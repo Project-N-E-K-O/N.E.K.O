@@ -810,7 +810,17 @@ def test_scoped_prompt_locale_forget_erases_row_and_rejects_late_record(
     rows = json.loads(locale_path.read_text(encoding="utf-8"))["subjects"]
     assert locale_state._subject_locale_key(target) not in rows
 
+    cutoff_key = (name, locale_state._subject_locale_key(target))
+    forget_cutoff = locale_state._subject_locale_forget_cutoffs[cutoff_key]
+    from tests.fake_clock import patch_module_clock
+
+    patch_module_clock(
+        monkeypatch,
+        locale_state,
+        time_ns=lambda: forget_cutoff,
+    )
     new_order = locale_state.reserve_subject_prompt_locale_order(name, target)
+    assert new_order == forget_cutoff + 1
     assert locale_state.record_subject_prompt_locale(
         name, target, "zh-TW", order=new_order,
     ) == "zh-TW"

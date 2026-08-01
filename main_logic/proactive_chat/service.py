@@ -307,6 +307,20 @@ def _resolve_topic_hook_locale(
     fallback: str,
 ) -> str:
     """Resolve the locale for topic-hook prompts without collapsing zh-TW."""
+    declared = _resolve_declared_topic_hook_locale(data, mgr)
+    if declared:
+        return declared
+    global_lang = normalize_language_code(get_global_language_full(), format="full")
+    if global_lang:
+        return global_lang
+    return fallback
+
+
+def _resolve_declared_topic_hook_locale(
+    data: ProactiveChatCommand | dict,
+    mgr,
+) -> str | None:
+    """Resolve only a locale explicitly declared by the request or session."""
     for raw_lang in (
         *_command_language_candidates(data),
         getattr(mgr, "user_language", None),
@@ -315,10 +329,16 @@ def _resolve_topic_hook_locale(
             normalized = normalize_language_code(raw_lang, format="full")
             if normalized:
                 return normalized
-    global_lang = normalize_language_code(get_global_language_full(), format="full")
-    if global_lang:
-        return global_lang
-    return fallback
+    return None
+
+
+def _new_dialog_locale_params(
+    data: ProactiveChatCommand | dict,
+    mgr,
+) -> dict[str, str] | None:
+    """Only explicit user locale evidence may update durable prompt state."""
+    declared = _resolve_declared_topic_hook_locale(data, mgr)
+    return {"language": declared} if declared else None
 
 
 async def handle_proactive_chat(
@@ -1222,7 +1242,7 @@ async def handle_proactive_chat(
             _pt_client = get_internal_http_client()
             resp = await _pt_client.get(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
-                params={"language": topic_hook_lang},
+                params=_new_dialog_locale_params(command, mgr),
                 timeout=5.0,
             )
             resp.raise_for_status()  # Check for HTTP errors explicitly

@@ -117,6 +117,31 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
     assert "回忆线索：" not in prompt
 
 
+def test_new_dialog_locale_params_require_explicit_user_language(monkeypatch):
+    mgr = SimpleNamespace(user_language=None)
+    monkeypatch.setattr(
+        proactive_service,
+        "get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    assert proactive_service._resolve_topic_hook_locale(
+        {},
+        mgr,
+        fallback="zh",
+    ) == "zh-TW"
+    assert proactive_service._new_dialog_locale_params({}, mgr) is None
+    assert proactive_service._new_dialog_locale_params(
+        {"language": "zh-TW"},
+        mgr,
+    ) == {"language": "zh-TW"}
+
+    mgr.user_language = "ja"
+    assert proactive_service._new_dialog_locale_params({}, mgr) == {
+        "language": "ja",
+    }
+
+
 def test_open_threads_compute_uses_topic_hook_locale():
     source = Path(proactive_service.__file__).read_text(encoding="utf-8")
 

@@ -235,6 +235,52 @@ async def test_stage2_locale_detection_excludes_opaque_ids(tmp_path):
     assert prompts[0].startswith("LANG=zh-TW\n")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ui_language", "fact_text"),
+    [
+        ("es", "Me gusta el cafe"),
+        ("pt", "Eu gosto de cafe"),
+    ],
+)
+async def test_stage2_keeps_ascii_ui_language(
+    tmp_path,
+    ui_language,
+    fact_text,
+):
+    from utils.language_utils import language_context
+
+    fs, _cm = _install_factstore(str(tmp_path))
+    new_facts = [{"id": "fact_001", "text": fact_text}]
+    existing = [{
+        "id": "persona.master.001",
+        "raw_id": "001",
+        "target_type": "persona",
+        "text": fact_text,
+        "entity": "master",
+        "score": 1.0,
+    }]
+    prompts = []
+
+    async def fake_llm(prompt, *_args, **_kwargs):
+        prompts.append(prompt)
+        return {"signals": []}
+
+    def prompt_template(language):
+        return (
+            f"LANG={language}\n"
+            "{NEW_FACTS}\n{EXISTING_OBSERVATIONS}\n{LANLAN_NAME}"
+        )
+
+    with language_context(ui_language), \
+         patch("memory.facts.get_signal_detection_prompt", side_effect=prompt_template), \
+         patch.object(fs, "_allm_call_with_retries", side_effect=fake_llm):
+        signals = await fs._allm_detect_signals("Neko", new_facts, existing)
+
+    assert signals == []
+    assert prompts[0].startswith(f"LANG={ui_language}\n")
+
+
 # ── S8: Stage-1 failure aborts; Stage-2 failure keeps facts ─────────
 
 

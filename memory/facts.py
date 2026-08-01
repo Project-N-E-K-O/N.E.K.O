@@ -2966,7 +2966,7 @@ class FactStore:
             )
             for observation, _ in budgeted_observations
         )
-        prompt_lang = detect_prompt_language(
+        prompt_lang = detect_prompt_language_with_ascii_fallback(
             locale_text,
             ui_language=get_global_language_full(),
         )

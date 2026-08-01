@@ -389,7 +389,8 @@ def reserve_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
                 key,
                 (None, None, None),
             )
-            high_water = max(order or 0, reserved_order or 0)
+            forget_cutoff = _subject_locale_forget_cutoffs.get((name, key), 0)
+            high_water = max(order or 0, reserved_order or 0, forget_cutoff)
             selected_order = max(time.time_ns(), high_water + 1)
             states[key] = (language, order, selected_order)
             selected_orders.append(selected_order)
