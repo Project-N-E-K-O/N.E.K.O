@@ -214,6 +214,68 @@ async def test_replace_preserves_embedding_when_replace_branch_not_taken(tmp_pat
     assert cat_entry["embedding_model_id"] == "local-text-retrieval-v1-128d-int8"
 
 
+@pytest.mark.asyncio
+async def test_correction_trust_overrides_model_and_archives_rejected_text(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "高信任旧记忆",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    await pm._aqueue_correction(
+        "Neko", "高信任旧记忆", "低信任新观察", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.8,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+    )
+    prompts = []
+    response = MagicMock()
+    response.content = json.dumps([{"index": 0, "action": "keep_new"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, prompt, *_args, **_kwargs):
+            prompts.append(prompt)
+            return response
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_RecordingLLM()):
+        assert await pm.resolve_corrections("Neko") == 1
+    persona = await pm.aensure_persona("Neko")
+    facts = pm._get_section_facts(persona, "master")
+    assert [entry["text"] for entry in facts] == ["高信任旧记忆"]
+    rejected = facts[0]["version_history"][-1]
+    assert rejected["text"] == "低信任新观察"
+    assert rejected["reason"] == "trust_rejected_observation"
+    assert rejected["speaker_id"] == "qq:1001"
+    assert "trust=high" in prompts[0]
+    assert "trust=low" in prompts[0]
+    assert "0.8" not in prompts[0] and "0.3" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_aadd_fact_carries_both_speakers_into_correction_queue(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "群友固定周五联机",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    result = await pm.aadd_fact(
+        "Neko", "群友不再周五联机", entity="master",
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    assert result == pm.FACT_QUEUED_CORRECTION
+    pending = await pm.aload_pending_corrections("Neko")
+    assert len(pending) == 1
+    assert pending[0]["old_speaker_id"] == "qq:2002"
+    assert pending[0]["old_speaker_trust"] == pytest.approx(0.8)
+    assert pending[0]["new_speaker_id"] == "qq:1001"
+    assert pending[0]["new_speaker_trust"] == pytest.approx(0.3)
+
+
 def test_invalidate_embedding_cache_helper_wipes_triple():
     """The shared helper called by every text-rewriting code path
     (resolve_corrections replace branch, amerge_into,

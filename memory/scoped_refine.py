@@ -46,10 +46,8 @@ scoped read path, so a merge that lost the stamp would silently destroy the
 memories it consumed.
 
 Speaker-trust hook (series 7/7): ``refine_pass`` and the prompt renderer
-accept ``trust_of: Callable[[dict], float | None]``. It is threaded through
-to the per-entry prompt lines so the arbitration model can weight sources;
-current callers pass ``None`` — the final PR of the series wires it to the
-``speaker_trust`` provenance recorded on scoped facts.
+accept a trust callback. Prompt lines receive only coarse high/medium/low
+bands; exact values stay in the code-side merge tie-break.
 """
 
 from __future__ import annotations
@@ -107,7 +105,36 @@ STORE_REFLECTION = 'reflection'
 VALID_SCOPED_REFINE_ACTIONS = frozenset({'merge'})
 
 # trust_of 回调签名（系列 7/7 的 speaker_trust 接入点）。
-TrustFn = Callable[[dict], float | None]
+TrustFn = Callable[[dict], str | float | None]
+
+
+def _trust_weighted_merge_text(
+    sources: list[dict], proposed_text: str,
+) -> tuple[str, list[dict]]:
+    """Prefer the highest-trust source in code when the margin is decisive."""
+    from memory.speaker_trust import normalize_trust, stable_speaker_id
+
+    usable = [
+        source for source in sources
+        if stable_speaker_id(source.get('speaker_id')) is not None
+        and isinstance(source.get('speaker_trust'), (int, float))
+        and not isinstance(source.get('speaker_trust'), bool)
+    ]
+    if len({stable_speaker_id(source.get('speaker_id')) for source in usable}) < 2:
+        return proposed_text, sources
+    ordered = sorted(
+        usable, key=lambda source: normalize_trust(source.get('speaker_trust')),
+        reverse=True,
+    )
+    from config import SPEAKER_TRUST_ARBITRATION_MARGIN
+    if (
+        normalize_trust(ordered[0].get('speaker_trust'))
+        - normalize_trust(ordered[-1].get('speaker_trust'))
+        < SPEAKER_TRUST_ARBITRATION_MARGIN
+    ):
+        return proposed_text, sources
+    winner_text = str(ordered[0].get('text') or '').strip()
+    return (winner_text or proposed_text), [ordered[0]]
 
 
 def _pick_temporal_boundary(values: list[str], *, latest: bool) -> str | None:
@@ -527,10 +554,9 @@ class ScopedLiteRefineEngine:
     ) -> str:
         """Numbered prompt lines; optional per-entry trust annotation.
 
-        The trust annotation slot is the series-7/7 wiring point: when
-        ``trust_of`` returns a float the line carries ``trust=x.x`` so the
-        arbitration prompt can weight contradicting sources by speaker
-        trust. With ``trust_of=None`` lines render without the field.
+        Numeric values and pre-banded values both render only as
+        ``trust=high|medium|low``. With ``trust_of=None`` lines render
+        without the field.
         """
         lines = []
         for i, e in enumerate(cluster):
@@ -539,10 +565,13 @@ class ScopedLiteRefineEngine:
             if not text or not eid:
                 continue
             trust = trust_of(e) if trust_of is not None else None
-            trust_part = (
-                f", trust={float(trust):.2f}" if isinstance(trust, (int, float))
-                and not isinstance(trust, bool) else ""
+            from memory.speaker_trust import trust_band
+            trust_label = (
+                trust_band(trust)
+                if isinstance(trust, (int, float)) and not isinstance(trust, bool)
+                else trust if trust in {'high', 'medium', 'low'} else None
             )
+            trust_part = f", trust={trust_label}" if trust_label else ""
             lines.append(f"[{i}] (id={eid}{trust_part}) {text}")
         return "\n".join(lines)
 
@@ -650,6 +679,8 @@ async def apply_scoped_persona_merge(
                 else str(act_obj.get('text', '')).strip()
             if not text:
                 continue
+            sources = [by_id[sid] for sid in valid_ids]
+            text, provenance_sources = _trust_weighted_merge_text(sources, text)
             merged = persona_manager._normalize_entry(text)
             merged['id'] = persona_manager._refine_persona_id(text)
             history = []
@@ -668,12 +699,18 @@ async def apply_scoped_persona_merge(
             merged_source_ids: list = []
             for sid in valid_ids:
                 src = by_id[sid]
-                history.append({
+                history_entry = {
                     'text': src.get('text', ''),
                     'replaced_at': now_iso,
                     'reason': 'scoped_refine_merge',
                     'source_fact_id': None,
-                })
+                }
+                for provenance_key in (
+                    'speaker_id', 'speaker_label', 'speaker_trust',
+                ):
+                    if src.get(provenance_key) is not None:
+                        history_entry[provenance_key] = src[provenance_key]
+                history.append(history_entry)
                 for upstream in (
                     [src.get('source_id')] + list(src.get('merged_source_ids') or [])
                 ):
@@ -723,6 +760,8 @@ async def apply_scoped_persona_merge(
             merged['source_id'] = inherited_source_id
             merged['merged_from_ids'] = list(valid_ids)
             merged['merged_source_ids'] = merged_source_ids
+            from memory.speaker_trust import provenance_of_entries
+            merged.update(provenance_of_entries(provenance_sources))
             # subject 戳：无戳条目在 scoped 渲染路径 fail-closed 掉队，
             # 漏掉这行等于把被合并的记忆整体蒸发。
             merged.update(subject.as_entry_fields())
@@ -841,6 +880,7 @@ async def apply_scoped_reflection_merge(
             if not text:
                 continue
             sources = [by_id[sid] for sid in valid_ids]
+            text, provenance_sources = _trust_weighted_merge_text(sources, text)
             first = sources[0]
             source_fact_ids: list[str] = []
             for src in sources:
@@ -890,6 +930,8 @@ async def apply_scoped_reflection_merge(
             )
             merged['reinforcement'] = max(max_rein, 0.1)
             merged['rein_last_signal_at'] = now_iso
+            from memory.speaker_trust import provenance_of_entries
+            merged.update(provenance_of_entries(provenance_sources))
             # subject 戳：无戳 reflection 在 scoped 读路径 fail-closed 掉队。
             merged.update(subject.as_entry_fields())
             # 产物 id 撞车守卫（同 persona 侧）：撞车会让源条目的

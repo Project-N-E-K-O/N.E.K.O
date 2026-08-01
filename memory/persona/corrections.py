@@ -55,6 +55,8 @@ class CorrectionsMixin:
     def _build_correction_list(
         corrections: list[dict], old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> list[dict] | None:
         """Returns the modified list or None if duplicate (no change needed)."""
         for existing in corrections:
@@ -73,16 +75,32 @@ class CorrectionsMixin:
             # scoped correction 携带完整 subject 戳：section key 不含 scope，
             # resolve 分域与 apply 界定都需要它。
             item.update(subject_fields)
+        from memory.speaker_trust import normalize_trust, stable_speaker_id
+        for prefix, provenance in (
+            ('old', old_speaker_provenance),
+            ('new', new_speaker_provenance),
+        ):
+            if not isinstance(provenance, dict):
+                continue
+            speaker_id = stable_speaker_id(provenance.get('speaker_id'))
+            if speaker_id is not None:
+                item[f'{prefix}_speaker_id'] = speaker_id
+                item[f'{prefix}_speaker_trust'] = normalize_trust(
+                    provenance.get('speaker_trust')
+                )
         corrections.append(item)
         return corrections
 
     def _queue_correction(
         self, name: str, old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> None:
         corrections = self.load_pending_corrections(name)
         updated = self._build_correction_list(
             corrections, old_text, new_text, entity, subject_fields,
+            old_speaker_provenance, new_speaker_provenance,
         )
         if updated is None:
             return
@@ -97,23 +115,29 @@ class CorrectionsMixin:
     async def _aqueue_correction(
         self, name: str, old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> None:
         """Public async entry — acquires the per-character lock.
         Callers already holding the lock must use _aqueue_correction_locked."""
         async with self._get_alock(name):
             await self._aqueue_correction_locked(
                 name, old_text, new_text, entity, subject_fields,
+                old_speaker_provenance, new_speaker_provenance,
             )
 
     async def _aqueue_correction_locked(
         self, name: str, old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> None:
         """Inner body. Caller must hold self._get_alock(name).
         Used by aadd_fact which already has the lock."""
         corrections = await self.aload_pending_corrections(name)
         updated = self._build_correction_list(
             corrections, old_text, new_text, entity, subject_fields,
+            old_speaker_provenance, new_speaker_provenance,
         )
         if updated is None:
             return
@@ -250,8 +274,11 @@ class CorrectionsMixin:
             # 错误消费。
             allowed_indices = {i for i, _ in pairs}
 
+            from memory.speaker_trust import trust_band
             batch_text = "\n".join(
-                f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
+                f"[{i}] 已有(trust={trust_band(item.get('old_speaker_trust'))}): "
+                f"{item['old_text']} | 新观察(trust="
+                f"{trust_band(item.get('new_speaker_trust'))}): {item['new_text']}"
                 for i, item in pairs
             )
             prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
@@ -367,6 +394,24 @@ class CorrectionsMixin:
                 continue
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
+            from memory.speaker_trust import preferred_by_trust
+            old_speaker_id = item.get('old_speaker_id')
+            new_speaker_id = item.get('new_speaker_id')
+            preference = None
+            if old_speaker_id and new_speaker_id and old_speaker_id != new_speaker_id:
+                preference = preferred_by_trust(
+                    item.get('old_speaker_trust'),
+                    item.get('new_speaker_trust'),
+                )
+            if preference is not None:
+                forced = 'keep_old' if preference == 'old' else 'keep_new'
+                if action != forced:
+                    logger.info(
+                        f"[Persona] {name}: trust 仲裁覆盖模型动作 "
+                        f"entity={entity} old_speaker={old_speaker_id} "
+                        f"new_speaker={new_speaker_id} action={action!r}->{forced}"
+                    )
+                action = forced
             section_facts = self._get_section_facts(persona, entity)
 
             # scoped correction 的一切匹配/删除/新建都限定在 item 自己的
@@ -419,7 +464,25 @@ class CorrectionsMixin:
                     new_entry['id'] = (
                         f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
                     )
+                if item.get('new_speaker_id'):
+                    new_entry['speaker_id'] = item['new_speaker_id']
+                    new_entry['speaker_trust'] = item.get('new_speaker_trust')
                 return new_entry
+
+            def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:
+                snapshot = {
+                    'text': text_value,
+                    'replaced_at': datetime.now().isoformat(),
+                    'reason': reason,
+                    'source_fact_id': None,
+                }
+                speaker_id = item.get(f'{prefix}_speaker_id')
+                if speaker_id:
+                    snapshot['speaker_id'] = speaker_id
+                    snapshot['speaker_trust'] = item.get(
+                        f'{prefix}_speaker_trust'
+                    )
+                return snapshot
 
             if action == 'merge':
                 # `replace` means "new observation is an update/correction to
@@ -431,16 +494,9 @@ class CorrectionsMixin:
                 # and provenance survive the rewrite. Rebuilding via
                 # `_normalize_entry(merged_text)` would wipe all of that,
                 # reducing a confirmed persona entry to a blank slate.
-                history_entry = {
-                    'text': old_text,
-                    'replaced_at': datetime.now().isoformat(),
-                    'reason': 'correction',
-                    # `source_fact_id` stays None: the pending-correction
-                    # record has no upstream fact id today. Follow-up work
-                    # can plumb one through _queue_correction without
-                    # changing this structure.
-                    'source_fact_id': None,
-                }
+                history_entry = _history_snapshot(
+                    old_text, 'old', 'correction',
+                )
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text and _entry_in_scope(existing):
@@ -466,14 +522,46 @@ class CorrectionsMixin:
                             section_facts[j] = new_entry
                         break
             elif action == 'keep_new':
+                old_entries = [
+                    e for e in section_facts
+                    if (e.get('text', '') if isinstance(e, dict) else str(e)) == old_text
+                    and _entry_in_scope(e)
+                ]
                 section_facts[:] = [
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
                     or not _entry_in_scope(e)
                 ]
-                section_facts.append(_stamped_new_entry(new_text))
+                replacement = _stamped_new_entry(new_text)
+                from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                if preference == 'new':
+                    replacement['version_history'] = (
+                        list(replacement.get('version_history') or [])
+                        + [
+                            _history_snapshot(
+                                old_text, 'old', 'trust_superseded',
+                            )
+                            for _ in old_entries[:1]
+                        ]
+                    )[-_VH_MAX:]
+                section_facts.append(replacement)
             elif action == 'keep_old':
-                pass
+                # 新观察不能静默蒸发：嵌入赢家的 version_history，保留全文、
+                # speaker 与 trust，可人工回滚。
+                if preference == 'old':
+                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                    for existing in section_facts:
+                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
+                        if et == old_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                            existing['version_history'] = (
+                                list(existing.get('version_history') or []) + [
+                                    _history_snapshot(
+                                        new_text, 'new',
+                                        'trust_rejected_observation',
+                                    )
+                                ]
+                            )[-_VH_MAX:]
+                            break
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))

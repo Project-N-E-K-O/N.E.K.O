@@ -915,6 +915,248 @@ class FactStore:
 
             await asyncio.to_thread(_record_under_fact_lock)
 
+    async def aarchive_arbitrated_facts(
+        self, name: str, archive_specs: dict[str, dict],
+    ) -> int:
+        """Archive trust/dedup losers with an archive-first two-file commit."""
+        if not archive_specs:
+            return 0
+        async with self._get_persist_alock(name):
+            def _archive() -> int:
+                with self._get_lock(name):
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation="archive",
+                        target=f"memory/{name}/facts_archive.json",
+                    )
+                    facts = self._facts.get(name, [])
+                    losers = [
+                        fact for fact in facts
+                        if isinstance(fact, dict) and fact.get('id') in archive_specs
+                    ]
+                    if not losers:
+                        return 0
+                    archive_path = self._facts_archive_path(name)
+                    archived: list[dict] = []
+                    if os.path.exists(archive_path):
+                        try:
+                            with open(archive_path, encoding='utf-8') as fh:
+                                data = json.load(fh)
+                        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                            raise RuntimeError(
+                                f"facts_archive unreadable during arbitration: {exc}"
+                            ) from exc
+                        if not isinstance(data, list):
+                            raise RuntimeError(
+                                "facts_archive is not a list during arbitration"
+                            )
+                        archived = data
+                    now_iso = datetime.now().isoformat()
+                    stamped = []
+                    for fact in losers:
+                        copy = dict(fact)
+                        spec = archive_specs.get(fact.get('id')) or {}
+                        copy['arbitration_archived_at'] = now_iso
+                        copy['arbitration_reason'] = str(
+                            spec.get('reason') or 'dedup_arbitration'
+                        )
+                        if spec.get('superseded_by'):
+                            copy['superseded_by'] = spec['superseded_by']
+                        stamped.append(copy)
+                    merged_archive = _merge_archive_entries(archived, stamped)
+                    loser_ids = {fact.get('id') for fact in losers}
+                    active = [
+                        fact for fact in facts if fact.get('id') not in loser_ids
+                    ]
+                    # Never reverse: crash between writes leaves a recoverable
+                    # duplicate, not an unrecoverable missing fact.
+                    try:
+                        atomic_write_json(
+                            archive_path, merged_archive, indent=2,
+                            ensure_ascii=False,
+                        )
+                        atomic_write_json(
+                            self._facts_path(name), active, indent=2,
+                            ensure_ascii=False,
+                        )
+                    except Exception:
+                        # The active cache may no longer match either durable
+                        # file after a partial two-file commit.  Force reload;
+                        # archive-first ordering still guarantees recoverability.
+                        self._facts.pop(name, None)
+                        raise
+                    facts[:] = active
+                    for fact in losers:
+                        logger.info(
+                            f"[FactStore] {name}: 仲裁归档 fact={fact.get('id')} "
+                            f"speaker={fact.get('speaker_id')} "
+                            f"superseded_by={(archive_specs.get(fact.get('id')) or {}).get('superseded_by')}"
+                        )
+                    return len(losers)
+
+            try:
+                return await asyncio.to_thread(_archive)
+            except BaseException:
+                # The resolver mutates the survivor in memory before asking
+                # for the archive-first commit. Any failure (including an
+                # unreadable pre-existing archive) must discard that cache so
+                # the next attempt reloads the unchanged durable active set.
+                def _invalidate() -> None:
+                    with self._get_lock(name):
+                        self._facts.pop(name, None)
+
+                await asyncio.to_thread(_invalidate)
+                raise
+
+    async def aevaluate_speaker_trust_events(
+        self,
+        name: str,
+        messages: list[dict],
+        *,
+        subject: MemorySubject | dict,
+        speaker_provenance: dict | None,
+        speaker_is_owner: bool,
+    ) -> list[dict]:
+        """Derive owner confirmation/correction signals from raw request text."""
+        if not speaker_is_owner or not isinstance(speaker_provenance, dict):
+            return []
+        from memory.speaker_trust import (
+            deterministic_relation,
+            observation_texts,
+            stable_speaker_id,
+            trust_event_id,
+        )
+
+        source_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
+        memory_subject = coerce_subject(subject)
+        texts = observation_texts(messages)
+        if source_id is None or memory_subject is None or not texts:
+            return []
+        facts = await self.aload_facts(name)
+
+        def _in_signal_scope(entry: dict) -> bool:
+            if memory_subject.kind != 'group_participant':
+                return entry_matches_subject(entry, memory_subject)
+            if entry.get('subject_kind') != 'group_participant':
+                return False
+            # A group participant subject is qq:<group>:<speaker>. Owner
+            # confirmation in their own participant bucket may evaluate other
+            # members of that same group, but never a different group.
+            current_prefix = memory_subject.subject_id.rsplit(':', 1)[0]
+            candidate_id = str(entry.get('subject_id') or '')
+            return candidate_id.rsplit(':', 1)[0] == current_prefix
+
+        events: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for prior in facts:
+            if not isinstance(prior, dict) or not _in_signal_scope(prior):
+                continue
+            target_id = stable_speaker_id(prior.get('speaker_id'))
+            if target_id is None or target_id == source_id:
+                continue
+            for text in texts:
+                relation = deterministic_relation(prior.get('text', ''), text)
+                key = (relation or '', target_id)
+                if relation is None or key in seen:
+                    continue
+                seen.add(key)
+                observation_key = hashlib.sha256(
+                    f"{source_id}|{' '.join(text.split()).casefold()}".encode(
+                        'utf-8'
+                    )
+                ).hexdigest()[:24]
+                events.append({
+                    'kind': relation,
+                    'speaker_id': target_id,
+                    'event_id': trust_event_id(
+                        relation, observation_key, target_id,
+                    ),
+                    'source_speaker_id': source_id,
+                })
+        return events
+
+    async def arestore_arbitrated_fact(self, name: str, fact_id: str) -> bool:
+        """Restore one arbitration archive row by its logged fact id."""
+        target_id = str(fact_id or '').strip()
+        if not target_id:
+            return False
+        async with self._get_persist_alock(name):
+            def _restore() -> bool:
+                with self._get_lock(name):
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation='restore',
+                        target=f'memory/{name}/facts_archive.json',
+                    )
+                    archive_path = self._facts_archive_path(name)
+                    if not os.path.exists(archive_path):
+                        return False
+                    try:
+                        with open(archive_path, encoding='utf-8') as fh:
+                            archived = json.load(fh)
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            f'facts_archive unreadable during restore: {exc}'
+                        ) from exc
+                    if not isinstance(archived, list):
+                        raise RuntimeError('facts_archive is not a list during restore')
+                    matches = [
+                        row for row in archived
+                        if isinstance(row, dict)
+                        and row.get('id') == target_id
+                        and row.get('arbitration_archived_at')
+                    ]
+                    if not matches:
+                        return False
+                    facts = self._facts.get(name)
+                    if facts is None:
+                        facts = self.load_facts(name)
+                    active_ids = {
+                        row.get('id') for row in facts if isinstance(row, dict)
+                    }
+                    restored = dict(matches[-1])
+                    for key in (
+                        'arbitration_archived_at', 'arbitration_reason',
+                        'superseded_by',
+                    ):
+                        restored.pop(key, None)
+                    restored['arbitration_restored_at'] = datetime.now().isoformat()
+                    active = list(facts)
+                    if target_id not in active_ids:
+                        active.append(restored)
+                    remaining = [
+                        row for row in archived
+                        if not (
+                            isinstance(row, dict)
+                            and row.get('id') == target_id
+                            and row.get('arbitration_archived_at')
+                        )
+                    ]
+                    # Restore is the mirror transaction: active first, archive
+                    # second. A crash leaves a duplicate, never a missing fact.
+                    atomic_write_json(
+                        self._facts_path(name), active, indent=2,
+                        ensure_ascii=False,
+                    )
+                    atomic_write_json(
+                        archive_path, remaining, indent=2, ensure_ascii=False,
+                    )
+                    facts[:] = active
+                    logger.info(
+                        f'[FactStore] {name}: 仲裁恢复 fact={target_id}'
+                    )
+                    return True
+
+            try:
+                return await asyncio.to_thread(_restore)
+            except BaseException:
+                def _invalidate() -> None:
+                    with self._get_lock(name):
+                        self._facts.pop(name, None)
+
+                await asyncio.to_thread(_invalidate)
+                raise
+
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
         from datetime import timedelta
@@ -1960,8 +2202,8 @@ class FactStore:
     def _speaker_provenance_of(segment: dict) -> dict | None:
         """The provenance fields to stamp onto this segment's persisted facts.
 
-        只落字段不接消费（发言人信赖度阶段一）：speaker_label = 谁说的，
-        speaker_trust = 调用方按权限等级派生的 0..1 初值。永远来自请求段，
+        speaker_label = 谁说的，speaker_trust = 调用方的代码侧信赖度快照。
+        永远来自请求段，
         绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""  # noqa: DOCSTRING_CJK
         prov: dict = {}
         label = str(segment.get('speaker_label') or '').strip()
@@ -1974,6 +2216,10 @@ class FactStore:
             and 0.0 <= float(trust) <= 1.0
         ):
             prov['speaker_trust'] = float(trust)
+        from memory.speaker_trust import stable_speaker_id
+        speaker_id = stable_speaker_id(segment.get('speaker_id'))
+        if speaker_id is not None:
+            prov['speaker_id'] = speaker_id
         return prov or None
 
     async def extract_facts_batch(
@@ -2239,10 +2485,10 @@ class FactStore:
         re-evaluates. The reverse (user→ai) never downgrades — user
         corroboration is irreversible.
 
-        ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
-        trust'} 子集），只盖在本批**新建 user_observation** fact 上；AI
-        disclosure 不冒用参与者 provenance。字段只落盘不接消费（信赖度
-        阶段一）；来自调用方（scoped_history 请求段），绝不读 extracted
+        ``speaker_provenance``: 发言人来源标识（speaker_label / speaker_trust /
+        speaker_id 白名单），只盖在本批**新建 user_observation** fact 上；AI
+        disclosure 不冒用参与者 provenance。来自调用方（scoped_history
+        请求段），绝不读 extracted
         元素里的同名键——LLM 输出无法伪造它。
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
@@ -2422,6 +2668,7 @@ class FactStore:
                         if (
                             hit is None
                             or hit.get('subject_archived_at')
+                            or hit.get('arbitration_archived_at')
                             or not entry_matches_subject(hit, memory_subject)
                         ):
                             continue
@@ -2532,6 +2779,13 @@ class FactStore:
                     and 0.0 <= float(trust) <= 1.0
                 ):
                     fact_entry['speaker_trust'] = float(trust)
+                from memory.speaker_trust import stable_speaker_id
+                speaker_id = stable_speaker_id(
+                    speaker_provenance.get('speaker_id')
+                )
+                if speaker_id is not None:
+                    fact_entry['speaker_id'] = speaker_id
+
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
@@ -3106,7 +3360,7 @@ class FactStore:
         :meth:`_allm_extract_facts`.
 
         ``speaker_provenance``: stamped onto新建 user_observation fact
-        （speaker_label / speaker_trust，信赖度阶段一只落字段）；AI
+        （speaker_label / speaker_trust / speaker_id）；AI
         disclosure 保持独立来源。与 ``speaker_label`` 分开传：后者影响
         prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
         "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定

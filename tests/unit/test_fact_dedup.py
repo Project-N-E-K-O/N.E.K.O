@@ -942,6 +942,82 @@ async def test_aapply_decisions_evicts_fact_cache_on_save_failure(tmp_path):
     assert e1["importance"] == 4  # untouched
 
 
+@pytest.mark.asyncio
+async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "low wording", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "high wording", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["e1"]
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = json.loads(archive_path.read_text(encoding="utf-8"))
+    loser = next(fact for fact in archived if fact["id"] == "c1")
+    assert loser["superseded_by"] == "e1"
+    assert loser["arbitration_reason"] == "fact_dedup_merge"
+    assert loser["text"] == "low wording"
+    assert await fs.arestore_arbitrated_fact("Neko", "c1")
+    assert {fact["id"] for fact in await fs.aload_facts("Neko")} == {"c1", "e1"}
+    remaining_archive = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert all(fact.get("id") != "c1" for fact in remaining_archive)
+
+
+@pytest.mark.asyncio
+async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "high wording", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "low wording", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert next(fact for fact in archived if fact["id"] == "e1")[
+        "superseded_by"
+    ] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_archive_aborts_arbitration_without_active_loss(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "candidate", embedding=[1.0, 0.0])
+    existing = _fact("e1", "existing", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    (tmp_path / "Neko" / "facts_archive.json").write_text(
+        "not-json", encoding="utf-8",
+    )
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        with pytest.raises(RuntimeError, match="facts_archive unreadable"):
+            await resolver.aresolve("Neko")
+    assert "Neko" not in fs._facts
+    active = await fs.aload_facts("Neko")
+    assert {fact["id"] for fact in active} == {"c1", "e1"}
+
+
 # ── ids-only queue（隐私收口：成员衍生原文不落 sidecar） ─────────────
 
 

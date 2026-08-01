@@ -11,6 +11,9 @@ from .group_permission import GroupPermissionManager
 class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        # trust 演化的唯一写者锁：不同群/私聊会话可能同时结算同一个 QQ，
+        # 所有 read-modify-persist 必须在这里串行，不能依赖 session lock。
+        self._speaker_trust_write_lock = asyncio.Lock()
 
     def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
         """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理
@@ -551,6 +554,10 @@ class QQSettingsService:
         try:
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
+            self.plugin._qq_settings["speaker_trust_profiles"] = (
+                self.plugin.permission_mgr.speaker_trust_profiles()
+                if self.plugin.permission_mgr else {}
+            )
             pre_publish = {
                 key: bool(self.plugin._qq_settings.get(key, False))
                 for key in (overlay or {})
@@ -597,9 +604,50 @@ class QQSettingsService:
             self.plugin._qq_settings["enable_group_attention"] = True
 
     def rebuild_permission_managers(self, config: dict[str, Any]) -> None:
-        self.plugin.permission_mgr = PermissionManager(config.get("trusted_users", []))
+        self.plugin.permission_mgr = PermissionManager(
+            config.get("trusted_users", []),
+            config.get("speaker_trust_profiles", {}),
+        )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
         self.plugin._refresh_admin_qq()
+
+    async def apply_speaker_trust_update(
+        self,
+        *,
+        sender_id: str,
+        message_count: int,
+        activity_event_id: str,
+        trust_events: list[dict] | None = None,
+    ) -> bool:
+        """Single durable writer for global per-QQ trust evolution."""
+        manager = self.plugin.permission_mgr
+        if manager is None:
+            return False
+        async with self._speaker_trust_write_lock:
+            # Share the full settings transaction lock as well: a dashboard
+            # save writes the same config file and could otherwise publish a
+            # stale snapshot over this trust update.
+            async with self._consent_transaction_lock:
+                before = manager.speaker_trust_profiles()
+                changed = manager.record_speaker_activity(
+                    sender_id, message_count, activity_event_id,
+                )
+                changed = (
+                    bool(manager.apply_speaker_trust_events(trust_events or []))
+                    or changed
+                )
+                if not changed:
+                    return True
+                if await self.persist_business_config():
+                    return True
+                manager.replace_speaker_trust_profiles(before)
+                runtime_settings = getattr(self.plugin, '_qq_settings', None)
+                if isinstance(runtime_settings, dict):
+                    runtime_settings['speaker_trust_profiles'] = before
+                self.plugin.logger.warning(
+                    f"speaker trust 写盘失败，已回滚 sender={sender_id}"
+                )
+                return False
 
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
         """Serialize the whole settings transaction.

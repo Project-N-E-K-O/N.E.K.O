@@ -408,6 +408,8 @@ class SynthesisMixin:
             'event_end_at': event_end_at,
             'schema_version': _SCHEMA_V,
         })
+        from memory.speaker_trust import provenance_of_entries
+        reflection.update(provenance_of_entries(unabsorbed))
         if memory_subject is not None:
             reflection.update(memory_subject.as_entry_fields())
             # 简化群记忆管线：scoped reflection 不走 evidence 确认。群/成员

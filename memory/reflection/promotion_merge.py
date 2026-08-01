@@ -645,6 +645,7 @@ class PromotionMergeMixin:
                     lanlan_name, current3.get('text', ''),
                     entity=target_entity or 'master',
                     source='reflection', source_id=current3['id'],
+                    speaker_provenance=current3,
                     **promote_kwargs,
                 )
             if result == self._persona_manager.FACT_ADDED:

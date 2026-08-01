@@ -4,6 +4,8 @@ from .display_name_service import QQDisplayNameService
 from .pipeline_models import is_synthetic_source
 
 import asyncio
+import hashlib
+import json
 import time
 from typing import Any
 
@@ -886,6 +888,9 @@ class QQSessionMemoryService:
         speaker_trust = self._speaker_trust_for(
             sender_id, user_data.get("permission_level"),
         )
+        speaker_is_owner = self._speaker_is_owner_for(
+            sender_id, user_data.get("permission_level"),
+        )
         subject = self.plugin.memory_bridge.participant_subject(sender_id)
         while True:
             if digest_batches_left <= 0:
@@ -925,12 +930,15 @@ class QQSessionMemoryService:
             if display_name:
                 # 与群 digest 同约定：拿不到显示名就不带参。
                 participant_extra["display_name"] = display_name
+            if speaker_is_owner:
+                participant_extra["speaker_is_owner"] = True
             result = await self.plugin.memory_bridge.post_scoped_memory_history(
                 her_name,
                 scoped_messages,
                 subject=subject,
                 speaker_label=speaker_label,
                 speaker_trust=speaker_trust,
+                speaker_id=f"qq:{sender_id}",
                 timeout=30.0,
                 **participant_extra,
             )
@@ -938,6 +946,11 @@ class QQSessionMemoryService:
                 raise RuntimeError(
                     result.get("message", "scoped participant history failed")
                 )
+            await self._apply_speaker_trust_update(
+                sender_id,
+                scoped_messages,
+                result.get("trust_events") or [],
+            )
             self.plugin.logger.info(
                 f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"
                 f"消息数: {len(scoped_messages)}"
@@ -1262,10 +1275,13 @@ class QQSessionMemoryService:
                         "speaker_label": (
                             str(member_labels.get(sender_id) or sender_id)[:64]
                         ),
-                        # 信赖度初值（阶段一只落字段）：按权限等级派生，
-                        # 随段落盘到该段抽出的每条 fact 上。
+                        # 全局信赖度快照：权限基线 + 有界演化，随段落盘到
+                        # 该段抽出的每条 fact 上。
                         "speaker_trust": self._speaker_trust_for(sender_id),
+                        "speaker_id": f"qq:{sender_id}",
                     }
+                    if self._speaker_is_owner_for(sender_id):
+                        segment["speaker_is_owner"] = True
                     # 显示名 = label 剥掉 "(sender_id)" 后缀的昵称本体
                     # （persona 标题里 subject_id 已含数字 id，不重复）。
                     # label 退化成纯 id 时不加键，标题回退裸 id 形态。
@@ -1337,6 +1353,11 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} 成员 {sender_id} "
                                 f"本次抽取丢弃了 {dropped} 条无内容条目"
                             )
+                        await self._apply_speaker_trust_update(
+                            sender_id,
+                            list(member_buckets.get(sender_id) or []),
+                            segment_result.get("trust_events") or [],
+                        )
                         member_buckets.pop(sender_id, None)
                         # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
                         # 群会让 label 映射无限增长，而参与者名额是按 bucket
@@ -1431,25 +1452,66 @@ class QQSessionMemoryService:
     def _speaker_trust_for(
         self, sender_id: str, permission_level: str | None = None,
     ) -> float:
-        """按权限等级派生的发言人信赖度初值（阶段一只落字段不接消费）。"""
-        from config import (
-            SPEAKER_TRUST_BY_PERMISSION_LEVEL,
-            SPEAKER_TRUST_DEFAULT,
+        """Resolve current global trust using a frozen permission baseline."""
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        try:
+            get_trust = getattr(permission_mgr, "get_speaker_trust", None)
+            if get_trust is not None:
+                return get_trust(sender_id, permission_level)
+            get_level = getattr(permission_mgr, "get_permission_level", None)
+            if get_level is not None:
+                permission_level = permission_level or get_level(sender_id)
+        except Exception:
+            pass
+        from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL, SPEAKER_TRUST_DEFAULT
+        return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
+            permission_level or "none", SPEAKER_TRUST_DEFAULT,
         )
 
+    def _speaker_is_owner_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> bool:
+        """Use the request-side permission tier, never trust score or content."""
         level = permission_level
         if level is None:
-            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            manager = getattr(self.plugin, "permission_mgr", None)
             try:
-                level = (
-                    permission_mgr.get_permission_level(sender_id)
-                    if permission_mgr is not None else "none"
-                )
+                get_level = getattr(manager, "get_permission_level", None)
+                if get_level is not None:
+                    level = get_level(sender_id)
             except Exception:
-                level = "none"
-        return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
-            level, SPEAKER_TRUST_DEFAULT,
+                level = None
+        return level == "admin"
+
+    async def _apply_speaker_trust_update(
+        self, sender_id: str, messages: list[dict], trust_events: list[dict],
+    ) -> None:
+        """Persist one idempotent raw-activity event plus server-verified signals."""
+        canonical = json.dumps(messages or [], ensure_ascii=False, sort_keys=True)
+        event_id = "activity_" + hashlib.sha256(
+            f"qq:{sender_id}|{canonical}".encode("utf-8")
+        ).hexdigest()[:24]
+        from memory.speaker_trust import observation_texts
+        authored_count = len(observation_texts(messages or []))
+        settings_service = getattr(self.plugin, "settings_service", None)
+        apply_update = getattr(
+            settings_service, "apply_speaker_trust_update", None,
         )
+        # Lightweight integrations and old test harnesses may intentionally
+        # omit persistence services.  Fact writes must remain usable there.
+        if apply_update is None:
+            return
+        ok = await apply_update(
+            sender_id=sender_id,
+            message_count=authored_count,
+            activity_event_id=event_id,
+            trust_events=trust_events,
+        )
+        if not ok:
+            # 记忆已安全落盘；trust 是派生权重，失败不回滚事实，只明确留痕。
+            self.plugin.logger.warning(
+                f"speaker trust 演化未持久化 sender={sender_id} event={event_id}"
+            )
 
     def _member_memory_consent_live(self) -> bool:
         """Whether member memory is still authorized right now.

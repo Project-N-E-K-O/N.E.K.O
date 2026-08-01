@@ -788,6 +788,11 @@ class ScopedHistorySegment(BaseModel):
     # Stage one of the speaker-trust mechanism: stored on each fact,
     # consumed by nothing yet.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Stable internal identity. Unlike speaker_label this never enters a prompt.
+    speaker_id: str | None = None
+    # Request-side authorization bit. It is never rendered or copied from LLM
+    # output; only owner-authored raw text may evolve another speaker's trust.
+    speaker_is_owner: bool = False
     # Optional display name for this segment's subject (see
     # ScopedFactsWriteRequest.display_name).
     display_name: str | None = None
@@ -812,6 +817,8 @@ class ScopedHistoryRequest(BaseModel):
     # Only meaningful alongside speaker_label — without a speaker there is
     # no one to trust, so the handler drops it when the label is absent.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    speaker_id: str | None = None
+    speaker_is_owner: bool = False
     # Optional display name for the single-subject shape's subject (see
     # ScopedFactsWriteRequest.display_name). Group digests pass the group
     # name here.
@@ -998,6 +1005,12 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         speaker_provenance = {"speaker_label": speaker_label}
         if req.speaker_trust is not None:
             speaker_provenance["speaker_trust"] = req.speaker_trust
+        from memory.speaker_trust import stable_speaker_id
+        speaker_id = stable_speaker_id(req.speaker_id)
+        if req.speaker_id is not None and speaker_id is None:
+            raise HTTPException(status_code=422, detail="invalid speaker_id")
+        if speaker_id is not None:
+            speaker_provenance["speaker_id"] = speaker_id
     subject = req.subject.to_domain()
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
@@ -1011,6 +1024,15 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         from config.prompts.prompts_memory import get_group_digest_speaker_label
         from utils.language_utils import get_global_language_full
         speaker_label = get_group_digest_speaker_label(get_global_language_full())
+    trust_events = []
+    if req.speaker_is_owner:
+        trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
+            lanlan_name,
+            input_history,
+            subject=subject,
+            speaker_provenance=speaker_provenance,
+            speaker_is_owner=True,
+        )
     # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
     # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
     # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
@@ -1035,6 +1057,7 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         "subject": subject.as_entry_fields(),
         "created": len(created),
         "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+        "trust_events": trust_events,
     }
 
 
@@ -1064,6 +1087,8 @@ async def _process_scoped_history_segments(
         or req.subject is not None
         or req.speaker_label is not None
         or req.speaker_trust is not None
+        or req.speaker_id is not None
+        or req.speaker_is_owner
         or req.display_name is not None
     ):
         raise HTTPException(
@@ -1139,10 +1164,20 @@ async def _process_scoped_history_segments(
             "subject": subject,
             "speaker_label": speaker_label,
             "speaker_trust": segment.speaker_trust,
+            "speaker_id": segment.speaker_id,
+            "speaker_is_owner": bool(segment.speaker_is_owner),
             "display_name": _sanitized_display_name(
                 segment.display_name, context=f"segment {position}",
             ),
         })
+        from memory.speaker_trust import stable_speaker_id
+        parsed_speaker_id = stable_speaker_id(segment.speaker_id)
+        if segment.speaker_id is not None and parsed_speaker_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"segment {position}: invalid speaker_id",
+            )
+        parsed[-1]["speaker_id"] = parsed_speaker_id
     if total_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES:
         # 单批的 LLM 输入工作量上界与 legacy 单发同一口径：调用方按这个
         # 常量打包，越界是契约 bug，fail loud。
@@ -1153,6 +1188,22 @@ async def _process_scoped_history_segments(
                 f"{SCOPED_HISTORY_BATCH_MAX_MESSAGES} messages in total"
             ),
         )
+    for segment in parsed:
+        segment["trust_events"] = []
+        if segment.get("speaker_is_owner"):
+            segment["trust_events"] = (
+                await runtime.fact_store.aevaluate_speaker_trust_events(
+                lanlan_name,
+                segment["messages"],
+                subject=segment["subject"],
+                speaker_provenance={
+                    "speaker_id": segment.get("speaker_id"),
+                    "speaker_trust": segment.get("speaker_trust"),
+                    "speaker_label": segment.get("speaker_label"),
+                },
+                speaker_is_owner=True,
+            )
+            )
     # fail_closed 语义（对齐 legacy 单发路径的注释）：调用方在成功段上
     # pop 掉只存在于它内存里的 bucket。整批抽取失败以 502 暴露（全部保留
     # 重试）；单段 persist 失败在响应体里按段标 failed。
@@ -1197,6 +1248,10 @@ async def _process_scoped_history_segments(
                     for fact in (result.get("created") or [])
                     if fact.get("id")
                 ],
+                "trust_events": (
+                    list(segment.get("trust_events") or [])
+                    if result.get("status") == "ok" else []
+                ),
             }
             for segment, result in zip(parsed, segment_results)
         ],

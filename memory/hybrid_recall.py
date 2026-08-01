@@ -408,7 +408,13 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
             # 配点，单点过滤即可覆盖。恢复路径会剥掉标记，行自然回池。
             return [
                 row for row in data
-                if not (isinstance(row, dict) and row.get('subject_archived_at'))
+                if not (
+                    isinstance(row, dict)
+                    and (
+                        row.get('subject_archived_at')
+                        or row.get('arbitration_archived_at')
+                    )
+                )
             ]
         return await asyncio.to_thread(_read)
     except (json.JSONDecodeError, OSError) as exc:

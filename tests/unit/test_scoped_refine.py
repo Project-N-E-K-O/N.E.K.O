@@ -427,7 +427,8 @@ def test_render_cluster_trust_annotation_hook():
     annotated = ScopedLiteRefineEngine._render_cluster(
         cluster, lambda e: 0.8 if e['id'] == 'a1' else None,
     )
-    assert "(id=a1, trust=0.80)" in annotated
+    assert "(id=a1, trust=high)" in annotated
+    assert "0.80" not in annotated
     assert "(id=a2)" in annotated
 
 
@@ -511,6 +512,47 @@ async def test_apply_persona_merge_stamps_subject_and_consumes_sources(tmp_path)
     assert merged['merged_from_ids'] == ['p0', 'p1']
     # 幸存者 p2 盖了 stamp。
     assert by_id['p2']['last_refine_cluster_hash'] == "hash123"
+
+
+@pytest.mark.asyncio
+async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    low = pm._build_fact_entry(
+        "低信任说法", "manual", None, subject=GROUP_A,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    high = pm._build_fact_entry(
+        "高信任说法", "manual", None, subject=GROUP_A,
+        speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.8},
+    )
+    low["id"], high["id"] = "low", "high"
+    section.extend([low, high])
+    await pm.asave_persona("Neko", persona)
+
+    applied = await apply_scoped_persona_merge(
+        pm,
+        "Neko",
+        GROUP_A,
+        [dict(low), dict(high)],
+        [{
+            "action": "merge",
+            "source_ids": ["low", "high"],
+            "produce": {"text": "模型偏向低信任说法"},
+        }],
+        "trust-hash",
+    )
+    assert applied == 1
+    persona = await pm.aensure_persona("Neko")
+    facts = persona[GROUP_A.persona_section_key]["facts"]
+    merged = next(entry for entry in facts if entry.get("merged_from_ids"))
+    assert merged["text"] == "高信任说法"
+    assert merged["speaker_id"] == "qq:2002"
+    assert merged["speaker_trust"] == pytest.approx(0.8)
+    history = {item["text"]: item for item in merged["version_history"]}
+    assert history["低信任说法"]["speaker_id"] == "qq:1001"
+    assert history["高信任说法"]["speaker_id"] == "qq:2002"
 
 
 @pytest.mark.asyncio

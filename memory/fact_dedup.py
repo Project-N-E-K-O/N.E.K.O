@@ -911,6 +911,7 @@ class FactDedupResolver:
         by_id = {f.get('id'): f for f in facts if isinstance(f, dict) and f.get('id')}
         applied = 0
         ids_to_remove: set[str] = set()
+        archive_specs: dict[str, dict] = {}
         processed_pairs: set[tuple] = set()
         seen_pairs: set[tuple] = set()
         for r in results:
@@ -971,6 +972,26 @@ class FactDedupResolver:
                 # so it doesn't keep blocking subsequent batches.
                 processed_pairs.add((cand_id, exist_id))
                 continue
+            from memory.speaker_trust import preferred_by_trust
+            cand_speaker = cand.get('speaker_id')
+            exist_speaker = existing.get('speaker_id')
+            preference = None
+            if cand_speaker and exist_speaker and cand_speaker != exist_speaker:
+                preference = preferred_by_trust(
+                    existing.get('speaker_trust'), cand.get('speaker_trust'),
+                )
+            if preference == 'old' and action == 'replace':
+                logger.info(
+                    "[FactDedup] %s: trust 仲裁保留 existing=%s(%s)，覆盖模型 replace",
+                    name, exist_id, exist_speaker,
+                )
+                action = 'merge'
+            elif preference == 'new' and action == 'merge':
+                logger.info(
+                    "[FactDedup] %s: trust 仲裁保留 candidate=%s(%s)，覆盖模型 merge",
+                    name, cand_id, cand_speaker,
+                )
+                action = 'replace'
             # Reciprocal-pair guard: an earlier decision in this batch
             # already scheduled one side for removal. Honouring this
             # decision too would either delete both facts (merge after
@@ -996,6 +1017,10 @@ class FactDedupResolver:
                 cur_imp = int(existing.get('importance', 5) or 5)
                 existing['importance'] = min(10, cur_imp + 1)
                 ids_to_remove.add(cand_id)
+                archive_specs[cand_id] = {
+                    'reason': 'fact_dedup_merge',
+                    'superseded_by': exist_id,
+                }
                 processed_pairs.add((cand_id, exist_id))
                 applied += 1
             elif action == 'replace':
@@ -1015,6 +1040,10 @@ class FactDedupResolver:
                 old = int(existing.get('importance', 5) or 5)
                 cand['importance'] = max(cur, old)
                 ids_to_remove.add(exist_id)
+                archive_specs[exist_id] = {
+                    'reason': 'fact_dedup_replace',
+                    'superseded_by': cand_id,
+                }
                 processed_pairs.add((cand_id, exist_id))
                 applied += 1
             else:  # keep_both
@@ -1024,11 +1053,14 @@ class FactDedupResolver:
                 applied += 1
 
         if ids_to_remove:
-            # Use the in-memory list reference and rely on FactStore's
-            # asave_facts to persist. Removing in place preserves the
-            # FactStore's view-cache identity (same list object).
-            facts[:] = [f for f in facts if f.get('id') not in ids_to_remove]
-            await self._fact_store.asave_facts(name)
+            archived = await self._fact_store.aarchive_arbitrated_facts(
+                name, archive_specs,
+            )
+            if archived != len(ids_to_remove):
+                raise RuntimeError(
+                    f"fact arbitration archive mismatch: expected "
+                    f"{len(ids_to_remove)}, archived {archived}"
+                )
         elif applied:
             # Even pure keep_both rounds may have nudged nothing on
             # facts.json, but we still need a save if importance was

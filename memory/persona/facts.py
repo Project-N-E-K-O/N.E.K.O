@@ -207,6 +207,7 @@ class FactsMixin:
 
     def _build_fact_entry(
         self, text: str, source: str, source_id: str | None, *, subject=None,
+        speaker_provenance: dict | None = None,
     ) -> dict:
         entry = self._normalize_entry(text)
         # scoped 条目 ID 掺隔离域：同 section 双 scope 同秒同文本会撞 ID，
@@ -223,11 +224,22 @@ class FactsMixin:
         entry['source_id'] = source_id
         if subject is not None:
             entry.update(subject.as_entry_fields())
+        if speaker_provenance:
+            from memory.speaker_trust import normalize_trust, stable_speaker_id
+            speaker_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
+            if speaker_id is not None:
+                entry['speaker_id'] = speaker_id
+                entry['speaker_trust'] = normalize_trust(
+                    speaker_provenance.get('speaker_trust')
+                )
+            label = str(speaker_provenance.get('speaker_label') or '').strip()
+            if label:
+                entry['speaker_label'] = label[:64]
         return entry
 
     def add_fact(self, name: str, text: str, entity: str = 'master',
                  source: str = 'manual', source_id: str | None = None,
-                 subject=None) -> str:
+                 subject=None, speaker_provenance: dict | None = None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
@@ -285,18 +297,25 @@ class FactsMixin:
                     memory_subject.as_entry_fields()
                     if memory_subject is not None else None
                 ),
+                old_speaker_provenance=next((
+                    e for e in scan_facts
+                    if isinstance(e, dict) and e.get('text') == old_text
+                ), None),
+                new_speaker_provenance=speaker_provenance,
             )
             return self.FACT_QUEUED_CORRECTION
 
         section_facts.append(self._build_fact_entry(
             text, source, source_id, subject=memory_subject,
+            speaker_provenance=speaker_provenance,
         ))
         self.save_persona(name, persona)
         return self.FACT_ADDED
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None,
-                        subject=None) -> str:
+                        subject=None,
+                        speaker_provenance: dict | None = None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
@@ -350,11 +369,17 @@ class FactsMixin:
                         memory_subject.as_entry_fields()
                         if memory_subject is not None else None
                     ),
+                    old_speaker_provenance=next((
+                        e for e in scan_facts
+                        if isinstance(e, dict) and e.get('text') == old_text
+                    ), None),
+                    new_speaker_provenance=speaker_provenance,
                 )
                 return self.FACT_QUEUED_CORRECTION
 
             section_facts.append(self._build_fact_entry(
                 text, source, source_id, subject=memory_subject,
+                speaker_provenance=speaker_provenance,
             ))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED

@@ -3530,6 +3530,8 @@ PERSONA_CORRECTION_PROMPT = {
 {pairs}
 ======以上为记忆条目======
 
+trust 仅使用 high/medium/low 粗粒度档位；只把它当作来源线索，不要推断精确分数。
+
 对于每组，判断：
 - merge: 把新观察与旧记忆融合成一条，提供合并后的 text
 - keep_new: 新观察完全取代旧记忆
@@ -3543,6 +3545,8 @@ PERSONA_CORRECTION_PROMPT = {
 ======以下为记忆条目======
 {pairs}
 ======以上为记忆条目======
+
+Trust uses only coarse high/medium/low bands. Treat it only as a source cue; do not infer an exact score.
 
 For each pair, determine:
 - merge: fuse the new observation with the old memory into a single entry — provide the merged text
@@ -3558,6 +3562,8 @@ Output only a JSON array. Each item should contain index, action, and text (opti
 {pairs}
 ======以上为记忆条目======
 
+trust は high/medium/low の粗い区分のみです。情報源の手掛かりとしてだけ使い、正確な数値を推測しないでください。
+
 各組について判断：
 - merge: 新しい観察と古い記憶を一つに融合 — 統合後のテキストを提供
 - keep_new: 新しい観察が古い記憶を完全に置き換える
@@ -3571,6 +3577,8 @@ JSON配列のみを出力。各項目には index、action、text（任意）を
 ======以下为记忆条目======
 {pairs}
 ======以上为记忆条目======
+
+trust는 high/medium/low의 거친 등급만 사용합니다. 출처 단서로만 보고 정확한 수치를 추정하지 마세요.
 
 각 쌍에 대해 판단:
 - merge: 새로운 관찰을 오래된 기억과 하나로 융합 — 병합된 text를 제공
@@ -3586,6 +3594,8 @@ JSON 배열만 출력하세요. 각 항목에는 index, action, text(선택)를 
 {pairs}
 ======以上为记忆条目======
 
+Trust задаётся только грубыми уровнями high/medium/low. Используйте его лишь как подсказку об источнике и не выводите точное значение.
+
 Для каждой пары определите:
 - merge: объедините новое наблюдение со старым воспоминанием в одну запись, предоставьте объединённый text
 - keep_new: новое наблюдение полностью заменяет старое воспоминание
@@ -3600,6 +3610,8 @@ JSON 배열만 출력하세요. 각 항목에는 index, action, text(선택)를 
 {pairs}
 ======以上为记忆条目======
 
+Trust usa solo bandas generales high/medium/low. Trátalo únicamente como una señal de la fuente; no deduzcas una puntuación exacta.
+
 Para cada par, decide:
 - merge: fusiona la nueva observación con la memoria antigua en una sola entrada; proporciona el text combinado
 - keep_new: la nueva observación reemplaza por completo a la memoria antigua
@@ -3613,6 +3625,8 @@ Devuelve solo un array JSON. Cada elemento debe contener index, action y text (o
 ======以下为记忆条目======
 {pairs}
 ======以上为记忆条目======
+
+Trust usa apenas faixas gerais high/medium/low. Trate-o somente como um indício da fonte; não infira uma pontuação exata.
 
 Para cada par, decida:
 - merge: funda a nova observação com a memória antiga em uma única entrada; forneça o text combinado
@@ -4265,6 +4279,7 @@ SCOPED_MEMORY_REFINE_PROMPT = {
 规则：
 - merge：语义重复的多条揉成一条，合并文本必须保留各源条目的全部独立信息
 - 明确矛盾的条目也必须 merge 成一条结论：优先用时间演变措辞（如「曾经X，后来变为Y」）；无法判断演变顺序时，采信 trust 标注更高或表述更具体的一方，并在结论里保留不确定性（如「对X的态度有反复」）
+- trust 标注只有 high/medium/low 粗粒度档位，不代表可推断的精确分数
 - 拿不准的条目不要动；无需任何合并时返回空数组 []
 - 同一个 id 只能出现在一个 action 里；source_ids 至少 2 条
 - 只输出 JSON 数组，不要输出其他内容
@@ -4285,6 +4300,7 @@ JSON 输出格式：
 規則：
 - merge：語義重複的多條揉成一條，合併文本必須保留各源條目的全部獨立資訊
 - 明確矛盾的條目也必須 merge 成一條結論：優先用時間演變措辭（如「曾經X，後來變為Y」）；無法判斷演變順序時，採信 trust 標註更高或表述更具體的一方，並在結論裡保留不確定性（如「對X的態度有反覆」）
+- trust 標註只有 high/medium/low 粗粒度檔位，不代表可推斷的精確分數
 - 拿不準的條目不要動；無需任何合併時返回空陣列 []
 - 同一個 id 只能出現在一個 action 裡；source_ids 至少 2 條
 - 只輸出 JSON 陣列，不要輸出其他內容
@@ -4305,6 +4321,7 @@ JSON 輸出格式：
 Rules:
 - merge: fold semantically duplicate entries into one; the merged text must preserve every distinct piece of information from the sources
 - clearly contradictory entries MUST also be merged into a single conclusion: prefer temporal-change wording (e.g. "used to X, later Y"); when the order cannot be determined, side with the entry carrying a higher trust annotation or the more specific wording, and keep the uncertainty in the conclusion (e.g. "attitude toward X has wavered")
+- trust annotations are coarse high/medium/low bands, not exact scores that can be inferred
 - leave anything you are unsure about untouched; return an empty array [] when nothing needs merging
 - each id may appear in at most one action; source_ids needs at least 2 entries
 - output ONLY the JSON array, nothing else
@@ -4325,6 +4342,7 @@ JSON output format:
 ルール：
 - merge：意味的に重複する複数エントリを 1 条に統合する。統合後のテキストは各ソースの独立した情報をすべて保持すること
 - 明確に矛盾するエントリも必ず 1 条の結論に merge する：時間的変化の表現（例「以前はX、後にY」）を優先；順序が判断できない場合は trust 注釈が高い方またはより具体的な記述を採用し、結論に不確実性を残す（例「Xへの態度は揺れている」）
+- trust 注釈は high/medium/low の粗い区分だけで、正確な数値を推測できるものではない
 - 判断に迷うエントリは触らない；統合不要なら空配列 [] を返す
 - 同一 id は 1 つの action にのみ出現可；source_ids は最低 2 件
 - JSON 配列のみを出力し、他の内容を出力しない
@@ -4345,6 +4363,7 @@ JSON 出力形式：
 규칙:
 - merge: 의미가 중복되는 여러 항목을 하나로 병합하되, 병합 텍스트는 각 원본 항목의 모든 고유 정보를 보존해야 함
 - 명백히 모순되는 항목도 반드시 하나의 결론으로 merge: 시간 변화 표현(예: "예전에는 X였으나 이후 Y")을 우선; 순서를 판단할 수 없으면 trust 주석이 높거나 더 구체적인 쪽을 채택하고 결론에 불확실성을 남김(예: "X에 대한 태도가 오락가락함")
+- trust 주석은 high/medium/low의 거친 등급일 뿐, 정확한 수치를 추정할 수 없음
 - 확신이 없는 항목은 건드리지 말 것; 병합할 것이 없으면 빈 배열 [] 반환
 - 같은 id는 하나의 action에만 등장 가능; source_ids는 최소 2개
 - JSON 배열만 출력하고 다른 내용은 출력하지 말 것
@@ -4365,6 +4384,7 @@ JSON 출력 형식:
 Правила:
 - merge: семантически дублирующиеся записи сводятся в одну; объединённый текст должен сохранить всю уникальную информацию из источников
 - явно противоречащие записи ТАКЖЕ обязательно объединяются в один вывод: предпочитайте формулировку временного изменения (например, «раньше X, позже Y»); если порядок определить нельзя, доверяйте записи с более высокой пометкой trust или более конкретной формулировке и сохраните неопределённость в выводе (например, «отношение к X менялось»)
+- пометки trust — лишь грубые уровни high/medium/low, по ним нельзя выводить точное значение
 - всё, в чём не уверены, не трогайте; если объединять нечего, верните пустой массив []
 - каждый id может появиться максимум в одном action; source_ids — минимум 2 записи
 - выводите ТОЛЬКО JSON-массив, ничего больше
@@ -4385,6 +4405,7 @@ JSON 출력 형식:
 Reglas:
 - merge: funde las entradas semánticamente duplicadas en una sola; el texto fusionado debe conservar toda la información distintiva de las fuentes
 - las entradas claramente contradictorias TAMBIÉN deben fusionarse en una única conclusión: prefiere la formulación de cambio temporal (p. ej., «antes X, luego Y»); si el orden no puede determinarse, da crédito a la entrada con mayor anotación trust o a la formulación más específica, y conserva la incertidumbre en la conclusión (p. ej., «la actitud hacia X ha fluctuado»)
+- las anotaciones trust son bandas generales high/medium/low, no puntuaciones exactas que puedan deducirse
 - no toques nada de lo que no estés seguro; devuelve un array vacío [] cuando no haya nada que fusionar
 - cada id puede aparecer como máximo en un action; source_ids necesita al menos 2 entradas
 - imprime SOLO el array JSON, nada más
@@ -4405,6 +4426,7 @@ Formato de salida JSON:
 Regras:
 - merge: funda entradas semanticamente duplicadas em uma só; o texto mesclado deve preservar toda a informação distinta das fontes
 - entradas claramente contraditórias TAMBÉM devem ser mescladas em uma única conclusão: prefira a formulação de mudança temporal (ex.: «antes X, depois Y»); se a ordem não puder ser determinada, dê crédito à entrada com anotação trust mais alta ou à formulação mais específica, e preserve a incerteza na conclusão (ex.: «a atitude em relação a X tem oscilado»)
+- as anotações trust são faixas gerais high/medium/low, não pontuações exatas que possam ser inferidas
 - não toque em nada de que não tenha certeza; devolva um array vazio [] quando não houver nada a mesclar
 - cada id pode aparecer no máximo em um action; source_ids precisa de pelo menos 2 entradas
 - imprima APENAS o array JSON, nada mais

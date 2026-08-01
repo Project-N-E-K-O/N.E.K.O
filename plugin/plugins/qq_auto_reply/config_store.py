@@ -84,6 +84,8 @@ class QQAutoReplyConfigStore:
             "qq_open_client_secret": "",
             "trusted_users": [],
             "trusted_groups": [],
+            # 全局 per-QQ 信赖度演化账本；群与私聊 participant 共池。
+            "speaker_trust_profiles": {},
             "normal_relay_probability": 0.1,
             "open_reply_probability": 0.1,
             "show_onboarding": True,
@@ -157,6 +159,7 @@ class QQAutoReplyConfigStore:
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
+        merged["speaker_trust_profiles"] = payload.get("speaker_trust_profiles") if isinstance(payload.get("speaker_trust_profiles"), dict) else {}
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
         reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
         if reply_mode != "text" or "reply_mode" in payload:
@@ -181,6 +184,12 @@ class QQAutoReplyConfigStore:
             normalized.update(dict(config or {}))
             normalized["trusted_users"] = list(normalized.get("trusted_users") or [])
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
+            normalized["speaker_trust_profiles"] = {
+                str(k): dict(v) for k, v in (
+                    normalized.get("speaker_trust_profiles") or {}
+                ).items()
+                if str(k).strip() and isinstance(v, dict)
+            }
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
             normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))

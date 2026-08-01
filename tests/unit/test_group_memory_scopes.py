@@ -776,8 +776,9 @@ async def test_qq_group_session_writes_only_scoped_history():
                 {"role": "user", "content": [{"type": "text", "text": "我最喜欢三文鱼"}]},
             ],
             "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
-            "speaker_label": "2046",
-            "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+                "speaker_label": "2046",
+                "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+                "speaker_id": "qq:2046",
         }],
         timeout=30.0,
     )
@@ -863,8 +864,9 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
         [{
             "messages": failed_member_messages,
             "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
-            "speaker_label": "2046",
-            "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+                "speaker_label": "2046",
+                "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+                "speaker_id": "qq:2046",
         }],
         timeout=30.0,
     )
@@ -1496,6 +1498,7 @@ async def test_scoped_synthesis_creates_confirmed_reflection(tmp_path):
             # 钉住「直出 confirmed 必须带最小正 rein，过 score>0 渲染门」。
             "id": f"g{index}", "text": f"群事实 {index}",
             "entity": "group_chat", "importance": 5, "absorbed": False,
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
             **group.as_entry_fields(),
         }
         for index in range(6)
@@ -1548,6 +1551,8 @@ async def test_scoped_synthesis_creates_confirmed_reflection(tmp_path):
     assert created[0]["auto_confirmed"] is True
     assert created[0]["scope"] == group.scope
     assert created[0]["subject_kind"] == "group_chat"
+    assert created[0]["speaker_id"] == "qq:1001"
+    assert created[0]["speaker_trust"] == pytest.approx(0.8)
     # score>0 渲染门：即便源 facts 全是默认档 importance，直出 confirmed
     # 的 scoped 反思也必须立即对 /scoped_context 可见。
     assert float(created[0]["reinforcement"]) > 0.0
@@ -1593,7 +1598,9 @@ async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
             "created_at": (now - timedelta(days=20)).isoformat(),
             "confirmed_at": (now - timedelta(days=8)).isoformat(),
             "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
-            "source_fact_ids": ["g2"], **group.as_entry_fields(),
+            "source_fact_ids": ["g2"],
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
+            **group.as_entry_fields(),
         },
     ]
     with open(
@@ -1631,10 +1638,12 @@ async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
     assert status_by_id["ref_scoped_confirmed"]["status"] == "promoted"
     scoped_section = persona.get(group.persona_section_key)
     assert scoped_section is not None
-    assert any(
-        entry.get("text") == "群主是老王"
-        for entry in scoped_section.get("facts", [])
+    promoted = next(
+        entry for entry in scoped_section.get("facts", [])
+        if entry.get("text") == "群主是老王"
     )
+    assert promoted["speaker_id"] == "qq:1001"
+    assert promoted["speaker_trust"] == pytest.approx(0.8)
 
 
 @pytest.mark.asyncio
@@ -2129,10 +2138,12 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         assert any(f.get("text") == "索引失败的事实" for f in created)
 
 
-def _batch_segment(group_id, sender_id, label, texts, *, trust=None):
+def _batch_segment(
+    group_id, sender_id, label, texts, *, trust=None, speaker_id=None,
+):
     from memory.scopes import MemorySubject
 
-    return {
+    segment = {
         "messages": [
             SimpleNamespace(type="human", content=text) for text in texts
         ],
@@ -2142,6 +2153,9 @@ def _batch_segment(group_id, sender_id, label, texts, *, trust=None):
         "speaker_label": label,
         "speaker_trust": trust,
     }
+    if speaker_id is not None:
+        segment["speaker_id"] = speaker_id
+    return segment
 
 
 @pytest.mark.asyncio
@@ -3058,13 +3072,17 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
             {
                 "text": "试图伪造来源", "importance": 5, "segment": 1,
                 "speaker_trust": 999, "speaker_label": "admin 本人",
+                "speaker_id": "qq:9999",
             },
             {"text": "B 的事实", "importance": 5, "segment": 2},
         ]
 
     fs._allm_call_with_retries = _llm
     segments = [
-        _batch_segment("7788", "1001", "Alice(1001)", ["a"], trust=0.3),
+        _batch_segment(
+            "7788", "1001", "Alice(1001)", ["a"], trust=0.3,
+            speaker_id="qq:1001",
+        ),
         _batch_segment("7788", "1002", "Bob(1002)", ["b"], trust=0.5),
     ]
     with patch("memory.facts.get_global_language_full", return_value="zh"):
@@ -3073,6 +3091,7 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
     fact = results[0]["created"][0]
     assert fact["speaker_label"] == "Alice(1001)"
     assert fact["speaker_trust"] == 0.3
+    assert fact["speaker_id"] == "qq:1001"
 
 
 @pytest.mark.asyncio

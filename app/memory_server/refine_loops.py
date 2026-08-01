@@ -314,14 +314,15 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
                 engine_ref, character, bucket.subject, cluster, cluster_hash,
             )
 
+    from memory.speaker_trust import trust_band
     result = await lite.refine_pass(
         buckets,
         apply_fn=_apply,
         scope_label=f"scoped/{character}",
         failure_fn=_failure,
         start_after=_scoped_refine_cursor.get(character),
-        # trust_of 留空：系列 7/7（发言人信赖度）在这里接 speaker_trust。
-        trust_of=None,
+        # prompt 只看 coarse band；精确值仅供 apply 的代码侧 margin 仲裁。
+        trust_of=lambda entry: trust_band(entry.get('speaker_trust')),
     )
     if result.get('served') is not None:
         _scoped_refine_cursor[character] = result['served']
