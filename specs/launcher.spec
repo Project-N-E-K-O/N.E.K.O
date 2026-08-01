@@ -71,6 +71,15 @@ voice_turn_assets_present = os.path.isdir(
         'models',
     )
 )
+speaker_shadow_assets_present = os.path.isdir(
+    os.path.join(
+        PROJECT_ROOT,
+        'main_logic',
+        'asr_client',
+        'speaker_shadow',
+        'models',
+    )
+)
 
 # galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
 # routes were removed). Two distinct failure modes get distinct diagnostics:
@@ -108,6 +117,7 @@ for pkg in critical_packages:
         if pkg in embedding_runtime_packages and (
             embedding_assets_present
             or (pkg == 'onnxruntime' and voice_turn_assets_present)
+            or (pkg == 'onnxruntime' and speaker_shadow_assets_present)
         ):
             raise RuntimeError(
                 f"Cannot collect {pkg!r}, but packaged model assets require it. "
@@ -186,6 +196,10 @@ add_data('data/embedding_models', 'data/embedding_models')
 add_data(
     'main_logic/asr_client/endpointing/models',
     'main_logic/asr_client/endpointing/models',
+)
+add_data(
+    'main_logic/asr_client/speaker_shadow/models',
+    'main_logic/asr_client/speaker_shadow/models',
 )
 add_data('steam_appid.txt', '.')
 

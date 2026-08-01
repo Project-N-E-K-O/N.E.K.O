@@ -119,6 +119,8 @@ exclude = [
   "plugin/plugins",
   "main_logic/asr_client/endpointing/models/*.onnx",
   "main_logic/asr_client/endpointing/models/*.part",
+  "main_logic/asr_client/speaker_shadow/models/*.onnx",
+  "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -144,6 +146,8 @@ exclude = [
   "plugin/plugins",
   "main_logic/asr_client/endpointing/models/*.onnx",
   "main_logic/asr_client/endpointing/models/*.part",
+  "main_logic/asr_client/speaker_shadow/models/*.onnx",
+  "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
 
 # pyncm-async 已从 PyPI 下架（连同上游 pyncm 与 GitHub 仓库），改为本地 wheel 安装。

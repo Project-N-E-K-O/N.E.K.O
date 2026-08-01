@@ -204,6 +204,15 @@ jobs:
       - name: Prepare verified voice-turn assets
         run: python3 scripts/prepare_voice_turn_assets.py
 
+      - name: Cache CAM++ speaker model weight
+        uses: actions/cache@v4
+        with:
+          path: main_logic/asr_client/speaker_shadow/models/*.onnx
+          key: speaker-shadow-campplus-v1-${{ runner.os }}-${{ hashFiles('main_logic/asr_client/speaker_shadow/models/manifest.json') }}
+
+      - name: Prepare verified CAM++ speaker model
+        run: python3 scripts/prepare_speaker_model.py
+
       - name: Check if Dockerfile exists
         id: check-dockerfile
         run: |
@@ -360,6 +369,15 @@ jobs:
 
       - name: Prepare verified voice-turn assets
         run: python3 scripts/prepare_voice_turn_assets.py
+
+      - name: Cache CAM++ speaker model weight
+        uses: actions/cache@v4
+        with:
+          path: main_logic/asr_client/speaker_shadow/models/*.onnx
+          key: speaker-shadow-campplus-v1-${{ runner.os }}-${{ hashFiles('main_logic/asr_client/speaker_shadow/models/manifest.json') }}
+
+      - name: Prepare verified CAM++ speaker model
+        run: python3 scripts/prepare_speaker_model.py
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

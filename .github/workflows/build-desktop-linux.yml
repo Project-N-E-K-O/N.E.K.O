@@ -209,6 +209,16 @@ jobs:
         shell: bash
         run: uv run --no-sync python scripts/prepare_voice_turn_assets.py
 
+      - name: Cache CAM++ speaker model weight
+        uses: actions/cache@v4
+        with:
+          path: main_logic/asr_client/speaker_shadow/models/*.onnx
+          key: speaker-shadow-campplus-v1-${{ runner.os }}-${{ hashFiles('main_logic/asr_client/speaker_shadow/models/manifest.json') }}
+
+      - name: Prepare verified CAM++ speaker model
+        shell: bash
+        run: uv run --no-sync python scripts/prepare_speaker_model.py
+
       # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
       # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
       # TIKTOKEN_CACHE_DIR; without warming, the bundled app would either
@@ -279,6 +289,7 @@ jobs:
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=main_logic/asr_client/endpointing/models=main_logic/asr_client/endpointing/models"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=main_logic/asr_client/speaker_shadow/models=main_logic/asr_client/speaker_shadow/models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
           # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
@@ -425,6 +436,24 @@ jobs:
           fi
           uv run --no-sync python scripts/prepare_voice_turn_assets.py \
             --asset-dir "$endpointing_assets" --offline || missing=1
+          speaker_shadow_assets="dist/Xiao8/main_logic/asr_client/speaker_shadow/models"
+          for rel in manifest.json THIRD_PARTY_NOTICES.md campplus-zh-en-advanced.onnx; do
+            if [ ! -s "$speaker_shadow_assets/$rel" ]; then
+              echo "::error::missing or empty bundled CAM++ asset: $rel"
+              missing=1
+            fi
+          done
+          if [ -e "dist/Xiao8/data/speaker_models" ]; then
+            echo "::error::obsolete data/speaker_models must not be packaged"
+            missing=1
+          fi
+          speaker_weight_count="$(find dist/Xiao8 -type f -name campplus-zh-en-advanced.onnx | wc -l | tr -d ' ')"
+          if [ "$speaker_weight_count" -ne 1 ]; then
+            echo "::error::CAM++ weight must be packaged exactly once"
+            missing=1
+          fi
+          uv run --no-sync python scripts/prepare_speaker_model.py \
+            --asset-dir "$speaker_shadow_assets" --offline || missing=1
           [ "$missing" -eq 0 ]
 
       # --- Generic dist invariant check ---
