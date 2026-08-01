@@ -285,9 +285,17 @@ class CorrectionsMixin:
                     except MemoryScopeError:
                         batch_subject = None
                     if batch_subject is not None:
-                        prompt_ui_language = await prompt_locale_resolver(
-                            batch_subject
-                        )
+                        try:
+                            prompt_ui_language = await prompt_locale_resolver(
+                                batch_subject
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[PersonaCorrection] %s: scoped prompt locale "
+                                "解析失败，回退到当前 locale: %s",
+                                name,
+                                exc,
+                            )
             # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
             # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
             # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被

@@ -3632,6 +3632,65 @@ async def test_correction_batch_uses_scoped_prompt_locale(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_correction_batch_falls_back_when_scoped_locale_lookup_fails(
+    tmp_path,
+):
+    import json as _json
+
+    from memory.persona import PersonaManager
+    from memory.scopes import MemorySubject
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_locale_fallback"
+    subject = MemorySubject.group_chat("qq", "7788")
+    corr_path = tmp_path / f"{name}_corrections.json"
+    corr_path.write_text(
+        _json.dumps([{
+            "old_text": "old",
+            "new_text": "new",
+            "entity": subject.persona_section_key,
+            "created_at": "2026-07-31T12:00:00",
+            **subject.as_entry_fields(),
+        }]),
+        encoding="utf-8",
+    )
+    captured_prompts = []
+
+    async def fail_locale(_subject):
+        raise OSError("locale sidecar unavailable")
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured_prompts.append(prompt)
+            response = MagicMock()
+            response.content = "[]"
+            return response
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*_args, **_kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create), \
+         patch(
+             "config.prompts.prompts_memory.get_persona_correction_prompt",
+             return_value="{pairs}",
+         ):
+        resolved = await pm.resolve_corrections(
+            name,
+            prompt_locale_resolver=fail_locale,
+        )
+
+    assert resolved == 0
+    assert len(captured_prompts) == 1
+    assert "old" in captured_prompts[0]
+    assert "new" in captured_prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_malformed_correction_entities_never_reach_prompt_or_master(tmp_path):
     """A correction whose entity is missing, empty, or not a string belongs
     to no isolation domain: it must not enter a resolve batch, and the apply

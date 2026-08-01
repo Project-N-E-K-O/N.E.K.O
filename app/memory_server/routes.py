@@ -83,6 +83,20 @@ def _activate_request_language(language: str | None) -> str:
     return get_global_language_full()
 
 
+async def _resolve_foreground_memory_language(
+    lanlan_name: str,
+    language: str | None,
+) -> str:
+    """Resolve foreground prompt locale without persisting a process guess."""
+    if is_supported_language_code(language):
+        return _activate_request_language(language)
+    durable_language = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale,
+        lanlan_name,
+    )
+    return _activate_request_language(durable_language)
+
+
 class ExternalMemoryImportRequest(BaseModel):
     character_name: str
     source_format: str
@@ -586,6 +600,8 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
         locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -620,8 +636,13 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
         locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
     )
-    memory_language = _activate_request_language(request.language)
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         # P2 vector warmup: first /process is the cheapest "frontend ready"
@@ -676,8 +697,13 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
         locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
     )
-    memory_language = _activate_request_language(request.language)
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         # Same warmup hint as /process: /renew is also a "user actively
@@ -736,8 +762,13 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
         locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
     )
-    memory_language = _activate_request_language(request.language)
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         try:

@@ -4,7 +4,7 @@ import ast
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -87,6 +87,68 @@ async def test_process_requests_keep_language_task_local_across_awaits(monkeypat
         "EnglishNeko": "en",
         "JapaneseNeko": "ja",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint_name",
+    [
+        "process_conversation",
+        "process_conversation_for_renew",
+        "settle_conversation",
+    ],
+)
+async def test_locale_less_foreground_routes_restore_durable_locale(
+    monkeypatch,
+    endpoint_name,
+):
+    observed = []
+
+    async def update_history(*_args, **_kwargs):
+        observed.append(get_global_language_full())
+
+    monkeypatch.setattr(
+        routes.locale_state,
+        "get_character_prompt_locale",
+        lambda _name: "zh-TW",
+    )
+    monkeypatch.setattr(
+        routes.locale_state,
+        "allocate_character_prompt_locale_order",
+        MagicMock(side_effect=AssertionError("locale-less route must not allocate")),
+    )
+    monkeypatch.setattr(
+        routes.runtime,
+        "_config_manager",
+        SimpleNamespace(
+            aload_characters=AsyncMock(return_value={"猫娘": {"小天": {}}}),
+        ),
+    )
+    monkeypatch.setattr(
+        routes.runtime,
+        "recent_history_manager",
+        SimpleNamespace(update_history=update_history),
+    )
+    monkeypatch.setattr(
+        routes.runtime,
+        "time_manager",
+        SimpleNamespace(astore_conversation=AsyncMock()),
+    )
+    monkeypatch.setattr(routes.runtime, "embedding_warmup_worker", None)
+    monkeypatch.setattr(routes.runtime, "_get_settle_lock", lambda _name: asyncio.Lock())
+    monkeypatch.setattr(routes.gates, "_touch_activity", lambda: None)
+    monkeypatch.setattr(routes.gates, "_aclear_review_clean", AsyncMock())
+    monkeypatch.setattr(routes.post_turn, "_spawn_outbox_post_turn_signals", AsyncMock())
+    monkeypatch.setattr(routes.review, "maybe_spawn_review", AsyncMock())
+
+    with language_utils.language_context("en"):
+        result = await getattr(routes, endpoint_name)(
+            routes.HistoryRequest(input_history="[]", language=None),
+            "小天",
+        )
+
+    assert result["status"] in {"processed", "settled"}
+    assert observed == ["zh-TW"]
 
 
 @pytest.mark.asyncio

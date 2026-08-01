@@ -473,11 +473,13 @@ def rebase_character_prompt_locale_order(name: str, captured_order: int) -> int:
                 # A later process-local admission already owns this character's
                 # high-water mark.  Rebase the older captured request below it
                 # instead of letting a durable offset turn the old request into
-                # the newest writer.
-                selected_order = min(
-                    selected_order,
-                    process_local_high_water - 1,
-                )
+                # the newest writer. If there is no integer gap between that
+                # admission and the durable writer, equality is unsafe because
+                # record_character_prompt_locale accepts equal orders.
+                ceilings = [process_local_high_water - 1]
+                if order is not None:
+                    ceilings.append(order - 1)
+                selected_order = min(selected_order, *ceilings)
             _character_locale_admission_orders[name] = max(
                 process_local_high_water,
                 selected_order,

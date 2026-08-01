@@ -1044,6 +1044,27 @@ def test_captured_locale_order_stays_below_intervening_process_write(monkeypatch
     assert locale_state._character_locale_admission_orders[name] == 200
 
 
+def test_captured_locale_order_stays_below_durable_order_when_gap_is_full(
+    monkeypatch,
+):
+    from app.memory_server import locale_state
+
+    name = "NoGapInterveningWriteNeko"
+    locale_state._character_locale_admission_orders[name] = 201
+    locale_state._character_locale_capture_offsets.pop(name, None)
+    monkeypatch.setattr(
+        locale_state,
+        "_load_locale_state_unlocked",
+        lambda _name: ("zh-TW", 200, 200),
+    )
+
+    rebased = locale_state.rebase_character_prompt_locale_order(name, 100)
+
+    assert rebased == 199
+    assert rebased < 200
+    assert locale_state._character_locale_admission_orders[name] == 201
+
+
 @pytest.mark.asyncio
 async def test_new_dialog_without_language_restores_durable_locale(monkeypatch):
     from app.memory_server import locale_state, routes, runtime
