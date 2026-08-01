@@ -1794,6 +1794,7 @@ class DetectorRuntime:
     ) -> bool:
         """Discard only successor activity while preserving the sealed fence."""
 
+        speaker_shadow: SpeakerShadowObserver | None = None
         async with self._lock:
             if (
                 self._closed
@@ -1809,7 +1810,10 @@ class DetectorRuntime:
             self._speech_active = False
             self._policy_event_candidate = None
             self._throttle_policy.reset_candidate_activity()
-            return True
+            self._reset_speaker_shadow_identity()
+            speaker_shadow = self._speaker_shadow
+        await self._reset_speaker_shadow(speaker_shadow)
+        return True
 
     async def complete_provider_candidate(
         self,

@@ -347,6 +347,18 @@ async def test_provider_shadow_observes_admitted_pcm_until_explicit_seal() -> No
         16_000,
         SpeakerShadowCandidateKey(0, 1, "provider_candidate"),
     )
+    assert await detector.discard_provider_successor(fence) is True
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 2
+    assert shadow.reset_calls == 1
+
+    replacement_pcm = b"\x04\x00" * 160
+    detector.observe_provider_audio(replacement_pcm, sample_rate_hz=16_000)
+    assert shadow.frames[-1] == (
+        replacement_pcm,
+        16_000,
+        SpeakerShadowCandidateKey(0, 2, "provider_candidate"),
+    )
 
     await detector.close()
     assert shadow.close_calls == 1
