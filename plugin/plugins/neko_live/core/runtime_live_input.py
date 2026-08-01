@@ -15,7 +15,7 @@ class _RecentChatObservedPayload(dict[str, Any]):
     """Internal handoff marker that provider payloads cannot spoof by key."""
 
 
-def mark_recent_chat_observed(payload: dict[str, Any]) -> dict[str, Any]:
+def mark_recent_chat_observed(payload: dict[str, Any]) -> _RecentChatObservedPayload:
     """Tag a selected payload before provider normalization copies its fields."""
 
     return _RecentChatObservedPayload(payload)
@@ -99,8 +99,7 @@ async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> Interact
     # the pipeline reaches its own stale-event gate.
     if is_current_live_session_event(runtime, event):
         remember_live_danmaku_seen(runtime, event)
-        raw = event.raw if isinstance(event.raw, dict) else {}
-        if not recent_chat_observed and raw.get("_recent_chat_observed") is not True:
+        if not recent_chat_observed:
             observe_live_danmaku(runtime, event)
     record_timeline(
         runtime,

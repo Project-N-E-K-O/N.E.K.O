@@ -468,11 +468,11 @@ async def test_selected_provider_event_is_observed_once_across_pipeline_handoff(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", ["douyin", "twitch"])
-@pytest.mark.parametrize("provider_event_id", ["", "token=unsafe"])
+@pytest.mark.parametrize("provider_event_id", [None, "", "token=unsafe"])
 async def test_selected_provider_event_is_observed_once_when_normalizer_sanitizes_handoff(
     runtime: LiveRuntime,
     platform: str,
-    provider_event_id: str,
+    provider_event_id: str | None,
 ) -> None:
     runtime.config.live_platform = platform
     runtime._accepting_live_events = True
@@ -483,7 +483,7 @@ async def test_selected_provider_event_is_observed_once_when_normalizer_sanitize
         "nickname": "synthetic",
         "text": "synthetic question?",
     }
-    if provider_event_id:
+    if provider_event_id is not None:
         payload["provider_event_id"] = provider_event_id
     runtime.live_events.submit(
         LiveEvent(
