@@ -30,18 +30,21 @@ THRESHOLDS = (0.40, 0.44, 0.48, 0.52, 0.55)
 
 
 def _read_pcm16(path: Path, *, maximum_seconds: float | None = None) -> bytes:
-    with wave.open(str(path), "rb") as source:
-        if (
-            source.getnchannels() != 1
-            or source.getsampwidth() != 2
-            or source.getframerate() != SAMPLE_RATE_HZ
-            or source.getcomptype() != "NONE"
-        ):
-            raise ValueError("all WAV inputs must be mono PCM16LE at 16 kHz")
-        frame_count = source.getnframes()
-        if maximum_seconds is not None:
-            frame_count = min(frame_count, round(SAMPLE_RATE_HZ * maximum_seconds))
-        pcm16 = source.readframes(frame_count)
+    try:
+        with wave.open(str(path), "rb") as source:
+            if (
+                source.getnchannels() != 1
+                or source.getsampwidth() != 2
+                or source.getframerate() != SAMPLE_RATE_HZ
+                or source.getcomptype() != "NONE"
+            ):
+                raise ValueError("all WAV inputs must be mono PCM16LE at 16 kHz")
+            frame_count = source.getnframes()
+            if maximum_seconds is not None:
+                frame_count = min(frame_count, round(SAMPLE_RATE_HZ * maximum_seconds))
+            pcm16 = source.readframes(frame_count)
+    except (OSError, EOFError, wave.Error):
+        raise ValueError("wav_unreadable") from None
     if len(pcm16) < round(SAMPLE_RATE_HZ * MINIMUM_AUDIO_SECONDS) * 2:
         raise ValueError("all voice segments must contain at least 1.5 seconds")
     return pcm16
@@ -146,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset-dir", type=Path)
     args = parser.parse_args(argv)
     result = evaluate(
-        reference_paths=[path.resolve() for path in args.reference],
-        candidate_paths=[path.resolve() for path in args.candidate],
+        reference_paths=list(args.reference),
+        candidate_paths=list(args.candidate),
         asset_dir=args.asset_dir.resolve() if args.asset_dir else None,
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

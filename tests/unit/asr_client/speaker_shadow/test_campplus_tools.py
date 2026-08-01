@@ -19,6 +19,7 @@ from main_logic.asr_client.speaker_shadow.asset_manifest import CampPlusAssetErr
 
 ROOT = Path(__file__).resolve().parents[4]
 PREPARER = ROOT / "scripts" / "prepare_speaker_model.py"
+EVALUATOR = ROOT / "scripts" / "evaluate_campplus_shadow.py"
 MODEL_FILENAME = "campplus-zh-en-advanced.onnx"
 
 
@@ -319,3 +320,32 @@ def test_evaluation_rejects_non_mono_pcm16_16khz_wav(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="mono PCM16LE at 16 kHz"):
         evaluator._read_pcm16(path)
+
+
+@pytest.mark.parametrize("payload", [None, b"not a WAV file"])
+def test_evaluation_redacts_unreadable_input_paths(tmp_path, payload) -> None:
+    private_path = tmp_path / "private-speaker-input.wav"
+    if payload is not None:
+        private_path.write_bytes(payload)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(EVALUATOR),
+            "--reference",
+            str(private_path),
+            str(private_path),
+            str(private_path),
+            "--candidate",
+            str(private_path),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "wav_unreadable" in result.stderr
+    assert private_path.name not in result.stderr
