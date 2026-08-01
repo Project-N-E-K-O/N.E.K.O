@@ -120,6 +120,14 @@ def _is_word_negation(tokens: tuple[str, ...], index: int) -> bool:
             and index + 1 < len(tokens)
             and not tokens[index + 1].isdigit()
         )
+    if marker == "not" and index + 1 < len(tokens) and tokens[index + 1] in {
+        "only", "just", "merely", "necessarily",
+    }:
+        # Focus constructions do not assert the opposite proposition:
+        # ``is not only smart`` is compatible with ``is only smart`` for this
+        # deliberately conservative code-side trust signal. False negatives
+        # are safer than penalising a speaker for rhetorical focus.
+        return False
     # Bare lexical occurrences are unsafe: ``the never button`` and
     # ``the not operator`` are modifiers, while hate/dislike are independent
     # predicates rather than removable polarity markers.  Restrict the two

@@ -2020,20 +2020,34 @@ class QQSessionMemoryService:
                 current.pop("member_settle_generation_promoted", None)
                 failed: list[str] = []
                 if group_id and her_name and snapshot:
-                    failed = await self._flush_member_buckets(
-                        current, group_id=group_id, her_name=her_name,
-                        reason="member_memory_disabled",
-                        buckets=snapshot,
-                        labels=current.get("pending_settle_labels") or {},
-                        # 这条路径**没有下一轮**：失败的桶按 opt-out 语义
-                        # 当场永久丢弃。打包让一次传输抖动的爆炸半径从
-                        # 1 个成员涨到整批（≤8），而它省下的那几次 LLM
-                        # 调用只在这个罕见的用户主动转变上省一次。一桶
-                        # 一请求把半径还原成打包前的样子；最坏用时
-                        # （2 波 × 30s = 60s）正是 SETTLE_JOIN_TIMEOUT_
-                        # LONG_SECONDS 当初按逐成员形态推出来的那个数。
-                        isolate_segments=True,
-                    )
+                    try:
+                        failed = await asyncio.wait_for(
+                            self._flush_member_buckets(
+                                current, group_id=group_id, her_name=her_name,
+                                reason="member_memory_disabled",
+                                buckets=snapshot,
+                                labels=(
+                                    current.get("pending_settle_labels") or {}
+                                ),
+                                # 这条路径**没有下一轮**：失败的桶按 opt-out
+                                # 语义当场永久丢弃。一桶一请求把单次传输抖动
+                                # 的爆炸半径保持为一个成员。
+                                isolate_segments=True,
+                            ),
+                            # 隔离请求为保持事实与 trust 信号的 authored-order
+                            # 必须串行，不能借 MEMBER_FLUSH_CONCURRENCY 抢跑。
+                            # 给整条链独立墙钟上限；服务异常时取消剩余请求并
+                            # 走下方可追溯的 fail-closed 丢弃，避免持有会话锁
+                            # 最坏 8 * 30 秒并阻塞关机最后一次结算。
+                            timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        failed = list(snapshot)
+                        self.plugin.logger.error(
+                            f"[member_memory_disabled] 群 {group_id} 隔离结算"
+                            f"超过 {self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS:.1f}s，"
+                            f"剩余 {len(failed)} 个成员 bucket 按 opt-out 丢弃"
+                        )
                     if failed:
                         self.plugin.logger.error(
                             f"[member_memory_disabled] 群 {group_id} 有 "

@@ -1119,14 +1119,9 @@ class FactDedupResolver:
                 applied += 1
 
         if ids_to_remove:
-            archived = await self._fact_store.aarchive_arbitrated_facts(
+            await self._fact_store.aarchive_arbitrated_facts(
                 name, archive_specs,
             )
-            if archived != len(ids_to_remove):
-                raise RuntimeError(
-                    f"fact arbitration archive mismatch: expected "
-                    f"{len(ids_to_remove)}, archived {archived}"
-                )
         elif applied:
             # Even pure keep_both rounds may have nudged nothing on
             # facts.json, but we still need a save if importance was

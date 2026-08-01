@@ -960,7 +960,10 @@ async def apply_scoped_reflection_merge(
             # confirmed 渲染门要求 evidence_score > 0：继承源里最高的
             # reinforcement，floor 0.1（对齐 scoped 合成的最小正种子）。
             max_rein = max(
-                (float(s.get('reinforcement', 0) or 0) for s in sources),
+                (
+                    float(s.get('reinforcement', 0) or 0)
+                    for s in semantic_sources
+                ),
                 default=0.0,
             )
             merged['reinforcement'] = max(max_rein, 0.1)

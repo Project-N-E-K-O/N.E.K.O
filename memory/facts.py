@@ -939,8 +939,17 @@ class FactStore:
                         fact for fact in facts
                         if isinstance(fact, dict) and fact.get('id') in archive_specs
                     ]
-                    if not losers:
-                        return 0
+                    if len(losers) != len(archive_specs):
+                        # The resolver mutates its selected survivor before
+                        # entering this persistence lock.  A concurrent forget
+                        # may remove either side in that window; treating a
+                        # partial archive as success would leave the mutated
+                        # cache ahead of disk.  Raise inside this helper so its
+                        # exception path below evicts the cache atomically.
+                        raise RuntimeError(
+                            "fact arbitration archive mismatch: expected "
+                            f"{len(archive_specs)}, archived {len(losers)}"
+                        )
                     archive_path = self._facts_archive_path(name)
                     archived: list[dict] = []
                     if os.path.exists(archive_path):

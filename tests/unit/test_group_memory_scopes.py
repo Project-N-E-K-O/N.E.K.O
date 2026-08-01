@@ -11846,6 +11846,65 @@ async def test_member_flush_serializes_cross_sender_request_chronology():
 
 
 @pytest.mark.asyncio
+async def test_opt_out_isolated_drain_has_a_total_wall_clock_budget():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "pending_member_settle": True,
+        "pending_settle_buckets": {
+            "1001": [{"role": "user", "content": "slow"}],
+            "1002": [{"role": "user", "content": "later"}],
+        },
+        "pending_settle_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    started = asyncio.Event()
+
+    async def _post(_name, segments, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def _run_with_session_lock(_session_key, fn):
+        return await fn()
+
+    bridge = SimpleNamespace(
+        group_participant_subject=lambda gid, uid: {
+            "subject_id": f"qq:{gid}:{uid}",
+        },
+        post_scoped_memory_history_batch=_post,
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={
+            "group_memory_enabled": False,
+            "group_member_memory_enabled": False,
+        },
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=None,
+    ))
+    service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS = 0.01
+    service._await_pending_session_settlement = AsyncMock(return_value=True)
+
+    await asyncio.wait_for(service.settle_member_buckets_on_disable(), 0.2)
+
+    assert started.is_set()
+    assert "pending_settle_buckets" not in ud
+    assert "pending_member_settle" not in ud
+    service.plugin.logger.error.assert_any_call(
+        "[member_memory_disabled] 群 7788 隔离结算超过 0.0s，"
+        "剩余 2 个成员 bucket 按 opt-out 丢弃"
+    )
+
+
+@pytest.mark.asyncio
 async def test_member_flush_defers_owner_chain_beyond_join_timeout_waves():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

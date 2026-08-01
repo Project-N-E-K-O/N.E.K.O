@@ -1183,6 +1183,41 @@ async def test_corrupt_archive_aborts_arbitration_without_active_loss(tmp_path):
     assert {fact["id"] for fact in active} == {"c1", "e1"}
 
 
+@pytest.mark.asyncio
+async def test_concurrent_forget_archive_mismatch_invalidates_mutated_cache(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    original_archive = fs.aarchive_arbitrated_facts
+
+    async def _forget_before_archive(name, specs):
+        fs._facts[name][:] = [
+            fact for fact in fs._facts[name] if fact.get("id") != "e1"
+        ]
+        return await original_archive(name, specs)
+
+    fs.aarchive_arbitrated_facts = _forget_before_archive
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        with pytest.raises(RuntimeError, match="archive mismatch"):
+            await resolver.aresolve("Neko")
+
+    assert "Neko" not in fs._facts
+    reloaded = await fs.aload_facts("Neko")
+    by_id = {fact["id"]: fact for fact in reloaded}
+    assert set(by_id) == {"c1", "e1"}
+    assert by_id["e1"]["importance"] == 5
+    assert by_id["e1"].get("merged_from_ids") == []
+
+
 # ── ids-only queue（隐私收口：成员衍生原文不落 sidecar） ─────────────
 
 

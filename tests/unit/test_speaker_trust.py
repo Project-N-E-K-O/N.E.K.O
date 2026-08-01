@@ -322,6 +322,9 @@ def test_correction_relation_requires_the_same_proposition():
         "Alice has never clicked the button", "Alice has clicked the button",
     ) == "correction"
     assert deterministic_relation(
+        "Alice is not only smart", "Alice is only smart",
+    ) is None
+    assert deterministic_relation(
         "Alice clicked the dislike button", "Alice clicked the button",
     ) is None
     assert deterministic_relation(

@@ -785,6 +785,7 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     low = _r_entry(
         "low", "小明不喜欢猫", GROUP_A,
         speaker_id="qq:1001", speaker_trust=0.3,
+        reinforcement=0.9,
         relation_type="habit", temporal_scope="past",
         event_when_raw={"kind": "absolute", "value": "2026-01-01"},
         event_start_at="2026-01-01T00:00:00",
@@ -794,6 +795,7 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     high = _r_entry(
         "high", "小明喜欢猫", GROUP_A,
         speaker_id="qq:2002", speaker_trust=0.9,
+        reinforcement=0.2,
         relation_type="preference", temporal_scope="current",
         event_when_raw={"kind": "absolute", "value": "2026-06-01"},
         event_start_at="2026-06-01T00:00:00",
@@ -820,6 +822,7 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     assert merged["event_start_at"] == "2026-06-01T00:00:00"
     assert merged["event_end_at"] is None
     assert merged["schema_version"] == 2
+    assert merged["reinforcement"] == pytest.approx(0.2)
     assert set(merged["source_fact_ids"]) == {"fact_low", "fact_high"}
     assert merged["merged_from_ids"] == ["low", "high"]
 
