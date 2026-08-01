@@ -1146,6 +1146,30 @@ async def test_stale_orphan_expiry_clears_transport_before_barge_in():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_barge_in_cancels_an_idless_live_lifecycle():
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/core",
+        "free-access",
+        model="free-model",
+        api_type="free",
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    client._activate_unannounced_response_state()
+
+    assert client._current_response_id is None
+    assert client._current_response_generation is not None
+    assert client._is_responding is True
+
+    try:
+        await client.handle_interruption()
+        assert [event["type"] for event in socket.sent] == ["response.cancel"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_adoption_keeps_transport_generation_and_ticket_suppression():
     finished: list[str] = []
     delivered: list[str] = []

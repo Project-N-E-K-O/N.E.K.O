@@ -45,6 +45,28 @@ from ._response_arbiter import (
 )
 
 
+def _response_id_text(value: Any) -> str | None:
+    """One reading of "does this name a response", used by both id sources.
+
+    Absent is ``None`` or the empty string — neither names anything, and
+    admitting the empty one would collapse every unidentified response onto a
+    shared identity. Zero is PRESENT: a provider numbering from zero names its
+    first response perfectly well.
+
+    Both halves matter and I got each wrong once. The original truthiness test
+    dropped `0`; replacing it with a bare ``is None`` check then stopped an
+    empty top-level ``response_id`` from falling back to the nested
+    ``response.id``, so a late terminal of that shape skipped the stale filter
+    and finalized whatever turn was current. Reading it in one place is what
+    keeps the two sources from disagreeing again.
+    """
+
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
 _ATTACHED_TRANSPORT = object()
 
 # Ceiling on each host step inside a fail-open release that may be cut short.
@@ -1066,9 +1088,24 @@ class _TransportMixin:
         twice — and a repeat necessarily takes the stale branch, because the
         first one cleared ``_current_response_id`` — so counting on both paths
         without a guard would overstate usage for a case the transport
-        supports on purpose. Keyed by response id; a terminal with no id
-        never reaches the stale branch (that filter needs an id to compare),
-        so it can only be counted once anyway.
+        supports on purpose. Keyed by response id.
+
+        The last sentence of this docstring used to read "a terminal with no
+        id never reaches the stale branch, so it can only be counted once
+        anyway." That is backwards. An id-less terminal never reaches the
+        stale branch precisely BECAUSE the filter needs an id — so a repeat of
+        it takes the ordinary terminal path both times, and the guard below,
+        keyed on an id it does not have, does not fire for either. Two copies
+        book twice; measured.
+
+        Left unfixed on purpose. A latch would have to be reset per turn, and
+        the provider class that omits a terminal id is the same one that omits
+        ``response.created`` — on such a connection there is no reset point at
+        all, so the latch would swallow every turn after the first. That trades
+        an accounting error no measured provider can produce for a real missed
+        bill. If a provider ever does repeat an id-less terminal, the fix
+        belongs at the terminal dispatch as a "this turn is already finalized"
+        latch, not here.
         """
 
         if not isinstance(resp_data, dict):
@@ -1600,6 +1637,9 @@ class _TransportMixin:
             # successor has not announced itself yet, so it has produced no
             # output of its own to erase.
             self._reset_per_turn_output_state()
+            # Per-lifecycle suppression now preserves any queued successor's
+            # explicit skipped state; this gate covers only unidentified output
+            # that can still arrive from the abandoned response.
             self._interrupted = True
             # Both release paths raise it: the abandoned response may still be
             # streaming, and from here until the next response.created nothing
@@ -1702,7 +1742,9 @@ class _TransportMixin:
         # Mark as interrupted to suppress any remaining output until next response
         self._interrupted = True
 
-        # 1. Cancel the current response
+        # 1. Cancel the arbiter's exact live lifecycle. This deliberately has
+        # no response-id truthiness guard: numeric id 0 and an unannounced
+        # id-less response are both cancellable identities in the arbiter.
         await self.cancel_response()
 
         self._is_responding = False
@@ -1852,12 +1894,13 @@ class _TransportMixin:
                 # include response identity let us reject those late events
                 # without changing the legacy behaviour of id-less proxies.
                 if event_type not in {"response.created", "response.done"}:
-                    event_response_id = event.get("response_id")
-                    if event_response_id is not None:
-                        event_response_id = str(event_response_id) or None
+                    event_response_id = _response_id_text(event.get("response_id"))
+                    tracked_response_id = _response_id_text(
+                        self._current_response_id
+                    )
                     if (
                         event_response_id is not None
-                        and event_response_id != self._current_response_id
+                        and event_response_id != tracked_response_id
                     ):
                         implicit_generation = (
                             self._response_arbiter.notify_response_activity(

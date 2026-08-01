@@ -20,6 +20,15 @@ import os  # noqa: F401 - compatibility export and sibling dependency
 import uuid  # noqa: F401 - compatibility export and sibling dependency
 
 import websockets  # noqa: F401 - compatibility export and sibling dependency
+# Explicit, because `websockets.exceptions` is NOT reachable as a lazy
+# attribute on the package (measured on 15.0.1: it raises AttributeError
+# until some submodule import pulls it in). `handle_messages` names it in
+# except clauses, and today those only resolve because `connect()` ran
+# first and imported `websockets.asyncio.client` as a side effect. That
+# holds in production and does not hold anywhere else — a test driving
+# the receive loop over a fake socket hits AttributeError inside the
+# except clause instead of the handler it was reaching for.
+import websockets.exceptions  # noqa: F401 - named in except clauses
 
 import json  # noqa: F401 - compatibility export and sibling dependency
 

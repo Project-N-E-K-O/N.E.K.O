@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import statistics
 import sys
 import time
@@ -92,6 +93,18 @@ _ROUTES = {
 }
 
 _FREE_API_KEY = "free-access"
+
+# What counts as the reply having started speaking. Metadata frames
+# (`response.output_item.added`, `response.content_part.added`) are excluded on
+# purpose — see the barge-in signal below.
+_OUTPUT_DELTA_TYPES = {
+    "response.text.delta",
+    "response.output_text.delta",
+    "response.audio.delta",
+    "response.output_audio.delta",
+    "response.audio_transcript.delta",
+    "response.output_audio_transcript.delta",
+}
 _FREE_MODEL = "free-model"
 
 # Short, boring and identical every turn: the point is to time the protocol,
@@ -138,6 +151,10 @@ class _Turn:
     item_acked_at: float | None = None
     first_delta_at: float | None = None
     cancel_sent_at: float | None = None
+    # When each outbound frame actually left, i.e. where the matching
+    # arbiter bound starts counting.
+    item_sent_at: float | None = None
+    create_sent_at: float | None = None
     response_id: str | None = None
     status: str | None = None
     # An id-less streaming provider is the case the escape hatch documents as
@@ -166,6 +183,9 @@ class _Observations:
     # the whole probe exists to detect, so it is reported whether or not any
     # latency was interesting.
     teardown: str | None = None
+    # The arbiter's own bound-consumption lines, the only honest
+    # margin measurement available.
+    margin_lines: list[str] = field(default_factory=list)
     frames_in: int = 0
 
 
@@ -178,9 +198,27 @@ class _TappedSocket:
     Everything else is delegated, including ``send`` and ``close``.
     """
 
-    def __init__(self, inner: Any, on_frame: Any) -> None:
+    def __init__(self, inner: Any, on_frame: Any, on_send: Any = None) -> None:
         self._inner = inner
         self._on_frame = on_frame
+        self._on_send = on_send
+
+    async def send(self, message: Any, *args: Any, **kwargs: Any) -> Any:
+        # Outbound frames are timestamped because every arbiter bound starts
+        # when its own send COMPLETES, not when the caller decided to make a
+        # request. Timing from the caller's instant folds in queueing and the
+        # wait for the lane, which inflates every percentage in the report —
+        # exactly the kind of error that argues for loosening a timeout that
+        # was never actually exceeded.
+        # AFTER the await, not before. The bound starts when the send
+        # completes, so stamping first re-admits exactly what this tap was
+        # added to exclude: queueing and I/O inside the send itself. The
+        # comment above said "completes" while the code said "begins" — the
+        # same contradiction this PR corrects one directory over.
+        result = await self._inner.send(message, *args, **kwargs)
+        if self._on_send is not None:
+            self._on_send(message)
+        return result
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -235,7 +273,7 @@ class _Probe:
             on_connection_error=_on_connection_error,
         )
         await client.connect(_INSTRUCTIONS)
-        client.ws = _TappedSocket(client.ws, self._on_frame)
+        client.ws = _TappedSocket(client.ws, self._on_frame, self._on_send)
 
         # Wrap the arbiter's own teardown callback. `create_response()` returns
         # at `ticket.sent`, while the missing-announcement and missing-terminal
@@ -279,6 +317,24 @@ class _Probe:
                 pass
 
     # -- observation ------------------------------------------------------
+
+    def _on_send(self, raw: Any) -> None:
+        """Stamp the instant a frame this probe cares about left the socket."""
+
+        turn = self._open
+        if turn is None:
+            return
+        try:
+            etype = json.loads(raw).get("type")
+        except (TypeError, ValueError):
+            return
+        now = self._stamp()
+        if etype == "conversation.item.create" and turn.item_sent_at is None:
+            turn.item_sent_at = now
+        elif etype == "response.create" and turn.create_sent_at is None:
+            turn.create_sent_at = now
+        elif etype == "response.cancel" and turn.cancel_sent_at is None:
+            turn.cancel_sent_at = now
 
     def _on_frame(self, raw: Any) -> None:
         self._obs.frames_in += 1
@@ -324,7 +380,13 @@ class _Probe:
             if turn is not None:
                 turn.done_at = now
                 turn.status = status or None
-            self._terminal.set()
+            # Gated like the delta signal beside it. A duplicate or delayed
+            # terminal for an EARLIER response is attributed to that turn by
+            # `_resolve`, and waking the shared event anyway told the open turn
+            # its own response had ended — after which the barge-in fires at a
+            # reply that has not spoken.
+            if turn is not None and turn is self._open:
+                self._terminal.set()
             return
 
         if etype == "error":
@@ -342,7 +404,23 @@ class _Probe:
             self._obs.errors.append(record)
             if self._idle_cancel_watch is not None:
                 self._idle_cancel_watch.append(record)
-            self._terminal.set()
+            # Recorded, and nothing else. An error frame is not proof this turn
+            # ended: an uncorrelated one belongs to something else, and a
+            # connection-level one (a 503 the transport answers by throttling
+            # and continuing) leaves the response streaming. The arbiter takes
+            # the same posture — `notify_error` ignores what it cannot match to
+            # a ticket.
+            #
+            # I had this wrong in both directions one round apart: first waking
+            # the waiter without recording anything, which let a barge-in fire
+            # at a response that had already failed; then recording a
+            # completion, which is a FALSE completion for every error that did
+            # not end the turn, and skips the barge-in that should have
+            # happened. The honest posture is neither.
+            #
+            # The cost is real and preferred: a turn that dies by error alone
+            # now waits out the probe's own budget and is reported under
+            # "terminals never received", which is exactly what was observed.
             return
 
         if etype.startswith("response."):
@@ -353,7 +431,20 @@ class _Probe:
                     turn.stream_events_with_id += 1
                 if turn.first_delta_at is None:
                     turn.first_delta_at = now
-            self._first_delta.set()
+            # Only actual output counts as "it has started speaking".
+            # `response.output_item.added` and `response.content_part.added`
+            # are metadata and arrive first on the announcing route, so
+            # signalling on them made the barge-in cancel a reply that had
+            # produced nothing — the 0.05s figure that measured was
+            # cancellation of silence, not interruption.
+            # Gated to the turn that is actually open. A cancelled earlier
+            # response can emit buffered deltas after the next turn has begun,
+            # and `_resolve` correctly attributes them to the OLD turn — but
+            # setting the shared event anyway told the new turn its own reply
+            # had started, so a barge-in would cancel a response that was still
+            # silent.
+            if etype in _OUTPUT_DELTA_TYPES and turn is not None and turn is self._open:
+                self._first_delta.set()
 
     @staticmethod
     def _response_id_of(event: dict[str, Any]) -> str | None:
@@ -374,11 +465,15 @@ class _Probe:
 
     @staticmethod
     async def _wait_for_first_of(
-        first: asyncio.Event, second: asyncio.Event, timeout: float
+        *events_then_timeout: Any,
     ) -> None:
-        """Return as soon as either event is set, or the bound expires."""
+        """Return as soon as any of the events is set, or the bound expires."""
 
-        waiters = [asyncio.create_task(first.wait()), asyncio.create_task(second.wait())]
+        events = [e for e in events_then_timeout if isinstance(e, asyncio.Event)]
+        timeout = next(
+            (e for e in events_then_timeout if isinstance(e, (int, float))), 20.0
+        )
+        waiters = [asyncio.create_task(event.wait()) for event in events]
         try:
             await asyncio.wait(
                 waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
@@ -425,19 +520,27 @@ class _Probe:
         # what the provider does rather than from a per-route flag, for the same
         # reason the arbiter is: these proxies have changed which events they
         # emit.
+        # The terminal is a wake-up too. A turn can reach response.done with
+        # no output delta at all — tool-only, empty, or failed — and on a route
+        # that never announces, neither of the other two events would ever
+        # fire, so the probe would sleep out its whole budget after the turn
+        # had already finished.
         await self._wait_for_first_of(
             self._announced,
             self._first_delta,
             max(_ARBITER_BOUNDS["response_started"] * 4, 20.0),
+            self._terminal,
         )
         if not self._announced.is_set():
             self._log("(no response.created — this route does not announce)")
 
         if barge_in:
-            if not self._first_delta.is_set():
-                try:
-                    await asyncio.wait_for(self._first_delta.wait(), 15.0)
-                except asyncio.TimeoutError:
+            if not self._first_delta.is_set() and turn.done_at is None:
+                # Same reason as above: a turn that ends without producing any
+                # output would otherwise burn this whole budget before the
+                # already-finished check below.
+                await self._wait_for_first_of(self._first_delta, self._terminal, 15.0)
+                if not self._first_delta.is_set():
                     self._log("!! nothing streaming to barge in on")
             if turn.done_at is not None:
                 # It already finished. Cancelling now would time an idle
@@ -446,7 +549,10 @@ class _Probe:
                 self._open = None
                 self._obs.turns.append(turn)
                 return turn
-            turn.cancel_sent_at = self._stamp()
+            # NOT stamped here: the outbound tap records the instant the
+            # frame actually left, which is where the arbiter's cancel bound
+            # starts. Stamping from the caller would charge the send itself to
+            # the bound.
             # Exactly what the production barge-in does: cancel_response(wait=True)
             # is cancel_current(), the 3s bound whose expiry tears the socket down.
             # Swallow its TimeoutError here — that IS the measurement.
@@ -500,6 +606,12 @@ class _Probe:
         self._obs.idle_cancel_replies.extend(watch)
 
 
+def _clamp_at_zero(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(value, 0.0)
+
+
 def _summarize(values: list[float | None]) -> dict[str, float] | None:
     clean = [v for v in values if v is not None]
     if not clean:
@@ -514,38 +626,102 @@ def _summarize(values: list[float | None]) -> dict[str, float] | None:
     }
 
 
-def _margin_line(name: str, stats: dict[str, float] | None, bound: float) -> str:
+class _MarginCapture(logging.Handler):
+    """Collect the arbiter's own bound-consumption lines.
+
+    This is the whole correction six rounds of review converged on. A bound is
+    not the interval between two provider events — it is how long the arbiter's
+    own ``wait_for`` was actually blocked, which is ZERO when the future is
+    already resolved by the time the wait begins. On the non-announcing route
+    a single ``response.done`` resolves both `started` and `terminal`, so both
+    of those waits consume nothing while the generation itself took seconds.
+    Every latency this probe can time from the outside is a provider
+    observation; none of them is a margin, and presenting one as the other is
+    what produced numbers that had to be retracted.
+
+    ``_report_wait_margin`` already measures the real thing from inside, so the
+    probe's job is to run the scenarios and collect what it says.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if "waited" in message and "of its" in message:
+            self.lines.append(message)
+
+
+def _latency_line(name: str, stats: dict[str, float] | None) -> str:
     if stats is None:
-        return f"  {name:<22} (no observations){' ' * 30}bound={bound:>5.1f}s"
-    worst = stats["max"]
-    pct = 100.0 * worst / bound if bound else 0.0
-    verdict = "OK" if pct < 50 else ("TIGHT" if pct < 100 else "OVER")
+        return f"  {name:<22} (no observations)"
     return (
         f"  {name:<22} n={int(stats['n']):<3d} p50={stats['p50']:6.2f}s "
-        f"p95={stats['p95']:6.2f}s max={worst:6.2f}s  bound={bound:>5.1f}s "
-        f"worst={pct:5.1f}%  {verdict}"
+        f"p95={stats['p95']:6.2f}s max={stats['max']:6.2f}s"
     )
 
 
 def _report(obs: _Observations) -> dict[str, Any]:
-    announce = [_Turn._delta(t.sent_at, t.created_at) for t in obs.turns]
+    # Each bound is timed from where the arbiter starts it — the outbound
+    # frame — falling back to the caller's instant only when the frame was
+    # never sent, in which case there is no bound to compare against anyway.
+    # Clamped at zero: on the item-triggered route this probe exists for, the
+    # announcement arrives while the request is still inside the item-ack
+    # barrier — BEFORE its own response.create goes out — so the subtraction is
+    # negative. The arbiter consumes none of the bound there (its `started`
+    # future is already resolved when the post-send wait begins), and an
+    # unclamped negative would be summarized as an unusually good margin.
+    announce = [
+        _clamp_at_zero(
+            _Turn._delta(
+                t.create_sent_at if t.create_sent_at is not None else t.sent_at,
+                t.created_at,
+            )
+        )
+        for t in obs.turns
+    ]
     # From the announcement when there is one, otherwise from the request
     # itself. One of the two routes this probe exists for never announces,
     # so keying completion on created_at alone reported 'no observations'
     # for that whole route — i.e. it could not measure the 60s bound it was
     # written to measure.
+    # Deliberately NOT clamped, unlike every other latency here: both ends are
+    # INBOUND events on one ordered socket, so `created` cannot follow `done`,
+    # and the `sent_at` fallback is the caller's own instant, which precedes
+    # any inbound frame. There is no arrangement that yields a negative.
     complete = [
         _Turn._delta(t.created_at if t.created_at is not None else t.sent_at, t.done_at)
         for t in obs.turns
     ]
-    item_ack = [_Turn._delta(t.sent_at, t.item_acked_at) for t in obs.turns]
+    # Clamped for the same reason the announcement is: the outbound stamp is
+    # taken after the send COMPLETES, so a peer that answered while the write
+    # was still draining yields a negative interval. The arbiter consumes none
+    # of the bound there either.
+    item_ack = [
+        _clamp_at_zero(
+            _Turn._delta(
+                t.item_sent_at if t.item_sent_at is not None else t.sent_at,
+                t.item_acked_at,
+            )
+        )
+        for t in obs.turns
+    ]
     cancel = [
-        _Turn._delta(t.cancel_sent_at, t.done_at)
+        _clamp_at_zero(_Turn._delta(t.cancel_sent_at, t.done_at))
         for t in obs.turns
         if t.cancel_sent_at is not None
     ]
     missing = [t.label for t in obs.turns if t.done_at is None]
-    idless = [t.label for t in obs.turns if t.stream_events and not t.stream_events_with_id]
+    # ANY id-less streaming event, not only an all-id-less turn: one
+    # unattributable late tool event is enough for issue #2611 to apply,
+    # and a turn that identifies most of its deltas would otherwise be
+    # reported as safe.
+    idless = [
+        t.label
+        for t in obs.turns
+        if t.stream_events and t.stream_events_with_id < t.stream_events
+    ]
 
     stats = {
         "item_ack": _summarize(item_ack),
@@ -559,11 +735,20 @@ def _report(obs: _Observations) -> dict[str, Any]:
     print(f"route     {_ROUTES[obs.route]['label']}")
     print(f"scenario  {obs.scenario}   turns={len(obs.turns)}   frames={obs.frames_in}")
     print("-" * 80)
-    print("margin against the arbiter's fail-close bounds")
-    print(_margin_line("item ack", stats["item_ack"], _ARBITER_BOUNDS["item_ack"]))
-    print(_margin_line("response announce", stats["response_started"], _ARBITER_BOUNDS["response_started"]))
-    print(_margin_line("response complete", stats["response_done"], _ARBITER_BOUNDS["response_done"]))
-    print(_margin_line("cancel -> terminal", stats["cancel"], _ARBITER_BOUNDS["cancel"]))
+    # Provider observations. NOT margins — see _MarginCapture. These say what
+    # the provider did; they say nothing about how much of a bound was spent.
+    print("provider latencies (observations, not bound consumption)")
+    print(_latency_line("item ack", stats["item_ack"]))
+    print(_latency_line("response announce", stats["response_started"]))
+    print(_latency_line("response complete", stats["response_done"]))
+    print(_latency_line("cancel -> terminal", stats["cancel"]))
+    print("-" * 80)
+    print("bound consumption, as the arbiter measured it from inside:")
+    if obs.margin_lines:
+        for line in obs.margin_lines:
+            print(f"  {line}")
+    else:
+        print("  (none — no wait spent half its allowance)")
     print("-" * 80)
     print(f"terminals never received : {len(missing)} / {len(obs.turns)}")
     if missing:
@@ -600,7 +785,8 @@ def _report(obs: _Observations) -> dict[str, Any]:
         "route": obs.route,
         "scenario": obs.scenario,
         "bounds": _ARBITER_BOUNDS,
-        "stats": stats,
+        "arbiter_bound_consumption": obs.margin_lines,
+        "provider_latencies": stats,
         "teardown": obs.teardown,
         "missing_terminal": missing,
         "idless_stream_turns": idless,
@@ -613,12 +799,35 @@ def _report(obs: _Observations) -> dict[str, Any]:
                 "label": t.label,
                 "response_id": t.response_id,
                 "status": t.status,
-                "announce_s": _Turn._delta(t.sent_at, t.created_at),
+                # Computed exactly as the aggregate above computes them,
+                # origin and clamp included. They disagreed before: the
+                # aggregate measured the announcement from the outbound create
+                # and clamped a pre-send announcement to zero, while this
+                # exported the raw interval from the caller's instant — so a
+                # consumer reading the per-turn records got the inflated
+                # numbers the aggregate had already corrected.
+                "announce_s": _clamp_at_zero(
+                    _Turn._delta(
+                        t.create_sent_at if t.create_sent_at is not None else t.sent_at,
+                        t.created_at,
+                    )
+                ),
+                "announce_from": "create_sent" if t.create_sent_at is not None else "sent",
+                # Unclamped for the same reason as the aggregate above: both
+                # ends are inbound and cannot invert.
                 "complete_s": _Turn._delta(
                     t.created_at if t.created_at is not None else t.sent_at, t.done_at
                 ),
                 "complete_from": "created" if t.created_at is not None else "sent",
-                "cancel_s": _Turn._delta(t.cancel_sent_at, t.done_at),
+                "item_ack_s": _clamp_at_zero(
+                    _Turn._delta(
+                        t.item_sent_at if t.item_sent_at is not None else t.sent_at,
+                        t.item_acked_at,
+                    )
+                ),
+                "cancel_s": _clamp_at_zero(
+                    _Turn._delta(t.cancel_sent_at, t.done_at)
+                ),
                 "stream_events": t.stream_events,
                 "stream_events_with_id": t.stream_events_with_id,
             }
@@ -630,6 +839,14 @@ def _report(obs: _Observations) -> dict[str, Any]:
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     probe = _Probe(args.route, verbose=not args.quiet)
     probe.observations.scenario = args.scenario
+    capture = _MarginCapture()
+    arbiter_log = logging.getLogger(
+        "main_logic.omni_realtime_client._response_arbiter"
+    )
+    previous_level = arbiter_log.level
+    arbiter_log.setLevel(logging.INFO)
+    arbiter_log.addHandler(capture)
+    probe.observations.margin_lines = capture.lines
     await probe.connect(args.url)
     obs = probe.observations
     try:
@@ -659,6 +876,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 await asyncio.sleep(args.gap)
     finally:
         await probe.close()
+        arbiter_log.removeHandler(capture)
+        arbiter_log.setLevel(previous_level)
 
     return _report(probe.observations)
 
