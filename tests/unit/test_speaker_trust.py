@@ -363,6 +363,28 @@ def test_fresh_persona_entry_preserves_missing_speaker_trust():
     assert "speaker_trust" not in entry
 
 
+@pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
+def test_fresh_persona_entry_preserves_non_finite_trust_as_unknown(invalid_trust):
+    from memory.persona.facts import FactsMixin
+
+    entry = FactsMixin()._build_fact_entry(
+        "malformed reflection", source="reflection", source_id="ref-bad",
+        speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": invalid_trust,
+        },
+    )
+
+    assert entry["id"] == "prom_ref-bad"
+    assert entry["speaker_id"] == "qq:1001"
+    assert "speaker_trust" not in entry
+
+    finite_entry = FactsMixin()._build_fact_entry(
+        "scored reflection", source="reflection", source_id="ref-good",
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.7},
+    )
+    assert finite_entry["speaker_trust"] == pytest.approx(0.7)
+
+
 def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text():
     assert observation_texts([
         HumanMessage(content="  owner confirmation  "),
@@ -1664,6 +1686,14 @@ def test_conditional_clause_negations_never_emit_correction():
     ) is None
 
 
+@pytest.mark.parametrize("marker", ["只要", "一旦"])
+def test_sufficient_condition_negations_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"{marker}小明喜欢猫，他就开心",
+        f"{marker}小明不喜欢猫，他就开心",
+    ) is None
+
+
 def test_epistemic_modal_negations_never_emit_correction():
     for modal in ("might", "may", "could"):
         assert deterministic_relation(
@@ -1672,6 +1702,17 @@ def test_epistemic_modal_negations_never_emit_correction():
         ) is None
     assert deterministic_relation(
         "Alice will attend", "Alice will not attend",
+    ) == "correction"
+
+
+@pytest.mark.parametrize("modal", ["might", "may", "could"])
+def test_english_epistemic_modals_reject_cjk_negations(modal):
+    assert deterministic_relation(
+        f"Alice {modal} 喜欢猫", f"Alice {modal} 不喜欢猫",
+    ) is None
+    assert deterministic_relation(
+        "Alice clicked the may button 喜欢猫",
+        "Alice clicked the may button 不喜欢猫",
     ) == "correction"
 
 

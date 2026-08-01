@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 
 
 import os
@@ -233,6 +234,7 @@ class FactsMixin:
                 if (
                     isinstance(trust, (int, float))
                     and not isinstance(trust, bool)
+                    and math.isfinite(float(trust))
                 ):
                     entry['speaker_trust'] = normalize_trust(trust)
             label = str(speaker_provenance.get('speaker_label') or '').strip()
