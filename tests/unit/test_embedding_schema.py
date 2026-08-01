@@ -525,7 +525,7 @@ async def test_same_speaker_merge_folds_trust_to_conservative_minimum(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_pending_correction_upgrades_to_stronger_source(tmp_path):
+async def test_duplicate_pending_correction_marks_different_sources_mixed(tmp_path):
     pm = _install_pm(str(tmp_path))
     common_old = {"speaker_id": "qq:9000", "speaker_trust": 0.8}
     await pm._aqueue_correction(
@@ -544,8 +544,9 @@ async def test_duplicate_pending_correction_upgrades_to_stronger_source(tmp_path
     )
     pending = await pm.aload_pending_corrections("Neko")
     assert len(pending) == 1
-    assert pending[0]["new_speaker_id"] == "qq:2002"
-    assert pending[0]["new_speaker_trust"] == pytest.approx(0.7)
+    assert "new_speaker_id" not in pending[0]
+    assert "new_speaker_trust" not in pending[0]
+    assert pending[0]["new_speaker_provenance_mixed"] is True
 
 
 @pytest.mark.asyncio

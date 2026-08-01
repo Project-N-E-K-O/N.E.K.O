@@ -2566,8 +2566,8 @@ async def test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment(
     把这类当成空壳静默丢掉、该段照报 ok，调用方就会 pop 掉那个桶——
     成员维度的唯一副本，内容真的没了（Codex P1）。
 
-    认出来的事实仍照常落盘：重试会把它们重新抽一遍、SHA-256 去重兜住重复，
-    而万一重试一直失败，起码这些不会跟着丢。"""  # noqa: DOCSTRING_CJK
+    认出来的前序事实仍照常落盘；为防重试反转 created_at，后序段也必须
+    fail-closed 留待重试，不能越过这个失败段先落盘。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2589,13 +2589,13 @@ async def test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment(
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
 
-    assert [r["status"] for r in results] == ["failed", "ok"], (
+    assert [r["status"] for r in results] == ["failed", "failed"], (
         "带文字的看不懂条目被当成空壳丢了，该段却照报 ok"
     )
     assert [f["text"] for f in results[0]["created"]] == ["认得出的事实"]
     assert results[0]["dropped"] == 0, "它不是空壳，不该记进 dropped"
     persisted = {f["text"] for f in await fs.aload_facts("Neko")}
-    assert persisted == {"认得出的事实", "邻段不受连累"}
+    assert persisted == {"认得出的事实"}
 
 
 @pytest.mark.asyncio
@@ -2629,7 +2629,7 @@ async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
 
-    assert [r["status"] for r in results] == ["failed", "ok"]
+    assert [r["status"] for r in results] == ["failed", "failed"]
     assert results[0]["created"] == []
 
     # 对照一：给了 facts 数组就算答过了（哪怕空数组 = 本段无事实），旁挂
@@ -2671,7 +2671,7 @@ async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
     fs._allm_call_with_retries = _non_string_text
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
-    assert [r["status"] for r in results] == ["failed", "ok"], (
+    assert [r["status"] for r in results] == ["failed", "failed"], (
         "text 不是字符串但裹着内容的段对象被当成「本段无事实」了"
     )
     assert results[0]["created"] == []
@@ -2756,7 +2756,7 @@ async def test_map_shaped_malformed_fact_is_not_treated_as_an_empty_shell(
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
 
-    assert [r["status"] for r in results] == ["failed", "ok"], (
+    assert [r["status"] for r in results] == ["failed", "failed"], (
         "文本在键上的畸形事实被当成空壳，段照报 ok，桶会被 pop"
     )
     assert results[0]["dropped"] == 0, "它不是空壳，不该记进 dropped"
@@ -11822,18 +11822,25 @@ async def test_member_flush_defers_parallel_batches_beyond_join_timeout_waves():
         memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
     ))
 
-    assert await service._flush_member_buckets(
+    failed = await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
-    ) == ["1001"]
-    assert len(calls) == service.GROUP_MEMBER_MAX_PARTICIPANTS
-    assert user_data["group_member_memory_messages"] == {
-        "1001": [last_message],
-    }
+    )
+    assert failed == ["1001", "1002"]
+    assert len(calls) == 2
+    assert set(user_data["group_member_memory_messages"]) == {"1001", "1002"}
+    assert last_message in user_data["group_member_memory_messages"]["1001"]
 
-    assert await service._flush_member_buckets(
-        user_data, group_id="7788", her_name="Neko", reason="retry",
-    ) == []
-    assert len(calls) == service.GROUP_MEMBER_MAX_PARTICIPANTS + 1
+    attempts_per_sweep = [len(calls)]
+    for retry in range(1, 10):
+        before = len(calls)
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        attempts_per_sweep.append(len(calls) - before)
+        if not failed:
+            break
+    assert failed == []
+    assert all(1 <= attempts <= 2 for attempts in attempts_per_sweep)
     assert user_data["group_member_memory_messages"] == {}
 
 
