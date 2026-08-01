@@ -731,7 +731,18 @@ class FactDedupResolver:
                 except MemoryScopeError:
                     batch_subject = None
                 if batch_subject is not None:
-                    selected_locale = await prompt_locale_resolver(batch_subject)
+                    try:
+                        selected_locale = await prompt_locale_resolver(
+                            batch_subject,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[FactDedup] %s: scoped prompt locale 解析失败，"
+                            "回退到全局 locale: %s",
+                            name,
+                            exc,
+                        )
+                        selected_locale = None
                     if selected_locale:
                         prompt_ui_language = selected_locale
         pairs_text = "\n".join(

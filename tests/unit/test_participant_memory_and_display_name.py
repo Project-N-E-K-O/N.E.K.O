@@ -2764,6 +2764,7 @@ async def test_bootstrap_section_participant_never_fetches_legacy():
         her_name="Neko", master_name="主人",
         context_ready_template="ready {name} {master}",
         is_group=False, group_id=None, sender_id="1001",
+        locale="zh-TW",
         participant_memory=True,
     )
 
@@ -2775,6 +2776,12 @@ async def test_bootstrap_section_participant_never_fetches_legacy():
     assert subjects == [
         {"subject_kind": "participant", "subject_id": "qq:1001"},
     ]
+    assert (
+        plugin.memory_bridge.fetch_scoped_bootstrap_memory.await_args.kwargs[
+            "language"
+        ]
+        == "zh-TW"
+    )
 
     # sender 空：fail-closed 空 subjects → bridge 空串 → 无段；legacy 仍未被碰
     plugin.memory_bridge.fetch_scoped_bootstrap_memory = AsyncMock(
