@@ -738,6 +738,31 @@ async def test_replay_respects_concurrency_semaphore(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_locale_replay_does_not_hold_llm_replay_semaphore(tmp_path):
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from memory.outbox import OP_PERSIST_PROMPT_LOCALE, OP_POST_TURN_SIGNALS
+
+    await ob.aappend_pending("小天", OP_PERSIST_PROMPT_LOCALE, {"i": 1})
+    await ob.aappend_pending("小天", OP_POST_TURN_SIGNALS, {"i": 2})
+    observed = []
+
+    async def capture(_name, op, semaphore=None):
+        observed.append((op["type"], semaphore))
+
+    with patch.object(memory_server.outbox_infra, "_run_outbox_op", capture):
+        spawned = await memory_server._replay_pending_outbox()
+        await asyncio.gather(*spawned)
+
+    by_type = dict(observed)
+    assert by_type[OP_PERSIST_PROMPT_LOCALE] is None
+    assert (
+        by_type[OP_POST_TURN_SIGNALS]
+        is memory_server.outbox_infra._replay_semaphore
+    )
+
+
+@pytest.mark.asyncio
 async def test_replay_scans_disk_for_characters_not_in_config(tmp_path):
     """Codex PR#905 P2: 角色从 config 移除但 outbox 还有 pending → 必须仍补跑。"""
     ob, mock_cm = _install_fresh_memory_state(str(tmp_path))

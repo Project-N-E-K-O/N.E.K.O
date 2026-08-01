@@ -43,8 +43,10 @@ _locale_locks: dict[str, threading.Lock] = {}
 _locale_locks_guard = threading.Lock()
 _locale_cache_guard = threading.Lock()
 _locale_reload_guard = threading.RLock()
+_subject_locale_forget_cutoffs_guard = threading.RLock()
 _locale_cache_generation = 0
 _subject_locale_forget_cutoffs: dict[tuple[str, str], int] = {}
+_subject_locale_forget_cutoffs_loaded = False
 _character_locale_admission_orders: dict[str, int] = {}
 
 
@@ -86,6 +88,69 @@ def _subject_locale_path(name: str) -> str:
         ensure_character_dir(config_manager.memory_dir, name),
         "scoped_prompt_locales.json",
     )
+
+
+def _subject_locale_forget_cutoff_path() -> str:
+    """Return the local-only tombstone store excluded from cloud snapshots."""
+    from utils.config_manager import get_config_manager
+
+    config_manager = get_config_manager()
+    config_manager.ensure_local_state_directory()
+    return os.path.join(
+        config_manager.local_state_dir,
+        "scoped_prompt_locale_forget_cutoffs.json",
+    )
+
+
+def _load_subject_locale_forget_cutoffs_unlocked() -> None:
+    global _subject_locale_forget_cutoffs_loaded
+    with _subject_locale_forget_cutoffs_guard:
+        if _subject_locale_forget_cutoffs_loaded:
+            return
+        loaded: dict[tuple[str, str], int] = {}
+        try:
+            with open(_subject_locale_forget_cutoff_path(), encoding="utf-8") as handle:
+                payload = json.load(handle)
+            characters = payload.get("characters") if isinstance(payload, dict) else None
+            if isinstance(characters, dict):
+                for name, rows in characters.items():
+                    if not isinstance(name, str) or not isinstance(rows, dict):
+                        continue
+                    for key, cutoff in rows.items():
+                        if (
+                            isinstance(key, str)
+                            and isinstance(cutoff, int)
+                            and not isinstance(cutoff, bool)
+                        ):
+                            loaded[(name, key)] = cutoff
+        except FileNotFoundError:
+            pass
+        except (OSError, json.JSONDecodeError) as exc:
+            # A tombstone read failure must fail closed: treating it as an
+            # empty set could revive a scoped locale restored from the cloud.
+            raise PromptLocalePersistenceError(
+                "scoped prompt locale forget cutoffs could not be loaded"
+            ) from exc
+        _subject_locale_forget_cutoffs.clear()
+        _subject_locale_forget_cutoffs.update(loaded)
+        _subject_locale_forget_cutoffs_loaded = True
+
+
+def _persist_subject_locale_forget_cutoffs_unlocked() -> None:
+    with _subject_locale_forget_cutoffs_guard:
+        characters: dict[str, dict[str, int]] = {}
+        for (name, key), cutoff in _subject_locale_forget_cutoffs.items():
+            characters.setdefault(name, {})[key] = cutoff
+        try:
+            atomic_write_json(
+                _subject_locale_forget_cutoff_path(),
+                {"version": 1, "characters": characters},
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            raise PromptLocalePersistenceError(
+                "scoped prompt locale forget cutoff was not persisted"
+            ) from exc
 
 
 def _assert_prompt_locale_writable(target: str) -> None:
@@ -231,6 +296,7 @@ def _persist_locale_state_unlocked(
 def _load_subject_locale_state_unlocked(
     name: str,
 ) -> dict[str, tuple[str | None, int | None, int | None]]:
+    _load_subject_locale_forget_cutoffs_unlocked()
     while True:
         with _locale_cache_guard:
             if name in _subject_locale_cache:
@@ -263,6 +329,11 @@ def _load_subject_locale_state_unlocked(
                         reserved_order = None
                     if order is not None:
                         reserved_order = max(reserved_order or order, order)
+                    forget_cutoff = _subject_locale_forget_cutoffs.get((name, key))
+                    if forget_cutoff is not None and (
+                        order is None or order <= forget_cutoff
+                    ):
+                        continue
                     loaded[key] = (selected, order, reserved_order)
         except (OSError, json.JSONDecodeError):
             # Missing or partially-written scoped state starts as an empty map.
@@ -426,6 +497,7 @@ def reserve_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
         return []
     with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("scoped_prompt_locales.json")
+        _load_subject_locale_forget_cutoffs_unlocked()
         states = dict(_load_subject_locale_state_unlocked(name))
         selected_orders = []
         for key in keys:
@@ -477,6 +549,7 @@ def record_subject_prompt_locales(name: str, updates) -> list[str | None]:
 
     with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("scoped_prompt_locales.json")
+        _load_subject_locale_forget_cutoffs_unlocked()
         states = dict(_load_subject_locale_state_unlocked(name))
         results = []
         changed = False
@@ -518,17 +591,27 @@ def forget_subject_prompt_locale(name: str, subject) -> int:
     key = _subject_locale_key(subject)
     with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("scoped_prompt_locales.json")
+        _load_subject_locale_forget_cutoffs_unlocked()
         states = dict(_load_subject_locale_state_unlocked(name))
         previous = states.pop(key, None)
         previous_order = previous[1] if previous is not None else None
         previous_reserved = previous[2] if previous is not None else None
         cutoff_key = (name, key)
+        previous_cutoff = _subject_locale_forget_cutoffs.get(cutoff_key)
         _subject_locale_forget_cutoffs[cutoff_key] = max(
             time.time_ns(),
             previous_order or 0,
             previous_reserved or 0,
-            _subject_locale_forget_cutoffs.get(cutoff_key, 0),
+            previous_cutoff or 0,
         )
+        try:
+            _persist_subject_locale_forget_cutoffs_unlocked()
+        except Exception:
+            if previous_cutoff is None:
+                _subject_locale_forget_cutoffs.pop(cutoff_key, None)
+            else:
+                _subject_locale_forget_cutoffs[cutoff_key] = previous_cutoff
+            raise
         if previous is None:
             return 0
         if not _persist_subject_locale_state_unlocked(name, states):
@@ -541,12 +624,18 @@ def forget_subject_prompt_locale(name: str, subject) -> int:
 def get_subject_prompt_locale(name: str, subject) -> str | None:
     """Load the latest explicit locale for one scoped memory owner."""
     key = _subject_locale_key(subject)
-    with _get_locale_lock(name):
+    with _get_locale_lock(name), _subject_locale_forget_cutoffs_guard:
+        _load_subject_locale_forget_cutoffs_unlocked()
         states = _load_subject_locale_state_unlocked(name)
         selected, _order, _reserved_order = states.get(
             key,
             (None, None, None),
         )
+        forget_cutoff = _subject_locale_forget_cutoffs.get((name, key))
+        if forget_cutoff is not None and (
+            _order is None or _order <= forget_cutoff
+        ):
+            return None
         return selected
 
 

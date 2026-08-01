@@ -1018,6 +1018,13 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             lanlan_name,
             subject,
         )
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            req.language,
+            order=locale_order,
+        )
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_facts",
     )
@@ -1026,14 +1033,6 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
         extracted,
         subject=subject,
     )
-    if locale_order is not None:
-        await asyncio.to_thread(
-            locale_state.record_subject_prompt_locale,
-            lanlan_name,
-            subject,
-            req.language,
-            order=locale_order,
-        )
     await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "stored",
@@ -1108,6 +1107,13 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             lanlan_name,
             subject,
         )
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            req.language,
+            order=locale_order,
+        )
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
     )
@@ -1138,14 +1144,6 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=502,
             detail="scoped fact extraction failed; retry later",
         ) from exc
-    if locale_order is not None:
-        await asyncio.to_thread(
-            locale_state.record_subject_prompt_locale,
-            lanlan_name,
-            subject,
-            req.language,
-            order=locale_order,
-        )
     await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "processed",
@@ -1277,6 +1275,14 @@ async def _process_scoped_history_segments(
             lanlan_name,
             [segment["subject"] for segment in parsed],
         )
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locales,
+            lanlan_name,
+            [
+                (segment["subject"], req.language, locale_order)
+                for segment, locale_order in zip(parsed, locale_orders)
+            ],
+        )
     else:
         locale_orders = [None] * len(parsed)
     # fail_closed 语义（对齐 legacy 单发路径的注释）：调用方在成功段上
@@ -1298,22 +1304,6 @@ async def _process_scoped_history_segments(
         raise HTTPException(
             status_code=502,
             detail="scoped fact extraction returned mismatched segments",
-        )
-    locale_updates = [
-        (segment["subject"], req.language, locale_order)
-        for segment, result, locale_order in zip(
-            parsed,
-            segment_results,
-            locale_orders,
-        )
-        if locale_order is not None
-        and (result.get("status") == "ok" or result.get("created"))
-    ]
-    if locale_updates:
-        await asyncio.to_thread(
-            locale_state.record_subject_prompt_locales,
-            lanlan_name,
-            locale_updates,
         )
     for segment, result in zip(parsed, segment_results):
         # 只给「模型对这一段给出了结论」的段刷新显示名：失败段整桶保留
@@ -1840,6 +1830,7 @@ async def _retry_new_dialog_locale(
 ) -> None:
     """Retry a deferred locale write until it succeeds or becomes stale."""
     persistence_retry_delay = 0.25
+    maintenance_retry_delay = 0.25
     while (
         generation is None
         or _new_dialog_locale_generations.get(lanlan_name) == generation
@@ -1852,11 +1843,14 @@ async def _retry_new_dialog_locale(
                 locale_admission_order=locale_admission_order,
             )
             return
-        except (
-            MaintenanceModeError,
-            locale_state.PromptLocaleInvalidatedError,
-        ):
+        except locale_state.PromptLocaleInvalidatedError:
             await asyncio.sleep(0.25)
+        except MaintenanceModeError:
+            await asyncio.sleep(maintenance_retry_delay)
+            maintenance_retry_delay = min(
+                maintenance_retry_delay * 2,
+                30.0,
+            )
         except locale_state.PromptLocalePersistenceError as exc:
             logger.warning(
                 "[PromptLocale] %s: new-dialog locale persistence failed; retrying: %s",
@@ -1874,7 +1868,7 @@ async def _outbox_new_dialog_locale_handler(
     lanlan_name: str,
     payload: dict,
 ) -> None:
-    """Replay one durable new-dialog locale intent once at startup."""
+    """Replay one durable new-dialog locale intent until it is committed."""
     language = payload.get('language')
     locale_admission_order = payload.get('locale_admission_order')
     if not is_supported_language_code(language):
@@ -1885,7 +1879,7 @@ async def _outbox_new_dialog_locale_handler(
     ):
         raise ValueError("invalid prompt locale order in outbox payload")
 
-    await _write_new_dialog_locale(
+    await _retry_new_dialog_locale(
         lanlan_name,
         language,
         None,

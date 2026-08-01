@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -27,6 +28,69 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
         )
         for name, session_manager in session_managers.items()
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_concurrent_downloads_serialize_before_sync_apply_fence():
+    """A second event-loop task must not enter the blocking sync fence."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        first_started = threading.Event()
+        release_first = threading.Event()
+        fence_entries = 0
+        import_calls = 0
+
+        @contextmanager
+        def tracked_fence(*_args, **_kwargs):
+            nonlocal fence_entries
+            fence_entries += 1
+            yield
+
+        def do_import(*_args, **_kwargs):
+            nonlocal import_calls
+            import_calls += 1
+            if import_calls == 1:
+                first_started.set()
+                assert release_first.wait(3)
+            return {"detail": {}, "backup_path": ""}
+
+        with patch("utils.config_manager._config_manager", cm):
+            module = importlib.import_module("main_routers.cloudsave_router")
+            with patch.object(
+                module, "is_cloudsave_provider_available", return_value=True,
+            ), patch.object(
+                module, "_local_character_exists", return_value=False,
+            ), patch.object(
+                module, "cloud_apply_fence", side_effect=tracked_fence,
+            ), patch.object(
+                module, "import_cloudsave_character_unit", side_effect=do_import,
+            ), patch.object(
+                module,
+                "_complete_cloudsave_character_download",
+                AsyncMock(return_value=None),
+            ), patch.object(
+                module,
+                "_enrich_cloudsave_payload_with_workshop_status",
+                AsyncMock(return_value={}),
+            ):
+                first = asyncio.create_task(
+                    module.post_cloudsave_character_download(
+                        "A", _DummyRequest({}),
+                    )
+                )
+                assert await asyncio.to_thread(first_started.wait, 3)
+                second = asyncio.create_task(
+                    module.post_cloudsave_character_download(
+                        "B", _DummyRequest({}),
+                    )
+                )
+                await asyncio.sleep(0)
+                assert fence_entries == 1
+                release_first.set()
+                await asyncio.gather(first, second)
+
+        assert fence_entries == 2
 from utils.config_manager import ConfigManager
 from utils.cloudsave_runtime import (
     MaintenanceModeError,

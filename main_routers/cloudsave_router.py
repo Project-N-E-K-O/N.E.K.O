@@ -63,6 +63,7 @@ from utils.cloudsave_runtime import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
+_character_download_apply_lock = asyncio.Lock()
 
 
 async def _await_thread_call_to_completion(func, *args, **kwargs):
@@ -678,34 +679,39 @@ async def post_cloudsave_character_download(name: str, request: Request):
             )
 
     try:
-        # Windows mutex ownership is thread-affine. This non-blocking acquire and
-        # release must stay on the event-loop thread while the worker performs IO.
-        with cloud_apply_fence(
-            config_manager,
-            mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
-            reason=f"single_character_download:{name}",
-        ):
-            result, import_cancelled = await _await_thread_call_to_completion(
-                import_cloudsave_character_unit,
+        # The synchronous fence contains a thread-reentrant process guard and
+        # holds its cross-process lock across awaits.  Serialize these async
+        # callers task-wise first, otherwise a second request on the same event
+        # loop can re-enter the thread guard and block that loop on the OS lock.
+        async with _character_download_apply_lock:
+            # Windows mutex ownership is thread-affine. Acquire and release must
+            # stay on the event-loop thread while the worker performs IO.
+            with cloud_apply_fence(
                 config_manager,
-                name,
-                overwrite=overwrite,
-                backup_before_overwrite=backup_before_overwrite,
-                retain_recent_locks=True,
-                use_cloud_apply_fence=False,
-            )
-            reload_error_response, completion_cancelled = (
-                await _await_coroutine_to_completion(
-                    _complete_cloudsave_character_download(
-                        config_manager,
-                        name,
-                        result,
-                        release_claim_token,
-                    ),
+                mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+                reason=f"single_character_download:{name}",
+            ):
+                result, import_cancelled = await _await_thread_call_to_completion(
+                    import_cloudsave_character_unit,
+                    config_manager,
+                    name,
+                    overwrite=overwrite,
+                    backup_before_overwrite=backup_before_overwrite,
+                    retain_recent_locks=True,
+                    use_cloud_apply_fence=False,
                 )
-            )
-            if reload_error_response is None:
-                release_needs_resume = False
+                reload_error_response, completion_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _complete_cloudsave_character_download(
+                            config_manager,
+                            name,
+                            result,
+                            release_claim_token,
+                        ),
+                    )
+                )
+                if reload_error_response is None:
+                    release_needs_resume = False
     except MaintenanceModeError as exc:
         return _maintenance_mode_error_response(exc, character_name=name)
     except CloudsaveOperationError as exc:

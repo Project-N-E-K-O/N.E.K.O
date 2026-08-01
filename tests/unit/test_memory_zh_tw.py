@@ -922,6 +922,37 @@ async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_new_dialog_locale_fence_retry_backs_off(monkeypatch):
+    from unittest.mock import AsyncMock, call
+
+    from app.memory_server import routes
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    generation = routes._new_dialog_locale_generations.get("FencedNeko", 0) + 1
+    routes._new_dialog_locale_generations["FencedNeko"] = generation
+    writer = AsyncMock(
+        side_effect=[
+            MaintenanceModeError("maintenance_readonly"),
+            MaintenanceModeError("maintenance_readonly"),
+            None,
+        ]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(routes, "_write_new_dialog_locale", writer)
+    monkeypatch.setattr(routes.asyncio, "sleep", sleep)
+
+    await routes._retry_new_dialog_locale(
+        "FencedNeko",
+        "zh-TW",
+        generation,
+        locale_admission_order=42,
+    )
+
+    assert writer.await_count == 3
+    assert sleep.await_args_list == [call(0.25), call(0.5)]
+
+
+@pytest.mark.asyncio
 async def test_new_dialog_locale_retry_retries_invalidated_write(monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -1286,6 +1317,7 @@ def test_scoped_prompt_locale_forget_erases_row_and_rejects_late_record(
     target = MemorySubject.participant("qq", "1001")
     other = MemorySubject.participant("qq", "1002")
     locale_path = tmp_path / "scoped_prompt_locales.json"
+    cutoff_path = tmp_path / "scoped_prompt_locale_forget_cutoffs.json"
     monkeypatch.setattr(
         locale_state,
         "_subject_locale_path",
@@ -1296,6 +1328,13 @@ def test_scoped_prompt_locale_forget_erases_row_and_rejects_late_record(
         "_assert_prompt_locale_writable",
         lambda _target: None,
     )
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_forget_cutoff_path",
+        lambda: str(cutoff_path),
+    )
+    locale_state._subject_locale_forget_cutoffs.clear()
+    locale_state._subject_locale_forget_cutoffs_loaded = False
     locale_state.invalidate_prompt_locale_caches()
 
     stale_order = locale_state.reserve_subject_prompt_locale_order(name, target)
@@ -1306,16 +1345,26 @@ def test_scoped_prompt_locale_forget_erases_row_and_rejects_late_record(
     locale_state.record_subject_prompt_locale(
         name, other, "zh-CN", order=other_order,
     )
+    pre_forget_snapshot = locale_path.read_text(encoding="utf-8")
 
     assert locale_state.forget_subject_prompt_locale(name, target) == 1
     rows = json.loads(locale_path.read_text(encoding="utf-8"))["subjects"]
     assert locale_state._subject_locale_key(target) not in rows
+
+    # A cloud restore may put the pre-forget sidecar back.  The local-only
+    # durable cutoff must survive a process restart and keep that row hidden.
+    locale_path.write_text(pre_forget_snapshot, encoding="utf-8")
+    locale_state._subject_locale_cache.clear()
+    locale_state._subject_locale_forget_cutoffs.clear()
+    locale_state._subject_locale_forget_cutoffs_loaded = False
+    assert locale_state.get_subject_prompt_locale(name, target) is None
+    assert locale_state.get_subject_prompt_locale(name, other) == "zh-CN"
     assert locale_state._subject_locale_key(other) in rows
     assert locale_state.record_subject_prompt_locale(
         name, target, "zh-TW", order=stale_order,
     ) is None
     rows = json.loads(locale_path.read_text(encoding="utf-8"))["subjects"]
-    assert locale_state._subject_locale_key(target) not in rows
+    assert locale_state._subject_locale_key(target) in rows
 
     cutoff_key = (name, locale_state._subject_locale_key(target))
     forget_cutoff = locale_state._subject_locale_forget_cutoffs[cutoff_key]
@@ -1545,16 +1594,56 @@ def test_prompt_locale_public_writers_reject_unpersisted_results(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scoped_facts_records_locale_before_persisting_facts(monkeypatch):
+    from app.memory_server import locale_state, routes, runtime
+
+    events = []
+
+    class FactStore:
+        async def apersist_scoped_facts(self, *_args, **_kwargs):
+            events.append("facts")
+            return []
+
+    monkeypatch.setattr(runtime, "fact_store", FactStore())
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_subject_prompt_locale_order",
+        lambda _name, _subject: 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "record_subject_prompt_locale",
+        lambda *_args, **_kwargs: events.append("locale"),
+    )
+
+    await routes.append_scoped_facts(
+        "Neko",
+        routes.ScopedFactsWriteRequest(
+            subject={
+                "subject_kind": "group_chat",
+                "subject_id": "qq:7788",
+            },
+            facts=[{"text": "喜歡貓"}],
+            language="zh-TW",
+        ),
+    )
+
+    assert events == ["locale", "facts"]
+
+
+@pytest.mark.asyncio
 async def test_scoped_history_persists_subject_locale(monkeypatch):
     import json
 
     from app.memory_server import locale_state, routes, runtime
 
+    recorded = []
+
     class FactStore:
         async def extract_facts(self, *_args, **_kwargs):
+            assert recorded
             return []
 
-    recorded = []
     monkeypatch.setattr(runtime, "fact_store", FactStore())
     monkeypatch.setattr(
         locale_state,
@@ -1586,7 +1675,7 @@ async def test_scoped_history_persists_subject_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scoped_history_batch_persists_each_completed_subject_locale(
+async def test_scoped_history_batch_persists_each_admitted_subject_locale(
     monkeypatch,
 ):
     import json
@@ -1595,6 +1684,7 @@ async def test_scoped_history_batch_persists_each_completed_subject_locale(
 
     class FactStore:
         async def extract_facts_batch(self, _segments, _name):
+            assert len(recorded) == 2
             return [
                 {"status": "ok", "created": []},
                 {"status": "failed", "created": []},
@@ -1664,6 +1754,7 @@ async def test_scoped_history_batch_persists_each_completed_subject_locale(
     )]
     assert recorded == [
         ("Neko", "group_participant:qq:7788:1001", "zh-TW", 41),
+        ("Neko", "group_participant:qq:7788:1002", "zh-TW", 42),
     ]
 
 
