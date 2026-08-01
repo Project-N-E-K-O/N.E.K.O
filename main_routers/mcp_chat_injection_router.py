@@ -23,6 +23,7 @@ runtime when the plugin process is running.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -34,9 +35,26 @@ from main_routers.system_router import _validate_local_mutation_request
 router = APIRouter()
 
 _MCP_ADAPTER_PLUGIN_ID = "mcp_adapter"
-_MCP_ADAPTER_CONFIG_URL = (
-    f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugin/{_MCP_ADAPTER_PLUGIN_ID}/config"
-)
+
+
+def _resolve_user_plugin_port() -> int:
+    """返回实际绑定的 user_plugin_server 端口。
+
+    ``plugin/user_plugin_server.py`` 启动时会把最终选定的端口写入
+    ``NEKO_USER_PLUGIN_SERVER_PORT``（默认端口被占用时会换端口）。
+    优先读该环境变量，缺失时回退到配置默认值。
+    """
+    raw = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return int(USER_PLUGIN_SERVER_PORT)
+
+
+def _plugin_config_url() -> str:
+    return f"http://127.0.0.1:{_resolve_user_plugin_port()}/plugin/{_MCP_ADAPTER_PLUGIN_ID}/config"
 
 
 def _plugin_http_client() -> httpx.AsyncClient:
@@ -68,7 +86,7 @@ def _extract_inject_mcp(config: Any) -> bool:
 
 async def _read_inject_mcp_state() -> dict[str, Any]:
     async with _plugin_http_client() as client:
-        response = await client.get(_MCP_ADAPTER_CONFIG_URL)
+        response = await client.get(_plugin_config_url())
     if response.status_code != 200:
         return {"enabled": False, "available": False}
     try:
@@ -98,11 +116,13 @@ async def set_mcp_chat_injection_enabled(request: Request, payload: dict[str, An
     )
     if validation_error is not None:
         return validation_error
-    enabled = _coerce_enabled_flag(payload.get("enabled"))
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        return {"success": False, "error": "enabled must be a boolean"}
     try:
         async with _plugin_http_client() as client:
             response = await client.post(
-                f"{_MCP_ADAPTER_CONFIG_URL}/hot-update",
+                f"{_plugin_config_url()}/hot-update",
                 json={
                     "config": {"mcp_adapter": {"inject_mcp": enabled}},
                     "mode": "permanent",

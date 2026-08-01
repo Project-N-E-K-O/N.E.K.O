@@ -33,9 +33,11 @@ def test_floating_window_slider_sits_below_agent_master_before_separator():
 
     master_position = popup_block.index("id: 'agent-master'")
     floating_window_position = popup_block.index("id: 'agent-taskhud'")
+    mcp_inject_position = popup_block.index("id: 'agent-mcp-inject'")
     keyboard_position = popup_block.index("id: 'agent-keyboard'")
 
-    assert master_position < floating_window_position < keyboard_position
+    assert master_position < floating_window_position < mcp_inject_position < keyboard_position
+    assert "settings.toggles.injectMcpInChat" in popup_block
     assert popup_block.count("controlStyle: 'slider'") == 8
     assert "separatorAfter: true" in popup_block
     assert "const toggleItem = this._createToggleItem(toggle, popup);" in popup_block

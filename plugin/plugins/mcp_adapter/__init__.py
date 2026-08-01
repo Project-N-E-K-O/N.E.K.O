@@ -10,11 +10,12 @@ MCP (Model Context Protocol) Router - 连接 MCP servers 并将其 tools 暴露�
 4. 提供统一的工具调用接口
 """
 import asyncio
+import copy
+import hashlib
 import json
 import os
 import re
 import subprocess
-import copy
 from urllib.parse import urljoin
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
@@ -1318,8 +1319,14 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         return self.unregister_dynamic_entry(tool_id)
     
     def _llm_tool_name_for(self, tool_id: str) -> str:
-        """将 MCP tool_id 规范化为 chat LLM tool 名（[A-Za-z0-9_.-]{1,64}）。"""
-        return re.sub(r"[^A-Za-z0-9_.\-]", "_", tool_id)[:64]
+        """将 MCP tool_id 规范化为 chat LLM tool 名（[A-Za-z0-9_.-]{1,64}）。
+
+        追加原始 tool_id 的稳定哈希，避免不同 tool_id 在替换非法字符或
+        截断后折叠为同一名称（否则后注册的工具会被跳过、注销时误删共享名）。
+        """
+        base = re.sub(r"[^A-Za-z0-9_.\-]", "_", tool_id) or "mcp_tool"
+        suffix = hashlib.sha256(tool_id.encode("utf-8")).hexdigest()[:12]
+        return f"{base[:51]}_{suffix}"
 
     def _build_mcp_tool_handler(
         self,

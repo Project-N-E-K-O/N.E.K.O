@@ -102,27 +102,33 @@
         return null;
     }
 
+    let writeQueue = Promise.resolve();
+
     async function setEnabled(enabled, options) {
         const next = enabled === true;
         const silent = !!(options && options.silent === true);
-        try {
-            const data = await postJson(API_ENABLED, { enabled: next });
-            if (!data || data.success !== true) throw new Error('invalid response');
-            applyBackendState(data.state);
-            if (!silent) {
-                showNotice(next
-                    ? t('settings.mcpChatInjection.enabledNotice', 'MCP chat injection enabled.')
-                    : t('settings.mcpChatInjection.disabledNotice', 'MCP chat injection disabled.'));
+        const operation = writeQueue.then(async function () {
+            try {
+                const data = await postJson(API_ENABLED, { enabled: next });
+                if (!data || data.success !== true) throw new Error('invalid response');
+                applyBackendState(data.state);
+                if (!silent) {
+                    showNotice(next
+                        ? t('settings.mcpChatInjection.enabledNotice', 'MCP chat injection enabled.')
+                        : t('settings.mcpChatInjection.disabledNotice', 'MCP chat injection disabled.'));
+                }
+                return true;
+            } catch (error) {
+                console.warn('[McpChatInjection] toggle failed:', error);
+                if (!silent) {
+                    showNotice(t('settings.mcpChatInjection.toggleFailed', 'Failed to switch MCP chat injection. Please try again later.'));
+                }
+                await refreshState();
+                return false;
             }
-            return true;
-        } catch (error) {
-            console.warn('[McpChatInjection] toggle failed:', error);
-            if (!silent) {
-                showNotice(t('settings.mcpChatInjection.toggleFailed', 'Failed to switch MCP chat injection. Please try again later.'));
-            }
-            await refreshState();
-            return false;
-        }
+        });
+        writeQueue = operation.catch(function () {});
+        return operation;
     }
 
     window.nekoMcpChatInjection = {
