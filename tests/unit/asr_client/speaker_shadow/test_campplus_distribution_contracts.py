@@ -4,6 +4,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[4]
 MODEL_DIRECTORY = "main_logic/asr_client/speaker_shadow/models"
@@ -20,11 +22,12 @@ def test_hatch_artifacts_exclude_downloaded_campplus_weights() -> None:
 
 
 def test_unit_ci_installs_pinned_frontend_parity_oracle() -> None:
-    workflow = (ROOT / ".github/workflows/unit-tests.yml").read_text(
-        encoding="utf-8"
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/unit-tests.yml").read_text(encoding="utf-8")
     )
+    runs = [step.get("run") for step in workflow["jobs"]["unit-pytest"]["steps"]]
 
-    assert "uv pip install kaldi-native-fbank==1.22.3" in workflow
+    assert "uv pip install kaldi-native-fbank==1.22.3" in runs
 
 
 def test_pyinstaller_bundles_campplus_and_requires_onnxruntime() -> None:
