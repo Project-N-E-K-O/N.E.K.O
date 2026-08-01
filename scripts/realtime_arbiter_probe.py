@@ -206,9 +206,15 @@ class _TappedSocket:
         # wait for the lane, which inflates every percentage in the report —
         # exactly the kind of error that argues for loosening a timeout that
         # was never actually exceeded.
+        # AFTER the await, not before. The bound starts when the send
+        # completes, so stamping first re-admits exactly what this tap was
+        # added to exclude: queueing and I/O inside the send itself. The
+        # comment above said "completes" while the code said "begins" — the
+        # same contradiction this PR corrects one directory over.
+        result = await self._inner.send(message, *args, **kwargs)
         if self._on_send is not None:
             self._on_send(message)
-        return await self._inner.send(message, *args, **kwargs)
+        return result
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
