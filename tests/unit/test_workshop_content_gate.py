@@ -59,10 +59,12 @@ def _registry_must_be_empty_afterwards():
     of one dedicated case that only ever proves the happy path.
     """
     yield
-    assert content_gate._EXCLUSIVE == {}, f"独占占用泄漏：{content_gate._EXCLUSIVE}"
-    assert content_gate._PARTIAL_WRITERS == {}, (
-        f"共享占用泄漏：{content_gate._PARTIAL_WRITERS}"
-    )
+    leaked_exclusive = dict(content_gate._EXCLUSIVE)
+    leaked_partial = dict(content_gate._PARTIAL_WRITERS)
+    content_gate._EXCLUSIVE.clear()
+    content_gate._PARTIAL_WRITERS.clear()
+    assert leaked_exclusive == {}, f"独占占用泄漏：{leaked_exclusive}"
+    assert leaked_partial == {}, f"共享占用泄漏：{leaked_partial}"
 
 
 def _raise_inside(claim):
@@ -856,6 +858,15 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
         arg.arg for arg in (func.args.vararg, func.args.kwarg) if arg is not None
     )
     qualified_aliases = set(getattr(func, '_claim_module_aliases', set())) - parameters
+    bare_aliases = {
+        name: canonical
+        for name, canonical in getattr(
+            func,
+            '_claim_bare_aliases',
+            {name: name for name in _CLAIM_CALLS},
+        ).items()
+        if name not in parameters
+    }
     def merge(left, right):
         return {
             name: value
@@ -979,7 +990,7 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
     return after(
         func.body,
         {
-            **{name: name for name in _CLAIM_CALLS if name not in parameters},
+            **bare_aliases,
             **{
                 f'{alias}.{name}': name
                 for alias in qualified_aliases
@@ -2004,9 +2015,24 @@ def _module_level_claiming_workers(trees):
             for alias, source_module in module_aliases[module].items()
             if source_module.rsplit('.', 1)[-1] == 'content_gate'
         }
+        module_scope = ast.FunctionDef(
+            name='<module>',
+            args=ast.arguments(
+                posonlyargs=[], args=[], vararg=None, kwonlyargs=[],
+                kw_defaults=[], kwarg=None, defaults=[]
+            ),
+            body=tree.body,
+            decorator_list=[],
+        )
+        claim_bare_aliases = {
+            name: canonical
+            for name, canonical in _claim_aliases(module_scope).items()
+            if '.' not in name
+        }
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 node._claim_module_aliases = claim_module_aliases
+                node._claim_bare_aliases = claim_bare_aliases
 
     class_bases = {}
     for class_scope, bases in class_base_nodes.items():
@@ -2231,6 +2257,17 @@ def _class_protocol_claim(
                 if method in methods:
                     return {(scope, method)}
             return set()
+        if isinstance(current, (ast.For, ast.AsyncFor)) and _contains_node(
+            current.iter, node
+        ):
+            protocol = (
+                ('__aiter__', '__anext__')
+                if isinstance(current, ast.AsyncFor)
+                else ('__iter__', '__next__')
+            )
+            return {
+                (scope, method) for method in protocol if method in methods
+            }
         if isinstance(current, (ast.Call, ast.Lambda, ast.GeneratorExp)):
             return set()
     return set()
@@ -3711,6 +3748,52 @@ def test_nested_router_imports_preserve_claim_ownership():
     ), 'class control flow 下定义的 claim-owning method 必须进入 inventory'
 
 
+def test_module_claim_factories_must_keep_their_verified_binding():
+    tree = ast.parse(
+        'from contextlib import nullcontext as claim_content_folder\n'
+        'def unsafe(content_folder):\n'
+        '    with claim_content_folder(content_folder):\n'
+        '        shutil.rmtree(content_folder)\n'
+    )
+    _module_level_claiming_workers([('shadowed_claim', tree)])
+    unsafe = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
+
+    assert _unclaimed_folder_operations(unsafe, 'shadowed_claim'), (
+        'module import 覆盖 bare claim factory 后不能再把同名调用当作真实 claim'
+    )
+
+
+def test_iterator_protocol_claims_are_counted_as_event_loop_work():
+    tree = ast.parse(
+        'class IterOwner:\n'
+        '    def __iter__(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        '        return self\n'
+        '    def __next__(self):\n'
+        '        raise StopIteration\n'
+        'async def handler():\n'
+        '    for item in IterOwner():\n'
+        '        pass\n'
+    )
+    claiming, generators, aliases, import_facts = _module_level_claiming_workers([
+        ('synthetic_iterator', tree)
+    ])
+    handler = next(
+        node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+    )
+
+    assert _scope_claiming_names_called_on_loop(
+        handler,
+        'synthetic_iterator',
+        None,
+        claiming,
+        generators,
+        aliases,
+        import_facts,
+    ), 'for 必须解析 claim-owning __iter__ / __next__ protocol calls'
+
+
 def test_workshop_router_discovery_is_recursive(tmp_path):
     (tmp_path / 'top.py').write_text('VALUE = 1\n', encoding='utf-8')
     workers = tmp_path / 'workers'
@@ -3797,6 +3880,7 @@ _MUST_BE_CLAIMED = {
 _PACKAGE_WIDE_OPERATIONS = {
     '_publish_workshop_item',
     '_cleanup_workshop_voice_reference',
+    'atomic_write_bytes',
 }
 
 # Common pathlib mutation methods are too generic to scan by tail name alone.
@@ -3830,6 +3914,9 @@ _OPEN_WRITE_OPERATION = '<open-write>'
 
 _PACKAGE_OPERATION_CLAIMS = {
     '_publish_workshop_item': {'claim_content_folder'},
+    'atomic_write_bytes': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
     '_cleanup_workshop_voice_reference': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
@@ -3878,11 +3965,13 @@ _FOLDER_OPERATION_ARGS = {
 _PACKAGE_OPERATION_FOLDER_ARGS = {
     '_publish_workshop_item': 3,
     '_cleanup_workshop_voice_reference': 0,
+    'atomic_write_bytes': 0,
 }
 
 _PACKAGE_OPERATION_FOLDER_KEYWORDS = {
     '_publish_workshop_item': 'content_folder',
     '_cleanup_workshop_voice_reference': 'content_folder',
+    'atomic_write_bytes': 'path',
     'rmtree': 'path',
     'copy': 'dst',
     'copy2': 'dst',
@@ -3937,6 +4026,7 @@ _DEFERRAL_CALLS = {
 _ALLOWED_UNCLAIMED = {
     ('publish', 'prepare_workshop_upload'),
     ('publish', '_publish_workshop_item'),
+    ('preview_cards', '_write_preview_image'),
     ('voice_manifest', '_cleanup_workshop_voice_reference'),
 }
 
@@ -4150,8 +4240,11 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                         and isinstance(child.ctx, ast.Store)
                     }
                     for name in bound_names:
-                        if origins:
-                            state[name] = origins
+                        named_origins = set(origins)
+                        if _looks_like_content_folder(name):
+                            named_origins.add(name)
+                        if named_origins:
+                            state[name] = named_origins
                         else:
                             state.pop(name, None)
             elif isinstance(statement, (ast.If, ast.While)):
@@ -4371,7 +4464,10 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
             and isinstance(target.value, ast.Name)
             and target.value.id in _known_os_module_names(func, node.lineno)
         )
-        is_builtin_open = isinstance(target, ast.Name) and target.id == 'open'
+        is_builtin_open = (
+            isinstance(target, ast.Name)
+            and target.id in _known_builtin_open_names(func, node.lineno)
+        )
         is_path_open = (
             isinstance(target, ast.Attribute)
             and target.attr == 'open'
@@ -4430,6 +4526,162 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
     return found
 
 
+def _known_builtin_open_names(func, before_line: int) -> set[str]:
+    """Names proven to refer to the builtin ``open`` on every path."""
+    parameters = {
+        arg.arg
+        for arg in (
+            list(func.args.posonlyargs)
+            + list(func.args.args)
+            + list(func.args.kwonlyargs)
+        )
+    }
+    parameters.update(
+        arg.arg for arg in (func.args.vararg, func.args.kwarg) if arg is not None
+    )
+
+    def merge(*states):
+        return set.intersection(*(set(state) for state in states))
+
+    def after(statements, names):
+        names = set(names)
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                value = statement.value
+                is_open = isinstance(value, ast.Name) and value.id in names
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        if is_open:
+                            names.add(target.id)
+                        else:
+                            names.discard(target.id)
+            elif isinstance(
+                statement, (ast.Import, ast.ImportFrom, ast.FunctionDef,
+                            ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                bound = (
+                    [alias.asname or alias.name.split('.')[0] for alias in statement.names]
+                    if isinstance(statement, (ast.Import, ast.ImportFrom))
+                    else [statement.name]
+                )
+                names.difference_update(bound)
+            elif isinstance(statement, ast.If):
+                names = merge(
+                    after(statement.body, names), after(statement.orelse, names)
+                )
+            elif isinstance(statement, ast.Match):
+                paths = [after(case.body, names) for case in statement.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(names)
+                names = merge(*paths)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                names = merge(names, after(statement.body, names))
+                names = after(statement.orelse, names)
+            elif isinstance(statement, ast.With):
+                names = after(statement.body, names)
+            elif isinstance(statement, ast.Try):
+                prefix_states = [names]
+                body_names = names
+                for nested in statement.body:
+                    body_names = after([nested], body_names)
+                    prefix_states.append(body_names)
+                paths = [after(statement.orelse, body_names)]
+                paths.extend(
+                    after(handler.body, prefix)
+                    for handler in statement.handlers
+                    for prefix in prefix_states
+                )
+                names = after(statement.finalbody, merge(*paths))
+        return names
+
+    return after(func.body, {'open'} - parameters)
+
+
+def _known_bound_mutation_receivers(func, before_line: int):
+    """Possible receivers retained by aliases of bound pathlib mutators."""
+    def merge(*states):
+        return {
+            name: set().union(*(state.get(name, set()) for state in states))
+            for name in set().union(*(set(state) for state in states))
+        }
+
+    def after(statements, state):
+        state = {name: set(receivers) for name, receivers in state.items()}
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                value = statement.value
+                receivers = (
+                    {value.value}
+                    if isinstance(value, ast.Attribute)
+                    and value.attr in _CONTENT_PATH_MUTATION_METHODS
+                    else set(state.get(_storage_key(value) or '', set()))
+                )
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    key = _storage_key(target)
+                    if key is None:
+                        continue
+                    if receivers:
+                        state[key] = set(receivers)
+                    else:
+                        state.pop(key, None)
+            elif isinstance(statement, ast.If):
+                state = merge(
+                    after(statement.body, state), after(statement.orelse, state)
+                )
+            elif isinstance(statement, ast.Match):
+                paths = [after(case.body, state) for case in statement.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                state = merge(*paths)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                state = merge(state, after(statement.body, state))
+                state = after(statement.orelse, state)
+            elif isinstance(statement, ast.With):
+                state = after(statement.body, state)
+            elif isinstance(statement, ast.Try):
+                prefix_states = [state]
+                body_state = state
+                for nested in statement.body:
+                    body_state = after([nested], body_state)
+                    prefix_states.append(body_state)
+                paths = [after(statement.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in statement.handlers
+                    for prefix_state in prefix_states
+                )
+                state = after(statement.finalbody, merge(*paths))
+        return state
+
+    return after(func.body, {})
+
+
 def _inventory_for_function(mapping, short: str, name: str):
     exact = mapping.get((short, name))
     if exact is not None:
@@ -4471,6 +4723,14 @@ def _operation_nodes(
             else set(canonical_values)
         )
         for canonical in canonicals:
+            if canonical in _CONTENT_PATH_MUTATION_METHODS:
+                receivers = _known_bound_mutation_receivers(
+                    func, node.lineno
+                ).get(_storage_key(reference) or '', set())
+                if receivers:
+                    node._bound_mutation_receivers = receivers
+                    found.append((node, canonical))
+                    continue
             if canonical in _OS_CONTENT_PATH_MUTATION_ARGS and not (
                 qualified == f'os.{canonical}'
                 or qualified in aliases_at_node
@@ -4553,6 +4813,9 @@ def _operation_folder_expressions(
 ) -> list:
     parent = parents.get(id(operation))
     reference = operation.value if isinstance(operation, ast.NamedExpr) else operation
+    bound_receivers = getattr(operation, '_bound_mutation_receivers', set())
+    if name in _CONTENT_PATH_MUTATION_METHODS and bound_receivers:
+        return list(bound_receivers)
     if (
         name == _OPEN_WRITE_OPERATION
         and isinstance(parent, ast.Call)
@@ -5543,6 +5806,14 @@ def test_the_claim_guard_resolves_operation_aliases():
     assert _unclaimed_folder_operations(attribute_alias, 'publish'), (
         'attribute storage 上的 protected operation alias 必须被发现'
     )
+    bound_mutation = ast.parse(
+        'def write(content_folder):\n'
+        "    writer = Path(content_folder, 'preview.png').write_bytes\n"
+        '    writer(data)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(bound_mutation, 'publish'), (
+        'bound pathlib mutator alias 必须保留 receiver 的 content-folder origin'
+    )
 
 
 def test_the_claim_guard_discovers_content_path_mutations():
@@ -5677,6 +5948,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "    mode = 'wb'\n"
         "    open(os.path.join(content_folder, 'preview.png'), mode)\n"
         '\n'
+        'def aliased_builtin_open(content_folder):\n'
+        '    writer = open\n'
+        "    writer(os.path.join(content_folder, 'preview.png'), 'wb')\n"
+        '\n'
         'def stored_os_open_flags(content_folder):\n'
         '    flags = os.O_TRUNC | os.O_WRONLY\n'
         '    os.open(content_folder, flags)\n'
@@ -5684,6 +5959,13 @@ def test_the_claim_guard_discovers_content_path_mutations():
         'def aliased_os_open(content_folder):\n'
         '    import os as filesystem\n'
         '    filesystem.open(content_folder, filesystem.O_WRONLY)\n'
+        '\n'
+        'def atomic_byte_write(content_folder):\n'
+        "    atomic_write_bytes(Path(content_folder, 'preview.png'), data)\n"
+        '\n'
+        'def explicit_content_local(path):\n'
+        '    content_folder = path\n'
+        '    shutil.rmtree(content_folder)\n'
         '\n'
         'def read_only_opens(content_folder):\n'
         "    open(os.path.join(content_folder, 'a'), 'r')\n"
@@ -5830,11 +6112,20 @@ def test_the_claim_guard_discovers_content_path_mutations():
         functions['stored_open_mode'], 'new_router'
     ), '局部变量保存的 write mode 也必须识别为 content-folder writer'
     assert _unclaimed_folder_operations(
+        functions['aliased_builtin_open'], 'new_router'
+    ), 'builtin open 的 callable alias 也必须识别为 content-folder writer'
+    assert _unclaimed_folder_operations(
         functions['stored_os_open_flags'], 'new_router'
     ), '局部变量保存的 os.open write flags 也必须识别为 writer'
     assert _unclaimed_folder_operations(
         functions['aliased_os_open'], 'new_router'
     ), 'import os as ... 的 alias 也必须识别 os.open writer'
+    assert _unclaimed_folder_operations(
+        functions['atomic_byte_write'], 'new_router'
+    ), 'atomic_write_bytes 必须进入 package-wide mutation vocabulary'
+    assert _unclaimed_folder_operations(
+        functions['explicit_content_local'], 'new_router'
+    ), '显式 content_folder local 即使源参数泛化也必须保留语义 origin'
     assert _unclaimed_folder_operations(
         functions['read_only_opens'], 'new_router'
     ) == [], 'read-only open 不应被当成 content-folder writer'
@@ -5876,7 +6167,7 @@ def test_the_claim_guard_discovers_content_path_mutations():
 
 def test_the_claim_guard_resolves_claim_context_aliases():
     fully_guarded = ast.parse(
-        'def _write_claimed_preview_image():\n'
+        'def _write_claimed_preview_image(folder):\n'
         '    claim = (\n'
         "        claim_partial_writer(folder, purpose='preview')\n"
         "        if flag else claim_partial_writer(folder, purpose='fallback')\n"
@@ -5885,7 +6176,7 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '        atomic_write_bytes(path, data)\n'
     ).body[0]
     conditionally_guarded = ast.parse(
-        'def _write_claimed_preview_image():\n'
+        'def _write_claimed_preview_image(folder):\n'
         '    claim = (\n'
         "        claim_partial_writer(folder, purpose='preview')\n"
         '        if flag else nullcontext()\n'
