@@ -1016,11 +1016,15 @@ class FactDedupResolver:
             )
             cand_speaker = cand.get('speaker_id')
             exist_speaker = existing.get('speaker_id')
+            cand_speaker_id = stable_speaker_id(cand_speaker)
+            exist_speaker_id = stable_speaker_id(exist_speaker)
             cand_trust = cand.get('speaker_trust')
             exist_trust = existing.get('speaker_trust')
             preference = None
             if (
-                cand_speaker and exist_speaker and cand_speaker != exist_speaker
+                cand_speaker_id is not None
+                and exist_speaker_id is not None
+                and cand_speaker_id != exist_speaker_id
                 and isinstance(cand_trust, (int, float))
                 and not isinstance(cand_trust, bool)
                 and isinstance(exist_trust, (int, float))

@@ -214,6 +214,36 @@ async def test_distinct_owner_observations_emit_distinct_trust_events():
 
 
 @pytest.mark.asyncio
+async def test_owner_signal_deduplicates_spelling_variants_for_one_fact():
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    store = object.__new__(FactStore)
+    facts = [{
+        "id": "smart", "text": "Alice is smart", "speaker_id": "qq:1001",
+        **target.as_entry_fields(),
+    }]
+
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko",
+        [{"role": "user", "content": text} for text in (
+            "Alice is not smart",
+            "Alice is not smart!",
+            "Alice is not smart.",
+        )],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=facts,
+    )
+
+    assert len(events) == 1
+    assert events[0]["kind"] == "correction"
+    assert events[0]["source_fact_id"] == "smart"
+
+
+@pytest.mark.asyncio
 async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
     from memory.facts import FactStore
 

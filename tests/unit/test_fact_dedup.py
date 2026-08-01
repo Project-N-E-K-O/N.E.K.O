@@ -1093,6 +1093,29 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_speaker", ["QQ:1001", "legacy-user"])
+async def test_invalid_or_same_canonical_speaker_cannot_drive_trust_arbitration(
+    tmp_path, candidate_speaker,
+):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id=candidate_speaker, speaker_trust=0.3)
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
+
+
+@pytest.mark.asyncio
 async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
     fs, _resolver = _install_resolver(str(tmp_path))
     await _seed_facts(fs, "Neko", [_fact("active", "survivor")])

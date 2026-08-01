@@ -1132,7 +1132,6 @@ class FactStore:
                     if raw_source_fact_id is not None
                     else None
                 )
-                normalized_observation = ' '.join(text.split()).casefold()
                 fallback_fact_id = hashlib.sha256(
                     ' '.join(str(prior.get('text') or '').split()).casefold().encode(
                         'utf-8'
@@ -1144,14 +1143,11 @@ class FactStore:
                     candidate_subject.scope,
                     source_fact_id or fallback_fact_id,
                 ))
-                observation_key = hashlib.sha256(
-                    f"{source_id}|{matched_fact_identity}|"
-                    f"{normalized_observation}".encode(
-                        'utf-8'
-                    )
+                signal_key = hashlib.sha256(
+                    f"{source_id}|{matched_fact_identity}".encode('utf-8')
                 ).hexdigest()[:24]
                 event_id = trust_event_id(
-                    relation, observation_key, target_id,
+                    relation, signal_key, target_id,
                 )
                 if event_id in seen_event_ids:
                     continue
