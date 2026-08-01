@@ -1311,6 +1311,7 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
     ("ui_language", "text", "expected"),
     [
         ("es", "Me gusta el cafe", "es"),
+        ("es", "Hola, buenos dias, amigo", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
         ("es", "I prefer quiet afternoons at home.", "en"),
         ("pt", "I prefer quiet afternoons at home.", "en"),

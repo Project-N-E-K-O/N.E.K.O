@@ -1733,7 +1733,7 @@ def detect_prompt_language_with_ascii_fallback(
         folded = str(text or '').casefold()
         if ui_short == 'es':
             strong = re.search(
-                r'\b(?:gusta|quiero|tengo|estoy|gracias|nombre)\b',
+                r'\b(?:hola|gusta|quiero|tengo|estoy|gracias|nombre)\b',
                 folded,
             )
             weak = set(re.findall(
