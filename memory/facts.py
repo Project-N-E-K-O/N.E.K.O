@@ -2631,6 +2631,10 @@ class FactStore:
         disclosure 不冒用参与者 provenance。来自调用方（scoped_history
         请求段），绝不读 extracted
         元素里的同名键——LLM 输出无法伪造它。
+
+        ``reconciled_facts`` receives snapshots of existing rows whose
+        provenance this call reconciled, so callers can distinguish their own
+        write from a concurrent provenance change.
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -3560,6 +3564,7 @@ class FactStore:
         fail_closed: bool = False,
         speaker_label: str | None = None,
         speaker_provenance: dict | None = None,
+        reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -3590,6 +3595,9 @@ class FactStore:
         prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
         "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定
         是否给本参数。
+
+        ``reconciled_facts`` receives snapshots of existing rows whose
+        provenance this extraction reconciled.
         """  # noqa: DOCSTRING_CJK
         memory_subject = coerce_subject(subject)
         expected_subject_generation = (
@@ -3629,6 +3637,7 @@ class FactStore:
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
             expected_subject_generation=expected_subject_generation,
+            reconciled_facts=reconciled_facts,
         )
 
     # ── external import state (sidecar) ──────────────────────────────

@@ -1028,6 +1028,14 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
     # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
     # 让调用方保留缓冲下轮重试；真·空抽取仍然 200 正常 checkpoint。
+    signal_facts = None
+    if req.speaker_is_owner:
+        signal_facts = [
+            dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict)
+        ]
+    reconciled_facts = []
     try:
         created = await runtime.fact_store.extract_facts(
             input_history,
@@ -1036,6 +1044,7 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             fail_closed=True,
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
+            reconciled_facts=reconciled_facts,
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -1045,15 +1054,61 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     await _stamp_subject_display_name(lanlan_name, subject, display_name)
     trust_events = []
     if req.speaker_is_owner:
-        # Keep this as the endpoint's final yielding operation. A concurrent
-        # scoped forget during extraction or display-name persistence must be
-        # visible before an owner signal is returned to the durable writer.
+        # Evaluate against the authored-order view, before this owner's exact
+        # dedup could mix away the target provenance.  The final reload still
+        # revalidates concurrent forgets and provenance changes; only a change
+        # reported by this extraction is replayed back to the pre-write row.
+        def _key(fact: dict) -> tuple:
+            return (
+                str(fact.get("id")),
+                fact.get("subject_kind"),
+                fact.get("subject_id"),
+                fact.get("scope"),
+            )
+
+        def _provenance(fact: dict) -> dict:
+            return {
+                key: fact[key]
+                for key in (
+                    "speaker_id", "speaker_label", "speaker_trust",
+                    "speaker_provenance_mixed",
+                )
+                if key in fact
+            }
+
+        current_by_key = {
+            _key(fact): dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        reconciled_by_id = {
+            str(fact.get("id")): dict(fact)
+            for fact in reconciled_facts
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        active_signal_facts = []
+        for authored_fact in signal_facts or []:
+            if authored_fact.get("id") is None:
+                continue
+            current_fact = current_by_key.get(_key(authored_fact))
+            if current_fact is None:
+                continue
+            reconciled = reconciled_by_id.get(str(authored_fact.get("id")))
+            active_signal_facts.append(
+                authored_fact
+                if (
+                    reconciled is not None
+                    and _provenance(current_fact) == _provenance(reconciled)
+                )
+                else current_fact
+            )
         trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
             lanlan_name,
             input_history,
             subject=subject,
             speaker_provenance=speaker_provenance,
             speaker_is_owner=True,
+            facts_snapshot=active_signal_facts,
         )
     return {
         "status": "processed",

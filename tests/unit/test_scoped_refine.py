@@ -66,6 +66,32 @@ def test_trust_merge_margin_is_stable_at_decimal_boundary():
     assert sources == [high]
 
 
+@pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
+def test_trust_merge_rejects_non_finite_source(invalid_trust):
+    sources = [
+        {
+            "text": "小明喜欢猫",
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.9,
+        },
+        {
+            "text": "小明不喜欢猫",
+            "speaker_id": "qq:2002",
+            "speaker_trust": 0.6,
+        },
+        {
+            "text": "小明不喜欢猫",
+            "speaker_id": "qq:3003",
+            "speaker_trust": invalid_trust,
+        },
+    ]
+
+    text, retained = _trust_weighted_merge_text(sources, "model merge")
+
+    assert text == "model merge"
+    assert retained == sources
+
+
 def _stamped(entry: dict, vec: list[float]) -> dict:
     """Attach a REAL encoded embedding triple so the engine's cache
     validation passes without stubbing it away."""

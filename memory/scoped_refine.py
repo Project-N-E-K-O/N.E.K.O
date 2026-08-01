@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -119,6 +120,7 @@ def _trust_weighted_merge_text(
         if stable_speaker_id(source.get('speaker_id')) is not None
         and isinstance(source.get('speaker_trust'), (int, float))
         and not isinstance(source.get('speaker_trust'), bool)
+        and math.isfinite(float(source.get('speaker_trust')))
     ]
     # A deterministic winner may replace the model merge only when every
     # source being consumed participated in the comparison.  Otherwise an

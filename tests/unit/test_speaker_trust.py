@@ -591,6 +591,114 @@ async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
 
 
 @pytest.mark.asyncio
+async def test_scoped_route_owner_signal_uses_pre_write_provenance():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    prior = {
+        "id": "member-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.8,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    reconciled = dict(prior)
+    reconciled.pop("speaker_id")
+    reconciled.pop("speaker_trust")
+    reconciled["speaker_provenance_mixed"] = True
+
+    async def _extract_facts(*_args, reconciled_facts=None, **_kwargs):
+        reconciled_facts.append(reconciled)
+        return []
+
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
+        extract_facts=_extract_facts,
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    request = ScopedHistoryRequest(
+        input_history=json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        subject={
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        speaker_label="Owner(9999)",
+        speaker_trust=1.0,
+        speaker_id="qq:9999",
+        speaker_is_owner=True,
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    assert len(result["trust_events"]) == 1
+    assert result["trust_events"][0]["kind"] == "confirmation"
+    assert result["trust_events"][0]["speaker_id"] == "qq:1001"
+
+
+@pytest.mark.asyncio
+async def test_scoped_route_owner_signal_keeps_concurrent_provenance_change():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    prior = {
+        "id": "member-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    reconciled = dict(prior)
+    reconciled.pop("speaker_id")
+    reconciled["speaker_provenance_mixed"] = True
+    concurrent_current = {
+        **reconciled,
+        "speaker_label": "Concurrent update",
+    }
+
+    async def _extract_facts(*_args, reconciled_facts=None, **_kwargs):
+        reconciled_facts.append(reconciled)
+        return []
+
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [concurrent_current]]),
+        extract_facts=_extract_facts,
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    request = ScopedHistoryRequest(
+        input_history=json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        subject={
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        speaker_label="Owner(9999)",
+        speaker_trust=1.0,
+        speaker_id="qq:9999",
+        speaker_is_owner=True,
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    assert result["trust_events"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("member_first", [True, False])
 async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
     from app.memory_server import routes
