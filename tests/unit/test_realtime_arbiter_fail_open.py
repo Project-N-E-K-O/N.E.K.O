@@ -51,6 +51,7 @@ findings collapse into five invariants once they are read together.
 
 import asyncio
 import json
+from unittest import mock
 import logging
 
 import pytest
@@ -2233,11 +2234,20 @@ async def test_reconnecting_forgets_which_responses_were_already_billed():
     client = _free_client()
     client._usage_recorded_ids = ["resp-1", "resp-2"]
 
-    try:
-        await client.connect(instructions="", native_audio=False)
-    except Exception:
-        # There is no provider to reach; the reset happens before any of that.
-        pass
+    # Stubbed, because otherwise this really does resolve and dial
+    # lanlan.app:443 — proven with a getaddrinfo spy. The contract under test
+    # is that connect() clears the cache BEFORE it reaches the provider at all,
+    # so a transport that refuses immediately exercises it exactly and stops
+    # every CI run from opening a socket to a sponsored endpoint.
+    with mock.patch(
+        "main_logic.omni_realtime_client._transport.websockets.connect",
+        side_effect=OSError("no provider in a unit test"),
+    ):
+        try:
+            await client.connect(instructions="", native_audio=False)
+        except Exception:
+            # The stub refuses; the reset happens before any of that.
+            pass
 
     assert client._usage_recorded_ids == [], (
         "usage deduplication is scoped to one connection, like the tool-call "
