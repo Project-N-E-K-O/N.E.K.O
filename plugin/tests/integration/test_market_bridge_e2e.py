@@ -1800,6 +1800,99 @@ async def test_concurrent_oauth_status_cas_conflict_keeps_session_authenticated(
 
 
 @pytest.mark.asyncio
+async def test_status_revision_race_preserves_rotated_refresh_credentials(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_WEB_URL", "https://market.test")
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+    probed_tokens: list[str] = []
+    revoked_tokens: list[str] = []
+
+    async def probe_market_user(access_token: Any) -> Any:
+        token = str(access_token)
+        probed_tokens.append(token)
+        if token == "old-race-access" and len(probed_tokens) == 1:
+            return market_bridge_module._MarketUserProbe(state="token_rejected")
+        return market_bridge_module._MarketUserProbe(
+            state="ready",
+            user={"username": f"user-for-{token}", "auth_user_id": "test-subject"},
+        )
+
+    async def refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
+        refresh_started.set()
+        await release_refresh.wait()
+        return {
+            **token_data,
+            "access_token": "rotated-race-access",
+            "refresh_token": "rotated-race-refresh",
+            "expires_at": time.time() + 3600,
+            "refresh_generation": 1,
+        }
+
+    async def revoke_oauth_token(token_data: dict[str, Any]) -> None:
+        revoked_tokens.append(str(token_data.get("refresh_token") or ""))
+
+    monkeypatch.setattr(market_bridge_module, "_probe_market_user", probe_market_user)
+    monkeypatch.setattr(market_bridge_module, "_refresh_oauth_token", refresh_oauth_token)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_revoke_oauth_token_best_effort",
+        revoke_oauth_token,
+    )
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "old-race-access",
+                "refresh_token": "old-race-refresh",
+                "expires_at": time.time() + 3600,
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": "test-subject",
+                "subject_pending": False,
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+                "state_revision": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    refreshing = asyncio.create_task(
+        client.get("/market/oauth/status", headers=headers)
+    )
+    await asyncio.wait_for(refresh_started.wait(), timeout=5)
+
+    concurrent = await client.get("/market/oauth/status", headers=headers)
+    release_refresh.set()
+    recovered = await asyncio.wait_for(refreshing, timeout=5)
+
+    assert concurrent.status_code == 200
+    assert concurrent.json()["authenticated"] is True
+    assert concurrent.json()["user"]["username"] == "user-for-old-race-access"
+    assert recovered.status_code == 200
+    assert recovered.json()["authenticated"] is True
+    assert recovered.json()["user"]["username"] == "user-for-rotated-race-access"
+    assert revoked_tokens == []
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["access_token"] == "rotated-race-access"
+    assert saved["refresh_token"] == "rotated-race-refresh"
+    assert saved["refresh_generation"] == 1
+    assert saved["state_revision"] == 3
+
+
+@pytest.mark.asyncio
 async def test_oauth_status_keeps_unexpired_token_when_refresh_transiently_fails(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,

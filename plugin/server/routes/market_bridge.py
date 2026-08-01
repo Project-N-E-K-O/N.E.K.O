@@ -1797,6 +1797,27 @@ async def _ensure_valid_oauth_token(
             return None
 
         if not _write_oauth_token_if_matches(current, refreshed):
+            latest = _current_oauth_token_for_invalidated_snapshot(current)
+            if latest is not None:
+                merged = dict(latest)
+                for key in (
+                    "access_token",
+                    "refresh_token",
+                    "token_type",
+                    "scope",
+                    "expires_at",
+                    "auth_url",
+                    "issuer",
+                    "client_id",
+                    "refresh_generation",
+                    "updated_at",
+                    "refreshed_at",
+                ):
+                    if key in refreshed:
+                        merged[key] = refreshed[key]
+                merged.pop("market_user_verified_at", None)
+                if _write_oauth_token_if_matches(latest, merged):
+                    return merged
             await _revoke_oauth_token_best_effort(refreshed)
             return None
         return refreshed
