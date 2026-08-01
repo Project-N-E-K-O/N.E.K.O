@@ -274,7 +274,10 @@ export function useMarketAuth() {
     resetMarketReadinessRetryState()
   }
 
-  function finishMarketReadinessRetry(userInitiated = false): void {
+  function finishMarketReadinessRetry(
+    userInitiated = false,
+    preservePending = false
+  ): void {
     const authWasPending = marketAuth.value.auth_state === 'pending'
     const shouldNotify = (
       authWasPending
@@ -282,7 +285,7 @@ export function useMarketAuth() {
     )
     resetMarketReadinessRetryState()
     marketAuthBusy.value = false
-    if (authWasPending) {
+    if (authWasPending && !preservePending) {
       marketAuth.value = {
         authenticated: false,
         market_web_url: marketAuth.value.market_web_url,
@@ -297,7 +300,7 @@ export function useMarketAuth() {
     clearMarketReadinessRetryTimer()
     marketReadinessUserInitiated ||= userInitiated
     if (marketReadinessRetryAttempts >= MARKET_READINESS_MAX_RETRIES) {
-      finishMarketReadinessRetry()
+      finishMarketReadinessRetry(false, true)
       return
     }
     const attempt = marketReadinessRetryAttempts++
@@ -313,7 +316,7 @@ export function useMarketAuth() {
       })
       if (!applied) return
       if (marketAuth.value.auth_state === 'pending') {
-        marketAuthBusy.value = true
+        marketAuthBusy.value = marketReadinessRetryAttempts > 0
         return
       }
       marketAuthBusy.value = false

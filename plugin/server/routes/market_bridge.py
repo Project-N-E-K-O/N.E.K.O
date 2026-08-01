@@ -1093,6 +1093,24 @@ async def market_oauth_status(
         )
 
     market_probe = await _probe_market_user(token_data.get("access_token"))
+    if market_probe.state == "token_rejected" and token_data.get("refresh_token"):
+        rejected_access_token = token_data.get("access_token")
+        token_data = await _ensure_valid_oauth_token(
+            force_refresh=True,
+            rejected_access_token=(
+                rejected_access_token
+                if isinstance(rejected_access_token, str)
+                else None
+            ),
+        )
+        if not token_data:
+            _clear_account_summary_cache()
+            return MarketOAuthStatusResponse(
+                authenticated=False,
+                market_web_url=MARKET_WEB_URL,
+            )
+        token_snapshot = dict(token_data)
+        market_probe = await _probe_market_user(token_data.get("access_token"))
     token_data["market_state"] = market_probe.state
     if market_probe.user is not None:
         token_data["user"] = market_probe.user
@@ -1146,7 +1164,7 @@ async def market_oauth_account_summary(
 
     async with _ACCOUNT_SUMMARY_LOCK:
         if not _oauth_token_snapshot_matches(token_snapshot):
-            return _unauthenticated_account_summary()
+            return _account_summary_for_invalidated_snapshot(token_snapshot)
         cached = _fresh_account_summary(cache_key)
         if cached is not None:
             return MarketOAuthAccountSummaryResponse.model_validate(cached)
@@ -1183,7 +1201,7 @@ async def market_oauth_account_summary(
 
             cache_key = _account_summary_cache_key(token_data)
         if not _oauth_token_snapshot_matches(token_snapshot):
-            return _unauthenticated_account_summary()
+            return _account_summary_for_invalidated_snapshot(token_snapshot)
         summary = _build_account_summary(token_data, auth_user, market_user)
         _store_account_summary(cache_key, summary)
         return summary
@@ -1998,6 +2016,30 @@ def _unauthenticated_account_summary() -> MarketOAuthAccountSummaryResponse:
             # Community profile lookup requires a server-only Market token.
             "community": MarketOAuthAccountSource(status="unavailable"),
         },
+    )
+
+
+def _account_summary_for_invalidated_snapshot(
+    snapshot: dict[str, Any],
+) -> MarketOAuthAccountSummaryResponse:
+    current = _read_json_file(_OAUTH_TOKEN_FILE)
+    if (
+        not current
+        or not _oauth_token_provenance_matches(current)
+        or not _oauth_subject_is_verified(current)
+        or current.get("access_token") != snapshot.get("access_token")
+        or current.get("session_id") != snapshot.get("session_id")
+        or current.get("refresh_generation") != snapshot.get("refresh_generation")
+    ):
+        return _unauthenticated_account_summary()
+    return MarketOAuthAccountSummaryResponse(
+        authenticated=True,
+        sources={
+            "auth": MarketOAuthAccountSource(status="unavailable"),
+            "market": MarketOAuthAccountSource(status="unavailable"),
+            "community": MarketOAuthAccountSource(status="unavailable"),
+        },
+        expires_at=current.get("expires_at"),
     )
 
 

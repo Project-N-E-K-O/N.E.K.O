@@ -1650,6 +1650,76 @@ async def test_oauth_status_refreshes_stale_cached_market_user(
 
 
 @pytest.mark.asyncio
+async def test_oauth_status_refreshes_a_market_rejected_token_before_expiry(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_WEB_URL", "https://market.test")
+
+    probed_tokens: list[str] = []
+
+    async def probe_market_user(access_token: Any) -> Any:
+        probed_tokens.append(str(access_token))
+        if access_token == "market-rejected-token":
+            return market_bridge_module._MarketUserProbe(state="token_rejected")
+        return market_bridge_module._MarketUserProbe(
+            state="ready",
+            user={"username": "recovered-user", "auth_user_id": "test-subject"},
+        )
+
+    async def refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **token_data,
+            "access_token": "refreshed-market-token",
+            "expires_at": time.time() + 3600,
+            "refresh_generation": 1,
+        }
+
+    monkeypatch.setattr(market_bridge_module, "_probe_market_user", probe_market_user)
+    monkeypatch.setattr(market_bridge_module, "_refresh_oauth_token", refresh_oauth_token)
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "market-rejected-token",
+                "refresh_token": "valid-refresh-token",
+                "expires_at": time.time() + 3600,
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": "test-subject",
+                "subject_pending": False,
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    response = await client.get(
+        "/market/oauth/status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["authenticated"] is True
+    assert body["market_state"] == "ready"
+    assert body["user"]["username"] == "recovered-user"
+    assert probed_tokens == ["market-rejected-token", "refreshed-market-token"]
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["access_token"] == "refreshed-market-token"
+    assert saved["refresh_generation"] == 1
+
+
+@pytest.mark.asyncio
 async def test_oauth_status_keeps_unexpired_token_when_refresh_transiently_fails(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -2966,6 +3036,89 @@ async def test_oauth_logout_prevents_in_flight_summary_cache_restore(
     assert summary.json()["authenticated"] is False
     assert market_bridge_module._ACCOUNT_SUMMARY_CACHE is None
     assert not token_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_oauth_status_revision_does_not_make_in_flight_summary_log_out(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    summary_started = asyncio.Event()
+    release_summary = asyncio.Event()
+
+    async def fetch_auth_userinfo(access_token: Any) -> dict[str, Any]:
+        return {"sub": "summary-status-subject", "preferred_username": "status-user"}
+
+    async def fetch_current_market_user(
+        token_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary_started.set()
+        await release_summary.wait()
+        return {"auth_user_id": "summary-status-subject", "username": "status-user"}
+
+    async def probe_market_user(access_token: Any) -> Any:
+        return market_bridge_module._MarketUserProbe(
+            state="ready",
+            user={"auth_user_id": "summary-status-subject", "username": "status-user"},
+        )
+
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_fetch_auth_userinfo",
+        fetch_auth_userinfo,
+    )
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_fetch_current_market_user",
+        fetch_current_market_user,
+    )
+    monkeypatch.setattr(market_bridge_module, "_probe_market_user", probe_market_user)
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "summary-status-access-token",
+                "refresh_token": "summary-status-refresh-token",
+                "expires_at": time.time() + 3600,
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": "summary-status-subject",
+                "subject_pending": False,
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+                "state_revision": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    loading = asyncio.create_task(
+        client.get("/market/oauth/account-summary", headers=headers)
+    )
+    await asyncio.wait_for(summary_started.wait(), timeout=5)
+
+    status = await client.get("/market/oauth/status", headers=headers)
+    release_summary.set()
+    summary = await asyncio.wait_for(loading, timeout=5)
+
+    assert status.status_code == 200
+    assert status.json()["authenticated"] is True
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["authenticated"] is True
+    assert body["sources"]["auth"]["status"] == "unavailable"
+    assert body["sources"]["market"]["status"] == "unavailable"
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["state_revision"] == 1
 
 
 @pytest.mark.asyncio

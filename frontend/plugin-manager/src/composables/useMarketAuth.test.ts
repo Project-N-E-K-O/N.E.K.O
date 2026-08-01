@@ -135,6 +135,9 @@ describe('useMarketAuth', () => {
           retryable: true,
         })
       }
+      if (path === '/market/oauth/logout') {
+        return jsonResponse({ message: 'ok' })
+      }
       throw new Error(`Unexpected request: ${path}`)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -146,7 +149,12 @@ describe('useMarketAuth', () => {
     expect(statusCalls).toBe(7)
     expect(vi.getTimerCount()).toBe(0)
     expect(auth.marketAuthBusy.value).toBe(false)
-    expect(auth.marketAuth.value.auth_state).toBeUndefined()
+    expect(auth.marketAuth.value.auth_state).toBe('pending')
+
+    await auth.logoutMarketAccount()
+
+    expect(fetchMock).toHaveBeenCalledWith('/market/oauth/logout', expect.any(Object))
+    expect(auth.marketAuth.value.authenticated).toBe(false)
   })
 
   it('clears pending state when a retry cannot refresh the bridge token', async () => {
