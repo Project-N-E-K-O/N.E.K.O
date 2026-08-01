@@ -458,7 +458,10 @@ class CorrectionsMixin:
                 continue
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
-            from memory.speaker_trust import preferred_by_trust
+            from memory.speaker_trust import (
+                deterministic_relation,
+                preferred_by_trust,
+            )
             old_speaker_id = item.get('old_speaker_id')
             new_speaker_id = item.get('new_speaker_id')
             preference = None
@@ -471,6 +474,7 @@ class CorrectionsMixin:
                 and not isinstance(old_trust, bool)
                 and isinstance(new_trust, (int, float))
                 and not isinstance(new_trust, bool)
+                and deterministic_relation(old_text, new_text) == 'correction'
             ):
                 preference = preferred_by_trust(
                     old_trust, new_trust,
@@ -642,8 +646,14 @@ class CorrectionsMixin:
                 replacement = _stamped_new_entry(new_text)
                 from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                 if preference == 'new':
+                    prior_history = (
+                        list(old_entries[0].get('version_history') or [])
+                        if old_entries and isinstance(old_entries[0], dict)
+                        else []
+                    )
                     replacement['version_history'] = (
-                        list(replacement.get('version_history') or [])
+                        prior_history
+                        + list(replacement.get('version_history') or [])
                         + [
                             _history_snapshot(
                                 old_text, 'old', 'trust_superseded',

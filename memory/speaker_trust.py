@@ -37,7 +37,7 @@ _CJK_NEGATED_PREDICATES = (
     ("不住", "住"),
 )
 _WORD_NEGATION_MARKERS = frozenset({
-    "not", "never", "no", "hate", "dislike", "false", "wrong",
+    "not", "never", "no", "hate", "dislike",
 })
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
