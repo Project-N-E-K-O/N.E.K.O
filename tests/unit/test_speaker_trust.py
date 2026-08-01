@@ -550,6 +550,17 @@ def test_derived_provenance_rejects_partially_attributed_sources():
     ]) == {}
 
 
+def test_derived_provenance_rejects_mixed_source_with_residual_fields():
+    assert provenance_of_entries([
+        {"speaker_id": "qq:1001", "speaker_trust": 0.8},
+        {
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.8,
+            "speaker_provenance_mixed": True,
+        },
+    ]) == {}
+
+
 def test_derived_provenance_does_not_borrow_an_omitted_trust_value():
     assert provenance_of_entries([
         {"speaker_id": "qq:1001", "speaker_trust": 0.8},
@@ -1750,8 +1761,16 @@ def test_epistemic_modal_negations_never_emit_correction():
             f"Alice {modal} attend",
             f"Alice {modal} not attend",
         ) is None
+        assert deterministic_relation(
+            f"Alice {modal} have been smart",
+            f"Alice {modal} have not been smart",
+        ) is None
     assert deterministic_relation(
         "Alice will attend", "Alice will not attend",
+    ) == "correction"
+    assert deterministic_relation(
+        "Alice clicked the may button and will attend",
+        "Alice clicked the may button and will not attend",
     ) == "correction"
 
 

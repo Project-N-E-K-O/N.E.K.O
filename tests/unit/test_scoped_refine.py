@@ -92,6 +92,25 @@ def test_trust_merge_rejects_non_finite_source(invalid_trust):
     assert retained == sources
 
 
+def test_trust_merge_rejects_mixed_source_with_residual_fields():
+    high = {
+        "text": "小明喜欢猫",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.9,
+        "speaker_provenance_mixed": True,
+    }
+    low = {
+        "text": "小明不喜欢猫",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+    }
+
+    text, retained = _trust_weighted_merge_text([high, low], "model merge")
+
+    assert text == "model merge"
+    assert retained == [high, low]
+
+
 def _stamped(entry: dict, vec: list[float]) -> dict:
     """Attach a REAL encoded embedding triple so the engine's cache
     validation passes without stubbing it away."""

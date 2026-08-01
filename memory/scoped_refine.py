@@ -117,7 +117,8 @@ def _trust_weighted_merge_text(
 
     usable = [
         source for source in sources
-        if stable_speaker_id(source.get('speaker_id')) is not None
+        if source.get('speaker_provenance_mixed') is not True
+        and stable_speaker_id(source.get('speaker_id')) is not None
         and isinstance(source.get('speaker_trust'), (int, float))
         and not isinstance(source.get('speaker_trust'), bool)
         and math.isfinite(float(source.get('speaker_trust')))

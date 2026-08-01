@@ -1226,6 +1226,38 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mixed_side", ["candidate", "existing"])
+async def test_mixed_residual_provenance_cannot_drive_fact_trust_arbitration(
+    tmp_path, mixed_side,
+):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    {"candidate": candidate, "existing": existing}[mixed_side][
+        "speaker_provenance_mixed"
+    ] = True
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["e1"]
+    assert active[0]["speaker_provenance_mixed"] is True
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert [fact["id"] for fact in archived] == ["c1"]
+
+
+@pytest.mark.asyncio
 async def test_trust_does_not_override_complementary_replace(tmp_path):
     fs, resolver = _install_resolver(str(tmp_path))
     candidate = _fact(

@@ -201,9 +201,14 @@ def _has_epistemic_modal_negation(text: str) -> bool:
     """Reject uncertainty modals from deterministic polarity matching."""
     tokens = _word_tokens(text)
     if any(
-        index > 0
-        and tokens[index - 1] in _EPISTEMIC_MODALS
+        modal_index < index
+        and all(
+            token in _NEGATION_AUXILIARIES
+            for token in tokens[modal_index + 1:index]
+        )
         and _is_word_negation(tokens, index)
+        for modal_index, modal in enumerate(tokens)
+        if modal in _EPISTEMIC_MODALS
         for index in range(len(tokens))
     ):
         return True
@@ -359,6 +364,8 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
     """Conservatively fold same-source provenance into a derived entry."""
     rows = list(entries)
     if not rows or any(not isinstance(entry, dict) for entry in rows):
+        return {}
+    if any(entry.get("speaker_provenance_mixed") is True for entry in rows):
         return {}
     speaker_ids = [stable_speaker_id(entry.get("speaker_id")) for entry in rows]
     if any(speaker_id is None for speaker_id in speaker_ids):
