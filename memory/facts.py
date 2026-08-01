@@ -2970,13 +2970,6 @@ class FactStore:
             )
             for f in new_facts
         )
-        locale_text += "\n" + "\n".join(
-            truncate_to_tokens(
-                observation.get('text', '') or '',
-                EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
-            )
-            for observation, _ in budgeted_observations
-        )
         prompt_lang = detect_prompt_language_with_ascii_fallback(
             locale_text,
             ui_language=get_global_language_full(),

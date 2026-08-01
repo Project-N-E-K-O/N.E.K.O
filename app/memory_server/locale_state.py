@@ -45,6 +45,7 @@ _locale_cache_guard = threading.Lock()
 _locale_reload_guard = threading.RLock()
 _locale_cache_generation = 0
 _subject_locale_forget_cutoffs: dict[tuple[str, str], int] = {}
+_character_locale_admission_orders: dict[str, int] = {}
 
 
 class PromptLocalePersistenceError(RuntimeError):
@@ -319,18 +320,43 @@ def _persist_subject_locale_state_unlocked(
             logger.debug("[PromptLocale] stale staging cleanup failed: %s", exc)
 
 
-def reserve_character_prompt_locale_order(name: str) -> int:
-    """Reserve and durably persist the next per-character causal order."""
+def allocate_character_prompt_locale_order(name: str) -> int:
+    """Allocate a process-local causal order at request admission time."""
+    with _locale_reload_guard, _get_locale_lock(name):
+        language, order, reserved_order = _load_locale_state_unlocked(name)
+        high_water = max(
+            order or 0,
+            reserved_order or 0,
+            _character_locale_admission_orders.get(name, 0),
+        )
+        selected_order = max(time.time_ns(), high_water + 1)
+        _character_locale_admission_orders[name] = selected_order
+        return selected_order
+
+
+def reserve_character_prompt_locale_order(
+    name: str,
+    *,
+    order: int | None = None,
+) -> int:
+    """Durably reserve a per-character causal order."""
+    selected_order = (
+        order
+        if isinstance(order, int) and not isinstance(order, bool)
+        else allocate_character_prompt_locale_order(name)
+    )
     with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("prompt_locale.json")
-        language, order, reserved_order = _load_locale_state_unlocked(name)
-        high_water = max(order or 0, reserved_order or 0)
-        selected_order = max(time.time_ns(), high_water + 1)
+        language, current_order, reserved_order = _load_locale_state_unlocked(name)
+        _character_locale_admission_orders[name] = max(
+            _character_locale_admission_orders.get(name, 0),
+            selected_order,
+        )
         if not _persist_locale_state_unlocked(
             name,
             language,
-            order,
-            selected_order,
+            current_order,
+            max(reserved_order or selected_order, selected_order),
         ):
             raise PromptLocalePersistenceError(
                 "prompt locale order reservation was not persisted"

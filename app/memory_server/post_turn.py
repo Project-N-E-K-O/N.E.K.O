@@ -81,15 +81,21 @@ async def _spawn_outbox_post_turn_signals(
     """
     from .locale_state import (
         PromptLocalePersistenceError,
+        allocate_character_prompt_locale_order,
         reserve_character_prompt_locale_order,
     )
     from utils.cloudsave_runtime import MaintenanceModeError
     from utils.llm_client import messages_to_dict
 
+    locale_admission_order = await asyncio.to_thread(
+        allocate_character_prompt_locale_order,
+        lanlan_name,
+    )
     try:
         locale_order = await asyncio.to_thread(
             reserve_character_prompt_locale_order,
             lanlan_name,
+            order=locale_admission_order,
         )
     except (MaintenanceModeError, PromptLocalePersistenceError) as exc:
         # The conversation rows may already be durable when a cloud operation
@@ -111,6 +117,7 @@ async def _spawn_outbox_post_turn_signals(
         payload['locale_order'] = locale_order
     else:
         payload['locale_order_deferred'] = True
+        payload['locale_admission_order'] = locale_admission_order
     if language:
         # Persist the locale with the work item: after a memory_server restart,
         # replay must not re-resolve from a neutral process locale and switch
@@ -149,21 +156,33 @@ async def _spawn_outbox_post_turn_signals(
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
 
 
-async def _wait_for_character_prompt_locale_order(lanlan_name: str) -> int:
+async def _wait_for_character_prompt_locale_order(
+    lanlan_name: str,
+    *,
+    admission_order: int | None,
+) -> int:
     """Wait until the deferred locale reservation is durably committed."""
     from .locale_state import (
-        PromptLocalePersistenceError,
+        allocate_character_prompt_locale_order,
         reserve_character_prompt_locale_order,
     )
     from utils.cloudsave_runtime import MaintenanceModeError
 
+    if not isinstance(admission_order, int) or isinstance(admission_order, bool):
+        # Legacy outbox rows only carried ``locale_order_deferred``. Allocate
+        # their admission order once, then keep that exact order across retries.
+        admission_order = await asyncio.to_thread(
+            allocate_character_prompt_locale_order,
+            lanlan_name,
+        )
     while True:
         try:
             return await asyncio.to_thread(
                 reserve_character_prompt_locale_order,
                 lanlan_name,
+                order=admission_order,
             )
-        except (MaintenanceModeError, PromptLocalePersistenceError):
+        except MaintenanceModeError:
             await asyncio.sleep(0.25)
 
 
@@ -172,8 +191,12 @@ async def _run_post_turn_signals_after_locale_reservation(
     lanlan_name: str,
     *,
     language: str | None = None,
+    admission_order: int | None,
 ):
-    locale_order = await _wait_for_character_prompt_locale_order(lanlan_name)
+    locale_order = await _wait_for_character_prompt_locale_order(
+        lanlan_name,
+        admission_order=admission_order,
+    )
     return await _run_post_turn_signals(
         messages,
         lanlan_name,
@@ -189,7 +212,6 @@ async def _wait_for_signal_locale_persistence(
     locale_order: int | None,
 ) -> None:
     """Wait until the turn locale is durable before exposing its signal."""
-    from .locale_state import PromptLocalePersistenceError
     from utils.cloudsave_runtime import MaintenanceModeError
 
     while True:
@@ -201,7 +223,7 @@ async def _wait_for_signal_locale_persistence(
                 locale_order=locale_order,
             )
             return
-        except (MaintenanceModeError, PromptLocalePersistenceError):
+        except MaintenanceModeError:
             await asyncio.sleep(0.25)
 
 
@@ -258,18 +280,18 @@ async def _run_post_turn_signals(
     # memory；只有 user 印证过的才升级到神明降临层。
     # Persist the locale before exposing the new turn to the periodic loop, while
     # keeping the counter mutation itself on the event-loop thread.
-    try:
-        if user_msgs:
-            await _wait_for_signal_locale_persistence(
-                lanlan_name,
-                language=language,
-                locale_order=locale_order,
-            )
+    if user_msgs:
+        await _wait_for_signal_locale_persistence(
+            lanlan_name,
+            language=language,
+            locale_order=locale_order,
+        )
+        try:
             signal_extraction._signal_check_record_turn(lanlan_name)
-    except Exception as e:
-        # Best-effort counter bump; a failure here only delays the next
-        # signal-extraction cycle — not worth interrupting conversation flow.
-        logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
+        except Exception as e:
+            # Best-effort counter bump; a failure here only delays the next
+            # signal-extraction cycle — not worth interrupting conversation flow.
+            logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
 
     # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
     # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
@@ -433,6 +455,7 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
             messages,
             lanlan_name,
             language=language,
+            admission_order=payload.get('locale_admission_order'),
         )
         return
     await _run_post_turn_signals(

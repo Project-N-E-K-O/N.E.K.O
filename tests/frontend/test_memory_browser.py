@@ -3582,7 +3582,7 @@ def test_memory_browser_stale_save_response_does_not_overwrite_new_selection(
 
 
 @pytest.mark.frontend
-def test_memory_browser_stale_same_file_save_does_not_overwrite_latest_response(
+def test_memory_browser_serializes_concurrent_saves_for_same_file(
     mock_page: Page,
     running_server: str,
     seed_memory_file,
@@ -3628,7 +3628,7 @@ def test_memory_browser_stale_same_file_save_does_not_overwrite_latest_response(
                         ));
                     });
                 }
-                const suffix = requestNumber === 2 ? 'latest-response' : 'third-response';
+                const suffix = requestNumber === 2 ? 'second-response' : 'third-response';
                 return Promise.resolve(new Response(
                     JSON.stringify({
                         success: true,
@@ -3644,11 +3644,18 @@ def test_memory_browser_stale_same_file_save_does_not_overwrite_latest_response(
     )
 
     save_button = mock_page.locator("#save-memory-btn")
-    save_button.click()
+    mock_page.evaluate(
+        """
+        () => {
+            const save = document.getElementById('save-memory-btn').onclick;
+            save();
+            save();
+        }
+        """
+    )
     mock_page.wait_for_function("window.__memorySaveBodies.length === 1")
-    save_button.click()
-    mock_page.wait_for_function("window.__memorySaveBodies.length === 2")
-    expect(mock_page.locator("#save-status")).to_contain_text("保存成功")
+    mock_page.wait_for_timeout(50)
+    assert len(mock_page.evaluate("window.__memorySaveBodies")) == 1
 
     mock_page.evaluate(
         """
@@ -3661,13 +3668,14 @@ def test_memory_browser_stale_same_file_save_does_not_overwrite_latest_response(
         }
         """
     )
+    expect(mock_page.locator("#save-status")).to_contain_text("保存成功")
     save_button.click()
-    mock_page.wait_for_function("window.__memorySaveBodies.length === 3")
+    mock_page.wait_for_function("window.__memorySaveBodies.length === 2")
 
     bodies = mock_page.evaluate("window.__memorySaveBodies")
-    assert bodies[2]["fingerprint"] == "fp:latest-response"
-    assert bodies[2]["identity_token"] == "token:latest-response"
-    assert mock_page.evaluate("window.__memoryRefreshBroadcasts") == []
+    assert bodies[1]["fingerprint"] == "fp:stale-response"
+    assert bodies[1]["identity_token"] == "token:stale-response"
+    assert len(mock_page.evaluate("window.__memoryRefreshBroadcasts")) == 1
 
 
 @pytest.mark.frontend

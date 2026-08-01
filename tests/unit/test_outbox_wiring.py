@@ -24,6 +24,7 @@ def _isolate_prompt_locale_sidecar(monkeypatch, tmp_path):
     locale_path = tmp_path / "prompt_locale.json"
     monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
     locale_state._locale_cache.clear()
+    locale_state._character_locale_admission_orders.clear()
 
 
 def _install_fresh_memory_state(tmpdir: str):
@@ -131,7 +132,8 @@ async def test_spawn_outbox_survives_post_commit_locale_reservation_fence(tmp_pa
     async def _fake_handler(name: str, payload: dict):
         calls.append((name, payload))
 
-    def blocked_reservation(_name):
+    def blocked_reservation(_name, *, order=None):
+        assert isinstance(order, int)
         raise MaintenanceModeError(
             "maintenance_readonly",
             operation="save",
@@ -159,6 +161,7 @@ async def test_spawn_outbox_survives_post_commit_locale_reservation_fence(tmp_pa
     assert payload["language"] == "zh-TW"
     assert "locale_order" not in payload
     assert payload["locale_order_deferred"] is True
+    assert isinstance(payload["locale_admission_order"], int)
     assert await ob.apending_ops("小天") == []
 
 
@@ -195,6 +198,7 @@ async def test_spawn_outbox_defers_unpersisted_locale_reservation(tmp_path):
     assert payload["language"] == "zh-TW"
     assert "locale_order" not in payload
     assert payload["locale_order_deferred"] is True
+    assert isinstance(payload["locale_admission_order"], int)
     assert await ob.apending_ops("小天") == []
 
 
@@ -206,8 +210,9 @@ async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
 
     attempts = 0
 
-    def reserve(_name):
+    def reserve(_name, *, order=None):
         nonlocal attempts
+        assert order == 41
         attempts += 1
         if attempts == 1:
             raise MaintenanceModeError(
@@ -215,7 +220,7 @@ async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
                 operation="save",
                 target="prompt_locale.json",
             )
-        return 42
+        return order
 
     sleep = AsyncMock()
     monkeypatch.setattr(
@@ -227,11 +232,38 @@ async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
 
     locale_order = await memory_server.post_turn._wait_for_character_prompt_locale_order(
         "小天",
+        admission_order=41,
     )
 
-    assert locale_order == 42
+    assert locale_order == 41
     assert attempts == 2
     sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
+async def test_deferred_locale_reservation_propagates_permanent_failure(monkeypatch):
+    from app import memory_server
+    from app.memory_server.locale_state import PromptLocalePersistenceError
+
+    def reserve(_name, *, order=None):
+        assert order == 41
+        raise PromptLocalePersistenceError("disk write failed")
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        reserve,
+    )
+    monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
+
+    with pytest.raises(PromptLocalePersistenceError, match="disk write failed"):
+        await memory_server.post_turn._wait_for_character_prompt_locale_order(
+            "小天",
+            admission_order=41,
+        )
+
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -298,6 +330,73 @@ async def test_post_turn_locale_record_retries_fence_before_counter(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_post_turn_locale_record_propagates_permanent_failure(monkeypatch):
+    from app import memory_server
+    from app.memory_server.locale_state import PromptLocalePersistenceError
+
+    def persist(_name, *, language, locale_order):
+        assert language == "zh-TW"
+        assert locale_order == 42
+        raise PromptLocalePersistenceError("disk write failed")
+
+    record_turn = MagicMock()
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        memory_server.post_turn,
+        "_extract_user_messages",
+        lambda _messages: ["請記住我喜歡草莓"],
+    )
+    monkeypatch.setattr(memory_server.post_turn, "_extract_ai_response", lambda _messages: "")
+    monkeypatch.setattr(
+        memory_server.signal_extraction,
+        "_signal_check_persist_locale",
+        persist,
+    )
+    monkeypatch.setattr(
+        memory_server.signal_extraction,
+        "_signal_check_record_turn",
+        record_turn,
+    )
+    monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
+
+    with pytest.raises(PromptLocalePersistenceError, match="disk write failed"):
+        await memory_server._run_post_turn_signals(
+            [HumanMessage(content="請記住我喜歡草莓")],
+            "小天",
+            language="zh-TW",
+            locale_order=42,
+        )
+
+    sleep.assert_not_awaited()
+    record_turn.assert_not_called()
+
+
+def test_deferred_locale_admission_order_cannot_overwrite_newer_turn(tmp_path):
+    _install_fresh_memory_state(str(tmp_path))
+    from app.memory_server import locale_state
+
+    older_order = locale_state.allocate_character_prompt_locale_order("小天")
+    newer_order = locale_state.reserve_character_prompt_locale_order("小天")
+    assert older_order < newer_order
+
+    assert locale_state.record_character_prompt_locale(
+        "小天",
+        "zh-TW",
+        order=newer_order,
+    ) == "zh-TW"
+    assert locale_state.reserve_character_prompt_locale_order(
+        "小天",
+        order=older_order,
+    ) == older_order
+    assert locale_state.record_character_prompt_locale(
+        "小天",
+        "zh-CN",
+        order=older_order,
+    ) == "zh-TW"
+    assert locale_state.get_character_prompt_locale("小天") == "zh-TW"
+
+
+@pytest.mark.asyncio
 async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
     """A durable deferred marker must reserve an order before signal writes."""
     from app import memory_server
@@ -308,6 +407,7 @@ async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
         "messages": messages_to_dict([HumanMessage(content="請記住我喜歡草莓")]),
         "language": "zh-TW",
         "locale_order_deferred": True,
+        "locale_admission_order": 41,
     }
 
     with patch(
@@ -319,6 +419,7 @@ async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
     runner.assert_awaited_once()
     assert runner.await_args.args[1] == "小天"
     assert runner.await_args.kwargs["language"] == "zh-TW"
+    assert runner.await_args.kwargs["admission_order"] == 41
 
 
 @pytest.mark.asyncio

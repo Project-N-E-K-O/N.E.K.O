@@ -41,7 +41,7 @@ import re
 import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
 from utils.internal_http_client import get_internal_http_client
-from utils.language_utils import get_global_language_full, is_supported_language_code
+from utils.language_utils import is_supported_language_code
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
@@ -644,17 +644,17 @@ async def _post_memory_server(
     url = f"http://127.0.0.1:{MEMORY_SERVER_PORT}/{endpoint}/{encoded_name}"
 
     client = get_internal_http_client()
+    request_payload = {
+        "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
+    }
+    # Only a live frontend/session locale is durable provenance. Omitting this
+    # field lets the memory server choose a render-only fallback without
+    # overwriting a character's last explicit locale.
+    if is_supported_language_code(language):
+        request_payload["language"] = language
     response = await client.post(
         url,
-        json={
-            "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
-            # A live frontend session is the source of truth: its locale can
-            # differ from Steam/system after an in-app language switch.
-            "language": (
-                language if is_supported_language_code(language)
-                else get_global_language_full()
-            ),
-        },
+        json=request_payload,
         timeout=timeout_s,
     )
     raw_body = response.text

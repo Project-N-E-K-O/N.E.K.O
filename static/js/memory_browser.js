@@ -9,6 +9,7 @@
     let currentCatName = '';
     let memoryFileRequestId = 0;
     let memorySaveRequestId = 0;
+    let memorySaveInFlight = null;
     let memoryRowExitInProgress = false;
     let memoryRowExitTimer = 0;
     let memoryRowExitOperationId = 0;
@@ -3377,6 +3378,33 @@
         }
     }
     async function saveCurrentMemory() {
+        const requestedFile = currentMemoryFile;
+        const requestedSelectionId = memoryFileRequestId;
+        if (
+            memorySaveInFlight
+            && memorySaveInFlight.file === requestedFile
+            && memorySaveInFlight.selectionId === requestedSelectionId
+        ) {
+            return memorySaveInFlight.promise;
+        }
+
+        const promise = saveCurrentMemoryOnce();
+        const activeSave = {
+            file: requestedFile,
+            selectionId: requestedSelectionId,
+            promise
+        };
+        memorySaveInFlight = activeSave;
+        try {
+            return await promise;
+        } finally {
+            if (memorySaveInFlight === activeSave) {
+                memorySaveInFlight = null;
+            }
+        }
+    }
+
+    async function saveCurrentMemoryOnce() {
         if (!currentMemoryFile) {
             showSaveStatus(window.t ? window.t('memory.pleaseSelectFile') : '请先选择文件', false);
             return false;

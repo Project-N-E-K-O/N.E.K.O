@@ -1992,8 +1992,8 @@ async def test_post_turn_counter_stays_on_loop_and_locale_persistence_offloads(
 
 
 @pytest.mark.asyncio
-async def test_post_turn_locale_failure_does_not_expose_signal_counter(monkeypatch):
-    from app.memory_server import gates, post_turn, signal_extraction
+async def test_post_turn_locale_failure_propagates_without_exposing_counter(monkeypatch):
+    from app.memory_server import post_turn, signal_extraction
     from utils.llm_client import HumanMessage
 
     events = []
@@ -2002,21 +2002,13 @@ async def test_post_turn_locale_failure_does_not_expose_signal_counter(monkeypat
         events.append("locale_failed")
         raise OSError("disk unavailable")
 
-    class StopAfterLocale(Exception):
-        pass
-
-    async def stop_after_locale():
-        raise StopAfterLocale
-
     monkeypatch.setattr(post_turn.asyncio, "to_thread", fail_to_thread)
     monkeypatch.setattr(
         signal_extraction,
         "_signal_check_record_turn",
         lambda *_args, **_kwargs: events.append("counter"),
     )
-    monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", stop_after_locale)
-
-    with pytest.raises(StopAfterLocale):
+    with pytest.raises(OSError, match="disk unavailable"):
         await post_turn._run_post_turn_signals(
             [HumanMessage(content="我喜歡貓")],
             "Neko",
