@@ -239,9 +239,18 @@ def _load_locale_state_unlocked(
                 bool,
             ):
                 reserved_order = candidate_reserved
-        except (OSError, json.JSONDecodeError):
-            # A missing or partially-written sidecar is equivalent to no saved locale.
+        except FileNotFoundError:
+            # A character with no sidecar has no saved prompt locale yet.
             pass
+        except json.JSONDecodeError:
+            # Preserve the existing self-heal contract for malformed sidecars.
+            pass
+        except OSError as exc:
+            # A transient read failure must not be cached as an empty state:
+            # writers would otherwise discard the real durable causal order.
+            raise PromptLocalePersistenceError(
+                "prompt locale sidecar could not be loaded"
+            ) from exc
         if order is not None:
             reserved_order = max(reserved_order or order, order)
         loaded = (selected, order, reserved_order)
@@ -344,9 +353,17 @@ def _load_subject_locale_state_unlocked(
                     ):
                         continue
                     loaded[key] = (selected, order, reserved_order)
-        except (OSError, json.JSONDecodeError):
-            # Missing or partially-written scoped state starts as an empty map.
+        except FileNotFoundError:
+            # A character with no scoped sidecar starts with an empty map.
             pass
+        except json.JSONDecodeError:
+            # Preserve the existing self-heal contract for malformed sidecars.
+            pass
+        except OSError as exc:
+            # Do not publish or cache an empty map for transient I/O failures.
+            raise PromptLocalePersistenceError(
+                "scoped prompt locale sidecar could not be loaded"
+            ) from exc
         with _locale_cache_guard:
             if generation != _locale_cache_generation:
                 continue

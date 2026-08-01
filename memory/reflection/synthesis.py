@@ -153,10 +153,17 @@ class SynthesisMixin:
             )
             selected_locale = None
             if subject_locale_resolver is not None:
-                selected_locale = await subject_locale_resolver(
-                    lanlan_name,
-                    bucket['subject'],
-                )
+                try:
+                    selected_locale = await subject_locale_resolver(
+                        lanlan_name,
+                        bucket['subject'],
+                    )
+                except Exception as locale_error:  # noqa: BLE001
+                    logger.warning(
+                        f"[ReflectionSynth] {lanlan_name}/"
+                        f"{bucket['subject'].key}: scoped prompt locale "
+                        f"解析失败，使用角色 locale: {locale_error}"
+                    )
             from utils.language_utils import language_context
             with language_context(selected_locale):
                 created.extend(await self.synthesize_reflections(

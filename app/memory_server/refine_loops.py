@@ -316,10 +316,16 @@ async def _run_reflection_refine_with_subject_locales(character: str) -> None:
             break
         selected_locale = None
         if subject is not None:
-            selected_locale = await aget_subject_prompt_locale(
-                character,
-                subject,
-            )
+            try:
+                selected_locale = await aget_subject_prompt_locale(
+                    character,
+                    subject,
+                )
+            except Exception as locale_error:  # noqa: BLE001
+                logger.warning(
+                    f"[ReflectionRefine] {character}/{subject.key}: scoped "
+                    f"prompt locale 解析失败，使用角色 locale: {locale_error}"
+                )
         if selected_locale:
             with language_context(selected_locale):
                 attempts = await _run_reflection_refine_for_character(

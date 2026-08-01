@@ -1904,6 +1904,72 @@ def test_prompt_locale_writes_propagate_final_transaction_fence(
 
 
 @pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_transient_read_failure_is_retried(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    import builtins
+    import json
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "TransientReadNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    subject_key = locale_state._subject_locale_key(subject)
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    row = {"language": "zh-TW", "order": 7, "reserved_order": 7}
+    payload = {"subjects": {subject_key: row}} if scoped else row
+    locale_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path" if scoped else "_locale_path",
+        lambda _name: str(locale_path),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_forget_cutoffs_loaded",
+        True,
+    )
+    monkeypatch.setattr(locale_state, "_subject_locale_forget_cutoffs", {})
+    locale_state.invalidate_prompt_locale_caches()
+
+    original_open = builtins.open
+    fail_read = True
+
+    def transient_open(path, *args, **kwargs):
+        if fail_read and str(path) == str(locale_path):
+            raise PermissionError("temporary access failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", transient_open)
+
+    with pytest.raises(locale_state.PromptLocalePersistenceError):
+        if scoped:
+            locale_state.get_subject_prompt_locale(name, subject)
+        else:
+            locale_state.get_character_prompt_locale(name)
+
+    assert name not in (
+        locale_state._subject_locale_cache
+        if scoped
+        else locale_state._locale_cache
+    )
+
+    fail_read = False
+    selected = (
+        locale_state.get_subject_prompt_locale(name, subject)
+        if scoped
+        else locale_state.get_character_prompt_locale(name)
+    )
+
+    assert selected == "zh-TW"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
 def test_prompt_locale_write_failure_does_not_publish_cache(
     monkeypatch,
     tmp_path,
@@ -2230,6 +2296,50 @@ async def test_deferred_scoped_synthesis_restores_subject_locale(monkeypatch):
     assert result == [{"id": "reflection-1"}]
     assert observed == [
         ("Neko", "group_chat:qq:7788", "zh-TW"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_scoped_synthesis_falls_back_when_locale_lookup_fails(
+    monkeypatch,
+):
+    from memory.reflection import synthesis
+    from memory.scopes import MemorySubject
+    from utils.language_utils import get_global_language_full, language_context
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    fact = {
+        "id": "fact-1",
+        "text": "喜歡貓",
+        "importance": 9,
+        **subject.as_entry_fields(),
+    }
+    observed = []
+
+    class FactStore:
+        async def aload_facts(self, _name):
+            return [fact]
+
+    class Harness(synthesis.SynthesisMixin):
+        _fact_store = FactStore()
+
+        async def synthesize_reflections(self, name, *, subject):
+            observed.append((name, subject.key, get_global_language_full()))
+            return [{"id": "reflection-1"}]
+
+    async def fail_locale(_name, _subject):
+        raise OSError("locale sidecar unavailable")
+
+    monkeypatch.setattr(synthesis, "MIN_FACTS_FOR_REFLECTION", 1)
+    with language_context("zh-CN"):
+        result = await Harness().synthesize_scoped_reflections(
+            "Neko",
+            subject_locale_resolver=fail_locale,
+        )
+
+    assert result == [{"id": "reflection-1"}]
+    assert observed == [
+        ("Neko", "group_chat:qq:7788", "zh-CN"),
     ]
 
 
@@ -3212,6 +3322,63 @@ async def test_reflection_refine_partitions_subject_locales(
         ("Neko", None, "zh-CN"),
         ("Neko", subject, "zh-TW"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_compat_reflection_refine_falls_back_when_locale_lookup_fails(
+    monkeypatch,
+):
+    from app.memory_server import refine_loops, runtime
+    from memory.scopes import MemorySubject
+    from utils.language_utils import get_global_language_full, language_context
+
+    name = "CompatLocaleFallbackNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    reflections = [
+        {"id": "scoped", "entity": "master", **subject.as_entry_fields()},
+    ]
+    observed = []
+
+    class ReflectionEngine:
+        async def aload_reflections(self, _name, *, include_archived):
+            assert include_archived is False
+            return reflections
+
+    async def run_batch(character, *, subject=None, max_clusters=None):
+        observed.append(
+            (character, subject, max_clusters, get_global_language_full())
+        )
+        return 1
+
+    async def fail_locale(_name, _subject):
+        raise OSError("locale sidecar unavailable")
+
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(
+        refine_loops,
+        "_run_reflection_refine_for_character",
+        run_batch,
+    )
+    monkeypatch.setattr(
+        refine_loops,
+        "aget_subject_prompt_locale",
+        fail_locale,
+    )
+    refine_loops._reflection_refine_subject_cursor.pop(name, None)
+
+    with language_context("zh-CN"):
+        await refine_loops._run_reflection_refine_with_subject_locales(name)
+
+    assert observed == [(
+        name,
+        subject,
+        refine_loops.MEMORY_REFINE_CLUSTERS_PER_PASS,
+        "zh-CN",
+    )]
+    assert refine_loops._reflection_refine_subject_cursor[name] == (
+        subject.key,
+        subject.scope,
+    )
 
 
 @pytest.mark.asyncio
