@@ -142,6 +142,7 @@ async def test_scoped_route_returns_request_derived_events_when_no_fact_created(
         "source_speaker_id": "qq:9999",
     }
     store = SimpleNamespace(
+        aload_facts=AsyncMock(return_value=[]),
         aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
         extract_facts=AsyncMock(return_value=[]),
     )
@@ -163,6 +164,81 @@ async def test_scoped_route_returns_request_derived_events_when_no_fact_created(
     kwargs = store.aevaluate_speaker_trust_events.await_args.kwargs
     assert kwargs["speaker_is_owner"] is True
     assert kwargs["speaker_provenance"]["speaker_id"] == "qq:9999"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member_first", [True, False])
+async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    member = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:1001",
+        },
+        "speaker_label": "Alice(1001)",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.3,
+    }
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    created_fact = {
+        "id": "member-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group",
+    }
+    segments = [member, owner] if member_first else [owner, member]
+    results = (
+        [
+            {"status": "ok", "created": [created_fact], "dropped": 0},
+            {"status": "ok", "created": [], "dropped": 0},
+        ]
+        if member_first
+        else [
+            {"status": "ok", "created": [], "dropped": 0},
+            {"status": "ok", "created": [created_fact], "dropped": 0},
+        ]
+    )
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(return_value=[]),
+        extract_facts_batch=AsyncMock(return_value=results),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    with patch.object(routes.runtime, "fact_store", store):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=segments),
+        )
+    owner_index = 1 if member_first else 0
+    events = response["segments"][owner_index]["trust_events"]
+    if member_first:
+        assert len(events) == 1
+        assert events[0]["kind"] == "confirmation"
+        assert events[0]["speaker_id"] == "qq:1001"
+    else:
+        assert events == []
 
 
 def test_model_shaped_fields_never_replace_request_provenance():

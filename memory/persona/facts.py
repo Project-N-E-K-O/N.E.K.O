@@ -518,6 +518,7 @@ class FactsMixin:
         reflection_evidence: dict,
         source_reflection_id: str,
         merged_from_ids: list[str] | None = None,
+        source_provenance: dict | None = None,
     ) -> str:
         """Merge a reflection's content into an existing persona entry.
 
@@ -625,6 +626,13 @@ class FactsMixin:
                 )
                 return 'noop'
 
+            merged_provenance = None
+            if source_provenance is not None:
+                from memory.speaker_trust import provenance_of_entries
+                merged_provenance = provenance_of_entries([
+                    target_entry, source_provenance,
+                ])
+
             # Compute new audit list — dedup by id, preserve insertion order.
             # source_reflection_id MUST be in the final list because it is the
             # idempotency sentinel used at line ~911 (`if source_reflection_id
@@ -666,6 +674,11 @@ class FactsMixin:
                 'merged_from_ids': new_merged_from,
                 'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
             }
+            if merged_provenance is not None:
+                # Explicit nested snapshot distinguishes "legacy caller did
+                # not reconcile provenance" from "this merge deliberately
+                # cleared mixed/unknown provenance" during event replay.
+                entry_payload['speaker_provenance'] = merged_provenance
 
             evidence_payload = {
                 'entity_key': entity_key,
@@ -710,6 +723,12 @@ class FactsMixin:
                 target_entry['disp_last_signal_at'] = now_iso
                 target_entry['sub_zero_days'] = 0
                 target_entry['merged_from_ids'] = new_merged_from
+                if merged_provenance is not None:
+                    for key in (
+                        'speaker_id', 'speaker_trust', 'speaker_label',
+                    ):
+                        target_entry.pop(key, None)
+                    target_entry.update(merged_provenance)
                 # Token-count cache is derived from `text`; rewriting text
                 # must drop the cache so the next render recomputes. The
                 # fingerprint check would catch the drift anyway, but

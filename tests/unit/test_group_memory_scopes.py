@@ -11280,6 +11280,64 @@ async def test_member_flush_retries_only_the_failed_permission_segment():
 
 
 @pytest.mark.asyncio
+async def test_member_flush_splits_oversized_permission_runs_in_order():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": f"message-{index}",
+            "_speaker_permission_level": (
+                "admin" if index % 2 else "normal"
+            ),
+        }
+        for index in range(9)
+    ]
+    user_data = {
+        "group_member_memory_messages": {"1001": messages},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+    active = 0
+    max_active = 0
+
+    async def _post(_name, segments, **_kwargs):
+        nonlocal active, max_active
+        assert len(segments) <= 8
+        calls.append(segments)
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    assert [len(call) for call in calls] == [8, 1]
+    assert max_active == 1
+    assert [
+        segment["messages"][0]["content"]
+        for call in calls for segment in call
+    ] == [f"message-{index}" for index in range(9)]
+    assert user_data["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
 async def test_speaker_trust_derived_from_permission_level():
     """信赖度初值按权限等级派生（阶段一只落字段）：admin/trusted/normal/
     none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""  # noqa: DOCSTRING_CJK

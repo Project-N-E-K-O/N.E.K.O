@@ -1454,8 +1454,37 @@ class QQSessionMemoryService:
             self._finish_member_flush_generation(user_data)
             return []
         try:
+            chains: list[list[list[dict]]] = []
+            sender_chains: dict[str, list[list[dict]]] = {}
+            for batch in batches:
+                senders = {
+                    str(spec.get("sender_id") or "") for spec in batch
+                    if spec.get("sender_id")
+                }
+                if len(senders) == 1:
+                    sender_id = next(iter(senders))
+                    chain = sender_chains.get(sender_id)
+                    if chain is None:
+                        chain = []
+                        sender_chains[sender_id] = chain
+                        chains.append(chain)
+                    chain.append(batch)
+                else:
+                    chains.append([batch])
+
+            async def _flush_chain(chain: list[list[dict]]) -> list[str]:
+                failed: list[str] = []
+                for batch in chain:
+                    batch_failed = await _flush_one_batch(batch)
+                    failed.extend(batch_failed)
+                    if batch_failed:
+                        # Later chunks from the same speaker must not overtake
+                        # an earlier failed permission run.
+                        break
+                return failed
+
             failed_lists = await asyncio.gather(
-                *(_flush_one_batch(batch) for batch in batches)
+                *(_flush_chain(chain) for chain in chains)
             )
             return [sid for failed in failed_lists for sid in failed]
         finally:
@@ -1510,22 +1539,60 @@ class QQSessionMemoryService:
     def _pack_member_segment_groups(
         groups: list[list[dict]], *, isolate_segments: bool = False,
     ) -> list[list[dict]]:
-        """Pack per-speaker permission segments without splitting a speaker."""
+        """Pack ordered permission runs within the server's batch limits."""
         from config import (
             SCOPED_HISTORY_BATCH_MAX_MESSAGES,
             SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
         )
 
+        max_segments = 1 if isolate_segments else SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+        split_groups: list[tuple[list[dict], bool]] = []
+        for group in groups:
+            chunks: list[list[dict]] = []
+            chunk: list[dict] = []
+            chunk_messages = 0
+            for raw_spec in group:
+                spec_messages = list(raw_spec.get("messages") or [])
+                while spec_messages:
+                    room = SCOPED_HISTORY_BATCH_MAX_MESSAGES - chunk_messages
+                    if chunk and (len(chunk) >= max_segments or room <= 0):
+                        chunks.append(chunk)
+                        chunk = []
+                        chunk_messages = 0
+                        room = SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                    take = min(len(spec_messages), room)
+                    spec = dict(raw_spec)
+                    spec["messages"] = spec_messages[:take]
+                    chunk.append(spec)
+                    chunk_messages += take
+                    spec_messages = spec_messages[take:]
+                    if len(chunk) >= max_segments or (
+                        chunk_messages >= SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                    ):
+                        chunks.append(chunk)
+                        chunk = []
+                        chunk_messages = 0
+            if chunk:
+                chunks.append(chunk)
+            oversized = len(chunks) > 1
+            split_groups.extend((part, oversized) for part in chunks)
+
         batches: list[list[dict]] = []
         current: list[dict] = []
         current_messages = 0
-        for group in groups:
+        for group, split_from_sender in split_groups:
             if not group:
                 continue
             group_messages = sum(len(spec.get("messages") or []) for spec in group)
+            if isolate_segments or split_from_sender:
+                if current:
+                    batches.append(current)
+                    current = []
+                    current_messages = 0
+                batches.append(group)
+                continue
             if current and (
-                isolate_segments
-                or current_messages + group_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                current_messages + group_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES
                 or len(current) + len(group) > SCOPED_HISTORY_BATCH_MAX_SEGMENTS
             ):
                 batches.append(current)

@@ -274,6 +274,28 @@ def make_persona_entry_handler(persona_manager):
                 if k in payload and e.get(k) != payload[k]:
                     e[k] = payload[k]
                     changed = True
+            if 'speaker_provenance' in payload:
+                provenance = payload.get('speaker_provenance')
+                if not isinstance(provenance, dict):
+                    provenance = {}
+                before = {
+                    key: e.get(key) for key in (
+                        'speaker_id', 'speaker_trust', 'speaker_label',
+                    ) if key in e
+                }
+                for key in ('speaker_id', 'speaker_trust', 'speaker_label'):
+                    e.pop(key, None)
+                e.update({
+                    key: provenance[key]
+                    for key in ('speaker_id', 'speaker_trust', 'speaker_label')
+                    if key in provenance
+                })
+                after = {
+                    key: e.get(key) for key in (
+                        'speaker_id', 'speaker_trust', 'speaker_label',
+                    ) if key in e
+                }
+                changed = changed or before != after
             if changed:
                 persona_manager._personas[name] = persona
                 atomic_write_json(path, persona, indent=2, ensure_ascii=False)

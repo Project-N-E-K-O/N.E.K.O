@@ -1016,6 +1016,7 @@ class FactStore:
         subject: MemorySubject | dict,
         speaker_provenance: dict | None,
         speaker_is_owner: bool,
+        facts_snapshot: list[dict] | None = None,
     ) -> list[dict]:
         """Derive owner confirmation/correction signals from raw request text."""
         if not speaker_is_owner or not isinstance(speaker_provenance, dict):
@@ -1032,7 +1033,11 @@ class FactStore:
         texts = observation_texts(messages)
         if source_id is None or memory_subject is None or not texts:
             return []
-        facts = await self.aload_facts(name)
+        facts = (
+            facts_snapshot
+            if facts_snapshot is not None
+            else await self.aload_facts(name)
+        )
 
         def _in_signal_scope(entry: dict) -> bool:
             if memory_subject.kind != 'group_participant':

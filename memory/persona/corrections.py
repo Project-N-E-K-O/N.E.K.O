@@ -523,10 +523,16 @@ class CorrectionsMixin:
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
-                            mixed_speakers = not (
-                                old_speaker_id
-                                and new_speaker_id
-                                and old_speaker_id == new_speaker_id
+                            from memory.speaker_trust import provenance_of_entries
+                            new_source = {
+                                'speaker_id': new_speaker_id,
+                                'speaker_trust': item.get('new_speaker_trust'),
+                            }
+                            folded_provenance = provenance_of_entries([
+                                existing, new_source,
+                            ])
+                            mixed_speakers = not folded_provenance.get(
+                                'speaker_id'
                             )
                             merged_history = list(prior_history) + [history_entry]
                             if mixed_speakers and new_speaker_id:
@@ -535,14 +541,17 @@ class CorrectionsMixin:
                                 ))
                             existing['text'] = merged_text
                             existing['version_history'] = merged_history[-_VH_MAX:]
-                            if mixed_speakers:
-                                # The merged text no longer belongs to one
-                                # speaker. Keeping the old identity would let
-                                # another source borrow its trust later.
-                                for key in (
-                                    'speaker_id', 'speaker_trust', 'speaker_label',
-                                ):
-                                    existing.pop(key, None)
+                            # Replace provenance even for the same speaker:
+                            # the merged text must carry the conservative
+                            # minimum of both authored snapshots, never borrow
+                            # the older stronger score. Mixed/unknown sources
+                            # yield an empty fold and clear single-speaker
+                            # provenance entirely.
+                            for key in (
+                                'speaker_id', 'speaker_trust', 'speaker_label',
+                            ):
+                                existing.pop(key, None)
+                            existing.update(folded_provenance)
                             # Text changed → invalidate the derived
                             # caches so the next render recomputes
                             # against the new text instead of serving

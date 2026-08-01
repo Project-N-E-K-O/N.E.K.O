@@ -437,6 +437,100 @@ async def test_merge_into_path_updates_target_and_marks_merged(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_id", "source_trust", "expected_provenance"),
+    [
+        (
+            "qq:1001", 0.5,
+            {
+                "speaker_id": "qq:1001",
+                "speaker_trust": 0.5,
+                "speaker_label": "Alice(1001)",
+            },
+        ),
+        ("qq:2002", 0.5, {}),
+        (None, None, {}),
+    ],
+)
+async def test_merge_into_folds_and_replays_speaker_provenance(
+    tmp_path, source_id, source_trust, expected_provenance,
+):
+    from memory.evidence_handlers import make_persona_entry_handler
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    target = _persona_entry('p_prov', '早期说法', rein=1.0)
+    target.update({
+        'speaker_id': 'qq:1001',
+        'speaker_trust': 0.8,
+        'speaker_label': 'Alice(1001)',
+    })
+    await pm.asave_persona('Neko', {'master': {'facts': [target]}})
+    reflection = _reflection('ref_prov', '后续补充', rein=2.5)
+    if source_id is not None:
+        reflection['speaker_id'] = source_id
+    if source_trust is not None:
+        reflection['speaker_trust'] = source_trust
+    await re.asave_reflections('Neko', [reflection])
+    decision = {
+        'action': 'merge_into',
+        'target_id': 'persona.master.p_prov',
+        'merged_text': '合并后说法',
+    }
+    with patch.object(
+        re, '_allm_call_promotion_merge', AsyncMock(return_value=decision),
+    ):
+        assert await re._apromote_with_merge('Neko', reflection) == 'merge_into'
+
+    merged = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    actual = {
+        key: merged[key]
+        for key in ('speaker_id', 'speaker_trust', 'speaker_label')
+        if key in merged
+    }
+    if expected_provenance:
+        assert actual['speaker_id'] == expected_provenance['speaker_id']
+        assert actual['speaker_trust'] == pytest.approx(
+            expected_provenance['speaker_trust']
+        )
+    else:
+        assert actual == {}
+
+    events_path = os.path.join(str(tmp_path), 'Neko', 'events.ndjson')
+    with open(events_path, encoding='utf-8') as f:
+        entry_payload = [
+            json.loads(line)['payload']
+            for line in f if line.strip()
+            and json.loads(line)['type'] == 'persona.entry_updated'
+        ][-1]
+    assert entry_payload['speaker_provenance'] == expected_provenance
+
+    # Simulate a crash-replay target that has the merged text but still carries
+    # the pre-merge strong provenance. The event payload must reproduce the
+    # conservative fold/clear, not merely mutate the live view once.
+    replay_target = _persona_entry('p_prov', '合并后说法', rein=1.0)
+    replay_target.update({
+        'speaker_id': 'qq:1001',
+        'speaker_trust': 0.8,
+        'speaker_label': 'Alice(1001)',
+    })
+    await pm.asave_persona('Neko', {'master': {'facts': [replay_target]}})
+    assert make_persona_entry_handler(pm)('Neko', entry_payload)
+    replayed = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    replayed_provenance = {
+        key: replayed[key]
+        for key in ('speaker_id', 'speaker_trust', 'speaker_label')
+        if key in replayed
+    }
+    if expected_provenance:
+        assert replayed_provenance['speaker_id'] == expected_provenance['speaker_id']
+        assert replayed_provenance['speaker_trust'] == pytest.approx(
+            expected_provenance['speaker_trust']
+        )
+    else:
+        assert replayed_provenance == {}
+
+
+@pytest.mark.asyncio
 async def test_merge_into_refuses_cross_scope_target(tmp_path):
     """Two custom scopes share persona_section_key: a scope-A reflection
     must not see scope-B entries as merge candidates, and a hallucinated

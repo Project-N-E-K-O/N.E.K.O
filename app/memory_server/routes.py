@@ -1188,22 +1188,17 @@ async def _process_scoped_history_segments(
                 f"{SCOPED_HISTORY_BATCH_MAX_MESSAGES} messages in total"
             ),
         )
-    for segment in parsed:
-        segment["trust_events"] = []
-        if segment.get("speaker_is_owner"):
-            segment["trust_events"] = (
-                await runtime.fact_store.aevaluate_speaker_trust_events(
-                lanlan_name,
-                segment["messages"],
-                subject=segment["subject"],
-                speaker_provenance={
-                    "speaker_id": segment.get("speaker_id"),
-                    "speaker_trust": segment.get("speaker_trust"),
-                    "speaker_label": segment.get("speaker_label"),
-                },
-                speaker_is_owner=True,
-            )
-            )
+    signal_facts = None
+    if any(segment.get("speaker_is_owner") for segment in parsed):
+        # Freeze the pre-batch view. After extraction we replay successful
+        # created rows into this private list in request order, so an owner
+        # sees earlier member statements but never borrows knowledge from a
+        # later segment that happened to persist in the same LLM batch.
+        signal_facts = [
+            dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict)
+        ]
     # fail_closed 语义（对齐 legacy 单发路径的注释）：调用方在成功段上
     # pop 掉只存在于它内存里的 bucket。整批抽取失败以 502 暴露（全部保留
     # 重试）；单段 persist 失败在响应体里按段标 failed。
@@ -1225,6 +1220,32 @@ async def _process_scoped_history_segments(
             detail="scoped fact extraction returned mismatched segments",
         )
     for segment, result in zip(parsed, segment_results):
+        segment["trust_events"] = []
+        if (
+            signal_facts is not None
+            and segment.get("speaker_is_owner")
+            and result.get("status") == "ok"
+        ):
+            segment["trust_events"] = (
+                await runtime.fact_store.aevaluate_speaker_trust_events(
+                    lanlan_name,
+                    segment["messages"],
+                    subject=segment["subject"],
+                    speaker_provenance={
+                        "speaker_id": segment.get("speaker_id"),
+                        "speaker_trust": segment.get("speaker_trust"),
+                        "speaker_label": segment.get("speaker_label"),
+                    },
+                    speaker_is_owner=True,
+                    facts_snapshot=signal_facts,
+                )
+            )
+        if signal_facts is not None:
+            signal_facts.extend(
+                dict(fact)
+                for fact in (result.get("created") or [])
+                if isinstance(fact, dict)
+            )
         # 只给「模型对这一段给出了结论」的段刷新显示名：失败段整桶保留
         # 重试，下次照样带名字来，不必在失败路径上碰 persona。
         if result.get("status") == "ok":

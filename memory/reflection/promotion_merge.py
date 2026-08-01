@@ -768,6 +768,7 @@ class PromotionMergeMixin:
                     },
                     source_reflection_id=current3['id'],
                     merged_from_ids=[current3['id']],
+                    source_provenance=current3,
                 )
             if merge_outcome == 'not_found':
                 logger.warning(

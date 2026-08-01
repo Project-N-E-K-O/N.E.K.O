@@ -322,6 +322,36 @@ async def test_mixed_speaker_merge_clears_single_speaker_provenance(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_same_speaker_merge_folds_trust_to_conservative_minimum(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "早期较高信任说法",
+        speaker_id="qq:1001", speaker_trust=0.8,
+        speaker_label="Alice(1001)",
+    )
+    await pm._aqueue_correction(
+        "Neko", "早期较高信任说法", "后续较低信任补充", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.5,
+        },
+    )
+    fake_llm = _make_llm_mock([{
+        "index": 0, "action": "merge", "text": "同一人的合并说法",
+    }])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await pm.resolve_corrections("Neko") == 1
+    merged = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    assert merged["speaker_id"] == "qq:1001"
+    assert merged["speaker_trust"] == pytest.approx(0.5)
+    assert merged["speaker_label"] == "Alice(1001)"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_pending_correction_upgrades_to_stronger_source(tmp_path):
     pm = _install_pm(str(tmp_path))
     common_old = {"speaker_id": "qq:9000", "speaker_trust": 0.8}
