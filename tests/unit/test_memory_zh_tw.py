@@ -2823,7 +2823,11 @@ async def test_reflection_feedback_keeps_ascii_ui_language(
     ("ui_language", "text", "expected"),
     [
         ("es", "Me gusta el cafe", "es"),
+        ("es", "Mi nombre es Carlos", "es"),
+        ("es", "Vivo en Madrid", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
+        ("pt", "Meu nome e Carlos", "pt"),
+        ("pt", "Eu moro em Lisboa", "pt"),
         ("zh-TW", "I like coffee", "en"),
     ],
 )
@@ -2845,7 +2849,11 @@ def test_persona_correction_keeps_ascii_ui_language(
     ("ui_language", "text", "expected"),
     [
         ("es", "Me gusta el cafe", "es"),
+        ("es", "Mi nombre es Carlos", "es"),
+        ("es", "Vivo en Madrid", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
+        ("pt", "Meu nome e Carlos", "pt"),
+        ("pt", "Eu moro em Lisboa", "pt"),
         ("en", "I like coffee", "en"),
     ],
 )
@@ -2865,7 +2873,13 @@ def test_persona_fusion_keeps_ascii_ui_language(
     ("ui_language", "text", "expected"),
     [
         ("es", "Me gusta el cafe", "es"),
+        ("es", "Mi nombre es Carlos", "es"),
+        ("es", "Vivo en Madrid", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
+        ("pt", "Meu nome e Carlos", "pt"),
+        ("pt", "Eu moro em Lisboa", "pt"),
+        ("es", "The project is ready", "en"),
+        ("pt", "The project is ready", "en"),
         ("zh-TW", "I like coffee", "en"),
     ],
 )

@@ -1731,18 +1731,31 @@ def detect_prompt_language_with_ascii_fallback(
     ui_short = normalize_language_code(active_ui_language, format='short')
     if detected == 'en':
         folded = str(text or '').casefold()
-        if ui_short == 'es' and re.search(
-            r'\b(?:me\s+gusta|yo\s+(?:quiero|tengo|estoy|soy)|'
-            r'(?:quiero|tengo|estoy|gracias)\b)',
-            folded,
-        ):
-            return ui_short
-        if ui_short == 'pt' and re.search(
-            r'\b(?:eu\s+(?:gosto|quero|tenho|estou|sou)|'
-            r'(?:obrigado|obrigada|tenho|estou)\b)',
-            folded,
-        ):
-            return ui_short
+        if ui_short == 'es':
+            strong = re.search(
+                r'\b(?:gusta|quiero|tengo|estoy|gracias|nombre)\b',
+                folded,
+            )
+            weak = set(re.findall(
+                r'\b(?:yo|me|mi|vivo|soy|es|en|el|la|los|las|de|del|'
+                r'con|para|por|que)\b',
+                folded,
+            ))
+            if strong or len(weak) >= 2:
+                return ui_short
+        if ui_short == 'pt':
+            strong = re.search(
+                r'\b(?:gosto|quero|tenho|estou|obrigado|obrigada|meu|'
+                r'minha|moro|nome)\b',
+                folded,
+            )
+            weak = set(re.findall(
+                r'\b(?:eu|sou|e|em|um|uma|de|do|da|dos|das|com|para|'
+                r'por|que)\b',
+                folded,
+            ))
+            if strong or len(weak) >= 2:
+                return ui_short
     return detected
 
 
