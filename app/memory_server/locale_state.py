@@ -52,6 +52,10 @@ class PromptLocalePersistenceError(RuntimeError):
     """Raised when a prompt-locale sidecar update was not committed."""
 
 
+class PromptLocaleInvalidatedError(PromptLocalePersistenceError):
+    """Raised when cache invalidation races a staged sidecar write."""
+
+
 def invalidate_prompt_locale_caches() -> None:
     """Force the next locale lookup to reload both durable sidecars."""
     global _locale_cache_generation
@@ -199,11 +203,13 @@ def _persist_locale_state_unlocked(
         with _prompt_locale_write_transaction("prompt_locale.json"):
             with _locale_cache_guard:
                 if generation != _locale_cache_generation:
-                    return False
+                    raise PromptLocaleInvalidatedError(
+                        "prompt locale write was invalidated"
+                    )
                 os.replace(staging_path, path)
                 _locale_cache[name] = (language, order, reserved_order)
                 return True
-    except MaintenanceModeError:
+    except (MaintenanceModeError, PromptLocaleInvalidatedError):
         raise
     except Exception as exc:
         logger.warning(
@@ -297,11 +303,13 @@ def _persist_subject_locale_state_unlocked(
         with _prompt_locale_write_transaction("scoped_prompt_locales.json"):
             with _locale_cache_guard:
                 if generation != _locale_cache_generation:
-                    return False
+                    raise PromptLocaleInvalidatedError(
+                        "scoped prompt locale write was invalidated"
+                    )
                 os.replace(staging_path, path)
                 _subject_locale_cache[name] = snapshot
                 return True
-    except MaintenanceModeError:
+    except (MaintenanceModeError, PromptLocaleInvalidatedError):
         raise
     except Exception as exc:
         logger.warning(

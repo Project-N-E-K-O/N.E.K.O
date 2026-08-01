@@ -666,7 +666,6 @@ class QQSessionInstructionService:
             else:
                 memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(
                     her_name,
-                    language=locale,
                 )
             if not memory_context:
                 return ""

@@ -118,6 +118,16 @@ def _message_locale_text(message) -> str:
     return '\n'.join(parts)
 
 
+def _message_prompt_role(message) -> str:
+    if isinstance(message, dict):
+        role = message.get('type') or message.get('role')
+        if not role and isinstance(message.get('data'), dict):
+            role = message['data'].get('type') or message['data'].get('role')
+    else:
+        role = getattr(message, 'type', None) or getattr(message, 'role', None)
+    return str(role or '').strip().lower()
+
+
 def _review_prompt_locale_text(messages: list) -> str:
     """Return raw message content without speaker labels."""
     return '\n\n'.join(_message_locale_text(message) for message in messages)
@@ -886,13 +896,18 @@ class CompressedRecentHistoryManager:
         from utils.tokenize import truncate_head_tail_tokens
 
         half_cap = self._summary_message_half_cap()
+        user_messages = [
+            msg for msg in messages
+            if _message_prompt_role(msg) in {'human', 'user'}
+        ]
+        locale_messages = user_messages or messages
         return "\n".join(
             truncate_head_tail_tokens(
                 _message_locale_text(msg),
                 half_cap,
                 half_cap,
             )
-            for msg in messages
+            for msg in locale_messages
         )
 
     def _render_messages_to_text(self, messages, lanlan_name):
@@ -1078,7 +1093,6 @@ class CompressedRecentHistoryManager:
                 logger.warning(f"[RecentHistory] {lanlan_name} 分段压缩失败，跳过本轮压缩")
                 return None
             messages_text = reduced
-            locale_text = reduced
 
         lang = _detect_recent_prompt_language(locale_text)
         prompt = self._build_summary_prompt(

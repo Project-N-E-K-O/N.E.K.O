@@ -542,7 +542,6 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
     assert "旧私人记忆" in rendered
     bridge.fetch_bootstrap_memory.assert_awaited_once_with(
         "Neko",
-        language="",
     )
     bridge.fetch_scoped_bootstrap_memory.assert_not_awaited()
 

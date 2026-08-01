@@ -1120,10 +1120,7 @@ class BiliDMPlugin(NekoPluginBase):
     ) -> str:
         """构建 AI 会话系统提示词"""
         from config.prompts.prompts_sys import SESSION_INIT_PROMPT
-        from utils.language_utils import (
-            get_global_language,
-            get_global_language_full,
-        )
+        from utils.language_utils import get_global_language
 
         try:
             from utils.i18n_utils import normalize_language_code
@@ -1156,9 +1153,11 @@ class BiliDMPlugin(NekoPluginBase):
                 async with httpx.AsyncClient(
                     timeout=5.0, proxy=None, trust_env=False
                 ) as client:
+                    # Bilibili has no explicit per-user locale.  Let Memory
+                    # Server restore the durable character locale instead of
+                    # persisting the host process fallback.
                     response = await client.get(
                         f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
-                        params={"language": get_global_language_full()},
                     )
                     if response.is_success:
                         memory_context = response.text.strip()
@@ -1393,14 +1392,14 @@ class BiliDMPlugin(NekoPluginBase):
         """发送对话历史到 Memory Server"""
         import httpx
         from config import MEMORY_SERVER_PORT
-        from utils.language_utils import get_global_language_full
 
         async with httpx.AsyncClient() as client:
+            # No Bilibili session locale is user-declared, so persistence-
+            # bearing endpoints must not receive the process fallback.
             response = await client.post(
                 f"http://localhost:{MEMORY_SERVER_PORT}/{endpoint}/{her_name}",
                 json={
                     "input_history": json.dumps(messages, ensure_ascii=False),
-                    "language": get_global_language_full(),
                 },
                 timeout=timeout,
             )

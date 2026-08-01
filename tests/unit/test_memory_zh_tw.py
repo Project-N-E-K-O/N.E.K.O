@@ -144,7 +144,7 @@ def test_summary_prompt_uses_request_scoped_traditional_locale():
             locale_text=locale_text,
         )
 
-    assert locale_text == "好\n嗯"
+    assert locale_text == "好"
     assert rendered == "Alice | 好\nNeko | 嗯"
     assert "資訊豐富" in prompt
     assert "負面回饋" in prompt
@@ -214,6 +214,44 @@ async def test_compressed_memo_wrapper_follows_detected_prompt_locale():
     assert memo.content == (
         "Memo from prior conversations: The user enjoys quiet afternoons."
     )
+
+
+@pytest.mark.asyncio
+async def test_summary_locale_prefers_user_turn_over_long_assistant_reply():
+    from memory.recent import CompressedRecentHistoryManager
+    from utils.language_utils import language_context
+    from utils.llm_client import AIMessage, HumanMessage
+
+    manager = object.__new__(CompressedRecentHistoryManager)
+    manager.name_mapping = {"human": "Alice"}
+    prompts = []
+
+    async def invoke(prompt):
+        prompts.append(prompt)
+        return "使用者說好。"
+
+    async def read_anchor(_name):
+        return None
+
+    async def write_anchor(_name):
+        return None
+
+    manager._invoke_summary_llm = invoke
+    manager._aread_last_past_block_update_at = read_anchor
+    manager._awrite_last_past_block_update_at = write_anchor
+
+    with language_context("zh-TW"):
+        memo, summary = await manager.compress_history(
+            [
+                HumanMessage(content="好"),
+                AIMessage(content="A long English assistant response. " * 80),
+            ],
+            "Neko",
+        )
+
+    assert "資訊豐富" in prompts[0]
+    assert summary == "使用者說好。"
+    assert memo.content == "先前對話的備忘錄：使用者說好。"
 
 
 def test_traditional_stale_summary_hint_uses_traditional_delimiters():
@@ -737,6 +775,32 @@ async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_new_dialog_locale_retry_retries_invalidated_write(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import locale_state, routes
+
+    generation = routes._new_dialog_locale_generations.get("InvalidatedNeko", 0) + 1
+    routes._new_dialog_locale_generations["InvalidatedNeko"] = generation
+    writer = AsyncMock(
+        side_effect=[locale_state.PromptLocaleInvalidatedError("invalidated"), None]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(routes, "_write_new_dialog_locale", writer)
+    monkeypatch.setattr(routes.asyncio, "sleep", sleep)
+
+    await routes._retry_new_dialog_locale(
+        "InvalidatedNeko",
+        "zh-TW",
+        generation,
+        locale_admission_order=42,
+    )
+
+    assert writer.await_count == 2
+    sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
 async def test_new_dialog_locale_retry_stops_after_permanent_failure(monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -976,7 +1040,7 @@ def test_prompt_locale_inflight_write_cannot_replace_restored_sidecar(
         restore_during_staged_write,
     )
 
-    with pytest.raises(locale_state.PromptLocalePersistenceError):
+    with pytest.raises(locale_state.PromptLocaleInvalidatedError):
         if scoped:
             locale_state.reserve_subject_prompt_locale_order(name, subject)
         else:
@@ -1508,7 +1572,9 @@ async def test_deferred_scoped_synthesis_restores_subject_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
+async def test_qq_bootstrap_forwards_explicit_locale_but_writes_omit_fallback(
+    monkeypatch,
+):
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
     from utils import language_utils
 
@@ -1570,8 +1636,8 @@ async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
 
     assert calls[0][1]["params"] == {"language": "zh-TW"}
     assert calls[1][1]["json"]["language"] == "zh-TW"
-    assert calls[2][1]["json"]["language"] == "zh-TW"
-    assert calls[3][1]["json"]["language"] == "zh-TW"
+    assert "language" not in calls[2][1]["json"]
+    assert "language" not in calls[3][1]["json"]
 
 
 def test_memory_prompt_locale_detection_ignores_formatter_metadata():
@@ -2964,7 +3030,7 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_plugin_bootstraps_forward_full_locale(monkeypatch):
+async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch):
     import httpx
 
     from plugin.plugins.bilibili_dm import BiliDMPlugin
@@ -3018,10 +3084,7 @@ async def test_plugin_bootstraps_forward_full_locale(monkeypatch):
     )
     assert await WechatIntegrationPlugin._fetch_memory_context("Neko") == "memory"
 
-    assert [kwargs["params"] for _url, kwargs in calls] == [
-        {"language": "zh-TW"},
-        {"language": "zh-TW"},
-    ]
+    assert all("params" not in kwargs for _url, kwargs in calls)
 
 
 @pytest.mark.asyncio

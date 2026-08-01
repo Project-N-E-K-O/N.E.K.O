@@ -540,7 +540,28 @@ async def test_qq_recall_forwards_process_prompt_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_qq_memory_writer_forwards_full_prompt_locale(monkeypatch):
+async def test_qq_bootstrap_omits_process_fallback_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    monkeypatch.setattr(
+        "utils.language_utils.get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await QQMemoryBridge(
+        SimpleNamespace(logger=MagicMock())
+    ).fetch_bootstrap_memory("Neko")
+
+    bootstrap_call = next(
+        call for call in recorder.calls if "/new_dialog/" in call[1]
+    )
+    assert "params" not in bootstrap_call[2]
+
+
+@pytest.mark.asyncio
+async def test_qq_memory_writer_omits_process_fallback_locale(monkeypatch):
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     recorder = _RecordingClient()
@@ -555,7 +576,7 @@ async def test_qq_memory_writer_forwards_full_prompt_locale(monkeypatch):
     ).post_memory_history("cache", "Neko", [{"role": "user"}])
 
     cache_call = next(call for call in recorder.calls if "/cache/" in call[1])
-    assert cache_call[2]["json"]["language"] == "zh-TW"
+    assert "language" not in cache_call[2]["json"]
 
 
 @pytest.mark.asyncio

@@ -80,21 +80,17 @@ class QQMemoryBridge:
         language: str | None = None,
         timeout: float = 5.0,
     ) -> str:
-        from utils.language_utils import (
-            get_global_language_full,
-            is_supported_language_code,
-        )
+        from utils.language_utils import is_supported_language_code
 
-        prompt_language = (
-            language
-            if is_supported_language_code(language)
-            else get_global_language_full()
-        )
+        # Only a caller-supplied locale has explicit provenance.  With no
+        # session locale, omission lets /new_dialog restore durable state.
+        request_kwargs: dict[str, Any] = {"timeout": timeout}
+        if is_supported_language_code(language):
+            request_kwargs["params"] = {"language": language}
         client = self._client()
         response = await client.get(
             f"{self._base_url()}/new_dialog/{her_name}",
-            params={"language": prompt_language},
-            timeout=timeout,
+            **request_kwargs,
         )
         response.raise_for_status()
         return response.text.strip()
@@ -298,14 +294,13 @@ class QQMemoryBridge:
         return "\n".join(kept)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
-        from utils.language_utils import get_global_language_full
-
+        # QQ currently has no explicit per-conversation locale; do not turn
+        # the host process fallback into durable user evidence.
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/{endpoint}/{her_name}",
             json={
                 "input_history": json.dumps(messages, ensure_ascii=False),
-                "language": get_global_language_full(),
             },
             timeout=timeout,
         )
@@ -323,8 +318,6 @@ class QQMemoryBridge:
         display_name: str | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        from utils.language_utils import get_global_language_full
-
         # speaker_label 只在单发言人批次（成员 bucket / 私聊 participant
         # digest）传：提取 prompt 用它替代私聊主人名渲染 user 轮，避免对方
         # 发言被抽成"关于主人"的事实。群 digest 不传——内容里每条消息已带
@@ -335,7 +328,6 @@ class QQMemoryBridge:
         payload: dict[str, Any] = {
             "input_history": json.dumps(messages, ensure_ascii=False),
             "subject": subject,
-            "language": get_global_language_full(),
         }
         if speaker_label:
             payload["speaker_label"] = speaker_label
@@ -367,8 +359,6 @@ class QQMemoryBridge:
         后按段分派，响应体按请求顺序逐段报 ok/failed，调用方只 pop 成功段
         的 bucket。display_name 是该段 subject 的显示名（昵称），只用于
         persona 标题，可缺省。"""
-        from utils.language_utils import get_global_language_full
-
         payload_segments: list[dict[str, Any]] = []
         for segment in segments:
             wire: dict[str, Any] = {
@@ -390,7 +380,6 @@ class QQMemoryBridge:
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
             json={
                 "segments": payload_segments,
-                "language": get_global_language_full(),
             },
             timeout=timeout,
         )

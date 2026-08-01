@@ -1836,7 +1836,10 @@ async def _retry_new_dialog_locale(
                 locale_admission_order=locale_admission_order,
             )
             return
-        except MaintenanceModeError:
+        except (
+            MaintenanceModeError,
+            locale_state.PromptLocaleInvalidatedError,
+        ):
             await asyncio.sleep(0.25)
         except locale_state.PromptLocalePersistenceError as exc:
             logger.warning(

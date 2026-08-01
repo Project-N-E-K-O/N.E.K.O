@@ -273,9 +273,9 @@ async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deferred_locale_reservation_retries_unpersisted_write(monkeypatch):
+async def test_deferred_locale_reservation_retries_invalidated_write(monkeypatch):
     from app import memory_server
-    from app.memory_server.locale_state import PromptLocalePersistenceError
+    from app.memory_server.locale_state import PromptLocaleInvalidatedError
 
     attempts = 0
 
@@ -284,7 +284,7 @@ async def test_deferred_locale_reservation_retries_unpersisted_write(monkeypatch
         assert order == 41
         attempts += 1
         if attempts == 1:
-            raise PromptLocalePersistenceError("not committed")
+            raise PromptLocaleInvalidatedError("invalidated")
         return order
 
     sleep = AsyncMock()
@@ -303,6 +303,32 @@ async def test_deferred_locale_reservation_retries_unpersisted_write(monkeypatch
     assert locale_order == 41
     assert attempts == 2
     sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
+async def test_deferred_locale_reservation_propagates_permanent_failure(monkeypatch):
+    from app import memory_server
+    from app.memory_server.locale_state import PromptLocalePersistenceError
+
+    def reserve(_name, *, order=None):
+        assert order == 41
+        raise PromptLocalePersistenceError("disk full")
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        reserve,
+    )
+    monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
+
+    with pytest.raises(PromptLocalePersistenceError, match="disk full"):
+        await memory_server.post_turn._wait_for_character_prompt_locale_order(
+            "小天",
+            admission_order=41,
+        )
+
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -369,9 +395,9 @@ async def test_post_turn_locale_record_retries_fence_before_counter(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_post_turn_locale_record_retries_unpersisted_write(monkeypatch):
+async def test_post_turn_locale_record_retries_invalidated_write(monkeypatch):
     from app import memory_server
-    from app.memory_server.locale_state import PromptLocalePersistenceError
+    from app.memory_server.locale_state import PromptLocaleInvalidatedError
 
     attempts = 0
 
@@ -381,7 +407,7 @@ async def test_post_turn_locale_record_retries_unpersisted_write(monkeypatch):
         assert locale_order == 42
         attempts += 1
         if attempts == 1:
-            raise PromptLocalePersistenceError("not committed")
+            raise PromptLocaleInvalidatedError("invalidated")
 
     sleep = AsyncMock()
     monkeypatch.setattr(
@@ -399,6 +425,34 @@ async def test_post_turn_locale_record_retries_unpersisted_write(monkeypatch):
 
     assert attempts == 2
     sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
+async def test_post_turn_locale_record_propagates_permanent_failure(monkeypatch):
+    from app import memory_server
+    from app.memory_server.locale_state import PromptLocalePersistenceError
+
+    def persist(_name, *, language, locale_order):
+        assert language == "zh-TW"
+        assert locale_order == 42
+        raise PromptLocalePersistenceError("disk full")
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        memory_server.signal_extraction,
+        "_signal_check_persist_locale",
+        persist,
+    )
+    monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
+
+    with pytest.raises(PromptLocalePersistenceError, match="disk full"):
+        await memory_server.post_turn._wait_for_signal_locale_persistence(
+            "小天",
+            language="zh-TW",
+            locale_order=42,
+        )
+
+    sleep.assert_not_awaited()
 
 
 def test_deferred_locale_admission_order_cannot_overwrite_newer_turn(tmp_path):
