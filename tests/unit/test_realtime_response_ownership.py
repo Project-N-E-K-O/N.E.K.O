@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -180,7 +181,10 @@ async def test_retiring_an_owner_retires_only_its_inflight_cancel_send():
                 "response": {"id": "resp-owner", "status": "completed"},
             }
         )
-        await asyncio.sleep(0)
+        for _ in range(20):
+            if arbiter._response_owner is None and not arbiter._cancel_send_tasks:
+                break
+            await asyncio.sleep(0)
         assert arbiter._response_owner is None
         assert not arbiter._cancel_send_tasks
 
@@ -1144,9 +1148,13 @@ async def test_stale_orphan_expiry_clears_transport_before_barge_in():
 @pytest.mark.asyncio
 async def test_adoption_keeps_transport_generation_and_ticket_suppression():
     finished: list[str] = []
+    delivered: list[str] = []
 
     async def on_done():
         finished.append("done")
+
+    async def on_text(delta, _first):
+        delivered.append(delta)
 
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",
@@ -1154,6 +1162,7 @@ async def test_adoption_keeps_transport_generation_and_ticket_suppression():
         model="qwen-test",
         api_type="qwen",
         on_response_done=on_done,
+        on_text_delta=on_text,
     )
     socket = _QueueSocket()
     client.ws = socket
@@ -1180,6 +1189,21 @@ async def test_adoption_keeps_transport_generation_and_ticket_suppression():
         socket.push(
             {"type": "response.created", "response": {"id": "resp-adopt"}}
         )
+        for _ in range(20):
+            if client._current_response_generation is not None:
+                break
+            await asyncio.sleep(0.005)
+        assert client._skip_until_next_response is True
+        socket.push(
+            {
+                "type": "response.text.delta",
+                "response_id": "resp-adopt",
+                "delta": "MUST_STAY_SILENT",
+            }
+        )
+        await asyncio.sleep(0.02)
+        assert delivered == []
+
         socket.push(
             {"type": "conversation.item.created", "item": {"id": "item-adopt", "role": "user"}}
         )
@@ -1506,6 +1530,49 @@ async def test_suppressed_unannounced_turn_is_silent_before_owner_assignment():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_never_announcing_ownerless_response_has_a_cancellable_lifetime():
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/core",
+        "free-access",
+        model="free-model",
+        api_type="free",
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    receiver = asyncio.create_task(client.handle_messages())
+    try:
+        # This is an automatic/provider response: no queued request and no
+        # response.created frame. Its first id-less activity must still create
+        # one bounded generation so response.cancel is neither lost nor
+        # detached from the response it intends to stop.
+        socket.push({"type": "response.text.delta", "delta": "provider output"})
+        for _ in range(20):
+            if client._current_response_generation is not None:
+                break
+            await asyncio.sleep(0.005)
+        assert client._current_response_generation is not None
+
+        await client.cancel_response(wait=False)
+        assert [event["type"] for event in socket.sent] == ["response.cancel"]
+
+        socket.push(
+            {
+                "type": "response.done",
+                "response": {"status": "cancelled"},
+            }
+        )
+        for _ in range(20):
+            if client._current_response_generation is None:
+                break
+            await asyncio.sleep(0.005)
+        assert client._current_response_generation is None
+    finally:
+        await _cancel_task(receiver)
+        await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_hung_host_turn_barrier_fails_connection_closed(monkeypatch):
     monkeypatch.setattr(
         "main_logic.omni_realtime_client._transport."
@@ -1628,6 +1695,85 @@ async def test_connection_task_retirement_is_bounded_when_handler_ignores_cancel
     assert task not in client._connection_tasks
     release.set()
     await asyncio.wait_for(task, 0.2)
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connection_task_failure_is_retrieved_without_logging_payload(caplog):
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-test",
+        api_type="gpt",
+    )
+
+    async def fail():
+        raise RuntimeError("private provider payload")
+
+    with caplog.at_level(logging.WARNING):
+        task = client._fire_connection_task(fail())
+        await asyncio.wait({task})
+        await asyncio.sleep(0)
+
+    assert "connection-scoped task failed: RuntimeError" in caplog.text
+    assert "private provider payload" not in caplog.text
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_connection_task_can_close_its_own_socket_without_self_cancel():
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-test",
+        api_type="gpt",
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    generation = client._client_connection_generation
+
+    task = client._fire_connection_task(
+        client._close_if_current_connection(generation)
+    )
+    await asyncio.wait_for(task, 0.2)
+
+    assert task.cancelled() is False
+    assert socket.closed is True
+    assert client.ws is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_deferred_sid_rotation_timeout_is_logged_and_keeps_retry_state(
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr(
+        "main_logic.omni_realtime_client._transport."
+        "_STUCK_RELEASE_STEP_TIMEOUT",
+        0.01,
+    )
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-test",
+        api_type="gpt",
+    )
+    client._has_server_vad = False
+    client._sid_rotation_required_before_dispatch = True
+
+    async def stuck_rotation():
+        await asyncio.Event().wait()
+
+    client.on_sid_rotate = stuck_rotation
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(asyncio.TimeoutError):
+            await client._before_response_dispatch()
+
+    assert "deferred sid rotation exceeded" in caplog.text
+    assert client._sid_rotation_required_before_dispatch is True
     await client.close()
 
 

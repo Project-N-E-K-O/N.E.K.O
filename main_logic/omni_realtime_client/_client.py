@@ -472,8 +472,28 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
 
         task = self._fire_task(coro)
         self._connection_tasks.add(task)
-        task.add_done_callback(self._connection_tasks.discard)
+        task.add_done_callback(self._connection_task_finished)
         return task
+
+    def _connection_task_finished(self, task: asyncio.Task[Any]) -> None:
+        """Retrieve failures from ordinary connection-scoped background work."""
+
+        was_active = task in self._connection_tasks
+        self._connection_tasks.discard(task)
+        # Retirement removes tasks before cancellation and installs its own
+        # completion observer, so only the ordinary completion path reports
+        # here. This avoids duplicate warnings for a detached stubborn task.
+        if not was_active or task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.warning(
+                "connection-scoped task failed: %s",
+                type(error).__name__,
+            )
 
     async def _retire_connection_tasks(self) -> None:
         """Cancel background work whose result targets the retired socket."""

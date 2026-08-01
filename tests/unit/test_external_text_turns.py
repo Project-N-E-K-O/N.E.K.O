@@ -1311,10 +1311,12 @@ async def test_vad_pending_quarantines_response_create_send_in_progress():
     # The explicit create completed its transport write after VAD won. It is a
     # second possible server response, so the successor stays blocked until its
     # own late lifecycle converges too.
+    await asyncio.sleep(0)
     assert follow_up.sent.done() is False
     arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-explicit-late"}}
     )
+    await asyncio.sleep(0)
     assert follow_up.sent.done() is False
     arbiter.notify_response_terminal(
         {

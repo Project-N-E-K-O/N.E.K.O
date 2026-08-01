@@ -206,6 +206,10 @@ class _ResponseLifetime:
     owner: "_QueuedResponse | None"
     response_id: str | None = None
     announced_at: float | None = None
+    # Output can need suppression before an announcement has enough evidence
+    # to adopt an owner. Keep that provisional policy on the lifetime itself
+    # so identity upgrades cannot briefly expose a skipped response.
+    suppress_output: bool = False
 
 
 @dataclass(slots=True)
@@ -434,8 +438,13 @@ class RealtimeResponseArbiter:
             )
         return any(
             lifetime.generation == generation
-            and lifetime.owner is not None
-            and lifetime.owner.suppress_output
+            and (
+                lifetime.suppress_output
+                or (
+                    lifetime.owner is not None
+                    and lifetime.owner.suppress_output
+                )
+            )
             for lifetime in self._response_lifetimes
         )
 
@@ -745,6 +754,7 @@ class RealtimeResponseArbiter:
         response_id: str | None = None,
         announced: bool,
         generation: int | None = None,
+        suppress_output: bool = False,
     ) -> _ResponseLifetime:
         lifetime = _ResponseLifetime(
             generation=(
@@ -755,6 +765,9 @@ class RealtimeResponseArbiter:
             owner=owner,
             response_id=response_id,
             announced_at=(asyncio.get_running_loop().time() if announced else None),
+            suppress_output=(
+                owner.suppress_output if owner is not None else suppress_output
+            ),
         )
         self._response_lifetimes.append(lifetime)
         if owner is not None:
@@ -773,6 +786,7 @@ class RealtimeResponseArbiter:
         response_id: str | None,
         *,
         generation: int | None = None,
+        suppress_output: bool = False,
     ) -> _ResponseLifetime:
         if response_id is not None:
             # A duplicate announcement refreshes the same unowned identity,
@@ -799,6 +813,7 @@ class RealtimeResponseArbiter:
             response_id=response_id,
             announced=True,
             generation=generation,
+            suppress_output=suppress_output,
         )
         id_bearing = [
             candidate
@@ -1027,6 +1042,7 @@ class RealtimeResponseArbiter:
             if previous is not None and previous is not orphan:
                 self._remove_lifetime(previous)
             orphan.owner = queued
+            orphan.suppress_output = queued.suppress_output
             queued.lifecycle = orphan
             if self._on_lifetime_adopted is not None:
                 self._on_lifetime_adopted(
@@ -1417,7 +1433,17 @@ class RealtimeResponseArbiter:
         # recognized as an orphan even when the owner's own response.created
         # carried no id.
         self._remember_seen_response_id(response_id)
-        lifetime = self._remember_server_response(response_id)
+        # A skipped request can provoke the provider to answer its conversation
+        # item before the explicit response.create owns the announcement. At
+        # this instant adoption is not yet provable, but exposing output and
+        # trying to hide it later is irreversible. Attach the current request's
+        # provisional policy to this one lifetime; adoption will either confirm
+        # it or the lifetime will converge independently without leaking the
+        # policy into a successor.
+        lifetime = self._remember_server_response(
+            response_id,
+            suppress_output=self.suppress_output_for_generation(None),
+        )
         # Offer it for adoption. On a provider that starts answering as soon
         # as it receives the conversation item — rather than waiting for
         # response.create — this IS the request's own announcement, arriving
@@ -1429,6 +1455,7 @@ class RealtimeResponseArbiter:
             ResponseCreatedKind.UNOWNED_SERVER,
             response_id,
             lifetime.generation,
+            lifetime.suppress_output,
         )
 
     def notify_server_vad_started(self) -> None:
@@ -1490,7 +1517,10 @@ class RealtimeResponseArbiter:
             or owner.ticket.started.done()
         ):
             if owner is None:
-                lifetime = self._remember_server_response(text)
+                lifetime = self._remember_server_response(
+                    text,
+                    suppress_output=self.suppress_output_for_generation(None),
+                )
                 self._remember_seen_response_id(text)
                 self._note_unowned_announcement(text)
                 return lifetime.generation
@@ -1506,6 +1536,35 @@ class RealtimeResponseArbiter:
                 owner.suppress_output,
             )
         return owner.lifecycle.generation
+
+    def notify_unannounced_response_started(self) -> int | None:
+        """Track one ownerless response on a never-announcing protocol.
+
+        Never-announcing routes can surface an automatic response through an
+        id-less delta without any queued request or response.created frame. In
+        that exact unambiguous state the response still needs a generation so
+        it holds the lane, accepts a lifecycle-bound cancel, and converges on
+        terminal/deadline. A response that overlaps queued/owned work remains
+        deliberately unclaimed because an unscoped response.cancel could stop
+        the wrong turn.
+        """
+
+        if self._response_created_expected or self._current is not None:
+            return None
+        self._idle.clear()
+        self._prune_stale_lifetimes()
+        if self._retired_created_windows or self._server_vad_response_pending:
+            return None
+        announced = [
+            lifetime
+            for lifetime in self._response_lifetimes
+            if lifetime.announced_at is not None
+        ]
+        if announced:
+            if len(announced) == 1 and announced[0].response_id is None:
+                return announced[0].generation
+            return None
+        return self._remember_server_response(None).generation
 
     def notify_server_vad_response_pending(
         self,

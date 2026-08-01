@@ -1245,6 +1245,14 @@ class _TransportMixin:
     def _activate_unannounced_response_state(self) -> None:
         """Track output on a protocol that never emits response.created."""
 
+        generation = self._response_arbiter.notify_unannounced_response_started()
+        if generation is not None:
+            self._activate_response_state(
+                None,
+                generation,
+                self._response_arbiter.suppress_output_for_generation(generation),
+            )
+            return
         self._is_responding = True
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch
@@ -1290,10 +1298,21 @@ class _TransportMixin:
         if self._has_server_vad or self.on_sid_rotate is None:
             self._sid_rotation_required_before_dispatch = False
             return
-        await asyncio.wait_for(
-            self.on_sid_rotate(),
-            _STUCK_RELEASE_STEP_TIMEOUT,
-        )
+        try:
+            await asyncio.wait_for(
+                self.on_sid_rotate(),
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            # Dispatch cannot continue on the old speech id: the successor's
+            # audio would be attached to a turn the host has already closed.
+            # Keep the flag raised so a later request may retry after this
+            # ticket fails, but make the fail-closed cause observable.
+            logger.error(
+                "deferred sid rotation exceeded %.1fs before successor dispatch",
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+            raise
         self._sid_rotation_required_before_dispatch = False
 
     def _reset_connection_response_state(self) -> None:
