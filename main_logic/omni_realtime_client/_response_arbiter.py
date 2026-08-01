@@ -470,6 +470,10 @@ class RealtimeResponseArbiter:
         return True
 
     async def wait_until_idle(self, timeout: float | None = None) -> None:
+        # Deliberately NOT wrapped in `_report_wait_margin`: its only caller
+        # with a timeout is `cancel_current`'s unowned branch, which already
+        # measures this wait from the outside as "unowned cancel". Wrapping
+        # here too would report one wait twice.
         waiter = self._idle.wait()
         if timeout is None:
             await waiter
@@ -1528,10 +1532,13 @@ class RealtimeResponseArbiter:
         had_lifecycle = released_owner is not None
         try:
             if self._on_stuck_release is not None and had_lifecycle:
-                await asyncio.wait_for(
-                    self._on_stuck_release(reason, released_id),
-                    _STUCK_RELEASE_NOTIFY_TIMEOUT,
-                )
+                with self._report_wait_margin(
+                    "stuck-release host notification", _STUCK_RELEASE_NOTIFY_TIMEOUT
+                ):
+                    await asyncio.wait_for(
+                        self._on_stuck_release(reason, released_id),
+                        _STUCK_RELEASE_NOTIFY_TIMEOUT,
+                    )
         except asyncio.TimeoutError:
             logger.warning(
                 "stuck-release host notification exceeded %.1fs; opening "
@@ -1688,6 +1695,8 @@ class RealtimeResponseArbiter:
         interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
         waiters = (dispatch_waiter, interrupt_waiter)
         try:
+            # Unbounded on purpose — a paused lane waits as long as the pause
+            # lasts — so there is no allowance to report a fraction of.
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for waiter in waiters:
@@ -1702,11 +1711,14 @@ class RealtimeResponseArbiter:
         interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
         waiters = (idle_waiter, interrupt_waiter)
         try:
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=queued.response_done_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            with self._report_wait_margin(
+                "lane availability", queued.response_done_timeout
+            ):
+                done, _ = await asyncio.wait(
+                    waiters,
+                    timeout=queued.response_done_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
             if not done:
                 await self._escalate(
                     "realtime response idle wait timed out", observed=queued
@@ -1842,9 +1854,12 @@ class RealtimeResponseArbiter:
                     except Exception:
                         cancel_write_failed = True
                         raise
-                    await asyncio.wait_for(
-                        asyncio.shield(queued.terminal), queued.cancel_timeout
-                    )
+                    with self._report_wait_margin(
+                        "interrupted cancel", queued.cancel_timeout
+                    ):
+                        await asyncio.wait_for(
+                            asyncio.shield(queued.terminal), queued.cancel_timeout
+                        )
                 except Exception:
                     if not queued.terminal.done():
                         queued.terminal.cancel()

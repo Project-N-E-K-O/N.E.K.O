@@ -3383,3 +3383,40 @@ async def test_the_item_ack_wait_reports_what_it_spent(caplog):
         for record in caplog.records
     ), "an item-ack wait that spends its allowance must say so"
     await arbiter.shutdown()
+
+
+@pytest.mark.unit
+def test_every_bounded_wait_is_measured_or_says_why_not():
+    # Two rounds of review each pointed at a different unmeasured bound, and
+    # each time I fixed the one that was pointed at. This discovers them
+    # instead: any `asyncio.wait_for` / `asyncio.wait` in the arbiter must
+    # either sit inside `_report_wait_margin` or carry an explicit note saying
+    # why it does not.
+    #
+    # Without this, the probe's "bound consumption" section is silent by
+    # absence for whatever was missed, which reads exactly like "nothing came
+    # close" — the failure mode that made a torn-down connection render as
+    # "worst 1.5% OK".
+    import re
+    from pathlib import Path
+
+    source = Path(
+        "main_logic/omni_realtime_client/_response_arbiter.py"
+    ).read_text()
+    lines = source.splitlines()
+    unmeasured = []
+    for index, line in enumerate(lines, 1):
+        if "def " in line:
+            continue
+        if "asyncio.wait_for(" not in line and not re.search(r"asyncio\.wait\(", line):
+            continue
+        window = "\n".join(lines[max(0, index - 9) : index])
+        measured = "_report_wait_margin" in window
+        excused = "Deliberately NOT wrapped" in window or "Unbounded on purpose" in window
+        if not measured and not excused:
+            unmeasured.append(f"{index}: {line.strip()[:60]}")
+
+    assert unmeasured == [], (
+        "every bounded wait needs `_report_wait_margin` or a written reason; "
+        f"these have neither: {unmeasured}"
+    )
