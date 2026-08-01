@@ -10,11 +10,12 @@ more work so that an external-turn hand-off can restore a newer pause.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Iterator
 
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
@@ -54,6 +55,15 @@ _DEFAULT_RESPONSE_DONE_TIMEOUT = 60.0
 # provider-side pre-creation failure cannot wedge the lane until the much
 # longer running-response timeout tears down an otherwise healthy connection.
 _SERVER_VAD_RESPONSE_STARTED_TIMEOUT = 5.0
+# Fraction of a wait's bound past which the wait is reported even when it
+# succeeds. Every fail-close bound in this file was chosen without field data
+# about how long real providers actually take, and the only evidence a bound
+# is too tight is a teardown that already happened. A near-miss line turns
+# ordinary use into the measurement: grep for it over a few sessions and the
+# distribution of "how close did we come" is there without anyone running an
+# experiment. Half is deliberately generous — the point is to see the shape of
+# the tail, not to warn about a healthy wait.
+_WAIT_MARGIN_REPORT_FRACTION = 0.5
 # Ceiling on the host's end-of-turn notification during a fail-open release.
 # Escalations raised inside ``_process`` run it on the sole queue consumer,
 # so an unbounded host callback would stall every later dispatch; short
@@ -301,7 +311,8 @@ class RealtimeResponseArbiter:
                 return
             await self._send_event({"type": "response.cancel"})
             try:
-                await self.wait_until_idle(timeout)
+                with self._report_wait_margin("unowned cancel", timeout):
+                    await self.wait_until_idle(timeout)
             except asyncio.TimeoutError as original_timeout:
                 await self._escalate(
                     "response cancellation terminal event timed out"
@@ -320,7 +331,11 @@ class RealtimeResponseArbiter:
             await self._send_event({"type": "response.cancel"})
         assert current.completed is not None
         try:
-            await asyncio.wait_for(asyncio.shield(current.completed), timeout)
+            # The barge-in bound. Every user interruption of a speaking turn
+            # arrives here, so this is the wait whose real-world margin matters
+            # most and the one no synthetic provider can answer.
+            with self._report_wait_margin("barge-in cancel", timeout):
+                await asyncio.wait_for(asyncio.shield(current.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
             await self._escalate(
                 "response cancellation terminal event timed out",
@@ -364,7 +379,8 @@ class RealtimeResponseArbiter:
             return True
         assert queued.completed is not None
         try:
-            await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
+            with self._report_wait_margin("targeted cancel", timeout):
+                await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
             await self._escalate(
                 "targeted response cancellation timed out", observed=queued
@@ -984,6 +1000,16 @@ class RealtimeResponseArbiter:
             # the transport has already dropped its socket.
             return "a transport write just failed"
         owner = self._response_owner
+        # NOTE: ``response_send_started`` is currently implied by ``owner is
+        # not None`` — ``_process`` assigns the owner on the statement before
+        # it sets the flag, with no await between them, and that is the only
+        # assignment that makes an owner. The conjunct is kept explicit anyway:
+        # it names the criterion this blocker actually rests on, so reordering
+        # those two statements later cannot silently change what is being
+        # tested. It also means this cell cannot discriminate the two candidate
+        # criteria on its own — the discriminating case is an owner whose
+        # create IS on the wire with no announcement back, covered by
+        # ``test_a_create_on_the_wire_without_an_announcement_stands_the_hatch_down``.
         if owner is not None and owner.response_send_started and (
             owner.response_id is None
         ):
@@ -1012,6 +1038,34 @@ class RealtimeResponseArbiter:
             # then.
             return "an unowned response is live with no id at all"
         return None
+
+    @contextlib.contextmanager
+    def _report_wait_margin(self, label: str, timeout: float) -> Iterator[None]:
+        """Report how close a bounded lifecycle wait came to its bound.
+
+        Wraps the wait rather than replacing it: the control flow, the
+        exception raised and the escalation that follows are all unchanged,
+        so this cannot alter what the arbiter does — it only records what it
+        saw. A wait that times out reports at 100% and pairs with the
+        escalation line that follows it; a wait that succeeds late is the more
+        interesting record, because nothing else in the system would ever
+        mention it.
+        """
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            yield
+        finally:
+            elapsed = loop.time() - started
+            if timeout > 0 and elapsed >= timeout * _WAIT_MARGIN_REPORT_FRACTION:
+                logger.info(
+                    "realtime %s waited %.2fs of its %.1fs bound (%.0f%%)",
+                    label,
+                    elapsed,
+                    timeout,
+                    100.0 * elapsed / timeout,
+                )
 
     async def _worker_send(self, event: dict[str, Any]) -> None:
         """Send from the queue consumer, flagged for the duration of the write.
@@ -1398,16 +1452,26 @@ class RealtimeResponseArbiter:
                 queued.ticket.sent.set_result(None)
 
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(queued.ticket.started),
-                    queued.response_started_timeout,
-                )
+                # How long the provider takes to announce a response it has
+                # accepted. On a congested shared route this is the bound most
+                # likely to be wrong, and a queued create is invisible to every
+                # other log line.
+                with self._report_wait_margin(
+                    "response announcement", queued.response_started_timeout
+                ):
+                    await asyncio.wait_for(
+                        asyncio.shield(queued.ticket.started),
+                        queued.response_started_timeout,
+                    )
             except asyncio.TimeoutError as started_timeout:
                 await self._cancel_after_timeout(queued, started_timeout)
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(queued.terminal), queued.response_done_timeout
-                )
+                with self._report_wait_margin(
+                    "response completion", queued.response_done_timeout
+                ):
+                    await asyncio.wait_for(
+                        asyncio.shield(queued.terminal), queued.response_done_timeout
+                    )
             except asyncio.TimeoutError as done_timeout:
                 await self._cancel_after_timeout(queued, done_timeout)
 
@@ -1486,9 +1550,10 @@ class RealtimeResponseArbiter:
                 cancel_write_failed = True
                 raise
             assert queued.terminal is not None
-            await asyncio.wait_for(
-                asyncio.shield(queued.terminal), queued.cancel_timeout
-            )
+            with self._report_wait_margin("cancel grace", queued.cancel_timeout):
+                await asyncio.wait_for(
+                    asyncio.shield(queued.terminal), queued.cancel_timeout
+                )
         except Exception:
             if queued.terminal is not None and not queued.terminal.done():
                 queued.terminal.cancel()

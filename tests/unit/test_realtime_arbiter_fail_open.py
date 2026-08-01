@@ -577,18 +577,37 @@ async def test_a_create_on_the_wire_without_an_announcement_stands_the_hatch_dow
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_request_whose_create_never_went_out_still_fails_open(make_harness):
-    # The criterion is "did the create reach the wire", not "did
-    # response.created come back". A request still waiting for dispatch has no
-    # live response at all, so nothing of its can surprise us later.
+    # The DUAL of the criterion, not a discriminator for it — and the
+    # difference matters, because getting that backwards is how #2592 shipped a
+    # wrong contract under a passing test.
     #
-    # The withdrawn #2592 wrote this the other way round — keyed on
-    # ticket.started — and pinned the wrong contract with a passing test.
+    # A request still waiting for dispatch has no live response at all, so
+    # nothing of its can surprise us later and the hatch must hold. But note
+    # WHY it holds: this request is neither ``_current`` nor
+    # ``_response_owner``, so the blocker never looks at it under EITHER
+    # candidate criterion. Keyed on ticket.started this test is just as green,
+    # which is exactly why it cannot be the one that pins the criterion — that
+    # job belongs to
+    # ``test_a_create_on_the_wire_without_an_announcement_stands_the_hatch_down``,
+    # the one cell where the two criteria disagree.
+    #
+    # What this test does pin is that the blocker is not "always fires":
+    # without it, a stand-down on every escalation would pass the whole
+    # criterion suite.
     harness = make_harness(fail_open=True)
     harness.arbiter.pause_dispatch()
     queued = await harness.arbiter.enqueue(source="native")
     await _settle()
     assert harness.dispatch_count == 0
     assert not queued.sent.done()
+    # Pin the mechanism this test actually rests on, so a future change that
+    # makes an undispatched request visible to the blocker fails here rather
+    # than silently turning the assertion below into a different claim.
+    assert harness.arbiter._response_owner is None, (
+        "an undispatched request owns nothing, which is why the blocker "
+        "cannot see it"
+    )
+    assert harness.arbiter._current is not queued
 
     harness.arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "srv-1"}}
@@ -1228,6 +1247,63 @@ async def test_the_host_ends_the_turn_it_was_actually_tracking():
         assert client._current_response_id is None, f"named_id={named_id}"
         assert client._image_sent_this_turn is False, f"named_id={named_id}"
         assert done_calls == ["done"], f"named_id={named_id}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_blocked_repetition_hook_cannot_strand_this_turns_state():
+    # The FIRST await, not the last one. Its sibling below cancels at the
+    # transcript flush, which is the second host hook — so with the whole
+    # synchronous reset moved to sit between the two, that sibling stays green
+    # and the property "settle every synchronous write before the FIRST await"
+    # goes unpinned. This is the case that distinguishes the two placements.
+    #
+    # The repetition hook is reached before anything else the release awaits,
+    # and a host that blocks in it gets the release cancelled right there —
+    # the arbiter's own bound is what eventually cuts it. If the reset ran
+    # afterwards, this turn's _image_sent_this_turn and _audio_delta_count
+    # would survive into the next turn.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    entered = asyncio.Event()
+
+    async def _blocks() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_repetition_detected=_blocks,
+    )
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._image_sent_this_turn = True
+    client._image_recognized_this_turn = True
+    client._audio_delta_count = 3
+    # Two identical predecessors put this turn's text at the third strike, so
+    # _check_repetition reaches on_repetition_detected — the release's first
+    # await — instead of returning without awaiting anything.
+    client._current_response_transcript = "一模一样的一句话"
+    client._recent_responses = ["一模一样的一句话", "一模一样的一句话"]
+
+    release = asyncio.create_task(client._on_arbiter_stuck_release("stalled", "resp-1"))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(release, timeout=1)
+
+    assert client._is_responding is False
+    assert client._current_response_id is None
+    assert client._image_sent_this_turn is False, (
+        "the next turn would withhold its own visual context"
+    )
+    assert client._image_recognized_this_turn is False
+    assert client._audio_delta_count == 0, (
+        "the next turn would count this turn's audio"
+    )
 
 
 @pytest.mark.unit

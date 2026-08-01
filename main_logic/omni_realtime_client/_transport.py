@@ -1235,8 +1235,15 @@ class _TransportMixin:
             except asyncio.TimeoutError:
                 # Kept ahead of the bare Exception arm even though TimeoutError
                 # is one: "took too long" and "raised" are different diagnoses.
+                #
+                # ``%s``, not ``%.1f``: the terminal path calls in with
+                # ``step_timeout=None`` and awaits the hook directly, so this
+                # arm is also how a TimeoutError raised BY the host surfaces
+                # there. Formatting None with %.1f raises inside logging and
+                # destroys the record — the one diagnosis this arm exists to
+                # give.
                 logger.warning(
-                    "turn-finished notification exceeded its %.1fs step bound; "
+                    "turn-finished notification exceeded its %ss step bound; "
                     "rotating anyway",
                     step_timeout,
                 )

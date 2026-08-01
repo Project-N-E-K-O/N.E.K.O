@@ -554,6 +554,20 @@ class _GeminiMixin:
                         or self._gemini_user_transcript_after_interrupt
                         or not _still_within_ai_window
                     )
+                    # The epoch bump below has no reader on this path today: a
+                    # Gemini client never enqueues through the arbiter (every
+                    # entry point takes an ``_is_gemini`` branch first), so
+                    # ``_on_arbiter_stuck_release`` — the epoch's only consumer
+                    # — cannot fire here. Maintained anyway because the
+                    # invariant is "every turn start advances the epoch", not
+                    # "every turn start something currently reads": once a turn
+                    # start stops advancing it, a release that DOES run cannot
+                    # tell that turn from its successor.
+                    #
+                    # Kept above the assignment, not between it and the bump:
+                    # ``test_every_turn_start_advances_the_epoch`` discovers
+                    # turn starts by proximity, so a comment wedged in there
+                    # reads as a missing bump.
                     self._is_responding = True
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
