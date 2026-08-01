@@ -180,6 +180,14 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # effects rather than merely wrong words. Never set on the default
         # fail-closed path, which has no release.
         self._idless_quarantine = False
+        # Latched the first time this connection sees a response.created.
+        # Until then the stale-event filter has no identity to compare
+        # against, and an id-bearing terminal cannot belong to anyone but
+        # the turn in progress — the free Gemini-proxy route never
+        # announces at all, and treating its terminal as stale skipped
+        # every turn's finalization, including the speech-id rotation it
+        # depends on. Reset per connect(): ids are connection-scoped.
+        self._announces_responses = False
         self._last_response_created_time = 0.0
         self._response_done_total = 0  # diagnostic: response.done events observed
         # Response ids whose token usage has already been booked, so a

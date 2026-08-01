@@ -113,6 +113,9 @@ class _TransportMixin:
         # after a reconnect would otherwise have the new session's first turns
         # suppressed as already-billed duplicates.
         self._usage_recorded_ids = []
+        # Same lifetime as the id bookkeeping above, and for the same
+        # reason: a reconnect may reach a different upstream.
+        self._announces_responses = False
 
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
@@ -1568,6 +1571,25 @@ class _TransportMixin:
                     if (
                         event_response_id
                         and event_response_id != self._current_response_id
+                        # ...unless this connection has never announced a
+                        # response at all. A provider that omits
+                        # response.created never writes _current_response_id,
+                        # so its id-bearing terminal looks stale against a
+                        # permanently-None tracked id and the whole turn
+                        # finalization below is skipped: no transcript flush,
+                        # no on_response_done, and — on exactly those routes,
+                        # which have no server VAD — no speech-id rotation,
+                        # which is what silences every turn after the first.
+                        #
+                        # Same reasoning as the arbiter's: a terminal for an id
+                        # this connection has never seen announced cannot be
+                        # another response's, because there is no other
+                        # response to have announced it. The latch is per
+                        # connection and set only by response.created, so on
+                        # any announcing provider this condition is false from
+                        # its first turn onward and the stale filter behaves
+                        # exactly as before.
+                        and self._announces_responses
                     ):
                         if event_type == "response.done":
                             # A terminal event must reach the arbiter even when
@@ -1728,6 +1750,7 @@ class _TransportMixin:
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     self._current_response_id = event.get("response", {}).get("id")
+                    self._announces_responses = True
                     self._is_responding = True
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch

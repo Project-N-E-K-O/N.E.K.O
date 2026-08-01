@@ -2881,3 +2881,80 @@ async def test_enqueue_keeps_caller_stamped_event_ids_unchanged():
     assert sent[0]["event_id"] == "event_user_item_explicit"
     assert sent[1]["event_id"] == "event_user_response_explicit"
     await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_never_announcing_provider_still_finalizes_its_turn_on_the_host():
+    # The arbiter half of this is
+    # test_a_terminal_for_a_never_announced_id_belongs_to_the_owner — it stops
+    # the teardown. This is the other half, and without it the fix is worse
+    # than the bug it replaces: the transport's stale filter compares the
+    # terminal's id against _current_response_id, which a provider that never
+    # sends response.created never writes, so the terminal is dropped as stale
+    # and the whole finalization below it is skipped. On exactly those routes
+    # (_has_server_vad is False) _notify_turn_finished is the only speech-id
+    # rotation point, so every turn after the first goes silent — and the
+    # teardown this PR removes is what used to reset that by rebuilding the
+    # session.
+    #
+    # Frame set measured against wss://www.lanlan.app/core on 2026-08-01: no
+    # session.created, no response.created, no conversation.item.created.
+    import json as _json
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _Socket:
+        def __init__(self, frames):
+            self._frames = frames
+
+        async def __aiter__(self):
+            for frame in self._frames:
+                yield _json.dumps(frame)
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+        async def send(self, *_a, **_k):
+            return None
+
+        async def close(self, *_a, **_k):
+            return None
+
+    fired = []
+
+    async def _on_done():
+        fired.append("on_response_done")
+
+    async def _on_rotate():
+        fired.append("on_sid_rotate")
+
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/core",
+        "free-access",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    assert client._has_server_vad is False, "the route this protects"
+    client._fatal_error_occurred = False
+    client.ws = _Socket(
+        [
+            {"type": "response.audio_transcript.delta", "delta": "今天"},
+            {"type": "response.audio_transcript.done", "transcript": "今天天气不错"},
+            {"type": "response.audio.done"},
+            {
+                "type": "response.done",
+                "response": {"id": "resp_1785581414491", "status": "completed"},
+            },
+        ]
+    )
+    try:
+        await asyncio.wait_for(client.handle_messages(), 1)
+    except (asyncio.TimeoutError, Exception):
+        pass
+
+    assert "on_response_done" in fired, "the host never completed the turn"
+    assert "on_sid_rotate" in fired, (
+        "no rotation here means TTS goes silent from the next turn on"
+    )
