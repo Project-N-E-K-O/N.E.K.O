@@ -520,7 +520,12 @@ async def test_server_response_older_than_30s_within_allowance_holds_lane():
     # live server response must keep the lane closed instead of being
     # presumed dead (which let the follow-up collide with it).
     loop = asyncio.get_running_loop()
-    arbiter._server_response_ids["resp-server"] = loop.time() - 31.0
+    server_lifetime = next(
+        lifetime
+        for lifetime in arbiter._response_lifetimes
+        if lifetime.owner is None and lifetime.response_id == "resp-server"
+    )
+    server_lifetime.announced_at = loop.time() - 31.0
     arbiter.notify_response_terminal(
         {"type": "response.done", "response": {"id": "resp-owner"}}
     )
@@ -859,7 +864,7 @@ async def test_a_terminal_for_a_never_announced_id_belongs_to_the_owner():
     async def send(event):
         sent.append(dict(event))
 
-    arbiter = RealtimeResponseArbiter(send)
+    arbiter = RealtimeResponseArbiter(send, response_created_expected=False)
     ticket = await arbiter.enqueue(source="owner")
     await asyncio.wait_for(ticket.sent, 0.2)
     assert ticket.started.done() is False
@@ -1301,6 +1306,20 @@ async def test_vad_pending_quarantines_response_create_send_in_progress():
         {
             "type": "response.done",
             "response": {"id": "resp-vad", "status": "completed"},
+        }
+    )
+    # The explicit create completed its transport write after VAD won. It is a
+    # second possible server response, so the successor stays blocked until its
+    # own late lifecycle converges too.
+    assert follow_up.sent.done() is False
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-explicit-late"}}
+    )
+    assert follow_up.sent.done() is False
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-explicit-late", "status": "completed"},
         }
     )
     await asyncio.wait_for(follow_up.sent, 0.2)
@@ -2479,7 +2498,7 @@ async def test_external_text_turn_response_create_has_no_per_response_instructio
 
 
 @pytest.mark.asyncio
-async def test_idless_response_created_drops_id_bearing_done_event():
+async def test_idless_response_created_accepts_its_later_id_bearing_done_event():
     response_done = AsyncMock()
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",
@@ -2496,7 +2515,9 @@ async def test_idless_response_created_drops_id_bearing_done_event():
 
     await client.handle_messages()
 
-    response_done.assert_not_awaited()
+    response_done.assert_awaited_once()
+    assert client._is_responding is False
+    assert client._current_response_generation is None
     await client._response_arbiter.wait_until_idle(timeout=0.2)
 
 
@@ -3173,6 +3194,14 @@ async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
     # epoch bump that does not interrupt the current request, which is why it
     # is the only one the wider window changes.
     arbiter._server_vad_pending_expired()
+    # The identity model retains one bounded late-created window after the
+    # pending timeout. Expire that second bound explicitly: this test is about
+    # the VAD epoch disqualifier after correlation has honestly ended, not the
+    # new window itself (covered by the ownership regressions).
+    arbiter._retired_created_windows[0].expires_at = (
+        asyncio.get_running_loop().time()
+    )
+    arbiter._release_lane_if_clear()
 
     with pytest.raises(Exception):
         await asyncio.wait_for(ticket.done, 1.0)

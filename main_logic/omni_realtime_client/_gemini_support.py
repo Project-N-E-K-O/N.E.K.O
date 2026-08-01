@@ -378,11 +378,22 @@ class _GeminiMixin:
             self._skip_until_next_response = previous_skip
             raise
 
-    async def _send_tool_result_gemini(self, results: List[ToolResult]) -> None:
+    async def _send_tool_result_gemini(
+        self,
+        results: List[ToolResult],
+        *,
+        connection_generation: int | None = None,
+    ) -> None:
         """Gemini Live SDK — batch all tool results into one
         ``send_tool_response`` call (matches the SDK's expectation when
         the model issues multiple parallel function calls)."""
-        if not self._gemini_session or not results:
+        if (
+            connection_generation is not None
+            and connection_generation != self._client_connection_generation
+        ):
+            return
+        session = self._gemini_session
+        if not session or not results:
             return
         if types is None:  # SDK unavailable — should never hit here
             return
@@ -394,7 +405,7 @@ class _GeminiMixin:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
         try:
-            await self._gemini_session.send_tool_response(function_responses=function_responses)
+            await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
             logger.error("Gemini send_tool_response failed: %s", e)
 
@@ -435,12 +446,28 @@ class _GeminiMixin:
             logger.error("Gemini session not established")
             return
 
+        session = self._gemini_session
+        connection_generation = self._client_connection_generation
+
         try:
-            while not self._fatal_error_occurred:
+            while (
+                not self._fatal_error_occurred
+                and self._gemini_session is session
+                and connection_generation == self._client_connection_generation
+            ):
                 try:
                     # 接收响应流
-                    turn = self._gemini_session.receive()
+                    turn = session.receive()
                     async for response in turn:
+                        if (
+                            self._gemini_session is not session
+                            or connection_generation
+                            != self._client_connection_generation
+                        ):
+                            logger.info(
+                                "discarding Gemini event stream from retired connection"
+                            )
+                            return
                         await self._process_gemini_response(response)
                     # receive() 是 session 级 async generator，仅在连接断开时退出；
                     # 正常会话期间此行不会执行。缺失 turn_complete 的兜底已移至
@@ -463,9 +490,13 @@ class _GeminiMixin:
         except Exception as e:
             logger.error(f"Gemini message handler error: {e}")
         finally:
-            self._settle_gemini_proactive_inject(
-                error_msg="Gemini realtime message loop ended"
-            )
+            if (
+                self._gemini_session is session
+                and connection_generation == self._client_connection_generation
+            ):
+                self._settle_gemini_proactive_inject(
+                    error_msg="Gemini realtime message loop ended"
+                )
 
     async def _process_gemini_response(self, response) -> None:
         """Process a single Gemini response event."""
@@ -476,34 +507,48 @@ class _GeminiMixin:
             if hasattr(response, 'tool_call') and response.tool_call:
                 fcs = list(getattr(response.tool_call, 'function_calls', []) or [])
                 if fcs:
-                    if self.on_tool_call is None:
-                        logger.warning(
-                            "Gemini tool_call received but no on_tool_call handler — replying with error"
+                    tool_generation = self._client_connection_generation
+                    async def _run_gemini_tools(
+                        _calls=fcs,
+                        _generation=tool_generation,
+                    ) -> None:
+                        if self.on_tool_call is None:
+                            logger.warning(
+                                "Gemini tool_call received but no on_tool_call "
+                                "handler; replying with error"
+                            )
+                            results = [
+                                ToolResult(
+                                    call_id=getattr(fc, 'id', '') or '',
+                                    name=getattr(fc, 'name', '') or '',
+                                    output={"error": "no on_tool_call handler"},
+                                    is_error=True,
+                                    error_message="no on_tool_call handler",
+                                )
+                                for fc in _calls
+                            ]
+                        else:
+                            results = []
+                            for fc in _calls:
+                                args = dict(getattr(fc, 'args', None) or {})
+                                call = ToolCall(
+                                    name=getattr(fc, 'name', '') or '',
+                                    arguments=args,
+                                    call_id=getattr(fc, 'id', '') or '',
+                                    raw_arguments=json.dumps(
+                                        args, ensure_ascii=False
+                                    ),
+                                )
+                                results.append(await self._execute_tool_call(call))
+                        await self._send_tool_result_gemini(
+                            results,
+                            connection_generation=_generation,
                         )
-                        results = [
-                            ToolResult(
-                                call_id=getattr(fc, 'id', '') or '',
-                                name=getattr(fc, 'name', '') or '',
-                                output={"error": "no on_tool_call handler"},
-                                is_error=True, error_message="no on_tool_call handler",
-                            )
-                            for fc in fcs
-                        ]
-                    else:
-                        results = []
-                        for fc in fcs:
-                            args = dict(getattr(fc, 'args', None) or {})
-                            call = ToolCall(
-                                name=getattr(fc, 'name', '') or '',
-                                arguments=args,
-                                call_id=getattr(fc, 'id', '') or '',
-                                raw_arguments=json.dumps(args, ensure_ascii=False),
-                            )
-                            results.append(await self._execute_tool_call(call))
-                    # Fire-and-forget — let the message loop continue. The
-                    # SDK's ``send_tool_response`` is the only way to feed
-                    # results back to a Live session.
-                    self._fire_task(self._send_tool_result_gemini(results))
+
+                    # Execution and reply are one socket-scoped task. A
+                    # reconnect cancels the external action as well as its
+                    # result send, matching the OpenAI realtime path.
+                    self._fire_connection_task(_run_gemini_tools())
                 # Tool call cancellation (if present in this SDK build) is
                 # surfaced as ``response.tool_call_cancellation`` — currently
                 # not actioned because we run tools fire-and-forget; if a

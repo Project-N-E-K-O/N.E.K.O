@@ -164,9 +164,6 @@ class _ResponseMixin:
             logger.info("Skipping empty content in create_response")
             return
 
-        if skipped:
-            self._skip_until_next_response = True
-
         item_event_id = f"event_user_item_{uuid.uuid4().hex}"
         response_event_id = f"event_user_response_{uuid.uuid4().hex}"
         item_id = f"item_neko_{uuid.uuid4().hex}"
@@ -200,6 +197,7 @@ class _ResponseMixin:
             ack_expected=True,
             expected_item_id=expected_item_id,
             expected_item_role="user",
+            suppress_output=skipped,
         )
         await ticket.sent
 
@@ -1335,7 +1333,7 @@ class _ResponseMixin:
                 turn_complete=False,
             )
             return
-        if wait:
-            await self._ensure_response_arbiter().cancel_current(timeout)
-            return
-        await self.send_event({"type": "response.cancel"})
+        await self._ensure_response_arbiter().cancel_current(
+            timeout,
+            wait=wait,
+        )

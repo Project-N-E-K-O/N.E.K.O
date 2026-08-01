@@ -85,6 +85,13 @@ class TurnMixin:
             # 再覆盖成 proactive sid。完整 USER_INPUT 事件仍在锁外 fire，以更新
             # owner/user_sid 并派发订阅者。
             self.state.mark_user_input_preempt()
+            notify_host_turn_started = getattr(
+                getattr(self, "session", None),
+                "notify_host_turn_started",
+                None,
+            )
+            if notify_host_turn_started is not None:
+                notify_host_turn_started()
         await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
 
     async def rotate_speech_id_for_response_done(self):
@@ -112,16 +119,19 @@ class TurnMixin:
         """
         if self._takeover_active:
             return
-        self.audio_resampler.clear()
         # 必须重置这两个 flag，否则下一轮 ``_request_tts_done_locked`` 会因
         # ``_tts_done_queued_for_turn=True`` 直接 early-return，下一轮的 TTS
         # flush sentinel 永远不入队，server 拿不到 ``tts.flush`` 句尾音频
         # 可能挂在 buffer 里、长句 utterance 不会 finalize。``handle_new_message``
         # 在 speech_stopped 路径也是这样 reset 的（[core.py:1214](main_logic/core.py:1214)），
         # 这里和它对偶。
-        self._tts_done_queued_for_turn = False
-        self._tts_done_pending_until_ready = False
         async with self.lock:
+            # Cancellation while waiting for the lock must leave the old turn
+            # wholly intact. Keep every successor-state mutation in this
+            # non-awaiting critical section.
+            self.audio_resampler.clear()
+            self._tts_done_queued_for_turn = False
+            self._tts_done_pending_until_ready = False
             self.current_speech_id = str(uuid4())
 
     async def handle_text_data(
