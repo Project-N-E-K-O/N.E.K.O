@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from typing import Any
@@ -574,6 +575,16 @@ class QQSettingsService:
         async with self._speaker_trust_write_lock:
             async with self._consent_transaction_lock:
                 return await self._persist_business_config_locked(overlay)
+
+    async def mutate_business_config(
+        self, mutation: Callable[[dict[str, Any]], bool],
+    ) -> bool:
+        """Run a direct settings read-modify-write under both writer locks."""
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                if not mutation(self.plugin._qq_settings):
+                    return True
+                return await self._persist_business_config_locked()
 
     async def _persist_business_config_locked(
         self,

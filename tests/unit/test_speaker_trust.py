@@ -686,6 +686,78 @@ async def test_batch_owner_signal_ignores_later_segment_reconciliation():
 
 
 @pytest.mark.asyncio
+async def test_batch_owner_signal_preserves_concurrent_provenance_update():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    member = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:1001",
+        },
+        "speaker_label": "Alice(1001)",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.3,
+    }
+    prior = {
+        "id": "prior-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "speaker_label": "Alice-old(1001)",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    batch_reconciled = {
+        **prior,
+        "speaker_label": "Alice(1001)",
+    }
+    concurrent_current = dict(batch_reconciled)
+    concurrent_current.pop("speaker_id")
+    concurrent_current.pop("speaker_label")
+    concurrent_current["speaker_provenance_mixed"] = True
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [concurrent_current]]),
+        extract_facts_batch=AsyncMock(return_value=[
+            {"status": "ok", "created": [], "dropped": 0},
+            {
+                "status": "ok", "created": [],
+                "reconciled": [batch_reconciled], "dropped": 0,
+            },
+        ]),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[owner, member]),
+        )
+
+    assert response["segments"][0]["trust_events"] == []
+
+
+@pytest.mark.asyncio
 async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest
@@ -1162,6 +1234,84 @@ async def test_direct_settings_save_waits_for_failed_trust_transaction():
     assert not await writer
     assert await dashboard_save
     assert payloads[1]["speaker_trust_profiles"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize((
+    "action_name", "action_args", "setting_key", "initial_value",
+    "expected_value",
+), [
+    (
+        "save_prompt_override", ("zh-CN", "identity", "new prompt"),
+        "prompt_overrides", {}, {"zh-CN": {"identity": "new prompt"}},
+    ),
+    (
+        "reset_prompt_override", ("zh-CN", "identity"),
+        "prompt_overrides", {"zh-CN": {"identity": "old prompt"}}, {},
+    ),
+    (
+        "save_group_prompt", ("7788", "new group prompt"),
+        "group_prompts", {}, {"7788": "new group prompt"},
+    ),
+    (
+        "delete_group_prompt", ("7788",),
+        "group_prompts", {"7788": "old group prompt"}, {},
+    ),
+])
+async def test_direct_action_mutation_waits_for_trust_writer(
+    action_name, action_args, setting_key, initial_value, expected_value,
+):
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    save_started = asyncio.Event()
+    save_release = asyncio.Event()
+    payloads = []
+
+    async def _save(payload):
+        payloads.append(dict(payload))
+        if len(payloads) == 1:
+            save_started.set()
+            await save_release.wait()
+        return dict(payload)
+
+    plugin = SimpleNamespace(
+        permission_mgr=manager,
+        group_permission_mgr=None,
+        logger=MagicMock(),
+        _qq_settings={
+            setting_key: json.loads(json.dumps(initial_value)),
+        },
+        config_store=SimpleNamespace(save=_save),
+        backlog_store=None,
+        _create_backlog_store_from_settings=lambda _settings: None,
+        session_instruction_service=SimpleNamespace(
+            _PROMPT_LAYERS=[{
+                "id": "identity", "i18n_key": "identity", "runtime": False,
+            }],
+            _discard_all_sessions_for_prompt_change=MagicMock(),
+        ),
+        session_runtime_service=None,
+        _emit_log=lambda *_args, **_kwargs: None,
+    )
+    service = QQSettingsService(plugin)
+    plugin.settings_service = service
+    trust_writer = asyncio.create_task(service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="trust-before-prompt", trust_events=[],
+    ))
+    await asyncio.wait_for(save_started.wait(), timeout=5.0)
+
+    action = getattr(QQAutoReplyPlugin, action_name)
+    action_writer = asyncio.create_task(action(plugin, *action_args))
+    await asyncio.sleep(0)
+    assert plugin._qq_settings[setting_key] == initial_value
+
+    save_release.set()
+    assert await trust_writer
+    await action_writer
+    assert payloads[-1][setting_key] == expected_value
 
 
 @pytest.mark.asyncio

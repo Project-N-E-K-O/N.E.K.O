@@ -1222,6 +1222,17 @@ async def _process_scoped_history_segments(
             status_code=502,
             detail="scoped fact extraction returned mismatched segments",
         )
+
+    def _speaker_provenance_fields(fact: dict) -> dict:
+        return {
+            key: fact[key]
+            for key in (
+                "speaker_id", "speaker_label", "speaker_trust",
+                "speaker_provenance_mixed",
+            )
+            if key in fact
+        }
+
     owner_signal_jobs = []
     for segment, result in zip(parsed, segment_results):
         segment["trust_events"] = []
@@ -1247,7 +1258,7 @@ async def _process_scoped_history_segments(
                     for fact in signal_facts
                     if isinstance(fact, dict) and fact.get("id") is not None
                 },
-                "later_reconciled_ids": set(),
+                "later_reconciled_by_id": {},
             })
         if signal_facts is not None:
             reconciled_by_id = {
@@ -1257,7 +1268,7 @@ async def _process_scoped_history_segments(
             }
             if reconciled_by_id:
                 for job in owner_signal_jobs:
-                    job["later_reconciled_ids"].update(reconciled_by_id)
+                    job["later_reconciled_by_id"].update(reconciled_by_id)
                 signal_facts[:] = [
                     reconciled_by_id.get(str(fact.get("id")), fact)
                     for fact in signal_facts
@@ -1294,9 +1305,14 @@ async def _process_scoped_history_segments(
                 current_fact = current_by_key.get(key)
                 if current_fact is None:
                     continue
+                batch_reconciled = job["later_reconciled_by_id"].get(key[0])
                 active_signal_facts.append(
                     authored_fact
-                    if key[0] in job["later_reconciled_ids"]
+                    if (
+                        batch_reconciled is not None
+                        and _speaker_provenance_fields(current_fact)
+                        == _speaker_provenance_fields(batch_reconciled)
+                    )
                     else current_fact
                 )
             segment["trust_events"] = (
