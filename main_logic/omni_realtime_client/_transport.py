@@ -1529,7 +1529,12 @@ class _TransportMixin:
         self._interrupted = True
 
         # 1. Cancel the current response
-        if self._current_response_id:
+        # Presence, not truthiness — the third site in this file where a
+        # numeric id of 0 would have read as "no response". Here the cost is
+        # the worst of the three: the barge-in would mark the turn interrupted
+        # and never send response.cancel, so generation keeps running and the
+        # arbiter lane stays held until the provider finishes on its own.
+        if self._current_response_id is not None:
             await self.cancel_response()
 
         self._is_responding = False

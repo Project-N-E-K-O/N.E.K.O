@@ -3295,14 +3295,46 @@ async def test_a_zero_id_is_still_an_identity_to_the_stale_filter():
             {"type": "response.done", "response": {"id": 0, "status": "completed"}},
         ]
     )
-    try:
+    # Only the bound expiring is expected — the socket parks after its frames.
+    # Catching Exception here would let a crash inside the receive loop pass as
+    # a green regression test.
+    with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(client.handle_messages(), 1)
-    except (asyncio.TimeoutError, Exception):
-        # The socket parks after its frames; the bound expiring is the end of
-        # the scenario, and the assertions below judge it.
-        pass
 
     assert fired == [], (
         "response 0's terminal must not finalize the turn response 1 owns"
     )
     assert client._current_response_id == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_barge_in_cancels_a_response_whose_id_is_zero():
+    # The third truthiness site, and the one whose cost is worst. With
+    # `if self._current_response_id:` a barge-in against response `0` marked
+    # the turn interrupted and never sent `response.cancel` — generation keeps
+    # running and the arbiter's lane stays held until the provider finishes on
+    # its own.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sent = []
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+
+    async def _capture(event, **_kwargs):
+        sent.append(event.get("type"))
+
+    client.send_event = _capture
+    client._current_response_id = 0
+    client._is_responding = True
+
+    await client.handle_interruption()
+
+    assert "response.cancel" in sent, (
+        "id 0 names a live response; the barge-in must actually cancel it"
+    )
