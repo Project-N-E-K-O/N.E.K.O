@@ -439,3 +439,87 @@ async def test_identical_text_in_distinct_batches_has_distinct_activity_ids():
     ]
     assert event_ids[0] != event_ids[1]
     assert event_ids[0] == event_ids[2]
+
+
+def test_correction_relation_preserves_argument_order():
+    assert deterministic_relation("小明喜欢小红", "小红不喜欢小明") is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_participant_scope_cannot_emit_trust_events():
+    from memory.facts import FactStore
+
+    subject = MemorySubject.group_participant("qq", "7788", "9999")
+    store = object.__new__(FactStore)
+    store.aload_facts = AsyncMock(return_value=[{
+        "id": "missing-scope",
+        "text": "我喜欢猫",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+    }])
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "我不喜欢猫"}],
+        subject=subject,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+    )
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_reload_waits_before_reading_trust_config():
+    from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    stored = {
+        "trusted_users": [{"qq": "1001", "level": "normal"}],
+        "trusted_groups": [],
+        "speaker_trust_profiles": {},
+    }
+    manager = PermissionManager(stored["trusted_users"])
+    persist_started = asyncio.Event()
+    persist_release = asyncio.Event()
+    load_called = asyncio.Event()
+    plugin = SimpleNamespace(
+        permission_mgr=manager, group_permission_mgr=None,
+        logger=MagicMock(), _qq_settings={},
+        config_store=SimpleNamespace(exists=AsyncMock(return_value=True)),
+        _refresh_admin_qq=lambda: None,
+    )
+    settings = QQSettingsService(plugin)
+    plugin.settings_service = settings
+
+    async def _persist():
+        persist_started.set()
+        await persist_release.wait()
+        stored["speaker_trust_profiles"] = manager.speaker_trust_profiles()
+        return True
+
+    async def _load():
+        load_called.set()
+        return {
+            **stored,
+            "speaker_trust_profiles": dict(stored["speaker_trust_profiles"]),
+        }
+
+    settings.persist_business_config = _persist
+    settings.load_business_config = _load
+    settings.apply_runtime_settings = MagicMock()
+    dashboard = QQDashboardService(plugin)
+    dashboard.build_dashboard_state = AsyncMock(return_value={})
+
+    writer = asyncio.create_task(settings.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="reload-race", trust_events=[],
+    ))
+    await asyncio.wait_for(persist_started.wait(), timeout=5.0)
+    reload_task = asyncio.create_task(dashboard.init_config())
+    await asyncio.sleep(0)
+    assert not load_called.is_set()
+    persist_release.set()
+    assert await writer
+    await reload_task
+    assert plugin.permission_mgr.speaker_trust_profiles()["1001"][
+        "message_count"
+    ] == 1

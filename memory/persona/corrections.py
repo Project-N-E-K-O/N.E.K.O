@@ -75,12 +75,29 @@ class CorrectionsMixin:
                     speaker_id = stable_speaker_id(provenance.get('speaker_id'))
                     if speaker_id is None:
                         continue
-                    trust = normalize_trust(provenance.get('speaker_trust'))
-                    current_id = existing.get(f'{prefix}_speaker_id')
-                    current_trust = normalize_trust(
-                        existing.get(f'{prefix}_speaker_trust')
+                    raw_trust = provenance.get('speaker_trust')
+                    trust = (
+                        normalize_trust(raw_trust)
+                        if isinstance(raw_trust, (int, float))
+                        and not isinstance(raw_trust, bool)
+                        else None
                     )
-                    if current_id is None or trust > current_trust:
+                    current_id = existing.get(f'{prefix}_speaker_id')
+                    raw_current_trust = existing.get(f'{prefix}_speaker_trust')
+                    current_trust = (
+                        normalize_trust(raw_current_trust)
+                        if isinstance(raw_current_trust, (int, float))
+                        and not isinstance(raw_current_trust, bool)
+                        else None
+                    )
+                    if current_id is None:
+                        existing[f'{prefix}_speaker_id'] = speaker_id
+                        changed = True
+                    if trust is not None and (
+                        current_id is None
+                        or current_trust is None
+                        or trust > current_trust
+                    ):
                         existing[f'{prefix}_speaker_id'] = speaker_id
                         existing[f'{prefix}_speaker_trust'] = trust
                         changed = True
@@ -105,9 +122,11 @@ class CorrectionsMixin:
             speaker_id = stable_speaker_id(provenance.get('speaker_id'))
             if speaker_id is not None:
                 item[f'{prefix}_speaker_id'] = speaker_id
-                item[f'{prefix}_speaker_trust'] = normalize_trust(
-                    provenance.get('speaker_trust')
-                )
+                raw_trust = provenance.get('speaker_trust')
+                if isinstance(raw_trust, (int, float)) and not isinstance(
+                    raw_trust, bool
+                ):
+                    item[f'{prefix}_speaker_trust'] = normalize_trust(raw_trust)
         corrections.append(item)
         return corrections
 
@@ -418,10 +437,18 @@ class CorrectionsMixin:
             old_speaker_id = item.get('old_speaker_id')
             new_speaker_id = item.get('new_speaker_id')
             preference = None
-            if old_speaker_id and new_speaker_id and old_speaker_id != new_speaker_id:
+            old_trust = item.get('old_speaker_trust')
+            new_trust = item.get('new_speaker_trust')
+            if (
+                old_speaker_id and new_speaker_id
+                and old_speaker_id != new_speaker_id
+                and isinstance(old_trust, (int, float))
+                and not isinstance(old_trust, bool)
+                and isinstance(new_trust, (int, float))
+                and not isinstance(new_trust, bool)
+            ):
                 preference = preferred_by_trust(
-                    item.get('old_speaker_trust'),
-                    item.get('new_speaker_trust'),
+                    old_trust, new_trust,
                 )
             if preference is not None and action != 'keep_both':
                 forced = 'keep_old' if preference == 'old' else 'keep_new'

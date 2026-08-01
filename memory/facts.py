@@ -57,7 +57,12 @@ from config.prompts.prompts_memory import (
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
-from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
+from memory.scopes import (
+    MemorySubject,
+    coerce_subject,
+    entry_matches_subject,
+    subject_from_entry,
+)
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language, get_global_language_full
 from utils.config_manager import get_config_manager
@@ -1042,14 +1047,18 @@ class FactStore:
         def _in_signal_scope(entry: dict) -> bool:
             if memory_subject.kind != 'group_participant':
                 return entry_matches_subject(entry, memory_subject)
-            if entry.get('subject_kind') != 'group_participant':
+            candidate_subject = subject_from_entry(entry)
+            if (
+                candidate_subject is None
+                or candidate_subject.kind != 'group_participant'
+            ):
                 return False
             # A group participant subject is qq:<group>:<speaker>. Owner
             # confirmation in their own participant bucket may evaluate other
             # members of that same group, but never a different group.
             current_prefix = memory_subject.subject_id.rsplit(':', 1)[0]
-            candidate_id = str(entry.get('subject_id') or '')
-            return candidate_id.rsplit(':', 1)[0] == current_prefix
+            candidate_prefix = candidate_subject.subject_id.rsplit(':', 1)[0]
+            return candidate_prefix == current_prefix
 
         events: list[dict] = []
         seen: set[tuple[str, str]] = set()
@@ -2504,9 +2513,31 @@ class FactStore:
 
         new_facts: list[dict] = []
         upgraded_count = 0
+        provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
         # in-place 升级，否则重试撞守卫直接跳过保存。
         upgraded_snapshots: list[tuple[dict, Any, Any]] = []
+        provenance_snapshots: list[tuple[dict, dict[str, Any]]] = []
+        request_provenance: dict[str, Any] = {}
+        if isinstance(speaker_provenance, dict):
+            from memory.speaker_trust import stable_speaker_id
+            request_speaker_id = stable_speaker_id(
+                speaker_provenance.get('speaker_id')
+            )
+            if request_speaker_id is not None:
+                request_provenance['speaker_id'] = request_speaker_id
+                label = str(
+                    speaker_provenance.get('speaker_label') or ''
+                ).strip()
+                if label:
+                    request_provenance['speaker_label'] = label[:64]
+                trust = speaker_provenance.get('speaker_trust')
+                if (
+                    isinstance(trust, (int, float))
+                    and not isinstance(trust, bool)
+                    and 0.0 <= float(trust) <= 1.0
+                ):
+                    request_provenance['speaker_trust'] = float(trust)
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -2609,6 +2640,50 @@ class FactStore:
                     if existing.get('signal_processed') is False:
                         existing[self._SIGNAL_RESET_PENDING] = True
                     upgraded_count += 1
+                if (
+                    existing is not None
+                    and source == 'user_observation'
+                    and request_provenance.get('speaker_id')
+                ):
+                    from memory.speaker_trust import (
+                        provenance_of_entries,
+                        stable_speaker_id,
+                    )
+                    provenance_keys = (
+                        'speaker_id', 'speaker_label', 'speaker_trust',
+                    )
+                    existing_speaker_id = stable_speaker_id(
+                        existing.get('speaker_id')
+                    )
+                    if existing_speaker_id is None:
+                        desired_provenance = dict(request_provenance)
+                    elif existing_speaker_id == request_provenance['speaker_id']:
+                        desired_provenance = provenance_of_entries((
+                            existing, request_provenance,
+                        ))
+                    else:
+                        # Identical content now has multiple independently
+                        # attributed sources. Never let it borrow the strongest
+                        # speaker's weight; clear the single-source claim.
+                        desired_provenance = {}
+                    current_provenance = {
+                        key: existing[key]
+                        for key in provenance_keys if key in existing
+                    }
+                    if current_provenance != desired_provenance:
+                        provenance_snapshots.append((
+                            existing, current_provenance,
+                        ))
+                        for key in provenance_keys:
+                            existing.pop(key, None)
+                        existing.update(desired_provenance)
+                        provenance_updated_count += 1
+                        logger.info(
+                            f"[FactStore] {lanlan_name}: exact fact provenance "
+                            f"reconciled fact_id={existing.get('id')} "
+                            f"existing_speaker={existing_speaker_id or '-'} "
+                            f"incoming_speaker={request_provenance['speaker_id']}"
+                        )
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
@@ -2774,24 +2849,10 @@ class FactStore:
             }
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
-            if speaker_provenance and source == 'user_observation':
-                # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
-                label = str(speaker_provenance.get('speaker_label') or '').strip()
-                if label:
-                    fact_entry['speaker_label'] = label[:64]
-                trust = speaker_provenance.get('speaker_trust')
-                if (
-                    isinstance(trust, (int, float))
-                    and not isinstance(trust, bool)
-                    and 0.0 <= float(trust) <= 1.0
-                ):
-                    fact_entry['speaker_trust'] = float(trust)
-                from memory.speaker_trust import stable_speaker_id
-                speaker_id = stable_speaker_id(
-                    speaker_provenance.get('speaker_id')
-                )
-                if speaker_id is not None:
-                    fact_entry['speaker_id'] = speaker_id
+            if request_provenance and source == 'user_observation':
+                # Whitelisted, request-derived fields only. Model-produced
+                # lookalike keys never enter request_provenance.
+                fact_entry.update(request_provenance)
 
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
@@ -2819,7 +2880,7 @@ class FactStore:
                     # facts.json 从未收到它（维护模式等场景）。
                     await self._rollback_uncommitted_facts(
                         lanlan_name, new_facts, existing_hashes,
-                        upgraded_snapshots,
+                        upgraded_snapshots, provenance_snapshots,
                     )
                     raise
 
@@ -2827,7 +2888,7 @@ class FactStore:
         # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
         # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
         # 把升级 wipe 了。
-        if new_facts or upgraded_count:
+        if new_facts or upgraded_count or provenance_updated_count:
             try:
                 await self.asave_facts(lanlan_name)
             except BaseException:
@@ -2838,7 +2899,7 @@ class FactStore:
                 # 重试会重做），让重试重新走完整提取+持久化。
                 await self._rollback_uncommitted_facts(
                     lanlan_name, new_facts, existing_hashes,
-                    upgraded_snapshots,
+                    upgraded_snapshots, provenance_snapshots,
                 )
                 raise
         if new_facts:
@@ -2862,6 +2923,11 @@ class FactStore:
             logger.info(
                 f"[FactStore] {lanlan_name}: 升级 {upgraded_count} 条 ai_disclosure → user_observation "
                 f"(user 印证后重入 Stage-2 evidence loop)"
+            )
+        if provenance_updated_count:
+            logger.info(
+                f"[FactStore] {lanlan_name}: reconciled provenance for "
+                f"{provenance_updated_count} exact facts"
             )
 
         return new_facts
@@ -4005,14 +4071,15 @@ class FactStore:
     async def _rollback_uncommitted_facts(
         self, lanlan_name: str, new_facts: list, existing_hashes: set,
         upgraded_snapshots: list | None = None,
+        provenance_snapshots: list | None = None,
     ) -> None:
         """Undo in-memory effects of a batch that never reached disk.
 
         The fail-closed callers retry on error; if the cache and hash set
         keep the uncommitted rows, that retry deduplicates into an empty
         success and the caller advances a volatile cursor over facts that
-        facts.json never received. Upgrades are left alone (field-level
-        idempotent, redone by the retry)."""
+        facts.json never received. In-place source and provenance changes are
+        restored so a retry cannot hit the dedup guard and skip persistence."""
         for entry, prev_source, prev_signal in (upgraded_snapshots or []):
             # in-place 升级同样要还原：留着的话重试会撞升级守卫（source
             # 已是 user_observation）→ upgraded_count=0 → 整轮跳过保存，
@@ -4022,6 +4089,10 @@ class FactStore:
                 entry.pop('signal_processed', None)
             else:
                 entry['signal_processed'] = prev_signal
+        for entry, previous in reversed(provenance_snapshots or []):
+            for key in ('speaker_id', 'speaker_label', 'speaker_trust'):
+                entry.pop(key, None)
+            entry.update(previous)
         added_ids = {
             nf.get('id') for nf in new_facts if isinstance(nf, dict)
         }

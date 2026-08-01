@@ -619,6 +619,21 @@ class QQSessionMemoryService:
         # this member's user permission.  Resolve the member profile directly
         # so a trusted group cannot promote every speaker's trust baseline.
         permission_level = self._speaker_permission_level_for(sender_id)
+        sequence = user_data.get("group_member_message_sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool):
+            # Hot-reload compatibility: stamp already buffered rows before
+            # assigning the first sequence to a new row. Message content can
+            # never choose or influence this code-side ordering key.
+            sequence = 0
+            for buffered in buckets.values():
+                for buffered_message in buffered or []:
+                    if not isinstance(buffered_message, dict):
+                        continue
+                    sequence += 1
+                    buffered_message.setdefault("_speaker_sequence", sequence)
+            user_data["group_member_message_sequence"] = sequence
+        sequence += 1
+        user_data["group_member_message_sequence"] = sequence
         activity_id = hashlib.sha256(
             f"{sender_id}|{time.time_ns()}|{len(messages)}|{text}".encode("utf-8")
         ).hexdigest()[:24]
@@ -630,6 +645,7 @@ class QQSessionMemoryService:
             # by the permission held when each message was authored.
             "_speaker_permission_level": permission_level,
             "_speaker_activity_id": activity_id,
+            "_speaker_sequence": sequence,
         })
         if len(messages) >= self.GROUP_MEMBER_MAX_MESSAGES:
             # 活跃群永远等不到 idle 结算，焦点 digest 又只冲群历史：到线
@@ -1268,10 +1284,30 @@ class QQSessionMemoryService:
         )
         member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
-        def _speaker_segment_group(sender_id: str) -> list[dict[str, Any]]:
+        def _chronological_segment_groups() -> list[list[dict[str, Any]]]:
+            ordered_messages: list[tuple[tuple[int, int, int, int], str, Any]] = []
+            for bucket_index, (sender_id, messages) in enumerate(
+                list(member_buckets.items())
+            ):
+                for message_index, message in enumerate(list(messages or [])):
+                    raw_sequence = (
+                        message.get("_speaker_sequence")
+                        if isinstance(message, dict) else None
+                    )
+                    if isinstance(raw_sequence, int) and not isinstance(
+                        raw_sequence, bool
+                    ):
+                        key = (0, raw_sequence, bucket_index, message_index)
+                    else:
+                        # Synthetic/legacy rows without the internal stamp keep
+                        # the historical deterministic bucket order.
+                        key = (1, bucket_index, message_index, 0)
+                    ordered_messages.append((key, sender_id, message))
+            ordered_messages.sort(key=lambda item: item[0])
+
             segments: list[dict[str, Any]] = []
-            fallback = self._speaker_permission_level_for(sender_id)
-            for message in list(member_buckets.get(sender_id) or []):
+            for _, sender_id, message in ordered_messages:
+                fallback = self._speaker_permission_level_for(sender_id)
                 raw_level = (
                     message.get("_speaker_permission_level")
                     if isinstance(message, dict) else None
@@ -1279,20 +1315,23 @@ class QQSessionMemoryService:
                 level = self._speaker_permission_level_for(
                     sender_id, raw_level or fallback,
                 )
-                if not segments or segments[-1]["permission_level"] != level:
+                if (
+                    not segments
+                    or segments[-1]["sender_id"] != sender_id
+                    or segments[-1]["permission_level"] != level
+                ):
                     segments.append({
                         "sender_id": sender_id,
                         "permission_level": level,
                         "messages": [],
                     })
                 segments[-1]["messages"].append(message)
-            return segments
+            # Each chronological run is its own packable group. The packer
+            # may coalesce adjacent runs into one request but cannot reorder
+            # them across speakers.
+            return [[segment] for segment in segments]
 
-        speaker_segment_groups = [
-            group
-            for sender_id in list(member_buckets)
-            if (group := _speaker_segment_group(sender_id))
-        ]
+        speaker_segment_groups = _chronological_segment_groups()
 
         async def _flush_one_batch(batch_specs: list[dict]) -> list[str]:
             async with member_flush_sem:
@@ -1456,32 +1495,51 @@ class QQSessionMemoryService:
         try:
             chains: list[list[list[dict]]] = []
             sender_chains: dict[str, list[list[dict]]] = {}
-            for batch in batches:
-                senders = {
-                    str(spec.get("sender_id") or "") for spec in batch
-                    if spec.get("sender_id")
-                }
-                if len(senders) == 1:
-                    sender_id = next(iter(senders))
-                    chain = sender_chains.get(sender_id)
-                    if chain is None:
-                        chain = []
-                        sender_chains[sender_id] = chain
-                        chains.append(chain)
-                    chain.append(batch)
-                else:
-                    chains.append([batch])
+            has_owner_segment = any(
+                self._speaker_is_owner_for(
+                    str(spec.get("sender_id") or ""),
+                    spec.get("permission_level"),
+                )
+                for batch in batches for spec in batch
+            )
+            if has_owner_segment:
+                # Owner confirmation/correction signals consume facts created
+                # by earlier segments. Preserve the global authored order
+                # across request boundaries as well as inside each request.
+                chains.append(batches)
+            else:
+                for batch in batches:
+                    senders = {
+                        str(spec.get("sender_id") or "") for spec in batch
+                        if spec.get("sender_id")
+                    }
+                    if len(senders) == 1:
+                        sender_id = next(iter(senders))
+                        chain = sender_chains.get(sender_id)
+                        if chain is None:
+                            chain = []
+                            sender_chains[sender_id] = chain
+                            chains.append(chain)
+                        chain.append(batch)
+                    else:
+                        chains.append([batch])
 
             async def _flush_chain(chain: list[list[dict]]) -> list[str]:
                 failed: list[str] = []
-                for batch in chain:
+                for batch_index, batch in enumerate(chain):
                     batch_failed = await _flush_one_batch(batch)
                     failed.extend(batch_failed)
                     if batch_failed:
-                        # Later chunks from the same speaker must not overtake
-                        # an earlier failed permission run.
+                        # Later chronological work must not overtake a failed
+                        # predecessor. Report its still-buffered senders too,
+                        # so callers do not mistake "not attempted" for ok.
+                        failed.extend(
+                            str(spec.get("sender_id") or "")
+                            for later in chain[batch_index + 1:]
+                            for spec in later if spec.get("sender_id")
+                        )
                         break
-                return failed
+                return list(dict.fromkeys(failed))
 
             failed_lists = await asyncio.gather(
                 *(_flush_chain(chain) for chain in chains)

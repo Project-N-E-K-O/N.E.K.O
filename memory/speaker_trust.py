@@ -31,6 +31,8 @@ def normalize_trust(value, default: float = SPEAKER_TRUST_DEFAULT) -> float:
 
 
 def trust_band(value) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "unknown"
     score = normalize_trust(value)
     if score >= 0.75:
         return "high"
@@ -77,12 +79,16 @@ def _polarity(text: str) -> bool:
     )
 
 
-def _proposition_tokens(text: str) -> set[str]:
+def _proposition_tokens(text: str) -> tuple[str, ...]:
     """Return content tokens after removing explicit polarity markers."""
     cleaned = str(text or "").lower()
     for marker in sorted(_CJK_NEGATION_MARKERS, key=len, reverse=True):
         cleaned = cleaned.replace(marker, " ")
-    return _tokens(cleaned) - _WORD_NEGATION_MARKERS
+    return tuple(
+        match.group(0).lower()
+        for match in _WORD_RE.finditer(cleaned)
+        if match.group(0).lower() not in _WORD_NEGATION_MARKERS
+    )
 
 
 def deterministic_relation(old_text: str, new_text: str) -> str | None:

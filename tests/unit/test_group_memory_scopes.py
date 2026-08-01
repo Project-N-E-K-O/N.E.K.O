@@ -787,6 +787,117 @@ async def test_qq_group_session_writes_only_scoped_history():
 
 
 @pytest.mark.asyncio
+async def test_exact_dedup_reconciles_request_sources_conservatively():
+    harness = _PersistHarness()
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    first = await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
+            "speaker_label": "Alice",
+        },
+    )
+    await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+            "speaker_label": "Alice",
+        },
+    )
+    assert first[0]["speaker_id"] == "qq:1001"
+    assert first[0]["speaker_trust"] == pytest.approx(0.3)
+    await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.9,
+            "speaker_label": "Bob",
+        },
+    )
+    assert all(
+        key not in first[0]
+        for key in ("speaker_id", "speaker_trust", "speaker_label")
+    )
+
+
+@pytest.mark.asyncio
+async def test_exact_dedup_provenance_rolls_back_when_save_fails():
+    harness = _PersistHarness()
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    first = await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    harness.asave_facts = AsyncMock(side_effect=OSError("disk full"))
+    with pytest.raises(OSError, match="disk full"):
+        await harness._apersist_new_facts(
+            "Neko", [_fact("同一事实")], subject=subject,
+            semantic_dedup=False,
+            speaker_provenance={
+                "speaker_id": "qq:2002", "speaker_trust": 0.9,
+            },
+        )
+    assert first[0]["speaker_id"] == "qq:1001"
+    assert first[0]["speaker_trust"] == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_member_flush_preserves_cross_speaker_authored_order():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    levels = {"9999": "admin", "1001": "normal"}
+    sent = []
+
+    async def _post(_name, segments, **_kwargs):
+        sent.extend(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, sid: {"subject_id": f"qq:{gid}:{sid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    plugin = SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda _sender: None,
+            get_permission_level=lambda sender: levels[sender],
+        ),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+    user_data = {}
+
+    def _context(sender_id, message):
+        return SimpleNamespace(
+            member_memory_enabled=True, is_group=True, group_facing=False,
+            group_scene_mode="", source_kind="incoming",
+            sender_id=sender_id, user_nickname="", message=message,
+        )
+
+    service.record_group_member_turn(user_data, _context("9999", "先询问"))
+    service.record_group_member_turn(user_data, _context("1001", "我喜欢猫"))
+    service.record_group_member_turn(user_data, _context("9999", "她确实喜欢猫"))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    assert [segment["speaker_label"] for segment in sent] == [
+        "9999", "1001", "9999",
+    ]
+    assert [
+        segment["messages"][0]["content"][0]["text"] for segment in sent
+    ] == ["先询问", "我喜欢猫", "她确实喜欢猫"]
+
+
+@pytest.mark.asyncio
 async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
     from plugin.plugins.qq_auto_reply.session_memory_service import (

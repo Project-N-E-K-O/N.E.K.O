@@ -1226,3 +1226,21 @@ def test_rebind_fact_store_preserves_alocks(tmp_path):
     assert resolver._fact_store is fs2
     assert resolver._fact_store is not fs1
     assert resolver._get_alock("小天") is lock_before
+
+
+@pytest.mark.asyncio
+async def test_unscored_existing_fact_cannot_invent_a_trust_override(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "candidate", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "unscored", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002")
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]

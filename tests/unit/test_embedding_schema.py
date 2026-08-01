@@ -43,6 +43,53 @@ def test_persona_normalize_entry_seeds_embedding_fields_as_none():
     assert entry["version_history"] == []
 
 
+@pytest.mark.asyncio
+async def test_missing_correction_trust_stays_unknown_and_cannot_override(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(pm, "Neko", "旧观察", speaker_id="qq:2002")
+    await pm._aqueue_correction(
+        "Neko", "旧观察", "新观察", "master",
+        old_speaker_provenance={"speaker_id": "qq:2002"},
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+    )
+    pending = await pm.aload_pending_corrections("Neko")
+    assert "old_speaker_trust" not in pending[0]
+    prompts = []
+    response = MagicMock()
+    response.content = json.dumps([{"index": 0, "action": "keep_new"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, prompt, *_args, **_kwargs):
+            prompts.append(prompt)
+            return response
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_RecordingLLM()):
+        assert await pm.resolve_corrections("Neko") == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    assert [entry["text"] for entry in facts] == ["新观察"]
+    assert "trust=unknown" in prompts[0]
+
+
+def test_duplicate_partial_correction_does_not_invent_trust():
+    from memory.persona.corrections import CorrectionsMixin
+
+    corrections = [{
+        "old_text": "旧观察", "new_text": "新观察",
+        "entity": "master", "scope": None,
+    }]
+    assert CorrectionsMixin._build_correction_list(
+        corrections, "旧观察", "新观察", "master",
+        new_speaker_provenance={"speaker_id": "qq:1001"},
+    ) is corrections
+    assert corrections[0]["new_speaker_id"] == "qq:1001"
+    assert "new_speaker_trust" not in corrections[0]
+
+
 def test_persona_normalize_entry_preserves_existing_embedding_payload():
     """If a dict already carries an embedding triple (e.g. loaded from
     disk), normalize must NOT clobber it — that's the warmup worker's

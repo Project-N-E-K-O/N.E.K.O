@@ -975,10 +975,18 @@ class FactDedupResolver:
             from memory.speaker_trust import preferred_by_trust
             cand_speaker = cand.get('speaker_id')
             exist_speaker = existing.get('speaker_id')
+            cand_trust = cand.get('speaker_trust')
+            exist_trust = existing.get('speaker_trust')
             preference = None
-            if cand_speaker and exist_speaker and cand_speaker != exist_speaker:
+            if (
+                cand_speaker and exist_speaker and cand_speaker != exist_speaker
+                and isinstance(cand_trust, (int, float))
+                and not isinstance(cand_trust, bool)
+                and isinstance(exist_trust, (int, float))
+                and not isinstance(exist_trust, bool)
+            ):
                 preference = preferred_by_trust(
-                    existing.get('speaker_trust'), cand.get('speaker_trust'),
+                    exist_trust, cand_trust,
                 )
             if preference == 'old' and action == 'replace':
                 logger.info(

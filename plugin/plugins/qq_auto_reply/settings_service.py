@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from typing import Any
 
@@ -610,6 +611,13 @@ class QQSettingsService:
         )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
         self.plugin._refresh_admin_qq()
+
+    @asynccontextmanager
+    async def permission_manager_rebuild_guard(self):
+        """Serialize reloads with the global trust read-modify-write path."""
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                yield
 
     async def apply_speaker_trust_update(
         self,
