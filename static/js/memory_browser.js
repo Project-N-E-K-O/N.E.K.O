@@ -3381,6 +3381,14 @@
             showSaveStatus(loadFailed + '。' + refreshTip, false);
             return false;
         }
+        const saveFile = currentMemoryFile;
+        const saveSelectionId = memoryFileRequestId;
+        const saveFingerprint = currentMemoryFingerprint;
+        const saveIdentityToken = currentMemoryIdentityToken;
+        const stillTargetsSavedSelection = () => (
+            currentMemoryFile === saveFile
+            && memoryFileRequestId === saveSelectionId
+        );
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -3400,22 +3408,24 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    filename: currentMemoryFile,
+                    filename: saveFile,
                     chat: chatData,
-                    fingerprint: currentMemoryFingerprint,
-                    identity_token: currentMemoryIdentityToken
+                    fingerprint: saveFingerprint,
+                    identity_token: saveIdentityToken
                 })
             });
             const data = await resp.json();
             if (data.success) {
-                currentMemoryFingerprint = typeof data.fingerprint === 'string'
-                    ? data.fingerprint
-                    : null;
-                currentMemoryIdentityToken = typeof data.identity_token === 'string'
-                    ? data.identity_token
-                    : null;
-                setMemoryDirty(false);
-                showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
+                if (stillTargetsSavedSelection()) {
+                    currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                        ? data.fingerprint
+                        : null;
+                    currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                        ? data.identity_token
+                        : null;
+                    setMemoryDirty(false);
+                    showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
+                }
 
                 // 通知父窗口刷新对话上下文
                 if (data.need_refresh) {
@@ -3453,11 +3463,15 @@
                 return true;
             } else {
                 const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
+                if (stillTargetsSavedSelection()) {
+                    showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
+                }
                 return false;
             }
         } catch (e) {
-            showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
+            if (stillTargetsSavedSelection()) {
+                showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
+            }
             return false;
         }
     }

@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import re
@@ -295,10 +296,18 @@ def _install_ready_memory_browser_routes(
         )
 
     def handle_recent_file(route):
+        filename = parse_qs(urlparse(route.request.url).query).get(
+            "filename",
+            ["recent_测试猫娘.json"],
+        )[0]
         route.fulfill(
             status=200,
             content_type="application/json",
-            json={"content": memory_file.read_text(encoding="utf-8")},
+            json={
+                "content": memory_file.read_text(encoding="utf-8"),
+                "fingerprint": f"fp:{filename}",
+                "identity_token": f"token:{filename}",
+            },
         )
 
     def handle_review_config(route):
@@ -3480,6 +3489,95 @@ def test_memory_browser_unsaved_close_dialog_guards_cancel_discard_and_save(
     expect(dialog).to_be_hidden(timeout=5000)
     expect(mock_page.locator("#memory-unsaved-status")).to_be_hidden()
     assert mock_page.evaluate("window.__memoryCloseAttempts") == 2
+
+
+@pytest.mark.frontend
+def test_memory_browser_stale_save_response_does_not_overwrite_new_selection(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(
+        mock_page,
+        seed_memory_file,
+        recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
+        current_catgirl="测试猫娘",
+    )
+    mock_page.goto(f"{running_server}/memory_browser")
+
+    current = mock_page.locator("#memory-file-list .cat-btn", has_text="测试猫娘")
+    target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
+    expect(current).to_have_attribute("aria-current", "true", timeout=10000)
+
+    mock_page.evaluate(
+        """
+        () => {
+            const originalFetch = window.fetch.bind(window);
+            window.__memorySaveBodies = [];
+            window.__firstMemorySaveStarted = false;
+            window.__resolveFirstMemorySave = null;
+            window.fetch = (input, init) => {
+                const url = String(input && input.url ? input.url : input);
+                if (!url.includes('/api/memory/recent_file/save')) {
+                    return originalFetch(input, init);
+                }
+                window.__memorySaveBodies.push(JSON.parse(init.body));
+                if (!window.__firstMemorySaveStarted) {
+                    window.__firstMemorySaveStarted = true;
+                    return new Promise(resolve => {
+                        window.__resolveFirstMemorySave = () => resolve(new Response(
+                            JSON.stringify({
+                                success: true,
+                                need_refresh: false,
+                                fingerprint: 'fp:stale-a-response',
+                                identity_token: 'token:stale-a-response',
+                            }),
+                            { status: 200, headers: { 'Content-Type': 'application/json' } }
+                        ));
+                    });
+                }
+                return originalFetch(input, init);
+            };
+        }
+        """
+    )
+
+    mock_page.locator("#save-memory-btn").click()
+    mock_page.wait_for_function("window.__firstMemorySaveStarted === true")
+
+    target.click()
+    expect(target).to_have_attribute("aria-current", "true", timeout=5000)
+    memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    expect(memo).to_be_visible(timeout=5000)
+    memo.fill("备用猫娘的新备忘录")
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+
+    mock_page.evaluate(
+        """
+        async () => {
+            const resolveSave = window.__resolveFirstMemorySave;
+            window.__resolveFirstMemorySave = null;
+            resolveSave();
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        """
+    )
+
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+    expect(mock_page.locator("#save-status")).not_to_contain_text("保存成功")
+
+    with mock_page.expect_response(
+        lambda response: "/api/memory/recent_file/save" in response.url
+        and response.status == 200
+    ):
+        mock_page.locator("#save-memory-btn").click()
+
+    bodies = mock_page.evaluate("window.__memorySaveBodies")
+    assert bodies[0]["filename"] == "recent_测试猫娘.json"
+    assert bodies[1]["filename"] == "recent_备用猫娘.json"
+    assert bodies[1]["fingerprint"] == "fp:recent_备用猫娘.json"
+    assert bodies[1]["identity_token"] == "token:recent_备用猫娘.json"
 
 
 @pytest.mark.frontend
