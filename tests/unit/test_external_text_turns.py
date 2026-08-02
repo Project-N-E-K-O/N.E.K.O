@@ -741,7 +741,10 @@ async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
 
 
 async def _adoption_harness(
-    during_create_send=None, during_item_window=None, ack_expected=True
+    during_create_send=None,
+    during_item_window=None,
+    ack_expected=True,
+    announced_response_id="resp-auto",
 ):
     """Drive the route-1 shape, letting a test disturb one of its two moments.
 
@@ -759,7 +762,10 @@ async def _adoption_harness(
         sent.append(dict(event))
         if event["type"] == "conversation.item.create":
             arbiter.notify_response_created(
-                {"type": "response.created", "response": {"id": "resp-auto"}}
+                {
+                    "type": "response.created",
+                    "response": {"id": announced_response_id},
+                }
             )
             if during_item_window is not None:
                 during_item_window(arbiter)
@@ -3012,6 +3018,29 @@ async def test_a_reply_that_finishes_inside_the_item_window_is_still_adoptable()
     result = await asyncio.wait_for(ticket.done, 1.0)
     assert result is not None
     assert aborted == [], "a completed reply must not cost the transport"
+    assert "response.cancel" not in [event["type"] for event in sent]
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_idless_announcement_adopts_identity_from_early_terminal():
+    def finish_with_identity(arbiter):
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-terminal", "status": "completed"},
+            }
+        )
+
+    arbiter, ticket, sent, aborted = await _adoption_harness(
+        during_item_window=finish_with_identity,
+        announced_response_id=None,
+    )
+    result = await asyncio.wait_for(ticket.done, 1.0)
+
+    assert result is not None
+    assert aborted == []
     assert "response.cancel" not in [event["type"] for event in sent]
     await arbiter.shutdown()
 

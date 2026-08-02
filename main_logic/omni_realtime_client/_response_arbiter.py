@@ -335,6 +335,7 @@ class RealtimeResponseArbiter:
         # serial to have advanced exactly once, so two announcements in the
         # window are ambiguous and neither is adoptable.
         self._adoptable_announcement: str | None = None
+        self._adoptable_generation: int | None = None
         self._adoptable_serial = 0
         # Set when the adoptable announcement's own terminal arrives
         # before anyone claimed it. Adoption stays deferred to the started
@@ -936,7 +937,11 @@ class RealtimeResponseArbiter:
         while len(self._seen_response_ids) > _SEEN_RESPONSE_ID_LIMIT:
             del self._seen_response_ids[next(iter(self._seen_response_ids))]
 
-    def _note_unowned_announcement(self, response_id: str | None) -> None:
+    def _note_unowned_announcement(
+        self,
+        response_id: str | None,
+        generation: int,
+    ) -> None:
         """Offer an announcement nobody claimed as adoptable, exactly once.
 
         The serial advances for every unowned announcement including the
@@ -946,6 +951,7 @@ class RealtimeResponseArbiter:
 
         self._adoptable_serial += 1
         self._adoptable_announcement = response_id
+        self._adoptable_generation = generation
         self._adoptable_terminal_status = None
 
     def _bump_vad_epoch(self) -> None:
@@ -1074,6 +1080,7 @@ class RealtimeResponseArbiter:
         self._remember_seen_response_id(response_id)
         terminal_status = self._adoptable_terminal_status
         self._adoptable_announcement = None
+        self._adoptable_generation = None
         self._adoptable_terminal_status = None
         if not queued.ticket.started.done():
             queued.ticket.started.set_result(None)
@@ -1467,7 +1474,7 @@ class RealtimeResponseArbiter:
         # while the item-ack barrier still holds the owner slot empty. Nothing
         # here decides that; ``_adoptable_id_for`` does, against evidence the
         # dispatching request captured for itself.
-        self._note_unowned_announcement(response_id)
+        self._note_unowned_announcement(response_id, lifetime.generation)
         return ResponseCreatedResult(
             ResponseCreatedKind.UNOWNED_SERVER,
             response_id,
@@ -1539,7 +1546,7 @@ class RealtimeResponseArbiter:
                     suppress_output=self.suppress_output_for_generation(None),
                 )
                 self._remember_seen_response_id(text)
-                self._note_unowned_announcement(text)
+                self._note_unowned_announcement(text, lifetime.generation)
                 return lifetime.generation
             return None
         owner.response_id = text
@@ -1818,7 +1825,12 @@ class RealtimeResponseArbiter:
                 # A terminal retires exactly the unowned lifetime it names.
                 # For id-less responses, list order pairs it with the oldest
                 # still-live id-less announcement.
-                if response_id == self._adoptable_announcement:
+                if generation == self._adoptable_generation:
+                    # Some providers announce an id-less response and reveal
+                    # its identity only on the terminal frame. The lifetime
+                    # matcher upgrades that identity in place; carry the same
+                    # upgrade into the adoption evidence before retiring it.
+                    self._adoptable_announcement = lifetime.response_id
                     self._adoptable_terminal_status = response_status or "completed"
                 self._remove_lifetime(lifetime)
                 if self._response_owner is None:
@@ -2201,6 +2213,7 @@ class RealtimeResponseArbiter:
         # its owner.
         self._seen_response_ids.clear()
         self._adoptable_announcement = None
+        self._adoptable_generation = None
         self._adoptable_terminal_status = None
         self._server_vad_response_pending = False
         self._server_vad_pending_generation = None

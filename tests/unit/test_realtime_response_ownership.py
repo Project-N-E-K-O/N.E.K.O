@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -1793,7 +1792,7 @@ async def test_connection_task_retirement_is_bounded_when_handler_ignores_cancel
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_connection_task_failure_is_retrieved_without_logging_payload(caplog):
+async def test_connection_task_failure_is_retrieved_without_logging_payload(monkeypatch):
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",
         "test-key",
@@ -1804,13 +1803,17 @@ async def test_connection_task_failure_is_retrieved_without_logging_payload(capl
     async def fail():
         raise RuntimeError("private provider payload")
 
-    with caplog.at_level(logging.WARNING):
-        task = client._fire_connection_task(fail())
-        await asyncio.wait({task})
-        await asyncio.sleep(0)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "main_logic.omni_realtime_client._client.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    task = client._fire_connection_task(fail())
+    await asyncio.wait({task})
+    await asyncio.sleep(0)
 
-    assert "connection-scoped task failed: RuntimeError" in caplog.text
-    assert "private provider payload" not in caplog.text
+    assert warnings == ["connection-scoped task failed: RuntimeError"]
+    assert "private provider payload" not in "\n".join(warnings)
     await client.close()
 
 
@@ -1841,7 +1844,6 @@ async def test_connection_task_can_close_its_own_socket_without_self_cancel():
 @pytest.mark.asyncio
 async def test_deferred_sid_rotation_timeout_is_logged_and_keeps_retry_state(
     monkeypatch,
-    caplog,
 ):
     monkeypatch.setattr(
         "main_logic.omni_realtime_client._transport."
@@ -1861,11 +1863,15 @@ async def test_deferred_sid_rotation_timeout_is_logged_and_keeps_retry_state(
         await asyncio.Event().wait()
 
     client.on_sid_rotate = stuck_rotation
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(asyncio.TimeoutError):
-            await client._before_response_dispatch()
+    errors: list[str] = []
+    monkeypatch.setattr(
+        "main_logic.omni_realtime_client._transport.logger.error",
+        lambda message, *args: errors.append(message % args),
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await client._before_response_dispatch()
 
-    assert "deferred sid rotation exceeded" in caplog.text
+    assert errors == ["deferred sid rotation exceeded 0.0s before successor dispatch"]
     assert client._sid_rotation_required_before_dispatch is True
     await client.close()
 
