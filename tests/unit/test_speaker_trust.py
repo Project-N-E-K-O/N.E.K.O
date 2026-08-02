@@ -1887,6 +1887,47 @@ async def test_trust_only_save_does_not_publish_staged_permission_mutations():
 
 
 @pytest.mark.asyncio
+async def test_failed_trust_save_restores_published_permission_snapshot():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    published_users = [{"qq": "1001", "level": "normal"}]
+    manager = PermissionManager(published_users)
+    payloads = []
+
+    async def _save(payload):
+        payloads.append(json.loads(json.dumps(payload)))
+        if len(payloads) == 1:
+            raise OSError("disk full")
+        return dict(payload)
+
+    plugin = SimpleNamespace(
+        permission_mgr=manager,
+        group_permission_mgr=None,
+        logger=MagicMock(),
+        _qq_settings={"trusted_users": published_users},
+        config_store=SimpleNamespace(save=_save),
+        backlog_store=None,
+        _create_backlog_store_from_settings=lambda _settings: None,
+    )
+    service = QQSettingsService(plugin)
+
+    assert manager.add_user("2002", "trusted")
+    assert not await service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="failed-trust-during-dashboard-invalidation",
+        trust_events=[],
+    )
+    assert plugin._qq_settings["trusted_users"] == published_users
+
+    assert await service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="retry-after-failed-trust-save",
+        trust_events=[],
+    )
+    assert payloads[1]["trusted_users"] == published_users
+
+
+@pytest.mark.asyncio
 async def test_unpersisted_trust_is_invisible_during_slow_failed_save():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

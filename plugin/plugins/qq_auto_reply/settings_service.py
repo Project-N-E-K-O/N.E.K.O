@@ -639,6 +639,12 @@ class QQSettingsService:
                 )
             return True
         except Exception as e:
+            if preserve_published_permissions:
+                # The live managers may contain a dashboard mutation whose
+                # owning action has not entered this transaction yet. A
+                # failed trust-only save must not publish that staged state
+                # into the runtime settings snapshot used by the next save.
+                self.plugin._qq_settings.update(published_permissions)
             self.plugin.logger.error(f"持久化 QQ 配置失败: {e}")
             return False
 
