@@ -21,6 +21,18 @@ jobs:
       NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O
       NEKO_REF: ${{ inputs.neko-ref }}
     steps:
+      - name: Validate workflow inputs
+        shell: bash
+        run: |
+          if [[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]; then
+            echo "Invalid plugin id: $PLUGIN_ID" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            echo "Market release requires a tag ref, got ${GITHUB_REF_TYPE}: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
       - name: Checkout plugin repository
         uses: actions/checkout@v4
         with:
@@ -116,6 +128,7 @@ jobs:
           path: neko/plugin/neko_plugin_cli/target/market-evidence.json
 
       - name: Create GitHub Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true

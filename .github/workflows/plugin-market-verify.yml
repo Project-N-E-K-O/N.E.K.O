@@ -21,6 +21,14 @@ jobs:
       NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O
       NEKO_REF: ${{ inputs.neko-ref }}
     steps:
+      - name: Validate workflow inputs
+        shell: bash
+        run: |
+          if [[ ! "$PLUGIN_ID" =~ ^[a-z][a-z0-9_]*$ ]]; then
+            echo "Invalid plugin id: $PLUGIN_ID" >&2
+            exit 1
+          fi
+
       - name: Checkout plugin repository
         uses: actions/checkout@v4
         with:
