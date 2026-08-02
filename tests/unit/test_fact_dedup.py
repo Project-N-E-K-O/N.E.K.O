@@ -190,8 +190,14 @@ async def test_group_participants_share_only_their_groups_arbitration_domain(
     await _seed_facts(fs, "Neko", rows)
     assert await resolver.aenqueue_candidates("Neko", pairs) == 1
     model = _make_llm_mock([{"index": 0, "action": "replace"}])
-    with patch("utils.llm_client.create_chat_llm", return_value=model):
+    with patch("utils.llm_client.create_chat_llm", return_value=model), \
+            patch("memory.facts.logger.info") as log_info:
         assert await resolver.aresolve("Neko") == 1
+    assert any(
+        "仲裁归档 fact=a" in str(call.args[0])
+        and "superseded_by=b" in str(call.args[0])
+        for call in log_info.call_args_list
+    )
     active = await fs.aload_facts("Neko")
     assert {row["id"] for row in active} == {"b", "c"}
     survivor = next(row for row in active if row["id"] == "b")

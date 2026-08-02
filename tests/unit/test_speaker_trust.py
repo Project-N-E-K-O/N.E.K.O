@@ -2278,6 +2278,7 @@ def test_english_lexical_uncertainty_never_emits_correction(marker):
 
 @pytest.mark.parametrize("verb", [
     "said", "reported", "claimed", "believed", "announced", "wrote", "heard",
+    "stated", "asserted", "observed", "found",
 ])
 def test_bare_reported_speech_complements_never_emit_correction(verb):
     assert deterministic_relation(

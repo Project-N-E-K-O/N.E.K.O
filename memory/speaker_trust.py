@@ -54,10 +54,19 @@ _EPISTEMIC_LEXICAL_MARKERS = frozenset({
     "maybe", "perhaps", "possibly", "probably",
 })
 _REPORTING_VERBS = frozenset({
-    "announce", "announced", "announces", "believe", "believed", "believes",
-    "claim", "claimed", "claims", "hear", "heard", "hears", "report",
-    "reported", "reports", "say", "said", "says", "tell", "tells", "think",
-    "thinks", "thought", "told", "write", "writes", "wrote",
+    "acknowledge", "acknowledged", "acknowledges", "admit", "admits", "admitted",
+    "allege", "alleged", "alleges", "announce", "announced", "announces",
+    "assert", "asserted", "asserts", "believe", "believed", "believes",
+    "claim", "claimed", "claims", "confirm", "confirmed", "confirms",
+    "declare", "declared", "declares", "discover", "discovered", "discovers",
+    "explain", "explained", "explains", "find", "finds", "found", "hear",
+    "heard", "hears", "indicate", "indicated", "indicates", "mention",
+    "mentioned", "mentions", "note", "noted", "notes", "observe", "observed",
+    "observes", "recall", "recalled", "recalls", "remember", "remembered",
+    "remembers", "report", "reported", "reports", "say", "said", "says",
+    "state", "stated", "states", "suggest", "suggested", "suggests", "tell",
+    "tells", "think", "thinks", "thought", "told", "understand", "understands",
+    "understood", "write", "writes", "wrote",
 })
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",

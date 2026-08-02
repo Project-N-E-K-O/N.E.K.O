@@ -1149,10 +1149,13 @@ class FactStore:
                         raise
                     facts[:] = active
                     for fact in losers:
+                        spec = archive_specs_by_identity.get(
+                            _fact_scoped_identity(fact),
+                        ) or {}
                         logger.info(
                             f"[FactStore] {name}: 仲裁归档 fact={fact.get('id')} "
                             f"speaker={fact.get('speaker_id')} "
-                            f"superseded_by={(archive_specs.get(fact.get('id')) or {}).get('superseded_by')}"
+                            f"superseded_by={spec.get('superseded_by')}"
                         )
                     return len(losers)
 
