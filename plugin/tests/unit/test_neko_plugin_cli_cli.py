@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import subprocess
 import zipfile
 
 import pytest
@@ -707,7 +708,7 @@ def test_init_repo_generates_market_compatible_ruff_gate(tmp_path: Path) -> None
 
     assert ruff_config == '''target-version = "py311"
 line-length = 120
-exclude = [".git"]
+extend-exclude = ["vendor"]
 respect-gitignore = false
 
 [lint]
@@ -741,6 +742,57 @@ from plugin.sdk.plugin import (
     plugin_entry,
 )
 ''' in plugin_source
+
+
+def test_generated_ruff_config_ignores_vendor_but_checks_plugin_source(
+    tmp_path: Path,
+) -> None:
+    assert (
+        neko_plugin_cli.main(
+            [
+                "init-repo",
+                "ruff_scope_demo",
+                "--plugins-root",
+                str(tmp_path),
+                "--no-git",
+            ]
+        )
+        == 0
+    )
+
+    repo_dir = tmp_path / "n.e.k.o_plugin_ruff_scope_demo"
+    vendor_file = repo_dir / "vendor" / "dependency.py"
+    vendor_file.parent.mkdir()
+    vendor_file.write_text("import os\n", encoding="utf-8")
+    ruff_command = [
+        "ruff",
+        "check",
+        "--ignore-noqa",
+        "--config",
+        "ruff.toml",
+        ".",
+    ]
+
+    vendor_result = subprocess.run(
+        ruff_command,
+        cwd=repo_dir,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert vendor_result.returncode == 0, vendor_result.stdout + vendor_result.stderr
+
+    (repo_dir / "bad_plugin.py").write_text("import os\n", encoding="utf-8")
+    plugin_result = subprocess.run(
+        ruff_command,
+        cwd=repo_dir,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert plugin_result.returncode == 1
+    assert "bad_plugin.py" in plugin_result.stdout
+    assert "F401" in plugin_result.stdout
 
 
 def test_init_without_github_actions_does_not_document_ruff_config(
@@ -853,6 +905,7 @@ def test_advanced_scaffold_with_github_actions_uses_ruff_clean_imports(
 from plugin.sdk.plugin import (
     NekoPluginBase,
     Ok,
+    PluginSettings,
     PluginStore,
     lifecycle,
     message,
@@ -862,7 +915,7 @@ from plugin.sdk.plugin import (
 )
 '''
     )
-    assert "PluginSettings" not in plugin_source
+    assert "    class Settings(PluginSettings):\n        pass\n" in plugin_source
 
 
 def test_init_repo_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:

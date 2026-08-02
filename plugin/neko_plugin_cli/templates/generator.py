@@ -337,6 +337,8 @@ def _render_plugin_init(spec: PluginSpec) -> str:
         imports.append("message")
     if "store" in spec.features:
         imports.append("PluginStore")
+    if "settings" in spec.features:
+        imports.append("PluginSettings")
 
     is_async = "async_support" in spec.features
 
@@ -354,6 +356,16 @@ def _render_plugin_init(spec: PluginSpec) -> str:
         "@neko_plugin",
         f"class {spec.class_name}(NekoPluginBase):",
         f'    """{_escape(spec.name or spec.plugin_id)}"""',
+    ])
+
+    if "settings" in spec.features:
+        lines.extend([
+            "",
+            "    class Settings(PluginSettings):",
+            "        pass",
+        ])
+
+    lines.extend([
         "",
         "    def __init__(self, ctx: Any):",
         "        super().__init__(ctx)",
@@ -823,7 +835,7 @@ def _render_ruff_config() -> str:
     """Render the same blocking Ruff policy used by the Plugin Market."""
     return '''target-version = "py311"
 line-length = 120
-exclude = [".git"]
+extend-exclude = ["vendor"]
 respect-gitignore = false
 
 [lint]
