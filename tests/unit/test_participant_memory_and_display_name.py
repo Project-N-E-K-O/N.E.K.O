@@ -2887,11 +2887,13 @@ async def test_bootstrap_section_participant_never_fetches_legacy():
     assert subjects == [
         {"subject_kind": "participant", "subject_id": "qq:1001"},
     ]
+    # The bridge must NOT receive a language here. What the caller holds is
+    # this process's default locale, not a per-conversation one, and sending
+    # it would outrank the durable per-subject locale the memory server
+    # restores on its own. (This assertion used to require the opposite.)
     assert (
-        plugin.memory_bridge.fetch_scoped_bootstrap_memory.await_args.kwargs[
-            "language"
-        ]
-        == "zh-TW"
+        "language"
+        not in plugin.memory_bridge.fetch_scoped_bootstrap_memory.await_args.kwargs
     )
 
     # sender 空：fail-closed 空 subjects → bridge 空串 → 无段；legacy 仍未被碰

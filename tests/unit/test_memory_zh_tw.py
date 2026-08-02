@@ -1505,6 +1505,100 @@ async def test_scoped_context_falls_through_subject_to_character_locale(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_scoped_locale_read_failure_degrades_instead_of_raising(monkeypatch):
+    """A transient sidecar read error must not escape as a 500.
+
+    ``_load_locale_state_unlocked`` raises ``PromptLocalePersistenceError`` on a
+    transient OSError deliberately — a *writer* caching that as empty state
+    would discard the real durable causal order. But these lookups are for
+    rendering, and the endpoints they sit in have their own fail-soft
+    contracts, so the read must degrade to the process locale instead.
+    """
+    from app.memory_server import locale_state, routes
+
+    rendered = []
+
+    async def render(_name, _req):
+        rendered.append(True)
+        return "ok"
+
+    async def broken_subject_locale(_name, _subject):
+        raise locale_state.PromptLocalePersistenceError("transient read failure")
+
+    def broken_character_locale(_name):
+        raise locale_state.PromptLocalePersistenceError("transient read failure")
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    monkeypatch.setattr(
+        locale_state, "aget_subject_prompt_locale", broken_subject_locale,
+    )
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", broken_character_locale,
+    )
+
+    request = routes.ScopedContextRequest(
+        subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
+    )
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    assert rendered == [True]
+
+
+@pytest.mark.asyncio
+async def test_character_locale_read_failure_degrades_instead_of_raising(monkeypatch):
+    """Same fail-soft contract on the character-level resolver (/cache path)."""
+    from app.memory_server import locale_state, routes
+
+    def broken_character_locale(_name):
+        raise locale_state.PromptLocalePersistenceError("transient read failure")
+
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", broken_character_locale,
+    )
+
+    resolved = await routes._resolve_foreground_memory_language("Neko", None)
+    assert resolved  # a usable locale, not an exception
+
+
+@pytest.mark.asyncio
+async def test_scoped_locale_lookup_is_bounded_for_oversized_requests(monkeypatch):
+    """An oversized subject list must not cost one durable lookup per item.
+
+    The resolver runs ahead of the endpoint's own ``1..8 subjects`` rejection,
+    so without its own bound an out-of-contract request would schedule one
+    thread-pool lookup per supplied subject on the way to a 422.
+    """
+    from app.memory_server import locale_state, routes
+
+    lookups = []
+
+    async def counting_subject_locale(_name, subject):
+        lookups.append(subject)
+        return None
+
+    async def render(_name, _req):
+        return "ok"
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    monkeypatch.setattr(
+        locale_state, "aget_subject_prompt_locale", counting_subject_locale,
+    )
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", lambda _name: "zh-TW",
+    )
+
+    oversized = [
+        {"subject_kind": "group_chat", "subject_id": f"qq:{index}"}
+        for index in range(40)
+    ]
+    request = routes.ScopedContextRequest(subjects=oversized)
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    assert len(lookups) == routes._SCOPED_LOCALE_LOOKUP_LIMIT
+    assert len(lookups) < len(oversized)
+
+
+@pytest.mark.asyncio
 async def test_scoped_history_activates_request_locale(monkeypatch):
     from app.memory_server import routes
     from utils.language_utils import get_global_language_full

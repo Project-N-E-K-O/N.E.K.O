@@ -87,14 +87,37 @@ async def _resolve_foreground_memory_language(
     lanlan_name: str,
     language: str | None,
 ) -> str:
-    """Resolve foreground prompt locale without persisting a process guess."""
+    """Resolve foreground prompt locale without persisting a process guess.
+
+    Fail-soft on a durable-state read error. ``_load_locale_state_unlocked``
+    raises ``PromptLocalePersistenceError`` on a transient ``OSError`` on
+    purpose — a *writer* must never cache that as empty state or it would
+    discard the real durable causal order. But this is a read for rendering
+    only: a temporarily unreadable sidecar must not turn into a 500 that drops
+    the caller's whole turn. Degrade to the request/process locale instead.
+    """
     if is_supported_language_code(language):
         return _activate_request_language(language)
-    durable_language = await asyncio.to_thread(
-        locale_state.get_character_prompt_locale,
-        lanlan_name,
-    )
+    try:
+        durable_language = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
+            lanlan_name,
+        )
+    except locale_state.PromptLocalePersistenceError:
+        logger.warning(
+            "[PromptLocale] %s: durable locale unreadable, rendering with the "
+            "process locale for this request",
+            lanlan_name,
+        )
+        return _activate_request_language(None)
     return _activate_request_language(durable_language)
+
+
+#: Upper bound on how many subjects one request may cost in durable-locale
+#: lookups. Matches the scoped endpoints' documented ``1..8`` subject contract,
+#: but is enforced independently so the resolver stays bounded even when it
+#: runs ahead of an endpoint's own validation.
+_SCOPED_LOCALE_LOOKUP_LIMIT = 8
 
 
 async def _resolve_scoped_memory_language(
@@ -112,7 +135,12 @@ async def _resolve_scoped_memory_language(
     """
     if is_supported_language_code(language):
         return _activate_request_language(language)
-    for subject in subjects or []:
+    # Bounded on purpose: this resolver runs before the endpoint's own
+    # ``1..8 subjects`` rejection, so an oversized list would otherwise
+    # schedule one thread-pool lookup per supplied item on its way to a 422.
+    # Bounding here (rather than requiring every caller to validate first)
+    # keeps the work bound a property of the resolver itself.
+    for subject in (subjects or [])[:_SCOPED_LOCALE_LOOKUP_LIMIT]:
         descriptor = (
             subject.model_dump()
             if hasattr(subject, "model_dump")
@@ -123,6 +151,16 @@ async def _resolve_scoped_memory_language(
                 lanlan_name,
                 descriptor,
             )
+        except locale_state.PromptLocalePersistenceError:
+            # Same fail-soft contract as the character-level resolver: a
+            # transient sidecar read error must not bubble out of a rendering
+            # lookup and break the caller's fail-soft response contract.
+            logger.warning(
+                "[PromptLocale] %s: scoped locale unreadable, falling through "
+                "to the character locale for this request",
+                lanlan_name,
+            )
+            break
         except ValueError:
             # A malformed descriptor fails closed downstream (coerce_subject);
             # locale lookup must not be the thing that rejects the request.
