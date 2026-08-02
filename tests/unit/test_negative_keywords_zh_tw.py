@@ -12,7 +12,7 @@ so ``zh-TW`` is already ``zh`` by the time the lookup happens: a per-locale
 ``NEGATIVE_KEYWORDS_I18N['zh-TW']`` entry would be unreachable data. The fix is
 the union at the lookup, which is why the assertions below deliberately pass
 ``lang="zh"`` as well as ``lang="zh-TW"``.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import pytest
@@ -57,7 +57,7 @@ def test_traditional_block_has_no_simplified_only_characters():
 
 def test_no_single_character_entries_in_either_block():
     """`別` is the back half of 個別 / 區別 / 特別; `煩` of 麻煩. Same standard
-    as the Simplified block, which the table comment already spells out."""
+    as the Simplified block, which the table comment already spells out."""  # noqa: DOCSTRING_CJK
     for key in ("zh", "zh-TW"):
         shorties = sorted(e for e in D.NEGATIVE_KEYWORDS_I18N[key] if len(e) < 2)
         assert not shorties, f"{key} 收了单字词条：{shorties}"

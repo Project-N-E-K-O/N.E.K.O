@@ -247,7 +247,7 @@ def test_time_since_buckets_zh_tw(days, label):
 def test_time_since_traditional_has_no_simplified_characters():
     """`周` is the Simplified time unit; Traditional needs `週`. Asserted on the
     table itself so a future edit that reverts one field is caught even if no
-    parametrized case happens to cover that bucket."""
+    parametrized case happens to cover that bucket."""  # noqa: DOCSTRING_CJK
     from memory.temporal import _TIME_LABELS
     blob = "".join(_TIME_LABELS['zh-TW'].values())
     leaked = sorted({ch for ch in '周当个时钟' if ch in blob})

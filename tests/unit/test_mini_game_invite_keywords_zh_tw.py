@@ -9,7 +9,7 @@ Before this block existed, a Traditional writer answering "來吧" or "沒空" g
 Because the scan is a union over all locales, a Traditional entry also runs
 against Japanese / Korean / Latin input. Japanese kanji overlap heavily with
 Traditional, which is a real collision surface and is covered below.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import pytest
@@ -68,7 +68,7 @@ def test_no_substring_matched_accept_phrase_is_contained_in_a_decline_phrase():
 
     Deriving the set from ``_LETTER_ONLY_KW_RE`` rather than listing locale names
     keeps the guard alive for any locale added later.
-    """
+    """  # noqa: DOCSTRING_CJK
     from main_logic.proactive_chat.mini_game_invite import _LETTER_ONLY_KW_RE
 
     checked = 0
@@ -139,5 +139,5 @@ def test_ordinary_traditional_replies_are_not_forced_into_a_bucket(text):
 
 
 def test_decline_still_wins_over_accept_in_traditional():
-    """Negation priority is what keeps '好啊，但我沒空' out of accept."""
+    """Negation priority is what keeps '好啊，但我沒空' out of accept."""  # noqa: DOCSTRING_CJK
     assert _match_mini_game_invite_keyword("好啊，但我沒空") == "decline"
