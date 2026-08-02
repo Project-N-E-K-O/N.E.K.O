@@ -718,22 +718,29 @@ async def test_co_stream_support_routes_verified_gifts_to_active_ack_and_passive
     support = LiveSupportEventsModule()
     await support.setup(ctx)
 
-    def publish(event_id: str, *, value: int) -> None:
+    def publish(
+        event_id: str,
+        *,
+        value: int,
+        coin_type: str | None = "gold",
+    ) -> None:
+        payload = {
+            "nickname": "alice",
+            "gift_name": "小心心" if value < 10_000 else "醒目礼物",
+            "gift_value": value,
+            "support_verified": True,
+            "support_evidence": "manual_live_simulation",
+            "provider_event_id": event_id,
+            "provider_event_type": "SEND_GIFT",
+        }
+        if coin_type is not None:
+            payload["coin_type"] = coin_type
         ctx.event_bus.publish(
             "gift",
             LiveEvent(
                 type="gift",
                 uid="9",
-                payload={
-                    "nickname": "alice",
-                    "gift_name": "小心心" if value < 10_000 else "醒目礼物",
-                    "gift_value": value,
-                    "coin_type": "gold",
-                    "support_verified": True,
-                    "support_evidence": "manual_live_simulation",
-                    "provider_event_id": event_id,
-                    "provider_event_type": "SEND_GIFT",
-                },
+                payload=payload,
             ),
         )
 
@@ -759,6 +766,16 @@ async def test_co_stream_support_routes_verified_gifts_to_active_ack_and_passive
     # High-value support still takes the active path (asserted above via
     # ctx.payloads); the passive shadow must NOT assert it was spoken.
     assert "已排队一次主动感谢" not in ctx.dispatcher.messages[-1]["text"]
+
+    # Douyin bridge payloads carry a verified gift value but no Bilibili-style
+    # coin type. Their passive tier must keep the value-derived classification.
+    publish("douyin-high-1", value=10_000, coin_type=None)
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+    await _drain_support(support)
+
+    assert "醒目礼物（high）" in ctx.dispatcher.messages[-1]["text"]
     strategy = [
         item for item in ctx.audit.records
         if item["op"] == "support.co_stream_strategy"
@@ -766,7 +783,12 @@ async def test_co_stream_support_routes_verified_gifts_to_active_ack_and_passive
     assert [
         item["detail"]["active_attempt_requested"]
         for item in strategy
-    ] == [True, True]
+    ] == [True, True, True]
+    assert [item["detail"]["tier"] for item in strategy] == [
+        "light",
+        "high",
+        "high",
+    ]
     await support.teardown()
     await hub.teardown()
 

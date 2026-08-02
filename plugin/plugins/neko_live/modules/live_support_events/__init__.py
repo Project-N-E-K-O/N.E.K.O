@@ -145,6 +145,7 @@ class LiveSupportEventsModule(BaseModule):
         co_stream = str(getattr(self.ctx.config, "live_mode", "")) == "co_stream"
         if co_stream and callable(remember_passive):
             scheduler_priority = classify_support_priority(payload)
+            coin_type = str(payload.get("coin_type") or "").strip().lower()
             tier = self._tier(
                 str(payload.get("event_type") or "gift"),
                 total_coin=safe_int(
@@ -155,6 +156,7 @@ class LiveSupportEventsModule(BaseModule):
             )
             if (
                 str(payload.get("event_type") or "").lower() == "gift"
+                and bool(coin_type)
                 and scheduler_priority is SupportPriority.LIGHT
             ):
                 tier = "light"
