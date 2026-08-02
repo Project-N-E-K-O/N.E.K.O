@@ -486,6 +486,21 @@ def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
     assert pairs[0]["existing_id"] == "aaa"
 
 
+@pytest.mark.parametrize("falsey_id", [0, False])
+def test_detect_candidates_accepts_falsey_scalar_ids(falsey_id):
+    candidate = _fact("candidate", "fresh", embedding=[1.0, 0.0, 0.0])
+    candidate["id"] = falsey_id
+    existing = _fact("existing", "old", embedding=[1.0, 0.0, 0.0])
+
+    pairs = FactDedupResolver.detect_candidates([candidate, existing])
+
+    assert any(
+        type(pair["candidate_id"]) is type(falsey_id)
+        and pair["candidate_id"] == falsey_id
+        for pair in pairs
+    )
+
+
 def test_detect_candidates_per_fact_limit_caps_collisions():
     """A pathological row near 5 existing rows must not produce 5
     pairs — the cap keeps the queue interpretable."""
@@ -2126,6 +2141,28 @@ async def test_resolve_dequeues_pair_with_both_rows_missing_without_llm(tmp_path
         resolved = await resolver.aresolve("小天")
     assert resolved == 0
     assert create_llm.call_count == 0
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("falsey_id", [0, False])
+async def test_resolve_finds_falsey_scalar_ids(falsey_id, tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("candidate", "fresh", embedding=[1.0, 0.0, 0.0])
+    candidate["id"] = falsey_id
+    existing = _fact("existing", "old", embedding=[1.0, 0.0, 0.0])
+    await _seed_facts(fs, "小天", [candidate, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": falsey_id,
+        "existing_id": "existing",
+        "entity": "master",
+        "cosine": 1.0,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("小天") == 1
+
     assert await resolver.aload_pending("小天") == []
 
 

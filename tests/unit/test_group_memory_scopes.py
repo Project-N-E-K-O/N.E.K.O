@@ -11903,6 +11903,67 @@ async def test_cancelled_private_trust_save_checkpoints_only_success(persisted):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_cancelled_group_trust_save_consumes_only_persisted_prefix(persisted):
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    old = {
+        "role": "user", "content": "old",
+        "_speaker_permission_level": "normal",
+        "_speaker_activity_id": "activity-old",
+    }
+    new = {
+        "role": "user", "content": "new",
+        "_speaker_permission_level": "normal",
+        "_speaker_activity_id": "activity-new",
+    }
+    user_data = {
+        "group_member_memory_messages": {"1001": [old]},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.return_value = {
+        "subject_id": "qq:7788:1001",
+    }
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed", "segments": [{"status": "ok"}],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    async def _cancel_after_append(*args, **kwargs):
+        user_data["group_member_memory_messages"]["1001"].append(new)
+        cancelled = asyncio.CancelledError()
+        cancelled.speaker_trust_persisted = persisted
+        raise cancelled
+
+    service._apply_speaker_trust_update = AsyncMock(
+        side_effect=_cancel_after_append,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason="test",
+        )
+
+    expected = [new] if persisted else [old, new]
+    assert user_data["group_member_memory_messages"]["1001"] == expected
+    if persisted:
+        service._apply_speaker_trust_update = AsyncMock(return_value=None)
+        assert await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason="retry",
+        ) == []
+        identity = service._apply_speaker_trust_update.await_args.kwargs[
+            "activity_identity"
+        ]
+        assert "activity-new" in identity
+        assert "activity-old" not in identity
+
+
+@pytest.mark.asyncio
 async def test_owner_trust_failure_excludes_later_persisted_batch_facts():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

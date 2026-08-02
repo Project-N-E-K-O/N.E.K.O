@@ -667,7 +667,7 @@ class FactDedupResolver:
             if not isinstance(f, dict):
                 continue
             cid = f.get('id')
-            if not cid:
+            if cid is None:
                 continue
             candidate_identity = _fact_scoped_identity(f)
             if only_for_ids is not None and not _is_fresh(f):
@@ -697,7 +697,7 @@ class FactDedupResolver:
             for sib in by_entity.get(bucket, ()):
                 sid = sib.get('id')
                 sibling_identity = _fact_scoped_identity(sib)
-                if not sid or sibling_identity == candidate_identity:
+                if sid is None or sibling_identity == candidate_identity:
                     continue
                 # Same-batch deduplication (CodeRabbit PR-956 Major):
                 # when both rows are in the fresh ``only_for_ids`` batch,
@@ -1122,7 +1122,7 @@ class FactDedupResolver:
         facts = [dict(f) if isinstance(f, dict) else f for f in live_facts]
         rows_by_id: dict[object, list[dict]] = {}
         for fact in facts:
-            if isinstance(fact, dict) and fact.get('id'):
+            if isinstance(fact, dict) and fact.get('id') is not None:
                 rows_by_id.setdefault(fact.get('id'), []).append(fact)
         originals_by_identity = {
             identity: dict(fact)

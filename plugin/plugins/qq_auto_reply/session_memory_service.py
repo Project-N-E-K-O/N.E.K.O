@@ -1612,6 +1612,30 @@ class QQSessionMemoryService:
                                     group_id, spec,
                                 ),
                             )
+                        except asyncio.CancelledError as cancelled:
+                            # The settings writer joins its shielded disk write
+                            # before propagating cancellation.  Consume exactly
+                            # the completed prefix when that write landed, so a
+                            # later message cannot enlarge the retry identity
+                            # and count the already-receipted prefix again.
+                            if getattr(
+                                cancelled, "speaker_trust_persisted", False,
+                            ):
+                                completed = {
+                                    id(message) for message in spec["messages"]
+                                }
+                                if sender_id in member_buckets:
+                                    member_buckets[sender_id] = [
+                                        message
+                                        for message in member_buckets[sender_id]
+                                        if id(message) not in completed
+                                    ]
+                                    if not member_buckets[sender_id]:
+                                        member_buckets.pop(sender_id, None)
+                                        if isinstance(member_labels, dict):
+                                            member_labels.pop(sender_id, None)
+                            _remember_later_fact_exclusions(spec, segment_index)
+                            raise
                         except BaseException:
                             # The memory server has already committed the whole
                             # batch.  If trust/activity persistence aborts here,

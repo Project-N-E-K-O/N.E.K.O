@@ -1268,6 +1268,72 @@ async def test_apply_requeues_source_whose_prompt_trust_changed(tmp_path, store)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("store", [STORE_PERSONA, STORE_REFLECTION])
+async def test_apply_requeues_stale_sources_after_partial_merge(tmp_path, store):
+    """One valid action must not stamp a second, trust-stale action's sources."""
+    _, pm, re = _install(str(tmp_path))
+    entries = []
+    for entry_id in ("valid-a", "valid-b", "stale-a", "stale-b"):
+        if store == STORE_PERSONA:
+            entry = pm._build_fact_entry(
+                entry_id, "manual", None, subject=GROUP_A,
+            )
+        else:
+            entry = _r_entry(entry_id, entry_id, GROUP_A)
+        entry.update({
+            "id": entry_id,
+            "speaker_id": f"qq:{entry_id}",
+            "speaker_trust": 0.5,
+        })
+        entries.append(entry)
+
+    actions = [{
+        "action": "merge",
+        "source_ids": ["valid-a", "valid-b"],
+        "produce": {"text": "valid merged output"},
+    }, {
+        "action": "merge",
+        "source_ids": ["stale-a", "stale-b"],
+        "produce": {"text": "stale merged output"},
+    }]
+    cluster = [dict(entry) for entry in entries]
+
+    if store == STORE_PERSONA:
+        persona = await pm.aensure_persona("小天")
+        section = persona.setdefault(
+            GROUP_A.persona_section_key,
+            {**GROUP_A.as_entry_fields(), "facts": []},
+        )
+        section["facts"] = entries
+        await pm.asave_persona("小天", persona)
+        entries[2]["speaker_provenance_mixed"] = True
+        await pm.asave_persona("小天", persona)
+        applied = await apply_scoped_persona_merge(
+            pm, "小天", GROUP_A, cluster, actions, "hash-partial-stale",
+        )
+        current = (await pm.aensure_persona("小天"))[
+            GROUP_A.persona_section_key
+        ]["facts"]
+    else:
+        await re.asave_reflections("小天", entries)
+        entries[2]["speaker_provenance_mixed"] = True
+        await re.asave_reflections("小天", entries)
+        applied = await apply_scoped_reflection_merge(
+            re, "小天", GROUP_A, cluster, actions, "hash-partial-stale",
+        )
+        current = await re._aload_reflections_full("小天")
+
+    by_id = {entry["id"]: entry for entry in current}
+    assert applied == SCOPED_REFINE_PROMPT_STALE
+    assert by_id["stale-a"].get("last_refine_cluster_hash") is None
+    assert by_id["stale-b"].get("last_refine_cluster_hash") is None
+    assert any(
+        entry.get("merged_from_ids") == ["valid-a", "valid-b"]
+        for entry in current
+    )
+
+
+@pytest.mark.asyncio
 async def test_apply_rejects_source_suppressed_since_cluster(tmp_path):
     """greptile round-2 P1: a source marked suppress=True during the
     unlocked LLM window has unchanged text, so the snapshot check alone

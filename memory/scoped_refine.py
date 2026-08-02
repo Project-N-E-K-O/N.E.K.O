@@ -932,7 +932,8 @@ async def apply_scoped_persona_merge(
             # 口内被并发改写的行若照常 stamp，新文本会被 hash-skip 静默压
             # 制 30 天——文本漂移的幸存者不 stamp，下轮重新入审。
             if (
-                eid in cluster_ids
+                not prompt_stale
+                and eid in cluster_ids
                 and eid not in consumed
                 and e.get('text') == cluster_text_by_id.get(eid)
             ):
@@ -953,7 +954,7 @@ async def apply_scoped_persona_merge(
             f"stamped={stamped}, +{len(produced)} produced, "
             f"-{len(consumed)} consumed)"
         )
-    return applied
+    return SCOPED_REFINE_PROMPT_STALE if prompt_stale else applied
 
 
 async def apply_scoped_reflection_merge(
@@ -1127,7 +1128,8 @@ async def apply_scoped_reflection_merge(
             # 同 persona 侧：文本漂移的幸存者不 stamp，防 hash-skip 把
             # 未经模型看过的新文本压制 30 天。
             if (
-                rid in cluster_ids
+                not prompt_stale
+                and rid in cluster_ids
                 and rid not in consumed
                 and r.get('text') == cluster_text_by_id.get(rid)
             ):
@@ -1148,7 +1150,7 @@ async def apply_scoped_reflection_merge(
             f"stamped={stamped}, +{len(produced)} produced, "
             f"-{len(consumed)} merged-away)"
         )
-    return applied
+    return SCOPED_REFINE_PROMPT_STALE if prompt_stale else applied
 
 
 # ── liveness bump（失败路径；同本体字段，scoped 寻址） ────────────────
