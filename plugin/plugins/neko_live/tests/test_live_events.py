@@ -776,6 +776,11 @@ async def test_co_stream_support_routes_verified_gifts_to_active_ack_and_passive
     await _drain_support(support)
 
     assert "醒目礼物（high）" in ctx.dispatcher.messages[-1]["text"]
+    assert [payload["provider_event_id"] for payload in ctx.payloads] == [
+        "light-1",
+        "high-1",
+        "douyin-high-1",
+    ]
     strategy = [
         item for item in ctx.audit.records
         if item["op"] == "support.co_stream_strategy"
