@@ -14280,6 +14280,47 @@ async def test_group_request_carries_permission_receipt_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_group_handler_snapshots_permission_before_first_await():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    permission = {"level": "normal"}
+
+    async def evaluate(**_kwargs):
+        permission["level"] = "admin"
+        return SimpleNamespace(action="reply", force_reply=False)
+
+    run = AsyncMock(return_value=SimpleNamespace(
+        action="skip", reply_text="", traces=[],
+    ))
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _qq_settings={},
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda _sender: permission["level"],
+        ),
+        attention_gate_service=SimpleNamespace(
+            evaluate=evaluate,
+            check_focus_shift=AsyncMock(return_value=None),
+        ),
+        qq_client=None,
+        reply_pipeline=SimpleNamespace(run=run),
+        runtime_service=SimpleNamespace(
+            record_pipeline_outcome=lambda **_kwargs: None,
+        ),
+        _emit_log=lambda *_args, **_kwargs: None,
+    )
+
+    await dispatcher.handle_group_message("7788", "2046", "hi", False)
+
+    request = run.await_args.args[0]
+    assert permission["level"] == "admin"
+    assert request.group_speaker_permission_level_at_receipt == "normal"
+
+
+@pytest.mark.asyncio
 async def test_reply_context_receives_group_permission_receipt_snapshot():
     from plugin.plugins.qq_auto_reply.pipeline_models import (
         QQReplyDecision,

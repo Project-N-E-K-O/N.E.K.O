@@ -489,6 +489,12 @@ class QQMessageDispatcher:
                 )
             )
         group_memory_at_receipt = bool(group_memory_at_receipt)
+        if group_speaker_permission_level_at_receipt is None:
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            if permission_mgr is not None:
+                group_speaker_permission_level_at_receipt = (
+                    permission_mgr.get_permission_level(str(sender_id))
+                )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
         if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:

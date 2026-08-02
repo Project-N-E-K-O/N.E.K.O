@@ -2462,6 +2462,17 @@ def test_english_lexical_uncertainty_never_emits_correction(marker):
     ) == "correction"
 
 
+@pytest.mark.parametrize("marker", ["possible", "probable"])
+def test_adjective_led_epistemic_uncertainty_never_emits_correction(marker):
+    assert deterministic_relation(
+        f"It is {marker} Alice is smart",
+        f"It is {marker} Alice is not smart",
+    ) is None
+    assert deterministic_relation(
+        "Alice is smart", "Alice is not smart",
+    ) == "correction"
+
+
 @pytest.mark.parametrize(("positive", "negative"), [
     ("Some cats are smart", "Some cats are not smart"),
     ("有些猫喜欢鱼", "有些猫不喜欢鱼"),

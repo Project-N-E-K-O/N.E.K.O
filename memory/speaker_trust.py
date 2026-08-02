@@ -58,7 +58,7 @@ _CONDITIONAL_CLAUSE_TOKEN_PHRASES = (
 )
 _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
 _EPISTEMIC_LEXICAL_MARKERS = frozenset({
-    "maybe", "perhaps", "possibly", "probably",
+    "maybe", "perhaps", "possible", "possibly", "probable", "probably",
 })
 _NON_UNIVERSAL_FREQUENCY_MARKERS = frozenset({
     "frequently", "generally", "occasionally", "often", "periodically",
