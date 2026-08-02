@@ -54,9 +54,10 @@ _EPISTEMIC_LEXICAL_MARKERS = frozenset({
     "maybe", "perhaps", "possibly", "probably",
 })
 _REPORTING_VERBS = frozenset({
-    "believe", "believed", "believes", "claim", "claimed", "claims",
-    "report", "reported", "reports", "say", "said", "says", "tell",
-    "tells", "told", "think", "thinks", "thought",
+    "announce", "announced", "announces", "believe", "believed", "believes",
+    "claim", "claimed", "claims", "hear", "heard", "hears", "report",
+    "reported", "reports", "say", "said", "says", "tell", "tells", "think",
+    "thinks", "thought", "told", "write", "writes", "wrote",
 })
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
