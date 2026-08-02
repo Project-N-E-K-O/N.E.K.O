@@ -918,7 +918,9 @@ def test_duplicate_correction_persists_residual_mixed_cleanup():
     assert "new_speaker_trust" not in queued[0]
 
 
-@pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "invalid_trust", [float("nan"), float("inf"), 10 ** 400],
+)
 def test_correction_queue_preserves_non_finite_trust_as_unknown(invalid_trust):
     from memory.persona.corrections import CorrectionsMixin
 
@@ -2635,6 +2637,8 @@ def test_adjective_led_epistemic_uncertainty_never_emits_correction(marker):
 
 
 @pytest.mark.parametrize(("positive", "negative"), [
+    ("A cat is black", "A cat is not black"),
+    ("An owl is awake", "An owl is not awake"),
     ("Some cats are smart", "Some cats are not smart"),
     ("Many cats are smart", "Many cats are not smart"),
     ("Several cats are smart", "Several cats are not smart"),
@@ -2645,6 +2649,12 @@ def test_adjective_led_epistemic_uncertainty_never_emits_correction(marker):
 ])
 def test_non_universal_quantifiers_never_emit_correction(positive, negative):
     assert deterministic_relation(positive, negative) is None
+
+
+def test_indefinite_predicate_complement_keeps_definite_subject_correction():
+    assert deterministic_relation(
+        "Alice is a doctor", "Alice is not a doctor",
+    ) == "correction"
 
 
 @pytest.mark.parametrize("marker", [

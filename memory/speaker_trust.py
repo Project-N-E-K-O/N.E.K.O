@@ -119,7 +119,8 @@ _CJK_REPORTING_MARKERS = (
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
-def _finite_trust_score(value) -> float | None:
+def finite_trust_score(value) -> float | None:
+    """Return one finite numeric trust value, or ``None`` if malformed."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
             score = float(value)
@@ -131,17 +132,17 @@ def _finite_trust_score(value) -> float | None:
 
 
 def normalize_trust(value, default: float = SPEAKER_TRUST_DEFAULT) -> float:
-    score = _finite_trust_score(value)
+    score = finite_trust_score(value)
     if score is not None:
         return max(0.0, min(1.0, score))
-    fallback = _finite_trust_score(default)
+    fallback = finite_trust_score(default)
     if fallback is None:
-        fallback = _finite_trust_score(SPEAKER_TRUST_DEFAULT) or 0.0
+        fallback = finite_trust_score(SPEAKER_TRUST_DEFAULT) or 0.0
     return max(0.0, min(1.0, fallback))
 
 
 def trust_band(value) -> str:
-    score = _finite_trust_score(value)
+    score = finite_trust_score(value)
     if score is None:
         return "unknown"
     score = normalize_trust(score)
@@ -154,8 +155,8 @@ def trust_band(value) -> str:
 
 def preferred_by_trust(old, new) -> str | None:
     """Return ``old``/``new`` only when the deterministic margin is met."""
-    old_raw = _finite_trust_score(old)
-    new_raw = _finite_trust_score(new)
+    old_raw = finite_trust_score(old)
+    new_raw = finite_trust_score(new)
     if old_raw is None or new_raw is None:
         return None
     old_score = normalize_trust(old_raw)
@@ -343,7 +344,11 @@ def _has_non_universal_quantifier(text: str) -> bool:
     """Reject quantified claims that need not cover the same individuals."""
     tokens = _word_tokens(text)
     return (
-        any(token in _NON_UNIVERSAL_QUANTIFIER_MARKERS for token in tokens)
+        # Limit indefinite articles to subject position.  An object or
+        # complement such as ``Alice is a doctor`` still describes one
+        # definite subject and can safely participate in polarity matching.
+        (bool(tokens) and tokens[0] in {"a", "an"})
+        or any(token in _NON_UNIVERSAL_QUANTIFIER_MARKERS for token in tokens)
         or any(
             token.isdigit() or token in _NON_UNIVERSAL_CARDINAL_MARKERS
             for token in tokens
@@ -568,7 +573,7 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
         return {"speaker_provenance_mixed": True}
     speaker_id = next(iter(speaker_ids))
     trust_scores = [
-        _finite_trust_score(entry.get("speaker_trust")) for entry in rows
+        finite_trust_score(entry.get("speaker_trust")) for entry in rows
     ]
     trusts = [normalize_trust(score) for score in trust_scores if score is not None]
     result = {"speaker_id": speaker_id}

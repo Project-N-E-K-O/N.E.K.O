@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import math
 import uuid
 
 
@@ -95,6 +94,14 @@ def _correction_prompt_trust_signature(item: dict) -> tuple[str, str]:
     )
 
 
+def _normalized_correction_trust(value) -> float | None:
+    """Normalize finite numeric provenance without inventing unknown trust."""
+    from memory.speaker_trust import finite_trust_score, normalize_trust
+
+    score = finite_trust_score(value)
+    return normalize_trust(score) if score is not None else None
+
+
 class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
@@ -109,7 +116,7 @@ class CorrectionsMixin:
                     and existing.get('new_text') == new_text
                     and existing.get('entity') == entity
                     and existing.get('scope') == (subject_fields or {}).get('scope')):
-                from memory.speaker_trust import normalize_trust, stable_speaker_id
+                from memory.speaker_trust import stable_speaker_id
                 changed = False
                 for prefix, provenance in (
                     ('old', old_speaker_provenance),
@@ -136,21 +143,11 @@ class CorrectionsMixin:
                     if existing.get(mixed_key) is True:
                         continue
                     raw_trust = provenance.get('speaker_trust')
-                    trust = (
-                        normalize_trust(raw_trust)
-                        if isinstance(raw_trust, (int, float))
-                        and not isinstance(raw_trust, bool)
-                        and math.isfinite(float(raw_trust))
-                        else None
-                    )
+                    trust = _normalized_correction_trust(raw_trust)
                     current_id = existing.get(f'{prefix}_speaker_id')
                     raw_current_trust = existing.get(f'{prefix}_speaker_trust')
-                    current_trust = (
-                        normalize_trust(raw_current_trust)
-                        if isinstance(raw_current_trust, (int, float))
-                        and not isinstance(raw_current_trust, bool)
-                        and math.isfinite(float(raw_current_trust))
-                        else None
+                    current_trust = _normalized_correction_trust(
+                        raw_current_trust
                     )
                     if current_id is None:
                         existing[f'{prefix}_speaker_id'] = speaker_id
@@ -181,7 +178,7 @@ class CorrectionsMixin:
             # scoped correction 携带完整 subject 戳：section key 不含 scope，
             # resolve 分域与 apply 界定都需要它。
             item.update(subject_fields)
-        from memory.speaker_trust import normalize_trust, stable_speaker_id
+        from memory.speaker_trust import stable_speaker_id
         for prefix, provenance in (
             ('old', old_speaker_provenance),
             ('new', new_speaker_provenance),
@@ -195,10 +192,9 @@ class CorrectionsMixin:
             if speaker_id is not None:
                 item[f'{prefix}_speaker_id'] = speaker_id
                 raw_trust = provenance.get('speaker_trust')
-                if isinstance(raw_trust, (int, float)) and not isinstance(
-                    raw_trust, bool
-                ) and math.isfinite(float(raw_trust)):
-                    item[f'{prefix}_speaker_trust'] = normalize_trust(raw_trust)
+                trust = _normalized_correction_trust(raw_trust)
+                if trust is not None:
+                    item[f'{prefix}_speaker_trust'] = trust
         corrections.append(item)
         return corrections
 

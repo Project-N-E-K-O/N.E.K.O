@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -748,6 +749,15 @@ def _requested_cluster_source_ids(action: dict, cluster_ids: set) -> set[str]:
     return {sid for sid in raw_ids if sid in cluster_ids}
 
 
+def _finite_counter_value(value: object) -> float:
+    """Return a finite evidence counter, treating malformed values as zero."""
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
+
+
 async def apply_scoped_persona_merge(
     persona_manager,
     name: str,
@@ -796,11 +806,12 @@ async def apply_scoped_persona_merge(
         for act_obj in actions:
             if not isinstance(act_obj, dict):
                 continue
+            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             act = act_obj.get('action')
             if act not in VALID_SCOPED_REFINE_ACTIONS:
                 logger.warning(f"[ScopedRefine apply] persona: 非法 action {act!r}")
+                retry_ids.update(requested_ids)
                 continue
-            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
                 cluster_trust_by_id,
@@ -861,8 +872,12 @@ async def apply_scoped_persona_merge(
                     if upstream and upstream not in merged_source_ids:
                         merged_source_ids.append(upstream)
             for src in semantic_sources:
-                max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
-                max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
+                max_rein = max(
+                    max_rein, _finite_counter_value(src.get('reinforcement'))
+                )
+                max_disp = max(
+                    max_disp, _finite_counter_value(src.get('disputation'))
+                )
                 max_user_count = max(
                     max_user_count,
                     int(src.get('user_fact_reinforce_count', 0) or 0),
@@ -1019,13 +1034,14 @@ async def apply_scoped_reflection_merge(
         for act_obj in actions:
             if not isinstance(act_obj, dict):
                 continue
+            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             act = act_obj.get('action')
             if act not in VALID_SCOPED_REFINE_ACTIONS:
                 logger.warning(
                     f"[ScopedRefine apply] reflection: 非法 action {act!r}"
                 )
+                retry_ids.update(requested_ids)
                 continue
-            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
                 cluster_trust_by_id,
@@ -1106,7 +1122,7 @@ async def apply_scoped_reflection_merge(
             # reinforcement，floor 0.1（对齐 scoped 合成的最小正种子）。
             max_rein = max(
                 (
-                    float(s.get('reinforcement', 0) or 0)
+                    _finite_counter_value(s.get('reinforcement'))
                     for s in semantic_sources
                 ),
                 default=0.0,

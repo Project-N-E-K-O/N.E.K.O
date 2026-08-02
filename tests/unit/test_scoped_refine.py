@@ -1048,6 +1048,66 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("store", [STORE_PERSONA, STORE_REFLECTION])
+async def test_scoped_merge_ignores_overflowing_evidence_counters(
+    tmp_path, store,
+):
+    """Imported integers outside the float range stay non-fatal evidence."""
+    _, pm, re = _install(str(tmp_path))
+    entries = []
+    for entry_id, reinforcement, disputation in (
+        ("overflow", 10 ** 400, 10 ** 400),
+        ("finite", 0.2, 0.3),
+    ):
+        entry = (
+            pm._build_fact_entry(
+                entry_id, "manual", None, subject=GROUP_A,
+            )
+            if store == STORE_PERSONA
+            else _r_entry(entry_id, entry_id, GROUP_A)
+        )
+        entry.update({
+            "id": entry_id,
+            "reinforcement": reinforcement,
+            "disputation": disputation,
+        })
+        entries.append(entry)
+
+    cluster = [dict(entry) for entry in entries]
+    actions = [{
+        "action": "merge",
+        "source_ids": ["overflow", "finite"],
+        "produce": {"text": "bounded merged output"},
+    }]
+    if store == STORE_PERSONA:
+        persona = await pm.aensure_persona("小天")
+        section = persona.setdefault(
+            GROUP_A.persona_section_key,
+            {**GROUP_A.as_entry_fields(), "facts": []},
+        )
+        section["facts"] = entries
+        await pm.asave_persona("小天", persona)
+        applied = await apply_scoped_persona_merge(
+            pm, "小天", GROUP_A, cluster, actions, "hash-overflow-counter",
+        )
+        current = (await pm.aensure_persona("小天"))[
+            GROUP_A.persona_section_key
+        ]["facts"]
+    else:
+        await re.asave_reflections("小天", entries)
+        applied = await apply_scoped_reflection_merge(
+            re, "小天", GROUP_A, cluster, actions, "hash-overflow-counter",
+        )
+        current = await re._aload_reflections_full("小天")
+
+    assert applied == 1
+    merged = next(entry for entry in current if entry.get("merged_from_ids"))
+    assert merged["reinforcement"] == pytest.approx(0.2)
+    if store == STORE_PERSONA:
+        assert merged["disputation"] == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
 async def test_older_trust_winner_preserves_newer_temporal_state(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     historical_high = _r_entry(
@@ -1415,7 +1475,17 @@ async def test_apply_requeues_stale_sources_after_partial_merge(tmp_path, store)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("store", [STORE_PERSONA, STORE_REFLECTION])
-async def test_apply_requeues_rejected_sources_after_partial_merge(tmp_path, store):
+@pytest.mark.parametrize("rejected_action", [{
+    "action": "merge",
+    "source_ids": ["retry-a", "retry-b", "foreign-id"],
+    "produce": {"text": "rejected merged output"},
+}, {
+    "action": "delete",
+    "source_ids": ["retry-a", "retry-b"],
+}])
+async def test_apply_requeues_rejected_sources_after_partial_merge(
+    tmp_path, store, rejected_action,
+):
     """A malformed second action must not stamp its valid cluster sources."""
     _, pm, re = _install(str(tmp_path))
     entries = []
@@ -1434,11 +1504,7 @@ async def test_apply_requeues_rejected_sources_after_partial_merge(tmp_path, sto
         "action": "merge",
         "source_ids": ["valid-a", "valid-b"],
         "produce": {"text": "valid merged output"},
-    }, {
-        "action": "merge",
-        "source_ids": ["retry-a", "retry-b", "foreign-id"],
-        "produce": {"text": "rejected merged output"},
-    }]
+    }, rejected_action]
     cluster = [dict(entry) for entry in entries]
 
     if store == STORE_PERSONA:
