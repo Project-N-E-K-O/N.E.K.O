@@ -832,7 +832,7 @@ jobs:
 # ---------------------------------------------------------------------------
 
 def _render_ruff_config() -> str:
-    """Render the same blocking Ruff policy used by the Plugin Market."""
+    """Render the blocking Ruff policy for first-party plugin source."""
     return '''target-version = "py311"
 line-length = 120
 extend-exclude = ["vendor"]

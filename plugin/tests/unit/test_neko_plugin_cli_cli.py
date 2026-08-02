@@ -765,7 +765,8 @@ def test_generated_ruff_config_ignores_vendor_but_checks_plugin_source(
     vendor_file.parent.mkdir()
     vendor_file.write_text("import os\n", encoding="utf-8")
     ruff_command = [
-        "ruff",
+        "uvx",
+        "ruff==0.12.4",
         "check",
         "--ignore-noqa",
         "--config",
