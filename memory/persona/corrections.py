@@ -102,8 +102,13 @@ class CorrectionsMixin:
                         continue
                     mixed_key = f'{prefix}_speaker_provenance_mixed'
                     if provenance.get('speaker_provenance_mixed') is True:
-                        existing.pop(f'{prefix}_speaker_id', None)
-                        existing.pop(f'{prefix}_speaker_trust', None)
+                        for residual_key in (
+                            f'{prefix}_speaker_id',
+                            f'{prefix}_speaker_trust',
+                        ):
+                            if residual_key in existing:
+                                existing.pop(residual_key)
+                                changed = True
                         if existing.get(mixed_key) is not True:
                             existing[mixed_key] = True
                             changed = True

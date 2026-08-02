@@ -827,6 +827,30 @@ def test_correction_queue_rejects_residual_mixed_provenance():
     assert "new_speaker_trust" not in queued[0]
 
 
+def test_duplicate_correction_persists_residual_mixed_cleanup():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued = [{
+        "old_text": "old",
+        "new_text": "new",
+        "entity": "master",
+        "scope": None,
+        "new_speaker_provenance_mixed": True,
+        "new_speaker_id": "qq:1001",
+        "new_speaker_trust": 0.9,
+    }]
+
+    result = CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        new_speaker_provenance={"speaker_provenance_mixed": True},
+    )
+
+    assert result is queued
+    assert queued[0]["new_speaker_provenance_mixed"] is True
+    assert "new_speaker_id" not in queued[0]
+    assert "new_speaker_trust" not in queued[0]
+
+
 @pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
 def test_correction_queue_preserves_non_finite_trust_as_unknown(invalid_trust):
     from memory.persona.corrections import CorrectionsMixin

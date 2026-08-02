@@ -109,6 +109,43 @@ VALID_SCOPED_REFINE_ACTIONS = frozenset({'merge'})
 TrustFn = Callable[[dict], str | float | None]
 
 
+def _parse_temporal_boundary(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return to_naive_local(datetime.fromisoformat(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _winner_precedes_newer_temporal_source(
+    winner: dict, sources: list[dict],
+) -> bool:
+    """Return True when a bounded winner predates another source state."""
+    winner_end = _parse_temporal_boundary(winner.get('event_end_at'))
+    if winner_end is None and winner.get('temporal_scope') in {'episode', 'past'}:
+        winner_end = _parse_temporal_boundary(winner.get('event_start_at'))
+    if winner_end is None:
+        return False
+    for source in sources:
+        if source is winner:
+            continue
+        start = _parse_temporal_boundary(source.get('event_start_at'))
+        if start is not None and winner_end < start:
+            return True
+    return False
+
+
+def _latest_temporal_source(sources: list[dict]) -> dict:
+    """Choose metadata from the newest represented source when available."""
+    dated: list[tuple[datetime, dict]] = []
+    for source in sources:
+        start = _parse_temporal_boundary(source.get('event_start_at'))
+        if start is not None:
+            dated.append((start, source))
+    return max(dated, key=lambda item: item[0])[1] if dated else sources[0]
+
+
 def _trust_weighted_merge_text(
     sources: list[dict], proposed_text: str,
 ) -> tuple[str, list[dict]]:
@@ -157,6 +194,12 @@ def _trust_weighted_merge_text(
     # when that winner conflicts with every row it would consume; a conflict
     # between two other rows must not let an unrelated leader erase both.
     winner = ordered[0]
+    # Trust resolves conflicting reports about the same state, not temporal
+    # evolution.  A bounded historical winner must not erase a later/current
+    # opposite state merely because its speaker has a higher score; retain the
+    # model's transition merge and both audit sources instead.
+    if _winner_precedes_newer_temporal_source(winner, ordered):
+        return proposed_text, sources
     if not all(
         deterministic_relation(
             str(winner.get('text') or ''), str(other.get('text') or ''),
@@ -922,7 +965,11 @@ async def apply_scoped_reflection_merge(
             semantic_sources = (
                 provenance_sources if len(provenance_sources) == 1 else sources
             )
-            semantic_source = semantic_sources[0]
+            semantic_source = (
+                semantic_sources[0]
+                if len(semantic_sources) == 1
+                else _latest_temporal_source(semantic_sources)
+            )
             source_fact_ids: list[str] = []
             for src in semantic_sources:
                 for fid in src.get('source_fact_ids') or []:
