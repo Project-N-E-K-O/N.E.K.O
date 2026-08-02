@@ -1309,7 +1309,7 @@ class FactStore:
                     source_fact_id or fallback_fact_id,
                 ))
                 signal_key = hashlib.sha256(
-                    f"{source_id}|{matched_fact_identity}".encode('utf-8')
+                    f"{name}|{source_id}|{matched_fact_identity}".encode('utf-8')
                 ).hexdigest()[:24]
                 event_id = trust_event_id(
                     relation, signal_key, target_id,

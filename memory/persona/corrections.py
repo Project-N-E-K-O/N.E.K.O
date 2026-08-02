@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import uuid
 
 
 import json
@@ -54,6 +55,27 @@ from ._shared import (
 _VALID_CORRECTION_ACTIONS = frozenset({
     'merge', 'keep_new', 'keep_old', 'keep_both',
 })
+
+_LEGACY_CORRECTION_IDENTITY_FIELDS = (
+    'created_at', 'entity', 'old_text', 'new_text',
+    'subject_kind', 'subject_id', 'scope',
+    'old_speaker_id', 'old_speaker_trust',
+    'old_speaker_provenance_mixed',
+    'new_speaker_id', 'new_speaker_trust',
+    'new_speaker_provenance_mixed',
+)
+
+
+def _correction_queue_identity(item: dict) -> tuple[str, ...] | None:
+    """Return a stable row identity, including a legacy-schema fallback."""
+    if not isinstance(item, dict):
+        return None
+    correction_id = str(item.get('correction_id') or '').strip()
+    if correction_id:
+        return ('id', correction_id)
+    return ('legacy', *(
+        repr(item.get(field)) for field in _LEGACY_CORRECTION_IDENTITY_FIELDS
+    ))
 
 
 class CorrectionsMixin:
@@ -131,6 +153,7 @@ class CorrectionsMixin:
             'new_text': new_text,
             'entity': entity,
             'created_at': datetime.now().isoformat(),
+            'correction_id': uuid.uuid4().hex,
         }
         if subject_fields:
             # scoped correction 携带完整 subject 戳：section key 不含 scope，
@@ -455,13 +478,18 @@ class CorrectionsMixin:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
         resolved_indices: set[int] = set()
-        fresh_by_created_at = None
+        fresh_by_identity = None
+        ambiguous_fresh_identities: set[tuple[str, ...]] = set()
         if fresh_corrections is not None:
-            fresh_by_created_at = {
-                item.get('created_at'): item
-                for item in fresh_corrections
-                if isinstance(item, dict) and item.get('created_at')
-            }
+            fresh_by_identity = {}
+            for fresh_item in fresh_corrections:
+                identity = _correction_queue_identity(fresh_item)
+                if identity is None:
+                    continue
+                if identity in fresh_by_identity:
+                    ambiguous_fresh_identities.add(identity)
+                    continue
+                fresh_by_identity[identity] = fresh_item
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -472,8 +500,13 @@ class CorrectionsMixin:
                 if idx in resolved_indices:
                     continue
                 item = corrections[idx]
-                if fresh_by_created_at is not None:
-                    item = fresh_by_created_at.get(item.get('created_at'))
+                if fresh_by_identity is not None:
+                    identity = _correction_queue_identity(item)
+                    if identity in ambiguous_fresh_identities:
+                        # Exact duplicate legacy rows cannot be safely mapped
+                        # back to one model index. Leave them queued.
+                        continue
+                    item = fresh_by_identity.get(identity)
                     if item is None:
                         # Removed while the model was running: its stale
                         # snapshot must not be applied or trusted.
@@ -800,16 +833,23 @@ class CorrectionsMixin:
 
         if resolved:
             await self.asave_persona(name, persona)
-            # 收集已处理条目的 created_at 作为精确匹配键
-            processed_keys = {
-                corrections[idx].get('created_at', '')
+            # New rows carry a generated id. Legacy rows use their complete
+            # immutable payload, so equal timestamps cannot cross-apply.
+            processed_identities = [
+                _correction_queue_identity(corrections[idx])
                 for idx in resolved_indices
-                if corrections[idx].get('created_at', '')
-            }
+            ]
             # 重新读取文件，仅删除已处理的条目，保留 LLM 期间新增的
             # （防止并发 _aqueue_correction 新追加的矛盾被覆盖丢失）
             current = await self.aload_pending_corrections(name)
-            remaining = [c for c in current if c.get('created_at', '') not in processed_keys]
+            remaining = list(current)
+            for identity in processed_identities:
+                if identity is None:
+                    continue
+                for position, correction in enumerate(remaining):
+                    if _correction_queue_identity(correction) == identity:
+                        remaining.pop(position)
+                        break
             assert_cloudsave_writable(
                 self._config_manager,
                 operation="save",

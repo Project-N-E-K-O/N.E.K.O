@@ -60,6 +60,14 @@ _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
 _EPISTEMIC_LEXICAL_MARKERS = frozenset({
     "maybe", "perhaps", "possibly", "probably",
 })
+_NON_UNIVERSAL_FREQUENCY_MARKERS = frozenset({
+    "frequently", "generally", "occasionally", "often", "periodically",
+    "rarely", "seldom", "sometimes", "usually",
+})
+_NON_UNIVERSAL_FREQUENCY_TOKEN_PHRASES = (
+    ("at", "times"),
+    ("from", "time", "to", "time"),
+)
 _REPORTING_VERBS = frozenset({
     "acknowledge", "acknowledged", "acknowledges", "admit", "admits", "admitted",
     "allege", "alleged", "alleges", "announce", "announced", "announces",
@@ -289,6 +297,18 @@ def _has_lexical_epistemic_negation(text: str) -> bool:
     )
 
 
+def _has_non_universal_frequency(text: str) -> bool:
+    """Reject time-varying claims from deterministic polarity matching."""
+    tokens = _word_tokens(text)
+    return (
+        any(token in _NON_UNIVERSAL_FREQUENCY_MARKERS for token in tokens)
+        or any(
+            _contains_token_phrase(tokens, phrase)
+            for phrase in _NON_UNIVERSAL_FREQUENCY_TOKEN_PHRASES
+        )
+    )
+
+
 def _has_cjk_epistemic_negation(text: str) -> bool:
     """Reject uncertain CJK markers that precede a negated predicate."""
     for marker in _CJK_EPISTEMIC_MARKERS:
@@ -382,6 +402,14 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
     if old_norm == new_norm:
         return "confirmation"
     if _has_disjunction(old_norm) or _has_disjunction(new_norm):
+        return None
+    if (
+        _has_non_universal_frequency(old_norm)
+        or _has_non_universal_frequency(new_norm)
+    ):
+        # ``sometimes P`` and ``sometimes not P`` can both be true at
+        # different times.  Frequency-qualified observations therefore do
+        # not provide a safe deterministic trust signal.
         return None
     if (
         (

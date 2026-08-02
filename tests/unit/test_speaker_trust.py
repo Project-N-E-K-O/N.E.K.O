@@ -591,10 +591,16 @@ async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
         speaker_provenance=provenance, speaker_is_owner=True,
         facts_snapshot=facts,
     ))[0]
+    other_character = (await store.aevaluate_speaker_trust_events(
+        "Mimi", messages, subject=owner_a,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=facts,
+    ))[0]
 
     assert event_a["source_fact_id"] == event_b["source_fact_id"] == "same-id"
     assert event_a["event_id"] != event_b["event_id"]
     assert repeated_a["event_id"] == event_a["event_id"]
+    assert other_character["event_id"] != event_a["event_id"]
 
 
 def test_fresh_persona_entry_preserves_missing_speaker_trust():
@@ -2296,6 +2302,19 @@ def test_english_lexical_uncertainty_never_emits_correction(marker):
     assert deterministic_relation(
         f"{marker} Alice is smart",
         f"{marker} Alice is not smart",
+    ) is None
+    assert deterministic_relation(
+        "Alice is smart", "Alice is not smart",
+    ) == "correction"
+
+
+@pytest.mark.parametrize("marker", [
+    "sometimes", "occasionally", "often", "rarely", "at times",
+])
+def test_frequency_qualified_negations_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"Alice is {marker} smart",
+        f"Alice is {marker} not smart",
     ) is None
     assert deterministic_relation(
         "Alice is smart", "Alice is not smart",

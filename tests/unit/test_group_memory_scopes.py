@@ -8512,6 +8512,45 @@ async def test_persona_trust_override_revalidates_current_old_provenance(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_correction_refresh_disambiguates_equal_timestamps(tmp_path):
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_equal_timestamps"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    items = [{
+        "old_text": "first old", "new_text": "first new",
+        "entity": "master", "created_at": "2026-08-02T00:00:00",
+    }, {
+        "old_text": "second old", "new_text": "second new",
+        "entity": "master", "created_at": "2026-08-02T00:00:00",
+    }]
+    corr_path.write_text(_json.dumps(items), encoding="utf-8")
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [
+        {"text": "first old"}, {"text": "second old"},
+    ]}
+    await pm.asave_persona(name, persona)
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)):
+        resolved = await pm._apply_correction_results(
+            name, items, {0}, [{"index": 0, "action": "keep_new"}],
+            refresh_pending=True,
+        )
+
+    assert resolved == 1
+    texts = {
+        fact["text"]
+        for fact in (await pm.aensure_persona(name))["master"]["facts"]
+    }
+    assert texts == {"first new", "second old"}
+    assert _json.loads(corr_path.read_text(encoding="utf-8")) == [items[1]]
+
+
+@pytest.mark.asyncio
 async def test_member_toggle_off_settles_buckets_before_clearing():
     """Turning group_member_memory_enabled off (group memory still on) must
     settle already-collected member buckets before clearing them — finalize
