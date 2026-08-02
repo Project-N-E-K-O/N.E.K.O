@@ -885,7 +885,7 @@ def test_derived_provenance_rejects_partially_attributed_sources():
     ]) == {}
 
 
-def test_derived_provenance_rejects_mixed_source_with_residual_fields():
+def test_derived_provenance_preserves_mixed_source_marker():
     assert provenance_of_entries([
         {"speaker_id": "qq:1001", "speaker_trust": 0.8},
         {
@@ -893,7 +893,14 @@ def test_derived_provenance_rejects_mixed_source_with_residual_fields():
             "speaker_trust": 0.8,
             "speaker_provenance_mixed": True,
         },
-    ]) == {}
+    ]) == {"speaker_provenance_mixed": True}
+
+
+def test_derived_provenance_marks_multiple_stable_speakers_as_mixed():
+    assert provenance_of_entries([
+        {"speaker_id": "qq:1001", "speaker_trust": 0.8},
+        {"speaker_id": "qq:2002", "speaker_trust": 0.6},
+    ]) == {"speaker_provenance_mixed": True}
 
 
 def test_derived_provenance_does_not_borrow_an_omitted_trust_value():

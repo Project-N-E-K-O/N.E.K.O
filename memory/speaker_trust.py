@@ -537,13 +537,13 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
     if not rows or any(not isinstance(entry, dict) for entry in rows):
         return {}
     if any(entry.get("speaker_provenance_mixed") is True for entry in rows):
-        return {}
+        return {"speaker_provenance_mixed": True}
     speaker_ids = [stable_speaker_id(entry.get("speaker_id")) for entry in rows]
     if any(speaker_id is None for speaker_id in speaker_ids):
         return {}
     speaker_ids = set(speaker_ids)
     if len(speaker_ids) != 1:
-        return {}
+        return {"speaker_provenance_mixed": True}
     speaker_id = next(iter(speaker_ids))
     trusts = [
         normalize_trust(entry.get("speaker_trust")) for entry in rows
