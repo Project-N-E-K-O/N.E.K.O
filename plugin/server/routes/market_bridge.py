@@ -877,6 +877,47 @@ async def market_oauth_start(
     return MarketOAuthStartResponse(auth_url=auth_url, state=state)
 
 
+# Subtags that mark a Chinese tag as Traditional. Matched against the tag's
+# own subtags (set intersection), not as a substring of the whole tag, so a
+# non-language subtag can never drag a Simplified tag over. Same membership as
+# plugin_install.py and application/plugins/ui_query_service.py — one shared
+# notion of "Traditional", not a fourth.
+_ZH_HANT_SUBTAGS = frozenset({"tw", "hk", "mo", "hant"})
+
+
+# Callback-page copy, keyed by whatever ``_preferred_oauth_callback_locale``
+# can return. The lookup at the use site is a hard subscript on purpose (a
+# missing key should fail loudly in tests, not silently serve the wrong
+# language), so these two must stay in lockstep — hence a module constant a
+# test can assert against rather than a dict literal inline in the handler.
+_OAUTH_CALLBACK_COPY: dict[str, dict[str, str]] = {
+    "zh-CN": {
+        "title": "N.E.K.O 浏览器授权已返回",
+        "heading": "浏览器授权已返回",
+        "body": "请回到 N.E.K.O 插件管理器，客户端正在确认 Auth 与 Market 账号状态。",
+        "close": "这个页面现在可以关闭。",
+    },
+    "zh-TW": {
+        "title": "N.E.K.O 瀏覽器授權已返回",
+        "heading": "瀏覽器授權已返回",
+        "body": "請回到 N.E.K.O 外掛管理器，用戶端正在確認 Auth 與 Market 帳號狀態。",
+        "close": "這個頁面現在可以關閉。",
+    },
+    "en": {
+        "title": "N.E.K.O browser authorization returned",
+        "heading": "Browser authorization returned",
+        "body": "Return to the N.E.K.O plugin manager while it confirms your Auth and Market account status.",
+        "close": "You can close this page now.",
+    },
+    "ja": {
+        "title": "N.E.K.O ブラウザー認証が戻りました",
+        "heading": "ブラウザー認証が戻りました",
+        "body": "N.E.K.O プラグインマネージャーに戻ってください。Auth と Market のアカウント状態を確認しています。",
+        "close": "このページは閉じてもかまいません。",
+    },
+}
+
+
 def _preferred_oauth_callback_locale(accept_language: str) -> str:
     """Select the highest-priority supported callback locale."""
 
@@ -898,6 +939,11 @@ def _preferred_oauth_callback_locale(accept_language: str) -> str:
                 break
         primary_tag = tag.split("-", 1)[0]
         locale = supported.get(primary_tag)
+        # accept_language was lower()ed as a whole above, so subtags compare
+        # lowercase. Looking at the primary tag alone would serve zh-TW / zh-HK
+        # a Simplified page.
+        if locale == "zh-CN" and _ZH_HANT_SUBTAGS & set(tag.split("-")[1:]):
+            locale = "zh-TW"
         if locale is None or not 0.0 < quality <= 1.0:
             continue
         candidates.append((-quality, index, locale))
@@ -937,26 +983,7 @@ async def market_oauth_callback(
     locale = _preferred_oauth_callback_locale(
         request.headers.get("accept-language", "")
     )
-    copy = {
-        "zh-CN": {
-            "title": "N.E.K.O 浏览器授权已返回",
-            "heading": "浏览器授权已返回",
-            "body": "请回到 N.E.K.O 插件管理器，客户端正在确认 Auth 与 Market 账号状态。",
-            "close": "这个页面现在可以关闭。",
-        },
-        "en": {
-            "title": "N.E.K.O browser authorization returned",
-            "heading": "Browser authorization returned",
-            "body": "Return to the N.E.K.O plugin manager while it confirms your Auth and Market account status.",
-            "close": "You can close this page now.",
-        },
-        "ja": {
-            "title": "N.E.K.O ブラウザー認証が戻りました",
-            "heading": "ブラウザー認証が戻りました",
-            "body": "N.E.K.O プラグインマネージャーに戻ってください。Auth と Market のアカウント状態を確認しています。",
-            "close": "このページは閉じてもかまいません。",
-        },
-    }[locale]
+    copy = _OAUTH_CALLBACK_COPY[locale]
     return HTMLResponse(
         f"""
         <!doctype html>

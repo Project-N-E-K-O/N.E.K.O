@@ -26,8 +26,6 @@ from config.prompts.prompts_soccer import (
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
 )
-from utils.language_utils import normalize_language_code
-
 
 _SOCCER_ANGER_PRESSURE_CAP_WEAK = 8
 
@@ -39,24 +37,6 @@ _SOCCER_ANGER_PRESSURE_CAP_STRONG = 50
 
 
 _SOCCER_EMOTION_INERTIA = {"low", "medium", "high", "very_high"}
-
-
-def _badminton_duel_difficulty_control_prompt(language: str | None = None) -> str:
-    lang = normalize_language_code(language)
-    if lang == "zh":
-        return (
-            "\n对战难度控制补充：duel 模式下你可以在台词后另起一行输出 "
-            "{\"difficulty\":\"max|lv2|lv3|lv4\"}。"
-            "max=最强/认真压制，lv2=强但略慢，lv3=明显放水，lv4=最弱/主要防守。"
-            "只在局势、情绪或 balanceHint 需要时调整；spectator 不使用 difficulty。\n"
-        )
-    return (
-        "\nDuel difficulty control addendum: in duel mode, you may output "
-        "{\"difficulty\":\"max|lv2|lv3|lv4\"} on a separate line after the spoken line. "
-        "max=strongest/serious pressure, lv2=strong but slightly slower, "
-        "lv3=clear soft play, lv4=weakest/mostly defensive. Adjust only when the "
-        "score, emotion, or balanceHint calls for it; spectator does not use difficulty.\n"
-    )
 
 
 def _build_soccer_balance_hint(event: Any) -> Dict[str, Any]:

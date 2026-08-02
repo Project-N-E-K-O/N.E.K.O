@@ -51,8 +51,11 @@ Convention (mirrors prompts_directives)
   turn that turned out light; the *accumulator knobs* (``FOCUS_CHARGE_*``)
   and the keyword *weight* (``FOCUS_SIGNAL_WEIGHTS``) are where rollout
   tuning lives, not this lexicon.
-- Locale keys match the short-code scheme of ``NEGATIVE_KEYWORDS_I18N``
-  (zh / en / ja / ko / ru / es / pt); ``zh`` is shared by zh-CN / zh-TW.
+- Locale keys match the scheme of ``NEGATIVE_KEYWORDS_I18N``: short codes
+  (zh / en / ja / ko / ru / es / pt) plus a separate ``zh-TW`` block. The two
+  Chinese blocks are independent lexicons, not two spellings of one — these
+  tables match the characters a user actually typed, and Simplified entries
+  score zero on Traditional input.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 

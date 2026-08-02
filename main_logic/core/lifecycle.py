@@ -1007,8 +1007,9 @@ class LifecycleMixin:
             topic_language_seed = normalize_language_code(get_global_language_full(), format='full')
             # Seed the FULL code (e.g. 'zh-TW'), consistent with set_user_language's
             # format='full'; every consumer short-normalizes at its use site. Keeping
-            # the Hant variant here lets resolve_dialog_slop_lang skip the Simplified
-            # slop table for Traditional-Chinese sessions (the short 'zh' hid it).
+            # the Hant variant here is what lets resolve_dialog_slop_lang route a
+            # Traditional-Chinese session to the 'zh-TW' slop rules instead of the
+            # Simplified ones (a short 'zh' would hide the distinction entirely).
             self.user_language = topic_language_seed
             self._conversation_turn_language = topic_language_seed
         self._set_conversation_turn_language(
