@@ -58,6 +58,30 @@ def test_trust_normalization_rejects_non_finite_values():
     assert overflow.speaker_trust_profiles()["1001"]["adjustment"] == 0.0
 
 
+def test_trust_normalization_rejects_overflowing_integers():
+    from config import SPEAKER_TRUST_DEFAULT
+
+    huge = 10 ** 400
+    assert normalize_trust(huge) == pytest.approx(SPEAKER_TRUST_DEFAULT)
+    assert trust_band(huge) == "unknown"
+    assert preferred_by_trust(huge, 0.5) is None
+    assert provenance_of_entries([{
+        "speaker_id": "qq:1001", "speaker_trust": huge,
+    }]) == {"speaker_id": "qq:1001"}
+
+
+def test_imported_activity_count_is_clamped_before_float_math():
+    manager = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={"1001": {"message_count": 10 ** 400}},
+    )
+
+    assert manager.speaker_trust_profiles()["1001"]["message_count"] == (
+        manager._speaker_activity_count_cap()
+    )
+    assert manager.get_speaker_trust("1001") == pytest.approx(0.52)
+
+
 def test_arbitration_margin_is_stable_at_decimal_boundary():
     assert preferred_by_trust(0.60, 0.45) == "old"
     assert preferred_by_trust(0.80, 0.65) == "old"

@@ -17,6 +17,19 @@ class PermissionManager:
     _NICKNAME_FORBIDDEN_CHARS = frozenset("[]|")
     _NICKNAME_ALLOWED_FORMAT_CHARS = frozenset({"\u200d"})
 
+    @staticmethod
+    def _speaker_activity_count_cap() -> int:
+        from config import (
+            SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
+            SPEAKER_TRUST_ACTIVITY_WEIGHT,
+        )
+
+        if SPEAKER_TRUST_ACTIVITY_MAX_BONUS <= 0 or SPEAKER_TRUST_ACTIVITY_WEIGHT <= 0:
+            return 0
+        return max(0, math.ceil(
+            SPEAKER_TRUST_ACTIVITY_MAX_BONUS / SPEAKER_TRUST_ACTIVITY_WEIGHT
+        ))
+
     def __init__(
         self,
         trusted_users: List[Dict[str, Any]] = None,
@@ -174,7 +187,10 @@ class PermissionManager:
         if not math.isfinite(adjustment):
             adjustment = 0.0
         try:
-            message_count = max(0, int(raw.get("message_count", 0) or 0))
+            message_count = min(
+                PermissionManager._speaker_activity_count_cap(),
+                max(0, int(raw.get("message_count", 0) or 0)),
+            )
         except (TypeError, ValueError, OverflowError):
             message_count = 0
         def _event_ids(key: str, *, durable: bool = False) -> list[str]:
@@ -252,10 +268,13 @@ class PermissionManager:
             -SPEAKER_TRUST_ADJUSTMENT_LIMIT,
             min(SPEAKER_TRUST_ADJUSTMENT_LIMIT, raw_adjustment),
         )
+        activity_count = min(
+            self._speaker_activity_count_cap(),
+            max(0, int(profile.get("message_count", 0) or 0)),
+        )
         activity = min(
             SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
-            max(0, int(profile.get("message_count", 0) or 0))
-            * SPEAKER_TRUST_ACTIVITY_WEIGHT,
+            activity_count * SPEAKER_TRUST_ACTIVITY_WEIGHT,
         )
         return max(0.0, min(1.0, base + adjustment + activity))
 
@@ -276,7 +295,10 @@ class PermissionManager:
         from config import SPEAKER_TRUST_EVENT_HISTORY_LIMIT
         processed.append(event)
         del processed[:-SPEAKER_TRUST_EVENT_HISTORY_LIMIT]
-        profile["message_count"] = int(profile.get("message_count", 0) or 0) + count
+        profile["message_count"] = min(
+            self._speaker_activity_count_cap(),
+            int(profile.get("message_count", 0) or 0) + count,
+        )
         return True
 
     def apply_speaker_trust_events(self, events: list[dict]) -> int:

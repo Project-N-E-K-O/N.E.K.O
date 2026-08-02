@@ -119,25 +119,32 @@ _CJK_REPORTING_MARKERS = (
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
-def normalize_trust(value, default: float = SPEAKER_TRUST_DEFAULT) -> float:
+def _finite_trust_score(value) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        score = float(value)
+        try:
+            score = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
         if math.isfinite(score):
-            return max(0.0, min(1.0, score))
-    fallback = float(default)
-    if not math.isfinite(fallback):
-        fallback = float(SPEAKER_TRUST_DEFAULT)
+            return score
+    return None
+
+
+def normalize_trust(value, default: float = SPEAKER_TRUST_DEFAULT) -> float:
+    score = _finite_trust_score(value)
+    if score is not None:
+        return max(0.0, min(1.0, score))
+    fallback = _finite_trust_score(default)
+    if fallback is None:
+        fallback = _finite_trust_score(SPEAKER_TRUST_DEFAULT) or 0.0
     return max(0.0, min(1.0, fallback))
 
 
 def trust_band(value) -> str:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(float(value))
-    ):
+    score = _finite_trust_score(value)
+    if score is None:
         return "unknown"
-    score = normalize_trust(value)
+    score = normalize_trust(score)
     if score >= 0.75:
         return "high"
     if score >= 0.45:
@@ -147,15 +154,12 @@ def trust_band(value) -> str:
 
 def preferred_by_trust(old, new) -> str | None:
     """Return ``old``/``new`` only when the deterministic margin is met."""
-    if any(
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(float(value))
-        for value in (old, new)
-    ):
+    old_raw = _finite_trust_score(old)
+    new_raw = _finite_trust_score(new)
+    if old_raw is None or new_raw is None:
         return None
-    old_score = normalize_trust(old)
-    new_score = normalize_trust(new)
+    old_score = normalize_trust(old_raw)
+    new_score = normalize_trust(new_raw)
     margin = Decimal(str(SPEAKER_TRUST_ARBITRATION_MARGIN))
     difference = Decimal(str(old_score)) - Decimal(str(new_score))
     if difference >= margin:
@@ -563,12 +567,10 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
     if len(speaker_ids) != 1:
         return {"speaker_provenance_mixed": True}
     speaker_id = next(iter(speaker_ids))
-    trusts = [
-        normalize_trust(entry.get("speaker_trust")) for entry in rows
-        if isinstance(entry.get("speaker_trust"), (int, float))
-        and not isinstance(entry.get("speaker_trust"), bool)
-        and math.isfinite(float(entry.get("speaker_trust")))
+    trust_scores = [
+        _finite_trust_score(entry.get("speaker_trust")) for entry in rows
     ]
+    trusts = [normalize_trust(score) for score in trust_scores if score is not None]
     result = {"speaker_id": speaker_id}
     if len(trusts) == len(rows):
         result["speaker_trust"] = min(trusts)

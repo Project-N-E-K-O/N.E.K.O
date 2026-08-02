@@ -711,6 +711,9 @@ class CorrectionsMixin:
                     'reason': reason,
                     'source_fact_id': None,
                 }
+                if item.get(f'{prefix}_speaker_provenance_mixed') is True:
+                    snapshot['speaker_provenance_mixed'] = True
+                    return snapshot
                 speaker_id = item.get(f'{prefix}_speaker_id')
                 if speaker_id:
                     snapshot['speaker_id'] = speaker_id

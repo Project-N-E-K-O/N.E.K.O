@@ -758,6 +758,41 @@ async def test_mixed_speaker_merge_clears_single_speaker_provenance(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_mixed_correction_history_omits_residual_single_speaker(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "旧来源说法",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    correction = {
+        "old_text": "旧来源说法",
+        "new_text": "混合来源补充",
+        "entity": "master",
+        "old_speaker_id": "qq:2002",
+        "old_speaker_trust": 0.8,
+        "new_speaker_provenance_mixed": True,
+        # Legacy rows may retain these stale single-speaker fields.
+        "new_speaker_id": "qq:1001",
+        "new_speaker_trust": 0.9,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0}, [{
+            "index": 0, "action": "merge", "text": "合并说法",
+        }],
+    ) == 1
+
+    merged = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    history = {row["text"]: row for row in merged["version_history"]}
+    mixed = history["混合来源补充"]
+    assert mixed["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in mixed
+    assert "speaker_trust" not in mixed
+
+
+@pytest.mark.asyncio
 async def test_same_speaker_merge_folds_trust_to_conservative_minimum(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(
@@ -813,7 +848,7 @@ async def test_duplicate_pending_correction_marks_different_sources_mixed(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_correction_apply_refreshes_provenance_after_llm_window(tmp_path):
+async def test_correction_apply_requeues_changed_provenance_after_llm_window(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(
         pm, "Neko", "小明喜欢猫",
@@ -847,10 +882,11 @@ async def test_correction_apply_refreshes_provenance_after_llm_window(tmp_path):
             "text": "模型保留的合并结论",
         }],
         refresh_pending=True,
-    ) == 1
+    ) == 0
+    assert await pm.aload_pending_corrections("Neko") == current
     persona = await pm.aensure_persona("Neko")
     facts = pm._get_section_facts(persona, "master")
-    assert [item["text"] for item in facts] == ["模型保留的合并结论"]
+    assert [item["text"] for item in facts] == ["小明喜欢猫"]
 
 
 @pytest.mark.asyncio
