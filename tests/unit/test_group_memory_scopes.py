@@ -11790,6 +11790,71 @@ async def test_member_flush_retries_owner_after_failed_chronological_predecessor
 
 
 @pytest.mark.asyncio
+async def test_owner_trust_failure_excludes_later_persisted_batch_facts():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    owner = {
+        "role": "user", "content": "owner observation",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 1,
+    }
+    later = {
+        "role": "user", "content": "later member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "9999": [owner], "1001": [later],
+        },
+        "group_member_memory_labels": {
+            "9999": "Owner(9999)", "1001": "Alice(1001)",
+        },
+    }
+    later_identity = [
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "fact_identities": [[
+                "owner-fact", "group_participant", "qq:7788:9999",
+                "group_participant:qq:7788:9999",
+            ]]},
+            {"status": "ok", "fact_identities": [later_identity]},
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    # Exercise the response-processing invariant directly: an older server or
+    # future packer may return an owner segment before another persisted row.
+    service._pack_member_segment_groups = (
+        lambda groups, **_kwargs: [[
+            spec for group in groups for spec in group
+        ]]
+    )
+    service._apply_speaker_trust_update = AsyncMock(
+        side_effect=RuntimeError("trust persistence failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="trust persistence failed"):
+        await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason="test",
+        )
+
+    assert owner["_trust_signal_excluded_fact_identities"] == [later_identity]
+    assert user_data["group_member_memory_messages"] == {
+        "9999": [owner], "1001": [later],
+    }
+
+
+@pytest.mark.asyncio
 async def test_owner_retry_sends_post_observation_fact_exclusions_to_server():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

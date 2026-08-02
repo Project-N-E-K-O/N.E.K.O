@@ -260,6 +260,58 @@ def test_detect_candidates_distinguishes_same_id_across_participant_scopes():
     assert pairs[0]["existing_subject_id"] == first.subject_id
 
 
+@pytest.mark.asyncio
+async def test_group_participant_paraphrases_stay_in_each_participant_scope(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    first = MemorySubject.group_participant("qq", "7788", "1001")
+    second = MemorySubject.group_participant("qq", "7788", "2002")
+    rows = [
+        {
+            **_fact("a", "小明喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **first.as_entry_fields(),
+        },
+        {
+            **_fact("b", "小明喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **second.as_entry_fields(),
+        },
+    ]
+    pair = {
+        "candidate_id": "a", "existing_id": "b",
+        "candidate_subject_kind": first.kind,
+        "candidate_subject_id": first.subject_id,
+        "candidate_scope": first.scope,
+        "existing_subject_kind": second.kind,
+        "existing_subject_id": second.subject_id,
+        "existing_scope": second.scope,
+        "entity": "group_participant",
+        "subject_key": "@group_participant_arbitration:qq:7788",
+        "scope": "@group_participant_arbitration:qq:7788",
+        "cosine": 0.99,
+    }
+
+    assert FactDedupResolver.detect_candidates(rows, only_for_ids={
+        ("a", first.kind, first.subject_id, first.scope),
+    }) == []
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", rows)
+    assert await resolver.aenqueue_candidates("Neko", [pair]) == 0
+
+    # Upgrade safety: consume an already-persisted invalid pair without
+    # exposing the two participants' texts to the LLM.
+    assert await resolver._asave_pending("Neko", [pair])
+    llm_factory = AsyncMock()
+    with patch("utils.llm_client.create_chat_llm_async", llm_factory):
+        assert await resolver.aresolve("Neko") == 0
+    llm_factory.assert_not_awaited()
+    assert await resolver.aload_pending("Neko") == []
+
+
 def test_detect_candidates_respects_entity_scope():
     """master + relationship entries don't collide even with identical
     embeddings — cross-entity dedup is too risky to defer to vectors."""

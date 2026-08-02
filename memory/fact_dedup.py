@@ -143,6 +143,38 @@ def _fact_dedup_domain(entry: dict) -> tuple | None:
     return None
 
 
+def _pair_can_share_dedup(first: dict, second: dict) -> bool:
+    """Allow cross-participant pairing only for deterministic corrections."""
+    from memory.scopes import subject_from_entry
+
+    first_subject = subject_from_entry(first)
+    second_subject = subject_from_entry(second)
+    if (
+        first_subject is None
+        or second_subject is None
+        or first_subject.kind != 'group_participant'
+        or second_subject.kind != 'group_participant'
+    ):
+        return True
+    if (
+        first_subject.kind,
+        first_subject.subject_id,
+        first_subject.scope,
+    ) == (
+        second_subject.kind,
+        second_subject.subject_id,
+        second_subject.scope,
+    ):
+        return True
+    if _fact_dedup_domain(first) != _fact_dedup_domain(second):
+        return False
+    from memory.speaker_trust import deterministic_relation
+    return deterministic_relation(
+        str(first.get('text') or ''),
+        str(second.get('text') or ''),
+    ) == 'correction'
+
+
 def _find_queued_fact(
     rows_by_id: dict[object, list[dict]], item: dict, side: str,
 ) -> dict | None:
@@ -377,6 +409,13 @@ class FactDedupResolver:
                         name, p.get('subject_key'), p.get('scope'),
                     )
                     or real_subject_forget_active
+                    or (
+                        pair_rows[0] is not None
+                        and pair_rows[1] is not None
+                        and not _pair_can_share_dedup(
+                            pair_rows[0], pair_rows[1],
+                        )
+                    )
                     or (
                         (
                             p.get('subject_key') is not None
@@ -676,6 +715,8 @@ class FactDedupResolver:
                         continue
                 if sib.get('absorbed'):
                     continue
+                if not _pair_can_share_dedup(f, sib):
+                    continue
                 svec = sib.get('embedding')
                 if not svec:
                     continue
@@ -822,6 +863,9 @@ class FactDedupResolver:
                 and self._fact_store._subject_forget_is_active(name, subject)
                 for row in (cand_row, exist_row)
             ):
+                stale_keys.add(_queue_identity(it))
+                continue
+            if not _pair_can_share_dedup(cand_row, exist_row):
                 stale_keys.add(_queue_identity(it))
                 continue
             domain = _classify_domain(it)

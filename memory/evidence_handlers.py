@@ -278,22 +278,22 @@ def make_persona_entry_handler(persona_manager):
                 provenance = payload.get('speaker_provenance')
                 if not isinstance(provenance, dict):
                     provenance = {}
+                provenance_keys = (
+                    'speaker_id', 'speaker_trust', 'speaker_label',
+                    'speaker_provenance_mixed',
+                )
                 before = {
-                    key: e.get(key) for key in (
-                        'speaker_id', 'speaker_trust', 'speaker_label',
-                    ) if key in e
+                    key: e.get(key) for key in provenance_keys if key in e
                 }
-                for key in ('speaker_id', 'speaker_trust', 'speaker_label'):
+                for key in provenance_keys:
                     e.pop(key, None)
                 e.update({
                     key: provenance[key]
-                    for key in ('speaker_id', 'speaker_trust', 'speaker_label')
+                    for key in provenance_keys
                     if key in provenance
                 })
                 after = {
-                    key: e.get(key) for key in (
-                        'speaker_id', 'speaker_trust', 'speaker_label',
-                    ) if key in e
+                    key: e.get(key) for key in provenance_keys if key in e
                 }
                 changed = changed or before != after
             if changed:

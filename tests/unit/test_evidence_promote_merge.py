@@ -448,7 +448,7 @@ async def test_merge_into_path_updates_target_and_marks_merged(tmp_path):
                 "speaker_label": "Alice(1001)",
             },
         ),
-        ("qq:2002", 0.5, {}),
+        ("qq:2002", 0.5, {"speaker_provenance_mixed": True}),
         (None, None, {}),
     ],
 )
@@ -484,16 +484,19 @@ async def test_merge_into_folds_and_replays_speaker_provenance(
     merged = (await pm.aget_persona('Neko'))['master']['facts'][0]
     actual = {
         key: merged[key]
-        for key in ('speaker_id', 'speaker_trust', 'speaker_label')
+        for key in (
+            'speaker_id', 'speaker_trust', 'speaker_label',
+            'speaker_provenance_mixed',
+        )
         if key in merged
     }
-    if expected_provenance:
+    if expected_provenance.get('speaker_id'):
         assert actual['speaker_id'] == expected_provenance['speaker_id']
         assert actual['speaker_trust'] == pytest.approx(
             expected_provenance['speaker_trust']
         )
     else:
-        assert actual == {}
+        assert actual == expected_provenance
 
     events_path = os.path.join(str(tmp_path), 'Neko', 'events.ndjson')
     with open(events_path, encoding='utf-8') as f:
@@ -518,16 +521,19 @@ async def test_merge_into_folds_and_replays_speaker_provenance(
     replayed = (await pm.aget_persona('Neko'))['master']['facts'][0]
     replayed_provenance = {
         key: replayed[key]
-        for key in ('speaker_id', 'speaker_trust', 'speaker_label')
+        for key in (
+            'speaker_id', 'speaker_trust', 'speaker_label',
+            'speaker_provenance_mixed',
+        )
         if key in replayed
     }
-    if expected_provenance:
+    if expected_provenance.get('speaker_id'):
         assert replayed_provenance['speaker_id'] == expected_provenance['speaker_id']
         assert replayed_provenance['speaker_trust'] == pytest.approx(
             expected_provenance['speaker_trust']
         )
     else:
-        assert replayed_provenance == {}
+        assert replayed_provenance == expected_provenance
 
 
 @pytest.mark.asyncio

@@ -1473,6 +1473,48 @@ class QQSessionMemoryService:
                 failed: set[str] = set()
                 successful_message_ids: dict[str, set[int]] = {}
                 chronological_predecessor_failed = False
+
+                def _remember_later_fact_exclusions(
+                    spec: dict, segment_index: int,
+                ) -> None:
+                    """Keep already-persisted later facts out of owner replay."""
+                    sender_id = str(spec.get("sender_id") or "")
+                    if not self._speaker_is_owner_for(
+                        sender_id, spec.get("permission_level"),
+                    ):
+                        return
+                    later_fact_identities = {
+                        tuple(str(part) for part in identity)
+                        for later_result in segment_results[segment_index + 1:]
+                        if isinstance(later_result, dict)
+                        and later_result.get("status") == "ok"
+                        for identity in later_result.get("fact_identities") or []
+                        if isinstance(identity, (list, tuple))
+                        and len(identity) == 4
+                        and all(identity)
+                    }
+                    if not later_fact_identities:
+                        return
+                    for message in spec["messages"]:
+                        if not isinstance(message, dict):
+                            continue
+                        existing = message.get(
+                            "_trust_signal_excluded_fact_identities"
+                        )
+                        excluded = {
+                            tuple(str(part) for part in identity)
+                            for identity in (
+                                existing if isinstance(existing, list) else []
+                            )
+                            if isinstance(identity, (list, tuple))
+                            and len(identity) == 4
+                            and all(identity)
+                        }
+                        excluded.update(later_fact_identities)
+                        message[
+                            "_trust_signal_excluded_fact_identities"
+                        ] = [list(identity) for identity in sorted(excluded)]
+
                 for segment_index, (spec, segment_result) in enumerate(zip(
                     batch_specs, segment_results,
                 )):
@@ -1496,47 +1538,7 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} {role_label} "
                                 f"{sender_id} 的前序段失败，保留本段重试"
                             )
-                            later_fact_identities = {
-                                tuple(str(part) for part in identity)
-                                for later_result in segment_results[
-                                    segment_index + 1:
-                                ]
-                                if isinstance(later_result, dict)
-                                and later_result.get("status") == "ok"
-                                for identity in (
-                                    later_result.get("fact_identities") or []
-                                )
-                                if isinstance(identity, (list, tuple))
-                                and len(identity) == 4
-                                and all(identity)
-                            }
-                            if (
-                                later_fact_identities
-                                and self._speaker_is_owner_for(
-                                sender_id, spec.get("permission_level"),
-                                )
-                            ):
-                                for message in spec["messages"]:
-                                    if not isinstance(message, dict):
-                                        continue
-                                    existing = message.get(
-                                        "_trust_signal_excluded_fact_identities"
-                                    )
-                                    excluded = {
-                                        tuple(str(part) for part in identity)
-                                        for identity in (
-                                            existing
-                                            if isinstance(existing, list)
-                                            else []
-                                        )
-                                        if isinstance(identity, (list, tuple))
-                                        and len(identity) == 4
-                                        and all(identity)
-                                    }
-                                    excluded.update(later_fact_identities)
-                                    message[
-                                        "_trust_signal_excluded_fact_identities"
-                                    ] = [list(identity) for identity in sorted(excluded)]
+                            _remember_later_fact_exclusions(spec, segment_index)
                             failed.add(sender_id)
                             continue
                         try:
@@ -1585,14 +1587,22 @@ class QQSessionMemoryService:
                                     f"[{reason}] 群 {group_id} 主人 {sender_id} "
                                     f"重试信任信号忽略 {suppressed} 条后序事实"
                                 )
-                        await self._apply_speaker_trust_update(
-                            sender_id,
-                            list(spec["messages"]),
-                            trust_events,
-                            activity_identity=self._group_activity_identity(
-                                group_id, spec,
-                            ),
-                        )
+                        try:
+                            await self._apply_speaker_trust_update(
+                                sender_id,
+                                list(spec["messages"]),
+                                trust_events,
+                                activity_identity=self._group_activity_identity(
+                                    group_id, spec,
+                                ),
+                            )
+                        except BaseException:
+                            # The memory server has already committed the whole
+                            # batch.  If trust/activity persistence aborts here,
+                            # the retained owner segment must not use facts from
+                            # later successful segments when it is retried.
+                            _remember_later_fact_exclusions(spec, segment_index)
+                            raise
                         successful_message_ids.setdefault(sender_id, set()).update(
                             id(message) for message in spec["messages"]
                         )
