@@ -39,6 +39,8 @@ class CustomStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         if path.endswith(".js"):
             response.headers["Content-Type"] = "application/javascript"
+        if b"v=" in scope.get("query_string", b""):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
 

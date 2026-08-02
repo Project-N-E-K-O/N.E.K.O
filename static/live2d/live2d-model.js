@@ -1791,6 +1791,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!this._isLoadTokenActive(loadToken)) return;
     this._modelLoadState = 'applying';
     this._parameterEditingMode = options.parameterEditingMode === true;
+    const minimalEmbed = options.minimalEmbed === true;
 
     // 解析模型目录名与根路径，供资源解析使用
     try {
@@ -1871,7 +1872,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     this.pixi_app.stage.addChild(model);
 
     // 设置交互性
-    if (options.dragEnabled !== false) {
+    if (!minimalEmbed && options.dragEnabled !== false) {
         this.setupDragAndDrop(model);
     }
 
@@ -1912,30 +1913,32 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // this.setupHitAreaInteraction(model);
 
     // 设置滚轮缩放
-    if (options.wheelEnabled !== false) {
+    if (!minimalEmbed && options.wheelEnabled !== false) {
         this.setupWheelZoom(model);
     }
     
     // 设置触摸缩放（双指捏合）
-    if (options.touchZoomEnabled !== false) {
+    if (!minimalEmbed && options.touchZoomEnabled !== false) {
         this.setupTouchZoom(model);
     }
 
     // 启用鼠标跟踪（始终启用监听器，内部根据设置决定是否执行眼睛跟踪）
     // enableMouseTracking 包含悬浮菜单显示/隐藏逻辑，必须始终启用
-    this.enableMouseTracking(model);
-    // 同步内部状态（眼睛跟踪是否启用）
-    this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
-    console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
+    if (!minimalEmbed) {
+        this.enableMouseTracking(model);
+        // 同步内部状态（眼睛跟踪是否启用）
+        this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+        console.log(`[Live2D] 鼠标跟踪初始化: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, _mouseTrackingEnabled=${this._mouseTrackingEnabled}`);
 
-    // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
-    this.setupFloatingButtons(model);
+        // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
+        this.setupFloatingButtons(model);
 
-    // 应用保存的全屏跟踪设置
-    this.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
-    
-    // 设置原来的锁按钮
-    this.setupHTMLLockIcon(model);
+        // 应用保存的全屏跟踪设置
+        this.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
+
+        // 设置原来的锁按钮
+        this.setupHTMLLockIcon(model);
+    }
 
     const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
     this._validateEyeBlinkGroup(settings, model);
@@ -1946,7 +1949,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     } catch (e) {
         console.warn('[Live2D EyeBlink] first-frame override install failed; will retry after full init:', e);
     }
-    if (settings) {
+    if (settings && !minimalEmbed) {
         try {
             await this._loadDisplayInfo(settings);
         } catch (_) {}
@@ -2143,18 +2146,22 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
-    await this._preTickPhysics(model, 2000, 16, loadToken);
+    await this._preTickPhysics(model, minimalEmbed ? 480 : 2000, 16, loadToken);
 
     this._modelLoadState = 'settling';
     if (this._isLoadTokenActive(loadToken)) {
-        await this._waitForModelVisualStability(model, loadToken);
+        await this._waitForModelVisualStability(model, loadToken, minimalEmbed ? {
+            requiredStableFrames: 2,
+            maxFrames: 18,
+            minElapsedMs: 96
+        } : {});
     }
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
     // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”。
     // 启动恢复必须与拖拽结束使用同一可见像素阈值，避免允许的半出屏位置被更严格地拉回屏内。
-    if (typeof this._checkSnapRequired === 'function') {
+    if (!minimalEmbed && typeof this._checkSnapRequired === 'function') {
         try {
             const snapInfo = await this._checkSnapRequired(model);
             if (snapInfo && Number.isFinite(snapInfo.targetX) && Number.isFinite(snapInfo.targetY)) {
@@ -2172,8 +2179,13 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     model.alpha = 1;
     // 等待 3 帧：让渲染器在 alpha=1 下输出完全稳定的画面
     // （含裁剪蒙版纹理刷新、变形器最终输出、物理末帧收敛）
-    await new Promise(r => requestAnimationFrame(() =>
-        requestAnimationFrame(() => requestAnimationFrame(r))));
+    await new Promise((resolve) => {
+        const waitFrame = (remaining) => requestAnimationFrame(() => {
+            if (remaining <= 1) resolve();
+            else waitFrame(remaining - 1);
+        });
+        waitFrame(minimalEmbed ? 1 : 3);
+    });
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
