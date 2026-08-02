@@ -18,6 +18,7 @@ from __future__ import annotations
 
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 
@@ -225,6 +226,17 @@ class FactsMixin:
         if subject is not None:
             entry.update(subject.as_entry_fields())
         if speaker_provenance:
+            if source.startswith('reflection'):
+                from memory.temporal import explicit_event_window
+                event_start_at, event_end_at = explicit_event_window(
+                    speaker_provenance,
+                )
+                if event_start_at is not None or event_end_at is not None:
+                    entry['event_when_raw'] = deepcopy(
+                        speaker_provenance.get('event_when_raw')
+                    )
+                    entry['event_start_at'] = event_start_at
+                    entry['event_end_at'] = event_end_at
             from memory.speaker_trust import (
                 finite_trust_score,
                 normalize_trust,

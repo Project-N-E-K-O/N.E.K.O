@@ -142,6 +142,44 @@ def test_trust_merge_ignores_synthesized_reflection_windows():
     assert retained == [high]
 
 
+@pytest.mark.asyncio
+async def test_reflection_merge_does_not_promote_synthesized_event_window(
+    tmp_path,
+):
+    _, _, re = _install(str(tmp_path))
+    high = _r_entry(
+        "high", "小明喜欢猫", GROUP_A,
+        speaker_id="qq:1001", speaker_trust=0.9,
+        temporal_scope="state", event_when_raw=None,
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at="2026-06-01T00:00:00",
+    )
+    low = _r_entry(
+        "low", "小明不喜欢猫", GROUP_A,
+        speaker_id="qq:2002", speaker_trust=0.3,
+        temporal_scope="state", event_when_raw=None,
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at="2026-06-01T00:00:00",
+    )
+    await re.asave_reflections("小天", [high, low])
+
+    assert await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, [high, low], [{
+            "action": "merge", "source_ids": ["high", "low"],
+            "produce": {"text": "模型错误合并"},
+        }], "timeless-window-hash",
+    ) == 1
+
+    merged = next(
+        row for row in await re._aload_reflections_full("小天")
+        if row.get("merged_from_ids")
+    )
+    assert merged["text"] == "小明喜欢猫"
+    assert merged["event_when_raw"] is None
+    assert merged["event_start_at"] is None
+    assert merged["event_end_at"] is None
+
+
 def test_trust_merge_preserves_bounded_episode_under_ongoing_winner():
     ongoing_high = {
         "text": "小明喜欢猫",

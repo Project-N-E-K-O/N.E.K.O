@@ -449,7 +449,7 @@ async def test_merge_into_path_updates_target_and_marks_merged(tmp_path):
             },
         ),
         ("qq:2002", 0.5, {"speaker_provenance_mixed": True}),
-        (None, None, {}),
+        (None, None, {"speaker_provenance_mixed": True}),
     ],
 )
 async def test_merge_into_folds_and_replays_speaker_provenance(

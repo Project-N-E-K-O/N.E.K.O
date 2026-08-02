@@ -103,7 +103,7 @@ except ImportError:
     _warn_once(__name__)
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
-from memory.temporal import to_naive_local
+from memory.temporal import explicit_event_window, to_naive_local
 from utils.language_utils import language_context
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -146,19 +146,9 @@ def _has_distinct_temporal_context(
 ) -> bool:
     """Return True when trust would collapse distinct temporal evidence."""
     def _temporal_context(entry: dict) -> tuple:
-        start = _parse_temporal_boundary(entry.get('event_start_at'))
-        end = _parse_temporal_boundary(entry.get('event_end_at'))
-        created = _parse_temporal_boundary(entry.get('created_at'))
-        # Reflection synthesis anchors timeless rows to created_at and, for
-        # states/episodes, synthesizes the same end. Those ingestion stamps
-        # are not explicit event windows.
-        if (
-            not entry.get('event_when_raw')
-            and start == created
-            and (end is None or end == created)
-        ):
-            start = None
-            end = None
+        raw_start, raw_end = explicit_event_window(entry)
+        start = _parse_temporal_boundary(raw_start)
+        end = _parse_temporal_boundary(raw_end)
         return entry.get('temporal_scope'), start, end
 
     winner_context = _temporal_context(winner)
@@ -1120,11 +1110,14 @@ async def apply_scoped_reflection_merge(
             # 全部源的时间跨度，只抄首源会把结论锚在旧时段，recall_by_time
             # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
             # （pattern/进行中，无结束点）则并集也无结束点，否则取最晚。
-            starts = [
-                s.get('event_start_at') for s in semantic_sources
-                if s.get('event_start_at')
+            explicit_windows = [
+                window for window in (
+                    explicit_event_window(s) for s in semantic_sources
+                )
+                if any(boundary is not None for boundary in window)
             ]
-            ends = [s.get('event_end_at') for s in semantic_sources]
+            starts = [start for start, _ in explicit_windows if start]
+            ends = [end for _, end in explicit_windows]
             merged_start = _pick_temporal_boundary(starts, latest=False)
             merged_end = (
                 None if (not ends or any(e is None for e in ends))

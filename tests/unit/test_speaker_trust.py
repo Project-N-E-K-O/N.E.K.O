@@ -729,6 +729,38 @@ def test_fresh_persona_entry_preserves_missing_speaker_trust():
     assert "speaker_trust" not in entry
 
 
+def test_fresh_persona_entry_preserves_only_explicit_reflection_window():
+    from memory.persona.facts import FactsMixin
+
+    explicit = FactsMixin()._build_fact_entry(
+        "dated reflection", source="reflection", source_id="ref-dated",
+        speaker_provenance={
+            "created_at": "2026-06-15T12:00:00",
+            "event_when_raw": {"start": {"offset": -1, "unit": "week"}},
+            "event_start_at": "2026-06-08T12:00:00",
+            "event_end_at": None,
+        },
+    )
+    assert explicit["event_when_raw"] == {
+        "start": {"offset": -1, "unit": "week"},
+    }
+    assert explicit["event_start_at"] == "2026-06-08T12:00:00"
+    assert explicit["event_end_at"] is None
+
+    timeless = FactsMixin()._build_fact_entry(
+        "timeless reflection", source="reflection_time_driven",
+        source_id="ref-timeless", speaker_provenance={
+            "created_at": "2026-06-15T12:00:00",
+            "event_when_raw": None,
+            "event_start_at": "2026-06-15T12:00:00",
+            "event_end_at": "2026-06-15T12:00:00",
+        },
+    )
+    assert "event_when_raw" not in timeless
+    assert "event_start_at" not in timeless
+    assert "event_end_at" not in timeless
+
+
 @pytest.mark.parametrize(
     "invalid_trust", [float("nan"), float("inf"), 10 ** 400],
 )
