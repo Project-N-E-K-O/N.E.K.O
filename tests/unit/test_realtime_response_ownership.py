@@ -333,6 +333,127 @@ async def test_retired_and_server_vad_created_claims_pay_one_debt_each():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_idless_retirement_quarantines_duplicate_frames_from_successor():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous", suppress_output=True)
+        await asyncio.wait_for(previous.sent, 0.2)
+        terminal = arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+
+        late = arbiter.notify_response_created({"type": "response.created"})
+        assert late.kind is ResponseCreatedKind.RETIRED
+        assert late.generation == terminal.generation
+        assert late.suppress_output is True
+
+        successor = await arbiter.enqueue(source="successor")
+        await asyncio.wait_for(successor.sent, 0.2)
+        duplicate_terminal = arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        assert duplicate_terminal.kind.name == "STALE"
+        assert duplicate_terminal.generation == terminal.generation
+        assert successor.done.done() is False
+
+        duplicate_created = arbiter.notify_response_created(
+            {"type": "response.created"}
+        )
+        assert duplicate_created.kind is ResponseCreatedKind.RETIRED
+        assert duplicate_created.generation == terminal.generation
+        created = arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-new"}}
+        )
+        assert created.kind is ResponseCreatedKind.OWNER
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"id": "resp-new"}}
+        )
+        await asyncio.wait_for(successor.done, 0.2)
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_created_selects_unknown_obligation_over_known_id_mismatch():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-a", "status": "completed"},
+            }
+        )
+        await asyncio.wait_for(previous.done, 0.2)
+        arbiter.notify_server_vad_response_pending(arm_timeout=False)
+
+        vad = arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-b"}}
+        )
+        assert vad.kind is ResponseCreatedKind.SERVER_VAD
+        assert len(arbiter._retired_created_windows) == 1
+        assert arbiter._retired_created_windows[0].terminal_response_id == "resp-a"
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"id": "resp-b"}}
+        )
+
+        old = arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-a"}}
+        )
+        assert old.kind is ResponseCreatedKind.RETIRED
+        assert not arbiter._retired_created_windows
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_seen_activity_pays_its_exact_terminal_obligation():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-a", "status": "completed"},
+            }
+        )
+        await asyncio.wait_for(previous.done, 0.2)
+        arbiter.notify_server_vad_response_pending(arm_timeout=False)
+
+        assert arbiter.notify_response_activity("resp-a") is None
+        assert len(arbiter._retired_created_windows) == 1
+        remaining = arbiter._retired_created_windows[0]
+        assert remaining.source == "server_vad"
+        assert remaining.terminal_seen is False
+
+        vad = arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-b"}}
+        )
+        assert vad.kind is ResponseCreatedKind.SERVER_VAD
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"id": "resp-b"}}
+        )
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_transport_does_not_adopt_a_created_frame_the_arbiter_retired():
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",

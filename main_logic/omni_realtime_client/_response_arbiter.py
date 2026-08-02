@@ -229,6 +229,15 @@ class _CreatedObligation:
     terminal_seen: bool = False
     terminal_status: str | None = None
     pending: bool = False
+    suppress_output: bool = False
+
+
+@dataclass(slots=True)
+class _IdlessRetirement:
+    """Bounded quarantine for ambiguous duplicate ID-less frames."""
+
+    generation: int
+    expires_at: float
 
 
 @dataclass(order=True, slots=True)
@@ -371,6 +380,7 @@ class RealtimeResponseArbiter:
         # generation that opened it instead of whichever owner happens to be
         # current later.
         self._retired_created_windows: list[_CreatedObligation] = []
+        self._idless_retirements: list[_IdlessRetirement] = []
         # An ended server-VAD utterance identifies an automatic response that
         # may race an explicit owner's response.create.  speech_started alone
         # is not sufficient: an already-sent explicit create can still emit
@@ -957,8 +967,8 @@ class RealtimeResponseArbiter:
     def _bump_vad_epoch(self) -> None:
         self._vad_epoch += 1
 
-    def _adoptable_id_for(self, queued: _QueuedResponse) -> str | None:
-        """The announcement this request may claim as its own, or None.
+    def _adoptable_generation_for(self, queued: _QueuedResponse) -> int | None:
+        """The announcement generation this request may claim, or None.
 
         Some providers begin answering when they receive the conversation
         item and never wait for ``response.create``. Their announcement then
@@ -992,15 +1002,16 @@ class RealtimeResponseArbiter:
           it, and the free routes are exactly those — requiring the ack would
           disqualify every request on the only providers that need this.
         - **Exactly one unowned announcement arrived in the window.** Two is
-          ambiguous, and an id-less one cannot be named at all; the serial
-          counts both, so either refuses adoption.
+          ambiguous. The serial counts both, while the lifecycle generation
+          keeps an id-less candidate distinct from there being no candidate.
         - **The server-VAD correlation state did not move.** An automatic
           response announced across this window is the user's, not ours — and
           the pending marker being armed or its backstop expiring both mean
           exactly that.
-        - **The id is still believed live.** An announcement whose terminal
-          already arrived is finished business; adopting it would resolve this
-          request against a response that has already ended.
+        - **The generation is still live or known-finished.** A terminal may
+          arrive before adoption; retaining its status lets the claim complete
+          the request immediately instead of waiting for a terminal that has
+          already gone by.
         """
 
         if not queued.response_send_started or queued.response_id is not None:
@@ -1026,10 +1037,17 @@ class RealtimeResponseArbiter:
             return None
         if self._adoptable_serial != queued.adoption.serial + 1:
             return None
-        adopted = self._adoptable_announcement
-        if adopted is None:
+        generation = self._adoptable_generation
+        if generation is None:
             return None
-        adopted_lifetime = self._match_live_response(adopted)
+        adopted_lifetime = next(
+            (
+                lifetime
+                for lifetime in self._response_lifetimes
+                if lifetime.generation == generation
+            ),
+            None,
+        )
         if (
             (adopted_lifetime is None or adopted_lifetime.owner is not None)
             and self._adoptable_terminal_status is None
@@ -1037,9 +1055,9 @@ class RealtimeResponseArbiter:
             # Neither live nor known-finished: its terminal was handled as
             # somebody else's, so it is not this request's to take.
             return None
-        return adopted
+        return generation
 
-    def _adopt_announcement(self, queued: _QueuedResponse, response_id: str) -> None:
+    def _adopt_announcement(self, queued: _QueuedResponse, generation: int) -> None:
         """Transfer an unowned announcement to this request.
 
         A MOVE, not a copy. Leaving the id in ``_server_response_ids`` would
@@ -1055,13 +1073,18 @@ class RealtimeResponseArbiter:
             (
                 lifetime
                 for lifetime in self._response_lifetimes
-                if lifetime.owner is None and lifetime.response_id == response_id
+                if lifetime.owner is None and lifetime.generation == generation
             ),
             None,
         )
+        response_id = (
+            orphan.response_id
+            if orphan is not None
+            else self._adoptable_announcement
+        )
         queued.response_id = response_id
+        previous = queued.lifecycle
         if orphan is not None:
-            previous = queued.lifecycle
             if previous is not None and previous is not orphan:
                 self._remove_lifetime(previous)
             orphan.owner = queued
@@ -1073,10 +1096,14 @@ class RealtimeResponseArbiter:
                     queued.suppress_output,
                 )
         else:
-            if queued.lifecycle is None:
-                queued.lifecycle = self._new_lifetime(owner=queued, announced=False)
-            queued.lifecycle.response_id = response_id
-            queued.lifecycle.announced_at = asyncio.get_running_loop().time()
+            if previous is not None:
+                self._remove_lifetime(previous)
+            self._new_lifetime(
+                owner=queued,
+                response_id=response_id,
+                announced=True,
+                generation=generation,
+            )
         self._remember_seen_response_id(response_id)
         terminal_status = self._adoptable_terminal_status
         self._adoptable_announcement = None
@@ -1102,7 +1129,7 @@ class RealtimeResponseArbiter:
         logger.info(
             "adopted unowned response.created %s for %s (%s): this provider "
             "answers the conversation item without waiting for response.create",
-            response_id,
+            response_id or "<idless>",
             queued.source,
             "already terminated" if terminal_status is not None else "still live",
         )
@@ -1238,16 +1265,71 @@ class RealtimeResponseArbiter:
         self._server_vad_response_pending = True
         self._arm_server_vad_pending_timer()
 
+    def _created_obligation_for_response(
+        self, response_id: str | None
+    ) -> _CreatedObligation | None:
+        exact = self._created_obligation_matching_terminal_id(response_id)
+        if exact is not None:
+            return exact
+        if response_id is None:
+            return (
+                self._retired_created_windows[0]
+                if self._retired_created_windows
+                else None
+            )
+        unknown_identity = [
+            obligation
+            for obligation in self._retired_created_windows
+            if not obligation.terminal_seen
+            or obligation.terminal_response_id is None
+        ]
+        return unknown_identity[0] if unknown_identity else None
+
     def _created_obligation_matching_terminal_id(
         self, response_id: str | None
     ) -> _CreatedObligation | None:
-        matches = [
+        exact = [
             obligation
             for obligation in self._retired_created_windows
             if obligation.terminal_seen
             and obligation.terminal_response_id == response_id
         ]
-        return matches[0] if len(matches) == 1 else None
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+        return None
+
+    def _prune_idless_retirements(self) -> None:
+        now = asyncio.get_running_loop().time()
+        self._idless_retirements = [
+            retirement
+            for retirement in self._idless_retirements
+            if retirement.expires_at > now
+        ]
+
+    def _remember_idless_retirement(self, generation: int) -> None:
+        self._prune_idless_retirements()
+        self._idless_retirements = [
+            retirement
+            for retirement in self._idless_retirements
+            if retirement.generation != generation
+        ]
+        self._idless_retirements.append(
+            _IdlessRetirement(
+                generation=generation,
+                expires_at=(
+                    asyncio.get_running_loop().time()
+                    + min(self._server_response_max_age, _RETIRED_CREATED_WINDOW_MAX)
+                ),
+            )
+        )
+        while len(self._idless_retirements) > _CREATED_OBLIGATION_LIMIT:
+            self._idless_retirements.pop(0)
+
+    def _latest_idless_retirement(self) -> _IdlessRetirement | None:
+        self._prune_idless_retirements()
+        return self._idless_retirements[-1] if self._idless_retirements else None
 
     def _consume_created_obligation(
         self,
@@ -1261,6 +1343,8 @@ class RealtimeResponseArbiter:
         self._clear_pending_vad_generation(obligation.generation)
         self._remember_seen_response_id(response_id)
         if obligation.terminal_seen or not obligation.created_is_live:
+            if response_id is None:
+                self._remember_idless_retirement(obligation.generation)
             logger.info(
                 "late response.created %s consumed by retired %s generation %d",
                 response_id or "<idless>",
@@ -1272,17 +1356,24 @@ class RealtimeResponseArbiter:
                 ResponseCreatedKind.RETIRED,
                 response_id,
                 obligation.generation,
+                obligation.suppress_output,
             )
         lifetime = self._remember_server_response(
             response_id,
             generation=obligation.generation,
+            suppress_output=obligation.suppress_output,
         )
         kind = (
             ResponseCreatedKind.SERVER_VAD
             if obligation.source == "server_vad" and was_active_vad
             else ResponseCreatedKind.UNOWNED_SERVER
         )
-        return ResponseCreatedResult(kind, response_id, lifetime.generation)
+        return ResponseCreatedResult(
+            kind,
+            response_id,
+            lifetime.generation,
+            obligation.suppress_output,
+        )
 
     def _arm_stale_release_timer(self) -> None:
         """Re-check the earliest unowned or retired lifecycle deadline."""
@@ -1398,8 +1489,18 @@ class RealtimeResponseArbiter:
         self._idle.clear()
         self._prune_stale_lifetimes()
         response_id = self._event_response_id(event)
-        # A terminal may have arrived first and named its own debt.  That exact
-        # pairing is stronger than the seen-id duplicate filter below.
+        if response_id is None:
+            retirement = self._latest_idless_retirement()
+            if retirement is not None:
+                self._release_lane_if_clear()
+                return ResponseCreatedResult(
+                    ResponseCreatedKind.RETIRED,
+                    None,
+                    retirement.generation,
+                )
+        # An exact terminal identity is strongest. If no exact match exists,
+        # only a debt whose identity is still unknown may consume this frame;
+        # a known, different terminal ID must retain its own window.
         obligation = self._created_obligation_matching_terminal_id(response_id)
         if obligation is not None:
             return self._consume_created_obligation(obligation, response_id)
@@ -1419,16 +1520,10 @@ class RealtimeResponseArbiter:
                 None,
             )
 
-        if self._retired_created_windows:
-            # One created frame pays exactly one causal debt.  When an old owner
-            # and a server-VAD response overlap, identity cannot tell which came
-            # first; consuming only the oldest obligation is conservative and
-            # leaves every other generation's barrier intact for its own frame
-            # or deadline.  Crucially, no event can collapse two debts into one.
-            return self._consume_created_obligation(
-                self._retired_created_windows[0],
-                response_id,
-            )
+        obligation = self._created_obligation_for_response(response_id)
+        if obligation is not None:
+            return self._consume_created_obligation(obligation, response_id)
+
         owner = self._response_owner
         if owner is not None and not owner.ticket.started.done():
             # The first response.created after the owner's response.create is
@@ -1472,7 +1567,7 @@ class RealtimeResponseArbiter:
         # as it receives the conversation item — rather than waiting for
         # response.create — this IS the request's own announcement, arriving
         # while the item-ack barrier still holds the owner slot empty. Nothing
-        # here decides that; ``_adoptable_id_for`` does, against evidence the
+        # here decides that; ``_adoptable_generation_for`` does, against evidence the
         # dispatching request captured for itself.
         self._note_unowned_announcement(response_id, lifetime.generation)
         return ResponseCreatedResult(
@@ -1504,17 +1599,19 @@ class RealtimeResponseArbiter:
         text = str(response_id)
         if not text:
             return None
-        if text in self._seen_response_ids:
-            return None
-        if self._retired_created_windows:
+        obligation = self._created_obligation_matching_terminal_id(text)
+        if obligation is not None:
             # Identified content is an implicit announcement. It must settle
             # the same generation-scoped debt as response.created; otherwise a
             # late id-less-owner delta can be installed as a fresh orphan and
             # leak output after that owner already terminated.
-            created = self._consume_created_obligation(
-                self._retired_created_windows[0],
-                text,
-            )
+            created = self._consume_created_obligation(obligation, text)
+            return created.generation if created.is_live else None
+        if text in self._seen_response_ids:
+            return None
+        obligation = self._created_obligation_for_response(text)
+        if obligation is not None:
+            created = self._consume_created_obligation(obligation, text)
             return created.generation if created.is_live else None
         idless = [
             lifetime
@@ -1524,6 +1621,8 @@ class RealtimeResponseArbiter:
         if len(idless) == 1:
             lifetime = idless[0]
             lifetime.response_id = text
+            if lifetime.generation == self._adoptable_generation:
+                self._adoptable_announcement = text
             if lifetime.owner is not None:
                 lifetime.owner.response_id = text
                 if self._on_lifetime_adopted is not None:
@@ -1789,6 +1888,7 @@ class RealtimeResponseArbiter:
                 terminal_response_id=terminal_response_id,
                 terminal_seen=True,
                 terminal_status=terminal_status,
+                suppress_output=owner.suppress_output,
             )
         )
 
@@ -1809,6 +1909,20 @@ class RealtimeResponseArbiter:
             and response_status not in {"completed", "success", "succeeded"}
             else None
         )
+
+        if response_id is None:
+            retirement = self._latest_idless_retirement()
+            live_idless = any(
+                lifetime.announced_at is not None
+                and lifetime.response_id is None
+                for lifetime in self._response_lifetimes
+            )
+            if retirement is not None and not live_idless:
+                return ResponseTerminalResult(
+                    ResponseTerminalKind.STALE,
+                    None,
+                    retirement.generation,
+                )
 
         has_unpaid_vad_terminal = any(
             obligation.source == "server_vad"
@@ -2180,6 +2294,7 @@ class RealtimeResponseArbiter:
         self._server_vad_pending_generation = None
         self._response_lifetimes.clear()
         self._retired_created_windows.clear()
+        self._idless_retirements.clear()
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
@@ -2207,6 +2322,7 @@ class RealtimeResponseArbiter:
         self._dispatch_allowed.set()
         self._response_lifetimes.clear()
         self._retired_created_windows.clear()
+        self._idless_retirements.clear()
         # Response ids are scoped to a connection: a provider that restarts
         # its numbering would otherwise have the new session's first terminal
         # recognised as one this arbiter has "already seen" and withheld from
@@ -2848,6 +2964,7 @@ class RealtimeResponseArbiter:
                             ),
                             source="detached_explicit_create",
                             created_is_live=True,
+                            suppress_output=queued.suppress_output,
                         )
                     )
                 if self._response_owner is queued:
@@ -2920,9 +3037,9 @@ class RealtimeResponseArbiter:
                 # else would have left this request's own create to be
                 # rejected or announced, and either resolves ``started``
                 # instead of timing out.
-                adopted_id = self._adoptable_id_for(queued)
-                if adopted_id is not None:
-                    self._adopt_announcement(queued, adopted_id)
+                adopted_generation = self._adoptable_generation_for(queued)
+                if adopted_generation is not None:
+                    self._adopt_announcement(queued, adopted_generation)
                 else:
                     await self._cancel_after_timeout(queued, started_timeout)
             try:

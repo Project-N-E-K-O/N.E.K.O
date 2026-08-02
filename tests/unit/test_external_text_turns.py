@@ -13,6 +13,7 @@ from main_logic.tool_calling import ToolResult
 _DEFAULT_RESPONSE_DONE_TIMEOUT = arbiter_module._DEFAULT_RESPONSE_DONE_TIMEOUT
 _SERVER_RESPONSE_ID_LIMIT = arbiter_module._SERVER_RESPONSE_ID_LIMIT
 RealtimeResponseArbiter = arbiter_module.RealtimeResponseArbiter
+ResponseCreatedKind = arbiter_module.ResponseCreatedKind
 
 
 async def _wait_for_arbiter_source(
@@ -1509,6 +1510,47 @@ async def test_vad_created_during_create_send_is_not_credited_to_owner():
     assert proactive.started.exception() is not None
     assert arbiter._response_owner is None
     assert arbiter._server_response_ids == {}
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_detached_explicit_create_keeps_suppression_on_late_announcement():
+    arbiter = None
+
+    async def send(event):
+        if event["type"] != "response.create":
+            return
+        arbiter.notify_server_vad_response_pending(arm_timeout=False)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-vad"}}
+        )
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-vad", "status": "completed"},
+            }
+        )
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(source="silent", suppress_output=True)
+    with pytest.raises(RuntimeError, match="pending server VAD response"):
+        await asyncio.wait_for(ticket.done, 0.2)
+
+    assert len(arbiter._retired_created_windows) == 1
+    obligation = arbiter._retired_created_windows[0]
+    assert obligation.source == "detached_explicit_create"
+    assert obligation.suppress_output is True
+
+    late = arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-explicit"}}
+    )
+    assert late.kind is ResponseCreatedKind.UNOWNED_SERVER
+    assert late.suppress_output is True
+    assert arbiter.suppress_output_for_generation(late.generation) is True
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-explicit"}}
+    )
     await arbiter.shutdown()
 
 
@@ -3042,6 +3084,55 @@ async def test_idless_announcement_adopts_identity_from_early_terminal():
     assert result is not None
     assert aborted == []
     assert "response.cancel" not in [event["type"] for event in sent]
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fully_idless_early_terminal_is_still_adoptable():
+    def finish_without_identity(arbiter):
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"status": "completed"},
+            }
+        )
+
+    arbiter, ticket, sent, aborted = await _adoption_harness(
+        during_item_window=finish_without_identity,
+        announced_response_id=None,
+    )
+    result = await asyncio.wait_for(ticket.done, 1.0)
+
+    assert result is not None
+    assert aborted == []
+    assert "response.cancel" not in [event["type"] for event in sent]
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_activity_identity_upgrade_preserves_idless_adoption_candidate():
+    def identify_from_activity(arbiter):
+        generation = arbiter.notify_response_activity("resp-activity")
+        assert generation is not None
+
+    arbiter, ticket, _sent, aborted = await _adoption_harness(
+        during_item_window=identify_from_activity,
+        announced_response_id=None,
+    )
+    await asyncio.wait_for(ticket.started, 1.0)
+
+    assert arbiter._response_owner is not None
+    assert arbiter._response_owner.response_id == "resp-activity"
+    arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-activity", "status": "completed"},
+        }
+    )
+    await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted == []
     await arbiter.shutdown()
 
 
