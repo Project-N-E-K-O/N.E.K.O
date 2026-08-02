@@ -35,6 +35,7 @@ from memory.scopes import MemorySubject, filter_entries_for_subjects
 from memory.scoped_refine import (
     STORE_PERSONA,
     STORE_REFLECTION,
+    SCOPED_REFINE_PROMPT_STALE,
     ScopedLiteRefineEngine,
     abump_scoped_persona_refine_attempts,
     abump_scoped_reflection_refine_attempts,
@@ -366,6 +367,33 @@ async def test_refine_pass_llm_config_is_lite():
     assert 'extra_body' not in kwargs
     assert kwargs['timeout'] == SCOPED_REFINE_LLM_TIMEOUT_SECONDS
     assert kwargs['max_retries'] == 0
+
+
+@pytest.mark.asyncio
+async def test_refine_pass_does_not_charge_prompt_staleness():
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(f"a{i}", f"文本{i}", GROUP_A, va if i % 2 else vb)
+        for i in range(8)
+    ]
+    failure = AsyncMock()
+
+    async def _apply(*_args):
+        return SCOPED_REFINE_PROMPT_STALE
+
+    with patch(
+        'utils.llm_client.create_chat_llm_async',
+        AsyncMock(return_value=_make_llm([{"action": "merge"}])),
+    ):
+        result = await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply, failure_fn=failure, scope_label='t',
+        )
+
+    assert result['resolved'] == 0
+    assert result['failed'] == 0
+    failure.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1141,6 +1169,74 @@ async def test_apply_rejects_source_whose_text_changed_since_cluster(tmp_path):
     assert set(by_id) == {"r0", "r1"}
     assert by_id['r0']['status'] == 'confirmed'
     assert by_id['r1']['text'] == "被并发改写的文本"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store", [STORE_PERSONA, STORE_REFLECTION])
+async def test_apply_requeues_source_whose_prompt_trust_changed(tmp_path, store):
+    """A model action cannot consume rows whose displayed trust band drifted."""
+    fs, pm, re = _install(str(tmp_path))
+    entries = []
+    for entry_id, text, trust in (
+        ("source-high", "高可信观点", 0.9),
+        ("source-low", "低可信观点", 0.2),
+    ):
+        if store == STORE_PERSONA:
+            entry = pm._build_fact_entry(
+                text, "manual", None, subject=GROUP_A,
+            )
+        else:
+            entry = _r_entry(entry_id, text, GROUP_A)
+        entry.update({
+            "id": entry_id,
+            "speaker_id": f"qq:{entry_id}",
+            "speaker_trust": trust,
+        })
+        entries.append(entry)
+
+    if store == STORE_PERSONA:
+        persona = await pm.aensure_persona("小天")
+        section = persona.setdefault(
+            GROUP_A.persona_section_key,
+            {**GROUP_A.as_entry_fields(), "facts": []},
+        )
+        section["facts"] = entries
+        await pm.asave_persona("小天", persona)
+        cluster = [dict(entry) for entry in entries]
+        entries[0]["speaker_provenance_mixed"] = True
+        await pm.asave_persona("小天", persona)
+        applied = await apply_scoped_persona_merge(
+            pm, "小天", GROUP_A, cluster, [{
+                "action": "merge",
+                "source_ids": ["source-high", "source-low"],
+                "produce": {"text": "stale trust conclusion"},
+            }], "hash-trust-drift",
+        )
+        current = (await pm.aensure_persona("小天"))[
+            GROUP_A.persona_section_key
+        ]["facts"]
+    else:
+        await re.asave_reflections("小天", entries)
+        cluster = [dict(entry) for entry in entries]
+        entries[0]["speaker_provenance_mixed"] = True
+        await re.asave_reflections("小天", entries)
+        applied = await apply_scoped_reflection_merge(
+            re, "小天", GROUP_A, cluster, [{
+                "action": "merge",
+                "source_ids": ["source-high", "source-low"],
+                "produce": {"text": "stale trust conclusion"},
+            }], "hash-trust-drift",
+        )
+        current = await re._aload_reflections_full("小天")
+
+    assert applied == SCOPED_REFINE_PROMPT_STALE
+    assert {entry["id"] for entry in current} == {
+        "source-high", "source-low",
+    }
+    assert all(
+        entry.get("last_refine_cluster_hash") != "hash-trust-drift"
+        for entry in current
+    )
 
 
 @pytest.mark.asyncio

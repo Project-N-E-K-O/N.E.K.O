@@ -38,11 +38,9 @@ from .gates import (
 
 def _scoped_prompt_trust_band(entry: dict) -> str:
     """Render mixed-source rows as unknown in LLM-facing refine prompts."""
-    from memory.speaker_trust import trust_band
+    from memory.scoped_refine import scoped_prompt_trust_band
 
-    if entry.get('speaker_provenance_mixed') is True:
-        return 'unknown'
-    return trust_band(entry.get('speaker_trust'))
+    return scoped_prompt_trust_band(entry)
 
 
 # ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────

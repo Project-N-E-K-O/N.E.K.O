@@ -11869,7 +11869,8 @@ async def test_member_flush_retries_owner_after_failed_chronological_predecessor
 
 
 @pytest.mark.asyncio
-async def test_cancelled_private_trust_save_advances_durable_prefix():
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_cancelled_private_trust_save_checkpoints_only_success(persisted):
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -11886,9 +11887,9 @@ async def test_cancelled_private_trust_save_advances_durable_prefix():
     service._slice_group_history_batch = MagicMock(return_value=(
         [{"role": "user", "content": "already persisted"}], 1,
     ))
-    service._apply_speaker_trust_update = AsyncMock(
-        side_effect=asyncio.CancelledError(),
-    )
+    cancelled = asyncio.CancelledError()
+    cancelled.speaker_trust_persisted = persisted
+    service._apply_speaker_trust_update = AsyncMock(side_effect=cancelled)
     user_data = {"last_participant_digest_index": 0}
 
     with pytest.raises(asyncio.CancelledError):
@@ -11898,7 +11899,7 @@ async def test_cancelled_private_trust_save_advances_durable_prefix():
             last_participant_digest_index=0,
         )
 
-    assert user_data["last_participant_digest_index"] == 1
+    assert user_data["last_participant_digest_index"] == (1 if persisted else 0)
 
 
 @pytest.mark.asyncio

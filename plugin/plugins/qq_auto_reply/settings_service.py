@@ -737,7 +737,7 @@ class QQSettingsService:
                 )
                 try:
                     persisted = await asyncio.shield(save_task)
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as cancelled:
                     try:
                         persisted = await save_task
                     except asyncio.CancelledError:
@@ -755,6 +755,7 @@ class QQSettingsService:
                     elif isinstance(runtime_settings, dict):
                         runtime_settings['speaker_trust_profiles'] = before
                     self.__dict__.pop('_staged_speaker_trust_profiles', None)
+                    cancelled.speaker_trust_persisted = bool(persisted)
                     raise
                 except Exception:
                     self.__dict__.pop('_staged_speaker_trust_profiles', None)

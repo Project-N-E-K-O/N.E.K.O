@@ -73,13 +73,22 @@ def test_archive_merge_distinguishes_scalar_id_types_in_one_scope():
         "subject_id": "qq:7788",
         "scope": "group_chat:qq:7788",
     }
-    existing = [{"id": 1, "text": "integer id", **subject_fields}]
-    incoming = [{"id": "1", "text": "string id", **subject_fields}]
+    existing = [
+        {"id": True, "text": "boolean id", **subject_fields},
+        {"id": 1, "text": "integer id", **subject_fields},
+    ]
+    incoming = [
+        {"id": 1.0, "text": "float id", **subject_fields},
+        {"id": "1", "text": "string id", **subject_fields},
+    ]
 
     merged = _merge_archive_entries(existing, incoming)
 
-    assert [(row["id"], row["text"]) for row in merged] == [
-        (1, "integer id"), ("1", "string id"),
+    assert [(type(row["id"]), row["id"], row["text"]) for row in merged] == [
+        (bool, True, "boolean id"),
+        (int, 1, "integer id"),
+        (float, 1.0, "float id"),
+        (str, "1", "string id"),
     ]
 
 

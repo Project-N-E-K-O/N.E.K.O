@@ -1365,7 +1365,7 @@ async def _process_scoped_history_segments(
             reconciled_by_key = {
                 _fact_identity(fact): dict(fact)
                 for fact in (result.get("reconciled") or [])
-                if isinstance(fact, dict) and fact.get("id")
+                if isinstance(fact, dict) and fact.get("id") is not None
             }
             if reconciled_by_key:
                 for job in owner_signal_jobs:

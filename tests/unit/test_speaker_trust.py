@@ -1462,7 +1462,8 @@ async def test_batch_owner_signal_ignores_later_segment_reconciliation():
 
 
 @pytest.mark.asyncio
-async def test_batch_owner_signal_preserves_concurrent_provenance_update():
+@pytest.mark.parametrize("fact_id", ["prior-fact", 0])
+async def test_batch_owner_signal_preserves_concurrent_provenance_update(fact_id):
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest
     from memory.facts import FactStore
@@ -1495,7 +1496,7 @@ async def test_batch_owner_signal_preserves_concurrent_provenance_update():
         "speaker_trust": 0.3,
     }
     prior = {
-        "id": "prior-fact",
+        "id": fact_id,
         "text": "Alice likes cats",
         "speaker_id": "qq:1001",
         "speaker_label": "Alice-old(1001)",
@@ -2075,8 +2076,9 @@ async def test_cancelled_trust_writer_waits_for_the_inflight_save(persisted):
     await asyncio.wait_for(started.wait(), timeout=5.0)
     task.cancel()
     release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as exc_info:
         await task
+    assert exc_info.value.speaker_trust_persisted is persisted
     profiles = manager.speaker_trust_profiles()
     if persisted:
         assert profiles["1001"]["message_count"] == 1

@@ -1001,13 +1001,14 @@ class QQSessionMemoryService:
                         f"{last_participant_digest_index}:{next_index}"
                     ),
                 )
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancelled:
                 # _apply_speaker_trust_update shields and joins its durable
                 # settings write before propagating cancellation. The memory
                 # server write also completed above, so retain that exact
                 # prefix checkpoint; otherwise a grown retry slice would
                 # count the already-receipted messages again.
-                user_data["last_participant_digest_index"] = next_index
+                if getattr(cancelled, "speaker_trust_persisted", False):
+                    user_data["last_participant_digest_index"] = next_index
                 raise
             self.plugin.logger.info(
                 f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"

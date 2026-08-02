@@ -109,6 +109,15 @@ VALID_SCOPED_REFINE_ACTIONS = frozenset({'merge'})
 TrustFn = Callable[[dict], str | float | None]
 
 
+def scoped_prompt_trust_band(entry: dict) -> str:
+    """Return exactly the coarse provenance band exposed to the model."""
+    from memory.speaker_trust import trust_band
+
+    if entry.get('speaker_provenance_mixed') is True:
+        return 'unknown'
+    return trust_band(entry.get('speaker_trust'))
+
+
 def _parse_temporal_boundary(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -323,10 +332,13 @@ def gather_scoped_refine_buckets(
     return ready
 
 
-# apply_fn(bucket, cluster, actions, cluster_hash) -> 应用成功的 action 数；
+# apply_fn(bucket, cluster, actions, cluster_hash) -> 应用成功的 action 数。
+# 负值哨兵表示 LLM 窗口内 prompt-visible provenance 漂移：原样留队且
+# 不计 refine_attempts；正常 action 数永远非负。
 # failure_fn(bucket, cluster, cluster_hash)。存储读写全在回调侧（manager
 # 锁内），engine 不碰磁盘——同本体 refine 的分工。返回值参与失败判定：
 # 非空 actions 全被拒（语义垃圾）按 cluster 失败计 refine_attempts。
+SCOPED_REFINE_PROMPT_STALE = -1
 ScopedApplyFn = Callable[
     [ScopedRefineBucket, list[dict], list[dict], str], Awaitable[int]
 ]
@@ -407,7 +419,9 @@ class ScopedLiteRefineEngine:
                 ok = await self._resolve_cluster(
                     bucket, cluster, cluster_hash, apply_fn, trust_of,
                 )
-                if ok:
+                if ok is None:
+                    pass
+                elif ok:
                     result['resolved'] = 1
                 else:
                     result['failed'] = 1
@@ -558,7 +572,7 @@ class ScopedLiteRefineEngine:
         cluster_hash: str,
         apply_fn: ScopedApplyFn,
         trust_of: TrustFn | None,
-    ) -> bool:
+    ) -> bool | None:
         cluster_text = self._render_cluster(cluster, trust_of)
         if not cluster_text:
             return False
@@ -617,6 +631,12 @@ class ScopedLiteRefineEngine:
             return False
 
         applied = await apply_fn(bucket, cluster, actions, cluster_hash)
+        if applied == SCOPED_REFINE_PROMPT_STALE:
+            logger.info(
+                f"[ScopedRefine] prompt provenance changed while the model "
+                f"was running (cluster_hash={cluster_hash}); left queued"
+            )
+            return None
         if actions and not applied:
             # 非空 actions 但没有一条通过 apply 校验 = 语义垃圾输出。apply
             # 侧刻意不 stamp（等下轮重试），这里必须按失败计——否则毒
@@ -663,8 +683,8 @@ class ScopedLiteRefineEngine:
 
 def _valid_merge_source_ids(
     action: dict, cluster_ids: set, by_id: dict, consumed: set,
-    cluster_text_by_id: dict,
-) -> list[str]:
+    cluster_text_by_id: dict, cluster_trust_by_id: dict,
+) -> list[str] | None:
     """Return the action's source ids, or ``[]`` unless EVERY one is valid.
 
     All-or-nothing on purpose: the LLM wrote its conclusion text from the
@@ -693,6 +713,15 @@ def _valid_merge_source_ids(
     # 标记 suppress 的源若被消费，其内容会以普通可见条目的身份复活。
     # 任一源失效 → 整条 action 拒绝（见 docstring 的 all-or-nothing）。
     for sid in unique_ids:
+        current = by_id.get(sid)
+        if (
+            current is not None
+            and scoped_prompt_trust_band(current) != cluster_trust_by_id.get(sid)
+        ):
+            # The LLM chose its action from a different prompt-visible trust
+            # annotation. ``None`` distinguishes this retryable drift from
+            # malformed output so the engine does not charge an attempt.
+            return None
         if (
             sid not in cluster_ids
             or sid not in by_id
@@ -739,9 +768,14 @@ async def apply_scoped_persona_merge(
             e.get('id'): e.get('text') for e in cluster
             if isinstance(e, dict) and e.get('id')
         }
+        cluster_trust_by_id = {
+            e.get('id'): scoped_prompt_trust_band(e) for e in cluster
+            if isinstance(e, dict) and e.get('id')
+        }
         consumed: set[str] = set()
         produced: list[dict] = []
         applied = 0
+        prompt_stale = False
         now_iso = datetime.now().isoformat()
 
         for act_obj in actions:
@@ -753,7 +787,11 @@ async def apply_scoped_persona_merge(
                 continue
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
+                cluster_trust_by_id,
             )
+            if valid_ids is None:
+                prompt_stale = True
+                continue
             if len(valid_ids) < 2:
                 continue
             text = str((act_obj.get('produce') or {}).get('text', '')).strip() \
@@ -867,6 +905,8 @@ async def apply_scoped_persona_merge(
         # stamp 三分支：同本体 refine apply 的语义（垃圾输出不 stamp，
         # 等下轮重试；明确 no-op 也 stamp 防 hash skip 失效）。
         if applied == 0 and actions:
+            if prompt_stale:
+                return SCOPED_REFINE_PROMPT_STALE
             return 0
 
         new_section = [
@@ -941,9 +981,14 @@ async def apply_scoped_reflection_merge(
             e.get('id'): e.get('text') for e in cluster
             if isinstance(e, dict) and e.get('id')
         }
+        cluster_trust_by_id = {
+            e.get('id'): scoped_prompt_trust_band(e) for e in cluster
+            if isinstance(e, dict) and e.get('id')
+        }
         consumed: set[str] = set()
         produced: list[dict] = []
         applied = 0
+        prompt_stale = False
         now_iso = datetime.now().isoformat()
 
         for act_obj in actions:
@@ -957,7 +1002,11 @@ async def apply_scoped_reflection_merge(
                 continue
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
+                cluster_trust_by_id,
             )
+            if valid_ids is None:
+                prompt_stale = True
+                continue
             if len(valid_ids) < 2:
                 continue
             text = str((act_obj.get('produce') or {}).get('text', '')).strip() \
@@ -1058,6 +1107,8 @@ async def apply_scoped_reflection_merge(
             applied += 1
 
         if applied == 0 and actions:
+            if prompt_stale:
+                return SCOPED_REFINE_PROMPT_STALE
             return 0
 
         stamped = 0
