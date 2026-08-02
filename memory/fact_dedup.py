@@ -67,7 +67,11 @@ import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from memory.facts import _fact_scoped_identity, safe_int_field
+from memory.facts import (
+    _fact_scoped_identity,
+    _speaker_trust_fact_id,
+    safe_int_field,
+)
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
     atomic_write_json_async,
@@ -115,9 +119,12 @@ def _has_distinct_event_windows(first: dict, second: dict) -> bool:
 
 def _queue_identity(item: dict) -> tuple:
     """Identify one queued pair inside its arbitration domain."""
+    def _typed_id(value: object) -> str | None:
+        return None if value is None else _speaker_trust_fact_id(value)
+
     return (
-        item.get('candidate_id'),
-        item.get('existing_id'),
+        _typed_id(item.get('candidate_id')),
+        _typed_id(item.get('existing_id')),
         item.get('subject_key'),
         item.get('scope'),
         item.get('candidate_subject_kind'),
@@ -192,7 +199,10 @@ def _find_queued_fact(
         item.get(f'{side}_scope'),
     )
     if all(value is not None for value in identity_fields):
-        expected = (item.get(f'{side}_id'), *identity_fields)
+        expected = (
+            _speaker_trust_fact_id(item.get(f'{side}_id')),
+            *identity_fields,
+        )
         rows = [row for row in rows if _fact_scoped_identity(row) == expected]
     elif 'subject_key' in item:
         domain = item.get('subject_key'), item.get('scope')
@@ -375,7 +385,7 @@ class FactDedupResolver:
             if has_scoped_pairs:
                 live_facts = await self._fact_store.aload_facts(name)
                 for row in live_facts:
-                    if isinstance(row, dict) and row.get('id'):
+                    if isinstance(row, dict) and row.get('id') is not None:
                         live_facts_by_id.setdefault(row.get('id'), []).append(row)
             existing = await self.aload_pending(name)
             # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
@@ -833,15 +843,14 @@ class FactDedupResolver:
         rows = await self._fact_store.aload_facts(name)
         facts_by_id: dict[object, list[dict]] = {}
         for row in rows:
-            if isinstance(row, dict) and row.get('id'):
+            if isinstance(row, dict) and row.get('id') is not None:
                 facts_by_id.setdefault(row.get('id'), []).append(row)
 
         def _classify_domain(it: dict) -> tuple | None:
             if 'subject_key' in it:
                 return (it.get('subject_key'), it.get('scope'))
-            for fid in (it.get('candidate_id'), it.get('existing_id')):
-                matches = facts_by_id.get(fid, [])
-                row = matches[0] if len(matches) == 1 else None
+            for side in ('candidate', 'existing'):
+                row = _find_queued_fact(facts_by_id, it, side)
                 if row is None:
                     continue
                 domain = _fact_dedup_domain(row)

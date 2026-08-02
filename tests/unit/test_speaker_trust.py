@@ -51,6 +51,11 @@ def test_trust_normalization_rejects_non_finite_values():
         speaker_trust_profiles={"1001": {"adjustment": float("nan")}},
     )
     assert manager.speaker_trust_profiles()["1001"]["adjustment"] == 0.0
+    overflow = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={"1001": {"adjustment": 10 ** 400}},
+    )
+    assert overflow.speaker_trust_profiles()["1001"]["adjustment"] == 0.0
 
 
 def test_arbitration_margin_is_stable_at_decimal_boundary():

@@ -1586,18 +1586,17 @@ class FactStore:
     async def arestore_arbitrated_fact(
         self,
         name: str,
-        fact_id: str,
+        fact_id: object,
         *,
         subject: MemorySubject | dict | None = None,
     ) -> bool:
         """Restore one arbitration row, rejecting ambiguous scoped IDs."""
-        target_id = str(fact_id or '').strip()
+        target_id = str(fact_id if fact_id is not None else '').strip()
         if not target_id:
             return False
         target_subject = coerce_subject(subject)
-        target_identity = (
+        target_scope = (
             (
-                target_id,
                 target_subject.kind,
                 target_subject.subject_id,
                 target_subject.scope,
@@ -1635,13 +1634,14 @@ class FactStore:
                         normalized = str(readable).strip()
                         return normalized or None
 
-                    def _restore_identity(row: dict) -> tuple:
-                        restore_id = _restore_id(row)
+                    def _restore_identity(row: dict) -> tuple | None:
+                        return _fact_scoped_identity(row)
+
+                    def _restore_scope(row: dict) -> tuple[str, str, str] | None:
                         row_subject = subject_from_entry(row)
                         if row_subject is None:
-                            return restore_id, None, None, None
+                            return None
                         return (
-                            restore_id,
                             row_subject.kind,
                             row_subject.subject_id,
                             row_subject.scope,
@@ -1654,8 +1654,8 @@ class FactStore:
                         and row.get('arbitration_archived_at')
                         and not row.get('subject_archived_at')
                         and (
-                            target_identity is None
-                            or _restore_identity(row) == target_identity
+                            target_scope is None
+                            or _restore_scope(row) == target_scope
                         )
                     ]
                     if not matches:
@@ -1663,11 +1663,30 @@ class FactStore:
                     match_identities = {
                         _restore_identity(row) for row in matches
                     }
-                    if target_identity is None and len(match_identities) != 1:
-                        return False
-                    selected_identity = target_identity or next(
-                        iter(match_identities)
+                    exact_fact_id = (
+                        target_id if isinstance(fact_id, str) else fact_id
                     )
+                    exact_identity = (
+                        _speaker_trust_fact_id(exact_fact_id),
+                        *(target_scope or ('', '', '')),
+                    )
+                    exact_matches = (
+                        [
+                            row for row in matches
+                            if _restore_identity(row) == exact_identity
+                        ]
+                        if target_scope is not None else []
+                    )
+                    if exact_matches:
+                        matches = exact_matches
+                        selected_identity = exact_identity
+                    elif len(match_identities) == 1:
+                        # Compatibility: a string request may address one
+                        # legacy numeric archive id when no exact string id
+                        # exists. Multiple scalar types remain ambiguous.
+                        selected_identity = next(iter(match_identities))
+                    else:
+                        return False
                     facts = self._facts.get(name, [])
                     active_identities = {
                         _restore_identity(row)

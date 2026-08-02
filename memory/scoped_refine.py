@@ -131,19 +131,27 @@ def _has_distinct_temporal_context(
     winner: dict, sources: list[dict],
 ) -> bool:
     """Return True when trust would collapse distinct temporal evidence."""
-    winner_context = (
-        winner.get('temporal_scope'),
-        _parse_temporal_boundary(winner.get('event_start_at')),
-        _parse_temporal_boundary(winner.get('event_end_at')),
-    )
+    def _temporal_context(entry: dict) -> tuple:
+        start = _parse_temporal_boundary(entry.get('event_start_at'))
+        end = _parse_temporal_boundary(entry.get('event_end_at'))
+        created = _parse_temporal_boundary(entry.get('created_at'))
+        # Reflection synthesis anchors timeless rows to created_at and, for
+        # states/episodes, synthesizes the same end. Those ingestion stamps
+        # are not explicit event windows.
+        if (
+            not entry.get('event_when_raw')
+            and start == created
+            and (end is None or end == created)
+        ):
+            start = None
+            end = None
+        return entry.get('temporal_scope'), start, end
+
+    winner_context = _temporal_context(winner)
     for source in sources:
         if source is winner:
             continue
-        source_context = (
-            source.get('temporal_scope'),
-            _parse_temporal_boundary(source.get('event_start_at')),
-            _parse_temporal_boundary(source.get('event_end_at')),
-        )
+        source_context = _temporal_context(source)
         if source_context != winner_context and any(
             value is not None for value in (*winner_context, *source_context)
         ):

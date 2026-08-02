@@ -169,7 +169,7 @@ class PermissionManager:
         raw = value if isinstance(value, dict) else {}
         try:
             adjustment = float(raw.get("adjustment", 0.0) or 0.0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             adjustment = 0.0
         if not math.isfinite(adjustment):
             adjustment = 0.0

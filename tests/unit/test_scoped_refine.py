@@ -112,6 +112,34 @@ def test_trust_merge_rejects_mixed_source_with_residual_fields():
     assert retained == [high, low]
 
 
+def test_trust_merge_ignores_synthesized_reflection_windows():
+    high = {
+        "text": "小明喜欢猫",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.9,
+        "temporal_scope": "state",
+        "created_at": "2026-01-01T00:00:00",
+        "event_when_raw": None,
+        "event_start_at": "2026-01-01T00:00:00",
+        "event_end_at": "2026-01-01T00:00:00",
+    }
+    low = {
+        "text": "小明不喜欢猫",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+        "temporal_scope": "state",
+        "created_at": "2026-06-01T00:00:00",
+        "event_when_raw": None,
+        "event_start_at": "2026-06-01T00:00:00",
+        "event_end_at": "2026-06-01T00:00:00",
+    }
+
+    text, retained = _trust_weighted_merge_text([low, high], "model merge")
+
+    assert text == "小明喜欢猫"
+    assert retained == [high]
+
+
 def test_trust_merge_preserves_bounded_episode_under_ongoing_winner():
     ongoing_high = {
         "text": "小明喜欢猫",

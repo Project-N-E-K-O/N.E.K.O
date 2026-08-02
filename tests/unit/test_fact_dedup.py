@@ -531,6 +531,41 @@ async def test_aenqueue_candidates_appends_and_persists(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aenqueue_scoped_numeric_ids_use_typed_identity(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    fields = subject.as_entry_fields()
+    candidate = {**_fact("numeric-1", "numeric candidate"), **fields}
+    existing = {**_fact("numeric-2", "numeric existing"), **fields}
+    candidate["id"] = 1
+    existing["id"] = 2
+    await _seed_facts(fs, "小天", [
+        candidate, existing,
+    ])
+    pair = {
+        "candidate_id": 1,
+        "existing_id": 2,
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }
+    for side in ("candidate", "existing"):
+        pair.update({
+            f"{side}_subject_kind": subject.kind,
+            f"{side}_subject_id": subject.subject_id,
+            f"{side}_scope": subject.scope,
+        })
+
+    assert await resolver.aenqueue_candidates("小天", [pair]) == 1
+    pending = await resolver.aload_pending("小天")
+    assert [(row["candidate_id"], row["existing_id"]) for row in pending] == [
+        (1, 2),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_aenqueue_dedups_same_pair_across_calls(tmp_path):
     """Re-enqueue of the same (candidate_id, existing_id) pair must
     no-op — otherwise an oscillating worker (re-embed under new
@@ -1338,6 +1373,48 @@ async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
     restored_row = next(fact for fact in restored if fact["id"] == 5)
     assert restored_row["restored_at"]
     assert restored_row["arbitration_restored_at"] == restored_row["restored_at"]
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
+async def test_restore_arbitrated_fact_keeps_scalar_id_types_distinct(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [])
+    subject = MemorySubject.group_chat("qq", "7788")
+    fields = subject.as_entry_fields()
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    integer_loser = {**_fact("integer-1", "integer loser"), **fields}
+    integer_loser["id"] = 1
+    archive_path.write_text(json.dumps([
+        {
+            **integer_loser,
+            "arbitration_archived_at": "2026-08-01T00:00:00",
+        },
+        {
+            **_fact("1", "string loser"), **fields,
+            "arbitration_archived_at": "2026-08-01T00:00:01",
+        },
+    ]), encoding="utf-8")
+
+    assert await fs.arestore_arbitrated_fact("Neko", "1", subject=subject)
+    active = await fs.aload_facts("Neko")
+    assert [(type(row["id"]), row["text"]) for row in active] == [
+        (str, "string loser"),
+    ]
+    remaining = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert [(type(row["id"]), row["text"]) for row in remaining] == [
+        (int, "integer loser"),
+    ]
+
+    # Preserve the compatibility path for an archive containing only a
+    # legacy numeric id addressed by its historical string form.
+    assert await fs.arestore_arbitrated_fact("Neko", "1", subject=subject)
+    active = await fs.aload_facts("Neko")
+    assert {(type(row["id"]), row["text"]) for row in active} == {
+        (str, "string loser"), (int, "integer loser"),
+    }
     assert json.loads(archive_path.read_text(encoding="utf-8")) == []
 
 
