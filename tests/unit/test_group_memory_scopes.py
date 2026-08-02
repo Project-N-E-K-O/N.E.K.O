@@ -3620,7 +3620,12 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
 
     store = MagicMock()
     store.extract_facts_batch = AsyncMock(return_value=[
-        {"status": "ok", "created": [{"id": "fact_1", "text": "x"}], "dropped": 2},
+        {"status": "ok", "created": [{
+            "id": "fact_1", "text": "x",
+            "subject_kind": "group_participant",
+            "subject_id": "qq:100:1001",
+            "scope": "group_participant:qq:100:1001",
+        }], "dropped": 2},
         {"status": "failed", "created": []},
     ])
     with patch.object(memory_routes.runtime, "fact_store", store):
@@ -3634,6 +3639,10 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
     assert [seg["dropped"] for seg in result["segments"]] == [2, 0]
     assert result["segments"][0]["created"] == 1
     assert result["segments"][0]["fact_ids"] == ["fact_1"]
+    assert result["segments"][0]["fact_identities"] == [[
+        "fact_1", "group_participant", "qq:100:1001",
+        "group_participant:qq:100:1001",
+    ]]
     assert result["segments"][0]["subject"]["subject_id"] == "qq:100:1001"
     # 传给 FactStore 的段带解析后的 messages / subject / label / trust。
     sent = store.extract_facts_batch.await_args.args[0]
@@ -11720,7 +11729,10 @@ async def test_owner_retry_sends_post_observation_fact_exclusions_to_server():
     owner = {
         "role": "user", "content": "owner observation",
         "_speaker_permission_level": "admin", "_speaker_sequence": 2,
-        "_trust_signal_excluded_fact_ids": ["later-fact"],
+        "_trust_signal_excluded_fact_identities": [[
+            "later-fact", "group_participant", "qq:7788:1001",
+            "group_participant:qq:7788:1001",
+        ]],
     }
     user_data = {
         "group_member_memory_messages": {"9999": [owner]},
@@ -11744,8 +11756,14 @@ async def test_owner_retry_sends_post_observation_fact_exclusions_to_server():
 
     sent = bridge.post_scoped_memory_history_batch.await_args.args[1]
     owner_segment = sent[0]
-    assert owner_segment["trust_signal_excluded_fact_ids"] == ["later-fact"]
-    assert "_trust_signal_excluded_fact_ids" not in owner_segment["messages"][0]
+    assert owner_segment["trust_signal_excluded_fact_identities"] == [(
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    )]
+    assert (
+        "_trust_signal_excluded_fact_identities"
+        not in owner_segment["messages"][0]
+    )
 
 
 @pytest.mark.asyncio

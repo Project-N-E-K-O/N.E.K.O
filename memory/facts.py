@@ -1397,7 +1397,17 @@ class FactStore:
                             for item in recorded if isinstance(item, dict)
                         }
                         for event in additions:
-                            if event['event_id'] not in known:
+                            is_replay = event['event_id'] in known
+                            if (
+                                not is_replay
+                                and (
+                                    fact.get('speaker_provenance_mixed') is True
+                                    or stable_speaker_id(fact.get('speaker_id'))
+                                    != event['speaker_id']
+                                )
+                            ):
+                                continue
+                            if not is_replay:
                                 recorded.append(event)
                                 known.add(event['event_id'])
                                 changed += 1
@@ -1442,7 +1452,17 @@ class FactStore:
                             if isinstance(item, dict)
                         }
                         for event in additions:
-                            if event['event_id'] not in known:
+                            is_replay = event['event_id'] in known
+                            if (
+                                not is_replay
+                                and (
+                                    fact.get('speaker_provenance_mixed') is True
+                                    or stable_speaker_id(fact.get('speaker_id'))
+                                    != event['speaker_id']
+                                )
+                            ):
+                                continue
+                            if not is_replay:
                                 recorded.append(event)
                                 known.add(event['event_id'])
                                 archive_changed = True

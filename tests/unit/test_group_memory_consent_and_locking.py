@@ -452,7 +452,10 @@ async def _drive_every_endpoint(bridge) -> None:
             },
             "speaker_label": "2046",
             "speaker_trust": 0.5,
-            "trust_signal_excluded_fact_ids": ["later-fact"],
+            "trust_signal_excluded_fact_identities": [[
+                "later-fact", "group_participant", "qq:7788:1001",
+                "group_participant:qq:7788:1001",
+            ]],
         }],
     )
 
@@ -494,8 +497,11 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
         if kwargs.get("json", {}).get("segments")
     )
     assert batch_payload["segments"][0][
-        "trust_signal_excluded_fact_ids"
-    ] == ["later-fact"]
+        "trust_signal_excluded_fact_identities"
+    ] == [[
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]]
 
 
 @pytest.mark.asyncio

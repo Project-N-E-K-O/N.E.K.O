@@ -177,7 +177,9 @@ async def test_group_participants_share_only_their_groups_arbitration_domain(
     rows[1].update(speaker_id="qq:2002", speaker_trust=0.8)
     rows[2].update(speaker_id="qq:3003", speaker_trust=0.8)
 
-    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids={"a"})
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids={
+        ("a", same_group_a.kind, same_group_a.subject_id, same_group_a.scope),
+    })
     assert [(pair["candidate_id"], pair["existing_id"]) for pair in pairs] == [
         ("a", "b"),
     ]
@@ -195,6 +197,35 @@ async def test_group_participants_share_only_their_groups_arbitration_domain(
     survivor = next(row for row in active if row["id"] == "b")
     assert survivor["speaker_id"] == "qq:2002"
     assert survivor["speaker_trust"] == pytest.approx(0.8)
+
+
+def test_detect_candidates_distinguishes_same_id_across_participant_scopes():
+    from memory.scopes import MemorySubject
+
+    first = MemorySubject.group_participant("qq", "7788", "1001")
+    second = MemorySubject.group_participant("qq", "7788", "2002")
+    rows = [
+        {
+            **_fact("shared", "成员甲喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **first.as_entry_fields(),
+        },
+        {
+            **_fact("shared", "成员甲不喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **second.as_entry_fields(),
+        },
+    ]
+    fresh = {
+        ("shared", first.kind, first.subject_id, first.scope),
+        ("shared", second.kind, second.subject_id, second.scope),
+    }
+
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids=fresh)
+
+    assert len(pairs) == 1
+    assert pairs[0]["candidate_subject_id"] == second.subject_id
+    assert pairs[0]["existing_subject_id"] == first.subject_id
 
 
 def test_detect_candidates_respects_entity_scope():

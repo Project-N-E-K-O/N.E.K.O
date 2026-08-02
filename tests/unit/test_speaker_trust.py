@@ -476,6 +476,44 @@ async def test_trust_event_persistence_uses_full_scoped_fact_identity(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trust_event_persistence_revalidates_live_speaker_provenance(
+    tmp_path,
+):
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    fact = {
+        "id": "changed-speaker", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", **target.as_entry_fields(),
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [fact]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=[fact])
+    store.save_facts = MagicMock()
+    event = (await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "Alice likes cats"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[fact],
+    ))[0]
+
+    fact.pop("speaker_id")
+    fact["speaker_provenance_mixed"] = True
+
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == []
+    assert fact.get("_speaker_trust_signal_events") in (None, [])
+    store.save_facts.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_trust_event_persists_when_source_moved_to_archive(tmp_path):
     """A route-time active fact may be archived before signal persistence."""
     from memory.facts import FactStore
@@ -911,6 +949,9 @@ async def test_scoped_batch_excludes_post_observation_events_before_persistence(
         "speaker_id": "qq:1001",
         "event_id": "post-observation-event",
         "source_fact_id": "later-fact",
+        "source_subject_kind": "group_participant",
+        "source_subject_id": "qq:7788:1001",
+        "source_scope": "group_participant:qq:7788:1001",
     }
     later_fact = {
         "id": "later-fact",
@@ -918,14 +959,19 @@ async def test_scoped_batch_excludes_post_observation_events_before_persistence(
         "subject_id": "qq:7788:1001",
         "scope": "group_participant:qq:7788:1001",
     }
+    same_id_other_scope = {
+        **later_fact,
+        "subject_id": "qq:7788:2002",
+        "scope": "group_participant:qq:7788:2002",
+    }
     store = SimpleNamespace(
-        aload_facts=AsyncMock(return_value=[later_fact]),
+        aload_facts=AsyncMock(return_value=[later_fact, same_id_other_scope]),
         extract_facts_batch=AsyncMock(return_value=[{
             "status": "ok", "created": [], "dropped": 0,
         }]),
         aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
         aload_archived_speaker_trust_signal_facts=AsyncMock(
-            return_value=[later_fact],
+            return_value=[later_fact, same_id_other_scope],
         ),
         apersist_speaker_trust_events=AsyncMock(return_value=[event]),
     )
@@ -940,7 +986,10 @@ async def test_scoped_batch_excludes_post_observation_events_before_persistence(
         "speaker_label": "Owner(9999)",
         "speaker_id": "qq:9999",
         "speaker_is_owner": True,
-        "trust_signal_excluded_fact_ids": ["later-fact"],
+        "trust_signal_excluded_fact_identities": [[
+            "later-fact", "group_participant", "qq:7788:1001",
+            "group_participant:qq:7788:1001",
+        ]],
     }])
 
     with patch.object(routes.runtime, "fact_store", store):
@@ -948,8 +997,10 @@ async def test_scoped_batch_excludes_post_observation_events_before_persistence(
 
     assert result["segments"][0]["trust_events"] == []
     kwargs = store.aevaluate_speaker_trust_events.await_args.kwargs
-    assert kwargs["facts_snapshot"] == []
-    assert kwargs["replay_facts_snapshot"] == []
+    assert kwargs["facts_snapshot"] == [same_id_other_scope]
+    assert kwargs["replay_facts_snapshot"] == [
+        same_id_other_scope, same_id_other_scope,
+    ]
     store.apersist_speaker_trust_events.assert_not_awaited()
 
 
@@ -2265,6 +2316,14 @@ def test_cjk_epistemic_marker_rejects_only_asserted_english_negation():
     ) is None
     assert _has_cjk_epistemic_negation("可能 Alice will not attend") is True
     assert _has_cjk_epistemic_negation("可能 Alice clicked the not operator") is False
+
+
+@pytest.mark.parametrize("verb", ["说", "表示", "认为"])
+def test_cjk_reported_negations_never_emit_correction(verb):
+    assert deterministic_relation(
+        f"小明{verb}小红喜欢猫",
+        f"小明{verb}小红不喜欢猫",
+    ) is None
 
 
 @pytest.mark.asyncio

@@ -1370,23 +1370,27 @@ class QQSessionMemoryService:
                     sender_id = spec["sender_id"]
                     permission_level = spec["permission_level"]
                     messages = []
-                    excluded_fact_ids: set[str] = set()
+                    excluded_fact_identities: set[tuple[str, str, str, str]] = set()
                     for message in spec["messages"]:
                         if (
                             isinstance(message, dict)
-                            and "_trust_signal_excluded_fact_ids" in message
+                            and "_trust_signal_excluded_fact_identities" in message
                         ):
-                            excluded_fact_ids.update(
-                                str(fact_id)
-                                for fact_id in (
+                            excluded_fact_identities.update(
+                                tuple(str(part) for part in identity)
+                                for identity in (
                                     message.get(
-                                        "_trust_signal_excluded_fact_ids"
+                                        "_trust_signal_excluded_fact_identities"
                                     ) or []
                                 )
-                                if fact_id
+                                if isinstance(identity, (list, tuple))
+                                and len(identity) == 4
+                                and all(identity)
                             )
                             message = dict(message)
-                            message.pop("_trust_signal_excluded_fact_ids", None)
+                            message.pop(
+                                "_trust_signal_excluded_fact_identities", None,
+                            )
                         messages.append(message)
                     segment: dict[str, Any] = {
                         "messages": messages,
@@ -1409,9 +1413,11 @@ class QQSessionMemoryService:
                         sender_id, permission_level,
                     ):
                         segment["speaker_is_owner"] = True
-                        if excluded_fact_ids:
-                            segment["trust_signal_excluded_fact_ids"] = sorted(
-                                excluded_fact_ids
+                        if excluded_fact_identities:
+                            segment[
+                                "trust_signal_excluded_fact_identities"
+                            ] = sorted(
+                                excluded_fact_identities
                             )
                     # 显示名 = label 剥掉 "(sender_id)" 后缀的昵称本体
                     # （persona 标题里 subject_id 已含数字 id，不重复）。
@@ -1490,48 +1496,47 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} {role_label} "
                                 f"{sender_id} 的前序段失败，保留本段重试"
                             )
-                            later_fact_ids = {
-                                str(fact_id)
+                            later_fact_identities = {
+                                tuple(str(part) for part in identity)
                                 for later_result in segment_results[
                                     segment_index + 1:
                                 ]
                                 if isinstance(later_result, dict)
                                 and later_result.get("status") == "ok"
-                                for fact_id in (
-                                    later_result.get("fact_ids") or []
+                                for identity in (
+                                    later_result.get("fact_identities") or []
                                 )
-                                if fact_id
+                                if isinstance(identity, (list, tuple))
+                                and len(identity) == 4
+                                and all(identity)
                             }
-                            later_fact_ids.update(
-                                str(row.get("id"))
-                                for later_result in segment_results[
-                                    segment_index + 1:
-                                ]
-                                if isinstance(later_result, dict)
-                                and later_result.get("status") == "ok"
-                                for row in (later_result.get("reconciled") or [])
-                                if isinstance(row, dict) and row.get("id")
-                            )
-                            if later_fact_ids and self._speaker_is_owner_for(
+                            if (
+                                later_fact_identities
+                                and self._speaker_is_owner_for(
                                 sender_id, spec.get("permission_level"),
+                                )
                             ):
                                 for message in spec["messages"]:
                                     if not isinstance(message, dict):
                                         continue
                                     existing = message.get(
-                                        "_trust_signal_excluded_fact_ids"
+                                        "_trust_signal_excluded_fact_identities"
                                     )
                                     excluded = {
-                                        str(fact_id) for fact_id in (
+                                        tuple(str(part) for part in identity)
+                                        for identity in (
                                             existing
                                             if isinstance(existing, list)
                                             else []
-                                        ) if fact_id
+                                        )
+                                        if isinstance(identity, (list, tuple))
+                                        and len(identity) == 4
+                                        and all(identity)
                                     }
-                                    excluded.update(later_fact_ids)
+                                    excluded.update(later_fact_identities)
                                     message[
-                                        "_trust_signal_excluded_fact_ids"
-                                    ] = sorted(excluded)
+                                        "_trust_signal_excluded_fact_identities"
+                                    ] = [list(identity) for identity in sorted(excluded)]
                             failed.add(sender_id)
                             continue
                         try:
@@ -1549,24 +1554,30 @@ class QQSessionMemoryService:
                         trust_events = list(
                             segment_result.get("trust_events") or []
                         )
-                        excluded_fact_ids = {
-                            str(fact_id)
+                        excluded_fact_identities = {
+                            tuple(str(part) for part in identity)
                             for message in spec["messages"]
                             if isinstance(message, dict)
-                            for fact_id in (
+                            for identity in (
                                 message.get(
-                                    "_trust_signal_excluded_fact_ids"
+                                    "_trust_signal_excluded_fact_identities"
                                 ) or []
                             )
-                            if fact_id
+                            if isinstance(identity, (list, tuple))
+                            and len(identity) == 4
+                            and all(identity)
                         }
-                        if excluded_fact_ids:
+                        if excluded_fact_identities:
                             unfiltered_count = len(trust_events)
                             trust_events = [
                                 event for event in trust_events
                                 if isinstance(event, dict)
-                                and str(event.get("source_fact_id") or "")
-                                not in excluded_fact_ids
+                                and (
+                                    str(event.get("source_fact_id") or ""),
+                                    str(event.get("source_subject_kind") or ""),
+                                    str(event.get("source_subject_id") or ""),
+                                    str(event.get("source_scope") or ""),
+                                ) not in excluded_fact_identities
                             ]
                             suppressed = unfiltered_count - len(trust_events)
                             if suppressed:

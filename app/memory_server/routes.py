@@ -793,9 +793,11 @@ class ScopedHistorySegment(BaseModel):
     # Request-side authorization bit. It is never rendered or copied from LLM
     # output; only owner-authored raw text may evolve another speaker's trust.
     speaker_is_owner: bool = False
-    # Fact ids that were authored after this retained owner's observation.
-    # They remain absent from both evaluation and durable event attachment.
-    trust_signal_excluded_fact_ids: list[str] = Field(default_factory=list)
+    # Full fact identities authored after this retained owner's observation.
+    # Bare ids are not unique across participant scopes.
+    trust_signal_excluded_fact_identities: list[
+        tuple[str, str, str, str]
+    ] = Field(default_factory=list)
     # Optional display name for this segment's subject (see
     # ScopedFactsWriteRequest.display_name).
     display_name: str | None = None
@@ -1244,10 +1246,10 @@ async def _process_scoped_history_segments(
             "speaker_trust": segment.speaker_trust,
             "speaker_id": segment.speaker_id,
             "speaker_is_owner": bool(segment.speaker_is_owner),
-            "trust_signal_excluded_fact_ids": {
-                str(fact_id).strip()
-                for fact_id in segment.trust_signal_excluded_fact_ids
-                if str(fact_id).strip()
+            "trust_signal_excluded_fact_identities": {
+                tuple(str(part).strip() for part in identity)
+                for identity in segment.trust_signal_excluded_fact_identities
+                if all(str(part).strip() for part in identity)
             },
             "display_name": _sanitized_display_name(
                 segment.display_name, context=f"segment {position}",
@@ -1386,10 +1388,12 @@ async def _process_scoped_history_segments(
             archived_signal_facts = await load_archived_signals(lanlan_name)
         for job in owner_signal_jobs:
             segment = job["segment"]
-            excluded_fact_ids = segment["trust_signal_excluded_fact_ids"]
+            excluded_fact_identities = segment[
+                "trust_signal_excluded_fact_identities"
+            ]
             active_signal_facts = []
             for key, authored_fact in job["facts_by_key"].items():
-                if key[0] in excluded_fact_ids:
+                if key in excluded_fact_identities:
                     continue
                 current_fact = current_by_key.get(key)
                 if current_fact is None:
@@ -1406,7 +1410,7 @@ async def _process_scoped_history_segments(
                 )
             replay_signal_facts = active_signal_facts + [
                 fact for fact in archived_signal_facts
-                if str(fact.get("id") or "") not in excluded_fact_ids
+                if _fact_identity(fact) not in excluded_fact_identities
             ]
             segment["trust_events"] = [
                 event for event in (
@@ -1424,8 +1428,12 @@ async def _process_scoped_history_segments(
                         replay_facts_snapshot=replay_signal_facts,
                     )
                 )
-                if str(event.get("source_fact_id") or "")
-                not in excluded_fact_ids
+                if (
+                    str(event.get("source_fact_id") or ""),
+                    event.get("source_subject_kind"),
+                    event.get("source_subject_id"),
+                    event.get("source_scope"),
+                ) not in excluded_fact_identities
             ]
             if segment["trust_events"]:
                 persist_events = getattr(
@@ -1451,6 +1459,18 @@ async def _process_scoped_history_segments(
                     fact.get("id")
                     for fact in (result.get("created") or [])
                     if fact.get("id")
+                ],
+                "fact_identities": [
+                    list(_fact_identity(fact))
+                    for fact in (
+                        (result.get("created") or [])
+                        + (result.get("reconciled") or [])
+                    )
+                    if (
+                        isinstance(fact, dict)
+                        and fact.get("id")
+                        and all(_fact_identity(fact))
+                    )
                 ],
                 # Exact/semantic dedup can update an existing fact without
                 # creating a row.  Return the affected identities as well so

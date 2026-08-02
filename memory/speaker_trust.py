@@ -65,6 +65,9 @@ _CJK_CONDITIONAL_MARKERS = (
     "如果", "若", "假如", "假设", "倘若", "要是", "只要", "一旦",
 )
 _CJK_EPISTEMIC_MARKERS = ("也许", "或许", "大概", "可能")
+_CJK_REPORTING_MARKERS = (
+    "说", "表示", "声称", "认为", "觉得", "相信", "报告", "告诉",
+)
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
@@ -256,6 +259,21 @@ def _has_cjk_epistemic_negation(text: str) -> bool:
     return False
 
 
+def _has_cjk_reported_negation(text: str) -> bool:
+    """Reject CJK negations embedded under a reporting predicate."""
+    for marker in _CJK_REPORTING_MARKERS:
+        marker_index = text.find(marker)
+        if marker_index < 0:
+            continue
+        suffix = text[marker_index + len(marker):]
+        if any(negative in suffix for negative, _ in _CJK_NEGATED_PREDICATES):
+            return True
+        tokens = _word_tokens(suffix)
+        if any(_is_word_negation(tokens, index) for index in range(len(tokens))):
+            return True
+    return False
+
+
 def _cjk_positive_variants(text: str) -> set[str]:
     """Return exact positive forms for conservative predicate negations."""
     variants: set[str] = set()
@@ -329,6 +347,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         and not _has_cjk_conditional_negation(new_norm)
         and not _has_cjk_epistemic_negation(old_norm)
         and not _has_cjk_epistemic_negation(new_norm)
+        and not _has_cjk_reported_negation(old_norm)
+        and not _has_cjk_reported_negation(new_norm)
         and not _has_epistemic_modal_negation(old_norm)
         and not _has_epistemic_modal_negation(new_norm)
         and not _has_lexical_epistemic_negation(old_norm)

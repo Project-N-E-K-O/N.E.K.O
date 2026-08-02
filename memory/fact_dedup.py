@@ -523,12 +523,12 @@ class FactDedupResolver:
         *,
         threshold: float = FACT_DEDUP_COSINE_THRESHOLD,
         per_fact_limit: int = FACT_DEDUP_PAIRS_PER_NEW,
-        only_for_ids: set[str] | None = None,
+        only_for_ids: set[str | tuple[str, str, str, str]] | None = None,
     ) -> list[dict]:
         """Pure function: scan facts for cosine > threshold pairs.
 
         ``only_for_ids`` constrains the *candidate* (newer) side so
-        the worker can pass the ids it just embedded — we don't want
+        the worker can pass the scoped identities it just embedded — we don't want
         to repeatedly scan the entire history on every sweep, only
         check the new arrivals against existing rows.
 
@@ -559,16 +559,31 @@ class FactDedupResolver:
             return (entity, *domain) if domain is not None else None
 
         results: list[dict] = []
+        scoped_only_for_ids = {
+            item for item in (only_for_ids or set())
+            if isinstance(item, tuple) and len(item) == 4
+        }
+        bare_only_for_ids = {
+            item for item in (only_for_ids or set()) if isinstance(item, str)
+        }
+
+        def _is_fresh(fact: dict) -> bool:
+            identity = _fact_scoped_identity(fact)
+            return (
+                identity in scoped_only_for_ids
+                or str(fact.get('id')) in bare_only_for_ids
+            )
+
         # Pre-bucket by entity + subject so the inner loop only walks
         # rows inside the same dedup boundary.
         by_entity: dict[tuple, list[dict]] = {}
-        fact_order: dict[object, int] = {}
+        fact_order: dict[tuple[str, str, str, str], int] = {}
         for index, f in enumerate(facts):
             if not isinstance(f, dict):
                 continue
-            fid = f.get('id')
-            if fid is not None:
-                fact_order[fid] = index
+            identity = _fact_scoped_identity(f)
+            if identity is not None:
+                fact_order[identity] = index
             bucket = _bucket_key(f)
             if bucket is None:
                 continue
@@ -580,7 +595,8 @@ class FactDedupResolver:
             cid = f.get('id')
             if not cid:
                 continue
-            if only_for_ids is not None and cid not in only_for_ids:
+            candidate_identity = _fact_scoped_identity(f)
+            if only_for_ids is not None and not _is_fresh(f):
                 continue
             if f.get('absorbed'):
                 # Already folded into a reflection — merging or
@@ -606,7 +622,8 @@ class FactDedupResolver:
             scored: list[tuple[float, dict]] = []
             for sib in by_entity.get(bucket, ()):
                 sid = sib.get('id')
-                if not sid or sid == cid:
+                sibling_identity = _fact_scoped_identity(sib)
+                if not sid or sibling_identity == candidate_identity:
                     continue
                 # Same-batch deduplication (CodeRabbit PR-956 Major):
                 # when both rows are in the fresh ``only_for_ids`` batch,
@@ -621,8 +638,8 @@ class FactDedupResolver:
                 # order breaks same-timestamp ties.  ID text is hash-random
                 # within one timestamp and must not decide chronology.
                 if (only_for_ids is not None
-                        and sid in only_for_ids
-                        and cid in only_for_ids):
+                        and _is_fresh(sib)
+                        and _is_fresh(f)):
                     candidate_instant = _created_at_instant(f.get('created_at'))
                     sibling_instant = _created_at_instant(sib.get('created_at'))
                     if (
@@ -633,7 +650,8 @@ class FactDedupResolver:
                         candidate_is_newer = candidate_instant > sibling_instant
                     else:
                         candidate_is_newer = (
-                            fact_order.get(cid, -1) > fact_order.get(sid, -1)
+                            fact_order.get(candidate_identity, -1)
+                            > fact_order.get(sibling_identity, -1)
                         )
                     if not candidate_is_newer:
                         continue
