@@ -54,7 +54,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -175,15 +174,13 @@ def _trust_weighted_merge_text(
     sources: list[dict], proposed_text: str,
 ) -> tuple[str, list[dict]]:
     """Prefer the highest-trust source in code when the margin is decisive."""
-    from memory.speaker_trust import normalize_trust, stable_speaker_id
+    from memory.speaker_trust import normalize_trust, stable_speaker_id, trust_band
 
     usable = [
         source for source in sources
         if source.get('speaker_provenance_mixed') is not True
         and stable_speaker_id(source.get('speaker_id')) is not None
-        and isinstance(source.get('speaker_trust'), (int, float))
-        and not isinstance(source.get('speaker_trust'), bool)
-        and math.isfinite(float(source.get('speaker_trust')))
+        and trust_band(source.get('speaker_trust')) != 'unknown'
     ]
     # A deterministic winner may replace the model merge only when every
     # source being consumed participated in the comparison.  Otherwise an
@@ -743,6 +740,14 @@ def _valid_merge_source_ids(
     return unique_ids
 
 
+def _requested_cluster_source_ids(action: dict, cluster_ids: set) -> set[str]:
+    """Return in-cluster ids named by an otherwise rejected model action."""
+    raw_ids = action.get('source_ids') or []
+    if not isinstance(raw_ids, list):
+        return set()
+    return {sid for sid in raw_ids if sid in cluster_ids}
+
+
 async def apply_scoped_persona_merge(
     persona_manager,
     name: str,
@@ -783,6 +788,7 @@ async def apply_scoped_persona_merge(
         }
         consumed: set[str] = set()
         produced: list[dict] = []
+        retry_ids: set[str] = set()
         applied = 0
         prompt_stale = False
         now_iso = datetime.now().isoformat()
@@ -794,6 +800,7 @@ async def apply_scoped_persona_merge(
             if act not in VALID_SCOPED_REFINE_ACTIONS:
                 logger.warning(f"[ScopedRefine apply] persona: 非法 action {act!r}")
                 continue
+            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
                 cluster_trust_by_id,
@@ -802,11 +809,13 @@ async def apply_scoped_persona_merge(
                 prompt_stale = True
                 continue
             if len(valid_ids) < 2:
+                retry_ids.update(requested_ids)
                 continue
             text = str((act_obj.get('produce') or {}).get('text', '')).strip() \
                 if isinstance(act_obj.get('produce'), dict) \
                 else str(act_obj.get('text', '')).strip()
             if not text:
+                retry_ids.update(requested_ids)
                 continue
             sources = [by_id[sid] for sid in valid_ids]
             text, provenance_sources = _trust_weighted_merge_text(sources, text)
@@ -837,11 +846,14 @@ async def apply_scoped_persona_merge(
                     'reason': 'scoped_refine_merge',
                     'source_fact_id': None,
                 }
-                for provenance_key in (
-                    'speaker_id', 'speaker_label', 'speaker_trust',
-                ):
-                    if src.get(provenance_key) is not None:
-                        history_entry[provenance_key] = src[provenance_key]
+                if src.get('speaker_provenance_mixed') is True:
+                    history_entry['speaker_provenance_mixed'] = True
+                else:
+                    for provenance_key in (
+                        'speaker_id', 'speaker_label', 'speaker_trust',
+                    ):
+                        if src.get(provenance_key) is not None:
+                            history_entry[provenance_key] = src[provenance_key]
                 history.append(history_entry)
                 for upstream in (
                     [src.get('source_id')] + list(src.get('merged_source_ids') or [])
@@ -906,6 +918,7 @@ async def apply_scoped_persona_merge(
                     f"[ScopedRefine apply] persona: 产物 id 撞车，跳过该 action "
                     f"(id={merged['id']})"
                 )
+                retry_ids.update(requested_ids)
                 continue
             produced.append(merged)
             consumed.update(valid_ids)
@@ -936,6 +949,7 @@ async def apply_scoped_persona_merge(
                 not prompt_stale
                 and eid in cluster_ids
                 and eid not in consumed
+                and eid not in retry_ids
                 and e.get('text') == cluster_text_by_id.get(eid)
             ):
                 e['last_refine_cluster_hash'] = cluster_hash
@@ -997,6 +1011,7 @@ async def apply_scoped_reflection_merge(
         }
         consumed: set[str] = set()
         produced: list[dict] = []
+        retry_ids: set[str] = set()
         applied = 0
         prompt_stale = False
         now_iso = datetime.now().isoformat()
@@ -1010,6 +1025,7 @@ async def apply_scoped_reflection_merge(
                     f"[ScopedRefine apply] reflection: 非法 action {act!r}"
                 )
                 continue
+            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
                 cluster_trust_by_id,
@@ -1018,11 +1034,13 @@ async def apply_scoped_reflection_merge(
                 prompt_stale = True
                 continue
             if len(valid_ids) < 2:
+                retry_ids.update(requested_ids)
                 continue
             text = str((act_obj.get('produce') or {}).get('text', '')).strip() \
                 if isinstance(act_obj.get('produce'), dict) \
                 else str(act_obj.get('text', '')).strip()
             if not text:
+                retry_ids.update(requested_ids)
                 continue
             sources = [by_id[sid] for sid in valid_ids]
             text, provenance_sources = _trust_weighted_merge_text(sources, text)
@@ -1106,6 +1124,7 @@ async def apply_scoped_reflection_merge(
                     f"[ScopedRefine apply] reflection: 产物 id 撞车，跳过该 "
                     f"action (id={merged['id']})"
                 )
+                retry_ids.update(requested_ids)
                 continue
             for sid in valid_ids:
                 src = by_id[sid]
@@ -1132,6 +1151,7 @@ async def apply_scoped_reflection_merge(
                 not prompt_stale
                 and rid in cluster_ids
                 and rid not in consumed
+                and rid not in retry_ids
                 and r.get('text') == cluster_text_by_id.get(rid)
             ):
                 r['last_refine_cluster_hash'] = cluster_hash

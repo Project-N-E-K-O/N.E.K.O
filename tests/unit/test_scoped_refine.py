@@ -67,7 +67,9 @@ def test_trust_merge_margin_is_stable_at_decimal_boundary():
     assert sources == [high]
 
 
-@pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "invalid_trust", [float("nan"), float("inf"), 10 ** 400],
+)
 def test_trust_merge_rejects_non_finite_source(invalid_trust):
     sources = [
         {
@@ -742,6 +744,54 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_scoped_persona_history_preserves_mixed_provenance(tmp_path):
+    _, pm, _ = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    mixed = pm._build_fact_entry(
+        "混合来源说法", "manual", None, subject=GROUP_A,
+        speaker_provenance={
+            "speaker_id": "qq:stale", "speaker_trust": 0.9,
+        },
+    )
+    mixed.update({
+        "id": "mixed",
+        "speaker_provenance_mixed": True,
+        # Legacy rows may retain these stale single-speaker fields.
+        "speaker_label": "stale label",
+    })
+    clean = pm._build_fact_entry(
+        "单一来源说法", "manual", None, subject=GROUP_A,
+        speaker_provenance={
+            "speaker_id": "qq:clean", "speaker_trust": 0.7,
+        },
+    )
+    clean["id"] = "clean"
+    section.extend([mixed, clean])
+    await pm.asave_persona("Neko", persona)
+
+    applied = await apply_scoped_persona_merge(
+        pm, "Neko", GROUP_A, [dict(mixed), dict(clean)], [{
+            "action": "merge",
+            "source_ids": ["mixed", "clean"],
+            "produce": {"text": "模型合并说法"},
+        }], "hash-mixed-history",
+    )
+
+    assert applied == 1
+    facts = (await pm.aensure_persona("Neko"))[
+        GROUP_A.persona_section_key
+    ]["facts"]
+    merged = next(entry for entry in facts if entry.get("merged_from_ids"))
+    history = {entry["text"]: entry for entry in merged["version_history"]}
+    mixed_history = history["混合来源说法"]
+    assert mixed_history["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in mixed_history
+    assert "speaker_label" not in mixed_history
+    assert "speaker_trust" not in mixed_history
+
+
+@pytest.mark.asyncio
 async def test_trust_merge_leader_must_beat_runner_up_not_weakest(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     persona = await pm.aensure_persona("Neko")
@@ -1357,6 +1407,65 @@ async def test_apply_requeues_stale_sources_after_partial_merge(tmp_path, store)
     assert applied == SCOPED_REFINE_PROMPT_STALE
     assert by_id["stale-a"].get("last_refine_cluster_hash") is None
     assert by_id["stale-b"].get("last_refine_cluster_hash") is None
+    assert any(
+        entry.get("merged_from_ids") == ["valid-a", "valid-b"]
+        for entry in current
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store", [STORE_PERSONA, STORE_REFLECTION])
+async def test_apply_requeues_rejected_sources_after_partial_merge(tmp_path, store):
+    """A malformed second action must not stamp its valid cluster sources."""
+    _, pm, re = _install(str(tmp_path))
+    entries = []
+    for entry_id in ("valid-a", "valid-b", "retry-a", "retry-b"):
+        entry = (
+            pm._build_fact_entry(
+                entry_id, "manual", None, subject=GROUP_A,
+            )
+            if store == STORE_PERSONA
+            else _r_entry(entry_id, entry_id, GROUP_A)
+        )
+        entry["id"] = entry_id
+        entries.append(entry)
+
+    actions = [{
+        "action": "merge",
+        "source_ids": ["valid-a", "valid-b"],
+        "produce": {"text": "valid merged output"},
+    }, {
+        "action": "merge",
+        "source_ids": ["retry-a", "retry-b", "foreign-id"],
+        "produce": {"text": "rejected merged output"},
+    }]
+    cluster = [dict(entry) for entry in entries]
+
+    if store == STORE_PERSONA:
+        persona = await pm.aensure_persona("小天")
+        section = persona.setdefault(
+            GROUP_A.persona_section_key,
+            {**GROUP_A.as_entry_fields(), "facts": []},
+        )
+        section["facts"] = entries
+        await pm.asave_persona("小天", persona)
+        applied = await apply_scoped_persona_merge(
+            pm, "小天", GROUP_A, cluster, actions, "hash-partial-rejected",
+        )
+        current = (await pm.aensure_persona("小天"))[
+            GROUP_A.persona_section_key
+        ]["facts"]
+    else:
+        await re.asave_reflections("小天", entries)
+        applied = await apply_scoped_reflection_merge(
+            re, "小天", GROUP_A, cluster, actions, "hash-partial-rejected",
+        )
+        current = await re._aload_reflections_full("小天")
+
+    by_id = {entry["id"]: entry for entry in current}
+    assert applied == 1
+    assert by_id["retry-a"].get("last_refine_cluster_hash") is None
+    assert by_id["retry-b"].get("last_refine_cluster_hash") is None
     assert any(
         entry.get("merged_from_ids") == ["valid-a", "valid-b"]
         for entry in current
