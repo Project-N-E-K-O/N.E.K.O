@@ -2510,9 +2510,14 @@ def test_adjective_led_epistemic_uncertainty_never_emits_correction(marker):
 
 @pytest.mark.parametrize(("positive", "negative"), [
     ("Some cats are smart", "Some cats are not smart"),
+    ("Many cats are smart", "Many cats are not smart"),
+    ("Several cats are smart", "Several cats are not smart"),
+    ("Two cats are smart", "Two cats are not smart"),
+    ("2 cats are smart", "2 cats are not smart"),
     ("有些猫喜欢鱼", "有些猫不喜欢鱼"),
+    ("很多猫喜欢鱼", "很多猫不喜欢鱼"),
 ])
-def test_existential_quantifiers_never_emit_correction(positive, negative):
+def test_non_universal_quantifiers_never_emit_correction(positive, negative):
     assert deterministic_relation(positive, negative) is None
 
 

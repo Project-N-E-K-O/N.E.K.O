@@ -88,6 +88,23 @@ def _created_at_instant(value: object) -> datetime | None:
         return None
 
 
+def _has_distinct_event_windows(first: dict, second: dict) -> bool:
+    """Return True when both facts describe different explicit event windows."""
+    first_window = (
+        _created_at_instant(first.get('event_start_at')),
+        _created_at_instant(first.get('event_end_at')),
+    )
+    second_window = (
+        _created_at_instant(second.get('event_start_at')),
+        _created_at_instant(second.get('event_end_at')),
+    )
+    return (
+        any(boundary is not None for boundary in first_window)
+        and any(boundary is not None for boundary in second_window)
+        and first_window != second_window
+    )
+
+
 def _queue_identity(item: dict) -> tuple:
     """Identify one queued pair inside its arbitration domain."""
     return (
@@ -1147,6 +1164,7 @@ class FactDedupResolver:
                     str(existing.get('text') or ''),
                     str(cand.get('text') or ''),
                 ) == 'correction'
+                and not _has_distinct_event_windows(existing, cand)
             ):
                 preference = preferred_by_trust(
                     exist_trust, cand_trust,

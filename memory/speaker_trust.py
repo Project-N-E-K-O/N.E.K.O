@@ -71,8 +71,17 @@ _NON_UNIVERSAL_FREQUENCY_TOKEN_PHRASES = (
 _CJK_NON_UNIVERSAL_FREQUENCY_MARKERS = (
     "偶尔", "偶爾", "经常", "經常", "时常", "時常", "通常",
 )
-_NON_UNIVERSAL_QUANTIFIER_MARKERS = frozenset({"some"})
-_CJK_NON_UNIVERSAL_QUANTIFIER_MARKERS = ("有些",)
+_NON_UNIVERSAL_QUANTIFIER_MARKERS = frozenset({
+    "few", "many", "several", "some",
+})
+_NON_UNIVERSAL_CARDINAL_MARKERS = frozenset({
+    "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+})
+_CJK_NON_UNIVERSAL_QUANTIFIER_MARKERS = (
+    "有些", "几个", "幾個", "很多", "若干", "许多", "許多",
+)
 _REPORTING_VERBS = frozenset({
     "acknowledge", "acknowledged", "acknowledges", "admit", "admits", "admitted",
     "allege", "alleged", "alleges", "announce", "announced", "announces",
@@ -324,10 +333,14 @@ def _has_non_universal_frequency(text: str) -> bool:
 
 
 def _has_non_universal_quantifier(text: str) -> bool:
-    """Reject existential claims that need not cover the same individuals."""
+    """Reject quantified claims that need not cover the same individuals."""
     tokens = _word_tokens(text)
     return (
         any(token in _NON_UNIVERSAL_QUANTIFIER_MARKERS for token in tokens)
+        or any(
+            token.isdigit() or token in _NON_UNIVERSAL_CARDINAL_MARKERS
+            for token in tokens
+        )
         or any(
             marker in text
             for marker in _CJK_NON_UNIVERSAL_QUANTIFIER_MARKERS
@@ -433,8 +446,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         _has_non_universal_quantifier(old_norm)
         or _has_non_universal_quantifier(new_norm)
     ):
-        # Existential claims can refer to different members of a set, so
-        # ``some P`` and ``some not P`` are not deterministic opposites.
+        # Non-universal claims can refer to different members of a set, so
+        # ``many P`` and ``many not P`` are not deterministic opposites.
         return None
     if (
         _has_non_universal_frequency(old_norm)

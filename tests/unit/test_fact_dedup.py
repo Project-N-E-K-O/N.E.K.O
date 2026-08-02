@@ -1431,6 +1431,43 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_trust_does_not_collapse_distinct_temporal_fact_states(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(
+        speaker_id="qq:1001",
+        speaker_trust=0.3,
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at=None,
+    )
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(
+        speaker_id="qq:2002",
+        speaker_trust=0.8,
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at="2026-01-31T00:00:00",
+    )
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert next(fact for fact in archived if fact["id"] == "e1")[
+        "superseded_by"
+    ] == "c1"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mixed_side", ["candidate", "existing"])
 async def test_mixed_residual_provenance_cannot_drive_fact_trust_arbitration(
     tmp_path, mixed_side,

@@ -118,20 +118,26 @@ def _parse_temporal_boundary(value: object) -> datetime | None:
         return None
 
 
-def _winner_precedes_newer_temporal_source(
+def _has_distinct_temporal_context(
     winner: dict, sources: list[dict],
 ) -> bool:
-    """Return True when a bounded winner predates another source state."""
-    winner_end = _parse_temporal_boundary(winner.get('event_end_at'))
-    if winner_end is None and winner.get('temporal_scope') in {'episode', 'past'}:
-        winner_end = _parse_temporal_boundary(winner.get('event_start_at'))
-    if winner_end is None:
-        return False
+    """Return True when trust would collapse distinct temporal evidence."""
+    winner_context = (
+        winner.get('temporal_scope'),
+        _parse_temporal_boundary(winner.get('event_start_at')),
+        _parse_temporal_boundary(winner.get('event_end_at')),
+    )
     for source in sources:
         if source is winner:
             continue
-        start = _parse_temporal_boundary(source.get('event_start_at'))
-        if start is not None and winner_end < start:
+        source_context = (
+            source.get('temporal_scope'),
+            _parse_temporal_boundary(source.get('event_start_at')),
+            _parse_temporal_boundary(source.get('event_end_at')),
+        )
+        if source_context != winner_context and any(
+            value is not None for value in (*winner_context, *source_context)
+        ):
             return True
     return False
 
@@ -195,10 +201,10 @@ def _trust_weighted_merge_text(
     # between two other rows must not let an unrelated leader erase both.
     winner = ordered[0]
     # Trust resolves conflicting reports about the same state, not temporal
-    # evolution.  A bounded historical winner must not erase a later/current
-    # opposite state merely because its speaker has a higher score; retain the
-    # model's transition merge and both audit sources instead.
-    if _winner_precedes_newer_temporal_source(winner, ordered):
+    # evolution or bounded exceptions.  Distinct temporal contexts must not be
+    # collapsed merely because one speaker has a higher score; retain the
+    # model's temporal merge and every audit source instead.
+    if _has_distinct_temporal_context(winner, ordered):
         return proposed_text, sources
     if not all(
         deterministic_relation(

@@ -111,6 +111,32 @@ def test_trust_merge_rejects_mixed_source_with_residual_fields():
     assert retained == [high, low]
 
 
+def test_trust_merge_preserves_bounded_episode_under_ongoing_winner():
+    ongoing_high = {
+        "text": "小明喜欢猫",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.9,
+        "temporal_scope": "state",
+        "event_start_at": "2026-01-01T00:00:00",
+        "event_end_at": None,
+    }
+    episode_low = {
+        "text": "小明不喜欢猫",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+        "temporal_scope": "episode",
+        "event_start_at": "2026-06-01T00:00:00",
+        "event_end_at": "2026-06-02T00:00:00",
+    }
+
+    text, retained = _trust_weighted_merge_text(
+        [ongoing_high, episode_low], "小明通常喜欢猫，但看兽医时不喜欢猫",
+    )
+
+    assert text == "小明通常喜欢猫，但看兽医时不喜欢猫"
+    assert retained == [ongoing_high, episode_low]
+
+
 def _stamped(entry: dict, vec: list[float]) -> dict:
     """Attach a REAL encoded embedding triple so the engine's cache
     validation passes without stubbing it away."""
@@ -873,10 +899,10 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
         "low", "小明不喜欢猫", GROUP_A,
         speaker_id="qq:1001", speaker_trust=0.3,
         reinforcement=0.9,
-        relation_type="habit", temporal_scope="past",
-        event_when_raw={"kind": "absolute", "value": "2026-01-01"},
-        event_start_at="2026-01-01T00:00:00",
-        event_end_at="2026-01-31T00:00:00",
+        relation_type="habit", temporal_scope="current",
+        event_when_raw={"kind": "absolute", "value": "2026-06-01"},
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at=None,
         schema_version=1,
     )
     high = _r_entry(
