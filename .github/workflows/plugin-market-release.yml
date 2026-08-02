@@ -1,0 +1,125 @@
+name: N.E.K.O Plugin Market Release
+
+on:
+  workflow_call:
+    inputs:
+      plugin-id:
+        required: true
+        type: string
+      neko-ref:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      PLUGIN_ID: ${{ inputs.plugin-id }}
+      NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O
+      NEKO_REF: ${{ inputs.neko-ref }}
+    steps:
+      - name: Checkout plugin repository
+        uses: actions/checkout@v4
+        with:
+          path: plugin-repo
+
+      - name: Checkout N.E.K.O
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NEKO_REPOSITORY }}
+          ref: ${{ env.NEKO_REF }}
+          path: neko
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Ruff check
+        run: >-
+          uvx ruff==0.12.4 check --ignore-noqa --isolated
+          --target-version py311 --line-length 120
+          --select E4,E7,E9,F,I --exclude vendor plugin-repo
+
+      - name: Mount plugin into N.E.K.O tree
+        run: |
+          rm -rf "neko/plugin/plugins/${PLUGIN_ID}"
+          mkdir -p neko/plugin/plugins
+          cp -R plugin-repo "neko/plugin/plugins/${PLUGIN_ID}"
+
+      - name: Sync plugin dependencies
+        working-directory: neko
+        run: uv run --with pip python -m plugin.neko_plugin_cli.cli sync "${PLUGIN_ID}" --clean
+
+      - name: Market release check
+        working-directory: neko
+        run: |
+          set -o pipefail
+          mkdir -p plugin/neko_plugin_cli/target
+          uv run python -m plugin.neko_plugin_cli.cli check -r --market-release "${PLUGIN_ID}" | tee "plugin/neko_plugin_cli/target/${PLUGIN_ID}.market-release-check.txt"
+
+      - name: Write Market evidence
+        working-directory: neko
+        run: |
+          PACKAGE="plugin/neko_plugin_cli/target/${PLUGIN_ID}.neko-plugin"
+          EVIDENCE="plugin/neko_plugin_cli/target/market-evidence.json"
+          test -f "$PACKAGE"
+          export PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{print $1}')"
+          export NEKO_COMMIT="$(git rev-parse HEAD)"
+          export EVIDENCE
+          python - <<'PY'
+          import json
+          import os
+          import tomllib
+          import zipfile
+          from pathlib import Path
+
+          package = Path(f'plugin/neko_plugin_cli/target/{os.environ["PLUGIN_ID"]}.neko-plugin')
+          payload_hash = None
+          with zipfile.ZipFile(package) as archive:
+              try:
+                  metadata = tomllib.loads(archive.read("metadata.toml").decode("utf-8"))
+                  candidate = metadata.get("payload", {}).get("hash")
+                  if isinstance(candidate, str):
+                      payload_hash = candidate
+              except (KeyError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+                  pass
+
+          evidence = {
+              "schema_version": 1,
+              "mode": "release",
+              "plugin_id": os.environ["PLUGIN_ID"],
+              "version": os.environ["GITHUB_REF_NAME"].removeprefix("v"),
+              "source_commit": os.environ["GITHUB_SHA"],
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "neko_repository": os.environ["NEKO_REPOSITORY"],
+              "neko_ref": os.environ["NEKO_REF"],
+              "neko_commit": os.environ["NEKO_COMMIT"],
+              "package": {
+                  "name": f'{os.environ["PLUGIN_ID"]}.neko-plugin',
+                  "sha256": os.environ["PACKAGE_SHA256"],
+                  "size": package.stat().st_size,
+                  "payload_hash": payload_hash,
+              },
+          }
+          Path(os.environ["EVIDENCE"]).write_text(
+              json.dumps(evidence, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload Market evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_ID }}-market-evidence
+          path: neko/plugin/neko_plugin_cli/target/market-evidence.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.neko-plugin
+            neko/plugin/neko_plugin_cli/target/${{ env.PLUGIN_ID }}.market-release-check.txt
+            neko/plugin/neko_plugin_cli/target/market-evidence.json

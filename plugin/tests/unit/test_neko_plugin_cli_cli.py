@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import subprocess
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -630,9 +630,11 @@ def test_init_repo_uses_market_repository_name_and_keeps_plugin_id(
     release_workflow = repo_dir / ".github" / "workflows" / "release.yml"
     assert release_workflow.is_file()
     release_workflow_text = release_workflow.read_text(encoding="utf-8")
-    assert "softprops/action-gh-release" in release_workflow_text
-    assert "set -o pipefail" in release_workflow_text
-    assert "fail_on_unmatched_files: true" in release_workflow_text
+    assert (
+        "uses: Project-N-E-K-O/N.E.K.O/.github/workflows/"
+        "plugin-market-release.yml@main"
+    ) in release_workflow_text
+    assert "plugin-id: market_demo" in release_workflow_text
 
     messages = [message for _level, message in validate_plugin_dir(repo_dir, strict=True)]
     assert not any("does not match directory name" in message for message in messages)
@@ -669,18 +671,19 @@ def test_init_repo_generates_online_vendor_build_workflow(tmp_path: Path) -> Non
     ).read_text(encoding="utf-8")
 
     assert "vendor/" in gitignore.splitlines()
-    sync_command = (
-        'uv run --with pip python -m plugin.neko_plugin_cli.cli sync '
-        '"${PLUGIN_ID}" --clean'
-    )
-    assert sync_command in verify_workflow
-    assert sync_command in release_workflow
-    assert verify_workflow.index(sync_command) < verify_workflow.index(
-        "check -r"
-    )
-    assert release_workflow.index(sync_command) < release_workflow.index(
-        "check -r --market-release"
-    )
+    assert (
+        "uses: Project-N-E-K-O/N.E.K.O/.github/workflows/"
+        "plugin-market-verify.yml@main"
+    ) in verify_workflow
+    assert (
+        "uses: Project-N-E-K-O/N.E.K.O/.github/workflows/"
+        "plugin-market-release.yml@main"
+    ) in release_workflow
+    for workflow in (verify_workflow, release_workflow):
+        assert "plugin-id: dependency_demo" in workflow
+        assert "neko-repository:" not in workflow
+        assert "neko-ref: main" in workflow
+        assert "Sync plugin dependencies" not in workflow
 
 
 def test_init_repo_generates_market_compatible_ruff_gate(tmp_path: Path) -> None:
@@ -715,18 +718,10 @@ respect-gitignore = false
 select = ["E4", "E7", "E9", "F", "I"]
 '''
 
-    ruff_command = (
-        "uvx ruff==0.12.4 check --ignore-noqa "
-        "--config plugin-repo/ruff.toml plugin-repo"
-    )
-    assert ruff_command in verify_workflow
-    assert ruff_command in release_workflow
-    assert verify_workflow.index(ruff_command) < verify_workflow.index(
-        "Sync plugin dependencies"
-    )
-    assert release_workflow.index(ruff_command) < release_workflow.index(
-        "Sync plugin dependencies"
-    )
+    assert "plugin-market-verify.yml@main" in verify_workflow
+    assert "plugin-market-release.yml@main" in release_workflow
+    assert "uvx ruff" not in verify_workflow
+    assert "uvx ruff" not in release_workflow
     assert '''From this plugin repository root:
 
 ```bash
@@ -876,7 +871,7 @@ def test_setup_repo_github_actions_preserves_files_unless_overwrite(
 
     assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
     assert "target-version" in ruff_config.read_text(encoding="utf-8")
-    assert "Ruff check" in verify_workflow.read_text(encoding="utf-8")
+    assert "plugin-market-verify.yml" in verify_workflow.read_text(encoding="utf-8")
 
 
 def test_advanced_scaffold_with_github_actions_uses_ruff_clean_imports(

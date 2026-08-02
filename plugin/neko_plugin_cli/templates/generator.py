@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
 
 from plugin._types.plugin_types import (
     SCAFFOLDABLE_PLUGIN_TYPES,
@@ -409,9 +409,9 @@ def _render_plugin_init(spec: PluginSpec) -> str:
         lines.extend([
             "",
             "    @plugin_entry(",
-            f'        id="example",',
-            f'        name="Example Entry",',
-            f'        description="An example entry point",',
+            '        id="example",',
+            '        name="Example Entry",',
+            '        description="An example entry point",',
             "        input_schema={",
             '            "type": "object",',
             '            "properties": {',
@@ -654,8 +654,6 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
 
 
 def _render_verify_workflow(spec: PluginSpec) -> str:
-    sync_command = _dependency_sync_command('"${PLUGIN_ID}"')
-    ruff_check_step = _render_ruff_check_step()
     return f'''name: Verify N.E.K.O Plugin
 
 on:
@@ -663,89 +661,19 @@ on:
   pull_request:
   workflow_dispatch:
 
-env:
-  PLUGIN_ID: {spec.plugin_id}
-  NEKO_REPOSITORY: {spec.neko_repository}
-  NEKO_REF: {spec.neko_ref}
+permissions:
+  contents: read
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout plugin repository
-        uses: actions/checkout@v4
-        with:
-          path: plugin-repo
-
-      - name: Checkout N.E.K.O
-        uses: actions/checkout@v4
-        with:
-          repository: ${{{{ env.NEKO_REPOSITORY }}}}
-          ref: ${{{{ env.NEKO_REF }}}}
-          path: neko
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-{ruff_check_step}
-
-      - name: Mount plugin into N.E.K.O tree
-        run: |
-          rm -rf "neko/plugin/plugins/${{PLUGIN_ID}}"
-          mkdir -p neko/plugin/plugins
-          cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
-
-      - name: Sync plugin dependencies
-        working-directory: neko
-        run: {sync_command}
-
-      - name: Release check
-        working-directory: neko
-        run: |
-          set -o pipefail
-          mkdir -p plugin/neko_plugin_cli/target
-          uv run python -m plugin.neko_plugin_cli.cli check -r "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.check-release.txt"
-
-      - name: Write verification summary
-        working-directory: neko
-        run: |
-          PACKAGE="plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
-          test -f "$PACKAGE"
-          PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
-          NEKO_COMMIT="$(git rev-parse HEAD)"
-
-          {{
-            echo "## N.E.K.O Plugin Verification"
-            echo ""
-            echo "| Field | Value |"
-            echo "| --- | --- |"
-            echo "| Plugin ID | ${{PLUGIN_ID}} |"
-            echo "| Plugin commit | ${{GITHUB_SHA}} |"
-            echo "| N.E.K.O repository | ${{NEKO_REPOSITORY}} |"
-            echo "| N.E.K.O ref | ${{NEKO_REF}} |"
-            echo "| N.E.K.O commit | ${{NEKO_COMMIT}} |"
-            echo "| Package | ${{PLUGIN_ID}}.neko-plugin |"
-            echo "| Package SHA256 | ${{PACKAGE_SHA256}} |"
-            echo ""
-            echo "### Release Check"
-            echo '```text'
-            cat "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.check-release.txt"
-            echo '```'
-          }} >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload verification artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{{{ env.PLUGIN_ID }}}}-verification
-          path: |
-            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
-            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.check-release.txt
+    uses: {spec.neko_repository}/.github/workflows/plugin-market-verify.yml@{spec.neko_ref}
+    with:
+      plugin-id: {spec.plugin_id}
+      neko-ref: {spec.neko_ref}
 '''
 
 
 def _render_release_workflow(spec: PluginSpec) -> str:
-    sync_command = _dependency_sync_command('"${PLUGIN_ID}"')
-    ruff_check_step = _render_ruff_check_step()
     return f'''name: Release N.E.K.O Plugin
 
 on:
@@ -757,73 +685,12 @@ on:
 permissions:
   contents: write
 
-env:
-  PLUGIN_ID: {spec.plugin_id}
-  NEKO_REPOSITORY: {spec.neko_repository}
-  NEKO_REF: {spec.neko_ref}
-
 jobs:
   release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout plugin repository
-        uses: actions/checkout@v4
-        with:
-          path: plugin-repo
-
-      - name: Checkout N.E.K.O
-        uses: actions/checkout@v4
-        with:
-          repository: ${{{{ env.NEKO_REPOSITORY }}}}
-          ref: ${{{{ env.NEKO_REF }}}}
-          path: neko
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-{ruff_check_step}
-
-      - name: Mount plugin into N.E.K.O tree
-        run: |
-          rm -rf "neko/plugin/plugins/${{PLUGIN_ID}}"
-          mkdir -p neko/plugin/plugins
-          cp -R plugin-repo "neko/plugin/plugins/${{PLUGIN_ID}}"
-
-      - name: Sync plugin dependencies
-        working-directory: neko
-        run: {sync_command}
-
-      - name: Market release check
-        working-directory: neko
-        run: |
-          set -o pipefail
-          mkdir -p plugin/neko_plugin_cli/target
-          uv run python -m plugin.neko_plugin_cli.cli check -r --market-release "${{PLUGIN_ID}}" | tee "plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.market-release-check.txt"
-
-      - name: Write release summary
-        working-directory: neko
-        run: |
-          PACKAGE="plugin/neko_plugin_cli/target/${{PLUGIN_ID}}.neko-plugin"
-          test -f "$PACKAGE"
-          PACKAGE_SHA256="$(sha256sum "$PACKAGE" | awk '{{print $1}}')"
-          {{
-            echo "## N.E.K.O Plugin Release"
-            echo ""
-            echo "| Field | Value |"
-            echo "| --- | --- |"
-            echo "| Plugin ID | ${{PLUGIN_ID}} |"
-            echo "| Tag | ${{GITHUB_REF_NAME}} |"
-            echo "| Package | ${{PLUGIN_ID}}.neko-plugin |"
-            echo "| Package SHA256 | ${{PACKAGE_SHA256}} |"
-          }} >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          fail_on_unmatched_files: true
-          files: |
-            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.neko-plugin
-            neko/plugin/neko_plugin_cli/target/${{{{ env.PLUGIN_ID }}}}.market-release-check.txt
+    uses: {spec.neko_repository}/.github/workflows/plugin-market-release.yml@{spec.neko_ref}
+    with:
+      plugin-id: {spec.plugin_id}
+      neko-ref: {spec.neko_ref}
 '''
 
 
@@ -841,14 +708,6 @@ respect-gitignore = false
 [lint]
 select = ["E4", "E7", "E9", "F", "I"]
 '''
-
-
-def _render_ruff_check_step() -> str:
-    return (
-        "      - name: Ruff check\n"
-        f"        run: uvx ruff=={_PLUGIN_RUFF_VERSION} check --ignore-noqa "
-        "--config plugin-repo/ruff.toml plugin-repo"
-    )
 
 
 def _escape(value: str) -> str:
