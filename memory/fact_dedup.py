@@ -90,14 +90,20 @@ def _created_at_instant(value: object) -> datetime | None:
 
 def _has_distinct_event_windows(first: dict, second: dict) -> bool:
     """Return True when facts describe different, at least partly explicit windows."""
-    first_window = (
-        _created_at_instant(first.get('event_start_at')),
-        _created_at_instant(first.get('event_end_at')),
-    )
-    second_window = (
-        _created_at_instant(second.get('event_start_at')),
-        _created_at_instant(second.get('event_end_at')),
-    )
+    def _explicit_window(entry: dict) -> tuple[datetime | None, datetime | None]:
+        start = _created_at_instant(entry.get('event_start_at'))
+        end = _created_at_instant(entry.get('event_end_at'))
+        created = _created_at_instant(entry.get('created_at'))
+        # Fact extraction synthesizes start=created_at for timeless facts.
+        # It is storage metadata, not an event boundary.  Imported start-only
+        # windows remain explicit when they differ from created_at; any end is
+        # likewise always explicit.
+        if not entry.get('event_when_raw') and end is None and start == created:
+            start = None
+        return start, end
+
+    first_window = _explicit_window(first)
+    second_window = _explicit_window(second)
     return (
         any(
             boundary is not None

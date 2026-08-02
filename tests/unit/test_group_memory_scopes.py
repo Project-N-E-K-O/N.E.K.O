@@ -3661,6 +3661,10 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
         "fact_1", "group_participant", "qq:100:1001",
         "group_participant:qq:100:1001",
     ]]
+    assert result["segments"][0]["created_fact_identities"] == [[
+        "fact_1", "group_participant", "qq:100:1001",
+        "group_participant:qq:100:1001",
+    ]]
     assert result["segments"][0]["subject"]["subject_id"] == "qq:100:1001"
     # 传给 FactStore 的段带解析后的 messages / subject / label / trust。
     sent = store.extract_facts_batch.await_args.args[0]
@@ -11852,6 +11856,63 @@ async def test_owner_trust_failure_excludes_later_persisted_batch_facts():
     assert user_data["group_member_memory_messages"] == {
         "9999": [owner], "1001": [later],
     }
+
+
+@pytest.mark.asyncio
+async def test_owner_retry_does_not_exclude_later_reconciled_existing_fact():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    owner = {
+        "role": "user", "content": "owner observation",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 1,
+    }
+    later = {
+        "role": "user", "content": "later reconciliation",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
+    }
+    user_data = {
+        "group_member_memory_messages": {"9999": [owner], "1001": [later]},
+        "group_member_memory_labels": {
+            "9999": "Owner(9999)", "1001": "Alice(1001)",
+        },
+    }
+    existing_identity = [
+        "existing-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "created_fact_identities": []},
+            {
+                "status": "ok",
+                "fact_identities": [existing_identity],
+                "created_fact_identities": [],
+            },
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    service._pack_member_segment_groups = (
+        lambda groups, **_kwargs: [[spec for group in groups for spec in group]]
+    )
+    service._apply_speaker_trust_update = AsyncMock(
+        side_effect=RuntimeError("trust persistence failed"),
+    )
+
+    with pytest.raises(RuntimeError, match="trust persistence failed"):
+        await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason="test",
+        )
+
+    assert "_trust_signal_excluded_fact_identities" not in owner
 
 
 @pytest.mark.asyncio

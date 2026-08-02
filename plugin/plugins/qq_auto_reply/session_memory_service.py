@@ -1488,7 +1488,13 @@ class QQSessionMemoryService:
                         for later_result in segment_results[segment_index + 1:]
                         if isinstance(later_result, dict)
                         and later_result.get("status") == "ok"
-                        for identity in later_result.get("fact_identities") or []
+                        for identity in (
+                            later_result.get("created_fact_identities")
+                            if isinstance(
+                                later_result.get("created_fact_identities"), list,
+                            )
+                            else later_result.get("fact_identities") or []
+                        )
                         if isinstance(identity, (list, tuple))
                         and len(identity) == 4
                         and all(identity)
@@ -1938,10 +1944,9 @@ class QQSessionMemoryService:
     ) -> None:
         """Persist one idempotent raw-activity event plus server-verified signals."""
         canonical = json.dumps(messages or [], ensure_ascii=False, sort_keys=True)
+        stable_activity = activity_identity or canonical
         event_id = "activity_" + hashlib.sha256(
-            f"qq:{sender_id}|{activity_identity or canonical}|{canonical}".encode(
-                "utf-8"
-            )
+            f"qq:{sender_id}|{stable_activity}".encode("utf-8")
         ).hexdigest()[:24]
         from memory.speaker_trust import observation_texts
         authored_count = len(observation_texts(messages or []))

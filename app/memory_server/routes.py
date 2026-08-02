@@ -1164,7 +1164,11 @@ async def _process_scoped_history_segments(
         SCOPED_HISTORY_BATCH_MAX_MESSAGES,
         SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
     )
-    from memory.facts import FactExtractionFailed, FactStore
+    from memory.facts import (
+        FactExtractionFailed,
+        FactStore,
+        _speaker_trust_fact_identity,
+    )
 
     if (
         req.input_history is not None
@@ -1320,11 +1324,12 @@ async def _process_scoped_history_segments(
         }
 
     def _fact_identity(fact: dict) -> tuple:
+        identity = _speaker_trust_fact_identity(fact)
+        if identity is not None:
+            return identity
         return (
-            str(fact.get("id")),
-            fact.get("subject_kind"),
-            fact.get("subject_id"),
-            fact.get("scope"),
+            str(fact.get("id")), fact.get("subject_kind"),
+            fact.get("subject_id"), fact.get("scope"),
         )
 
     owner_signal_jobs = []
@@ -1477,6 +1482,15 @@ async def _process_scoped_history_segments(
                     if (
                         isinstance(fact, dict)
                         and fact.get("id")
+                        and all(_fact_identity(fact))
+                    )
+                ],
+                "created_fact_identities": [
+                    list(_fact_identity(fact))
+                    for fact in (result.get("created") or [])
+                    if (
+                        isinstance(fact, dict)
+                        and fact.get("id") is not None
                         and all(_fact_identity(fact))
                     )
                 ],

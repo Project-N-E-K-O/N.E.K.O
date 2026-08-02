@@ -1400,6 +1400,34 @@ async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_arbitration_archive_preserves_scalar_id_type(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    fields = subject.as_entry_fields()
+    integer_fact = {
+        "id": 1, "text": "integer loser", "created_at": "2026-08-01",
+        **fields,
+    }
+    string_fact = {
+        "id": "1", "text": "string survivor", "created_at": "2026-08-01",
+        **fields,
+    }
+    await _seed_facts(fs, "Neko", [integer_fact, string_fact])
+    integer_identity = (1, subject.kind, subject.subject_id, subject.scope)
+
+    assert await fs.aarchive_arbitrated_facts(
+        "Neko", {integer_identity: {"reason": "typed-id-test"}},
+        expected_losers={integer_identity: integer_fact},
+    ) == 1
+    active = await fs.aload_facts("Neko")
+    assert [(fact["id"], fact["text"]) for fact in active] == [
+        ("1", "string survivor"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_arbitration_uses_full_identity_for_duplicate_ids_across_scopes(
     tmp_path,
 ):
@@ -1513,6 +1541,37 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
     assert next(fact for fact in archived if fact["id"] == "e1")[
         "superseded_by"
     ] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_synthesized_fact_starts_do_not_disable_trust_arbitration(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(
+        speaker_id="qq:2002", speaker_trust=0.8,
+        created_at="2026-06-01T00:00:00",
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at=None, event_when_raw=None,
+    )
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(
+        speaker_id="qq:1001", speaker_trust=0.3,
+        created_at="2026-01-01T00:00:00",
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at=None, event_when_raw=None,
+    )
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
 
 
 @pytest.mark.asyncio

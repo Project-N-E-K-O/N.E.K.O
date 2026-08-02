@@ -231,7 +231,7 @@ async def test_only_owner_request_provenance_can_emit_trust_events():
 
 @pytest.mark.asyncio
 async def test_numeric_legacy_fact_id_builds_stable_trust_event_key():
-    from memory.facts import FactStore
+    from memory.facts import FactStore, _speaker_trust_fact_id
 
     owner = MemorySubject.group_participant("qq", "7788", "9999")
     target = MemorySubject.group_participant("qq", "7788", "1001")
@@ -247,7 +247,45 @@ async def test_numeric_legacy_fact_id_builds_stable_trust_event_key():
         }],
     )
     assert len(events) == 1
-    assert events[0]["source_fact_id"] == "123"
+    assert events[0]["source_fact_id"] == _speaker_trust_fact_id(123)
+
+
+@pytest.mark.asyncio
+async def test_scalar_fact_id_types_get_distinct_trust_signal_identities(tmp_path):
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    facts = [{
+        "id": fact_id,
+        "text": "小明喜欢猫",
+        "speaker_id": "qq:1001",
+        **target.as_entry_fields(),
+    } for fact_id in (1, "1")]
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": facts}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=facts)
+    store.save_facts = MagicMock()
+
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "小明喜欢猫"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=facts,
+    )
+
+    assert len(events) == 2
+    assert len({event["source_fact_id"] for event in events}) == 2
+    assert len({event["event_id"] for event in events}) == 2
+    assert await store.apersist_speaker_trust_events("Neko", events) == events
+    assert all(len(fact["_speaker_trust_signal_events"]) == 1 for fact in facts)
 
 
 @pytest.mark.asyncio
@@ -2349,6 +2387,37 @@ async def test_identical_text_in_distinct_batches_has_distinct_activity_ids():
     ]
     assert event_ids[0] != event_ids[1]
     assert event_ids[0] == event_ids[2]
+
+
+@pytest.mark.asyncio
+async def test_retry_metadata_does_not_change_stable_activity_id():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
+        return_value=True,
+    ))
+    service = QQSessionMemoryService(SimpleNamespace(
+        settings_service=settings, logger=MagicMock(),
+    ))
+    messages = [{"role": "user", "content": "好的"}]
+    await service._apply_speaker_trust_update(
+        "1001", messages, [], activity_identity="group:a:batch-1",
+    )
+    messages[0]["_trust_signal_excluded_fact_identities"] = [[
+        "later", "group_participant", "qq:a:2",
+        "group_participant:qq:a:2",
+    ]]
+    await service._apply_speaker_trust_update(
+        "1001", messages, [], activity_identity="group:a:batch-1",
+    )
+
+    event_ids = [
+        call.kwargs["activity_event_id"]
+        for call in settings.apply_speaker_trust_update.await_args_list
+    ]
+    assert event_ids[0] == event_ids[1]
 
 
 def test_correction_relation_preserves_argument_order():

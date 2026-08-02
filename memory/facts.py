@@ -167,6 +167,32 @@ def _readable_fact_id(entry: dict):
     return fact_id
 
 
+_TYPED_TRUST_FACT_ID_PREFIX = "__neko_typed_fact_id_v1__:"
+
+
+def _speaker_trust_fact_id(fact_id: object) -> str:
+    """Serialize a fact id without collapsing distinct scalar types.
+
+    Normal string ids keep their historical wire representation.  Strings
+    using our reserved prefix are escaped, while non-string legacy scalar ids
+    are tagged with their type so ``1`` and ``"1"`` cannot address the same
+    trust-signal row.
+    """
+    if isinstance(fact_id, str) and not fact_id.startswith(
+        _TYPED_TRUST_FACT_ID_PREFIX
+    ):
+        return fact_id
+    try:
+        payload = json.dumps(
+            fact_id, ensure_ascii=False, separators=(",", ":"),
+            sort_keys=True, allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        payload = repr(fact_id)
+    kind = "str" if isinstance(fact_id, str) else type(fact_id).__name__
+    return f"{_TYPED_TRUST_FACT_ID_PREFIX}{kind}:{payload}"
+
+
 def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | None:
     """Return the full scoped identity used to attach a trust signal."""
     if not isinstance(entry, dict):
@@ -175,7 +201,10 @@ def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | Non
     subject = subject_from_entry(entry)
     if fact_id is None or subject is None:
         return None
-    return str(fact_id), subject.kind, subject.subject_id, subject.scope
+    return (
+        _speaker_trust_fact_id(fact_id), subject.kind,
+        subject.subject_id, subject.scope,
+    )
 
 
 def _fact_scoped_identity(entry: dict) -> tuple[object, str, str, str] | None:
@@ -1001,11 +1030,11 @@ class FactStore:
     async def aarchive_arbitrated_facts(
         self,
         name: str,
-        archive_specs: dict[tuple[str, str, str, str], dict],
+        archive_specs: dict[tuple[object, str, str, str], dict],
         *,
-        survivor_updates: dict[tuple[str, str, str, str], dict] | None = None,
-        expected_survivors: dict[tuple[str, str, str, str], dict] | None = None,
-        expected_losers: dict[tuple[str, str, str, str], dict] | None = None,
+        survivor_updates: dict[tuple[object, str, str, str], dict] | None = None,
+        expected_survivors: dict[tuple[object, str, str, str], dict] | None = None,
+        expected_losers: dict[tuple[object, str, str, str], dict] | None = None,
     ) -> int:
         """Archive trust/dedup losers with an archive-first two-file commit."""
         if not archive_specs:
@@ -1033,7 +1062,12 @@ class FactStore:
                         normalized = {}
                         for key, value in values.items():
                             if isinstance(key, tuple) and len(key) == 4:
-                                identity = tuple(str(part) for part in key)
+                                identity = (
+                                    key[0],
+                                    str(key[1]),
+                                    str(key[2]),
+                                    str(key[3]),
+                                )
                             else:
                                 matches = [
                                     candidate
@@ -1312,9 +1346,8 @@ class FactStore:
                     continue
                 raw_source_fact_id = _readable_fact_id(prior)
                 source_fact_id = (
-                    str(raw_source_fact_id)
-                    if raw_source_fact_id is not None
-                    else None
+                    _speaker_trust_fact_id(raw_source_fact_id)
+                    if raw_source_fact_id is not None else None
                 )
                 fallback_fact_id = hashlib.sha256(
                     ' '.join(str(prior.get('text') or '').split()).casefold().encode(
