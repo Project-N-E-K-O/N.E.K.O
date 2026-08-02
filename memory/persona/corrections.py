@@ -78,6 +78,23 @@ def _correction_queue_identity(item: dict) -> tuple[str, ...] | None:
     ))
 
 
+def _correction_prompt_trust_band(item: dict, side: str) -> str:
+    """Return exactly the provenance band exposed to the correction model."""
+    from memory.speaker_trust import trust_band
+
+    if item.get(f'{side}_speaker_provenance_mixed') is True:
+        return 'unknown'
+    return trust_band(item.get(f'{side}_speaker_trust'))
+
+
+def _correction_prompt_trust_signature(item: dict) -> tuple[str, str]:
+    """Capture the prompt-visible provenance used to choose an action."""
+    return (
+        _correction_prompt_trust_band(item, 'old'),
+        _correction_prompt_trust_band(item, 'new'),
+    )
+
+
 class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
@@ -368,17 +385,10 @@ class CorrectionsMixin:
             # 错误消费。
             allowed_indices = {i for i, _ in pairs}
 
-            from memory.speaker_trust import trust_band
-
-            def _prompt_trust_band(item: dict, side: str) -> str:
-                if item.get(f'{side}_speaker_provenance_mixed') is True:
-                    return 'unknown'
-                return trust_band(item.get(f'{side}_speaker_trust'))
-
             batch_text = "\n".join(
-                f"[{i}] 已有(trust={_prompt_trust_band(item, 'old')}): "
+                f"[{i}] 已有(trust={_correction_prompt_trust_band(item, 'old')}): "
                 f"{item['old_text']} | 新观察(trust="
-                f"{_prompt_trust_band(item, 'new')}): {item['new_text']}"
+                f"{_correction_prompt_trust_band(item, 'new')}): {item['new_text']}"
                 for i, item in pairs
             )
             prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
@@ -430,22 +440,34 @@ class CorrectionsMixin:
                 return 0
 
             # ── 短临界 2: load fresh persona + apply + save ──
+            stale_prompt_indices: set[int] = set()
             resolved = await self._apply_correction_results(
                 name, corrections, allowed_indices, results,
                 refresh_pending=True,
+                stale_prompt_indices=stale_prompt_indices,
             )
             # 对偶 fact_dedup：LLM 返了 list 但 ``_apply_correction_results_locked``
             # 没消费任何 correction（全 invalid index / 全 unknown action），
             # corrections queue 原样保留 → 队头同样 N 条下次 tick 重新喂同样
             # prompt → 仍然 0 resolved → 永久卡死。算 attempts 一次。
             if resolved == 0:
+                attempted_items = [
+                    item for idx, item in pairs
+                    if idx not in stale_prompt_indices
+                ]
+                if not attempted_items:
+                    logger.info(
+                        f"[Persona] {name}: correction provenance changed "
+                        f"while the model was running; left batch queued"
+                    )
+                    return 0
                 logger.warning(
                     f"[Persona] {name}: correction model 输出 {len(results)} "
                     f"条 action 全部无效（invalid index / unknown action），"
                     f"batch 0 条 correction 消费，按 attempt 失败计"
                 )
                 await self._abump_correction_attempts_and_dead_letter(
-                    name, [item for _, item in pairs],
+                    name, attempted_items,
                 )
             return resolved
 
@@ -457,6 +479,7 @@ class CorrectionsMixin:
         results: list,
         *,
         refresh_pending: bool = False,
+        stale_prompt_indices: set[int] | None = None,
     ) -> int:
         """The post-LLM apply phase of resolve_corrections. Runs inside the data lock."""
         async with self._get_alock(name):
@@ -468,6 +491,7 @@ class CorrectionsMixin:
             return await self._apply_correction_results_locked(
                 name, persona, corrections, allowed_indices, results,
                 fresh_corrections=fresh_corrections,
+                stale_prompt_indices=stale_prompt_indices,
             )
 
     async def _apply_correction_results_locked(
@@ -479,6 +503,7 @@ class CorrectionsMixin:
         results: list,
         *,
         fresh_corrections: list[dict] | None = None,
+        stale_prompt_indices: set[int] | None = None,
     ) -> int:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
@@ -506,16 +531,28 @@ class CorrectionsMixin:
                     continue
                 item = corrections[idx]
                 if fresh_by_identity is not None:
+                    prompt_trust = _correction_prompt_trust_signature(item)
                     identity = _correction_queue_identity(item)
                     if identity in ambiguous_fresh_identities:
                         # Exact duplicate legacy rows cannot be safely mapped
                         # back to one model index. Leave them queued.
                         continue
-                    item = fresh_by_identity.get(identity)
-                    if item is None:
+                    fresh_item = fresh_by_identity.get(identity)
+                    if fresh_item is None:
                         # Removed while the model was running: its stale
                         # snapshot must not be applied or trusted.
                         continue
+                    if (
+                        _correction_prompt_trust_signature(fresh_item)
+                        != prompt_trust
+                    ):
+                        # The action was chosen from different prompt-visible
+                        # provenance. Requeue without charging a liveness
+                        # attempt; a later pass will ask the model again.
+                        if stale_prompt_indices is not None:
+                            stale_prompt_indices.add(idx)
+                        continue
+                    item = fresh_item
             except (ValueError, TypeError):
                 continue
 

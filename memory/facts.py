@@ -3542,12 +3542,12 @@ class FactStore:
                 f"{provenance_updated_count} exact facts"
             )
             if reconciled_facts is not None:
-                reconciled_by_id = {
-                    str(entry.get('id')): dict(entry)
+                reconciled_by_identity = {
+                    identity: dict(entry)
                     for entry, _before in provenance_snapshots
-                    if entry.get('id')
+                    if (identity := _fact_scoped_identity(entry)) is not None
                 }
-                reconciled_facts.extend(reconciled_by_id.values())
+                reconciled_facts.extend(reconciled_by_identity.values())
 
         return new_facts
 

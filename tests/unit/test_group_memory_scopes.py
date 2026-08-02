@@ -840,6 +840,31 @@ async def test_exact_dedup_reconciles_request_sources_conservatively():
 
 
 @pytest.mark.asyncio
+async def test_reconciled_facts_preserve_typed_scoped_identities():
+    harness = _PersistHarness()
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    existing = await harness._apersist_new_facts(
+        "Neko", [_fact("first fact"), _fact("second fact")],
+        subject=subject, semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    existing[0]["id"] = 1
+    existing[1]["id"] = "1"
+
+    reconciled = []
+    await harness._apersist_new_facts(
+        "Neko", [_fact("first fact"), _fact("second fact")],
+        subject=subject, semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.9},
+        reconciled_facts=reconciled,
+    )
+
+    assert [(type(fact["id"]), fact["id"]) for fact in reconciled] == [
+        (int, 1), (str, "1"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_exact_dedup_provenance_rolls_back_when_save_fails():
     harness = _PersistHarness()
     subject = MemorySubject.group_participant("qq", "7788", "1001")
@@ -8552,6 +8577,56 @@ async def test_correction_refresh_disambiguates_equal_timestamps(tmp_path):
     }
     assert texts == {"first new", "second old"}
     assert _json.loads(corr_path.read_text(encoding="utf-8")) == [items[1]]
+
+
+@pytest.mark.asyncio
+async def test_correction_refresh_requeues_prompt_provenance_drift(tmp_path):
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_prompt_provenance_drift"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    item = {
+        "correction_id": "corr-1",
+        "old_text": "Alice is smart",
+        "new_text": "Alice is not smart",
+        "entity": "master",
+        "created_at": "2026-08-02T00:00:00",
+        "old_speaker_trust": 0.9,
+        "new_speaker_trust": 0.2,
+    }
+    corr_path.write_text(_json.dumps([item]), encoding="utf-8")
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [{"text": item["old_text"]}]}
+    await pm.asave_persona(name, persona)
+
+    class _FakeLLM:
+        async def ainvoke(self, _prompt):
+            fresh = {**item, "old_speaker_provenance_mixed": True}
+            corr_path.write_text(_json.dumps([fresh]), encoding="utf-8")
+            resp = MagicMock()
+            resp.content = '[{"index": 0, "action": "keep_old"}]'
+            return resp
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*_args, **_kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create):
+        resolved = await pm.resolve_corrections(name)
+
+    assert resolved == 0
+    queued = _json.loads(corr_path.read_text(encoding="utf-8"))
+    assert queued == [{**item, "old_speaker_provenance_mixed": True}]
+    assert "resolve_attempts" not in queued[0]
+    facts = (await pm.aensure_persona(name))["master"]["facts"]
+    assert [fact["text"] for fact in facts] == [item["old_text"]]
 
 
 @pytest.mark.asyncio
