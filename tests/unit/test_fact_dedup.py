@@ -35,6 +35,7 @@ from memory.fact_dedup import (
     FACT_DEDUP_COSINE_THRESHOLD,
     FACT_DEDUP_PAIRS_PER_NEW,
     FactDedupResolver,
+    _created_at_instant,
 )
 
 
@@ -354,6 +355,14 @@ def test_detect_candidates_compares_offset_timestamps_as_instants():
     assert [(p["candidate_id"], p["existing_id"]) for p in pairs] == [
         ("newer", "older"),
     ]
+
+
+@pytest.mark.parametrize("value", [
+    "0001-01-01T00:00:00+14:00",
+    "9999-12-31T23:59:59-14:00",
+])
+def test_created_at_instant_rejects_utc_conversion_overflow(value):
+    assert _created_at_instant(value) is None
 
 
 def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
