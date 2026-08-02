@@ -208,7 +208,7 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
 #   任意一个都会被 400 拦住:
 #       {"error": "Invalid request: you are not using Lanlan. STOP ABUSE THE API."}
 #   2026-04 实测结果 (详见 docs/AGENT_NOTES.md #12): 只有**老域名无 www 前
-#   缀**的 `https://www.lanlan.app/text/v1` 未启用该校验, 返回正常的 OpenAI
+#   缀**的 `https://lanlan.app/text/v1` 未启用该校验, 返回正常的 OpenAI
 #   兼容 completion 数据. 主程序 `utils.config_manager._adjust_free_api_url`
 #   只把 `lanlan.tech → lanlan.app`, 不动 `www.` 前缀, 所以主程序靠 GeoIP
 #   路由能得到 `www.lanlan.app` / `lanlan.tech` 两种形态, 但它**本身已经**
@@ -216,7 +216,7 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
 #
 # 策略
 #   在 testbench 这一侧, 当 ``cfg.base_url`` 命中任意一个被拦截的 lanlan 免
-#   费域时, 统一重写为 `https://www.lanlan.app/text/v1` 再交给下游 openai SDK.
+#   费域时, 统一重写为 `https://lanlan.app/text/v1` 再交给下游 openai SDK.
 #   这是**纯测试生态补丁**, 不写回 session.model_config (summary 页面展示
 #   的仍是用户/预设原始 URL, 避免视觉欺骗), 也不动 `config/api_providers
 #   .json` (那是主程序财产, 按规则不能动). 后续若 lanlan 服务端把老域名
@@ -240,12 +240,16 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
 #   + API key; 免费 Lanlan 预设仅对 NEKO 主程序自身可用。
 #   (绝大多数 smoke 用 mock, 不受影响; 仅真实对话/记忆/评分的手测需要可用 key。)
 
-_LANLAN_FREE_BLOCKED_HOSTS: tuple[str, ...] = (
-    "www.lanlan.tech",
-    "lanlan.tech",
-    "www.lanlan.app",
-)
-_LANLAN_FREE_OPEN_HOST = "lanlan.app"
+# 2026-08-01: 裸 `lanlan.app` 已**下线** (维护者确认), 不只是像 6 月那样被反滥
+#   用校验拦掉。旁路目标不复存在, 所以旁路本身必须停用: 继续重写只会把一个能
+#   给出 "STOP ABUSE THE API" 的 400 (它至少说明了原因) 换成一个 DNS/连接失败
+#   (它什么也不说明), 诊断信息只会更差。
+#
+#   保留常量而非删除函数: 它记录了这条路曾经存在、为何存在、以及为何不再可用,
+#   而空元组让重写循环自然成为 no-op —— base_url 原样交给下游, 免费预设在
+#   testbench 里以服务端自己的话失败。
+_LANLAN_FREE_BLOCKED_HOSTS: tuple[str, ...] = ()
+_LANLAN_FREE_OPEN_HOST = ""
 
 
 def _rewrite_lanlan_free_base_url(cfg: ModelGroupConfig) -> ModelGroupConfig:
