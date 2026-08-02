@@ -1195,13 +1195,14 @@ async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
 
 
 @pytest.mark.asyncio
-async def test_scoped_route_owner_signal_uses_pre_write_provenance():
+@pytest.mark.parametrize("fact_id", ["member-fact", 1])
+async def test_scoped_route_owner_signal_uses_pre_write_provenance(fact_id):
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest
-    from memory.facts import FactStore
+    from memory.facts import FactStore, _speaker_trust_fact_id
 
     prior = {
-        "id": "member-fact",
+        "id": fact_id,
         "text": "Alice likes cats",
         "speaker_id": "qq:1001",
         "speaker_trust": 0.8,
@@ -1222,7 +1223,8 @@ async def test_scoped_route_owner_signal_uses_pre_write_provenance():
         _name, events, *, expected_reconciliations,
     ):
         identity = (
-            "member-fact", "group_participant", "qq:7788:1001",
+            _speaker_trust_fact_id(fact_id),
+            "group_participant", "qq:7788:1001",
             "group_participant:qq:7788:1001",
         )
         assert expected_reconciliations[identity] == reconciled
@@ -2467,6 +2469,16 @@ def test_temporal_clause_negations_never_emit_correction(marker):
     assert deterministic_relation(
         f"{marker} Alice is smart, Bob waits",
         f"{marker} Alice is not smart, Bob waits",
+    ) is None
+
+
+@pytest.mark.parametrize("marker", [
+    "之前", "之后", "之後", "以前", "以后", "以後", "期间", "期間",
+])
+def test_cjk_temporal_clause_negations_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"小明喜欢猫{marker}通知我",
+        f"小明不喜欢猫{marker}通知我",
     ) is None
 
 

@@ -11794,6 +11794,39 @@ async def test_member_flush_retries_owner_after_failed_chronological_predecessor
 
 
 @pytest.mark.asyncio
+async def test_cancelled_private_trust_save_advances_durable_prefix():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    bridge = SimpleNamespace(
+        participant_subject=lambda sender_id: {"subject_id": f"qq:{sender_id}"},
+        post_scoped_memory_history=AsyncMock(return_value={
+            "status": "processed", "trust_events": [],
+        }),
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    service._slice_group_history_batch = MagicMock(return_value=(
+        [{"role": "user", "content": "already persisted"}], 1,
+    ))
+    service._apply_speaker_trust_update = AsyncMock(
+        side_effect=asyncio.CancelledError(),
+    )
+    user_data = {"last_participant_digest_index": 0}
+
+    with pytest.raises(asyncio.CancelledError):
+        await service._settle_participant_digest_batches(
+            user_data=user_data, sender_id="1001", her_name="Neko",
+            reason="test", conversation_history=[object()],
+            last_participant_digest_index=0,
+        )
+
+    assert user_data["last_participant_digest_index"] == 1
+
+
+@pytest.mark.asyncio
 async def test_owner_trust_failure_excludes_later_persisted_batch_facts():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

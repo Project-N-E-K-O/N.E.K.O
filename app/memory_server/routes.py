@@ -989,7 +989,11 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=422,
             detail="speaker_label must contain at most 64 characters",
         )
-    from memory.facts import FactExtractionFailed, FactStore
+    from memory.facts import (
+        FactExtractionFailed,
+        FactStore,
+        _speaker_trust_fact_identity,
+    )
 
     speaker_label = (
         FactStore.sanitize_speaker_label(raw_speaker_label)
@@ -1064,6 +1068,9 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         # revalidates concurrent forgets and provenance changes; only a change
         # reported by this extraction is replayed back to the pre-write row.
         def _key(fact: dict) -> tuple:
+            identity = _speaker_trust_fact_identity(fact)
+            if identity is not None:
+                return identity
             return (
                 str(fact.get("id")),
                 fact.get("subject_kind"),

@@ -107,6 +107,9 @@ _CJK_CONDITIONAL_MARKERS = (
     "如果", "若", "假如", "假设", "倘若", "要是", "只要", "一旦",
     "即使", "除非",
 )
+_CJK_TEMPORAL_CLAUSE_MARKERS = (
+    "之前", "之後", "之后", "以前", "以後", "以后", "期间", "期間",
+)
 _CJK_EPISTEMIC_MARKERS = ("也许", "或许", "大概", "可能")
 _CJK_REPORTING_MARKERS = (
     "说", "表示", "声称", "认为", "觉得", "相信", "报告", "告诉",
@@ -420,6 +423,14 @@ def _has_cjk_conditional_negation(text: str) -> bool:
     )
 
 
+def _has_cjk_temporal_clause_negation(text: str) -> bool:
+    """Reject predicate negations inside a CJK temporal clause."""
+    return (
+        any(marker in text for marker in _CJK_TEMPORAL_CLAUSE_MARKERS)
+        and any(negative in text for negative, _ in _CJK_NEGATED_PREDICATES)
+    )
+
+
 def _has_disjunction(text: str) -> bool:
     """Reject polarity matches that alter only one disjunct."""
     return (
@@ -464,6 +475,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         )
         and not _has_cjk_conditional_negation(old_norm)
         and not _has_cjk_conditional_negation(new_norm)
+        and not _has_cjk_temporal_clause_negation(old_norm)
+        and not _has_cjk_temporal_clause_negation(new_norm)
         and not _has_cjk_epistemic_negation(old_norm)
         and not _has_cjk_epistemic_negation(new_norm)
         and not _has_cjk_reported_negation(old_norm)

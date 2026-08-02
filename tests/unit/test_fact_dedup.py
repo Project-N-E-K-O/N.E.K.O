@@ -1383,6 +1383,36 @@ async def test_restore_arbitrated_fact_rejects_subject_archived_row(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_subject_restore_unblocks_dual_marked_arbitration_row(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    await _seed_facts(fs, "Neko", [])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = {
+        **_fact("loser", "dual-marked loser"),
+        **subject.as_entry_fields(),
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "subject_archived_at": "2026-08-01T00:00:01",
+    }
+    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
+
+    assert not await fs.arestore_arbitrated_fact(
+        "Neko", "loser", subject=subject,
+    )
+    assert await fs.arestore_subject_facts("Neko", subject) == 1
+    assert await fs.aload_facts("Neko") == []
+    pending = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert pending[0]["arbitration_archived_at"]
+    assert "subject_archived_at" not in pending[0]
+    assert await fs.arestore_arbitrated_fact(
+        "Neko", "loser", subject=subject,
+    )
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["loser"]
+
+
+@pytest.mark.asyncio
 async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
     fs, _resolver = _install_resolver(str(tmp_path))
     await _seed_facts(fs, "Neko", [

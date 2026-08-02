@@ -1942,6 +1942,11 @@ class FactStore:
         so an explicit restore resets the subject's archival clock instead of
         being undone by the very next sweep.
 
+        A row carrying both subject and arbitration markers remains archived:
+        subject restoration clears only its subject marker and stamps the
+        restore time. A later explicit arbitration restore can then activate
+        it without bypassing the arbitration decision.
+
         Returns the number of rows moved back, or ``None`` when the archive
         file is corrupt — mirroring the archival side's abort semantics, so
         the orchestrator skips the higher stores instead of leaving the
@@ -1974,11 +1979,10 @@ class FactStore:
                 )
                 return None
 
-            def _is_subject_archived_row(f) -> bool:
+            def _is_subject_marked_row(f) -> bool:
                 return (
                     isinstance(f, dict)
                     and f.get('subject_archived_at')
-                    and not f.get('arbitration_archived_at')
                     and (
                         archived_after_iso is None
                         or str(f.get('subject_archived_at')) > archived_after_iso
@@ -1986,8 +1990,17 @@ class FactStore:
                     and entry_matches_subject(f, subject)
                 )
 
-            to_restore = [f for f in archived if _is_subject_archived_row(f)]
-            if not to_restore:
+            to_restore = [
+                f for f in archived
+                if _is_subject_marked_row(f)
+                and not f.get('arbitration_archived_at')
+            ]
+            arbitration_rows = [
+                f for f in archived
+                if _is_subject_marked_row(f)
+                and f.get('arbitration_archived_at')
+            ]
+            if not to_restore and not arbitration_rows:
                 return 0
             facts = self._facts.get(name, [])
             active_ids = {
@@ -2006,9 +2019,19 @@ class FactStore:
                 copy.pop('subject_archived_at', None)
                 copy['restored_at'] = restored_at_iso
                 restored.append(copy)
-            remaining_archive = [
-                f for f in archived if not _is_subject_archived_row(f)
-            ]
+            restore_object_ids = {id(f) for f in to_restore}
+            arbitration_object_ids = {id(f) for f in arbitration_rows}
+            remaining_archive = []
+            for f in archived:
+                if id(f) in restore_object_ids:
+                    continue
+                if id(f) in arbitration_object_ids:
+                    copy = dict(f)
+                    copy.pop('subject_archived_at', None)
+                    copy['restored_at'] = restored_at_iso
+                    remaining_archive.append(copy)
+                else:
+                    remaining_archive.append(f)
             atomic_write_json(
                 self._facts_path(name), facts + restored, indent=2, ensure_ascii=False,
             )
@@ -2018,9 +2041,10 @@ class FactStore:
             facts.extend(restored)
             logger.info(
                 f"[FactStore] {name}: subject 恢复 [scoped {subject.kind}"
-                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池"
+                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池，"
+                f"{len(arbitration_rows)} 条仲裁 loser 清除 subject 标记"
             )
-            return len(restored)
+            return len(restored) + len(arbitration_rows)
 
     async def arestore_subject_facts(
         self, name: str, subject: MemorySubject,

@@ -990,16 +990,25 @@ class QQSessionMemoryService:
                 raise RuntimeError(
                     result.get("message", "scoped participant history failed")
                 )
-            await self._apply_speaker_trust_update(
-                sender_id,
-                scoped_messages,
-                result.get("trust_events") or [],
-                activity_identity=(
-                    f"participant:{her_name}:"
-                    f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
-                    f"{last_participant_digest_index}:{next_index}"
-                ),
-            )
+            try:
+                await self._apply_speaker_trust_update(
+                    sender_id,
+                    scoped_messages,
+                    result.get("trust_events") or [],
+                    activity_identity=(
+                        f"participant:{her_name}:"
+                        f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
+                        f"{last_participant_digest_index}:{next_index}"
+                    ),
+                )
+            except asyncio.CancelledError:
+                # _apply_speaker_trust_update shields and joins its durable
+                # settings write before propagating cancellation. The memory
+                # server write also completed above, so retain that exact
+                # prefix checkpoint; otherwise a grown retry slice would
+                # count the already-receipted messages again.
+                user_data["last_participant_digest_index"] = next_index
+                raise
             self.plugin.logger.info(
                 f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"
                 f"消息数: {len(scoped_messages)}"
