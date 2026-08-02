@@ -854,13 +854,14 @@ async def test_subject_restore_never_resurrects_an_arbitration_loser(tmp_path):
     atomic_write_json(archive_path, rows, indent=2, ensure_ascii=False)
     assert fs._restore_subject_facts(
         "小天", SUBJ_STALE, (NOW + timedelta(seconds=1)).isoformat(),
-    ) == 0
+    ) == 1
     assert await fs.aload_facts("小天") == []
     with open(archive_path, encoding="utf-8") as handle:
         remaining = json.load(handle)
     assert remaining[0]["id"] == "loser"
     assert remaining[0]["arbitration_archived_at"]
-    assert remaining[0]["subject_archived_at"]
+    assert "subject_archived_at" not in remaining[0]
+    assert remaining[0]["restored_at"]
 
 
 @pytest.mark.asyncio

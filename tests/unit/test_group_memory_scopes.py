@@ -8663,6 +8663,36 @@ async def test_persona_trust_override_revalidates_current_old_provenance(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_correction_apply_treats_oversized_trust_as_unknown(tmp_path):
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_oversized_trust"
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [{"text": "Alice is smart"}]}
+    await pm.asave_persona(name, persona)
+    items = [{
+        "old_text": "Alice is smart",
+        "new_text": "Alice is not smart",
+        "entity": "master",
+        "created_at": "2026-08-02T00:00:00",
+        "new_speaker_id": "qq:2002",
+        "new_speaker_trust": 10 ** 400,
+    }]
+
+    resolved = await pm._apply_correction_results(
+        name, items, {0}, [{"index": 0, "action": "keep_new"}],
+    )
+
+    assert resolved == 1
+    facts = (await pm.aensure_persona(name))["master"]["facts"]
+    assert [fact["text"] for fact in facts] == ["Alice is not smart"]
+    assert facts[0]["speaker_id"] == "qq:2002"
+    assert "speaker_trust" not in facts[0]
+
+
+@pytest.mark.asyncio
 async def test_correction_refresh_disambiguates_equal_timestamps(tmp_path):
     import json as _json
 

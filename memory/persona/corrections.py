@@ -757,13 +757,11 @@ class CorrectionsMixin:
                     new_entry['speaker_provenance_mixed'] = True
                 elif item.get('new_speaker_id'):
                     new_entry['speaker_id'] = item['new_speaker_id']
-                    trust = item.get('new_speaker_trust')
-                    if (
-                        isinstance(trust, (int, float))
-                        and not isinstance(trust, bool)
-                        and 0.0 <= float(trust) <= 1.0
-                    ):
-                        new_entry['speaker_trust'] = float(trust)
+                    trust = _normalized_correction_trust(
+                        item.get('new_speaker_trust')
+                    )
+                    if trust is not None:
+                        new_entry['speaker_trust'] = trust
                 return new_entry
 
             def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:
@@ -779,13 +777,11 @@ class CorrectionsMixin:
                 speaker_id = item.get(f'{prefix}_speaker_id')
                 if speaker_id:
                     snapshot['speaker_id'] = speaker_id
-                    trust = item.get(f'{prefix}_speaker_trust')
-                    if (
-                        isinstance(trust, (int, float))
-                        and not isinstance(trust, bool)
-                        and 0.0 <= float(trust) <= 1.0
-                    ):
-                        snapshot['speaker_trust'] = float(trust)
+                    trust = _normalized_correction_trust(
+                        item.get(f'{prefix}_speaker_trust')
+                    )
+                    if trust is not None:
+                        snapshot['speaker_trust'] = trust
                 return snapshot
 
             if action == 'merge':

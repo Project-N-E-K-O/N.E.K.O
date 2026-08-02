@@ -714,6 +714,40 @@ async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
     assert other_character["event_id"] != event_a["event_id"]
 
 
+@pytest.mark.asyncio
+async def test_trust_event_identity_is_structural_across_delimiter_values():
+    from memory.facts import FactStore
+
+    subject_a = MemorySubject.create(
+        "group_chat", "qq:7788", scope="tenant|a",
+    )
+    subject_b = MemorySubject.create(
+        "group_chat", "qq:7788", scope="tenant",
+    )
+    store = object.__new__(FactStore)
+    messages = [{"role": "user", "content": "小明喜欢猫"}]
+    provenance = {"speaker_id": "qq:9999", "speaker_trust": 1.0}
+
+    async def _event(subject, fact_id):
+        return (await store.aevaluate_speaker_trust_events(
+            "Neko", messages, subject=subject,
+            speaker_provenance=provenance, speaker_is_owner=True,
+            facts_snapshot=[{
+                "id": fact_id,
+                "text": "小明喜欢猫",
+                "speaker_id": "qq:1001",
+                **subject.as_entry_fields(),
+            }],
+        ))[0]
+
+    event_a = await _event(subject_a, "b")
+    event_b = await _event(subject_b, "a|b")
+
+    # The old pipe-joined tuples both serialized as
+    # group_chat|qq:7788|tenant|a|b.
+    assert event_a["event_id"] != event_b["event_id"]
+
+
 def test_fresh_persona_entry_preserves_missing_speaker_trust():
     from memory.persona.facts import FactsMixin
 
