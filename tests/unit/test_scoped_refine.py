@@ -986,6 +986,46 @@ async def test_older_trust_winner_preserves_newer_temporal_state(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reflection_merge_uses_end_only_latest_source_metadata(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    older = _r_entry(
+        "older", "旧事件", GROUP_A,
+        relation_type="episode", temporal_scope="episode",
+        event_when_raw={"kind": "absolute", "value": "2026-01-01"},
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at="2026-01-31T00:00:00",
+        schema_version=1,
+    )
+    newer_end_only = _r_entry(
+        "newer-end-only", "迁移后的新状态", GROUP_A,
+        relation_type="state", temporal_scope="current",
+        event_when_raw={"kind": "absolute", "value": "2026-06-30"},
+        event_start_at=None,
+        event_end_at="2026-06-30T00:00:00",
+        schema_version=2,
+    )
+    await re.asave_reflections("小天", [older, newer_end_only])
+    cluster = [dict(row) for row in await re.aload_reflections("小天")]
+
+    assert await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, [{
+            "action": "merge",
+            "source_ids": ["older", "newer-end-only"],
+            "produce": {"text": "先有旧事件，后有新状态"},
+        }], "end-only-metadata-hash",
+    ) == 1
+
+    full = await re._aload_reflections_full("小天")
+    merged = next(row for row in full if row.get("merged_from_ids"))
+    assert merged["relation_type"] == "state"
+    assert merged["temporal_scope"] == "current"
+    assert merged["event_when_raw"] == {
+        "kind": "absolute", "value": "2026-06-30",
+    }
+    assert merged["schema_version"] == 2
+
+
+@pytest.mark.asyncio
 async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
     """One section key may legally mix entries from different custom
     scopes; even if the LLM hallucinates another scope's id, that row

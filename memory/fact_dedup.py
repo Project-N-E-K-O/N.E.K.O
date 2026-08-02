@@ -186,7 +186,7 @@ def _find_queued_fact(
         item.get(f'{side}_scope'),
     )
     if all(value is not None for value in identity_fields):
-        expected = (str(item.get(f'{side}_id')), *identity_fields)
+        expected = (item.get(f'{side}_id'), *identity_fields)
         rows = [row for row in rows if _fact_scoped_identity(row) == expected]
     elif 'subject_key' in item:
         domain = item.get('subject_key'), item.get('scope')
@@ -581,7 +581,7 @@ class FactDedupResolver:
         *,
         threshold: float = FACT_DEDUP_COSINE_THRESHOLD,
         per_fact_limit: int = FACT_DEDUP_PAIRS_PER_NEW,
-        only_for_ids: set[str | tuple[str, str, str, str]] | None = None,
+        only_for_ids: set[str | tuple[object, str, str, str]] | None = None,
     ) -> list[dict]:
         """Pure function: scan facts for cosine > threshold pairs.
 
@@ -635,7 +635,7 @@ class FactDedupResolver:
         # Pre-bucket by entity + subject so the inner loop only walks
         # rows inside the same dedup boundary.
         by_entity: dict[tuple, list[dict]] = {}
-        fact_order: dict[tuple[str, str, str, str], int] = {}
+        fact_order: dict[tuple[object, str, str, str], int] = {}
         for index, f in enumerate(facts):
             if not isinstance(f, dict):
                 continue

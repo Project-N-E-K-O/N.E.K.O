@@ -178,7 +178,7 @@ def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | Non
     return str(fact_id), subject.kind, subject.subject_id, subject.scope
 
 
-def _fact_scoped_identity(entry: dict) -> tuple[str, str, str, str] | None:
+def _fact_scoped_identity(entry: dict) -> tuple[object, str, str, str] | None:
     """Return an archive-safe identity without collapsing scoped duplicate ids."""
     if not isinstance(entry, dict):
         return None
@@ -187,9 +187,9 @@ def _fact_scoped_identity(entry: dict) -> tuple[str, str, str, str] | None:
         return None
     subject = subject_from_entry(entry)
     if subject is not None:
-        return str(fact_id), subject.kind, subject.subject_id, subject.scope
+        return fact_id, subject.kind, subject.subject_id, subject.scope
     return (
-        str(fact_id),
+        fact_id,
         str(entry.get('subject_kind') or ''),
         str(entry.get('subject_id') or ''),
         str(entry.get('scope') or ''),

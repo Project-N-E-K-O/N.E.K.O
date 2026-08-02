@@ -146,9 +146,11 @@ def _latest_temporal_source(sources: list[dict]) -> dict:
     """Choose metadata from the newest represented source when available."""
     dated: list[tuple[datetime, dict]] = []
     for source in sources:
-        start = _parse_temporal_boundary(source.get('event_start_at'))
-        if start is not None:
-            dated.append((start, source))
+        represented_at = _parse_temporal_boundary(source.get('event_start_at'))
+        if represented_at is None:
+            represented_at = _parse_temporal_boundary(source.get('event_end_at'))
+        if represented_at is not None:
+            dated.append((represented_at, source))
     return max(dated, key=lambda item: item[0])[1] if dated else sources[0]
 
 

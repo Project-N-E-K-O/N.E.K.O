@@ -878,10 +878,17 @@ def test_correction_queue_preserves_non_finite_trust_as_unknown(invalid_trust):
     assert queued[0]["old_speaker_trust"] == pytest.approx(0.7)
 
 
-def test_derived_provenance_rejects_partially_attributed_sources():
+def test_derived_provenance_marks_known_plus_unknown_sources_as_mixed():
     assert provenance_of_entries([
         {"speaker_id": "qq:1001", "speaker_trust": 0.8},
         {"text": "legacy source without provenance"},
+    ]) == {"speaker_provenance_mixed": True}
+
+
+def test_derived_provenance_keeps_all_unknown_sources_unattributed():
+    assert provenance_of_entries([
+        {"text": "legacy source one"},
+        {"text": "legacy source two"},
     ]) == {}
 
 

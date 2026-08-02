@@ -539,9 +539,14 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
     if any(entry.get("speaker_provenance_mixed") is True for entry in rows):
         return {"speaker_provenance_mixed": True}
     speaker_ids = [stable_speaker_id(entry.get("speaker_id")) for entry in rows]
-    if any(speaker_id is None for speaker_id in speaker_ids):
+    known_speaker_ids = [
+        speaker_id for speaker_id in speaker_ids if speaker_id is not None
+    ]
+    if not known_speaker_ids:
         return {}
-    speaker_ids = set(speaker_ids)
+    if len(known_speaker_ids) != len(rows):
+        return {"speaker_provenance_mixed": True}
+    speaker_ids = set(known_speaker_ids)
     if len(speaker_ids) != 1:
         return {"speaker_provenance_mixed": True}
     speaker_id = next(iter(speaker_ids))

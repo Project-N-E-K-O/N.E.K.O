@@ -67,6 +67,22 @@ def test_archive_merge_preserves_arbitration_marker_from_crash_duplicate():
     }]
 
 
+def test_archive_merge_distinguishes_scalar_id_types_in_one_scope():
+    subject_fields = {
+        "subject_kind": "group_chat",
+        "subject_id": "qq:7788",
+        "scope": "group_chat:qq:7788",
+    }
+    existing = [{"id": 1, "text": "integer id", **subject_fields}]
+    incoming = [{"id": "1", "text": "string id", **subject_fields}]
+
+    merged = _merge_archive_entries(existing, incoming)
+
+    assert [(row["id"], row["text"]) for row in merged] == [
+        (1, "integer id"), ("1", "string id"),
+    ]
+
+
 def _mock_cm(tmpdir: str):
     cm = MagicMock()
     cm.memory_dir = tmpdir
@@ -1403,19 +1419,19 @@ async def test_arbitration_uses_full_identity_for_duplicate_ids_across_scopes(
         "qq", "target", "2002",
     )
     target_candidate = {
-        **_fact("c1", "target candidate", embedding=[1.0, 0.0]),
+        **_fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0]),
         **target_candidate_subject.as_entry_fields(),
     }
     target_existing = {
-        **_fact("e1", "target existing", embedding=[0.99, 0.05]),
+        **_fact("e1", "小明喜欢猫", embedding=[0.99, 0.05]),
         **target_existing_subject.as_entry_fields(),
     }
     foreign_candidate = {
-        **_fact("c1", "foreign candidate", embedding=[1.0, 0.0]),
+        **_fact("c1", "小红不喜欢猫", embedding=[1.0, 0.0]),
         **foreign_candidate_subject.as_entry_fields(),
     }
     foreign_existing = {
-        **_fact("e1", "foreign existing", embedding=[0.99, 0.05]),
+        **_fact("e1", "小红喜欢猫", embedding=[0.99, 0.05]),
         **foreign_existing_subject.as_entry_fields(),
     }
     await _seed_facts(fs, "Neko", [
@@ -1455,10 +1471,10 @@ async def test_arbitration_uses_full_identity_for_duplicate_ids_across_scopes(
     ]["merged_from_ids"] == ["c1"]
     assert active_by_subject[
         (foreign_candidate_subject.subject_id, "c1")
-    ]["text"] == "foreign candidate"
+    ]["text"] == "小红不喜欢猫"
     assert active_by_subject[
         (foreign_existing_subject.subject_id, "e1")
-    ]["text"] == "foreign existing"
+    ]["text"] == "小红喜欢猫"
     archived = json.loads(
         archive_path.read_text(encoding="utf-8")
     )
