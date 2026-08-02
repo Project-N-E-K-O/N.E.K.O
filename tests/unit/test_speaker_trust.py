@@ -514,6 +514,50 @@ async def test_trust_event_persistence_revalidates_live_speaker_provenance(
 
 
 @pytest.mark.asyncio
+async def test_trust_event_persistence_accepts_request_owned_reconciliation(
+    tmp_path,
+):
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    fact = {
+        "id": "confirmed-speaker", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", **target.as_entry_fields(),
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [fact]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=[fact])
+    store.save_facts = MagicMock()
+    event = (await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "Alice likes cats"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[fact],
+    ))[0]
+
+    fact.pop("speaker_id")
+    fact["speaker_provenance_mixed"] = True
+    identity = (
+        "confirmed-speaker", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    )
+
+    assert await store.apersist_speaker_trust_events(
+        "Neko", [event], expected_reconciliations={identity: dict(fact)},
+    ) == [event]
+    assert fact["_speaker_trust_signal_events"] == [event]
+    store.save_facts.assert_called_once_with("Neko", _fact_lock_held=True)
+
+
+@pytest.mark.asyncio
 async def test_trust_event_persists_when_source_moved_to_archive(tmp_path):
     """A route-time active fact may be archived before signal persistence."""
     from memory.facts import FactStore
@@ -1098,9 +1142,20 @@ async def test_scoped_route_owner_signal_uses_pre_write_provenance():
         reconciled_facts.append(reconciled)
         return []
 
+    async def _persist_events(
+        _name, events, *, expected_reconciliations,
+    ):
+        identity = (
+            "member-fact", "group_participant", "qq:7788:1001",
+            "group_participant:qq:7788:1001",
+        )
+        assert expected_reconciliations[identity] == reconciled
+        return events
+
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
         extract_facts=_extract_facts,
+        apersist_speaker_trust_events=_persist_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -2234,6 +2289,14 @@ def test_phrase_conditional_introducers_never_emit_correction(marker):
     ) is None
 
 
+@pytest.mark.parametrize("marker", ["即使", "除非"])
+def test_cjk_conditional_introducers_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"{marker}小明喜欢猫，也通知我",
+        f"{marker}小明不喜欢猫，也通知我",
+    ) is None
+
+
 @pytest.mark.parametrize("conditional_first", [False, True])
 def test_independent_conditional_sentence_does_not_hide_correction(
     conditional_first,
@@ -2319,6 +2382,16 @@ def test_frequency_qualified_negations_never_emit_correction(marker):
     assert deterministic_relation(
         "Alice is smart", "Alice is not smart",
     ) == "correction"
+
+
+@pytest.mark.parametrize("marker", [
+    "偶尔", "偶爾", "经常", "經常", "时常", "時常", "通常",
+])
+def test_cjk_frequency_qualified_negations_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"小明{marker}喜欢猫",
+        f"小明{marker}不喜欢猫",
+    ) is None
 
 
 @pytest.mark.parametrize("verb", [

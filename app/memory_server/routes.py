@@ -1086,8 +1086,8 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             for fact in await runtime.fact_store.aload_facts(lanlan_name)
             if isinstance(fact, dict) and fact.get("id") is not None
         }
-        reconciled_by_id = {
-            str(fact.get("id")): dict(fact)
+        reconciled_by_key = {
+            _key(fact): dict(fact)
             for fact in reconciled_facts
             if isinstance(fact, dict) and fact.get("id") is not None
         }
@@ -1098,7 +1098,7 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             current_fact = current_by_key.get(_key(authored_fact))
             if current_fact is None:
                 continue
-            reconciled = reconciled_by_id.get(str(authored_fact.get("id")))
+            reconciled = reconciled_by_key.get(_key(authored_fact))
             active_signal_facts.append(
                 authored_fact
                 if (
@@ -1131,7 +1131,11 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 runtime.fact_store, 'apersist_speaker_trust_events', None,
             )
             if persist_events is not None:
-                trust_events = await persist_events(lanlan_name, trust_events)
+                trust_events = await persist_events(
+                    lanlan_name,
+                    trust_events,
+                    expected_reconciliations=reconciled_by_key,
+                )
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
@@ -1441,7 +1445,11 @@ async def _process_scoped_history_segments(
                 )
                 if persist_events is not None:
                     segment["trust_events"] = await persist_events(
-                        lanlan_name, segment["trust_events"],
+                        lanlan_name,
+                        segment["trust_events"],
+                        expected_reconciliations=job[
+                            "later_reconciled_by_key"
+                        ],
                     )
     return {
         "status": "processed",

@@ -68,6 +68,9 @@ _NON_UNIVERSAL_FREQUENCY_TOKEN_PHRASES = (
     ("at", "times"),
     ("from", "time", "to", "time"),
 )
+_CJK_NON_UNIVERSAL_FREQUENCY_MARKERS = (
+    "偶尔", "偶爾", "经常", "經常", "时常", "時常", "通常",
+)
 _REPORTING_VERBS = frozenset({
     "acknowledge", "acknowledged", "acknowledges", "admit", "admits", "admitted",
     "allege", "alleged", "alleges", "announce", "announced", "announces",
@@ -88,6 +91,7 @@ _EMBEDDED_CLAUSE_MARKERS = frozenset({
 })
 _CJK_CONDITIONAL_MARKERS = (
     "如果", "若", "假如", "假设", "倘若", "要是", "只要", "一旦",
+    "即使", "除非",
 )
 _CJK_EPISTEMIC_MARKERS = ("也许", "或许", "大概", "可能")
 _CJK_REPORTING_MARKERS = (
@@ -305,6 +309,10 @@ def _has_non_universal_frequency(text: str) -> bool:
         or any(
             _contains_token_phrase(tokens, phrase)
             for phrase in _NON_UNIVERSAL_FREQUENCY_TOKEN_PHRASES
+        )
+        or any(
+            marker in text
+            for marker in _CJK_NON_UNIVERSAL_FREQUENCY_MARKERS
         )
     )
 

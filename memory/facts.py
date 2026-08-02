@@ -1331,10 +1331,26 @@ class FactStore:
         return events
 
     async def apersist_speaker_trust_events(
-        self, name: str, events: list[dict],
+        self,
+        name: str,
+        events: list[dict],
+        *,
+        expected_reconciliations: dict[
+            tuple[str, str, str, str], dict
+        ] | None = None,
     ) -> list[dict]:
         """Attach issued owner signals and return only durably backed events."""
         from memory.speaker_trust import stable_speaker_id
+
+        def _provenance(entry: dict) -> dict:
+            return {
+                key: entry[key]
+                for key in (
+                    'speaker_id', 'speaker_label', 'speaker_trust',
+                    'speaker_provenance_mixed',
+                )
+                if key in entry
+            }
 
         valid_by_fact: dict[tuple[str, str, str, str], list[dict]] = {}
         for raw in events or []:
@@ -1373,6 +1389,11 @@ class FactStore:
             })
         if not valid_by_fact:
             return []
+        expected_provenance_by_fact = {
+            identity: _provenance(snapshot)
+            for identity, snapshot in (expected_reconciliations or {}).items()
+            if identity in valid_by_fact and isinstance(snapshot, dict)
+        }
 
         async with self._get_persist_alock(name):
             await self.aload_facts(name)
@@ -1386,11 +1407,14 @@ class FactStore:
                     for fact in facts:
                         if not isinstance(fact, dict):
                             continue
-                        additions = valid_by_fact.get(
-                            _speaker_trust_fact_identity(fact)
-                        )
+                        fact_identity = _speaker_trust_fact_identity(fact)
+                        additions = valid_by_fact.get(fact_identity)
                         if not additions:
                             continue
+                        matches_expected_reconciliation = (
+                            expected_provenance_by_fact.get(fact_identity)
+                            == _provenance(fact)
+                        )
                         recorded = fact.get('_speaker_trust_signal_events')
                         if not isinstance(recorded, list):
                             recorded = []
@@ -1403,6 +1427,7 @@ class FactStore:
                             is_replay = event['event_id'] in known
                             if (
                                 not is_replay
+                                and not matches_expected_reconciliation
                                 and (
                                     fact.get('speaker_provenance_mixed') is True
                                     or stable_speaker_id(fact.get('speaker_id'))
@@ -1440,11 +1465,14 @@ class FactStore:
                     for fact in archived:
                         if not isinstance(fact, dict):
                             continue
-                        additions = valid_by_fact.get(
-                            _speaker_trust_fact_identity(fact)
-                        )
+                        fact_identity = _speaker_trust_fact_identity(fact)
+                        additions = valid_by_fact.get(fact_identity)
                         if not additions:
                             continue
+                        matches_expected_reconciliation = (
+                            expected_provenance_by_fact.get(fact_identity)
+                            == _provenance(fact)
+                        )
                         recorded = fact.get('_speaker_trust_signal_events')
                         if not isinstance(recorded, list):
                             recorded = []
@@ -1458,6 +1486,7 @@ class FactStore:
                             is_replay = event['event_id'] in known
                             if (
                                 not is_replay
+                                and not matches_expected_reconciliation
                                 and (
                                     fact.get('speaker_provenance_mixed') is True
                                     or stable_speaker_id(fact.get('speaker_id'))
