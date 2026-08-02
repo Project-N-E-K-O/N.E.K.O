@@ -729,7 +729,9 @@ def test_fresh_persona_entry_preserves_missing_speaker_trust():
     assert "speaker_trust" not in entry
 
 
-@pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "invalid_trust", [float("nan"), float("inf"), 10 ** 400],
+)
 def test_fresh_persona_entry_preserves_non_finite_trust_as_unknown(invalid_trust):
     from memory.persona.facts import FactsMixin
 

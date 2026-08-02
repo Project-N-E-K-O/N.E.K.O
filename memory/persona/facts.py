@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 
 
 import os
@@ -226,7 +225,11 @@ class FactsMixin:
         if subject is not None:
             entry.update(subject.as_entry_fields())
         if speaker_provenance:
-            from memory.speaker_trust import normalize_trust, stable_speaker_id
+            from memory.speaker_trust import (
+                finite_trust_score,
+                normalize_trust,
+                stable_speaker_id,
+            )
             if speaker_provenance.get('speaker_provenance_mixed') is True:
                 entry['speaker_provenance_mixed'] = True
                 return entry
@@ -234,12 +237,9 @@ class FactsMixin:
             if speaker_id is not None:
                 entry['speaker_id'] = speaker_id
                 trust = speaker_provenance.get('speaker_trust')
-                if (
-                    isinstance(trust, (int, float))
-                    and not isinstance(trust, bool)
-                    and math.isfinite(float(trust))
-                ):
-                    entry['speaker_trust'] = normalize_trust(trust)
+                trust_score = finite_trust_score(trust)
+                if trust_score is not None:
+                    entry['speaker_trust'] = normalize_trust(trust_score)
             label = str(speaker_provenance.get('speaker_label') or '').strip()
             if label:
                 entry['speaker_label'] = label[:64]
