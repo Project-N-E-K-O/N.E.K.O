@@ -1918,6 +1918,7 @@ async def test_failed_trust_save_restores_published_permission_snapshot():
         trust_events=[],
     )
     assert plugin._qq_settings["trusted_users"] == published_users
+    assert manager.speaker_trust_profiles() == {}
 
     assert await service.apply_speaker_trust_update(
         sender_id="1001", message_count=1,
