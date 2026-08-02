@@ -971,11 +971,12 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     failed_member_messages = [
         {"role": "user", "content": [{"type": "text", "text": "A"}]},
     ]
+    later_member_messages = [
+        {"role": "user", "content": [{"type": "text", "text": "B"}]},
+    ]
     member_buckets = {
         "2046": failed_member_messages,
-        "4096": [
-            {"role": "user", "content": [{"type": "text", "text": "B"}]},
-        ],
+        "4096": later_member_messages,
     }
     user_data = {
         "memory_enabled": True,
@@ -1003,14 +1004,18 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
     assert [seg["speaker_label"] for seg in sent_segments] == ["2046", "4096"]
     assert user_data["group_memory_flushed"] is True
-    # 批内单段失败只保留那一段的桶，成功段当场弹出。
-    assert list(member_buckets) == ["2046"]
+    # 后段虽已入库，但前序失败时仍保留重试，避免 authored chronology
+    # 在插件侧越过缺口；服务端精确去重保证重试幂等。
+    assert list(member_buckets) == ["2046", "4096"]
     assert "group:7788" in plugin._user_sessions
     session.close.assert_not_awaited()
 
     bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
         "status": "processed",
-        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+        "segments": [
+            {"status": "ok", "created": 0, "fact_ids": []},
+            {"status": "ok", "created": 0, "fact_ids": []},
+        ],
     })
     completed = await service.finalize_user_memory_session(
         "group:7788", reason="retry",
@@ -1020,13 +1025,26 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
     bridge.post_scoped_memory_history_batch.assert_awaited_once_with(
         "Neko",
-        [{
-            "messages": failed_member_messages,
-            "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
+        [
+            {
+                "messages": failed_member_messages,
+                "subject": QQMemoryBridge.group_participant_subject(
+                    "7788", "2046",
+                ),
                 "speaker_label": "2046",
                 "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
                 "speaker_id": "qq:2046",
-        }],
+            },
+            {
+                "messages": later_member_messages,
+                "subject": QQMemoryBridge.group_participant_subject(
+                    "7788", "4096",
+                ),
+                "speaker_label": "4096",
+                "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+                "speaker_id": "qq:4096",
+            },
+        ],
         timeout=30.0,
     )
     assert member_buckets == {}
@@ -7515,6 +7533,7 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
 
     group = MemorySubject.group_chat("qq", "100")
     fact_store = MagicMock()
+    fact_store._subject_forget_is_active.return_value = False
     fact_store._config_manager = MagicMock()
     _api_config = {"model": "fake", "base_url": "http://fake", "api_key": "sk"}
     fact_store._config_manager.get_model_api_config = MagicMock(
@@ -7545,6 +7564,12 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
         {
             # New-schema scoped pair: different domain, must stay queued.
             "candidate_id": "c2", "existing_id": "e2",
+            "candidate_subject_kind": group.kind,
+            "candidate_subject_id": group.subject_id,
+            "candidate_scope": group.scope,
+            "existing_subject_kind": group.kind,
+            "existing_subject_id": group.subject_id,
+            "existing_scope": group.scope,
             "entity": "group_chat",
             "subject_key": group.key, "scope": group.scope,
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:01",
@@ -11462,13 +11487,17 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
 
     assert await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
-    ) == []
+    ) == ["1001"]
     assert bridge.post_scoped_memory_history_batch.await_count == 2
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    assert bridge.post_scoped_memory_history_batch.await_count == 3
     requests = [
         call.args[1]
         for call in bridge.post_scoped_memory_history_batch.await_args_list
     ]
-    assert [len(segments) for segments in requests] == [2, 1]
+    assert [len(segments) for segments in requests] == [1, 1, 1]
     segments = [segment for request in requests for segment in request]
     assert len(segments) == 3
     assert segments[0].get("speaker_is_owner") is None
@@ -11623,10 +11652,10 @@ async def test_member_flush_retries_only_the_failed_permission_segment():
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
-    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
-        "status": "processed",
-        "segments": [{"status": "ok"}, {"status": "failed"}],
-    })
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=[
+        {"status": "processed", "segments": [{"status": "ok"}]},
+        {"status": "processed", "segments": [{"status": "failed"}]},
+    ])
     service = QQSessionMemoryService(SimpleNamespace(
         memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
     ))
@@ -11638,6 +11667,7 @@ async def test_member_flush_retries_only_the_failed_permission_segment():
     assert user_data["group_member_memory_labels"]["1001"] == "Alice(1001)"
 
     bridge.post_scoped_memory_history_batch.reset_mock()
+    bridge.post_scoped_memory_history_batch.side_effect = None
     bridge.post_scoped_memory_history_batch.return_value = {
         "status": "processed", "segments": [{"status": "ok"}],
     }
@@ -11884,10 +11914,18 @@ async def test_member_flush_splits_oversized_permission_runs_in_order():
         memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
     ))
 
-    assert await service._flush_member_buckets(
+    failed = await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
-    ) == []
-    assert [len(call) for call in calls] == [8, 1]
+    )
+    assert failed == ["1001"]
+    for retry in range(1, 10):
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        if not failed:
+            break
+    assert failed == []
+    assert [len(call) for call in calls] == [1] * 9
     assert max_active == 1
     assert [
         segment["messages"][0]["content"]
@@ -11941,9 +11979,17 @@ async def test_member_flush_serializes_cross_sender_request_chronology():
         memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
     ))
 
-    assert await service._flush_member_buckets(
+    failed = await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
-    ) == []
+    )
+    assert failed == ["1001", "1002"]
+    for retry in range(1, 10):
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        if not failed:
+            break
+    assert failed == []
     assert max_active == 1
     assert [
         segment["messages"][0]["content"]
@@ -12105,13 +12151,18 @@ async def test_member_flush_defers_owner_chain_beyond_join_timeout_waves():
     assert await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
     ) == ["1001"]
-    assert [len(call) for call in calls] == [8, 8]
-    assert user_data["group_member_memory_messages"]["1001"] == [messages[-1]]
+    assert [len(call) for call in calls] == [1, 1]
+    assert user_data["group_member_memory_messages"]["1001"] == messages[2:]
 
-    assert await service._flush_member_buckets(
-        user_data, group_id="7788", her_name="Neko", reason="retry",
-    ) == []
-    assert [len(call) for call in calls] == [8, 8, 1]
+    failed = ["1001"]
+    for retry in range(1, 10):
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        if not failed:
+            break
+    assert failed == []
+    assert [len(call) for call in calls] == [1] * 17
     assert user_data["group_member_memory_messages"] == {}
 
 
@@ -12163,7 +12214,7 @@ async def test_member_flush_defers_parallel_batches_beyond_join_timeout_waves():
     assert last_message in user_data["group_member_memory_messages"]["1001"]
 
     attempts_per_sweep = [len(calls)]
-    for retry in range(1, 10):
+    for retry in range(1, 40):
         before = len(calls)
         failed = await service._flush_member_buckets(
             user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
@@ -12196,12 +12247,15 @@ async def test_speaker_trust_derived_from_permission_level():
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
-    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
-        "status": "processed",
-        "segments": [
-            {"status": "ok", "created": 0, "fact_ids": []} for _ in range(4)
-        ],
-    })
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=(
+        lambda _name, segments, **_kwargs: {
+            "status": "processed",
+            "segments": [
+                {"status": "ok", "created": 0, "fact_ids": []}
+                for _ in segments
+            ],
+        }
+    ))
     service = QQSessionMemoryService(SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
@@ -12212,7 +12266,11 @@ async def test_speaker_trust_derived_from_permission_level():
     await service._flush_member_buckets(
         ud, group_id="7788", her_name="Neko", reason="test",
     )
-    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    sent_segments = [
+        segment
+        for call in bridge.post_scoped_memory_history_batch.await_args_list
+        for segment in call.args[1]
+    ]
     trust_by_sender = {
         seg["speaker_label"]: seg["speaker_trust"] for seg in sent_segments
     }
