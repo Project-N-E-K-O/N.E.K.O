@@ -721,6 +721,8 @@ def _valid_merge_source_ids(
     # 标记 suppress 的源若被消费，其内容会以普通可见条目的身份复活。
     # 任一源失效 → 整条 action 拒绝（见 docstring 的 all-or-nothing）。
     for sid in unique_ids:
+        if sid not in cluster_ids:
+            return []
         current = by_id.get(sid)
         if (
             current is not None
@@ -731,8 +733,7 @@ def _valid_merge_source_ids(
             # malformed output so the engine does not charge an attempt.
             return None
         if (
-            sid not in cluster_ids
-            or sid not in by_id
+            sid not in by_id
             or sid in consumed
             or by_id[sid].get('protected')
             or by_id[sid].get('suppress')

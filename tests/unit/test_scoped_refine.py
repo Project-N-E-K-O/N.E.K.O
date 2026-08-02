@@ -1116,6 +1116,36 @@ async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_apply_persona_merge_rejects_same_subject_id_outside_cluster(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("小天")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    for i in range(3):
+        entry = pm._build_fact_entry(
+            f"本域条目{i}", 'manual', None, subject=GROUP_A,
+        )
+        entry['id'] = f"p{i}"
+        entry['speaker_trust'] = 0.8
+        section.append(entry)
+    await pm.asave_persona("小天", persona)
+
+    cluster = [dict(entry) for entry in section[:2]]
+    applied = await apply_scoped_persona_merge(
+        pm, "小天", GROUP_A, cluster, [{
+            'action': 'merge',
+            'source_ids': ['p0', 'p2'],
+            'produce': {'text': '越界合并产物'},
+        }], "hash-outside-cluster",
+    )
+
+    assert applied == 0
+    facts = (await pm.aensure_persona("小天"))[
+        GROUP_A.persona_section_key
+    ]['facts']
+    assert {entry['id'] for entry in facts} == {'p0', 'p1', 'p2'}
+
+
+@pytest.mark.asyncio
 async def test_apply_reflection_merge_full_contract(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     refls = [
