@@ -68,7 +68,6 @@ class WarmupHostingModule(BaseModule):
             "Use one concrete stream/theme anchor if available before leaving a tiny opening.",
             "Do not address an unseen human host, owner, or operator; do not ask them to give NEKO a topic.",
             "Solo-stream agency: NEKO is the only on-stage host and must perform all hosting actions herself.",
-            "Never tell or ask an unseen streamer, operator, or current viewer to greet viewers, warm up the room, carry chat, or provide content.",
             "Never tell or ask an unseen streamer, operator, or current viewer to greet the room, warm up the stream, carry the chat, provide topics, or help NEKO host.",
             "Do not mention owner, master, backstage human, carbon-based human, private chat, or pre-stream relationship memory.",
             "In solo_stream, 'you' means the viewers or room, never an unseen operator.",

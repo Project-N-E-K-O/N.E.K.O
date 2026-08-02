@@ -36,6 +36,8 @@ def project_chat_message(message: Any, *, room_ref: Any, ts: float | None = None
         "message_id": message_id,
         "room_ref": parsed.room_ref,
     }
+    if message_id:
+        payload["provider_event_id"] = message_id
     event_type = "gift" if bits else "danmaku"
     payload["event_type"] = event_type
     if bits:

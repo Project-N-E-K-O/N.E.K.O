@@ -26,6 +26,7 @@ from main_logic.asr_client.endpointing.detector import (
 )
 from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
+from main_logic.asr_client.speaker_shadow.contracts import SpeakerShadowCandidateKey
 from main_logic.asr_client.endpointing.throttle_policy import (
     ThrottleAction,
     VoiceThrottlePolicy,
@@ -133,6 +134,29 @@ class _BlockingSemanticCoordinator(_SemanticCoordinator):
         return True
 
 
+class _BlockingResultCoordinator(_BlockingSemanticCoordinator):
+    def __init__(
+        self,
+        *,
+        status: EvaluationStatus,
+        decision: TurnDecision | None,
+    ) -> None:
+        super().__init__()
+        self._status = status
+        self._decision = decision
+        self.activity_seq = 0
+
+    async def on_activity_event(self, event: SpeechActivityEvent) -> None:
+        self.activity_seq += 1
+        await super().on_activity_event(event)
+
+    async def evaluate_buffered(self):
+        self.evaluate_started.set()
+        await self.evaluate_release.wait()
+        self.state = CoordinatorState.PAUSE_CANDIDATE
+        return SimpleNamespace(status=self._status, decision=self._decision)
+
+
 class _ResetClearsSemanticCoordinator(_SemanticCoordinator):
     def __init__(self) -> None:
         super().__init__()
@@ -180,6 +204,60 @@ class _OverflowAdapter:
         return None
 
 
+class _SpeakerShadowSpy:
+    def __init__(self) -> None:
+        self.enabled_value = True
+        self.enabled_error: Exception | None = None
+        self.submit_error: Exception | None = None
+        self.finish_error: Exception | None = None
+        self.reset_error: Exception | None = None
+        self.close_error: Exception | None = None
+        self.frames: list[tuple[bytes, int, SpeakerShadowCandidateKey]] = []
+        self.finished: list[SpeakerShadowCandidateKey] = []
+        self.events: list[tuple[str, object]] = []
+        self.reset_calls = 0
+        self.close_calls = 0
+
+    @property
+    def enabled(self) -> bool:
+        if self.enabled_error is not None:
+            raise self.enabled_error
+        return self.enabled_value
+
+    def submit(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+        candidate: SpeakerShadowCandidateKey,
+    ) -> bool:
+        if self.submit_error is not None:
+            raise self.submit_error
+        self.frames.append((pcm16, sample_rate_hz, candidate))
+        self.events.append(("submit", candidate))
+        return False
+
+    def finish_candidate(self, candidate: SpeakerShadowCandidateKey) -> bool:
+        if self.finish_error is not None:
+            raise self.finish_error
+        self.finished.append(candidate)
+        self.events.append(("finish", candidate))
+        return False
+
+    def snapshot(self) -> dict[str, int]:
+        return {"submitted_frame_count": len(self.frames)}
+
+    async def reset(self) -> None:
+        self.reset_calls += 1
+        if self.reset_error is not None:
+            raise self.reset_error
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
 def _smart_turn_policy() -> AsrProviderPolicy:
     return AsrProviderPolicy(
         transport="segmented",
@@ -204,6 +282,180 @@ def _provider_endpoint_policy() -> AsrProviderPolicy:
 
 def _ingress_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
+
+
+async def test_speaker_shadow_default_none_installs_no_smart_turn_callbacks() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+
+    adapter = detector._semantic_adapter
+    assert adapter is not None
+    assert adapter._on_accepted_audio is None
+    assert adapter._on_candidate_complete is None
+    await detector.close()
+
+
+async def test_provider_shadow_observes_admitted_pcm_until_explicit_seal() -> None:
+    shadow = _SpeakerShadowSpy()
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=shadow,
+    )
+    first_pcm = b"\x01\x00" * 160
+    second_pcm = b"\x02\x00" * 160
+
+    feed_result = await detector.feed(
+        first_pcm,
+        speech_probability=0.9,
+        ingress_token=_ingress_token(),
+    )
+
+    assert feed_result.events == (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    assert shadow.frames == []
+    assert shadow.finished == []
+
+    detector.observe_provider_audio(first_pcm, sample_rate_hz=16_000)
+    detector.observe_provider_audio(second_pcm, sample_rate_hz=16_000)
+
+    candidate = SpeakerShadowCandidateKey(0, 0, "provider_candidate")
+    assert shadow.frames == [
+        (first_pcm, 16_000, candidate),
+        (second_pcm, 16_000, candidate),
+    ]
+    assert shadow.frames[0][0] is first_pcm
+    assert shadow.frames[1][0] is second_pcm
+    assert shadow.finished == []
+
+    fence = await detector.seal_provider_candidate()
+    assert fence is not None
+    assert shadow.finished == [candidate]
+    assert await detector.seal_provider_candidate() == fence
+    assert shadow.finished == [candidate]
+
+    successor_pcm = b"\x03\x00" * 160
+    detector.observe_provider_audio(successor_pcm, sample_rate_hz=16_000)
+    assert shadow.frames[-1] == (
+        successor_pcm,
+        16_000,
+        SpeakerShadowCandidateKey(0, 1, "provider_candidate"),
+    )
+    assert await detector.discard_provider_successor(fence) is True
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 2
+    assert shadow.reset_calls == 1
+
+    replacement_pcm = b"\x04\x00" * 160
+    detector.observe_provider_audio(replacement_pcm, sample_rate_hz=16_000)
+    assert shadow.frames[-1] == (
+        replacement_pcm,
+        16_000,
+        SpeakerShadowCandidateKey(0, 2, "provider_candidate"),
+    )
+
+    await detector.close()
+    assert shadow.close_calls == 1
+
+
+async def test_speaker_shadow_reset_and_close_advance_generation_fail_open() -> None:
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=shadow,
+    )
+    detector.observe_provider_audio(b"\x01\x00" * 160, sample_rate_hz=16_000)
+    assert detector._speaker_shadow_candidate == SpeakerShadowCandidateKey(
+        0,
+        0,
+        "provider_candidate",
+    )
+
+    shadow.reset_error = RuntimeError("observer reset failed")
+    await detector.reset()
+
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 1
+    assert shadow.reset_calls == 1
+
+    detector.observe_provider_audio(b"\x02\x00" * 160, sample_rate_hz=16_000)
+    assert detector._speaker_shadow_candidate == SpeakerShadowCandidateKey(
+        1,
+        1,
+        "provider_candidate",
+    )
+    shadow.close_error = RuntimeError("observer close failed")
+    await detector.close()
+
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 2
+    assert shadow.close_calls == 1
+
+
+async def test_speaker_shadow_submit_finish_and_enabled_failures_are_ignored() -> None:
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=shadow,
+    )
+
+    shadow.enabled_error = RuntimeError("observer enabled failed")
+    detector.observe_provider_audio(b"\x01\x00" * 160, sample_rate_hz=16_000)
+    assert detector._speaker_shadow_candidate is None
+
+    shadow.enabled_error = None
+    shadow.submit_error = RuntimeError("observer submit failed")
+    detector.observe_provider_audio(b"\x02\x00" * 160, sample_rate_hz=16_000)
+    assert detector._speaker_shadow_candidate is not None
+    assert shadow.frames == []
+
+    shadow.finish_error = RuntimeError("observer finish failed")
+    fence = await detector.seal_provider_candidate()
+
+    assert fence is not None
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 1
+    await detector.close()
+
+
+async def test_semantic_failure_invalidates_speaker_shadow_fail_open() -> None:
+    class _FailedAdapter:
+        async def wait_failure(self):
+            return SimpleNamespace(stage="smart_turn")
+
+    shadow = _SpeakerShadowSpy()
+    shadow.reset_error = RuntimeError("observer reset failed")
+    on_failure = AsyncMock()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        speaker_shadow=shadow,
+        on_turn_complete=AsyncMock(),
+        on_endpointing_failure=on_failure,
+    )
+    assert detector._open_speaker_shadow_candidate("smart_turn_turn") is not None
+
+    await detector._watch_semantic_failure(_FailedAdapter())
+
+    assert detector.detector_epoch == 1
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 1
+    assert shadow.reset_calls == 1
+    assert detector.smart_turn_readiness is SmartTurnReadiness.FAILED
+    on_failure.assert_awaited_once()
+    await detector.close()
 
 
 async def test_provider_prewarm_keeps_candidate_open_until_silero_confirms() -> None:
@@ -278,22 +530,27 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     coordinator = _BlockingSemanticCoordinator()
     gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
     completed = asyncio.Event()
+    shadow = _SpeakerShadowSpy()
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=gate,
         provider_policy=_smart_turn_policy(),
         coordinator=coordinator,
+        speaker_shadow=shadow,
         on_turn_complete=lambda: completed.set() or asyncio.sleep(0),
     )
+    first_pcm = b"\x01\x00" * 160
 
     await detector.submit_audio(
-        b"\x01\x00" * 160,
+        first_pcm,
         ingress_token=_ingress_token(),
         sample_rate_hz=16_000,
         speech_probability=0.9,
         rnnoise_available=True,
     )
     await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    predecessor = SpeakerShadowCandidateKey(0, 0, "smart_turn_turn")
+    assert shadow.frames == [(first_pcm, 16_000, predecessor)]
     gate.events = ()
     successor_pcm = b"\x02\x00" * 160
     successor = await detector.submit_audio(
@@ -306,6 +563,7 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     async with asyncio.timeout(1):
         while gate.inputs.count(successor_pcm) < 1:
             await asyncio.sleep(0)
+    assert shadow.frames == [(first_pcm, 16_000, predecessor)]
 
     coordinator.evaluate_release.set()
     await asyncio.wait_for(completed.wait(), 1)
@@ -317,6 +575,85 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     assert successor.candidate.candidate_generation == 0
     assert gate.inputs.count(successor_pcm) == 2
     assert coordinator.audio.count(successor_pcm) == 2
+    successor_candidate = SpeakerShadowCandidateKey(0, 1, "smart_turn_turn")
+    assert shadow.frames == [
+        (first_pcm, 16_000, predecessor),
+        (successor_pcm, 16_000, successor_candidate),
+    ]
+    assert shadow.frames[1][0] is successor_pcm
+    assert shadow.finished == [predecessor]
+    assert shadow.events == [
+        ("submit", predecessor),
+        ("finish", predecessor),
+        ("submit", successor_candidate),
+    ]
+    await detector.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "decision", "tail_events"),
+    [
+        (EvaluationStatus.STALE, None, ()),
+        (EvaluationStatus.OK, TurnDecision.INCOMPLETE, ()),
+        (
+            EvaluationStatus.OK,
+            TurnDecision.INCOMPLETE,
+            (SpeechActivityEvent.SPEECH_RESUMED,),
+        ),
+    ],
+)
+async def test_speaker_shadow_keeps_stale_or_incomplete_tail_on_predecessor(
+    status: EvaluationStatus,
+    decision: TurnDecision | None,
+    tail_events: tuple[SpeechActivityEvent, ...],
+) -> None:
+    coordinator = _BlockingResultCoordinator(status=status, decision=decision)
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        speaker_shadow=shadow,
+        on_turn_complete=AsyncMock(),
+    )
+    first_pcm = b"\x01\x00" * 160
+    tail_pcm = b"\x02\x00" * 160
+
+    await detector.submit_audio(
+        first_pcm,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    gate.events = tail_events
+    await detector.submit_audio(
+        tail_pcm,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    async with asyncio.timeout(1):
+        while tail_pcm not in gate.inputs:
+            await asyncio.sleep(0)
+
+    candidate = SpeakerShadowCandidateKey(0, 0, "smart_turn_turn")
+    assert shadow.frames == [(first_pcm, 16_000, candidate)]
+
+    coordinator.evaluate_release.set()
+    adapter = detector._semantic_adapter
+    assert adapter is not None
+    await adapter.wait_idle()
+
+    assert shadow.frames == [
+        (first_pcm, 16_000, candidate),
+        (tail_pcm, 16_000, candidate),
+    ]
+    assert shadow.finished == []
     await detector.close()
 
 
@@ -1377,13 +1714,17 @@ async def test_close_while_waiting_for_stale_prepare_cleans_up() -> None:
 
 
 async def test_overflow_reset_rejects_audio_until_barrier_finishes() -> None:
+    shadow = _SpeakerShadowSpy()
+    shadow.reset_error = RuntimeError("observer reset failed")
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),
         provider_policy=_smart_turn_policy(),
         coordinator=_SemanticCoordinator(),
+        speaker_shadow=shadow,
         on_turn_complete=AsyncMock(),
     )
+    assert detector._open_speaker_shadow_candidate("smart_turn_turn") is not None
     adapter = _OverflowAdapter()
     detector._semantic_adapter = adapter
     detector._semantic_started = True
@@ -1407,11 +1748,14 @@ async def test_overflow_reset_rejects_audio_until_barrier_finishes() -> None:
     assert first.status is DetectorSubmitStatus.BACKPRESSURE
     assert second.status is DetectorSubmitStatus.BACKPRESSURE
     assert adapter.push_calls == 1
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 1
 
     overflow_reset = detector._overflow_reset_task
     assert overflow_reset is not None
     adapter.reset_release.set()
     await asyncio.wait_for(overflow_reset, 1)
+    assert shadow.reset_calls == 1
     third = await detector.submit_audio(
         b"\x03\x00" * 160,
         ingress_token=_ingress_token(),
@@ -1465,11 +1809,13 @@ async def test_overflow_epoch_bump_clears_deferred_completion_flags() -> None:
 
 
 async def test_invalidate_clears_deferred_completion_flags() -> None:
+    shadow = _SpeakerShadowSpy()
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),
         provider_policy=_smart_turn_policy(),
         coordinator=_SemanticCoordinator(),
+        speaker_shadow=shadow,
         on_turn_complete=AsyncMock(),
     )
     token = VoiceTurnToken(_ingress_token(), turn_id=1)
@@ -1477,6 +1823,7 @@ async def test_invalidate_clears_deferred_completion_flags() -> None:
     assert lease is not None
     detector._defer_turn_complete = True
     detector._deferred_turn_complete = True
+    assert detector._open_speaker_shadow_candidate("smart_turn_turn") is not None
     epoch_before = detector.detector_epoch
 
     await detector.invalidate(token)
@@ -1484,6 +1831,9 @@ async def test_invalidate_clears_deferred_completion_flags() -> None:
     assert detector.detector_epoch == epoch_before + 1
     assert detector._defer_turn_complete is False
     assert detector._deferred_turn_complete is False
+    assert detector._speaker_shadow_candidate is None
+    assert detector._speaker_shadow_generation == 1
+    assert shadow.reset_calls == 1
     semantic_generation = detector._semantic_generation
     await detector.release_deferred_turn()
     assert detector._candidate_generation == 0

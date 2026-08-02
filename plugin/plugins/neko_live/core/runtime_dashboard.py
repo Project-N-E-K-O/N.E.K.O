@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .runtime_dashboard_actions import dashboard_actions
+from .runtime_dashboard_actions import dashboard_actions as dashboard_actions
 from .runtime_dashboard_explain import live_explanation
-from .runtime_health import runtime_health_rows
+from .runtime_health import runtime_health_rows as runtime_health_rows
 
 
 async def dashboard_state(runtime: Any) -> dict[str, Any]:

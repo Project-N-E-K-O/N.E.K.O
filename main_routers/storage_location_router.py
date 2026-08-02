@@ -37,6 +37,7 @@ import subprocess
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -230,18 +231,12 @@ def _restore_storage_mutation_state(
     *,
     anchor_root: Path,
 ) -> None:
-    """Roll three storage state files back to a snapshot. Stays synchronous.
+    """Roll three storage state files back to a snapshot synchronously.
 
-    This one deliberately does NOT move to a worker thread even though the other
-    write sequences in this module did. Every caller is an ``except`` handler, and
-    the whole point is that the rollback runs to completion; awaiting inside an
-    except handler makes it a cancellation point, and ``CancelledError`` is a
-    ``BaseException`` that the surrounding ``except Exception`` cannot catch — a
-    client disconnect during the rollback would leave the three files
-    half-reverted with nothing to finish the job.
-
-    The cost is bounded: this only runs when a mutation has already failed, and
-    the routes that call it are already about to return an error response.
+    Keeping all three writes in one synchronous callable makes the sequence
+    indivisible. Async callers submit the whole callable through
+    ``_run_locked_storage_job``, which waits for the worker to finish before it
+    propagates cancellation.
     """
     # ⚠️ 空快照绝不能往下走。下面的分支把"没有 migration / policy 键"读作"这两个文件
     # 本来就不存在"，于是删检查点、unlink 策略文件。而快照一旦真的取到，
@@ -273,6 +268,36 @@ def _restore_storage_mutation_state(
     previous_root_state = snapshot.get("root_state")
     if isinstance(previous_root_state, dict):
         config_manager.save_root_state(previous_root_state)
+
+
+def _restore_restart_schedule_state(
+    config_manager,
+    snapshot: dict[str, Any],
+    *,
+    anchor_root: Path,
+) -> None:
+    """Restore the restart checkpoint and root state as one worker job."""
+    previous_root_state = snapshot.get("root_state")
+    previous_migration = snapshot.get("migration")
+    try:
+        if isinstance(previous_migration, dict):
+            save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
+        else:
+            delete_storage_migration(config_manager, anchor_root=anchor_root)
+    except Exception:
+        # 先前确有 checkpoint 时，save 失败后绝不能退化成 delete；原文件
+        # 很可能仍由 atomic write 保留，删除反而把一次回滚失败扩大成数据丢失。
+        logger.exception(
+            "failed to restore migration checkpoint during restart-schedule rollback"
+        )
+
+    try:
+        if isinstance(previous_root_state, dict):
+            config_manager.save_root_state(previous_root_state)
+    except Exception:
+        logger.exception(
+            "failed to restore root_state during restart-schedule rollback"
+        )
 
 
 async def _run_locked_storage_job(job: Callable[[], Any]) -> Any:
@@ -361,23 +386,19 @@ async def _release_storage_startup_barrier_or_rollback(
         # 回滚的那个状态。下面无条件 raise，所以 KeyboardInterrupt / SystemExit 的
         # 语义不变。
         try:
-            # 这一处**刻意**留在事件循环上。_restore_storage_mutation_state 的最后
-            # 一步是 config_manager.save_root_state()，而 root_state 还有另一个写者：
-            # build_storage_location_bootstrap_payload → _reconcile_legacy_cleanup_
-            # pending_root_state（utils/storage/location_bootstrap.py:191）也会
-            # save_root_state，它挂在 GET /bootstrap、/status、/diagnostics、
-            # /retained-source 和 POST /exit 上 —— 这几条**都不在
-            # _storage_mutation_lock 覆盖下**（锁只包 cleanup / select / restart 三条）。
-            #
-            # 今天让这两个「读 root_state — 改 — 写回」互斥的，不是锁，而是「它们都跑在
-            # 同一条事件循环线程上」。把回滚搬进 worker 就恰好打破这个不变量：前端存储页
-            # 每 500ms 轮询 /status，回滚写 root_state 的同时那边正拿着读到的旧 dict 往
-            # 回写，回滚会被整份盖掉 —— 迁移检查点和策略回滚了、root_state 没有，下次启动
-            # recovery_required 直接算成 False，恢复闸被跳过。
-            #
-            # 正确的收口是给 root_state 一把真锁、并让 GET 路由别在读路径上写盘，那是
-            # 独立的一份工作。在那之前，宁可让这条罕见的回滚路径同步落盘。
-            _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚必须跑完，await 会让它自己变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
+            # root_state 生命周期锁可能由另一个 async 请求持有；回滚若在事件循环线程
+            # 同步等锁，会卡住持锁请求恢复执行。整段送进 worker，并让 helper 在取消后
+            # 仍等到 worker 终态。这里 suppress 的只是 helper 重新传播的取消，下面的
+            # bare raise 仍会保留原始 BaseException。
+            with suppress(asyncio.CancelledError):
+                await _run_locked_storage_job(
+                    partial(
+                        _restore_storage_mutation_state,
+                        config_manager,
+                        snapshot,
+                        anchor_root=anchor_root,
+                    )
+                )
         except Exception:
             logger.exception(
                 "failed to rollback storage mutation state after startup barrier release failed",
@@ -1545,9 +1566,12 @@ async def _post_storage_location_select_locked(
             "error": exc.message,
         }
 
-    blocking_bootstrap = build_storage_location_bootstrap_payload(
-        config_manager,
-        persist_reconcile=True,
+    blocking_bootstrap = await _run_locked_storage_job(
+        partial(
+            build_storage_location_bootstrap_payload,
+            config_manager,
+            persist_reconcile=True,
+        )
     )
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
         config_manager,
@@ -1886,9 +1910,12 @@ async def _post_storage_location_restart_locked(
             "error": "当前实例暂时无法执行受控关闭，请稍后重试。",
         }
 
-    blocking_bootstrap = build_storage_location_bootstrap_payload(
-        config_manager,
-        persist_reconcile=True,
+    blocking_bootstrap = await _run_locked_storage_job(
+        partial(
+            build_storage_location_bootstrap_payload,
+            config_manager,
+            persist_reconcile=True,
+        )
     )
     if bool(blocking_bootstrap.get("migration_pending")):
         response.status_code = 409
@@ -1973,16 +2000,28 @@ async def _post_storage_location_restart_locked(
             # 尚未被接受——留着就是把应用钉死在受限态，用户看到一个永远不重启的
             # "正在迁移"。
             # CancelledError 是 BaseException，下面的 except Exception 接不住，所以
-            # 必须单列。回滚本身是同步的，不会再被取消。
+            # 必须单列。回滚 worker 即使再收到取消也会先跑到终态。
             if state_snapshot:
-                with suppress(Exception):
-                    _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
+                with suppress(Exception, asyncio.CancelledError):
+                    await _run_locked_storage_job(
+                        partial(
+                            _restore_storage_mutation_state,
+                            config_manager,
+                            state_snapshot,
+                            anchor_root=anchor_root,
+                        )
+                    )
             raise
         except Exception as exc:
             try:
-                # 与 _release_storage_startup_barrier_or_rollback 那处同因同治：回滚
-                # 必须跑完，挪成 await 就会让它自己变成取消点。
-                _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
+                await _run_locked_storage_job(
+                    partial(
+                        _restore_storage_mutation_state,
+                        config_manager,
+                        state_snapshot,
+                        anchor_root=anchor_root,
+                    )
+                )
             except Exception:
                 logger.exception(
                     "failed to rollback storage mutation state after restart scheduling failed",
@@ -2071,40 +2110,29 @@ async def _post_storage_location_restart_locked(
         # 同上：写已落盘、shutdown 尚未被接受，不回滚就会留下一个没人执行的
         # 待迁移检查点 + maintenance_readonly。rollback_state 为空 = 什么都还没写。
         if rollback_state:
-            previous_root_state = rollback_state.get("root_state")
-            previous_migration_payload = rollback_state.get("migration")
-            with suppress(Exception):
-                if isinstance(previous_migration_payload, dict):
-                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
-                else:
-                    delete_storage_migration(config_manager, anchor_root=anchor_root)
-            with suppress(Exception):
-                if isinstance(previous_root_state, dict):
-                    config_manager.save_root_state(previous_root_state)
+            with suppress(Exception, asyncio.CancelledError):
+                await _run_locked_storage_job(
+                    partial(
+                        _restore_restart_schedule_state,
+                        config_manager,
+                        rollback_state,
+                        anchor_root=anchor_root,
+                    )
+                )
         raise
     except Exception as exc:
         # rollback_state 为空 = 两份 pre-image 还没读到，也就意味着
         # create_pending_storage_migration 一行都还没跑，没有东西需要回滚。这时候
         # 走下面的分支反而会把一份本来就在盘上的检查点删掉。
         if rollback_state:
-            previous_root_state = rollback_state.get("root_state")
-            previous_migration_payload = rollback_state.get("migration")
-            try:
-                if isinstance(previous_migration_payload, dict):
-                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
-                else:
-                    delete_storage_migration(config_manager, anchor_root=anchor_root)
-            except Exception:
-                try:
-                    delete_storage_migration(config_manager, anchor_root=anchor_root)
-                except Exception:
-                    pass
-            try:
-                if isinstance(previous_root_state, dict):
-                    config_manager.save_root_state(previous_root_state)
-            except Exception:
-                # 回滚本身失败就只能到此为止：外层已经在返回 500，再抛只会盖掉原因
-                pass
+            await _run_locked_storage_job(
+                partial(
+                    _restore_restart_schedule_state,
+                    config_manager,
+                    rollback_state,
+                    anchor_root=anchor_root,
+                )
+            )
         response.status_code = 500
         return {
             "ok": False,

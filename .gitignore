@@ -18,6 +18,11 @@ tests/test_inputs/
 /main_logic/asr_client/endpointing/models/*
 !/main_logic/asr_client/endpointing/models/manifest.json
 !/main_logic/asr_client/endpointing/models/THIRD_PARTY_NOTICES.md
+# CAM++ follows the same supply-chain rule: review the pinned manifest and
+# notices, but never commit downloaded weights or partial transfers.
+/main_logic/asr_client/speaker_shadow/models/*
+!/main_logic/asr_client/speaker_shadow/models/manifest.json
+!/main_logic/asr_client/speaker_shadow/models/THIRD_PARTY_NOTICES.md
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe

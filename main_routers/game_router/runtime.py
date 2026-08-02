@@ -1157,6 +1157,7 @@ async def game_route_start(game_type: str, request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
     # 把请求体里的 i18n 真值同步进 mgr.user_language（详见 _absorb_request_language
     # 文档）：route/start 是 game-route 整段生命周期的入口，越早 heal 越多下游受益。
+    request_language_full = _extract_request_language_full(data)
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
@@ -1239,6 +1240,8 @@ async def game_route_start(game_type: str, request: Request):
                 lanlan_name,
                 data.get("game_last_full_dialogue_count"),
             )
+            if request_language_full:
+                state["user_language"] = request_language_full
             # Take over the SessionManager: ordinary chat LLM output handlers must
             # stay silent during the game, and any voice transcript that reaches
             # the SessionManager must be redirected into route_external_voice_transcript.
@@ -1304,6 +1307,7 @@ async def game_route_start(game_type: str, request: Request):
                     lanlan_name=lanlan_name,
                     neko_initiated=neko_initiated,
                     neko_invite_text=neko_invite_text,
+                    prompt_locale=request_language_full,
                 )
             else:
                 context, source, error = await _build_badminton_pregame_context(
@@ -1313,6 +1317,7 @@ async def game_route_start(game_type: str, request: Request):
                     neko_initiated=neko_initiated,
                     neko_invite_text=neko_invite_text,
                     mode=str(state.get("mode") or data.get("mode") or "spectator"),
+                    prompt_locale=request_language_full,
                 )
         except Exception as exc:
             logger.warning("🎮 开局上下文构建异常，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)

@@ -1,4 +1,10 @@
+import json
+import shutil
 from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_stdin
 from tests.static_app_parts import read_js_parts
 
 from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
@@ -15,6 +21,20 @@ def _read_avatar_ui_buttons_source() -> str:
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
 APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
+
+
+def _run_node_harness(script: str):
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        pytest.skip("node not found")
+    return run_node_stdin(
+        node_executable,
+        script,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        timeout=10,
+        check=False,
+    )
 
 
 def _source_slice_between(source, start_marker, end_marker, block_name):
@@ -106,6 +126,139 @@ def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():
     assert "window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockTop, actualLockIconSize)" in lock_icon_block
     assert "right: clampedLeft + actualLockIconSize" in lock_icon_block
     assert "bottom: clampedTop + actualLockIconSize" in lock_icon_block
+
+
+def test_model_lock_icons_ignore_pointer_input_while_avatar_overlays_overlap():
+    renderer_contracts = [
+        (
+            "static/live2d/live2d-ui-buttons.js",
+            "lockIcon.style.pointerEvents = nextPointerEvents;",
+        ),
+        (
+            "static/vrm/vrm-ui-buttons.js",
+            "lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';",
+        ),
+        (
+            "static/mmd/mmd-ui-buttons.js",
+            "lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';",
+        ),
+        (
+            "static/pngtuber-core.js",
+            "lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';",
+        ),
+    ]
+
+    for relative_path, pointer_guard in renderer_contracts:
+        source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+        assert pointer_guard in source
+
+    live2d_source = (PROJECT_ROOT / renderer_contracts[0][0]).read_text(encoding="utf-8")
+    assert "const nextPointerEvents = isPointerOverlapped ? 'none' : 'auto';" in live2d_source
+    assert "this._lockIconLastPointerEvents = undefined;" in live2d_source
+    assert live2d_source.index("const isPointerOverlapped =") < live2d_source.index(
+        "if (!this._lockIconLastOverlapScanAt"
+    )
+
+    popup_common_source = (
+        PROJECT_ROOT / "static/avatar/avatar-popup-common.js"
+    ).read_text(encoding="utf-8")
+    assert "isRectOverlappedByVisibleOverlay" in popup_common_source
+    assert '`[id^="${ownerPrefix}-popup-"]`' in popup_common_source
+    assert '`[data-neko-sidepanel-owner^="${ownerPrefix}-popup-"]`' in popup_common_source
+
+    for renderer, prefix in (("vrm", "vrm"), ("mmd", "mmd")):
+        source = (
+            PROJECT_ROOT / f"static/{renderer}/{renderer}-ui-buttons.js"
+        ).read_text(encoding="utf-8")
+        layout_start = source.index("const visibleCount = getVisibleButtonCount();")
+        mobile_branch = source.index("if (isMobile) {", layout_start)
+        common_visibility_guard = source.index(
+            "const isLockVisible = !this._isInReturnState", mobile_branch
+        )
+        shared_guard = source.index(
+            f"popupUi.isRectOverlappedByVisibleOverlay(lockRect, '{prefix}')",
+            common_visibility_guard,
+        )
+        assert common_visibility_guard > source.index("} else {", mobile_branch)
+        assert shared_guard < source.index(
+            "buttonsContainer.style.transform = `scale(${scale})`;", shared_guard
+        )
+        assert f'[data-neko-sidepanel-owner^="{prefix}-popup-"]' in source
+
+    pngtuber_source = (PROJECT_ROOT / "static/pngtuber-core.js").read_text(
+        encoding="utf-8"
+    )
+    popup_source = (
+        PROJECT_ROOT / "static/avatar/avatar-ui-popup.js"
+    ).read_text(encoding="utf-8")
+    overlay_event = "neko-avatar-overlay-visibility-changed"
+    assert f"window.addEventListener('{overlay_event}'" in pngtuber_source
+    assert "this.updateLockIconPosition();" in pngtuber_source
+    assert f"new CustomEvent('{overlay_event}'" in popup_source
+    assert "dispatchAvatarSidePanelVisibilityChanged(container);" in popup_source
+    assert popup_source.count(
+        "scheduleAvatarSidePanelVisibilitySettled(container, visibilityRevision);"
+    ) == 2
+    assert popup_source.count(
+        "container.style.display = 'none';\n"
+        "                dispatchAvatarSidePanelVisibilityChanged(container);"
+    ) == 2
+    assert "if (panel._visibilitySettledTimer)" in popup_source
+    interval_control = popup_source[popup_source.index("function createIntervalControl") :]
+    interval_collapse = interval_control[interval_control.index("container._collapse = () => {") :]
+    assert interval_collapse.index("container.style.pointerEvents = 'none';") < (
+        interval_collapse.index("container.style.opacity = '0';")
+    )
+
+
+def test_shared_avatar_overlay_overlap_detects_owned_sidepanels_by_geometry():
+    source = (PROJECT_ROOT / "static/avatar/avatar-popup-common.js").read_text(
+        encoding="utf-8"
+    )
+    script = rf"""
+const assert = require('node:assert/strict');
+const source = {json.dumps(source)};
+const lockRect = {{ left: 10, top: 10, right: 42, bottom: 42 }};
+const vrmPopup = {{
+  style: {{ display: 'flex', visibility: 'visible', opacity: '0' }},
+  computedStyle: {{ display: 'flex', visibility: 'visible', opacity: '0' }},
+  getBoundingClientRect: () => ({{ left: 0, top: 0, right: 50, bottom: 50, width: 50, height: 50 }})
+}};
+const vrmSidePanel = {{
+  style: {{ display: 'flex', visibility: 'visible', opacity: '1' }},
+  computedStyle: {{ display: 'flex', visibility: 'visible', opacity: '1' }},
+  getBoundingClientRect: () => ({{ left: 30, top: 30, right: 80, bottom: 80, width: 50, height: 50 }})
+}};
+const overlaysByPrefix = {{ vrm: [vrmPopup, vrmSidePanel], mmd: [] }};
+const queriedSelectors = [];
+global.document = {{
+  querySelectorAll(selector) {{
+    queriedSelectors.push(selector);
+    if (selector.includes('vrm-popup-')) return overlaysByPrefix.vrm;
+    if (selector.includes('mmd-popup-')) return overlaysByPrefix.mmd;
+    return [];
+  }},
+  getElementById() {{ return null; }},
+  querySelector() {{ return null; }}
+}};
+global.window = {{
+  getComputedStyle(element) {{ return element.computedStyle || element.style; }},
+  innerWidth: 1920,
+  innerHeight: 1080
+}};
+eval(source);
+assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'vrm'), true);
+assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'mmd'), false);
+assert.match(queriedSelectors[0], /\[id\^="vrm-popup-"\]/);
+assert.match(queriedSelectors[0], /data-neko-sidepanel-owner\^="vrm-popup-"/);
+vrmSidePanel.style.opacity = '0';
+vrmSidePanel.computedStyle.opacity = '1';
+assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'vrm'), true);
+vrmSidePanel.computedStyle.opacity = '0';
+assert.equal(window.AvatarPopupUI.isRectOverlappedByVisibleOverlay(lockRect, 'vrm'), false);
+"""
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_interpage_restore_keeps_floating_button_containers_in_flex_layout():

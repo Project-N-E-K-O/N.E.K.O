@@ -29,20 +29,31 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 import asyncio
 import base64
 import binascii
+import hashlib
 import os
 import re
 import json
+from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from utils.character_name import validate_character_name
 from utils.character_memory import (
     character_memory_exists,
-    rename_character_memory_storage,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
+# merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
+# 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
+from utils.recent_file import (
+    RecentFileDeletedError,
+    capture_recent_generation,
+    get_recent_pending_unlocked,
+    read_recent_text_unlocked,
+    recent_file_access,
+    set_recent_pending_unlocked,
+    write_recent_payload_unlocked,
+)
 from fastapi.responses import JSONResponse
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
@@ -60,6 +71,22 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+
+
+async def _await_browser_save_transaction(coro):
+    """Finish a committed browser save before propagating request cancellation."""
+    operation = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        try:
+            result = operation.result()
+        except BaseException as exc:
+            raise asyncio.CancelledError from exc
+        return result, True
 
 
 def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
@@ -310,6 +337,112 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
 logger = get_module_logger(__name__, "Main")
 
 
+def _recent_browser_fingerprint(content: str) -> str:
+    """Return the optimistic-concurrency token for one browser snapshot."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _recent_browser_identity_token(path: Path) -> str:
+    """Return an opaque token binding an editor snapshot to one path identity."""
+    key, generation = capture_recent_generation(path)
+    material = f"{key}\0{generation}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _read_recent_browser_text_unlocked(path: Path) -> str:
+    """Build one editable disk-plus-pending snapshot while its lock is held."""
+    content = read_recent_text_unlocked(path)
+    pending = get_recent_pending_unlocked(path)
+    if not pending:
+        return content
+    payload = json.loads(content)
+    if not isinstance(payload, list):
+        raise ValueError(f"recent history is not a list: {path}")
+    if all(isinstance(message, dict) for message in pending):
+        pending_payload = list(pending)
+    else:
+        from utils.llm_client import messages_to_dict
+
+        pending_payload = messages_to_dict(pending)
+    return json.dumps(payload + pending_payload, ensure_ascii=False, indent=2)
+
+
+def _read_recent_browser_text(path: Path) -> str:
+    """Read one editable disk-plus-pending snapshot under the recent lock."""
+    with recent_file_access(path) as resolved_path:
+        return _read_recent_browser_text_unlocked(resolved_path)
+
+
+def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
+    """Read editable content and its opaque identity while holding one lock."""
+    with recent_file_access(path) as resolved_path:
+        return (
+            _read_recent_browser_text_unlocked(resolved_path),
+            _recent_browser_identity_token(Path(resolved_path)),
+        )
+
+
+def _write_recent_browser_payload(
+    path: Path,
+    payload: list[dict],
+    *,
+    expected_fingerprint: str | None,
+    expected_identity_token: str | None,
+    expected_generation: tuple[str, int],
+) -> tuple[bool, str, str]:
+    """Replace a browser snapshot unless disk or pending state changed since read."""
+    with recent_file_access(
+        path, expected_generation=expected_generation,
+    ) as resolved_path:
+        current_identity_token = _recent_browser_identity_token(Path(resolved_path))
+        current_text = _read_recent_browser_text_unlocked(resolved_path)
+        current_fingerprint = _recent_browser_fingerprint(current_text)
+        if (
+            expected_identity_token is not None
+            and expected_identity_token != current_identity_token
+        ) or (
+            expected_fingerprint is not None
+            and expected_fingerprint != current_fingerprint
+        ):
+            return False, current_fingerprint, current_identity_token
+        write_recent_payload_unlocked(resolved_path, payload)
+        set_recent_pending_unlocked(resolved_path, [])
+        saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        return (
+            True,
+            _recent_browser_fingerprint(saved_text),
+            current_identity_token,
+        )
+
+
+def _read_recent_browser_conflict_tokens(
+    path: Path,
+) -> tuple[str | None, str | None]:
+    """Best-effort current tokens for a generation-race conflict response."""
+    try:
+        content, identity_token = _read_recent_browser_snapshot(path)
+    except Exception:
+        return None, None
+    return _recent_browser_fingerprint(content), identity_token
+
+
+def _recent_browser_conflict_response(
+    fingerprint: str | None,
+    identity_token: str | None,
+) -> JSONResponse:
+    """Return the browser editor's uniform optimistic-concurrency conflict."""
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "RECENT_FILE_CONFLICT",
+            "error": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
+            "fingerprint": fingerprint,
+            "identity_token": identity_token,
+        },
+        status_code=409,
+    )
+
+
 @router.get('/recent_files')
 async def get_recent_files():
     """List all recent*.json filenames under the memory directory."""
@@ -346,14 +479,22 @@ async def get_recent_file(filename: str):
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    # offload 同步 read 到线程池：recent.json 单文件可达数 MB
-    content = await asyncio.to_thread(_read_text_file, resolved_path)
-    return {"content": content}
-
-
-def _read_text_file(path: str, encoding: str = 'utf-8') -> str:
-    with open(path, 'r', encoding=encoding) as f:
-        return f.read()
+    # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
+    # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
+    try:
+        content, identity_token = await asyncio.to_thread(
+            _read_recent_browser_snapshot, resolved_path,
+        )
+    except RecentFileDeletedError:
+        return JSONResponse(
+            {"success": False, "error": "文件不存在"},
+            status_code=path_error_status_code(PATH_ERROR_NOT_FOUND),
+        )
+    return {
+        "content": content,
+        "fingerprint": _recent_browser_fingerprint(content),
+        "identity_token": identity_token,
+    }
 
 
 @router.post('/recent_file/save')
@@ -361,6 +502,8 @@ async def save_recent_file(request: Request):
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
+    snapshot_fingerprint = data.get('fingerprint')
+    snapshot_identity_token = data.get('identity_token')
     
     # Validate filename
     is_valid, error_msg = validate_recent_filename(filename)
@@ -373,6 +516,21 @@ async def save_recent_file(request: Request):
     if not is_valid:
         logger.warning(f"Invalid chat payload rejected: {error_msg}")
         return JSONResponse({"success": False, "error": error_msg}, status_code=400)
+    if snapshot_fingerprint is not None and not isinstance(snapshot_fingerprint, str):
+        return JSONResponse(
+            {"success": False, "error": "文件快照指纹格式不合法"},
+            status_code=400,
+        )
+    if snapshot_identity_token is not None and not isinstance(snapshot_identity_token, str):
+        return JSONResponse(
+            {"success": False, "error": "文件身份令牌格式不合法"},
+            status_code=400,
+        )
+    if snapshot_fingerprint is None or snapshot_identity_token is None:
+        return JSONResponse(
+            {"success": False, "error": "文件身份令牌缺失，请重新加载后再保存"},
+            status_code=409,
+        )
     
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
@@ -381,17 +539,25 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
+    # 保存到读取时会解析到的同一布局；旧版 flat/project 文件不能被悄悄
+    # 改写到一个尚不存在的 runtime nested 路径，否则 CAS 比较失去对象。
+    resolved_path, _path_error, path_error_code, _ = resolve_recent_file_path(
+        cm, filename,
+    )
+    if resolved_path is None:
+        if path_error_code != PATH_ERROR_NOT_FOUND:
+            return JSONResponse(
+                {"success": False, "error": _path_error},
+                status_code=path_error_status_code(path_error_code),
+            )
+        resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
+    admission_generation = capture_recent_generation(resolved_path)
     assert_cloudsave_writable(
         cm,
         operation="save",
         target=f"memory/{catgirl_name}/recent.json",
     )
 
-    resolved_path, path_error, _path_error_code, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
-    if resolved_path is None:
-        logger.warning(f"Recent file path resolution failed for filename: {filename!r} - {path_error}")
-        return JSONResponse({"success": False, "error": path_error}, status_code=400)
-    
     arr = []
     for msg in chat:
         t = msg.get('role')
@@ -409,8 +575,30 @@ async def save_recent_file(request: Request):
                 **({"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": None} if t == "ai" else {})
             }
         })
-    try:
-        await atomic_write_json_async(resolved_path, arr, ensure_ascii=False, indent=2)
+    async def _commit_browser_save():
+        try:
+            saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _write_recent_browser_payload,
+                resolved_path,
+                arr,
+                expected_fingerprint=snapshot_fingerprint,
+                expected_identity_token=snapshot_identity_token,
+                expected_generation=admission_generation,
+            )
+        except RecentFileDeletedError:
+            saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _read_recent_browser_conflict_tokens,
+                resolved_path,
+            )
+            return _recent_browser_conflict_response(
+                saved_fingerprint,
+                saved_identity_token,
+            )
+        if not saved:
+            return _recent_browser_conflict_response(
+                saved_fingerprint,
+                saved_identity_token,
+            )
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -428,7 +616,21 @@ async def save_recent_file(request: Request):
                 logger.warning(f"Failed to cancel correction task: {e}")
         
         # 返回成功并提示需要刷新上下文
-        return {"success": True, "need_refresh": True, "catgirl_name": catgirl_name}
+        return {
+            "success": True,
+            "need_refresh": True,
+            "catgirl_name": catgirl_name,
+            "fingerprint": saved_fingerprint,
+            "identity_token": saved_identity_token,
+        }
+
+    try:
+        result, save_cancelled = await _await_browser_save_transaction(
+            _commit_browser_save()
+        )
+        if save_cancelled:
+            raise asyncio.CancelledError
+        return result
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -465,30 +667,36 @@ async def update_catgirl_name(request: Request):
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        if character_memory_exists(cm, old_name) or character_memory_exists(cm, new_name):
-            assert_cloudsave_writable(
-                cm,
-                operation="rename",
-                target=f"memory/{old_name} -> memory/{new_name}",
-            )
+        characters = await cm.aload_characters()
+        catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
 
-        result = rename_character_memory_storage(cm, old_name, new_name)
-        logger.info(
-            "已更新猫娘名称从 '%s' 到 '%s' 的记忆文件，changed=%s",
-            old_name,
-            new_name,
-            result.get("changed", False),
-        )
-        return {
-            "success": True,
-            "changed": bool(result.get("changed", False)),
-            "exists_after": bool(result.get("exists_after", False)),
-        }
+        # 兼容旧客户端在 canonical rename 成功后重复调用本端点的幂等路径。
+        if old_name not in catgirls and new_name in catgirls:
+            if character_memory_exists(cm, old_name):
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": "角色配置已改名但旧记忆仍存在，请通过角色管理接口修复",
+                    },
+                    status_code=409,
+                )
+            return {
+                "success": True,
+                "changed": False,
+                "exists_after": character_memory_exists(cm, new_name),
+                "already_renamed": True,
+            }
+
+        # 单独移动 memory 会绕过角色改名事务的 task drain、配置发布和回滚。
+        # 统一委托 canonical route，避免旧派生任务沿 recent redirect 写进新角色。
+        from .characters_router.crud import rename_catgirl
+
+        return await rename_catgirl(old_name, request)
     except MaintenanceModeError:
         raise
-    except Exception as e:
+    except Exception as exc:
         logger.exception("更新猫娘名称失败")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(exc)}
 
 
 @router.get('/review_config')
@@ -876,6 +1084,7 @@ async def commit_external_memory_import(request: Request):
                 "imported_files": analysis["files"],
                 "candidates": analysis["candidates"],
                 "warning_count": len(analysis["warnings"]),
+                "language": payload.get("language"),
             },
             # persona 导入现在按 entity 同步跑 LLM 融合（每 entity 可数十秒），
             # 30s 不够；放宽到 240s 覆盖 master+neko 两段融合。前端 commit 超时

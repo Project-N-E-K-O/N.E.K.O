@@ -1280,6 +1280,13 @@ class LifecycleMixin:
             logger.warning("⚠️ TTS未就绪，当前回复将继续缓存，等待后续就绪信号")
         return True
 
+    def _new_dialog_request_kwargs(self) -> dict:
+        """Share explicit-locale provenance across initial and hot-swap bootstrap."""
+        request_kwargs = {"timeout": 5.0}
+        if getattr(self, "_user_language_explicit", False):
+            request_kwargs["params"] = {"language": self.user_language}
+        return request_kwargs
+
     async def _start_session_fetch_new_dialog(self, lanlan_name, port):
         """Independent task: fetch the /new_dialog response. Kicked off before the gather,
         deliberately avoiding the GIL contention window during TTS worker startup."""
@@ -1288,7 +1295,7 @@ class LifecycleMixin:
         try:
             resp = await _mem_client.get(
                 f"http://127.0.0.1:{port}/new_dialog/{lanlan_name}",
-                timeout=5.0,
+                **self._new_dialog_request_kwargs(),
             )
         except httpx.ConnectError:
             raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {port})")
@@ -1800,7 +1807,7 @@ class LifecycleMixin:
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
-                    timeout=5.0,
+                    **self._new_dialog_request_kwargs(),
                 )
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")

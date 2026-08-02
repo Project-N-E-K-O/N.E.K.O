@@ -1704,9 +1704,59 @@ def detect_prompt_language(
             # Reads a context var, then a process-level cache filled on first
             # call, so this stays cheap on a per-request path.
             configured = get_global_language_full()
-        return 'zh-TW' if configured == 'zh-TW' else detected
+        if configured == 'zh-TW':
+            return 'zh-TW'
+        if normalize_language_code(configured, format='short') == 'ja':
+            # Han-only Japanese has no kana signal, so the lightweight detector
+            # cannot distinguish it from Chinese. The explicit session locale is
+            # the only orthographic evidence available for this ambiguous case.
+            return 'ja'
+        return detected
     except Exception:
         return detected
+
+
+def detect_prompt_language_with_ascii_fallback(
+    text: str,
+    default: str = 'zh',
+    ui_language: Optional[str] = None,
+) -> str:
+    """Keep Spanish or Portuguese when English detection has locale evidence."""
+    active_ui_language = ui_language or get_global_language_full()
+    detected = detect_prompt_language(
+        text,
+        default=default,
+        ui_language=active_ui_language,
+    )
+    ui_short = normalize_language_code(active_ui_language, format='short')
+    if detected == 'en':
+        folded = str(text or '').casefold()
+        if ui_short == 'es':
+            strong = re.search(
+                r'\b(?:hola|gusta|quiero|tengo|estoy|gracias|nombre)\b',
+                folded,
+            )
+            weak = set(re.findall(
+                r'\b(?:yo|me|mi|vivo|soy|es|en|el|la|los|las|de|del|'
+                r'con|para|por|que)\b',
+                folded,
+            ))
+            if strong or len(weak) >= 2:
+                return ui_short
+        if ui_short == 'pt':
+            strong = re.search(
+                r'\b(?:ola|gosto|quero|tenho|estou|obrigado|obrigada|meu|'
+                r'minha|moro|nome)\b',
+                folded,
+            )
+            weak = set(re.findall(
+                r'\b(?:eu|sou|e|em|um|uma|de|do|da|dos|das|com|para|'
+                r'por|que)\b',
+                folded,
+            ))
+            if strong or len(weak) >= 2:
+                return ui_short
+    return detected
 
 
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:

@@ -2319,6 +2319,7 @@
         "freeApiAutoCloseNotice": "A API gratuita fechou automaticamente a sessão de voz após muito tempo sem entrada de voz",
         "deviceSelected": "Selecionado {{device}}",
         "micAccessDenied": "Não é possível acessar o microfone",
+        "microphoneFallbackToDefault": "O microfone selecionado não está disponível. O microfone padrão do sistema será usado.",
         "gameVoiceSttMicPermissionDenied": "A transcrição de voz do jogo não tem permissão para usar o microfone. Verifique as permissões do navegador.",
         "gameVoiceSttNotSupported": "Este navegador não oferece suporte à transcrição de voz do jogo. Use a entrada de texto por enquanto.",
         "micMuted": "Microfone silenciado",
@@ -4069,7 +4070,10 @@
         "unknownState": "Estado desconhecido",
         "volume": "Volume:",
         "unsafeSource": "Fonte de áudio insegura bloqueada: {{domain}}",
-        "cookieExpired": "O cookie de música expirou"
+        "cookieExpired": "O cookie de música expirou",
+        "loginRequired": "Configure primeiro o cookie do NetEase Cloud Music",
+        "playlistAmbiguous": "Existem várias listas de reprodução com este nome. Indique um nome mais específico",
+        "sourceEmpty": "Esta fonte de música não tem faixas reproduzíveis no momento"
     },
     "Jukebox": {
         "title": "Juke-box",

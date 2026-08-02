@@ -31,8 +31,8 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_NO_RESULT,
     RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
+    _normalize_memory_prompt_lang,
 )
-from utils.language_utils import normalize_language_code
 from ._shared import logger
 
 
@@ -141,7 +141,7 @@ class ToolCallingMixin:
                 "[builtin tools] NEKO_DISABLE_BUILTIN_TOOLS set — skipping recall_memory registration"
             )
             return
-        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        _lang = _normalize_memory_prompt_lang(self.user_language)
         recall_tool = ToolDefinition(
             name="recall_memory",
             description=_loc(RECALL_MEMORY_TOOL_DESCRIPTION, _lang),
@@ -188,7 +188,7 @@ class ToolCallingMixin:
         conversation flow. Never raise to the upstream wire, or one failed tool
         call would stall the model's whole turn.
         """
-        _lang = normalize_language_code(self.user_language, format='short') or 'en'
+        _lang = _normalize_memory_prompt_lang(self.user_language)
         args_dict = arguments if isinstance(arguments, dict) else {}
         query = ""
         raw_query = args_dict.get("query")
@@ -215,7 +215,7 @@ class ToolCallingMixin:
         # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
         # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
         # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
-        post_body = {"query": query}
+        post_body = {"query": query, "language": self.user_language}
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}

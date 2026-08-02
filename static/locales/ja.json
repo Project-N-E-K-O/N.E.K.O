@@ -2319,6 +2319,7 @@
         "freeApiAutoCloseNotice": "無料 API で長時間音声入力がないため、音声セッションを自動終了しました",
         "deviceSelected": "{{device}}を選択しました",
         "micAccessDenied": "マイクにアクセスできません",
+        "microphoneFallbackToDefault": "選択したマイクを使用できないため、システムの既定のマイクに切り替えました。",
         "gameVoiceSttMicPermissionDenied": "ゲーム音声文字起こしにマイク権限がありません。ブラウザの権限を確認してください。",
         "gameVoiceSttNotSupported": "このブラウザはゲーム音声文字起こしに対応していません。しばらくテキスト入力を使ってください。",
         "micMuted": "マイクをミュートしました",
@@ -4069,7 +4070,10 @@
         "unknownState": "不明な状態",
         "volume": "音量: ",
         "unsafeSource": "安全でない音源をブロックしました: {{domain}}",
-        "cookieExpired": "音楽Cookieの有効期限が切れました"
+        "cookieExpired": "音楽Cookieの有効期限が切れました",
+        "loginRequired": "先にNetEase Cloud MusicのCookieを設定してください",
+        "playlistAmbiguous": "同名のプレイリストがあります。より具体的な名前を指定してください",
+        "sourceEmpty": "この音楽ソースには現在再生可能な曲がありません"
     },
     "Jukebox": {
         "title": "ジュークボックス",

@@ -189,6 +189,15 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
+# 6d. CAM++ is pre-fetched and SHA/size verified on the native CI runner. The
+# image build only verifies the copied package-local asset; it never downloads
+# under QEMU. Reject the obsolete data/ location and duplicate model bytes.
+RUN cd /app && \
+    python3 scripts/prepare_speaker_model.py --offline && \
+    test -s /app/main_logic/asr_client/speaker_shadow/models/THIRD_PARTY_NOTICES.md && \
+    test ! -e /app/data/speaker_models && \
+    test "$(find /app -type f -name campplus-zh-en-advanced.onnx | wc -l)" -eq 1
+
 # 7. Copy frontend build artifacts
 # Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`
 # (relative to its package root), so the actual build output lives at

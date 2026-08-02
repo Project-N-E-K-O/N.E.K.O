@@ -1539,26 +1539,31 @@ def test_post_turn_signals_only_bumps_counter_for_user_turn():
     源码扫描钉死：``_signal_check_record_turn`` 调用必须被 ``if user_msgs:``
     gate 包裹。
     """
+    import ast
     import inspect
+    import textwrap
     from app import memory_server
 
-    src = inspect.getsource(memory_server._run_post_turn_signals)
+    src = textwrap.dedent(inspect.getsource(memory_server._run_post_turn_signals))
+    tree = ast.parse(src)
 
-    record_idx = src.find("_signal_check_record_turn(lanlan_name)")
-    assert record_idx > 0, "_signal_check_record_turn 调用必须存在"
+    def is_record_call(node):
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_signal_check_record_turn"
+        )
 
-    # 往前找最近的非空 `if ...` 行：必须是 `if user_msgs:`
-    preceding = src[max(0, record_idx - 200):record_idx]
-    lines = [ln.strip() for ln in preceding.split("\n") if ln.strip()]
-    last_if = None
-    for ln in reversed(lines):
-        if ln.startswith("if "):
-            last_if = ln
-            break
-    assert last_if is not None, "counter bump 紧上方必须有 if 条件"
-    assert "user_msgs" in last_if, (
-        f"counter bump 必须被 `if user_msgs:` gate——只算 user engagement，"
-        f"不算 AI-only turn。当前 if: {last_if!r}"
+    guarded = any(
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "user_msgs"
+        and any(is_record_call(child) for child in ast.walk(node))
+        for node in ast.walk(tree)
+    )
+    assert guarded, (
+        "counter bump 必须被 `if user_msgs:` gate——只算 user engagement，"
+        "不算 AI-only turn"
     )
 
 

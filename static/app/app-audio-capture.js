@@ -35,9 +35,19 @@
     // compares equal again and commits -- re-claiming through refreshMicLease()
     // the exact lease this counter exists to protect.
     let micStartGeneration = 0;
+    // Device ids are not a sufficient change token: a rapid A -> B -> A
+    // sequence ends at the same id while still superseding the in-flight
+    // selection attempt. Increment this on every authoritative selection write
+    // so async ownership checks cannot lose intermediate changes.
+    let microphoneSelectionGeneration = 0;
 
     function invalidatePendingMicStart() {
         micStartGeneration += 1;
+    }
+
+    function setSelectedMicrophoneId(deviceId) {
+        S.selectedMicrophoneId = deviceId;
+        microphoneSelectionGeneration += 1;
     }
 
     function currentVoiceInputControlState() {
@@ -826,7 +836,7 @@
     // ======================== 麦克风设备选择 ========================
 
     async function selectMicrophone(deviceId) {
-        S.selectedMicrophoneId = deviceId;
+        setSelectedMicrophoneId(deviceId);
 
         // 获取设备名称用于状态提示
         let deviceName = '系统默认麦克风';
@@ -926,7 +936,28 @@
                 }
 
                 if (wasRecording) {
-                    await startMicCapture();
+                    while (true) {
+                        const selectionGenerationForRestart = microphoneSelectionGeneration;
+                        // startMicCapture claims the next generation
+                        // synchronously, before its first await. If anything
+                        // else advances the counter, a stop/takeover occurred
+                        // and this switch must not reopen the microphone.
+                        const expectedRestartGeneration = micStartGeneration + 1;
+                        const microphoneStarted = await startMicCapture();
+                        if (microphoneStarted === true) {
+                            break;
+                        }
+                        const latestSelectionNeedsRetry = (
+                            microphoneSelectionGeneration !== selectionGenerationForRestart
+                            && micStartGeneration === expectedRestartGeneration
+                            && S.voiceInputRouteBlocked !== true
+                        );
+                        if (!latestSelectionNeedsRetry) {
+                            console.log('[App] microphone switch restart was cancelled before commit');
+                            return;
+                        }
+                        console.log('[App] microphone selection changed while opening; retrying the latest device');
+                    }
 
                     // 重启屏幕共享（如果之前正在共享）
                     if (shouldRestartScreening) {
@@ -1069,11 +1100,11 @@
         try {
             const saved = localStorage.getItem('neko_selected_microphone');
             if (saved) {
-                S.selectedMicrophoneId = saved;
+                setSelectedMicrophoneId(saved);
                 console.log(`已加载麦克风设置: ${saved}`);
             }
         } catch (e) {
-            S.selectedMicrophoneId = null;
+            setSelectedMicrophoneId(null);
         }
     }
 
@@ -1269,7 +1300,12 @@
      * That is deliberate: this whole subsystem is fail-closed, and the only
      * consumer is startMicCapture below (the module export exists for tests).
      */
-    async function startAudioWorklet(mediaStream, startToken) {
+    async function startAudioWorklet(
+        mediaStream,
+        startToken,
+        selectedMicrophoneIdAtStart,
+        microphoneSelectionGenerationAtStart
+    ) {
         // Entry gate, before ANY shared state is touched. An attempt can be
         // superseded while it is still in startMicCapture's getUserMedia (a
         // cold device open is slow; the newer attempt hits a warm one and
@@ -1280,7 +1316,12 @@
         // and a microphone that has stopped producing, while the UI still says
         // recording. Nothing has been allocated yet at this point, so bailing
         // costs only this attempt's own device handle.
-        if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+        if (
+            startToken !== micStartGeneration
+            || S.voiceInputRouteBlocked === true
+            || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+            || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+        ) {
             console.log('[App] microphone start was superseded before opening; unwinding');
             try {
                 if (mediaStream && typeof mediaStream.getTracks === 'function') {
@@ -1533,7 +1574,12 @@
             // stopRecording() early-returned and could not prevent this. Unwind
             // instead of committing: without this the pending start re-claims a
             // lease the backend just revoked and feeds a blocked route.
-            if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            if (
+                startToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+                || S.selectedMicrophoneId !== selectedMicrophoneIdAtStart
+                || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+            ) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 // Nothing above was published, so this tears down ONLY what
                 // this attempt built. There is no re-entrancy guard on
@@ -1657,6 +1703,173 @@
         refreshMicLease();
     }
 
+    function stopMicrophoneStreamTracks(stream) {
+        try {
+            if (stream && typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        } catch (_) {
+            // best-effort teardown
+        }
+    }
+
+    function hasLiveMicrophoneTrack(stream) {
+        if (!stream || typeof stream.getAudioTracks !== 'function') {
+            return false;
+        }
+        return stream.getAudioTracks().some(track => track && track.readyState !== 'ended');
+    }
+
+    function hasLiveCommittedMicrophonePipeline() {
+        return (
+            S.isRecording === true
+            && S.voiceInputRouteBlocked !== true
+            && hasLiveMicrophoneTrack(S.stream)
+            && !!S.audioContext
+            && S.audioContext.state !== 'closed'
+            && !!S.workletNode
+        );
+    }
+
+    async function requestUsableMicrophoneStream(constraints) {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (hasLiveMicrophoneTrack(stream)) {
+            return stream;
+        }
+
+        stopMicrophoneStreamTracks(stream);
+        const error = new Error(
+            window.t ? window.t('app.micAccessDenied') : 'Cannot access microphone'
+        );
+        error.name = 'NotReadableError';
+        throw error;
+    }
+
+    function isSelectedMicrophoneFallbackEligibleError(error) {
+        const errorName = error && error.name;
+        return (
+            errorName === 'NotFoundError'
+            || errorName === 'OverconstrainedError'
+            || errorName === 'NotReadableError'
+        );
+    }
+
+    function applySystemDefaultMicrophoneSelection() {
+        setSelectedMicrophoneId(null);
+        updateMicListSelection();
+
+        const defaultLabel = window.t
+            ? window.t('microphone.defaultDevice')
+            : 'System Default Microphone';
+        document.querySelectorAll('[data-neko-mic-action="device"] .neko-mic-action-sub-label').forEach(labelEl => {
+            labelEl.textContent = defaultLabel;
+        });
+
+        // localStorage is updated synchronously before saveSelectedMicrophone's
+        // network await. The backend write is best-effort and must not delay an
+        // already-open default microphone stream.
+        void saveSelectedMicrophone(null);
+    }
+
+    async function openMicrophoneStreamWithFallback(
+        baseAudioConstraints,
+        micStartToken,
+        selectedMicrophoneId,
+        microphoneSelectionGenerationAtStart
+    ) {
+        const defaultConstraints = { audio: baseAudioConstraints };
+        const startStillOwnsMicrophoneRequest = () => (
+            micStartToken === micStartGeneration
+            && S.voiceInputRouteBlocked !== true
+            && S.selectedMicrophoneId === selectedMicrophoneId
+            && microphoneSelectionGeneration === microphoneSelectionGenerationAtStart
+        );
+        const cancelledOpenResult = () => ({
+            stream: null,
+            fallbackFromMicrophoneId: null,
+            cancelled: true
+        });
+        const requestOwnedMicrophoneStream = async (constraints) => {
+            try {
+                const stream = await requestUsableMicrophoneStream(constraints);
+                if (!startStillOwnsMicrophoneRequest()) {
+                    stopMicrophoneStreamTracks(stream);
+                    return null;
+                }
+                return stream;
+            } catch (error) {
+                if (!startStillOwnsMicrophoneRequest()) {
+                    return null;
+                }
+                throw error;
+            }
+        };
+
+        if (!selectedMicrophoneId) {
+            const defaultStream = await requestOwnedMicrophoneStream(defaultConstraints);
+            if (!defaultStream) {
+                return cancelledOpenResult();
+            }
+            return {
+                stream: defaultStream,
+                fallbackFromMicrophoneId: null
+            };
+        }
+
+        try {
+            const selectedStream = await requestOwnedMicrophoneStream({
+                audio: {
+                    ...baseAudioConstraints,
+                    deviceId: { exact: selectedMicrophoneId }
+                }
+            });
+            if (!selectedStream) {
+                return cancelledOpenResult();
+            }
+            return {
+                stream: selectedStream,
+                fallbackFromMicrophoneId: null
+            };
+        } catch (selectedMicrophoneError) {
+            // A superseded/blocked attempt must not change the user's saved
+            // device choice or open another hardware device.
+            if (
+                micStartToken !== micStartGeneration
+                || S.voiceInputRouteBlocked === true
+                || S.selectedMicrophoneId !== selectedMicrophoneId
+                || microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart
+            ) {
+                return cancelledOpenResult();
+            }
+
+            // Permission, security-context, abort and programming errors apply
+            // to the capture request itself, not just the selected device.
+            // Retrying those against the default device would prompt/open
+            // unnecessarily and could erase a still-valid saved selection.
+            if (!isSelectedMicrophoneFallbackEligibleError(selectedMicrophoneError)) {
+                throw selectedMicrophoneError;
+            }
+
+            console.warn(
+                '[App] selected microphone unavailable; trying the system default microphone',
+                selectedMicrophoneError
+            );
+
+            const fallbackStream = await requestOwnedMicrophoneStream(defaultConstraints);
+            if (!fallbackStream) {
+                return cancelledOpenResult();
+            }
+
+            // Commit the selection change and notification only after the
+            // worklet pipeline also commits. Otherwise an important fallback
+            // toast could hide a later, more accurate setup error.
+            return {
+                stream: fallbackStream,
+                fallbackFromMicrophoneId: selectedMicrophoneId
+            };
+        }
+    }
+
     async function startMicCapture() {
         // Refuse to open the hardware microphone onto a route the backend has
         // already fail-closed. This is THE guard that closes the startup-failure
@@ -1672,7 +1885,7 @@
         // the mic on a dead route, and one guard covers all five.
         if (S.voiceInputRouteBlocked === true) {
             console.log('[App] voice route is fail-closed; refusing to open the microphone');
-            return;
+            return false;
         }
         // Claim this attempt BEFORE the first await. Anything that invalidates
         // pending starts from here on makes the commit at the end of
@@ -1727,12 +1940,6 @@
                 channelCount: 1
             };
 
-            const constraints = {
-                audio: S.selectedMicrophoneId
-                    ? { ...baseAudioConstraints, deviceId: { exact: S.selectedMicrophoneId } }
-                    : baseAudioConstraints
-            };
-
             // Attempt-local, for the same reason the audio graph is: publishing
             // the stream here put it OUTSIDE the single publish point in
             // startAudioWorklet, and this write lands after an await, so it is
@@ -1745,7 +1952,41 @@
             // for the life of the page, and the `S.stream && S.audioContext &&
             // S.workletNode` liveness probes read dead against a live pipeline
             // and open a second microphone on top of it.
-            ownStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;
+            const microphoneSelectionGenerationAtStart = microphoneSelectionGeneration;
+            const microphoneOpenResult = await openMicrophoneStreamWithFallback(
+                baseAudioConstraints,
+                micStartToken,
+                selectedMicrophoneIdAtStart,
+                microphoneSelectionGenerationAtStart
+            );
+            if (microphoneOpenResult.cancelled === true) {
+                // A newer attempt can commit while this one is still awaiting
+                // getUserMedia. Its pipeline and UI are shared globals, so the
+                // late loser must report the live winner instead of painting
+                // "not recording" over it.
+                if (hasLiveCommittedMicrophonePipeline()) {
+                    return true;
+                }
+                S.isRecording = false;
+                window.isRecording = false;
+                if (_mic) {
+                    _mic.classList.remove('recording');
+                    _mic.classList.remove('active');
+                }
+                const cancelledTextInputArea = document.getElementById('text-input-area');
+                if (cancelledTextInputArea) {
+                    cancelledTextInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
+                if (typeof window.syncFloatingMicButtonState === 'function') {
+                    window.syncFloatingMicButtonState(false);
+                }
+                return false;
+            }
+            ownStream = microphoneOpenResult.stream;
 
             // 检查音频轨道状态
             const audioTracks = ownStream.getAudioTracks();
@@ -1773,7 +2014,12 @@
                 throw new Error('没有可用的音频轨道');
             }
 
-            const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);
+            const micStartCommitted = await startAudioWorklet(
+                ownStream,
+                micStartToken,
+                selectedMicrophoneIdAtStart,
+                microphoneSelectionGenerationAtStart
+            );
             if (!micStartCommitted) {
                 // Superseded or fail-closed while opening: the hardware is
                 // already torn down, so restore the pre-start UI and leave
@@ -1784,9 +2030,11 @@
                 // global, same as the S.* fields the unwind is careful about,
                 // and painting "not recording" over a window that is recording
                 // is the display-plane half of the same bug.
-                if (S.isRecording === true) {
-                    return;
+                if (hasLiveCommittedMicrophonePipeline()) {
+                    return true;
                 }
+                S.isRecording = false;
+                window.isRecording = false;
                 if (_mic) {
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
@@ -1801,7 +2049,25 @@
                 if (typeof window.syncFloatingMicButtonState === 'function') {
                     window.syncFloatingMicButtonState(false);
                 }
-                return;
+                // A normal cancellation has no device/worklet error to
+                // propagate, but the outer voice starter must distinguish it
+                // from a committed capture before publishing session success.
+                return false;
+            }
+            if (
+                microphoneOpenResult.fallbackFromMicrophoneId
+                && S.selectedMicrophoneId === microphoneOpenResult.fallbackFromMicrophoneId
+            ) {
+                applySystemDefaultMicrophoneSelection();
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.microphoneFallbackToDefault')
+                            : '所选麦克风无法使用，已自动切换到系统默认麦克风',
+                        6000,
+                        { important: true }
+                    );
+                }
             }
             if (S.gameVoiceSttGateActive) {
                 startGameVoiceSttGate();
@@ -1829,6 +2095,7 @@
             if (typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
+            return true;
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
             // A worklet setup failure already showed its own, more accurate

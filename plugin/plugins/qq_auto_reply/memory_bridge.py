@@ -73,10 +73,24 @@ class QQMemoryBridge:
             "subject_id": f"qq:{str(sender_id or '').strip()}",
         }
 
-    async def fetch_bootstrap_memory(self, her_name: str, *, timeout: float = 5.0) -> str:
+    async def fetch_bootstrap_memory(
+        self,
+        her_name: str,
+        *,
+        language: str | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        from utils.language_utils import is_supported_language_code
+
+        # Only a caller-supplied locale has explicit provenance.  With no
+        # session locale, omission lets /new_dialog restore durable state.
+        request_kwargs: dict[str, Any] = {"timeout": timeout}
+        if is_supported_language_code(language):
+            request_kwargs["params"] = {"language": language}
         client = self._client()
         response = await client.get(
-            f"{self._base_url()}/new_dialog/{her_name}", timeout=timeout,
+            f"{self._base_url()}/new_dialog/{her_name}",
+            **request_kwargs,
         )
         response.raise_for_status()
         return response.text.strip()
@@ -86,14 +100,25 @@ class QQMemoryBridge:
         her_name: str,
         *,
         subjects: list[dict[str, str]],
+        language: str | None = None,
         timeout: float = 5.0,
     ) -> str:
         if not subjects:
             return ""
+        from utils.language_utils import (
+            get_global_language_full,
+            is_supported_language_code,
+        )
+
+        prompt_language = (
+            language
+            if is_supported_language_code(language)
+            else get_global_language_full()
+        )
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-            json={"subjects": subjects},
+            json={"subjects": subjects, "language": prompt_language},
             timeout=timeout,
         )
         response.raise_for_status()
@@ -164,6 +189,9 @@ class QQMemoryBridge:
             request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
+        from utils.language_utils import get_global_language_full
+
+        request_payload["language"] = get_global_language_full()
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/query_memory/{her_name}",
@@ -218,10 +246,10 @@ class QQMemoryBridge:
             RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
         from config.prompts.prompts_memory import render_recall_entry_tag
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
 
-        lang = get_global_language()
+        lang = get_global_language_full()
         lines: list[str] = []
         for index, item in enumerate(results, start=1):
             text = str(item.get("text") or "").strip()
@@ -266,10 +294,14 @@ class QQMemoryBridge:
         return "\n".join(kept)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
+        # QQ currently has no explicit per-conversation locale; do not turn
+        # the host process fallback into durable user evidence.
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/{endpoint}/{her_name}",
-            json={"input_history": json.dumps(messages, ensure_ascii=False)},
+            json={
+                "input_history": json.dumps(messages, ensure_ascii=False),
+            },
             timeout=timeout,
         )
         response.raise_for_status()
@@ -364,7 +396,9 @@ class QQMemoryBridge:
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
-            json={"segments": payload_segments},
+            json={
+                "segments": payload_segments,
+            },
             timeout=timeout,
         )
         response.raise_for_status()

@@ -64,7 +64,10 @@ from memory.scopes import (
     subject_from_entry,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language, get_global_language_full
+from utils.language_utils import (
+    detect_prompt_language_with_ascii_fallback,
+    get_global_language_full,
+)
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -77,6 +80,18 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
+
+
+def _detect_fact_extraction_prompt_language(
+    text: str,
+    *,
+    ui_language: str | None = None,
+) -> str:
+    """Resolve Stage-1 prompt language without losing ASCII es/pt input."""
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language or get_global_language_full(),
+    )
 
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
@@ -1958,7 +1973,7 @@ class FactStore:
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
         archived_after_iso: str | None = None,
-    ) -> int:
+    ) -> int | None:
         """Move a subject's ``subject_archived_at`` rows back into facts.json.
 
         Inverse of `_archive_subject_facts`; absorbed-archived rows (no
@@ -2103,6 +2118,28 @@ class FactStore:
             return ''.join(parts)
         return str(content or '')
 
+    _PROMPT_TEXT_PART_TYPES = frozenset((None, 'text', 'input_text', 'output_text'))
+
+    @classmethod
+    def _message_locale_content(cls, content) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ''
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get('type') not in cls._PROMPT_TEXT_PART_TYPES:
+                continue
+            text = item.get('text')
+            if isinstance(text, str):
+                parts.append(text)
+        return '\n'.join(parts)
+
     @classmethod
     def _format_conversation(cls, messages: list, name_mapping: dict) -> str:
         """Serialize messages into the 'role | content' shape used by LLM prompts."""
@@ -2113,6 +2150,23 @@ class FactStore:
             if isinstance(content, (str, list)):
                 lines.append(f"{role} | {cls._flatten_message_content(content)}")
         return "\n".join(lines)
+
+    @classmethod
+    def _messages_locale_text(
+        cls,
+        messages: list,
+        *,
+        roles: frozenset[str] | None = None,
+    ) -> str:
+        """Return message bodies without generated speaker or segment labels."""
+        selected = [
+            cls._message_locale_content(getattr(message, 'content', ''))
+            for message in messages
+            if roles is None or getattr(message, 'type', '') in roles
+        ]
+        if roles is not None and not any(text.strip() for text in selected):
+            return cls._messages_locale_text(messages)
+        return "\n".join(selected)
 
     # 段首标记里不允许出现的结构字符：方括号 / 竖线 / 任何换行与制表。
     # speaker_label 是**用户可改**的原始数据（群名片），不中和的话
@@ -2345,6 +2399,20 @@ class FactStore:
             segments,
             omission_marker=omission_marker,
         )
+        return cls._render_capped_speaker_segments(
+            segments,
+            capped_bodies,
+            nonce=nonce,
+        )
+
+    @classmethod
+    def _render_capped_speaker_segments(
+        cls,
+        segments: list[dict],
+        capped_bodies: list[list[str]],
+        *,
+        nonce: str,
+    ) -> str:
         blocks = []
         for index, (segment, message_bodies) in enumerate(
             zip(segments, capped_bodies),
@@ -2358,6 +2426,68 @@ class FactStore:
                 lines.extend(f"| {line}" for line in body_lines[1:])
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
+
+    @classmethod
+    def _format_speaker_segments_with_locale(
+        cls,
+        segments: list[dict],
+        *,
+        nonce: str,
+        ui_lang: str,
+    ) -> tuple[str, str]:
+        locale_text = "\n".join(
+            cls._messages_locale_text(segment.get('messages') or [])
+            for segment in segments
+        )
+        lang = _detect_fact_extraction_prompt_language(
+            locale_text,
+            ui_language=ui_lang,
+        )
+
+        # Re-run the cap when its localized marker changes. Locale detection
+        # then sees the same retained head/tail bodies as the rendered prompt,
+        # without generated omission or multimodal markers.
+        capped_bodies: list[list[str]] = []
+        for _ in range(3):
+            omission_marker = get_scoped_batch_middle_omission_marker(lang)
+            capped_bodies = cls._cap_speaker_message_bodies(
+                segments,
+                omission_marker=omission_marker,
+            )
+            generated_markers = {omission_marker}
+            for segment in segments:
+                for message in segment.get('messages') or []:
+                    content = getattr(message, 'content', '')
+                    if not isinstance(content, list):
+                        continue
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = item.get('type')
+                        if item_type not in cls._PROMPT_TEXT_PART_TYPES:
+                            generated_markers.add(
+                                str(item.get('text', f"|{item_type or ''}|"))
+                            )
+            capped_locale_text = "\n".join(
+                body
+                for message_bodies in capped_bodies
+                for body in message_bodies
+            )
+            for marker in generated_markers:
+                capped_locale_text = capped_locale_text.replace(marker, '')
+            detected = _detect_fact_extraction_prompt_language(
+                capped_locale_text,
+                ui_language=ui_lang,
+            )
+            if detected == lang:
+                break
+            lang = detected
+
+        return lang, cls._render_capped_speaker_segments(
+            segments,
+            capped_bodies,
+            nonce=nonce,
+        )
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -2486,9 +2616,16 @@ class FactStore:
         if speaker_label:
             name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
+        prompt_lang = _detect_fact_extraction_prompt_language(
+            self._messages_locale_text(
+                messages,
+                roles=frozenset({'human', 'user'}),
+            ),
+            ui_language=get_global_language_full(),
+        )
 
         prompt = (
-            get_fact_extraction_prompt(get_global_language_full())
+            get_fact_extraction_prompt(prompt_lang)
             .replace('{CONVERSATION}', conversation_text)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
@@ -2531,12 +2668,12 @@ class FactStore:
         二次替换（后者尤其重要——那等于让攻击者把 nonce 印进自己的正文）。"""  # noqa: DOCSTRING_CJK
         # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
-        lang = get_global_language_full()
-        rendered_segments = await asyncio.to_thread(
-            self._format_speaker_segments,
+        ui_lang = get_global_language_full()
+        lang, rendered_segments = await asyncio.to_thread(
+            self._format_speaker_segments_with_locale,
             segments,
             nonce=nonce,
-            lang=lang,
+            ui_lang=ui_lang,
         )
         prompt = (
             get_fact_extraction_batch_prompt(lang)
@@ -3802,7 +3939,18 @@ class FactStore:
         if not budgeted_observations:
             return []
         obs_text = "\n".join(line for _, line in budgeted_observations)
-        prompt = get_signal_detection_prompt(get_global_language()) \
+        locale_text = "\n".join(
+            truncate_to_tokens(
+                f.get('text', '') or '',
+                EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+            )
+            for f in new_facts
+        )
+        prompt_lang = detect_prompt_language_with_ascii_fallback(
+            locale_text,
+            ui_language=get_global_language_full(),
+        )
+        prompt = get_signal_detection_prompt(prompt_lang) \
             .replace('{NEW_FACTS}', new_facts_text) \
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \
             .replace('{LANLAN_NAME}', lanlan_name)
@@ -4665,6 +4813,13 @@ class FactStore:
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
+        prompt_lang = _detect_fact_extraction_prompt_language(
+            self._messages_locale_text(
+                messages,
+                roles=frozenset({'ai', 'assistant'}),
+            ),
+            ui_language=get_global_language_full(),
+        )
 
         # Known pool 段渲染：按 importance DESC 排（最重要的在最前，给 LLM
         # 最强信号）。cap 已经在 caller 端做过，这里不重复。
@@ -4678,7 +4833,7 @@ class FactStore:
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
         prompt = (
-            get_fact_extraction_ai_aware_prompt(get_global_language_full())
+            get_fact_extraction_ai_aware_prompt(prompt_lang)
             .replace('{CONVERSATION}', conversation_text)
             .replace('{KNOWN_POOL}', known_block)
             .replace('{LANLAN_NAME}', lanlan_name)

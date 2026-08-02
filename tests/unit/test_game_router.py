@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -106,12 +106,48 @@ def test_badminton_removed_modes_are_not_public_or_scored():
 
 
 @pytest.mark.unit
+def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
+    manager = SimpleNamespace(user_language="zh-TW")
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_global_language_full",
+        lambda: "zh-CN",
+    )
+
+    assert gr_char_info._resolve_game_prompt_locale("Lan") == "zh-TW"
+    assert gr_char_info._resolve_game_prompt_language("Lan") == "zh"
+
+
+@pytest.mark.unit
+def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+        set_user_language=MagicMock(),
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    assert gr_char_info._absorb_request_language({"language": "en"}, "Lan") == "en"
+    manager.set_user_language.assert_called_once_with("en")
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["neko_initiated"] is False
+        assert kwargs["prompt_locale"] == "zh-TW"
         return gr_pregame._default_badminton_pregame_context(mode="duel"), "lightweight", ""
 
     _gr_patch_all(monkeypatch, "_build_badminton_pregame_context", fake_pregame_context)
@@ -119,7 +155,12 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
             "badminton",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "duel"}),
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "debug-badminton",
+                "mode": "duel",
+                "i18n_language": "zh-TW",
+            }),
         )
 
         assert result["ok"] is True
@@ -139,6 +180,7 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["game_type"] == "soccer"
+        assert kwargs["prompt_locale"] == "zh-TW"
         return gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
 
     _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", fake_pregame_context)
@@ -146,7 +188,11 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
             "soccer",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log"}),
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "soccer-auto-log",
+                "i18n_language": "zh-TW",
+            }),
         )
 
     assert result["ok"] is True
@@ -2333,9 +2379,12 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
         "base_url": "http://fake",
         "api_type": "local",
         "api_key": "key",
+        "user_language": "zh",
+        "user_language_full": "zh-TW",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
         return "", "recent_history_failed"
 
     async def fake_ai(**kwargs):
@@ -2365,6 +2414,75 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_soccer_pregame_uses_request_prompt_locale(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢踢球。",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
+        return "", ""
+
+    async def fake_ai(**kwargs):
+        assert kwargs["prompt_locale"] == "zh-TW"
+        return {"gameStance": "neutral_play"}
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
+
+    await gr_pregame._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_locale",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+        prompt_locale="zh-TW",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_pregame_uses_request_prompt_locale(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢打球。",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
+        return "", ""
+
+    async def fake_ai(**kwargs):
+        assert kwargs["prompt_template"] == "traditional-template"
+        return {"gameStance": "neutral_play"}
+
+    def fake_prompt(language):
+        assert language == "zh-TW"
+        return "traditional-template"
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_pregame_context_ai", fake_ai)
+    _gr_patch_all(monkeypatch, "get_badminton_pregame_context_prompt", fake_prompt)
+
+    await gr_pregame._build_badminton_pregame_context(
+        game_type="badminton",
+        session_id="match_locale",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+        prompt_locale="zh-TW",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",
@@ -2376,7 +2494,7 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
         "api_key": "key",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 来踢球", ""
 
     async def fake_ai(**_kwargs):
@@ -2412,7 +2530,7 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
         "api_key": "key",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 你这个笨蛋！", ""
 
     async def fake_ai(**_kwargs):
@@ -2449,6 +2567,7 @@ def test_game_archive_memory_payload_uses_system_note_shape():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "summary": "soccer 小游戏结束。最终/最近比分：玩家 1 : 4 Lan。",
         "game_memory_tail_count": 2,
         "soccer_game_memory_enabled": True,
@@ -2502,6 +2621,7 @@ def test_game_archive_memory_tail_uses_game_dialog_order_without_event_labels():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "summary": "soccer 小游戏结束。",
         "game_memory_tail_count": 4,
         "soccer_game_memory_enabled": True,
@@ -2539,6 +2659,7 @@ def test_game_archive_memory_prefers_final_score_over_oral_concession_text():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "summary": "soccer 小游戏结束。",
         "finalScore": {"player": 9, "ai": 20},
         "last_state": {"score": {"player": 99, "ai": 0}},
@@ -2568,6 +2689,7 @@ def test_game_archive_memory_prefers_explicit_score_text_for_horse_results():
         "game_type": "badminton",
         "session_id": "horse_1",
         "lanlan_name": "Neko",
+        "user_language": "zh-CN",
         "summary": "badminton 小游戏结束。",
         "finalScore": {
             "player": 3,
@@ -2689,6 +2811,7 @@ def test_memory_highlight_source_explains_game_event_text_is_not_user_speech():
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "last_state": {"score": {"player": 1, "ai": 2}},
         "soccer_game_memory_enabled": True,
         "soccer_game_memory_player_interaction_enabled": True,
@@ -2803,6 +2926,7 @@ def test_memory_highlight_prompt_rejects_bare_or_reversed_scores(monkeypatch):
         "game_type": "soccer",
         "session_id": "match_1",
         "lanlan_name": "Lan",
+        "user_language": "zh-CN",
         "last_state": {"score": {"player": 0, "ai": 10}},
         "full_dialogues": [],
     }))
@@ -3806,6 +3930,7 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
             "nekoInitiated": True,
             "nekoInviteText": "来踢球吧，玩家。",
             "gameMemoryTailCount": 3,
+            "i18n_language": "zh-TW",
         }),
     )
 
@@ -3825,6 +3950,8 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
     assert state["soccer_game_memory_archive_enabled"] is False
     assert state["soccer_game_memory_postgame_context_enabled"] is False
     assert state["game_memory_enabled"] is False
+    assert state["user_language"] == "zh-TW"
+    assert gr_archive._build_game_archive(state)["user_language"] == "zh-TW"
 
 
 @pytest.mark.unit
@@ -5383,7 +5510,7 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     assert len(session.create_response_calls) == 1
     assert "[Game Module Postgame Context]" in session.create_response_calls[0]
     assert "[Game Module Postgame Proactive Greeting]" in session.create_response_calls[0]
-    assert "不要继续扮演游戏仍在进行" in session.create_response_calls[0]
+    assert "do not keep acting as if the game is still in progress" in session.create_response_calls[0]
 
 
 class _FakePostgameState:

@@ -55,6 +55,7 @@ from .lifecycle import (
     VoiceTransportToken,
 )
 from .provider_policy import resolve_provider_policy
+from .speaker_shadow.contracts import SpeakerShadowObserver
 from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
@@ -106,6 +107,9 @@ class AsrRuntimeCallbacks:
     on_failure: Callable[[AsrFailureEvent], Awaitable[None]]
     on_status: Callable[[AsrStatusEvent], Awaitable[None]]
     on_lifecycle: Callable[[AsrLifecycleNotification], Awaitable[None]]
+
+
+SpeakerShadowFactory = Callable[[], SpeakerShadowObserver | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -974,16 +978,40 @@ class IndependentAsrRuntime:
         if self._asr_audio_dispatcher.active_turn == turn_token:
             return True
         self._asr_audio_sequence = 0
-        return self._asr_audio_dispatcher.activate(
+        payload = (
+            lifecycle.drain_active_start_audio()
+            if buffered_pcm16 is None
+            else buffered_pcm16
+        )
+        activated = self._asr_audio_dispatcher.activate(
             turn_token,
             session_ref,
-            (
-                lifecycle.drain_active_start_audio()
-                if buffered_pcm16 is None
-                else buffered_pcm16
-            ),
+            payload,
             sample_rate_hz=16_000,
         )
+        if activated:
+            self._observe_provider_speaker_shadow(
+                detector,
+                payload,
+                sample_rate_hz=16_000,
+            )
+        return activated
+
+    @staticmethod
+    def _observe_provider_speaker_shadow(
+        detector: DetectorRuntime,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> None:
+        try:
+            detector.observe_provider_audio(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+            )
+        except Exception:
+            # Observation never participates in ASR acceptance or failure.
+            return
 
     async def _ensure_smart_turn_ready(
         self,
@@ -1266,6 +1294,7 @@ class IndependentAsrRuntime:
         route_key: str,
         resource_optimization_enabled: bool,
         user_language: str | None = None,
+        speaker_shadow_factory: SpeakerShadowFactory | None = None,
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route.
 
@@ -1443,6 +1472,7 @@ class IndependentAsrRuntime:
             return candidate_session
 
         asr_session = None
+        detector_ref: DetectorRuntime | None = None
         connect_started_at = time.monotonic()
         try:
             max_attempts = policy.connect_max_attempts
@@ -1528,7 +1558,6 @@ class IndependentAsrRuntime:
                 (time.monotonic() - connect_started_at) * 1_000
             )
             lifecycle_ref = self._asr_lifecycle
-            detector_ref: DetectorRuntime | None = None
 
             async def on_detector_endpointing_failure() -> None:
                 if not self._asr_runtime_refs_match(
@@ -1566,18 +1595,24 @@ class IndependentAsrRuntime:
                 if not accepted:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
-            detector_ref = DetectorRuntime(
-                resource_optimization_enabled=(
-                    self._voice_input_resource_optimization_enabled
-                ),
-                provider_policy=policy,
-                on_endpointing_failure=(
-                    on_detector_endpointing_failure
-                    if _uses_smart_turn_endpointing(policy)
-                    else None
-                ),
-                on_event=on_detector_event,
-            )
+            speaker_shadow = self._create_speaker_shadow(speaker_shadow_factory)
+            try:
+                detector_ref = DetectorRuntime(
+                    resource_optimization_enabled=(
+                        self._voice_input_resource_optimization_enabled
+                    ),
+                    provider_policy=policy,
+                    on_endpointing_failure=(
+                        on_detector_endpointing_failure
+                        if _uses_smart_turn_endpointing(policy)
+                        else None
+                    ),
+                    on_event=on_detector_event,
+                    speaker_shadow=speaker_shadow,
+                )
+            except Exception:
+                await self._close_created_speaker_shadow(speaker_shadow)
+                raise
             self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate
             self._asr_transport_selection = selection
@@ -1616,10 +1651,22 @@ class IndependentAsrRuntime:
                 session_epoch=epoch,
             )
         except asyncio.CancelledError:
+            if detector_ref is not None and self._asr_detector is detector_ref:
+                self._asr_detector = None
+                try:
+                    await detector_ref.close()
+                except Exception:
+                    pass
             if asr_session is not None:
                 await self._close_asr_session(asr_session)
             raise
         except Exception:
+            if detector_ref is not None and self._asr_detector is detector_ref:
+                self._asr_detector = None
+                try:
+                    await detector_ref.close()
+                except Exception:
+                    pass
             if asr_session is not None:
                 await self._close_asr_session(asr_session)
             if operation_is_current():
@@ -1648,6 +1695,36 @@ class IndependentAsrRuntime:
                     session_epoch=epoch,
                 )
             return stale_result(provider)
+
+    def _create_speaker_shadow(
+        self,
+        factory: SpeakerShadowFactory | None,
+    ) -> SpeakerShadowObserver | None:
+        """Construct one lightweight observer without risking ASR startup."""
+
+        if factory is None:
+            return None
+        try:
+            # Model/process creation remains lazy inside the observer's first
+            # accepted submission.
+            return factory()
+        except Exception:
+            logger.warning(
+                "[%s] speaker shadow factory failed; continuing without observer",
+                self.display_name,
+            )
+            return None
+
+    @staticmethod
+    async def _close_created_speaker_shadow(
+        shadow: SpeakerShadowObserver | None,
+    ) -> None:
+        if shadow is None:
+            return
+        try:
+            await shadow.close()
+        except Exception:
+            return
 
     def _reset_asr_turn_state(self) -> None:
         """Reset per-turn bookkeeping shared by close/abort/error teardown."""
@@ -2014,6 +2091,11 @@ class IndependentAsrRuntime:
                     expected_identity=identity,
                 )
                 return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+            self._observe_provider_speaker_shadow(
+                detector,
+                payload,
+                sample_rate_hz=sample_rate_hz,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

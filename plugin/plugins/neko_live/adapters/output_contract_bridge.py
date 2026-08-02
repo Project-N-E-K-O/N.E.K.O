@@ -132,10 +132,27 @@ def metadata_for_request(
         "room_theme",
         "meme_hint_ids",
         "meme_hint_tags",
+        "delivery_intent",
+        # Forward-compatible delivery declarations. RFC #2491 is narrowed to
+        # generic per-cue TTL plus host-internal safety; it does not make
+        # lifecycle, compensation, delivery-key, or brief-cue fields into a
+        # host contract. Unknown metadata remains safe to ignore.
+        "interrupt_policy",
+        "compensation_text",
+        "delivery_key",
+        "brief_text",
     ):
         value = request.metadata.get(key)
         if isinstance(value, str) and value.strip():
             metadata[key] = value.strip()
+    for key in (
+        "candidate_ttl_seconds",
+        "delivery_ttl_seconds",
+        "compensation_ttl_seconds",
+    ):
+        value = request.metadata.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            metadata[key] = value
     if extra:
         metadata.update(extra)
     _sync_plugin_output_policy(metadata)

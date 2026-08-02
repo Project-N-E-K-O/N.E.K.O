@@ -20,6 +20,7 @@ from memory.persona.fusion import (
     ExternalMemoryImportTooLargeError,
 )
 from memory.facts import FactStore
+from utils.language_utils import get_global_language_full
 
 
 # ── routes 层 harness ────────────────────────────────────────────────
@@ -77,6 +78,21 @@ def wire(monkeypatch):
         monkeypatch.setattr(routes_mod.runtime, "_config_manager", object(), raising=False)
         monkeypatch.setattr(routes_mod, "assert_cloudsave_writable", lambda *a, **k: None)
         monkeypatch.setattr(routes_mod, "validate_lanlan_name", lambda n: n)
+        monkeypatch.setattr(
+            routes_mod.locale_state,
+            "allocate_character_prompt_locale_order",
+            lambda _name: 1,
+        )
+        monkeypatch.setattr(
+            routes_mod.locale_state,
+            "reserve_character_prompt_locale_order",
+            lambda _name, *, order: order,
+        )
+        monkeypatch.setattr(
+            routes_mod.locale_state,
+            "record_character_prompt_locale",
+            lambda *_args, **_kwargs: None,
+        )
     return _wire
 
 
@@ -92,7 +108,11 @@ def _daily_cand(source_file: str, event_date: str) -> dict:
     }
 
 
-def _request(extra_candidates: list | None = None) -> "routes_mod.ExternalMemoryImportRequest":
+def _request(
+    extra_candidates: list | None = None,
+    *,
+    language: str | None = None,
+) -> "routes_mod.ExternalMemoryImportRequest":
     return routes_mod.ExternalMemoryImportRequest(
         character_name="Neko",
         source_format="openclaw",
@@ -101,6 +121,7 @@ def _request(extra_candidates: list | None = None) -> "routes_mod.ExternalMemory
             _persona_cand("master", "likes tea"),
             _persona_cand("neko", "warm but direct"),
         ] + (extra_candidates or []),
+        language=language,
     )
 
 
@@ -126,6 +147,83 @@ async def test_persona_entities_fuse_concurrently(wire):
 
     assert result["status"] == "success"
     assert result["added_persona"] == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_extraction_keeps_request_locale(wire):
+    class _LocaleRecordingFactStore(_FakeFactStore):
+        language = None
+
+        async def aimport_external_daily(
+            self,
+            name,
+            candidates,
+            source_format,
+            imported_at,
+        ):
+            self.language = get_global_language_full()
+            return await super().aimport_external_daily(
+                name,
+                candidates,
+                source_format,
+                imported_at,
+            )
+
+    fact_store = _LocaleRecordingFactStore()
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 1, "skipped": 0, "fused": True},
+        }),
+        fact_store,
+    )
+
+    result = await routes_mod.import_external_markdown(
+        _request(
+            [_daily_cand("memory/2026-07-31.md", "2026-07-31")],
+            language="zh-TW",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert fact_store.language == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_external_import_persists_explicit_request_locale(
+    wire,
+    monkeypatch,
+):
+    wire(_FakePersonaManager({
+        "master": {"added": 1, "skipped": 0, "fused": True},
+        "neko": {"added": 1, "skipped": 0, "fused": True},
+    }))
+    recorded = []
+    allocated = []
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "allocate_character_prompt_locale_order",
+        lambda name: allocated.append(name) or 73,
+    )
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda name, *, order: order,
+    )
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "record_character_prompt_locale",
+        lambda name, language, *, order: recorded.append(
+            (name, language, order)
+        ),
+    )
+    result = await routes_mod.import_external_markdown(
+        _request(language="zh-TW")
+    )
+
+    assert result["status"] == "success"
+    assert allocated == ["Neko"]
+    assert recorded == [("Neko", "zh-TW", 73)]
 
 
 @pytest.mark.asyncio

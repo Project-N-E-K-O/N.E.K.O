@@ -61,6 +61,7 @@ function clearAvatarSidePanelHoverState(panel) {
     if (!panel) return;
     if (panel._collapseTimeout) { clearTimeout(panel._collapseTimeout); panel._collapseTimeout = null; }
     if (panel._hoverCollapseTimer) { clearTimeout(panel._hoverCollapseTimer); panel._hoverCollapseTimer = null; }
+    if (panel._visibilitySettledTimer) { clearTimeout(panel._visibilitySettledTimer); panel._visibilitySettledTimer = null; }
     if (typeof panel._stopHoverPointerTracking === 'function') panel._stopHoverPointerTracking();
 }
 
@@ -557,6 +558,35 @@ function dispatchAvatarPopupLifecycleEvent(eventName, buttonId, popup, prefix) {
             }
         }));
     } catch (_) {}
+    dispatchAvatarOverlayVisibilityChanged(prefix);
+}
+
+function dispatchAvatarOverlayVisibilityChanged(prefix) {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+    try {
+        window.dispatchEvent(new CustomEvent('neko-avatar-overlay-visibility-changed', {
+            detail: { prefix: prefix || '' }
+        }));
+    } catch (_) {}
+}
+
+function dispatchAvatarSidePanelVisibilityChanged(sidePanel) {
+    const ownerId = sidePanel && typeof sidePanel.getAttribute === 'function'
+        ? (sidePanel.getAttribute('data-neko-sidepanel-owner') || '')
+        : '';
+    const popupMarkerIndex = ownerId.indexOf('-popup-');
+    const prefix = popupMarkerIndex > 0 ? ownerId.slice(0, popupMarkerIndex) : '';
+    dispatchAvatarOverlayVisibilityChanged(prefix);
+}
+
+function scheduleAvatarSidePanelVisibilitySettled(sidePanel, visibilityRevision) {
+    if (!sidePanel) return;
+    if (sidePanel._visibilitySettledTimer) clearTimeout(sidePanel._visibilitySettledTimer);
+    sidePanel._visibilitySettledTimer = setTimeout(() => {
+        sidePanel._visibilitySettledTimer = null;
+        if (sidePanel._visibilityRevision !== visibilityRevision) return;
+        dispatchAvatarSidePanelVisibilityChanged(sidePanel);
+    }, AVATAR_POPUP_ANIMATION_DURATION_MS);
 }
 
 function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source) {
@@ -1635,6 +1665,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
 
         container.style.display = 'flex';
         container.style.pointerEvents = alreadyVisible ? 'auto' : 'none';
@@ -1655,6 +1686,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             container.style.display = 'none';
             container.style.pointerEvents = 'none';
             container._visibilityRevision = visibilityRevision + 1;
+            dispatchAvatarSidePanelVisibilityChanged(container);
             return false;
         }
 
@@ -1665,6 +1697,8 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             }
             container.style.opacity = '1';
             applyAvatarSidePanelTransform(container, 'none');
+            dispatchAvatarSidePanelVisibilityChanged(container);
+            scheduleAvatarSidePanelVisibilitySettled(container, visibilityRevision);
             if (alreadyVisible) {
                 container.style.pointerEvents = 'auto';
                 return;
@@ -1692,12 +1726,15 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
         if (container._interactionGuardTimer) { clearTimeout(container._interactionGuardTimer); container._interactionGuardTimer = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
         container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
+        dispatchAvatarSidePanelVisibilityChanged(container);
         container._collapseTimeout = setTimeout(() => {
             if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
                 container.style.display = 'none';
+                dispatchAvatarSidePanelVisibilityChanged(container);
             }
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
@@ -1987,6 +2024,7 @@ function createIntervalControl(manager, prefix, toggle) {
             container._expandFrameId = null;
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
 
         container.style.display = 'flex';
         container.style.pointerEvents = 'none';
@@ -2013,6 +2051,8 @@ function createIntervalControl(manager, prefix, toggle) {
             container.style.pointerEvents = 'auto';
             container.style.opacity = '1';
             applyAvatarSidePanelTransform(container, 'none');
+            dispatchAvatarSidePanelVisibilityChanged(container);
+            scheduleAvatarSidePanelVisibilitySettled(container, visibilityRevision);
         });
     };
 
@@ -2025,10 +2065,16 @@ function createIntervalControl(manager, prefix, toggle) {
             container._expandFrameId = null;
         }
         if (container._collapseTimeout) { clearTimeout(container._collapseTimeout); container._collapseTimeout = null; }
+        if (container._visibilitySettledTimer) { clearTimeout(container._visibilitySettledTimer); container._visibilitySettledTimer = null; }
+        container.style.pointerEvents = 'none';
         container.style.opacity = '0';
         applyAvatarSidePanelTransform(container, getAvatarSidePanelExitMotion(container));
+        dispatchAvatarSidePanelVisibilityChanged(container);
         container._collapseTimeout = setTimeout(() => {
-            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') container.style.display = 'none';
+            if (container._visibilityRevision === visibilityRevision && container.style.opacity === '0') {
+                container.style.display = 'none';
+                dispatchAvatarSidePanelVisibilityChanged(container);
+            }
             container._collapseTimeout = null;
         }, AVATAR_POPUP_ANIMATION_DURATION_MS);
     };

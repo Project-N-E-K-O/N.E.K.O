@@ -20,6 +20,7 @@ from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartStatus,
     IndependentAsrRuntime,
+    SpeakerShadowFactory,
 )
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
@@ -253,6 +254,7 @@ class AsrRuntimeMixin:
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
+        self._speaker_shadow_factory: SpeakerShadowFactory | None = None
         self._voice_input_resource_optimization_handshake_override: bool | None = None
         self._voice_input_resource_optimization_session_value: bool | None = None
         self._voice_input_noise_reduction_enabled = True
@@ -347,6 +349,8 @@ class AsrRuntimeMixin:
             self._last_hot_swap_rebind_drop_log_time = 0.0
         if not hasattr(self, "_independent_asr_handshake_override"):
             self._independent_asr_handshake_override = None
+        if not hasattr(self, "_speaker_shadow_factory"):
+            self._speaker_shadow_factory = None
         if not hasattr(
             self,
             "_voice_input_resource_optimization_handshake_override",
@@ -721,14 +725,17 @@ class AsrRuntimeMixin:
                 )
             )
             return
-        result = await self._asr_runtime.start(
-            route_key=core_type,
-            resource_optimization_enabled=resolved_optimization_value,
+        start_kwargs: dict[str, object] = {
+            "route_key": core_type,
+            "resource_optimization_enabled": resolved_optimization_value,
             # Session language follows the Core-tracked user language; the
             # asr_client factory maps it per provider and falls back to
             # automatic detection when it is unset or unsupported.
-            user_language=getattr(self, "user_language", None),
-        )
+            "user_language": getattr(self, "user_language", None),
+        }
+        if self._speaker_shadow_factory is not None:
+            start_kwargs["speaker_shadow_factory"] = self._speaker_shadow_factory
+        result = await self._asr_runtime.start(**start_kwargs)
         current_epoch = self._capture_ingress_token().session_epoch
         if not core_start_is_current():
             route_fields_still_ours = bool(

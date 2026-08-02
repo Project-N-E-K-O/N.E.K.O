@@ -21,6 +21,7 @@ unabsorbed-facts → pending-reflections synthesis pass.
 import asyncio
 
 from config import (
+    MEMORY_REFINE_CLUSTERS_PER_PASS,
     MEMORY_REFINE_CRON_INTERVAL_SECONDS,
     MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS,
     SCOPED_REFINE_CRON_INTERVAL_SECONDS,
@@ -28,6 +29,10 @@ from config import (
 
 from . import gates, runtime
 from ._shared import logger
+from .locale_state import (
+    aget_subject_prompt_locale,
+    run_with_character_prompt_locale,
+)
 from .gates import (
     _INITIAL_DELAY_PERSONA_REFINE,
     _INITIAL_DELAY_REFLECTION_REFINE,
@@ -44,6 +49,11 @@ def _scoped_prompt_trust_band(entry: dict) -> str:
 
 
 # ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
+
+_reflection_refine_subject_cursor: dict[
+    str,
+    tuple[str | None, str | None],
+] = {}
 
 
 async def _run_persona_refine_for_character(character: str) -> None:
@@ -145,13 +155,22 @@ async def _periodic_persona_refine_loop():
             continue
         for name in catgirl_names:
             try:
-                await _run_persona_refine_for_character(name)
+                await run_with_character_prompt_locale(
+                    name,
+                    _run_persona_refine_for_character,
+                    name,
+                )
             except Exception as e:
                 logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
 
 
-async def _run_reflection_refine_for_character(character: str) -> None:
+async def _run_reflection_refine_for_character(
+    character: str,
+    *,
+    subject=None,
+    max_clusters: int | None = None,
+) -> int:
     """Single-character reflection refine pass. The cluster may mix in absorbed
     facts of the same entity as a read-only information source (facts cannot be
     split/discarded/modified; the apply layer enforces this as a backstop)."""
@@ -160,6 +179,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
     )
     from memory.facts import safe_int_field
+    from memory.scopes import entry_matches_subject
     from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
@@ -172,11 +192,11 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     engine_ref = runtime.reflection_engine
     fs = runtime.fact_store
     if engine_ref is None or fs is None:
-        return
+        return 0
 
     refls = await engine_ref.aload_reflections(character, include_archived=False)
     if not refls:
-        return
+        return 0
     facts = await fs.aload_facts(character)
 
     candidates_by_entity: dict[str, list[dict]] = {}
@@ -192,6 +212,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
+            and entry_matches_subject(r, subject)
             and (
                 safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
                 or cooldown_elapsed(
@@ -205,11 +226,12 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             for f in facts
             if isinstance(f, dict) and f.get('entity') == entity
             and f.get('absorbed') and f.get('id')
+            and entry_matches_subject(f, subject)
         ]
         if entity_refls:  # 至少要有 reflection；fact 是只读补料
             candidates_by_entity[entity] = entity_refls + entity_facts
     if not candidates_by_entity:
-        return
+        return 0
 
     engine = MemoryRefineEngine(runtime._config_manager)
 
@@ -224,11 +246,17 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     async def _failure(cluster, cluster_hash):
         await engine_ref._abump_refine_attempts(character, cluster, cluster_hash)
 
+    subject_label = (
+        "legacy"
+        if subject is None
+        else f"{subject.key}/{subject.scope}"
+    )
     result = await engine.refine_pass(
         candidates_by_entity,
         apply_fn=_apply,
-        scope_label=f"reflection/{character}",
+        scope_label=f"reflection/{character}/{subject_label}",
         failure_fn=_failure,
+        max_clusters=max_clusters,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
         logger.info(
@@ -237,6 +265,95 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             f"resolved={result['clusters_resolved']}, "
             f"failed={result['clusters_failed']}"
         )
+    return result['clusters_resolved'] + result['clusters_failed']
+
+
+async def _run_reflection_refine_with_subject_locales(character: str) -> None:
+    engine_ref = runtime.reflection_engine
+    if engine_ref is None:
+        return
+    reflections = await engine_ref.aload_reflections(
+        character,
+        include_archived=False,
+    )
+    if not reflections:
+        return
+
+    from memory.scopes import is_legacy_private_entry, subject_from_entry
+    from utils.language_utils import language_context
+
+    subjects = []
+    seen_domains: set[tuple[str | None, str | None]] = set()
+    for reflection in reflections:
+        if not isinstance(reflection, dict):
+            continue
+        # Current scoped rows use their subject kind as ``entity`` and are
+        # handled by the dedicated scoped-refine loop.  Feeding those subjects
+        # into the legacy master/neko/relationship pass guarantees a full-file
+        # no-op scan for every subject.
+        if reflection.get('entity') not in {'master', 'neko', 'relationship'}:
+            continue
+        subject = subject_from_entry(reflection)
+        if subject is not None:
+            domain = (subject.key, subject.scope)
+        elif is_legacy_private_entry(reflection):
+            domain = (None, None)
+        else:
+            continue
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        subjects.append(subject)
+
+    if not subjects:
+        return
+
+    markers = [
+        (subject.key, subject.scope) if subject is not None else (None, None)
+        for subject in subjects
+    ]
+    cursor = _reflection_refine_subject_cursor.get(character)
+    if cursor in markers:
+        start = (markers.index(cursor) + 1) % len(subjects)
+        subjects = subjects[start:] + subjects[:start]
+
+    remaining = MEMORY_REFINE_CLUSTERS_PER_PASS
+    for subject in subjects:
+        if remaining <= 0:
+            break
+        selected_locale = None
+        if subject is not None:
+            try:
+                selected_locale = await aget_subject_prompt_locale(
+                    character,
+                    subject,
+                )
+            except Exception as locale_error:  # noqa: BLE001
+                logger.warning(
+                    f"[ReflectionRefine] {character}/{subject.key}: scoped "
+                    f"prompt locale 解析失败，使用角色 locale: {locale_error}"
+                )
+        if selected_locale:
+            with language_context(selected_locale):
+                attempts = await _run_reflection_refine_for_character(
+                    character,
+                    subject=subject,
+                    max_clusters=remaining,
+                )
+        else:
+            attempts = await _run_reflection_refine_for_character(
+                character,
+                subject=subject,
+                max_clusters=remaining,
+            )
+        attempts = int(attempts or 0)
+        if attempts:
+            remaining -= attempts
+            _reflection_refine_subject_cursor[character] = (
+                (subject.key, subject.scope)
+                if subject is not None
+                else (None, None)
+            )
 
 
 async def _periodic_reflection_refine_loop():
@@ -257,7 +374,11 @@ async def _periodic_reflection_refine_loop():
             continue
         for name in catgirl_names:
             try:
-                await _run_reflection_refine_for_character(name)
+                await run_with_character_prompt_locale(
+                    name,
+                    _run_reflection_refine_with_subject_locales,
+                    name,
+                )
             except Exception as e:
                 logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -321,6 +442,9 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
                 engine_ref, character, bucket.subject, cluster, cluster_hash,
             )
 
+    async def _prompt_locale(subject):
+        return await aget_subject_prompt_locale(character, subject)
+
     result = await lite.refine_pass(
         buckets,
         apply_fn=_apply,
@@ -329,6 +453,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
         start_after=_scoped_refine_cursor.get(character),
         # prompt 只看 coarse band；精确值仅供 apply 的代码侧 margin 仲裁。
         trust_of=_scoped_prompt_trust_band,
+        prompt_locale_resolver=_prompt_locale,
     )
     if result.get('served') is not None:
         _scoped_refine_cursor[character] = result['served']
@@ -354,7 +479,11 @@ async def _run_scoped_refine_round(catgirl_names: list[str]) -> None:
     rotation = names[start:] + names[:start]
     for name in rotation:
         try:
-            served = await _run_scoped_refine_for_character(name)
+            served = await run_with_character_prompt_locale(
+                name,
+                _run_scoped_refine_for_character,
+                name,
+            )
         except Exception as e:
             logger.warning(f"[ScopedRefine] {name} cron 异常: {e}")
             continue
@@ -439,7 +568,11 @@ async def _periodic_reflection_synthesis_loop():
             try:
                 results = []
                 try:
-                    results += await runtime.reflection_engine.synthesize_reflections(name)
+                    results += await run_with_character_prompt_locale(
+                        name,
+                        runtime.reflection_engine.synthesize_reflections,
+                        name,
+                    )
                 except Exception as legacy_error:
                     # 两遍隔离：legacy 侧的持久失败（例如手改出的无 id
                     # 事实让 sorted(f['id']) 抛错）不得饿死 scoped 侧——
@@ -454,7 +587,13 @@ async def _periodic_reflection_synthesis_loop():
                     runtime.reflection_engine, 'synthesize_scoped_reflections', None,
                 )
                 if callable(scoped_synth):
-                    results += await scoped_synth(name, max_subjects=1)
+                    results += await run_with_character_prompt_locale(
+                        name,
+                        scoped_synth,
+                        name,
+                        max_subjects=1,
+                        subject_locale_resolver=aget_subject_prompt_locale,
+                    )
                 if results:
                     logger.info(
                         f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 reflection"

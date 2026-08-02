@@ -732,9 +732,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
         try:
             import httpx
             from config import MEMORY_SERVER_PORT
+            # WeChat has no explicit per-conversation locale.  Omitting the
+            # process fallback lets Memory Server restore the durable locale.
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.get(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
                 )
                 if response.is_success:
                     memory = response.text.strip()
@@ -751,7 +753,10 @@ class WechatIntegrationPlugin(NekoPluginBase):
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
-            payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+            # Do not persist the process fallback as user-declared evidence.
+            payload = {
+                "input_history": json.dumps(messages, ensure_ascii=False),
+            }
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{her_name}",
@@ -774,7 +779,10 @@ class WechatIntegrationPlugin(NekoPluginBase):
             # /settle with an empty increment performs compression/review for
             # cached turns.  Passing the in-memory session history to /process
             # would append the same messages to recent history and SQLite again.
-            payload = {"input_history": json.dumps([], ensure_ascii=False)}
+            # Locale is likewise omitted because WeChat did not declare one.
+            payload = {
+                "input_history": json.dumps([], ensure_ascii=False),
+            }
             async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/settle/{her_name}",

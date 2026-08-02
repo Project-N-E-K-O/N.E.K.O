@@ -121,6 +121,8 @@ MANAGED_MEMORY_FILENAMES = (
     # 全去重天的 processed 指纹，若它随云同步而 facts 回滚（或反之）会与账本失配，
     # 故一起 hash/上传/删除/恢复（缺失文件在各遍历处 is_file/exists 判断跳过）。
     "external_import_state.json",
+    "prompt_locale.json",
+    "scoped_prompt_locales.json",
     "persona.json",
     "persona_corrections.json",
     "reflections.json",

@@ -5686,7 +5686,7 @@ def test_blocked_route_refuses_to_open_the_microphone():
     start_fn = capture_source.split("async function startMicCapture() {", 1)[1]
     head = start_fn.split("const _mic = micButton();", 1)[0]
     assert "S.voiceInputRouteBlocked === true" in head
-    assert "return;" in head
+    assert "return false;" in head
 
     # A refused start must unwind the starting-voice UI rather than throw --
     # throwing would replace the accurate ASR toast with a generic failure.
@@ -5806,6 +5806,74 @@ def test_auto_restart_does_not_claim_success_on_a_blocked_route():
     assert "resetSessionButton(); if (_rsB) _rsB.disabled = false;" in restart
 
 
+def test_auto_restart_unwinds_a_cancelled_microphone_start():
+    # startMicCapture returns false for an ownership cancellation. The restart's
+    # backend session has already been accepted by then, so it must enter the
+    # common teardown without showing a generic failure toast or continuing to
+    # the floating-control/restartComplete success path.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    restart = websocket_source.split("await sessionStartPromise;", 1)[1].split(
+        "} catch (error) {", 1
+    )[0]
+    restart_code = _code_only(restart)
+    await_marker = "microphoneStarted = await window.startMicCapture();"
+    cancellation_marker = "if (microphoneStarted !== true) {"
+    success_marker = "window.syncFloatingMicButtonState(true)"
+    assert await_marker in restart_code
+    assert cancellation_marker in restart_code
+    assert restart_code.index(await_marker) < restart_code.index(cancellation_marker)
+    assert restart_code.index(cancellation_marker) < restart_code.index(success_marker)
+    assert "microphoneStartCancelled.microphoneStartCancelled = true;" in restart_code
+    assert "throw microphoneStartCancelled;" in restart_code
+
+    catch = websocket_source.split("} catch (error) {", 1)[1].split(
+        "}, 7500);", 1
+    )[0]
+    catch_code = _code_only(catch)
+    assert "error && error.microphoneStartCancelled" in catch_code
+    assert "if (!isMicrophoneStartCancelled" in catch_code
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in catch_code
+    assert "window.syncFloatingMicButtonState(false)" in catch_code
+
+
+def test_microphone_switch_requires_a_live_committed_replacement():
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    select_fn = _code_only(
+        _block_after(capture_source, "async function selectMicrophone(deviceId) {")
+    )
+    await_marker = "const microphoneStarted = await startMicCapture();"
+    success_marker = "if (microphoneStarted === true) {"
+    retry_marker = "const latestSelectionNeedsRetry = ("
+    assert "while (true) {" in select_fn
+    assert await_marker in select_fn
+    assert success_marker in select_fn
+    assert retry_marker in select_fn
+    assert select_fn.index(await_marker) < select_fn.index(success_marker)
+    assert select_fn.index(success_marker) < select_fn.index(retry_marker)
+    retry_condition = select_fn.split(retry_marker, 1)[1].split(");", 1)[0]
+    assert (
+        "microphoneSelectionGeneration !== selectionGenerationForRestart"
+        in retry_condition
+    )
+    assert "micStartGeneration === expectedRestartGeneration" in retry_condition
+    assert "S.voiceInputRouteBlocked !== true" in retry_condition
+    assert select_fn.index(retry_marker) < select_fn.index(
+        "await window.startScreenSharing();"
+    )
+
+    start_fn = _code_only(
+        _block_after(capture_source, "async function startMicCapture() {")
+    )
+    assert "let microphoneSelectionGeneration = 0;" in capture_source
+    assert "microphoneSelectionGeneration += 1;" in capture_source
+    assert len(re.findall(r"S\.selectedMicrophoneId\s*=(?!=)", capture_source)) == 1, (
+        "all microphone-selection writes must go through the generation-tracked helper"
+    )
+    assert start_fn.count("if (hasLiveCommittedMicrophonePipeline()) {") == 2
+    assert start_fn.count("S.isRecording = false;") >= 2
+    assert start_fn.count("window.isRecording = false;") >= 2
+
+
 def test_in_flight_microphone_start_is_cancellable():
     # Codex P2. S.isRecording only flips at the END of startAudioWorklet, after
     # getUserMedia() and audioWorklet.addModule() have both awaited, so every
@@ -5834,10 +5902,21 @@ def test_in_flight_microphone_start_is_cancellable():
 
     # ...and the commit is gated on it.
     worklet = _block_after(
-        capture_source, "async function startAudioWorklet(mediaStream, startToken) {"
+        capture_source,
+        "async function startAudioWorklet(\n"
+        "        mediaStream,\n"
+        "        startToken,\n"
+        "        selectedMicrophoneIdAtStart,\n"
+        "        microphoneSelectionGenerationAtStart\n"
+        "    ) {",
     )
     assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
+    assert "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart" in worklet
+    assert (
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+        in worklet
+    )
     # TWO gates on that token, and both are load-bearing. The entry gate stops
     # an attempt that was superseded while still in getUserMedia from running
     # the old-pipeline teardown below it, which would close the WINNER's
@@ -5845,6 +5924,12 @@ def test_in_flight_microphone_start_is_cancellable():
     assert worklet.count("startToken !== micStartGeneration") == 2, (
         "expected an entry gate and a commit gate on the start token"
     )
+    assert worklet.count(
+        "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart"
+    ) == 2, "expected both gates to enforce microphone-selection ownership"
+    assert worklet.count(
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+    ) == 2, "expected both gates to preserve intermediate selection changes"
     assert worklet.index("superseded before opening") < worklet.index(
         "await previousContext.close()"
     ), "the entry gate must precede the old-pipeline teardown it protects"
@@ -5873,9 +5958,13 @@ def test_in_flight_microphone_start_is_cancellable():
     # before the token gate, where a loser whose getUserMedia settled last
     # could take the slot and then null it out from under the winner), so the
     # handoff goes through the local binding.
+    assert "const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;" in start_code_only
+    compact_start_code = "".join(start_code_only.split())
     assert (
-        "const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);"
-        in start_code_only
+        "constmicStartCommitted=awaitstartAudioWorklet("
+        "ownStream,micStartToken,selectedMicrophoneIdAtStart,"
+        "microphoneSelectionGenerationAtStart);"
+        in compact_start_code
     )
     assert "if (!micStartCommitted) {" in start_code_only
     # ...and the bail happens before every success-path side effect.

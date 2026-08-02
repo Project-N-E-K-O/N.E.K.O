@@ -109,6 +109,17 @@ def _append(runtime: Any, item: dict[str, Any]) -> None:
         timeline.append(item)
     except Exception:
         pass
+    # Mirror to the runtime log. This is the single choke point for timeline
+    # records, and every field here is already sanitized (HMAC uid, allowlisted
+    # reason), so the log inherits those guarantees rather than re-deriving
+    # them. Diagnostics must never break the live path.
+    runtime_log = getattr(runtime, "runtime_log", None)
+    if runtime_log is None:
+        return
+    try:
+        runtime_log.note(runtime, item)
+    except Exception:
+        pass
 
 
 def _opaque_uid(runtime: Any, value: Any) -> str:

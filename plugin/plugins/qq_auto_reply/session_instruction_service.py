@@ -10,7 +10,7 @@ from config.prompts.prompts_sys import (
     get_context_summary_ready,
 )
 from main_logic.core import apply_role_placeholders
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language, get_global_language_full
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
@@ -257,7 +257,7 @@ class QQSessionInstructionService:
         except Exception:
             normalize_language_code = None
 
-        user_language = get_global_language()
+        user_language = get_global_language_full()
         short_language = (
             normalize_language_code(user_language, format="short")
             if normalize_language_code else user_language
@@ -626,6 +626,7 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,
+                    language=locale,
                 )
                 if not bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -652,6 +653,7 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,
+                    language=locale,
                 )
                 if not bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -662,7 +664,9 @@ class QQSessionInstructionService:
                     # 时丢弃已读回的数据。
                     return ""
             else:
-                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
+                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(
+                    her_name,
+                )
             if not memory_context:
                 return ""
             # 走本地化静态层（与其余 prompt 段同一条解析路径）：裸 format

@@ -372,6 +372,102 @@ async def test_refine_pass_single_llm_call_and_no_cross_bucket_text():
 
 
 @pytest.mark.asyncio
+async def test_refine_pass_restores_served_subject_prompt_locale(monkeypatch):
+    from config.prompts import prompts_memory
+    from utils.language_utils import language_context
+
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(f"a{i}", f"A群文本{i}", GROUP_A, va if i % 2 else vb)
+        for i in range(8)
+    ]
+    buckets = gather_scoped_refine_buckets({}, entries)
+    requested = []
+    prompt_locales = []
+
+    async def _resolve_locale(subject):
+        requested.append(subject)
+        return "zh-TW"
+
+    def _prompt_for(locale):
+        prompt_locales.append(locale)
+        return "{CLUSTER}\n{COUNT}"
+
+    async def _apply(*_args):
+        return 1
+
+    monkeypatch.setattr(
+        prompts_memory,
+        "get_scoped_memory_refine_prompt",
+        _prompt_for,
+    )
+    with (
+        language_context("zh-CN"),
+        patch(
+            'utils.llm_client.create_chat_llm_async',
+            AsyncMock(return_value=_make_llm([])),
+        ),
+    ):
+        await engine.refine_pass(
+            buckets,
+            apply_fn=_apply,
+            scope_label='scoped/t',
+            prompt_locale_resolver=_resolve_locale,
+        )
+
+    assert requested == [GROUP_A]
+    assert prompt_locales == ["zh-TW"]
+
+
+@pytest.mark.asyncio
+async def test_refine_prompt_detects_english_cluster_under_zh_tw_ui(monkeypatch):
+    from config.prompts import prompts_memory
+    from utils.language_utils import language_context
+
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(
+            f"a{i}",
+            f"The user prefers quiet mornings {i}",
+            GROUP_A,
+            va if i % 2 else vb,
+        )
+        for i in range(8)
+    ]
+    buckets = gather_scoped_refine_buckets({}, entries)
+    prompt_locales = []
+
+    def _prompt_for(locale):
+        prompt_locales.append(locale)
+        return "{CLUSTER}\n{COUNT}"
+
+    async def _apply(*_args):
+        return 1
+
+    monkeypatch.setattr(
+        prompts_memory,
+        "get_scoped_memory_refine_prompt",
+        _prompt_for,
+    )
+    with (
+        language_context("zh-TW"),
+        patch(
+            "utils.llm_client.create_chat_llm_async",
+            AsyncMock(return_value=_make_llm([])),
+        ),
+    ):
+        await engine.refine_pass(
+            buckets,
+            apply_fn=_apply,
+            scope_label="scoped/t",
+        )
+
+    assert prompt_locales == ["en"]
+
+
+@pytest.mark.asyncio
 async def test_refine_pass_llm_config_is_lite():
     """Pin the cost contract: summary tier, extra_body OMITTED (= the
     provider-dialect thinking-off default), short timeout. A wrong
@@ -516,6 +612,42 @@ async def test_refine_pass_failure_calls_failure_fn():
         )
     assert result['failed'] == 1
     assert len(failures) == 1
+
+
+@pytest.mark.asyncio
+async def test_refine_pass_locale_resolver_failure_does_not_bump_attempts():
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(f"a{i}", f"文本{i}", GROUP_A, va if i % 2 else vb)
+        for i in range(8)
+    ]
+    failures = []
+
+    async def _apply(*_args):
+        return 1
+
+    async def _failure(_bucket, _cluster, cluster_hash):
+        failures.append(cluster_hash)
+
+    async def _broken_locale(_subject):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+    with patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=_make_llm([])),
+    ):
+        result = await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply,
+            scope_label="t",
+            failure_fn=_failure,
+            prompt_locale_resolver=_broken_locale,
+        )
+
+    assert result["resolved"] == 1
+    assert result["failed"] == 0
+    assert failures == []
 
 
 @pytest.mark.asyncio
@@ -1907,7 +2039,7 @@ def test_scoped_refine_prompt_locales_and_placeholders():
         # 水印分隔符全 locale 保持简体（既有约定）。
         assert "======以下为记忆群组======" in tmpl, lang
         assert "======以上为记忆群组======" in tmpl, lang
-        # merge 单件套：本体四件套的другие action 不得进 lite prompt。
+        # merge 单件套：本体四件套的其他 action 不得进 lite prompt。
         assert '"action": "merge"' in tmpl, lang
         assert '"split"' not in tmpl, lang
 
@@ -1930,26 +2062,48 @@ def test_scoped_refine_loop_gated_on_powerful_memory():
     assert "_ais_powerful_memory_enabled" in src
 
 
+def test_scoped_refine_runner_wires_subject_locale_resolver():
+    import inspect
+    from app.memory_server import refine_loops
+
+    src = inspect.getsource(refine_loops._run_scoped_refine_for_character)
+    assert "aget_subject_prompt_locale(character, subject)" in src
+    assert "prompt_locale_resolver=_prompt_locale" in src
+
+
 @pytest.mark.asyncio
 async def test_scoped_refine_round_caps_calls_and_rotates_characters(monkeypatch):
     """One global round serves at most one character and rotates fairly."""
     from app.memory_server import refine_loops
 
     calls = []
+    locale_contexts = []
     served = {"甲": False, "乙": True, "丙": True}
 
     async def _fake_run(name):
         calls.append(name)
         return served[name]
 
+    async def _with_locale(name, operation, *args):
+        locale_contexts.append(name)
+        return await operation(*args)
+
     monkeypatch.setattr(refine_loops, "_run_scoped_refine_for_character", _fake_run)
+    monkeypatch.setattr(
+        refine_loops,
+        "run_with_character_prompt_locale",
+        _with_locale,
+    )
     monkeypatch.setattr(refine_loops, "_scoped_refine_character_cursor", None)
 
     await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
     assert calls == ["甲", "乙"]
+    assert locale_contexts == ["甲", "乙"]
     assert refine_loops._scoped_refine_character_cursor == "乙"
 
     calls.clear()
+    locale_contexts.clear()
     await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
     assert calls == ["丙"]
+    assert locale_contexts == ["丙"]
     assert refine_loops._scoped_refine_character_cursor == "丙"

@@ -65,6 +65,105 @@ Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.
 
+## Realtime voice escape hatches
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEKO_REALTIME_ARBITER_FAIL_OPEN` | unset (off) | Changes what the realtime response arbiter does when a response cannot reach a terminal state. By default it tears the realtime WebSocket down, which the user sees as a disconnect and session rebuild. Set to `1`, `true`, `yes`, or `on` to end only the stuck turn and keep the connection. Read once when a voice session's client is constructed, so a change needs a restart. |
+
+Leave this unset unless you are actually hitting the failure. The default
+exists because the arbiter escalates precisely when its own bookkeeping about
+which response owns the connection has become untrustworthy, and continuing on
+a connection in that state can produce overlapping responses.
+
+The symptom worth setting it for is repeated disconnect-and-rebuild during
+voice conversation, with backend logs carrying:
+
+```text
+response arbiter failing closed: <reason> (current=... owner=... queue_depth=...)
+```
+
+That line distinguishes an arbiter-initiated teardown from an upstream
+provider disconnect — absent it, the disconnect came from somewhere else and
+this variable will not help.
+
+### It still tears down sometimes, on purpose
+
+Keeping the connection is only defensible when the transport is still usable
+**and** the arbiter can still tell whose events are whose. When either half
+fails it tears down anyway and logs why:
+
+```text
+response arbiter cannot keep the connection (<blocker>); failing closed despite the escape hatch
+```
+
+Seeing that with the variable set is expected behaviour, not a broken switch.
+The blockers are:
+
+| Blocker | Meaning |
+| --- | --- |
+| the queue consumer is suspended inside a transport write | Nothing the arbiter does to its own state unwinds that wait, and closing the transport is what releases it. |
+| a transport write just failed | The connection refused a send moments earlier; on the fatal branch it has already dropped its socket. |
+| the abandoned response has no id to attribute later events by | Its `response.create` reached the provider, so it may still be announced — and without an id that announcement is indistinguishable from the next turn's. |
+| an announced server-VAD response has no id yet | The same, for a response the provider announced but has not yet identified. |
+| an unowned response is live with no id at all | A response nobody requested announced itself without an id. Nothing identifies it, so its terminal cannot be told from the next turn's and would end whichever turn holds the lane by then. |
+
+If every escalation in your logs carries one of these, the variable is working
+as designed and the disconnects have a different cause — attach those lines to
+the report rather than assuming the switch had no effect.
+
+### What it cannot protect you from
+
+The blockers above cover what the arbiter can *see*. One thing it cannot:
+whether the events that follow will carry a response id at all.
+
+A provider that identifies its `response.created` but omits the id from the
+events after it puts the arbiter in a position with no good answer. The
+abandoned response's late audio, text and — worst — tool calls are then
+indistinguishable from the next turn's, so they are delivered as the next
+turn's. Keeping the connection is what exposes this: the default teardown
+takes the socket with it, and those late events never arrive.
+
+The window is bounded, though — an earlier version of this note claimed it
+could not be narrowed at all, and that was wrong. A release only happens when
+the abandoned response HAD an id, and ids come only from `response.created`,
+so any provider that can reach this state does announce identified responses.
+The successor's own announcement therefore always arrives before the
+successor's id-less events, on one ordered socket. The leak is confined to the
+gap between the release and that announcement.
+
+Tool calls are gated in exactly that gap, because a leaked sentence is wrong
+words while a leaked tool call is a side effect executed for a turn nobody is
+having. You will see:
+
+```text
+quarantined an id-less tool call arriving after a stuck-turn release
+```
+
+Audio and text are deliberately NOT gated there: suppressing them risks a mute
+host on a provider that never announces the successor, which is a worse
+failure than a stray half-sentence. So if you enable this on a provider whose
+streaming events lack `response_id`, still treat a stuck turn as possibly
+leaking its remaining words into the next one — just not its side effects.
+Tracked in issue #2611.
+
+### A third line: kept, but nothing was released
+
+Some escalations are raised over a response the arbiter never owned — a
+server-initiated one it can only cancel blindly. There is no turn to give up
+there, so the transport survives but the lane stays held by that response:
+
+```text
+response arbiter kept the transport but had no lifecycle to release: <reason> (lane held by server response ids: ..., queue_depth=N); the lane reopens when their terminal events arrive, or after 60s if none do
+```
+
+This is a delay, not a wedge, and in the common case a short one — the lane
+reopens the moment that response's terminal arrives. The full 60s only elapses
+when the terminal is lost outright. The ids are not retired early on purpose:
+the arbiter has no per-response activity signal, so it cannot tell a lost
+terminal from a response that is simply still speaking, and dispatching over a
+live one costs a silently dropped turn.
+
 ## Storage and local vectors
 
 | Variable | Meaning |

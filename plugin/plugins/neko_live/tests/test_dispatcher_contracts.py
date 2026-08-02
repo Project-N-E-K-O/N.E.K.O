@@ -17,6 +17,153 @@ from plugin.plugins.neko_live.core.contracts import (
 from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
 from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
 
+
+@pytest.mark.asyncio
+async def test_dispatcher_queues_replaceable_hidden_passive_room_context():
+    class Plugin:
+        def __init__(self):
+            self.kwargs = None
+            self.ctx = SimpleNamespace(_current_lanlan="TestCat")
+
+        def push_message(self, **kwargs):
+            self.kwargs = kwargs
+
+    plugin = Plugin()
+
+    result = await NekoDispatcher(plugin).push_ambient_room_context(
+        "recent room facts",
+        session_key="7:room-42",
+    )
+
+    assert result == (
+        "ambient_context_submitted(target=TestCat, expired=false, confirmed=false)"
+    )
+    assert plugin.kwargs["source"] == "neko_live"
+    assert plugin.kwargs["visibility"] == []
+    assert plugin.kwargs["ai_behavior"] == "read"
+    assert plugin.kwargs["priority"] == 2
+    assert plugin.kwargs["coalesce_key"] == "neko_live:ambient_room:TestCat"
+    assert plugin.kwargs["metadata"]["delivery_intent"] == "passive_context"
+    assert plugin.kwargs["metadata"]["context_expired"] is False
+    assert plugin.kwargs["metadata"]["ambient_expired"] is False
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_uses_one_ambient_key_across_live_sessions():
+    class Plugin:
+        def __init__(self):
+            self.keys = []
+            self.ctx = SimpleNamespace(_current_lanlan="TestCat")
+
+        def push_message(self, **kwargs):
+            self.keys.append(kwargs["coalesce_key"])
+
+    plugin = Plugin()
+    dispatcher = NekoDispatcher(plugin)
+
+    await dispatcher.push_ambient_room_context("old", session_key="7:room-42")
+    await dispatcher.push_ambient_room_context(
+        "expired", session_key="7:room-42", expired=True
+    )
+    await dispatcher.push_ambient_room_context("new", session_key="8:room-99")
+
+    assert plugin.keys == ["neko_live:ambient_room:TestCat"] * 3
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_uses_replaceable_overlay_for_live_scene_restore():
+    class Plugin:
+        def __init__(self):
+            self.messages = []
+            self.ctx = SimpleNamespace(_current_lanlan="TestCat")
+
+        def push_message(self, **kwargs):
+            self.messages.append(kwargs)
+
+    plugin = Plugin()
+    dispatcher = NekoDispatcher(plugin)
+
+    await dispatcher.push_context_instructions("live scene")
+    await dispatcher.push_context_restore("normal scene")
+
+    assert len(plugin.messages) == 2
+    injected, restored = plugin.messages
+    assert injected["coalesce_key"] == "neko_live:live_scene:TestCat"
+    assert restored["coalesce_key"] == injected["coalesce_key"]
+    assert injected["metadata"]["delivery_intent"] == "passive_context"
+    assert injected["metadata"]["context_expired"] is False
+    assert restored["metadata"]["context_expired"] is True
+    assert all(message["visibility"] == [] for message in plugin.messages)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_keeps_solo_danmaku_on_immediate_response_path():
+    class Plugin:
+        def __init__(self):
+            self.kwargs = None
+            self.ctx = SimpleNamespace(_current_lanlan="TestCat")
+
+        def push_message(self, **kwargs):
+            self.kwargs = kwargs
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(
+            uid="42",
+            nickname="viewer",
+            danmaku_text="hello",
+            source="live_danmaku",
+            live_mode="solo_stream",
+        ),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="reply prompt",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=False,
+    )
+
+    result = await NekoDispatcher(plugin).push_roast(request)
+
+    assert result.startswith("queued_to_neko")
+    assert plugin.kwargs["ai_behavior"] == "respond"
+    assert plugin.kwargs["coalesce_key"] == ""
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_keeps_selected_co_stream_danmaku_on_active_response_path():
+    class Plugin:
+        def __init__(self):
+            self.kwargs = None
+            self.ctx = SimpleNamespace(_current_lanlan="TestCat")
+
+        def push_message(self, **kwargs):
+            self.kwargs = kwargs
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(
+            uid="42",
+            nickname="viewer",
+            danmaku_text="hello",
+            source="live_danmaku",
+            live_mode="co_stream",
+        ),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="bounded co-stream reply",
+        live_mode="co_stream",
+        strength="normal",
+        allow_avatar_image=False,
+    )
+
+    result = await NekoDispatcher(plugin).push_roast(request)
+
+    assert result.startswith("queued_to_neko")
+    assert plugin.kwargs["ai_behavior"] == "respond"
+    assert "delivery_intent" not in plugin.kwargs["metadata"]
+
+
 def test_output_contract_bridge_maps_manual_live_simulation_like_live_danmaku():
     avatar_request = InteractionRequest(
         event=ViewerEvent(uid="42", nickname="viewer", source="manual_live_simulation", live_mode="solo_stream"),
@@ -536,6 +683,7 @@ async def test_dispatcher_does_not_force_safe_reply_for_verified_gift_event():
     assert plugin.metadata["response_module_hint"] == "live_support_events"
     assert "forced_reply_reason" not in plugin.metadata
     assert plugin.parts[0]["text"].startswith("verified gift thanks prompt")
+    assert "begin with an explicit thank-you" in plugin.parts[0]["text"]
 
 
 @pytest.mark.asyncio

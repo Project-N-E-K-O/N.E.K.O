@@ -13,7 +13,7 @@
 | `GET` | `/api/memory/recent_files` | 列出近期记忆的逻辑文件名 |
 | `GET` | `/api/memory/recent_file` | 读取一个近期记忆文件 |
 | `POST` | `/api/memory/recent_file/save` | 替换一个角色的近期记忆历史 |
-| `POST` | `/api/memory/update_catgirl_name` | 重命名角色的记忆存储 |
+| `POST` | `/api/memory/update_catgirl_name` | 完整角色改名事务的兼容别名 |
 | `GET` | `/api/memory/review_config` | 读取近期记忆自动复核开关 |
 | `POST` | `/api/memory/review_config` | 更新近期记忆自动复核开关 |
 | `GET` | `/api/memory/powerful_memory_config` | 读取强力记忆开关 |
@@ -49,9 +49,13 @@
 
 ```json
 {
-  "content": "[{\"type\":\"human\",\"data\":{...}}]"
+  "content": "[{\"type\":\"human\",\"data\":{...}}]",
+  "fingerprint": "b4c1000000000000000000000000000000000000000000000000000000000000",
+  "identity_token": "a7e3111111111111111111111111111111111111111111111111111111111111"
 }
 ```
+
+`fingerprint` 与 `identity_token` 是不透明的快照令牌。客户端编辑内容时必须保留二者，并在对应的保存请求中原样回传。
 
 错误响应为 `{"success": false, "error": "..."}`：文件名非法返回 `400`，逻辑文件无法解析返回 `404`。
 
@@ -64,6 +68,8 @@
 ```json
 {
   "filename": "recent_小天.json",
+  "fingerprint": "b4c1000000000000000000000000000000000000000000000000000000000000",
+  "identity_token": "a7e3111111111111111111111111111111111111111111111111111111111111",
   "chat": [
     { "role": "human", "text": "你好！" },
     { "role": "ai", "text": "晚上好！" }
@@ -74,6 +80,8 @@
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `filename` | 字符串 | 是 | 必须匹配 `recent_<角色>.json`；角色名从该字段推导 |
+| `fingerprint` | 字符串 | 是 | 用于载入本次编辑的 GET 所返回的不透明内容令牌 |
+| `identity_token` | 字符串 | 是 | 同一次 GET 所返回的不透明文件身份令牌 |
 | `chat` | 数组 | 是 | 替换后的历史，最多 10,000 条 |
 | `chat[].role` | 字符串 | 是 | 写入的消息类型，通常为 `human`、`ai` 或 `system` |
 | `chat[].text` | 字符串 | 否 | 消息文本；默认为空字符串 |
@@ -86,17 +94,19 @@
 {
   "success": true,
   "need_refresh": true,
-  "catgirl_name": "小天"
+  "catgirl_name": "小天",
+  "fingerprint": "d8f2222222222222222222222222222222222222222222222222222222222222",
+  "identity_token": "a7e3111111111111111111111111111111111111111111111111111111111111"
 }
 ```
 
-校验失败返回 `400` 和 `success: false`。存储失败返回 `success: false` 及 `error`；云存储维护态返回 `409`。
+校验失败返回 `400` 和 `success: false`。缺少快照令牌，或文件内容/身份已经并发变化时返回 `409`；冲突响应带有 `code: "RECENT_FILE_CONFLICT"` 和当前令牌。发生冲突后必须重新 GET 文件、合并用户编辑再保存，不能仅替换为响应中的新令牌后重放旧 `chat`。成功响应会返回下一次编辑要使用的令牌。存储失败返回 `success: false` 及 `error`；云存储维护态同样返回 `409`。
 
 ## 角色记忆重命名
 
 ### `POST /api/memory/update_catgirl_name`
 
-通过共享的角色记忆迁移工具重命名角色的完整记忆存储，而不只是近期历史文件。
+这是规范接口 `POST /api/characters/catgirl/{old_name}/rename` 的兼容别名。它会排空记忆复核/压缩任务、发布角色改名、迁移全部记忆与卡面状态、重载 memory server，并在失败时回滚。若旧客户端在该事务已经提交后重复调用，本接口会以幂等 no-op 成功返回。
 
 ```json
 {
@@ -110,12 +120,12 @@
 ```json
 {
   "success": true,
-  "changed": true,
-  "exists_after": true
+  "memory_renamed": true,
+  "memory_server_reloaded": true
 }
 ```
 
-名称缺失或非法返回 `400`。存储不可写时可能返回 `409`。
+幂等重复调用返回 `changed: false`、`already_renamed: true` 和 `exists_after`。只有配置已经包含新名称且旧存储已经消失时才允许该 no-op；若配置已发布但旧存储仍残留，接口返回 `409`，不会掩盖部分改名，需通过规范的角色管理接口修复。名称缺失或非法返回 `400`；存储不可写时也可能返回 `409`。
 
 ## 记忆功能开关
 

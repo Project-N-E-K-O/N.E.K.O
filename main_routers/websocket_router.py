@@ -51,6 +51,10 @@ from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
 )
+from main_logic.music_playback import (
+    handle_music_playback_state,
+    handle_music_request_playback_failed,
+)
 
 
 _VOICE_BINARY_MAGIC = b"NEKO"
@@ -152,6 +156,16 @@ def _is_voice_path_message(message: dict) -> bool:
     if action in {"voice_input_control", "pause_session"}:
         return True
     return action == "stream_data" and message.get("input_type") == "audio"
+
+
+def _is_music_playback_state_message(message: dict) -> bool:
+    """True when the sender is the window currently hosting the local player."""
+    return message.get("action") == "music_playback_state"
+
+
+def _is_music_request_playback_failed_message(message: dict) -> bool:
+    """True when the window handling a request exhausts its candidates."""
+    return message.get("action") == "music_request_playback_failed"
 
 
 def _stamp_user_input_ingress(message: dict) -> dict:
@@ -476,6 +490,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
+    music_websockets = getattr(mgr, "_music_playback_websockets", None)
+    if not isinstance(music_websockets, set):
+        music_websockets = set()
+        mgr._music_playback_websockets = music_websockets
+    music_websockets.add(websocket)
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
 
     # Engagement-deferred voice-input claim. Claiming the manager-wide voice
@@ -709,6 +728,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # messages keep dispatching through the narrow helper above;
                 # any non-voice message from it, or any message once a newer
                 # socket re-claims voice, closes it exactly as before.
+                # Music playback ownership is also window-local: the socket
+                # reporting a real player event may be older than the newest
+                # chat window, so route only that narrow state message without
+                # handing it any general session authority.
+                if _is_music_playback_state_message(message):
+                    handle_music_playback_state(
+                        session_manager[lanlan_name],
+                        message,
+                    )
+                    continue
+                if _is_music_request_playback_failed_message(message):
+                    handle_music_request_playback_failed(
+                        session_manager[lanlan_name],
+                        message,
+                    )
+                    continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
                     continue
@@ -1125,6 +1160,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
                 pass
 
+            elif action == "music_playback_state":
+                handle_music_playback_state(
+                    session_manager[lanlan_name],
+                    message,
+                )
+
+            elif action == "music_request_playback_failed":
+                handle_music_request_playback_failed(
+                    session_manager[lanlan_name],
+                    message,
+                )
+
             elif action in ("voice_play_start", "voice_play_end"):
                 # FRONTEND-reported real audio playback boundaries. start =
                 # buffered audio actually began playing; end = the audio queue
@@ -1176,6 +1223,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # 抛异常会污染调用栈让真正的 WS error 看不到。
             pass
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
+        music_websockets.discard(websocket)
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
         _ws_disconnect_time[lanlan_name] = time.time()
         # 释放活跃连接计数（与 try 起始处的 +1 对偶）

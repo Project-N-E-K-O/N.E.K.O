@@ -56,6 +56,11 @@ N.E.K.O/
 # the obsolete directory so local leftovers cannot duplicate weights.
 /data/vad_models
 
+# CAM++ is likewise prepared on the native runner into the package-local
+# speaker_shadow/models directory and must remain in the build context. Reject
+# the obsolete data/ location so a local checkout cannot ship a second copy.
+/data/speaker_models
+
 # Build artifacts
 build/
 dist/

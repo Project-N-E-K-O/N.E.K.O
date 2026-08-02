@@ -8,12 +8,15 @@ import time
 from collections import deque
 from typing import Any
 
+from .runtime_log import RuntimeLog
+
 
 def initialize_runtime_state(runtime: Any) -> None:
     """Initialize runtime-local mutable state and scheduler caches."""
     runtime.recent_results = deque(maxlen=runtime.config.recent_limit)
     runtime.recent_sandbox_results = deque(maxlen=runtime.config.recent_limit)
     runtime.runtime_timeline = deque(maxlen=200)
+    runtime.runtime_log = RuntimeLog()
     runtime.live_connection_state = "disconnected"
     runtime.live_connection_auth_mode = "unknown"
     runtime.live_room_context = {}

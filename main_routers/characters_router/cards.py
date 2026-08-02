@@ -42,6 +42,7 @@ from .pngtuber_assets import (
     _restore_imported_pngtuber_avatar_config,
     _rewrite_imported_pngtuber_refs,
 )
+from .notify import notify_memory_server_reload
 
 import json
 import io
@@ -66,6 +67,7 @@ from utils.config_manager import (
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
 from utils.cloudsave_runtime import MaintenanceModeError
+from utils.character_memory import asave_characters_with_recent_activation
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
@@ -233,7 +235,13 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
 
         # 保存到characters.json
-        await _config_manager.asave_characters(characters)
+        publish_cancelled = False
+        if is_new_character:
+            publish_cancelled = await asave_characters_with_recent_activation(
+                _config_manager, characters, chara_name,
+            )
+        else:
+            await _config_manager.asave_characters(characters)
         prompt_fields_changed = (
             is_new_character
             or _catgirl_prompt_fields_changed(previous_catgirl_data, catgirl_data)
@@ -262,10 +270,18 @@ async def save_character_card(request: Request):
                 "session_restarted": False,
             }
 
+        memory_server_reloaded = True
+        if is_new_character:
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"角色卡保存新角色: {chara_name}",
+                resume_derived_task_names=(chara_name,),
+            )
+
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
         result: dict = {
             "success": True,
             "character_card_name": chara_name,
+            "memory_server_reloaded": memory_server_reloaded,
             **context_refresh_result,
         }
         if not pending_mark_ok:
@@ -273,6 +289,8 @@ async def save_character_card(request: Request):
             result["pending_mark_ok"] = False
             result["pending_mark_failed"] = True
             result["pending_mark_error"] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return result
     except MaintenanceModeError:
         raise
@@ -994,13 +1012,19 @@ async def import_character_card(
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            await _config_manager.asave_characters(characters)
+            publish_cancelled = await asave_characters_with_recent_activation(
+                _config_manager, characters, character_name,
+            )
             pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 
             # 刷新内存中的角色数据，确保磁盘和内存同步
             initialize_character_data = get_initialize_character_data()
             if initialize_character_data:
                 await initialize_character_data()
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"导入角色卡: {character_name}",
+                resume_derived_task_names=(character_name,),
+            )
 
             # 写入卡面元数据 sidecar（origin=imported）
             try:
@@ -1032,10 +1056,13 @@ async def import_character_card(
                     "card_meta_saved": False,
                     "character_name": character_name,
                     "pending_mark_ok": pending_mark_ok,
+                    "memory_server_reloaded": memory_server_reloaded,
                 }
                 if not pending_mark_ok:
                     partial_result["pending_mark_failed"] = True
                     partial_result["pending_mark_error"] = pending_mark_error
+                if publish_cancelled:
+                    raise asyncio.CancelledError
                 return JSONResponse(partial_result, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
@@ -1078,12 +1105,15 @@ async def import_character_card(
             'success': True,
             'character_name': character_name,
             'message': f'角色卡 "{character_name}" 导入成功',
+            'memory_server_reloaded': memory_server_reloaded,
         }
         if not pending_mark_ok:
             import_result['partial_success'] = True
             import_result['pending_mark_ok'] = False
             import_result['pending_mark_failed'] = True
             import_result['pending_mark_error'] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return JSONResponse(import_result)
 
     except zipfile.BadZipFile:

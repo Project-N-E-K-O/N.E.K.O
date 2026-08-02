@@ -319,7 +319,7 @@ def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecyc
     start_mic = _js_function_block(source, "startMicCapture")
     failure = _catch_block_after(
         start_mic,
-        "ownStream = await navigator.mediaDevices.getUserMedia(constraints);",
+        "const microphoneOpenResult = await openMicrophoneStreamWithFallback(",
         binding="err",
     )
 
@@ -1091,3 +1091,35 @@ def test_voice_start_bails_when_another_start_took_over_the_pending_slot():
     check = start_flow[start_flow.index("function micStartMustStandDown()"):await_index]
     assert "abortVoiceStartForBlockedRoute" in check
     assert "supersededByAudioStart" in check
+
+
+def test_selection_change_cancellation_does_not_publish_voice_start_success():
+    source = _read(APP_BUTTONS_PATH)
+    start_flow = _mic_button_start_flow(source)
+
+    await_marker = "var microphoneStarted = await window.startMicCapture();"
+    cancellation_marker = "if (microphoneStarted !== true) {"
+    success_marker = "window.dispatchEvent(new CustomEvent('neko:voice-session-started'));"
+    assert await_marker in start_flow
+    assert cancellation_marker in start_flow
+    assert start_flow.index(await_marker) < start_flow.index(cancellation_marker)
+    assert start_flow.index(cancellation_marker) < start_flow.index(success_marker)
+
+    cancellation = start_flow[
+        start_flow.index(cancellation_marker):start_flow.index(
+            "ensureVoiceStartCurrent();",
+            start_flow.index(cancellation_marker),
+        )
+    ]
+    assert "microphoneStartCancelled.microphoneStartCancelled = true;" in cancellation
+    assert "throw microphoneStartCancelled;" in cancellation
+
+    catch_block = start_flow[start_flow.index("} catch (error) {"):]
+    assert "var isMicrophoneStartCancelled = !!(" in catch_block
+    assert "!isVoiceStartCancelled && !isMicrophoneStartCancelled" in catch_block
+    assert (
+        "if (!isVoiceStartCancelled "
+        "&& !(error && error.voiceConfigSwitchTimedOut)"
+        in catch_block
+    ), "selection cancellation must still close the accepted backend voice session"
+    assert "else if (!isMicrophoneStartCancelled)" in catch_block

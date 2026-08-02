@@ -102,6 +102,27 @@ def test_signal_check_mark_done_clears_path_a_failures():
     assert state['a_extract_failures'] == {}, "mark_done 必须清 path-A counter"
 
 
+@pytest.mark.unit
+def test_signal_check_mark_done_preserves_turns_recorded_during_pass():
+    from app import memory_server
+
+    memory_server._signal_check_state.clear()
+    state = memory_server._signal_check_state.setdefault(
+        'neko_test_inflight_turn',
+        {'turns_since': 3, 'last_check_ts': 'old_cursor'},
+    )
+    state['turns_since'] += 1
+
+    memory_server._signal_check_mark_done(
+        'neko_test_inflight_turn',
+        datetime(2026, 5, 18, 12, 0, 0),
+        processed_turns=3,
+    )
+
+    assert state['turns_since'] == 1
+    assert state['last_check_ts'] == '2026-05-18T12:00:00'
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Site 0b — _run_path_b Stage-1 dead-letter
 # ─────────────────────────────────────────────────────────────────────

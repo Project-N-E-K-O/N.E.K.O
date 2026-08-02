@@ -234,4 +234,4 @@ async def test_scoped_batch_rendering_runs_off_the_event_loop(monkeypatch):
     )
 
     assert result == []
-    assert offloaded == [store._format_speaker_segments]
+    assert offloaded == [store._format_speaker_segments_with_locale]

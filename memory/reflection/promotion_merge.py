@@ -57,7 +57,26 @@ from ._shared import (
     logger,
 )
 
+
+def _detect_promotion_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
 class PromotionMergeMixin:
+    @staticmethod
+    def _promotion_locale_text(
+        reflection: dict,
+    ) -> str:
+        """Use the promoted reflection as locale evidence, not the old pool."""
+        return str(reflection.get('text', '') or '')
+
     @staticmethod
     def _compute_merged_evidence(
         target: dict, reflection: dict,
@@ -335,24 +354,30 @@ class PromotionMergeMixin:
         skip_retry_pending per §3.9.4.
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
         # Build the impression pool block with stable ordering — protected
         # persona entries first, then non-protected by score DESC, then
         # confirmed/promoted reflections by score DESC.
-        pool_lines: list[str] = []
+        pool_rows: list[tuple[str, str, int]] = []
         for ek, e in persona_pool:
-            pool_lines.append(
-                f"[persona.{ek}.{e.get('id')}] \"{e.get('text', '')}\""
+            raw_text = str(e.get('text', '') or '')
+            prefix = f"[persona.{ek}.{e.get('id')}] \""
+            line = (
+                f"{prefix}{raw_text}\""
                 f" (evidence_score={evidence_score(e, now):.2f})"
             )
+            pool_rows.append((line, raw_text, len(prefix)))
         for r in reflection_pool:
-            pool_lines.append(
-                f"[reflection.{r.get('id')}] \"{r.get('text', '')}\""
+            raw_text = str(r.get('text', '') or '')
+            prefix = f"[reflection.{r.get('id')}] \""
+            line = (
+                f"{prefix}{raw_text}\""
                 f" (evidence_score={evidence_score(r, now):.2f})"
             )
+            pool_rows.append((line, raw_text, len(prefix)))
+        pool_lines = [line for line, _raw_text, _text_offset in pool_rows]
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
         # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
         # entity 长期累积下来 persona+reflection 池可能超 8k tokens；
@@ -361,7 +386,11 @@ class PromotionMergeMixin:
         from utils.tokenize import truncate_to_tokens
         pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
 
-        prompt = get_promotion_merge_prompt(get_global_language()).format(
+        prompt = get_promotion_merge_prompt(
+            _detect_promotion_prompt_language(
+                self._promotion_locale_text(R)
+            )
+        ).format(
             AI_NAME=lanlan_name,
             MASTER_NAME=master_name,
             R_TEXT=R.get('text', ''),

@@ -16,6 +16,19 @@ from ...core.contracts import ViewerEvent, ViewerIdentity
 from .._base import BaseModule
 
 
+_MAX_AVATAR_BYTES = 1 * 1024 * 1024
+_MAX_AVATAR_REDIRECTS = 2
+_BILI_AVATAR_HOST_SUFFIX = "hdslb.com"
+
+
+def _external_http_client():
+    # Keep the host dependency lazy so importing the plugin does not initialize
+    # the shared TLS/proxy client until a Bilibili avatar is actually needed.
+    from utils.external_http_client import get_external_http_client
+
+    return get_external_http_client()
+
+
 class _ResolvedHTTPConnection(http.client.HTTPConnection):
     def __init__(self, host: str, resolved_ip: str, *, port: int, timeout: float) -> None:
         super().__init__(host, port=port, timeout=timeout)
@@ -105,7 +118,10 @@ class BiliIdentityModule(BaseModule):
             return identity
         timeout = self.ctx.config.avatar_fetch_timeout_seconds if self.ctx else 8
         try:
-            data, mime = await asyncio.to_thread(self._fetch_avatar, avatar_url, timeout)
+            if self._is_bili_avatar_url(avatar_url):
+                data, mime = await self._fetch_bili_avatar(avatar_url, timeout)
+            else:
+                data, mime = await asyncio.to_thread(self._fetch_avatar, avatar_url, timeout)
             if data:
                 usable, animated = self._inspect_avatar(data)
                 if not usable:
@@ -183,7 +199,7 @@ class BiliIdentityModule(BaseModule):
                 raise ValueError("avatar_redirect_not_allowed")
             if response.status >= 400:
                 raise ValueError("avatar_fetch_failed_status")
-            data = response.read(2 * 1024 * 1024)
+            data = response.read(_MAX_AVATAR_BYTES)
             content_type = response.getheader("content-type") or ""
         finally:
             connection.close()
@@ -191,6 +207,85 @@ class BiliIdentityModule(BaseModule):
         if not mime:
             mime = mimetypes.guess_type(url)[0] or "image/png"
         return data, mime
+
+    @staticmethod
+    def _is_bili_avatar_url(url: str) -> bool:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            port = parsed.port
+        except (TypeError, ValueError):
+            return False
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return False
+        hostname = (parsed.hostname or "").strip(".").lower()
+        if not hostname or port not in {None, 80, 443}:
+            return False
+        return hostname == _BILI_AVATAR_HOST_SUFFIX or hostname.endswith(
+            f".{_BILI_AVATAR_HOST_SUFFIX}"
+        )
+
+    @staticmethod
+    async def _fetch_bili_avatar(url: str, timeout: float) -> tuple[bytes, str]:
+        """Fetch allowlisted Bilibili CDN images through the host proxy client.
+
+        Clash-style Fake-IP DNS intentionally resolves CDN hosts into the
+        reserved 198.18.0.0/15 range. The generic downloader must reject those
+        addresses for SSRF safety, while this path is safe because every request
+        and redirect remains constrained to Bilibili's avatar CDN suffix.
+        """
+
+        current_url = url
+        client = _external_http_client()
+        headers = {
+            "Referer": "https://www.bilibili.com",
+            "User-Agent": "Mozilla/5.0 NEKO-Roast/0.1",
+        }
+        for _ in range(_MAX_AVATAR_REDIRECTS + 1):
+            if not BiliIdentityModule._is_bili_avatar_url(current_url):
+                raise ValueError("avatar_url_host_not_allowed")
+            async with client.stream(
+                "GET",
+                current_url,
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+            ) as response:
+                final_url = str(getattr(response, "url", current_url) or current_url)
+                if not BiliIdentityModule._is_bili_avatar_url(final_url):
+                    raise ValueError("avatar_redirect_not_allowed")
+                status = int(getattr(response, "status_code", 0) or 0)
+                if 300 <= status < 400:
+                    location = str(response.headers.get("location") or "").strip()
+                    if not location:
+                        raise ValueError("avatar_redirect_missing_location")
+                    next_url = urllib.parse.urljoin(final_url, location)
+                    if not BiliIdentityModule._is_bili_avatar_url(next_url):
+                        raise ValueError("avatar_redirect_not_allowed")
+                    current_url = next_url
+                    continue
+                if status >= 400:
+                    raise ValueError("avatar_fetch_failed_status")
+                content_length = str(response.headers.get("content-length") or "").strip()
+                if content_length:
+                    try:
+                        declared_size = int(content_length)
+                    except ValueError:
+                        declared_size = 0
+                    if declared_size > _MAX_AVATAR_BYTES:
+                        raise ValueError("avatar_too_large")
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if not chunk:
+                        continue
+                    data.extend(chunk)
+                    if len(data) > _MAX_AVATAR_BYTES:
+                        raise ValueError("avatar_too_large")
+                content_type = str(response.headers.get("content-type") or "")
+                mime = content_type.split(";", 1)[0].strip()
+                if not mime:
+                    mime = mimetypes.guess_type(final_url)[0] or "image/png"
+                return bytes(data), mime
+        raise ValueError("avatar_too_many_redirects")
 
     @staticmethod
     def _resolve_avatar_endpoint(url: str) -> tuple[urllib.parse.ParseResult, str, int]:

@@ -9,9 +9,10 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_TIME_DESCRIPTION,
     RECALL_MEMORY_TOOL_NO_RESULT,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
+    _normalize_memory_prompt_lang,
 )
 from main_logic.tool_calling import ToolDefinition
-from utils.language_utils import get_global_language, normalize_language_code
+from utils.language_utils import get_global_language_full
 
 from .pipeline_models import is_synthetic_source
 from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
@@ -160,10 +161,13 @@ class QQMemoryToolService:
         self.plugin = plugin
 
     @staticmethod
+    def _prompt_lang() -> str:
+        return _normalize_memory_prompt_lang(get_global_language_full())
+
+    @staticmethod
     def _short_lang() -> str:
-        return normalize_language_code(
-            get_global_language(), format="short",
-        ) or "en"
+        """Backward-compatible alias for callers that inspect the selected locale."""
+        return QQMemoryToolService._prompt_lang()
 
     def build_recall_tool_definition(self) -> ToolDefinition:
         """The recall_memory ToolDefinition for QQ generation sessions.
@@ -174,7 +178,7 @@ class QQMemoryToolService:
         via ``set_tool_call_handler`` (the subject scope changes with the
         speaker, so a registry-style static handler would be wrong).
         """
-        lang = self._short_lang()
+        lang = self._prompt_lang()
         return ToolDefinition(
             name=RECALL_TOOL_NAME,
             description=_loc(RECALL_MEMORY_TOOL_DESCRIPTION, lang),
@@ -202,7 +206,7 @@ class QQMemoryToolService:
         )
 
     def no_result_text(self) -> str:
-        return _loc(RECALL_MEMORY_TOOL_NO_RESULT, self._short_lang())
+        return _loc(RECALL_MEMORY_TOOL_NO_RESULT, self._prompt_lang())
 
     @staticmethod
     def _normalized_recall_arguments(arguments: Any) -> tuple[str, str]:
@@ -250,7 +254,7 @@ class QQMemoryToolService:
         that happened MID-generation, where the old "is the section still
         in the prompt" judgement no longer exists.
         """
-        lang = self._short_lang()
+        lang = self._prompt_lang()
         no_result = _loc(RECALL_MEMORY_TOOL_NO_RESULT, lang)
         args = arguments if isinstance(arguments, dict) else {}
         query, time_spec = self._normalized_recall_arguments(args)

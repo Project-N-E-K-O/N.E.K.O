@@ -151,6 +151,15 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
     '_proactive_expected_sid', default=None,
 )
 
+# Startup greeting text that crossed the real frontend publish boundary in the
+# current proactive task.  ``prompt_ephemeral`` accumulates model output before
+# awaiting its delta callback, so its final committed text can contain a suffix
+# that was dropped after user preemption.  The per-task list lets the greeting
+# flow persist only chunks that ``send_lanlan_response`` actually published.
+_proactive_published_text_chunks: contextvars.ContextVar[list[str] | None] = (
+    contextvars.ContextVar('_proactive_published_text_chunks', default=None)
+)
+
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
 NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）

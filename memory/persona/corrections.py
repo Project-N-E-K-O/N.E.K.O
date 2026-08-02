@@ -102,6 +102,24 @@ def _normalized_correction_trust(value) -> float | None:
     return normalize_trust(score) if score is not None else None
 
 
+def _detect_correction_prompt_language(
+    pairs: list[tuple[int, dict]],
+    *,
+    ui_language: str | None = None,
+) -> str:
+    """Detect the prompt locale from correction values, excluding UI labels."""
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    raw_text = "\n".join(str(item.get('new_text') or '') for _, item in pairs)
+    return detect_prompt_language_with_ascii_fallback(
+        raw_text,
+        ui_language=ui_language or get_global_language_full(),
+    )
+
+
 class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
@@ -282,7 +300,12 @@ class CorrectionsMixin:
             return []
         return []
 
-    async def resolve_corrections(self, name: str) -> int:
+    async def resolve_corrections(
+        self,
+        name: str,
+        *,
+        prompt_locale_resolver=None,
+    ) -> int:
         """Batch-review the contradiction queue with the correction model (single LLM call).
 
         Merges all pending corrections into one prompt for the correction model;
@@ -307,7 +330,7 @@ class CorrectionsMixin:
         - The final "re-read corrections file → filter processed_keys → save"
           already protects corrections newly added during the LLM call
         """
-        from config.prompts.prompts_memory import persona_correction_prompt
+        from config.prompts.prompts_memory import get_persona_correction_prompt
 
         # ── 串行 resolve（独立锁，与 data lock 不互锁） ──
         async with self._get_resolve_alock(name):
@@ -375,19 +398,62 @@ class CorrectionsMixin:
                     break
             if not pairs:
                 return 0
+            prompt_ui_language = None
+            if prompt_locale_resolver is not None and batch_domain != '__legacy__':
+                from memory.scopes import MemoryScopeError, MemorySubject
+
+                section_key, subject_scope = batch_domain
+                subject_key = section_key[len(SCOPED_PERSONA_PREFIX):]
+                subject_kind, separator, subject_id = subject_key.partition(':')
+                if separator:
+                    try:
+                        batch_subject = MemorySubject.create(
+                            subject_kind,
+                            subject_id,
+                            scope=subject_scope,
+                        )
+                    except MemoryScopeError:
+                        batch_subject = None
+                    if batch_subject is not None:
+                        try:
+                            prompt_ui_language = await prompt_locale_resolver(
+                                batch_subject
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "[PersonaCorrection] %s: scoped prompt locale "
+                                "解析失败，回退到当前 locale: %s",
+                                name,
+                                exc,
+                            )
             # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
             # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
             # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
             # 错误消费。
             allowed_indices = {i for i, _ in pairs}
 
+            from config.prompts.prompts_memory import (
+                get_persona_correction_pair_labels,
+            )
+
+            prompt_language = _detect_correction_prompt_language(
+                pairs,
+                ui_language=prompt_ui_language,
+            )
+            old_label, new_label = get_persona_correction_pair_labels(
+                prompt_language
+            )
             batch_text = "\n".join(
-                f"[{i}] 已有(trust={_correction_prompt_trust_band(item, 'old')}): "
-                f"{item['old_text']} | 新观察(trust="
-                f"{_correction_prompt_trust_band(item, 'new')}): {item['new_text']}"
+                f"[{i}] {old_label}: {item['old_text']} | "
+                f"{new_label}: {item['new_text']} | old trust="
+                f"{_correction_prompt_trust_band(item, 'old')} | new trust="
+                f"{_correction_prompt_trust_band(item, 'new')}"
                 for i, item in pairs
             )
-            prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
+            prompt = get_persona_correction_prompt(prompt_language).format(
+                pairs=batch_text,
+                count=len(pairs),
+            )
 
             # ── LLM (锁外) ──
             try:

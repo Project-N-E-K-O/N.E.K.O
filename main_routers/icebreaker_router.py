@@ -84,21 +84,24 @@ def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
         return None
     try:
         normalized_short = normalize_language_code(str(raw), format="short")
+        normalized_full = normalize_language_code(str(raw), format="full")
     except Exception:
         return None
-    if not normalized_short:
+    if not normalized_short or not normalized_full:
         return None
     try:
         manager = get_session_manager().get(str(lanlan_name or "").strip())
         if manager is not None:
-            normalized_full = normalize_language_code(str(raw), format="full")
-            if normalized_full and getattr(manager, "user_language", None) != normalized_full:
+            if normalized_full and (
+                getattr(manager, "user_language", None) != normalized_full
+                or not getattr(manager, "_user_language_explicit", False)
+            ):
                 setter = getattr(manager, "set_user_language", None)
                 if callable(setter):
                     setter(str(raw))
     except Exception:
         logger.debug("icebreaker absorb request language failed lanlan=%s", lanlan_name, exc_info=True)
-    return normalized_short
+    return normalized_full
 
 
 def _strip_ssml_like_tags(text: str) -> str:
@@ -134,7 +137,13 @@ def _build_icebreaker_memory_message(role: str, text: str) -> dict | None:
     }
 
 
-async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text: str) -> tuple[bool, str]:
+async def _cache_icebreaker_context_memory(
+    *,
+    lanlan_name: str,
+    role: str,
+    text: str,
+    language: str | None = None,
+) -> tuple[bool, str]:
     message = _build_icebreaker_memory_message(role, text)
     if message is None:
         return False, "invalid_memory_message"
@@ -146,6 +155,7 @@ async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text:
             lanlan_name,
             [message],
             timeout_s=ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+            language=language,
         )
         return bool(ok), str(err_detail or "")
     except Exception as exc:
@@ -329,7 +339,7 @@ async def icebreaker_context(request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
 
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    _absorb_request_language(data, lanlan_name)
+    request_language = _absorb_request_language(data, lanlan_name)
     requested_session_id = str(data.get("session_id") or "")
     event = data.get("event") if isinstance(data.get("event"), dict) else {}
     request_id = str(data.get("request_id") or event.get("request_id") or "").strip()
@@ -417,6 +427,14 @@ async def icebreaker_context(request: Request):
         lanlan_name=lanlan_name,
         role=role,
         text=text,
+        language=(
+            request_language
+            or (
+                getattr(mgr, "user_language", None)
+                if getattr(mgr, "_user_language_explicit", False)
+                else None
+            )
+        ),
     )
     if not memory_cached:
         logger.warning(

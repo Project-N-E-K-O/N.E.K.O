@@ -19,7 +19,7 @@ import struct
 import time
 import zlib
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode
 
 # ── WBI 签名常量 ──────────────────────────────────────────────────
@@ -1015,15 +1015,13 @@ class DanmakuListener:
                     # 有些 cmd 带 : 后缀，取前部分
                     cmd = cmd.split(":")[0]
                     if cmd == "DANMU_MSG":
-                        self._log(f"📨 收到弹幕包 cmd=DANMU_MSG")
+                        self._log("📨 收到弹幕包 cmd=DANMU_MSG")
                     await self._dispatch_message(cmd, msg)
                 except Exception as e:
                     self._log(f"解析消息失败: {e}", "warning")
 
     async def start(self):
         """启动监听（带自动重连，直到 stop() 被调用）"""
-        import websockets
-
         # 重置停止事件和直播结束标记
         self._stop_event.clear()
         self._ready_event.clear()
@@ -1181,7 +1179,7 @@ class DanmakuListener:
 
                     # 直播结束：收到 PREPARING 后不再重连
                     if self._live_ended:
-                        self._log(f"直播已结束，停止重连", "info")
+                        self._log("直播已结束，停止重连", "info")
                         break
 
                     # 否则是服务器正常断开，继续尝试下一个服务器

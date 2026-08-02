@@ -34,6 +34,10 @@ from utils.file_utils import (
 
 
 from utils.token_tracker import set_call_type
+from utils.language_utils import (
+    detect_prompt_language_with_ascii_fallback,
+    get_global_language_full,
+)
 
 
 
@@ -54,9 +58,30 @@ from ._shared import (
     REFLECTION_COOLDOWN_MINUTES,
 )
 
+
+def _detect_synthesis_prompt_language(text: str) -> str:
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
+
 class SynthesisMixin:
+    @staticmethod
+    def _synthesis_locale_text(facts: list[dict]) -> str:
+        """Return raw fact text without importance labels or watermarks."""
+        return "\n".join(
+            str(fact.get('text', ''))
+            for fact in facts
+            if fact.get('text')
+        )
+
     async def synthesize_scoped_reflections(
-        self, lanlan_name: str, *, max_subjects: int = 1,
+        self,
+        lanlan_name: str,
+        *,
+        max_subjects: int = 1,
+        subject_locale_resolver=None,
     ) -> list[dict]:
         """Synthesize a bounded number of ready non-legacy subjects.
 
@@ -126,9 +151,24 @@ class SynthesisMixin:
             cursors[lanlan_name] = (
                 bucket['subject'].key, bucket['subject'].scope,
             )
-            created.extend(await self.synthesize_reflections(
-                lanlan_name, subject=bucket['subject'],
-            ))
+            selected_locale = None
+            if subject_locale_resolver is not None:
+                try:
+                    selected_locale = await subject_locale_resolver(
+                        lanlan_name,
+                        bucket['subject'],
+                    )
+                except Exception as locale_error:  # noqa: BLE001
+                    logger.warning(
+                        f"[ReflectionSynth] {lanlan_name}/"
+                        f"{bucket['subject'].key}: scoped prompt locale "
+                        f"解析失败，使用角色 locale: {locale_error}"
+                    )
+            from utils.language_utils import language_context
+            with language_context(selected_locale):
+                created.extend(await self.synthesize_reflections(
+                    lanlan_name, subject=bucket['subject'],
+                ))
         return created
 
     async def synthesize_reflections(
@@ -162,7 +202,6 @@ class SynthesisMixin:
             losing side returns [] without polluting the caller's view.
         """
         from config.prompts.prompts_memory import get_reflection_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
         from memory.scopes import coerce_subject
@@ -255,11 +294,17 @@ class SynthesisMixin:
         else:
             master_name = name_mapping.get('human', '主人')
 
+        prompt_lang = _detect_synthesis_prompt_language(
+            self._synthesis_locale_text(unabsorbed),
+        )
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
         related_block = await self._build_related_context_block(
-            lanlan_name, unabsorbed, subject=memory_subject,
+            lanlan_name,
+            unabsorbed,
+            subject=memory_subject,
+            prompt_lang=prompt_lang,
         )
-        reflection_prompt = get_reflection_prompt(get_global_language())
+        reflection_prompt = get_reflection_prompt(prompt_lang)
         prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
         prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
@@ -488,7 +533,12 @@ class SynthesisMixin:
         return [reflection]
 
     async def _build_related_context_block(
-        self, lanlan_name: str, unabsorbed: list[dict], *, subject=None,
+        self,
+        lanlan_name: str,
+        unabsorbed: list[dict],
+        *,
+        subject=None,
+        prompt_lang: str = "zh",
     ) -> str:
         """When embeddings are available, recall absorbed facts as RELATED_CONTEXT;
         unavailable / empty recall → return an empty string (the
@@ -584,10 +634,11 @@ class SynthesisMixin:
             f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
             for f in related
         )
+        from config.prompts.prompts_memory import get_reflection_related_context_note
         return (
             "======以下为相关历史背景======\n"
             f"{related_text}\n"
-            "（仅供参考，本轮不要为它们单独产出 reflection）\n"
+            f"（{get_reflection_related_context_note(prompt_lang)}）\n"
             "======以上为相关历史背景======\n\n"
         )
 

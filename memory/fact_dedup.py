@@ -212,6 +212,19 @@ def _find_queued_fact(
 logger = logging.getLogger(__name__)
 
 
+def _detect_fact_dedup_prompt_language(
+    text: str,
+    *,
+    ui_language: str,
+) -> str:
+    from utils.language_utils import detect_prompt_language_with_ascii_fallback
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language,
+    )
+
+
 def cosine_similarity(left, right) -> float:
     """Load the optional vector implementation only when detection runs."""
     try:
@@ -255,6 +268,14 @@ class FactDedupResolver:
     consume).  FactStore's own threading.Lock guards facts.json, so
     apply_decision delegates to FactStore's save path rather than
     writing the file directly."""
+
+    @staticmethod
+    def _locale_text(batch_texts: list[tuple[str, str]]) -> str:
+        """Return only user-authored fact text for prompt locale detection."""
+        return "\n".join(
+            f"{candidate_text}\n{existing_text}"
+            for candidate_text, existing_text in batch_texts
+        )
 
     def __init__(self, fact_store: "FactStore") -> None:
         self._fact_store = fact_store
@@ -779,7 +800,7 @@ class FactDedupResolver:
 
     # ── resolve loop ─────────────────────────────────────────────────
 
-    async def aresolve(self, name: str) -> int:
+    async def aresolve(self, name: str, *, prompt_locale_resolver=None) -> int:
         """Process one batch of pending items via a single LLM call.
 
         Returns the number of items resolved (i.e. removed from the
@@ -796,12 +817,15 @@ class FactDedupResolver:
         that landed mid-call.
         """
         async with self._get_alock(name):
-            return await self._aresolve_locked(name)
+            return await self._aresolve_locked(
+                name,
+                prompt_locale_resolver=prompt_locale_resolver,
+            )
 
-    async def _aresolve_locked(self, name: str) -> int:
+    async def _aresolve_locked(self, name: str, *, prompt_locale_resolver=None) -> int:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -910,6 +934,36 @@ class FactDedupResolver:
             )
         if not batch:
             return 0
+        prompt_ui_language = get_global_language_full()
+        if prompt_locale_resolver is not None and batch_domain[0] is not None:
+            from memory.scopes import MemoryScopeError, MemorySubject
+
+            subject_key, subject_scope = batch_domain
+            subject_kind, separator, subject_id = subject_key.partition(':')
+            if separator:
+                try:
+                    batch_subject = MemorySubject.create(
+                        subject_kind,
+                        subject_id,
+                        scope=subject_scope,
+                    )
+                except MemoryScopeError:
+                    batch_subject = None
+                if batch_subject is not None:
+                    try:
+                        selected_locale = await prompt_locale_resolver(
+                            batch_subject,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[FactDedup] %s: scoped prompt locale 解析失败，"
+                            "回退到全局 locale: %s",
+                            name,
+                            exc,
+                        )
+                        selected_locale = None
+                    if selected_locale:
+                        prompt_ui_language = selected_locale
         pairs_text = "\n".join(
             f"[{i}] candidate: {cand_text}"
             f" | existing: {exist_text}"
@@ -919,7 +973,12 @@ class FactDedupResolver:
             )
         )
         prompt = (
-            get_fact_dedup_prompt(get_global_language())
+            get_fact_dedup_prompt(
+                _detect_fact_dedup_prompt_language(
+                    self._locale_text(batch_texts),
+                    ui_language=prompt_ui_language,
+                )
+            )
             .replace('{PAIRS}', pairs_text)
             .replace('{COUNT}', str(len(batch)))
         )

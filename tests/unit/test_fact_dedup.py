@@ -913,6 +913,95 @@ async def test_aresolve_keep_both_leaves_facts_untouched(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aresolve_uses_scoped_batch_prompt_locale(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+    observed_subjects = []
+
+    async def resolve_locale(actual_subject):
+        observed_subjects.append(actual_subject)
+        return "zh-TW"
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=resolve_locale,
+        )
+
+    assert observed_subjects == [subject]
+    get_prompt.assert_called_once_with("zh-TW")
+
+
+@pytest.mark.asyncio
+async def test_aresolve_falls_back_when_scoped_locale_resolver_fails(
+    tmp_path, caplog,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+
+    async def fail_locale(_subject):
+        raise UnicodeDecodeError("utf-8", b"x", 0, 1, "invalid")
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.language_utils.get_global_language_full",
+        return_value="zh-TW",
+    ), patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        resolved = await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=fail_locale,
+        )
+
+    assert resolved == 1
+    get_prompt.assert_called_once_with("zh-TW")
+    assert "scoped prompt locale" in caplog.text
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_aresolve_reciprocal_pair_does_not_delete_both(tmp_path):
     """Codex PR-957 P1: if the LLM emits reciprocal decisions on the
     same two facts (merge for (c1,e1) AND replace for (e1,c1)) in one
@@ -2123,6 +2212,62 @@ async def test_resolve_prompt_uses_current_authoritative_text(tmp_path):
     assert len(prompts) == 1
     assert "EDITED-当前权威文本" in prompts[0]
     assert "入队时的旧文本" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_resolve_detects_locale_from_hydrated_fact_text(tmp_path):
+    from utils.language_utils import (
+        detect_prompt_language as real_detect_prompt_language,
+        language_context,
+    )
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "I love coffee", embedding=[1.0, 0.0])
+    existing = _fact("e1", "I enjoy coffee", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    observed = []
+    resp = MagicMock()
+    resp.content = json.dumps([{"index": 0, "action": "keep_both"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, _prompt, *_a, **_k):
+            return resp
+
+        async def aclose(self):
+            return None
+
+    def detect(text, *, default="zh", ui_language):
+        selected = real_detect_prompt_language(
+            text,
+            default=default,
+            ui_language=ui_language,
+        )
+        observed.append((text, ui_language, selected))
+        return selected
+
+    with patch(
+        "utils.language_utils.detect_prompt_language",
+        side_effect=detect,
+    ), patch(
+        "utils.llm_client.create_chat_llm",
+        return_value=_RecordingLLM(),
+    ), language_context("zh-TW"):
+        resolved = await resolver.aresolve("小天")
+
+    assert resolved == 1
+    assert observed == [(
+        "I love coffee\nI enjoy coffee",
+        "zh-TW",
+        "en",
+    )]
+    raw_queue = _read_queue_file_raw(tmp_path)
+    assert "I love coffee" not in raw_queue
+    assert "I enjoy coffee" not in raw_queue
 
 
 @pytest.mark.asyncio

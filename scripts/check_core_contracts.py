@@ -87,7 +87,12 @@ ASR_LAYERING
     endpointing; endpointing cannot import Core, workers, or scripts; workers
     cannot import endpointing implementations; lifecycle/provider policy
     cannot depend back on endpointing; ONNX Runtime remains lazy. Streaming
-    can only enqueue audio into the bridge.
+    can only enqueue audio into the bridge. Speaker Shadow remains a
+    provider-neutral, observation-only leaf: endpointing can see only its
+    contracts, Core can obtain only the opaque factory exported by
+    ``asr_client.runtime``, and the package cannot depend back on Core,
+    endpointing, workers, lifecycle, policy, voice-input, routers, or scripts.
+    Its package initializer stays inert and model runtimes remain lazy.
 
 VOICE_INPUT_LAYERING
     The controlled transcript Registry and its consumers may depend only on
@@ -1089,6 +1094,10 @@ def run(root: Path) -> list[Violation]:
     voice_input_path = voice_turn_dir / "audio_input.py"
     transcript_registry_dir = root / "main_logic" / "voice_input"
     endpointing_dir = asr_client_dir / "endpointing"
+    speaker_shadow_dir = asr_client_dir / "speaker_shadow"
+    speaker_shadow_init = speaker_shadow_dir / "__init__.py"
+    speaker_shadow_contracts = speaker_shadow_dir / "contracts.py"
+    speaker_shadow_runtime = speaker_shadow_dir / "runtime.py"
     for required, violation_code in (
         (asr_bridge_path, "ASR_LAYERING"),
         (tts_path, "ASR_LAYERING"),
@@ -1097,6 +1106,10 @@ def run(root: Path) -> list[Violation]:
         (asr_component_path, "ASR_LAYERING"),
         (asr_audio_path, "ASR_LAYERING"),
         (asr_registry_path, "ASR_LAYERING"),
+        (speaker_shadow_dir, "ASR_LAYERING"),
+        (speaker_shadow_init, "ASR_LAYERING"),
+        (speaker_shadow_contracts, "ASR_LAYERING"),
+        (speaker_shadow_runtime, "ASR_LAYERING"),
         (voice_input_path, "ASR_LAYERING"),
         (transcript_registry_dir, "VOICE_INPUT_LAYERING"),
     ):
@@ -1285,25 +1298,52 @@ def run(root: Path) -> list[Violation]:
             pkg = ".".join(path.relative_to(root).parts[:-1])
             alias_paths = module_alias_paths(tree, pkg)
             for node in ast.walk(tree):
-                if any(
-                    module == "main_logic.asr_client.endpointing"
-                    or module.startswith("main_logic.asr_client.endpointing.")
-                    for module in _imported_paths(node, pkg, alias_paths)
+                imported_paths = _imported_paths(node, pkg, alias_paths)
+                for forbidden in (
+                    "main_logic.asr_client.endpointing",
+                    "main_logic.asr_client.speaker_shadow",
                 ):
-                    violations.append(Violation(
-                        path,
-                        node.lineno,
-                        node.col_offset,
-                        "ASR_LAYERING",
-                        "Core must not import main_logic.asr_client.endpointing",
-                    ))
-            violations.extend(_dynamic_import_violations(
-                path,
-                tree,
-                alias_paths,
+                    if any(
+                        module == forbidden
+                        or module.startswith(f"{forbidden}.")
+                        for module in imported_paths
+                    ):
+                        violations.append(Violation(
+                            path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"Core must not import {forbidden}",
+                        ))
+                if isinstance(node, ast.ImportFrom) and any(
+                    alias.name == "SpeakerShadowFactory" for alias in node.names
+                ):
+                    imported_from = (
+                        node.module
+                        if node.level == 0
+                        else _resolve_relative(pkg, node.level, node.module)
+                    )
+                    if imported_from != "main_logic.asr_client.runtime":
+                        violations.append(Violation(
+                            path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            "Core must obtain SpeakerShadowFactory only from "
+                            "main_logic.asr_client.runtime",
+                        ))
+            for index, forbidden in enumerate((
                 "main_logic.asr_client.endpointing",
-                "Core",
-            ))
+                "main_logic.asr_client.speaker_shadow",
+            )):
+                violations.extend(_dynamic_import_violations(
+                    path,
+                    tree,
+                    alias_paths,
+                    forbidden,
+                    "Core",
+                    report_generic=(index == 0),
+                ))
 
     if endpointing_dir.exists():
         endpointing_init = endpointing_dir / "__init__.py"
@@ -1374,6 +1414,29 @@ def run(root: Path) -> list[Violation]:
                         "ASR_LAYERING",
                         "endpointing must not import scripts",
                     ))
+                if any(
+                    (
+                        module == "main_logic.asr_client.speaker_shadow"
+                        or module.startswith(
+                            "main_logic.asr_client.speaker_shadow."
+                        )
+                    )
+                    and not (
+                        module
+                        == "main_logic.asr_client.speaker_shadow.contracts"
+                        or module.startswith(
+                            "main_logic.asr_client.speaker_shadow.contracts."
+                        )
+                    )
+                    for module in imported_paths
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "endpointing may import only speaker_shadow.contracts",
+                    ))
             for index, (forbidden, owner) in enumerate((
                 ("main_logic.core", "endpointing"),
                 ("main_logic.asr_client.workers", "endpointing"),
@@ -1387,6 +1450,41 @@ def run(root: Path) -> list[Violation]:
                     owner,
                     report_generic=(index == 0),
                 ))
+            dynamic_alias_paths = {
+                **alias_paths,
+                **_importlib_alias_paths(tree),
+            }
+            for node in ast.walk(tree):
+                targets, dynamic = _dynamic_import_target(
+                    node,
+                    dynamic_alias_paths,
+                )
+                if not dynamic or targets is None:
+                    continue
+                if any(
+                    (
+                        target == "main_logic.asr_client.speaker_shadow"
+                        or target.startswith(
+                            "main_logic.asr_client.speaker_shadow."
+                        )
+                    )
+                    and not (
+                        target
+                        == "main_logic.asr_client.speaker_shadow.contracts"
+                        or target.startswith(
+                            "main_logic.asr_client.speaker_shadow.contracts."
+                        )
+                    )
+                    for target in targets
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "endpointing may import only speaker_shadow.contracts "
+                        "(dynamic import)",
+                    ))
 
         onnx_runtime_path = endpointing_dir / "onnx_runtime.py"
         if onnx_runtime_path.exists():
@@ -1407,6 +1505,130 @@ def run(root: Path) -> list[Violation]:
                         "ASR_LAYERING",
                         "onnxruntime must remain a lazy function-local import",
                     ))
+
+    if speaker_shadow_dir.exists():
+        if speaker_shadow_init.exists():
+            speaker_shadow_init_tree = parse(speaker_shadow_init)
+            doc_only = (
+                len(speaker_shadow_init_tree.body) == 1
+                and isinstance(speaker_shadow_init_tree.body[0], ast.Expr)
+                and isinstance(
+                    speaker_shadow_init_tree.body[0].value,
+                    ast.Constant,
+                )
+                and isinstance(
+                    speaker_shadow_init_tree.body[0].value.value,
+                    str,
+                )
+            )
+            if not doc_only:
+                node = (
+                    speaker_shadow_init_tree.body[1]
+                    if len(speaker_shadow_init_tree.body) > 1
+                    else (
+                        speaker_shadow_init_tree.body[0]
+                        if speaker_shadow_init_tree.body
+                        else None
+                    )
+                )
+                violations.append(Violation(
+                    speaker_shadow_init,
+                    getattr(node, "lineno", 1),
+                    getattr(node, "col_offset", 0),
+                    "ASR_LAYERING",
+                    "speaker_shadow/__init__.py may contain only a package docstring",
+                ))
+
+        forbidden_shadow_dependencies = (
+            "main_logic.asr_client.runtime",
+            "main_logic.asr_client.endpointing",
+            "main_logic.asr_client.workers",
+            "main_logic.asr_client.provider_policy",
+            "main_logic.asr_client.lifecycle",
+            "main_logic.voice_turn",
+            "main_logic.voice_input",
+            "main_routers",
+            "scripts",
+        )
+        for path in sorted(speaker_shadow_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            for node in ast.walk(tree):
+                imported_paths = _imported_paths(node, pkg, alias_paths)
+                forbidden = next(
+                    (
+                        prefix
+                        for module in imported_paths
+                        for prefix in forbidden_shadow_dependencies
+                        if module == prefix or module.startswith(f"{prefix}.")
+                    ),
+                    None,
+                )
+                if forbidden is not None:
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        f"speaker_shadow must not import {forbidden}",
+                    ))
+            violations.extend(_dynamic_import_violations(
+                path,
+                tree,
+                alias_paths,
+                forbidden_shadow_dependencies,
+                "speaker_shadow",
+                report_generic=False,
+            ))
+            dynamic_alias_paths = {
+                **alias_paths,
+                **_importlib_alias_paths(tree),
+            }
+            for node in _module_scope_nodes(tree):
+                imports_onnxruntime = (
+                    isinstance(node, ast.Import)
+                    and any(alias.name == "onnxruntime" for alias in node.names)
+                ) or (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "onnxruntime"
+                )
+                targets, dynamic = _dynamic_import_target(
+                    node,
+                    dynamic_alias_paths,
+                )
+                imports_onnxruntime = imports_onnxruntime or bool(
+                    dynamic
+                    and targets is not None
+                    and any(
+                        target == "onnxruntime"
+                        or target.startswith("onnxruntime.")
+                        for target in targets
+                    )
+                )
+                if imports_onnxruntime:
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "speaker_shadow onnxruntime must remain a lazy "
+                        "function-local import",
+                    ))
+
+    for forbidden_legacy_path in (
+        root / "data" / "speaker_models",
+        root / "tools" / "voice_eval",
+        asr_client_dir / "detector_runtime.py",
+    ):
+        if forbidden_legacy_path.exists():
+            violations.append(Violation(
+                forbidden_legacy_path,
+                1,
+                0,
+                "ASR_LAYERING",
+                "legacy speaker-shadow path must not be restored",
+            ))
 
     workers_dir = asr_client_dir / "workers"
     if workers_dir.exists():

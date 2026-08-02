@@ -35,13 +35,18 @@ from config.prompts.prompts_memory import (
     INNER_THOUGHTS_HEADER,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
     CHAT_HOLIDAY_CONTEXT,
-    MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
+    LEGACY_SETTINGS_EMPTY,
+    LEGACY_SETTINGS_HEADER,
+    LEGACY_SETTINGS_SECTION_HEADER,
+    MEMORY_RECALL_HEADER,
+    MEMORY_RESULTS_HEADER,
+    MEMORY_UNAVAILABLE_NOTICE,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
+    _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
 from utils.language_utils import (
-    get_global_language,
     get_global_language_full,
     is_supported_language_code,
     language_context,
@@ -49,11 +54,12 @@ from utils.language_utils import (
 )
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
-from . import gates, post_turn, review, runtime
+from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from .rows import _has_human_messages
 from .runtime import app
@@ -77,12 +83,27 @@ def _activate_request_language(language: str | None) -> str:
     return get_global_language_full()
 
 
+async def _resolve_foreground_memory_language(
+    lanlan_name: str,
+    language: str | None,
+) -> str:
+    """Resolve foreground prompt locale without persisting a process guess."""
+    if is_supported_language_code(language):
+        return _activate_request_language(language)
+    durable_language = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale,
+        lanlan_name,
+    )
+    return _activate_request_language(durable_language)
+
+
 class ExternalMemoryImportRequest(BaseModel):
     character_name: str
     source_format: str
     imported_files: list[str]
     candidates: list[dict]
     warning_count: int = 0
+    language: str | None = None
 
 
 @app.post("/internal/memory/import_external_markdown")
@@ -122,6 +143,14 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
         operation="import",
         target=f"memory/{name}/external-markdown",
     )
+
+    explicit_language = None
+    locale_admission_order = None
+    if is_supported_language_code(request.language):
+        explicit_language = normalize_language_code(request.language, format='full')
+        locale_admission_order = (
+            locale_state.allocate_character_prompt_locale_order(name)
+        )
 
     imported_at = datetime.now().astimezone().isoformat()
     # persona 候选按 entity(master / neko) 分组各自送 LLM 融合；facts 里 MEMORY.md
@@ -181,20 +210,35 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 },
             })
 
+    if explicit_language is not None:
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_character_prompt_locale_order,
+            name,
+            order=locale_admission_order,
+        )
+        await asyncio.to_thread(
+            locale_state.record_character_prompt_locale,
+            name,
+            explicit_language,
+            order=locale_order,
+        )
+
     # ── persona 阶段：按 entity 并发 LLM 融合（不降级纯追加，见端点 docstring）──
     # 并发安全：afuse_external_facts 的 Phase 1/3 持同一把角色锁串行读写、且各
     # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
     # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
     persona_entities = list(persona_candidates_by_entity.items())
-    fusion_outcomes = await asyncio.gather(
-        *(
-            runtime.persona_manager.afuse_external_facts(
-                name, entity, entity_candidates, request.source_format,
-            )
-            for entity, entity_candidates in persona_entities
-        ),
-        return_exceptions=True,
-    )
+    memory_language = explicit_language or _activate_request_language(request.language)
+    with language_context(memory_language):
+        fusion_outcomes = await asyncio.gather(
+            *(
+                runtime.persona_manager.afuse_external_facts(
+                    name, entity, entity_candidates, request.source_format,
+                )
+                for entity, entity_candidates in persona_entities
+            ),
+            return_exceptions=True,
+        )
     added_persona = sum(r["added"] for r in fusion_outcomes if isinstance(r, dict))
     skipped_persona = sum(r["skipped"] for r in fusion_outcomes if isinstance(r, dict))
     fusion_errors = [r for r in fusion_outcomes if isinstance(r, BaseException)]
@@ -278,9 +322,10 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     daily_added = 0
     if daily_candidates:
         try:
-            daily_result = await runtime.fact_store.aimport_external_daily(
-                name, daily_candidates, request.source_format, imported_at,
-            )
+            with language_context(memory_language):
+                daily_result = await runtime.fact_store.aimport_external_daily(
+                    name, daily_candidates, request.source_format, imported_at,
+                )
         except ExternalMemoryImportTooLargeError as exc:
             # 确定性超限（真正要抽取的日记天数超 cap）：重试同一份必然再超 →
             # too_large 引导拆分。已导入天会被逐日指纹 skip，分次导入零重复成本。
@@ -363,13 +408,31 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
 # proactive_chat 路径是否成为 memory_server 真正的负载来源；如不是，则不必再
 # 上 main_server 端缓存（C+ 方案）。
 _new_dialog_qps_counter: dict[str, int] = {}
+_new_dialog_locale_generations: dict[str, int] = {}
 NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
 
 
-def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
+def _promote_new_dialog_locale_generation(
+    lanlan_name: str,
+    generation: int,
+) -> None:
+    _new_dialog_locale_generations[lanlan_name] = max(
+        _new_dialog_locale_generations.get(lanlan_name, 0),
+        generation,
+    )
+
+
+def _format_legacy_settings_as_text(
+    settings: dict,
+    lanlan_name: str,
+    language: str | None = None,
+) -> str:
     """Convert legacy settings JSON into natural-language form, replacing the raw json.dumps output."""
+    lang = _normalize_memory_prompt_lang(language or get_global_language_full())
+    header = _loc(LEGACY_SETTINGS_HEADER, lang).format(name=lanlan_name)
+    empty = _loc(LEGACY_SETTINGS_EMPTY, lang)
     if not settings:
-        return f"{lanlan_name}记得：（暂无记录）"
+        return header + empty
 
     sections = []
     for name, data in settings.items():
@@ -388,11 +451,15 @@ def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
                 value_str = str(value)
             lines.append(f"- {key}：{value_str}")
         if lines:
-            sections.append(f"关于{name}：\n" + "\n".join(lines))
+            section_header = _loc(
+                LEGACY_SETTINGS_SECTION_HEADER,
+                lang,
+            ).format(subject=name)
+            sections.append(section_header + "\n" + "\n".join(lines))
 
     if not sections:
-        return f"{lanlan_name}记得：（暂无记录）"
-    return f"{lanlan_name}记得：\n" + "\n".join(sections)
+        return header + empty
+    return header + "\n" + "\n".join(sections)
 
 
 async def _periodic_new_dialog_qps_log_loop():
@@ -436,7 +503,11 @@ async def api_reflect(lanlan_name: str):
     # 计数无功能影响。
     runtime._spawn_background_task(_safe_auto_promote(lanlan_name))
     try:
-        reflection_result = await runtime.reflection_engine.reflect(lanlan_name)
+        reflection_result = await locale_state.run_with_character_prompt_locale(
+            lanlan_name,
+            runtime.reflection_engine.reflect,
+            lanlan_name,
+        )
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
     return {
@@ -453,9 +524,14 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
     """
     try:
         if await gates._ais_powerful_memory_enabled():
-            await runtime.reflection_engine.aauto_promote_stale(lanlan_name)
+            operation = runtime.reflection_engine.aauto_promote_stale
         else:
-            await runtime.reflection_engine.aauto_promote_time_driven(lanlan_name)
+            operation = runtime.reflection_engine.aauto_promote_time_driven
+        await locale_state.run_with_character_prompt_locale(
+            lanlan_name,
+            operation,
+            lanlan_name,
+        )
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
@@ -522,6 +598,11 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
+    )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
         gates._touch_activity()
@@ -542,6 +623,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                locale_admission_order=locale_admission_order,
             )
             return {"status": "cached", "count": len(input_history)}
         except Exception as e:
@@ -552,7 +634,15 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    memory_language = _activate_request_language(request.language)
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
+    )
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         # P2 vector warmup: first /process is the cheapest "frontend ready"
@@ -589,6 +679,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             # 异步事实提取（不阻塞返回，失败静默跳过）
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                locale_admission_order=locale_admission_order,
             )
 
             # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
@@ -604,7 +695,15 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    memory_language = _activate_request_language(request.language)
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
+    )
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         # Same warmup hint as /process: /renew is also a "user actively
@@ -640,6 +739,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
             # 异步事实提取
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                locale_admission_order=locale_admission_order,
             )
 
             # Phase C: 见 /process 的注释——不再 cancel-and-restart。
@@ -660,7 +760,15 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    memory_language = _activate_request_language(request.language)
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        if is_supported_language_code(request.language)
+        else None
+    )
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         try:
@@ -680,9 +788,10 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                     on_compress_done=review._on_compress_done,
                 )
 
-            if input_history:
+            if input_history or is_supported_language_code(request.language):
                 await post_turn._spawn_outbox_post_turn_signals(
                     lanlan_name, input_history, language=request.language,
+                    locale_admission_order=locale_admission_order,
                 )
 
             # Phase C: 见 /process 的注释——不再 cancel-and-restart。
@@ -695,9 +804,9 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
 
 @app.get("/get_recent_history/{lanlan_name}")
-async def get_recent_history(lanlan_name: str):
+async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _lang = get_global_language()
+    _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
     # 检查角色是否存在于配置中
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -727,20 +836,25 @@ async def get_recent_history(lanlan_name: str):
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
-async def get_memory(query: str, lanlan_name: str):
+async def get_memory(
+    query: str,
+    lanlan_name: str,
+    language: str | None = None,
+):
     """**Deprecated** — the old GET endpoint is kept only to avoid breaking old
     callers; new callers use POST ``/query_memory/{lanlan_name}`` for structured
     results. This endpoint keeps returning placeholder text to discourage the old
     path from coming back (semantic recall was taken off this GET long ago).
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _lang = get_global_language()
+    _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
     return (
         _loc(MEMORY_RECALL_HEADER, _lang).format(name=lanlan_name)
         + query
         + "\n\n"
         + _loc(MEMORY_RESULTS_HEADER, _lang).format(name=lanlan_name)
-        + "\n（语义记忆已下线，暂无相关记忆片段。）"
+        + "\n"
+        + _loc(MEMORY_UNAVAILABLE_NOTICE, _lang)
     )
 
 
@@ -768,6 +882,7 @@ class ScopedFactInput(BaseModel):
 class ScopedFactsWriteRequest(BaseModel):
     subject: MemorySubjectRequest
     facts: list[ScopedFactInput]
+    language: str | None = None
     # Optional human-readable name for the subject (group name / member
     # nickname). Untrusted user data: sanitized like speaker_label, then
     # stamped onto the subject's existing persona section metadata so the
@@ -834,10 +949,12 @@ class ScopedHistoryRequest(BaseModel):
     # shipped in the same deployment), but the legacy shape stays anyway —
     # the group-digest paths keep using it unchanged.
     segments: list[ScopedHistorySegment] | None = None
+    language: str | None = None
 
 
 class ScopedContextRequest(BaseModel):
     subjects: list[MemorySubjectRequest]
+    language: str | None = None
 
 
 class ScopedMentionsRequest(BaseModel):
@@ -864,6 +981,7 @@ class QueryMemoryRequest(BaseModel):
     # An explicit empty list is a caller contract bug and is rejected 422 at
     # the endpoint (fail-closed) — it must never fall back to legacy private.
     subjects: list[MemorySubjectRequest] | None = None
+    language: str | None = None
 
 
 def _sanitized_display_name(raw: str | None, *, context: str) -> str | None:
@@ -944,6 +1062,27 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_facts",
     )
+    locale_order = None
+    if is_supported_language_code(req.language):
+        locale_admission_order = (
+            locale_state.allocate_subject_prompt_locale_order(
+                lanlan_name,
+                subject,
+            )
+        )
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_order,
+            lanlan_name,
+            subject,
+            order=locale_admission_order,
+        )
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            req.language,
+            order=locale_order,
+        )
     created = await runtime.fact_store.apersist_scoped_facts(
         lanlan_name,
         extracted,
@@ -961,6 +1100,11 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
 @app.post("/internal/memory/{lanlan_name}/scoped_history")
 async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     """Extract scoped facts from a bounded group-chat digest/history batch."""
+    with language_context(_activate_request_language(req.language)):
+        return await _process_scoped_history(lanlan_name, req)
+
+
+async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     lanlan_name = validate_lanlan_name(lanlan_name)
     if runtime.fact_store is None:
         raise HTTPException(
@@ -1024,6 +1168,27 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
     )
+    locale_order = None
+    if is_supported_language_code(req.language):
+        locale_admission_order = (
+            locale_state.allocate_subject_prompt_locale_order(
+                lanlan_name,
+                subject,
+            )
+        )
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_order,
+            lanlan_name,
+            subject,
+            order=locale_admission_order,
+        )
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            req.language,
+            order=locale_order,
+        )
     if speaker_label is None and subject.kind == "group_chat":
         # 群 digest 无单一发言人：不给 label 时 legacy prompt 会把提取
         # 框定为"只找关于私聊主人的事实"，成员自述被当空提取 checkpoint
@@ -1299,6 +1464,31 @@ async def _process_scoped_history_segments(
             for fact in await runtime.fact_store.aload_facts(lanlan_name)
             if isinstance(fact, dict)
         ]
+    locale_orders: list[int | None]
+    if is_supported_language_code(req.language):
+        subjects = [segment["subject"] for segment in parsed]
+        locale_admission_orders = (
+            locale_state.allocate_subject_prompt_locale_orders(
+                lanlan_name,
+                subjects,
+            )
+        )
+        locale_orders = await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_orders,
+            lanlan_name,
+            subjects,
+            orders=locale_admission_orders,
+        )
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locales,
+            lanlan_name,
+            [
+                (segment["subject"], req.language, locale_order)
+                for segment, locale_order in zip(parsed, locale_orders)
+            ],
+        )
+    else:
+        locale_orders = [None] * len(parsed)
     # fail_closed 语义（对齐 legacy 单发路径的注释）：调用方在成功段上
     # pop 掉只存在于它内存里的 bucket。整批抽取失败以 502 暴露（全部保留
     # 重试）；单段 persist 失败在响应体里按段标 failed。
@@ -1522,6 +1712,11 @@ async def _process_scoped_history_segments(
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
+    with language_context(_activate_request_language(req.language)):
+        return await _get_scoped_context(lanlan_name, req)
+
+
+async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     """Render only explicitly authorized persona/reflection subjects.
 
     ⚠️ `subjects` ORDER IS THE BUDGET PRIORITY. The renderer allocates the
@@ -1660,6 +1855,11 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         stats.update(
             await runtime.persona_manager.aforget_subject(lanlan_name, subject)
         )
+        stats["prompt_locale"] = await asyncio.to_thread(
+            locale_state.forget_subject_prompt_locale,
+            lanlan_name,
+            subject,
+        )
         # Reflection/persona archive writers take their store locks. Their
         # forget calls above therefore drain any writer that had already
         # snapshotted this subject. Advance the persistent cutoff only now,
@@ -1794,25 +1994,27 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             elif not query_text:
                 # 只给 time、没 query → 按时间邻近返回最接近的若干条。
                 from memory.hybrid_recall import recall_by_time
-                return await recall_by_time(
-                    lanlan_name=lanlan_name,
-                    time_spec=time_spec,
-                    fact_store=runtime.fact_store,
-                    reflection_engine=runtime.reflection_engine,
-                    subjects=subjects,
-                )
+                with language_context(_activate_request_language(req.language)):
+                    return await recall_by_time(
+                        lanlan_name=lanlan_name,
+                        time_spec=time_spec,
+                        fact_store=runtime.fact_store,
+                        reflection_engine=runtime.reflection_engine,
+                        subjects=subjects,
+                    )
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
-        return await hybrid_recall(
-            lanlan_name=lanlan_name,
-            query=query_text,
-            fact_store=runtime.fact_store,
-            reflection_engine=runtime.reflection_engine,
-            config_manager=runtime._config_manager,
-            time_window=time_window,
-            subjects=subjects,
-        )
+        with language_context(_activate_request_language(req.language)):
+            return await hybrid_recall(
+                lanlan_name=lanlan_name,
+                query=query_text,
+                fact_store=runtime.fact_store,
+                reflection_engine=runtime.reflection_engine,
+                config_manager=runtime._config_manager,
+                time_window=time_window,
+                subjects=subjects,
+            )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
         # 那边的 handler 会把空 results 翻译成 "没有找到相关记忆"，模型可以
@@ -1843,23 +2045,38 @@ async def get_settings(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
 
-    # Render 前刷新 reflection suppress 状态（冷却期过 → 解除），语义对齐
-    # persona render 的 update_suppressions 调用位置
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as e:
-        logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-    # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
-    persona_md = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name, pending_reflections, confirmed_reflections,
+    async def render_settings():
+        # Render 前刷新 reflection suppress 状态（冷却期过 → 解除），语义对齐
+        # persona render 的 update_suppressions 调用位置
+        try:
+            await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
+        except Exception as e:
+            logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
+        # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
+        pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
+            lanlan_name,
+        )
+        confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
+            lanlan_name,
+        )
+        persona_md = await runtime.persona_manager.arender_persona_markdown(
+            lanlan_name,
+            pending_reflections,
+            confirmed_reflections,
+        )
+        if persona_md:
+            return persona_md
+        # 兼容回退（自然语言格式）
+        legacy_settings = await asyncio.to_thread(
+            runtime.settings_manager.get_settings,
+            lanlan_name,
+        )
+        return _format_legacy_settings_as_text(legacy_settings, lanlan_name)
+
+    return await locale_state.run_with_character_prompt_locale(
+        lanlan_name,
+        render_settings,
     )
-    if persona_md:
-        return persona_md
-    # 兼容回退（自然语言格式）
-    legacy_settings = await asyncio.to_thread(runtime.settings_manager.get_settings, lanlan_name)
-    return _format_legacy_settings_as_text(legacy_settings, lanlan_name)
 
 
 @app.get("/get_persona/{lanlan_name}")
@@ -1948,9 +2165,130 @@ async def cancel_correction(lanlan_name: str):
     return {"status": "no_task"}
 
 @app.get("/new_dialog/{lanlan_name}")
-async def new_dialog(lanlan_name: str):
+async def new_dialog(lanlan_name: str, language: str | None = None):
+    with language_context(_activate_request_language(language)):
+        return await _new_dialog(lanlan_name, language)
+
+
+async def _write_new_dialog_locale(
+    lanlan_name: str,
+    language: str,
+    generation: int | None,
+    *,
+    locale_admission_order: int,
+) -> None:
+    """Persist one still-current new-dialog locale selection."""
+    locale_order = await asyncio.to_thread(
+        locale_state.reserve_character_prompt_locale_order,
+        lanlan_name,
+        order=locale_admission_order,
+    )
+    if (
+        generation is not None
+        and _new_dialog_locale_generations.get(lanlan_name) != generation
+    ):
+        return
+    await asyncio.to_thread(
+        locale_state.record_character_prompt_locale,
+        lanlan_name,
+        language,
+        order=locale_order,
+    )
+
+
+async def _retry_new_dialog_locale(
+    lanlan_name: str,
+    language: str,
+    generation: int | None,
+    *,
+    locale_admission_order: int,
+) -> None:
+    """Retry transient fences; let permanent failures reach the outbox."""
+    maintenance_retry_delay = 0.25
+    while (
+        generation is None
+        or _new_dialog_locale_generations.get(lanlan_name) == generation
+    ):
+        try:
+            await _write_new_dialog_locale(
+                lanlan_name,
+                language,
+                generation,
+                locale_admission_order=locale_admission_order,
+            )
+            return
+        except locale_state.PromptLocaleInvalidatedError:
+            await asyncio.sleep(0.25)
+        except MaintenanceModeError:
+            await asyncio.sleep(maintenance_retry_delay)
+            maintenance_retry_delay = min(
+                maintenance_retry_delay * 2,
+                30.0,
+            )
+
+
+async def _outbox_new_dialog_locale_handler(
+    lanlan_name: str,
+    payload: dict,
+) -> None:
+    """Replay one durable new-dialog locale intent until it is committed."""
+    language = payload.get('language')
+    locale_admission_order = payload.get('locale_admission_order')
+    if not is_supported_language_code(language):
+        raise ValueError("invalid prompt locale in outbox payload")
+    if not isinstance(locale_admission_order, int) or isinstance(
+        locale_admission_order,
+        bool,
+    ):
+        raise ValueError("invalid prompt locale order in outbox payload")
+
+    await _retry_new_dialog_locale(
+        lanlan_name,
+        language,
+        None,
+        locale_admission_order=locale_admission_order,
+    )
+
+
+async def _run_durable_new_dialog_locale_retry(
+    lanlan_name: str,
+    language: str,
+    generation: int,
+    *,
+    locale_admission_order: int,
+    op_id: str,
+) -> None:
+    """Run a newly queued locale intent through generic outbox liveness."""
+    payload = {
+        'language': language,
+        'locale_admission_order': locale_admission_order,
+        'generation': generation,
+    }
+    await outbox_infra._run_outbox_op(
+        lanlan_name,
+        {
+            'op_id': op_id,
+            'type': OP_PERSIST_PROMPT_LOCALE,
+            'payload': payload,
+        },
+    )
+
+
+outbox_infra.register_outbox_handler(
+    OP_PERSIST_PROMPT_LOCALE,
+    _outbox_new_dialog_locale_handler,
+)
+
+
+async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
+    has_explicit_language = is_supported_language_code(language)
+    locale_admission_order = None
+    if has_explicit_language:
+        locale_admission_order = (
+            locale_state.capture_character_prompt_locale_order(lanlan_name)
+        )
 
     # 检查角色是否存在于配置中
     try:
@@ -1962,6 +2300,82 @@ async def new_dialog(lanlan_name: str):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
+
+    if not has_explicit_language:
+        language = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
+            lanlan_name,
+        )
+
+    if has_explicit_language:
+        locale_admission_order = await asyncio.to_thread(
+            locale_state.rebase_character_prompt_locale_order,
+            lanlan_name,
+            locale_admission_order,
+        )
+        # The durable retry generation is the admission order itself.  This
+        # prevents a slower, older validation from superseding a newer request
+        # merely because it reached persistence later.
+        generation = locale_admission_order
+        try:
+            await _write_new_dialog_locale(
+                lanlan_name,
+                language,
+                None,
+                locale_admission_order=locale_admission_order,
+            )
+        except (
+            MaintenanceModeError,
+            locale_state.PromptLocalePersistenceError,
+        ) as exc:
+            # /new_dialog is a read path. The request-scoped language context is
+            # already active, so a cloud snapshot should only defer the durable
+            # locale hint instead of preventing a new conversation from opening.
+            logger.info(
+                "[PromptLocale] %s: new-dialog locale persistence deferred: %s",
+                lanlan_name,
+                exc,
+            )
+            payload = {
+                'language': language,
+                'locale_admission_order': locale_admission_order,
+                'generation': generation,
+            }
+            try:
+                op_id = await runtime.outbox.aappend_pending(
+                    lanlan_name,
+                    OP_PERSIST_PROMPT_LOCALE,
+                    payload,
+                )
+            except Exception as outbox_exc:
+                logger.error(
+                    "[PromptLocale] %s: durable locale retry registration failed; "
+                    "rejecting new-dialog admission: %s",
+                    lanlan_name,
+                    outbox_exc,
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Prompt locale persistence is unavailable",
+                ) from outbox_exc
+            else:
+                _promote_new_dialog_locale_generation(
+                    lanlan_name,
+                    generation,
+                )
+                operation = _run_durable_new_dialog_locale_retry(
+                    lanlan_name,
+                    language,
+                    generation,
+                    locale_admission_order=locale_admission_order,
+                    op_id=op_id,
+                )
+                runtime._spawn_background_task(operation)
+        else:
+            _promote_new_dialog_locale_generation(
+                lanlan_name,
+                generation,
+            )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
     # cacheable 机会，记进来反而污染 per_char 分布。
@@ -1977,27 +2391,38 @@ async def new_dialog(lanlan_name: str):
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
-        _lang = get_global_language()
+        _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
-        # pending + confirmed 反思也注入上下文（分区标注）
-        try:
-            await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-        except Exception as e:
-            logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-        pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-        confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
-        result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-        persona_md = await runtime.persona_manager.arender_persona_markdown(
-            lanlan_name, pending_reflections, confirmed_reflections,
-        )
+        # 请求没显式带语言时，上层 context 仍是进程回退值。耐久 locale
+        # 读取发生在入口之后，因此必须在调用可能读取全局语言的嵌套 renderer
+        # 前重新进入 context；显式 _lang 继续用于本函数内的表驱动字符串。
+        with language_context(_activate_request_language(language)):
+            # pending + confirmed 反思也注入上下文（分区标注）
+            try:
+                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
+            except Exception as e:
+                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
+            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
+            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
+            persona_md = await runtime.persona_manager.arender_persona_markdown(
+                lanlan_name, pending_reflections, confirmed_reflections,
+            )
         if persona_md:
             result += persona_md
         else:
             # 兼容回退：使用旧 settings（自然语言格式）
             # get_settings 内部 open() + json.load()，offload 避免阻塞（冷回退路径，但触发时多文件 IO）
             legacy_settings = await asyncio.to_thread(runtime.settings_manager.get_settings, lanlan_name)
-            result += _format_legacy_settings_as_text(legacy_settings, lanlan_name) + "\n"
+            result += (
+                _format_legacy_settings_as_text(
+                    legacy_settings,
+                    lanlan_name,
+                    _lang,
+                )
+                + "\n"
+            )
 
         # ── [动态部分] 内心活动（每次变化） ──
         result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)

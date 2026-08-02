@@ -2963,29 +2963,22 @@
             lockIcon.style.visibility = 'visible';
 
             const lockRect = lockIcon.getBoundingClientRect();
-            let isOverlapped = false;
-            document.querySelectorAll('[id^="pngtuber-popup-"]').forEach((popup) => {
-                if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                    const popupRect = popup.getBoundingClientRect();
-                    if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                        lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                        isOverlapped = true;
-                    }
-                }
-            });
-            if (!isOverlapped) {
-                document.querySelectorAll('[data-neko-sidepanel]').forEach((panel) => {
-                    if (panel.style.display !== 'none' && parseFloat(panel.style.opacity) > 0) {
-                        const panelRect = panel.getBoundingClientRect();
-                        if (lockRect.right > panelRect.left && lockRect.left < panelRect.right &&
-                            lockRect.bottom > panelRect.top && lockRect.top < panelRect.bottom) {
-                            isOverlapped = true;
-                        }
-                    }
+            const popupUi = window.AvatarPopupUI || null;
+            const isOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'pngtuber')
+                : Array.from(document.querySelectorAll('[id^="pngtuber-popup-"], [data-neko-sidepanel-owner^="pngtuber-popup-"]')).some(element => {
+                    const style = window.getComputedStyle(element);
+                    const computedOpacity = Number.parseFloat(style.opacity || '1');
+                    const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                    if (style.display === 'none' || style.visibility === 'hidden' ||
+                        (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                    const overlayRect = element.getBoundingClientRect();
+                    return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                        lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
                 });
-            }
             const shouldFade = this.container && this.container.classList.contains('locked-hover-fade');
             lockIcon.style.opacity = shouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
+            lockIcon.style.pointerEvents = isOverlapped ? 'none' : 'auto';
         }
 
         async resolveCurrentLanlanName() {
@@ -4101,12 +4094,19 @@
                 applyResponsiveFloatingLayout();
                 this.updateLockIconPosition();
             });
+            const refreshLockForOverlayVisibility = (event) => {
+                const eventPrefix = event && event.detail ? event.detail.prefix : '';
+                if (eventPrefix && eventPrefix !== prefix) return;
+                this.updateLockIconPosition();
+            };
             this._uiWindowHandlers.push({ event: 'resize', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'orientationchange', handler: scheduleLayout, target: window });
             this._uiWindowHandlers.push({ event: 'neko:yui-guide-floating-toolbar-suppression-change', handler: scheduleLayout, target: window });
+            this._uiWindowHandlers.push({ event: 'neko-avatar-overlay-visibility-changed', handler: refreshLockForOverlayVisibility, target: window });
             window.addEventListener('resize', scheduleLayout);
             window.addEventListener('orientationchange', scheduleLayout);
             window.addEventListener('neko:yui-guide-floating-toolbar-suppression-change', scheduleLayout);
+            window.addEventListener('neko-avatar-overlay-visibility-changed', refreshLockForOverlayVisibility);
             if (this.image) {
                 this.image.addEventListener('load', scheduleLayout);
                 this.image.addEventListener('pointerenter', handleImagePointerEnter);

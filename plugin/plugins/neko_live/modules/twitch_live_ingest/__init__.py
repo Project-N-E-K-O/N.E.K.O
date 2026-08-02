@@ -430,11 +430,16 @@ class TwitchLiveIngestModule(BaseModule):
         parsed_room = parse_twitch_room_ref(safe.get("room_ref"))
         if parsed_room.ok:
             raw["room_ref"] = parsed_room.room_ref
+        provider_event_id = _safe_public_token(safe.get("provider_event_id"), 80)
+        if provider_event_id:
+            raw["provider_event_id"] = provider_event_id
+        session_generation = _safe_generation(safe.get("_live_session_generation"))
+        if session_generation:
+            raw["_live_session_generation"] = session_generation
         if raw["event_type"] == "gift":
             gift_name = _safe_text(safe.get("gift_name"), 80)
             gift_count = _safe_positive_int(safe.get("gift_count"), maximum=10_000_000)
             gift_value = _safe_positive_int(safe.get("gift_value"), maximum=10_000_000)
-            provider_event_id = _safe_public_token(safe.get("provider_event_id"), 80)
             provider_event_type = _safe_text(safe.get("provider_event_type"), 48)
             verified = (
                 safe.get("support_verified") is True

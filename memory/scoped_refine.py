@@ -55,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -69,6 +70,18 @@ from config import (
     SCOPED_REFINE_REVISIT_AFTER_DAYS,
     SCOPED_REFINE_TOPK_PER_ENTRY,
 )
+
+
+def _detect_scoped_refine_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
 
 try:
     from memory.embeddings import (
@@ -91,6 +104,7 @@ except ImportError:
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
 from memory.temporal import to_naive_local
+from utils.language_utils import language_context
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -351,6 +365,7 @@ ScopedApplyFn = Callable[
 ScopedFailureFn = Callable[
     [ScopedRefineBucket, list[dict], str], Awaitable[None]
 ]
+PromptLocaleResolver = Callable[[MemorySubject], Awaitable[str | None]]
 
 
 class ScopedLiteRefineEngine:
@@ -374,6 +389,7 @@ class ScopedLiteRefineEngine:
         failure_fn: ScopedFailureFn | None = None,
         start_after: tuple | None = None,
         trust_of: TrustFn | None = None,
+        prompt_locale_resolver: PromptLocaleResolver | None = None,
     ) -> dict:
         """Process at most ONE cluster of ONE bucket; return pass stats.
 
@@ -422,9 +438,26 @@ class ScopedLiteRefineEngine:
             result['served'] = bucket.marker
             cluster_failed = False
             try:
-                ok = await self._resolve_cluster(
-                    bucket, cluster, cluster_hash, apply_fn, trust_of,
+                prompt_locale = None
+                if prompt_locale_resolver is not None:
+                    try:
+                        prompt_locale = await prompt_locale_resolver(
+                            bucket.subject
+                        )
+                    except Exception as locale_error:  # noqa: BLE001
+                        logger.warning(
+                            f"[ScopedRefine] {scope_label} prompt locale "
+                            f"解析失败，使用默认语言: {locale_error}"
+                        )
+                locale_scope = (
+                    language_context(prompt_locale)
+                    if prompt_locale
+                    else nullcontext()
                 )
+                with locale_scope:
+                    ok = await self._resolve_cluster(
+                        bucket, cluster, cluster_hash, apply_fn, trust_of,
+                    )
                 if ok is None:
                     pass
                 elif ok:
@@ -584,11 +617,13 @@ class ScopedLiteRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_scoped_memory_refine_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
+        prompt_locale = _detect_scoped_refine_prompt_language(
+            "\n".join(str(entry.get("text") or "") for entry in cluster)
+        )
         prompt = (
-            get_scoped_memory_refine_prompt(get_global_language())
+            get_scoped_memory_refine_prompt(prompt_locale)
             .replace('{CLUSTER}', cluster_text)
             .replace('{COUNT}', str(len(cluster)))
         )

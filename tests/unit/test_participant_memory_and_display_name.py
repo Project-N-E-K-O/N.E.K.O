@@ -230,7 +230,10 @@ async def test_scoped_facts_route_rejects_oversized_display_name():
 
     store = MagicMock()
     store.apersist_scoped_facts = AsyncMock(return_value=[])
-    with patch.object(memory_routes.runtime, "fact_store", store):
+    with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
+        memory_routes.locale_state,
+        "allocate_subject_prompt_locale_order",
+    ) as allocate_locale:
         with pytest.raises(HTTPException) as excinfo:
             await memory_routes.append_scoped_facts(
                 "Neko",
@@ -238,9 +241,43 @@ async def test_scoped_facts_route_rejects_oversized_display_name():
                     subject={"subject_kind": "group_chat", "subject_id": "qq:1"},
                     facts=[ScopedFactInput(text="t")],
                     display_name="水" * 65,
+                    language="zh-TW",
                 ),
             )
     assert excinfo.value.status_code == 422
+    allocate_locale.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_rejects_display_name_before_locale_recording():
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    history = json.dumps([
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    ])
+    store = MagicMock()
+    store.extract_facts = AsyncMock(return_value=[])
+    with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
+        memory_routes.locale_state,
+        "allocate_subject_prompt_locale_order",
+    ) as allocate_locale:
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(
+                    input_history=history,
+                    subject={"subject_kind": "group_chat", "subject_id": "qq:1"},
+                    display_name="水" * 65,
+                    language="zh-TW",
+                ),
+            )
+
+    assert excinfo.value.status_code == 422
+    allocate_locale.assert_not_called()
+    store.extract_facts.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -287,6 +324,66 @@ async def test_scoped_facts_route_stamps_sanitized_display_name():
             ),
         )
     assert result["status"] == "stored"
+
+
+@pytest.mark.asyncio
+async def test_scoped_facts_route_records_locale_before_persist():
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import (
+        ScopedFactInput,
+        ScopedFactsWriteRequest,
+    )
+
+    events = []
+    store = MagicMock()
+
+    async def persist(*args, **kwargs):
+        events.append("persist")
+        return [{"id": "f1"}]
+
+    def reserve(*args, **kwargs):
+        events.append("reserve")
+        return 42
+
+    def record(*args, **kwargs):
+        events.append("record")
+
+    store.apersist_scoped_facts = AsyncMock(side_effect=persist)
+    with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
+        memory_routes.locale_state,
+        "allocate_subject_prompt_locale_order",
+        return_value=42,
+    ), patch.object(
+        memory_routes.locale_state,
+        "reserve_subject_prompt_locale_order",
+        side_effect=reserve,
+    ) as reserve_locale, patch.object(
+        memory_routes.locale_state,
+        "record_subject_prompt_locale",
+        side_effect=record,
+    ) as record_locale:
+        result = await memory_routes.append_scoped_facts(
+            "Neko",
+            ScopedFactsWriteRequest(
+                subject={
+                    "subject_kind": "group_chat",
+                    "subject_id": "qq:1",
+                },
+                facts=[ScopedFactInput(text="喜歡貓")],
+                language="zh-TW",
+            ),
+        )
+
+    subject = reserve_locale.call_args.args[1]
+    assert result["status"] == "stored"
+    assert events == ["reserve", "record", "persist"]
+    reserve_locale.assert_called_once_with("Neko", subject, order=42)
+    record_locale.assert_called_once_with(
+        "Neko",
+        subject,
+        "zh-TW",
+        order=42,
+    )
 
 
 @pytest.mark.asyncio
@@ -367,20 +464,27 @@ def test_scoped_header_language_tables_cover_all_kinds_and_langs():
     from config.prompts.prompts_memory import (
         SCOPED_PERSONA_SECTION_HEADER,
         SCOPED_PERSONA_SECTION_HEADER_NAMED,
+        get_scoped_persona_section_header,
     )
 
     assert set(SCOPED_PERSONA_SECTION_HEADER_NAMED) == set(
         SCOPED_PERSONA_SECTION_HEADER
     )
     for kind, table in SCOPED_PERSONA_SECTION_HEADER_NAMED.items():
-        # named 表至少覆盖既有表的全部语言；额外的 zh-TW 是 CI ratchet
-        # （check_prompt_zh_tw）要求的新表模板，既有表的繁中 backfill
-        # 归 #2500 批处理。
-        assert set(table) >= set(SCOPED_PERSONA_SECTION_HEADER[kind]), kind
-        assert "zh-TW" in table, kind
+        # #2623 把既有表的繁中补键留给 #2500；合并 #2616 后两张表必须
+        # 锁成同一套八 locale，不能再依赖缺键回退。
+        assert set(table) == set(SCOPED_PERSONA_SECTION_HEADER[kind]), kind
+        assert set(table) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
         for lang, template in table.items():
             assert "{display_name}" in template, (kind, lang)
             assert "{subject_id}" in template, (kind, lang)
+
+    assert get_scoped_persona_section_header(
+        "group_chat", "qq:7788", "zh-TW", display_name="水群",
+    ) == "群組聊天記憶（水群，qq:7788）"
+    assert get_scoped_persona_section_header(
+        "group_participant", "qq:7788:1", "zh-TW", display_name="小明",
+    ) == "群組內成員記憶（小明，qq:7788:1）"
 
 
 def test_render_sanitizes_hand_edited_display_name():
@@ -2623,10 +2727,18 @@ async def test_scoped_forget_route_wires_all_three_stores():
             calls.append("dedup") or {"pending_dedup": 1}
         ),
     )
+    forget_locale = MagicMock(
+        side_effect=lambda *args: calls.append("prompt_locale") or 1,
+    )
     with patch.object(memory_routes.runtime, "fact_store", store), \
             patch.object(memory_routes.runtime, "fact_dedup_resolver", dedup), \
             patch.object(memory_routes.runtime, "reflection_engine", reflection), \
-            patch.object(memory_routes.runtime, "persona_manager", persona):
+            patch.object(memory_routes.runtime, "persona_manager", persona), \
+            patch.object(
+                memory_routes.locale_state,
+                "forget_subject_prompt_locale",
+                forget_locale,
+            ):
         result = await memory_routes.forget_scoped_subject(
             "Neko",
             ScopedForgetRequest(
@@ -2638,9 +2750,15 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["reflections"] == 2
     assert result["persona_entries"] == 3
     assert result["pending_dedup"] == 1
+    assert result["prompt_locale"] == 1
+    forget_locale.assert_called_once()
+    locale_name, locale_subject = forget_locale.call_args.args
+    assert locale_name == "Neko"
+    assert locale_subject.kind == "participant"
+    assert locale_subject.subject_id == "qq:1001"
     assert calls == [
         "fact_begin", "reflection_begin", "dedup", "facts", "reflections",
-        "persona", "fact_finalize", "reflection_end", "fact_end",
+        "persona", "prompt_locale", "fact_finalize", "reflection_end", "fact_end",
     ]
     for double in (store, dedup, reflection, persona):
         forgotten = double.aforget_subject.await_args.args[1]
@@ -2898,6 +3016,7 @@ async def test_bootstrap_section_participant_never_fetches_legacy():
         her_name="Neko", master_name="主人",
         context_ready_template="ready {name} {master}",
         is_group=False, group_id=None, sender_id="1001",
+        locale="zh-TW",
         participant_memory=True,
     )
 
@@ -2909,6 +3028,12 @@ async def test_bootstrap_section_participant_never_fetches_legacy():
     assert subjects == [
         {"subject_kind": "participant", "subject_id": "qq:1001"},
     ]
+    assert (
+        plugin.memory_bridge.fetch_scoped_bootstrap_memory.await_args.kwargs[
+            "language"
+        ]
+        == "zh-TW"
+    )
 
     # sender 空：fail-closed 空 subjects → bridge 空串 → 无段；legacy 仍未被碰
     plugin.memory_bridge.fetch_scoped_bootstrap_memory = AsyncMock(

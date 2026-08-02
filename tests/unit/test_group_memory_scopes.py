@@ -494,6 +494,7 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
             QQMemoryBridge.group_subject("7788"),
             QQMemoryBridge.group_participant_subject("7788", "2046"),
         ],
+        language="",
     )
 
     # Member memory OFF gates this read too (dual of the recall path):
@@ -510,7 +511,9 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
         sender_id="2046",
     )
     bridge.fetch_scoped_bootstrap_memory.assert_awaited_once_with(
-        "Neko", subjects=[QQMemoryBridge.group_subject("7788")],
+        "Neko",
+        subjects=[QQMemoryBridge.group_subject("7788")],
+        language="",
     )
 
 
@@ -537,7 +540,9 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
     )
 
     assert "旧私人记忆" in rendered
-    bridge.fetch_bootstrap_memory.assert_awaited_once_with("Neko")
+    bridge.fetch_bootstrap_memory.assert_awaited_once_with(
+        "Neko",
+    )
     bridge.fetch_scoped_bootstrap_memory.assert_not_awaited()
 
 
@@ -1444,6 +1449,7 @@ async def test_scoped_read_refreshes_reflection_suppressions():
     )
     req = SimpleNamespace(
         subjects=[SimpleNamespace(to_domain=lambda: subject)],
+        language=None,
     )
     with patch.object(routes.runtime, "reflection_engine", engine, create=True),          patch.object(routes.runtime, "persona_manager", persona, create=True):
         await routes.get_scoped_context("Neko", req)
@@ -2183,7 +2189,7 @@ async def test_extraction_prompt_uses_speaker_label(tmp_path):
     fs._allm_call_with_retries = _capture
     msg = SimpleNamespace(type="human", content="我对花生过敏")
 
-    with patch("memory.facts.get_global_language", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         await fs._allm_extract_facts("Neko", [msg])
         assert "主人 | 我对花生过敏" in captured["prompt"]
 
@@ -2213,7 +2219,7 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         return None
 
     fs._allm_call_with_retries = _terminal_failure
-    with patch("memory.facts.get_global_language", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         with pytest.raises(FactExtractionFailed):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert await fs.extract_facts([msg], "Neko") == []
@@ -3279,8 +3285,7 @@ async def test_batch_extraction_single_segment_still_uses_bounded_batch_prompt(t
         ["BEGIN-important " + ("界" * 2000) + " END-important"],
         trust=1.0,
     )
-    with patch("memory.facts.get_global_language", return_value="zh"), \
-            patch("memory.facts.get_global_language_full", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch([segment], "Neko")
 
     assert [r["status"] for r in results] == ["ok"]
@@ -3358,8 +3363,7 @@ async def test_ai_disclosure_does_not_inherit_participant_provenance(tmp_path):
     segment = _batch_segment(
         "7788", "1001", "Alice(1001)", ["聊音乐"], trust=0.3,
     )
-    with patch("memory.facts.get_global_language", return_value="zh"), \
-            patch("memory.facts.get_global_language_full", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch([segment], "Neko")
 
     human, ai = results[0]["created"]
@@ -3835,6 +3839,124 @@ async def test_correction_batches_partition_by_isolation_domain(tmp_path):
     assert {item["entity"] for item in remaining} == {
         "master", "@subject/group_chat:qq:100", "@subject/group_chat:qq:200",
     }
+
+
+@pytest.mark.asyncio
+async def test_correction_batch_uses_scoped_prompt_locale(tmp_path):
+    import json as _json
+
+    from memory.persona import PersonaManager
+    from memory.scopes import MemorySubject
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_locale"
+    subject = MemorySubject.group_chat("qq", "7788")
+    corr_path = tmp_path / f"{name}_corrections.json"
+    item = {
+        "old_text": "好",
+        "new_text": "嗯",
+        "entity": subject.persona_section_key,
+        "created_at": "2026-07-31T12:00:00",
+        **subject.as_entry_fields(),
+    }
+    corr_path.write_text(
+        _json.dumps([item], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    observed_subjects = []
+    captured_prompts = []
+
+    async def resolve_locale(actual_subject):
+        observed_subjects.append(actual_subject)
+        return "zh-TW"
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured_prompts.append(prompt)
+            response = MagicMock()
+            response.content = "[]"
+            return response
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*_args, **_kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create), \
+         patch(
+             "config.prompts.prompts_memory.get_persona_correction_prompt",
+             return_value="{pairs}",
+         ) as get_prompt:
+        await pm.resolve_corrections(
+            name,
+            prompt_locale_resolver=resolve_locale,
+        )
+
+    assert observed_subjects == [subject]
+    get_prompt.assert_called_once_with("zh-TW")
+    assert "已有: 好 | 新觀察: 嗯" in captured_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_correction_batch_falls_back_when_scoped_locale_lookup_fails(
+    tmp_path,
+):
+    import json as _json
+
+    from memory.persona import PersonaManager
+    from memory.scopes import MemorySubject
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_locale_fallback"
+    subject = MemorySubject.group_chat("qq", "7788")
+    corr_path = tmp_path / f"{name}_corrections.json"
+    corr_path.write_text(
+        _json.dumps([{
+            "old_text": "old",
+            "new_text": "new",
+            "entity": subject.persona_section_key,
+            "created_at": "2026-07-31T12:00:00",
+            **subject.as_entry_fields(),
+        }]),
+        encoding="utf-8",
+    )
+    captured_prompts = []
+
+    async def fail_locale(_subject):
+        raise OSError("locale sidecar unavailable")
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured_prompts.append(prompt)
+            response = MagicMock()
+            response.content = "[]"
+            return response
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*_args, **_kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create), \
+         patch(
+             "config.prompts.prompts_memory.get_persona_correction_prompt",
+             return_value="{pairs}",
+         ):
+        resolved = await pm.resolve_corrections(
+            name,
+            prompt_locale_resolver=fail_locale,
+        )
+
+    assert resolved == 0
+    assert len(captured_prompts) == 1
+    assert "old" in captured_prompts[0]
+    assert "new" in captured_prompts[0]
 
 
 @pytest.mark.asyncio
@@ -12823,6 +12945,61 @@ async def test_session_instructions_build_executes_end_to_end():
     )
     assert "9900" in bundle.system_prompt
     assert "9900" in bundle.cross_session_section
+
+
+@pytest.mark.parametrize(
+    ("is_group", "group_id"),
+    [(False, None), (True, "7788")],
+)
+@pytest.mark.asyncio
+async def test_session_instructions_forward_full_locale_to_memory(
+    monkeypatch,
+    is_group,
+    group_id,
+):
+    from plugin.plugins.qq_auto_reply import session_instruction_service as module
+
+    monkeypatch.setattr(module, "get_global_language", lambda: "zh")
+    monkeypatch.setattr(module, "get_global_language_full", lambda: "zh-TW")
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+            "allow_cross_group_context": False,
+        },
+        _user_sessions={},
+        i18n=_default_i18n(),
+        memory_bridge=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda *a, **k: None,
+            get_user_title=lambda *a, **k: "",
+        ),
+        qq_client=SimpleNamespace(needs_attention=False),
+        fatigue_service=None,
+        session_runtime_service=SimpleNamespace(),
+    )
+    service = module.QQSessionInstructionService(plugin)
+    service._build_core_memory_section = AsyncMock(return_value="")
+
+    await service.build_session_instructions(
+        her_name="Neko",
+        master_name="Master",
+        character_prompt="persona",
+        character_card_fields={},
+        permission_level="admin",
+        sender_id="2046",
+        user_title="member",
+        is_group=is_group,
+        group_id=group_id,
+        use_memory_context=True,
+    )
+
+    assert (
+        service._build_core_memory_section.await_args.kwargs["locale"]
+        == "zh-TW"
+    )
 
 
 @pytest.mark.asyncio

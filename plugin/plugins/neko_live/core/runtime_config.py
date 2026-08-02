@@ -13,12 +13,43 @@ from .runtime_config_activation import (
 )
 from .runtime_config_persistence import (
     persist_config_best_effort,
-    persist_config_update,
+    persist_config_update as persist_config_update,
 )
 from .runtime_live_listener import (
     reconcile_live_listener_after_config,
-    start_live_listener,
-    stop_live_listener,
+    start_live_listener as start_live_listener,
+    stop_live_listener as stop_live_listener,
+)
+
+
+_LIVE_SCENE_CONFIG_KEYS = frozenset(
+    {
+        "live_enabled",
+        "avatar_roast_enabled",
+        "avatar_analysis_enabled",
+        "danmaku_response_enabled",
+        "live_support_events_enabled",
+        "warmup_hosting_enabled",
+        "idle_hosting_enabled",
+        "active_engagement_enabled",
+        "live_mode",
+        "stream_theme",
+        "stream_goal",
+        "stream_columns",
+        "stream_avoid_topics",
+    }
+)
+_FORCE_LIVE_SCENE_SYNC_KEYS = frozenset(
+    {
+        "live_enabled",
+        "avatar_roast_enabled",
+        "avatar_analysis_enabled",
+        "danmaku_response_enabled",
+        "live_support_events_enabled",
+        "warmup_hosting_enabled",
+        "idle_hosting_enabled",
+        "active_engagement_enabled",
+    }
 )
 
 
@@ -91,20 +122,21 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
             runtime._accepting_live_events = False
         activate_config(runtime, candidate)
         runtime._config_revision += 1
-        defer_instruction_sync = was_listening and bool(
-            {"live_platform", "live_room_ref", "live_room_id"} & set(live_diff)
+        live_target_keys = {"live_platform", "live_room_ref", "live_room_id"}
+        defer_instruction_sync = (
+            was_listening
+            and bool(live_target_keys & set(clean))
+            and bool(live_target_keys & set(live_diff))
         )
-        if not defer_instruction_sync and {
-            "live_enabled",
-            "avatar_roast_enabled",
-            "avatar_analysis_enabled",
-            "danmaku_response_enabled",
-            "live_support_events_enabled",
-            "warmup_hosting_enabled",
-            "idle_hosting_enabled",
-            "active_engagement_enabled",
-        } & set(clean):
-            await runtime.sync_live_instructions(force=True)
+        requested_scene_keys = _LIVE_SCENE_CONFIG_KEYS & set(clean)
+        if (
+            not defer_instruction_sync
+            and requested_scene_keys
+            and bool(candidate.live_enabled)
+        ):
+            await runtime.sync_live_instructions(
+                force=bool(_FORCE_LIVE_SCENE_SYNC_KEYS & requested_scene_keys)
+            )
         if developer_mode_changed:
             await runtime.sync_developer_mode(announce=False, force=True)
         await persist_config_best_effort(runtime, clean)

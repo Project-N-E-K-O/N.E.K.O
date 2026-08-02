@@ -37,6 +37,7 @@ Input contracts:
 Output contracts:
 
 - Normal chat events publish provider-neutral `LiveEvent(type="danmaku")` and later become `ViewerEvent(source="live_danmaku")`.
+- When the bridge exposes `common.msgId` / `msg_id` / `message_id`, the adapter projects it as an optional sanitized `provider_event_id`. The shared recent-chat layer uses only this explicit ID to suppress transport redelivery; it never derives identity from viewer text.
 - Douyin viewer identity must prefer stable opaque ids such as `webcastUid`, `webcast_user_id`, `open_id`, or `sec_uid` before legacy numeric ids. Some rooms hide detailed viewer information and emit `id` / `idStr` as the placeholder `111111`; those placeholder ids must not become the viewer-profile key when a stable opaque id is present.
 - Gift events publish only safe gift summary fields. The provider remains signal-only in the sense that it never creates a reply itself; after EventBus publish, shared `live_events` Selection may choose the event and `live_support_events` may produce a short thanks line. Flat `giftName` / count / value fields and nested `gift` summary objects are accepted, but only `giftName` / `gift_name` / `name`, `num` / `repeat_count` / `combo_count`, and `total_coin` / `diamond_count` / `price` are projected; nested raw objects are dropped. Bridge contribution events such as `WebcastLightGiftMessage`, `WebcastLinkerContributeMessage`, and `WebcastProfitInteractionScoreMessage` may also normalize to `gift` when the bridge emits them instead of `WebcastGiftMessage`; `WebcastLinkerContributeMessage` must prefer `userContributeList[*].userId` over the top-level receiver/anchor id, and must not project a top-level anchor `avatarThumb` as the gift sender avatar. Empty or invalid flat summary fields may fall back to the nested safe summary fields, and multiple numeric aliases use the first valid positive integer or pure-digit string. Bytes, bools, objects, and other unsafe numeric values are treated as missing instead of being stringified.
 - Member, follow, like, and stats events are status-only in v1 and must not publish to the EventBus unless a later event-family design is approved.
@@ -102,6 +103,18 @@ The maintained integration path covers manual Cookie import, room lookup, bundle
 
 This coverage does not settle binary distribution. The bundled executable remains the internal bridge backend, while signing, checksum policy, packaging size, platform coverage, and replacement-source review remain separate distribution decisions.
 
+## Decision Points: Bundled Bridge Distribution
+
+This Draft PR records the runtime boundary but does not approve a release binary policy. Maintainer approval is still required for these distribution decisions:
+
+| Decision | Budget / threshold | Alternatives and trade-off | Recommended Draft option | Rollback / evidence |
+|---|---|---|---|---|
+| Package size and platforms | One versioned bridge per explicitly supported OS/architecture; package growth must be reported before release | Download-on-first-use reduces package size but adds network and supply-chain failure; bundling is reproducible but increases artifact size | Bundle only the reviewed Windows amd64 bridge in the first release | Remove the backend entry and degrade Douyin ingest to unavailable; packaging checks report artifact contents and size |
+| Integrity and signing | License, upstream version, and cryptographic checksum are mandatory; one SHA256 scan of the bundled executable is allowed on each cold process start, off the event loop; signing policy remains a release-gate decision | Checksum-only adds O(binary size) local read cost but no network or dependency; platform signing improves provenance but adds release operations | Require checksum now and decide signing before promoting the Draft | Every Douyin backend supplies its checksum path; the supervisor refuses a missing, malformed, unreadable, or mismatched executable before process creation, exposes only a stable failure reason, and tests both verified startup and rejection paths |
+| Replacement source | Replacement must preserve localhost transport and sanitized adapter contracts | Replacing only backend/adapter is bounded; embedding provider protocol logic expands maintenance and risk | Keep bridge backend disposable and bridge-only | Fall back to disconnected/auth-required with sanitized connection status; bridge lifecycle and adapter fixtures provide observability |
+
+Affected interfaces are `bridge_backend.py`, the embedded supervisor, packaging metadata, and the provider-neutral localhost transport. No EventBus, pipeline, viewer-store, or output contract change is approved by this decision record.
+
 ## Replacement Boundary
 
 If the current bridge stops working, keep the runtime shape and replace only the disposable bridge layer:
@@ -109,7 +122,7 @@ If the current bridge stops working, keep the runtime shape and replace only the
 1. Add or update a `DouyinBridgeBackend` entry in `bridge_backend.py` with the new executable path and launch arguments.
 2. Add a new adapter beside `bridge_adapter.py` only if the replacement bridge emits a different JSON shape.
 3. Wire that adapter in `external_bridge.py` or `embedded_bridge.py`; do not touch EventBus, `live_events`, viewer profiles, pipeline, UI actions, or safety guard.
-4. Keep the public payload contract unchanged: `event_type`, `room_ref`, `uid`, `nickname`, `text`, optional `avatar_url`, optional gift summary fields, and optional numeric `room_id`.
+4. Keep the public payload contract unchanged: `event_type`, `room_ref`, `uid`, `nickname`, `text`, optional safe `provider_event_id`, optional `avatar_url`, optional gift summary fields, and optional numeric `room_id`.
 5. Update vendor license/version/checksum metadata and run the bridge/douyin boundary tests.
 
 Dropping a broken bridge should therefore be a small backend/adapter change, not a rewrite of the Douyin provider.
