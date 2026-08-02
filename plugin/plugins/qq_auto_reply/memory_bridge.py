@@ -105,20 +105,19 @@ class QQMemoryBridge:
     ) -> str:
         if not subjects:
             return ""
-        from utils.language_utils import (
-            get_global_language_full,
-            is_supported_language_code,
-        )
+        from utils.language_utils import is_supported_language_code
 
-        prompt_language = (
-            language
-            if is_supported_language_code(language)
-            else get_global_language_full()
-        )
+        # Same contract as the sibling methods: only a caller-supplied locale
+        # has explicit provenance. Omitting the field lets the server restore
+        # the durable per-subject locale, which the host process fallback
+        # would otherwise overwrite with a coarser guess.
+        payload: dict[str, Any] = {"subjects": subjects}
+        if is_supported_language_code(language):
+            payload["language"] = language
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-            json={"subjects": subjects, "language": prompt_language},
+            json=payload,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -189,9 +188,11 @@ class QQMemoryBridge:
             request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
-        from utils.language_utils import get_global_language_full
-
-        request_payload["language"] = get_global_language_full()
+        # No language field: QQ has no explicit per-conversation locale, and
+        # this method has no caller-supplied one either. Sending the host
+        # process fallback would outrank the durable per-subject locale the
+        # server can restore on its own (same contract as the sibling
+        # bootstrap/history methods).
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/query_memory/{her_name}",

@@ -107,12 +107,19 @@ def cosine_similarity(left, right) -> float:
     return implementation(left, right)
 
 
-# Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is
-# the design number from the P2 plan — empirically what the default
-# local profile emits for "主人喜欢猫" vs "对猫咪很感兴趣" (≈0.88)
-# without false-positives between "主人喜欢猫" / "主人讨厌猫" (≈0.78). Tunable per
-# deploy via the constant; lower values flood the LLM, higher misses
-# real paraphrases.
+# Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is the design
+# number from the P2 plan: it was calibrated so a paraphrase pair clears the
+# bar while an antonym pair ("主人喜欢猫" / "主人讨厌猫") does not.
+#
+# ⚠️ This comment used to quote absolute scores (≈0.88 paraphrase / ≈0.78
+# antonym) as if they were current. They were measured on the embedding
+# profile of the time and were never re-taken after the model changed, so
+# they no longer describe what this deployment emits — re-measure before
+# citing any number here. What the threshold rests on is the *ordering*
+# (paraphrase > antonym), not those two values. Lower values flood the LLM,
+# higher ones miss real paraphrases; retune against freshly measured pairs on
+# the profile you actually ship, and note that Matryoshka truncation makes the
+# scale dimension-dependent (see memory/_embeddings/hardware.py).
 FACT_DEDUP_COSINE_THRESHOLD = 0.85
 
 # Cap how many candidate pairs go into a single LLM call. The prompt

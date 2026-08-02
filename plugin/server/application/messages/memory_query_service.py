@@ -7,7 +7,6 @@ import httpx
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
-from utils.language_utils import get_global_language_full
 
 logger = get_logger("server.application.messages.memory_query")
 
@@ -63,11 +62,13 @@ class MemoryQueryService:
                 lanlan_name=normalized_lanlan_name,
                 query=normalized_query,
             )
+            # No language param: this GET is a deprecated placeholder endpoint
+            # (semantic recall was removed from it long ago) and the plugin
+            # server has no session locale to contribute. Letting the memory
+            # server resolve its own locale keeps the plugin process's
+            # fallback from propagating across the boundary.
             async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None, trust_env=False) as client:
-                response = await client.get(
-                    url,
-                    params={"language": get_global_language_full()},
-                )
+                response = await client.get(url)
                 response.raise_for_status()
                 result = response.json()
             return {"result": result}

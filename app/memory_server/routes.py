@@ -97,6 +97,41 @@ async def _resolve_foreground_memory_language(
     return _activate_request_language(durable_language)
 
 
+async def _resolve_scoped_memory_language(
+    lanlan_name: str,
+    subjects,
+    language: str | None,
+) -> str:
+    """Resolve scoped prompt locale: explicit request > subject > character.
+
+    ``subjects`` arrives in the caller's own priority order (see
+    ``_get_scoped_context``), so the first one carrying a durable locale wins.
+    Without this chain a group request falls straight through to the calling
+    process's locale, and the per-subject durable state is never read — which
+    is the whole point of storing it.
+    """
+    if is_supported_language_code(language):
+        return _activate_request_language(language)
+    for subject in subjects or []:
+        descriptor = (
+            subject.model_dump()
+            if hasattr(subject, "model_dump")
+            else subject
+        )
+        try:
+            durable = await locale_state.aget_subject_prompt_locale(
+                lanlan_name,
+                descriptor,
+            )
+        except ValueError:
+            # A malformed descriptor fails closed downstream (coerce_subject);
+            # locale lookup must not be the thing that rejects the request.
+            continue
+        if is_supported_language_code(durable):
+            return _activate_request_language(durable)
+    return await _resolve_foreground_memory_language(lanlan_name, None)
+
+
 class ExternalMemoryImportRequest(BaseModel):
     character_name: str
     source_format: str
@@ -603,7 +638,15 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         if is_supported_language_code(request.language)
         else None
     )
-    memory_language = _activate_request_language(request.language)
+    # Same resolution as the sibling /process /renew /settle endpoints. Today
+    # /cache runs update_history(compress=False), so nothing inside this
+    # context reaches a prompt and the asymmetry is invisible — but any future
+    # prompt work moved in here would silently render in the caller's process
+    # locale instead of the character's durable one.
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         try:
@@ -1395,7 +1438,16 @@ async def _process_scoped_history_segments(
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
-    with language_context(_activate_request_language(req.language)):
+    # Validate before the locale lookup: it keys per-character state files by
+    # this name, so it must not run on an unvalidated path component. The
+    # inner handler validates again — the helper is idempotent.
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    resolved_language = await _resolve_scoped_memory_language(
+        lanlan_name,
+        req.subjects,
+        req.language,
+    )
+    with language_context(resolved_language):
         return await _get_scoped_context(lanlan_name, req)
 
 
@@ -1661,6 +1713,14 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             detail="subjects must be omitted (legacy private) or contain 1..8 items",
         )
     subjects = [subject.to_domain() for subject in (req.subjects or [])]
+    # Recall renders tier/entity tags and rerank prompts, so it needs the
+    # subject's own durable locale when the caller has none — not whichever
+    # locale the calling process happens to sit in.
+    resolved_language = await _resolve_scoped_memory_language(
+        lanlan_name,
+        subjects,
+        req.language,
+    )
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
@@ -1677,7 +1737,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             elif not query_text:
                 # 只给 time、没 query → 按时间邻近返回最接近的若干条。
                 from memory.hybrid_recall import recall_by_time
-                with language_context(_activate_request_language(req.language)):
+                with language_context(resolved_language):
                     return await recall_by_time(
                         lanlan_name=lanlan_name,
                         time_spec=time_spec,
@@ -1688,7 +1748,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
-        with language_context(_activate_request_language(req.language)):
+        with language_context(resolved_language):
             return await hybrid_recall(
                 lanlan_name=lanlan_name,
                 query=query_text,
