@@ -71,6 +71,8 @@ _NON_UNIVERSAL_FREQUENCY_TOKEN_PHRASES = (
 _CJK_NON_UNIVERSAL_FREQUENCY_MARKERS = (
     "偶尔", "偶爾", "经常", "經常", "时常", "時常", "通常",
 )
+_NON_UNIVERSAL_QUANTIFIER_MARKERS = frozenset({"some"})
+_CJK_NON_UNIVERSAL_QUANTIFIER_MARKERS = ("有些",)
 _REPORTING_VERBS = frozenset({
     "acknowledge", "acknowledged", "acknowledges", "admit", "admits", "admitted",
     "allege", "alleged", "alleges", "announce", "announced", "announces",
@@ -88,6 +90,9 @@ _REPORTING_VERBS = frozenset({
 })
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
+})
+_TEMPORAL_CLAUSE_MARKERS = frozenset({
+    "after", "before", "until", "while",
 })
 _CJK_CONDITIONAL_MARKERS = (
     "如果", "若", "假如", "假设", "倘若", "要是", "只要", "一旦",
@@ -240,6 +245,7 @@ def _fragment_has_embedded_clause_negation(text: str) -> bool:
         negation_indices
         and (
             any(token in _CONDITIONAL_CLAUSE_MARKERS for token in tokens)
+            or any(token in _TEMPORAL_CLAUSE_MARKERS for token in tokens)
             or any(
                 _contains_token_phrase(tokens, phrase)
                 for phrase in _CONDITIONAL_CLAUSE_TOKEN_PHRASES
@@ -313,6 +319,18 @@ def _has_non_universal_frequency(text: str) -> bool:
         or any(
             marker in text
             for marker in _CJK_NON_UNIVERSAL_FREQUENCY_MARKERS
+        )
+    )
+
+
+def _has_non_universal_quantifier(text: str) -> bool:
+    """Reject existential claims that need not cover the same individuals."""
+    tokens = _word_tokens(text)
+    return (
+        any(token in _NON_UNIVERSAL_QUANTIFIER_MARKERS for token in tokens)
+        or any(
+            marker in text
+            for marker in _CJK_NON_UNIVERSAL_QUANTIFIER_MARKERS
         )
     )
 
@@ -410,6 +428,13 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
     if old_norm == new_norm:
         return "confirmation"
     if _has_disjunction(old_norm) or _has_disjunction(new_norm):
+        return None
+    if (
+        _has_non_universal_quantifier(old_norm)
+        or _has_non_universal_quantifier(new_norm)
+    ):
+        # Existential claims can refer to different members of a set, so
+        # ``some P`` and ``some not P`` are not deterministic opposites.
         return None
     if (
         _has_non_universal_frequency(old_norm)

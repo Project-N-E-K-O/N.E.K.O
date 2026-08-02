@@ -37,9 +37,34 @@ from memory.fact_dedup import (
     FactDedupResolver,
     _created_at_instant,
 )
+from memory.facts import _merge_archive_entries
 
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+
+def test_archive_merge_preserves_arbitration_marker_from_crash_duplicate():
+    existing = [{
+        "id": "loser",
+        "text": "old archived copy",
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "arbitration_reason": "fact_dedup_merge",
+        "superseded_by": "winner",
+    }]
+    incoming = [{
+        "id": "loser",
+        "text": "newer active copy",
+        "subject_archived_at": "2026-08-02T00:00:00",
+    }]
+
+    assert _merge_archive_entries(existing, incoming) == [{
+        "id": "loser",
+        "text": "newer active copy",
+        "subject_archived_at": "2026-08-02T00:00:00",
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "arbitration_reason": "fact_dedup_merge",
+        "superseded_by": "winner",
+    }]
 
 
 def _mock_cm(tmpdir: str):

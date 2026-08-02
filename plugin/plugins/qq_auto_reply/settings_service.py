@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from copy import deepcopy
 
 from typing import Any
 
@@ -591,9 +592,15 @@ class QQSettingsService:
         overlay: dict[str, Any] | None = None,
         *,
         refresh_backlog_store: bool = True,
+        preserve_published_permissions: bool = False,
     ) -> bool:
         """Persist while the shared settings writer locks are already held."""
         try:
+            published_permissions = {
+                key: deepcopy(self.plugin._qq_settings[key])
+                for key in ("trusted_users", "trusted_groups")
+                if key in self.plugin._qq_settings
+            }
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
             live_trust_profiles = (
@@ -611,6 +618,8 @@ class QQSettingsService:
             payload = dict(self.plugin._qq_settings)
             if isinstance(staged_trust_profiles, dict):
                 payload["speaker_trust_profiles"] = staged_trust_profiles
+            if preserve_published_permissions:
+                payload.update(published_permissions)
             payload.update(overlay or {})
             saved = await self.plugin.config_store.save(payload)
             for key, value in pre_publish.items():
@@ -619,6 +628,8 @@ class QQSettingsService:
                 # The durable writer may publish the staged profile only
                 # after save succeeds; readers keep seeing the live snapshot.
                 saved["speaker_trust_profiles"] = live_trust_profiles
+            if preserve_published_permissions:
+                saved.update(published_permissions)
             self.plugin._qq_settings = saved
             if refresh_backlog_store:
                 self.plugin.backlog_store = (
@@ -715,6 +726,7 @@ class QQSettingsService:
                 save_task = asyncio.ensure_future(
                     self._persist_business_config_locked(
                         refresh_backlog_store=False,
+                        preserve_published_permissions=True,
                     )
                 )
                 try:

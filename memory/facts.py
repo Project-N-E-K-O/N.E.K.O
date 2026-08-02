@@ -207,7 +207,9 @@ def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     itself also heals duplicates an earlier half-commit already wrote to disk.
 
     Later wins because ``incoming`` is the live copy being archived right now —
-    it may carry flag updates the older archived copy predates.
+    it may carry flag updates the older archived copy predates. The one
+    exception is an existing arbitration marker: an archive-first crash must
+    not let a later subject archive turn that loser into a restorable row.
 
     Rows with an unusable id are all kept: there is no key to compare them on,
     and folding them together would trade a duplicate for silent data loss (the
@@ -223,7 +225,24 @@ def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
             out.append(entry)
             continue
         if identity in pos:
-            out[pos[identity]] = entry
+            previous = out[pos[identity]]
+            replacement = entry
+            if (
+                previous.get('arbitration_archived_at')
+                and not entry.get('arbitration_archived_at')
+            ):
+                # Arbitration commits archive-first. If a crash leaves the
+                # loser active, a later subject archive can re-append that
+                # active copy. Keep newer live fields, but never erase the
+                # marker that excludes it from ordinary subject restore.
+                replacement = dict(entry)
+                for key in (
+                    'arbitration_archived_at', 'arbitration_reason',
+                    'superseded_by',
+                ):
+                    if key in previous:
+                        replacement[key] = previous[key]
+            out[pos[identity]] = replacement
         else:
             pos[identity] = len(out)
             out.append(entry)

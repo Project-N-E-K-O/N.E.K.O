@@ -879,7 +879,8 @@ class CorrectionsMixin:
         if not batch_items:
             return
         bumped_keys = {
-            it.get('created_at', '') for it in batch_items if it.get('created_at')
+            identity for it in batch_items
+            if (identity := _correction_queue_identity(it)) is not None
         }
         if not bumped_keys:
             return
@@ -888,7 +889,7 @@ class CorrectionsMixin:
             kept: list[dict] = []
             dropped = 0
             for c in current:
-                key = c.get('created_at', '')
+                key = _correction_queue_identity(c)
                 if key in bumped_keys:
                     new_attempts = safe_int_field(c, 'resolve_attempts') + 1
                     if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:

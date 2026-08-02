@@ -1845,6 +1845,48 @@ async def test_trust_only_save_preserves_backlog_store_instance():
 
 
 @pytest.mark.asyncio
+async def test_trust_only_save_does_not_publish_staged_permission_mutations():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    published_users = [{"qq": "1001", "level": "normal"}]
+    manager = PermissionManager(published_users)
+    payloads = []
+
+    async def _save(payload):
+        payloads.append(json.loads(json.dumps(payload)))
+        return dict(payload)
+
+    plugin = SimpleNamespace(
+        permission_mgr=manager,
+        group_permission_mgr=None,
+        logger=MagicMock(),
+        _qq_settings={"trusted_users": published_users},
+        config_store=SimpleNamespace(save=_save),
+        backlog_store=None,
+        _create_backlog_store_from_settings=lambda _settings: None,
+    )
+    service = QQSettingsService(plugin)
+
+    # Dashboard actions mutate the live manager before awaiting session
+    # invalidation and entering the settings writer locks.
+    assert manager.add_user("2002", "trusted")
+    assert await service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="trust-during-dashboard-invalidation",
+        trust_events=[],
+    )
+
+    assert payloads[0]["trusted_users"] == published_users
+    assert plugin._qq_settings["trusted_users"] == published_users
+    assert {row["qq"] for row in manager.list_users()} == {"1001", "2002"}
+
+    assert await service.persist_business_config()
+    assert {row["qq"] for row in payloads[1]["trusted_users"]} == {
+        "1001", "2002",
+    }
+
+
+@pytest.mark.asyncio
 async def test_unpersisted_trust_is_invisible_during_slow_failed_save():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
@@ -2271,6 +2313,14 @@ def test_conditional_clause_negations_never_emit_correction():
     ) is None
 
 
+@pytest.mark.parametrize("marker", ["Before", "After", "While", "Until"])
+def test_temporal_clause_negations_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"{marker} Alice is smart, Bob waits",
+        f"{marker} Alice is not smart, Bob waits",
+    ) is None
+
+
 @pytest.mark.parametrize("marker", ["Provided", "Assuming", "Supposing"])
 def test_bare_conditional_introducers_never_emit_correction(marker):
     assert deterministic_relation(
@@ -2369,6 +2419,14 @@ def test_english_lexical_uncertainty_never_emits_correction(marker):
     assert deterministic_relation(
         "Alice is smart", "Alice is not smart",
     ) == "correction"
+
+
+@pytest.mark.parametrize(("positive", "negative"), [
+    ("Some cats are smart", "Some cats are not smart"),
+    ("有些猫喜欢鱼", "有些猫不喜欢鱼"),
+])
+def test_existential_quantifiers_never_emit_correction(positive, negative):
+    assert deterministic_relation(positive, negative) is None
 
 
 @pytest.mark.parametrize("marker", [
