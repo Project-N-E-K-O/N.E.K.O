@@ -449,22 +449,56 @@ class OpenClawAdapter:
             return {"is_magic_intent": False, "command": None, "source": "rule"}
 
         # 高精度优先：词表宁可保守，也不冒进扩展。
-        if any(token in lowered for token in ("我忘了", "我忘记", "雨停了", "停电了", "新的一天", "你的看法")):
+        # ⚠️ 下面几张表撞的是用户实际打出来的字，简繁是不同码位——只列简体等于
+        # 这套口令对繁中用户完全不存在（实测繁中 10/10 全 MISS）。
+        if any(
+            token in lowered
+            for token in (
+                "我忘了", "我忘记", "我忘記", "雨停了", "停电了", "停電了",
+                "新的一天", "你的看法",
+            )
+        ):
             return {"is_magic_intent": False, "command": None, "source": "rule"}
 
         mapping = [
-            ("/clear", ("忘了刚才的事", "忘掉刚才的事", "清除我们的聊天记录", "清除聊天记录", "删掉刚才的记录", "清空聊天记录")),
-            ("/new", ("换个话题", "重新开始", "说点别的", "聊点别的", "重新开个话题")),
-            ("/stop", ("别找了", "快停下来", "取消这个任务", "取消这个搜索", "算了别查了", "停止搜索", "停下来")),
-            ("/daemon approve", ("删吧", "准了", "去执行", "去执行吧", "没问题，去执行", "没问题去执行")),
+            ("/clear", (
+                "忘了刚才的事", "忘了剛才的事", "忘掉刚才的事", "忘掉剛才的事",
+                "清除我们的聊天记录", "清除我們的聊天記錄", "清除聊天记录", "清除聊天記錄",
+                "删掉刚才的记录", "刪掉剛才的記錄", "清空聊天记录", "清空聊天記錄",
+            )),
+            ("/new", (
+                "换个话题", "換個話題", "重新开始", "重新開始",
+                "说点别的", "說點別的", "聊点别的", "聊點別的",
+                "重新开个话题", "重新開個話題",
+            )),
+            # 台湾用「搜尋」不用「搜索」，所以繁体那条不是「搜索」的字形转换。
+            ("/stop", (
+                "别找了", "別找了", "快停下来", "快停下來",
+                "取消这个任务", "取消這個任務", "取消这个搜索", "取消這個搜尋",
+                "算了别查了", "算了別查了", "停止搜索", "停止搜尋",
+                "停下来", "停下來",
+            )),
+            ("/daemon approve", (
+                "删吧", "刪吧", "准了", "準了", "去执行", "去執行",
+                "去执行吧", "去執行吧", "没问题，去执行", "沒問題，去執行",
+                "没问题去执行", "沒問題去執行",
+            )),
         ]
+        # ⚠️ 这三个否定 token 必须与上面的 approve 触发词**同批**补繁体。少补的话
+        # 「我同意去執行」会命中 approve 而守卫恒假——那才是真正的行为反转（现在
+        # 的 MISS 只会导致不批准，是安全方向）。
+        _APPROVE_GUARD_TOKENS = ("执行", "執行", "删", "刪", "准", "準")
         for command, triggers in mapping:
             if any(token in text for token in triggers):
-                if command == "/daemon approve" and "同意" in text and "执行" not in text and "删" not in text and "准" not in text:
+                if (
+                    command == "/daemon approve"
+                    and "同意" in text
+                    and not any(token in text for token in _APPROVE_GUARD_TOKENS)
+                ):
                     return {"is_magic_intent": False, "command": None, "source": "rule"}
                 return {"is_magic_intent": True, "command": command, "source": "rule"}
 
-        if text in {"我同意", "同意", "没问题"}:
+        if text in {"我同意", "同意", "没问题", "沒問題"}:
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
 
         return {"is_magic_intent": False, "command": None, "source": "rule"}

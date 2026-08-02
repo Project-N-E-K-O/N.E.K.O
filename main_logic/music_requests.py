@@ -174,11 +174,27 @@ _QUOTE_PAIRS = {
     "『": "』",
     "【": "】",
 }
+# ── 简繁并列的复用片段 ────────────────────────────────────────────
+# ⚠️ 这些正则撞的是**用户实际打出来的字**，不是界面语言。繁简是不同码位，
+# 所以简体词条对繁体输入不是「匹配度低」而是一条都不中：点歌整个功能对繁中
+# 用户等于不存在，而且还会误解析（「播放我的紅心歌單」曾被当成「搜索歌手
+# 『我』的歌曲『紅心歌單』」）。
+# 片段提在这里而不是逐条内联，是因为同一个前缀在下面出现九次，散写必漏。
+_ZH_POLITE = r"(?:请|請|麻烦|麻煩)?"
+_ZH_FOR_ME = r"(?:给我|給我|帮我|幫我)?"
+_ZH_REQ_PREFIX = rf"{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?(?:想|要)?"
+_ZH_ONE_TRACK = r"(?:一首|首|点|點)?"
+_ZH_SONG_NOUN = r"(?:歌|歌曲|音乐|音樂)"
+_ZH_PLAYLIST_NOUN = r"(?:歌单|歌單)"
+_ZH_NETEASE = r"(?:网易云|網易雲)"
+_ZH_ONCE = r"(?:一下)?"
+
 _ZH_NEGATIVE_MUSIC = re.compile(
-    r"^(?:(?:算了|还是算了)[，,\s]*)?(?:请|麻烦)?(?:我)?"
-    r"(?:(?:不要|别|不想|不听|无需|停止|暂停|关掉|关闭|停掉|取消)"
-    r".{0,6}(?:播放|放|播|听|音乐|歌)"
-    r"|把(?:音乐|歌).{0,4}(?:关了|关掉|停掉))"
+    r"^(?:(?:算了|还是算了|還是算了)[，,\s]*)?(?:请|請|麻烦|麻煩)?(?:我)?"
+    r"(?:(?:不要|别|別|不想|不听|不聽|无需|無需|停止|暂停|暫停|关掉|關掉"
+    r"|关闭|關閉|停掉|取消)"
+    r".{0,6}(?:播放|放|播|听|聽|音乐|音樂|歌)"
+    r"|把(?:音乐|音樂|歌).{0,4}(?:关了|關了|关掉|關掉|停掉))"
 )
 _EN_NEGATIVE_MUSIC = re.compile(
     r"^(?:(?:actually|never\s*mind)[,\s]+)?"
@@ -207,40 +223,61 @@ _EN_NON_MUSIC_TARGET = re.compile(
     r"|\bwith\s+(?:me|us|him|her|them)\b",
     re.IGNORECASE,
 )
-_ZH_SPEECH_SUBJECT = r"(?:你|我|他|她|它|我们|咱们|他们|她们)(?:的)?"
+_ZH_SPEECH_SUBJECT = r"(?:你|我|他|她|它|我们|我們|咱们|咱們|他们|他們|她们|她們)(?:的)?"
 _ZH_SPEECH_TARGET = (
-    rf"(?:一段\s*)?{_ZH_SPEECH_SUBJECT}(?:说话|讲话)(?:的?声音)?"
+    rf"(?:一段\s*)?{_ZH_SPEECH_SUBJECT}(?:说话|說話|讲话|講話)(?:的?(?:声音|聲音))?"
 )
+# ⚠️ 只收台湾用字「動畫」，**不要**写「动画」的日文形「動画」——日文里那是
+# 极常见的普通名词，收了会把日文输入判成「非音乐目标」。
 _ZH_NON_MUSIC_TARGET = re.compile(
-    r"(?:(?:一个|一段|一些|这个|那个|我的|你的|他的|她的)\s*)?"
-    r"(?:视频|游戏|电影|电视剧|动画|动漫|播客|有声书)"
+    r"(?:(?:一个|一個|一段|一些|这个|這個|那个|那個|我的|你的|他的|她的)\s*)?"
+    r"(?:视频|視頻|游戏|遊戲|电影|電影|电视剧|電視劇|动画|動畫|动漫|動漫"
+    r"|播客|有声书|有聲書)"
     rf"|{_ZH_SPEECH_TARGET}"
 )
 _ZH_NON_MUSIC_SPEECH_REQUEST = re.compile(
-    r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?"
-    r"(?:播放|放|听|想听|要听)(?:一下)?"
+    rf"{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?(?:想|要)?"
+    r"(?:播放|放|听|聽|想听|想聽|要听|要聽)(?:一下)?"
     rf"{_ZH_SPEECH_TARGET}"
 )
+# 简繁各列一遍（同形的只出现一次）。这张表决定「放輕鬆的歌」里的「輕鬆」
+# 被当成曲风还是歌手名——缺繁体时会返回 song_artist="輕鬆" 去搜歌手。
 _ZH_MUSIC_MOOD_OR_STYLE = {
     "安静",
+    "安靜",
     "悲伤",
+    "悲傷",
     "电子",
+    "電子",
     "放松",
+    "放鬆",
     "古典",
     "欢快",
+    "歡快",
     "怀旧",
+    "懷舊",
     "爵士",
     "开心",
+    "開心",
     "快乐",
+    "快樂",
     "浪漫",
     "民谣",
+    "民謠",
     "轻松",
+    "輕鬆",
     "热血",
+    "熱血",
     "伤感",
+    "傷感",
     "舒缓",
+    "舒緩",
     "温柔",
+    "溫柔",
     "摇滚",
+    "搖滾",
     "治愈",
+    "治癒",
 }
 
 
@@ -299,24 +336,24 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         return None
 
     if re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:只)?"
-        r"(?:来|放|播放|听)(?:一下)?(?:一首|首|点)?(?:我)?(?:的)?"
-        r"(?:红心|我喜欢|收藏)(?:的)?(?:歌|歌曲|音乐)?(?:歌单)?",
+        rf"{_ZH_REQ_PREFIX}(?:只)?"
+        rf"(?:来|來|放|播放|听|聽){_ZH_ONCE}{_ZH_ONE_TRACK}(?:我)?(?:的)?"
+        rf"(?:红心|紅心|我喜欢|我喜歡|收藏)(?:的)?{_ZH_SONG_NOUN}?{_ZH_PLAYLIST_NOUN}?",
         clause,
     ):
         return MusicRequest(personalization_source="liked")
     if re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:只)?"
-        r"(?:来|放|播放|听)(?:一下)?(?:一首|首|点)?(?:我)?(?:的)?(?:网易云)?(?:的)?"
-        r"(?:日推|每日推荐)(?:歌|歌曲|音乐)?",
+        rf"{_ZH_REQ_PREFIX}(?:只)?"
+        rf"(?:来|來|放|播放|听|聽){_ZH_ONCE}{_ZH_ONE_TRACK}(?:我)?(?:的)?{_ZH_NETEASE}?(?:的)?"
+        rf"(?:日推|每日推荐|每日推薦){_ZH_SONG_NOUN}?",
         clause,
     ):
         return MusicRequest(personalization_source="daily")
 
     playlist_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:从|播放|放|听)(?:网易云)?(?:的)?(?:歌单)?"
-        r"[《「『【]?(.{1,40}?)[》」』】]?(?:这个|的)?(?:歌单)?(?:里|中)"
-        r"(?:随机)?(?:放|播|听|来)?(?:一首|首|点)?(?:歌|音乐)?",
+        rf"{_ZH_REQ_PREFIX}(?:从|從|播放|放|听|聽){_ZH_NETEASE}?(?:的)?{_ZH_PLAYLIST_NOUN}?"
+        rf"[《「『【]?(.{{1,40}}?)[》」』】]?(?:这个|這個|的)?{_ZH_PLAYLIST_NOUN}?(?:里|裡|中)"
+        rf"(?:随机|隨機)?(?:放|播|听|聽|来|來)?{_ZH_ONE_TRACK}(?:歌|音乐|音樂)?",
         clause,
     )
     if playlist_match:
@@ -326,8 +363,8 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         return MusicRequest(playlist_name=playlist) if playlist else MusicRequest()
 
     direct_playlist_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:播放|放|听)(?:一下)?"
-        r"(.{1,40}?)歌单",
+        rf"{_ZH_REQ_PREFIX}(?:播放|放|听|聽){_ZH_ONCE}"
+        rf"(.{{1,40}}?){_ZH_PLAYLIST_NOUN}",
         clause,
     )
     if direct_playlist_match:
@@ -337,8 +374,9 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         return MusicRequest(playlist_name=playlist) if playlist else MusicRequest()
 
     quoted_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:播放|放|听|来)(?:一下)?(?:一首|首)?"
-        r"(?:(.{1,30}?)的)?[《「『【](.{1,60}?)[》」』】](?:这首歌|这首|歌曲|歌)?",
+        rf"{_ZH_REQ_PREFIX}(?:播放|放|听|聽|来|來){_ZH_ONCE}(?:一首|首)?"
+        rf"(?:(.{{1,30}}?)的)?[《「『【](.{{1,60}}?)[》」』】]"
+        r"(?:这首歌|這首歌|这首|這首|歌曲|歌)?",
         clause,
     )
     if quoted_match:
@@ -351,8 +389,8 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         )
 
     switch_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?"
-        r"(?:换成|切到|切成|改放)(?:歌曲?|曲目|音乐)\s*[:：]?\s*(.{1,60})",
+        rf"{_ZH_REQ_PREFIX}"
+        r"(?:换成|換成|切到|切成|改放)(?:歌曲?|曲目|音乐|音樂)\s*[:：]?\s*(.{1,60})",
         clause,
     )
     if switch_match:
@@ -360,27 +398,28 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         return MusicRequest(keyword=song, song_name=song)
 
     artist_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:播放|放|听|来点|来一首|来首)(?:一下)?"
-        r"(?:一首|首)?(.{1,40}?)的(?:歌|歌曲|音乐)",
+        rf"{_ZH_REQ_PREFIX}"
+        r"(?:播放|放|听|聽|来点|來點|来一首|來一首|来首|來首)(?:一下)?"
+        rf"(?:一首|首)?(.{{1,40}}?)的{_ZH_SONG_NOUN}",
         clause,
     )
     if artist_match:
         artist = _strip_request_payload(artist_match.group(1))
-        if artist in {"我", "你", "他", "她", "它", "咱", "咱们", "我们", "自己"}:
+        if artist in {"我", "你", "他", "她", "它", "咱", "咱们", "咱們", "我们", "我們", "自己"}:
             return MusicRequest()
         if artist in _ZH_MUSIC_MOOD_OR_STYLE:
             return MusicRequest(keyword=artist)
         return MusicRequest(keyword=artist, song_artist=artist)
 
     artist_song_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?(?:播放|放|听|来一首)(?:一下)?(?:一首|首)?"
+        rf"{_ZH_REQ_PREFIX}(?:播放|放|听|聽|来一首|來一首)(?:一下)?(?:一首|首)?"
         r"(.{1,30}?)的(.{1,60})",
         clause,
     )
     if artist_song_match:
         artist = _strip_request_payload(artist_song_match.group(1))
         song = _strip_request_payload(artist_song_match.group(2))
-        song = re.sub(r"(?:这首歌|这首|歌曲)$", "", song).strip()
+        song = re.sub(r"(?:这首歌|這首歌|这首|這首|歌曲)$", "", song).strip()
         return MusicRequest(
             keyword=f"{song} {artist}",
             song_name=song,
@@ -388,8 +427,12 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         )
 
     generic_match = re.fullmatch(
-        r"(?:请|麻烦)?(?:给我|帮我)?(?:我)?(?:想|要)?"
-        r"(播放一首|播放首|播放一下|播放下|播放|放一首|放首|放一下|听一首|听首|听一下|想听|要听|来一首|来首|来点)"
+        rf"{_ZH_REQ_PREFIX}"
+        r"(播放一首|播放首|播放一下|播放下|播放"
+        r"|放一首|放首|放一下"
+        r"|听一首|聽一首|听首|聽首|听一下|聽一下"
+        r"|想听|想聽|要听|要聽"
+        r"|来一首|來一首|来首|來首|来点|來點)"
         r"(.{0,60})",
         clause,
     )
@@ -397,7 +440,7 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         return None
     _action, payload = generic_match.groups()
     payload = _strip_request_payload(payload)
-    if payload in {"", "歌", "歌曲", "音乐", "一首歌", "首歌", "点音乐"}:
+    if payload in {"", "歌", "歌曲", "音乐", "音樂", "一首歌", "首歌", "点音乐", "點音樂"}:
         return MusicRequest()
     if _ZH_NON_MUSIC_TARGET.fullmatch(payload):
         return None
@@ -405,15 +448,21 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
     if named_song_match:
         song = _strip_request_payload(named_song_match.group(1))
         return MusicRequest(keyword=song, song_name=song)
+    # 「放一首 X」把 X 当歌名，「放 X」只当关键词——两组动作的语义不同，所以
+    # 繁体形必须同样进这个集合，否则「聽一首晴天」会退化成关键词搜索。
     if _action in {
         "播放一首",
         "播放首",
         "放一首",
         "放首",
         "听一首",
+        "聽一首",
         "听首",
+        "聽首",
         "来一首",
+        "來一首",
         "来首",
+        "來首",
     }:
         return MusicRequest(keyword=payload, song_name=payload)
     return MusicRequest(keyword=payload)

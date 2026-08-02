@@ -1,0 +1,261 @@
+"""Traditional/Simplified parity for the user-input matchers (issue #2500).
+
+Second batch of the "0 hit" class: tables and regexes that get matched against
+what the user actually typed. Simplified and Traditional are distinct code
+points, so a Simplified-only lexicon does not degrade for a Traditional writer —
+the feature simply does not exist for them.
+
+As in ``test_zh_tw_guard_parity``, the assertions are **parity** rather than
+per-case expected values: none of these matchers is supposed to care about
+orthography, so parity holds by construction while a hand-written expectation
+would drift as the lexicons grow.
+"""  # noqa: DOCSTRING_CJK
+from __future__ import annotations
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# main_logic/music_requests.py — explicit song-request parsing
+# ---------------------------------------------------------------------------
+
+MUSIC_PAIRS = [
+    ("听一首晴天", "聽一首晴天"),
+    ("来一首轻松的音乐", "來一首輕鬆的音樂"),
+    ("帮我放一首治愈的歌", "幫我放一首治癒的歌"),
+    ("请给我播放林俊杰的音乐", "請給我播放林俊傑的音樂"),
+    ("换成歌曲：晴天", "換成歌曲：晴天"),
+    ("从我的健身歌单里随机放一首", "從我的健身歌單裡隨機放一首"),
+    ("播放我的红心歌单", "播放我的紅心歌單"),
+    ("放点每日推荐", "放點每日推薦"),
+    ("播放《告白气球》", "播放《告白氣球》"),
+    ("放一首周杰伦的稻香", "放一首周杰倫的稻香"),
+    ("来点摇滚", "來點搖滾"),
+    ("播放网易云的日推", "播放網易雲的日推"),
+]
+
+
+def _music_shape(text: str):
+    """The decision, with free-text payloads reduced to "present or not".
+
+    Payload text is necessarily different between scripts (「稻香」 is the same
+    but 「輕鬆」 is not), so comparing it verbatim would be wrong. What must match
+    is the *routing*: which branch fired and which fields it decided to fill.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    request = parse_explicit_user_music_request(text)
+    if request is None:
+        return None
+    return (
+        request.personalization_source,
+        bool(request.playlist_name),
+        bool(request.song_name),
+        bool(request.song_artist),
+        bool(request.keyword),
+    )
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), MUSIC_PAIRS)
+def test_music_requests_parse_the_same_in_both_scripts(simplified, traditional):
+    assert _music_shape(simplified) == _music_shape(traditional)
+
+
+def test_traditional_liked_playlist_is_not_parsed_as_an_artist_search():
+    """The worst case here was not a miss but a *misparse*.
+
+    「播放我的紅心歌單」 used to fall through the personalization branch into the
+    artist/song branch and come out as "search for the song 紅心歌單 by the artist
+    我" — i.e. a wrong search instead of the user's liked playlist.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    request = parse_explicit_user_music_request("播放我的紅心歌單")
+    assert request is not None
+    assert request.personalization_source == "liked"
+    assert not request.song_artist
+    assert not request.song_name
+
+
+CANCEL_PAIRS = [
+    ("别放音乐了", "別放音樂了"),
+    ("把音乐关掉", "把音樂關掉"),
+    ("暂停播放", "暫停播放"),
+    ("不想听歌了", "不想聽歌了"),
+    ("取消播放音乐", "取消播放音樂"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), CANCEL_PAIRS)
+def test_music_cancellation_is_detected_in_both_scripts(simplified, traditional):
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(simplified) is True
+    assert is_explicit_music_cancellation(traditional) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我们来聊聊天气吧",
+        "我們來聊聊天氣吧",
+        "帮我放一段你说话的声音",
+        "幫我放一段你說話的聲音",
+        "播放这个视频",
+        "播放這個視頻",
+    ],
+)
+def test_non_music_requests_are_still_rejected(text):
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    assert parse_explicit_user_music_request(text) is None
+
+
+def test_mood_words_are_not_mistaken_for_artist_names():
+    """「放輕鬆的歌」 must route as a style keyword, not as an artist search."""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in ("放轻松的歌", "放輕鬆的歌"):
+        request = parse_explicit_user_music_request(text)
+        assert request is not None, text
+        assert not request.song_artist, f"{text}: 曲风被当成歌手名"
+
+
+# ---------------------------------------------------------------------------
+# brain/openclaw_adapter.py — zero-LLM magic-command classifier
+# ---------------------------------------------------------------------------
+
+MAGIC_PAIRS = [
+    ("忘了刚才的事", "忘了剛才的事"),
+    ("清空聊天记录", "清空聊天記錄"),
+    ("换个话题", "換個話題"),
+    ("说点别的", "說點別的"),
+    ("重新开始", "重新開始"),
+    # 台湾用「搜尋」，所以这一条不是「搜索」的字形转换。
+    ("停止搜索", "停止搜尋"),
+    ("取消这个任务", "取消這個任務"),
+    ("停下来", "停下來"),
+    ("去执行吧", "去執行吧"),
+    ("删吧", "刪吧"),
+    ("没问题", "沒問題"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), MAGIC_PAIRS)
+def test_magic_commands_resolve_the_same_in_both_scripts(simplified, traditional):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    resolved = OpenClawAdapter.rule_magic_command(simplified)
+    assert resolved is not None, f"{simplified}: 简体侧本身就没命中，用例前提不成立"
+    assert OpenClawAdapter.rule_magic_command(traditional) == resolved
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("我忘了带钥匙", "我忘記帶鑰匙"),
+        ("雨停了", "雨停了"),
+        ("停电了", "停電了"),
+        ("想听听你的看法", "想聽聽你的看法"),
+    ],
+)
+def test_high_precision_negatives_still_suppress_in_both_scripts(simplified, traditional):
+    """The conservative negative list has to move with the trigger list, or the
+    Traditional side loses its suppression while gaining the triggers."""
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(simplified) is None
+    assert OpenClawAdapter.rule_magic_command(traditional) is None
+
+
+def test_approve_guard_tokens_cover_both_scripts():
+    """⚠️ The guard has to be backfilled in the same commit as the triggers.
+
+    ``/daemon approve`` is suppressed when the text says 同意 without any of
+    执行 / 删 / 准. Leaving those three Simplified-only while adding Traditional
+    triggers would make the guard vacuously false for Traditional users — which
+    is a real reversal (approving something the guard was meant to hold back),
+    unlike the plain misses that only ever fail closed.
+    """  # noqa: DOCSTRING_CJK
+    from brain import openclaw_adapter
+
+    source = openclaw_adapter.OpenClawAdapter._classify_magic_intent_with_rules.__code__
+    tokens = next(
+        const for const in source.co_consts
+        if isinstance(const, tuple) and "执行" in const
+    )
+    for simplified, traditional in (("执行", "執行"), ("删", "刪"), ("准", "準")):
+        assert simplified in tokens and traditional in tokens, (simplified, traditional)
+
+
+# ---------------------------------------------------------------------------
+# utils/music_crawlers.py — which crawler a keyword routes to
+# ---------------------------------------------------------------------------
+
+ROUTING_TABLES = [
+    "ROUTING_STRONG_CLASSICAL_KEYWORDS",
+    "ROUTING_INSTRUMENT_KEYWORDS",
+    "ROUTING_MODERN_STYLE_KEYWORDS",
+    "ROUTING_INDIE_KEYWORDS",
+    "ROUTING_CHINESE_KEYWORDS",
+]
+
+# Simplified -> Traditional for exactly the characters these five tables use.
+# Explicit rather than converter-driven: a converter would just restate itself.
+#
+# ⚠️ 杰 is deliberately absent. It is *not* a 1:1 mapping — 周杰倫 keeps 杰 while
+# 林俊傑 takes 傑, so a character map gets one of the two wrong whichever way it
+# is set. Both names are listed below instead.
+_ROUTING_CHAR_MAP = str.maketrans({
+    "贝": "貝", "扎": "札", "响": "響", "协": "協", "鸣": "鳴", "钢": "鋼",
+    "说": "說", "电": "電", "松": "鬆", "独": "獨", "众": "眾", "环": "環",
+    "华": "華", "语": "語", "国": "國", "伦": "倫", "邓": "鄧",
+    "陈": "陳", "张": "張", "学": "學", "刘": "劉", "静": "靜",
+    "荣": "榮", "谦": "謙", "赵": "趙", "许": "許", "莹": "瑩", "闽": "閩",
+})
+
+# Entries a plain character map cannot produce: proper names whose Taiwan
+# rendering is a different choice of character, not a different spelling.
+_TAIWAN_RENDERINGS = {
+    "莫扎特": "莫札特",
+    "周杰伦": "周杰倫",
+    "林俊杰": "林俊傑",
+}
+
+# Rows that belong to a *different language's* section of the same table, where
+# Chinese conversion rules do not apply. `中国語` is the Japanese word for
+# "Chinese language" — 国 is correct there and must not become 國.
+_NOT_CHINESE_ROWS = {"中国語"}
+
+
+@pytest.mark.parametrize("table_name", ROUTING_TABLES)
+def test_every_simplified_routing_keyword_has_a_traditional_sibling(table_name):
+    from utils import music_crawlers
+
+    table = getattr(music_crawlers, table_name)
+    present = {entry.lower() for entry in table}
+    missing = []
+    converted_any = False
+    for entry in table:
+        if entry in _NOT_CHINESE_ROWS:
+            continue
+        if not any("一" <= ch <= "鿿" for ch in entry):
+            continue  # latin / kana / hangul row
+        traditional = _TAIWAN_RENDERINGS.get(entry, entry.translate(_ROUTING_CHAR_MAP))
+        if traditional == entry:
+            continue  # identical in both scripts
+        converted_any = True
+        if traditional.lower() not in present:
+            missing.append((entry, traditional))
+    assert converted_any, f"{table_name}: 字符映射没转出任何东西，用例已失效"
+    assert not missing, f"{table_name} 缺繁体对应条目：{missing}"
+
+
+def test_routing_tables_are_module_level_so_they_can_be_asserted():
+    """They used to be locals inside the scheduler, where nothing could see a
+    missing entry until a user reported bad routing."""
+    from utils import music_crawlers
+
+    for name in ROUTING_TABLES:
+        table = getattr(music_crawlers, name)
+        assert isinstance(table, list) and table

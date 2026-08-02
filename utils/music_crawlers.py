@@ -146,6 +146,61 @@ NETEASE_PERSONALIZATION_SOURCE_ORDER = (
 )
 
 
+# ── 智能调度的路由词表 ────────────────────────────────────────────
+# 提到模块级不是为了复用，是为了**可断言**：它们撞的是用户点歌时打出来的
+# 关键词，简繁不同码位，缺一侧就是整条路由失效（繁体关键词全部落到区域
+# 兜底）。函数内的局部列表没法被测试拿到，缺词只能靠人眼发现。
+# ⚠️ 这里只读不改；下面的调度逻辑按原样引用。
+# 1. 【强古典词】确保正确路由至 Musopen
+ROUTING_STRONG_CLASSICAL_KEYWORDS = [
+    # 简繁并列：这些词撞的是用户点歌时打出来的关键词，繁简不同码位。
+    # ⚠️ 台湾译名不是机械转换——Mozart 台湾作「莫札特」，s2t 只会给「莫扎特」。
+    "古典", "肖邦", "貝多芬", "贝多芬", "莫扎特", "莫札特",
+    "交响", "交響", "夜曲", "协奏曲", "協奏曲", "奏鸣曲", "奏鳴曲",
+    "classical", "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
+    "クラシック", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
+    "클래식", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
+    "классическая", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",
+]
+
+# 2. 【乐器词】具有歧义，可能是古典也可能是现代
+ROUTING_INSTRUMENT_KEYWORDS = ["钢琴", "鋼琴", "piano", "ピアノ", "피아노", "фортепиано",
+               "violin", "小提琴", "cello", "大提琴"]
+
+# 3. 【现代风格词】只要出现这些词，即便有乐器，也绝对不走 Musopen
+ROUTING_MODERN_STYLE_KEYWORDS = ["lofi", "chill", "relax", "remix", "cover", "说唱", "說唱",
+                 "hiphop", "电子", "電子", "electronic", "放松", "放鬆", "伴奏"]
+
+ROUTING_INDIE_KEYWORDS = [
+    "独立", "獨立", "电音", "電音", "小众", "小眾", "环境音", "環境音",
+    "electronic", "chill", "lofi",
+    "インディーズ", "電子音楽",
+     "인디", "전자음악",
+    "инди", "электронная", "лоуфай",
+]
+ROUTING_CHINESE_KEYWORDS = [
+    # zh
+    "华语", "華語", "中文", "国语", "國語", "华语流行", "華語流行", "中文歌",
+    # en
+    "mandarin", "c-pop", "chinese pop",
+    # ja
+    "中国語", "中文", "華語",
+    # ko
+    "중국어", "중국 음악", "중국 팝",
+    # ru
+    "китайская музыка", "китайский поп",
+    # 华语歌手 (常见中文歌手名)
+    "周杰伦", "周杰倫", "jay chou", "蔡依林", "jolin tsai", "林俊杰", "林俊傑", "jj lin",
+    "王心凌", "cyndi wang", "五月天", "mayday", "告五人",
+    "邓紫棋", "鄧紫棋", "g.e.m.", "陈奕迅", "陳奕迅", "eason chan",
+    "张学友", "張學友", "jacky cheung",
+    "刘德华", "劉德華", "andy lau", "王菲", "faye wong", "梁静茹", "梁靜茹", "fish leong",
+    "李荣浩", "李榮浩", "毛不易", "薛之谦", "薛之謙", "赵雷", "趙雷",
+    "许嵩", "許嵩", "徐佳莹", "徐佳瑩",
+    # 台流
+    "台式", "台客", "闽南语", "閩南語", "台语", "台語",
+]
+
 def sync_pyncm_session_cookies(session, cookies: Dict[str, str]) -> bool:
     """Update NetEase credentials without clearing unrelated session cookies."""
     cookie_jars = []
@@ -2235,56 +2290,14 @@ async def fetch_music_content(
     if not all_results and keyword and not strict_personalization:
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
-        # 1. 【强古典词】确保正确路由至 Musopen
-        strong_classical = [
-            "古典", "肖邦", "贝多芬", "莫扎特", "交响", "夜曲", "协奏曲", "奏鸣曲",
-            "classical", "chopin", "beethoven", "mozart", "symphony", "nocturne", "concerto", "sonata",
-            "クラシック", "ショパン", "ベートーヴェン", "モーツァルト", "交響", "夜想曲",
-            "클래식", "쇼팽", "베토벤", "모차르트", "교향곡", "야상곡",
-            "классическая", "шопен", "бетховен", "моцарт", "симфония", "ноктюрн",
-        ]
-        
-        # 2. 【乐器词】具有歧义，可能是古典也可能是现代
-        instruments = ["钢琴", "piano", "ピアノ", "피아노", "фортепиано", "violin", "小提琴", "cello", "大提琴"]
-        
-        # 3. 【现代风格词】只要出现这些词，即便有乐器，也绝对不走 Musopen
-        modern_styles = ["lofi", "chill", "relax", "remix", "cover", "说唱", "hiphop", "电子", "electronic", "放松", "伴奏"]
-
-        indie_keywords = [
-            "独立",  "电音", "小众", "环境音", 
-            "electronic", "chill", "lofi",
-            "インディーズ", "電子音楽",
-             "인디", "전자음악",
-            "инди", "электронная", "лоуфай",
-        ]
-        raw_chinese_keywords = [
-            # zh
-            "华语", "中文", "国语", "华语流行", "中文歌",
-            # en
-            "mandarin", "c-pop", "chinese pop",
-            # ja
-            "中国語", "中文", "華語",
-            # ko
-            "중국어", "중국 음악", "중국 팝",
-            # ru
-            "китайская музыка", "китайский поп",
-            # 华语歌手 (常见中文歌手名)
-            "周杰伦", "jay chou", "蔡依林", "jolin tsai", "林俊杰", "jj lin",
-            "王心凌", "cyndi wang", "五月天", "mayday", "告五人",
-            "邓紫棋", "g.e.m.", "陈奕迅", "eason chan", "张学友", "jacky cheung",
-            "刘德华", "andy lau", "王菲", "faye wong", "梁静茹", "fish leong",
-            "李荣浩", "毛不易", "薛之谦", "赵雷", "许嵩", "徐佳莹",
-            # 台流
-            "台式", "台客", "闽南语", "台语",
-        ]
-        chinese_keywords = [kw.lower() for kw in raw_chinese_keywords]
+        chinese_keywords = [kw.lower() for kw in ROUTING_CHINESE_KEYWORDS]
         primary_tasks = []
         
         # --- 组建第一梯队（最优解竞速） ---
 
         # 1. 古典乐意图判定：强古典词 OR (包含乐器词且非现代风格词)
-        is_classical = any(kw in kw_lower for kw in strong_classical) or \
-                       (any(kw in kw_lower for kw in instruments) and not any(kw in kw_lower for kw in modern_styles))
+        is_classical = any(kw in kw_lower for kw in ROUTING_STRONG_CLASSICAL_KEYWORDS) or \
+                       (any(kw in kw_lower for kw in ROUTING_INSTRUMENT_KEYWORDS) and not any(kw in kw_lower for kw in ROUTING_MODERN_STYLE_KEYWORDS))
         
         if is_classical:
             logger.info(f"[智能调度] 识别到古典/纯正乐器意图，优先调度 Musopen: {keyword}")
@@ -2297,7 +2310,7 @@ async def fetch_music_content(
             netease_used = True
 
         # 3. 独立/电子/Lofi 路由
-        elif any(kw in kw_lower for kw in indie_keywords):
+        elif any(kw in kw_lower for kw in ROUTING_INDIE_KEYWORDS):
             logger.info(f"[智能调度] 识别到独立/电子风格意图，优先调度 Bandcamp/SoundCloud: {keyword}")
             expanded_keywords = expand_style_keyword(keyword)
             for exp_kw in expanded_keywords[:2]:
