@@ -188,11 +188,20 @@ class QQMemoryBridge:
             request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
-        # No language field: QQ has no explicit per-conversation locale, and
-        # this method has no caller-supplied one either. Sending the host
-        # process fallback would outrank the durable per-subject locale the
-        # server can restore on its own (same contract as the sibling
-        # bootstrap/history methods).
+        from utils.language_utils import get_global_language_full
+
+        # Deliberately still sends the process locale, unlike the sibling
+        # bootstrap/history methods. The difference is who renders: those
+        # receive server-rendered text, so omitting the field lets the server
+        # use the durable per-subject locale end to end. This one receives
+        # *structured* rows and renders the tier/entity tags locally (see
+        # render_relevant_memory), so omitting it here would only move the
+        # server half to the subject locale while the tags stayed on this
+        # process's — worse than today's self-consistent pair. Moving this
+        # path onto the subject locale needs the resolved locale returned in
+        # the response (or the tags rendered server-side); that is a response
+        # contract change and belongs in its own PR.
+        request_payload["language"] = get_global_language_full()
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/query_memory/{her_name}",
