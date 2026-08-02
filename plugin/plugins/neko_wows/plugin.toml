@@ -1,0 +1,115 @@
+[plugin]
+name = "战舰世界猫娘陪玩"
+description = "World of Warships 猫娘陪玩：只读 8111_for_wows 遥测，把连续快照转成分立战局事件，按优先级仲裁后让猫娘提醒与陪伴。不做外挂、不做自动操作、不读写游戏内存。"
+short_description = "World of Warships catgirl companion: telemetry-only battle call-outs."
+keywords = ["world of warships", "wows", "战舰世界", "海战", "8111", "telemetry", "陪玩"]
+version = "0.1.0"
+id = "neko_wows"
+entry = "plugin.plugins.neko_wows:NekoWowsPlugin"
+# 本插件的入口全部是面板动作，不需要参与 Agent 的插件选择；主动播报走
+# push_message，不受 passive 影响。
+passive = true
+
+[plugin.author]
+name = "0N.E.K"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "战舰世界猫娘陪玩"
+entry = "ui/panel.tsx"
+context = "dashboard"
+permissions = ["state:read", "action:call"]
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+# 运行状态落在 store 里（{runtime_data_root}/plugins/neko_wows/data/store.db），
+# 而不是插件目录：打包安装后插件目录是只读的。
+[plugin.store]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# 运行参数。dry_run 默认开：整条链路照跑到 DeliveryRequest，但 dispatcher 短路，
+# 绝不真投给猫娘。真机校准确认事件链可信后再由面板显式开启。
+# ---------------------------------------------------------------------------
+[neko_wows]
+enabled = true
+dry_run = true
+
+# 数据源。service_url 指向 8111_for_wows；serviceId 校验保证不会误连
+# War Thunder 自带的 8111 遥测（同端口、完全不同的协议）。
+service_url = "http://127.0.0.1:8111"
+service_auto_start = true
+# 8111_for_wows 仓库根目录；留空则不自动拉起，只连已在跑的服务。
+service_source_dir = ""
+# World_of_Warships 安装目录，转交给服务端自动定位 state.json。
+game_dir = ""
+service_startup_timeout_seconds = 10.0
+service_health_timeout_seconds = 1.5
+
+# 传输：优先 WebSocket，失败时 REST 轮询兜底并后台重连。
+transport_prefer_ws = true
+rest_poll_interval_seconds = 0.5
+ws_reconnect_min_seconds = 1.0
+ws_reconnect_max_seconds = 15.0
+http_timeout_seconds = 1.5
+
+# 仲裁与限流（草稿值，待真机校准）。
+urgent_ttl_seconds = 8.0
+urgent_min_gap_seconds = 6.0
+normal_ttl_seconds = 30.0
+normal_min_gap_seconds = 18.0
+# dual = base + urgent/normal overlay；single = 只用完整 base。
+channel_mode = "dual"
+
+# 安全门：连续投递失败自动暂停，需面板手动恢复。
+safety_window_seconds = 60.0
+safety_failure_limit = 5
+observability_max_events = 120
+
+# 检测阈值（世界坐标单位为米）。
+low_health_ratios = [0.35, 0.15]
+rapid_damage_ratio = 0.12
+rapid_damage_window_seconds = 3.0
+enemy_close_range_m = 8000.0
+threat_scan_range_m = 12000.0
+multi_direction_spread_deg = 90.0
+isolation_ally_range_m = 6000.0
+isolation_enemy_range_m = 10000.0
+boundary_margin_m = 1500.0
+broadside_angle_deg = 25.0
+low_hp_target_ratio = 0.2
+damage_milestone_step = 50000.0
+outnumbered_margin = 2
+
+# 战术文档库。存储配额可以放很大，但排序索引单独设上限：超出后文档仍然可以
+# 按 front matter 标签检索，只是不再参与 BM25 排序，面板会显示索引覆盖率。
+tactics_max_file_bytes = 8388608
+tactics_max_documents = 500
+tactics_max_total_bytes = 134217728
+tactics_chunk_chars = 800
+tactics_chunk_overlap = 100
+tactics_index_chunk_cap = 3000
+tactics_tag_weight = 2.5
+# 无标签命中时，一个段落至少要命中这么多个不同查询词才会被注入。
+tactics_min_term_hits = 2
+
+# 播报偏好。这一层叠在宿主自己的「用户 10 秒内活跃就不放行」之上，
+# 时间线会标明是插件还是宿主压住的。
+dialogue_intrusion_mode = "critical_only"
+user_chat_quiet_window_seconds = 60.0
+disabled_categories = []
+disabled_lanes = []
+prompt_revisions_kept = 20

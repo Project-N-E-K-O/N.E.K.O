@@ -1,0 +1,254 @@
+{
+  "_comment": [
+    "Desensitized replay of one battle, in the wire shape the v1 service emits.",
+    "Player names and ids are synthetic; only the field layout is real.",
+    "Used by tests/unit/test_neko_wows_replay.py to drive the whole pipeline."
+  ],
+  "instance_id": "replay-inst",
+  "frames": [
+    {
+      "serviceId": "8111-for-wows",
+      "apiVersion": "1.0",
+      "instanceId": "replay-inst",
+      "seq": 1,
+      "battleId": null,
+      "source": {"kind": "mod-file-bridge", "mode": "live", "status": "waiting", "updatedAt": 1000.0},
+      "capabilities": {},
+      "availability": {},
+      "extensions": {},
+      "schema": 1,
+      "active": false,
+      "ts": null,
+      "battleType": null,
+      "gameMode": null,
+      "map": {},
+      "bounds": null,
+      "boundsSource": null,
+      "self": null,
+      "objects": [],
+      "roster": [],
+      "damage": {"inflicted": {}, "received": {}, "teamTotal": {}},
+      "ballistics": {"available": false},
+      "diag": null
+    },
+    {
+      "serviceId": "8111-for-wows",
+      "apiVersion": "1.0",
+      "instanceId": "replay-inst",
+      "seq": 2,
+      "battleId": "replay-b1",
+      "source": {"kind": "mod-file-bridge", "mode": "live", "status": "live", "updatedAt": 1001.0},
+      "capabilities": {},
+      "availability": {},
+      "extensions": {},
+      "schema": 1,
+      "active": true,
+      "ts": 1.0,
+      "battleType": "RandomBattle",
+      "gameMode": "Domination",
+      "map": {"id": "13_OC_new_dawn", "name": "New Dawn"},
+      "bounds": [-21000.0, 21000.0, -21000.0, 21000.0],
+      "boundsSource": "table",
+      "self": {
+        "playerId": 1001, "teamId": 0, "health": 80000.0, "maxHealth": 80000.0,
+        "yaw": 1.5708, "speed": 22.0, "position": [0.0, 0.0, -12000.0],
+        "isObserver": false
+      },
+      "objects": [
+        {
+          "uiId": 1, "playerId": 1001, "teamId": 0, "relation": 0,
+          "type": "Battleship", "name": "OwnShip", "playerName": "PlayerOne",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 0.0, "z": -12000.0, "yaw": 1.5708,
+          "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0
+        },
+        {
+          "uiId": 2, "playerId": 1002, "teamId": 0, "relation": 1,
+          "type": "Cruiser", "name": "AllyCruiser", "playerName": "PlayerTwo",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 800.0, "z": -11800.0, "yaw": 1.5708,
+          "health": 40000.0, "maxHealth": 40000.0, "hpRatio": 1.0
+        }
+      ],
+      "roster": [
+        {"playerId": 1001, "teamId": 0, "relation": 0, "name": "PlayerOne",
+         "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+        {"playerId": 1002, "teamId": 0, "relation": 1, "name": "PlayerTwo",
+         "shipName": "AllyCruiser", "shipType": "Cruiser", "shipTier": 10}
+      ],
+      "damage": {"inflicted": {}, "received": {}, "teamTotal": {}},
+      "ballistics": {"available": false},
+      "diag": {}
+    },
+    {
+      "serviceId": "8111-for-wows",
+      "apiVersion": "1.0",
+      "instanceId": "replay-inst",
+      "seq": 3,
+      "battleId": "replay-b1",
+      "source": {"kind": "mod-file-bridge", "mode": "live", "status": "live", "updatedAt": 1010.0},
+      "capabilities": {},
+      "availability": {},
+      "extensions": {},
+      "schema": 1,
+      "active": true,
+      "ts": 10.0,
+      "battleType": "RandomBattle",
+      "gameMode": "Domination",
+      "map": {"id": "13_OC_new_dawn", "name": "New Dawn"},
+      "bounds": [-21000.0, 21000.0, -21000.0, 21000.0],
+      "boundsSource": "table",
+      "self": {
+        "playerId": 1001, "teamId": 0, "health": 80000.0, "maxHealth": 80000.0,
+        "yaw": 1.5708, "speed": 22.0, "position": [0.0, 0.0, -10000.0],
+        "isObserver": false
+      },
+      "objects": [
+        {
+          "uiId": 1, "playerId": 1001, "teamId": 0, "relation": 0,
+          "type": "Battleship", "name": "OwnShip", "playerName": "PlayerOne",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 0.0, "z": -10000.0, "yaw": 1.5708,
+          "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0
+        },
+        {
+          "uiId": 2, "playerId": 1002, "teamId": 0, "relation": 1,
+          "type": "Cruiser", "name": "AllyCruiser", "playerName": "PlayerTwo",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 800.0, "z": -9800.0, "yaw": 1.5708,
+          "health": 40000.0, "maxHealth": 40000.0, "hpRatio": 1.0
+        },
+        {
+          "uiId": 3, "playerId": 2001, "teamId": 1, "relation": 2,
+          "type": "Destroyer", "name": "EnemyDD", "playerName": "FoeOne",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 5000.0, "z": -10000.0, "yaw": 3.1416,
+          "health": 12000.0, "maxHealth": 20000.0, "hpRatio": 0.6
+        }
+      ],
+      "roster": [
+        {"playerId": 1001, "teamId": 0, "relation": 0, "name": "PlayerOne",
+         "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+        {"playerId": 1002, "teamId": 0, "relation": 1, "name": "PlayerTwo",
+         "shipName": "AllyCruiser", "shipType": "Cruiser", "shipTier": 10},
+        {"playerId": 2001, "teamId": 1, "relation": 2, "name": "FoeOne",
+         "shipName": "EnemyDD", "shipType": "Destroyer", "shipTier": 10}
+      ],
+      "damage": {"inflicted": {"1001": 8000.0}, "received": {}, "teamTotal": {"1001": 8000.0}},
+      "ballistics": {"available": true, "ammoType": "AP", "penetration": 640},
+      "diag": {}
+    },
+    {
+      "serviceId": "8111-for-wows",
+      "apiVersion": "1.0",
+      "instanceId": "replay-inst",
+      "seq": 4,
+      "battleId": "replay-b1",
+      "source": {"kind": "mod-file-bridge", "mode": "live", "status": "live", "updatedAt": 1013.0},
+      "capabilities": {},
+      "availability": {},
+      "extensions": {},
+      "schema": 1,
+      "active": true,
+      "ts": 13.0,
+      "battleType": "RandomBattle",
+      "gameMode": "Domination",
+      "map": {"id": "13_OC_new_dawn", "name": "New Dawn"},
+      "bounds": [-21000.0, 21000.0, -21000.0, 21000.0],
+      "boundsSource": "table",
+      "self": {
+        "playerId": 1001, "teamId": 0, "health": 44000.0, "maxHealth": 80000.0,
+        "yaw": 0.0, "speed": 20.0, "position": [0.0, 0.0, -9000.0],
+        "isObserver": false
+      },
+      "objects": [
+        {
+          "uiId": 1, "playerId": 1001, "teamId": 0, "relation": 0,
+          "type": "Battleship", "name": "OwnShip", "playerName": "PlayerOne",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 0.0, "z": -9000.0, "yaw": 0.0,
+          "health": 44000.0, "maxHealth": 80000.0, "hpRatio": 0.55
+        },
+        {
+          "uiId": 3, "playerId": 2001, "teamId": 1, "relation": 2,
+          "type": "Destroyer", "name": "EnemyDD", "playerName": "FoeOne",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 4000.0, "z": -9000.0, "yaw": 3.1416,
+          "health": 12000.0, "maxHealth": 20000.0, "hpRatio": 0.6
+        },
+        {
+          "uiId": 4, "playerId": 2002, "teamId": 1, "relation": 2,
+          "type": "Cruiser", "name": "EnemyCA", "playerName": "FoeTwo",
+          "tier": 10, "alive": true, "visible": true,
+          "x": 0.0, "z": -4500.0, "yaw": 3.1416,
+          "health": 30000.0, "maxHealth": 40000.0, "hpRatio": 0.75
+        }
+      ],
+      "roster": [
+        {"playerId": 1001, "teamId": 0, "relation": 0, "name": "PlayerOne",
+         "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+        {"playerId": 2001, "teamId": 1, "relation": 2, "name": "FoeOne",
+         "shipName": "EnemyDD", "shipType": "Destroyer", "shipTier": 10},
+        {"playerId": 2002, "teamId": 1, "relation": 2, "name": "FoeTwo",
+         "shipName": "EnemyCA", "shipType": "Cruiser", "shipTier": 10}
+      ],
+      "damage": {"inflicted": {"1001": 62000.0}, "received": {"1001": 36000.0}, "teamTotal": {"1001": 62000.0}},
+      "ballistics": {"available": true, "ammoType": "AP", "penetration": 640},
+      "diag": {}
+    },
+    {
+      "serviceId": "8111-for-wows",
+      "apiVersion": "1.0",
+      "instanceId": "replay-inst",
+      "seq": 5,
+      "battleId": "replay-b1",
+      "source": {"kind": "mod-file-bridge", "mode": "live", "status": "stale", "updatedAt": 1013.0},
+      "capabilities": {},
+      "availability": {},
+      "extensions": {},
+      "schema": 1,
+      "active": true,
+      "ts": 13.0,
+      "battleType": "RandomBattle",
+      "gameMode": "Domination",
+      "map": {"id": "13_OC_new_dawn", "name": "New Dawn"},
+      "bounds": [-21000.0, 21000.0, -21000.0, 21000.0],
+      "boundsSource": "table",
+      "self": {
+        "playerId": 1001, "teamId": 0, "health": 44000.0, "maxHealth": 80000.0,
+        "yaw": 0.0, "speed": 20.0, "position": [0.0, 0.0, -9000.0],
+        "isObserver": false
+      },
+      "objects": [],
+      "roster": [],
+      "damage": {"inflicted": {}, "received": {}, "teamTotal": {}},
+      "ballistics": {"available": false},
+      "diag": {}
+    },
+    {
+      "serviceId": "8111-for-wows",
+      "apiVersion": "1.0",
+      "instanceId": "replay-inst",
+      "seq": 6,
+      "battleId": "replay-b1",
+      "source": {"kind": "mod-file-bridge", "mode": "live", "status": "ended", "updatedAt": 1120.0},
+      "capabilities": {},
+      "availability": {},
+      "extensions": {},
+      "schema": 1,
+      "active": false,
+      "ts": 120.0,
+      "battleType": "RandomBattle",
+      "gameMode": "Domination",
+      "map": {"id": "13_OC_new_dawn", "name": "New Dawn"},
+      "bounds": [-21000.0, 21000.0, -21000.0, 21000.0],
+      "boundsSource": "table",
+      "self": null,
+      "objects": [],
+      "roster": [],
+      "damage": {"inflicted": {}, "received": {}, "teamTotal": {}},
+      "ballistics": {"available": false},
+      "diag": null
+    }
+  ]
+}
