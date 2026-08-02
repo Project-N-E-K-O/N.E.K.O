@@ -776,21 +776,43 @@ class DirectTaskExecutor:
     def _sanitize_correction_text(text: str) -> str:
         cleaned = str(text or "")
         cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+        # ⚠️ Every Chinese noun and copula below lists both orthographies.
+        # Simplified and Traditional are distinct code points, so a Simplified-only
+        # alternation lets a Traditional-typing user's secret through verbatim: the
+        # secret then rides into the downstream agent's task description in the
+        # clear. The copula group matters on its own — 令牌 / 口令 / cookie are
+        # spelled identically in both scripts, so `為` alone was enough to defeat
+        # redaction for them.
+        # Traditional-only forms are the Taiwan standard ones: 簡訊 (not 短信),
+        # 祕鑰 (not 秘鑰).
+        _CN_COPULA = r"(?:is|为|為|是)"
         patterns = [
             (r"(?i)(password|passwd|pwd)\s*[:=]\s*\S+", r"\1=[REDACTED_PASSWORD]"),
-            (r"(?i)(password|passwd|pwd|密码|口令)\s*(?:is|为|是|=|:|：)\s*\S+", r"\1=[REDACTED_PASSWORD]"),
+            (
+                r"(?i)(password|passwd|pwd|密码|密碼|口令)\s*(?:is|为|為|是|=|:|：)\s*\S+",
+                r"\1=[REDACTED_PASSWORD]",
+            ),
             (r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: Bearer [REDACTED_TOKEN]"),
             (r"(?i)(token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*\S+", r"\1=[REDACTED_TOKEN]"),
             (
-                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)|令牌|密钥|秘钥)\s*(?:is|为|是|=|:|：)\s*\S+",
+                r"(?i)(token|api(?:[\s_-]?key)|access(?:[\s_-]?token)|refresh(?:[\s_-]?token)"
+                r"|令牌|密钥|密鑰|秘钥|祕鑰)\s*(?:is|为|為|是|=|:|：)\s*\S+",
                 r"\1=[REDACTED_TOKEN]",
             ),
             (r"(?i)\bsk-[a-z0-9_-]{10,}\b", "[REDACTED_TOKEN]"),
             (r"(?i)(cookie)\s*[:=：]\s*\S+", r"\1=[REDACTED_COOKIE]"),
-            (r"(?i)(cookie)\s*(?:[:=：]|is|为|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
+            (r"(?i)(cookie)\s*(?:[:=：]|is|为|為|是)\s*\S+", r"\1=[REDACTED_COOKIE]"),
             (r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
             (
-                r"(?i)(\b(?:otp|pin|verification(?:\s+code)?|sms\s*code|one[-\s]?time(?:\s+password|\s+code)?|验证码|校验码|短信码|动态码)\b(?:\s*(?:is|为|是))?[\s:：=#-]{0,6})\d{4,8}\b",
+                # The CJK nouns are listed outside the \b group: \b is a word
+                # boundary between a word and a non-word character, and CJK is
+                # "word" on both sides, so `验证码是 483920` never satisfied the
+                # trailing \b — the Simplified side leaked this form too, not just
+                # Traditional. Only the latin aliases need the boundary.
+                r"(?i)((?:\b(?:otp|pin|verification(?:\s+code)?|sms\s*code"
+                r"|one[-\s]?time(?:\s+password|\s+code)?)\b"
+                r"|验证码|驗證碼|校验码|校驗碼|短信码|簡訊碼|动态码|動態碼)"
+                r"(?:\s*" + _CN_COPULA + r")?[\s:：=#-]{0,6})\d{4,8}\b",
                 r"\1[REDACTED_OTP]",
             ),
             (r"\b(?:\d{15}|\d{17}[0-9Xx])\b", "[REDACTED_ID]"),

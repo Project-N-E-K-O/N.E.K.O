@@ -720,36 +720,51 @@ _VALID_ACTION_TYPES = frozenset({"refine_field", "add_field", "remove_field"})
 # 开发猫角色 ready 后，前端会传那个名字过来。
 _DEFAULT_DEV_CAT_NAME = "YUI"
 
+# ⚠️ 这四条正则拿去撞**用户实际打出来的字**，所以每个中文词都要简繁并列。
+# 这个功能本身是繁中已本地化的（见 _SUPPORTED_LOCALE_FILES / _LOCALE_OUTPUT_LANGUAGE
+# 都有 zh-TW 键），也就是说用户确实会用繁体打字。
+#
+# ⚠️⚠️ EDIT 与 ADVICE_ONLY 必须**成对**收词：_chat_text_requests_advice_only 是
+# 「命中 advice 且不命中 direct-edit」的 AND-NOT，而 :1119 又是
+# `edit_intent = False if advice_only else ...`。单边补齐会把反转换个方向而不是
+# 修好——繁中「給我一些修改建議」此前正是 edit=True/advice=False（「修改」简繁
+# 同形而「建议/建議」不同形），系统直接改写用户的卡而不是给建议。
+# 台湾用词：field 叫「欄位」不叫「字段」。
 _CHAT_EDIT_INTENT_RE = re.compile(
-    r"(修改|改写|重写|重生|重做|重新写|调整|补充|新增|添加|删除|移除|换一|换成|"
-    r"优化|完善|梳理|设定|字段|rewrite|revise|regenerate|refine|update|change|"
+    r"(修改|改写|改寫|重写|重寫|重生|重做|重新写|重新寫|调整|調整|补充|補充|新增|添加|"
+    r"删除|刪除|移除|换一|換一|换成|換成|优化|優化|完善|梳理|设定|設定|字段|欄位|"
+    r"rewrite|revise|regenerate|refine|update|change|"
     r"edit|add|remove|delete|replace|make\s+her|make\s+him)",
     re.IGNORECASE,
 )
 
 _CHAT_FULL_REWRITE_RE = re.compile(
-    r"(所有可见字段|全部可见字段|所有字段|全部字段|每个字段|整张卡|整個卡|全卡|"
+    r"(所有可见字段|所有可見欄位|全部可见字段|全部可見欄位|所有字段|所有欄位|"
+    r"全部字段|全部欄位|每个字段|每個欄位|整张卡|整張卡|整個卡|全卡|"
     r"整个角色卡|整個角色卡|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
     r"all\s+visible\s+fields)",
     re.IGNORECASE,
 )
 
 _CHAT_REWRITE_VERB_RE = re.compile(
-    r"(重写|重新写|改写|重做|重生|梳理|完善|rewrite|revise|regenerate|redo|refresh)",
+    r"(重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善|"
+    r"rewrite|revise|regenerate|redo|refresh)",
     re.IGNORECASE,
 )
 
 _CHAT_ADVICE_ONLY_INTENT_RE = re.compile(
-    r"(建议|意见|点评|审一下|审稿|检查一下|帮我看看|看一下|指出问题|分析|优缺点|"
-    r"修改方向|修改方案|候选写法|suggest|suggestion|advice|critique|review|"
+    r"(建议|建議|意见|意見|点评|點評|审一下|審一下|审稿|審稿|检查一下|檢查一下|"
+    r"帮我看看|幫我看看|看一下|指出问题|指出問題|分析|优缺点|優缺點|"
+    r"修改方向|修改方案|候选写法|候選寫法|suggest|suggestion|advice|critique|review|"
     r"pros\s+and\s+cons|candidate\s+rewrite)",
     re.IGNORECASE,
 )
 
 _CHAT_DIRECT_EDIT_REQUEST_RE = re.compile(
-    r"(直接|现在|立刻|马上|帮我|替我|给我)?\s*"
-    r"(改一下|改下|改一改|修改一下|调整一下|调整下|改成|修改成|换成|写成|写进|应用|采纳|"
-    r"更新字段|保存到字段|直接改|帮我改|替我改|"
+    r"(直接|现在|現在|立刻|马上|馬上|帮我|幫我|替我|给我|給我)?\s*"
+    r"(改一下|改下|改一改|修改一下|调整一下|調整一下|调整下|調整下|改成|修改成|"
+    r"换成|換成|写成|寫成|写进|寫進|应用|應用|采纳|採納|"
+    r"更新字段|更新欄位|保存到字段|儲存到欄位|直接改|帮我改|幫我改|替我改|"
     r"apply|make\s+the\s+changes|edit\s+the\s+field|update\s+the\s+field|change\s+it\s+to)",
     re.IGNORECASE,
 )
