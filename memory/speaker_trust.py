@@ -49,6 +49,9 @@ _NEGATION_AUXILIARIES = frozenset({
 _CONDITIONAL_CLAUSE_MARKERS = frozenset({
     "assuming", "if", "provided", "supposing", "unless", "whether",
 })
+_CONDITIONAL_CLAUSE_PHRASES = (
+    "as long as", "even if", "in case", "on condition that", "only if",
+)
 _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
 _EPISTEMIC_LEXICAL_MARKERS = frozenset({
     "maybe", "perhaps", "possibly", "probably",
@@ -77,6 +80,8 @@ _CJK_CONDITIONAL_MARKERS = (
 _CJK_EPISTEMIC_MARKERS = ("也许", "或许", "大概", "可能")
 _CJK_REPORTING_MARKERS = (
     "说", "表示", "声称", "认为", "觉得", "相信", "报告", "告诉",
+    "宣布", "写道", "指出", "承认", "提到", "透露", "强调", "回忆",
+    "发现", "证实", "确认",
 )
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
@@ -206,7 +211,13 @@ def _has_embedded_clause_negation(text: str) -> bool:
     ]
     if (
         negation_indices
-        and any(token in _CONDITIONAL_CLAUSE_MARKERS for token in tokens)
+        and (
+            any(token in _CONDITIONAL_CLAUSE_MARKERS for token in tokens)
+            or any(
+                re.search(rf"\b{re.escape(phrase)}\b", text)
+                for phrase in _CONDITIONAL_CLAUSE_PHRASES
+            )
+        )
     ):
         return True
     marker_indices = [

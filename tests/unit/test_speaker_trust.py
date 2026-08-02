@@ -2218,6 +2218,16 @@ def test_bare_conditional_introducers_never_emit_correction(marker):
     ) is None
 
 
+@pytest.mark.parametrize("marker", [
+    "In case", "As long as", "Even if", "Only if", "On condition that",
+])
+def test_phrase_conditional_introducers_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"{marker} Alice is smart, notify Bob",
+        f"{marker} Alice is not smart, notify Bob",
+    ) is None
+
+
 @pytest.mark.parametrize("old_text,new_text", [
     (
         "Alice is smart or Bob is happy",
@@ -2321,7 +2331,9 @@ def test_cjk_epistemic_marker_rejects_only_asserted_english_negation():
     assert _has_cjk_epistemic_negation("可能 Alice clicked the not operator") is False
 
 
-@pytest.mark.parametrize("verb", ["说", "表示", "认为"])
+@pytest.mark.parametrize("verb", [
+    "说", "表示", "认为", "宣布", "写道", "指出", "承认", "提到",
+])
 def test_cjk_reported_negations_never_emit_correction(verb):
     assert deterministic_relation(
         f"小明{verb}小红喜欢猫",
