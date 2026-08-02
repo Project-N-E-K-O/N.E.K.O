@@ -27,7 +27,9 @@ import json
 import os
 import re
 import asyncio
+import secrets
 import threading
+from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -40,6 +42,9 @@ from config import (
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     EXTERNAL_IMPORT_DAILY_MAX_FILES,
     MEMORY_SCHEMA_VERSION_CURRENT,
+    SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS,
+    SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
+    SCOPED_BATCH_SEGMENT_NONCE_BYTES,
 )
 from memory.temporal import (
     compute_event_timestamps,
@@ -48,12 +53,16 @@ from memory.temporal import (
 from config.prompts.prompts_memory import (
     get_fact_extraction_batch_prompt,
     get_fact_extraction_prompt,
+    get_scoped_batch_middle_omission_marker,
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
 from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language, get_global_language_full
+from utils.language_utils import (
+    detect_prompt_language_with_ascii_fallback,
+    get_global_language_full,
+)
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -66,6 +75,18 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
+
+
+def _detect_fact_extraction_prompt_language(
+    text: str,
+    *,
+    ui_language: str | None = None,
+) -> str:
+    """Resolve Stage-1 prompt language without losing ASCII es/pt input."""
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language or get_global_language_full(),
+    )
 
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
@@ -156,8 +177,65 @@ def _readable_fact_id(entry: dict):
     return fact_id
 
 
+def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
+    """Merge archive rows keyed by id: later occurrence wins, first slot kept.
+
+    facts_archive.json is appended by a two-file commit (archive first, then
+    facts.json — see ``_archive_absorbed``). An interrupted commit leaves a row
+    in BOTH files, so the next archive pass re-appends it. Keying on
+    ``_readable_fact_id`` makes that append idempotent, and merging ``existing``
+    against itself also heals duplicates an earlier half-commit already wrote to
+    a user's disk.
+
+    Later wins because ``incoming`` is the live copy being archived right now —
+    it may carry flag updates the older archived copy predates.
+
+    Rows with an unusable id are all kept: there is no key to compare them on,
+    and folding them together would trade a duplicate for silent data loss (the
+    same call ``_readable_fact_id`` already makes).
+    """
+    out: list[dict] = []
+    pos: dict = {}
+    for entry in list(existing) + list(incoming):
+        if not isinstance(entry, dict):
+            continue
+        fid = _readable_fact_id(entry)
+        if fid is None:
+            out.append(entry)
+            continue
+        if fid in pos:
+            out[pos[fid]] = entry
+        else:
+            pos[fid] = len(out)
+            out.append(entry)
+    return out
+
+
+# 惰性创建 recheck 镜像时的互斥（见 FactStore._recheck_mem）。放模块级而不是
+# 实例级，是因为它要保护的正是「实例上还没有那把锁」的那一瞬间。只护创建的
+# 那几行，不参与后续读写。
+_RECHECK_MEM_BOOTSTRAP = threading.Lock()
+
+
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
+
+    # legacy fact 重判的失败计数「进程内镜像」：{name: {fid: {"n", "at"}}}。
+    # session 内它是权威工作副本，facts.json 里那两栏只是持久化 + 重启恢复。
+    # 对齐 ReflectionEngine._synth_backoff_mem（memory/reflection/manager.py:79）：
+    # 计数器如果只活在「那个写不进去的文件」里，只读 FS / 权限 / 维护态下熔断
+    # 永远不会触发。
+    #
+    # class 级默认 None + 惰性创建（不是只在 __init__ 里赋值）：仓库里有多处
+    # `FactStore.__new__(FactStore)` 绕过 __init__ 造实例
+    # （tests/unit/test_ai_aware_stage1_path_b.py、tests/unit/test_group_memory_scopes.py），
+    # 那些实例一碰镜像就会 AttributeError。
+    #
+    # 刻意用实例级而不是模块级状态：它是 liveness 兜底不是持久状态，热重载
+    # （app/memory_server/runtime.py 重建 FactStore）丢掉只是让卡住的 fact 多跑
+    # 几轮，而模块单例会在 pytest 用例之间串状态。
+    _recheck_attempts_mem: dict | None = None
+    _recheck_mem_guard: threading.Lock | None = None
 
     def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
@@ -166,6 +244,19 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
         self._persist_alocks: dict[str, asyncio.Lock] = {}
+        # Per-character, per-subject erase generations. Scoped extraction
+        # captures one before its LLM call and rechecks it under the persistence
+        # lock, so an in-flight pre-forget request cannot recreate erased facts.
+        self._subject_forget_generations: dict[tuple[str, str, str], int] = {}
+        self._active_subject_forgets: set[tuple[str, str, str]] = set()
+        # Restore and forget are multi-store transactions.  A dedicated
+        # per-subject lock prevents restore from re-appending an archive shard
+        # between the individual store erases.  runtime reload deliberately
+        # shares this registry with the replacement FactStore so requests that
+        # captured the old instance participate in the same transaction.
+        self._subject_forget_transaction_locks: dict[
+            tuple[str, str, str], asyncio.Lock
+        ] = {}
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -182,6 +273,104 @@ class FactStore:
                 if name not in self._persist_alocks:
                     self._persist_alocks[name] = asyncio.Lock()
         return self._persist_alocks[name]
+
+    def _subject_forget_generation(
+        self, name: str, subject: MemorySubject,
+    ) -> int:
+        generations = getattr(self, '_subject_forget_generations', None)
+        if generations is None:
+            # Some focused tests construct FactStore via __new__.
+            generations = {}
+            self._subject_forget_generations = generations
+        return generations.get((name, subject.key, subject.scope), 0)
+
+    def _bump_subject_forget_generation(
+        self, name: str, subject: MemorySubject,
+    ) -> int:
+        generations = getattr(self, '_subject_forget_generations', None)
+        if generations is None:
+            generations = {}
+            self._subject_forget_generations = generations
+        key = (name, subject.key, subject.scope)
+        generations[key] = generations.get(key, 0) + 1
+        return generations[key]
+
+    @staticmethod
+    def _subject_forget_key(
+        name: str, subject: MemorySubject,
+    ) -> tuple[str, str, str]:
+        return (name, subject.key, subject.scope)
+
+    def _subject_forget_is_active(
+        self, name: str, subject: MemorySubject,
+    ) -> bool:
+        active = getattr(self, '_active_subject_forgets', None)
+        return bool(
+            active is not None
+            and self._subject_forget_key(name, subject) in active
+        )
+
+    def _subject_forget_fields_are_active(
+        self, name: str, subject_key: object, scope: object,
+    ) -> bool:
+        """Check a queue row's stamped isolation fields against tombstones."""
+        if not isinstance(subject_key, str) or not isinstance(scope, str):
+            return False
+        active = getattr(self, '_active_subject_forgets', None)
+        return bool(active and (name, subject_key, scope) in active)
+
+    def _get_subject_forget_transaction_lock(
+        self, name: str, subject,
+    ) -> asyncio.Lock:
+        """Return the cross-store restore/forget lock for one subject."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("subject transaction requires an explicit subject")
+        locks = getattr(self, '_subject_forget_transaction_locks', None)
+        if locks is None:
+            # Focused tests may construct FactStore via __new__.
+            locks = {}
+            self._subject_forget_transaction_locks = locks
+        key = self._subject_forget_key(name, memory_subject)
+        if key not in locks:
+            guard = getattr(self, '_locks_guard', None)
+            if guard is None:
+                guard = threading.Lock()
+                self._locks_guard = guard
+            with guard:
+                if key not in locks:
+                    locks[key] = asyncio.Lock()
+        return locks[key]
+
+    async def abegin_subject_forget(self, name: str, subject) -> None:
+        """Open a fact-write tombstone for the complete scoped-forget route."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("abegin_subject_forget requires an explicit subject")
+        async with self._get_persist_alock(name):
+            active = getattr(self, '_active_subject_forgets', None)
+            if active is None:
+                active = set()
+                self._active_subject_forgets = active
+            key = self._subject_forget_key(name, memory_subject)
+            if key in active:
+                raise RuntimeError("subject forget is already active")
+            active.add(key)
+            self._bump_subject_forget_generation(name, memory_subject)
+
+    async def aend_subject_forget(self, name: str, subject) -> None:
+        """Close the route tombstone and invalidate work started inside it."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aend_subject_forget requires an explicit subject")
+        async with self._get_persist_alock(name):
+            active = getattr(self, '_active_subject_forgets', None)
+            if active is None:
+                return
+            key = self._subject_forget_key(name, memory_subject)
+            if key in active:
+                self._bump_subject_forget_generation(name, memory_subject)
+                active.remove(key)
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -243,7 +432,14 @@ class FactStore:
         archive via this loader before any per-day isolation, so a non-UTF-8
         archive must degrade here instead of aborting the whole import — Codex
         P2). ``UnicodeDecodeError`` is a ``ValueError`` subclass, distinct from
-        ``JSONDecodeError``, so it is listed explicitly."""
+        ``JSONDecodeError``, so it is listed explicitly.
+
+        Rows whose id also exists among the active facts are dropped, keeping
+        the active copy. That is not an optional extra guard — it is the read
+        half of ``_archive_absorbed``'s two-file commit protocol, whose write
+        order deliberately prefers "the row is in both files" over "the row is
+        in neither". Something has to collapse "in both", and a warning makes
+        this a backstop with a detector rather than a cover-up."""
         active = self.load_facts(name)
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
@@ -256,7 +452,30 @@ class FactStore:
             return list(active)
         if not isinstance(archived, list):
             return list(active)
-        return list(active) + [f for f in archived if isinstance(f, dict)]
+        # active 与 archive 的 id 重叠 = 归档两文件提交被打断后还没收敛的残留。
+        # 收敛到 active 那份：它至少和归档副本一样新，且 absorbed /
+        # signal_processed 之类的 monotonic 标记以它为准。
+        merged = list(active)
+        active_ids = {
+            fid for fid in (
+                _readable_fact_id(f) for f in merged if isinstance(f, dict)
+            ) if fid is not None
+        }
+        dropped = 0
+        for f in archived:
+            if not isinstance(f, dict):
+                continue
+            fid = _readable_fact_id(f)
+            if fid is not None and fid in active_ids:
+                dropped += 1
+                continue
+            merged.append(f)
+        if dropped:
+            logger.warning(
+                f"[FactStore] {name}: active/archive 存在 {dropped} 条 id 重叠，"
+                f"已按 active 收敛（多半是上一次归档两文件提交被打断）"
+            )
+        return merged
 
     async def aload_facts_full(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.load_facts_full, name)
@@ -273,8 +492,11 @@ class FactStore:
                 changed = True
         return changed
 
-    def save_facts(self, name: str) -> None:
-        with self._get_lock(name):
+    def save_facts(self, name: str, *, _fact_lock_held: bool = False) -> None:
+        lock_context = (
+            nullcontext() if _fact_lock_held else self._get_lock(name)
+        )
+        with lock_context:
             try:
                 assert_cloudsave_writable(
                     self._config_manager,
@@ -394,19 +616,319 @@ class FactStore:
                     mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
                     if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
                         return
-                self._archive_absorbed(name)
-                # 更新 marker（无论归档是否有实际条目都 touch 一次）
-                with open(marker_path, 'w', encoding='utf-8') as f:
-                    f.write(datetime.now().isoformat())
+                # 只在归档「真跑过」（跑完或真失败）时才 touch marker。维护态是
+                # 预期跳过、不该消耗归档窗口：否则维护期间每次 save 都把冷却续
+                # 24h，维护结束后要再等一整天才归档。
+                archive_ran = True
+                try:
+                    self._archive_absorbed(name)
+                except MaintenanceModeError as exc:
+                    # 对齐 load_facts 里的迁移分支：维护态跳过走 debug。
+                    #
+                    # 窄但不是死代码：save_facts 顶部的 assert_cloudsave_writable
+                    # 已经判过一次维护态，稳态维护期根本进不到这里。能走到的只有
+                    # 「顶部那次判定放行之后、_archive_absorbed 里那次判定之前
+                    # 进入维护态」这一窄窗——两次判定之间没有跨进程锁，root_state
+                    # 由别的进程/线程改。所以别按"不可达"把 archive_ran 一并删掉：
+                    # 真踩上时它决定了不消耗 24h 归档窗口。
+                    archive_ran = False
+                    logger.debug(f"[FactStore] {name}: 维护态跳过归档: {exc}")
+                except Exception:
+                    # 归档失败不能让调用方的 save 失败（facts.json 本身已经落盘
+                    # 成功了），但必须留痕：原来是裸 pass，两文件半提交在生产里
+                    # 完全不可见。marker 照常 touch —— archive 那次写就失败时
+                    # archive 的 mtime 不变、冷却不生效，不 touch 就会每次 save
+                    # 都重跑一遍必然失败的归档。
+                    logger.warning(
+                        f"[FactStore] {name}: 归档失败，facts.json 已落盘，"
+                        f"{_ARCHIVE_COOLDOWN_HOURS}h 后重试",
+                        exc_info=True,
+                    )
+                if archive_ran:
+                    # 更新 marker（无论归档是否有实际条目都 touch 一次）
+                    with open(marker_path, 'w', encoding='utf-8') as f:
+                        f.write(datetime.now().isoformat())
             except Exception:
-                pass
+                # 冷却判定 / marker 落盘本身出错：不影响已成功的 facts.json 保存，
+                # 但不再整个吞掉。
+                logger.debug(
+                    f"[FactStore] {name}: 归档冷却判定失败", exc_info=True,
+                )
 
-    async def asave_facts(self, name: str) -> None:
-        await asyncio.to_thread(self.save_facts, name)
+    async def asave_facts(
+        self, name: str, *, _fact_lock_held: bool = False,
+    ) -> None:
+        await asyncio.to_thread(
+            self.save_facts, name, _fact_lock_held=_fact_lock_held,
+        )
+
+    async def aforget_subject(self, lanlan_name: str, subject) -> dict:
+        """Run scoped erasure as one transaction against archive sweeps."""
+        # Lock order is persist -> fact everywhere. Extraction already holds
+        # persist when save_facts takes the fact lock; reversing that order
+        # here would deadlock against an in-flight persistence task.
+        async with self._get_persist_alock(lanlan_name):
+            fact_lock = self._get_lock(lanlan_name)
+            acquire_task = asyncio.create_task(
+                asyncio.to_thread(fact_lock.acquire)
+            )
+            try:
+                await asyncio.shield(acquire_task)
+            except asyncio.CancelledError:
+                # to_thread keeps running after its awaiter is cancelled. Let
+                # it acquire, then release, so cancellation cannot strand the
+                # per-character lock forever.
+                acquired = await acquire_task
+                if acquired:
+                    fact_lock.release()
+                raise
+            try:
+                return await self._aforget_subject_with_fact_lock(
+                    lanlan_name, subject, _persist_lock_held=True,
+                )
+            finally:
+                fact_lock.release()
+
+    async def _aforget_subject_with_fact_lock(
+        self, lanlan_name: str, subject, *, _persist_lock_held: bool = False,
+    ) -> dict:
+        """Delete every fact belonging to one exact (subject, scope) domain.
+
+        撤回入口（删好友/退群后清档）：活跃 facts、facts_archive、FTS 索引
+        三处一起清。匹配用 entry_matches_subject 的精确 (key, scope) 相等
+        ——legacy 无戳条目与其它 scope 的条目绝不落入删除面（fail-closed
+        方向与读侧过滤一致）。幂等：目标为空时是 no-op。
+
+        FTS 使用严格删除并排在 JSON 变更之前：无法确认索引清理时整次
+        forget 失败，保留主存中的 id 供重试；逐 id 的成功删除是幂等的。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import coerce_subject, entry_matches_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        removed_active = 0
+        removed_archive = 0
+        removed_from_archive: list[dict] = []
+        persist_context = (
+            nullcontext()
+            if _persist_lock_held else self._get_persist_alock(lanlan_name)
+        )
+        async with persist_context:
+            # Fence every scoped extraction that captured the previous
+            # generation before this critical section.
+            self._bump_subject_forget_generation(lanlan_name, memory_subject)
+            # Never trust the cache here. The normal loader is deliberately
+            # best-effort and may already have cached [] after a malformed or
+            # transiently unreadable facts.json. Re-read the authoritative
+            # file on every forget attempt so a repaired file can be erased
+            # without restarting the process.
+            facts_path = self._facts_path(lanlan_name)
+            facts: list = []
+            if await asyncio.to_thread(os.path.exists, facts_path):
+                def _read_active_facts() -> object:
+                    with open(facts_path, encoding='utf-8') as f:
+                        return json.load(f)
+
+                try:
+                    facts_data = await asyncio.to_thread(_read_active_facts)
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(facts_data, list):
+                    raise RuntimeError(
+                        "facts state is not a list during forget"
+                    )
+                facts = facts_data
+            else:
+                # A freshly-created in-process store may have durable work
+                # pending in its cache before the first file appears.
+                facts = self._facts.get(lanlan_name, [])
+            self._facts[lanlan_name] = facts
+            removed = [
+                f for f in facts
+                if isinstance(f, dict) and entry_matches_subject(f, memory_subject)
+            ]
+
+            # Strictly inspect and prepare the archive before changing active
+            # facts. Otherwise a corrupt/transiently unreadable archive raises
+            # only after facts.json has already been durably deleted, yielding
+            # a permanent partial forget.
+            archive_path = self._facts_archive_path(lanlan_name)
+            archived: list = []
+            archive_exists = await asyncio.to_thread(
+                os.path.exists, archive_path,
+            )
+            kept_archive: list = []
+            if archive_exists:
+                def _read_archive() -> object:
+                    with open(archive_path, encoding='utf-8') as f:
+                        return json.load(f)
+
+                try:
+                    archived = await asyncio.to_thread(_read_archive)
+                except (json.JSONDecodeError, OSError) as exc:
+                    # 归档损坏时明确失败：静默跳过会让"已删干净"的响应
+                    # 掩盖一份仍可被 BM25 召回的副本。
+                    raise RuntimeError(
+                        f"facts_archive unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(archived, list):
+                    raise RuntimeError(
+                        "facts_archive is not a list during forget"
+                    )
+                removed_from_archive = [
+                    f for f in archived
+                    if (
+                        isinstance(f, dict)
+                        and entry_matches_subject(f, memory_subject)
+                    )
+                ]
+                kept_archive = [
+                    f for f in archived
+                    if not (
+                        isinstance(f, dict)
+                        and entry_matches_subject(f, memory_subject)
+                    )
+                ]
+                removed_archive = len(removed_from_archive)
+
+            # Persist the privacy boundary before deleting any recoverable
+            # copy. Reflection/persona archive events can recreate their shard
+            # snapshots during a later full replay; restore must still know
+            # that every snapshot at or before this point is erased history.
+            await asyncio.to_thread(
+                self._record_subject_forget_tombstone_locked,
+                lanlan_name,
+                memory_subject,
+                datetime.now().isoformat(),
+            )
+
+            # Privacy erasure must fail closed.  The normal FTS helper is
+            # deliberately best-effort, so request strict propagation here
+            # while the authoritative JSON rows still preserve every id for
+            # a retry.  A partial multi-id FTS deletion is harmless because
+            # DELETE is idempotent and no JSON state has changed yet.
+            if self._time_indexed is not None:
+                deleted_fact_ids: set = set()
+                for fact in removed + removed_from_archive:
+                    fact_id = _readable_fact_id(fact)
+                    if fact_id is None or fact_id in deleted_fact_ids:
+                        continue
+                    deleted_fact_ids.add(fact_id)
+                    await self._time_indexed.adelete_fact_from_index(
+                        lanlan_name, fact_id, strict=True,
+                    )
+
+            # Archive first: if the later active write fails, facts.json still
+            # contains enough subject-stamped rows for a retry. The reverse
+            # order is the irrecoverable half-commit reported by Greptile.
+            if removed_archive:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{lanlan_name}/facts_archive.json",
+                )
+                await asyncio.to_thread(
+                    atomic_write_json, archive_path, kept_archive,
+                    indent=2, ensure_ascii=False,
+                )
+
+            if removed:
+                removed_active = len(removed)
+                removed_identities = {id(f) for f in removed}
+                previous_facts = list(facts)
+                facts[:] = [
+                    f for f in facts if id(f) not in removed_identities
+                ]
+                try:
+                    await self.asave_facts(
+                        lanlan_name, _fact_lock_held=True,
+                    )
+                except Exception:
+                    # Keep the in-memory cache aligned with the unchanged
+                    # active file so the retry can still find the subject.
+                    facts[:] = previous_facts
+                    raise
+        if removed_active or removed_archive:
+            logger.info(
+                f"[FactStore] {lanlan_name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"active={removed_active} archive={removed_archive}"
+            )
+        return {"facts": removed_active, "facts_archive": removed_archive}
 
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
+
+    def _subject_forget_tombstones_path(self, name: str) -> str:
+        return os.path.join(
+            os.path.dirname(self._facts_path(name)),
+            'subject_forget_tombstones.json',
+        )
+
+    def _load_subject_forget_tombstones_strict(self, name: str) -> list[dict]:
+        """Load persistent scoped-forget cutoffs without best-effort fallback."""
+        path = self._subject_forget_tombstones_path(name)
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, encoding='utf-8') as fh:
+                rows = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            raise RuntimeError(
+                f"subject forget tombstones unreadable: {exc}"
+            ) from exc
+        if not isinstance(rows, list):
+            raise RuntimeError("subject forget tombstones are not a list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _record_subject_forget_tombstone_locked(
+        self, name: str, subject: MemorySubject, forgotten_at: str,
+    ) -> None:
+        """Persist the latest erasure cutoff while the fact lock is held."""
+        rows = self._load_subject_forget_tombstones_strict(name)
+        kept = [row for row in rows if not entry_matches_subject(row, subject)]
+        kept.append({**subject.as_entry_fields(), 'forgotten_at': forgotten_at})
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/subject_forget_tombstones.json",
+        )
+        atomic_write_json(
+            self._subject_forget_tombstones_path(name), kept,
+            indent=2, ensure_ascii=False,
+        )
+
+    def subject_forget_cutoff(
+        self, name: str, subject: MemorySubject,
+    ) -> str | None:
+        """Return the latest persistent erasure cutoff for one exact scope."""
+        cutoffs = [
+            str(row.get('forgotten_at') or '')
+            for row in self._load_subject_forget_tombstones_strict(name)
+            if entry_matches_subject(row, subject) and row.get('forgotten_at')
+        ]
+        return max(cutoffs, default=None)
+
+    async def asubject_forget_cutoff(
+        self, name: str, subject: MemorySubject,
+    ) -> str | None:
+        return await asyncio.to_thread(self.subject_forget_cutoff, name, subject)
+
+    async def afinalize_subject_forget(
+        self, name: str, subject: MemorySubject,
+    ) -> None:
+        """Advance the durable cutoff after the other stores have drained."""
+        async with self._get_persist_alock(name):
+            def _record_under_fact_lock() -> None:
+                with self._get_lock(name):
+                    self._record_subject_forget_tombstone_locked(
+                        name, subject, datetime.now().isoformat(),
+                    )
+
+            await asyncio.to_thread(_record_under_fact_lock)
 
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
@@ -444,14 +966,291 @@ class FactStore:
                 # 归档文件损坏 → 放弃本次归档，避免覆盖丢数据
                 logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过本次归档: {e}")
                 return 0
-        existing_archive.extend(to_archive)
+        # 追加按 id 幂等合并：半提交（archive 写成功、facts.json 没写成）之后
+        # 下一轮归档会把同一批 fact 再送进来一次，extend 会让它在归档里永久存在
+        # 两份。顺带修好已经落在用户盘上的历史重复。
+        existing_archive = _merge_archive_entries(existing_archive, to_archive)
         atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
-        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）
-        facts.clear()
-        facts.extend(active)
-        atomic_write_json(self._facts_path(name), facts, indent=2, ensure_ascii=False)
-        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(active)} 条")
+        # 两文件提交顺序固定为「先 archive 再 facts.json」：中断窗口的状态是
+        # 「两边都有」（重复 —— 读侧 load_facts_full 按 id 收敛、下轮归档按 id
+        # 幂等追加），而不是「两边都没有」（永久丢已归档 fact，连带丢 daily
+        # import 的指纹 → 整天重导）。顺序不要反过来。
+        atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+        # 缓存只在 facts.json 落盘成功之后才动 —— 对齐 event_log.record_and_save
+        # 已经写明的纪律（cache only changes after the disk write）。原来是先改
+        # 缓存再写盘，写盘失败就留下「缓存少 k 条 / 磁盘多 k 条」的半提交，而
+        # save_facts 的 evict 只挂在前一个 try 上、这里不触发。
+        #
+        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）。
+        # 按身份剔除已归档的那几条，而不是拿函数开头算的 active 快照整体替换：
+        # add_facts 在 aload_facts 之后直接 append，并不持 _get_lock（本仓库既有
+        # 约定），快照整体替换会把「快照之后、这里之前」append 进来的 fact 一起
+        # 抹掉，而写序重排把这个窗口从一次写盘拉长成了两次。
+        # 用 id() 作键是安全的：to_archive 全程持有这些 dict 的强引用，它们不会
+        # 在此期间被回收、id 也就不会被别的对象复用。
+        archived_identities = {id(f) for f in to_archive}
+        facts[:] = [f for f in facts if id(f) not in archived_identities]
+        # 剩余数报缓存实际长度而不是 active 快照长度：并发 append 进来的行也还在。
+        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(facts)} 条")
         return len(to_archive)
+
+    # ── scoped subject archival (time-driven, 群记忆系列 5/7) ────────
+
+    def _archive_subject_facts(
+        self, name: str, subject: MemorySubject, archived_at_iso: str,
+        stale_cutoff: datetime,
+    ) -> int | None:
+        """Move the stale facts of one scoped subject into facts_archive.json.
+
+        Returns the number of rows stamped, or ``None`` when the pass ABORTED
+        because a fresh write revealed the subject just revived — the caller
+        must treat None as "subject is active again" and skip the subject's
+        remaining stores, not as an ordinary zero-count result.
+
+        Also stamps ``subject_archived_at`` onto the subject's rows that the
+        absorbed-shrink path had ALREADY moved into facts_archive.json: those
+        rows stay recallable by design for live subjects, so without the
+        in-place stamp an archived subject would remain searchable through
+        its absorbed history forever.
+
+        Time-driven counterpart of `_archive_absorbed` (score/absorbed-driven).
+        Every moved row is stamped with ``subject_archived_at`` — the marker
+
+          * excludes the row from both recall paths' archive pool
+            (`hybrid_recall._aload_archive_facts` filters on it), unlike
+            absorbed-archived rows which stay recallable by design;
+          * excludes the row from the FTS near-dup guard in
+            `_apersist_new_facts_locked`, so a revived subject re-stating an
+            archived fact lands a NEW active fact instead of being silently
+            deduped into invisibility;
+          * is what `_restore_subject_facts` strips when moving rows back.
+
+        ``stale_cutoff`` re-validates the sweep's staleness snapshot UNDER
+        the write lock: a fact written (or explicitly restored — the
+        ``restored_at`` stamp counts like the ledger does) between the
+        sweep's judgement and this call has a timestamp ``>= cutoff`` — the
+        subject just revived, so the whole archival aborts (returning
+        ``None``) rather than sweeping the subject's first fresh memory out
+        of recall. Rows with unparseable timestamps never archive (unknown
+        age must not mean "old"), but also never veto the pass — one
+        corrupt row must not immortalize the subject. A corrupt archive
+        file likewise aborts with ``None``: proceeding would leave the
+        subject permanently split (facts active, higher stores archived).
+
+        Same two-file commit discipline as `_archive_absorbed`: archive first,
+        facts.json second — an interruption leaves the row in BOTH files
+        (readers converge by id, next run is idempotent), never in neither.
+        """
+        self.load_facts(name)  # ensure cache before taking the lock (non-reentrant)
+        with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="archive",
+                target=f"memory/{name}/facts.json",
+            )
+            facts = self._facts.get(name, [])
+            matching = [
+                f for f in facts
+                if isinstance(f, dict) and entry_matches_subject(f, subject)
+            ]
+            to_archive: list[dict] = []
+            for f in matching:
+                # 复活检查同时看 created_at 与 restored_at：判定窗口内的
+                # 显式 restore 给行盖的是 restored_at（created_at 仍是旧
+                # 值），只看 created_at 会把刚恢复的行立刻再归档。
+                latest: datetime | None = None
+                for field in ('created_at', 'restored_at'):
+                    try:
+                        parsed = datetime.fromisoformat(f.get(field) or '')
+                    except (ValueError, TypeError):
+                        continue
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone().replace(tzinfo=None)
+                    if latest is None or parsed > latest:
+                        latest = parsed
+                if latest is None:
+                    continue  # 未知年龄的行留在活跃池（对齐 _archive_absorbed）
+                if latest >= stale_cutoff:
+                    # 判定后落进来的新写入/恢复：subject 已复活，本轮整体
+                    # 中止。新写入只会落在活跃池，归档池里的行都早于判定
+                    # 快照，所以复活检查只需要看活跃行。
+                    logger.info(
+                        f"[FactStore] {name}: subject "
+                        f"[scoped {subject.kind}/{subject.subject_id}] 在归档窗口"
+                        f"内有新写入，中止本轮 subject 归档"
+                    )
+                    return None
+                to_archive.append(f)
+            archive_path = self._facts_archive_path(name)
+            existing_archive: list[dict] = []
+            if os.path.exists(archive_path):
+                try:
+                    with open(archive_path, encoding='utf-8') as fh:
+                        data = json.load(fh)
+                    if not isinstance(data, list):
+                        logger.warning(
+                            f"[FactStore] {name}: 归档文件顶层不是列表，"
+                            "中止本轮 subject 归档"
+                        )
+                        return None
+                    existing_archive = data
+                except (json.JSONDecodeError, OSError) as e:
+                    # 归档文件损坏时按中止（None）而非普通零结果返回：让
+                    # caller 跳过 reflection/persona——否则每轮都在同一处
+                    # 失败，subject 永久劈叉成「facts 活跃、高层已归档」。
+                    logger.warning(
+                        f"[FactStore] {name}: 读取归档文件失败，中止本轮 subject 归档: {e}"
+                    )
+                    return None
+            # absorbed 收缩早已搬进归档文件的同 subject 行：就地补
+            # subject_archived_at 标记，让它们与活跃行一起退出召回。
+            stamped_in_archive = 0
+            for f in existing_archive:
+                if (
+                    isinstance(f, dict)
+                    and not f.get('subject_archived_at')
+                    and entry_matches_subject(f, subject)
+                ):
+                    f['subject_archived_at'] = archived_at_iso
+                    stamped_in_archive += 1
+            if not to_archive and not stamped_in_archive:
+                return 0
+            stamped = []
+            for f in to_archive:
+                copy = dict(f)
+                copy['subject_archived_at'] = archived_at_iso
+                stamped.append(copy)
+            existing_archive = _merge_archive_entries(existing_archive, stamped)
+            atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
+            if to_archive:
+                active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
+                atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+                # 缓存按身份原地剔除（并发 append 的行保留在缓存里，下次 save 落盘）。
+                archived_identities = {id(f) for f in to_archive}
+                facts[:] = [f for f in facts if id(f) not in archived_identities]
+            # 隐私口径：只打域标识与条数，不打原文。
+            logger.info(
+                f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
+                f"/{subject.subject_id}] 活跃 {len(to_archive)} 条 + 归档池补标记 "
+                f"{stamped_in_archive} 条"
+            )
+            return len(to_archive) + stamped_in_archive
+
+    async def aarchive_subject_facts(
+        self, name: str, subject: MemorySubject, archived_at_iso: str,
+        stale_cutoff: datetime,
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._archive_subject_facts, name, subject, archived_at_iso,
+            stale_cutoff,
+        )
+
+    def _restore_subject_facts(
+        self, name: str, subject: MemorySubject,
+        restored_at_iso: str | None = None,
+        archived_after_iso: str | None = None,
+    ) -> int | None:
+        """Move a subject's ``subject_archived_at`` rows back into facts.json.
+
+        Inverse of `_archive_subject_facts`; absorbed-archived rows (no
+        marker) are untouched. Write order is the mirror image — facts.json
+        (with the restored rows) first, archive (without them) second — so an
+        interruption again leaves rows in BOTH files, and every reader's
+        by-id convergence keeps the active copy.
+
+        Every restored row is stamped with ``restored_at``: the staleness
+        ledger counts it as a write (see ``subject_archive._TIMESTAMP_FIELDS``),
+        so an explicit restore resets the subject's archival clock instead of
+        being undone by the very next sweep.
+
+        Returns the number of rows moved back, or ``None`` when the archive
+        file is corrupt — mirroring the archival side's abort semantics, so
+        the orchestrator skips the higher stores instead of leaving the
+        subject split (facts still archived, reflections/persona active).
+        A missing archive file is an ordinary no-op 0.
+        """
+        if restored_at_iso is None:
+            restored_at_iso = datetime.now().isoformat()
+        self.load_facts(name)
+        with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/facts.json",
+            )
+            archive_path = self._facts_archive_path(name)
+            if not os.path.exists(archive_path):
+                return 0
+            try:
+                with open(archive_path, encoding='utf-8') as fh:
+                    archived = json.load(fh)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(
+                    f"[FactStore] {name}: 读取归档文件失败，中止 subject 恢复: {e}"
+                )
+                return None
+            if not isinstance(archived, list):
+                logger.warning(
+                    f"[FactStore] {name}: 归档文件顶层非 list，中止 subject 恢复"
+                )
+                return None
+
+            def _is_subject_archived_row(f) -> bool:
+                return (
+                    isinstance(f, dict)
+                    and f.get('subject_archived_at')
+                    and (
+                        archived_after_iso is None
+                        or str(f.get('subject_archived_at')) > archived_after_iso
+                    )
+                    and entry_matches_subject(f, subject)
+                )
+
+            to_restore = [f for f in archived if _is_subject_archived_row(f)]
+            if not to_restore:
+                return 0
+            facts = self._facts.get(name, [])
+            active_ids = {
+                fid for fid in (
+                    _readable_fact_id(f) for f in facts if isinstance(f, dict)
+                ) if fid is not None
+            }
+            restored: list[dict] = []
+            for f in to_restore:
+                fid = _readable_fact_id(f)
+                if fid is not None and fid in active_ids:
+                    # 上次恢复被打断留下的「两边都有」：active 赢，归档副本
+                    # 直接收敛掉即可。
+                    continue
+                copy = dict(f)
+                copy.pop('subject_archived_at', None)
+                copy['restored_at'] = restored_at_iso
+                restored.append(copy)
+            remaining_archive = [
+                f for f in archived if not _is_subject_archived_row(f)
+            ]
+            atomic_write_json(
+                self._facts_path(name), facts + restored, indent=2, ensure_ascii=False,
+            )
+            atomic_write_json(
+                archive_path, remaining_archive, indent=2, ensure_ascii=False,
+            )
+            facts.extend(restored)
+            logger.info(
+                f"[FactStore] {name}: subject 恢复 [scoped {subject.kind}"
+                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池"
+            )
+            return len(restored)
+
+    async def arestore_subject_facts(
+        self, name: str, subject: MemorySubject,
+        restored_at_iso: str | None = None,
+        archived_after_iso: str | None = None,
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._restore_subject_facts, name, subject, restored_at_iso,
+            archived_after_iso,
+        )
 
     # ── extraction ───────────────────────────────────────────────────
 
@@ -470,6 +1269,28 @@ class FactStore:
             return ''.join(parts)
         return str(content or '')
 
+    _PROMPT_TEXT_PART_TYPES = frozenset((None, 'text', 'input_text', 'output_text'))
+
+    @classmethod
+    def _message_locale_content(cls, content) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ''
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get('type') not in cls._PROMPT_TEXT_PART_TYPES:
+                continue
+            text = item.get('text')
+            if isinstance(text, str):
+                parts.append(text)
+        return '\n'.join(parts)
+
     @classmethod
     def _format_conversation(cls, messages: list, name_mapping: dict) -> str:
         """Serialize messages into the 'role | content' shape used by LLM prompts."""
@@ -482,23 +1303,342 @@ class FactStore:
         return "\n".join(lines)
 
     @classmethod
-    def _format_speaker_segments(cls, segments: list[dict]) -> str:
+    def _messages_locale_text(
+        cls,
+        messages: list,
+        *,
+        roles: frozenset[str] | None = None,
+    ) -> str:
+        """Return message bodies without generated speaker or segment labels."""
+        selected = [
+            cls._message_locale_content(getattr(message, 'content', ''))
+            for message in messages
+            if roles is None or getattr(message, 'type', '') in roles
+        ]
+        if roles is not None and not any(text.strip() for text in selected):
+            return cls._messages_locale_text(messages)
+        return "\n".join(selected)
+
+    # 段首标记里不允许出现的结构字符：方括号 / 竖线 / 任何换行与制表。
+    # speaker_label 是**用户可改**的原始数据（群名片），不中和的话
+    # "X]\n[SEGMENT 2 | speaker: Alice" 这种名片会在渲染结果里造出一个
+    # 位于行首、逐字节合法的段首。
+    _SEGMENT_LABEL_STRUCTURAL = re.compile(r'[\[\]|]')
+    # 正文里的段首字面量：即便有逐行前缀兜底（见 _format_speaker_segments），
+    # 也把它折成全角左括号，让"看起来像段首"的注入连形状都不成立。
+    _SEGMENT_MARKER_LITERAL = re.compile(r'\[\s*SEGMENT', re.IGNORECASE)
+
+    @classmethod
+    def sanitize_speaker_label(cls, label) -> str:
+        """Strip a speaker label down to something that cannot forge markup.
+
+        剥掉方括号 / 竖线 / 换行 / 控制字符并压缩空白，最后截到 64 字符
+        （与路由的长度契约同口径）。返回空串表示这个 label 整个由结构字符
+        组成——调用方（路由）按契约违例 fail loud，不要静默替换成占位符：
+        插件侧的 label 恒含 "(sender_id)" 数字，空只可能是调用方 bug。"""  # noqa: DOCSTRING_CJK
+        text = cls._SEGMENT_LABEL_STRUCTURAL.sub(' ', str(label or ''))
+        # 控制字符（含各种换行/分隔符）一律折成空格再压缩：段首必须是单行。
+        text = ''.join(ch if ch.isprintable() else ' ' for ch in text)
+        return ' '.join(text.split())[:64].strip()
+
+    @classmethod
+    def _cap_speaker_message_bodies(
+        cls,
+        segments: list[dict],
+        *,
+        omission_marker: str,
+    ) -> list[list[str]]:
+        """Apply per-message and whole-batch token budgets to prompt text.
+
+        Short messages are returned byte-for-byte unchanged. Long messages
+        keep both ends, and an over-budget batch shares its remaining content
+        budget fairly so late segments cannot be starved by earlier ones.
+        """
+        from utils.tokenize import count_tokens, truncate_head_tail_tokens
+
+        omission_tokens = count_tokens(omission_marker)
+
+        raw_by_segment: list[list[str]] = []
+        flat_raw: list[str] = []
+        flat_separator_costs: list[int] = []
+        for segment in segments:
+            segment_bodies = []
+            for message_index, msg in enumerate(segment.get('messages') or []):
+                body = cls._SEGMENT_MARKER_LITERAL.sub(
+                    '［SEGMENT',
+                    cls._flatten_message_content(getattr(msg, 'content', '')),
+                )
+                segment_bodies.append(body)
+                flat_raw.append(body)
+                flat_separator_costs.append(
+                    count_tokens("\n") if message_index else 0
+                )
+            raw_by_segment.append(segment_bodies)
+
+        def _rendered_cost(body: str) -> int:
+            body_lines = body.splitlines() or ['']
+            rendered_lines = [f"> {body_lines[0]}"]
+            rendered_lines.extend(f"| {line}" for line in body_lines[1:])
+            return count_tokens("\n".join(rendered_lines))
+
+        def _clip(body: str, budget: int) -> str:
+            if budget <= 0:
+                return ''
+
+            # Tokenizers can be pathologically slow on a single enormous run
+            # (for example hundreds of thousands of repeated ASCII chars).
+            # This is a CPU guard, not the prompt contract: the final output is
+            # still governed by token budgets below and keeps both ends plus a
+            # visible marker. The generous factor avoids touching ordinary
+            # prose while bounding what any tokenizer invocation receives.
+            working_char_limit = (
+                SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS * 16
+            )
+            if len(body) > working_char_limit:
+                guard_head = working_char_limit // 2
+                guard_tail = working_char_limit - guard_head
+                guarded = (
+                    f"{body[:guard_head]}{omission_marker}{body[-guard_tail:]}"
+                )
+                if _rendered_cost(guarded) <= budget:
+                    return guarded
+                body = f"{body[:guard_head]}{body[-guard_tail:]}"
+            elif _rendered_cost(body) <= budget:
+                return body
+
+            # Bound the working set once before binary search. Otherwise each
+            # probe would re-encode the complete untrusted body. An empty
+            # separator deliberately joins the retained ends only internally;
+            # the final probe below inserts the visible localized marker.
+            working_budget = min(
+                SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
+                budget,
+            )
+            working_head = working_budget // 2
+            working_body = truncate_head_tail_tokens(
+                body,
+                working_head,
+                working_budget - working_head,
+                separator='',
+            )
+            working_was_truncated = working_body != body
+
+            # The budget covers the generated per-line ``| `` prefix too.
+            # Binary-search the largest content allocation whose fully
+            # rendered form fits; this closes the newline-dense amplification
+            # path without discarding either retained end.
+            low = 0
+            high = min(SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS, budget)
+            if working_was_truncated:
+                # Force the final pass to insert the visible marker instead
+                # of accepting the internal marker-less working set as-is.
+                high = min(high, max(0, count_tokens(working_body) - 1))
+            best = ''
+            while low <= high:
+                content_budget = (low + high) // 2
+                retained_budget = max(0, content_budget - omission_tokens)
+                head = retained_budget // 2
+                candidate = truncate_head_tail_tokens(
+                    working_body,
+                    head + omission_tokens,
+                    retained_budget - head,
+                    separator=omission_marker,
+                )
+                if _rendered_cost(candidate) <= budget:
+                    best = candidate
+                    low = content_budget + 1
+                else:
+                    high = content_budget - 1
+            return best
+
+        individually_capped = [
+            _clip(body, SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS)
+            for body in flat_raw
+        ]
+        if (
+            sum(
+                _rendered_cost(body) + separator_cost
+                for body, separator_cost in zip(
+                    individually_capped,
+                    flat_separator_costs,
+                )
+            )
+            <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
+        ):
+            final_flat = individually_capped
+        else:
+            costs = [
+                _rendered_cost(body) + separator_cost
+                for body, separator_cost in zip(
+                    individually_capped,
+                    flat_separator_costs,
+                )
+            ]
+            allocations = [0] * len(costs)
+            remaining_budget = SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
+            active = list(range(len(costs)))
+            while active:
+                fair_share = remaining_budget // len(active)
+                satisfied = [index for index in active if costs[index] <= fair_share]
+                if satisfied:
+                    for index in satisfied:
+                        allocations[index] = costs[index]
+                        remaining_budget -= costs[index]
+                    satisfied_set = set(satisfied)
+                    active = [index for index in active if index not in satisfied_set]
+                    continue
+
+                bonus_count = remaining_budget % len(active)
+                for position, index in enumerate(active):
+                    allocations[index] = fair_share + (position < bonus_count)
+                break
+
+            final_flat = [
+                _clip(body, max(0, budget - separator_cost))
+                for body, budget, separator_cost in zip(
+                    flat_raw,
+                    allocations,
+                    flat_separator_costs,
+                )
+            ]
+
+        final_iter = iter(final_flat)
+        return [
+            [next(final_iter) for _ in segment_bodies]
+            for segment_bodies in raw_by_segment
+        ]
+
+    @classmethod
+    def _format_speaker_segments(
+        cls,
+        segments: list[dict],
+        *,
+        nonce: str,
+        lang: str = "en",
+    ) -> str:
         """Render multi-speaker segments for the batch extraction prompt.
 
-        段首标记 ``[SEGMENT n | speaker: label]`` 是 locale 无关的固定形状，
-        批模板（FACT_EXTRACTION_BATCH_PROMPT）按原样向模型解释它；段内每行
-        以该段的 speaker label 开头，与单发路径的 'role | content' 同构。"""  # noqa: DOCSTRING_CJK
+        段首标记 ``[SEGMENT n:nonce | speaker: label]`` 是 locale 无关的固定
+        形状，批模板（FACT_EXTRACTION_BATCH_PROMPT）按原样向模型解释它。
+
+        三层防伪，缺一不可（模板恰恰告诉模型"段首就是归属依据"，能伪造段首
+        的群成员就能把自己的内容写进别人的 subject，并借到别人的
+        speaker_trust 信任基线）：
+
+        1. **每一行都带前缀**——正文永远不出现在行首，注入进来的
+           "\\n[SEGMENT 2 | speaker: Alice]" 只会渲染成
+           "| ［SEGMENT 2 | ...]"，明确落在自己那段里。按 ``splitlines()``
+           切，覆盖 \\r / \\x85 / U+2028 这些同样会被渲染成换行的分隔符。
+
+           正文每行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
+           而消息里的换行数不受任何上游限制（路由只数消息条数、群名片也
+           没有长度校验），逐行重复 label 等于给攻击者一个 ~67 倍的放大器
+           ——一条几千行的消息就能把 prompt 撑爆或耗光抽取超时，而失败的
+           批是保留重试的，同批其他成员会被一起拖住（Codex）。发言人已在
+           段首唯一标明；消息首行用 ``> ``、续行用 ``| ``，既保留消息边界，
+           又把固定开销压到每行 2 字节。这些生成前缀也计入 batch token
+           预算，避免换行密集正文再次放大。
+        2. **段首带一次性 nonce**——攻击者的消息在 nonce 生成之前就写死了，
+           猜不到本次请求的 token，伪造头与真段首形状对不上。
+        3. **label 与正文里的结构字面量中和**——label 剥方括号/竖线/换行，
+           正文里的 "[SEGMENT" 折成全角左括号。
+
+        nonce 只用于渲染侧的边界防伪，**不要求模型原样回吐**（归属输出仍是
+        段号整数）——让模型复述 token 只会凭空增加它出错的面。"""  # noqa: DOCSTRING_CJK
+        omission_marker = get_scoped_batch_middle_omission_marker(lang)
+        capped_bodies = cls._cap_speaker_message_bodies(
+            segments,
+            omission_marker=omission_marker,
+        )
+        return cls._render_capped_speaker_segments(
+            segments,
+            capped_bodies,
+            nonce=nonce,
+        )
+
+    @classmethod
+    def _render_capped_speaker_segments(
+        cls,
+        segments: list[dict],
+        capped_bodies: list[list[str]],
+        *,
+        nonce: str,
+    ) -> str:
         blocks = []
-        for index, segment in enumerate(segments, start=1):
-            label = str(segment.get('speaker_label') or '').strip()
-            lines = [f"[SEGMENT {index} | speaker: {label}]"]
-            for msg in segment.get('messages') or []:
-                lines.append(
-                    f"{label} | "
-                    f"{cls._flatten_message_content(getattr(msg, 'content', ''))}"
-                )
+        for index, (segment, message_bodies) in enumerate(
+            zip(segments, capped_bodies),
+            start=1,
+        ):
+            label = cls.sanitize_speaker_label(segment.get('speaker_label'))
+            lines = [f"[SEGMENT {index}:{nonce} | speaker: {label}]"]
+            for body in message_bodies:
+                body_lines = body.splitlines() or ['']
+                lines.append(f"> {body_lines[0]}")
+                lines.extend(f"| {line}" for line in body_lines[1:])
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
+
+    @classmethod
+    def _format_speaker_segments_with_locale(
+        cls,
+        segments: list[dict],
+        *,
+        nonce: str,
+        ui_lang: str,
+    ) -> tuple[str, str]:
+        locale_text = "\n".join(
+            cls._messages_locale_text(segment.get('messages') or [])
+            for segment in segments
+        )
+        lang = _detect_fact_extraction_prompt_language(
+            locale_text,
+            ui_language=ui_lang,
+        )
+
+        # Re-run the cap when its localized marker changes. Locale detection
+        # then sees the same retained head/tail bodies as the rendered prompt,
+        # without generated omission or multimodal markers.
+        capped_bodies: list[list[str]] = []
+        for _ in range(3):
+            omission_marker = get_scoped_batch_middle_omission_marker(lang)
+            capped_bodies = cls._cap_speaker_message_bodies(
+                segments,
+                omission_marker=omission_marker,
+            )
+            generated_markers = {omission_marker}
+            for segment in segments:
+                for message in segment.get('messages') or []:
+                    content = getattr(message, 'content', '')
+                    if not isinstance(content, list):
+                        continue
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = item.get('type')
+                        if item_type not in cls._PROMPT_TEXT_PART_TYPES:
+                            generated_markers.add(
+                                str(item.get('text', f"|{item_type or ''}|"))
+                            )
+            capped_locale_text = "\n".join(
+                body
+                for message_bodies in capped_bodies
+                for body in message_bodies
+            )
+            for marker in generated_markers:
+                capped_locale_text = capped_locale_text.replace(marker, '')
+            detected = _detect_fact_extraction_prompt_language(
+                capped_locale_text,
+                ui_language=ui_lang,
+            )
+            if detected == lang:
+                break
+            lang = detected
+
+        return lang, cls._render_capped_speaker_segments(
+            segments,
+            capped_bodies,
+            nonce=nonce,
+        )
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -627,9 +1767,16 @@ class FactStore:
         if speaker_label:
             name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
+        prompt_lang = _detect_fact_extraction_prompt_language(
+            self._messages_locale_text(
+                messages,
+                roles=frozenset({'human', 'user'}),
+            ),
+            ui_language=get_global_language_full(),
+        )
 
         prompt = (
-            get_fact_extraction_prompt(get_global_language_full())
+            get_fact_extraction_prompt(prompt_lang)
             .replace('{CONVERSATION}', conversation_text)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
@@ -661,16 +1808,29 @@ class FactStore:
     ) -> list | None:
         """Stage-1 batch: one LLM call over multiple single-speaker segments.
 
-        每个元素应带 ``segment`` 归属字段（由 ``extract_facts_batch``
-        fail-closed 解析）。非数组一律按终止失败返回 None——唯一调用方是
-        fail-closed 的 scoped_history 路由，没有"宽容当空"的模式。
+        输出契约是**每段一个对象**（``{"segment": n, "facts": [...]}``，由
+        ``extract_facts_batch`` fail-closed 解析）：归属结构化之后，一条带
+        内容的事实不可能"归属不明"，段覆盖也变成显式信号。非数组一律按终止
+        失败返回 None——唯一调用方是 fail-closed 的 scoped_history 路由，
+        没有"宽容当空"的模式。
 
-        占位符替换顺序刻意 {LANLAN_NAME} 在前、{SEGMENTS} 在后：消息正文
-        里出现字面 "{LANLAN_NAME}" 时不得被二次替换。"""  # noqa: DOCSTRING_CJK
+        占位符替换顺序刻意 {LANLAN_NAME} → {SEGMENT_NONCE} → {SEGMENTS}：
+        消息正文里出现字面 "{LANLAN_NAME}" / "{SEGMENT_NONCE}" 时不得被
+        二次替换（后者尤其重要——那等于让攻击者把 nonce 印进自己的正文）。"""  # noqa: DOCSTRING_CJK
+        # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
+        nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
+        ui_lang = get_global_language_full()
+        lang, rendered_segments = await asyncio.to_thread(
+            self._format_speaker_segments_with_locale,
+            segments,
+            nonce=nonce,
+            ui_lang=ui_lang,
+        )
         prompt = (
-            get_fact_extraction_batch_prompt(get_global_language_full())
+            get_fact_extraction_batch_prompt(lang)
             .replace('{LANLAN_NAME}', lanlan_name)
-            .replace('{SEGMENTS}', self._format_speaker_segments(segments))
+            .replace('{SEGMENT_NONCE}', nonce)
+            .replace('{SEGMENTS}', rendered_segments)
         )
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -688,19 +1848,12 @@ class FactStore:
         return extracted
 
     @staticmethod
-    def _batch_fact_segment_index(fact, segment_count: int) -> int | None:
-        """Fail-closed attribution: the 0-based segment index, or None to drop.
+    def _coerce_segment_index(raw, segment_count: int) -> int | None:
+        """The 0-based segment index for a model-emitted段号, or None.
 
-        归属标记无法解析 / 指向不存在的段时**必须丢弃而不是猜**——A 的
-        事实挂到 B 头上比丢一条严重得多（错误归属会进 B 的 persona 且
-        无人能发现）。接受 int 与纯数字字符串（模型输出 "1" 的常见形态），
-        bool 显式排除（True 是 int 子类）。"""  # noqa: DOCSTRING_CJK
-        if not isinstance(fact, dict):
-            return None
-        text = fact.get('text')
-        if not isinstance(text, str) or not text.strip():
-            return None
-        raw = fact.get('segment')
+        接受 int 与纯数字字符串（模型输出 "1" 的常见形态），bool 显式排除
+        （True 是 int 子类）。越界一律 None——绝不 clamp 到边界段：A 的内容
+        挂到 B 头上比整批重试严重得多。"""  # noqa: DOCSTRING_CJK
         if isinstance(raw, bool):
             return None
         if isinstance(raw, int):
@@ -708,7 +1861,7 @@ class FactStore:
         elif isinstance(raw, str):
             # try/except 而非 isdigit() 预检：isdigit() 对上标数字（"²"）等
             # int() 消化不了的字符也返回 True，预检放行后 int() 抛
-            # ValueError 会把整批弄崩——按契约这类畸形只该丢这一条。
+            # ValueError 会把整批弄崩。
             try:
                 seg = int(raw.strip())
             except ValueError:
@@ -720,6 +1873,225 @@ class FactStore:
         if not (1 <= seg <= segment_count):
             return None
         return seg - 1
+
+    # 一条 LLM 事实里真正会被 :meth:`_apersist_new_facts_locked` 读走的键。
+    # 只有这一处用它：段对象被整个收作事实时，判断"还剩什么没人读"。
+    #
+    # ⚠️ 手写清单会随 fact schema 演进变陈旧，而陈旧的后果是**每一条带新
+    # 字段的事实都被误判成 failed、桶被无休止重抽**。所以它由
+    # test_persisted_fact_fields_matches_what_persist_actually_reads 用 AST
+    # 扫 _apersist_new_facts_locked 反查兜底——加了字段忘了更新这里，那条
+    # 测试会红，而不是等着线上打转。
+    _PERSISTED_FACT_FIELDS = frozenset({
+        'text', 'importance', 'entity', 'source', 'event_when',
+        '_external_import',
+    })
+
+    @staticmethod
+    def _as_fact_entry(entry) -> dict | None:
+        """Normalize one ``facts[]`` element into a persistable fact, or None.
+
+        裸字符串 promote 成 ``{'text': ...}``：模型偶尔直接给一句话而不是
+        对象，它明确承载内容、归属又由所在段对象给定，收下来是无损的——
+        比"当垃圾丢掉"（丢内容）和"整段重试"（多花一次抽取）都好。限定
+        ``str``：数字/布尔之类的假值渲染成文本毫无意义。"""  # noqa: DOCSTRING_CJK
+        if isinstance(entry, dict):
+            text = entry.get('text')
+            if isinstance(text, str) and text.strip():
+                return entry
+            return None
+        if isinstance(entry, str) and entry.strip():
+            return {'text': entry}
+        return None
+
+    @classmethod
+    def _carries_unused_text(cls, entry) -> bool:
+        """True when a value still holds non-blank text somewhere.
+
+        纯粹看"这个值里有没有文字"，不认字段名——字段名那层由
+        :meth:`_has_unconsumed_text` 负责。"""  # noqa: DOCSTRING_CJK
+        if isinstance(entry, str):
+            return bool(entry.strip())
+        if isinstance(entry, dict):
+            # 键与值一视同仁地往下递归：map 形态的畸形事实
+            # （{"Alice likes cats": 7}）可以裹在任意深度的字段下
+            # （{"fact": {"Alice likes cats": 7}}），只查顶层键会漏。
+            # 字段名形状的键（confidence / start / unit …）不算内容。
+            return any(
+                (
+                    isinstance(key, str)
+                    and key.strip()
+                    and not cls._FIELD_NAME_RE.match(key)
+                )
+                or cls._carries_unused_text(value)
+                for key, value in entry.items()
+            )
+        if isinstance(entry, (list, tuple, set)):
+            return any(cls._carries_unused_text(v) for v in entry)
+        return False
+
+    # JSON 里像"字段名"的键：ASCII 标识符。模型给 schema 加字段时用的是
+    # confidence / reason / evidence 这种；而把事实文本塞进键的畸形形态
+    # （{"Alice likes cats": 7}）几乎不可能长成标识符——自然语言带空格或
+    # 非 ASCII。用它区分"键是字段名"与"键就是内容"。
+    _FIELD_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+    @classmethod
+    def _holds_unextracted_text(cls, entry, *, always_consumed: tuple = ()) -> bool:
+        """True when a **rejected** entry still holds text nobody extracted.
+
+        只对"这一条什么都没抽出来"的元素问这个问题，理由是**重试能不能救**：
+        - 什么都没抽出来 → 重来一次抽取，模型完全可能给出规范形状，那截
+          内容就回来了。保留桶重试是有意义的；
+        - 已经抽出了事实、只是旁边还挂着别的字段 → 重抽会复现同一个形状，
+          那个字段照样没人读。判 failed 换不回任何东西，只会让这个成员的
+          记忆**永远结算不掉**：桶一路涨到硬顶后连原始消息一起丢，比丢一个
+          附注严重得多。那种情况只记一条 WARNING（见调用方），段照常 ok。
+
+        ⚠️ **键本身也可能就是内容**：``{"Alice likes cats": 7}`` 这种 map
+        形态的畸形事实，文本全在键上、值是个数字——只查值会把它当空壳丢掉
+        （Codex）。所以非字段名形状的键（见 :attr:`_FIELD_NAME_RE`）只要
+        非空白就算内容。
+
+        ``always_consumed``：调用方已经逐条解析过的键（段对象的 ``segment``
+        / ``facts``），当作已读走。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(entry, dict):
+            return cls._carries_unused_text(entry)
+        for key, value in entry.items():
+            if isinstance(key, str) and key in always_consumed:
+                continue
+            if (
+                isinstance(key, str)
+                and key.strip()
+                and not cls._FIELD_NAME_RE.match(key)
+            ):
+                return True
+            if cls._carries_unused_text(value):
+                return True
+        return False
+
+    @classmethod
+    def _unread_fields_of_accepted_fact(cls, fact, *, always_consumed=()) -> list:
+        """Field names on an accepted fact that nobody downstream reads.
+
+        只用于打日志（见 :meth:`_holds_unextracted_text` 里的理由：判 failed
+        换不回内容、只会让这个成员永远结算不掉）。留这条日志是为了让"模型
+        开始往事实上挂别的文字"这件事看得见——真发生了就去改 prompt，而不是
+        靠一个永远重试的闸门去发现。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(fact, dict):
+            return []
+        return sorted(
+            str(key)[:64] for key, value in fact.items()
+            if key not in cls._PERSISTED_FACT_FIELDS
+            and key not in always_consumed
+            # 键与值一视同仁（与 _carries_unused_text 同口径）：
+            # {"text": "A", "Bob 的生日是 3 月 5 日": 7} 里文本全在键上，
+            # 只查值的话这条内容连一行日志都留不下。
+            and (
+                (
+                    isinstance(key, str)
+                    and key.strip()
+                    and not cls._FIELD_NAME_RE.match(key)
+                )
+                or cls._carries_unused_text(value)
+            )
+        )
+
+    @classmethod
+    def _parse_batch_segment_entry(
+        cls, item, segment_count: int,
+    ) -> tuple[int | None, list[dict], int, int]:
+        """Parse one top-level element of the batch payload.
+
+        Returns ``(0-based index | None, facts, dropped, suspect)``。
+
+        ``index is None`` 表示这个元素**放不下去**——它可能承载着某一段的
+        内容而我们无从判断是哪段，调用方据此整批 raise（与
+        :meth:`extract_facts` 对畸形元素"整批可重试失败"同一条不变式：
+        persist 会静默跳过畸形项，调用方推进游标后该元素承载的内容永久丢失）。
+
+        丢弃分两档，判据是"丢了会不会丢内容"：
+        - ``dropped``：空壳（``{}`` / ``{"text": ""}`` / ``{"importance": 5}``
+          / 空串），丢了不丢内容，本段照常 ``ok``；
+        - ``suspect``：我们**没能用上、但里面还有文字**的元素——本段判
+          ``failed`` 让调用方保留桶重试。嵌套形状消除了"有内容却归属不明"，
+          但消除不了"有内容却看不懂形状"，那一类必须 fail-closed。
+
+        容忍的形状：
+        - 规范：``{"segment": n, "facts": [...]}``；
+        - 段内无事实：``{"segment": n}``（模型显式点名该段且没给内容——
+          这是合法的"本段无事实"结论，不是漏标）；
+        - 旧的扁平事实：``{"segment": n, "text": ...}``，**含与 facts 数组
+          同时出现的情形**——两种约定混用时归属并无歧义（都挂在这一个段
+          对象上），元素自带的 text 必须一起收下，不能被 list 分支吃掉。
+          这种形态整个 dict 原样交给 persist（event_when / entity / source
+          等字段那边自己读），所以它身上没有"被丢弃的内容"可言；
+        - ``facts`` 里的裸字符串（见 :meth:`_as_fact_entry`）。
+        ``facts`` 存在、不是数组、又不是 ``null`` = 形状坏了且可能带内容 →
+        放不下去。``null`` 例外：它不承载任何内容，语义与"没给这个字段"、
+        与空数组都一样是"本段无事实"，按缺席处理（判成畸形会为了一个空值
+        把整批 8 段一起打回重抽）。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(item, dict):
+            return None, [], 0, 0
+        index = cls._coerce_segment_index(item.get('segment'), segment_count)
+        if index is None:
+            return None, [], 0, 0
+        raw_facts = item.get('facts')
+        if raw_facts is not None and not isinstance(raw_facts, list):
+            return None, [], 0, 0
+
+        kept: list[dict] = []
+        dropped = 0
+        suspect = 0
+        unread_fields: list[str] = []
+        for entry in (raw_facts or []):
+            fact = cls._as_fact_entry(entry)
+            if fact is None:
+                # 读不成事实：里面还攥着没人抽走的文字就 suspect（重抽有可能
+                # 把它变成规范形状救回来），纯空壳才丢。
+                if cls._holds_unextracted_text(entry):
+                    suspect += 1
+                else:
+                    dropped += 1
+                continue
+            kept.append(fact)
+            unread_fields.extend(cls._unread_fields_of_accepted_fact(fact))
+        own_fact = cls._as_fact_entry(item)
+        # 段对象上还剩什么没人读？剩下的键里若攥着文字，说明这个形状我们
+        # 没读懂，别把它当成"本段的结论"——那会让调用方 pop 掉桶，那截
+        # 文字就此消失。
+        #
+        # 排除集分两种情形，判据是"这次到底消费掉了什么"：
+        # - item 被整个收作事实 → persist 会读走 _PERSISTED_FACT_FIELDS 那
+        #   一组（event_when 里的 "day"、entity 的 "master" 都是被消费的，
+        #   算成旁挂文字会让每条带时间线索的扁平事实都误判 failed）；但
+        #   **它读不到的键仍然没人读**，比如 {"text": "...", "note": "..."}
+        #   里的 note——那截内容确实会随着 pop 一起消失，仍要判 suspect。
+        # - item 读不成事实 → 连 text 都没被消费（{"text": ["Alice 养猫"]}
+        #   这种内容裹在非字符串里），一个都不能排除。
+        if own_fact is not None:
+            kept.append(own_fact)
+        # 段对象"答过了"= 给了自己的事实、或给了 facts 数组（哪怕是空的——
+        # 空数组正是"本段无事实"这个合法结论）。答过了就跟被收下的事实同
+        # 一档：旁挂字段只记日志。{"segment": 1, "facts": [],
+        # "reason": "..."} 判 failed 换不回任何东西，模型只要习惯性带上这个
+        # 字段，这个成员就永远结算不掉（Codex）。
+        if own_fact is not None or isinstance(raw_facts, list):
+            unread_fields.extend(cls._unread_fields_of_accepted_fact(
+                item, always_consumed=('segment', 'facts'),
+            ))
+        elif cls._holds_unextracted_text(
+            item, always_consumed=('segment', 'facts'),
+        ):
+            suspect += 1
+        if unread_fields:
+            logger.warning(
+                f"[FactStore] 批抽取：模型往事实上挂了没人读的字段 "
+                f"{sorted(set(unread_fields))}——那部分内容不会入库。判 failed "
+                f"换不回它（重抽会复现同一个形状），所以只记一条日志；真频繁"
+                f"出现就去改 prompt。"
+            )
+        return index, kept, dropped, suspect
 
     @staticmethod
     def _speaker_provenance_of(segment: dict) -> dict | None:
@@ -751,80 +2123,133 @@ class FactStore:
         发言人。成本从 O(发言人数) 次 LLM 调用降到每批一次。
 
         Returns one result dict per segment, in request order:
-        ``{'status': 'ok'|'failed', 'created': list[dict]}``。
+        ``{'status': 'ok'|'failed', 'created': list[dict], 'dropped': int}``。
 
         fail-closed 语义是 **per-段** 的（对比 :meth:`extract_facts` 的整批
         判定）：
         - 整个 LLM 调用终止失败 / 返回非数组 → raise
           :class:`FactExtractionFailed`（路由 502，调用方整批保留重试）；
-        - 单条输出畸形 / ``segment`` 归属无法解析或越界 → 丢那一条，绝不
-          猜段；
-        - 输出非空但**零条**可归属 → 模型没理解任务，整批 raise——静默
-          全丢会让调用方 pop 掉从未入库的桶（与单发路径"畸形整批可重试"
-          同一防线）；
+        - 任一顶层元素**放不下去**（段号缺失/越界、facts 不是数组）→ 整批
+          raise：它可能承载着某段的内容而我们无从判断是哪段，静默丢弃
+          等于让调用方 pop 掉一份内容已经消失的桶；
+        - 某段**没出现在输出里** → 该段 ``failed``（保留重试），绝不当成
+          "本段无事实"：模型把八段内容全并进段 1 时，另外七个人的桶
+          （成员维度唯一副本）会被调用方一次性弹光；
+        - 段对象里的空壳条目（``{}`` / ``{"text": ""}`` / 空串）→ 丢弃并
+          计入 ``dropped`` 回报给调用方，本段照常 ``ok``：它们**不承载
+          内容**，丢它不丢东西；
+        - 段对象里**看不懂形状、但还攥着文字**的条目 → 本段 ``failed``，
+          认出来的那些仍照常落盘（重试靠 SHA-256 去重兜住重复，而万一
+          重试一直失败，起码认出来的这些不会跟着丢）；
         - 某段 persist 失败 → 只该段 ``failed``，其余段不连累重来。
+
+        整个输出为空数组是合法结论（"整批没有值得记的事实"），此时所有段
+        ``ok`` 且零 fact——群聊里这是最常见的一批，把它当成"零段被覆盖"
+        会让每一批安静的群消息都进入无尽重试。
         """  # noqa: DOCSTRING_CJK
         if not segments:
             return []
-        if len(segments) == 1:
-            # 单段无归属风险：走成熟的单发抽取管线（prompt 更完整、
-            # malformed 判定也更严）。
-            segment = segments[0]
-            created = await self.extract_facts(
-                segment.get('messages') or [],
-                lanlan_name,
-                subject=segment.get('subject'),
-                fail_closed=True,
-                speaker_label=segment.get('speaker_label'),
-                speaker_provenance=self._speaker_provenance_of(segment),
-            )
-            return [{'status': 'ok', 'created': created}]
 
+        segment_generations = [
+            (
+                self._subject_forget_generation(lanlan_name, memory_subject)
+                if (memory_subject := coerce_subject(segment.get('subject')))
+                is not None
+                else None
+            )
+            for segment in segments
+        ]
         extracted = await self._allm_extract_facts_batch(lanlan_name, segments)
         if extracted is None:
             raise FactExtractionFailed(
                 f"batch Stage-1 LLM call failed for {lanlan_name!r} "
                 f"({len(segments)} segments, fail_closed caller)"
             )
-        per_segment: list[list[dict]] = [[] for _ in segments]
-        dropped = 0
-        for fact in extracted:
-            index = self._batch_fact_segment_index(fact, len(segments))
-            if index is None:
-                dropped += 1
-                continue
-            per_segment[index].append(fact)
-        if extracted and not any(per_segment):
-            raise FactExtractionFailed(
-                f"batch Stage-1 returned {len(extracted)} facts but none "
-                f"attributable for {lanlan_name!r} (fail_closed caller)"
+        # None = 该段没出现在输出里（≠ 该段无事实，后者是空 list）。
+        per_segment: list[list[dict] | None] = [None] * len(segments)
+        dropped_per_segment = [0] * len(segments)
+        suspect_per_segment = [0] * len(segments)
+        unplaceable = 0
+        for item in extracted:
+            index, facts, dropped, suspect = self._parse_batch_segment_entry(
+                item, len(segments),
             )
-        if dropped:
+            if index is None:
+                unplaceable += 1
+                continue
+            if per_segment[index] is None:
+                per_segment[index] = []
+            per_segment[index].extend(facts)
+            dropped_per_segment[index] += dropped
+            suspect_per_segment[index] += suspect
+        if unplaceable:
+            raise FactExtractionFailed(
+                f"batch Stage-1 returned {unplaceable}/{len(extracted)} "
+                f"unplaceable entries for {lanlan_name!r} (fail_closed caller)"
+            )
+        if not extracted:
+            # 空数组 = 模型对整批的结论是"没有值得记的事实"，每段都算已答复。
+            per_segment = [[] for _ in segments]
+        if any(facts is None for facts in per_segment):
+            missing = [
+                i + 1 for i, facts in enumerate(per_segment) if facts is None
+            ]
             logger.warning(
-                f"[FactStore] {lanlan_name}: 批抽取丢弃 {dropped}/"
-                f"{len(extracted)} 条畸形或归属不明的输出（fail-closed，不猜段）"
+                f"[FactStore] {lanlan_name}: 批抽取输出缺段 {missing}（共 "
+                f"{len(segments)} 段）——按失败保留重试，绝不当成「本段无事实」"
             )
 
         results: list[dict] = []
-        for segment, segment_facts in zip(segments, per_segment):
-            if not segment_facts:
-                results.append({'status': 'ok', 'created': []})
-                continue
-            try:
-                created = await self._apersist_new_facts(
-                    lanlan_name,
-                    segment_facts,
-                    subject=segment.get('subject'),
-                    speaker_provenance=self._speaker_provenance_of(segment),
+        for position, (segment, segment_facts) in enumerate(
+            zip(segments, per_segment), start=1,
+        ):
+            dropped = dropped_per_segment[position - 1]
+            suspect = suspect_per_segment[position - 1]
+            if segment_facts is None:
+                results.append(
+                    {'status': 'failed', 'created': [], 'dropped': dropped}
                 )
-            except Exception as exc:
-                logger.error(
-                    f"[FactStore] {lanlan_name}: 批抽取第 "
-                    f"{len(results) + 1} 段持久化失败（其余段不受连累）: {exc}"
-                )
-                results.append({'status': 'failed', 'created': []})
                 continue
-            results.append({'status': 'ok', 'created': created})
+            if dropped:
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: 批抽取第 {position} 段丢弃 "
+                    f"{dropped} 条无内容的垃圾条目（归属由段对象给定，"
+                    f"丢弃不损失内容）"
+                )
+            status = 'ok'
+            if suspect:
+                # 有看不懂但攥着文字的条目：本段报 failed 让调用方保留桶。
+                # 认出来的那些照常落盘——重试会把它们重新抽一遍，SHA-256
+                # 去重兜住重复，而万一重试一直失败，起码这些不会跟着丢。
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: 批抽取第 {position} 段有 "
+                    f"{suspect} 条形状看不懂但带文字的条目——按失败保留重试"
+                )
+                status = 'failed'
+            created: list[dict] = []
+            if segment_facts:
+                try:
+                    created = await self._apersist_new_facts(
+                        lanlan_name,
+                        segment_facts,
+                        subject=segment.get('subject'),
+                        speaker_provenance=self._speaker_provenance_of(segment),
+                        expected_subject_generation=(
+                            segment_generations[position - 1]
+                        ),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"[FactStore] {lanlan_name}: 批抽取第 "
+                        f"{position} 段持久化失败（其余段不受连累）: {exc}"
+                    )
+                    results.append(
+                        {'status': 'failed', 'created': [], 'dropped': dropped}
+                    )
+                    continue
+            results.append(
+                {'status': status, 'created': created, 'dropped': dropped}
+            )
         return results
 
     # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；
@@ -865,8 +2290,30 @@ class FactStore:
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
+        expected_subject_generation: int | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
+            memory_subject = coerce_subject(subject)
+            if (
+                memory_subject is not None
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or (
+                        expected_subject_generation is not None
+                        and self._subject_forget_generation(
+                            lanlan_name, memory_subject,
+                        ) != expected_subject_generation
+                    )
+                )
+            ):
+                logger.info(
+                    f"[FactStore] {lanlan_name}: 丢弃撤回期间完成的 scoped "
+                    f"fact extraction ({memory_subject.key}/"
+                    f"{memory_subject.scope})"
+                )
+                return []
             return await self._apersist_new_facts_locked(
                 lanlan_name,
                 extracted,
@@ -884,10 +2331,21 @@ class FactStore:
         subject: MemorySubject | dict,
     ) -> list[dict]:
         """Persist already extracted facts for an explicitly scoped adapter request."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("apersist_scoped_facts requires an explicit subject")
+        # Capture before waiting for the per-character persistence lock. If
+        # a queued tombstone close wins that lock first, its generation bump
+        # must still invalidate this request even though the active marker is
+        # gone by the time persistence enters its critical section.
+        expected_subject_generation = self._subject_forget_generation(
+            lanlan_name, memory_subject,
+        )
         return await self._apersist_new_facts(
             lanlan_name,
             extracted,
-            subject=subject,
+            subject=memory_subject,
+            expected_subject_generation=expected_subject_generation,
         )
 
     async def _apersist_new_facts_locked(
@@ -919,9 +2377,10 @@ class FactStore:
         corroboration is irreversible.
 
         ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
-        trust'} 子集），盖在本批每条**新建** fact 上。只落字段不接消费
-        （信赖度阶段一）；来自调用方（scoped_history 请求段），绝不读
-        extracted 元素里的同名键——LLM 输出无法伪造它。
+        trust'} 子集），只盖在本批**新建 user_observation** fact 上；AI
+        disclosure 不冒用参与者 provenance。字段只落盘不接消费（信赖度
+        阶段一）；来自调用方（scoped_history 请求段），绝不读 extracted
+        元素里的同名键——LLM 输出无法伪造它。
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -1092,7 +2551,16 @@ class FactStore:
                         hit = facts_by_id.get(fid)
                         if hit is None:
                             hit = (await _aarchived_by_id()).get(fid)
-                        if hit is None or not entry_matches_subject(hit, memory_subject):
+                        # subject 时间归档的行（subject_archived_at 标记）不算
+                        # 去重障碍：subject 复活时重述的旧事实必须能落新
+                        # active fact——归档行已退出召回与渲染，挡住重述等于
+                        # 让这条信息永久不可见。absorbed 归档行（无标记）仍
+                        # 照旧挡重复。
+                        if (
+                            hit is None
+                            or hit.get('subject_archived_at')
+                            or not entry_matches_subject(hit, memory_subject)
+                        ):
                             continue
                         same_subject_seen += 1
                         if same_subject_seen > 3:
@@ -1189,7 +2657,7 @@ class FactStore:
             }
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
-            if speaker_provenance:
+            if speaker_provenance and source == 'user_observation':
                 # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
                 label = str(speaker_provenance.get('speaker_label') or '').strip()
                 if label:
@@ -1495,7 +2963,18 @@ class FactStore:
         if not budgeted_observations:
             return []
         obs_text = "\n".join(line for _, line in budgeted_observations)
-        prompt = get_signal_detection_prompt(get_global_language()) \
+        locale_text = "\n".join(
+            truncate_to_tokens(
+                f.get('text', '') or '',
+                EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+            )
+            for f in new_facts
+        )
+        prompt_lang = detect_prompt_language_with_ascii_fallback(
+            locale_text,
+            ui_language=get_global_language_full(),
+        )
+        prompt = get_signal_detection_prompt(prompt_lang) \
             .replace('{NEW_FACTS}', new_facts_text) \
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \
             .replace('{LANLAN_NAME}', lanlan_name)
@@ -1774,12 +3253,18 @@ class FactStore:
         ``speaker_label`` is forwarded to the extraction prompt — see
         :meth:`_allm_extract_facts`.
 
-        ``speaker_provenance``: stamped onto每条新建 fact（speaker_label /
-        speaker_trust，信赖度阶段一只落字段）。与 ``speaker_label`` 分开传：
-        后者影响 prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——
-        那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
-        决定是否给本参数。
+        ``speaker_provenance``: stamped onto新建 user_observation fact
+        （speaker_label / speaker_trust，信赖度阶段一只落字段）；AI
+        disclosure 保持独立来源。与 ``speaker_label`` 分开传：后者影响
+        prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
+        "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定
+        是否给本参数。
         """  # noqa: DOCSTRING_CJK
+        memory_subject = coerce_subject(subject)
+        expected_subject_generation = (
+            self._subject_forget_generation(lanlan_name, memory_subject)
+            if memory_subject is not None else None
+        )
         extracted = await self._allm_extract_facts(
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
@@ -1812,6 +3297,7 @@ class FactStore:
         return await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
+            expected_subject_generation=expected_subject_generation,
         )
 
     # ── external import state (sidecar) ──────────────────────────────
@@ -2346,6 +3832,13 @@ class FactStore:
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
+        prompt_lang = _detect_fact_extraction_prompt_language(
+            self._messages_locale_text(
+                messages,
+                roles=frozenset({'ai', 'assistant'}),
+            ),
+            ui_language=get_global_language_full(),
+        )
 
         # Known pool 段渲染：按 importance DESC 排（最重要的在最前，给 LLM
         # 最强信号）。cap 已经在 caller 端做过，这里不重复。
@@ -2359,7 +3852,7 @@ class FactStore:
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
         prompt = (
-            get_fact_extraction_ai_aware_prompt(get_global_language_full())
+            get_fact_extraction_ai_aware_prompt(prompt_lang)
             .replace('{CONVERSATION}', conversation_text)
             .replace('{KNOWN_POOL}', known_block)
             .replace('{LANLAN_NAME}', lanlan_name)
@@ -2515,30 +4008,175 @@ class FactStore:
     async def amark_signal_processed(self, name: str, fact_ids: list[str]) -> None:
         await asyncio.to_thread(self.mark_signal_processed, name, fact_ids)
 
+    def _recheck_mem(self) -> tuple[dict, threading.Lock]:
+        """Return the recheck failure mirror and its guard, creating them once.
+
+        Lazy rather than ``__init__``-only because several call sites build a
+        ``FactStore`` through ``object.__new__``, which never runs ``__init__``;
+        a plain instance attribute would make those instances raise
+        ``AttributeError`` the moment the recheck path touches the mirror.
+        Creation is serialised by a module-level lock — the thing that has to be
+        protected here is precisely the window in which the instance has no lock
+        of its own yet.
+        """
+        mem = self._recheck_attempts_mem
+        guard = self._recheck_mem_guard
+        if mem is not None and guard is not None:
+            return mem, guard
+        with _RECHECK_MEM_BOOTSTRAP:
+            if self._recheck_attempts_mem is None:
+                # 赋到实例上（不是 class 上）：镜像必须是 per-instance，否则会变成
+                # 跨实例 / 跨 pytest 用例的单例。
+                self._recheck_attempts_mem = {}
+            if self._recheck_mem_guard is None:
+                self._recheck_mem_guard = threading.Lock()
+            return self._recheck_attempts_mem, self._recheck_mem_guard
+
+    def _note_recheck_attempt(
+        self, name: str, fid: str, *, base: dict | None,
+    ) -> tuple[int, str]:
+        """Record one recheck failure in the in-process mirror; returns (n, at).
+
+        The mirror stores the failure timestamp as well as the count on
+        purpose: ``cooldown_elapsed(None, …)`` returns True, so a count-only
+        mirror would let the dead-letter self-heal branch re-admit the entry on
+        the very next round — the breaker would look implemented and still
+        never bite.
+
+        On first entry for a fact the count resumes from the on-disk column so
+        a restart does not reset the budget to zero.
+
+        Concurrency contract: writers always replace an entry wholesale
+        (``per_char[fid] = {...}``) instead of mutating its fields in place, so
+        the lock-free reader in ``arecheck_one_legacy_fact`` can never observe a
+        half-written entry. Keep it that way.
+
+        No entry cap, unlike ``_abump_synth_backoff``'s 64: that map is keyed by
+        content-derived synth keys (unbounded key space), this one by fact id
+        (bounded by facts.json rows, which the archive sweep itself caps). A cap
+        here would evict entries already frozen at MAX and un-freeze them.
+        """
+        stamp = datetime.now().isoformat()
+        mem, guard = self._recheck_mem()
+        with guard:
+            per_char = mem.setdefault(name, {})
+            prev = per_char.get(fid)
+            if prev is not None:
+                n = safe_int_field(prev, 'n') + 1
+            else:
+                n = (safe_int_field(base, 'recheck_attempts') if base else 0) + 1
+            per_char[fid] = {"n": n, "at": stamp}
+        return n, stamp
+
+    def _clear_recheck_attempt(self, name: str, fid: str) -> None:
+        """Drop a fact's failure record after it migrates successfully.
+
+        Dual of ``_note_recheck_attempt``, mirroring
+        ``ReflectionEngine._aclear_synth_backoff``: without it the mirror would
+        only ever grow, and a migrated fact carrying a stale failure count is
+        unexplainable state even though the schema filter already excludes it.
+        """
+        mem = self._recheck_attempts_mem
+        if not mem:
+            return
+        _, guard = self._recheck_mem()
+        with guard:
+            mem.get(name, {}).pop(fid, None)
+
+    def _recheck_budget_open(self, mem_entry: dict | None, fact: dict) -> bool:
+        """Whether this legacy fact may still consume a recheck slot.
+
+        The in-process mirror wins over the two on-disk columns. When
+        facts.json cannot be written (read-only FS / permissions / maintenance
+        mode) ``recheck_attempts`` stays 0 and ``last_recheck_attempt_at`` stays
+        ``None`` on disk forever, and ``cooldown_elapsed(None, …)`` returns
+        True — reading disk only would mean neither the breaker nor the
+        self-heal gate ever bites, which is exactly the situation both were
+        added for.
+
+        ``safe_int_field`` rather than ``(… or 0)``: both columns come out of
+        hand-editable JSON, and a dirty value like ``""`` / ``[]`` would raise
+        inside the comparison and stall the whole drain loop.
+
+        A mirror entry always carries both fields — ``_note_recheck_attempt``
+        is its only writer and stamps ``at`` on every write — so this reads
+        ``at`` straight, with no on-disk fallback that could never run.
+        """
+        from config import (
+            MEMORY_RECHECK_MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        )
+        from memory.temporal import cooldown_elapsed
+
+        if mem_entry is not None:
+            attempts = safe_int_field(mem_entry, 'n')
+            last_at = mem_entry.get('at')
+        else:
+            attempts = safe_int_field(fact, 'recheck_attempts')
+            last_at = fact.get('last_recheck_attempt_at')
+        if attempts < MEMORY_RECHECK_MAX_ATTEMPTS:
+            return True
+        # 时间自愈：达上限的 entry 过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 后放行
+        # 一次 probe，让一次性写盘/网络故障恢复后自愈。
+        return cooldown_elapsed(last_at, MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS)
+
     def _bump_fact_recheck_attempts(self, name: str, fid: str, reason: str) -> None:
-        """Increment the given fact's ``recheck_attempts`` counter.
+        """Increment the given fact's recheck failure count.
 
         Once failures reach the ``MEMORY_RECHECK_MAX_ATTEMPTS`` cap, the
         candidates filter excludes the fact so the loop gives its slot to other
-        v1 entries. Directly mutates the cached list + save_facts (mirroring the
-        mark_absorbed style; save_facts takes its own lock).
-        Best-effort — save failures don't raise.
+        v1 entries.
+
+        The count lands in the in-process mirror first, then best-effort on
+        disk. The old version only wrote facts.json — the very file whose
+        failure it was supposed to count — so in the read-only FS / permission
+        case named in ``arecheck_one_legacy_fact``'s comment the counter never
+        moved (``save_facts`` even evicts the cache on failure, discarding the
+        just-incremented value), and the same fact was re-judged, at the cost of
+        one LLM call, every 30s forever.
+
+        A failed persist logs at WARNING — "the mirror moved but the disk
+        counter did not" has no other visible signal in production — except
+        under maintenance mode, an expected write ban that the archive block in
+        ``save_facts`` also keeps at debug.
         """
+        target: dict | None = None
         try:
-            current = self.load_facts(name)
-            for f in current:
-                if f.get('id') == fid:
-                    f['recheck_attempts'] = (f.get('recheck_attempts') or 0) + 1
-                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
-                    f['last_recheck_attempt_at'] = datetime.now().isoformat()
-                    self.save_facts(name)
-                    logger.debug(
-                        f"[Recheck-Fact] {name} {fid}: "
-                        f"recheck_attempts → {f['recheck_attempts']} ({reason})"
-                    )
-                    return
+            for f in self.load_facts(name):
+                if isinstance(f, dict) and f.get('id') == fid:
+                    target = f
+                    break
         except Exception as e:
-            logger.debug(f"[Recheck-Fact] {name} {fid}: bump attempts 失败: {e}")
+            logger.debug(f"[Recheck-Fact] {name} {fid}: 读 facts 失败: {e}")
+        if target is None and fid not in (self._recheck_attempts_mem or {}).get(name, {}):
+            # fact 已经不在库里、镜像里也没有历史计数 → 无需记账。
+            return
+        # 1) 先更新进程内镜像（纯内存，不可能失败）。
+        attempts, stamp = self._note_recheck_attempt(name, fid, base=target)
+        if target is not None:
+            # 2) 再尽力持久化。写失败只 WARN 不抛 —— 镜像已经生效，熔断不受影响；
+            #    对齐 ReflectionEngine._asave_synth_backoff 的口径。
+            target['recheck_attempts'] = attempts
+            # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+            target['last_recheck_attempt_at'] = stamp
+            try:
+                self.save_facts(name)
+            except MaintenanceModeError as e:
+                # 维护态是预期的写禁止（save_facts 顶部的闸），不是故障。对齐
+                # save_facts 里的归档分支：那里也把维护态从 WARNING 降到 debug，
+                # 否则维护期间每一次重判失败都在日志里报一条"落盘失败"。
+                logger.debug(
+                    f"[Recheck-Fact] {name} {fid}: 维护态跳过 recheck_attempts "
+                    f"落盘（进程内镜像仍生效）: {e}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[Recheck-Fact] {name} {fid}: recheck_attempts 落盘失败"
+                    f"（进程内镜像仍生效，熔断不受影响）: {e}"
+                )
+        logger.debug(
+            f"[Recheck-Fact] {name} {fid}: recheck_attempts → {attempts} ({reason})"
+        )
 
     async def arecheck_one_legacy_fact(self, name: str) -> bool:
         """Schema v1 → v2 slow recheck (processes only 1 fact per call).
@@ -2552,31 +4190,23 @@ class FactStore:
         Returns: True when one fact was processed successfully; False when no
         candidate was found or processing failed.
         """
-        from config import (
-            MEMORY_RECHECK_MAX_ATTEMPTS,
-            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
-        )
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,
             compute_event_timestamps as _compute_ts,
-            cooldown_elapsed,
         )
 
         facts = await self.aload_facts(name)
+        # 无锁单次读：写侧整体替换条目 dict，读者不会看到半写状态
+        # （契约见 _note_recheck_attempt）。
+        recheck_mem = (self._recheck_attempts_mem or {}).get(name, {})
         candidates = [
             f for f in facts
             if (f.get('schema_version') or 1) < MEMORY_SCHEMA_VERSION_CURRENT
             # 重试预算：LLM 持续失败的 entry 累计达上限后不再阻塞队列
             # (Codex review on PR #1316 P2，对齐 reflection 同样写法)。
-            # 时间自愈：达上限的 entry 过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
-            # 后放行一次 probe，让一次性写盘/网络故障恢复后自愈。
-            and (
-                (f.get('recheck_attempts') or 0) < MEMORY_RECHECK_MAX_ATTEMPTS
-                or cooldown_elapsed(
-                    f.get('last_recheck_attempt_at'),
-                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
-                )
+            and self._recheck_budget_open(
+                recheck_mem.get(_readable_fact_id(f)), f,
             )
         ]
         if not candidates:
@@ -2693,6 +4323,7 @@ class FactStore:
             )
             return False
         if ok:
+            self._clear_recheck_attempt(name, fid)
             logger.info(
                 f"[Recheck-Fact] {name} {fid}: v1→v{MEMORY_SCHEMA_VERSION_CURRENT} "
                 f"when={event_when_raw}"

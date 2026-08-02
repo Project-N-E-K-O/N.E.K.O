@@ -21,6 +21,7 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 
 from ._shared import logger, router
 
+import asyncio
 import os
 import json
 import tempfile
@@ -28,8 +29,14 @@ from datetime import datetime
 from pathlib import Path
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_bytes, atomic_write_json
 from utils.config_manager import get_reserved
+
+from .content_gate import ContentFolderBusy, claim_partial_writer
+
+
+class _PreviewContentFolderMissing(RuntimeError):
+    """The accepted content folder disappeared before its worker could write."""
 
 
 WORKSHOP_CARD_FACE_SIZE = (768, 1024)
@@ -472,6 +479,34 @@ def _ensure_workshop_card_face_meta(config_mgr, chara_name: str, item: dict) -> 
     return True
 
 
+def _write_claimed_preview_image(
+    content_folder: str,
+    preview_image_path: str,
+    image_bytes: bytes,
+) -> None:
+    """Atomically persist content-folder preview bytes under local ownership."""
+    with claim_partial_writer(content_folder, purpose='上传预览图'):
+        if not os.path.isdir(content_folder):
+            raise _PreviewContentFolderMissing(
+                '内容目录已被清理，请重新开始上传'
+            )
+        atomic_write_bytes(preview_image_path, image_bytes)
+
+
+def _write_preview_image(
+    content_folder: str | None,
+    preview_image_path: str,
+    image_bytes: bytes,
+) -> None:
+    """Persist preview bytes in one worker, claiming content folders only."""
+    if content_folder:
+        _write_claimed_preview_image(
+            content_folder, preview_image_path, image_bytes
+        )
+    else:
+        atomic_write_bytes(preview_image_path, image_bytes)
+
+
 @router.post('/upload-preview-image')
 async def upload_preview_image(request: Request):
     """
@@ -534,15 +569,26 @@ async def upload_preview_image(request: Request):
             temp_folder = tempfile.gettempdir()
             preview_image_path = os.path.join(temp_folder, f'preview{file_extension}')
         
-        # 保存文件到指定路径
-        with open(preview_image_path, 'wb') as f:
-            f.write(await file.read())
+        # 先在异步上传对象上读完，再把完整的原子落盘单元交给 worker。
+        image_bytes = await file.read()
+        await asyncio.to_thread(
+            _write_preview_image,
+            content_folder,
+            preview_image_path,
+            image_bytes,
+        )
         
         return JSONResponse({
             "success": True,
             "file_path": preview_image_path,
             "message": "文件上传成功"
         })
+    except (ContentFolderBusy, _PreviewContentFolderMissing) as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "message": str(e),
+        }, status_code=409)
     except Exception as e:
         logger.error(f"上传预览图片时出错: {e}")
         return JSONResponse({

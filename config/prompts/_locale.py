@@ -35,8 +35,9 @@ Three axes cover every prompt module's needs:
 ``keep_traditional``
     Whether ``zh-TW`` survives as its own key. Pass ``False`` for prompt
     modules whose dicts have no ``'zh-TW'`` templates yet — collapsing to
-    Simplified there is what keeps Traditional Chinese users on a Chinese
-    prompt instead of dropping to the English fallback baked into ``_loc``.
+    Simplified there keeps the module's intended locale key explicit. The
+    shared ``_loc`` resolver independently uses Simplified Chinese as its
+    safety fallback when a Chinese variant key is absent.
     Flip a module to ``True`` in the same change that adds its ``'zh-TW'``
     templates, never before. See issue #2500.
 
@@ -142,3 +143,20 @@ def normalize_prompt_locale(
     if resolved == "zh-TW":
         return "zh-TW" if keep_traditional else simplified
     return resolved
+
+
+def prompt_locale_fallback_key(language: Any) -> str:
+    """Return the generic fallback family for a prompt locale.
+
+    Chinese locale tags and aliases fall back to the Simplified Chinese
+    family. Missing non-Chinese variants and unknown locales fall back to
+    English. The caller remains responsible for selecting the concrete
+    Simplified key used by its table (usually ``zh``, occasionally ``zh-CN``).
+    """
+    normalized = normalize_prompt_locale(
+        language,
+        default="en",
+        simplified="zh",
+        keep_traditional=True,
+    )
+    return "zh" if normalized in {"zh", "zh-TW"} else "en"

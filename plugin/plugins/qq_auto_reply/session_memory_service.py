@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from .display_name_service import QQDisplayNameService
 from .pipeline_models import is_synthetic_source
 
 import asyncio
 import time
 from typing import Any
+
+
+_CURRENT_TURN_AI_ROW = object()
 
 
 
@@ -44,6 +48,8 @@ class QQSessionMemoryService:
     # "波数 × 单发超时"推导的等待上限在最坏情形下与逐成员时代一致。
     # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
+    # speaker_label 的长度上限，与 /scoped_history 路由的校验同一个数。
+    MEMBER_LABEL_MAX_CHARS = 64
     SCOPED_HISTORY_TIMEOUT_SECONDS = 30.0
     # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
     # · 短档（idle sweep）：放弃只是多等一个 sweep 周期，下轮自然重来。
@@ -235,6 +241,9 @@ class QQSessionMemoryService:
             return ()
         return (
             int(user_data.get("last_group_digest_index", 0) or 0),
+            # participant 结算的进展同样按游标衡量：少了它，关机 while
+            # 循环会把"私聊批次上限打断"误判成零进展而提前放弃。
+            int(user_data.get("last_participant_digest_index", 0) or 0),
             len(user_data.get("group_member_memory_messages") or {}),
             len(user_data.get("pending_settle_buckets") or {}),
         )
@@ -339,7 +348,8 @@ class QQSessionMemoryService:
     def record_synthetic_prompt_rows(
         self, session_key: str, history_len_before: int,
         *, include_ai_rows: bool = False,
-    ) -> None:
+        replacement_user_texts: list[str] | None = None,
+    ) -> int:
         """Synthetic control turns (rapid-fire flush / proactive speech) run
         the full pipeline, appending a fabricated human instruction row to
         the shared history. Record those rows into the exclusion list so
@@ -350,17 +360,9 @@ class QQSessionMemoryService:
             session_key
         )
         if not isinstance(user_data, dict):
-            return
-        if not user_data.get("is_group"):
-            # 私聊 pre_buffer 场景：第二条起的真实用户消息只活在 flush
-            # prompt 里（handle_private_message 在 pre_buffer 后直接返回，
-            # 不进正常历史）——排除整行会让私聊长期记忆丢真实输入。包装
-            # 噪声交提取端消化，完整性优先。群路径的成员消息每条都走过
-            # 正常轮次、已在历史里，照常排除合成行。
-            return
+            return 0
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
-        rows = user_data.setdefault("undelivered_draft_rows", [])
         baseline = int(history_len_before)
         measured_on = getattr(history_len_before, "session", None)
         if measured_on is not None and measured_on is not session:
@@ -369,6 +371,72 @@ class QQSessionMemoryService:
             # 行就当成真人发言进了 scoped 记忆。新会话里现有的行全是本轮
             # 写的，从头算即可。
             baseline = 0
+
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") == "participant"
+        ):
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            # Private pre-buffer inputs after the first one never traverse the
+            # pipeline. Replace the fabricated rapid-fire human control row
+            # in-place with those real inputs, preserving their position
+            # before the generated AI reply. This avoids both prompt-wrapper
+            # leakage and loss of the actual participant messages.
+            human_indexes = [
+                index
+                for index in range(max(0, baseline), len(history))
+                if getattr(history[index], "type", "") == "human"
+            ]
+            texts = [
+                str(value).strip()
+                for value in (replacement_user_texts or [])
+                if str(value).strip()
+            ]
+            inserted = 0
+            if human_indexes and texts:
+                try:
+                    from langchain_core.messages import HumanMessage
+
+                    replacement_rows = [
+                        HumanMessage(content=value) for value in texts
+                    ]
+                except Exception:
+                    from types import SimpleNamespace
+
+                    replacement_rows = [
+                        SimpleNamespace(type="human", content=value)
+                        for value in texts
+                    ]
+                first_index = human_indexes[0]
+                for index in reversed(human_indexes[1:]):
+                    del history[index]
+                history[first_index:first_index + 1] = replacement_rows
+                inserted = len(replacement_rows)
+            else:
+                for index in human_indexes:
+                    msg = history[index]
+                    if not any(existing is msg for existing in rows):
+                        rows.append(msg)
+            if include_ai_rows:
+                for msg in history[max(0, baseline):]:
+                    if (
+                        getattr(msg, "type", "") == "ai"
+                        and not any(existing is msg for existing in rows)
+                    ):
+                        rows.append(msg)
+                # _run_session_generation stamped the OFF-era boundary before
+                # this synthetic control row was expanded into multiple real
+                # inputs. Move the floor past every newly materialized row so
+                # none can be collected after participant memory is re-enabled.
+                user_data["nonconsent_history_end"] = max(
+                    int(user_data.get("nonconsent_history_end", 0) or 0),
+                    len(history),
+                )
+            return inserted
+
+        if not user_data.get("is_group"):
+            return 0
+        rows = user_data.setdefault("undelivered_draft_rows", [])
         for msg in history[max(0, baseline):]:
             msg_type = getattr(msg, "type", "")
             if msg_type != "human" and not (
@@ -379,8 +447,11 @@ class QQSessionMemoryService:
                 continue
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
+        return 0
 
-    def record_tail_undelivered_ai_row(self, session_key: str) -> None:
+    def record_tail_undelivered_ai_row(
+        self, session_key: str, ai_row: Any = _CURRENT_TURN_AI_ROW,
+    ) -> None:
         """Mark the newest ai row as undelivered after a FAILED direct send.
 
         History-backed replies that bypass the buffer (synthetic turns, or
@@ -391,10 +462,30 @@ class QQSessionMemoryService:
         user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
             session_key
         )
-        if not isinstance(user_data, dict) or not user_data.get("is_group"):
+        if not isinstance(user_data, dict):
+            return
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") != "participant"
+        ):
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
+        if ai_row is not _CURRENT_TURN_AI_ROW:
+            # Direct delivery carries the originating row identity across its
+            # await. A later generation may already have replaced the mutable
+            # session-wide pointer by the time this send fails.
+            row = ai_row
+            if row is None or not any(existing is row for existing in history):
+                return
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            if not any(existing is row for existing in rows):
+                rows.append(row)
+            provisional = user_data.get("provisional_draft_rows", [])
+            user_data["provisional_draft_rows"] = [
+                existing for existing in provisional if existing is not row
+            ]
+            return
         if "current_turn_ai_row" in user_data:
             # 生成路径记下了本轮到底写没写 ai 行：按身份标，没写就什么都不
             # 标。扫"最新一条 ai"在本轮无行时会打到上一条已投递的回复上。
@@ -412,6 +503,49 @@ class QQSessionMemoryService:
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
             return
+
+    def record_provisional_ai_row(self, session_key: str, ai_row: Any) -> None:
+        """Fence an exact history row while direct delivery is in flight."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") != "participant"
+        ):
+            return
+        history = getattr(
+            user_data.get("session"), "_conversation_history", None,
+        ) or []
+        if ai_row is None or not any(existing is ai_row for existing in history):
+            return
+        for key in ("undelivered_draft_rows", "provisional_draft_rows"):
+            rows = user_data.setdefault(key, [])
+            if not any(existing is ai_row for existing in rows):
+                rows.append(ai_row)
+
+    def settle_provisional_ai_row(
+        self, session_key: str, ai_row: Any, *, delivered: bool,
+    ) -> None:
+        """Resolve a direct-send fence without relying on a mutable tail."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict) or ai_row is None:
+            return
+        provisional = user_data.get("provisional_draft_rows", [])
+        user_data["provisional_draft_rows"] = [
+            existing for existing in provisional if existing is not ai_row
+        ]
+        undelivered = user_data.setdefault("undelivered_draft_rows", [])
+        if delivered:
+            user_data["undelivered_draft_rows"] = [
+                existing for existing in undelivered if existing is not ai_row
+            ]
+        elif not any(existing is ai_row for existing in undelivered):
+            undelivered.append(ai_row)
 
     def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
         """Keep bounded, actor-attributed user turns for optional member memory."""
@@ -467,7 +601,17 @@ class QQSessionMemoryService:
             custom_nickname or getattr(context, "user_nickname", "") or ""
         ).strip()
         labels = user_data.setdefault("group_member_memory_labels", {})
-        labels[sender_id] = f"{nickname}({sender_id})" if nickname else sender_id
+        # "(sender_id)" 后缀是这条 label 的**保底可追溯部分**，必须活过截断：
+        # 昵称既可能是群名片（用户自己改）也可能是后台设的备注名；后者的
+        # 新写入已经校验，但历史配置仍可能含超长/结构字符。先按剩余额度裁
+        # 昵称再拼后缀，否则一个 64 字以上的历史昵称会把后缀整个挤掉——
+        # 服务端中和完只剩空串，那一批会拖住同批其他成员反复重试。
+        suffix = f"({sender_id})"
+        nickname_budget = self.MEMBER_LABEL_MAX_CHARS - len(suffix)
+        if nickname and nickname_budget > 0:
+            labels[sender_id] = f"{nickname[:nickname_budget]}{suffix}"
+        else:
+            labels[sender_id] = sender_id[:self.MEMBER_LABEL_MAX_CHARS]
         messages = buckets.setdefault(sender_id, [])
         messages.append({
             "role": "user",
@@ -521,6 +665,29 @@ class QQSessionMemoryService:
                 self.plugin._spawn_memory_sync_task(
                     self._drain_member_buckets(session_key),
                     session_key=session_key,
+                )
+            return 0
+        if user_data.get("private_memory_mode") == "participant":
+            # 私聊 participant 会话绝不进 legacy /cache（那是主人的语料）；
+            # 与群分支同构，这里只当调度点——积压过线时后台冲一次 scoped
+            # digest（复读守卫会把共享历史整段换掉，未落盘轮次当场消失，
+            # 与群 digest 同一根因同一治法）。必须放在下面的 memory_enabled
+            # 闸**之前**：participant 会话的 memory_enabled 为 True，落到
+            # 闸后就会继续走 legacy /cache 分支。
+            if not user_data.get("memory_enabled"):
+                return 0
+            self.prune_draft_row_refs(user_data)
+            session = user_data.get("session")
+            history = getattr(session, "_conversation_history", []) or []
+            backlog = len(history) - int(
+                user_data.get("last_participant_digest_index", 0) or 0
+            )
+            if backlog >= self.GROUP_DIGEST_BACKLOG_TRIGGER and not user_data.get(
+                "participant_digest_draining"
+            ):
+                user_data["participant_digest_draining"] = True
+                self.plugin._spawn_memory_sync_task(
+                    self._drain_participant_digest(session_key)
                 )
             return 0
         if not user_data.get("memory_enabled"):
@@ -610,6 +777,174 @@ class QQSessionMemoryService:
                 user_data.pop("group_digest_draining", None)
 
         await self.plugin._run_with_session_lock(session_key, _drain)
+
+    async def _drain_participant_digest(self, session_key: str) -> None:
+        """私聊 participant 会话的积压冲刷（对偶 _drain_group_digest）。
+
+        同一根因：复读守卫会把共享历史整段换成只剩系统消息，未落盘的
+        轮次当场消失；按积压线主动落盘把损失压到有界。整段在会话锁内跑，
+        与结算天然串行。"""
+        async def _drain() -> None:
+            user_data = self.plugin._user_sessions.get(session_key)
+            if not user_data:
+                return
+            try:
+                if (
+                    user_data.get("private_memory_mode") != "participant"
+                    or not user_data.get("memory_enabled")
+                ):
+                    return
+                if user_data.get("pending_disable_settle"):
+                    # opt-out 结算未完成：实时排空用的是旧游标、没有
+                    # cutoff 围栏，交转变/兜底任务按 cutoff 结算。
+                    return
+                if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                    "private_participant_memory_enabled", False,
+                ):
+                    # 写点前复检实时策略（对偶读侧）：OFF 之后不再推送。
+                    return
+                sender_id = str(user_data.get("sender_id") or "").strip()
+                her_name = user_data.get("her_name")
+                session = user_data.get("session")
+                history = getattr(session, "_conversation_history", []) or []
+                if not sender_id or not her_name or not history:
+                    return
+                # Generation and this drain use different locks. Freeze the
+                # authorized prefix before the first HTTP await so rows added
+                # after a concurrent opt-out cannot enter a later batch.
+                history_snapshot = list(history)
+                cursor = max(
+                    0, int(user_data.get("last_participant_digest_index", 0) or 0),
+                )
+                # 未授权边界地板（对偶 finalize / focus digest）：OFF 时代
+                # 的行不得被实时排空推上去。
+                cursor = max(
+                    cursor, int(user_data.get("nonconsent_history_end", 0) or 0),
+                )
+                if cursor > len(history):
+                    cursor = len(history)
+                    user_data["last_participant_digest_index"] = cursor
+                await self._settle_participant_digest_batches(
+                    user_data=user_data, sender_id=sender_id,
+                    her_name=her_name, reason="participant_digest_backlog",
+                    conversation_history=history_snapshot,
+                    last_participant_digest_index=cursor,
+                    # 在途草稿处停下（对偶群积压冲刷）：越过后草稿被真投递
+                    # 时，那条回复永远进不了 scoped 历史。
+                    stop_at_provisional=True,
+                )
+            except Exception as exc:
+                # 失败留待下一轮/idle 结算：游标停在最后一个成功批次。
+                self.plugin.logger.warning(
+                    f"[participant_digest_backlog] 私聊积压冲刷失败 "
+                    f"({session_key}): {exc}"
+                )
+            finally:
+                user_data.pop("participant_digest_draining", None)
+
+        await self.plugin._run_with_session_lock(session_key, _drain)
+
+    def _participant_speaker_label(
+        self, user_data: dict[str, Any], sender_id: str,
+    ) -> str:
+        """私聊对话方的 speaker_label（备注名 > 昵称 > 纯 QQ 号）。
+
+        与 record_group_member_turn 的组装规则严格同构："(sender_id)"
+        后缀是保底可追溯部分，必须活过截断——否则超长昵称会把后缀挤掉，
+        服务端中和完只剩空串。"""
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        custom_nickname = (
+            permission_mgr.get_nickname(sender_id) if permission_mgr else None
+        )
+        nickname = str(
+            custom_nickname or user_data.get("user_nickname") or ""
+        ).strip()
+        suffix = f"({sender_id})"
+        nickname_budget = self.MEMBER_LABEL_MAX_CHARS - len(suffix)
+        if nickname and nickname_budget > 0:
+            return f"{nickname[:nickname_budget]}{suffix}"
+        return str(sender_id)[:self.MEMBER_LABEL_MAX_CHARS]
+
+    async def _settle_participant_digest_batches(
+        self, *, user_data: dict[str, Any], sender_id: str, her_name: str,
+        reason: str, conversation_history: list,
+        last_participant_digest_index: int,
+        stop_at_provisional: bool = False,
+    ) -> bool:
+        """私聊 participant 历史的分批结算（对偶 _settle_group_digest_batches）。
+
+        与群 digest 的差异只在请求形状：私聊历史含 user（对方）与 ai
+        （角色）两种行，走 segments 批形状会把 ai 行也前缀成对方发言——
+        所以用 legacy 单发形状（speaker_label 只顶替 user 轮的渲染名），
+        并随请求带 speaker_trust / display_name（与群成员段同一组字段，
+        trust 形状一致是发言人信赖度阶段一的硬约束）。"""
+        digest_batches_left = 5
+        speaker_label = self._participant_speaker_label(user_data, sender_id)
+        display_name = QQDisplayNameService.display_name_from_label(
+            speaker_label, sender_id,
+        )
+        speaker_trust = self._speaker_trust_for(
+            sender_id, user_data.get("permission_level"),
+        )
+        subject = self.plugin.memory_bridge.participant_subject(sender_id)
+        while True:
+            if digest_batches_left <= 0:
+                self.plugin.logger.info(
+                    f"[{reason}] 私聊 {sender_id} 本轮结算达批次上限，"
+                    f"剩余待下一轮"
+                )
+                return False
+            digest_batches_left -= 1
+            scoped_messages, next_index = self._slice_group_history_batch(
+                conversation_history, last_participant_digest_index,
+                self.GROUP_HISTORY_MAX_MESSAGES,
+                user_data=user_data,
+                stop_at_provisional=stop_at_provisional,
+            )
+            if not scoped_messages:
+                if (
+                    stop_at_provisional
+                    and next_index < len(conversation_history)
+                    and any(
+                        row is conversation_history[next_index]
+                        for row in (
+                            user_data.get("provisional_draft_rows") or []
+                        )
+                    )
+                ):
+                    # Retained opt-out sessions must keep their marker/cutoff
+                    # until this in-flight reply's delivery is decided. A
+                    # successful empty result would consume the cutoff and
+                    # leave no later settlement owner for the delivered row.
+                    return False
+                if next_index > last_participant_digest_index:
+                    # 尾部全是被过滤的行：推进游标即可，无须发送。
+                    user_data["last_participant_digest_index"] = next_index
+                break
+            participant_extra: dict[str, Any] = {}
+            if display_name:
+                # 与群 digest 同约定：拿不到显示名就不带参。
+                participant_extra["display_name"] = display_name
+            result = await self.plugin.memory_bridge.post_scoped_memory_history(
+                her_name,
+                scoped_messages,
+                subject=subject,
+                speaker_label=speaker_label,
+                speaker_trust=speaker_trust,
+                timeout=30.0,
+                **participant_extra,
+            )
+            if result.get("status") == "error":
+                raise RuntimeError(
+                    result.get("message", "scoped participant history failed")
+                )
+            self.plugin.logger.info(
+                f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"
+                f"消息数: {len(scoped_messages)}"
+            )
+            user_data["last_participant_digest_index"] = next_index
+            last_participant_digest_index = next_index
+        return True
 
     async def _drain_member_buckets(self, session_key: str) -> None:
         """Flush member buckets that hit the cap, instead of dropping the
@@ -851,6 +1186,11 @@ class QQSessionMemoryService:
                         buckets=orphan_retry["snapshot"],
                         labels=orphan_retry["labels"],
                         require_consent=True,
+                        # 同 opt-out 结算：这是末次重试，失败就"就此丢失"
+                        # （下面那条 error 日志说的正是这个）。而且这些桶
+                        # 已经作为一批失败过一次——再打一次同样的包，一次
+                        # 传输抖动就能连着抹掉同样的 8 个人。
+                        isolate_segments=True,
                     )
                 except Exception as exc:
                     self.plugin.logger.error(
@@ -868,7 +1208,7 @@ class QQSessionMemoryService:
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
         reason: str, buckets: dict | None = None, labels: dict | None = None,
-        require_consent: bool = False,
+        require_consent: bool = False, isolate_segments: bool = False,
     ) -> list[str]:
         """Flush member buckets in packed batches (semaphore 4).
 
@@ -878,6 +1218,12 @@ class QQSessionMemoryService:
         与逐成员时代同一份"成功即弹、失败保留"契约，只是粒度从每人一次
         请求变成每批一次。抽取调用数从 O(发言人数) 降到 O(总消息数/批容
         量)；最坏（每桶都接近硬顶）退化回一桶一批，与旧形态同形。
+
+        ``isolate_segments``: 一桶一请求，放弃打包省下的那几次 LLM 调用。
+        只有 **失败即永久丢弃** 的调用方该开它——那里"整批一起失败"意味着
+        一次传输抖动同时抹掉 ≤8 个人（打包前是 1 个）。有重试的路径不用开：
+        整批失败只是让这 8 个人晚一轮，代价与 1 个人晚一轮同量级，而打包
+        省下的调用是每次 sweep 都在省的。
 
         Serial 8x30s used to hold the session lock ~4 min, exhausting the
         global message semaphore and never fitting the host shutdown kill
@@ -905,8 +1251,8 @@ class QQSessionMemoryService:
                         f"个成员发出前授权已撤销，按 fail-closed 丢弃"
                     )
                     return list(batch_senders)
-                segments = [
-                    {
+                def _member_segment(sender_id: str) -> dict[str, Any]:
+                    segment: dict[str, Any] = {
                         "messages": member_buckets.get(sender_id) or [],
                         "subject": (
                             self.plugin.memory_bridge.group_participant_subject(
@@ -920,7 +1266,18 @@ class QQSessionMemoryService:
                         # 随段落盘到该段抽出的每条 fact 上。
                         "speaker_trust": self._speaker_trust_for(sender_id),
                     }
-                    for sender_id in batch_senders
+                    # 显示名 = label 剥掉 "(sender_id)" 后缀的昵称本体
+                    # （persona 标题里 subject_id 已含数字 id，不重复）。
+                    # label 退化成纯 id 时不加键，标题回退裸 id 形态。
+                    display_name = QQDisplayNameService.display_name_from_label(
+                        member_labels.get(sender_id), sender_id,
+                    )
+                    if display_name:
+                        segment["display_name"] = display_name
+                    return segment
+
+                segments = [
+                    _member_segment(sender_id) for sender_id in batch_senders
                 ]
                 try:
                     # 外层再包一次墙钟上限：httpx 的 timeout= 是给 connect /
@@ -968,6 +1325,18 @@ class QQSessionMemoryService:
                         isinstance(segment_result, dict)
                         and segment_result.get("status") == "ok"
                     ):
+                        try:
+                            dropped = int(segment_result.get("dropped") or 0)
+                        except (TypeError, ValueError):
+                            dropped = 0
+                        if dropped:
+                            # 服务端丢的是**不承载内容**的垃圾条目（归属由
+                            # 段对象给定），所以照样 pop；记一行是为了让
+                            # "模型输出在变脏"在插件日志里留痕。
+                            self.plugin.logger.info(
+                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                                f"本次抽取丢弃了 {dropped} 条无内容条目"
+                            )
                         member_buckets.pop(sender_id, None)
                         # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
                         # 群会让 label 映射无限增长，而参与者名额是按 bucket
@@ -986,7 +1355,9 @@ class QQSessionMemoryService:
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
         self._enter_member_flush(user_data)
-        batches = self._pack_member_batches(member_buckets)
+        batches = self._pack_member_batches(
+            member_buckets, isolate_segments=isolate_segments,
+        )
         if not batches:
             self._finish_member_flush_generation(user_data)
             return []
@@ -999,8 +1370,13 @@ class QQSessionMemoryService:
             self._finish_member_flush_generation(user_data)
 
     @staticmethod
-    def _pack_member_batches(member_buckets: dict) -> list[list[str]]:
+    def _pack_member_batches(
+        member_buckets: dict, *, isolate_segments: bool = False,
+    ) -> list[list[str]]:
         """Greedy-pack sender buckets into batches of sender ids.
+
+        ``isolate_segments`` 把每批压到一段（= 打包前的形态），给"失败即
+        永久丢弃"的调用方用。
 
         每批：段数 ≤ SCOPED_HISTORY_BATCH_MAX_SEGMENTS、消息总量 ≤
         SCOPED_HISTORY_BATCH_MAX_MESSAGES（服务端同口径校验）。单桶硬顶
@@ -1015,6 +1391,9 @@ class QQSessionMemoryService:
             SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
         )
 
+        max_segments = (
+            1 if isolate_segments else SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+        )
         batches: list[list[str]] = []
         current: list[str] = []
         current_messages = 0
@@ -1024,7 +1403,7 @@ class QQSessionMemoryService:
             count = len(messages)
             if current and (
                 current_messages + count > SCOPED_HISTORY_BATCH_MAX_MESSAGES
-                or len(current) >= SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+                or len(current) >= max_segments
             ):
                 batches.append(current)
                 current = []
@@ -1035,21 +1414,39 @@ class QQSessionMemoryService:
             batches.append(current)
         return batches
 
-    def _speaker_trust_for(self, sender_id: str) -> float:
+    def _group_display_name(self, group_id: object) -> str | None:
+        """The group's human-readable name for scoped writes, or None.
+
+        防御性 getattr：合成测试的 plugin stub 未必装配 display_name
+        service；名字是装饰性元数据，拿不到就退化成不带（persona 保留
+        上次盖上的名字，自愈）。"""
+        service = getattr(self.plugin, "display_name_service", None)
+        if service is None:
+            return None
+        try:
+            return service.group_display_name(group_id)
+        except Exception:
+            return None
+
+    def _speaker_trust_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> float:
         """按权限等级派生的发言人信赖度初值（阶段一只落字段不接消费）。"""
         from config import (
             SPEAKER_TRUST_BY_PERMISSION_LEVEL,
             SPEAKER_TRUST_DEFAULT,
         )
 
-        permission_mgr = getattr(self.plugin, "permission_mgr", None)
-        try:
-            level = (
-                permission_mgr.get_permission_level(sender_id)
-                if permission_mgr is not None else "none"
-            )
-        except Exception:
-            level = "none"
+        level = permission_level
+        if level is None:
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            try:
+                level = (
+                    permission_mgr.get_permission_level(sender_id)
+                    if permission_mgr is not None else "none"
+                )
+            except Exception:
+                level = "none"
         return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
             level, SPEAKER_TRUST_DEFAULT,
         )
@@ -1148,6 +1545,14 @@ class QQSessionMemoryService:
                         reason="member_memory_disabled",
                         buckets=snapshot,
                         labels=current.get("pending_settle_labels") or {},
+                        # 这条路径**没有下一轮**：失败的桶按 opt-out 语义
+                        # 当场永久丢弃。打包让一次传输抖动的爆炸半径从
+                        # 1 个成员涨到整批（≤8），而它省下的那几次 LLM
+                        # 调用只在这个罕见的用户主动转变上省一次。一桶
+                        # 一请求把半径还原成打包前的样子；最坏用时
+                        # （2 波 × 30s = 60s）正是 SETTLE_JOIN_TIMEOUT_
+                        # LONG_SECONDS 当初按逐成员形态推出来的那个数。
+                        isolate_segments=True,
                     )
                     if failed:
                         self.plugin.logger.error(
@@ -1304,6 +1709,67 @@ class QQSessionMemoryService:
                 if not group_settled:
                     # 成员侧已经排空，群 digest 留给下一轮（游标精确）。
                     return False
+            elif user_data.get("private_memory_mode") == "participant":
+                # 私聊 participant 会话：以对方为主体的 scoped 结算，**绝不**
+                # 落到下面的 legacy /process——那是主人的私聊语料。
+                cutoff = user_data.get("participant_opt_out_cutoff", None)
+                consumed_cutoff = cutoff
+                if cutoff is not None:
+                    # opt-out 截止点（对偶群分支）：只结算开关翻 OFF 时刻
+                    # 之前的历史。
+                    conversation_history = conversation_history[:max(0, int(cutoff))]
+                sender_id = str(user_data.get("sender_id") or "").strip()
+                if not sender_id:
+                    # 防御性 fail-closed：没有 sender 就没有合法的写入目标。
+                    # 宁可丢弃这段缓冲（走正常 pop+close 收尾），也不能把
+                    # 它写进任何别的语料域。
+                    self.plugin.logger.error(
+                        f"[{reason}] participant 会话 {session_key} 缺 "
+                        f"sender_id，按 fail-closed 丢弃未结算缓冲"
+                    )
+                else:
+                    last_participant_digest_index = max(
+                        0, int(user_data.get("last_participant_digest_index", 0)),
+                    )
+                    # 未授权边界地板 + cutoff 豁免（对偶群分支）：cutoff
+                    # 之后记下的边界属于下一个时代，套到本窗口会把整段已
+                    # 授权前缀当作已处理而丢弃。
+                    nonconsent_floor = int(
+                        user_data.get("nonconsent_history_end", 0) or 0
+                    )
+                    if cutoff is not None and nonconsent_floor > int(cutoff):
+                        nonconsent_floor = 0
+                    last_participant_digest_index = max(
+                        last_participant_digest_index, nonconsent_floor,
+                    )
+                    if last_participant_digest_index > len(conversation_history):
+                        # 历史被重复守卫重置后旧游标越界：钳到当前长度并
+                        # 回写（对偶群分支），绝不回退。
+                        last_participant_digest_index = len(conversation_history)
+                        user_data["last_participant_digest_index"] = (
+                            last_participant_digest_index
+                        )
+                    try:
+                        participant_settled = (
+                            await self._settle_participant_digest_batches(
+                                user_data=user_data, sender_id=sender_id,
+                                her_name=her_name, reason=reason,
+                                conversation_history=conversation_history,
+                                last_participant_digest_index=(
+                                    last_participant_digest_index
+                                ),
+                                stop_at_provisional=retain_session,
+                            )
+                        )
+                    except Exception as digest_error:
+                        self.plugin.logger.error(
+                            f"[{reason}] 私聊 {sender_id} scoped 结算失败: "
+                            f"{digest_error}"
+                        )
+                        participant_settled = False
+                    if not participant_settled:
+                        # 游标停在最后一个成功批次，留给下一轮重试。
+                        return False
             else:
                 last_synced_index = int(user_data.get("last_synced_index", 0))
                 remaining_messages = self.conversation_slice_to_memory_messages(
@@ -1335,8 +1801,12 @@ class QQSessionMemoryService:
             # compare-and-pop：分批结算窗口长达数分钟，期间第二次 OFF 盖章
             # 会覆写 cutoff——那个更新的 cutoff 本次并未消费，删掉它会让
             # 排队中的第二个 OFF 结算失去 opt-out 围栏。
-            if user_data.get("group_opt_out_cutoff") == consumed_cutoff:
-                user_data.pop("group_opt_out_cutoff", None)
+            cutoff_key = (
+                "group_opt_out_cutoff" if user_data.get("is_group")
+                else "participant_opt_out_cutoff"
+            )
+            if user_data.get(cutoff_key) == consumed_cutoff:
+                user_data.pop(cutoff_key, None)
             return True
         self.plugin._user_sessions.pop(session_key, None)
         try:
@@ -1374,11 +1844,18 @@ class QQSessionMemoryService:
                     # 尾部全是被过滤的行：推进游标即可，无须发送。
                     user_data["last_group_digest_index"] = next_index
                 break
+            # 拿不到群名就不带参（而不是传 None）：优雅退化的同时保持旧
+            # 调用形状——display_name 只在真有名字时出现。
+            digest_extra: dict[str, Any] = {}
+            group_display_name = self._group_display_name(group_id)
+            if group_display_name:
+                digest_extra["display_name"] = group_display_name
             result = await self.plugin.memory_bridge.post_scoped_memory_history(
                 her_name,
                 scoped_messages,
                 subject=self.plugin.memory_bridge.group_subject(group_id),
                 timeout=30.0,
+                **digest_extra,
             )
             if result.get("status") == "error":
                 raise RuntimeError(result.get("message", "scoped history failed"))
@@ -1554,9 +2031,44 @@ class QQSessionMemoryService:
 
         async def _invalidate() -> None:
             user_data = self.plugin._user_sessions.get(session_key)
-            if user_data and user_data.get("memory_enabled"):
-                finalized = await self.finalize_user_memory_session(session_key, reason="permission_change")
+            buffer_service = getattr(
+                self.plugin, "reply_buffer_service", None,
+            )
+            if buffer_service is not None:
+                # Permission mutation has already happened. Kill every delayed
+                # reply from the old permission era before either settlement
+                # or the retained-retry branch can leave it deliverable.
+                buffer_service.cancel_pending(session_key, user_data)
+            if user_data and (
+                user_data.get("memory_enabled")
+                or user_data.get("pending_disable_settle")
+            ):
+                retrying_disabled_settlement = bool(
+                    user_data.get("pending_disable_settle")
+                    and not user_data.get("memory_enabled")
+                )
+                if retrying_disabled_settlement:
+                    # The cutoff is the authorization boundary; temporarily
+                    # enable the finalizer exactly as discard/shutdown do.
+                    user_data["memory_enabled"] = True
+                try:
+                    finalized = await self.finalize_user_memory_session(
+                        session_key, reason="permission_change",
+                    )
+                finally:
+                    survivor = self.plugin._user_sessions.get(session_key)
+                    if retrying_disabled_settlement and survivor is user_data:
+                        user_data["memory_enabled"] = False
                 if finalized:
+                    return
+                if user_data.get("private_memory_mode") == "participant":
+                    # A failed participant settlement retains unsent history
+                    # for the next retry. Popping/closing here would make the
+                    # failure irreversible and silently discard that history.
+                    self.plugin.logger.warning(
+                        f"参与者私聊结算失败，保留会话等待重试（{session_key}）"
+                    )
+                    user_data["pending_permission_discard"] = True
                     return
 
             user_data = self.plugin._user_sessions.pop(session_key, None)

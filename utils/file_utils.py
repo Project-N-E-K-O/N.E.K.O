@@ -621,7 +621,7 @@ _REPLACE_BUSY_WINERRORS = frozenset({5, 32})
 _REPLACE_RETRY_BACKOFF_S = (0.005, 0.01, 0.02, 0.04, 0.08)
 
 
-def _running_on_event_loop() -> bool:
+def running_on_event_loop() -> bool:
     """Whether this thread is currently inside a running asyncio event loop."""
     try:
         asyncio.get_running_loop()
@@ -641,7 +641,7 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
                 raise
             # 只在真的撞上 busy 之后才问「我是不是在循环上」：happy path 一条
             # 指令都不多。
-            if _running_on_event_loop():
+            if running_on_event_loop():
                 raise
         time.sleep(delay)
     os.replace(temp_path, target_path)
@@ -681,6 +681,30 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
         raise
 
 
+def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
+    """Atomically replace a binary file in the same directory."""
+    target_path = Path(path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_tmp_if_due(target_path)
+
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{_TMP_OWNER_TAG}",
+        suffix=".tmp",
+        dir=str(target_path.parent),
+    )
+
+    try:
+        with os.fdopen(fd, "wb") as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        _replace_with_busy_retry(temp_path, target_path)
+    except BaseException:
+        with suppress(OSError):
+            os.remove(temp_path)
+        raise
+
+
 def atomic_write_json(
     path: str | os.PathLike[str],
     data: Any,
@@ -698,6 +722,38 @@ def atomic_write_json(
         **json_kwargs,
     )
     atomic_write_text(path, content, encoding=encoding)
+
+
+def read_json_tolerating_replace(
+    path: str | os.PathLike[str],
+    *,
+    encoding: str = "utf-8",
+) -> Any:
+    """``read_json`` that rides out a concurrent ``os.replace`` on Windows.
+
+    The write side already backs off when the target is busy; this is the same
+    window seen from the reader. Without it a caller that swallows exceptions
+    turns a transient sharing violation into "the file is unreadable" and falls
+    back to defaults, which is far worse than waiting a few milliseconds.
+
+    Only the Windows "target is busy" codes are retried, the budget is the same
+    bounded one as the write side, and the final attempt re-raises the real
+    error rather than a wrapped one.
+    """
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            return read_json(path, encoding=encoding)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+            # 与写入侧同一条铁律：绝不在事件循环上 sleep。读路径尤其容易踩 ——
+            # get_workshop_path() 这类同步读就挂在 async handler 上。上环调用者
+            # 拿到的是「第一次就抛」，由调用方决定怎么降级（见
+            # ConfigManager.load_workshop_config 的 last-known-good 回落）。
+            if running_on_event_loop():
+                raise
+        time.sleep(delay)
+    return read_json(path, encoding=encoding)
 
 
 def read_json(path: str | os.PathLike[str], *, encoding: str = "utf-8") -> Any:

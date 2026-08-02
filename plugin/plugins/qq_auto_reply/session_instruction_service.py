@@ -10,7 +10,7 @@ from config.prompts.prompts_sys import (
     get_context_summary_ready,
 )
 from main_logic.core import apply_role_placeholders
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language, get_global_language_full
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
@@ -243,6 +243,7 @@ class QQSessionInstructionService:
         is_group: bool = False,
         group_id: Optional[str] = None,
         use_memory_context: Optional[bool] = None,
+        participant_memory: bool = False,
         address_user_by_name: bool = True,
         group_facing: bool = False,
         shared_group_session: bool = False,
@@ -256,7 +257,7 @@ class QQSessionInstructionService:
         except Exception:
             normalize_language_code = None
 
-        user_language = get_global_language()
+        user_language = get_global_language_full()
         short_language = (
             normalize_language_code(user_language, format="short")
             if normalize_language_code else user_language
@@ -278,9 +279,16 @@ class QQSessionInstructionService:
             lanlan_name=her_name,
             master_name=master_title,
         )
-        should_use_memory_context = (
-            (not is_group and permission_level == "admin")
-            if use_memory_context is None else bool(use_memory_context)
+        prompt_builder = getattr(self.plugin, "prompt_builder", None)
+        if prompt_builder is None:
+            # Lightweight callers/tests may construct the instruction service
+            # without the full plugin wiring; still reuse the canonical policy.
+            from .prompt_builder import QQPromptBuilder
+            prompt_builder = QQPromptBuilder(self.plugin)
+        should_use_memory_context = prompt_builder.should_use_memory_context(
+            is_group=is_group,
+            permission_level=permission_level,
+            requested=use_memory_context,
         )
 
         def t(key, default):
@@ -358,6 +366,7 @@ class QQSessionInstructionService:
             sender_id=core_sender_id,
             locale=user_language,
             used_member_subject_out=core_used_member,
+            participant_memory=participant_memory,
         )
         used_member_subject = bool(core_used_member)
         if core_memory_text:
@@ -580,6 +589,7 @@ class QQSessionInstructionService:
         sender_id: str = "",
         locale: str = "",
         used_member_subject_out: list | None = None,
+        participant_memory: bool = False,
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -616,6 +626,7 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,
+                    language=locale,
                 )
                 if not bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -625,8 +636,37 @@ class QQSessionInstructionService:
                     # 读后复检（对偶 _build_recalled_memory_text）：opt-out
                     # 落在 fetch 飞行期间时丢弃已读回的数据。
                     return ""
+            elif participant_memory:
+                # 私聊 participant 轮：subject 组装与 tool handler / 回落
+                # 召回共用 resolver（开关实时复检 + sender 规范化收口在它
+                # 那一处）。resolver fail-closed 返回 []，bridge 对空列表
+                # 直接返回空串——**绝不**落到下面的 legacy 分支：那是
+                # 主人的私聊 persona，交给非 admin 好友就是隐私泄漏。
+                from .memory_tool_service import (
+                    resolve_participant_recall_subjects,
+                )
+
+                subjects = resolve_participant_recall_subjects(
+                    self.plugin,
+                    memory_sender_id=str(sender_id or "").strip(),
+                )
+                memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
+                    her_name,
+                    subjects=subjects,
+                    language=locale,
+                )
+                if not bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "private_participant_memory_enabled", False,
+                    )
+                ):
+                    # 读后复检（对偶群分支）：opt-out 落在 fetch 飞行期间
+                    # 时丢弃已读回的数据。
+                    return ""
             else:
-                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
+                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(
+                    her_name,
+                )
             if not memory_context:
                 return ""
             # 走本地化静态层（与其余 prompt 段同一条解析路径）：裸 format

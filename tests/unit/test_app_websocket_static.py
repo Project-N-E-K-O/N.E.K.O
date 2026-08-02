@@ -256,28 +256,21 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
     assert "window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' })" in ready_branch
     assert "window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })" in source
 
-    # The hint is rendered by one function now, called both at build time and
-    # from the toggle's change handler -- it used to be computed once, so
-    # flipping the switch with the popup open left the previous text standing
-    # and the confirmation contradicted the choice just made.
-    hint_block = capture_source.split("function renderAsrHint() {", 1)[1].split(
-        "asrInput.addEventListener('change'",
-        1,
-    )[0]
-    assert "{ providerKey: S.independentAsrProvider || 'unknown' }" in hint_block
-    assert "asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));" in hint_block
-    assert hint_block.index("asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));") < hint_block.index(
-        "window.t(hintKey, hintParams)"
-    )
-    assert "provider: S.independentAsrProvider" not in hint_block
+    # The shared popover now owns the summary. It resolves the registry key to a
+    # display name, renders that value through the locale template, and refreshes
+    # from the toggle handler so the visible route never lags the user's choice.
+    summary_block = capture_source.split(
+        "function updateVoiceRecognitionUi() {", 1
+    )[1].split("function positionVoicePanel()", 1)[0]
+    assert "'microphone.independentAsrSummary'" in summary_block
+    assert "{ provider: provider }" in summary_block
+    assert "'microphone.voiceRecognitionDisabled'" in summary_block
+    assert "provider: S.independentAsrProvider" not in summary_block
 
-    # ...and the change handler actually re-renders it.
     change_handler = capture_source.split(
-        "asrInput.addEventListener('change', function () {", 1
-    )[1].split("window.appSettings.saveSettings", 1)[0]
-    assert "renderAsrHint();" in change_handler, (
-        "flipping the toggle must refresh the hint it confirms"
-    )
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    assert "updateVoiceRecognitionUi();" in change_handler
 
 
 def test_provider_names_cover_asr_registry_keys_in_all_locales():
@@ -312,42 +305,42 @@ def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():
         "en.json": (
             "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
             "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
-            "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
+            "{{providerKey}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
         ),
         "es.json": (
             "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
             "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
-            "{{provider}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
+            "{{providerKey}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
         ),
         "ja.json": (
             "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
             "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
-            "{{provider}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
+            "{{providerKey}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
         ),
         "ko.json": (
             "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 독립 ASR 설정을 확인한 다음 새 음성 세션을 시작하세요.",
             "다음 음성 세션부터 활성화되며, 사용할 수 없어도 Omni로 자동 전환되지 않습니다.",
-            "{{provider}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
+            "{{providerKey}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
         ),
         "pt.json": (
             "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Verifique a configuração do ASR independente e depois inicie uma nova sessão de voz.",
             "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
-            "{{provider}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
+            "{{providerKey}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
         ),
         "ru.json": (
             "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
             "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
-            "{{provider}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
+            "{{providerKey}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
         ),
         "zh-CN.json": (
             "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
             "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
-            "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
+            "{{providerKey}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
         ),
         "zh-TW.json": (
             "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
             "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
-            "{{provider}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
+            "{{providerKey}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
         ),
     }
 
@@ -493,19 +486,22 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("function markVoiceSettingsPending", 1)[0]
     toggle_block = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
-    assert "window.appSettings.saveSettings({ skipServerSync: true });" in toggle_block
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
-    assert "S.pendingSettingsSyncPromise = syncPromise;" in toggle_block
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    assert "persistVoiceSettingChange();" in toggle_block
+    assert "window.appSettings.saveSettings({ skipServerSync: true });" in persist_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
+    assert "S.pendingSettingsSyncPromise = syncPromise;" in persist_block
     # Completion clears the gate only when it still owns it (a newer toggle
     # may have replaced the pending promise meanwhile).
-    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in toggle_block
-    assert "S.pendingSettingsSyncPromise = null;" in toggle_block
+    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in persist_block
+    assert "S.pendingSettingsSyncPromise = null;" in persist_block
     # Fallback when the settings module does not expose syncSettingsToServer.
-    assert "window.appSettings.saveSettings();" in toggle_block
+    assert "window.appSettings.saveSettings();" in persist_block
 
     gate_block = websocket_source.split(
         "function ensureWebSocketOpen(timeoutMs = 5000)",
@@ -588,6 +584,28 @@ def test_start_session_payload_carries_independent_asr_handshake():
     assert 0 < attach_index - creation_index < 200
 
 
+def test_start_session_payload_carries_resource_optimization_handshake():
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    wrapper = websocket_source.split(
+        "function attachStartSessionHandshake(ws)",
+        1,
+    )[1].split("function connectWebSocket()", 1)[0]
+
+    assert "voiceInputResourceOptimizationAuthoritative: false," in state_source
+    assert "S.voiceInputResourceOptimizationAuthoritative === true" in wrapper
+    assert (
+        "msg.voice_input_resource_optimization_enabled = "
+        "S.voiceInputResourceOptimizationEnabled !== false;"
+    ) in wrapper
+    assert (
+        "_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')"
+        in settings_source
+    )
+    assert "S.voiceInputResourceOptimizationAuthoritative = true;" in settings_source
+
+
 def test_start_session_handshake_omitted_until_settings_hydrated():
     # On a fresh browser profile — or while the async conversation-settings
     # GET is still pending — S.independentAsrEnabled is only the boot default
@@ -626,7 +644,7 @@ def test_start_session_handshake_omitted_until_settings_hydrated():
 
 
 def test_settings_hydration_marked_on_server_merge_and_user_change():
-    # S.settingsHydrated must flip true on exactly the three authoritative
+    # S.settingsHydrated must flip true on authoritative settings evidence:
     # events, and never merely at boot:
     #   (1) the conversation-settings GET succeeded (server values merged);
     #   (2) the user explicitly changed a setting — the independent-ASR toggle
@@ -637,6 +655,8 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     #   (3) a cross-window independent-ASR flip arrived via the 'storage'
     #       listener — the originating window's user action, pinned by
     #       test_cross_window_asr_flip_marks_hydration_and_asr_dirty.
+    #   (4) a durable, explicit optimization decision survived a reload while
+    #       its server synchronization is still pending.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
 
@@ -677,11 +697,14 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     # syncSettingsToServer({ userInitiated: true }); the saveSettings call it
     # makes skips the internal server sync, so the direct call is the seam.
     toggle_handler = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(", 1)[0]
-    assert "S.independentAsrEnabled = asrInput.checked;" in toggle_handler
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_handler
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("function markVoiceSettingsPending", 1)[0]
+    assert "S.independentAsrEnabled = enabled;" in toggle_handler
+    assert "persistVoiceSettingChange();" in toggle_handler
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
     # Boot must NOT mark hydration: the first-launch initialization save goes
     # through saveSettings({ skipServerSync: true }) which bypasses
@@ -693,13 +716,18 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     )[1].split("} catch (error) {", 1)[0]
     assert "saveSettings({ skipServerSync: true });" in first_launch_block
     assert "S.settingsHydrated" not in first_launch_block
-    # And nothing else in loadSettings' synchronous body marks hydration
-    # before the async GET callback runs.
+    # The only synchronous load-time hydration is guarded by a durable pending
+    # optimization decision; ordinary boot defaults still cannot gain authority.
     sync_load_body = settings_source.split("function loadSettings()", 1)[1].split(
         "loadSettingsFromServer().then(serverResult => {",
         1,
     )[0]
-    assert "S.settingsHydrated" not in sync_load_body
+    assert sync_load_body.count("S.settingsHydrated = true;") == 1
+    assert "bootMeta.optimizationDecisionPendingSync" in sync_load_body
+    assert (
+        sync_load_body.index("bootMeta.optimizationDecisionPendingSync")
+        < sync_load_body.index("S.settingsHydrated = true;")
+    )
 
 
 def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
@@ -759,10 +787,13 @@ def test_user_toggle_during_get_failure_marks_hydration_posts_and_stamps():
 
     # The toggle's direct sync call is user-initiated and still POSTs.
     toggle_block = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("function markVoiceSettingsPending", 1)[0]
+    assert "persistVoiceSettingChange();" in toggle_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
     # saveSettings' full (non-skipServerSync) path is the other user seam —
     # the settings popup, subtitle toggles and chat-window toggles all route
@@ -1051,7 +1082,12 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
     )[0]
     assert "S.settingsHydrated = true;" in flip_gate
     assert "_dirtySettingsKeys.add('independentAsrEnabled');" in flip_gate
-    assert listener_block.count("S.settingsHydrated = true;") == 1
+    optimization_gate = listener_block.split(
+        "if (optimizationChangedByOtherWindow) {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "S.settingsHydrated = true;" in optimization_gate
+    assert listener_block.count("S.settingsHydrated = true;") == 2
     assert listener_block.count("_dirtySettingsKeys.add('independentAsrEnabled');") == 1
 
     # No POST from the receiving window: the originating window owns
@@ -1503,8 +1539,12 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           const resetPriorDecision = {
             writeId: Date.now() + 1000,
             writerId: 'server-before-reset',
-            value: true,
+            value: false,
           };
+          assert(
+            resetPriorDecision.value !== true,
+            'the pre-reset ASR decision must differ from the enabled reset default'
+          );
           const reset = makeContext(false, {
             success: true,
             settings: {},
@@ -1519,13 +1559,15 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             reset.S.slopFilterEnabled === true
               && reset.S.proactiveVisionEnabled === resetVisionDefault
-              && reset.S.independentAsrEnabled === false,
+              && reset.S.independentAsrEnabled === true
+              && reset.S.voiceInputResourceOptimizationEnabled === true,
             'an empty authoritative restore must reset stale local values to defaults: '
               + JSON.stringify({
                 slop: reset.S.slopFilterEnabled,
                 vision: reset.S.proactiveVisionEnabled,
                 visionDefault: resetVisionDefault,
                 asr: reset.S.independentAsrEnabled,
+                optimization: reset.S.voiceInputResourceOptimizationEnabled,
               })
           );
           assert(reset.postCalls.length === 1, 'the reset defaults must be written back once');
@@ -1535,7 +1577,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             ]
           );
           assert(
-            resetWritebackDecision.value === false
+            resetWritebackDecision.value === true
               && resetWritebackDecision.writeId
                 > resetPriorDecision.writeId,
             'a reset writeback must rebase the stale tuple onto the reset default'
@@ -1548,7 +1590,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             resetBody.slopFilterEnabled === true
               && resetBody.proactiveVisionEnabled === resetVisionDefault
-              && resetBody.independentAsrEnabled === false,
+              && resetBody.independentAsrEnabled === true
+              && resetBody.voiceInputResourceOptimizationEnabled === true,
             'the reset writeback must not repopulate the server with stale localStorage'
           );
           reset.postCalls[0].resolve(response(
@@ -1570,7 +1613,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             reset.store.get('project_neko_settings')
           );
           assert(
-            resetPersisted._sharedWriteMeta.asrDecision.value === false
+            resetPersisted._sharedWriteMeta.asrDecision.value === true
               && resetPersisted._sharedWriteMeta.serverRevision === 11,
             'a full-write success must adopt and rebroadcast the generated server ASR tuple'
           );
@@ -1594,7 +1637,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               'X-Conversation-Settings-ASR-Decision'
             ]
           );
-          resetRace.S.independentAsrEnabled = true;
+          resetRace.S.independentAsrEnabled = false;
           resetRace.mod.saveSettings({
             skipServerSync: true,
             explicitSharedKeys: ['independentAsrEnabled'],
@@ -1611,7 +1654,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             resetRace.store.get('project_neko_settings')
           )._sharedWriteMeta.asrDecision;
           assert(
-            resetToggleDecision.value === true
+            resetToggleDecision.value === false
               && resetToggleDecision.writeId
                 > resetRaceBaselineDecision.writeId,
             'a toggle during reset must mint above the rebased reset decision'
@@ -1623,7 +1666,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             {
               success: true,
               settings: {
-                independentAsrEnabled: false,
+                independentAsrEnabled: true,
                 slopFilterEnabled: true,
               },
               revision: 11,
@@ -1636,7 +1679,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           await tick();
           assert(
-            resetRace.S.independentAsrEnabled === true
+            resetRace.S.independentAsrEnabled === false
               && resetRace.postCalls.length === 2,
             'the older reset response must not overwrite the queued toggle'
           );
@@ -1647,7 +1690,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             ]
           );
           assert(
-            resetToggleBody.independentAsrEnabled === true
+            resetToggleBody.independentAsrEnabled === false
               && JSON.stringify(resetToggleHeader)
                 === JSON.stringify(resetToggleDecision),
             'the queued sync must persist the newer toggle tuple'
@@ -2642,7 +2685,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             ctx.S.focusModeEnabled === true
               && ctx.S.slopFilterEnabled === true
-              && ctx.S.independentAsrEnabled === false,
+              && ctx.S.independentAsrEnabled === true,
             'a partial reset response must materialize defaults without losing the edit'
           );
           const restoredLocal = JSON.parse(ctx.store.get('project_neko_settings'));
@@ -2805,8 +2848,12 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
+          const dispatchedEvents = [];
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
+            CustomEvent: class {
+              constructor(type) { this.type = type; }
+            },
             setInterval() { return 0; },
             clearInterval() {},
             setTimeout(fn, ms) {
@@ -2830,11 +2877,21 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
             },
           };
           sandbox.window = {
-            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appState: {
+              independentAsrEnabled: false,
+              independentAsrActive: true,
+              voiceChatActive: true,
+              voiceInputLifecycleState: 'active',
+              voiceSessionStartEpoch: 10,
+              voiceSettingsPendingUntilEpoch: null,
+              pendingVoiceRouteIndependentAsr: null,
+              settingsHydrated: false,
+            },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
             addEventListener(type, fn) { listeners.push({ type, fn }); },
             removeEventListener() {},
+            dispatchEvent(event) { dispatchedEvents.push(event.type); },
           };
           vm.createContext(sandbox);
           vm.runInContext(source, sandbox);
@@ -2843,6 +2900,7 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           return {
             postCalls,
             getCalls,
+            dispatchedEvents,
             S: sandbox.window.appState,
             fireStorage(newValue) {
               storage[0].fn({ key: 'project_neko_settings', newValue });
@@ -2862,6 +2920,12 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx.fireStorage(JSON.stringify({ independentAsrEnabled: true }));
           assert(ctx.S.independentAsrEnabled === true, 'the flip must be applied to S');
           assert(ctx.S.settingsHydrated === true, 'the flip must arm the start_session handshake stamp');
+          assert(ctx.S.voiceSettingsPendingUntilEpoch === 11, 'the flip must target the next voice-session epoch');
+          assert(ctx.S.pendingVoiceRouteIndependentAsr === true, 'the pending summary must preserve the active route');
+          assert(
+            ctx.dispatchedEvents.includes('neko:voice-settings-pending-changed'),
+            'the flip must notify an already-open microphone popover'
+          );
           assert(ctx.postCalls.length === 0, 'the receiving window must not POST (originating window owns persistence)');
 
           // The GET now resolves with the server value read BEFORE the other
@@ -2883,6 +2947,8 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx2.fireStorage(JSON.stringify({ independentAsrEnabled: false, mergeMessagesEnabled: true }));
           assert(ctx2.S.mergeMessagesEnabled === true, 'other shared keys must still sync across windows');
           assert(ctx2.S.settingsHydrated === false, 'no ASR flip means no hydration mark');
+          assert(ctx2.S.voiceSettingsPendingUntilEpoch === null, 'no flip means no pending voice-session marker');
+          assert(ctx2.dispatchedEvents.length === 0, 'no flip means no popover notification');
           assert(ctx2.postCalls.length === 0, 'a non-flip storage event must not POST either');
 
           ctx2.getCalls[0].resolve({
@@ -2932,7 +2998,7 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         "localStorage.setItem('project_neko_settings', JSON.stringify(settings))"
         not in settings_source
     )
-    assert settings_source.count("_writeSharedSettings(") == 3  # 1 def + 2 writes
+    assert settings_source.count("_writeSharedSettings(") == 4  # 1 def + 3 writes
     save_fn = _block_after(settings_source, "function saveSettings(options) {")
     assert "serverMerged ? [] : _collectExplicitSharedKeys(settings)" in save_fn
     assert "const serverMerged = !!(options && options.serverMerged);" in save_fn
@@ -3001,6 +3067,13 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "if (serverAuthoritative === true) return true;" in id_validator
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
     assert "knownKeyWritesPresent" in read_fn
+    optimization_reader = read_fn.split(
+        "optimizationDecision: (meta.optimizationDecision", 1
+    )[1].split("optimizationDecisionPendingSync:", 1)[0]
+    assert "_isValidAsrWriteId(" in optimization_reader
+    assert "meta.optimizationDecision.writeId," in optimization_reader
+    assert "Number.isInteger(meta.serverRevision)" in optimization_reader
+    assert "isFinite(meta.optimizationDecision.writeId)" not in optimization_reader
 
     listener_block = settings_source.split(
         "window.addEventListener('storage', function (event) {", 1
@@ -3062,7 +3135,7 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           if (!cond) throw new Error('ASSERT: ' + msg);
         }
 
-        function makeContext(initialSettings) {
+        function makeContext(initialSettings = null) {
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
@@ -3139,11 +3212,16 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
         const okPost = { ok: true, json: async () => ({ success: true }) };
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-        async function hydrateFromServer(ctx, settings) {
+        async function hydrateFromServer(ctx, settings, decisions = null) {
           assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
           ctx.getCalls[0].resolve({
             ok: true,
-            json: async () => ({ success: true, settings, telemetryBranch: null }),
+            json: async () => ({
+              success: true,
+              settings,
+              decisions: decisions || {},
+              telemetryBranch: null,
+            }),
           });
           await tick();
           await tick();
@@ -3157,8 +3235,15 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
         async function main() {
           // ---- Scenario 1: unrelated save from an UNHYDRATED window ----
           const receiver = makeContext();
-          await hydrateFromServer(receiver, { independentAsrEnabled: true });
+          await hydrateFromServer(receiver, {
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: false,
+          });
           assert(receiver.S.independentAsrEnabled === true, 'receiver merged the server ASR value');
+          assert(
+            receiver.S.voiceInputResourceOptimizationEnabled === false,
+            'receiver merged the server optimization value'
+          );
 
           const writer = makeContext();      // boot GET left pending -> unhydrated
           writer.win.mergeMessagesEnabled = true;
@@ -3169,11 +3254,19 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             staleParsed.independentAsrEnabled === false,
             'saveSettings still copies the ASR key into every snapshot (that is the trap)'
           );
+          assert(
+            staleParsed.voiceInputResourceOptimizationEnabled === true,
+            'saveSettings still copies the optimization key into every snapshot (that is the trap)'
+          );
           const receiverPostsBefore = receiver.postCalls.length;
           receiver.fireStorage(stalePayload);
           assert(
             receiver.S.independentAsrEnabled === true,
             'the hydrated ASR value must survive an unrelated save from an unhydrated window'
+          );
+          assert(
+            receiver.S.voiceInputResourceOptimizationEnabled === false,
+            'the hydrated optimization value must survive an unrelated save from an unhydrated window'
           );
           assert(
             receiver.S.mergeMessagesEnabled === true,
@@ -3194,6 +3287,10 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             staleMeta.changedKeys.indexOf('independentAsrEnabled') === -1,
             'an unrelated save must NOT declare the ASR key as user-changed'
+          );
+          assert(
+            staleMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') === -1,
+            'an unrelated save must NOT declare the optimization key as user-changed'
           );
           assert(staleMeta.hydrated === false, 'the writer had not merged the server settings yet');
 
@@ -3482,6 +3579,163 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             observer.S.focusModeEnabled === false,
             'a fresh recovery envelope must not outrank its older per-key provenance'
+          );
+
+          // ---- Scenario 11: a genuine optimization toggle still propagates ----
+          const optimizationWriter = makeContext();
+          await hydrateFromServer(optimizationWriter, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationWriter.S.voiceInputResourceOptimizationEnabled = false;
+          optimizationWriter.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayload = optimizationWriter.lastSharedWrite();
+          const optimizationMeta = JSON.parse(optimizationPayload)._sharedWriteMeta;
+          assert(
+            optimizationMeta.changedKeys.indexOf(
+              'voiceInputResourceOptimizationEnabled'
+            ) !== -1,
+            'a real optimization toggle must be declared explicitly'
+          );
+
+          const optimizationReceiver = makeContext();
+          await hydrateFromServer(optimizationReceiver, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationReceiver.fireStorage(optimizationPayload);
+          assert(
+            optimizationReceiver.S.voiceInputResourceOptimizationEnabled === false,
+            'a real optimization toggle must apply across windows'
+          );
+
+          // ---- Scenario 7: concurrent optimization toggles converge ----
+          // Each window writes before observing the other. Freshness against
+          // received writes cannot order either window's own pending choice;
+          // the per-key decision tuple must select the same winner on both.
+          const optimizationA = makeContext();
+          await hydrateFromServer(optimizationA, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationA.S.voiceInputResourceOptimizationEnabled = false;
+          optimizationA.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayloadA = optimizationA.lastSharedWrite();
+
+          const optimizationB = makeContext();
+          await hydrateFromServer(optimizationB, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: false,
+          });
+          optimizationB.S.voiceInputResourceOptimizationEnabled = true;
+          optimizationB.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayloadB = optimizationB.lastSharedWrite();
+
+          const parsedA = JSON.parse(optimizationPayloadA);
+          const parsedB = JSON.parse(optimizationPayloadB);
+          const decisionA = parsedA._sharedWriteMeta.optimizationDecision;
+          const decisionB = parsedB._sharedWriteMeta.optimizationDecision;
+          assert(decisionA && decisionB, 'each explicit optimization write must carry its decision tuple');
+          const aWins = decisionA.writeId > decisionB.writeId
+            || (
+              decisionA.writeId === decisionB.writeId
+              && decisionA.writerId > decisionB.writerId
+            );
+          const winningValue = aWins
+            ? parsedA.voiceInputResourceOptimizationEnabled
+            : parsedB.voiceInputResourceOptimizationEnabled;
+
+          optimizationA.fireStorage(optimizationPayloadB);
+          optimizationB.fireStorage(optimizationPayloadA);
+          assert(
+            optimizationA.S.voiceInputResourceOptimizationEnabled === winningValue,
+            'window A must converge on the winning optimization choice'
+          );
+          assert(
+            optimizationB.S.voiceInputResourceOptimizationEnabled === winningValue,
+            'window B must converge on the winning optimization choice'
+          );
+
+          // ---- Scenario 8: a real return to the restored value is fresh ----
+          const restoredDecision = {
+            writeId: 1,
+            writerId: 'restored-writer',
+            value: false,
+          };
+          const rebound = makeContext({
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'restored-writer',
+              changedKeys: [
+                'independentAsrEnabled',
+                'voiceInputResourceOptimizationEnabled',
+              ],
+              asrDecision: restoredDecision,
+              optimizationDecision: restoredDecision,
+              optimizationDecisionPendingSync: false,
+            },
+          });
+          await hydrateFromServer(rebound, {
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: true,
+          }, {
+            independentAsrEnabled: {
+              writeId: 2,
+              writerId: 'server-winner',
+              value: true,
+            },
+          });
+          assert(
+            rebound.S.independentAsrEnabled === true
+              && rebound.S.voiceInputResourceOptimizationEnabled === true,
+            'server decisions must apply before testing a return to the restored value'
+          );
+          rebound.S.independentAsrEnabled = false;
+          rebound.S.voiceInputResourceOptimizationEnabled = false;
+          rebound.mod.saveSettings({ skipServerSync: true });
+          const reboundMeta = JSON.parse(
+            rebound.lastSharedWrite()
+          )._sharedWriteMeta;
+          assert(
+            reboundMeta.asrDecision.writeId === reboundMeta.writeId
+              && reboundMeta.asrDecision.writerId === reboundMeta.writerId,
+            'returning to a restored ASR value is a fresh user decision'
+          );
+          assert(
+            reboundMeta.optimizationDecision.writeId === reboundMeta.writeId
+              && reboundMeta.optimizationDecision.writerId === reboundMeta.writerId,
+            'returning to a restored optimization value is a fresh user decision'
+          );
+
+          // ---- Scenario 9: an invalid optimization decision id cannot poison
+          // later local choices by permanently outranking the browser clock.
+          const poisonedOptimization = makeContext({
+            voiceInputResourceOptimizationEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'poisoned-writer',
+              changedKeys: ['voiceInputResourceOptimizationEnabled'],
+              optimizationDecision: {
+                writeId: Number.MAX_SAFE_INTEGER,
+                writerId: 'poisoned-writer',
+                value: false,
+              },
+              optimizationDecisionPendingSync: false,
+            },
+          });
+          poisonedOptimization.S.voiceInputResourceOptimizationEnabled = true;
+          poisonedOptimization.mod.saveSettings({ skipServerSync: true });
+          const recoveredOptimizationMeta = JSON.parse(
+            poisonedOptimization.lastSharedWrite()
+          )._sharedWriteMeta;
+          assert(
+            recoveredOptimizationMeta.optimizationDecision
+              && recoveredOptimizationMeta.optimizationDecision.value === true
+              && recoveredOptimizationMeta.optimizationDecision.writeId
+                === recoveredOptimizationMeta.writeId,
+            'invalid optimization decision ids must not block a fresh local choice'
           );
 
           console.log('HARNESS_OK');
@@ -3967,6 +4221,197 @@ def test_never_settling_get_posts_only_dirty_keys_harness():
     result = _run_settings_node_harness(harness)
     assert result.returncode == 0, (
         "never-settling-GET dirty-only harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_unsynced_optimization_decision_survives_reload_until_posted_harness():
+    """A persisted explicit choice stays authoritative until its POST succeeds."""
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+        const optimizationKey = 'voiceInputResourceOptimizationEnabled';
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext(initialSnapshot) {
+          let stored = initialSnapshot ? JSON.stringify(initialSnapshot) : null;
+          const postCalls = [];
+          const getCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) {
+                return key === 'project_neko_settings' ? stored : null;
+              },
+              setItem(key, value) {
+                if (key === 'project_neko_settings') stored = value;
+              },
+              removeItem() {},
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: {
+              independentAsrEnabled: true,
+              settingsHydrated: false,
+              independentAsrAuthoritative: false,
+              voiceInputResourceOptimizationEnabled: true,
+              voiceInputResourceOptimizationAuthoritative: false,
+            },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            getCalls,
+            postCalls,
+            S: sandbox.window.appState,
+            mod: sandbox.window.appSettings,
+            snapshot() { return JSON.parse(stored); },
+          };
+        }
+
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+
+        async function main() {
+          // This is a snapshot written by the previous PR head: it records the
+          // explicit decision but predates the durable pending-sync marker.
+          const legacyPendingSnapshot = {
+            [optimizationKey]: false,
+            _sharedWriteMeta: {
+              writeId: 41,
+              writerId: 'window-a',
+              changedKeys: [optimizationKey],
+              hydrated: true,
+              asrAuthoritative: false,
+              optimizationDecision: {
+                writeId: 41,
+                writerId: 'window-a',
+                value: false,
+              },
+            },
+          };
+
+          // If the boot GET also fails, pre-merge sync must still retry the
+          // durable decision. `_pickDirtySettings()` reads only the pending
+          // set, so restoring just dirty membership would produce no POST.
+          const offline = makeContext(legacyPendingSnapshot);
+          offline.getCalls[0].resolve({ ok: false });
+          await tick();
+          await tick();
+          const offlineSync = offline.mod.syncSettingsToServer();
+          await tick();
+          assert(
+            offline.postCalls.length === 1,
+            'failed boot GET must not forget the pending optimization POST'
+          );
+          assert(
+            JSON.parse(offline.postCalls[0].body)[optimizationKey] === false,
+            'dirty-only retry must carry the durable optimization choice'
+          );
+          offline.postCalls[0].resolve(okPost);
+          await offlineSync;
+
+          const ctx = makeContext(legacyPendingSnapshot);
+          assert(ctx.S[optimizationKey] === false, 'boot must load the local choice');
+          assert(ctx.S.settingsHydrated === true, 'pending choice must hydrate the handshake');
+          assert(
+            ctx.S.voiceInputResourceOptimizationAuthoritative === true,
+            'pending choice must be authoritative for the next start handshake'
+          );
+
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { [optimizationKey]: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctx.S[optimizationKey] === false,
+            'stale server GET must not overwrite the unsynced local choice'
+          );
+
+          const sync = ctx.mod.syncSettingsToServer();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'pending choice must be POSTed after reload');
+          assert(
+            JSON.parse(ctx.postCalls[0].body)[optimizationKey] === false,
+            'POST must carry the pending local choice'
+          );
+          ctx.postCalls[0].resolve(okPost);
+          await sync;
+          const syncedSnapshot = ctx.snapshot();
+          assert(
+            syncedSnapshot._sharedWriteMeta.optimizationDecisionPendingSync === false,
+            'successful POST must durably clear the pending marker'
+          );
+
+          // Once synchronization is durable, a later reload may accept newer
+          // server truth instead of pinning the old local choice forever.
+          const reloaded = makeContext(syncedSnapshot);
+          reloaded.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { [optimizationKey]: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            reloaded.S[optimizationKey] === true,
+            'synced decision must no longer block server truth on a later reload'
+          );
+
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "unsynced-optimization-reload harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
@@ -5167,21 +5612,21 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     assert "typeof meta.writerId === 'string' ? meta.writerId : ''" in read_fn
 
     # The comparison is (writeId, writerId) against the local decision.
-    outranks = settings_source.split("function _asrWriteOutranksLocalChoice(", 1)[
+    outranks = settings_source.split("function _settingWriteOutranksLocalChoice(", 1)[
         1
     ].split("\n    }", 1)[0]
     # Ordering is on the DECISION that produced the value, not on the id of the
     # write carrying it: a monotone dirty key makes every later unrelated save
     # re-declare the ASR key explicit with a fresh id, which would outrank a
     # genuinely newer toggle elsewhere (no race required).
-    assert "decision.writeId > _lastAsrDecision.writeId" in outranks
-    assert "(decision.writerId || '') > _lastAsrDecision.writerId" in outranks
+    assert "decision.writeId > localDecision.writeId" in outranks
+    assert "(decision.writerId || '') > localDecision.writerId" in outranks
     # A write with neither a decision tuple nor an explicit declaration is an
     # incidental copy and must never outrank a local choice.
     assert "if (!decision) return false;" in outranks
     # The decision must be DERIVED (tuple, else an explicit declaration), never
     # taken as the incoming write itself -- that is the bug being fixed.
-    assert "const decision = meta.asrDecision" in outranks
+    assert "const decision = meta[decisionKey]" in outranks
     assert "const decision = meta;" not in outranks
 
     # A window's OWN explicit write must be recorded, or it has nothing to
@@ -5189,8 +5634,10 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     write_fn = settings_source.split("function _writeSharedSettings(", 1)[1].split(
         "\n    }", 1
     )[0]
-    assert "_nextAsrDecisionWriteId(ownMeta.writeId)" in write_fn
-    assert "_noteAsrDecision(" in write_fn
+    asr_note = write_fn.split("_noteAsrDecision(", 1)[1].split(");", 1)[0]
+    assert "_nextAsrDecisionWriteId(ownMeta.writeId)" in asr_note
+    assert "ownMeta.writerId" in asr_note
+    assert "snapshot.independentAsrEnabled" in asr_note
 
     # Refusing authority alone is not enough: applySharedRuntimeSettings copies
     # independentAsrEnabled unconditionally, so the losing write must also be
@@ -5239,7 +5686,7 @@ def test_blocked_route_refuses_to_open_the_microphone():
     start_fn = capture_source.split("async function startMicCapture() {", 1)[1]
     head = start_fn.split("const _mic = micButton();", 1)[0]
     assert "S.voiceInputRouteBlocked === true" in head
-    assert "return;" in head
+    assert "return false;" in head
 
     # A refused start must unwind the starting-voice UI rather than throw --
     # throwing would replace the accurate ASR toast with a generic failure.
@@ -5359,6 +5806,74 @@ def test_auto_restart_does_not_claim_success_on_a_blocked_route():
     assert "resetSessionButton(); if (_rsB) _rsB.disabled = false;" in restart
 
 
+def test_auto_restart_unwinds_a_cancelled_microphone_start():
+    # startMicCapture returns false for an ownership cancellation. The restart's
+    # backend session has already been accepted by then, so it must enter the
+    # common teardown without showing a generic failure toast or continuing to
+    # the floating-control/restartComplete success path.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    restart = websocket_source.split("await sessionStartPromise;", 1)[1].split(
+        "} catch (error) {", 1
+    )[0]
+    restart_code = _code_only(restart)
+    await_marker = "microphoneStarted = await window.startMicCapture();"
+    cancellation_marker = "if (microphoneStarted !== true) {"
+    success_marker = "window.syncFloatingMicButtonState(true)"
+    assert await_marker in restart_code
+    assert cancellation_marker in restart_code
+    assert restart_code.index(await_marker) < restart_code.index(cancellation_marker)
+    assert restart_code.index(cancellation_marker) < restart_code.index(success_marker)
+    assert "microphoneStartCancelled.microphoneStartCancelled = true;" in restart_code
+    assert "throw microphoneStartCancelled;" in restart_code
+
+    catch = websocket_source.split("} catch (error) {", 1)[1].split(
+        "}, 7500);", 1
+    )[0]
+    catch_code = _code_only(catch)
+    assert "error && error.microphoneStartCancelled" in catch_code
+    assert "if (!isMicrophoneStartCancelled" in catch_code
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in catch_code
+    assert "window.syncFloatingMicButtonState(false)" in catch_code
+
+
+def test_microphone_switch_requires_a_live_committed_replacement():
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    select_fn = _code_only(
+        _block_after(capture_source, "async function selectMicrophone(deviceId) {")
+    )
+    await_marker = "const microphoneStarted = await startMicCapture();"
+    success_marker = "if (microphoneStarted === true) {"
+    retry_marker = "const latestSelectionNeedsRetry = ("
+    assert "while (true) {" in select_fn
+    assert await_marker in select_fn
+    assert success_marker in select_fn
+    assert retry_marker in select_fn
+    assert select_fn.index(await_marker) < select_fn.index(success_marker)
+    assert select_fn.index(success_marker) < select_fn.index(retry_marker)
+    retry_condition = select_fn.split(retry_marker, 1)[1].split(");", 1)[0]
+    assert (
+        "microphoneSelectionGeneration !== selectionGenerationForRestart"
+        in retry_condition
+    )
+    assert "micStartGeneration === expectedRestartGeneration" in retry_condition
+    assert "S.voiceInputRouteBlocked !== true" in retry_condition
+    assert select_fn.index(retry_marker) < select_fn.index(
+        "await window.startScreenSharing();"
+    )
+
+    start_fn = _code_only(
+        _block_after(capture_source, "async function startMicCapture() {")
+    )
+    assert "let microphoneSelectionGeneration = 0;" in capture_source
+    assert "microphoneSelectionGeneration += 1;" in capture_source
+    assert len(re.findall(r"S\.selectedMicrophoneId\s*=(?!=)", capture_source)) == 1, (
+        "all microphone-selection writes must go through the generation-tracked helper"
+    )
+    assert start_fn.count("if (hasLiveCommittedMicrophonePipeline()) {") == 2
+    assert start_fn.count("S.isRecording = false;") >= 2
+    assert start_fn.count("window.isRecording = false;") >= 2
+
+
 def test_in_flight_microphone_start_is_cancellable():
     # Codex P2. S.isRecording only flips at the END of startAudioWorklet, after
     # getUserMedia() and audioWorklet.addModule() have both awaited, so every
@@ -5387,10 +5902,21 @@ def test_in_flight_microphone_start_is_cancellable():
 
     # ...and the commit is gated on it.
     worklet = _block_after(
-        capture_source, "async function startAudioWorklet(mediaStream, startToken) {"
+        capture_source,
+        "async function startAudioWorklet(\n"
+        "        mediaStream,\n"
+        "        startToken,\n"
+        "        selectedMicrophoneIdAtStart,\n"
+        "        microphoneSelectionGenerationAtStart\n"
+        "    ) {",
     )
     assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
+    assert "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart" in worklet
+    assert (
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+        in worklet
+    )
     # TWO gates on that token, and both are load-bearing. The entry gate stops
     # an attempt that was superseded while still in getUserMedia from running
     # the old-pipeline teardown below it, which would close the WINNER's
@@ -5398,6 +5924,12 @@ def test_in_flight_microphone_start_is_cancellable():
     assert worklet.count("startToken !== micStartGeneration") == 2, (
         "expected an entry gate and a commit gate on the start token"
     )
+    assert worklet.count(
+        "S.selectedMicrophoneId !== selectedMicrophoneIdAtStart"
+    ) == 2, "expected both gates to enforce microphone-selection ownership"
+    assert worklet.count(
+        "microphoneSelectionGeneration !== microphoneSelectionGenerationAtStart"
+    ) == 2, "expected both gates to preserve intermediate selection changes"
     assert worklet.index("superseded before opening") < worklet.index(
         "await previousContext.close()"
     ), "the entry gate must precede the old-pipeline teardown it protects"
@@ -5426,9 +5958,13 @@ def test_in_flight_microphone_start_is_cancellable():
     # before the token gate, where a loser whose getUserMedia settled last
     # could take the slot and then null it out from under the winner), so the
     # handoff goes through the local binding.
+    assert "const selectedMicrophoneIdAtStart = S.selectedMicrophoneId;" in start_code_only
+    compact_start_code = "".join(start_code_only.split())
     assert (
-        "const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);"
-        in start_code_only
+        "constmicStartCommitted=awaitstartAudioWorklet("
+        "ownStream,micStartToken,selectedMicrophoneIdAtStart,"
+        "microphoneSelectionGenerationAtStart);"
+        in compact_start_code
     )
     assert "if (!micStartCommitted) {" in start_code_only
     # ...and the bail happens before every success-path side effect.

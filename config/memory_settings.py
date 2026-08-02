@@ -208,6 +208,21 @@ SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
 # 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
 # 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
 SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+# 每条消息进入批抽取 prompt 前的正文上限。与 recent 压缩的单条口径一致：
+# 500 token，超限时保留头尾、用 locale 对应的可见标记替换中段。
+SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS = 500
+# 整批只给消息正文 8000 token。仅做单条 500 token 闸时，200 条仍可能达到
+# 100k token，足以超过部分 summary 模型上下文并拖过插件侧 30s 超时。总闸
+# 超限时按“剩余预算 / 剩余消息数”公平分配；短消息按原文计费，省下的额度
+# 继续给后面的消息，避免按请求顺序贪心导致尾段完全拿不到正文。
+SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS = 8000
+# 段首标记里那截一次性 token 的字节数（token_hex → 2 倍长度的十六进制）。
+# 它防的是"群成员在自己的消息里伪造 [SEGMENT n | speaker: 别人]"：批模板
+# 恰恰告诉模型段首就是归属依据，伪造成功 = 把自己的内容写进别人的 subject
+# 并借到别人的 speaker_trust。攻击者的消息在 nonce 生成之前就写死了，猜不
+# 到本次请求的 token。4 字节 = 8 个十六进制字符，够挡住盲猜（每次请求重新
+# 生成，没有多次试探的机会），又不至于在 prompt 里占掉可观的 token。
+SCOPED_BATCH_SEGMENT_NONCE_BYTES = 4
 
 # ── 群召回读侧的 subject 形状 ────────────────────────────────────────────
 # 一轮群回复带的 subject：1 个群 + 最多这么多个成员（当前发言人 + 本轮
@@ -676,6 +691,73 @@ MEMORY_REFINE_CRON_INTERVAL_SECONDS = 1800
 - 30 分钟一次；engine 内 cluster_hash skip 让"刚审过"的 cluster
   零成本跳过，所以高频触发也不会浪费 LLM token。
 - 两条 cron 用同一间隔，靠 _INITIAL_DELAY_* 错峰起始。"""
+
+# ---- Memory: scoped subject 淘汰（群记忆系列 5/7 主线一） ----
+# scoped（群/成员）条目拿不到任何 evidence 信号（fact 写盘即
+# signal_processed=True、reflection 直落 confirmed、surfacing legacy-only），
+# score 驱动的 sub_zero 归档对它们结构性不可达。scoped 的淘汰维度只有
+# 时间：按「subject 最后写入时间」超期归档。判据从数据本身推导
+# （per-subject max(created_at)，facts 为主、reflection/persona 时间戳并入
+# 取 max 的保守口径），刻意不建 sidecar 账本——PR#2394 的教训是账本比数据
+# 活得久就会永久失联，嵌在数据里的判据在结构上不可能失配。
+
+SCOPED_SUBJECT_ARCHIVE_ENABLED = True
+"""scoped subject 时间驱动归档的总开关。关掉后 sweep 只跳过，不影响
+score 驱动的 legacy 归档。"""
+
+SCOPED_SUBJECT_STALE_DAYS = 90
+"""subject 最后写入时间超过此天数（严格大于）→ 该 subject 的
+fact / reflection / persona 条目整体归档。恰好 N 天不归档。90 天
+≈ 一个季度没有任何新写入的群/成员，其记忆继续占据渲染与召回
+候选池的价值已低于串味/矛盾风险。"""
+
+SCOPED_SUBJECT_ARCHIVE_DRY_RUN = False
+"""True 时 sweep 只打「将归档」日志（域标识+条数，不含原文），不动
+任何数据。排查判据用的逃生阀。"""
+
+SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS = 21600
+"""scoped subject 归档阶段在 archive sweep 循环内的最小间隔（秒）。
+判据粒度是天，6h 一次绰绰有余；挂在 1h 一轮的
+_periodic_archive_sweep_loop 里靠进程内时间戳节流。"""
+
+# ---- Memory: scoped 轻量 refine（群记忆系列 5/7 主线二） ----
+# scoped 条目结构性进不了本体 MemoryRefineEngine 的两条 cron（entity 白名
+# 单只有 master/neko/relationship），语义重复与矛盾条目会无限并存，谁进
+# prompt 由 2000-token 裁剪决定。这里是 scoped 专用的轻量对偶：
+#   本体 = correction tier + thinking + 3 cluster/轮 + 定期全扫；
+#   scoped = summary tier + 无 thinking + 全角色每轮 1 个 cluster +
+#            仅在单 subject 条目数达阈值时触发。
+# 分桶键必须是 (kind, subject_id, scope)——所有群共享 entity='group_chat'，
+# 按 entity 分桶会把 A 群和 B 群塞进同一个 cosine cluster 跨群覆写
+# （成文先例见 memory/fact_dedup.py 的 _bucket_key docstring）。
+
+SCOPED_REFINE_MIN_ENTRIES = 8
+"""单 (subject, 存储) 池触发 refine 的最小条目数。per-subject 渲染预算
+2000 token ≈ 10-15 条典型条目，8 条起审让合并发生在预算裁剪开始
+静默丢条目之前。"""
+
+SCOPED_REFINE_COSINE_THRESHOLD = 0.82
+"""scoped cluster 的 cosine 阈值，沿用本体 refine 的取值（聚类找
+"相关"而非 dedup 找"等价"）。"""
+
+SCOPED_REFINE_TOPK_PER_ENTRY = 5
+"""邻接图上单条目最多保留的近邻数（同本体 refine 的双 cap 第二条）。"""
+
+SCOPED_REFINE_CLUSTER_SIZE_MAX = 5
+"""单 cluster 上限。比本体的 6 略紧：lite prompt 无 thinking，控制单
+次决策面让 summary tier 模型稳定输出。"""
+
+SCOPED_REFINE_REVISIT_AFTER_DAYS = 30
+"""同一 cluster_hash 的重审窗口，同本体取值。"""
+
+SCOPED_REFINE_CRON_INTERVAL_SECONDS = 1800
+"""scoped refine cron 的轮询间隔（秒）。每轮全角色最多 1 次 LLM 调用
+（1 个 cluster），配合 cluster_hash skip 高频空转零成本。"""
+
+SCOPED_REFINE_LLM_TIMEOUT_SECONDS = 60
+"""scoped refine 单次 LLM 调用超时（秒）。无 thinking + 单 cluster 输出
+量小，60s 对齐 fact_dedup 的裁决调用；不用本体 refine 的 110s——lite
+管线的存在前提就是比本体便宜。"""
 
 # ---- Memory: recall ----
 RECALL_COARSE_OVERSAMPLE = 3

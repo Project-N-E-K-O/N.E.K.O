@@ -41,7 +41,45 @@ from ._shared import (
 )
 
 
+def _response_id_text(value: Any) -> str | None:
+    """One reading of "does this name a response", used by both id sources.
+
+    Absent is ``None`` or the empty string — neither names anything, and
+    admitting the empty one would collapse every unidentified response onto a
+    shared identity. Zero is PRESENT: a provider numbering from zero names its
+    first response perfectly well.
+
+    Both halves matter and I got each wrong once. The original truthiness test
+    dropped `0`; replacing it with a bare ``is None`` check then stopped an
+    empty top-level ``response_id`` from falling back to the nested
+    ``response.id``, so a late terminal of that shape skipped the stale filter
+    and finalized whatever turn was current. Reading it in one place is what
+    keeps the two sources from disagreeing again.
+    """
+
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
 _ATTACHED_TRANSPORT = object()
+
+# Ceiling on each host step inside a fail-open release that may be cut short.
+# The arbiter bounds the WHOLE notification with one shared budget
+# (_STUCK_RELEASE_NOTIFY_TIMEOUT, 2.0s); without a per-step ceiling the first
+# await consumes it and everything after it is cancelled where it stands.
+# Three bounded steps x 0.5s leaves the rest of the arbiter's budget for the
+# speech-id rotation, which gets no ceiling of its own because it is last —
+# nothing behind it can be starved. That is a necessary condition, not a
+# guarantee: asyncio.wait_for bounds when the cancellation is DELIVERED, not
+# when the coroutine returns, and the outer budget still reaches the rotation.
+_STUCK_RELEASE_STEP_TIMEOUT = 0.5
+
+# How many finished response ids to remember for usage deduplication. A repeat
+# arrives right behind its original, so this only has to outlive the events
+# interleaved between them; it is a leak guard, not a history.
+_USAGE_RECORDED_ID_LIMIT = 32
 
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
@@ -91,6 +129,22 @@ class _TransportMixin:
         # new session's first tool calls look like a burst. Cleared before the
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
+
+        # Same reason, same lifetime: response ids are scoped to a connection,
+        # so a provider that restarts its numbering (or simply reuses an id)
+        # after a reconnect would otherwise have the new session's first turns
+        # suppressed as already-billed duplicates.
+        self._usage_recorded_ids = []
+        # Same lifetime as the id bookkeeping above, and for the same
+        # reason: a reconnect may reach a different upstream.
+        self._announces_responses = False
+        # Same lifetime, same reason: the quarantine is lowered only by a
+        # response.created on THIS socket, so a replacement connection to a
+        # never-announcing upstream would never clear it. Unreachable today
+        # (connect() swaps self.ws before any of this can matter, so the old
+        # response's events cannot arrive on the new socket) — reset anyway,
+        # because 'connection-scoped' should be true by construction.
+        self._idless_quarantine = False
 
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
@@ -889,7 +943,9 @@ class _TransportMixin:
             logger.error(f"Error streaming image: {e}")
             raise e
 
-    async def _check_repetition(self, response: str) -> bool:
+    async def _check_repetition(
+        self, response: str, should_recover: Callable[[], bool] | None = None
+    ) -> bool:
         """
         Check whether the reply is highly repetitive of recent replies.
         Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
@@ -915,12 +971,574 @@ class _TransportMixin:
             self._recent_responses.clear()
 
             # 触发回调
+            if should_recover is not None and not should_recover():
+                # Recording history is about the text this turn produced and
+                # lands nowhere else. The RECOVERY is not: the host clears the
+                # focus state, resets the emotion scorer and warns the user, so
+                # firing it once a new turn has started applies a dead turn's
+                # remedy to a live one. Checked here rather than at the caller
+                # because ``wait_for`` yields before this body runs.
+                logger.info(
+                    "repetition detected on a turn that is no longer current; "
+                    "recording it but skipping the recovery"
+                )
+                return True
             if self.on_repetition_detected:
                 await self.on_repetition_detected()
 
             return True
 
         return False
+
+    def _reset_per_turn_output_state(self) -> None:
+        """Clear the transport state scoped to one response.
+
+        Extracted from the ``response.done`` handler so any future path that
+        ends a turn without its terminal event has one place to call rather
+        than a list to re-derive. Every field here leaks into the NEXT turn if
+        it is missed: a stale ``_image_sent_this_turn`` makes ``stream_image``
+        withhold that turn's visual context for its whole duration, a stale
+        transcript buffer is flushed against the wrong turn, and
+        ``_audio_delta_count`` drives the "did this turn actually speak"
+        checks.
+
+        Behaviour is unchanged — this is the same block, in the same order,
+        with the same conditions.
+        """
+
+        self._audio_delta_count = 0
+        # 确保 buffer 被清空
+        self._output_transcript_buffer = ""
+        self._print_input_transcript = False
+        if self._supports_native_image:
+            self._image_recognized_this_turn = False
+        elif (
+            self._latest_image_b64 is None
+            or self._proactive_image_consumed
+        ):
+            # Standard StepFun analyzes only while this sentinel is
+            # present. Rearm after a consumed/absent frame, but keep
+            # a completed annotation generation-bound to an
+            # unconsumed cached frame across unrelated responses.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+        self._image_sent_this_turn = False
+
+    async def _flush_pending_output_transcript(self) -> None:
+        """Forward transcript text this turn produced but never flushed.
+
+        Some providers (the lanlan.app Gemini proxy among them) emit
+        ``response.audio_transcript.delta`` and no transcript-done event, so
+        the buffer is normally drained by the streaming branch. In a turn that
+        used tools, the tool round's terminal clears
+        ``_print_input_transcript``, and the real reply's transcript then
+        accumulates in the buffer with nothing left to flush it — resetting
+        per-turn state would drop it and the frontend shows audio with no text.
+
+        Fires only when this turn actually spoke, so a normal turn is a no-op
+        and nothing is sent twice. Must run BEFORE the per-turn reset, which
+        is what clears the buffer.
+        """
+
+        await self._emit_pending_output_transcript(
+            self._take_pending_output_transcript()
+        )
+
+    def _record_response_usage(self, resp_data: Any) -> None:
+        """Book the provider's token counts for one finished response, once.
+
+        Shared by the terminal path and the stale-terminal path, because a
+        response's cost does not depend on whose turn the host thinks is
+        current when its ``response.done`` finally arrives.
+
+        Which is exactly why it has to deduplicate. The transport already
+        tolerates a repeated ``response.done`` without finalizing the turn
+        twice — and a repeat necessarily takes the stale branch, because the
+        first one cleared ``_current_response_id`` — so counting on both paths
+        without a guard would overstate usage for a case the transport
+        supports on purpose. Keyed by response id.
+
+        The last sentence of this docstring used to read "a terminal with no
+        id never reaches the stale branch, so it can only be counted once
+        anyway." That is backwards. An id-less terminal never reaches the
+        stale branch precisely BECAUSE the filter needs an id — so a repeat of
+        it takes the ordinary terminal path both times, and the guard below,
+        keyed on an id it does not have, does not fire for either. Two copies
+        book twice; measured.
+
+        Left unfixed on purpose. A latch would have to be reset per turn, and
+        the provider class that omits a terminal id is the same one that omits
+        ``response.created`` — on such a connection there is no reset point at
+        all, so the latch would swallow every turn after the first. That trades
+        an accounting error no measured provider can produce for a real missed
+        bill. If a provider ever does repeat an id-less terminal, the fix
+        belongs at the terminal dispatch as a "this turn is already finalized"
+        latch, not here.
+        """
+
+        if not isinstance(resp_data, dict):
+            return
+        try:
+            usage = resp_data.get("usage")
+            if not usage:
+                return
+            response_id = resp_data.get("id")
+            if response_id is not None:
+                if response_id in self._usage_recorded_ids:
+                    return
+                self._usage_recorded_ids.append(response_id)
+                if len(self._usage_recorded_ids) > _USAGE_RECORDED_ID_LIMIT:
+                    self._usage_recorded_ids.pop(0)
+            from utils.token_tracker import TokenTracker
+
+            TokenTracker.get_instance().record(
+                model=resp_data.get("model", self.model or "realtime"),
+                prompt_tokens=usage.get("input_tokens", 0),
+                completion_tokens=usage.get("output_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                call_type="conversation_realtime",
+                source="main_logic/omni_realtime_client",
+            )
+        except Exception as exc:
+            # Accounting is bookkeeping, and it runs on the receive loop. A
+            # tracker that is unavailable, or a provider whose usage payload
+            # has an unexpected shape, must not take the voice session down
+            # with it — the turn itself already happened either way.
+            logger.debug("realtime usage accounting skipped: %s", exc)
+
+    def _take_response_transcript(self) -> str:
+        """Close the books on what this turn actually said.
+
+        Split from the repetition check that consumes it for the same reason
+        as the output-transcript pair below: the release path has to commit
+        every synchronous write before its first await, or a cancellation
+        strands this turn's state for the next one to inherit.
+
+        Reads ``_audio_delta_count`` for its log line, so it must run BEFORE
+        the per-turn reset zeroes it.
+        """
+
+        transcript = self._current_response_transcript
+        if transcript:
+            self._last_response_transcript = transcript
+            print(
+                f"OmniRealtimeClient: response.done - 当前转录: "
+                f"'{transcript[:50]}...' | audio_deltas={self._audio_delta_count}"
+            )
+            self._current_response_transcript = ""
+        else:
+            self._last_response_transcript = ""
+            print(
+                "OmniRealtimeClient: response.done - 没有转录文本 | "
+                f"audio_deltas={self._audio_delta_count}"
+            )
+        return transcript
+
+    async def _record_response_repetition(
+        self, transcript: str, should_recover: Callable[[], bool] | None = None
+    ) -> None:
+        """Add what this turn said to the repetition history.
+
+        Ending a turn has to do this on EVERY path, not just the terminal one.
+        A provider that repeatedly loses its ``response.done`` — the case the
+        fail-open hatch exists for — would otherwise never contribute an
+        audible reply to ``_recent_responses``, so three identical turns in a
+        row could not trigger ``on_repetition_detected`` at all.
+
+        The history is recorded before ``_check_repetition``'s only await, so
+        a bounded caller that cuts the host callback short still keeps it.
+        """
+
+        if transcript:
+            await self._check_repetition(transcript, should_recover)
+
+    def _take_pending_output_transcript(self) -> tuple[str, bool] | None:
+        """Decide what the fallback flush owes the host, and settle the state.
+
+        Split from the sending half so a caller that must not be interrupted
+        mid-cleanup can commit every synchronous write first, then await. The
+        turn's remaining state is consistent the moment this returns, whether
+        or not the emit that follows ever completes.
+        """
+
+        if not (
+            self._output_transcript_buffer
+            and self.on_output_transcript
+            and self._audio_delta_count > 0
+        ):
+            return None
+        # 「有声无字」是反复出现的问题（见 ISSUE4b），留一条 debug 日志方便下次
+        # 诊断时确认是这条兜底生效、还是 streaming/transcript.done 路径生效。
+        # audio_delta_count 此处尚未清零，记录的是本轮真实值。
+        logger.debug(
+            "turn-end 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
+            len(self._output_transcript_buffer),
+            self._audio_delta_count,
+            self._is_first_transcript_chunk,
+        )
+        pending = (self._output_transcript_buffer, self._is_first_transcript_chunk)
+        self._is_first_transcript_chunk = False
+        return pending
+
+    async def _emit_pending_output_transcript(
+        self, pending: tuple[str, bool] | None
+    ) -> None:
+        """Send what ``_take_pending_output_transcript`` decided was owed."""
+
+        if pending is None or not self.on_output_transcript:
+            return
+        text, is_first = pending
+        await self.on_output_transcript(text, is_first)
+
+    def _clear_turn_response_state(self) -> None:
+        """Drop the flags that say "a response is in progress".
+
+        Extracted from the ``response.done`` handler alongside
+        ``_notify_turn_finished`` so that ending a turn is one implementation
+        rather than a sequence any second caller has to reproduce. Behaviour
+        is unchanged — same assignments, same order.
+        """
+
+        self._is_responding = False
+        self._current_response_id = None
+        self._current_item_id = None
+        self._skip_until_next_response = False
+        # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+        self._interrupted = False
+
+    async def _notify_turn_finished(
+        self,
+        *,
+        step_timeout: float | None = None,
+        still_ours: Callable[[], bool] | None = None,
+    ) -> None:
+        """Tell the host this turn is over.
+
+        The two hooks the terminal path fires, in the order it fires them.
+
+        Both keywords belong to the fail-open release path, and both default
+        to the terminal path's behaviour so this stays one implementation
+        rather than two.
+
+        ``still_ours`` gates the PAIR, once, rather than each hook. They are
+        not independent: ``on_response_done`` queues this turn's TTS-done
+        sentinel, which closes its speech id, and ``on_sid_rotate`` is what
+        hands out the next one. Re-checking between them lets a turn that
+        starts mid-notification split the pair — the old sid closed, no new
+        one issued — and on a provider without server VAD the successor then
+        speaks under a closed sid and has its text silently dropped, which is
+        the failure this hook exists to prevent. So either the release still
+        owns the turn and finishes ending it, or it never started.
+
+        ``on_sid_rotate`` gets no step bound of its own, because it is the
+        last step — there is nothing behind it for a slow hook to starve. That
+        is NOT the same as being uncancellable, and an earlier version of this
+        comment claimed it was: the arbiter bounds the whole notification, so
+        the rotation can still be cancelled at its only await, taking the
+        session lock. Today that leaves the host half-rotated — the TTS flags
+        say a fresh turn while the speech id still says the old one — because
+        ``rotate_speech_id_for_response_done`` writes those flags before it
+        takes the lock.
+
+        Measured, that state is repaired by the next turn's terminal, which
+        rotates unconditionally; it is not the permanent silence the earlier
+        comment described. It also is not this path's to fix: the rotation has
+        two other callers that are cancelled just as ordinarily and with no
+        escape hatch involved
+        ([_responses.py](main_logic/omni_realtime_client/_responses.py) and
+        [proactive.py](main_logic/core/proactive.py), both inside
+        fire-and-forget tasks), so making the rotation all-or-nothing belongs
+        in the rotation itself. Tracked separately.
+
+        ``on_sid_rotate`` is conditional because providers WITH server VAD
+        rotate the speech id from ``speech_stopped`` instead; firing here too
+        would be a second, unpaired rotation on a live turn. Providers without
+        it never emit ``speech_stopped`` (the Gemini proxy: lanlan.app+free,
+        and livestream), so this is their only rotation point — and without it
+        TTS upstream silently drops every later turn's text once the first
+        ``tts.response.done`` closes the initial sid. The lightweight
+        rotate-only path is deliberate: a full ``handle_new_message`` would
+        clip trailing TTS audio and mis-fire USER_INPUT, since no user input
+        actually happened.
+
+        Each hook is awaited independently so a host that raises while closing
+        the turn cannot skip the rotation that follows it.
+        """
+
+        if still_ours is not None and not still_ours():
+            logger.info(
+                "a new turn started before this one could be ended; leaving "
+                "both end-of-turn hooks to it"
+            )
+            return
+        if self.on_response_done:
+            try:
+                if step_timeout is None:
+                    await self.on_response_done()
+                else:
+                    await asyncio.wait_for(self.on_response_done(), step_timeout)
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                # Kept ahead of the bare Exception arm even though TimeoutError
+                # is one: "took too long" and "raised" are different diagnoses.
+                #
+                # ``%s``, not ``%.1f``: the terminal path calls in with
+                # ``step_timeout=None`` and awaits the hook directly, so this
+                # arm is also how a TimeoutError raised BY the host surfaces
+                # there. Formatting None with %.1f raises inside logging and
+                # destroys the record — the one diagnosis this arm exists to
+                # give.
+                logger.warning(
+                    "turn-finished notification exceeded its %ss step bound; "
+                    "rotating anyway",
+                    step_timeout,
+                )
+            except Exception as exc:
+                logger.warning("turn-finished notification failed: %s", exc)
+        if not self._has_server_vad and self.on_sid_rotate:
+            try:
+                await self.on_sid_rotate()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("turn-finished speech-id rotation failed: %s", exc)
+
+    async def _on_arbiter_stuck_release(
+        self, reason: str, response_id: str | None = None
+    ) -> None:
+        """End a turn the arbiter gave up on, exactly as its terminal would.
+
+        The same three steps ``response.done`` runs, in the same order. That
+        is the entire point: a second way to end a turn is a second thing to
+        keep correct, and the withdrawn #2592 spent seven review rounds
+        discovering, one at a time, which parts its own version had left out.
+
+        Clearing the identity here is what quarantines the abandoned
+        response's later events — the stale-event filter then routes its
+        terminal to the arbiter alone, so the lane still releases but nothing
+        finalizes a second time. Note this is the opposite of what
+        ``handle_interruption`` wants, which keeps the identity precisely so
+        the cancelled response's own terminal still ends the turn.
+
+        ``response_id`` names the response the arbiter abandoned, and this
+        finalizes only that one. The turn being tracked here is not always it:
+        an owned response can overlap a server-initiated one, and it is the
+        server response's ``response.created`` that last wrote
+        ``_current_response_id``. Ending "the current turn" would then close a
+        response that is still streaming, and its own terminal would find
+        nothing left to close. A ``None`` id means the arbiter had nothing to
+        name — it never learned one — and the tracked turn is finalized as
+        before.
+
+        A tracked id of ``None`` is not a wildcard either. ``response_id``
+        comes from the owner's own ``response.created`` — the event that wrote
+        ``_current_response_id`` three lines later in the same handler — so a
+        named release implies the host once tracked that exact id. Seeing
+        ``None`` now means a later, id-less ``response.created`` overwrote it:
+        an overlapping response that is still streaming, and not this
+        release's to end.
+
+        The synchronous state is settled before the first await on purpose.
+        Both remaining awaits reach host code that can block past the
+        arbiter's notification bound, and being cancelled there must not leave
+        this turn's flags half-cleared for the next turn to inherit.
+
+        Identity has to survive those awaits, not merely precede them. The
+        lane can reopen mid-notification — the abandoned response's own
+        terminal can land and release it — and the next turn can be live
+        before the transcript flush returns. The arbiter cannot prevent that
+        from its side (the user's own turn starts through
+        ``handle_new_message``, which never consults the lane), so the check
+        lives here: the release captures ``_turn_epoch`` and abandons the rest
+        of its work the moment a new turn has started. The rotation it skips
+        is deferred rather than lost — the turn that took over ends through
+        its own terminal, which rotates.
+        """
+
+        tracked_id = self._current_response_id
+        # Compared as text on both sides. The arbiter normalises ids through
+        # `_event_response_id` (`str(...)`), while this side stores whatever
+        # the JSON carried — so a provider using a numeric id made every
+        # comparison here false ("123" != 123) and the release silently
+        # finalized and quarantined nothing, on every turn.
+        if response_id is not None and (
+            tracked_id is None or str(tracked_id) != str(response_id)
+        ):
+            if tracked_id is None:
+                # Nothing is tracked, so nothing id-less arriving before the
+                # next response.created can belong to a live turn — the
+                # released response is the only candidate, and its tool calls
+                # are what the quarantine exists to stop.
+                #
+                # Deliberately NOT raised when tracked_id names a different,
+                # LIVE response: that one has already announced, so the
+                # window's "closes at the next response.created" bound would
+                # fall after its own id-less tool calls and suppress them
+                # instead. Containing an abandoned turn must not mute a live
+                # one.
+                self._idless_quarantine = True
+            logger.info(
+                "Arbiter released %s but this turn is tracking %s; leaving it "
+                "alone",
+                response_id,
+                tracked_id,
+            )
+            return
+        if not self._is_responding and self._current_response_id is None:
+            return
+        # The epoch this response began in, not the one the callback happens to
+        # find. Between them a barge-in can have advanced _turn_epoch at
+        # speech_stopped — which does not clear _current_response_id, so the id
+        # guard above still passes — and reading the live value here would make
+        # the check compare the successor's epoch with itself.
+        released_epoch = self._current_turn_epoch
+
+        def _still_ours() -> bool:
+            return self._turn_epoch == released_epoch
+
+        if not _still_ours():
+            # A turn already started before this release even ran, so NOTHING
+            # here belongs to it — not the awaited hooks, and not the
+            # synchronous cleanup ahead of them either. Both have side effects
+            # on the live turn: `_clear_turn_response_state` resets
+            # `_interrupted`, which on a provider whose late deltas carry no id
+            # is the only thing keeping the abandoned response's audio out of
+            # the new turn; and `_check_repetition` can fire
+            # `on_repetition_detected`, whose host resets the shared focus
+            # scorer and emotion state rather than merely recording history.
+            #
+            # Leaving this turn's per-turn flags for the successor's own
+            # terminal to clear is the lesser harm, and the successor's
+            # `response.created` overwrites the identity fields regardless.
+            # One thing does still have to happen: give up the identity. The
+            # stale-event filter keys on `_current_response_id`, so leaving it
+            # naming the abandoned response makes that response's LATER
+            # id-bearing events match and pass — a delayed
+            # `function_call_arguments.done` would execute its tool, and its
+            # `response.done` would run a full finalization against the user's
+            # new turn. Clearing it is what quarantines them, and it is the one
+            # piece of `_clear_turn_response_state` that belongs to the dead
+            # turn rather than the live one: `_is_responding`, `_interrupted`
+            # and the per-turn flags are the successor's now.
+            logger.info(
+                "a turn already started before this release ran (%s); "
+                "quarantining %s and leaving the rest of the host alone",
+                reason,
+                self._current_response_id,
+            )
+            self._current_response_id = None
+            self._current_item_id = None
+            # The per-response output accounting belongs to the dead turn as
+            # well, and nothing else will clear it: `response.created` resets
+            # the transcript buffers but not `_image_sent_this_turn` or
+            # `_audio_delta_count`, so a successor would spend its whole
+            # duration withholding its own visual context and counting the
+            # previous turn's audio. Safe here because reaching this line
+            # means the tracked id still named the abandoned response — the
+            # successor has not announced itself yet, so it has produced no
+            # output of its own to erase.
+            self._reset_per_turn_output_state()
+            # `_skip_until_next_response` is deliberately NOT touched here,
+            # and neither leaving it nor clearing it is right — which is the
+            # actual finding.
+            #
+            # Leaving it mutes the successor: `_interrupted` may be left for
+            # the next turn because `response.created` resets it, and this flag
+            # has no such reset, so the successor's every delta stays
+            # suppressed until its own terminal. But clearing it is not the
+            # answer either, because the flag may already belong to the
+            # successor: `create_response(skipped=True)` raises it BEFORE it
+            # enqueues (`_responses.py`), so a request queued behind the
+            # abandoned one owns it while it waits for the lane. Clearing would
+            # then un-skip a turn the caller explicitly asked to suppress.
+            #
+            # A flag with no owner cannot be correctly cleared or correctly
+            # left; picking a side is arbitrary. The fix is to give output
+            # suppression a per-turn identity, which is issue #2594. Until
+            # then this stays as it shipped rather than trading one wrong
+            # behaviour for another — the whole state is unreachable today
+            # (nothing on the WebSocket path passes `skipped=True`), so there
+            # is nothing to buy by guessing.
+            # Both release paths raise it: the abandoned response may still be
+            # streaming, and from here until the next response.created nothing
+            # id-less can be attributed. Clearing _current_response_id above
+            # quarantines its ID-BEARING events; this covers the rest.
+            self._idless_quarantine = True
+            return
+        logger.info("Ending abandoned turn after arbiter release: %s", reason)
+        # Both release paths raise it: the abandoned response may still be
+        # streaming, and from here until the next response.created nothing
+        # id-less can be attributed. Clearing _current_response_id above
+        # quarantines its ID-BEARING events; this covers the rest.
+        self._idless_quarantine = True
+
+        # Captured before the reset, which is what clears the buffer: a stalled
+        # lifecycle is exactly the case where the terminal that would normally
+        # flush it never arrives.
+        pending_transcript = self._take_pending_output_transcript()
+        pending_response = self._take_response_transcript()
+        self._clear_turn_response_state()
+        self._reset_per_turn_output_state()
+        # Same order the terminal path uses: repetition history first, then
+        # the fallback transcript flush.
+        try:
+            await asyncio.wait_for(
+                self._record_response_repetition(pending_response, _still_ours),
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "stuck-release repetition check exceeded %.1fs; ending the "
+                "turn anyway",
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning("stuck-release repetition check failed: %s", exc)
+        # Epoch-guarded, unlike the repetition check above it. That one is
+        # bookkeeping about the released turn's own text and lands nowhere
+        # else; this one goes out through ``handle_output_transcript``, which
+        # publishes and queues TTS under whatever speech id is CURRENT — so
+        # once a successor has started, flushing here speaks the abandoned
+        # turn's half-sentence as part of the successor's. The released turn's
+        # trailing text is worth losing to prevent that; it is the same
+        # "lands on that turn or not at all" rule the end-of-turn hooks follow.
+        #
+        # The repetition check ahead of it can yield (on_repetition_detected),
+        # which is what makes this reachable — an earlier version of this
+        # comment said the flush was the first await and therefore safe, and
+        # inserting that step in front of it quietly made that false.
+        #
+        # Best-effort besides: a host that blocks or raises while taking the
+        # last half-sentence must not take the rotation behind it down too.
+        if _still_ours():
+            try:
+                await asyncio.wait_for(
+                    self._emit_pending_output_transcript(pending_transcript),
+                    _STUCK_RELEASE_STEP_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "stuck-release transcript flush exceeded %.1fs; ending the "
+                    "turn anyway",
+                    _STUCK_RELEASE_STEP_TIMEOUT,
+                )
+            except Exception as exc:
+                logger.warning("stuck-release transcript flush failed: %s", exc)
+        elif pending_transcript is not None:
+            logger.info(
+                "a new turn started before the abandoned turn's trailing "
+                "transcript could be sent; dropping it rather than speaking "
+                "it as the new turn's"
+            )
+        await self._notify_turn_finished(
+            step_timeout=_STUCK_RELEASE_STEP_TIMEOUT,
+            still_ours=_still_ours,
+        )
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
@@ -933,7 +1551,12 @@ class _TransportMixin:
         self._interrupted = True
 
         # 1. Cancel the current response
-        if self._current_response_id:
+        # Presence, not truthiness — the third site in this file where a
+        # numeric id of 0 would have read as "no response". Here the cost is
+        # the worst of the three: the barge-in would mark the turn interrupted
+        # and never send response.cancel, so generation keeps running and the
+        # arbiter lane stays held until the provider finishes on its own.
+        if self._current_response_id is not None:
             await self.cancel_response()
 
         self._is_responding = False
@@ -1023,14 +1646,42 @@ class _TransportMixin:
                 # include response identity let us reject those late events
                 # without changing the legacy behaviour of id-less proxies.
                 if event_type != "response.created":
-                    event_response_id = event.get("response_id")
-                    if event_type == "response.done" and not event_response_id:
+                    # Presence, not truthiness, on both reads — the same
+                    # correction the arbiter's `_event_response_id` gets in this
+                    # PR, and useless without it. A provider numbering from zero
+                    # would have response `0`'s late deltas, tool events and
+                    # terminal slip past this filter once a successor is
+                    # current, and a late terminal would then run the ordinary
+                    # host finalization against that successor.
+                    event_response_id = _response_id_text(event.get("response_id"))
+                    if event_response_id is None and event_type == "response.done":
                         response = event.get("response")
                         if isinstance(response, dict):
-                            event_response_id = response.get("id")
+                            event_response_id = _response_id_text(response.get("id"))
+                    tracked = self._current_response_id
+                    tracked_text = None if tracked is None else str(tracked)
                     if (
-                        event_response_id
-                        and event_response_id != self._current_response_id
+                        event_response_id is not None
+                        and event_response_id != tracked_text
+                        # ...unless this connection has never announced a
+                        # response at all. A provider that omits
+                        # response.created never writes _current_response_id,
+                        # so its id-bearing terminal looks stale against a
+                        # permanently-None tracked id and the whole turn
+                        # finalization below is skipped: no transcript flush,
+                        # no on_response_done, and — on exactly those routes,
+                        # which have no server VAD — no speech-id rotation,
+                        # which is what silences every turn after the first.
+                        #
+                        # Same reasoning as the arbiter's: a terminal for an id
+                        # this connection has never seen announced cannot be
+                        # another response's, because there is no other
+                        # response to have announced it. The latch is per
+                        # connection and set only by response.created, so on
+                        # any announcing provider this condition is false from
+                        # its first turn onward and the stale filter behaves
+                        # exactly as before.
+                        and self._announces_responses
                     ):
                         if event_type == "response.done":
                             # A terminal event must reach the arbiter even when
@@ -1044,6 +1695,18 @@ class _TransportMixin:
                             # owner. Content of the stale response stays
                             # filtered below.
                             self._response_arbiter.notify_response_terminal(event)
+                            # The tokens were spent whoever the turn belonged
+                            # to, and this is the ONLY path a fail-open
+                            # released turn's terminal can take: the release
+                            # clears _current_response_id on purpose, so its
+                            # real terminal always lands here. Quarantining
+                            # the host finalization must not also quarantine
+                            # the accounting, or every recovered turn vanishes
+                            # from usage stats even though the provider sent
+                            # exact counts. Counted here and only here — the
+                            # branch continues, so nothing double-counts.
+                            self._response_done_total += 1
+                            self._record_response_usage(event.get("response"))
                         logger.info(
                             "Dropping stale response event type=%s response_id=%s current_response_id=%s",
                             event_type,
@@ -1080,6 +1743,30 @@ class _TransportMixin:
                         if delta:
                             slot["arguments"] += delta
                 elif event_type == "response.function_call_arguments.done":
+                    if self._idless_quarantine and not event.get("response_id"):
+                        # A fail-open release abandoned a turn, and this event
+                        # names no response — so it cannot be told apart from
+                        # the successor's. Content that leaks is a wrong
+                        # sentence; a tool call that leaks is a side effect
+                        # executed on behalf of a turn nobody is having.
+                        #
+                        # Bounded, not blanket: the window closes at the next
+                        # response.created (see below), which on the only
+                        # providers that can reach here is guaranteed to carry
+                        # an id — a release requires the abandoned response to
+                        # have had one, and ids are written only from
+                        # response.created. The successor's announcement
+                        # therefore always precedes its own id-less events on
+                        # this single ordered socket, so nothing of the
+                        # successor's is ever suppressed.
+                        logger.warning(
+                            "quarantined an id-less tool call arriving after a "
+                            "stuck-turn release (call_id=%s name=%s)",
+                            event.get("call_id") or "?",
+                            event.get("name") or "?",
+                        )
+                        self._inflight_tool_args.pop(event.get("call_id") or "", None)
+                        continue
                     name = event.get("name") or ""
                     raw_args = event.get("arguments") or ""
                     call_id = event.get("call_id") or ""
@@ -1131,36 +1818,13 @@ class _TransportMixin:
                     self._response_arbiter.notify_response_terminal(event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
-                    resp_data = event.get("response", {})
                     # 解析实时 API 返回的 token 用量
-                    try:
-                        _rt_usage = resp_data.get("usage")
-                        if _rt_usage:
-                            from utils.token_tracker import TokenTracker
-                            TokenTracker.get_instance().record(
-                                model=resp_data.get("model", self.model or "realtime"),
-                                prompt_tokens=_rt_usage.get("input_tokens", 0),
-                                completion_tokens=_rt_usage.get("output_tokens", 0),
-                                total_tokens=_rt_usage.get("total_tokens", 0),
-                                call_type="conversation_realtime",
-                                source="main_logic/omni_realtime_client",
-                            )
-                    except Exception:
-                        pass
-                    self._is_responding = False
-                    self._current_response_id = None
-                    self._current_item_id = None
-                    self._skip_until_next_response = False
-                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+                    self._record_response_usage(event.get("response"))
+                    self._clear_turn_response_state()
                     # 响应完成，检测重复度
-                    if self._current_response_transcript:
-                        self._last_response_transcript = self._current_response_transcript
-                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
-                        await self._check_repetition(self._current_response_transcript)
-                        self._current_response_transcript = ""
-                    else:
-                        self._last_response_transcript = ""
-                        print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    await self._record_response_repetition(
+                        self._take_response_transcript()
+                    )
                     # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
                     # response.audio_transcript.delta、从不发 response.audio_transcript.done，
                     # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
@@ -1170,63 +1834,26 @@ class _TransportMixin:
                     # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
                     # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
                     # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
-                    if (
-                        self._output_transcript_buffer
-                        and self.on_output_transcript
-                        and self._audio_delta_count > 0
-                    ):
-                        # 「有声无字」是反复出现的问题（见上方 ISSUE4b），留一条 debug
-                        # 日志方便下次诊断时确认是这条兜底生效、还是 streaming/transcript.done
-                        # 路径生效。audio_delta_count 此处尚未清零，记录的是本轮真实值。
-                        logger.debug(
-                            "response.done 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
-                            len(self._output_transcript_buffer),
-                            self._audio_delta_count,
-                            self._is_first_transcript_chunk,
-                        )
-                        await self.on_output_transcript(
-                            self._output_transcript_buffer, self._is_first_transcript_chunk
-                        )
-                        self._is_first_transcript_chunk = False
-                    self._audio_delta_count = 0
-                    # 确保 buffer 被清空
-                    self._output_transcript_buffer = ""
-                    self._print_input_transcript = False
-                    if self._supports_native_image:
-                        self._image_recognized_this_turn = False
-                    elif (
-                        self._latest_image_b64 is None
-                        or self._proactive_image_consumed
-                    ):
-                        # Standard StepFun analyzes only while this sentinel is
-                        # present. Rearm after a consumed/absent frame, but keep
-                        # a completed annotation generation-bound to an
-                        # unconsumed cached frame across unrelated responses.
-                        self._image_recognized_this_turn = False
-                        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-                    self._image_sent_this_turn = False
-                    if self.on_response_done:
-                        await self.on_response_done()
-                    # No-server-VAD providers (Gemini-proxy: lanlan.app+free /
-                    # livestream) never emit input_audio_buffer.speech_stopped,
-                    # so handle_messages' on_new_message path on speech_stopped
-                    # never fires and current_speech_id never rotates between
-                    # turns. Without rotation, TTS upstream silently drops text
-                    # after the first tts.response.done closes the initial sid.
-                    # Hook here at response.done (Gemini's turn_complete, the
-                    # only reliable end-of-AI-turn signal in those proxies) and
-                    # call the lightweight rotate-only path — full
-                    # handle_new_message would clip trailing TTS audio and
-                    # mis-fire USER_INPUT (no user input actually happened).
-                    if not self._has_server_vad and self.on_sid_rotate:
-                        await self.on_sid_rotate()
+                    await self._flush_pending_output_transcript()
+                    self._reset_per_turn_output_state()
+                    await self._notify_turn_finished()
                 elif event_type == "response.created":
                     self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     self._current_response_id = event.get("response", {}).get("id")
+                    self._announces_responses = True
                     self._is_responding = True
+                    self._turn_epoch += 1
+                    self._current_turn_epoch = self._turn_epoch
                     self._interrupted = False  # Clear interruption flag on new response
+                    # Closes the id-less quarantine a fail-open release opened.
+                    # Safe as the sole exit: a release only happens when the
+                    # abandoned response HAD an id, ids are written only here,
+                    # and this socket is consumed by one ordered ``async for`` —
+                    # so a successor's announcement always precedes its own
+                    # id-less events and none of them are ever suppressed.
+                    self._idless_quarantine = False
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
                     # 清空转录 buffer，防止累积旧内容
                     self._output_transcript_buffer = ""
@@ -1263,6 +1890,14 @@ class _TransportMixin:
                     self._response_arbiter.notify_server_vad_response_pending(
                         arm_timeout=False
                     )
+                    # The user's turn starts HERE on a server-VAD provider, not
+                    # at response.created: on_new_message assigns the new
+                    # speech id and fires USER_INPUT, and the provider's
+                    # response.created only follows some time later. A release
+                    # suspended in a host callback would otherwise resume in
+                    # that gap, still believe the turn is its own, and finalize
+                    # against the speech id this user turn just took.
+                    self._turn_epoch += 1
                     try:
                         if self.on_new_message:
                             await self.on_new_message()

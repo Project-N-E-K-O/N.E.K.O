@@ -51,6 +51,160 @@ describe('hosted ui runtime', () => {
     document.body.appendChild(root)
   })
 
+  it.each([
+    ['click', 'button', 'onClick'],
+    ['submit', 'form', 'onSubmit'],
+    ['keydown', 'input', 'onKeyDown'],
+    ['change', 'select', 'onChange'],
+    ['input', 'input', 'onInput'],
+  ])('marks hosted action calls triggered by a trusted iframe %s as user initiated', (eventName, tagName, propName) => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    const handler = (event: Event) => {
+      event.preventDefault()
+      void ui.api.call('save')
+    }
+    ui.render(ui.h(tagName, { [propName]: handler }), root)
+    const target = root.firstElementChild!
+    const event = new Event(eventName, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(target, event)
+
+    expect(requestMessage).toMatchObject({
+      type: 'neko-hosted-surface-request',
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
+  it('does not attribute a later automatic call to an earlier iframe interaction', () => {
+    const requestMessages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessages.push(message)
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h('button', { onClick: () => undefined }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('button')!, event)
+
+    void ui.api.call('background-refresh')
+
+    expect(requestMessages.at(-1)).toMatchObject({
+      method: 'call',
+      userInitiated: false,
+    })
+  })
+
+  it('preserves explicit user attribution after an async handler awaits', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h('button', {
+      onClick: async () => {
+        await Promise.resolve()
+        void ui.api.call('save', {}, { userInitiated: true })
+      },
+    }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('button')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessage).toMatchObject({
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
+  it('preserves user attribution for the action immediately following useConfirm', async () => {
+    const requestMessages: any[] = []
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessages.push(message)
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    function App() {
+      const confirm = ui.useConfirm()
+      return ui.h('button', {
+        onClick: async () => {
+          if (await confirm('Run this action?')) void ui.api.call('save')
+        },
+      }, 'Open confirmation')
+    }
+    ui.render(ui.h(App, null), root)
+    const click = (target: Element) => {
+      const event = new Event('click', { bubbles: true })
+      Object.defineProperty(event, 'isTrusted', { value: true })
+      fireEvent(target, event)
+    }
+    click(root.querySelector('button')!)
+    click(Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Confirm')!)
+    await flushMicrotasks()
+
+    expect(requestMessages.at(-1)).toMatchObject({
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
+  it('keeps synthetic ActionButton clicks automatic', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h(ui.ActionButton, { actionId: 'save' }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: false })
+    fireEvent(root.querySelector('button')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessage).toMatchObject({
+      method: 'call',
+      userInitiated: false,
+    })
+  })
+
   it('runs hooks inside function components', async () => {
     function Counter() {
       const [count, setCount] = ui.useState(0)

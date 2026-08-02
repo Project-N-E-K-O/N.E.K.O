@@ -507,6 +507,10 @@ async def update_catgirl_l2d(name: str, request: Request):
     """Update the specified catgirl's model settings (supports Live2D and VRM)."""
     try:
         data = await request.json()
+        apply_runtime = _config_value_is_enabled(data.get('apply_runtime', True))
+        query_params = getattr(request, 'query_params', {})
+        if 'apply_runtime' in query_params:
+            apply_runtime = _config_value_is_enabled(query_params.get('apply_runtime'))
         live2d_model = data.get('live2d')
         vrm_model = data.get('vrm')
         mmd_model = data.get('mmd')
@@ -878,7 +882,8 @@ async def update_catgirl_l2d(name: str, request: Request):
         await _config_manager.asave_characters(characters)
         # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
         init_one_catgirl = get_init_one_catgirl()
-        await init_one_catgirl(name, is_new=False)
+        if apply_runtime:
+            await init_one_catgirl(name, is_new=False)
 
 
         if model_type_str == 'live3d':
@@ -892,7 +897,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         return JSONResponse(content={
             'success': True,
-            'message': message
+            'message': message,
+            'applied_runtime': apply_runtime,
         })
 
     except MaintenanceModeError:

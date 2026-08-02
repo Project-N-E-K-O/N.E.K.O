@@ -7,10 +7,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Hashable
 
-from main_logic.voice_turn.contracts import (
-    FinalKey,
-    VoiceTurnToken,
-)
+from main_logic.voice_turn.contracts import VoiceTurnToken
+
+from .lifecycle import FinalKey
 
 
 SegmentId = Hashable

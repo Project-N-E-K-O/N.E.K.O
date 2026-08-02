@@ -443,6 +443,7 @@ class LLMSessionManager(
 
         # 用户语言设置（由 start_session 或前端 set_user_language() 设置，初始为 None）
         self.user_language = None
+        self._user_language_explicit = False
         self._conversation_turn_language = None
         # 翻译服务（延迟初始化）
         self._translation_service = None

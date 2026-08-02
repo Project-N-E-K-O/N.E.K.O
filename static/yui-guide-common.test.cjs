@@ -1267,9 +1267,10 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.notEqual(sourceRectFunctionStart, -1);
     const shouldAlignFunction = getBalancedBlockFrom(appInterpageSource, shouldAlignFunctionStart);
     const sourceRectFunction = getBalancedBlockFrom(appInterpageSource, sourceRectFunctionStart);
-    // 修改原因：普通 input 保留旧 plain-capsule 逻辑；capsule-input 仅在桌面宿主明确声明
-    // Wayland work-area carrier 时对齐文字，避免改变 X11/macOS 的 registry 几何。
-    assert.match(shouldAlignFunction, /kind === 'capsule-input'[\s\S]*metrics\.waylandWorkAreaCarrier === true/);
+    // 修改原因：Niri 的 capsuleBody 使用已提交布局坐标，不再叠加文字起点平移；
+    // 标准 Wayland 和普通 input + plain-capsule 保留既有视觉契约。
+    assert.match(shouldAlignFunction, /metrics\.waylandWorkAreaCarrier === true/);
+    assert.match(shouldAlignFunction, /metrics\.niriWaylandRuntime !== true/);
     assert.match(sourceRectFunction, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
     assert.match(sourceRectFunction, /width:\s*rect\.width/);
     assert.doesNotMatch(sourceRectFunction, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);

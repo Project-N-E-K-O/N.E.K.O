@@ -374,6 +374,9 @@ class _GenaiMixin:
         # 跨迭代累计真正执行过的 tool call 数（与 OpenAI 路径对偶）：0 与
         # 非 0 在封顶日志里是两种性质。
         executed_tool_calls = 0
+        # 是否因"零执行轮且已经流过文本"提前跳出循环：封顶日志据此别谎称
+        # 迭代被耗尽（cap=3 时我们可能在第 1 轮就跳出）。
+        zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
@@ -418,6 +421,11 @@ class _GenaiMixin:
             # collected 为空，但这轮确实不是普通文本轮。
             saw_tool_call_fragment = False
             had_text = False
+            # 本轮真的有非空文本 yield 给用户（≠ had_text：模型吐了 text
+            # part 但被 leak filter 整段抑制时，用户其实什么都没看到）。
+            # 零执行轮的"要不要再试一轮"只看这个——OpenAI 路径那边天然
+            # 是这个语义（它的 streamed_text_buffer 累的就是过滤后的文本）。
+            visible_text = False
             # 累积本轮已经 yield 给用户的 text，下面写 assistant 历史时
             # 用作 ``content`` —— 否则下一轮 LLM 看到 ``content=""`` 会
             # 不知道自己已经说过这部分话，可能重复或改口。
@@ -490,6 +498,8 @@ class _GenaiMixin:
                                     text, tool_leak_filter, provider=tool_leak_provider,
                                 )
                             had_text = True
+                            if text:
+                                visible_text = True
                             streamed_text_buffer += text
                             chunk_out = LLMStreamChunk(content=text)
                             if tool_leak_filter is not None:
@@ -552,36 +562,66 @@ class _GenaiMixin:
                 )
 
             if saw_tool_call_fragment and self.on_tool_call is not None:
-                # 本轮已确认是 tool 轮（哪怕所有 function_call 都因空 name 被
-                # drop）：先给缓冲型调用方一个丢弃 pre-tool 文本的锚点，与
-                # OpenAI 路径对偶。挂在 collected 非空的分支里会漏掉全 drop
-                # 的那条路径——那正是 pre-tool 文本会被当成整条回复外发的
-                # 场景。
+                # ⚠️ 顺序不变量（与 OpenAI 路径 _tools.py 对偶，那边是先
+                # finalize/yield tail、后 notify）：leak filter 扣住的那截
+                # pre-tool 文本必须在 round-start 回调**之前**吐完。回调体
+                # 是缓冲型调用方的 reply_chunks.clear()，先 notify 再 yield
+                # tail 等于把被扣住的半截文本吐进一个刚清空的缓冲区，它照样
+                # 会外发——leak filter 白扣了。
+                #
+                # 本轮已确认是 tool 轮（哪怕所有 function_call 都因空 name
+                # 被 drop）：round-start 挂在 collected 非空的分支里会漏掉全
+                # drop 的那条路径——那正是 pre-tool 文本会被当成整条回复外发
+                # 的场景。
+                #
+                # tail 是否进 streamed_text_buffer 按分支分：collected 非空
+                # 时本轮会写一条 assistant turn 入史，tail 属于那条 turn 的
+                # content；全 drop 时没有 assistant turn，tail 只 yield 给
+                # 用户。
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        if collected_tool_calls:
+                            streamed_text_buffer += tail
+                        # tail 是真的流给用户的（全 drop 的那条路径不进
+                        # buffer，但用户照样看得见），零执行轮的判据要算上。
+                        visible_text = True
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
+                    tool_leak_filter.reset()
                 await self._notify_tool_round_start()
             if (
                 saw_tool_call_fragment
                 and not collected_tool_calls
                 and self.on_tool_call is not None
             ):
-                # 与 OpenAI 路径对偶（那边 collect_tool_calls 全 drop 后经
-                # `if not calls: return 0` 早退、循环 continue）：消耗一次
-                # 迭代重试，而不是把这轮当成"模型不再调工具"直接 return——
-                # 直接 return 的话既无 forced-finalize 也无封顶日志，pre-tool
-                # 的"我查一下"就成了整条回复。
+                # 零执行轮（function_call 分片全因空 name 被 drop）：messages
+                # 一个字都没变，重来一轮不会有新信息，只会让模型把同样的
+                # pre-tool 文本再流一遍给用户。cap=3 的主程序上实测是
+                # "我查一下我查一下我查一下最终回答"。
                 #
-                # leak filter 也按 tool 轮边界收尾（与 collected 分支及
-                # OpenAI 分支入口对偶）：不 finalize/reset 的话，挂起的
-                # 半截文本会跨迭代滞留在 filter 里。本轮没有 assistant
-                # turn 入史，tail 只需 yield 给用户，不进 text buffer。
-                if tool_leak_filter is not None:
-                    tail, event = tool_leak_filter.finalize()
-                    if event:
-                        log_tool_leak_filtered(event, provider=tool_leak_provider)
-                    if tail:
-                        tail_chunk = LLMStreamChunk(content=tail)
-                        setattr(tail_chunk, "_tool_leak_filtered", True)
-                        yield tail_chunk
-                    tool_leak_filter.reset()
+                # 所以只在**本轮什么都没流给用户**时才允许再试一轮（重试
+                # 无用户可见代价，且 SDK 抖动确实可能下一轮就正常）；已经
+                # 流过文本就直接跳出循环去 forced-finalize——#2597 引入这条
+                # 分支的目的（不要早 return，要走到 forced-finalize + 封顶
+                # 日志）由 break 完整保留，被放大的只是重试本身。
+                #
+                # 判据是 visible_text 而不是 had_text：模型只吐了 tool-call
+                # 标记文本、被 leak filter 整段抑制时 had_text 也是真，可用户
+                # 一个字都没看到——那种轮次白白放弃重试，下一轮本来可能给出
+                # 合法调用（Codex P2）。
+                #
+                # 装了 round-start 回调的调用方（QQ 召回）是缓冲型的：那个
+                # 回调体就是 reply_chunks.clear()，而它在上面几行已经跑过，
+                # 本轮的 pre-tool 文本**根本没送到用户手里**。对它们"重放"
+                # 无从谈起，break 只是白白丢掉一次本可恢复的工具调用——那正
+                # 是召回轮，代价是这条回复没有记忆结果（Codex）。
+                if visible_text and getattr(self, "on_tool_round_start", None) is None:
+                    zero_exec_break = True
+                    break
                 continue
             if collected_tool_calls and self.on_tool_call is not None:
                 # Execute tools, append a unified assistant + tool history (dict shape
@@ -594,16 +634,6 @@ class _GenaiMixin:
                     }
                     for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
                 ]
-                if tool_leak_filter is not None:
-                    tail, event = tool_leak_filter.finalize()
-                    if event:
-                        log_tool_leak_filtered(event, provider=tool_leak_provider)
-                    if tail:
-                        streamed_text_buffer += tail
-                        tail_chunk = LLMStreamChunk(content=tail)
-                        setattr(tail_chunk, "_tool_leak_filtered", True)
-                        yield tail_chunk
-                    tool_leak_filter.reset()
                 # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
                 # 里允许 text part 与 function_call part 并存；如果这里仍写
                 # ``content=""``，下一轮 LLM 看到的上下文会缺掉前半句，模型
@@ -656,10 +686,20 @@ class _GenaiMixin:
             # 与 OpenAI 路径对偶：进过 tool 轮却一次都没执行成（function_call
             # 分片全部因空 name 被 drop），单列一条最值得排查的日志。
             logger.warning(
-                "OmniOfflineClient(genai): tool iteration cap %d reached with 0 "
-                "executed tool calls (dropped nameless function_call parts); "
-                "forcing final answer without tools",
-                self.max_tool_iterations,
+                "OmniOfflineClient(genai): %s with 0 executed tool calls "
+                "(dropped nameless function_call parts); forcing final answer "
+                "without tools",
+                "zero-execution round after streaming text" if zero_exec_break
+                else f"tool iteration cap {self.max_tool_iterations} reached",
+            )
+        elif zero_exec_break:
+            # 前面几轮真的执行过 tool，最后一轮零执行且已流过文本：循环没被
+            # 耗尽，别打成 runaway 封顶。
+            logger.warning(
+                "OmniOfflineClient(genai): zero-execution round after streaming "
+                "text (dropped nameless function_call parts) with %d executed "
+                "tool calls so far; forcing final answer without tools",
+                executed_tool_calls,
             )
         elif self.max_tool_iterations == 1:
             # cap=1 的设计内单轮预算（QQ 插件）：正常召回轮必然耗尽循环，

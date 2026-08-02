@@ -44,6 +44,9 @@ import pytest
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+from main_logic.omni_realtime_client._shared import (
+    _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
+)
 from main_logic.tool_calling import ToolResult
 
 
@@ -303,6 +306,264 @@ async def test_reconnect_restores_dispatch_for_a_native_client():
     assert [event["type"] for event in sent] == ["response.create"]
     _complete_turn(arbiter, "resp-1")
     await asyncio.wait_for(revived.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_resets_the_per_turn_output_state():
+    # The per-turn cleanup in the response.done handler had no coverage at
+    # all: deleting the whole block turned nothing red. It is worth pinning on
+    # its own — _image_sent_this_turn in particular, because a stale one makes
+    # stream_image withhold the NEXT turn's visual context for its whole
+    # duration, so that response answers about a screen it cannot see.
+    #
+    # It is also the safety net for the extraction this commit performs: a
+    # helper nobody tests can be moved wrong without anything noticing.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    # Dirty the state AFTER response.created: that handler clears the
+    # transcript buffer itself, so seeding before it would leave this test
+    # asserting a value nobody had to produce. Every field the helper clears
+    # is seeded — a field left at its default makes its reset deletable
+    # without this test noticing.
+    client._audio_delta_count = 5
+    client._output_transcript_buffer = "leftover"
+    client._print_input_transcript = True
+    client._image_sent_this_turn = True
+    client._image_recognized_this_turn = True
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._audio_delta_count == 0
+    assert client._output_transcript_buffer == ""
+    assert client._print_input_transcript is False
+    assert client._image_sent_this_turn is False, (
+        "a stale image flag makes stream_image withhold the next turn's "
+        "visual context for its whole duration"
+    )
+    assert client._image_recognized_this_turn is False
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_clears_the_in_progress_flags():
+    # The other half of ending a turn: the flags that say a response is in
+    # flight. Untested before this, same as the per-turn reset was.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    assert client._is_responding is True
+    client._current_item_id = "item-1"
+    client._skip_until_next_response = True
+    client._interrupted = True
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._is_responding is False
+    assert client._current_response_id is None
+    assert client._current_item_id is None
+    assert client._skip_until_next_response is False, (
+        "left raised, the next turn's text and audio are suppressed"
+    )
+    assert client._interrupted is False
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_notifies_the_host_and_rotates_only_without_server_vad():
+    # The host-facing half. Rotation is conditional: routes WITH server VAD
+    # rotate from speech_stopped, so firing here too would be a second,
+    # unpaired rotation on a live turn.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    async def _build(base: str):
+        done: list[str] = []
+        rotations: list[str] = []
+
+        async def _on_done() -> None:
+            done.append("done")
+
+        async def _on_rotate() -> None:
+            rotations.append("rotate")
+
+        client = OmniRealtimeClient(
+            base,
+            "test-key",
+            model="free-model",
+            api_type="free",
+            on_response_done=_on_done,
+            on_sid_rotate=_on_rotate,
+        )
+        socket = _RecordingSocket()
+        client.ws = socket
+        loop_task = asyncio.create_task(client.handle_messages())
+        socket.feed({"type": "response.created", "response": {"id": "r"}})
+        await _settle()
+        socket.feed({"type": "response.done", "response": {"id": "r"}})
+        await _settle()
+        socket.finish()
+        await asyncio.wait_for(loop_task, timeout=1)
+        return client, done, rotations
+
+    # lanlan.app free is _is_free_proxy and NOT _is_gemini: arbitrated, and
+    # response.done is its only rotation point.
+    proxy, proxy_done, proxy_rotations = await _build(
+        "wss://lanlan.app/api/v1/realtime"
+    )
+    assert proxy._has_server_vad is False
+    assert proxy_done == ["done"]
+    assert proxy_rotations == ["rotate"], (
+        "without this the speech id never advances and TTS upstream drops "
+        "every later turn's text"
+    )
+
+    direct, direct_done, direct_rotations = await _build(
+        "wss://example.invalid/realtime"
+    )
+    assert direct._has_server_vad is True
+    assert direct_done == ["done"]
+    assert direct_rotations == [], (
+        "a server-VAD route already rotates from speech_stopped"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_second_terminal_for_a_finished_turn_does_not_finalize_it_again():
+    # Ending a turn clears _current_response_id, which is what makes a late
+    # terminal for that same response read as stale: the filter forwards it to
+    # the arbiter (so the lane still releases) and drops it otherwise.
+    #
+    # Worth pinning because the temptation runs the other way. handle_
+    # interruption deliberately KEEPS the identity, so the cancelled
+    # response's own terminal still finalizes the turn — the opposite need.
+    # A path that ends a turn early and keeps the identity would let the late
+    # terminal finalize a second time, over whatever turn came next.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+        on_response_done=_on_done,
+    )
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-a"}})
+    await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    await _settle()
+    assert done_calls == ["done"]
+    assert client._current_response_id is None
+
+    # The provider repeats itself, or a buffered duplicate lands late.
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    await _settle()
+
+    assert done_calls == ["done"], (
+        "a turn already finalized must not be finalized again by its own "
+        "late terminal"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_raising_host_hook_does_not_skip_the_rotation():
+    # The hooks are independent: a host that blows up ending the turn must
+    # not take the speech-id rotation down with it, or the failure silently
+    # mutes every later turn on a no-server-VAD route.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        raise RuntimeError("frontend went away")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/api/v1/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "r"}})
+    await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "r"}})
+    await _settle()
+
+    assert rotations == ["rotate"]
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_rearms_analysis_on_a_non_native_image_provider():
+    # The helper has two branches and the case above only exercises one.
+    # Standard StepFun is the sole provider without native image input: it
+    # re-arms the pending sentinel instead, and only while the cached frame is
+    # absent or already consumed. Without this, the elif could be deleted
+    # wholesale and the suite would stay green.
+    client = _native_client(api_type="step", model="step-realtime")
+    assert client._supports_native_image is False, "this is the elif branch"
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    client._image_recognized_this_turn = True
+    client._image_description = "an analysis from the turn being ended"
+    client._latest_image_b64 = None  # absent frame -> re-arm
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._image_recognized_this_turn is False
+    assert client._image_description == _IMAGE_ANALYSIS_PENDING_DESCRIPTION, (
+        "StepFun analyzes only while the sentinel is present, so ending a "
+        "turn with no cached frame has to re-arm it"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
 
 
 @pytest.mark.unit

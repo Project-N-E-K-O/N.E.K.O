@@ -12,7 +12,7 @@ from main_logic.asr_client._infra import (
     _CallbackItem,
     _RealtimeAsrSessionImpl,
 )
-from main_logic.asr_client.detector import (
+from main_logic.asr_client.endpointing.detector import (
     AsrDetectorDispatcher,
     CoreDetectorEventEnvelope,
     DetectorActivityEvent,

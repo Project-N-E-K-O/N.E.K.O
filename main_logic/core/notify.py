@@ -203,7 +203,9 @@ class NotifyMixin:
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
-            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
+            anti_repeat_corpus = get_anti_repeat_corpus()
+            await anti_repeat_corpus.apreload(_directives_key)
+            topics = anti_repeat_corpus.top_recent_topics(_directives_key)
             prompt += render_recent_topics_block(topics, _lang)
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
@@ -332,6 +334,7 @@ class NotifyMixin:
         normalized_lang = normalize_language_code(language, format='full')
 
         self.user_language = normalized_lang
+        self._user_language_explicit = True
         self._conversation_turn_language = normalized_lang
         self._set_conversation_turn_language(normalized_lang)
         if normalized_lang != language:
@@ -561,7 +564,7 @@ class NotifyMixin:
                 #
                 # Game owner exempt, matching send_session_ended_by_server and
                 # _fail_closed_voice_route. The galgame gate owns the mic
-                # through its own consumer binding and tears down via
+                # through the built-in game consumer route and tears down via
                 # GAME_ROUTE_ENDED, and websocket_router acknowledges a text
                 # entry during an active game route with a bare
                 # send_session_started("text") -- no ordinary text session, no
@@ -652,7 +655,7 @@ class NotifyMixin:
             # the window holding the hardware is not necessarily the current
             # socket. Outside the guard on purpose: a dead current socket must
             # not swallow the lease holder's copy. Game owner exempt -- the
-            # galgame gate owns the mic through its own consumer binding and
+            # galgame gate owns the mic through the built-in game consumer and
             # tears down via GAME_ROUTE_ENDED.
             if getattr(self, "_voice_lease_owner", "none") != "game":
                 await self._send_to_voice_owner(payload)

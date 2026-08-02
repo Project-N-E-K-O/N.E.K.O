@@ -27,6 +27,8 @@ import asyncio
 import os
 from typing import Awaitable, Callable
 
+from memory.outbox import OP_PERSIST_PROMPT_LOCALE
+
 from . import runtime
 from ._shared import logger
 
@@ -218,8 +220,15 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
             continue
         logger.info(f"[Outbox] {name}: 补跑 {len(pending)} 条未完成 op")
         for op in pending:
+            # Locale intents are local sidecar writes and deliberately wait
+            # out a cloud-apply fence.  Do not let those long-lived retries
+            # occupy the bounded LLM replay slots.
+            semaphore = (
+                None
+                if op.get("type") == OP_PERSIST_PROMPT_LOCALE
+                else _replay_semaphore
+            )
             spawned.append(
-                runtime._spawn_background_task(_run_outbox_op(name, op, _replay_semaphore))
+                runtime._spawn_background_task(_run_outbox_op(name, op, semaphore))
             )
     return spawned
-

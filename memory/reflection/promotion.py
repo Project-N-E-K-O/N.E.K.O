@@ -453,7 +453,15 @@ class PromotionMixin:
             for fact in section.get('facts') or []:
                 if not isinstance(fact, dict):
                     continue
-                if fact.get('source_id') != reflection_id:
+                # scoped refine 的 merge 会把多个晋升条目揉成一条：产物的
+                # source_id 只继承首源，其余源的 reflection id 保存在
+                # merged_source_ids 里——幂等检查两处都要看，否则「persona
+                # 已写、reflection 状态落盘失败」的半提交在被 merge 后会
+                # 重新晋升出重复条目。
+                if (
+                    fact.get('source_id') != reflection_id
+                    and reflection_id not in (fact.get('merged_source_ids') or [])
+                ):
                     continue
                 if entry_matches_subject(fact, subject):
                     return True

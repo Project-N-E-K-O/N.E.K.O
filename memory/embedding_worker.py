@@ -122,6 +122,7 @@ class EmbeddingWarmupWorker:
         get_character_names,         # callable returning list[str]
         warmup_delay_seconds: float,
         get_dedup_resolver=None,     # callable returning current FactDedupResolver, or None to disable
+        get_sweep_barrier=None,      # callable returning the reload/forget lock
     ) -> None:
         # All store/manager accesses go through getters so /reload (which
         # rebinds the memory_server module globals) is observed on the next
@@ -143,6 +144,10 @@ class EmbeddingWarmupWorker:
         # installations that prefer pure hash + FTS5 dedup until they
         # have evaluated LLM cost).
         self._get_dedup_resolver = get_dedup_resolver
+        # A getter keeps this worker independent of memory_server while letting
+        # production drain a sweep that captured pre-reload managers before a
+        # reload + scoped forget can erase through their replacements.
+        self._get_sweep_barrier = get_sweep_barrier
 
         self._service = get_embedding_service()
         self._first_process_event = asyncio.Event()
@@ -270,6 +275,17 @@ class EmbeddingWarmupWorker:
         starve the rest of memory_server. Remaining work picks up on
         the next sweep — eventual consistency is fine here.
         """
+        barrier = (
+            self._get_sweep_barrier()
+            if self._get_sweep_barrier is not None else None
+        )
+        if barrier is None:
+            return await self._sweep_once_under_barrier()
+        async with barrier:
+            return await self._sweep_once_under_barrier()
+
+    async def _sweep_once_under_barrier(self) -> int:
+        """Run one sweep while the caller keeps component generation stable."""
         try:
             names = list(self._get_character_names())
         except Exception as e:  # noqa: BLE001

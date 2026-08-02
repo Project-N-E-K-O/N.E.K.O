@@ -92,6 +92,7 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "this.config.mobile_offset_y" in save_block
     assert "this.config.mobile_scale" in save_block
     assert "this.config.position_anchor" in save_block
+    assert "apply_runtime: false" in save_block
 
 
 def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets():
@@ -227,6 +228,60 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
     assert "layerMotionEnabled ? this.motionValue(layerState.yAmp, layerState.yFrq" in draw_block
     assert "const wiggleDegrees = layerMotionEnabled" in draw_block
     assert "this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq" in draw_block
+
+
+def test_layered_pngtuber_caps_render_resolution_without_changing_logical_coordinates():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    setup_block = source[
+        source.index("        async setupLayeredAdapter()"):
+        source.index("        hasBlinkLayers()")
+    ]
+    pointer_block = source[
+        source.index("        layeredPointerForLayer("):
+        source.index("        layeredPointerNeedsFrame(")
+    ]
+    draw_block = source[
+        source.index("        drawLayeredState(stateName"):
+        source.index("        showTransientImage(")
+    ]
+
+    assert "const PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE = 1024;" in source
+    assert "PNGTUBER_LAYERED_CANVAS_MAX_RENDER_EDGE / Math.max(logicalWidth, logicalHeight)" in setup_block
+    assert "this.layeredCanvasLogicalWidth = logicalWidth;" in setup_block
+    assert "this.layeredCanvasLogicalHeight = logicalHeight;" in setup_block
+    assert "this.layeredCanvasScaleX = renderWidth / logicalWidth;" in setup_block
+    assert "this.layeredCanvasScaleY = renderHeight / logicalHeight;" in setup_block
+    assert "const heightLimitedWidthVh = (maxHeightVh * logicalWidth) / logicalHeight;" in setup_block
+    assert "canvas.style.width = `min(${logicalWidth}px, ${viewportWidthLimits})`;" in setup_block
+    assert "canvas.style.height = 'auto';" in setup_block
+    assert "Number(this.layeredCanvasLogicalWidth)" in pointer_block
+    assert "Number(this.layeredCanvasLogicalHeight)" in pointer_block
+    assert "ctx.clearRect(0, 0, canvas.width, canvas.height);" in draw_block
+    assert "ctx.setTransform(renderScaleX, 0, 0, renderScaleY, 0, 0);" in draw_block
+
+
+def test_layered_pngtuber_can_render_full_resolution_snapshot_without_resizing_runtime_canvas():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    snapshot_block = source[
+        source.index("        renderLayeredSnapshotCanvas("):
+        source.index("        drawLayeredState(stateName")
+    ]
+    draw_block = source[
+        source.index("        drawLayeredState(stateName"):
+        source.index("        showTransientImage(")
+    ]
+
+    assert "document.createElement('canvas')" in snapshot_block
+    assert "Number(this.layeredCanvasLogicalWidth)" in snapshot_block
+    assert "Number(this.layeredCanvasLogicalHeight)" in snapshot_block
+    assert "this.drawLayeredState(stateName, timestamp, {" in snapshot_block
+    assert "scaleX: 1" in snapshot_block
+    assert "scaleY: 1" in snapshot_block
+    assert "return drawn ? canvas : null;" in snapshot_block
+    assert "this.canvasElement =" not in snapshot_block
+    assert "renderTarget?.canvas || this.canvasElement" in draw_block
+    assert "renderTarget?.scaleX ?? this.layeredCanvasScaleX" in draw_block
+    assert "renderTarget?.scaleY ?? this.layeredCanvasScaleY" in draw_block
 
 
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():

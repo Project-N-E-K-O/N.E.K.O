@@ -2183,7 +2183,7 @@ def _patch_runtime_detector_start(
     candidates: list[_RuntimeStartCandidate],
 ) -> list[_RuntimeDetectorStub]:
     detectors: list[_RuntimeDetectorStub] = []
-    selection = SimpleNamespace(provider_key="qwen", endpointing_mode="manual")
+    selection = SimpleNamespace(provider_key="glm", endpointing_mode="manual")
     monkeypatch.setattr(
         asr_runtime_module,
         "_resolve_asr_selection",
@@ -2238,12 +2238,12 @@ def _install_active_runtime_state(
     detector: _RuntimeDetectorStub,
 ) -> None:
     lifecycle = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy("qwen", "manual"),
+        provider_policy=resolve_provider_policy("glm", "manual"),
         shadow_mode=False,
     )
     lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
     runtime._asr_session = SimpleNamespace(is_ready=True, close=AsyncMock())
-    runtime._asr_provider = "qwen"
+    runtime._asr_provider = "glm"
     runtime._asr_lifecycle = lifecycle
     runtime._asr_detector = detector
     runtime._asr_current_ingress_token = runtime.capture_ingress_token(
@@ -2287,11 +2287,11 @@ async def test_stale_detector_failure_callback_cannot_close_new_runtime(
     runtime = IndependentAsrRuntime(
         _runtime_callbacks(failures=failures, statuses=statuses)
     )
-    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    await runtime.start(route_key="glm", resource_optimization_enabled=True)
     old_detector = detectors[0]
     callback = old_detector.on_endpointing_failure
     assert callback is not None
-    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    await runtime.start(route_key="glm", resource_optimization_enabled=True)
     new_session = runtime._asr_session
     new_lifecycle = runtime._asr_lifecycle
     new_detector = runtime._asr_detector
@@ -2319,7 +2319,7 @@ async def test_current_detector_failure_callback_fails_closed_once(monkeypatch) 
     runtime = IndependentAsrRuntime(
         _runtime_callbacks(failures=failures, statuses=statuses)
     )
-    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    await runtime.start(route_key="glm", resource_optimization_enabled=True)
     callback = detectors[0].on_endpointing_failure
     assert callback is not None
 
@@ -2414,7 +2414,7 @@ async def test_stale_deferred_turn_release_error_cannot_fail_new_runtime() -> No
     )
     await runtime._handle_independent_asr_endpoint(epoch)
     final = asyncio.create_task(
-        runtime._handle_independent_asr_final("final", epoch, "qwen")
+        runtime._handle_independent_asr_final("final", epoch, "glm")
     )
     await asyncio.wait_for(release_entered.wait(), 1)
     new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
@@ -2450,7 +2450,7 @@ async def test_current_deferred_turn_release_error_fails_closed_once() -> None:
     )
     await runtime._handle_independent_asr_endpoint(epoch)
 
-    await runtime._handle_independent_asr_final("final", epoch, "qwen")
+    await runtime._handle_independent_asr_final("final", epoch, "glm")
 
     assert runtime._asr_session is None
     assert runtime._asr_lifecycle is None
@@ -2614,7 +2614,7 @@ async def test_stale_final_lease_unwind_uses_old_dispatcher_only() -> None:
 
     old_lease.release = AsyncMock(side_effect=block_release)
     final = asyncio.create_task(
-        runtime._handle_independent_asr_final("final", epoch, "qwen")
+        runtime._handle_independent_asr_final("final", epoch, "glm")
     )
     await asyncio.wait_for(release_started.wait(), 1)
     await runtime.abort("hard_mute")

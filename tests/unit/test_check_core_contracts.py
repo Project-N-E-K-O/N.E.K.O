@@ -52,7 +52,10 @@ def test_imported_paths_resolves_package_alias_attribute_chains(
     assert expected in referenced
 
 
-def _dynamic_import_results(contract_checker, source: str) -> list[tuple[str | None, bool]]:
+def _dynamic_import_results(
+    contract_checker,
+    source: str,
+) -> list[tuple[tuple[str, ...] | None, bool]]:
     tree = ast.parse(source)
     aliases = contract_checker.module_alias_paths(tree, "main_logic.asr_client")
     return [
@@ -80,7 +83,7 @@ def test_dynamic_import_target_resolves_string_literal_forms(
     source: str,
 ) -> None:
     assert _dynamic_import_results(contract_checker, source) == [
-        ("main_logic.core", True)
+        (("main_logic.core",), True)
     ]
 
 
@@ -89,6 +92,31 @@ def test_dynamic_import_target_reports_non_literal_argument(contract_checker) ->
     source = "import importlib\ndef load(name):\n    return importlib.import_module(name)"
 
     assert _dynamic_import_results(contract_checker, source) == [(None, True)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "import importlib\n\n"
+            "def load():\n"
+            '    return importlib.import_module(".core", "main_logic")\n'
+        ),
+        (
+            "def load():\n"
+            '    return __import__("main_logic", fromlist=["core"])\n'
+        ),
+    ],
+)
+def test_dynamic_import_gate_resolves_relative_and_fromlist_targets(
+    contract_checker,
+    source: str,
+) -> None:
+    assert (
+        "asr_client must not import main_logic.core (dynamic import)"
+        in _dynamic_import_violation_messages(contract_checker, source)
+    )
 
 
 @pytest.mark.unit
@@ -107,6 +135,15 @@ def _dynamic_import_violation_messages(contract_checker, source: str) -> list[st
             Path("loader.py"), tree, aliases, "main_logic.core", "asr_client"
         )
     ]
+
+
+@pytest.mark.unit
+def test_dynamic_import_docstring_describes_multiple_forbidden_prefixes(
+    contract_checker,
+) -> None:
+    docstring = contract_checker._dynamic_import_violations.__doc__ or ""
+
+    assert "forbidden prefixes" in docstring
 
 
 @pytest.mark.unit
@@ -306,6 +343,14 @@ def _write_minimal_core_layout(root: Path) -> None:
     )
 
 
+def _write_minimal_speaker_shadow_layout(root: Path) -> Path:
+    package = root / "main_logic" / "asr_client" / "speaker_shadow"
+    package.mkdir(parents=True, exist_ok=True)
+    for name in ("__init__.py", "contracts.py", "runtime.py"):
+        (package / name).write_text('"""speaker shadow."""\n', encoding="utf-8")
+    return package
+
+
 @pytest.mark.unit
 def test_run_flags_dynamic_imports_of_core_inside_asr_client(
     contract_checker,
@@ -332,6 +377,622 @@ def test_run_flags_dynamic_imports_of_core_inside_asr_client(
 
     assert "asr_client must not import main_logic.core (dynamic import)" in messages
     assert any("non-literal module name" in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import main_logic.core\n",
+        "from main_logic import asr_client\n",
+        "from main_logic.voice_turn import audio_input\n",
+        "import main_routers.game_router\n",
+        "from utils import preferences\n",
+        "import plugin.plugins.demo\n",
+        "import importlib\nimportlib.import_module('main_logic.core')\n",
+    ],
+)
+def test_run_flags_forbidden_voice_input_dependencies(
+    contract_checker,
+    tmp_path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    for package in (tmp_path / "main_routers", tmp_path / "utils"):
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    plugin = tmp_path / "plugin" / "plugins" / "demo"
+    plugin.mkdir(parents=True)
+    for package in (plugin.parent.parent, plugin.parent, plugin):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    voice_input = tmp_path / "main_logic" / "voice_input"
+    voice_input.mkdir()
+    probe = voice_input / "probe.py"
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "VOICE_INPUT_LAYERING"
+    ]
+
+    assert messages
+
+
+@pytest.mark.unit
+def test_missing_voice_input_registry_uses_voice_input_violation_code(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    missing = tmp_path / "main_logic" / "voice_input"
+
+    violations = [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == missing
+    ]
+
+    assert len(violations) == 1
+    assert violations[0].code == "VOICE_INPUT_LAYERING"
+    assert (
+        violations[0].message
+        == "required layering path is missing (VOICE_INPUT_LAYERING)"
+    )
+
+
+@pytest.mark.unit
+def test_run_accepts_frozen_voice_input_dependency_direction(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    voice_input = tmp_path / "main_logic" / "voice_input"
+    consumers = voice_input / "consumers"
+    consumers.mkdir(parents=True)
+    probe = consumers / "game.py"
+    probe.write_text(
+        "from main_logic.voice_input.contracts import VoiceInputConsumer\n"
+        "from main_logic.voice_turn.contracts import VoiceTurnToken\n"
+        "from utils.game_route_state import is_game_route_active\n",
+        encoding="utf-8",
+    )
+
+    violations = [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "VOICE_INPUT_LAYERING"
+    ]
+
+    assert violations == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import main_logic.voice_input\n",
+        "import importlib\n"
+        "importlib.import_module('main_logic.voice_input.registry')\n",
+    ],
+)
+def test_run_flags_asr_client_importing_core_owned_registry(
+    contract_checker,
+    tmp_path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    (tmp_path / "main_logic" / "voice_input").mkdir()
+    asr_client = tmp_path / "main_logic" / "asr_client"
+    asr_client.mkdir()
+    probe = asr_client / "probe.py"
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert any(
+        "asr_client must not import main_logic.voice_input" in message
+        for message in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("relative_path", "source", "expected"),
+    [
+        (
+            "main_logic/voice_turn/probe.py",
+            "from main_logic.asr_client import runtime\n",
+            "voice_turn must not import main_logic.asr_client",
+        ),
+        (
+            "main_logic/core/probe.py",
+            "from main_logic.asr_client.endpointing import detector\n",
+            "Core must not import main_logic.asr_client.endpointing",
+        ),
+        (
+            "main_logic/asr_client/endpointing/probe.py",
+            "from main_logic.core import manager\n",
+            "endpointing must not import main_logic.core",
+        ),
+        (
+            "main_logic/asr_client/endpointing/probe.py",
+            "from main_logic.asr_client.workers import glm\n",
+            "endpointing must not import provider workers",
+        ),
+        (
+            "main_logic/asr_client/endpointing/probe.py",
+            "from scripts import prepare_voice_turn_assets\n",
+            "endpointing must not import scripts",
+        ),
+        (
+            "main_logic/asr_client/workers/probe.py",
+            "from main_logic.asr_client.endpointing import silero_vad\n",
+            "provider workers must not import endpointing implementations",
+        ),
+        (
+            "main_logic/asr_client/lifecycle.py",
+            "from main_logic.asr_client.endpointing import detector\n",
+            "lifecycle.py must not import endpointing",
+        ),
+        (
+            "main_logic/asr_client/provider_policy.py",
+            "from main_logic.asr_client.endpointing import detector\n",
+            "provider_policy.py must not import endpointing",
+        ),
+    ],
+)
+def test_run_flags_endpointing_layer_violations(
+    contract_checker,
+    tmp_path,
+    relative_path: str,
+    source: str,
+    expected: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / relative_path
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert expected in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("relative_path", "source", "expected"),
+    [
+        (
+            "main_logic/asr_client/endpointing/__init__.py",
+            "",
+            "endpointing/__init__.py may contain only a package docstring",
+        ),
+        (
+            "main_logic/asr_client/endpointing/__init__.py",
+            '"""package."""\nfrom .smart_turn_v3 import SmartTurnV3\n',
+            "endpointing/__init__.py may contain only a package docstring",
+        ),
+        (
+            "main_logic/asr_client/endpointing/onnx_runtime.py",
+            "import onnxruntime\n",
+            "onnxruntime must remain a lazy function-local import",
+        ),
+        (
+            "main_logic/asr_client/endpointing/onnx_runtime.py",
+            "try:\n"
+            "    import onnxruntime\n"
+            "except ImportError:\n"
+            "    onnxruntime = None\n",
+            "onnxruntime must remain a lazy function-local import",
+        ),
+    ],
+)
+def test_run_flags_endpointing_import_time_regressions(
+    contract_checker,
+    tmp_path,
+    relative_path: str,
+    source: str,
+    expected: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / relative_path
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(source, encoding="utf-8")
+
+    violations = contract_checker.run(tmp_path)
+    messages = [
+        violation.message
+        for violation in violations
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert expected in messages
+    assert not any(
+        violation.code == "CORE_FACADE_LAYOUT" for violation in violations
+    )
+
+
+@pytest.mark.unit
+def test_endpointing_nonliteral_dynamic_import_is_reported_once(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / "main_logic" / "asr_client" / "endpointing" / "probe.py"
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "import importlib\n\n\n"
+        "def load(module_name):\n"
+        "    return importlib.import_module(module_name)\n",
+        encoding="utf-8",
+    )
+
+    violations = [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "non-literal module name" in violation.message
+    ]
+
+    assert len(violations) == 1
+
+
+@pytest.mark.unit
+def test_endpointing_allows_function_local_onnxruntime_import(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = (
+        tmp_path
+        / "main_logic"
+        / "asr_client"
+        / "endpointing"
+        / "onnx_runtime.py"
+    )
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "def load_runtime():\n"
+        "    import onnxruntime\n"
+        "    return onnxruntime\n",
+        encoding="utf-8",
+    )
+
+    assert not [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "onnxruntime must remain" in violation.message
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "from main_logic.asr_client.speaker_shadow import runtime\n",
+            "endpointing may import only speaker_shadow.contracts",
+        ),
+        (
+            "import importlib\n"
+            "runtime = importlib.import_module("
+            "'main_logic.asr_client.speaker_shadow.campplus')\n",
+            "endpointing may import only speaker_shadow.contracts "
+            "(dynamic import)",
+        ),
+    ],
+)
+def test_endpointing_can_see_only_speaker_shadow_contracts(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = (
+        tmp_path
+        / "main_logic"
+        / "asr_client"
+        / "endpointing"
+        / "speaker_shadow_probe.py"
+    )
+    probe.parent.mkdir(parents=True)
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert expected in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from main_logic.asr_client.speaker_shadow.contracts import "
+        "SpeakerShadowObserver\n",
+        "import importlib\n"
+        "contracts = importlib.import_module("
+        "'main_logic.asr_client.speaker_shadow.contracts')\n",
+    ],
+)
+def test_endpointing_allows_speaker_shadow_contracts(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = (
+        tmp_path
+        / "main_logic"
+        / "asr_client"
+        / "endpointing"
+        / "speaker_shadow_probe.py"
+    )
+    probe.parent.mkdir(parents=True)
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "speaker_shadow" in violation.message
+    ]
+
+    assert messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "from main_logic.asr_client.speaker_shadow.contracts import "
+            "SpeakerShadowObserver\n",
+            "Core must not import main_logic.asr_client.speaker_shadow",
+        ),
+        (
+            "from somewhere import SpeakerShadowFactory\n",
+            "Core must obtain SpeakerShadowFactory only from "
+            "main_logic.asr_client.runtime",
+        ),
+    ],
+)
+def test_core_speaker_shadow_boundary_is_opaque(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = tmp_path / "main_logic" / "core" / "shadow_probe.py"
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert expected in messages
+
+
+@pytest.mark.unit
+def test_core_allows_opaque_speaker_shadow_factory_from_asr_runtime(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = tmp_path / "main_logic" / "core" / "shadow_probe.py"
+    probe.write_text(
+        "from main_logic.asr_client.runtime import SpeakerShadowFactory\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "SpeakerShadow" in violation.message
+    ]
+
+    assert messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("forbidden", "expected_prefix"),
+    [
+        (
+            "main_logic.asr_client.runtime",
+            "main_logic.asr_client.runtime",
+        ),
+        (
+            "main_logic.asr_client.endpointing.detector_runtime",
+            "main_logic.asr_client.endpointing",
+        ),
+        (
+            "main_logic.asr_client.workers.openai",
+            "main_logic.asr_client.workers",
+        ),
+        (
+            "main_logic.asr_client.provider_policy",
+            "main_logic.asr_client.provider_policy",
+        ),
+        (
+            "main_logic.asr_client.lifecycle",
+            "main_logic.asr_client.lifecycle",
+        ),
+        (
+            "main_logic.voice_turn.audio_input",
+            "main_logic.voice_turn",
+        ),
+        (
+            "main_logic.voice_input.consumers",
+            "main_logic.voice_input",
+        ),
+        ("main_routers.voice", "main_routers"),
+        ("scripts.prepare_speaker_model", "scripts"),
+    ],
+)
+def test_speaker_shadow_cannot_depend_back_on_owners(
+    contract_checker,
+    tmp_path: Path,
+    forbidden: str,
+    expected_prefix: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    package = _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = package / "probe.py"
+    probe.write_text(f"import {forbidden}\n", encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert f"speaker_shadow must not import {expected_prefix}" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from .runtime import SpeakerShadowRuntime\n",
+        "import onnxruntime\n",
+    ],
+)
+def test_speaker_shadow_initializer_is_inert(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    package = _write_minimal_speaker_shadow_layout(tmp_path)
+    package_init = package / "__init__.py"
+    package_init.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == package_init and violation.code == "ASR_LAYERING"
+    ]
+
+    assert "speaker_shadow/__init__.py may contain only a package docstring" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import onnxruntime\n",
+        "try:\n    import onnxruntime\nexcept ImportError:\n    onnxruntime = None\n",
+        "import importlib\nonnxruntime = importlib.import_module('onnxruntime')\n",
+    ],
+)
+def test_speaker_shadow_onnxruntime_must_be_lazy(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    package = _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = package / "campplus.py"
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert (
+        "speaker_shadow onnxruntime must remain a lazy function-local import"
+        in messages
+    )
+
+
+@pytest.mark.unit
+def test_speaker_shadow_allows_function_local_onnxruntime_import(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    package = _write_minimal_speaker_shadow_layout(tmp_path)
+    probe = package / "campplus.py"
+    probe.write_text(
+        "def load_runtime():\n"
+        "    import onnxruntime\n"
+        "    return onnxruntime\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "onnxruntime" in violation.message
+    ]
+
+    assert messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("relative_path", "is_dir"),
+    [
+        ("data/speaker_models", True),
+        ("tools/voice_eval", True),
+        ("main_logic/asr_client/detector_runtime.py", False),
+    ],
+)
+def test_legacy_speaker_shadow_paths_cannot_be_restored(
+    contract_checker,
+    tmp_path: Path,
+    relative_path: str,
+    is_dir: bool,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    _write_minimal_speaker_shadow_layout(tmp_path)
+    legacy_path = tmp_path / relative_path
+    if is_dir:
+        legacy_path.mkdir(parents=True)
+    else:
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text('"""legacy."""\n', encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == legacy_path and violation.code == "ASR_LAYERING"
+    ]
+
+    assert "legacy speaker-shadow path must not be restored" in messages
 
 
 @pytest.mark.unit

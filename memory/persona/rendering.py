@@ -78,6 +78,7 @@ class RenderingMixin:
             SCOPED_PERSONA_PREFIX,
             normalize_subjects,
             persona_subject_from_section,
+            subject_from_entry,
         )
         allowed = normalize_subjects(subjects)
         if include_legacy_private is None:
@@ -116,6 +117,19 @@ class RenderingMixin:
                     continue
                 filtered = dict(section)
                 filtered['facts'] = scoped_facts
+                rendered_subjects = {
+                    (entry_subject.key, entry_subject.scope)
+                    for entry in scoped_facts
+                    if (entry_subject := subject_from_entry(entry)) is not None
+                }
+                if rendered_subjects != {
+                    (scoped_subject.key, scoped_subject.scope),
+                }:
+                    # Section metadata belongs to the last writer, while this
+                    # view is authorized entry-by-entry. Do not carry that
+                    # writer's label into another scope's rendered header (or
+                    # into a mixed-scope header where no single label applies).
+                    filtered.pop('display_name', None)
                 view[section_key] = filtered
             elif (scoped_subject.key, scoped_subject.scope) in allowed_keys:
                 view[section_key] = section
@@ -584,10 +598,17 @@ class RenderingMixin:
         """  # noqa: DOCSTRING_CJK
         master_name = name_mapping.get('human', '主人')
         ai_name = name
+        from config.prompts.prompts_memory import get_persona_section_header
+        from utils.language_utils import get_global_language_full
+        render_lang = get_global_language_full()
         _headers = {
-            'master': f"关于{master_name}",
-            'neko': f"关于{ai_name}",
-            'relationship': "关系动态",
+            section: get_persona_section_header(
+                section,
+                render_lang,
+                ai_name=ai_name,
+                master_name=master_name,
+            )
+            for section in ('master', 'neko', 'relationship')
         }
 
         # Suppressed entries always render (the whole point is "AI
@@ -661,9 +682,17 @@ class RenderingMixin:
                     from config.prompts.prompts_memory import (
                         get_scoped_persona_section_header,
                     )
-                    from utils.language_utils import get_global_language
+                    from memory.facts import FactStore
+                    # display_name 是不可信用户输入（群名/群名片），路由入口
+                    # 已中和过一次，这里再过一次——渲染是唯一把它拼进 prompt
+                    # 的地方，而 persona.json 可被手改（与 speaker_label 的
+                    # 双侧中和同一道理，#2605）。中和后为空按无名回退。
+                    display_name = FactStore.sanitize_speaker_label(
+                        section_meta.get('display_name'),
+                    )
                     header = get_scoped_persona_section_header(
-                        subject_kind, subject_id, get_global_language(),
+                        subject_kind, subject_id, render_lang,
+                        display_name=display_name or None,
                     )
                 else:
                     header = _headers.get(entity_key, entity_key)
@@ -674,7 +703,15 @@ class RenderingMixin:
                      if r.get('text')]
             if lines:
                 sections.append(
-                    f"### {ai_name}最近的印象（还不太确定）\n" + "\n".join(lines)
+                    "### "
+                    + get_persona_section_header(
+                        "pending_reflections",
+                        render_lang,
+                        ai_name=ai_name,
+                        master_name=master_name,
+                    )
+                    + "\n"
+                    + "\n".join(lines)
                 )
 
         # Split confirmed reflections into active vs past at render time.
@@ -697,7 +734,15 @@ class RenderingMixin:
         if active_confirmed:
             lines = [f"- {r.get('text', '')}" for r in active_confirmed]
             sections.append(
-                f"### {ai_name}比较确定的印象\n" + "\n".join(lines)
+                "### "
+                + get_persona_section_header(
+                    "confirmed_reflections",
+                    render_lang,
+                    ai_name=ai_name,
+                    master_name=master_name,
+                )
+                + "\n"
+                + "\n".join(lines)
             )
 
         if past_confirmed:
@@ -705,11 +750,10 @@ class RenderingMixin:
             # feedback_prompt_delimiters_above_below.md：分隔符内部禁冒号
             # 和破折号）。每条前缀 [X 天前 / X 周前 / X 月前] 由
             # time_since_label 按 0-6d / 7-29d / 30d+ 三档生成。整段按
-            # get_global_language() 本地化（Codex review on PR #1316
+            # get_global_language_full() 本地化（Codex review on PR #1316
             # P2 catch：之前硬编码 zh 让非 zh locale 看到中文时间标签）。
-            from utils.language_utils import get_global_language
             from config.prompts.prompts_memory import render_past_memory_block
-            lang = get_global_language()
+            lang = render_lang
             past_lines = []
             for r in past_confirmed:
                 anchor = (
@@ -734,7 +778,14 @@ class RenderingMixin:
 
         if suppressed_lines:
             sections.append(
-                f"### 暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）\n"
+                "### "
+                + get_persona_section_header(
+                    "suppressed",
+                    render_lang,
+                    ai_name=ai_name,
+                    master_name=master_name,
+                )
+                + "\n"
                 + "\n".join(suppressed_lines)
             )
 
@@ -1222,4 +1273,3 @@ class RenderingMixin:
             if isinstance(entry, dict) and entry.get('suppress') and entry.get('text') == text:
                 return True
         return False
-

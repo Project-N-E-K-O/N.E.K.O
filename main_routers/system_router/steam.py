@@ -27,7 +27,7 @@ from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import ensure_steamworks as get_steamworks
-from utils.workshop_utils import get_workshop_path
+from utils.workshop_utils import get_workshop_path_async
 
 
 # Progress Stat for timed achievements. Steamworks Partner must bind
@@ -314,7 +314,9 @@ async def proxy_image(image_path: str):
         
         # 添加get_workshop_path()返回的路径作为允许目录，支持相对路径解析
         try:
-            workshop_base_dir = os.path.abspath(os.path.normpath(get_workshop_path()))
+            workshop_base_dir = os.path.abspath(
+                os.path.normpath(await get_workshop_path_async())
+            )
             if os.path.exists(workshop_base_dir):
                 real_workshop_dir = os.path.realpath(workshop_base_dir)
                 if real_workshop_dir not in allowed_dirs:
@@ -434,7 +436,9 @@ async def proxy_image(image_path: str):
         # 尝试相对于默认创意工坊目录的路径处理
         if final_path is None:
             try:
-                workshop_base_dir = os.path.abspath(os.path.normpath(get_workshop_path()))
+                workshop_base_dir = os.path.abspath(
+                    os.path.normpath(await get_workshop_path_async())
+                )
                 
                 # 尝试将解码路径作为相对于创意工坊目录的路径
                 rel_workshop_path = os.path.join(workshop_base_dir, decoded_path)

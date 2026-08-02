@@ -38,6 +38,7 @@ class ProactiveChatCommand:
     lanlan_name: Any = None
     voice_mode: bool = False
     is_playing_music: bool = False
+    is_music_occupied: bool = False
     current_track: Any = None
     music_cooldown: bool = False
     mini_game_invite_enabled: bool = True
@@ -61,6 +62,7 @@ class ProactiveChatCommand:
             lanlan_name=payload.get("lanlan_name"),
             voice_mode=bool(payload.get("voice_mode", False)),
             is_playing_music=bool(payload.get("is_playing_music", False)),
+            is_music_occupied=bool(payload.get("is_music_occupied", False)),
             current_track=payload.get("current_track"),
             music_cooldown=bool(payload.get("music_cooldown", False)),
             mini_game_invite_enabled=bool(

@@ -1,6 +1,17 @@
 Object.assign(AvatarButtonMixin.methods, {
     setup(ManagerPrototype, prefix, options) {
         ManagerPrototype.setupFloatingButtonsBase = function(model) {
+            // 同一 manager 重建时，先释放各按钮持有的 Observer / window listener。
+            // 仅移除旧 DOM 不会触发这些私有资源的清理。
+            if (this._floatingButtons) {
+                Object.values(this._floatingButtons).forEach((buttonData) => {
+                    if (buttonData && typeof buttonData.cleanup === 'function') {
+                        buttonData.cleanup();
+                    }
+                });
+            }
+            this._floatingButtons = {};
+
             // 清理旧事件监听
             if (!this._uiWindowHandlers) {
                 this._uiWindowHandlers = [];

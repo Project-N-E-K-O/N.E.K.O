@@ -331,6 +331,110 @@ async def test_aenqueue_skips_rows_with_missing_ids(tmp_path):
     assert await resolver.aload_pending("小天") == []
 
 
+@pytest.mark.asyncio
+async def test_scoped_forget_purges_pending_text_and_rejects_stale_enqueue(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    target_rows = [
+        {**_fact("t1", "forgotten one"), **target.as_entry_fields()},
+        {**_fact("t2", "forgotten two"), **target.as_entry_fields()},
+    ]
+    other_rows = [
+        {**_fact("o1", "keep one"), **other.as_entry_fields()},
+        {**_fact("o2", "keep two"), **other.as_entry_fields()},
+    ]
+    await _seed_facts(fs, "小天", target_rows + other_rows)
+    target_pair = {
+        "candidate_id": "t1", "existing_id": "t2",
+        "candidate_text": "forgotten one", "existing_text": "forgotten two",
+        "entity": "participant", "subject_key": target.key,
+        "scope": target.scope, "cosine": 0.99,
+    }
+    other_pair = {
+        "candidate_id": "o1", "existing_id": "o2",
+        "candidate_text": "keep one", "existing_text": "keep two",
+        "entity": "participant", "subject_key": other.key,
+        "scope": other.scope, "cosine": 0.99,
+    }
+    assert await resolver.aenqueue_candidates(
+        "小天", [target_pair, other_pair],
+    ) == 2
+
+    assert await resolver.aforget_subject("小天", target) == {
+        "pending_dedup": 1,
+    }
+    pending = await resolver.aload_pending("小天")
+    assert any(
+        item.get("candidate_id") == "o1"
+        and "candidate_text" not in item
+        and "existing_text" not in item
+        for item in pending if isinstance(item, dict)
+    )
+    assert not any(
+        item.get("subject_key") == target.key
+        and item.get("scope") == target.scope
+        for item in pending if isinstance(item, dict)
+    )
+
+    # The route's fact tombstone is already open while queue purge and fact
+    # deletion are separate awaits. A stale embedding sweep entering in that
+    # exact gap must be rejected even though both fact ids are still live.
+    await fs.abegin_subject_forget("小天", target)
+    assert await resolver.aenqueue_candidates("小天", [target_pair]) == 0
+    await fs.aend_subject_forget("小天", target)
+
+    with patch("memory.facts.assert_cloudsave_writable"):
+        await fs.aforget_subject("小天", target)
+    assert await resolver.aenqueue_candidates("小天", [target_pair]) == 0
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_purges_legacy_archive_only_dedup_rows(tmp_path):
+    from pathlib import Path
+
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    await _seed_facts(fs, "小天", [
+        {**_fact("o1", "keep one"), **other.as_entry_fields()},
+        {**_fact("o2", "keep two"), **other.as_entry_fields()},
+    ])
+    archive_path = Path(fs._facts_archive_path("小天"))
+    archive_path.write_text(json.dumps([
+        {**_fact("t1", "forgotten one"), **target.as_entry_fields()},
+        {**_fact("t2", "forgotten two"), **target.as_entry_fields()},
+    ], ensure_ascii=False), encoding="utf-8")
+    legacy_target_pair = {
+        "candidate_id": "t1", "existing_id": "t2",
+        "candidate_text": "forgotten one", "existing_text": "forgotten two",
+        "entity": "participant", "cosine": 0.99,
+    }
+    other_pair = {
+        "candidate_id": "o1", "existing_id": "o2",
+        "candidate_text": "keep one", "existing_text": "keep two",
+        "entity": "participant", "subject_key": other.key,
+        "scope": other.scope, "cosine": 0.99,
+    }
+    assert await resolver._asave_pending(
+        "小天", [legacy_target_pair, other_pair],
+    )
+
+    assert await resolver.aforget_subject("小天", target) == {
+        "pending_dedup": 1,
+    }
+    expected_other = dict(other_pair)
+    expected_other.pop("candidate_text")
+    expected_other.pop("existing_text")
+    assert await resolver.aload_pending("小天") == [expected_other]
+
+
 # ── aresolve: action handling ────────────────────────────────────────
 
 
@@ -442,6 +546,95 @@ async def test_aresolve_keep_both_leaves_facts_untouched(tmp_path):
     assert next(f for f in facts if f["id"] == "c1")["importance"] == 5
     assert next(f for f in facts if f["id"] == "e1")["importance"] == 3
     # Queue is consumed even though no mutation happened
+    assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_aresolve_uses_scoped_batch_prompt_locale(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+    observed_subjects = []
+
+    async def resolve_locale(actual_subject):
+        observed_subjects.append(actual_subject)
+        return "zh-TW"
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=resolve_locale,
+        )
+
+    assert observed_subjects == [subject]
+    get_prompt.assert_called_once_with("zh-TW")
+
+
+@pytest.mark.asyncio
+async def test_aresolve_falls_back_when_scoped_locale_resolver_fails(
+    tmp_path, caplog,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+
+    async def fail_locale(_subject):
+        raise UnicodeDecodeError("utf-8", b"x", 0, 1, "invalid")
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.language_utils.get_global_language_full",
+        return_value="zh-TW",
+    ), patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        resolved = await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=fail_locale,
+        )
+
+    assert resolved == 1
+    get_prompt.assert_called_once_with("zh-TW")
+    assert "scoped prompt locale" in caplog.text
     assert await resolver.aload_pending("小天") == []
 
 
@@ -836,6 +1029,245 @@ async def test_aapply_decisions_evicts_fact_cache_on_save_failure(tmp_path):
     assert {f["id"] for f in facts} == {"c1", "e1"}
     e1 = next(f for f in facts if f["id"] == "e1")
     assert e1["importance"] == 4  # untouched
+
+
+# ── ids-only queue（隐私收口：成员衍生原文不落 sidecar） ─────────────
+
+
+def _read_queue_file_raw(tmp_path, name: str = "小天") -> str:
+    """Read the pending-dedup sidecar as raw text (disk truth, not API)."""
+    import os
+    path = os.path.join(str(tmp_path), name, "facts_pending_dedup.json")
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.mark.asyncio
+async def test_queue_file_on_disk_never_contains_fact_text(tmp_path):
+    """The privacy contract this PR closes: the sidecar queue must be
+    ids-only. Scoped (member-derived) fact text may exist ONLY in
+    facts.json — the extraction / dead-letter logs already print just
+    domain markers and lengths, and a plaintext copy in the queue file
+    undid that. Assert against the RAW file: an implementation that
+    strips in memory but persists text would still pass an API-level
+    check."""
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "12345")
+    member_text_a = "群成员小明说自己住在幸福路 42 号"
+    member_text_b = "小明提到过自己的家庭住址在幸福路"
+    a = {**_fact("s1", member_text_a, embedding=[1.0, 0.0]),
+         **subject.as_entry_fields()}
+    b = {**_fact("s2", member_text_b, embedding=[0.99, 0.05]),
+         **subject.as_entry_fields()}
+    await _seed_facts(fs, "小天", [a, b])
+
+    pairs = FactDedupResolver.detect_candidates([a, b])
+    assert pairs, "sanity: cosine 应产生候选对"
+    # detect_candidates 的返回本身就不携带文本字段。
+    for p in pairs:
+        assert "candidate_text" not in p
+        assert "existing_text" not in p
+    appended = await resolver.aenqueue_candidates("小天", pairs)
+    assert appended >= 1
+
+    raw = _read_queue_file_raw(tmp_path)
+    assert "幸福路" not in raw
+    assert "candidate_text" not in raw
+    assert "existing_text" not in raw
+    # 域标识（非内容）允许在队列里：resolve 按域锁批要用。
+    assert "group_chat:qq:12345" in raw
+
+
+@pytest.mark.asyncio
+async def test_legacy_plaintext_queue_scrubbed_by_resolve_even_on_llm_failure(tmp_path):
+    """Upgrade path: a queue file written by the old schema carries
+    plaintext copies. The FIRST resolve tick must scrub them from disk
+    — including when the LLM call itself fails (the scrub cannot wait
+    for a successful batch, or a poison pair would keep member text on
+    disk until dead-letter)."""
+    import os
+    from utils.file_utils import atomic_write_json
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "成员甲的敏感发言原文", embedding=[1.0, 0.0])
+    existing = _fact("e1", "成员甲的另一句原文", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    # 手写旧 schema 队列文件（绕过新 enqueue 的白名单）。
+    legacy_queue = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "成员甲的敏感发言原文",
+        "existing_text": "成员甲的另一句原文",
+        "entity": "master", "cosine": 0.99,
+        "queued_at": "2026-04-25T10:00:00",
+    }]
+    qpath = os.path.join(str(tmp_path), "小天", "facts_pending_dedup.json")
+    atomic_write_json(qpath, legacy_queue, indent=2, ensure_ascii=False)
+
+    class _BoomLLM:
+        async def ainvoke(self, *_a, **_k):
+            raise RuntimeError("simulated failure")
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_BoomLLM()):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 0
+    # pair 仍在队列（LLM 失败按 attempts 兜底），但磁盘上已无明文。
+    pending = await resolver.aload_pending("小天")
+    assert len(pending) == 1
+    raw = _read_queue_file_raw(tmp_path)
+    assert "成员甲" not in raw
+    assert "candidate_text" not in raw
+    assert "existing_text" not in raw
+
+
+@pytest.mark.asyncio
+async def test_enqueue_persists_scrub_even_when_all_pairs_are_duplicates(tmp_path):
+    """coderabbit round-3 Major: when every incoming pair dedups away
+    (appended == 0), the scrub of legacy plaintext fields must STILL be
+    written back — otherwise member text lingers on disk until the next
+    genuine write."""
+    import os
+    from utils.file_utils import atomic_write_json
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    legacy_queue = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "成员乙的明文残留",
+        "existing_text": "成员乙的另一句",
+        "entity": "master", "cosine": 0.9,
+        "queued_at": "2026-04-25T10:00:00",
+    }]
+    qpath = os.path.join(str(tmp_path), "小天", "facts_pending_dedup.json")
+    atomic_write_json(qpath, legacy_queue, indent=2, ensure_ascii=False)
+
+    # 唯一入队 pair 与队列现存条目重复 → appended == 0。
+    appended = await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.9,
+    }])
+    assert appended == 0
+    raw = _read_queue_file_raw(tmp_path)
+    assert "成员乙" not in raw
+    assert "candidate_text" not in raw
+
+
+@pytest.mark.asyncio
+async def test_resolve_prompt_uses_current_authoritative_text(tmp_path):
+    """Texts in the LLM prompt come from facts.json AT RESOLVE TIME,
+    not from an enqueue-time copy — a fact edited between enqueue and
+    resolve must be arbitrated on its current wording."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "入队时的旧文本", embedding=[1.0, 0.0])
+    existing = _fact("e1", "另一条", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    # enqueue 之后、resolve 之前 fact 被改写。
+    facts = await fs.aload_facts("小天")
+    next(f for f in facts if f["id"] == "c1")["text"] = "EDITED-当前权威文本"
+    await fs.asave_facts("小天")
+
+    prompts: list[str] = []
+    resp = MagicMock()
+    resp.content = json.dumps([{"index": 0, "action": "keep_both"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, prompt, *_a, **_k):
+            prompts.append(prompt)
+            return resp
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_RecordingLLM()):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 1
+    assert len(prompts) == 1
+    assert "EDITED-当前权威文本" in prompts[0]
+    assert "入队时的旧文本" not in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_resolve_detects_locale_from_hydrated_fact_text(tmp_path):
+    from utils.language_utils import (
+        detect_prompt_language as real_detect_prompt_language,
+        language_context,
+    )
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "I love coffee", embedding=[1.0, 0.0])
+    existing = _fact("e1", "I enjoy coffee", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    observed = []
+    resp = MagicMock()
+    resp.content = json.dumps([{"index": 0, "action": "keep_both"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, _prompt, *_a, **_k):
+            return resp
+
+        async def aclose(self):
+            return None
+
+    def detect(text, *, default="zh", ui_language):
+        selected = real_detect_prompt_language(
+            text,
+            default=default,
+            ui_language=ui_language,
+        )
+        observed.append((text, ui_language, selected))
+        return selected
+
+    with patch(
+        "utils.language_utils.detect_prompt_language",
+        side_effect=detect,
+    ), patch(
+        "utils.llm_client.create_chat_llm",
+        return_value=_RecordingLLM(),
+    ), language_context("zh-TW"):
+        resolved = await resolver.aresolve("小天")
+
+    assert resolved == 1
+    assert observed == [(
+        "I love coffee\nI enjoy coffee",
+        "zh-TW",
+        "en",
+    )]
+    raw_queue = _read_queue_file_raw(tmp_path)
+    assert "I love coffee" not in raw_queue
+    assert "I enjoy coffee" not in raw_queue
+
+
+@pytest.mark.asyncio
+async def test_resolve_dequeues_pair_with_both_rows_missing_without_llm(tmp_path):
+    """Both rows gone (merged away / archived) ⇒ the pair is consumed
+    via the stale path BEFORE any prompt is assembled — there is no
+    text to arbitrate and the entry must not block the queue."""
+    fs, resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "小天", [_fact("other", "x", embedding=[1.0, 0.0])])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "gone1", "existing_id": "gone2",
+        "entity": "master", "cosine": 0.99,
+    }])
+    create_llm = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", create_llm):
+        resolved = await resolver.aresolve("小天")
+    assert resolved == 0
+    assert create_llm.call_count == 0
+    assert await resolver.aload_pending("小天") == []
 
 
 def test_rebind_fact_store_preserves_alocks(tmp_path):

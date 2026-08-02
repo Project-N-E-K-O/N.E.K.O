@@ -38,6 +38,9 @@ N.E.K.O/
 - `utils/config_manager/` owns writable config/storage; `config/` owns bundled defaults.
 - `frontend/react-neko-chat/` is the only real chat UI. `index.html` and `chat.html` mount it; legacy `#chat-container` is deprecated.
 - `main_logic/core/` is a package/facade protected by structural CI checks.
+- `main_logic/voice_turn/` owns provider-neutral voice contracts; local
+  Silero/Smart Turn code and model assets live under
+  `main_logic/asr_client/endpointing/`.
 - Docker files are under `docker/`, not the repository root.
 - `pyproject.toml` and `uv.lock` are the dependency contract; `requirements.txt` is not the recommended installation entrypoint.
 

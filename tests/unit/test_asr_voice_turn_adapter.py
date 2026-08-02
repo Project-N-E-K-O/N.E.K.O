@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.asr_client.detector_runtime import _VoiceTurnAdapter
-from main_logic.asr_client.detector import DetectorIngressIdentity
+from main_logic.asr_client.endpointing.detector_runtime import _VoiceTurnAdapter
+from main_logic.asr_client.endpointing.detector import DetectorIngressIdentity
 from main_logic.asr_client.lifecycle import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
@@ -18,7 +18,7 @@ from main_logic.voice_turn.contracts import (
     TurnDecision,
     TurnEvaluation,
 )
-from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState
 
 
 async def _eventually(predicate, *, timeout: float = 1.0) -> None:
@@ -572,6 +572,63 @@ async def test_silero_keeps_consuming_while_smart_turn_is_blocked() -> None:
     coordinator.evaluate_release.set()
     await adapter.wait_idle()
     await adapter.close()
+
+
+async def test_evaluation_tail_overflow_uses_backpressure_without_failure() -> None:
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(
+            [
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+                (),
+                (),
+                (),
+            ]
+        ),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        queue_capacity_ms=20,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=b"\x01\x00" * 160,
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+
+        for value in (2, 3):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=bytes((value, 0)) * 160,
+            )
+            await _eventually(lambda: len(coordinator.pushed_audio) >= value)
+
+        with pytest.raises(asyncio.QueueFull):
+            await adapter.push_audio(
+                generation=1,
+                buffer_epoch=1,
+                utterance_id=1,
+                pcm16=b"\x04\x00" * 160,
+            )
+
+        assert adapter.failed is False
+        assert coordinator.pushed_audio == [
+            b"\x01\x00" * 160,
+            b"\x02\x00" * 160,
+            b"\x03\x00" * 160,
+        ]
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+        assert adapter.failed is False
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
 
 
 async def test_multiple_pauses_coalesce_to_one_followup_evaluation() -> None:

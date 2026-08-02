@@ -23,6 +23,8 @@ Pool composition
 - **BM25 pool**:      facts (active) + reflections (active) + facts_archive
   BM25 is cheap on small corpora; including archive lets the model surface
   long-tail keyword hits that have aged out of the live working set.
+  Archived rows whose id is still active are dropped first — an interrupted
+  archive commit leaves the row in both files (see ``_drop_archive_overlap``).
 
 - **Embedding pool**: facts (active) + reflections (active)
   Excludes archive (cost + recency window) and *persona* (already rendered
@@ -397,13 +399,78 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
         def _read() -> list[dict]:
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
-            return data if isinstance(data, list) else []
+            if not isinstance(data, list):
+                return []
+            # subject 时间归档（subject_archived_at 标记）的行不进召回：
+            # absorbed 归档行留在池里是设计（BM25 长尾），但 subject 归档
+            # 的语义就是「这个群/成员的记忆整体退出候选」——这里是两条召
+            # 回路径（hybrid_recall / recall_by_time）唯一的 archive 池装
+            # 配点，单点过滤即可覆盖。恢复路径会剥掉标记，行自然回池。
+            return [
+                row for row in data
+                if not (isinstance(row, dict) and row.get('subject_archived_at'))
+            ]
         return await asyncio.to_thread(_read)
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning(
             "[hybrid_recall] %s: 加载 facts_archive 失败: %s", lanlan_name, exc,
         )
         return []
+
+
+def _drop_archive_overlap(
+    archive_rows: list[dict], active_rows: list[dict], lanlan_name: str,
+) -> list[dict]:
+    """Drop archived rows whose id is still present among the active facts.
+
+    ``FactStore._archive_absorbed`` commits two files that cannot be written
+    atomically together (facts_archive.json, then facts.json) and deliberately
+    prefers the "row is in both files" interruption state over "row is in
+    neither". Collapsing that overlap is therefore every archive reader's job,
+    not an optional extra guard; ``FactStore.load_facts_full`` does the same
+    thing for its own callers.
+
+    Here the overlap distorts scoring, not just row counts: ``_rrf_fuse`` adds
+    ``1/(k+rank)`` for every occurrence of an id, so the duplicated row scores
+    twice, and each copy also occupies one of the ``HYBRID_RECALL_BUDGET_EACH``
+    slots, pushing a genuine candidate out of the fused result.
+    ``recall_by_time`` has no fusion step at all and would simply return the
+    same memory twice.
+
+    Active wins for the same reason it wins in ``load_facts_full``: it is at
+    least as fresh as the archived copy, and monotonic flags (``absorbed`` /
+    ``signal_processed``) are authoritative there.
+    """
+    if not archive_rows:
+        return []
+    # 复用 facts.py 的「可用 id」判定：手改 / 老库里的 id 可能缺失、为空串或是
+    # list/dict，两边判得不一样就会各自留下对方以为已收敛的行。惰性导入沿用本
+    # 文件对 memory.* 的一贯写法（避免启动期循环导入）。
+    from memory.facts import _readable_fact_id
+
+    active_ids = set()
+    for row in active_rows or []:
+        if not isinstance(row, dict):
+            continue
+        fid = _readable_fact_id(row)
+        if fid is not None:
+            active_ids.add(fid)
+    if not active_ids:
+        return list(archive_rows)
+    out: list[dict] = []
+    dropped = 0
+    for row in archive_rows:
+        if isinstance(row, dict) and _readable_fact_id(row) in active_ids:
+            dropped += 1
+            continue
+        out.append(row)
+    if dropped:
+        logger.warning(
+            "[hybrid_recall] %s: facts_archive 有 %d 条 id 与活跃 facts 重叠，"
+            "已按活跃副本收敛（多半是上一次归档两文件提交被打断）",
+            lanlan_name, dropped,
+        )
+    return out
 
 
 def _tag_tier(items: list[dict], tier: str) -> list[dict]:
@@ -558,10 +625,13 @@ async def hybrid_recall(
     )
     active_facts = active_facts or []
     active_reflections = active_reflections or []
+    archive_facts = _drop_archive_overlap(
+        archive_facts or [], active_facts, lanlan_name,
+    )
 
     facts_tagged = _tag_tier(active_facts, 'fact')
     refl_tagged = _tag_tier(active_reflections, 'reflection')
-    arch_tagged = _tag_tier(archive_facts or [], 'fact_archive')
+    arch_tagged = _tag_tier(archive_facts, 'fact_archive')
 
     # Security boundary: scope filtering happens before any BM25/cosine/RRF
     # scoring. A group caller never searches the private/global corpus and then
@@ -734,10 +804,14 @@ async def recall_by_time(
         reflection_engine.aload_reflections(lanlan_name),
         _aload_archive_facts(fact_store, lanlan_name),
     )
+    active_facts = active_facts or []
     pool_raw = (
-        _tag_tier(active_facts or [], 'fact')
+        _tag_tier(active_facts, 'fact')
         + _tag_tier(active_reflections or [], 'reflection')
-        + _tag_tier(archive_facts or [], 'fact_archive')
+        + _tag_tier(
+            _drop_archive_overlap(archive_facts or [], active_facts, lanlan_name),
+            'fact_archive',
+        )
     )
     from memory.scopes import filter_entries_for_subjects
     pool_raw = filter_entries_for_subjects(

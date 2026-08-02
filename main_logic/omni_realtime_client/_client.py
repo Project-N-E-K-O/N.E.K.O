@@ -27,6 +27,7 @@ from ._shared import (
     TurnDetectionMode,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
+    response_arbiter_fail_open_enabled,
     soxr,
 )
 
@@ -137,9 +138,27 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._current_response_id = None
         self._current_item_id = None
         self._is_responding = False
+        # Advanced once per turn START, by every writer that begins one. A
+        # fail-open release captures it and stops the moment it changes: an
+        # abandoned turn's end-of-turn hooks must not land on whatever turn is
+        # live by the time the host gets around to them. Nothing that ENDS a
+        # turn touches it — "this turn ended" is not "a new turn started", and
+        # an interrupted response's own terminal must still be able to finish
+        # the turn it belongs to.
+        self._turn_epoch = 0
+        # The value ``_turn_epoch`` had when the response ``_current_response_id``
+        # names began. A release must compare against THIS, not against the
+        # epoch it happens to read on entry: a barge-in advances ``_turn_epoch``
+        # at ``speech_stopped`` without clearing the tracked response id, so a
+        # release starting after that barge-in would otherwise adopt the
+        # successor's epoch as its own baseline and find itself trivially
+        # current.
+        self._current_turn_epoch = 0
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
+            fail_open=response_arbiter_fail_open_enabled(),
+            on_stuck_release=self._on_arbiter_stuck_release,
         )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
@@ -155,8 +174,25 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._input_audio_committed_total = 0  # diagnostic: audio buffer commits observed
         self._last_input_audio_committed_time = 0.0
         self._response_created_total = 0  # diagnostic: response.created events observed
+        # Raised by a fail-open release, lowered by the next response.created.
+        # Inside that window an id-less event cannot be told apart from the
+        # successor's, and a tool call is the one kind whose leak has side
+        # effects rather than merely wrong words. Never set on the default
+        # fail-closed path, which has no release.
+        self._idless_quarantine = False
+        # Latched the first time this connection sees a response.created.
+        # Until then the stale-event filter has no identity to compare
+        # against, and an id-bearing terminal cannot belong to anyone but
+        # the turn in progress — the free Gemini-proxy route never
+        # announces at all, and treating its terminal as stale skipped
+        # every turn's finalization, including the speech-id rotation it
+        # depends on. Reset per connect(): ids are connection-scoped.
+        self._announces_responses = False
         self._last_response_created_time = 0.0
         self._response_done_total = 0  # diagnostic: response.done events observed
+        # Response ids whose token usage has already been booked, so a
+        # repeated response.done cannot count the same turn twice.
+        self._usage_recorded_ids: list[str] = []
         self._last_response_done_time = 0.0
         self._last_response_transcript = ""
         self._speech_started_total = 0  # diagnostic: server VAD start events observed

@@ -45,10 +45,131 @@ class QQSettingsService:
                 ud["pending_disable_settle"] = True
                 ud.pop("pending_enable_rebase", None)
 
+    def _stamp_participant_memory_transition(
+        self, *, enabled_after: bool,
+    ) -> list[tuple[dict[str, Any], int]]:
+        """私聊 participant 记忆开关转变的同步盖章（对偶群版）。
+
+        OFF：给既有 participant 会话盖 cutoff + pending 章——结算只到
+        opt-out 时刻，竞态窗口内的新轮次不入库；消费者是后台结算任务与
+        discard/关机兜底（它们本就认 pending_disable_settle）。
+        ON：把未授权边界推到转变时刻——OFF 时代可能有未 stamp 的尾行
+        （nonconsent 边界只在生成轮 finally 记），floor 一推即闭合；带
+        未消费 disable 章的会话不动（旧时代结算先行，finalize 的
+        floor>cutoff 豁免保证它仍只结算到 cutoff）。"""
+        created_markers: list[tuple[dict[str, Any], int]] = []
+        for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
+            if ud.get("is_group"):
+                continue
+            sess = ud.get("session")
+            hist_len = len(getattr(sess, "_conversation_history", []) or [])
+            if enabled_after:
+                if ud.get("pending_disable_settle"):
+                    # The old opt-out prefix still owns this session. Reusing it
+                    # after re-enable would append new authorized rows behind
+                    # the old cutoff, and the eventual retry would truncate
+                    # them. Force bootstrap to settle/discard it first.
+                    ud["pending_permission_discard"] = True
+                    continue
+                if ud.get("memory_enabled"):
+                    continue
+                ud["nonconsent_history_end"] = max(
+                    int(ud.get("nonconsent_history_end", 0) or 0), hist_len,
+                )
+                continue
+            if ud.get("private_memory_mode") != "participant":
+                # legacy admin 会话与从未开过记忆的会话都不参与 participant
+                # 的 opt-out 结算。
+                continue
+            if not ud.get("pending_disable_settle"):
+                ud["participant_opt_out_cutoff"] = hist_len
+                created_markers.append((ud, hist_len))
+            # else：上一次 OFF 的结算还没消费其 cutoff——保留更早的界
+            # （与群版同理：覆写会打歪 floor 豁免判据）。
+            ud["pending_disable_settle"] = True
+        return created_markers
+
+    async def _settle_participant_sessions_on_disable(self) -> None:
+        """participant 开关 ON->OFF：把带章会话按 cutoff 结算掉。
+
+        对偶 invalidate_group_sessions 的 OFF 半边，但刻意薄得多：失败
+        **保留**章与 cutoff 交给 discard/关机兜底重试（它们本就消费
+        pending_disable_settle），不做群版的 fail-closed 销毁与回滚恢复
+        ——cutoff 围栏保证无论谁最终结算，入库的都只有 opt-out 之前的
+        已授权前缀。"""
+        lock = getattr(self.plugin, "_memory_transition_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.plugin._memory_transition_lock = lock
+        async with lock:
+            for session_key in list(
+                getattr(self.plugin, "_user_sessions", {}).keys()
+            ):
+                async def _settle_one(key: str = session_key) -> None:
+                    current = self.plugin._user_sessions.get(key)
+                    if not current or current.get("is_group"):
+                        return
+                    if current.get("private_memory_mode") != "participant":
+                        return
+                    if not current.get("pending_disable_settle"):
+                        return
+                    # 临时按 opt-in 结算（对偶关机兜底）：cutoff 保证只带
+                    # 出 opt-out 之前的历史。
+                    current["memory_enabled"] = True
+                    finalized = False
+                    svc = self.plugin.session_memory_service
+                    prev_progress = svc._settlement_progress(current)
+                    while True:
+                        # A plain ON->OFF transition has no future work that
+                        # needs this client: let a successful finalization pop
+                        # and close it.  Only a rapid OFF->ON transition stamps
+                        # pending_permission_discard; that path must retain the
+                        # old session until bootstrap can replace its memory
+                        # domain safely.
+                        retain = bool(current.get("pending_permission_discard"))
+                        try:
+                            finalized = await svc.finalize_user_memory_session(
+                                key, reason="participant_memory_disabled",
+                                retain_session=retain,
+                            )
+                        except Exception as exc:
+                            self.plugin.logger.error(
+                                f"[participant_memory_disabled] 私聊会话结算"
+                                f"失败 ({key}): {exc}"
+                            )
+                            break
+                        survivor = self.plugin._user_sessions.get(key)
+                        if finalized or not survivor:
+                            break
+                        progress = svc._settlement_progress(survivor)
+                        if progress == prev_progress:
+                            break
+                        prev_progress = progress
+                    current = self.plugin._user_sessions.get(key)
+                    if current is None:
+                        return
+                    current["memory_enabled"] = False
+                    if finalized:
+                        current.pop("pending_disable_settle", None)
+                    else:
+                        self.plugin.logger.warning(
+                            f"[participant_memory_disabled] 会话 {key} 结算"
+                            f"未完成，保留标记与 cutoff 待 discard/关机兜底"
+                        )
+
+                await self.plugin._run_with_session_lock(
+                    session_key, _settle_one,
+                )
+
     async def _persist_with_consent_rollback(
         self, *, group_memory_before: bool, group_memory_after: bool,
         member_memory_before: bool, member_memory_after: bool,
         cross_group_before: bool | None, cross_group_after: bool | None = None,
+        participant_memory_before: bool | None = None,
+        participant_memory_after: bool | None = None,
+        participant_markers_created: list[
+            tuple[dict[str, Any], int]
+        ] | None = None,
         deferred_opt_ins: dict[str, bool] | None = None,
     ) -> bool:
         # 取消路径也要能发布：写盘被 shield 保护，取消 await 不取消它。
@@ -64,6 +185,9 @@ class QQSettingsService:
             member_memory_after=member_memory_after,
             cross_group_before=cross_group_before,
             cross_group_after=cross_group_after,
+            participant_memory_before=participant_memory_before,
+            participant_memory_after=participant_memory_after,
+            participant_markers_created=participant_markers_created,
         )
         # 写盘跑成独立 task：config_store.save 内部是 to_thread 的原子写，
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
@@ -133,6 +257,11 @@ class QQSettingsService:
         group_before = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
+        participant_before = bool(
+            self.plugin._qq_settings.get(
+                "private_participant_memory_enabled", False,
+            )
+        )
         for key in opt_ins:
             self.plugin._qq_settings[key] = True
         # 迟发的 opt-in 同样受父子约束：群记忆关着时把 member 打开无效。
@@ -140,6 +269,15 @@ class QQSettingsService:
         group_after = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
+        if not participant_before and bool(
+            self.plugin._qq_settings.get(
+                "private_participant_memory_enabled", False,
+            )
+        ):
+            # ON 盖章：把 OFF 会话的未授权边界推到此刻，OFF 时代未 stamp
+            # 的尾行不得随后续结算入库。无须后台任务——prime 的实时门控
+            # 会让下一轮起 memory_enabled 翻 True。
+            self._stamp_participant_memory_transition(enabled_after=True)
         if group_after != group_before:
             self._stamp_group_memory_transition(enabled_after=True)
             self._spawn_group_memory_sync_task(
@@ -168,6 +306,11 @@ class QQSettingsService:
         member_memory_before: bool, member_memory_after: bool,
         cross_group_before: bool | None = None,
         cross_group_after: bool | None = None,
+        participant_memory_before: bool | None = None,
+        participant_memory_after: bool | None = None,
+        participant_markers_created: list[
+            tuple[dict[str, Any], int]
+        ] | None = None,
     ) -> None:
         """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
         按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
@@ -191,6 +334,54 @@ class QQSettingsService:
                     "WARNING",
                     "跨群上下文开关变更未能写盘，已回滚运行时策略",
                 )
+        if (
+            participant_memory_before is not None
+            and participant_memory_after is not None
+            and participant_memory_before != participant_memory_after
+        ):
+            # participant 开关只有 ON→OFF 方向能走到这里（OFF→ON 被延迟
+            # 发布扣着，写盘失败时根本没发布过）。恢复运行时策略并撤掉
+            # 本次盖下且尚未被结算消费的章——已消费的（结算到 cutoff）是
+            # 在合法授权时代内入库的，无须也无法撤销。
+            self.plugin._qq_settings["private_participant_memory_enabled"] = (
+                participant_memory_before
+            )
+            if participant_memory_before:
+                # Remove only markers created by this failed transaction.
+                # Older pending settlements deliberately survive rapid
+                # ON/OFF toggles and must keep their original retry cutoff.
+                for ud, cutoff in participant_markers_created or []:
+                    if (
+                        ud.get("pending_disable_settle")
+                        and int(
+                            ud.get("participant_opt_out_cutoff", -1) or 0
+                        ) == cutoff
+                    ):
+                        ud.pop("pending_disable_settle", None)
+                        ud.pop("participant_opt_out_cutoff", None)
+                # A receipt-authorized turn may have created and primed its
+                # participant session while the failed OFF save was awaiting
+                # disk I/O.  It has no transition marker, but priming observed
+                # the temporary live OFF state and left memory_enabled=False.
+                # Restore only current participant sessions; post-OFF turns
+                # are stamped with mode=None, while older pending settlements
+                # must remain frozen until their original cutoff is handled.
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if (
+                        ud.get("is_group")
+                        or ud.get("private_memory_mode") != "participant"
+                        or ud.get("pending_disable_settle")
+                        or ud.get("pending_permission_discard")
+                        or ud.get("pending_identity_discard")
+                    ):
+                        continue
+                    ud["memory_enabled"] = True
+            self.plugin._emit_log(
+                "WARNING",
+                "私聊成员记忆开关变更未能写盘，已回滚运行时策略",
+            )
         if group_memory_before != group_memory_after:
             self.plugin._qq_settings["group_memory_enabled"] = group_memory_before
             self.plugin._qq_settings["group_member_memory_enabled"] = member_memory_before
@@ -501,6 +692,11 @@ class QQSettingsService:
         member_memory_before = bool(
             self.plugin._qq_settings.get("group_member_memory_enabled", False)
         )
+        participant_memory_before = bool(
+            self.plugin._qq_settings.get(
+                "private_participant_memory_enabled", False,
+            )
+        )
         cross_group_before = bool(
             self.plugin._qq_settings.get("allow_cross_group_context", False)
         )
@@ -512,6 +708,7 @@ class QQSettingsService:
         for key in (
             "group_memory_enabled",
             "group_member_memory_enabled",
+            "private_participant_memory_enabled",
             "allow_cross_group_context",
         ):
             value = kwargs.get(key)
@@ -566,6 +763,23 @@ class QQSettingsService:
                         pending.setdefault(sender, []).extend(msgs)
                     ud.setdefault("pending_settle_labels", {}).update(fresh_labels)
                     ud["pending_member_settle"] = True
+        participant_memory_after = bool(
+            self.plugin._qq_settings.get(
+                "private_participant_memory_enabled", False,
+            )
+        )
+        participant_markers_created: list[
+            tuple[dict[str, Any], int]
+        ] = []
+        participant_settle_needed = False
+        if participant_memory_before and not participant_memory_after:
+            # 关闭立即生效（与其余 consent 键同向不对称）：同步盖章后交
+            # 后台任务按 cutoff 结算既有 participant 会话。ON 方向在
+            # _publish_consent_opt_ins（写盘成功后）处理。
+            participant_markers_created = (
+                self._stamp_participant_memory_transition(enabled_after=False)
+            )
+            participant_settle_needed = True
         if group_memory_before != group_memory_after:
             self._stamp_group_memory_transition(enabled_after=group_memory_after)
         if member_turning_off or group_memory_after != group_memory_before:
@@ -603,7 +817,17 @@ class QQSettingsService:
                 bool(self.plugin._qq_settings.get("allow_cross_group_context", False))
                 if cross_group_before is not None else None
             ),
+            participant_memory_before=participant_memory_before,
+            participant_memory_after=participant_memory_after,
+            participant_markers_created=participant_markers_created,
         )
+        if success and participant_settle_needed:
+            # Do not race a failed-write rollback against this task: rollback
+            # removes the marker/cutoff, while a failed settlement needs both
+            # to remain retryable by discard and shutdown flush paths.
+            self._spawn_group_memory_sync_task(
+                self._settle_participant_sessions_on_disable()
+            )
         if deferred_opt_ins:
             if success:
                 self._publish_consent_opt_ins(deferred_opt_ins)

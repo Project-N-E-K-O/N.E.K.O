@@ -11,7 +11,7 @@ import asyncio
 import json
 import struct
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
@@ -20,6 +20,18 @@ from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartStatus,
     IndependentAsrRuntime,
+    SpeakerShadowFactory,
+)
+from main_logic.voice_input import (
+    BuiltinVoiceInputConsumer,
+    VoiceInputConsumerCapabilities,
+    VoiceInputDispatchResult,
+    VoiceInputRegistry,
+)
+from main_logic.voice_input.consumers import (
+    CoreChatTurnContext,
+    CoreChatVoiceInputConsumer,
+    GameVoiceInputConsumer,
 )
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
@@ -28,10 +40,10 @@ from main_logic.voice_turn.contracts import (
     AsrSubmitStatus,
     VoicePartialEvent,
     VoiceIngressToken,
-    VoiceTranscriptCallback,
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
+from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
     VoiceInputAudioPipeline,
@@ -39,14 +51,6 @@ from main_logic.voice_turn.audio_input import (
 from main_logic import core as _core_facade
 
 from ._shared import logger
-
-
-@dataclass(frozen=True, slots=True)
-class VoiceInputConsumerBinding:
-    owner: Literal["game"]
-    on_final: VoiceTranscriptCallback
-    identity: object = field(default_factory=object, repr=False, compare=False)
-
 
 @dataclass(frozen=True, slots=True)
 class _QueuedMicFrame:
@@ -157,6 +161,7 @@ class _HotSwapAudioFrame:
     token: VoiceIngressToken
     speech_probability: float | None = None
     rnnoise_available: bool = False
+    rnnoise_evidence: RnnoiseEvidence | None = None
     audio_stream_epoch: int = 0
     ingress_sequence: int = 0
 
@@ -220,10 +225,6 @@ class AsrRuntimeMixin:
         self._voice_lease_resync_signal_state: tuple[str, int, bool, str] | None = (
             None
         )
-        self._voice_input_consumer_bindings: dict[
-            str,
-            VoiceInputConsumerBinding,
-        ] = {}
         self._audio_stream_queue = _AudioDurationQueue(
             capacity_us=2_000_000,
             max_frames=256,
@@ -245,9 +246,17 @@ class AsrRuntimeMixin:
         self._microphone_route_generation = 0
         self._asr_route_operation_generation = 0
         self._asr_notification_lock = asyncio.Lock()
+        # Shared with the hot-swap lifecycle: a prepared final either finishes
+        # against the still-open old session, or waits until close+promotion
+        # has atomically exposed the replacement.
+        self._core_voice_session_swap_lock = asyncio.Lock()
+        self._core_voice_session_swap_barrier_timeout_s = 5.0
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
+        self._speaker_shadow_factory: SpeakerShadowFactory | None = None
+        self._voice_input_resource_optimization_handshake_override: bool | None = None
+        self._voice_input_resource_optimization_session_value: bool | None = None
         self._voice_input_noise_reduction_enabled = True
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
@@ -260,11 +269,13 @@ class AsrRuntimeMixin:
         # can tell "my own bubble" from "the next turn already took it over".
         self._core_asr_preview_turn_id = ""
         self._core_asr_preview_text = ""
+        self._core_asr_preview_turn_token: VoiceTurnToken | None = None
+        self._init_voice_input_registry()
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
-            on_prepare_turn=self._prepare_core_voice_turn,
-            on_partial=self._send_core_asr_preview,
-            on_final=self._dispatch_core_asr_transcript,
+            on_prepare_turn=self._prepare_voice_input_turn,
+            on_partial=self._dispatch_voice_input_partial,
+            on_final=self._dispatch_voice_input_final,
             on_turn_abandoned=self._handle_core_asr_turn_abandoned,
             on_failure=self._handle_core_asr_failure,
             on_status=self._send_core_asr_status,
@@ -272,13 +283,62 @@ class AsrRuntimeMixin:
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
 
+    def _init_voice_input_registry(self) -> None:
+        """Install the manager-lifetime built-ins exactly once."""
+
+        if hasattr(self, "_voice_input_registry"):
+            return
+        registry = VoiceInputRegistry()
+        core_chat = CoreChatVoiceInputConsumer(
+            session_ref=lambda: getattr(self, "session", None),
+            on_prepare=lambda token, context: self._prepare_core_voice_turn(
+                token,
+                session_ref=context.session_ref,
+                abandon_on_failure=False,
+            ),
+            on_partial_event=self._send_core_asr_preview,
+            on_final_event=lambda event, context: self._dispatch_core_asr_transcript(
+                event,
+                session_ref=context.session_ref,
+            ),
+            on_cancelled_event=self._cancel_core_chat_voice_turn,
+        )
+        game = GameVoiceInputConsumer(
+            lanlan_name=lambda: str(getattr(self, "lanlan_name", "core")),
+        )
+        core_registration = registry.register_builtin(
+            BuiltinVoiceInputConsumer.CORE_CHAT,
+            core_chat,
+            capabilities=VoiceInputConsumerCapabilities(
+                accepts_partial=True,
+                accepts_final=True,
+            ),
+        )
+        game_registration = registry.register_builtin(
+            BuiltinVoiceInputConsumer.GAME,
+            game,
+            capabilities=VoiceInputConsumerCapabilities(
+                accepts_partial=False,
+                accepts_final=True,
+            ),
+        )
+        registry.activate(core_registration.handle)
+        self._voice_input_registry = registry
+        self._core_chat_voice_input_registration = core_registration
+        self._game_voice_input_registration = game_registration
+
     def _ensure_asr_runtime_state(self) -> None:
         if not hasattr(self, "_asr_runtime"):
             self._init_asr_runtime_state()
+        self._init_voice_input_registry()
         if not hasattr(self, "_asr_route_operation_generation"):
             self._asr_route_operation_generation = 0
         if not hasattr(self, "_asr_notification_lock"):
             self._asr_notification_lock = asyncio.Lock()
+        if not hasattr(self, "_core_voice_session_swap_lock"):
+            self._core_voice_session_swap_lock = asyncio.Lock()
+        if not hasattr(self, "_core_voice_session_swap_barrier_timeout_s"):
+            self._core_voice_session_swap_barrier_timeout_s = 5.0
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -289,10 +349,24 @@ class AsrRuntimeMixin:
             self._last_hot_swap_rebind_drop_log_time = 0.0
         if not hasattr(self, "_independent_asr_handshake_override"):
             self._independent_asr_handshake_override = None
+        if not hasattr(self, "_speaker_shadow_factory"):
+            self._speaker_shadow_factory = None
+        if not hasattr(
+            self,
+            "_voice_input_resource_optimization_handshake_override",
+        ):
+            self._voice_input_resource_optimization_handshake_override = None
+        if not hasattr(
+            self,
+            "_voice_input_resource_optimization_session_value",
+        ):
+            self._voice_input_resource_optimization_session_value = None
         if not hasattr(self, "_core_asr_preview_turn_id"):
             self._core_asr_preview_turn_id = ""
         if not hasattr(self, "_core_asr_preview_text"):
             self._core_asr_preview_text = ""
+        if not hasattr(self, "_core_asr_preview_turn_token"):
+            self._core_asr_preview_turn_token = None
         if not hasattr(self, "_blocked_text_mode_microphone_signalled"):
             self._blocked_text_mode_microphone_signalled = False
         if not hasattr(self, "_voice_input_websocket"):
@@ -411,9 +485,19 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
-        owner_has_target = self._voice_lease_owner == "core" or (
-            self._voice_lease_owner == "game"
-            and self._voice_input_consumer_bindings.get("game") is not None
+        owner = self._voice_lease_owner
+        active_identity = self._voice_input_registry.active_identity
+        owner_has_target = bool(
+            owner in {"core", "game"}
+            and active_identity is not None
+            and active_identity.namespace == "builtin"
+            and active_identity.name
+            == (
+                BuiltinVoiceInputConsumer.CORE_CHAT.value
+                if owner == "core"
+                else BuiltinVoiceInputConsumer.GAME.value
+            )
+            and self._voice_input_registry.active_accepts_input
         )
         return bool(
             self._voice_lease_synchronized
@@ -422,44 +506,6 @@ class AsrRuntimeMixin:
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
         )
-
-    def bind_voice_input_consumer(
-        self,
-        owner: str,
-        on_final: VoiceTranscriptCallback,
-    ) -> VoiceInputConsumerBinding:
-        self._ensure_asr_runtime_state()
-        normalized_owner = str(owner or "").strip().lower()
-        if normalized_owner != "game":
-            raise ValueError("VOICE_INPUT_CONSUMER_OWNER_UNSUPPORTED")
-        if not callable(on_final):
-            raise TypeError("VOICE_INPUT_CONSUMER_CALLBACK_REQUIRED")
-        if self._voice_lease_owner == normalized_owner:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_BIND_BEFORE_TAKEOVER")
-        if normalized_owner in self._voice_input_consumer_bindings:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_ALREADY_BOUND")
-        binding = VoiceInputConsumerBinding(owner="game", on_final=on_final)
-        self._voice_input_consumer_bindings[normalized_owner] = binding
-        return binding
-
-    def unbind_voice_input_consumer(
-        self,
-        binding: VoiceInputConsumerBinding,
-    ) -> bool:
-        self._ensure_asr_runtime_state()
-        if not isinstance(binding, VoiceInputConsumerBinding):
-            return False
-        if self._voice_lease_owner == binding.owner:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_RELEASE_LEASE_FIRST")
-        if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
-            return False
-        del self._voice_input_consumer_bindings[binding.owner]
-        return True
-
-    def _current_voice_input_consumer(self) -> VoiceInputConsumerBinding | None:
-        if self._voice_lease_owner != "game":
-            return None
-        return self._voice_input_consumer_bindings.get("game")
 
     def set_independent_asr_handshake(self, value: object) -> None:
         # Record the frontend's authoritative independent-ASR toggle carried by
@@ -475,21 +521,31 @@ class AsrRuntimeMixin:
             value if isinstance(value, bool) else None
         )
 
+    def set_voice_input_resource_optimization_handshake(
+        self,
+        value: object,
+    ) -> None:
+        """Pin one session's authoritative resource-optimization preference."""
+        self._ensure_asr_runtime_state()
+        self._voice_input_resource_optimization_handshake_override = (
+            value if isinstance(value, bool) else None
+        )
+
     async def _start_independent_asr_if_enabled(
         self,
         input_mode: str,
         *,
         preserve_hot_swap_audio: bool = False,
         handshake_override=...,
+        resource_optimization_override=...,
     ) -> None:
         """Resolve the microphone route for one session start.
 
         ``handshake_override`` carries the start_session handshake belonging to
         THIS start operation, snapshotted by ``start_session`` before its first
         await. Ellipsis means "not supplied" — the internal re-entry paths
-        (hot-swap, device change) have no request of their own and fall back to
-        the shared field, which is correct for them: they inherit whatever the
-        live session was started with.
+        (hot-swap, device change) have no request of their own and reuse the
+        accepted live session's optimization choice.
         """
         self._ensure_asr_runtime_state()
         operation_generation = self._begin_asr_route_operation()
@@ -631,11 +687,34 @@ class AsrRuntimeMixin:
             # settings POST failed or was still in flight at session start.
             enabled = handshake_enabled
         else:
-            enabled = bool(settings.get("independentAsrEnabled", False))
-        optimization_value = settings.get(
-            "voiceInputResourceOptimizationEnabled",
-            True,
+            enabled = bool(settings.get("independentAsrEnabled", True))
+        optimization_handshake = resource_optimization_override
+        if resource_optimization_override is ...:
+            optimization_handshake = getattr(
+                self,
+                "_voice_input_resource_optimization_session_value",
+                None,
+            )
+            if optimization_handshake is None:
+                optimization_handshake = getattr(
+                    self,
+                    "_voice_input_resource_optimization_handshake_override",
+                    None,
+                )
+        optimization_value = (
+            optimization_handshake
+            if optimization_handshake is not None
+            else settings.get("voiceInputResourceOptimizationEnabled", True)
         )
+        resolved_optimization_value = optimization_value is not False
+        if resource_optimization_override is not ...:
+            # Only an accepted start_session call supplies this argument.
+            # Losing/deduplicated requests may still overwrite the manager-level
+            # handshake field, so internal provider restarts must use this
+            # session-owned snapshot instead.
+            self._voice_input_resource_optimization_session_value = (
+                resolved_optimization_value
+            )
         if not enabled:
             self._set_microphone_route("native")
             await self._send_core_asr_status(
@@ -646,14 +725,17 @@ class AsrRuntimeMixin:
                 )
             )
             return
-        result = await self._asr_runtime.start(
-            route_key=core_type,
-            resource_optimization_enabled=optimization_value is not False,
+        start_kwargs: dict[str, object] = {
+            "route_key": core_type,
+            "resource_optimization_enabled": resolved_optimization_value,
             # Session language follows the Core-tracked user language; the
             # asr_client factory maps it per provider and falls back to
             # automatic detection when it is unset or unsupported.
-            user_language=getattr(self, "user_language", None),
-        )
+            "user_language": getattr(self, "user_language", None),
+        }
+        if self._speaker_shadow_factory is not None:
+            start_kwargs["speaker_shadow_factory"] = self._speaker_shadow_factory
+        result = await self._asr_runtime.start(**start_kwargs)
         current_epoch = self._capture_ingress_token().session_epoch
         if not core_start_is_current():
             route_fields_still_ours = bool(
@@ -731,8 +813,9 @@ class AsrRuntimeMixin:
             )
 
     async def _abort_independent_asr(self, reason: str) -> None:
-        self._abandon_core_voice_turn()
         await self._asr_runtime.abort(reason)
+        self._invalidate_voice_pcm_sync(reason)
+        await self._voice_input_registry.wait_idle()
 
     async def _reset_native_audio_turn(
         self,
@@ -808,8 +891,9 @@ class AsrRuntimeMixin:
             await abort
 
     async def _suspend_independent_asr(self, reason: str) -> None:
-        self._abandon_core_voice_turn()
         await self._asr_runtime.suspend(reason)
+        self._invalidate_voice_pcm_sync(reason)
+        await self._voice_input_registry.wait_idle()
 
     async def _close_independent_asr(
         self,
@@ -830,13 +914,17 @@ class AsrRuntimeMixin:
         self._set_microphone_route("blocked")
         if not preserve_hot_swap_audio:
             self._invalidate_voice_pcm_sync("independent_asr_close")
+        else:
+            self._voice_input_registry.invalidate_utterance(
+                reason="independent_asr_close",
+            )
+        await self._voice_input_registry.wait_idle()
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
         )
         self._voice_input_pipeline_failed = False
         self._independent_asr_provider = None
         self._independent_asr_route_key = None
-        self._abandon_core_voice_turn()
         await self._asr_runtime.close()
         try:
             await pipeline.close()
@@ -1381,6 +1469,7 @@ class AsrRuntimeMixin:
                             token=ingress_token,
                             speech_probability=processed_frame.speech_probability,
                             rnnoise_available=processed_frame.rnnoise_available,
+                            rnnoise_evidence=processed_frame.rnnoise_evidence,
                             audio_stream_epoch=audio_epoch,
                             ingress_sequence=ingress_sequence,
                         )
@@ -1404,6 +1493,7 @@ class AsrRuntimeMixin:
                 sample_rate_hz=processed_frame.sample_rate_hz,
                 speech_probability=processed_frame.speech_probability,
                 rnnoise_available=processed_frame.rnnoise_available,
+                rnnoise_evidence=processed_frame.rnnoise_evidence,
                 ingress_token=ingress_token,
             )
         except struct.error:
@@ -1423,6 +1513,7 @@ class AsrRuntimeMixin:
         sample_rate_hz: int,
         speech_probability: float | None = None,
         rnnoise_available: bool | None = None,
+        rnnoise_evidence: RnnoiseEvidence | None = None,
         ingress_token: VoiceIngressToken | None = None,
     ) -> bool:
         route_mode = self._asr_route_mode
@@ -1523,6 +1614,7 @@ class AsrRuntimeMixin:
                 sample_rate_hz=sample_rate_hz,
                 speech_probability=speech_probability,
                 rnnoise_available=bool(rnnoise_available),
+                rnnoise_evidence=rnnoise_evidence,
             ),
             ingress_token=token,
         )
@@ -1645,6 +1737,7 @@ class AsrRuntimeMixin:
                             sample_rate_hz=16_000,
                             speech_probability=frame.speech_probability,
                             rnnoise_available=frame.rnnoise_available,
+                            rnnoise_evidence=frame.rnnoise_evidence,
                             ingress_token=token,
                         )
                     except asyncio.CancelledError:
@@ -1723,6 +1816,7 @@ class AsrRuntimeMixin:
                 )
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+        self._voice_input_registry.invalidate_utterance(reason=reason)
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
 
@@ -1745,10 +1839,23 @@ class AsrRuntimeMixin:
         self._voice_lease_owner = owner
         self._voice_lease_hard_muted = hard_muted
         self._voice_lease_focus_suppressed = focus_suppressed
+        previous_owner = previous[0]
+        if owner != previous_owner:
+            if owner == "game":
+                self._voice_input_registry.activate(
+                    self._game_voice_input_registration.handle,
+                )
+            elif owner == "core":
+                self._voice_input_registry.activate(
+                    self._core_chat_voice_input_registration.handle,
+                )
         reasons: set[str] = set()
         if owner == "none":
             reasons.add("owner_none")
-        elif owner == "game" and self._current_voice_input_consumer() is None:
+        elif (
+            owner == "game"
+            and not self._voice_input_registry.active_accepts_input
+        ):
             reasons.add("game")
         if hard_muted:
             reasons.add("hard_mute")
@@ -1762,14 +1869,14 @@ class AsrRuntimeMixin:
             force_abort or self._voice_lease_requires_abort or previous != current
         )
         self._voice_lease_requires_abort = False
-        if reason == "game_takeover" or (
-            owner == "game" and self._current_voice_input_consumer() is None
-        ):
-            await self._suspend_independent_asr(reason)
+        if owner == "game" and not self._voice_input_registry.active_accepts_input:
+            await self._asr_runtime.suspend(reason)
+            await self._voice_input_registry.wait_idle()
         elif reason == "game_release":
             if should_abort:
                 route_operation_snapshot = self._asr_route_operation_generation
-                await self._abort_independent_asr(reason)
+                await self._asr_runtime.abort(reason)
+                await self._voice_input_registry.wait_idle()
                 if (
                     self._asr_route_operation_generation != route_operation_snapshot
                     or self._voice_lease_owner != "core"
@@ -1783,7 +1890,8 @@ class AsrRuntimeMixin:
             # the rest of the session.
             await self._asr_runtime.resume(reason)
         elif should_abort:
-            await self._abort_independent_asr(reason)
+            await self._asr_runtime.abort(reason)
+            await self._voice_input_registry.wait_idle()
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
         await self._apply_voice_lease_state(
@@ -1920,8 +2028,8 @@ class AsrRuntimeMixin:
         Clients that never receive or never honour the teardown notice (older
         builds, third-party clients, throttled background tabs) keep uploading
         PCM into a route that discards it. Stop accepting it at ingress too.
-        The game owner is exempt: the galgame route holds the lease through its
-        own consumer binding and must not be collaterally revoked.
+        The game owner is exempt: its built-in Registry consumer holds the
+        active transcript route and must not be collaterally revoked.
 
         NEVER hoist this above the stale/competing-start exits.
         ``_revoke_voice_input_connection`` calls ``_invalidate_asr_start()``
@@ -2079,24 +2187,98 @@ class AsrRuntimeMixin:
         return True
 
     async def _handle_core_asr_turn_abandoned(self, token: VoiceTurnToken) -> None:
-        external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
-        self._abandon_core_voice_turn(external_turn_id)
+        self._voice_input_registry.invalidate_utterance(
+            token,
+            reason="asr_turn_abandoned",
+        )
+        await self._voice_input_registry.wait_idle()
 
-    async def _prepare_core_voice_turn(self, token: VoiceTurnToken) -> bool:
+    async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
+        self._ensure_asr_runtime_state()
+        # A lease transition activates its next consumer before waiting for
+        # keyed cancellation callbacks and aborting the ASR transport. Reject
+        # a prepare arriving in that window before it can pin an old ingress
+        # token to the newly active consumer.
+        if (
+            not isinstance(token, VoiceTurnToken)
+            or token.ingress != self._capture_ingress_token()
+            or not self._voice_input_accepts_pcm()
+        ):
+            return False
+        if not self._voice_input_registry.begin_utterance(token):
+            return False
+        return await self._voice_input_registry.prepare_utterance(token)
+
+    async def _dispatch_voice_input_partial(
+        self,
+        event: VoicePartialEvent,
+    ) -> None:
+        await self._voice_input_registry.dispatch_partial(event)
+
+    async def _dispatch_voice_input_final(
+        self,
+        event: VoiceTranscriptEvent,
+    ) -> None:
+        result = await self._voice_input_registry.dispatch_final(event)
+        if result is VoiceInputDispatchResult.CALLBACK_FAILED:
+            await self._send_core_asr_status(
+                AsrStatusEvent(
+                    code="ASR_INDEPENDENT_INJECTION_FAILED",
+                    provider=event.provider,
+                    session_epoch=event.turn_token.ingress.session_epoch,
+                )
+            )
+        elif result is VoiceInputDispatchResult.REJECTED:
+            logger.debug(
+                "[%s] voice input final rejected turn=%s-%s",
+                self.lanlan_name,
+                event.turn_token.ingress.session_epoch,
+                event.turn_token.turn_id,
+            )
+
+    async def _cancel_core_chat_voice_turn(
+        self,
+        context: CoreChatTurnContext,
+        reason: str,
+    ) -> None:
+        del reason
+        try:
+            await self._send_core_asr_preview_clear(context.external_turn_id)
+        finally:
+            # Registry cancellation has already consumed the keyed route. Even
+            # if websocket preview cleanup is itself cancelled, the response
+            # arbiter pause must be released exactly once here.
+            self._abandon_core_voice_turn(
+                context.external_turn_id,
+                session_ref=context.session_ref,
+            )
+
+    async def _prepare_core_voice_turn(
+        self,
+        token: VoiceTurnToken,
+        *,
+        session_ref: object | None = None,
+        abandon_on_failure: bool = True,
+    ) -> bool:
         if not self._ingress_token_matches(token.ingress):
             return False
-        if self._voice_lease_owner == "game":
-            return self._current_voice_input_consumer() is not None
         if self._voice_lease_owner != "core":
             return False
-        session_ref = self.session
+        if session_ref is None:
+            session_ref = getattr(self, "session", None)
+        if session_ref is None:
+            return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        previous_preview_turn_id = self._core_asr_preview_turn_id
+        previous_preview_turn_token = self._core_asr_preview_turn_token
+        previous_preview_text = self._core_asr_preview_text
         # Turn preparation is the ordered boundary between two turns' partial
         # streams, so every preview from here on belongs to this turn. Stamping
         # the owner here is what lets a previous turn's delayed clear be
         # recognized as stale by the frontend instead of erasing this bubble.
         self._core_asr_preview_turn_id = external_turn_id
+        self._core_asr_preview_turn_token = token
         self._core_asr_preview_text = ""
 
         def operation_is_current() -> bool:
@@ -2108,6 +2290,7 @@ class AsrRuntimeMixin:
             )
 
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
+        preparation_succeeded = False
         try:
             if callable(prepare):
                 await prepare(turn_id=external_turn_id)
@@ -2116,30 +2299,35 @@ class AsrRuntimeMixin:
                 if callable(interrupt):
                     await interrupt()
             if not operation_is_current():
+                if abandon_on_failure:
+                    self._abandon_core_voice_turn(
+                        external_turn_id,
+                        session_ref=session_ref,
+                    )
+                return False
+            await self.handle_new_message()
+            if operation_is_current():
+                preparation_succeeded = True
+                return True
+            if abandon_on_failure:
                 self._abandon_core_voice_turn(
                     external_turn_id,
                     session_ref=session_ref,
                 )
-                return False
-            await self.handle_new_message()
-            if operation_is_current():
-                return True
-            self._abandon_core_voice_turn(
-                external_turn_id,
-                session_ref=session_ref,
-            )
             return False
         except asyncio.CancelledError:
-            self._abandon_core_voice_turn(
-                external_turn_id,
-                session_ref=session_ref,
-            )
+            if abandon_on_failure:
+                self._abandon_core_voice_turn(
+                    external_turn_id,
+                    session_ref=session_ref,
+                )
             raise
         except Exception:
-            self._abandon_core_voice_turn(
-                external_turn_id,
-                session_ref=session_ref,
-            )
+            if abandon_on_failure:
+                self._abandon_core_voice_turn(
+                    external_turn_id,
+                    session_ref=session_ref,
+                )
             if not operation_is_current():
                 return False
             logger.warning(
@@ -2147,6 +2335,15 @@ class AsrRuntimeMixin:
                 self.lanlan_name,
             )
             return False
+        finally:
+            if (
+                not preparation_succeeded
+                and self._core_asr_preview_turn_id == external_turn_id
+                and self._core_asr_preview_turn_token == token
+            ):
+                self._core_asr_preview_turn_id = previous_preview_turn_id
+                self._core_asr_preview_turn_token = previous_preview_turn_token
+                self._core_asr_preview_text = previous_preview_text
 
     async def _submit_core_voice_turn(
         self,
@@ -2176,28 +2373,21 @@ class AsrRuntimeMixin:
     async def _dispatch_core_asr_transcript(
         self,
         event: VoiceTranscriptEvent,
+        *,
+        session_ref: object | None = None,
     ) -> None:
         token = event.turn_token.ingress
-        if not self._ingress_token_matches(token):
-            return
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
-        binding = self._current_voice_input_consumer()
-        if binding is not None:
-            if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
-                return
-            if not event.text.strip():
-                # Same lingering-preview hazard as the core branch below: a
-                # preview created before a game takeover would otherwise
-                # survive this silently consumed empty final.
-                await self._send_core_asr_preview_clear(external_turn_id)
-                return
-            await binding.on_final(event)
-            return
-        if self._voice_lease_owner != "core":
-            return
-        session_ref = self.session
+        if session_ref is None:
+            session_ref = getattr(self, "session", None)
         transition_generation = self._voice_input_transition_generation
         try:
+            if (
+                not self._ingress_token_matches(token)
+                or self._voice_lease_owner != "core"
+                or session_ref is None
+            ):
+                return
             if not event.text.strip():
                 # An empty final still completed the turn provider-side (e.g.
                 # the OpenAI/Step stalled-item timeouts): Core deliberately
@@ -2231,9 +2421,13 @@ class AsrRuntimeMixin:
                     and self._ingress_token_matches(token)
                 )
 
-            operation_still_current = self.session is session_ref and route_still_core()
+            operation_still_current = route_still_core()
             if not accepted or not operation_still_current:
-                if not accepted and operation_still_current:
+                if (
+                    not accepted
+                    and operation_still_current
+                    and self.session is session_ref
+                ):
                     # Rejected text (echo suppression, takeover routing) also
                     # never produces a user_transcript; drop the preview so it
                     # cannot linger. Guarded on an unchanged runtime identity:
@@ -2255,16 +2449,53 @@ class AsrRuntimeMixin:
             # order _fail_closed_voice_route owns.
             if not route_still_core():
                 return
-            # Submit through the session validated above, not whatever
-            # self.session happens to be now: the preview restore awaited a
-            # websocket send, and a hot swap promoting a new session inside that
-            # await would otherwise land this transcript in the wrong
-            # conversation.
-            await self._submit_core_voice_turn(
-                event.text,
-                turn_id=external_turn_id,
-                session_ref=session_ref,
-            )
+            # Synchronize with close+promotion itself, rather than sampling
+            # final_swap_task once. A swap may begin during any awaited submit;
+            # sharing this barrier means it cannot close the prepared session
+            # until this final finishes, while a final arriving second observes
+            # the promoted replacement. Bound the wait so the serial transcript
+            # dispatcher cannot be held forever by a stuck swap.
+            session_swap_lock = self._core_voice_session_swap_lock
+            try:
+                await asyncio.wait_for(
+                    session_swap_lock.acquire(),
+                    timeout=self._core_voice_session_swap_barrier_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Timed out waiting for Core voice hot-swap barrier; "
+                    "dropping final fail-closed",
+                    self.lanlan_name,
+                )
+                return
+            try:
+                if not route_still_core():
+                    return
+
+                # Re-read only while close+promotion is excluded. An unchanged
+                # transition/ingress means a replacement session is the endpoint
+                # for this same conversation, not an unrelated start.
+                target_session = getattr(self, "session", None)
+                if target_session is None:
+                    return
+                if target_session is not session_ref:
+                    session_ref = target_session
+                    prepare = getattr(
+                        session_ref,
+                        "prepare_external_voice_turn",
+                        None,
+                    )
+                    if callable(prepare):
+                        await prepare(turn_id=external_turn_id)
+                    if not route_still_core() or self.session is not session_ref:
+                        return
+                await self._submit_core_voice_turn(
+                    event.text,
+                    turn_id=external_turn_id,
+                    session_ref=session_ref,
+                )
+            finally:
+                session_swap_lock.release()
         finally:
             self._abandon_core_voice_turn(
                 external_turn_id,
@@ -2342,9 +2573,15 @@ class AsrRuntimeMixin:
         turn has stopped producing them.
         """
         preview_owner_turn_id = self._core_asr_preview_turn_id
+        preview_owner_turn_token = getattr(
+            self,
+            "_core_asr_preview_turn_token",
+            None,
+        )
         preview_owner_text = self._core_asr_preview_text
         if (
             not preview_owner_turn_id
+            or preview_owner_turn_token is None
             or not preview_owner_text
             or preview_owner_turn_id == finalized_turn_id
         ):
@@ -2352,8 +2589,8 @@ class AsrRuntimeMixin:
         try:
             await self._send_core_asr_preview(
                 VoicePartialEvent(
+                    turn_token=preview_owner_turn_token,
                     text=preview_owner_text,
-                    session_epoch=session_epoch,
                 ),
                 remember=False,
             )
@@ -2383,6 +2620,7 @@ class AsrRuntimeMixin:
             return
         if self._core_asr_preview_turn_id == turn_id:
             self._core_asr_preview_text = ""
+            self._core_asr_preview_turn_token = None
         try:
             await send_json(
                 {
@@ -2401,51 +2639,63 @@ class AsrRuntimeMixin:
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
         route_operation_generation = self._asr_route_operation_generation
-        async with self._asr_notification_lock:
-            if (
-                not self._core_asr_operation_identity_matches(source_identity)
-                or event.session_epoch
-                != self._core_asr_identity_ingress_token(source_identity).session_epoch
-            ):
-                return
-            self._abandon_core_voice_turn()
-            self._set_microphone_route("blocked")
-            self._clear_audio_stream_queue("independent_asr_failure")
-            self.hot_swap_audio_cache.clear()
-            # Fail-safe for clients that never receive or never honour the
-            # teardown notice (an older build, a third-party client, a
-            # throttled background tab). The route is fail-closed for the rest
-            # of the session, so stop accepting the PCM at ingress too. The
-            # game owner is exempt: the galgame route holds the lease through
-            # its own consumer binding and must not be collaterally revoked.
-            # No notice of its own -- the BLOCKED lifecycle event that produced
-            # this failure already reached the client.
-            #
-            # Re-captured AFTER this handler's own mutations, and that is the
-            # whole point: ``source_identity`` was taken while the route was
-            # still "independent", and the identity tuple carries
-            # ``_asr_route_mode`` (plus ``_microphone_route_generation``, inside
-            # the ingress token). Handing that pre-transition tuple to
-            # ``still_current`` made the predicate false on ENTRY -- against a
-            # transition this handler had itself performed two lines up -- so
-            # _fail_closed_voice_route returned before the revoke and left a
-            # live hardware microphone uploading into a dead route. The fence
-            # exists to reject a COMPETING newer operation, never our own step.
-            # Nothing awaits between the identity check at the top of this lock
-            # and here, so no competing operation can hide in the gap.
-            #
-            # The sibling predicates dodge this by testing the route mode
-            # ABSOLUTELY (``_asr_route_mode == "blocked"``) rather than against
-            # a captured value; a full-tuple comparison cannot, so it has to be
-            # re-based here instead.
-            post_transition_identity = self._capture_core_asr_operation_identity()
-            await self._fail_closed_voice_route(
-                "independent_asr_failure",
-                operation_generation=route_operation_generation,
-                still_current=lambda: self._core_asr_operation_identity_matches(
-                    post_transition_identity
-                ),
+
+        def failure_is_current() -> bool:
+            return bool(
+                self._core_asr_operation_identity_matches(source_identity)
+                and event.session_epoch
+                == self._core_asr_identity_ingress_token(
+                    source_identity
+                ).session_epoch
             )
+
+        async with self._asr_notification_lock:
+            if not failure_is_current():
+                return
+
+        # Registry cancellation may execute consumer callbacks. Those
+        # callbacks are allowed to publish status/lifecycle notifications,
+        # which acquire _asr_notification_lock themselves. Keep the entire
+        # cancellation path outside that lock, and re-fence after releasing it
+        # in case a newer route operation landed while this task was queued.
+        if not failure_is_current():
+            return
+        self._set_microphone_route("blocked")
+        self._invalidate_voice_pcm_sync("independent_asr_failure")
+        post_transition_identity = self._capture_core_asr_operation_identity()
+        await self._voice_input_registry.wait_idle()
+        # Fail-safe for clients that never receive or never honour the
+        # teardown notice (an older build, a third-party client, a
+        # throttled background tab). The route is fail-closed for the rest
+        # of the session, so stop accepting the PCM at ingress too. The
+        # game owner is exempt: the galgame route holds the lease through
+        # its built-in Registry consumer and must not be collaterally
+        # revoked.
+        # No notice of its own -- the BLOCKED lifecycle event that produced
+        # this failure already reached the client.
+        #
+        # Re-captured AFTER this handler's own mutations, and that is the
+        # whole point: ``source_identity`` was taken while the route was
+        # still "independent", and the identity tuple carries
+        # ``_asr_route_mode`` (plus ``_microphone_route_generation``, inside
+        # the ingress token). Handing that pre-transition tuple to
+        # ``still_current`` made the predicate false on ENTRY -- against a
+        # transition this handler had itself performed two lines up -- so
+        # _fail_closed_voice_route returned before the revoke and left a
+        # live hardware microphone uploading into a dead route. The fence
+        # exists to reject a COMPETING newer operation, never our own step.
+        #
+        # The sibling predicates dodge this by testing the route mode
+        # ABSOLUTELY (``_asr_route_mode == "blocked"``) rather than against
+        # a captured value; a full-tuple comparison cannot, so it has to be
+        # re-based here instead.
+        await self._fail_closed_voice_route(
+            "independent_asr_failure",
+            operation_generation=route_operation_generation,
+            still_current=lambda: self._core_asr_operation_identity_matches(
+                post_transition_identity
+            ),
+        )
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
@@ -2503,3 +2753,4 @@ class AsrRuntimeMixin:
         """
 
         await self._asr_runtime.wait_transcript_idle()
+        await self._voice_input_registry.wait_idle()

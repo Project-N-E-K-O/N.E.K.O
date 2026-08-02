@@ -36,6 +36,10 @@ from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
 
 from . import gates, review, runtime
+from .locale_state import (
+    aget_subject_prompt_locale,
+    run_with_character_prompt_locale,
+)
 from ._shared import logger
 from .gates import (
     IDLE_CHECK_INTERVAL,
@@ -55,6 +59,81 @@ REBUTTAL_DRAIN_BATCH_LIMIT = 20
 # 读 SQL 时的硬上限——bound memory，防止 1h fallback 把整张表拉进来。
 # 200 行通常包含 50-100 条 user 消息，足以喂多次 drain。
 REBUTTAL_SQL_ROW_LIMIT = 200
+
+
+async def _run_with_character_language(name: str, operation):
+    """Run one async maintenance operation with the latest session locale."""
+    return await run_with_character_prompt_locale(name, operation, name)
+
+
+async def _get_batch_subject_prompt_locale(name: str, subject):
+    """Return a scoped locale override; legacy batches keep character context."""
+    if subject is None:
+        return None
+    return await aget_subject_prompt_locale(name, subject)
+
+
+async def _resolve_fact_dedup_with_language(name: str):
+    async def operation(character_name: str):
+        return await runtime.fact_dedup_resolver.aresolve(
+            character_name,
+            prompt_locale_resolver=lambda subject: (
+                _get_batch_subject_prompt_locale(character_name, subject)
+            ),
+        )
+
+    return await _run_with_character_language(name, operation)
+
+
+async def _resolve_persona_corrections_with_language(name: str):
+    async def operation(character_name: str):
+        return await runtime.persona_manager.resolve_corrections(
+            character_name,
+            prompt_locale_resolver=lambda subject: (
+                _get_batch_subject_prompt_locale(character_name, subject)
+            ),
+        )
+
+    return await _run_with_character_language(name, operation)
+
+
+async def _auto_promote_character(name: str, powerful: bool):
+    operation = (
+        runtime.reflection_engine.aauto_promote_stale
+        if powerful
+        else runtime.reflection_engine.aauto_promote_time_driven
+    )
+    return await _run_with_character_language(name, operation)
+
+
+async def _compress_recent_history(name: str):
+    return await run_with_character_prompt_locale(
+        name,
+        runtime.recent_history_manager.update_history,
+        [],
+        name,
+        detailed=True,
+        on_compress_done=review._on_compress_done,
+    )
+
+
+async def _spawn_review_with_character_language(name: str):
+    return await _run_with_character_language(name, review.maybe_spawn_review)
+
+
+async def _check_feedback_for_confirmed(
+    name: str,
+    confirmed: list[dict],
+    user_msgs: list[str],
+):
+    """Run periodic rebuttal analysis with the durable character locale."""
+    return await run_with_character_prompt_locale(
+        name,
+        runtime.reflection_engine.check_feedback_for_confirmed,
+        name,
+        confirmed,
+        user_msgs,
+    )
 
 
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
@@ -266,7 +345,7 @@ async def _periodic_rebuttal_loop():
                 user_msgs = [m for m, _ in batch]
 
                 # 复用 check_feedback 判断反驳
-                feedbacks = await runtime.reflection_engine.check_feedback_for_confirmed(
+                feedbacks = await _check_feedback_for_confirmed(
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
@@ -380,12 +459,7 @@ async def _periodic_auto_promote_loop():
 
         async def _promote_one(name: str):
             try:
-                if powerful:
-                    # score-driven + merge LLM (current evidence-RFC 路径)
-                    transitions = await runtime.reflection_engine.aauto_promote_stale(name)
-                else:
-                    # 强力记忆关：time-driven 直接 aadd_fact，零 LLM
-                    transitions = await runtime.reflection_engine.aauto_promote_time_driven(name)
+                transitions = await _auto_promote_character(name, powerful)
                 if transitions:
                     logger.info(
                         f"[AutoPromote] {name}: {transitions} 条状态迁移"
@@ -460,7 +534,7 @@ async def _periodic_idle_maintenance_loop():
                         )
                         try:
                             # 传空消息列表仅触发压缩逻辑
-                            await runtime.recent_history_manager.update_history([], name, detailed=True, on_compress_done=review._on_compress_done)
+                            await _compress_recent_history(name)
                             logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
@@ -484,7 +558,7 @@ async def _periodic_idle_maintenance_loop():
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
                                 )
-                                resolved = await runtime.fact_dedup_resolver.aresolve(name)
+                                resolved = await _resolve_fact_dedup_with_language(name)
                                 if resolved:
                                     logger.info(
                                         f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
@@ -507,7 +581,7 @@ async def _periodic_idle_maintenance_loop():
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
                                 )
-                                resolved = await runtime.persona_manager.resolve_corrections(name)
+                                resolved = await _resolve_persona_corrections_with_language(name)
                                 if resolved:
                                     logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
                         except Exception as e:
@@ -520,7 +594,7 @@ async def _periodic_idle_maintenance_loop():
                     if not gates._is_idle():
                         break
                     try:
-                        await review.maybe_spawn_review(name)
+                        await _spawn_review_with_character_language(name)
                     except Exception as e:
                         logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
 
@@ -784,11 +858,56 @@ async def _periodic_slow_memory_recheck_loop():
         await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
 
 
+# scoped subject 时间归档的进程内节流（判据粒度是天，无须持久化：重启后
+# 首轮 sweep 多跑一次也是幂等的）。
+_subject_archive_last_run: dict[str, datetime] = {}
+
+
+async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
+    """Scoped subject time-driven archival stage inside the archive sweep.
+
+    Dual of the score-driven sweep body: legacy entries leave via
+    ``sub_zero_days`` accumulation, scoped subjects leave via last-write
+    age (they can never accumulate ``sub_zero_days`` — no evidence signal
+    path reaches them). Throttled per character because the staleness
+    criterion has day granularity while the sweep loop runs hourly.
+    """
+    # 函数级 import：每次调用时从 config 模块现读属性，测试 patch
+    # config.SCOPED_* 即可生效（模块级 from-import 会在导入时冻结值）。
+    from config import (
+        SCOPED_SUBJECT_ARCHIVE_ENABLED,
+        SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS,
+    )
+    if not SCOPED_SUBJECT_ARCHIVE_ENABLED:
+        return
+    min_interval = SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS
+    last = _subject_archive_last_run.get(name)
+    if last is not None and (now - last).total_seconds() < min_interval:
+        return
+    # 先占窗口再跑：持续性失败也按节流间隔重试，不放大为每小时重打。
+    _subject_archive_last_run[name] = now
+    from memory.subject_archive import asweep_scoped_subject_archive
+    try:
+        await asweep_scoped_subject_archive(
+            name,
+            fact_store=runtime.fact_store,
+            persona_manager=runtime.persona_manager,
+            reflection_engine=runtime.reflection_engine,
+            now=now,
+        )
+    except Exception as e:
+        logger.warning(f"[SubjectArchive] {name}: sweep 失败: {e}")
+
+
 async def _periodic_archive_sweep_loop():
     """Periodically scan all non-protected reflection / persona entries
     and (a) bump `sub_zero_days` for those with `evidence_score < 0`
     today, (b) move entries with `sub_zero_days >= EVIDENCE_ARCHIVE_DAYS`
     into a sharded archive file.
+
+    Additionally runs the scoped-subject time-driven archival stage
+    (``_amaybe_sweep_subject_archive``) per character, throttled to
+    ``SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS``.
 
     Runs every `EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS`. The
     `maybe_mark_sub_zero` helper has its own day-based debounce so a
@@ -913,6 +1032,9 @@ async def _periodic_archive_sweep_loop():
                             logger.warning(
                                 f"[ArchiveSweep] {name}: persona {entity_key}/{eid} 归档失败: {e}"
                             )
+
+                # ── scoped subjects（时间驱动，群记忆系列 5/7） ──
+                await _amaybe_sweep_subject_archive(name, now)
             except Exception as e:
                 logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")
 
@@ -923,4 +1045,3 @@ async def _periodic_archive_sweep_loop():
             )
 
         await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
-

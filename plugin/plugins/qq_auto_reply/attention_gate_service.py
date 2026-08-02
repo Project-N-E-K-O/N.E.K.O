@@ -596,11 +596,17 @@ class QQAttentionGateService:
                         if next_index > start_index:
                             s["last_group_digest_index"] = next_index
                         break
+                    # 拿不到群名就不带参（对偶 finalize 的 digest 调用）。
+                    digest_extra = {}
+                    group_display_name = svc._group_display_name(group_id)
+                    if group_display_name:
+                        digest_extra["display_name"] = group_display_name
                     await self.plugin.memory_bridge.post_scoped_memory_history(
                         str(s.get("her_name") or "neko"),
                         messages,
                         subject=self.plugin.memory_bridge.group_subject(group_id),
                         timeout=30.0,
+                        **digest_extra,
                     )
                     s["last_group_digest_index"] = next_index
                     start_index = next_index

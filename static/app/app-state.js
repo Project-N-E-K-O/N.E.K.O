@@ -88,17 +88,26 @@
         selectedMicrophoneId: null,
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
-        independentAsrEnabled: false,
+        independentAsrEnabled: true,
+        voiceInputResourceOptimizationEnabled: true,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
-        // 在此之前 S.independentAsrEnabled 只是启动默认值（false），不代表权威偏好，
+        // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
+        // independentAsrEnabled 尤其不能提前进入会话握手，
         // start_session 握手（app-websocket.js attachStartSessionHandshake）不得携带它，
-        // 否则新浏览器 profile 首个会话会用默认 false 覆盖后端持久化的 true。
+        // 否则新浏览器 profile 首个会话会覆盖后端持久化的显式 false。
         settingsHydrated: false,
         // independentAsrEnabled 的按键权威位：settingsHydrated 在任何一次用户改
         // 设置时都会翻真，而那与 ASR 的值毫无关系。只有「server GET 合并成功」
         // 「用户显式改过 ASR 开关」「跨窗口 ASR 翻转」这三种事件才让它变权威；
         // 在此之前 start_session 握手必须省略该字段，由后端持久化值兜底。
         independentAsrAuthoritative: false,
+        // 资源优化同样参与会话路由启动，必须独立证明该键来自 server merge、
+        // 本窗口显式修改或可信的跨窗口修改，不能用启动默认值覆盖持久化选择。
+        voiceInputResourceOptimizationAuthoritative: false,
+        // 跨 popup generation 保存「下次会话生效」状态与当前会话的实际 ASR
+        // route。否则跨窗口设置事件更新偏好后，重渲染会把偏好误报成当前 route。
+        voiceSettingsPendingUntilEpoch: null,
+        pendingVoiceRouteIndependentAsr: null,
         // 独立 ASR 已 fail-closed 的粘性标记：blocked 生命周期事件只发一次，
         // 而游戏 STT 网关持有麦克风时会跳过停麦，退出游戏的恢复路径必须据此
         // 拒绝把麦克风重新开到一条仍然关闭的路由上。

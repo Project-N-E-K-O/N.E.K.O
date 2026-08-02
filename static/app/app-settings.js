@@ -83,42 +83,109 @@
         );
         return value <= maxAccepted;
     }
-    function _noteAsrDecision(writeId, writerId, value) {
+    function _noteSettingDecision(
+        current,
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
         // A write that merely re-asserts the value already decided is not a new
         // choice: _dirtySettingsKeys is monotone, so every later save from a
         // window that once toggled declares the key explicit, and treating those
         // as fresh intent would shield this window from a genuinely newer toggle.
-        if (_lastAsrDecision && _lastAsrDecision.value === value) return;
-        if (_lastAsrDecision
-            && !(writeId > _lastAsrDecision.writeId
-                || (writeId === _lastAsrDecision.writeId && writerId > _lastAsrDecision.writerId))) {
-            return;
+        if (
+            current
+            && current.value === value
+            && isFreshChoice !== true
+        ) return current;
+        if (current
+            && !(writeId > current.writeId
+                || (writeId === current.writeId && writerId > current.writerId))) {
+            return current;
         }
-        _lastAsrDecision = { writeId: writeId, writerId: writerId || '', value: value };
-        _asrDecisionWriteIdFloor = Math.max(_asrDecisionWriteIdFloor, writeId);
+        return { writeId: writeId, writerId: writerId || '', value: value };
     }
-    function _asrWriteOutranksLocalChoice(meta) {
-        if (!_lastAsrDecision) return true;
+    let _lastOptimizationDecision = null;
+    // Durable write-ahead bit for the optimization handshake. A localStorage
+    // decision can outlive the page that issued its POST; keep it authoritative
+    // across reloads until the exact decision is acknowledged by the server.
+    let _optimizationDecisionPendingSync = false;
+    function _noteAsrDecision(
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
+        const nextDecision = _noteSettingDecision(
+            _lastAsrDecision,
+            writeId,
+            writerId,
+            value,
+            isFreshChoice
+        );
+        _lastAsrDecision = nextDecision;
+        if (nextDecision) {
+            _asrDecisionWriteIdFloor = Math.max(
+                _asrDecisionWriteIdFloor,
+                nextDecision.writeId
+            );
+        }
+    }
+    function _noteOptimizationDecision(
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
+        _lastOptimizationDecision = _noteSettingDecision(
+            _lastOptimizationDecision,
+            writeId,
+            writerId,
+            value,
+            isFreshChoice
+        );
+    }
+    function _settingWriteOutranksLocalChoice(
+        meta,
+        settingKey,
+        decisionKey,
+        localDecision
+    ) {
+        if (!localDecision) return true;
         // Order on the DECISION that produced this value, not on the id of the
         // write that happens to carry it. _dirtySettingsKeys is monotone and
-        // every save copies independentAsrEnabled, so once a window has toggled
-        // once, each later UNRELATED save re-declares the key explicit with a
-        // fresh id -- and would outrank a genuinely newer toggle in another
-        // window. That needs no race at all, which makes it strictly more
-        // reachable than the same-millisecond tie this ordering was added for.
-        const decision = meta.asrDecision
-            || (meta.changedKeys.indexOf('independentAsrEnabled') !== -1 ? meta : null);
+        // every save copies shared settings, so once a window has toggled once,
+        // each later unrelated save re-declares the dirty key with a fresh id.
+        const decision = meta[decisionKey]
+            || (meta.changedKeys.indexOf(settingKey) !== -1 ? meta : null);
         // No tuple AND not declared explicit: an incidental copy of whatever
         // this writer happened to hold. It must never outrank an explicit local
         // choice. Previous-build snapshots that DO declare the key keep today's
         // writeId ordering through the fallback above.
         if (!decision) return false;
-        if (decision.writeId > _lastAsrDecision.writeId) return true;
-        if (decision.writeId < _lastAsrDecision.writeId) return false;
+        if (decision.writeId > localDecision.writeId) return true;
+        if (decision.writeId < localDecision.writeId) return false;
         // Equal ids are unordered in time; break on the window-unique key so
         // both windows pick the SAME winner. An absent writerId (previous
         // build) reads as '' and loses, keeping this window's own choice.
-        return (decision.writerId || '') > _lastAsrDecision.writerId;
+        return (decision.writerId || '') > localDecision.writerId;
+    }
+    function _asrWriteOutranksLocalChoice(meta) {
+        return _settingWriteOutranksLocalChoice(
+            meta,
+            'independentAsrEnabled',
+            'asrDecision',
+            _lastAsrDecision
+        );
+    }
+    function _optimizationWriteOutranksLocalChoice(meta) {
+        return _settingWriteOutranksLocalChoice(
+            meta,
+            'voiceInputResourceOptimizationEnabled',
+            'optimizationDecision',
+            _lastOptimizationDecision
+        );
     }
     function _normalizeServerAsrDecision(value, serverAuthoritative) {
         if (!value || typeof value !== 'object') return null;
@@ -484,6 +551,7 @@
         'focusCognitionEnabled',
         'noiseReductionEnabled',
         'independentAsrEnabled',
+        'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
         'proactiveChatInterval',
@@ -510,7 +578,8 @@
             focusModeEnabled: false,
             focusCognitionEnabled: true,
             noiseReductionEnabled: true,
-            independentAsrEnabled: false,
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
             proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
@@ -569,6 +638,7 @@
             focusCognitionEnabled: S.focusCognitionEnabled,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
+            voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -678,6 +748,12 @@
         return keys;
     }
 
+    function _settingDivergedFromBaseline(snapshot, key) {
+        return !!_settingsBaseline
+            && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+            && _settingsBaseline[key] !== snapshot[key];
+    }
+
     /**
      * Persist the shared settings snapshot with its write metadata.
      * `hydrated` records whether this window held ANY authoritative settings
@@ -741,8 +817,27 @@
             _noteAsrDecision(
                 _nextAsrDecisionWriteId(ownMeta.writeId),
                 ownMeta.writerId,
-                snapshot.independentAsrEnabled
+                snapshot.independentAsrEnabled,
+                _settingDivergedFromBaseline(
+                    snapshot,
+                    'independentAsrEnabled'
+                )
             );
+        }
+        if (ownMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') !== -1) {
+            const isFreshOptimizationChoice = _settingDivergedFromBaseline(
+                snapshot,
+                'voiceInputResourceOptimizationEnabled'
+            );
+            _noteOptimizationDecision(
+                ownMeta.writeId,
+                ownMeta.writerId,
+                snapshot.voiceInputResourceOptimizationEnabled,
+                isFreshOptimizationChoice
+            );
+            if (isFreshOptimizationChoice) {
+                _optimizationDecisionPendingSync = true;
+            }
         }
         // Stamp the ASR key with the id of the decision that PRODUCED this
         // value. _noteAsrDecision already refuses to advance the LOCAL decision
@@ -758,6 +853,17 @@
                 writerId: _lastAsrDecision.writerId,
                 value: _lastAsrDecision.value
             };
+        }
+        if (_lastOptimizationDecision
+            && _lastOptimizationDecision.value
+                === snapshot.voiceInputResourceOptimizationEnabled) {
+            ownMeta.optimizationDecision = {
+                writeId: _lastOptimizationDecision.writeId,
+                writerId: _lastOptimizationDecision.writerId,
+                value: _lastOptimizationDecision.value
+            };
+            ownMeta.optimizationDecisionPendingSync =
+                _optimizationDecisionPendingSync === true;
         }
         try {
             localStorage.setItem('project_neko_settings', JSON.stringify(payload));
@@ -879,7 +985,25 @@
                         : '',
                     value: meta.asrDecision.value
                 }
-                : null
+                : null,
+            optimizationDecision: (meta.optimizationDecision
+                && _isValidAsrWriteId(
+                    meta.optimizationDecision.writeId,
+                    Number.isInteger(meta.serverRevision)
+                ))
+                ? {
+                    writeId: meta.optimizationDecision.writeId,
+                    writerId: typeof meta.optimizationDecision.writerId === 'string'
+                        ? meta.optimizationDecision.writerId
+                        : '',
+                    value: meta.optimizationDecision.value
+                }
+                : null,
+            // Snapshots from the previous PR head already carry the decision
+            // tuple but not this bit. Treat those as pending so an interrupted
+            // POST cannot be forgotten during rollout.
+            optimizationDecisionPendingSync: !!meta.optimizationDecision
+                && meta.optimizationDecisionPendingSync !== false
         };
     }
 
@@ -1177,6 +1301,9 @@
             // touched the ASR key, synchronously before any await so the very
             // next start_session already carries it.
             if (_dirtySettingsKeys.has('independentAsrEnabled')) S.independentAsrAuthoritative = true;
+            if (_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')) {
+                S.voiceInputResourceOptimizationAuthoritative = true;
+            }
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
         // settings snapshot is built inside runSync, at SEND time — after the
@@ -1229,6 +1356,17 @@
                     writerId: _lastAsrDecision.writerId,
                     value: _lastAsrDecision.value
                 } : null;
+                const optimizationDecisionAtSend = (
+                    Object.prototype.hasOwnProperty.call(
+                        payload,
+                        'voiceInputResourceOptimizationEnabled'
+                    )
+                    && _lastOptimizationDecision
+                    && _lastOptimizationDecision.value
+                        === payload.voiceInputResourceOptimizationEnabled
+                )
+                    ? Object.assign({}, _lastOptimizationDecision)
+                    : null;
                 const headers = { 'Content-Type': 'application/json' };
                 if (_conversationSettingsEtag) {
                     headers['If-Match'] = _conversationSettingsEtag;
@@ -1277,6 +1415,21 @@
                     if (!data.success) {
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
+                    }
+                    if (
+                        optimizationDecisionAtSend
+                        && _lastOptimizationDecision
+                        && optimizationDecisionAtSend.writeId
+                            === _lastOptimizationDecision.writeId
+                        && optimizationDecisionAtSend.writerId
+                            === _lastOptimizationDecision.writerId
+                        && optimizationDecisionAtSend.value
+                            === _lastOptimizationDecision.value
+                        && S.voiceInputResourceOptimizationEnabled
+                            === optimizationDecisionAtSend.value
+                    ) {
+                        _optimizationDecisionPendingSync = false;
+                        _writeSharedSettings(getConversationSettings(), []);
                     }
                     _confirmSharedKeyWrites(
                         payload,
@@ -1447,6 +1600,8 @@
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
         const currentIndependentAsr = S.independentAsrEnabled === true;
+        const currentVoiceResourceOptimization =
+            S.voiceInputResourceOptimizationEnabled !== false;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -1520,6 +1675,7 @@
             focusCognitionEnabled: currentFocusCognition,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
+            voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -1561,6 +1717,7 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.independentAsrEnabled = currentIndependentAsr;
+        S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -1651,6 +1808,38 @@
                     const bootDecision = bootMeta.asrDecision || bootMeta;
                     _noteAsrDecision(bootDecision.writeId, bootDecision.writerId, settings.independentAsrEnabled);
                 }
+                if (
+                    bootMeta
+                    && (
+                        bootMeta.optimizationDecision
+                        || bootMeta.changedKeys.indexOf(
+                            'voiceInputResourceOptimizationEnabled'
+                        ) !== -1
+                    )
+                ) {
+                    const optimizationDecision =
+                        bootMeta.optimizationDecision || bootMeta;
+                    _noteOptimizationDecision(
+                        optimizationDecision.writeId,
+                        optimizationDecision.writerId,
+                        settings.voiceInputResourceOptimizationEnabled
+                    );
+                    if (
+                        bootMeta.optimizationDecisionPendingSync
+                        && typeof settings.voiceInputResourceOptimizationEnabled
+                            === 'boolean'
+                    ) {
+                        _optimizationDecisionPendingSync = true;
+                        _dirtySettingsKeys.add(
+                            'voiceInputResourceOptimizationEnabled'
+                        );
+                        _pendingSettingsKeys.add(
+                            'voiceInputResourceOptimizationEnabled'
+                        );
+                        S.settingsHydrated = true;
+                        S.voiceInputResourceOptimizationAuthoritative = true;
+                    }
+                }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
                 // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
@@ -1707,7 +1896,9 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
-                S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
+                S.independentAsrEnabled = settings.independentAsrEnabled ?? true;
+                S.voiceInputResourceOptimizationEnabled =
+                    settings.voiceInputResourceOptimizationEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -1871,6 +2062,7 @@
                 // now holds either server truth or a user change the field-level
                 // merge preserved — authoritative for the handshake either way.
                 S.independentAsrAuthoritative = true;
+                S.voiceInputResourceOptimizationAuthoritative = true;
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -2152,6 +2344,54 @@
                 ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer
                     && asrOutranksLocalChoice)
                 : asrValueDiffers;
+            const optimizationKey = 'voiceInputResourceOptimizationEnabled';
+            const optimizationValueDiffers =
+                Object.prototype.hasOwnProperty.call(settings, optimizationKey)
+                && S[optimizationKey] !== settings[optimizationKey];
+            const optimizationMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf(optimizationKey) !== -1;
+            const optimizationWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (
+                    meta.writeId === _lastAppliedSharedWriteId
+                    && optimizationMarkedExplicit
+                );
+            const optimizationOutranksLocalChoice =
+                !meta || _optimizationWriteOutranksLocalChoice(meta);
+            // Like independentAsrEnabled, this key is copied into every shared
+            // snapshot. With metadata, only an explicit user change may alter
+            // another window; otherwise an unhydrated writer's boot default
+            // could overwrite a server-merged preference incidentally.
+            const optimizationChangedByOtherWindow = meta
+                ? (
+                    optimizationValueDiffers
+                    && optimizationMarkedExplicit
+                    && optimizationWriteIsNewer
+                    && optimizationOutranksLocalChoice
+                )
+                : optimizationValueDiffers;
+            const optimizationSyncAcknowledgesLocalDecision = !!meta
+                && !!meta.optimizationDecision
+                && meta.optimizationDecisionPendingSync === false
+                && !!_lastOptimizationDecision
+                && meta.optimizationDecision.writeId
+                    === _lastOptimizationDecision.writeId
+                && meta.optimizationDecision.writerId
+                    === _lastOptimizationDecision.writerId
+                && meta.optimizationDecision.value
+                    === _lastOptimizationDecision.value;
+            if (optimizationSyncAcknowledgesLocalDecision) {
+                _optimizationDecisionPendingSync = false;
+            }
+            const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
+                ? (
+                    S.independentAsrActive === true
+                    || (
+                        S.voiceInputLifecycleState === 'blocked'
+                        && S.independentAsrEnabled === true
+                    )
+                )
+                : null;
             // Drop the key from the apply set when the snapshot's ASR value
             // carries neither user intent nor trustworthy server truth: an
             // already-superseded write, or one made before its own window
@@ -2163,13 +2403,20 @@
                 && !asrChangedByOtherWindow
                 && (!asrWriteIsNewer || !asrOutranksLocalChoice
                     || (!meta.asrAuthoritative && S.settingsHydrated === true));
+            const optimizationValueIsStale = !!meta
+                && optimizationValueDiffers
+                && (
+                    !optimizationChangedByOtherWindow
+                    || !optimizationOutranksLocalChoice
+                );
             if (meta && meta.writeId > _lastAppliedSharedWriteId) {
                 _lastAppliedSharedWriteId = meta.writeId;
             }
             let incoming = settings;
-            if (asrValueIsStale) {
+            if (asrValueIsStale || optimizationValueIsStale) {
                 incoming = Object.assign({}, settings);
-                delete incoming.independentAsrEnabled;
+                if (asrValueIsStale) delete incoming.independentAsrEnabled;
+                if (optimizationValueIsStale) delete incoming[optimizationKey];
             }
             if (meta) {
                 for (const key of meta.changedKeys) {
@@ -2398,6 +2645,41 @@
                     const adopted = meta.asrDecision || meta;
                     _noteAsrDecision(adopted.writeId, adopted.writerId, settings.independentAsrEnabled);
                 }
+            }
+            if (optimizationChangedByOtherWindow) {
+                // Preserve a genuine cross-window toggle across this window's
+                // still-pending server merge without granting unrelated fields
+                // handshake authority or emitting a duplicate POST.
+                S.settingsHydrated = true;
+                S.voiceInputResourceOptimizationAuthoritative = true;
+                _dirtySettingsKeys.add(optimizationKey);
+                _optimizationDecisionPendingSync = !meta
+                    || meta.optimizationDecisionPendingSync;
+                if (meta) {
+                    const adopted = meta.optimizationDecision || meta;
+                    _noteOptimizationDecision(
+                        adopted.writeId,
+                        adopted.writerId,
+                        settings[optimizationKey]
+                    );
+                }
+            }
+            if (asrChangedByOtherWindow || optimizationChangedByOtherWindow) {
+                const targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
+                if (
+                    asrChangedByOtherWindow
+                    && (
+                        S.voiceSettingsPendingUntilEpoch !== targetEpoch
+                        || S.pendingVoiceRouteIndependentAsr === null
+                    )
+                ) {
+                    S.pendingVoiceRouteIndependentAsr =
+                        activeRouteBeforeSharedVoiceChange;
+                }
+                S.voiceSettingsPendingUntilEpoch = targetEpoch;
+                window.dispatchEvent(new CustomEvent(
+                    'neko:voice-settings-pending-changed'
+                ));
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {

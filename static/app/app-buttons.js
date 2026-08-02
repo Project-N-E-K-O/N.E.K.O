@@ -2363,7 +2363,14 @@
                         }
                         return;
                     }
-                    await window.startMicCapture();
+                    var microphoneStarted = await window.startMicCapture();
+                    if (microphoneStarted !== true) {
+                        var microphoneStartCancelled = new Error(
+                            'Microphone start cancelled before capture committed'
+                        );
+                        microphoneStartCancelled.microphoneStartCancelled = true;
+                        throw microphoneStartCancelled;
+                    }
                     ensureVoiceStartCurrent();
 
                     // getUserMedia and the worklet setup are another wide-open
@@ -2438,10 +2445,13 @@
             } catch (error) {
                 var voiceStartErrorMessage = getVoiceStartErrorMessage(error);
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
+                var isMicrophoneStartCancelled = !!(
+                    error && error.microphoneStartCancelled
+                );
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'
                     && window.isNekoGoodbyeModeActive();
-                if (!isVoiceStartCancelled) {
+                if (!isVoiceStartCancelled && !isMicrophoneStartCancelled) {
                     console.error(window.t('console.startVoiceSessionFailed'), error);
                 }
 
@@ -2515,7 +2525,7 @@
                     window.showStatusToast('', 0);
                 } else if (error && error.voiceConfigSwitchTimedOut) {
                     window.showStatusToast(voiceStartErrorMessage, 5000);
-                } else {
+                } else if (!isMicrophoneStartCancelled) {
                     window.showStatusToast(window.t ? window.t('app.startFailed', { error: voiceStartErrorMessage }) : '\u542F\u52A8\u5931\u8D25: ' + voiceStartErrorMessage, 5000);
                 }
 

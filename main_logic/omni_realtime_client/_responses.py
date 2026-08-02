@@ -21,6 +21,7 @@ from ._shared import (
     Optional,
     asyncio,
     logger,
+    response_arbiter_fail_open_enabled,
     time,
     uuid,
 )
@@ -60,6 +61,8 @@ class _ResponseMixin:
             arbiter = RealtimeResponseArbiter(
                 self.send_event,
                 abort_transport=getattr(self, "_abort_failed_transport", None),
+                fail_open=response_arbiter_fail_open_enabled(),
+                on_stuck_release=getattr(self, "_on_arbiter_stuck_release", None),
             )
             self._response_arbiter = arbiter
         return arbiter

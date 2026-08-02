@@ -23,10 +23,19 @@ threshold:
      while it has both old and new vectors in hand, scans for
      cosine > FACT_DEDUP_COSINE_THRESHOLD against existing facts of
      the same entity.  Hits go into ``facts_pending_dedup.json``.
+     The queue is **ids-only**: fact text never lands in the sidecar
+     file. Scoped (group/member-derived) fact text must not exist in
+     any store outside facts.json itself — the queue used to carry
+     denormalized ``candidate_text`` / ``existing_text`` copies, which
+     both leaked member content into a second plaintext file and went
+     stale when the authoritative row was edited between enqueue and
+     resolve.
   2. The idle-maintenance loop periodically calls ``aresolve(name)``,
-     which batches the queue into one LLM call asking the model to
-     classify each (candidate, existing) pair as ``merge`` / ``replace``
-     / ``keep_both``.
+     which re-reads the current text for each queued id pair from
+     facts.json (a row that disappeared meanwhile is consumed via the
+     stale-pair path) and batches the queue into one LLM call asking
+     the model to classify each (candidate, existing) pair as
+     ``merge`` / ``replace`` / ``keep_both``.
   3. Decisions are applied to facts.json under the FactStore's
      existing per-character file lock, then processed queue items
      are removed.
@@ -58,15 +67,6 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-try:
-    from memory.embeddings import cosine_similarity
-except ImportError:
-    # See ``embedding_worker`` for context on the fallback path. With a
-    # 0.0-cosine stub the resolver's pending queue stays empty and the
-    # legacy hash + FTS5 dedup is the entire pipeline — same shape as
-    # ``is_available() == False`` in the real module.
-    from memory.embeddings_fallback import cosine_similarity, _warn_once
-    _warn_once(__name__)
 from memory.facts import safe_int_field
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
@@ -79,6 +79,32 @@ if TYPE_CHECKING:
     from memory.facts import FactStore
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_fact_dedup_prompt_language(
+    text: str,
+    *,
+    ui_language: str,
+) -> str:
+    from utils.language_utils import detect_prompt_language_with_ascii_fallback
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language,
+    )
+
+
+def cosine_similarity(left, right) -> float:
+    """Load the optional vector implementation only when detection runs."""
+    try:
+        from memory.embeddings import cosine_similarity as implementation
+    except ImportError:
+        from memory.embeddings_fallback import (
+            _warn_once,
+            cosine_similarity as implementation,
+        )
+        _warn_once(__name__)
+    return implementation(left, right)
 
 
 # Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is
@@ -111,6 +137,14 @@ class FactDedupResolver:
     consume).  FactStore's own threading.Lock guards facts.json, so
     apply_decision delegates to FactStore's save path rather than
     writing the file directly."""
+
+    @staticmethod
+    def _locale_text(batch_texts: list[tuple[str, str]]) -> str:
+        """Return only user-authored fact text for prompt locale detection."""
+        return "\n".join(
+            f"{candidate_text}\n{existing_text}"
+            for candidate_text, existing_text in batch_texts
+        )
 
     def __init__(self, fact_store: "FactStore") -> None:
         self._fact_store = fact_store
@@ -210,8 +244,15 @@ class FactDedupResolver:
 
         Each pair dict must contain:
           * candidate_id / existing_id — stable fact ids
-          * candidate_text / existing_text — for the LLM prompt
           * cosine — scoring transparency (debugging + threshold tuning)
+
+        The queue is ids-only by design: fact TEXT is deliberately not
+        persisted here. The authoritative copy lives in facts.json;
+        ``_aresolve_locked`` re-reads it by id when assembling the LLM
+        prompt. A text copy in this sidecar would put scoped (group /
+        member-derived) content in a second plaintext file — the same
+        content whose extraction / dead-letter logs only ever print
+        domain markers and lengths.
 
         The id-pair dedup matters because an oscillating worker (e.g.
         re-embed under a new model_id) would otherwise re-enqueue the
@@ -220,7 +261,32 @@ class FactDedupResolver:
         if not pairs:
             return 0
         async with self._get_alock(name):
+            # Candidate detection runs outside this lock. A scoped forget may
+            # therefore delete its source facts after detection but before
+            # enqueue. Revalidate both ids against the live store so a stale
+            # worker cannot reintroduce forgotten text after the queue purge.
+            has_scoped_pairs = any(
+                p.get('subject_key') is not None or p.get('scope') is not None
+                for p in pairs
+            )
+            live_ids: set = set()
+            if has_scoped_pairs:
+                live_facts = await self._fact_store.aload_facts(name)
+                live_ids = {
+                    row.get('id')
+                    for row in live_facts
+                    if isinstance(row, dict) and row.get('id')
+                }
             existing = await self.aload_pending(name)
+            # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
+            # （全部撞去重），只要发生了 scrub 就必须重写队列文件——否则
+            # 磁盘上的明文要等下一次真正的写入才消失。
+            scrubbed = False
+            for it in existing:
+                if 'candidate_text' in it or 'existing_text' in it:
+                    it.pop('candidate_text', None)
+                    it.pop('existing_text', None)
+                    scrubbed = True
             existing_keys = {
                 (it.get('candidate_id'), it.get('existing_id'))
                 for it in existing
@@ -229,13 +295,27 @@ class FactDedupResolver:
             appended = 0
             for p in pairs:
                 key = (p.get('candidate_id'), p.get('existing_id'))
-                if key in existing_keys or None in key:
+                if (
+                    key in existing_keys
+                    or None in key
+                    or self._fact_store._subject_forget_fields_are_active(
+                        name, p.get('subject_key'), p.get('scope'),
+                    )
+                    or (
+                        (
+                            p.get('subject_key') is not None
+                            or p.get('scope') is not None
+                        )
+                        and (
+                            key[0] not in live_ids
+                            or key[1] not in live_ids
+                        )
+                    )
+                ):
                     continue
                 existing.append({
                     'candidate_id': p.get('candidate_id'),
                     'existing_id': p.get('existing_id'),
-                    'candidate_text': p.get('candidate_text', ''),
-                    'existing_text': p.get('existing_text', ''),
                     'entity': p.get('entity'),
                     'subject_key': p.get('subject_key'),
                     'scope': p.get('scope'),
@@ -244,6 +324,8 @@ class FactDedupResolver:
                 })
                 existing_keys.add(key)
                 appended += 1
+            if scrubbed and not appended:
+                await self._asave_pending(name, existing)
             if appended:
                 if not await self._asave_pending(name, existing):
                     # Maintenance-mode skip: the queue file was NOT
@@ -259,6 +341,114 @@ class FactDedupResolver:
                     name, appended, len(existing),
                 )
         return appended
+
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Purge queued text for one exact subject under the resolver lock.
+
+        Holding the same lock as ``aresolve`` waits for any in-flight LLM
+        decision before returning. Old queue rows without explicit subject
+        fields are matched through their still-live fact ids, before the route
+        deletes those facts.
+        """
+        from memory.scopes import coerce_subject, entry_matches_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        async with self._get_alock(name):
+            path = self._pending_path(name)
+            pending: list = []
+            if await asyncio.to_thread(os.path.exists, path):
+                try:
+                    data = await read_json_async(path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts_pending_dedup unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(data, list):
+                    raise RuntimeError(
+                        "facts_pending_dedup is not a list during forget"
+                    )
+                pending = data
+
+            facts_path = self._fact_store._facts_path(name)
+            facts: list = []
+            if await asyncio.to_thread(os.path.exists, facts_path):
+                try:
+                    facts_data = await read_json_async(facts_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts state unreadable during dedup forget: {exc}"
+                    ) from exc
+                if not isinstance(facts_data, list):
+                    raise RuntimeError(
+                        "facts state is not a list during dedup forget"
+                    )
+                facts = facts_data
+            subject_fact_ids = {
+                row.get('id')
+                for row in facts
+                if (
+                    isinstance(row, dict)
+                    and row.get('id')
+                    and entry_matches_subject(row, memory_subject)
+                )
+            }
+            archive_path = self._fact_store._facts_archive_path(name)
+            if await asyncio.to_thread(os.path.exists, archive_path):
+                try:
+                    archive_data = await read_json_async(archive_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts_archive unreadable during dedup forget: {exc}"
+                    ) from exc
+                if not isinstance(archive_data, list):
+                    raise RuntimeError(
+                        "facts_archive is not a list during dedup forget"
+                    )
+                subject_fact_ids.update(
+                    row.get('id')
+                    for row in archive_data
+                    if (
+                        isinstance(row, dict)
+                        and row.get('id')
+                        and entry_matches_subject(row, memory_subject)
+                    )
+                )
+
+            def _matches(item: object) -> bool:
+                if not isinstance(item, dict):
+                    return False
+                if (
+                    item.get('subject_key') == memory_subject.key
+                    and item.get('scope') == memory_subject.scope
+                ):
+                    return True
+                return bool(subject_fact_ids.intersection({
+                    item.get('candidate_id'), item.get('existing_id'),
+                }))
+
+            kept: list = []
+            scrubbed = False
+            for item in pending:
+                if _matches(item):
+                    continue
+                if isinstance(item, dict):
+                    item = dict(item)
+                    if 'candidate_text' in item or 'existing_text' in item:
+                        item.pop('candidate_text', None)
+                        item.pop('existing_text', None)
+                        scrubbed = True
+                kept.append(item)
+            removed = len(pending) - len(kept)
+            if (
+                (removed or scrubbed)
+                and not await self._asave_pending(name, kept)
+            ):
+                raise RuntimeError(
+                    "facts_pending_dedup not writable during forget"
+                )
+        return {'pending_dedup': removed}
 
     # ── candidate detection ──────────────────────────────────────────
 
@@ -346,7 +536,6 @@ class FactDedupResolver:
             if bucket is None:
                 continue
             entity = f.get('entity') or 'master'
-            ctext = f.get('text', '')
             collected = 0
             # Sort siblings by cosine descending so we capture the
             # strongest pair first; the per_fact_limit cap then keeps
@@ -397,11 +586,11 @@ class FactDedupResolver:
             for cos, sib in scored:
                 if collected >= per_fact_limit:
                     break
+                # ids-only（隐私收口）：pair 不携带 text，resolve 侧按 id
+                # 从 facts.json 现取——队列文件因此不落任何成员衍生原文。
                 results.append({
                     'candidate_id': cid,
                     'existing_id': sib.get('id'),
-                    'candidate_text': ctext,
-                    'existing_text': sib.get('text', ''),
                     'entity': entity,
                     # 隔离域随 pair 入队（legacy 为 None/None）：resolve 侧
                     # 按域锁批，跨隔离域的 fact 文本不得共现在同一个 prompt。
@@ -414,7 +603,7 @@ class FactDedupResolver:
 
     # ── resolve loop ─────────────────────────────────────────────────
 
-    async def aresolve(self, name: str) -> int:
+    async def aresolve(self, name: str, *, prompt_locale_resolver=None) -> int:
         """Process one batch of pending items via a single LLM call.
 
         Returns the number of items resolved (i.e. removed from the
@@ -431,18 +620,38 @@ class FactDedupResolver:
         that landed mid-call.
         """
         async with self._get_alock(name):
-            return await self._aresolve_locked(name)
+            return await self._aresolve_locked(
+                name,
+                prompt_locale_resolver=prompt_locale_resolver,
+            )
 
-    async def _aresolve_locked(self, name: str) -> int:
+    async def _aresolve_locked(self, name: str, *, prompt_locale_resolver=None) -> int:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
         pending = await self.aload_pending(name)
         if not pending:
             return 0
+
+        # 队列 ids-only 迁移 scrub：老 schema 条目落盘携带 candidate_text/
+        # existing_text 明文副本（成员衍生内容），一经发现就地剥掉并立即
+        # 重写队列文件——不能等到批次消费时才顺带清，否则轮不上的长尾条
+        # 目会让明文在磁盘上一直躺到 dead-letter。维护态写失败无妨：内存
+        # 里已 scrub，本轮 prompt 不受影响，下轮重试重写。
+        scrubbed = False
+        for it in pending:
+            if 'candidate_text' in it or 'existing_text' in it:
+                it.pop('candidate_text', None)
+                it.pop('existing_text', None)
+                scrubbed = True
+        if scrubbed:
+            await self._asave_pending(name, pending)
+            logger.info(
+                "[FactDedup] %s: 队列明文字段 scrub 完成（ids-only 迁移）", name,
+            )
 
         # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
         # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
@@ -451,21 +660,21 @@ class FactDedupResolver:
         # 单批锁定单一隔离域（对偶 corrections 的 batch_domain 锁）：legacy
         # 私聊为一域、每个 subject (key, scope) 各一域；跨域 pair 留队等
         # 下一轮 FIFO 轮到。新条目带 subject_key/scope 直接分类；升级前的
-        # 老队列条目查活体 fact 行兜底分类；两行都消失/损坏的条目按既有
-        # disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
+        # 老队列条目查活体 fact 行兜底分类。
+        #
+        # prompt 文本按 id 从 facts.json 现取（队列 ids-only）：任一侧行已
+        # 消失（被 absorb 归档 / 上一轮 merge 掉 / subject 归档）的 pair 按
+        # 既有 disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
         from memory.scopes import is_legacy_private_entry, subject_from_entry
 
-        facts_by_id: dict | None = None
+        rows = await self._fact_store.aload_facts(name)
+        facts_by_id: dict = {
+            r.get('id'): r for r in rows if isinstance(r, dict) and r.get('id')
+        }
 
-        async def _classify_domain(it: dict) -> tuple | None:
-            nonlocal facts_by_id
+        def _classify_domain(it: dict) -> tuple | None:
             if 'subject_key' in it:
                 return (it.get('subject_key'), it.get('scope'))
-            if facts_by_id is None:
-                rows = await self._fact_store.aload_facts(name)
-                facts_by_id = {
-                    r.get('id'): r for r in rows if isinstance(r, dict)
-                }
             for fid in (it.get('candidate_id'), it.get('existing_id')):
                 row = facts_by_id.get(fid)
                 if row is None:
@@ -478,12 +687,21 @@ class FactDedupResolver:
             return None
 
         batch: list[dict] = []
+        # 与 batch 平行的 (candidate_text, existing_text)。独立结构而不是
+        # 临时挂在 item 上：batch 条目在失败路径会带着 resolve_attempts 原样
+        # 写回队列文件，挂上去的文本会跟着落盘，把 ids-only 改回去。
+        batch_texts: list[tuple[str, str]] = []
         stale_keys: set[tuple] = set()
         batch_domain: tuple | None = None
         for it in pending:
             if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                 continue
-            domain = await _classify_domain(it)
+            cand_row = facts_by_id.get(it.get('candidate_id'))
+            exist_row = facts_by_id.get(it.get('existing_id'))
+            if cand_row is None or exist_row is None:
+                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                continue
+            domain = _classify_domain(it)
             if domain is None:
                 stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
                 continue
@@ -492,6 +710,9 @@ class FactDedupResolver:
             elif domain != batch_domain:
                 continue
             batch.append(it)
+            batch_texts.append(
+                (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
+            )
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
                 break
         if stale_keys:
@@ -502,19 +723,56 @@ class FactDedupResolver:
             # 落盘失败（维护态）无妨：下一轮重新识别重新丢。
             await self._asave_pending(name, kept)
             logger.info(
-                "[FactDedup] %s: 出队 %d 对无法归域的陈旧候选",
+                "[FactDedup] %s: 出队 %d 对行已消失/无法归域的陈旧候选",
                 name, len(stale_keys),
             )
         if not batch:
             return 0
+        prompt_ui_language = get_global_language_full()
+        if prompt_locale_resolver is not None and batch_domain[0] is not None:
+            from memory.scopes import MemoryScopeError, MemorySubject
+
+            subject_key, subject_scope = batch_domain
+            subject_kind, separator, subject_id = subject_key.partition(':')
+            if separator:
+                try:
+                    batch_subject = MemorySubject.create(
+                        subject_kind,
+                        subject_id,
+                        scope=subject_scope,
+                    )
+                except MemoryScopeError:
+                    batch_subject = None
+                if batch_subject is not None:
+                    try:
+                        selected_locale = await prompt_locale_resolver(
+                            batch_subject,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[FactDedup] %s: scoped prompt locale 解析失败，"
+                            "回退到全局 locale: %s",
+                            name,
+                            exc,
+                        )
+                        selected_locale = None
+                    if selected_locale:
+                        prompt_ui_language = selected_locale
         pairs_text = "\n".join(
-            f"[{i}] candidate: {item.get('candidate_text', '')}"
-            f" | existing: {item.get('existing_text', '')}"
+            f"[{i}] candidate: {cand_text}"
+            f" | existing: {exist_text}"
             f" | cosine={item.get('cosine', 0.0):.3f}"
-            for i, item in enumerate(batch)
+            for i, (item, (cand_text, exist_text)) in enumerate(
+                zip(batch, batch_texts)
+            )
         )
         prompt = (
-            get_fact_dedup_prompt(get_global_language())
+            get_fact_dedup_prompt(
+                _detect_fact_dedup_prompt_language(
+                    self._locale_text(batch_texts),
+                    ui_language=prompt_ui_language,
+                )
+            )
             .replace('{PAIRS}', pairs_text)
             .replace('{COUNT}', str(len(batch)))
         )

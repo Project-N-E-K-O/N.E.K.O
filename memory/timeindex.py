@@ -832,12 +832,26 @@ class TimeIndexedMemory:
     async def asearch_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
         return await asyncio.to_thread(self.search_facts, lanlan_name, query, limit)
 
-    def delete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
-        """Remove a fact from the FTS5 index."""
+    def delete_fact_from_index(
+        self, lanlan_name: str, fact_id: str, *, strict: bool = False,
+    ) -> None:
+        """Remove a fact from the FTS5 index.
+
+        ``strict`` is used by privacy erasure: any inability to confirm the
+        deletion must abort before the authoritative JSON rows are removed.
+        """
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
+            if strict:
+                raise RuntimeError(
+                    f"Unable to initialize time index for {lanlan_name}"
+                )
             return
         if not self._ensure_fts_table(lanlan_name):
+            if strict:
+                raise RuntimeError(
+                    f"Unable to initialize facts FTS index for {lanlan_name}"
+                )
             return
         try:
             with self.engines[lanlan_name].connect() as conn:
@@ -847,7 +861,18 @@ class TimeIndexedMemory:
                 )
                 conn.commit()
         except Exception as e:
+            if strict:
+                raise RuntimeError(
+                    f"Unable to delete fact {fact_id} from FTS index"
+                ) from e
             logger.warning(f"[TimeIndexedMemory] 删除 FTS5 索引失败: {e}")
 
-    async def adelete_fact_from_index(self, lanlan_name: str, fact_id: str) -> None:
-        await asyncio.to_thread(self.delete_fact_from_index, lanlan_name, fact_id)
+    async def adelete_fact_from_index(
+        self, lanlan_name: str, fact_id: str, *, strict: bool = False,
+    ) -> None:
+        await asyncio.to_thread(
+            self.delete_fact_from_index,
+            lanlan_name,
+            fact_id,
+            strict=strict,
+        )

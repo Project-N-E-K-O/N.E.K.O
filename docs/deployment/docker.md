@@ -33,9 +33,15 @@ Back up the first mount before upgrades. Never expose the data or private-key di
 The Compose service declares `image:`, not `build:`. Build from the repository root explicitly:
 
 ```bash
+uv run python scripts/prepare_speaker_model.py
 docker build -f docker/Dockerfile -t neko-local:standard .
 docker build -f docker/Dockerfile.full -t neko-local:full .
 ```
+
+The preparation step downloads and verifies the pinned CAM++ weight on the
+native host. Both Dockerfiles intentionally re-verify it with `--offline`; this
+keeps emulated multi-architecture builds and image layers free of model network
+fallbacks. Re-run the preparation step after the speaker-model manifest changes.
 
 Set `NEKO_IMAGE=neko-local:standard` or `neko-local:full` before `docker compose up`. `docker compose build` does nothing useful here unless a reviewed `build:` definition is added.
 

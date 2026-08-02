@@ -12,6 +12,8 @@ Covered:
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 import random
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -404,7 +406,11 @@ def test_render_outdated_block_uses_six_equals(tmp_path):
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
-    with patch('utils.language_utils.get_global_language', return_value='zh'):
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
         md = pm._compose_markdown_from_trimmed(
             name='小天',
             persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
@@ -489,7 +495,7 @@ def test_render_past_block_localizes_to_active_language(tmp_path):
     with patch(
         'utils.language_utils.get_global_language', return_value='en',
     ), patch(
-        'utils.language_utils.get_global_language', return_value='en',
+        'utils.language_utils.get_global_language_full', return_value='en',
     ):
         md = pm._compose_markdown_from_trimmed(
             name='Mio',
@@ -521,7 +527,11 @@ def test_render_past_block_no_temporal_scope_label(tmp_path):
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
-    with patch('utils.language_utils.get_global_language', return_value='zh'):
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
         md = pm._compose_markdown_from_trimmed(
             name='小天',
             persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
@@ -872,3 +882,308 @@ async def test_followup_weighted_enabled_varies_picks(tmp_path):
             picks = await re.aget_followup_topics('小天')
             seen.add(tuple(sorted(r['id'] for r in picks)))
     assert len(seen) >= 2, f"weighted sampling produced only {len(seen)} unique combos"
+
+
+# ── legacy fact recheck: the breaker must work when facts.json is unwritable ──
+#
+# `_bump_fact_recheck_attempts` used to record failures only in facts.json —
+# the very file whose write failure it was counting. In the read-only FS /
+# permission case named in `arecheck_one_legacy_fact`'s own comment the counter
+# never moved, so the same fact was re-judged (one LLM call each time) forever.
+
+
+def _recheck_store(tmpdir: str):
+    from memory.facts import FactStore
+    cm = _mock_cm(tmpdir)
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        fs = FactStore()
+        fs._config_manager = cm
+    return fs
+
+
+def _legacy_fact(fid: str = "f-legacy", **extra):
+    entry = {
+        "id": fid, "text": "用户上周一去爬山了", "importance": 6,
+        "entity": "master", "tags": [], "hash": f"h-{fid}",
+        "created_at": "2026-05-01T00:00:00", "absorbed": False,
+    }
+    entry.update(extra)
+    return entry
+
+
+def _counting_llm(counter: list, *, content: str | None = None):
+    """Fake chat client that tallies every ainvoke; raises when content is None."""
+    async def _ainvoke(*_a, **_k):
+        counter.append(1)
+        if content is None:
+            raise RuntimeError("simulated LLM failure")
+        resp = MagicMock()
+        resp.content = content
+        return resp
+
+    async def _aclose():
+        return None
+
+    llm = MagicMock()
+    llm.ainvoke = _ainvoke
+    llm.aclose = _aclose
+    return llm
+
+
+def _valid_when_json():
+    import json
+    return json.dumps(
+        {"event_when": {"start": {"offset": -1, "unit": "week"}, "end": None}}
+    )
+
+
+def _readonly_writes():
+    """Patch context: every atomic_write_json under memory.facts fails."""
+    def _boom(*_a, **_k):
+        raise OSError("simulated read-only filesystem")
+    return patch("memory.facts.atomic_write_json", side_effect=_boom)
+
+
+@pytest.mark.asyncio
+async def test_recheck_breaker_trips_when_facts_json_is_unwritable(tmp_path):
+    from config import MEMORY_RECHECK_MAX_ATTEMPTS
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    await fs.asave_facts("小天")
+
+    calls: list = []
+    llm = _counting_llm(calls, content=_valid_when_json())
+    rounds = MEMORY_RECHECK_MAX_ATTEMPTS + 3
+    with _readonly_writes(), patch("utils.llm_client.create_chat_llm", return_value=llm):
+        results = [await fs.arecheck_one_legacy_fact("小天") for _ in range(rounds)]
+
+    assert len(calls) == MEMORY_RECHECK_MAX_ATTEMPTS, (
+        f"breaker never tripped: {len(calls)} LLM calls over {rounds} rounds"
+    )
+    assert results[-3:] == [False, False, False]
+
+
+@pytest.mark.asyncio
+async def test_recheck_mirror_records_the_failure_timestamp(tmp_path):
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    await fs.asave_facts("小天")
+
+    calls: list = []
+    llm = _counting_llm(calls, content=_valid_when_json())
+    with _readonly_writes(), patch("utils.llm_client.create_chat_llm", return_value=llm):
+        await fs.arecheck_one_legacy_fact("小天")
+
+    entry = fs._recheck_attempts_mem["小天"]["f-legacy"]
+    assert entry["n"] == 1
+    # 只补计数不补时刻等于白修：cooldown_elapsed(None, …) 恒为 True，
+    # 刚冻结的条目会被 5h 自愈分支立刻放回队列。
+    stamped = datetime.fromisoformat(entry["at"])
+    assert abs((datetime.now() - stamped).total_seconds()) < 60
+
+
+@pytest.mark.asyncio
+async def test_recheck_breaker_self_heals_once_per_cooldown_window(tmp_path):
+    from config import (
+        MEMORY_RECHECK_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    await fs.asave_facts("小天")
+
+    calls: list = []
+    llm = _counting_llm(calls, content=_valid_when_json())
+    with _readonly_writes(), patch("utils.llm_client.create_chat_llm", return_value=llm):
+        for _ in range(MEMORY_RECHECK_MAX_ATTEMPTS + 1):
+            await fs.arecheck_one_legacy_fact("小天")
+        assert len(calls) == MEMORY_RECHECK_MAX_ATTEMPTS  # frozen
+
+        aged = datetime.now() - timedelta(
+            seconds=MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS + 60
+        )
+        entry = dict(fs._recheck_attempts_mem["小天"]["f-legacy"])
+        entry["at"] = aged.isoformat()
+        fs._recheck_attempts_mem["小天"]["f-legacy"] = entry
+
+        for _ in range(3):
+            await fs.arecheck_one_legacy_fact("小天")
+
+    assert len(calls) == MEMORY_RECHECK_MAX_ATTEMPTS + 1, (
+        "self-heal must let exactly one probe through per cooldown window, "
+        f"got {len(calls) - MEMORY_RECHECK_MAX_ATTEMPTS} over 3 rounds"
+    )
+
+
+@pytest.mark.asyncio
+async def test_recheck_counter_resumes_from_the_persisted_value(tmp_path):
+    import json
+    import os
+    from config import MEMORY_RECHECK_MAX_ATTEMPTS
+    fs = _recheck_store(str(tmp_path))
+    facts_path = fs._facts_path("小天")
+    os.makedirs(os.path.dirname(facts_path), exist_ok=True)
+    with open(facts_path, "w", encoding="utf-8") as fh:
+        json.dump([_legacy_fact(
+            recheck_attempts=MEMORY_RECHECK_MAX_ATTEMPTS - 1,
+            last_recheck_attempt_at=datetime.now().isoformat(),
+        )], fh)
+
+    calls: list = []
+    llm = _counting_llm(calls, content=_valid_when_json())
+    with _readonly_writes(), patch("utils.llm_client.create_chat_llm", return_value=llm):
+        for _ in range(3):
+            await fs.arecheck_one_legacy_fact("小天")
+
+    assert len(calls) == 1, (
+        "the mirror must resume from the on-disk count, not restart at 0 "
+        f"after a restart: {len(calls)} calls"
+    )
+
+
+@pytest.mark.asyncio
+async def test_persisted_bump_is_not_double_counted(tmp_path):
+    from config import MEMORY_RECHECK_MAX_ATTEMPTS
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    await fs.asave_facts("小天")
+
+    calls: list = []
+    llm = _counting_llm(calls, content=None)  # LLM 失败，但磁盘可写
+    rounds = MEMORY_RECHECK_MAX_ATTEMPTS + 2
+    with patch("utils.llm_client.create_chat_llm", return_value=llm):
+        for _ in range(rounds):
+            await fs.arecheck_one_legacy_fact("小天")
+
+    # 磁盘写得进去时，两处计数必须是同一个数：读侧若把磁盘和镜像相加，熔断会
+    # 提前一倍触发，等于凭空砍掉一半重试预算。
+    assert len(calls) == MEMORY_RECHECK_MAX_ATTEMPTS, len(calls)
+    on_disk = (await fs.aload_facts("小天"))[0]
+    assert on_disk["recheck_attempts"] == MEMORY_RECHECK_MAX_ATTEMPTS
+    assert (
+        fs._recheck_attempts_mem["小天"]["f-legacy"]["n"]
+        == MEMORY_RECHECK_MAX_ATTEMPTS
+    )
+
+
+@pytest.mark.asyncio
+async def test_successful_recheck_clears_the_mirror_entry(tmp_path):
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    await fs.asave_facts("小天")
+
+    failing: list = []
+    with patch("utils.llm_client.create_chat_llm",
+               return_value=_counting_llm(failing, content=None)):
+        await fs.arecheck_one_legacy_fact("小天")
+        await fs.arecheck_one_legacy_fact("小天")
+    assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 2
+
+    ok_calls: list = []
+    with patch("utils.llm_client.create_chat_llm",
+               return_value=_counting_llm(ok_calls, content=_valid_when_json())):
+        assert await fs.arecheck_one_legacy_fact("小天") is True
+
+    # 对齐 _aclear_synth_backoff：成功落地后镜像必须收回，否则只增不减。
+    assert "f-legacy" not in fs._recheck_attempts_mem.get("小天", {})
+    assert (await fs.aload_facts("小天"))[0]["schema_version"] == 2
+
+
+def test_recheck_mirror_survives_instances_built_without_init():
+    """`FactStore.__new__` bypasses `__init__`; the mirror must still work.
+
+    Four such construction sites exist in this test suite alone, so an
+    instance-attribute-only mirror would raise AttributeError the first time
+    one of them reached the recheck path.
+    """
+    from memory.facts import FactStore
+    fs = FactStore.__new__(FactStore)
+    n, stamp = fs._note_recheck_attempt("小天", "f-legacy", base=None)
+    assert (n, bool(stamp)) == (1, True)
+    assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 1
+    # 实例级而不是模块级：别的实例不该看见这条计数。
+    other = FactStore.__new__(FactStore)
+    assert (other._recheck_attempts_mem or {}) == {}
+
+
+class _RecheckLogSink(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+    def at_least(self, level: int) -> list[str]:
+        return [r.getMessage() for r in self.records if r.levelno >= level]
+
+
+@contextlib.contextmanager
+def _capture_facts_logger():
+    """Collect records straight off the facts logger.
+
+    Attaches a handler to the logger itself instead of relying on ``caplog``:
+    this project's logging setup breaks propagation to root depending on
+    import order, so propagation-based capture silently records nothing.
+    """
+    log = logging.getLogger("N.E.K.O.Memory.memory.facts")
+    sink = _RecheckLogSink()
+    prior = log.level
+    log.addHandler(sink)
+    log.setLevel(logging.DEBUG)
+    try:
+        yield sink
+    finally:
+        log.removeHandler(sink)
+        log.setLevel(prior)
+
+
+def test_recheck_counter_persist_failure_is_visible_in_logs(tmp_path):
+    """"Mirror moved, disk counter did not" has no other production signal.
+
+    Same standard this PR sets for signals / pipeline (see
+    ``test_persistence_failure_is_visible_in_logs`` and
+    ``test_used_topics_persist_failure_is_visible``): a silent failure has to
+    leave a trace, and the level has to be pinned — accepting DEBUG here would
+    stay green when someone downgrades the call back to ``logger.debug``.
+    """
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    fs.save_facts("小天")
+
+    with _capture_facts_logger() as sink:
+        with _readonly_writes():
+            fs._bump_fact_recheck_attempts("小天", "f-legacy", "llm_failed")
+
+    warnings = sink.at_least(logging.WARNING)
+    assert any("f-legacy" in m and "落盘失败" in m for m in warnings), warnings
+    # 留痕的前提是熔断计数真的记在了镜像里。
+    assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 1
+
+
+def test_recheck_counter_persist_skipped_in_maintenance_is_not_warned(tmp_path):
+    """Maintenance mode is an expected write ban, not a failure.
+
+    The gate at the top of ``save_facts`` raises ``MaintenanceModeError``; a
+    bare ``except Exception`` turns every recheck failure during maintenance
+    into a WARNING. The archive block deliberately keeps that case at debug,
+    and this path has to match it.
+    """
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    fs = _recheck_store(str(tmp_path))
+    fs._facts.setdefault("小天", []).append(_legacy_fact())
+    fs.save_facts("小天")
+
+    def _gate(_cm, *, operation: str, target: str):
+        if operation == "save":
+            raise MaintenanceModeError("simulated maintenance")
+
+    with _capture_facts_logger() as sink:
+        with patch("memory.facts.assert_cloudsave_writable", side_effect=_gate):
+            fs._bump_fact_recheck_attempts("小天", "f-legacy", "llm_failed")
+
+    warnings = sink.at_least(logging.WARNING)
+    assert warnings == [], f"maintenance skip is an expected path: {warnings}"
+    # 降级不许连带把熔断也降级掉：镜像照记，只读盘/维护态下才有熔断可言。
+    assert fs._recheck_attempts_mem["小天"]["f-legacy"]["n"] == 1

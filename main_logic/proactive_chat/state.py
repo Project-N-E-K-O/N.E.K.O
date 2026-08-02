@@ -53,6 +53,26 @@ _source_history: dict[str, dict[str, Any]] = {}
 _source_history_lock = asyncio.Lock()
 _source_history_loaded = False
 _source_history_loaded_path: Path | None = None
+# 内存里那份能不能被**读路径**当权威。跟 _source_history_loaded 不是一回事：
+# 后者说的是「内存代表 _source_history_loaded_path 那个根」，而这个说的是「内存代表
+# 刚才那次请求要的那个根」。两者只在「换了根、而新根读失败」时分叉——那时内存里装的
+# 还是上一个根的历史，写侧靠返回值挡住了，读侧（_should_skip_source）却会拿 A 的
+# 历史去压 B 的候选，表现为她对这个角色明明没聊过的素材闭口不谈。
+# 读侧宁可漏抑制（顶多把某个素材再聊一遍）也不能跨根抑制，所以这里 fail-open。
+_source_history_authoritative = False
+# 连续失败计数，只用于给日志降频。一次性的读失败和「永久停摆」在单条 warning 里
+# 长得一模一样，靠的就是这两个累计数把它们区分开。任何一次成功都清零。
+_source_history_read_failures = 0
+_source_history_skipped_records = 0
+
+
+def _should_log_repeated_failure(count: int) -> bool:
+    """Report the first few consecutive failures, then back off to every 50th."""
+    # 永久性读失败（比如文件的读 ACL 坏了但目录仍可写，os.replace 照样成功）会让每
+    # 一次记录都走到失败/跳过分支。每次刷一条 warning 只会变成噪音，把「她已经不再
+    # 记录用过的素材了」这件事本身淹掉。前几次照报（偶发时看得见），之后按 50 次一报
+    # 并带上累计数——一条日志就能分辨这是抖了一下还是彻底停摆。
+    return count <= 3 or count % 50 == 0
 
 
 def _resolve_memory_dir(memory_dir: str | Path | None) -> Path:
@@ -92,50 +112,130 @@ def _source_skip_probability(age: float, half_life: float) -> float:
 
 
 def _get_source_history_entry(url_hash: str) -> dict[str, Any] | None:
-    """Return the current in-memory source record for a stable hash."""
+    """Return the in-memory source record, or None when it is not authoritative."""
     if not url_hash:
+        return None
+    if not _source_history_authoritative:
+        # 上一次加载失败过，内存里可能装着**别的根**的历史。签名里没有 memory_dir，
+        # 加一个要串 _should_skip_source → candidate_selection / decisions /
+        # service 两处 / system_router 再导出，共五个调用点，为一条 fail-open 的
+        # 判据不值得。改成让加载侧把结论落在这个标记上，读侧只查标记。
         return None
     return _source_history.get(url_hash)
 
 
 async def _ensure_source_history_loaded(
     *, memory_dir: str | Path | None = None
-) -> None:
-    """Load source history once without blocking the event loop."""
+) -> bool:
+    """Load source history once without blocking the event loop.
+
+    Returns whether the in-memory history is authoritative for *memory_dir*.
+    A false return means the read failed and nothing may be overwritten yet.
+    """
+    # 返回值不是装饰：_record_source_used 是**全量覆盖写**（entries 就是整个
+    # _source_history）。读盘失败时内存里要么是空的、要么装着上一个 root 的东西，
+    # 无论哪种，被当成「已加载」都会让下一次记录把盘上整段历史截掉或换掉。所以
+    # 「内存现在能不能代表 memory_dir 那份」必须是这个函数说了算，而不是让调用方去猜。
     global _source_history_loaded, _source_history_loaded_path
+    global _source_history_read_failures, _source_history_authoritative
     path = _source_history_path(memory_dir=memory_dir)
     if _source_history_loaded and _source_history_loaded_path == path:
-        return
+        _source_history_authoritative = True
+        return True
     async with _source_history_lock:
         if _source_history_loaded and _source_history_loaded_path == path:
-            return
-        _source_history.clear()
+            _source_history_authoritative = True
+            return True
+        # 全程解析进这个局部 dict，只有走到函数末尾才整体换入 _source_history。
+        # 这样「异常 / 取消」与「全局状态」彻底解耦：
+        #   * 取消（唯一挂起点是下面那次 to_thread，CancelledError 是 BaseException，
+        #     两个 except 都接不住）不再留下「flag=True、path=旧 root、内存空」——
+        #     那正是这次要消灭的状态，之后一次完全正常的记录就会拿空内存全量覆盖写。
+        #   * 读失败时旧 root 的内存原样保留，仍然与 flag/path 自洽，不用清标记。
+        # 换句话说：全局三件套（flag / path / 内存）要么一起前进，要么一动不动。
+        loaded: dict[str, dict[str, Any]] = {}
         try:
             data = await asyncio.to_thread(read_json, path)
-            entries = data.get('entries') if isinstance(data, dict) else None
-            if isinstance(entries, dict):
-                now = time.time()
-                for source_hash, entry in entries.items():
-                    if not isinstance(entry, dict):
-                        continue
+        except FileNotFoundError:
+            # 文件本来就不存在（首启 / 被清理过）= 正常的空历史，不是失败。
+            # 照旧标记已加载，下一次记录会把文件创建出来。
+            data = None
+        except (ValueError, TypeError, RecursionError) as exc:
+            # 整个文件读不成结构（JSONDecodeError / UnicodeDecodeError 都是 ValueError
+            # 子类）：盘上那份已经不是可用的历史了，没有值得保护的东西，而且重试永远
+            # 失败。按空历史起步、让后续覆盖写自愈——否则一个坏文件会让「我用过这个
+            # 素材」永久停止记录。
+            #
+            # RecursionError 也归这里：json 解码器对足够深的嵌套（`[[[[...]]]]`）抛的
+            # 是它，而它既不是 ValueError 也不是 OSError。落到下面那个「瞬时失败」分支
+            # 就成了最坏的组合——由内容导致、因而**永远**失败的东西被当成「下次重试」，
+            # 于是记录永久停摆，而这正是自愈路径本来要消灭的状态。
+            logger.warning(
+                "%s 内容损坏，按空历史起步并等待覆盖重建: %s: %s",
+                _SOURCE_HISTORY_FILENAME,
+                type(exc).__name__,
+                exc,
+            )
+            data = None
+        except Exception as exc:
+            # 真正的读失败（IO / 权限 / 文件被杀软或索引器短暂占住）：盘上那份大概率
+            # 还是完整的，只是这一刻读不到。绝不能标记「已加载」——那会让空内存冒充
+            # 权威，下一次全量覆盖写直接把整段历史截掉。什么都不动，让下次调用重试。
+            #
+            # 每次调用都会重来一遍，所以永久性失败在这里同样会刷屏，跟着连续计数降频。
+            _source_history_read_failures += 1
+            if _should_log_repeated_failure(_source_history_read_failures):
+                logger.warning(
+                    "加载 %s 失败，本次不视为已加载（下次重试）: %s: %s，连续失败 %d 次",
+                    _SOURCE_HISTORY_FILENAME,
+                    type(exc).__name__,
+                    exc,
+                    _source_history_read_failures,
+                )
+            # 内存原样保留（清掉会让「flag=已加载 / path=旧根 / 内存空」这个状态复活，
+            # 下一次针对旧根的记录就会拿空内存全量覆盖写），但读侧从这一刻起不许再用它，
+            # 否则旧根的历史会去压新根的候选。
+            _source_history_authoritative = False
+            return False
+        entries = data.get('entries') if isinstance(data, dict) else None
+        if isinstance(entries, dict):
+            now = time.time()
+            damaged = 0
+            for source_hash, entry in entries.items():
+                if not isinstance(entry, dict):
+                    continue
+                try:
                     age = now - float(entry.get('ts', 0.0) or 0.0)
                     probability = _source_skip_probability(
                         age,
                         _half_life_for(entry.get('kind', 'web')),
                     )
-                    if probability >= PROACTIVE_SOURCE_FORGET_P:
-                        _source_history[source_hash] = entry
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            logger.warning(
-                "加载 %s 失败，按空历史处理: %s: %s",
-                _SOURCE_HISTORY_FILENAME,
-                type(exc).__name__,
-                exc,
-            )
+                except (ValueError, TypeError, OverflowError):
+                    # 逐条跳过而不是整份作废：ts 是字符串抛 ValueError、kind 不可 hash
+                    # 抛 TypeError、ts 是个几百位的大整数 float() 抛 OverflowError
+                    # （它是 ArithmeticError 而不是 ValueError 的子类，漏掉就会一路
+                    # 逃出本函数，让每一次主动搭话都炸），都只说明**这一条**坏了。半损坏（几百条里坏一条）
+                    # 比整份 JSON 坏掉常见得多，把其余合法条目一起丢掉就是白白让她把
+                    # 那些素材再聊一遍。坏的那条本来就该被遗忘，丢掉它没有代价。
+                    damaged += 1
+                    continue
+                if probability >= PROACTIVE_SOURCE_FORGET_P:
+                    loaded[source_hash] = entry
+            if damaged:
+                # 一次加载只汇总一条，别按条刷屏。
+                logger.warning(
+                    "%s 有 %d 条记录无法解析，已跳过（其余 %d 条正常载入）",
+                    _SOURCE_HISTORY_FILENAME,
+                    damaged,
+                    len(loaded),
+                )
+        _source_history.clear()
+        _source_history.update(loaded)
         _source_history_loaded = True
         _source_history_loaded_path = path
+        _source_history_read_failures = 0
+        _source_history_authoritative = True
+        return True
 
 
 async def _persist_source_history_unlocked(
@@ -171,10 +271,64 @@ async def _record_source_used(
     memory_dir: str | Path | None = None,
 ) -> None:
     """Update, prune and persist one consumed source record."""
+    global _source_history_skipped_records
     source_hash = _source_hash(url, title)
     if not source_hash:
         return
+    # 加载放在进锁之前：_ensure_source_history_loaded 自己要取同一把
+    # _source_history_lock，锁内再调必定自锁。已加载时它只是一次 flag+path 比较，
+    # 代价可忽略。
+    #
+    # 为什么要在这里再加载一次：「记录之前一定先加载过」此前只由
+    # handle_proactive_chat 里的语句顺序维持——加载在 try-body 第 53 条，两处记录在
+    # 第 115/170 条，中间隔着上千行和几十个 await。谁把某个投递分支提前一点，就会
+    # 拿空内存做全量覆盖写、静默抹掉整段历史，而且没有任何测试会红。把不变量收进
+    # 函数自己，行号就不再是它的唯一保障。
+    # memory_dir 原样往下传，加载与落盘都经 _source_history_path(memory_dir=...)
+    # 解析，两边用的一定是同一个根。
+    if not await _ensure_source_history_loaded(memory_dir=memory_dir):
+        # 读不出来就不写。本函数是全量覆盖写，拿一份空内存去写等于把盘上整段历史
+        # 截成 1 条。丢这一次记录的代价是这条素材以后可能被再聊一遍；截库的代价是
+        # 所有素材都可能被再聊一遍——量级差着整个清单。
+        #
+        # 这不会变成「读不出来就再也不记录了」：加载在每次调用时都重试，盘一恢复
+        # 就继续记；而「内容坏掉」那类永久性失败已经在加载侧按空历史放行，由覆盖
+        # 写自愈，不会落到这个分支里。
+        #
+        # 但「盘永远读不回来」这种情况确实存在（读 ACL 坏了而目录可写），那时记录就
+        # 永久停摆，而且对用户只表现为她反复聊同一个东西。日志是这件事唯一的出口，
+        # 所以带上累计次数并降频——既不刷屏，也不让停摆无声无息。
+        _source_history_skipped_records += 1
+        if _should_log_repeated_failure(_source_history_skipped_records):
+            logger.warning(
+                "%s 未能加载，跳过本次 source 记录以免覆盖写截断盘上历史: "
+                "kind=%s, 连续跳过 %d 次",
+                _SOURCE_HISTORY_FILENAME,
+                kind,
+                _source_history_skipped_records,
+            )
+        return
+    # 加载成功就把连跳计数清零：降频只针对「连续失败」，偶发的一两次不该攒起来
+    # 把后面真正的停摆推到 50 次之后才第一次报出来。
+    _source_history_skipped_records = 0
     async with _source_history_lock:
+        # 护栏判定在锁外（_ensure 自己要取这把锁，锁内再调必定自锁），覆盖写在锁内，
+        # 中间隔着一个窗口：_ensure 走 IO 分支时是持锁 await 的，它放锁之后、本协程
+        # 拿到锁之前，另一个 root 的 _ensure 能插进来把内存整个换掉。这里再做一次纯
+        # 内存复核——不调 _ensure（不会自锁、不产生额外 IO），只确认此刻内存仍然代表
+        # 本次要写的那个 root。不等就什么都不写：拿 root_b 的内容去全量覆盖 root_a 的
+        # 文件，比漏记一条严重得多。
+        if not (
+            _source_history_loaded
+            and _source_history_loaded_path
+            == _source_history_path(memory_dir=memory_dir)
+        ):
+            logger.warning(
+                "%s 在加载与写入之间被换成了别的根，跳过本次 source 记录: kind=%s",
+                _SOURCE_HISTORY_FILENAME,
+                kind,
+            )
+            return
         _source_history[source_hash] = {
             "ts": time.time(),
             "kind": kind,

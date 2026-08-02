@@ -40,6 +40,14 @@ from ._shared import logger, _proactive_expected_sid
 class GreetingMixin:
     """Greeting and avatar-interaction methods (see module docstring)."""
 
+    @staticmethod
+    def _greeting_locale_keys(language: str | None) -> tuple[str, str]:
+        """Return the short prompt locale and full regional holiday locale."""
+        return (
+            normalize_language_code(language, format='short'),
+            normalize_language_code(language, format='full'),
+        )
+
     def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
         if interaction_id in self._recent_avatar_interaction_id_set:
             return
@@ -324,7 +332,7 @@ class GreetingMixin:
             logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
             return
 
-        _lang = normalize_language_code(self.user_language, format='short')
+        _lang, _holiday_lang = self._greeting_locale_keys(self.user_language)
         from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from utils.time_format import format_elapsed as _format_elapsed
         from utils.holiday_cache import preview_holiday_or_weekend_hint, commit_holiday_or_weekend_hint
@@ -363,7 +371,10 @@ class GreetingMixin:
 
         _holiday_token = None
         try:
-            holiday_hint_text, _holiday_token = await preview_holiday_or_weekend_hint(_lang, self.lanlan_name)
+            holiday_hint_text, _holiday_token = await preview_holiday_or_weekend_hint(
+                _holiday_lang,
+                self.lanlan_name,
+            )
         except Exception as e:
             logger.debug("[%s] trigger_greeting: holiday hint failed: %s", self.lanlan_name, e)
             holiday_hint_text = None

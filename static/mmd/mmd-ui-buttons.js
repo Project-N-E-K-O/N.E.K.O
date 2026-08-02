@@ -175,9 +175,9 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) {
-            this.createMicMuteButton(btnWrapper);
+            this.createVoiceSessionQuickControls(btnWrapper);
         }
 
         // 处理弹窗
@@ -871,23 +871,35 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.visibility = shouldShowLock ? 'visible' : 'hidden';
                         lockIcon.style.opacity = shouldShowLock ? '' : '0';
 
+                    }
+                }
+                if (lockIcon) {
+                    const isLockVisible = !this._isInReturnState &&
+                        lockIcon.style.display !== 'none' && lockIcon.style.visibility !== 'hidden';
+                    if (isLockVisible) {
                         const lockRect = lockIcon.getBoundingClientRect();
-                        let isLockOverlapped = false;
-                        document.querySelectorAll('[id^="mmd-popup-"]').forEach(popup => {
-                            if (popup.style.display === 'flex' && popup.style.opacity === '1') {
-                                const popupRect = popup.getBoundingClientRect();
-                                if (lockRect.right > popupRect.left && lockRect.left < popupRect.right &&
-                                    lockRect.bottom > popupRect.top && lockRect.top < popupRect.bottom) {
-                                    isLockOverlapped = true;
-                                }
-                            }
-                        });
+                        const popupUi = window.AvatarPopupUI || null;
+                        const isLockOverlapped = popupUi && typeof popupUi.isRectOverlappedByVisibleOverlay === 'function'
+                            ? popupUi.isRectOverlappedByVisibleOverlay(lockRect, 'mmd')
+                            : Array.from(document.querySelectorAll('[id^="mmd-popup-"], [data-neko-sidepanel-owner^="mmd-popup-"]')).some(element => {
+                                const style = window.getComputedStyle(element);
+                                const computedOpacity = Number.parseFloat(style.opacity || '1');
+                                const targetOpacity = Number.parseFloat(element.style.opacity || style.opacity || '1');
+                                if (style.display === 'none' || style.visibility === 'hidden' ||
+                                    (computedOpacity <= 0 && targetOpacity <= 0)) return false;
+                                const overlayRect = element.getBoundingClientRect();
+                                return lockRect.right > overlayRect.left && lockRect.left < overlayRect.right &&
+                                    lockRect.bottom > overlayRect.top && lockRect.top < overlayRect.bottom;
+                            });
                         // 与角色形象半透明状态完全同步：容器淡化(opacity<1)时锁图标镜像同一透明度
                         const mmdFadeContainer = document.getElementById('mmd-container');
                         const mmdFadeOpacity = mmdFadeContainer ? parseFloat(mmdFadeContainer.style.opacity) : NaN;
                         lockIcon.style.opacity = (Number.isFinite(mmdFadeOpacity) && mmdFadeOpacity < 1)
                             ? String(mmdFadeOpacity)
                             : (isLockOverlapped ? '0.3' : '');
+                        lockIcon.style.pointerEvents = isLockOverlapped ? 'none' : 'auto';
+                    } else {
+                        lockIcon.style.pointerEvents = 'none';
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

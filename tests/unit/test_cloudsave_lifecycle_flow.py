@@ -732,6 +732,119 @@ async def test_release_storage_startup_barrier_restores_memory_limited_mode_when
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_release_storage_startup_barrier_reblocks_memory_before_propagating_cancellation():
+    """Cancellation must not expose initialized memory against rolled-back storage."""
+    from app import main_server
+
+    init_started = asyncio.Event()
+    block_started = asyncio.Event()
+    allow_block = asyncio.Event()
+
+    async def _wait_for_cancel(*, reason: str):
+        init_started.set()
+        await asyncio.Event().wait()
+
+    async def _block_memory(reason: str):
+        block_started.set()
+        await allow_block.wait()
+
+    with patch.object(
+        main_server,
+        "_request_memory_server_continue_startup",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        main_server,
+        "_ensure_main_server_runtime_initialized",
+        side_effect=_wait_for_cancel,
+    ), patch.object(
+        main_server,
+        "_request_memory_server_block_startup",
+        side_effect=_block_memory,
+    ) as mock_block, patch.object(
+        main_server,
+        "_main_runtime_limited_mode_enabled",
+        False,
+    ), patch.object(
+        main_server,
+        "_main_runtime_limited_mode_reason",
+        "",
+    ):
+        task = asyncio.create_task(
+            main_server.release_storage_startup_barrier(reason="unit_test")
+        )
+        await init_started.wait()
+        task.cancel()
+        await block_started.wait()
+
+        # A second cancellation must not let the storage router roll back its
+        # blocking snapshot before memory_server has restored its own guard.
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_block.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_compensates_ambiguous_continue_cancellation():
+    """A cancelled continue response may hide an already-applied server request."""
+    from app import main_server
+
+    continue_applied = asyncio.Event()
+    block_started = asyncio.Event()
+
+    async def _continue_without_response(reason: str):
+        continue_applied.set()
+        await asyncio.Event().wait()
+
+    async def _block_memory(reason: str):
+        block_started.set()
+
+    with patch.object(
+        main_server,
+        "_request_memory_server_continue_startup",
+        side_effect=_continue_without_response,
+    ), patch.object(
+        main_server,
+        "_ensure_main_server_runtime_initialized",
+        AsyncMock(),
+    ) as mock_ensure, patch.object(
+        main_server,
+        "_request_memory_server_block_startup",
+        side_effect=_block_memory,
+    ) as mock_block, patch.object(
+        main_server,
+        "_main_runtime_limited_mode_enabled",
+        False,
+    ), patch.object(
+        main_server,
+        "_main_runtime_limited_mode_reason",
+        "",
+    ):
+        task = asyncio.create_task(
+            main_server.release_storage_startup_barrier(reason="unit_test")
+        )
+        await continue_applied.wait()
+        task.cancel()
+
+        [outcome] = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(outcome, asyncio.CancelledError)
+
+        assert block_started.is_set()
+        assert main_server._main_runtime_limited_mode_enabled is True
+        assert main_server._main_runtime_limited_mode_reason == "runtime_initialization_failed"
+
+    mock_ensure.assert_not_awaited()
+    mock_block.assert_awaited_once_with("unit_test:main_server_init_failed")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_server_continue_startup_preserves_409_blocking_payload():
     import httpx
     from app import main_server
