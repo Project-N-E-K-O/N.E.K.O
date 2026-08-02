@@ -51,7 +51,12 @@ SLOP_RULESET_VERSION = 1
 SLOP_REPEAT_THRESHOLD = 2
 
 
-SLOP_RULES: dict[str, list[dict]] = {
+# 这不是文案模板表，是按语言分组的**正则规则集**（find/replace 对）。补 zh-TW
+# 等于把整套简体正则重写成繁体正字，是独立的内容工程，不属于 issue #2500 的
+# "复制模板"批次。当前 zh-TW 用户经 ``_resolve_short_lang`` 落到 'zh' 规则集：
+# 简体正则对繁体文本大部分不命中，效果是"套路过滤变弱"，不是"输出掉英文"——
+# 没有用户可见回归，所以按 noqa 记账而不是硬凑一份繁体规则。
+SLOP_RULES: dict[str, list[dict]] = {  # noqa: PROMPT_ZH_TW  # 正则规则集，非文案模板；见上方注释
     'zh': [
         {
             "id": 'ZH_001',

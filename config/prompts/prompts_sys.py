@@ -671,14 +671,20 @@ TRANSLATION_REQUIREMENTS = {
 }
 
 # 语言名称（外层 key=UI 语言，内层 key=语言代码）
+# 外层 key 是 UI locale，内层 key 是 ``translate_text(text, target_lang)`` 的
+# 翻译目标语言域。该域固定为 zh/en/ja/ko/ru/es/pt（见 utils/language_utils.py
+# 的 target_lang 白名单），zh-TW 从来不是翻译目标——繁中用户要的是"把原文译成
+# 中文"，而不是"译成繁体中文"这一独立目标。所以内层的 zh-TW 缺失不是欠账，
+# 逐个标 noqa；只有外层需要补 zh-TW 行。
 TRANSLATION_LANG_NAMES = {
-    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},
-    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},
-    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},
-    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},
-    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},
-    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},
-    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},
+    'zh': {'zh': '中文', 'en': '英文', 'ja': '日语', 'ko': '韩语', 'ru': '俄语', 'es': '西班牙语', 'pt': '葡萄牙语'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'zh-TW': {'zh': '中文', 'en': '英文', 'ja': '日文', 'ko': '韓文', 'ru': '俄文', 'es': '西班牙文', 'pt': '葡萄牙文'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'en': {'zh': 'Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish', 'pt': 'Portuguese'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'ja': {'zh': '中国語', 'en': '英語', 'ja': '日本語', 'ko': '韓国語', 'ru': 'ロシア語', 'es': 'スペイン語', 'pt': 'ポルトガル語'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'ko': {'zh': '중국어', 'en': '영어', 'ja': '일본어', 'ko': '한국어', 'ru': '러시아어', 'es': '스페인어', 'pt': '포르투갈어'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'ru': {'zh': 'китайский', 'en': 'английский', 'ja': 'японский', 'ko': 'корейский', 'ru': 'русский', 'es': 'испанский', 'pt': 'португальский'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'es': {'zh': 'chino', 'en': 'inglés', 'ja': 'japonés', 'ko': 'coreano', 'ru': 'ruso', 'es': 'español', 'pt': 'portugués'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
+    'pt': {'zh': 'chinês', 'en': 'inglês', 'ja': 'japonês', 'ko': 'coreano', 'ru': 'russo', 'es': 'espanhol', 'pt': 'português'},  # noqa: PROMPT_ZH_TW  # 内层=翻译目标语言域
 }
 
 # ---------- 对话备忘录注入 LLM 上下文 ----------
