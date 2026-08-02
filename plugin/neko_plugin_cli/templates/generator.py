@@ -14,6 +14,7 @@ from plugin._types.plugin_types import (
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
 _DEFAULT_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
+_PLUGIN_RUFF_VERSION = "0.12.4"
 
 
 @dataclass
@@ -118,6 +119,10 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
         created.append(tasks_path)
 
     if spec.create_github_actions:
+        ruff_config_path = target_dir / "ruff.toml"
+        ruff_config_path.write_text(_render_ruff_config(), encoding="utf-8", newline="\n")
+        created.append(ruff_config_path)
+
         workflow_dir = target_dir / ".github" / "workflows"
         workflow_dir.mkdir(parents=True, exist_ok=True)
         workflow_path = workflow_dir / "verify.yml"
@@ -185,6 +190,13 @@ def generate_repo_support_files(
         )
 
     if spec.create_github_actions:
+        _write_support_file(
+            target_dir / "ruff.toml",
+            _render_ruff_config(),
+            created=created,
+            overwrite=overwrite,
+        )
+
         workflow_dir = target_dir / ".github" / "workflows"
         workflow_dir.mkdir(parents=True, exist_ok=True)
         _write_support_file(
@@ -265,9 +277,13 @@ def _render_init_py(spec: PluginSpec) -> str:
 
 def _render_quick_start_init(spec: PluginSpec) -> str:
     return f'''from typing import Any
+
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase,
     Ok,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
 )
 
 
@@ -307,7 +323,6 @@ class {spec.class_name}(NekoPluginBase):
 
 def _render_plugin_init(spec: PluginSpec) -> str:
     imports = ["NekoPluginBase", "neko_plugin", "Ok"]
-    decorators_needed: list[str] = []
 
     if "lifecycle" in spec.features or "entry_point" in spec.features:
         # Always include these for non-quick-start plugins
@@ -320,23 +335,18 @@ def _render_plugin_init(spec: PluginSpec) -> str:
         imports.append("timer_interval")
     if "message" in spec.features:
         imports.append("message")
-
-    extra_imports: list[str] = []
     if "store" in spec.features:
-        extra_imports.append("from plugin.sdk.plugin import PluginStore")
-    if "settings" in spec.features:
-        extra_imports.append("from plugin.sdk.plugin import PluginSettings")
+        imports.append("PluginStore")
 
     is_async = "async_support" in spec.features
 
     lines = [
         "from typing import Any",
-        f"from plugin.sdk.plugin import (",
-        f"    {', '.join(imports)},",
+        "",
+        "from plugin.sdk.plugin import (",
+        *(f"    {name}," for name in sorted(imports)),
         ")",
     ]
-    for imp in extra_imports:
-        lines.append(imp)
 
     lines.extend([
         "",
@@ -428,8 +438,9 @@ def _render_plugin_init(spec: PluginSpec) -> str:
 
 def _render_adapter_init(spec: PluginSpec) -> str:
     return f'''from typing import Any
-from plugin.sdk.plugin import neko_plugin, plugin_entry, lifecycle, Ok
-from plugin.sdk.adapter import AdapterGatewayCore, NekoAdapterPlugin
+
+from plugin.sdk.adapter import NekoAdapterPlugin
+from plugin.sdk.plugin import Ok, lifecycle, neko_plugin, plugin_entry
 
 
 @neko_plugin
@@ -483,6 +494,15 @@ def _render_readme_md(spec: PluginSpec) -> str:
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
     sync_command = _dependency_sync_command(spec.plugin_id)
+    ruff_instructions = ""
+    if spec.create_github_actions:
+        ruff_instructions = f'''From this plugin repository root:
+
+```bash
+uvx ruff=={_PLUGIN_RUFF_VERSION} check --ignore-noqa --config ruff.toml .
+```
+
+'''
     return f'''# {name}
 
 {description}
@@ -501,7 +521,7 @@ When publishing to the plugin market, use this GitHub repository name:
 {_market_repo_name(spec.plugin_id)}
 ```
 
-From the N.E.K.O repository root:
+{ruff_instructions}From the N.E.K.O repository root:
 
 ```bash
 {sync_command}
@@ -623,6 +643,7 @@ def _render_vscode_tasks(spec: PluginSpec) -> str:
 
 def _render_verify_workflow(spec: PluginSpec) -> str:
     sync_command = _dependency_sync_command('"${PLUGIN_ID}"')
+    ruff_check_step = _render_ruff_check_step()
     return f'''name: Verify N.E.K.O Plugin
 
 on:
@@ -653,6 +674,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+
+{ruff_check_step}
 
       - name: Mount plugin into N.E.K.O tree
         run: |
@@ -710,6 +733,7 @@ jobs:
 
 def _render_release_workflow(spec: PluginSpec) -> str:
     sync_command = _dependency_sync_command('"${PLUGIN_ID}"')
+    ruff_check_step = _render_ruff_check_step()
     return f'''name: Release N.E.K.O Plugin
 
 on:
@@ -744,6 +768,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+
+{ruff_check_step}
 
       - name: Mount plugin into N.E.K.O tree
         run: |
@@ -792,6 +818,26 @@ jobs:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _render_ruff_config() -> str:
+    """Render the same blocking Ruff policy used by the Plugin Market."""
+    return '''target-version = "py311"
+line-length = 120
+exclude = [".git"]
+respect-gitignore = false
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I"]
+'''
+
+
+def _render_ruff_check_step() -> str:
+    return (
+        "      - name: Ruff check\n"
+        f"        run: uvx ruff=={_PLUGIN_RUFF_VERSION} check --ignore-noqa "
+        "--config plugin-repo/ruff.toml plugin-repo"
+    )
+
 
 def _escape(value: str) -> str:
     return (

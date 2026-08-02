@@ -682,6 +682,189 @@ def test_init_repo_generates_online_vendor_build_workflow(tmp_path: Path) -> Non
     )
 
 
+def test_init_repo_generates_market_compatible_ruff_gate(tmp_path: Path) -> None:
+    exit_code = neko_plugin_cli.main(
+        [
+            "init-repo",
+            "ruff_demo",
+            "--plugins-root",
+            str(tmp_path),
+            "--no-git",
+        ]
+    )
+
+    assert exit_code == 0
+    repo_dir = tmp_path / "n.e.k.o_plugin_ruff_demo"
+    ruff_config = (repo_dir / "ruff.toml").read_text(encoding="utf-8")
+    verify_workflow = (
+        repo_dir / ".github" / "workflows" / "verify.yml"
+    ).read_text(encoding="utf-8")
+    release_workflow = (
+        repo_dir / ".github" / "workflows" / "release.yml"
+    ).read_text(encoding="utf-8")
+    plugin_source = (repo_dir / "__init__.py").read_text(encoding="utf-8")
+    readme = (repo_dir / "README.md").read_text(encoding="utf-8")
+
+    assert ruff_config == '''target-version = "py311"
+line-length = 120
+exclude = [".git"]
+respect-gitignore = false
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I"]
+'''
+
+    ruff_command = (
+        "uvx ruff==0.12.4 check --ignore-noqa "
+        "--config plugin-repo/ruff.toml plugin-repo"
+    )
+    assert ruff_command in verify_workflow
+    assert ruff_command in release_workflow
+    assert verify_workflow.index(ruff_command) < verify_workflow.index(
+        "Sync plugin dependencies"
+    )
+    assert release_workflow.index(ruff_command) < release_workflow.index(
+        "Sync plugin dependencies"
+    )
+    assert '''From this plugin repository root:
+
+```bash
+uvx ruff==0.12.4 check --ignore-noqa --config ruff.toml .
+```''' in readme
+    assert '''from typing import Any
+
+from plugin.sdk.plugin import (
+    NekoPluginBase,
+    Ok,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+)
+''' in plugin_source
+
+
+def test_init_without_github_actions_does_not_document_ruff_config(
+    tmp_path: Path,
+) -> None:
+    assert (
+        neko_plugin_cli.main(
+            [
+                "init",
+                "plain_demo",
+                "--plugins-root",
+                str(tmp_path),
+                "--no-interactive",
+            ]
+        )
+        == 0
+    )
+
+    plugin_dir = tmp_path / "plain_demo"
+    assert not (plugin_dir / "ruff.toml").exists()
+    readme = (plugin_dir / "README.md").read_text(encoding="utf-8")
+    assert "uvx ruff" not in readme
+
+
+def test_init_repo_adapter_scaffold_uses_ruff_clean_imports(tmp_path: Path) -> None:
+    assert (
+        neko_plugin_cli.main(
+            [
+                "init-repo",
+                "adapter_demo",
+                "--type",
+                "adapter",
+                "--plugins-root",
+                str(tmp_path),
+                "--no-git",
+            ]
+        )
+        == 0
+    )
+
+    plugin_source = (
+        tmp_path / "n.e.k.o_plugin_adapter_demo" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    assert plugin_source.startswith(
+        '''from typing import Any
+
+from plugin.sdk.adapter import NekoAdapterPlugin
+from plugin.sdk.plugin import Ok, lifecycle, neko_plugin, plugin_entry
+'''
+    )
+
+
+def test_setup_repo_github_actions_preserves_files_unless_overwrite(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "setup_demo")
+    setup_args = [
+        "setup-repo",
+        str(plugin_dir),
+        "--github-actions",
+        "--no-readme",
+        "--no-tests",
+        "--no-gitignore",
+        "--no-vscode",
+    ]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    ruff_config = plugin_dir / "ruff.toml"
+    verify_workflow = plugin_dir / ".github" / "workflows" / "verify.yml"
+    release_workflow = plugin_dir / ".github" / "workflows" / "release.yml"
+    assert ruff_config.is_file()
+    assert verify_workflow.is_file()
+    assert release_workflow.is_file()
+
+    ruff_config.write_text("# custom Ruff policy\n", encoding="utf-8")
+    verify_workflow.write_text("# custom verify workflow\n", encoding="utf-8")
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert ruff_config.read_text(encoding="utf-8") == "# custom Ruff policy\n"
+    assert verify_workflow.read_text(encoding="utf-8") == "# custom verify workflow\n"
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "target-version" in ruff_config.read_text(encoding="utf-8")
+    assert "Ruff check" in verify_workflow.read_text(encoding="utf-8")
+
+
+def test_advanced_scaffold_with_github_actions_uses_ruff_clean_imports(
+    tmp_path: Path,
+) -> None:
+    target_dir = tmp_path / "advanced_demo"
+    generate_plugin(
+        PluginSpec(
+            plugin_id="advanced_demo",
+            features=[
+                "lifecycle",
+                "entry_point",
+                "timer",
+                "message",
+                "store",
+                "settings",
+            ],
+            create_github_actions=True,
+        ),
+        target_dir,
+    )
+
+    plugin_source = (target_dir / "__init__.py").read_text(encoding="utf-8")
+    assert plugin_source.startswith(
+        '''from typing import Any
+
+from plugin.sdk.plugin import (
+    NekoPluginBase,
+    Ok,
+    PluginStore,
+    lifecycle,
+    message,
+    neko_plugin,
+    plugin_entry,
+    timer_interval,
+)
+'''
+    )
+    assert "PluginSettings" not in plugin_source
+
+
 def test_init_repo_documents_and_exposes_dependency_sync(tmp_path: Path) -> None:
     exit_code = neko_plugin_cli.main(
         [
