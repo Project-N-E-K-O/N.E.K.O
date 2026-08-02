@@ -49,8 +49,12 @@ _NEGATION_AUXILIARIES = frozenset({
 _CONDITIONAL_CLAUSE_MARKERS = frozenset({
     "assuming", "if", "provided", "supposing", "unless", "whether",
 })
-_CONDITIONAL_CLAUSE_PHRASES = (
-    "as long as", "even if", "in case", "on condition that", "only if",
+_CONDITIONAL_CLAUSE_TOKEN_PHRASES = (
+    ("as", "long", "as"),
+    ("even", "if"),
+    ("in", "case"),
+    ("on", "condition", "that"),
+    ("only", "if"),
 )
 _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
 _EPISTEMIC_LEXICAL_MARKERS = frozenset({
@@ -202,8 +206,19 @@ def _proposition_tokens(text: str) -> tuple[str, ...]:
     )
 
 
-def _has_embedded_clause_negation(text: str) -> bool:
-    """Reject word negations after a relative or embedded-clause marker."""
+def _contains_token_phrase(
+    tokens: tuple[str, ...], phrase: tuple[str, ...],
+) -> bool:
+    """Return whether one exact token phrase occurs in ``tokens``."""
+    width = len(phrase)
+    return any(
+        tokens[index:index + width] == phrase
+        for index in range(len(tokens) - width + 1)
+    )
+
+
+def _fragment_has_embedded_clause_negation(text: str) -> bool:
+    """Reject negations scoped under an embedded marker in one sentence."""
     tokens = _word_tokens(text)
     negation_indices = [
         index for index in range(len(tokens))
@@ -214,8 +229,8 @@ def _has_embedded_clause_negation(text: str) -> bool:
         and (
             any(token in _CONDITIONAL_CLAUSE_MARKERS for token in tokens)
             or any(
-                re.search(rf"\b{re.escape(phrase)}\b", text)
-                for phrase in _CONDITIONAL_CLAUSE_PHRASES
+                _contains_token_phrase(tokens, phrase)
+                for phrase in _CONDITIONAL_CLAUSE_TOKEN_PHRASES
             )
         )
     ):
@@ -226,6 +241,15 @@ def _has_embedded_clause_negation(text: str) -> bool:
     ]
     return bool(marker_indices) and any(
         index > marker_indices[0] for index in negation_indices
+    )
+
+
+def _has_embedded_clause_negation(text: str) -> bool:
+    """Reject word negations scoped under a relative or embedded clause."""
+    return any(
+        _fragment_has_embedded_clause_negation(fragment)
+        for fragment in re.split(r"[.!?;。！？；\r\n]+", text)
+        if fragment.strip()
     )
 
 

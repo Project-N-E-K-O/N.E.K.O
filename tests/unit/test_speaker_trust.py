@@ -2228,6 +2228,22 @@ def test_phrase_conditional_introducers_never_emit_correction(marker):
     ) is None
 
 
+@pytest.mark.parametrize("conditional_first", [False, True])
+def test_independent_conditional_sentence_does_not_hide_correction(
+    conditional_first,
+):
+    conditional = "Bob will arrive if it rains"
+    old_assertion = "Alice is home"
+    new_assertion = "Alice is not home"
+    if conditional_first:
+        old_text = f"{conditional}. {old_assertion}"
+        new_text = f"{conditional}. {new_assertion}"
+    else:
+        old_text = f"{old_assertion}. {conditional}"
+        new_text = f"{new_assertion}. {conditional}"
+    assert deterministic_relation(old_text, new_text) == "correction"
+
+
 @pytest.mark.parametrize("old_text,new_text", [
     (
         "Alice is smart or Bob is happy",
