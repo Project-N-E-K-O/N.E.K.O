@@ -1608,6 +1608,7 @@ class FactStore:
                         if isinstance(row, dict)
                         and _restore_id(row) == target_id
                         and row.get('arbitration_archived_at')
+                        and not row.get('subject_archived_at')
                         and (
                             target_identity is None
                             or _restore_identity(row) == target_identity

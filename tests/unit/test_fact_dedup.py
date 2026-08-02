@@ -1298,6 +1298,23 @@ async def test_restore_arbitrated_fact_uses_full_scoped_identity(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_arbitrated_fact_rejects_subject_archived_row(tmp_path):
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [_fact("active", "survivor")])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = {
+        **_fact("loser", "subject-archived arbitration loser"),
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "subject_archived_at": "2026-08-01T00:00:01",
+    }
+    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
+
+    assert not await fs.arestore_arbitrated_fact("Neko", "loser")
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["active"]
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == [archived]
+
+
+@pytest.mark.asyncio
 async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
     fs, _resolver = _install_resolver(str(tmp_path))
     await _seed_facts(fs, "Neko", [
@@ -1447,6 +1464,38 @@ async def test_trust_does_not_collapse_distinct_temporal_fact_states(tmp_path):
         event_start_at="2026-01-01T00:00:00",
         event_end_at="2026-01-31T00:00:00",
     )
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    archived = json.loads(
+        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
+    )
+    assert next(fact for fact in archived if fact["id"] == "e1")[
+        "superseded_by"
+    ] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_trust_preserves_bounded_episode_against_undated_state(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(
+        speaker_id="qq:1001",
+        speaker_trust=0.3,
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at="2026-06-30T00:00:00",
+    )
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002", speaker_trust=0.8)
     await _seed_facts(fs, "Neko", [candidate, existing])
     await resolver.aenqueue_candidates("Neko", [{
         "candidate_id": "c1", "existing_id": "e1",

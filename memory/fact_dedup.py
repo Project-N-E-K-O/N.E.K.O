@@ -89,7 +89,7 @@ def _created_at_instant(value: object) -> datetime | None:
 
 
 def _has_distinct_event_windows(first: dict, second: dict) -> bool:
-    """Return True when both facts describe different explicit event windows."""
+    """Return True when facts describe different, at least partly explicit windows."""
     first_window = (
         _created_at_instant(first.get('event_start_at')),
         _created_at_instant(first.get('event_end_at')),
@@ -99,8 +99,10 @@ def _has_distinct_event_windows(first: dict, second: dict) -> bool:
         _created_at_instant(second.get('event_end_at')),
     )
     return (
-        any(boundary is not None for boundary in first_window)
-        and any(boundary is not None for boundary in second_window)
+        any(
+            boundary is not None
+            for boundary in (*first_window, *second_window)
+        )
         and first_window != second_window
     )
 
