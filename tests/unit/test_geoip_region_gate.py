@@ -969,7 +969,7 @@ def test_custom_url_merely_containing_the_brand_string_is_not_a_free_route():
     assert ConfigManager._config_needs_region(
         {'CORE_URL': 'https://custom.example/v1/lanlan.tech'}) is False
     assert ConfigManager._config_needs_region(
-        {'CORE_URL': 'https://lanlan.tech.evil.example/core'}) is False
+        {'CORE_URL': 'https://www.lanlan.tech.evil.example/core'}) is False
     assert ConfigManager._config_needs_region(
         {'CORE_URL': 'wss://www.lanlan.tech/core'}) is True
 

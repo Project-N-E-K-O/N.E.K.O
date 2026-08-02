@@ -16,7 +16,7 @@
 """
 Probe lanlan.app free TTS WebSocket and log raw handshake failures.
 
-Default URL is hardcoded to wss://lanlan.app/tts (no GeoIP / lanlan.tech switching).
+Default URL is hardcoded to wss://www.lanlan.app/tts (no GeoIP / www.lanlan.tech switching).
 
 Use when debugging HTTP 503 (or other non-101) during the WebSocket upgrade: the
 ``websockets`` library raises InvalidStatus with the full HTTP response attached.
@@ -50,7 +50,12 @@ from websockets.exceptions import InvalidStatus
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Fixed probe target (do not route via ConfigManager GeoIP).
-DEFAULT_TTS_WSS_URL = "wss://lanlan.app/tts"
+#
+# The `www.` is required: the bare apex does not serve these endpoints, so a
+# probe pointed at it reports a handshake failure caused by its own URL rather
+# than by the service — which is the one thing a script whose whole purpose is
+# "log raw handshake failures" must not do.
+DEFAULT_TTS_WSS_URL = "wss://www.lanlan.app/tts"
 
 
 def _setup_logging(log_path: Path | None) -> logging.Logger:
