@@ -92,7 +92,7 @@ _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
 })
 _TEMPORAL_CLAUSE_MARKERS = frozenset({
-    "after", "before", "until", "while",
+    "after", "before", "until", "whenever", "while",
 })
 _CJK_CONDITIONAL_MARKERS = (
     "如果", "若", "假如", "假设", "倘若", "要是", "只要", "一旦",

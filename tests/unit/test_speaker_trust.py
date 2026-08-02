@@ -2362,6 +2362,16 @@ def test_temporal_clause_negations_never_emit_correction(marker):
     ) is None
 
 
+def test_postposed_whenever_negation_never_emits_correction():
+    assert deterministic_relation(
+        "Notify Bob whenever Alice is smart",
+        "Notify Bob whenever Alice is not smart",
+    ) is None
+    assert deterministic_relation(
+        "Alice is smart", "Alice is not smart",
+    ) == "correction"
+
+
 @pytest.mark.parametrize("marker", ["Provided", "Assuming", "Supposing"])
 def test_bare_conditional_introducers_never_emit_correction(marker):
     assert deterministic_relation(
