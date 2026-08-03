@@ -192,6 +192,11 @@ def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditiona
         # 跟的是内容，不是某个单一字段（Codex P2 第四轮）。
         ("把所有字段的内容重写一遍", "把所有欄位的內容重寫一遍"),
         ("重写每个字段的内容", "重寫每個欄位的內容"),
+        # ⚠️ 「整卡 + 的全部內容」是整卡重写，不是单字段定语——上一版的
+        # (?![的片]) 把它一起挡了（Codex P2，简繁两侧都坏）。
+        ("把整个角色卡的全部内容重写一遍", "把整個角色卡的全部內容重寫一遍"),
+        ("把整张卡的所有内容重写", "把整張卡的所有內容重寫"),
+        ("重写整个卡片的内容", "重寫整個卡片的內容"),
     ],
 )
 def test_a_genuine_full_rewrite_still_matches(simplified, traditional):

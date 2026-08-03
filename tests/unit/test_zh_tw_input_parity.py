@@ -326,6 +326,8 @@ DIRECT_STOP_PAIRS = [
     ("我想停止播放红心歌单", "我想停止播放紅心歌單"),
     ("算了我想停止播放红心歌单", "算了我想停止播放紅心歌單"),
     ("我要暂停播放每日推荐", "我要暫停播放每日推薦"),
+    # 来源名前允许所有格「我的」（Codex P2）。
+    ("停止我的红心歌单", "停止我的紅心歌單"),
     ("暂停播放我喜欢的", "暫停播放我喜歡的"),
     ("取消播放每日推荐", "取消播放每日推薦"),
 ]
@@ -717,3 +719,149 @@ def test_the_two_cancellation_patterns_share_one_preface():
     assert mr._ZH_DIRECT_MUSIC_STOP.pattern.startswith(shared_prefix), (
         "_ZH_DIRECT_MUSIC_STOP 的前缀与 _ZH_NEGATIVE_MUSIC 漂开了"
     )
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("来点评一下这张卡", "來點評一下這張卡"),
+        ("来点评论", "來點評論"),
+    ],
+)
+def test_a_two_char_action_does_not_swallow_a_longer_verb(simplified, traditional):
+    """⚠️ 来点/來點 is the shortest action here and 点 also heads other verbs
+    (点评 / 点击 / 点赞 / 点名 / 点菜).
+
+    Without the guard 「來點評一下這張卡」 splits into 來點 + 評一下這張卡 and
+    searches for a song by that name (Codex P2). ⚠️ Pre-existing on the
+    Simplified side — 「来点评一下这张卡」 did the same on main — so the guard
+    fixes both. The rejected set is **not** claimed to be exhaustive; 点 takes
+    an open set of complements, which is inherent to a two-character action and
+    not something the zh-TW backfill introduced.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in (simplified, traditional):
+        assert parse_explicit_user_music_request(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("来点摇滚", "來點搖滾"), ("来点周杰伦的歌", "來點周杰倫的歌")],
+)
+def test_the_two_char_action_still_parses_real_requests(simplified, traditional):
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in (simplified, traditional):
+        assert parse_explicit_user_music_request(text) is not None, text
+
+
+def test_a_stop_verb_governing_a_source_without_a_music_noun_is_unchanged():
+    """Recorded, not fixed: 「暫停每日推薦」 is False on main too.
+
+    ``_ZH_NEGATIVE_MUSIC`` needs 播放/放/听/音乐/歌 within six characters of the
+    negator, and 每日推薦 supplies none — 「停止紅心歌單」 only passes because
+    歌單 contains 歌. Widening the refusal pattern's object is script-neutral
+    work and is not part of this batch.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ("暂停每日推荐", "暫停每日推薦"):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+# ---------------------------------------------------------------------------
+# 对抗扫描（推送前自查）找出的四条回归
+# ---------------------------------------------------------------------------
+
+NON_PLAYBACK_BIE_PAIRS = [
+    ("别放弃", "別放棄"),
+    ("别放在心上", "別放在心上"),
+    ("别放手", "別放手"),
+    ("别放过我", "別放過我"),
+    ("别听他的", "別聽他的"),
+    ("别听信谣言", "別聽信謠言"),
+    ("别播种太早", "別播種太早"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), NON_PLAYBACK_BIE_PAIRS)
+def test_bie_plus_a_playback_verb_in_a_non_playback_sense(simplified, traditional):
+    """⚠️⚠️ 放 / 聽 / 播 head many non-playback verbs.
+
+    Requiring 别/別 to sit on a playback verb was **not** sufficient, contrary to
+    what the previous round's comment claimed: 放棄 / 放心上 / 放手 / 放過 /
+    聽信 / 播種 all start with one. 「別放棄」 is an everyday phrase and it was
+    cancelling the user's music.
+
+    The fix adds a **closed** lookahead — the playback verb must be followed by
+    end-of-clause, a modal particle, punctuation, or a music/source noun. That
+    set is enumerable, unlike "what can follow 別", which is not.
+
+    ⚠️ Traditional was entirely safe on main (the character class held only the
+    Simplified 别), so this batch imported the whole class; the fix also clears
+    it on the Simplified side, where 「别放弃」 cancelled playback on main.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+A_NOT_A_PAIRS = [
+    ("要不要停止播放", "要不要停止播放"),
+    ("想不想关掉音乐", "想不想關掉音樂"),
+    ("我要不要取消播放", "我要不要取消播放"),
+    ("要不要放歌", "要不要放歌"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), A_NOT_A_PAIRS)
+def test_an_a_not_a_question_is_not_a_command(simplified, traditional):
+    """⚠️ The only regression in this batch that broke Simplified too.
+
+    `_ZH_REQ_PREFIX` gained an optional `(?:想|要)` so that 「我想停止播放…」
+    would enter the refusal branch. It also ate the first 要/想 of an A-not-A
+    question, leaving 不要/不想 to match the negator — so a user *wondering*
+    whether to stop was read as commanding it. `(?!不)` closes that.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止这个红心歌单", "停止這個紅心歌單"),
+        ("停止那个红心歌单", "停止那個紅心歌單"),
+        ("停止你的红心歌单", "停止你的紅心歌單"),
+    ],
+)
+def test_a_determiner_before_the_source_still_cancels(simplified, traditional):
+    """Only 我的 was allowed, so 「停止這個紅心歌單」 read as a narrow exclusion
+    and playback kept running — while 「停止這個歌單」 (two characters shorter)
+    cancelled correctly. Determiners are a closed set; all of them are listed.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+def test_the_taiwanese_spelling_of_like_is_rejected_too():
+    """⚠️ 點讚, not 點贊 — 讚 is praise, 贊 is sponsorship, and they are not
+    interchangeable in Traditional.
+
+    The blacklist was written by mechanically transliterating the Simplified
+    赞, so 「来点赞吧」 was blocked while 「來點讚吧」 sailed through into a music
+    search. Same class of error as 着/著 in the topic stop-chars: **glyph
+    correspondence is not a bijection.**
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in ("来点赞吧", "來點讚吧", "來點贊吧"):
+        assert parse_explicit_user_music_request(text) is None, text
+    for text in ("来点摇滚", "來點搖滾"):
+        assert parse_explicit_user_music_request(text) is not None, text
