@@ -1812,3 +1812,48 @@ def test_every_quote_pair_shields_a_title(opening, closing):
     assert is_explicit_music_cancellation(
         f'不要播放{opening}影片{closing}'
     ) is True
+
+
+@pytest.mark.parametrize("marker", ["是否可以", "是否合适", "能否停下", "可否暂停"])
+@pytest.mark.parametrize("prefix", ["我想", "我要", "帮我", "幫我"])
+def test_a_shifou_question_is_not_a_command(prefix, marker):
+    """⚠️ 汉语的是非问不止靠句末语气词——「是否/能否/可否」在句中就已经标记了
+    疑问。守卫只认句末 吗/嗎/呢 和裸问号，这一族整类漏掉。这些词是封闭类。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'{prefix}停止播放{marker}') is False
+
+
+@pytest.mark.parametrize(
+    "compound",
+    ["主題曲", "主题曲", "插曲", "片頭曲", "配樂", "配乐", "原聲", "背景音樂", "背景音乐"],
+)
+def test_a_soundtrack_compound_is_a_music_target(compound):
+    """⚠️ 影视配乐类复合词也是音乐名词。`不要播放影片的主題曲` 拒的是**音乐**，
+    只认通用名词（歌/音樂/曲）会把它判成视频目标（base 是 True）。
+
+    这一族是可枚举的：主題曲/插曲/片頭曲/片尾曲/配樂/原聲/背景音樂。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'不要播放影片的{compound}') is True
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("停止红心歌单吗", "停止紅心歌單嗎"), ("取消我喜欢的歌吗", "取消我喜歡的歌嗎")],
+)
+def test_the_two_predicates_share_one_particle_table(simplified, traditional):
+    """⚠️⚠️ 语气词表必须与 `_ZH_NEGATIVE_MUSIC` 那一支**同一套**。
+
+    少了 吗/嗎，`停止紅心歌單嗎` 会被否定判据认下、却被直接停止判据拒掉，
+    于是降级成窄范围来源排除、音乐继续放。
+
+    **两条判据漂开在这个文件里已经是第四次了**（前三次是共享前缀、疑问守卫、
+    引号对）。每次都是同一个形状：同一件事的两个方面各自维护一份表。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
