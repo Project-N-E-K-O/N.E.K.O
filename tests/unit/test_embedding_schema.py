@@ -499,6 +499,65 @@ async def test_correction_keep_new_preserves_explicit_event_window(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_correction_trust_does_not_override_distinct_event_windows(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明住在巴黎",
+        speaker_id="qq:1001", speaker_trust=0.8,
+        event_when_raw={"kind": "absolute", "value": "2026-01"},
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at="2026-01-31T23:59:59",
+    )
+    correction = {
+        "old_text": "小明住在巴黎", "new_text": "小明住在柏林",
+        "entity": "master",
+        "old_speaker_id": "qq:1001", "old_speaker_trust": 0.8,
+        "new_speaker_id": "qq:2002", "new_speaker_trust": 0.3,
+        "new_event_when_raw": {"kind": "absolute", "value": "2026-06"},
+        "new_event_start_at": "2026-06-01T00:00:00",
+        "new_event_end_at": "2026-06-30T23:59:59",
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "merge", "text": "小明先住巴黎，后住柏林"}],
+    ) == 1
+    entry = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    assert entry["text"] == "小明先住巴黎，后住柏林"
+
+
+@pytest.mark.asyncio
+async def test_correction_merge_unions_explicit_event_windows(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明住在巴黎",
+        event_when_raw={"kind": "absolute", "value": "2026-01"},
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at="2026-01-31T23:59:59",
+    )
+    correction = {
+        "old_text": "小明住在巴黎", "new_text": "小明住在柏林",
+        "entity": "master",
+        "new_event_when_raw": {"kind": "absolute", "value": "2026-06"},
+        "new_event_start_at": "2026-06-01T00:00:00",
+        "new_event_end_at": "2026-06-30T23:59:59",
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "merge", "text": "小明先住巴黎，后住柏林"}],
+    ) == 1
+    entry = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    assert entry["event_when_raw"] == correction["new_event_when_raw"]
+    assert entry["event_start_at"] == "2026-01-01T00:00:00"
+    assert entry["event_end_at"] == "2026-06-30T23:59:59"
+
+
+@pytest.mark.asyncio
 async def test_live_extreme_correction_trust_is_treated_as_stale(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

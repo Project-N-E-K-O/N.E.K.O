@@ -120,6 +120,58 @@ def _queued_new_event_fields(provenance: dict | None) -> dict:
     }
 
 
+def _queued_event_entry(item: dict) -> dict:
+    """Expose a queued observation using the persisted temporal schema."""
+    return {
+        'event_when_raw': item.get('new_event_when_raw'),
+        'event_start_at': item.get('new_event_start_at'),
+        'event_end_at': item.get('new_event_end_at'),
+    }
+
+
+def _has_distinct_correction_event_windows(old_entry: dict, item: dict) -> bool:
+    """Return True when trust would collapse different event contexts."""
+    from memory.temporal import explicit_event_window
+
+    old_window = explicit_event_window(old_entry)
+    new_window = explicit_event_window(_queued_event_entry(item))
+    return old_window != new_window and any((*old_window, *new_window))
+
+
+def _merged_correction_event_fields(existing: dict, item: dict) -> dict:
+    """Union explicit old/new windows for a model-selected correction merge."""
+    from memory.temporal import explicit_event_window, to_naive_local
+
+    queued_entry = _queued_event_entry(item)
+    old_window = explicit_event_window(existing)
+    new_window = explicit_event_window(queued_entry)
+    explicit_windows = [
+        window for window in (old_window, new_window)
+        if any(boundary is not None for boundary in window)
+    ]
+    if not explicit_windows:
+        return {}
+
+    def _boundary_key(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return to_naive_local(parsed)
+
+    starts = [start for start, _end in explicit_windows if start]
+    ends = [end for _start, end in explicit_windows]
+    return {
+        'event_when_raw': deepcopy(
+            queued_entry.get('event_when_raw')
+            if any(new_window) else existing.get('event_when_raw')
+        ),
+        'event_start_at': min(starts, key=_boundary_key) if starts else None,
+        'event_end_at': (
+            None
+            if any(end is None for end in ends)
+            else max(ends, key=_boundary_key)
+        ),
+    }
+
+
 def _detect_correction_prompt_language(
     pairs: list[tuple[int, dict]],
     *,
@@ -755,6 +807,10 @@ class CorrectionsMixin:
                     or current_old_trust != queued_old_trust
                 ):
                     preference = None
+                elif _has_distinct_correction_event_windows(current_old, item):
+                    # Trust scores cannot choose between claims anchored to
+                    # different periods (including dated versus undated).
+                    preference = None
             if preference is not None and action != 'keep_both':
                 forced = 'keep_old' if preference == 'old' else 'keep_new'
                 if action != forced:
@@ -863,6 +919,9 @@ class CorrectionsMixin:
                                 ))
                             existing['text'] = merged_text
                             existing['version_history'] = merged_history[-_VH_MAX:]
+                            existing.update(
+                                _merged_correction_event_fields(existing, item)
+                            )
                             # Replace provenance even for the same speaker:
                             # the merged text must carry the conservative
                             # minimum of both authored snapshots, never borrow

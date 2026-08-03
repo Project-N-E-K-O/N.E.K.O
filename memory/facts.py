@@ -1271,6 +1271,7 @@ class FactStore:
             trust_event_id,
             trust_observation_id,
         )
+        from memory.temporal import explicit_event_window
 
         source_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
         memory_subject = coerce_subject(subject)
@@ -1363,6 +1364,12 @@ class FactStore:
                     continue
                 target_id = stable_speaker_id(prior.get('speaker_id'))
                 if target_id is None or target_id == source_id:
+                    continue
+                # Raw owner observations carry no structured event window.
+                # Do not reinterpret an explicitly dated historical fact as a
+                # present-day confirmation/correction. Persisted events above
+                # still replay idempotently after a lost response.
+                if any(explicit_event_window(prior)):
                     continue
                 relation = deterministic_relation(prior.get('text', ''), text)
                 if relation is None:

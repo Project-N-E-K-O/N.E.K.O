@@ -263,6 +263,31 @@ async def test_only_owner_request_provenance_can_emit_trust_events():
 
 
 @pytest.mark.asyncio
+async def test_undated_owner_observation_ignores_explicitly_dated_fact():
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    store = object.__new__(FactStore)
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "小明不住在巴黎"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[{
+            "id": "january-home", "text": "小明住在巴黎",
+            "speaker_id": "qq:1001",
+            "event_when_raw": {"kind": "absolute", "value": "2026-01"},
+            "event_start_at": "2026-01-01T00:00:00",
+            "event_end_at": "2026-01-31T23:59:59",
+            **target.as_entry_fields(),
+        }],
+    )
+
+    assert events == []
+
+
+@pytest.mark.asyncio
 async def test_numeric_legacy_fact_id_builds_stable_trust_event_key():
     from memory.facts import FactStore, _speaker_trust_fact_id
 
@@ -1440,6 +1465,60 @@ async def test_scoped_route_owner_signal_uses_pre_write_provenance(fact_id):
     assert len(result["trust_events"]) == 1
     assert result["trust_events"][0]["kind"] == "confirmation"
     assert result["trust_events"][0]["speaker_id"] == "qq:1001"
+
+
+@pytest.mark.asyncio
+async def test_failed_owner_segment_persists_signal_for_its_reconciliation():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore, _speaker_trust_fact_identity
+
+    prior = {
+        "id": "member-fact", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    reconciled = {**prior, "speaker_provenance_mixed": True}
+    persisted = AsyncMock(side_effect=lambda _name, events, **_kwargs: events)
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
+        extract_facts_batch=AsyncMock(return_value=[{
+            "status": "failed", "created": [], "dropped": 1,
+            "reconciled": [reconciled],
+        }]),
+        apersist_speaker_trust_events=persisted,
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    request = ScopedHistoryRequest(segments=[{
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)", "speaker_trust": 1.0,
+        "speaker_id": "qq:9999", "speaker_is_owner": True,
+    }])
+
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    segment = result["segments"][0]
+    assert segment["status"] == "failed"
+    # Failed segments remain retained by the caller, so their durable event is
+    # intentionally hidden until the successful retry replays it.
+    assert segment["trust_events"] == []
+    persisted.assert_awaited_once()
+    assert persisted.await_args.kwargs["expected_reconciliations"] == {
+        _speaker_trust_fact_identity(prior): reconciled,
+    }
 
 
 @pytest.mark.asyncio

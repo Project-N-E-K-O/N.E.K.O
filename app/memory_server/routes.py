@@ -1553,7 +1553,10 @@ async def _process_scoped_history_segments(
         if (
             signal_facts is not None
             and segment.get("speaker_is_owner")
-            and result.get("status") == "ok"
+            and (
+                result.get("status") == "ok"
+                or bool(result.get("reconciled"))
+            )
         ):
             # Freeze the authored-order rows as well as their allow-list.
             # The final reload below still revalidates concurrent changes,
