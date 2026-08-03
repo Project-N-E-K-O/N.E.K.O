@@ -1622,3 +1622,53 @@ def test_the_speech_subject_guard_does_not_block_a_real_artist(artist):
 
     result = parse_explicit_user_music_request(f'聽一下{artist}的歌')
     assert getattr(result, 'song_artist', None) == artist
+
+
+def _playback_adverbs():
+    """从共用常量拆出副词闭集。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    inner = mr._ZH_PLAYBACK_ADVERB.split('(?:', 1)[1].split(')', 1)[0]
+    return [w for w in inner.split('|') if w]
+
+
+PLAYBACK_ADVERBS = _playback_adverbs()
+
+
+def test_the_adverb_table_is_not_empty():
+    assert len(PLAYBACK_ADVERBS) >= 12, PLAYBACK_ADVERBS
+
+
+@pytest.mark.parametrize("adverb", PLAYBACK_ADVERBS)
+@pytest.mark.parametrize("negator", ["别", "別"])
+def test_an_adverb_between_the_negator_and_the_verb(negator, adverb):
+    """⚠️ 「别」和播放动词之间不止能塞「再」。
+
+    `别继续播放` / `别现在播放` / `别马上放晴天` 在基线上都是 True，只允许
+    「再」把它们整类打成 False。
+
+    ⚠️ 这张表与名词尾那一支**共用同一个常量**——两处漂开就会出现「同一句话
+    两条判据给不同答案」，这个文件已经因为前缀漂开踩过两次坑。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'{negator}{adverb}播放') is True
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止网易云音乐", "停止網易雲音樂"),
+        ("关掉网易云音乐", "關掉網易雲音樂"),
+        ("停止目前的音乐", "停止目前的音樂"),
+        ("停止当前的音乐", "停止當前的音樂"),
+    ],
+)
+def test_a_service_or_time_qualifier_still_stops_playback(simplified, traditional):
+    """服务名和时间限定词也在名词尾的闭集里——收紧开窗口时最容易漏的就是
+    这类高频限定成分，这已经是同一处的第三批漏项（前两批是量词和所有格）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
