@@ -85,6 +85,10 @@ CARD_ASSIST_PAIRS = [
     ("点评一下这个设定", "點評一下這個設定"),
     ("帮我改写核心特点", "幫我改寫核心特點"),
     ("把整个角色卡重写一遍", "把整個角色卡重寫一遍"),
+    # 「整个卡」/「整個卡」 uses 个 as the classifier rather than 张. The
+    # Simplified half of this pair was the one missing (CodeRabbit) — parity
+    # catches a one-sided gap whichever side it is on.
+    ("把整个卡重写一遍", "把整個卡重寫一遍"),
     ("所有可见字段都重写", "所有可見欄位都重寫"),
     ("删除这个字段", "刪除這個欄位"),
     ("优化这个设定", "優化這個設定"),
@@ -121,9 +125,16 @@ def test_traditional_advice_request_does_not_trigger_an_edit():
     import main_routers.card_assist_router as router
 
     text = "給我一些修改建議"
+    simplified = "给我一些修改建议"
+    # ⚠️ This line first read `advice_only(text) or not edits(text)`, whose left
+    # operand the line above already asserts True — so the whole expression was
+    # vacuous and the reversal it claims to pin could have come straight back
+    # without turning this red (CodeRabbit). Assert the decisive predicate, and
+    # assert it against the Simplified side rather than a literal, so the claim
+    # stays "these two agree" rather than a hardcoded expectation.
     assert router._chat_text_requests_advice_only(text) is True
-    # The caller reads advice_only first and suppresses edit_intent on it.
-    assert router._chat_text_requests_advice_only(text) or not router._chat_text_requests_edits(text)
+    assert router._chat_text_requests_advice_only(simplified) is True
+    assert router._chat_text_requests_edits(text) == router._chat_text_requests_edits(simplified)
 
 
 @pytest.mark.parametrize(

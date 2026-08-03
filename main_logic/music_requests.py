@@ -578,13 +578,28 @@ def _parse_explicit_en_clause(clause: str) -> MusicRequest | None:
 
 
 def _excluded_personalization_source(clause: str) -> str:
+    """Which personalization source a negative clause is excluding, if any.
+
+    ⚠️ Must list the same scripts as ``_ZH_NEGATIVE_MUSIC``. The two work as a
+    pair: the negative pattern decides "this clause is a refusal", and this one
+    decides "…but only of one source, not of playback". Leaving this side
+    Simplified-only while the negative pattern accepts Traditional turns
+    「別放紅心歌單，播放每日推薦」 from a narrow exclusion into a full stop.
+    (收藏 and 日推 are spelled the same in both scripts.)
+    """  # noqa: DOCSTRING_CJK
     folded = clause.casefold()
-    if any(token in folded for token in ("红心", "我喜欢", "收藏")) or re.search(
+    if any(
+        token in folded
+        for token in ("红心", "紅心", "我喜欢", "我喜歡", "收藏")
+    ) or re.search(
         rf"\b{_EN_LIKED_SOURCE_PATTERN}\b",
         folded,
     ):
         return "liked"
-    if any(token in folded for token in ("日推", "每日推荐")) or re.search(
+    if any(
+        token in folded
+        for token in ("日推", "每日推荐", "每日推薦")
+    ) or re.search(
         rf"\b{_EN_DAILY_SOURCE_PATTERN}\b",
         folded,
     ):

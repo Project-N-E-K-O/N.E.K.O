@@ -58,7 +58,41 @@ def _music_shape(text: str):
 
 @pytest.mark.parametrize(("simplified", "traditional"), MUSIC_PAIRS)
 def test_music_requests_parse_the_same_in_both_scripts(simplified, traditional):
-    assert _music_shape(simplified) == _music_shape(traditional)
+    # Guard the premise: `None == None` would make this a vacuous pass if the
+    # Simplified side ever stopped matching too (CodeRabbit).
+    shape = _music_shape(simplified)
+    assert shape is not None, f"{simplified}: 简体侧本身就没命中，用例前提不成立"
+    assert _music_shape(traditional) == shape
+
+
+EXCLUSION_PAIRS = [
+    ("别放红心歌单，播放每日推荐", "別放紅心歌單，播放每日推薦"),
+    ("别听我喜欢的", "別聽我喜歡的"),
+    ("不要日推", "不要日推薦"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), EXCLUSION_PAIRS)
+def test_excluding_one_source_is_not_read_as_stopping_playback(simplified, traditional):
+    """⚠️ ``_ZH_NEGATIVE_MUSIC`` and ``_excluded_personalization_source`` are a
+    pair and must list the same scripts.
+
+    The first decides "this clause is a refusal"; the second decides "…of one
+    source only, not of playback". Backfilling the first alone turned
+    「別放紅心歌單，播放每日推薦」 from a narrow exclusion into a full stop —
+    i.e. the Traditional user's music got cut off entirely (greptile P1).
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import (
+        _excluded_personalization_source,
+        is_explicit_music_cancellation,
+    )
+
+    for text in (simplified, traditional):
+        assert _excluded_personalization_source(text), f"{text}: 认不出被排除的来源"
+        assert is_explicit_music_cancellation(text) is False, f"{text}: 被当成全局取消"
+    assert _excluded_personalization_source(simplified) == (
+        _excluded_personalization_source(traditional)
+    )
 
 
 def test_traditional_liked_playlist_is_not_parsed_as_an_artist_search():
@@ -179,13 +213,53 @@ def test_approve_guard_tokens_cover_both_scripts():
     """  # noqa: DOCSTRING_CJK
     from brain import openclaw_adapter
 
-    source = openclaw_adapter.OpenClawAdapter._classify_magic_intent_with_rules.__code__
-    tokens = next(
-        const for const in source.co_consts
-        if isinstance(const, tuple) and "执行" in const
-    )
+    tokens = openclaw_adapter.APPROVE_GUARD_TOKENS
     for simplified, traditional in (("执行", "執行"), ("删", "刪"), ("准", "準")):
         assert simplified in tokens and traditional in tokens, (simplified, traditional)
+
+
+NEGATED_APPROVAL_PAIRS = [
+    ("我还没同意你去执行", "我還沒同意你去執行"),
+    ("我没同意去执行", "我沒同意去執行"),
+    ("别去执行", "別去執行"),
+    ("不要执行", "不要執行"),
+    ("先别执行", "先別執行"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), NEGATED_APPROVAL_PAIRS)
+def test_negated_approval_does_not_dispatch(simplified, traditional):
+    """A pre-existing hole (Simplified had it too), widened by this batch.
+
+    ``别去执行`` contains the approve trigger ``去执行``, and the guard only
+    refuses when 同意 appears *without* 执行/删/准 — so a sentence that literally
+    says "don't execute" dispatched ``/daemon approve``. Until this batch the
+    Traditional side was saved by missing every trigger; adding the triggers
+    without this would have handed Traditional users the same hole.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    for text in (simplified, traditional):
+        assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["去执行吧", "去執行吧", "删吧", "刪吧", "没问题，去执行", "沒問題，去執行", "准了", "準了"],
+)
+def test_genuine_approval_still_dispatches(text):
+    """The negation phrases are full phrases, not bare 别/不 — a bare negator
+    would also kill 别找了, which is a legitimate /stop trigger."""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve"
+
+
+@pytest.mark.parametrize("text", ["别找了", "別找了", "算了别查了", "算了別查了"])
+def test_stop_triggers_containing_a_negator_are_untouched(text):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == "/stop"
 
 
 # ---------------------------------------------------------------------------

@@ -125,6 +125,37 @@ def _extract_json_block(raw_text: str) -> str:
     return match.group(0) if match else text
 
 
+# ── magic-command 规则分类器的词表 ─────────────────────────────────
+# 模块级不是为了复用，是为了**可断言**：函数内的局部 tuple 测试拿不到，
+# 缺一侧字形只能靠人眼发现。（这条和 utils/music_crawlers.py 的路由词表同理。）
+#
+# ⚠️ 这些表撞的是用户实际打出来的字，简繁不同码位，两侧必须同批收词。
+
+# 命中即整轮判定为「非 magic」。高精度优先：宁可保守，不冒进扩展。
+#
+# 后半段那几条否定短语修的是一个**既有**缺陷（简体侧同样存在，不是繁体补齐
+# 引入的）：`别去执行` / `我还没同意你去执行` 会命中 approve 触发词「去执行」，
+# 而 APPROVE_GUARD_TOKENS 那道守卫只在「有『同意』且没有执行/删/准」时才拒绝
+# ——句子里恰好有「执行」，守卫就放行了，结果是**执行用户明确否定的批准**。
+# 用整条短语而不是裸「别 / 不」：`别找了` 是合法的 /stop 触发词，裸否定字会
+# 把它一起打掉。
+_HIGH_PRECISION_NON_MAGIC = (
+    "我忘了", "我忘记", "我忘記", "雨停了", "停电了", "停電了",
+    "新的一天", "你的看法",
+    # 明确否定「批准」的说法
+    "不同意", "没同意", "沒同意", "还没同意", "還沒同意",
+    "别执行", "別執行", "别去执行", "別去執行",
+    "不要执行", "不要執行", "不用执行", "不用執行",
+    "先别执行", "先別執行", "不准执行", "不準執行",
+)
+
+# `/daemon approve` 的否定守卫：文本里有「同意」但没有下面任何一个动作词时，
+# 判定为「只是在表达同意某个观点」而不是批准执行，于是拒绝。
+# ⚠️ 必须与 approve 触发词同批补繁体：少补的话「我同意去執行」会命中 approve
+# 而守卫恒假——那是真反转；全 MISS 只会导致不批准，是安全方向。
+APPROVE_GUARD_TOKENS = ("执行", "執行", "删", "刪", "准", "準")
+
+
 class OpenClawAdapter:
     AUTH_ERROR_STATUS_CODES = frozenset({401, 403})
 
@@ -451,13 +482,7 @@ class OpenClawAdapter:
         # 高精度优先：词表宁可保守，也不冒进扩展。
         # ⚠️ 下面几张表撞的是用户实际打出来的字，简繁是不同码位——只列简体等于
         # 这套口令对繁中用户完全不存在（实测繁中 10/10 全 MISS）。
-        if any(
-            token in lowered
-            for token in (
-                "我忘了", "我忘记", "我忘記", "雨停了", "停电了", "停電了",
-                "新的一天", "你的看法",
-            )
-        ):
+        if any(token in lowered for token in _HIGH_PRECISION_NON_MAGIC):
             return {"is_magic_intent": False, "command": None, "source": "rule"}
 
         mapping = [
@@ -484,16 +509,12 @@ class OpenClawAdapter:
                 "没问题去执行", "沒問題去執行",
             )),
         ]
-        # ⚠️ 这三个否定 token 必须与上面的 approve 触发词**同批**补繁体。少补的话
-        # 「我同意去執行」会命中 approve 而守卫恒假——那才是真正的行为反转（现在
-        # 的 MISS 只会导致不批准，是安全方向）。
-        _APPROVE_GUARD_TOKENS = ("执行", "執行", "删", "刪", "准", "準")
         for command, triggers in mapping:
             if any(token in text for token in triggers):
                 if (
                     command == "/daemon approve"
                     and "同意" in text
-                    and not any(token in text for token in _APPROVE_GUARD_TOKENS)
+                    and not any(token in text for token in APPROVE_GUARD_TOKENS)
                 ):
                     return {"is_magic_intent": False, "command": None, "source": "rule"}
                 return {"is_magic_intent": True, "command": command, "source": "rule"}
