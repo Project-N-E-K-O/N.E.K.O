@@ -1345,3 +1345,24 @@ def test_the_scope_boundary_is_neither_too_tight_nor_too_loose(phrasing, expecte
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
+
+
+@pytest.mark.parametrize("verb", ["rewrite", "revise", "regenerate", "redo", "refresh"])
+@pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有字段"])
+def test_an_english_rewrite_verb_terminates_a_chinese_scope(scope, verb):
+    """⚠️ 英文重写动词也是合法收尾（base 是 True）。
+
+    第十四轮把收尾收成「只认标点」堵拉丁字段名时，把这一族一起挡掉了
+    （Codex P2 第二十二轮）。这一侧安全——它是 `_CHAT_REWRITE_VERB_RE` 里的
+    **闭集**，不像 `nickname` 那样是任意字段名。
+
+    ⚠️ 右边界用 `\b`：`rewriteX` 这类更长的标识符不能命中，否则 P1 从这里回来。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'{scope} {verb}') is True
+    # 反向：拉丁字段名照旧被挡，更长的标识符也不能借这条路进来。
+    assert router._chat_text_requests_full_rewrite(
+        f'{scope} {verb}X重写'
+    ) is False
+    assert router._chat_text_requests_full_rewrite('把整个卡的全部 nickname重写') is False

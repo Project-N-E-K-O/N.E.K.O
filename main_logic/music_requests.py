@@ -577,6 +577,17 @@ _ZH_PLAYBACK_UI_NOUN = r"(?:按钮|按鈕|功能|键|鍵|控件|組件|组件)"
 # Codex P2 第十九轮）。
 # ⚠️ 缺陷本体那一族不带「正在」——`我要停止播放的代码` / `的教程` / `的听歌功能`
 # 说的是「停止播放」这件事的代码，不是「正在播放的代码」，所以照旧被挡。
+# 进行体/当下体的「副词 + 播放动词」组合。⚠️ Python 的后视必须定长，所以这里
+# **生成**每个组合的定长后视，而不是手写一串——第二十二轮 reviewer 指出
+# `当前播放的X` / `目前播放的X` 跟 `正在播放的X` 是同一个构式，手写那三条漏了它们。
+# 副词和播放动词都是封闭词类，笛卡尔积一次铺开。
+_ZH_PROGRESSIVE_ADVERBS = ("正在", "正", "当前", "當前", "目前", "现在", "現在")
+_ZH_PROGRESSIVE_VERBS = ("播放", "放", "播")
+_ZH_PROGRESSIVE_LOOKBEHIND = "".join(
+    f"(?<!{adverb}{verb})"
+    for adverb in _ZH_PROGRESSIVE_ADVERBS
+    for verb in _ZH_PROGRESSIVE_VERBS
+)
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # ⚠️ `\s*` 写在**内层前视里面**，不能写成 `的\s*(?!…)`：后者里 `\s*` 会回溯
     # 成零宽，前视又在空格那个位置判一次「后面不是音乐名词」，于是照样判成名物化。
@@ -592,7 +603,7 @@ _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # ⚠️ 三条后视要挂在**「的」这一支的最前面**，不能塞进内层前视里：塞进去就
     # 变成「逃生项后面还得满足后视」，而 `晴天` 匹配不上任何逃生项，内层前视直接
     # 成功、整条守卫照样把它挡掉（第十九轮第一版就是这么写的，实测才发现）。
-    rf"(?!(?<!正在播放)(?<!正在放)(?<!正播放)"
+    rf"(?!{_ZH_PROGRESSIVE_LOOKBEHIND}"
     rf"\s*的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_MODIFIED_MUSIC_OBJECT_AFTER_DE}"
     rf"|{_ZH_DEGREE_AFTER_DE}|{_ZH_COMPARATIVE_AFTER_DE}"
     rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE}))"

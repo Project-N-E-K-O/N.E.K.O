@@ -3107,3 +3107,19 @@ def test_permission_and_volition_modals_are_generated(marker):
     assert is_explicit_music_cancellation(
         f'我想停止播放{marker}换成《你好吗？》'
     ) is False
+
+
+@pytest.mark.parametrize(
+    "aspect", ["正在", "正", "当前", "當前", "目前", "现在", "現在"]
+)
+@pytest.mark.parametrize("name", ["晴天", "Taylor Swift"])
+def test_every_current_playback_aspect_marks_the_object(aspect, name):
+    """⚠️ 当下体（当前/目前/现在播放的X）跟进行体（正在播放的X）是同一个构式。
+
+    手写那三条后视只覆盖了「正在」那一族（Codex P2 第二十二轮）。副词和播放动词
+    都是封闭词类，改成**笛卡尔积生成**定长后视，一次铺开。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{aspect}播放的{name}') is True
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False

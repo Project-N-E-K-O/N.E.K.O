@@ -811,6 +811,11 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
 # `把整個卡的全部一併重寫` / `把整个卡的全部彻底重写` base 都是 True，只认
 # 「紧跟动词首字」会把它们挡掉（Codex P2 第十二轮）。副词是封闭词类，列干净；
 # 单字段那条路不受影响——副词后面仍然要求重写动词首字，字段名进不来。
+# ⚠️ 英文重写动词也是合法收尾：`把所有字段 rewrite` base 是 True，而第十四轮
+# 把收尾收成「只认标点」时把它一起挡掉了（Codex P2 第二十二轮）。
+# 这一侧安全——它是 _CHAT_REWRITE_VERB_RE 里的**闭集**，不像 `nickname` 那样是
+# 任意字段名；`\b` 保证不会命中 `rewriteX` 这种更长的标识符。
+_WHOLE_CARD_EN_REWRITE_VERB = r"(?:rewrite|revise|regenerate|redo|refresh)\b"
 _WHOLE_CARD_BARE_ADVERB = (
     r"(?:一并|一併|一起|统统|統統|通通|全都|彻底|徹底|好好|认真|認真|重新)"
 )
@@ -827,6 +832,7 @@ _WHOLE_CARD_BARE_ADVERB = (
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     r"(?=\s*(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
+    + "|" + _WHOLE_CARD_EN_REWRITE_VERB
     + r"|的\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r")|"
     + _WHOLE_CARD_BARE_ADVERB
@@ -834,7 +840,8 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
-    r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT + r"|"
+    r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
+    + "|" + _WHOLE_CARD_EN_REWRITE_VERB + r"|"
     + _WHOLE_CARD_BARE_ADVERB
     + r"\s*(?:重|改|梳|完)"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
