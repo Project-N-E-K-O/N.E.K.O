@@ -234,7 +234,17 @@ _ZH_A_NOT_A_QUESTION_TAIL = (
 #   帮我停止播放《好不好》      → 「《」没闭合就到标记 → 不开火 → 是命令
 #   我想停止播放《晴天》吗       → 「《晴天》」整段闭合 → 开火 → 是提问
 #   我想停止播放是否会影响《原神》 → 标记之前没有引号   → 开火 → 是提问
-# ⚠️ 两条分支按首字符互斥（一条排除开引号、一条要求开引号），不会回溯爆炸。
+#
+# ⚠️⚠️ 引用那一支必须**逐对配平、且体内不含自己的定界符**，两点缺一不可：
+#   · 上一版体内写 `[^。！？!?]*?`（连定界符一起吃），于是 `《》《》《》…` 能被
+#     切成指数多种分段。实测 23 对耗时 542ms、每加一对翻倍，而入口只卡 160 字
+#     ——70 对照样进得来。这条判据跑在**用户可控文本**上，等于一条短输入就能
+#     占死一个请求 worker（Codex P1，我引入的）。体内排除自己那对定界符之后，
+#     从任一开引号起只有唯一一种匹配方式，分支又按首字符互斥，整体线性。
+#   · 上一版用的是「全局闭合符集合」，于是 `《Don’t好不好》` 里的 `’` 被当成
+#     把 `《` 闭上了，`好不好` 又变回「没被引号保护的疑问词」；嵌套引用
+#     `《“晴天”好不好》` 同理（Codex P2）。现在只有 `》` 能闭 `《`。
+# ⚠️ 这几个定界符都不是字符类元字符（不含 ] \ ^ -），可以直接进 [...]。
 # ⚠️ ASCII 单引号**不算开引号**。`Guns N' Roses` / `Rock'n'Roll` 里它是撇号，
 # 一律当没闭合的开引号会把守卫关掉：`我想停止播放Guns N' Roses是否合适` base 是
 # False，却被判成停止命令（Codex P2，又是危险方向）。西文名字里的撇号比「用直
@@ -247,9 +257,13 @@ _ZH_QUOTE_OPENERS = "".join(
     if ch != _ZH_AMBIGUOUS_APOSTROPHE
 )
 _ZH_QUOTE_CLOSERS = "".join(dict.fromkeys(_QUOTE_PAIRS.values()))
+_ZH_PAIRED_QUOTED_SPAN = "|".join(
+    f"{opening}[^。！？!?{opening}{closing}]*{closing}"
+    for opening, closing in _QUOTE_PAIRS.items()
+    if opening != _ZH_AMBIGUOUS_APOSTROPHE
+)
 _ZH_BEFORE_QUESTION_MARKER = (
-    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]"
-    rf"|[{_ZH_QUOTE_OPENERS}][^。！？!?]*?[{_ZH_QUOTE_CLOSERS}])*"
+    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN})*"
 )
 
 # ⚠️ 礼貌前缀与点歌解析器同一套（_ZH_POLITE + _ZH_FOR_ME）。此前只允许「请/麻烦」，
@@ -361,6 +375,10 @@ _ZH_DEGREE_AFTER_DE = (
 )
 # 「V 的同时 W」的连动结构：这里的「的」既不是名物化也不是补语标记。
 _ZH_COORDINATION_AFTER_DE = r"(?:同时|同時)"
+# ⚠️ 「的」直接收尾时宾语是**省略**掉的，不是名物化：`停止正在播放的` /
+# `帮我停止正在播放的` / `停止正在播放的吧` base 全是 True（Codex P2）。
+# 语气词表跟这个文件里其它几处同一套；`的代码` 这类显式非音乐中心语照旧被挡。
+_ZH_ELLIPTICAL_AFTER_DE = r"(?:[了吧啊呀呢嘛喔哦]|\s)*(?=$|[，,。！!？?])"
 # 界面控件名。小闭集——`播放按鈕` / `播放功能` / `播放鍵` 这类复合词就这几种写法。
 #
 # ⚠️ 这张表是**前缀匹配**，而 键/功能 又都是更长名词的词头（键盘 / 功能性 /
@@ -375,7 +393,7 @@ _ZH_COORDINATION_AFTER_DE = r"(?:同时|同時)"
 _ZH_PLAYBACK_UI_NOUN = r"(?:按钮|按鈕|功能|键|鍵|控件|組件|组件)"
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
     rf"(?!的(?!{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_DEGREE_AFTER_DE}"
-    rf"|{_ZH_COORDINATION_AFTER_DE})"
+    rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE})"
     rf"|{_ZH_PLAYBACK_UI_NOUN}"
     rf"(?![^，,。！!？?]{{0,4}}?{_ZH_MUSIC_HEAD_AFTER_DE}))"
 )

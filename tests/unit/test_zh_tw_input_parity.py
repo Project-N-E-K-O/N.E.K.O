@@ -2292,3 +2292,78 @@ def test_a_straight_single_quote_no_longer_shields_a_title(marker):
 
     assert is_explicit_music_cancellation(f"帮我停止播放'{marker}'") is False
     assert is_explicit_music_cancellation(f'帮我停止播放《{marker}》') is True
+
+
+# --- Codex 第四轮：两条 P1（回溯爆炸 / 空格漏整卡覆盖）+ 两条 P2 -------------
+
+
+def test_quoted_span_matching_cannot_backtrack_exponentially():
+    """⚠️⚠️ P1：这条判据跑在**用户可控文本**上。
+
+    上一版引用那一支的体内写 `[^。！？!?]*?`（连定界符一起吃），于是
+    `《》《》《》…` 能被切成指数多种分段：实测 23 对 542ms、每加一对翻倍，
+    而入口只卡 160 字——70 对照样进得来，一条短输入就能占死一个请求 worker。
+
+    ⚠️ 断言**结构 + 耗时**两样：只测耗时的话，哪天体内又被放开、而 CI 机器
+    恰好快一点，这条就悄悄过了。
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    from main_logic import music_requests as mr
+
+    # 结构：每个引用分支的体内都必须排除掉自己那对定界符。
+    for opening, closing in mr._QUOTE_PAIRS.items():
+        if opening == mr._ZH_AMBIGUOUS_APOSTROPHE:
+            continue
+        assert f"{opening}[^。！？!?{opening}{closing}]*{closing}" in (
+            mr._ZH_PAIRED_QUOTED_SPAN
+        ), f"{opening}{closing} 那一支的体内没有排除自己的定界符"
+
+    # 耗时：入口卡 160 字，这里直接顶到上限。线性实现是微秒级。
+    worst = "我想停止播放" + "《》" * 70 + "X"
+    assert len(worst) <= 160
+    start = time.perf_counter()
+    mr.is_explicit_music_cancellation(worst)
+    assert time.perf_counter() - start < 1.0, "引用匹配又开始回溯了"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # `’` 是 `‘` 的闭合符，不该被当成把 `《` 闭上了。
+        "《Don’t好不好》",
+        # 嵌套引用：`”` 不该提前闭掉外层的 `《`。
+        "《“晴天”好不好》",
+        "「Don’t是不是」",
+    ],
+)
+def test_only_the_matching_closer_ends_a_quoted_title(title):
+    """⚠️ 上一版用的是**全局闭合符集合**，`《Don’t好不好》` 里 `’` 就把 `《`
+    闭上了，`好不好` 又变回「没被引号保护的疑问标记」，整句被判成提问
+    （Codex P2）。现在逐对配平：只有 `》` 能闭 `《`。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'帮我停止播放{title}') is True
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止正在播放的", "停止正在播放的"),
+        ("帮我停止正在播放的", "幫我停止正在播放的"),
+        ("停止正在播放的吧", "停止正在播放的吧"),
+        ("关掉正在播放的了", "關掉正在播放的了"),
+    ],
+)
+def test_an_elliptical_object_after_de_is_still_a_command(simplified, traditional):
+    """⚠️ 「的」直接收尾时宾语是**省略**掉的，不是名物化（base 全是 True）。
+
+    ⚠️ 配对反向断言：显式的非音乐中心语仍然要挡住，否则这个逃生口等于把
+    整条守卫作废。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False

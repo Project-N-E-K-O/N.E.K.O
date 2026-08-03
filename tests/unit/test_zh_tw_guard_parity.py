@@ -958,3 +958,26 @@ def test_de_between_a_quantifier_and_a_field_name_is_still_blocked(quantifier, f
 
     text = f'把整个卡的{quantifier}的{field}重写'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("field", ["名字", "昵称", "暱稱", "性格"])
+@pytest.mark.parametrize("separator", [" ", "\u3000", "\t", "  "])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+def test_a_separator_does_not_turn_a_field_edit_into_a_full_rewrite(
+    quantifier, separator, field
+):
+    """⚠️⚠️ P1：空白不能算「限定词自己当中心语」的合法收尾。
+
+    上一版把收尾写成 `[^一-鿿]`，空格也在里面，于是 `把整个卡的全部 名字重写`
+    被判成整卡重写——同一句话不带空格时是正确的单字段编辑，加个空格就走进
+    `_complete_full_rewrite_actions` 把其余字段全覆盖并 autosave（Codex P1）。
+
+    ⚠️ 配对正向断言：空白后面确实是合法收尾时，仍然是整卡重写——否则把空白
+    整个禁掉也能让这条变绿。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    blocked = f'把整个卡的{quantifier}{separator}{field}重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+    allowed = f'把整个卡的{quantifier}{separator}重写一遍'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
