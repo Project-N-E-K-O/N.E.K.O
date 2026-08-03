@@ -690,3 +690,76 @@ def test_plural_demonstratives_reach_the_stop_target(simplified, traditional):
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+def test_the_clause_splitter_and_the_negation_window_share_one_table():
+    """⚠️⚠️ 切分器的标点表和否定守卫里那个「不许跨过」的字符类必须同源。
+
+    只改一处的话，「否定只在自己子句内生效」这句话在两个地方就是两个意思。
+    这个文件已经因为「两条判据的前缀漂开」踩过两次坑。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    split_chars = set(
+        router._CHAT_CLAUSE_SPLIT_RE.pattern.removeprefix('[').removesuffix(']+')
+    )
+    window = router._CHAT_NEGATED_REWRITE_RE.pattern
+    guard_chars = set(
+        window[window.index('[^') + 2 : window.index(']*?')]
+    )
+    assert split_chars == guard_chars, (split_chars, guard_chars)
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("请勿把我今天下午花了好几个小时慢慢调整出来的整个角色卡全部重写",
+         "請勿把我今天下午花了好幾個小時慢慢調整出來的整個角色卡全部重寫"),
+        ("不要把我刚刚辛苦写了半天又反复改过好几遍的整张卡的所有内容重写一遍",
+         "不要把我剛剛辛苦寫了半天又反覆改過好幾遍的整張卡的所有內容重寫一遍"),
+    ],
+)
+def test_a_long_object_phrase_does_not_escape_the_negation(simplified, traditional):
+    """⚠️ 固定长度窗口这条路没有终点：{0,4}→{0,12}→{0,24} 各被绕过一次。
+
+    宾语短语可以任意长，真正的上界是**子句**。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("名字不用重写，但请重写整个卡", "名字不用重寫，但請重寫整個卡"),
+        ("简介先不要改写，把整张卡的所有内容重写一遍",
+         "簡介先不要改寫，把整張卡的所有內容重寫一遍"),
+    ],
+)
+def test_a_negation_does_not_leak_into_another_clause(simplified, traditional):
+    """⚠️ 反方向：否定守卫原本是**全局早退**，一个子句里的「不用」把另一个
+    子句里明确的整卡请求也一起否掉——这是触发不足那一侧的破坏。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("先展示整个卡，然后重写名字", "先展示整個卡，然後重寫名字"),
+        ("看一下整张卡，再重写简介", "看一下整張卡，再重寫簡介"),
+    ],
+)
+def test_the_target_and_the_verb_must_share_a_clause(simplified, traditional):
+    """⚠️ 「整个卡」是「展示」的宾语，「重写」管的只是名字。两个信号分属不同
+    子句却被组合起来，就会把整张卡覆盖掉。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is False, text

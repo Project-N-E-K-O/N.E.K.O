@@ -878,7 +878,14 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
     # 之间隔了八个字，{0,4} 够不着。
     # 这里放宽是**安全方向**：否定守卫误触发 = 整卡补全不跑（少补几个字段），
     # 漏触发 = 用户说「别改」却把整张卡改了并 autosave。两者代价不对称。
-    r"[^。，、！？,.!?;；]{0,24}?"
+    # ⚠️⚠️ 这里**不能**是固定长度窗口。{0,4} 盖不住宾语短语，放宽到 {0,12}
+    # 又被更长的句子绕过，再放宽到 {0,24} 只是把门槛往后推一格——宾语短语
+    # 可以任意长，这一路没有终点（reviewer 连着报了三次）。
+    #
+    # 真正的上界是**子句**：否定词管到句读为止。所以窗口改成「不跨句读的
+    # 任意长度」，也就是下面 _CHAT_CLAUSE_SPLIT_RE 那张标点表的补集。
+    # ⚠️ 两处必须同源，否则「否定只在自己子句内生效」在两个地方含义不一样。
+    r"[^。，、！？,.!?;；]*?"
     # ⚠️ 动词侧也要收英文。整卡目标和重写动词那两张表本来就有英文分支，
     # 只补否定词而不补动词，`don't rewrite the whole card` 照样绕过去。
     r"(?:重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善"
@@ -886,16 +893,47 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
 )
 
 
+# 子句边界。和 _CHAT_NEGATED_REWRITE_RE 里那个「不许跨过」的字符类是同一张表。
+_CHAT_CLAUSE_SPLIT_RE = re.compile(r"[。，、！？,.!?;；]+")
+
+
+def _chat_clauses(text: str) -> list[str]:
+    """按句读把整段文本切成子句。"""  # noqa: DOCSTRING_CJK
+    return [c for c in _CHAT_CLAUSE_SPLIT_RE.split(text or "") if c.strip()]
+
+
 def _chat_text_requests_full_rewrite(text: str) -> bool:
+    """整卡重写判据——三条谓词必须落在**同一个子句**里。
+
+    ⚠️ 上一版对整段文本分别 search 整卡目标 / 重写动词 / 否定守卫再组合。
+    那个形状同时产出三条互相矛盾的缺陷，根因是同一个——判据作用在整段文本上：
+
+    * 否定守卫靠固定长度窗口连接否定词和重写动词，够不着长宾语。窗口从
+      {0,4} 放宽到 {0,12} 再到 {0,24}，每次都被更长的句子绕过；
+    * 否定守卫是**全局早退**，一个子句里的「不用」把另一个子句里明确的整卡
+      请求也一起否掉（`名字不用重寫，但請重寫整個卡`）；
+    * 整卡目标和重写动词可以分属**不同子句**却被组合起来
+      （`先展示整个卡，然后重写名字` 里「整个卡」是「展示」的宾语）。
+
+    按子句求值一次解掉三条：切分让跨子句的信号不再相遇，否定只在自己所在的
+    子句内生效，而「同子句」这个天然上界取代了那个永远不够长的固定窗口。
+
+    ⚠️ 代价方向仍然是**宁可触发不足**：过度触发会让
+    `_complete_full_rewrite_actions` 给每个缺失字段合成内容并 autosave，覆盖
+    用户没要求改的数据；触发不足只是少补几个字段。所以判据是「**任一**子句
+    同时满足三条」，而不是把散落各处的信号在全段上拼起来。
+    """  # noqa: DOCSTRING_CJK
     if not text:
         return False
-    if _CHAT_NEGATED_REWRITE_RE.search(text or ""):
-        return False
-    return bool(
-        _CHAT_FULL_REWRITE_RE.search(text)
-        and _CHAT_REWRITE_VERB_RE.search(text)
-    )
-
+    for clause in _chat_clauses(text):
+        if _CHAT_NEGATED_REWRITE_RE.search(clause):
+            continue
+        if (
+            _CHAT_FULL_REWRITE_RE.search(clause)
+            and _CHAT_REWRITE_VERB_RE.search(clause)
+        ):
+            return True
+    return False
 
 def _chat_text_requests_advice_only(text: str) -> bool:
     if not text:
