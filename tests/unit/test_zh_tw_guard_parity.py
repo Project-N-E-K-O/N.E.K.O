@@ -237,6 +237,38 @@ def test_an_inverted_quantifier_is_still_a_full_rewrite(target):
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
+# ⚠️ 限定词闭集要按**语法分布**再切一刀：全部/所有/每个/一切 是全称限定词，
+# 可以后置浮动；整体/整體 是副词、内容/內容 是普通名词，只有紧贴「的」当中心语
+# 时才代表整卡。放进 12 字窗口的话「…的名字整体重写」会触发整卡补全，把用户
+# 只想改一个字段的卡整张覆盖掉。
+FIELD_MODIFIERS = ["整体", "整體", "内容", "內容"]
+
+
+@pytest.mark.parametrize("modifier", FIELD_MODIFIERS)
+@pytest.mark.parametrize("field", ["名字", "简介", "性格"])
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_an_adverb_after_a_single_field_is_not_a_full_rewrite(target, field, modifier):
+    """副词/普通名词不能靠 12 字窗口远距离触发整卡补全。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{target}的{field}{modifier}重写一下'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("modifier", FIELD_MODIFIERS)
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_the_same_word_next_to_de_is_still_a_full_rewrite(target, modifier):
+    """反向：同一个词紧贴「的」当中心语时仍是整卡重写。
+
+    ⚠️ 没有这条反向用例，把 整体/内容 从闭集里整个删掉也是绿的——那会把
+    「重寫整個卡片的內容」打回上一轮刚修好的坏行为。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写{target}的{modifier}'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
 @pytest.mark.parametrize(
     "field", ["名字", "简介", "性格", "头像", "問候語"]
 )

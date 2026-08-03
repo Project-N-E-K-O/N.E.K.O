@@ -1076,3 +1076,156 @@ def test_a_bare_music_compound_is_still_a_music_refusal(simplified, traditional)
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+# ---------------------------------------------------------------------------
+# 第十二轮
+# ---------------------------------------------------------------------------
+
+
+def _playback_compound_product():
+    """从常量拆出 playlist/queue 的全部写法，做笛卡尔积。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    inner = mr._ZH_PLAYBACK_COMPOUND_NOUN.removeprefix('(?:播放(?:').removesuffix('))')
+    nouns = ['播放' + w for w in inner.split('|')]
+    return [
+        (verb, noun, sep, tail)
+        for verb in ('取消', '停止', '关掉', '關掉', '暫停', '關閉')
+        for noun in nouns
+        for sep in ('的', '')
+        for tail in ('', '了', '吧')
+    ]
+
+
+PLAYBACK_COMPOUND_PRODUCT = _playback_compound_product()
+
+
+def test_the_playback_compound_product_is_not_empty():
+    assert len(PLAYBACK_COMPOUND_PRODUCT) > 100
+
+
+@pytest.mark.parametrize(
+    ("verb", "noun", "sep", "tail"), PLAYBACK_COMPOUND_PRODUCT
+)
+def test_a_playback_compound_noun_is_not_a_playback_verb(verb, noun, sep, tail):
+    """⚠️ 「播放清單 / 播放列表」是**名词**，里面的「播放」不是动词。
+
+    停止动词后面直接跟它时，`取消播放` 这个前缀先吃掉「播放」二字，把真正的
+    中心语「收藏」整段忽略——一次「取消歌单收藏」于是把用户正在放的歌停了。
+    繁体侧特别容易踩：台湾就叫「播放清單」。
+
+    ⚠️ 前提守卫：先断言裸形式确实取消，否则「加了收藏就不取消」可能真空通过。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    bare = f'{verb}{noun}{tail}'
+    assert is_explicit_music_cancellation(bare) is True, f'{bare} 前提不成立'
+    assert is_explicit_music_cancellation(f'{verb}{noun}{sep}收藏{tail}') is False
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("取消播放列表的收藏", "取消播放清單的收藏"),
+        ("停止播放列表的收藏", "停止播放清單的收藏"),
+        ("关掉播放列表收藏", "關閉播放清單收藏"),
+        ("取消播放清单的收藏", "取消播放清單的收藏"),
+    ],
+)
+def test_both_scripts_spell_the_playlist_compound(simplified, traditional):
+    """⚠️ 词表是从常量拆出来的，缩表会让上面那条笛卡尔积跟着缩水而假绿。
+    简/繁/混三种写法另外钉死。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["停止播放我的收藏", "停止播放收藏的歌", "停止播放清單裡的紅心歌",
+     "停止播放那首紅心裡的歌", "停止播放紅心歌單", "暫停播放我喜歡的"],
+)
+def test_the_compound_guard_does_not_swallow_real_stops(text):
+    """守卫只在两个闭集同时出现时开火，不能把真停止一起吞掉。
+
+    ⚠️ 「停止播放我的收藏」是关键样本：它也含「收藏」，但「播放」在这里是动词。
+    一刀切拒绝「…的收藏」后缀的方案就是栽在这条上。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+ZH_LOCALIZERS = ["中", "裡", "里", "裏", "內", "上", "裡面", "當中", "之中", "裏頭"]
+
+
+@pytest.mark.parametrize("localizer", ZH_LOCALIZERS)
+@pytest.mark.parametrize(
+    ("target", "noun"), [("影片", "歌"), ("電影", "音樂"), ("遊戲", "曲目")]
+)
+def test_a_localizer_still_makes_it_a_music_refusal(target, noun, localizer):
+    """⚠️ 「不要播放影片中的歌」拒的是**音乐**（来源是视频），必须仍能取消。
+
+    枚举的是**方位词**不是「中的/裡的」这类连接短语——短语是开集
+    （裡面的/當中的/之中的/內的…列不完），方位词是汉语的封闭词类。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'不要播放{target}{localizer}的{noun}'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["不要播放唱歌的視頻", "不要播放唱歌的视频", "不要播放有歌曲的遊戲",
+     "不要播放遊戲了我要聽歌", "不要播放這個影片裡唱歌的人", "不要播放這個影片"],
+)
+def test_a_music_noun_elsewhere_does_not_revive_the_video_target(text):
+    """⚠️ 反向：不能退成「目标词之后整片搜音乐名词」。
+
+    那样的话后半句出现的「歌」会把视频目标撤销，把一次「别放视频」变成
+    取消音乐。方位词必须**连续**，中间夹一个非方位词立刻失配。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "verb", ["讨论", "討論", "研究", "推荐", "推薦", "分析", "介绍", "介紹"]
+)
+@pytest.mark.parametrize("noun", ["音乐", "音樂"])
+def test_a_negator_governing_another_verb_is_not_a_playback_stop(verb, noun):
+    """⚠️ 名词尾（音乐/音樂/歌）不像动词尾那样自带播放义。
+
+    否定词和名词之间原本是 `.{0,6}` 的开窗口，里面塞进任何一个别的动词，
+    否定词就改嫁给它了——`停止討論音樂` 于是把用户正在放的歌停了。
+    「能改嫁的动词」是开集，所以枚举**补集**（合法的修饰成分）。
+
+    ⚠️ 简体侧在基线上就是 True，这一条顺带把它修了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for negator in ('停止', '不要', '取消'):
+        text = f'{negator}{verb}{noun}'
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["不要播放音樂", "不要播放音乐", "别放歌了", "別放歌了", "停止播放",
+     "不要給我放歌", "別幫我播放音樂", "停止紅心歌單的音樂", "取消我喜歡的歌",
+     "關掉背景音樂", "暫停一下音樂", "停止音樂", "關掉音樂", "不要音樂了"],
+)
+def test_the_modifier_closed_set_still_lets_real_refusals_through(text):
+    """⚠️ 收紧名词尾那一支时最容易漏掉的是**来源名和「收藏」**。
+
+    漏了它们，`取消我喜歡的歌` / `停止紅心歌單的音樂` 会当场翻 False——而且
+    `取消收藏這首歌` 会在**前提**上就错（进不了否定分支），是不好查的那种失败。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is True, text
