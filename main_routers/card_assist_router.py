@@ -817,7 +817,8 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
 # 任意字段名；`\b` 保证不会命中 `rewriteX` 这种更长的标识符。
 _WHOLE_CARD_EN_REWRITE_VERB = r"(?:rewrite|revise|regenerate|redo|refresh)\b"
 _WHOLE_CARD_BARE_ADVERB = (
-    r"(?:一并|一併|一起|统统|統統|通通|全都|彻底|徹底|好好|认真|認真|重新)"
+    r"(?:一并|一併|一起|统统|統統|通通|全都|彻底|徹底|好好|认真|認真|重新"
+    r"|全面|一律|统一|統一|逐一|逐个|逐個|挨个|挨個|再)"
 )
 
 # 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
@@ -847,7 +848,10 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     # 进了整卡补全通路（CodeRabbit Major）。这是「白名单词是更长词的前缀」在本
     # PR 里的**第五个入口**——前四个是 字段名 / 字段清单 / 的名字 / 内容名。
     # 所以：吃掉一串范围成分（原子化，避免重叠解析），再要求那个闭集收尾。
-    + r"|的\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
+    # ⚠️ 「的」和范围成分之间还能夹一个**全称限定词**：`把所有字段的所有内容重写`
+    # base 是 True（Codex P2 第二十六轮）。限定词表就是上面那张闭集，直接复用。
+    + r"|的\s*(?:" + "|".join(_WHOLE_CARD_QUANTIFIERS) + r")?"
+    + r"\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
     + _WHOLE_CARD_BARE_ADVERB

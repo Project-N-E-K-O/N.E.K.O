@@ -1395,3 +1395,34 @@ def test_the_de_branch_recurses_to_a_closed_tail(phrasing, expected):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
+
+
+@pytest.mark.parametrize(
+    "adverb",
+    ["全面", "一律", "统一", "統一", "逐一", "逐个", "逐個", "挨个", "再"],
+)
+@pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有字段"])
+def test_more_whole_card_rewrite_adverbs(scope, adverb):
+    """范围级副词表补齐（base 全是 True，Codex P2 第二十六轮）。
+
+    ⚠️ 配对反向断言：副词位置换成字段名仍然被挡——副词后面依旧要求重写动词。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'{scope}{adverb}重写') is True
+    assert router._chat_text_requests_full_rewrite(f'{scope}名字重写') is False
+
+
+@pytest.mark.parametrize("quantifier", ["所有", "全部", "每一个", "各项"])
+@pytest.mark.parametrize("noun", ["内容", "內容", "设定", "字段"])
+def test_a_quantifier_may_sit_between_de_and_the_scope_noun(quantifier, noun):
+    """⚠️ 「的」和范围成分之间还能夹一个**全称限定词**（base 是 True）。
+
+    ⚠️ 配对反向断言：夹了限定词也不能把字段名放进来。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把所有字段的{quantifier}{noun}重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把所有字段的{quantifier}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked

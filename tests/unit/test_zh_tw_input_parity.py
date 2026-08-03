@@ -3211,3 +3211,21 @@ def test_the_lookbehind_mount_point_survives_raw_whitespace(space):
     assert mr._ZH_NEGATIVE_MUSIC.search(raw), raw
     # 反向：不带进行体时，同样的原始文本仍然被守卫挡住。
     assert not mr._ZH_NEGATIVE_MUSIC.search(f'我要停止播放{space}的代码')
+
+
+@pytest.mark.parametrize("marker", ["谁", "誰", "哪个", "哪個", "哪些", "多少"])
+def test_indefinite_capable_wh_markers_are_still_treated_as_questions(marker):
+    """⚠️ 这几个 wh 词有**非疑问用法**（谁都行 / 哪个都可以 / 多少有点）。
+
+    严格按第二十三轮我自己划的边界（「只收只能用于提问的」）本该不收。但代价
+    不对称：不收 = `我想停止播放谁唱的《你好吗？》` 执行取消（危险方向）；
+    收 = `帮我停止播放谁的歌都行` 判成提问、少停一次歌（轻）。取轻的那一侧，
+    跟这个文件里其它十几处取舍一致（Codex P2 第二十六轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}唱的《你好吗？》'
+    ) is False
+    for command in ('帮我停止播放红心歌单', '停止播放', '不要放晴天'):
+        assert is_explicit_music_cancellation(command) is True, command
