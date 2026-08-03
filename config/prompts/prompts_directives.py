@@ -127,7 +127,10 @@ _TRIM_TRAIL_TOKENS_BY_LOCALE: dict[str, Tuple[str, ...]] = {
 # 混合语言是这个模块明确支持的路径（"stop talking about 前女友了" / "stop saying
 # 仕事ね"），term 整段可能是中文也可能是日文，不剥就把助词原样存进去（codex P2）。
 # 分表要隔离的是 zh/ja/ko **互相**污染——它们命中时用自己那张表，不受这里影响。
-_TRIM_TRAIL_FALLBACK_LOCALES = ("zh", "ja")
+# ⚠️ 三家都要收，不是只有 zh + ja：``stop saying 전남친은`` 在 parent 上是
+# ``전남친``，漏掉 ko 就成了回归。谚文与汉字/假名不共码位，本来就不存在当初促使
+# 分表的那种跨语言字形碰撞（codex P2）。
+_TRIM_TRAIL_FALLBACK_LOCALES = ("zh", "ja", "ko")
 
 # 与 locale 无关的尾巴：ASCII 词，字形上不可能和别的语言撞。中英混说很常见
 # （"别提 my ex please"），所以这些对每个 locale 都剥。
@@ -307,7 +310,12 @@ def _zh_verb_alternation(*, with_address: bool) -> str:
     if with_address:
         parts += list(_ZH_ADDRESS_VERBS)
     parts += list(_ZH_SAY_VERBS)
-    return "(?:" + "|".join(parts) + ")"
+    # ⚠️ 原子组：复合动词排在单字前缀之前只解决了"谁先匹配"，解决不了**回溯**。
+    # ``别提起了。`` 里 ``提起`` 先中，但后面只剩 ``了`` 凑不够两个单位的宾语，
+    # 引擎就退回 ``提``、把 ``起了`` 当成话题存下来——而这个模块的 docstring 明确
+    # 说不抽无宾语的指令（codex P2）。原子化之后动词一旦选定就不再回头，整条匹配
+    # 直接失败，正是想要的结果。
+    return "(?>" + "|".join(parts) + ")"
 
 
 _ZH_VERBS_WITH_ADDRESS = _zh_verb_alternation(with_address=True)
@@ -347,7 +355,6 @@ _ZH_BRACKET_PAIRS = (
     # ⚠️ 不收单引号 ``'``：英文里它是词内撇号（don't / it's），配对没有意义。
     ('"', '"'), ("(", ")"),
 )
-_ZH_BRACKET_OPENERS = "".join(lo for lo, _hi in _ZH_BRACKET_PAIRS)
 _ZH_BRACKET_RUN = "(?:" + "|".join(
     f"{re.escape(lo)}[^{re.escape(hi)}\\r\\n]*{re.escape(hi)}"
     for lo, hi in _ZH_BRACKET_PAIRS
@@ -748,17 +755,35 @@ def _drop_filler_suffixed_terms(
         return hits
     suspect_set = set(suspects)
 
+    # ⚠️ 光筛 suspects 不够：话题本身就以填充词结尾时（``成就别提了。`` 重复几千遍）
+    # 每条命中都是 suspect，逐条再扫全表又变回 O(n²)——4000 条要 1.25 秒，而这条
+    # 路径是同步跑在用户消息上的（codex P2）。
+    #
+    # 命中区间的长度有上界（模板本身有 {,40} 之类的限制），所以按起点分桶之后，
+    # 可能与某条命中重叠的邻居只会落在它自己和左右几个桶里，查找变成 O(1)。
+    _BUCKET = 128
+    _span_buckets: dict[int, List[int]] = {}
+    for other_index, (start, end) in enumerate(spans):
+        for bucket in range(start // _BUCKET, end // _BUCKET + 1):
+            _span_buckets.setdefault(bucket, []).append(other_index)
+
     def _overlaps(a: Tuple[int, int], b: Tuple[int, int]) -> bool:
         return a[0] < b[1] and b[0] < a[1]
 
     def _is_redundant(index: int) -> bool:
         _locale, kind, term = hits[index]
+        start, end = spans[index]
+        neighbours = {
+            other_index
+            for bucket in range(start // _BUCKET, end // _BUCKET + 1)
+            for other_index in _span_buckets.get(bucket, ())
+        }
         # 只跟"命中区间和自己重叠"的同类 term 比 —— 那才是同一条指令的两种切法。
         rivals = {
-            other_term
-            for other_index, (_l, other_kind, other_term) in enumerate(hits)
+            hits[other_index][2]
+            for other_index in neighbours
             if other_index != index
-            and other_kind == kind
+            and hits[other_index][1] == kind
             and _overlaps(spans[index], spans[other_index])
         }
         if not rivals:

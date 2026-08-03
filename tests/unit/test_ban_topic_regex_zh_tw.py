@@ -838,7 +838,7 @@ def test_all_four_zh_templates_share_one_topic_char_class():
         ('"', '"'), ("(", ")"),
     )
     # ⚠️ 单引号刻意不收：英文里它是词内撇号（don't / it's），配对没有意义。
-    assert "'" not in D._ZH_BRACKET_OPENERS
+    assert "'" not in {lo for lo, _hi in D._ZH_BRACKET_PAIRS}
 
 
 def test_every_bracket_delimiter_is_also_trimmed():
@@ -967,6 +967,10 @@ def test_ascii_tails_stay_global(locale):
         ("não fale de 加班了", "pt", "加班"),
         # ⚠️ 混说的那一段也可能是**日文**，所以回落是 zh + ja 的并集，不是只有 zh
         ("stop saying 仕事ね", "en", "仕事"),
+        # ⚠️ 韩语也要在回落里：谚文与汉字/假名不共码位，本来就没有当初促使分表的
+        # 那种跨语言字形碰撞（codex P2）。
+        ("stop saying 전남친은", "en", "전남친"),
+        ("don't mention 직장에", "en", "직장"),
         ("stop talking about あの人よ", "en", "あの人"),
         ("don't mention my ex 啊", "en", "my ex"),
     ],
@@ -998,6 +1002,24 @@ COMPOUND_VERB_PAIRS = [
 def test_compound_verb_is_not_swallowed_by_its_prefix(tw, cn):
     for text in (tw, cn):
         assert _zh_terms(text) == {"工作"}, f"{text!r} 的复合动词被单字前缀吃掉了"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["别提起了。", "别提及了。", "别说起了。", "別提起了。", "別說到了。", "别谈及了。"],
+)
+def test_an_objectless_directive_does_not_invent_an_object(text):
+    """⚠️ 复合动词排在单字前缀之前只解决"谁先匹配"，解决不了**回溯**：``提起`` 先中，
+    后面只剩 ``了`` 凑不够宾语下限，引擎就退回 ``提``、把 ``起了`` 当话题存下来。
+    而本模块 docstring 明确说不抽无宾语的指令（codex P2）。动词组原子化后，动词一旦
+    选定就不再回头，整条匹配直接失败——正是想要的结果。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), f"{text!r} 被造出了话题：{_zh_terms(text)}"
+
+
+def test_the_verb_alternation_is_atomic():
+    assert D._ZH_VERBS_WITH_ADDRESS.startswith("(?>")
+    assert D._ZH_VERBS_PLAIN.startswith("(?>")
 
 
 # ── 5e. 的 + 指示词 的自然说法 ───────────────────────────────
@@ -1136,6 +1158,17 @@ def test_filler_dedup_stays_linear_on_many_directives():
     assert "index not in suspect_set" in source, (
         "逐条跳过没了：有一条填充词 term 时，全部命中都会做 O(n) 的重叠比对"
     )
+    # ⚠️ 光筛 suspects 不够：话题本身就以填充词结尾时（`成就别提了。` 重复几千遍）
+    # 每条都是 suspect，逐条再扫全表又变回 O(n²)——4000 条曾要 1.25 秒。按起点分桶
+    # 之后只看邻桶（命中区间长度有上界），这里用时限钉住那个量级差（codex P2）。
+    import time
+
+    started = time.perf_counter()
+    extract_directives("成就别提了。" * 4000)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"4000 条以填充词结尾的话题跑了 {elapsed:.2f}s，桶索引失效了"
+    assert "_span_buckets" in inspect.getsource(D._drop_filler_suffixed_terms)
+
     hits = [("zh", "ban_topic", f"话题{i}") for i in range(50)]
     spans = [(i * 10, i * 10 + 5) for i in range(50)]
     assert not any(
