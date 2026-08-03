@@ -206,8 +206,24 @@ _ZH_CHANGED_MIND_PREFACE = r"(?:(?:算了|还是算了|還是算了)[，,\s]*)?"
 # ⚠️ 礼貌前缀与点歌解析器同一套（_ZH_POLITE + _ZH_FOR_ME）。此前只允许「请/麻烦」，
 # 于是 `请帮我停止播放红心歌单` 压根进不了否定分支——两侧对称的既有缺口，不是繁体
 # 补齐引入的。只放宽前缀、仍然要求出现否定/停止动词，所以不会把肯定句吃进来。
+# ⚠️ 疑问句不是命令。本 PR 把 _ZH_NEGATIVE_MUSIC / _ZH_DIRECT_MUSIC_STOP 的前缀
+# 换成了共享的 _ZH_REQ_PREFIX，顺带让它们认得两种以前不认的开头：收件人短语
+# （帮我/给我）和意图词（我想/我要）。认得开头之后，`請幫我停止播放嗎？`
+# `我要停止播放嗎？` 这类「用户在自问要不要停」就被判成了命令（base 简繁都是
+# False，Codex P2）。
+#
+# ⚠️ 守卫**必须要求那两种前缀真的出现**，不能改成「凡是以疑问语气词结尾就不算
+# 命令」。`停止播放吗` / `请停止播放吗` / `我停止播放吗` 在基线上都是 True，
+# 一刀切会把简体用户既有的行为改掉——那是另一个方向的回归。
+#
+# ⚠️⚠️ 跟前缀一样，这道守卫必须**逐字同时**出现在 _ZH_NEGATIVE_MUSIC 和
+# _ZH_DIRECT_MUSIC_STOP 上。只加一边会让整句静默换类（见下面那条 lockstep 注释）。
+_ZH_PREFIXED_QUESTION_GUARD = (
+    rf"(?!{_ZH_POLITE}(?:(?:给我|給我|帮我|幫我)|(?:我)?(?:想|要))"
+    r"[^。！？!?]*[吗嗎呢]\s*[？?]?\s*$)"
+)
 _ZH_NEGATIVE_MUSIC = re.compile(
-    rf"^{_ZH_CHANGED_MIND_PREFACE}{_ZH_REQ_PREFIX}"
+    rf"^{_ZH_PREFIXED_QUESTION_GUARD}{_ZH_CHANGED_MIND_PREFACE}{_ZH_REQ_PREFIX}"
     # ⚠️⚠️ 单字「别 / 別」走**单独一条、要求紧邻播放动词**的分支，不跟多字否定词
     # 共用那个 `.{0,6}` 的宽松窗口。
     #
@@ -707,8 +723,25 @@ def _excluded_personalization_source(clause: str) -> str:
 # `取消收藏这首歌` 里的「取消」管的是「收藏」这个来源操作，不是播放，却会让
 # _is_source_exclusion_preference 判否、把一次「取消收藏」变成停止播放
 # （Codex P2）。简体侧在基线上是 False，本来就不该取消。
+# 停止对象短语：来源名 / 音乐名词，可以用「的」串起来（紅心歌單的音樂）。
+_ZH_STOP_SOURCE_NOUN = r"(?:红心|紅心|日推|每日推荐|每日推薦|我喜欢的|我喜歡的)"
+_ZH_STOP_MUSIC_NOUN = r"(?:歌单|歌單|歌曲|音乐|音樂|歌|曲)"
+# ⚠️ 收尾必须是**子句边界**，而且要先把整个短语吃完再判。
+#
+# 上一版在来源名后面挂了个单点后视（「后面得是句末/语气词/标点/音乐名词」）。
+# 那样写挡得住 `取消這個歌單的收藏`，却挡不住 `取消紅心歌單的收藏`：`紅心` 先
+# 匹配上，紧跟的 `歌單` 正好满足后视，尾巴 `的收藏` 照样被吞。同族还有
+# `取消我喜歡的歌的收藏` / `取消日推歌單的收藏` / `取消紅心音樂的收藏`。
+#
+# 「在某一个点上做后视」和「把整个短语消费完再要求边界」是两件事——短语可以
+# 有任意多节，逐点判永远漏掉最后一节后面的东西。
+_ZH_STOP_TARGET_PHRASE = (
+    rf"(?:{_ZH_STOP_SOURCE_NOUN}|{_ZH_STOP_MUSIC_NOUN})"
+    rf"(?:的?(?:{_ZH_STOP_SOURCE_NOUN}|{_ZH_STOP_MUSIC_NOUN}))*"
+    r"(?:了|吧|啊|呀|呢|嘛|喔|哦)*\s*(?=$|[，,。！!？?])"
+)
 _ZH_DIRECT_MUSIC_STOP = re.compile(
-    rf"^{_ZH_CHANGED_MIND_PREFACE}{_ZH_REQ_PREFIX}"
+    rf"^{_ZH_PREFIXED_QUESTION_GUARD}{_ZH_CHANGED_MIND_PREFACE}{_ZH_REQ_PREFIX}"
     r"(?:把)?(?:停止|停掉|暂停|暫停|关掉|關掉|关闭|關閉|取消)"
     # 后面接**播放动词**，或直接接一个**来源名词**（`停止紅心歌單`）。
     # ⚠️ 来源名词这一支刻意**不含「收藏」**：它在「取消收藏这首歌」里是动词
@@ -718,7 +751,13 @@ _ZH_DIRECT_MUSIC_STOP = re.compile(
     # 来源名前面可以有所有格「我的」：`停止我的紅心歌單`（Codex P2）。
     # 来源名前可以有限定词。闭集，逐个列出（Codex / 对抗扫描）。
     r"|(?:我的|你的|这个|這個|那个|那個|当前的|當前的|一下)?"
-    r"(?:红心|紅心|歌单|歌單|日推|每日推荐|每日推薦|我喜欢的|我喜歡的))"
+    # ⚠️ 来源名词必须是**完整的**停止对象。不加这个后视，`取消這個歌單的收藏`
+    # 里的「取消這個歌單」会先匹配上、把尾巴「的收藏」整个忽略，于是一次
+    # 「取消收藏」被当成停止播放（Codex P2，简繁在基线上都是 False）。
+    # 短语吃完之后必须落在子句边界上。`停止紅心歌單的音樂` 能一路吃到句末所以
+    # 取消；`取消這個歌單的收藏` 吃到 `歌單` 就卡住（`收藏` 不在闭集里），
+    # 边界判定失败，于是落回窄排除。
+    rf"{_ZH_STOP_TARGET_PHRASE})"
 )
 
 
@@ -749,10 +788,18 @@ def _has_explicit_non_music_target(clause: str) -> bool:
         )
     ):
         en_target = None
-    zh_target = _ZH_NON_MUSIC_TARGET.search(clause)
-    if zh_target and _ZH_MUSIC_NOUN_AFTER_TARGET.match(clause, zh_target.end()):
-        # 「這個影片的歌」「電影歌曲」——目标词自己构成了音乐复合，不是非音乐目标。
-        zh_target = None
+    # ⚠️ 只看第一个匹配是不够的。`不要播放電影歌曲的影片` 里先撞上的是「電影」，
+    # 它确实只是「電影歌曲」这个音乐复合词的一半——但句子后面还有一个真的
+    # 非音乐目标「影片」。上一版撞上复合词就直接丢弃、不再往后扫，于是整句
+    # 退化成取消音乐，把用户「别放视频」听成了「别放音乐」（Codex P2；简体
+    # `不要播放电影歌曲的视频` 在基线上是 False）。
+    zh_target = None
+    for candidate in _ZH_NON_MUSIC_TARGET.finditer(clause):
+        if _ZH_MUSIC_NOUN_AFTER_TARGET.match(clause, candidate.end()):
+            # 「這個影片的歌」「電影歌曲」——目标词自己构成了音乐复合词。
+            continue
+        zh_target = candidate
+        break
     return bool(zh_target or en_target)
 
 

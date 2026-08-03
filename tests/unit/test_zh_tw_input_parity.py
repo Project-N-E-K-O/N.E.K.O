@@ -711,8 +711,18 @@ def test_the_two_cancellation_patterns_share_one_preface():
     # ⚠️ 断言**完整前缀**而不只是引导语。第一版只对了引导语，结果没抓住
     # `_ZH_DIRECT_MUSIC_STOP` 比对方多一个 `(?:想|要)?`——`我想停止播放紅心歌單`
     # 因此被静默忽略（greptile P1 第二次）。守卫要覆盖到会漂的整段。
-    shared_prefix = "^" + mr._ZH_CHANGED_MIND_PREFACE + mr._ZH_REQ_PREFIX
+    # ⚠️ 共享的不止引导语和前缀，还有疑问守卫 `_ZH_PREFIXED_QUESTION_GUARD`。
+    # 它挡的是「以收件人短语/意图词开头 + 以疑问语气词结尾」这一个形状；只加在
+    # 一条规则上，另一条就会继续把 `請幫我停止播放嗎？` 当命令，整句静默换类。
+    # 每往这段共享开头加一个常量，就得往这里加一项——漏了这个测试就不再覆盖它。
+    shared_prefix = (
+        "^"
+        + mr._ZH_PREFIXED_QUESTION_GUARD
+        + mr._ZH_CHANGED_MIND_PREFACE
+        + mr._ZH_REQ_PREFIX
+    )
     assert mr._ZH_CHANGED_MIND_PREFACE, "引导语常量是空的"
+    assert mr._ZH_PREFIXED_QUESTION_GUARD, "疑问守卫常量是空的"
     assert mr._ZH_NEGATIVE_MUSIC.pattern.startswith(shared_prefix), (
         "_ZH_NEGATIVE_MUSIC 的前缀与 _ZH_DIRECT_MUSIC_STOP 漂开了"
     )
@@ -865,3 +875,204 @@ def test_the_taiwanese_spelling_of_like_is_rejected_too():
         assert parse_explicit_user_music_request(text) is None, text
     for text in ("来点摇滚", "來點搖滾"):
         assert parse_explicit_user_music_request(text) is not None, text
+
+
+# ---------------------------------------------------------------------------
+# 第十一轮：三条级联回归——全部由前几轮我自己的修复引出
+# ---------------------------------------------------------------------------
+
+
+def _alternation(pattern: str) -> list[str]:
+    """把 `(?:a|b|c)` 这种闭集常量拆回词表。
+
+    ⚠️ 用常量推导而不是手抄列表：这几个闭集这一轮已经被改过三次，手抄的清单
+    只会 pin 住抄的那一刻。哪天有人往表里加个来源名，笛卡尔积自动覆盖它。
+    """  # noqa: DOCSTRING_CJK
+    return pattern.removeprefix('(?:').removesuffix(')').split('|')
+
+
+def _stop_target_product():
+    from main_logic import music_requests as mr
+
+    verbs = ('取消', '停止', '关掉', '關掉')
+    determiners = ('', '这个', '這個', '我的')
+    nouns = _alternation(mr._ZH_STOP_SOURCE_NOUN) + _alternation(mr._ZH_STOP_MUSIC_NOUN)
+    return [
+        (verb, det, noun)
+        for verb in verbs
+        for det in determiners
+        for noun in nouns
+    ]
+
+
+STOP_TARGET_PRODUCT = _stop_target_product()
+
+
+def test_the_stop_target_product_is_not_empty():
+    """⚠️ 词表是从常量拆出来的。拆法一旦失效，下面两条笛卡尔积用例会退化成
+    空参数集、全绿在没跑上。
+    """  # noqa: DOCSTRING_CJK
+    assert len(STOP_TARGET_PRODUCT) > 100
+
+
+@pytest.mark.parametrize(("verb", "determiner", "noun"), STOP_TARGET_PRODUCT)
+def test_a_source_management_suffix_is_never_a_playback_stop(verb, determiner, noun):
+    """⚠️⚠️ 「<停止对象>的收藏」永远不是停止播放。
+
+    上一版在来源名后面挂了个单点后视，挡得住 `取消這個歌單的收藏`，挡不住
+    `取消紅心歌單的收藏`——`紅心` 先匹配，紧跟的 `歌單` 正好满足后视，尾巴照样
+    被吞。同族还有 `取消我喜歡的歌的收藏` / `取消日推歌單的收藏`。
+
+    「在某一个点上做后视」和「把整个短语消费完再要求子句边界」是两件事：短语
+    可以有任意多节，逐点判永远漏掉最后一节后面的东西。所以这里用笛卡尔积而不是
+    举例——上一版那批举例式用例全是绿的。
+
+    ⚠️ 前提守卫：只有「裸形式确实会取消」的组合才谈得上被后缀改写。没有这个
+    守卫，`關掉我的曲` 这种本来就不取消的组合会让断言真空通过。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    bare = f'{verb}{determiner}{noun}'
+    if not is_explicit_music_cancellation(bare):
+        pytest.skip(f'{bare} 本身就不是取消播放')
+    assert is_explicit_music_cancellation(f'{bare}的收藏') is False, bare
+
+
+def test_the_product_leaves_enough_cases_unskipped():
+    """⚠️ 上面那条几乎全靠前提守卫过滤。如果哪天守卫把所有组合都 skip 掉，
+    整条用例就成了摆设——这里钉住实际跑到断言的数量。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    live = [
+        (v, d, n)
+        for v, d, n in STOP_TARGET_PRODUCT
+        if is_explicit_music_cancellation(f'{v}{d}{n}')
+    ]
+    assert len(live) >= 60, f'只有 {len(live)} 个组合跑到断言'
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止红心歌单的音乐", "停止紅心歌單的音樂"),
+        ("取消我喜欢的歌", "取消我喜歡的歌"),
+        ("停止这个红心歌单了", "停止這個紅心歌單了"),
+        ("停止这个红心歌单吧", "停止這個紅心歌單吧"),
+    ],
+)
+def test_a_multi_part_target_reaching_the_clause_end_still_cancels(
+    simplified, traditional
+):
+    """⚠️ 「停止紅心歌單的音樂」是关键样本：它后面也跟着「的」，但跟的是音乐
+    名词而不是来源操作，短语能一路吃到句末，必须仍然取消。语气词同理。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("取消收藏这首歌", "取消收藏這首歌"),
+        ("取消红心这首歌", "取消紅心這首歌"),
+    ],
+)
+def test_unfavouriting_a_source_is_not_stopping_playback(simplified, traditional):
+    """⚠️ 来源名词必须是**完整的**停止对象。
+
+    上一轮为了让「停止這個紅心歌單」能取消，给来源名词前面开了限定词白名单。
+    副作用是「取消這個歌單」这个前缀会先匹配上，把尾巴「的收藏」整个忽略——
+    一次「取消收藏」于是变成了停止播放。base 简繁都是 False。
+
+    修法跟 `別` 那条一样是**正向闭集**后视：来源名后面必须是句末、语气词、
+    标点、播放动词，或者「的+音乐名词」。「的收藏」哪一支都不落。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("我要停止播放吗", "我要停止播放嗎"),
+        ("我想暂停播放吗？", "我想暫停播放嗎？"),
+        ("我要关掉音乐吗", "我要關掉音樂嗎"),
+        ("帮我停止播放吗", "幫我停止播放嗎"),
+        ("给我停止播放吗", "給我停止播放嗎"),
+        ("请帮我停止播放吗", "請幫我停止播放嗎"),
+    ],
+)
+def test_asking_whether_to_stop_is_not_ordering_a_stop(simplified, traditional):
+    """⚠️ 本 PR 让这两条规则认得了两种新前缀：收件人短语（帮我/给我）和
+    意图词（我想/我要）。认得开头之后就不再看句末——「用户在自问要不要停」
+    被判成了「命令停」。base 简繁都是 False。
+
+    这是 `(?!不)` 那条 A-not-A 修复的**同族漏洞**：都是可选前缀吃掉了一个字，
+    让剩下的部分看起来像命令。前者靠 A-not-A 的「不」识别，这里没有「不」，
+    只能看句末语气词。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["停止播放吗", "请停止播放吗", "麻烦停止播放吗", "我停止播放吗",
+     "算了请停止播放吗", "关掉音乐吗", "别放了吗", "不要播放了吗"],
+)
+def test_the_question_guard_does_not_touch_pre_existing_behaviour(text):
+    """⚠️⚠️ 疑问守卫**必须要求那两种前缀真的出现**。
+
+    改成「凡是以疑问语气词结尾就不是命令」会顺手把这些改掉——它们在基线上
+    全是 True。修繁体的洞不能拿简体既有行为去换；这一轮已经有两条回归是这么
+    来的（`要不要停止播放`、`别放弃`）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要播放电影歌曲的视频", "不要播放電影歌曲的影片"),
+        ("别放电影原声带的预告片", "別放電影原聲帶的預告片"),
+        ("不要播放电视剧主题曲的视频", "不要播放電視劇主題曲的影片"),
+    ],
+)
+def test_a_music_compound_does_not_hide_a_later_video_target(simplified, traditional):
+    """⚠️ 撞上音乐复合词之后**必须继续往后扫**。
+
+    「不要播放電影歌曲的影片」里先撞上的是「電影」，它确实只是「電影歌曲」
+    这个复合词的一半——但句子后面还有个真的非音乐目标「影片」。上一版撞上
+    复合词就直接丢弃、不再往后找，于是整句退化成取消音乐：用户说「别放视频」，
+    系统听成「别放音乐」并把正在放的歌停了。简体在基线上是 False。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要播放电影歌曲", "不要播放電影歌曲"),
+        ("不要放这个视频的歌", "不要放這個影片的歌"),
+    ],
+)
+def test_a_bare_music_compound_is_still_a_music_refusal(simplified, traditional):
+    """继续往后扫不能变成「永远找得到非音乐目标」——句子里只有复合词、
+    没有第二个目标时，仍然是拒绝音乐。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text

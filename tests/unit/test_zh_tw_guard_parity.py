@@ -206,6 +206,53 @@ def test_a_genuine_full_rewrite_still_matches(simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
+# ⚠️ 判定「是不是整卡重写」的信号是**「的」后面有没有全量限定词**，不是后面那个
+# 名词恰好叫什么。上一版只白名单了「内容」，于是 `把整個角色卡的全部設定重寫一遍`
+# 被守卫挡掉，整卡补全通路不触发、只落库半张卡（简繁两侧都坏，共 22 条）。
+#
+# 所以这里**刻意不只测「設定」一个词**：再加 資料 / 人設 / 描述。只测一个词的话，
+# 下次有人把判据写回名词白名单、只把「設定」加进去，这条测试照样绿。
+WHOLE_CARD_NOUNS = ["设定", "資料", "人设", "描述", "内容"]
+WHOLE_CARD_QUANTIFIERS = ["全部", "所有"]
+WHOLE_CARD_TARGETS = ["整个角色卡", "整張卡", "整个卡片", "全卡"]
+
+
+@pytest.mark.parametrize("noun", WHOLE_CARD_NOUNS)
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_a_quantified_whole_card_request_is_a_full_rewrite(target, quantifier, noun):
+    """「<整卡目标>的<全量限定词><任意整卡级名词>重写」必须是整卡重写。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{target}的{quantifier}{noun}重写一遍'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_an_inverted_quantifier_is_still_a_full_rewrite(target):
+    """语序倒置的「…的設定全部重寫」同样是整卡重写——判据要允许限定词晚一点出现。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{target}的设定全部重写一遍'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "field", ["名字", "简介", "性格", "头像", "問候語"]
+)
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_a_single_field_possessive_is_not_a_full_rewrite(target, field):
+    """⚠️ 反向：没有全量限定词的单字段定语必须仍然**不是**整卡重写。
+
+    把判据从名词白名单换成限定词闭集，一不小心就会把这一整类放行——那是
+    `(?![的片])` 当初要挡的东西（`重寫整個卡的名字` 不该触发整卡补全）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写{target}的{field}'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
 @pytest.mark.parametrize(
     "text", ["今天天气不错", "今天天氣不錯", "这个角色好可爱", "這個角色好可愛"]
 )
