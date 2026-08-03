@@ -188,12 +188,17 @@ _ZH_SONG_NOUN = r"(?:歌|歌曲|音乐|音樂)"
 _ZH_PLAYLIST_NOUN = r"(?:歌单|歌單)"
 _ZH_NETEASE = r"(?:网易云|網易雲)"
 _ZH_ONCE = r"(?:一下)?"
+# 「算了 / 还是算了」这类改主意的引导语。⚠️ 提成常量是因为 _ZH_NEGATIVE_MUSIC 和
+# _ZH_DIRECT_MUSIC_STOP **必须认同一套前缀**：前者收了它、后者没有的话，
+# `算了停止播放红心歌单`（不带逗号，切不出子句）会被判成窄排除而不是取消播放
+# ——两个模式各写各的前缀就会这样悄悄漂开（greptile P1）。
+_ZH_CHANGED_MIND_PREFACE = r"(?:(?:算了|还是算了|還是算了)[，,\s]*)?"
 
 # ⚠️ 礼貌前缀与点歌解析器同一套（_ZH_POLITE + _ZH_FOR_ME）。此前只允许「请/麻烦」，
 # 于是 `请帮我停止播放红心歌单` 压根进不了否定分支——两侧对称的既有缺口，不是繁体
 # 补齐引入的。只放宽前缀、仍然要求出现否定/停止动词，所以不会把肯定句吃进来。
 _ZH_NEGATIVE_MUSIC = re.compile(
-    rf"^(?:(?:算了|还是算了|還是算了)[，,\s]*)?{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?"
+    rf"^{_ZH_CHANGED_MIND_PREFACE}{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?"
     # ⚠️⚠️ 单字「别 / 別」走**单独一条、要求紧邻播放动词**的分支，不跟多字否定词
     # 共用那个 `.{0,6}` 的宽松窗口。
     #
@@ -673,7 +678,8 @@ def _excluded_personalization_source(clause: str) -> str:
 # _is_source_exclusion_preference 判否、把一次「取消收藏」变成停止播放
 # （Codex P2）。简体侧在基线上是 False，本来就不该取消。
 _ZH_DIRECT_MUSIC_STOP = re.compile(
-    rf"^{_ZH_REQ_PREFIX}(?:把)?(?:停止|停掉|暂停|暫停|关掉|關掉|关闭|關閉|取消)"
+    rf"^{_ZH_CHANGED_MIND_PREFACE}{_ZH_REQ_PREFIX}"
+    r"(?:把)?(?:停止|停掉|暂停|暫停|关掉|關掉|关闭|關閉|取消)"
     # 后面接**播放动词**，或直接接一个**来源名词**（`停止紅心歌單`）。
     # ⚠️ 来源名词这一支刻意**不含「收藏」**：它在「取消收藏这首歌」里是动词
     # （把这首歌取消收藏），管的不是播放。红心/歌单/日推/我喜欢的 都是名词，

@@ -272,7 +272,12 @@ def test_the_single_char_negator_still_matches_imperatives(simplified, tradition
 
 @pytest.mark.parametrize(
     ("simplified", "traditional"),
-    [("取消收藏这首歌", "取消收藏這首歌"), ("请取消收藏这首歌", "請取消收藏這首歌")],
+    [
+        ("取消收藏这首歌", "取消收藏這首歌"),
+        ("请取消收藏这首歌", "請取消收藏這首歌"),
+        # 引导语不该把来源编辑变成取消播放。
+        ("算了取消收藏这首歌", "算了取消收藏這首歌"),
+    ],
 )
 def test_a_source_edit_is_not_a_playback_cancellation(simplified, traditional):
     """⚠️ 取消 here governs 收藏 (unfavourite), not playback.
@@ -312,6 +317,11 @@ DIRECT_STOP_PAIRS = [
     # 「取消收藏这首歌」 and governs the favourite, not playback.
     ("停止红心歌单", "停止紅心歌單"),
     ("停止红心歌单音乐", "停止紅心歌單音樂"),
+    # ⚠️ 「算了」这类改主意的引导语，两个模式必须认同一套。不带逗号时切不出
+    # 子句，只有 _ZH_NEGATIVE_MUSIC 收了它、_ZH_DIRECT_MUSIC_STOP 没收，
+    # 就会被判成窄排除而不是取消播放（greptile P1）。前缀已提成共用常量。
+    ("算了停止播放红心歌单", "算了停止播放紅心歌單"),
+    ("还是算了暂停播放每日推荐", "還是算了暫停播放每日推薦"),
     ("暂停播放我喜欢的", "暫停播放我喜歡的"),
     ("取消播放每日推荐", "取消播放每日推薦"),
 ]
@@ -677,3 +687,22 @@ def test_routing_tables_are_module_level_so_they_can_be_asserted():
         # 是自然的优化，钉死 list 会无谓地红（CodeRabbit nitpick）。
         assert isinstance(table, (list, tuple, set, frozenset)), name
         assert table, f"{name}: 表为空"
+
+
+def test_the_two_cancellation_patterns_share_one_preface():
+    """⚠️ Structural guard, not a sample.
+
+    ``_ZH_NEGATIVE_MUSIC`` decides "this clause is a refusal" and
+    ``_ZH_DIRECT_MUSIC_STOP`` decides "…and it stops playback rather than
+    narrowing a source". They are consulted on the same clause, so a prefix
+    accepted by one and not the other silently reclassifies the utterance —
+    which is exactly how 「算了停止播放红心歌单」 became a narrow exclusion. Both
+    now build from the same constant; assert that rather than adding yet another
+    sample sentence.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    preface = mr._ZH_CHANGED_MIND_PREFACE
+    assert preface, "引导语常量是空的"
+    assert preface in mr._ZH_NEGATIVE_MUSIC.pattern
+    assert preface in mr._ZH_DIRECT_MUSIC_STOP.pattern
