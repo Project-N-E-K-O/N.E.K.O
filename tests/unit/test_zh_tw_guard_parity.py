@@ -213,7 +213,9 @@ def test_a_genuine_full_rewrite_still_matches(simplified, traditional):
 # 所以这里**刻意不只测「設定」一个词**：再加 資料 / 人設 / 描述。只测一个词的话，
 # 下次有人把判据写回名词白名单、只把「設定」加进去，这条测试照样绿。
 WHOLE_CARD_NOUNS = ["设定", "資料", "人设", "描述", "内容"]
-WHOLE_CARD_QUANTIFIERS = ["全部", "所有"]
+# ⚠️ 必须**穷举**正则里的限定词闭集。少列一个，那个分支被删掉时测试不会红——
+# 上面那条注释自己把这五个词当同一类来论证，覆盖就不能只做其中两个。
+WHOLE_CARD_QUANTIFIERS = ["全部", "所有", "每个", "每個", "一切"]
 WHOLE_CARD_TARGETS = ["整个角色卡", "整張卡", "整个卡片", "全卡"]
 
 

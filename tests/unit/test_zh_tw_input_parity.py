@@ -888,7 +888,16 @@ def _alternation(pattern: str) -> list[str]:
     ⚠️ 用常量推导而不是手抄列表：这几个闭集这一轮已经被改过三次，手抄的清单
     只会 pin 住抄的那一刻。哪天有人往表里加个来源名，笛卡尔积自动覆盖它。
     """  # noqa: DOCSTRING_CJK
-    return pattern.removeprefix('(?:').removesuffix(')').split('|')
+    words = pattern.removeprefix('(?:').removesuffix(')').split('|')
+    # ⚠️ 拆法只对**扁平**闭集有效。常量一旦写成嵌套形式（`(?:紅心(?:歌單)?|日推)`），
+    # 按 `|` 平切会得到 `紅心(?:歌單)?` 这种残片；残片拼进句子后不是合法中文输入，
+    # 会被下面的前提守卫静默 skip 掉——覆盖被稀释，但一条都不红。
+    # 所以这里让解析失效直接变成红灯。
+    for word in words:
+        assert word and all('一' <= ch <= '鿿' for ch in word), (
+            f'{pattern} 不再是扁平闭集，_alternation 拆出了残片 {word!r}'
+        )
+    return words
 
 
 def _stop_target_product():
@@ -1091,7 +1100,10 @@ def _playback_compound_product():
     nouns = ['播放' + w for w in inner.split('|')]
     return [
         (verb, noun, sep, tail)
-        for verb in ('取消', '停止', '关掉', '關掉', '暫停', '關閉')
+        # ⚠️ 简繁必须成对。原来只有繁体的 暫停/關閉，于是 `暂停播放列表的收藏`
+        # 和 `关闭播放列表收藏` 这两类**简体**输入一条都没被覆盖到——在一个
+        # 主题就是简繁对等的文件里。
+        for verb in ('取消', '停止', '关掉', '關掉', '暂停', '暫停', '关闭', '關閉')
         for noun in nouns
         for sep in ('的', '')
         for tail in ('', '了', '吧')
