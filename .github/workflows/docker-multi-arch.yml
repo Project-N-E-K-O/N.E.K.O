@@ -56,8 +56,9 @@ jobs:
   # Job 1: Calculate version (shared by all build jobs)
   # ============================================================================
   calculate-version:
-    # Keep fork pushes from creating a runner job solely to calculate a version.
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    # Fork pushes should not consume a runner; retain the documented manual
+    # validation path, which downstream Docker build jobs also allow.
+    if: github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     outputs:
       image_version: ${{ steps.version_calc.outputs.VERSION }}
