@@ -75,18 +75,28 @@ def main() -> int:
         ('_TRAD_FOLD_SOURCE', wrap(trad)),
         ('_SIMP_FOLD_TARGET', wrap(simp)),
     ):
-        src = re.sub(
+        # ⚠️ re.sub 在不匹配时**静默**返回原文本。这里必须卡住替换次数：常量的
+        # 书写格式一变，生成器就会保留旧映射、却照常更新指纹并打印成功——指纹
+        # 测试于是变绿，而新字符对应的繁体标题仍然一条都撞不上。
+        # 这个脚本存在的唯一意义就是防静默过期，它自己不能有静默失败。
+        src, replaced = re.subn(
             rf'{name} = \(\n(?:.*\n)*?\)',
             f'{name} = (\n{value}\n)',
             src,
             count=1,
         )
-    src = re.sub(
+        if replaced != 1:
+            raise RuntimeError(f'{TARGET} 里找不到 {name} 的定义块，无法更新')
+    src, replaced = re.subn(
         r"_FOLD_ALIAS_CHAR_DIGEST = '[^']*'",
         f"_FOLD_ALIAS_CHAR_DIGEST = '{digest(chars)}'",
         src,
         count=1,
     )
+    if replaced != 1:
+        raise RuntimeError(
+            f'{TARGET} 里找不到 _FOLD_ALIAS_CHAR_DIGEST，无法更新'
+        )
     TARGET.write_text(src, encoding='utf-8')
     print(f'{len(mapping)} fold pairs over {len(chars)} alias characters')
     return 0

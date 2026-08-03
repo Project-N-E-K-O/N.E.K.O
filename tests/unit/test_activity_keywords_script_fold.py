@@ -61,7 +61,18 @@ def _to_traditional(text: str) -> str:
     return ''.join(_UNFOLD.get(c, c) for c in text)
 
 
-CJK_ALIASES = sorted({t for t in _table_texts() if CJK.search(t) and '\\' not in t})
+def _plain_alias(text: str) -> str:
+    """把 `_make_needle` 生成的正则语法剥掉，还原成用户会打出来的字面别名。
+
+    ⚠️ 上一版是直接**排除**含反斜杠的 pattern。但混合 CJK/ASCII 的别名
+    （`哔哩哔哩.exe`、`qq音乐`）经 `_make_needle` 编译后都带 `\\b` 和
+    `re.escape` 的转义——整整一类别名被悄悄挡在简繁等价参数化之外，折叠
+    回归可以在全绿下溜过去（greptile P2）。剥语法，不要丢样本。
+    """  # noqa: DOCSTRING_CJK
+    return text.replace(r'\b', '').replace('\\', '')
+
+
+CJK_ALIASES = sorted({_plain_alias(t) for t in _table_texts() if CJK.search(t)})
 
 
 def test_the_corpus_under_test_is_not_empty():
