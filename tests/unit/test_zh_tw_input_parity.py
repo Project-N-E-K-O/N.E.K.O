@@ -72,6 +72,66 @@ EXCLUSION_PAIRS = [
 ]
 
 
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("听一下这个视频", "聽一下這個影片"),
+        ("播放这个视频", "播放這個影片"),
+        ("看一下这个电影", "看一下這個電影"),
+    ],
+)
+def test_video_requests_are_not_parsed_as_music(simplified, traditional):
+    """⚠️ Taiwan says 影片, not 視頻.
+
+    Backfilling only the character-mapped form left the most common Taiwanese
+    word out, so 「聽一下這個影片」 fell through to the generic music parser and
+    started searching for a song called 這個影片 (Codex P2).
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in (simplified, traditional):
+        assert parse_explicit_user_music_request(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("别人都在听音乐", "別人都在聽音樂"), ("别人的歌很好听", "別人的歌很好聽")],
+)
+def test_the_noun_other_people_is_not_a_cancellation(simplified, traditional):
+    """⚠️ Single-character 别/別 must not match the noun 别人/別人.
+
+    「別人都在聽音樂」 is a statement about other people, not an imperative to
+    stop. Simplified had this bug already — 「别人都在听音乐」 cancelled playback
+    on main — so the negative lookahead fixes both scripts (Codex P2).
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要取消红心歌单", "不要取消紅心歌單"),
+        ("别取消我喜欢的歌", "別取消我喜歡的歌"),
+        ("不要停止播放红心歌单", "不要停止播放紅心歌單"),
+    ],
+)
+def test_a_negated_stop_verb_is_not_a_cancellation(simplified, traditional):
+    """⚠️ ``_ZH_DIRECT_MUSIC_STOP`` has to be anchored, not a bare search.
+
+    An unanchored search finds 取消 inside 「不要取消」 and reads "don't cancel"
+    as "cancel" — the exact reversal it was added to prevent (Codex P2). Anchored
+    at the clause start (polite prefixes only), 「停止播放…」 still counts as a
+    direct stop while 「不要取消…」 falls back to a narrow source exclusion.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
 DIRECT_STOP_PAIRS = [
     ("停止播放红心歌单", "停止播放紅心歌單"),
     ("暂停播放我喜欢的", "暫停播放我喜歡的"),
@@ -185,8 +245,9 @@ def test_mood_words_are_not_mistaken_for_artist_names():
 # ---------------------------------------------------------------------------
 
 MAGIC_PAIRS = [
-    ("忘了刚才的事", "忘了剛才的事"),
-    ("清空聊天记录", "清空聊天記錄"),
+    # ⚠️ /clear 的触发词不在这里：它不可逆地清掉对话历史，判据又是自由文本子串，
+    # 所以和 approve 一样刻意保持简体。见
+    # test_destructive_command_triggers_stay_simplified_only。
     ("换个话题", "換個話題"),
     ("说点别的", "說點別的"),
     ("重新开始", "重新開始"),
@@ -230,12 +291,15 @@ def test_high_precision_negatives_still_suppress_in_both_scripts(simplified, tra
 @pytest.mark.parametrize(
     "text",
     [
+        # /daemon approve — executes a high-risk action
         "去執行吧", "刪吧", "準了", "沒問題，去執行",
-        # Traditional users writing an explicit refusal must not approve either.
         "拒絕去執行", "禁止去執行", "要去執行嗎？", "他說去執行", "別去執行",
+        # /clear — irreversibly wipes the conversation history
+        "忘了剛才的事", "清空聊天記錄", "清除聊天記錄", "刪掉剛才的記錄",
+        "我想知道如何清除聊天記錄",
     ],
 )
-def test_approve_substring_triggers_stay_simplified_only(text):
+def test_destructive_command_triggers_stay_simplified_only(text):
     """⚠️ Deliberate gap: ``/daemon approve``'s substring triggers are NOT
     backfilled to Traditional in this batch.
 
@@ -244,6 +308,12 @@ def test_approve_substring_triggers_stay_simplified_only(text):
     approves 我准了假 (「准了」), 删吧台的记录 (「删吧」), 他说去执行,
     可以去执行吗, 拒绝去执行. Adding Traditional triggers doubles the exposure
     of that pre-existing hole.
+
+    The same reasoning covers ``/clear``: it wipes the conversation history, and
+    on main a plain question — 「我想知道如何清除聊天记录」 — already returns
+    ``/clear`` (Codex P2). ``/new`` and ``/stop`` are *not* in this list: the
+    worst a false positive does there is change the subject or halt a task, so
+    those keep full Traditional parity.
 
     A "reject when a negator precedes the trigger" guard was tried and an
     adversarial pass broke it on 196 inputs: negation to the *right* of the
@@ -258,6 +328,25 @@ def test_approve_substring_triggers_stay_simplified_only(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Non-destructive commands keep full parity — a false positive here only
+        # changes the subject or stops a task.
+        ("這個遊戲要怎麼重新開始？", "/new"),
+        ("这个游戏要怎么重新开始？", "/new"),
+    ],
+)
+def test_non_destructive_commands_keep_traditional_parity(text, expected):
+    """Recorded rather than fixed: both scripts behave the same, and that same
+    behaviour (a question about the command triggering it) is what main already
+    does for Simplified. Narrowing it is a separate, script-neutral change.
+    """
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected
 
 
 def test_traditional_can_still_approve_by_whole_sentence():
@@ -302,7 +391,9 @@ def test_stop_triggers_containing_a_negator_are_untouched(text):
         ("我还没同意，停止搜索", "/stop"),
         ("我還沒同意，停止搜尋", "/stop"),
         ("我不同意，清空聊天记录", "/clear"),
-        ("我不同意，清空聊天記錄", "/clear"),
+        # 繁体那条不在这里：/clear 的触发词刻意保持简体（见
+        # test_destructive_command_triggers_stay_simplified_only），所以
+        # 「我不同意，清空聊天記錄」本来就该是 None，不是被否定短语压掉的。
     ],
 )
 def test_negation_does_not_suppress_the_other_commands(text, expected):

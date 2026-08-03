@@ -153,6 +153,42 @@ def test_traditional_advice_request_does_not_trigger_an_edit():
 
 
 @pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("把整个卡的名字重写一下", "把整個卡的名字重寫一下"),
+        ("重写整个卡的简介", "重寫整個卡的簡介"),
+        ("调整整张卡的性格", "調整整張卡的性格"),
+    ],
+)
+def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditional):
+    """⚠️ 「整個卡的X」 is a possessive, not a rewrite target.
+
+    Without the ``(?!的)`` guard these reach ``_complete_full_rewrite_actions``,
+    which synthesises content for *every* missing field — so asking to change
+    one name overwrites the rest of the card. Traditional had this on main; the
+    Simplified twin arrived with 「整个卡」 in this batch (Codex P1).
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("把整个卡重写一遍", "把整個卡重寫一遍"),
+        ("所有可见字段都重写", "所有可見欄位都重寫"),
+    ],
+)
+def test_a_genuine_full_rewrite_still_matches(simplified, traditional):
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
     "text", ["今天天气不错", "今天天氣不錯", "这个角色好可爱", "這個角色好可愛"]
 )
 def test_small_talk_is_neither_edit_nor_advice(text):

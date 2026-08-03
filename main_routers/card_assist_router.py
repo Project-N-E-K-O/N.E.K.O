@@ -739,12 +739,18 @@ _CHAT_EDIT_INTENT_RE = re.compile(
 )
 
 _CHAT_FULL_REWRITE_RE = re.compile(
-    r"(所有可见字段|所有可見欄位|全部可见字段|全部可見欄位|所有字段|所有欄位|"
     # 「整个卡」是本来就缺的简体配对（表里原有「整個卡」但没有它），不是繁体
     # 补齐引入的——它既不是「整张卡」的子串，也不是「整个角色卡」的子串，所以
     # 简体用户用「个」当量词时这条一直匹配不到（CodeRabbit）。
+    #
+    # ⚠️ CJK 那组统一带 `(?!的)`：这些词后面跟「的」时是**定语**而不是重写目标。
+    # 「把整個卡的名字重寫一下」只想改 name，却会被判成全量重写，进而由
+    # `_complete_full_rewrite_actions` 给所有缺失字段合成内容、覆盖掉整张卡
+    # （Codex P1）。繁体侧此前就有这个 bug，补简体「整个卡」时一并收口。
+    r"((?:所有可见字段|所有可見欄位|全部可见字段|全部可見欄位|所有字段|所有欄位|"
     r"全部字段|全部欄位|每个字段|每個欄位|整张卡|整張卡|整个卡|整個卡|全卡|"
-    r"整个角色卡|整個角色卡|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
+    r"整个角色卡|整個角色卡)(?!的)"
+    r"|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
     r"all\s+visible\s+fields)",
     re.IGNORECASE,
 )
