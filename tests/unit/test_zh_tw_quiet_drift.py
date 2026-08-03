@@ -22,7 +22,9 @@ import pytest
 # ---------------------------------------------------------------------------
 
 # Function words that must never survive into the similarity units, paired.
-STOP_CHAR_PAIRS = [("与", "與"), ("着", "著"), ("吗", "嗎"), ("还", "還"), ("这", "這")]
+# ⚠️ ("着", "著") 不在这里：「著」在**两种字形里都是词汇用字**（著名 / 著作），
+# 只有简体的「着」是纯体标记。收「著」会削掉真实内容，见下面那条用例。
+STOP_CHAR_PAIRS = [("与", "與"), ("吗", "嗎"), ("还", "還"), ("这", "這")]
 
 
 @pytest.mark.parametrize(("simplified", "traditional"), STOP_CHAR_PAIRS)
@@ -36,7 +38,7 @@ def test_topic_stop_chars_cover_both_scripts(simplified, traditional):
 
 
 @pytest.mark.parametrize(
-    ("simplified", "traditional"), [("与", "與"), ("着", "著"), ("吗", "嗎"), ("还", "還")]
+    ("simplified", "traditional"), [("与", "與"), ("吗", "嗎"), ("还", "還")]
 )
 def test_link_stop_chars_cover_both_scripts(simplified, traditional):
     """⚠️ This table deliberately excludes demonstratives (这/那/我/你…), so only
@@ -65,8 +67,35 @@ def test_traditional_topic_does_not_carry_function_word_units():
     )
     # ⚠️ 不断言 個：个/個 在**两侧都不是**停用字（既有取舍，对称），拿它做判据
     # 会把一个非 zh-TW 问题记到本批头上。
-    for junk in ("這", "嗎", "還", "與", "著"):
+    for junk in ("這", "嗎", "還", "與"):
         assert junk not in topic_units(f"聊聊{junk}這件事"), f"虚词 {junk!r} 混进了相似度单元"
+
+
+def test_the_lexical_zhe_character_is_not_stripped():
+    """⚠️ 「著」 must stay out of the stop sets even though it is the Traditional
+    form of the Simplified aspect particle 着.
+
+    The two scripts divide the work differently: Simplified uses 着 for the
+    aspect particle and 著 for the lexical word (著名 / 著作), which is why the
+    baseline only had 着. Traditional 著 does both, and no character-level rule
+    separates them. Stripping it deletes real content — 「著名景點推薦」 vs
+    「著名景點清單」 dropped from 0.47 to 0.38 Jaccard, moving them relative to
+    the 0.6 dedup threshold — and it did so in **Simplified too**, since 著名 is
+    spelled the same there (Codex P2).
+
+    Prefer leaving one function-word unit in over deleting real content.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.topic.common import (
+        ZH_LINK_STOP_CHARS,
+        ZH_TOPIC_STOP_CHARS,
+        topic_units,
+    )
+
+    assert "著" not in ZH_TOPIC_STOP_CHARS
+    assert "著" not in ZH_LINK_STOP_CHARS
+    for text in ("著名景點推薦", "著名景点推荐"):
+        units = topic_units(text)
+        assert "著" in units and "著名" in units, f"{text}: 词汇性的「著」被削掉了"
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +279,10 @@ def test_all_four_holiday_tables_resolve_together_for_traditional():
         table = getattr(P, table_name)
         assert key in table, f"{table_name} 取不到 {key}，会 fallback 到英文"
         leaked = sorted({ch for ch in "这周节过松别样" if ch in table[key]})
+        assert "連假" not in table[key], (
+            f"{table_name}: HolidayPeriod 允许单日节日，而 SOON/WEEK 只按 days_away 选模板，"
+            "写「連假」会对单日节日做出假陈述"
+        )
         assert not leaked, f"{table_name} 的 zh-TW 里混进了简体字：{leaked}"
 
 
