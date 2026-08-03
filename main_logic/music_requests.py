@@ -314,7 +314,12 @@ _ZH_PREFIXED_QUESTION_GUARD = (
     # 直接把歌停掉（Codex P2，base 是 False）。A-not-A 是同一族疑问标记，能落在
     # 这个位置的就是几个模态动词/形容词的重叠式，跟上面三个一样列干净。
     rf"{_ZH_BEFORE_QUESTION_MARKER}(?:[吗嗎呢]\s*[？?]?|是否|能否|可否"
-    rf"|{_ZH_A_NOT_A_QUESTION_TAIL})[^。！？!?]*\s*$)"
+    # ⚠️ 标记**之后**的尾巴同样要能穿过配平跨度：`我想停止播放是否适合《你好吗？》`
+    # 里标题自带问号，尾巴在它上面断掉、守卫开不了火（base 是 False，危险方向；
+    # Codex P2 第十三轮）。用跟标记之前同一套跨度常量。
+    rf"|{_ZH_A_NOT_A_QUESTION_TAIL})"
+    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN}"
+    rf"|{_ZH_UNPAIRED_QUOTE_OPENER})*\s*$)"
 )
 # ⚠️ 逗号也要排除：这条作用在**未切分**的整句上，允许跨子句的话，
 # `我想先听一下，别播放音乐了，好吗？` 会被整句否掉——里面那个明确的取消子句
@@ -407,6 +412,9 @@ _ZH_MUSIC_OBJECT_NOUN = (
     rf"(?:{_ZH_SONG_NOUN}|{_ZH_PLAYLIST_NOUN}|{_ZH_SOUNDTRACK_NOUN}|曲|音频|音頻"
     r"|声音|聲音|音效|音轨|音軌|旋律|伴奏|曲子|铃声|鈴聲|[Bb][Gg][Mm]"
     r"|专辑|專輯|单曲|單曲|唱片"
+    # 播放队列/清单：跟 _ZH_PLAYBACK_COMPOUND_NOUN 是同一族词（那边把它们当
+    # 「播放不是动词」的证据），这里当播放对象（Codex P2 第十三轮，base 是 True）。
+    r"|播放队列|播放隊列|播放佇列|队列|隊列|佇列"
     # ⚠️ 量词短语自己就能收尾：`停止正在播放的这首` / `的下一首` base 都是 True，
     # 限定词那张表不能单独站住（它后面永远还要求一个中心语），所以把「首」也
     # 收成中心语（Codex P2 第八轮）。
@@ -452,6 +460,16 @@ _ZH_DEGREE_AFTER_DE = (
     r"|有点|有點|有一点|有一點|稍微|稍稍|略微|比较|比較"
     r"|大声|大聲|小声|小聲)"
 )
+# 比较式补语：`不要放的比刚才大声`（base 是 True，Codex P2 第十三轮）。
+#
+# ⚠️ 比较对象是**开集**（比刚才/比之前/比昨天/比那首…），所以不枚举它，改为要求
+# 整段以**程度词**收尾——这跟自由修饰语那一支是同一招。`停止播放的比赛结果`
+# 不受影响：「比赛结果」不以程度词收尾。
+# ⚠️ 单列一个常量而不是塞进上面那张表：那张表是**扁平词表**，测试按 `|` 拆开做
+# 笛卡尔积，塞进带量词的模式会让拆解当场报错（本轮实测踩到）。
+_ZH_COMPARATIVE_AFTER_DE = (
+    r"(?:比[^，,。！!？?]{0,6}?(?:大声|大聲|小声|小聲|轻|輕|响|響|吵|快|慢))"
+)
 # 「V 的同时 W」的连动结构：这里的「的」既不是名物化也不是补语标记。
 #
 # ⚠️ 「的时候」要跟「的同时」**分开看**，不能一并放行：
@@ -488,10 +506,13 @@ _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # 成零宽，前视又在空格那个位置判一次「后面不是音乐名词」，于是照样判成名物化。
     # 内层写成 `(?!\s*(?:…))` 时，只要「跳过空白后能匹配上任一逃生项」整条前视就
     # 失败——这才是想要的语义。
-    rf"(?!的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_MODIFIED_MUSIC_OBJECT_AFTER_DE}"
-    rf"|{_ZH_DEGREE_AFTER_DE}"
+    # ⚠️ 「的」**前面**的空白同样要跳过。入口的 normalize 只把连续空白压成一个，
+    # 不会删掉它，于是 `我要停止播放 的代码` 里前视看到的是空格而不是「的」，
+    # 守卫整个失效、问代码照样把歌停掉（Codex P2 第十三轮，危险方向）。
+    rf"(?!\s*的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_MODIFIED_MUSIC_OBJECT_AFTER_DE}"
+    rf"|{_ZH_DEGREE_AFTER_DE}|{_ZH_COMPARATIVE_AFTER_DE}"
     rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE}))"
-    rf"|{_ZH_PLAYBACK_UI_NOUN}"
+    rf"|\s*{_ZH_PLAYBACK_UI_NOUN}"
     rf"(?![^，,。！!？?]{{0,4}}?{_ZH_MUSIC_HEAD_AFTER_DE}))"
 )
 # ⚠️⚠️ 单字播放动词（放 / 播 / 听 / 聽）后面的**词汇化动词复合第二字**黑名单。
@@ -581,7 +602,7 @@ _ZH_NEGATIVE_MUSIC = re.compile(
     # `的广播代码` / `的听歌功能` 同理）。
     # 用 tempered dot：窗口里的每个字都不许是「播放动词 + 的」的起点。每次迭代
     # 恰好吃一个字，没有嵌套量词，仍是线性。
-    rf"(?:(?:(?!(?:播放|[放播听聽])的).){{0,6}}(?:播放{_ZH_PLAYBACK_NOT_NOMINALIZED}"
+    rf"(?:(?:(?!(?:播放|[放播听聽])\s*的).){{0,6}}(?:播放{_ZH_PLAYBACK_NOT_NOMINALIZED}"
     rf"|[听聽](?![{_ZH_NON_PLAYBACK_AFTER_TING}]){_ZH_PLAYBACK_NOT_NOMINALIZED}"
     rf"|放(?![{_ZH_NON_PLAYBACK_AFTER_FANG}]){_ZH_PLAYBACK_NOT_NOMINALIZED}"
     rf"|播(?!放)(?![{_ZH_NON_PLAYBACK_AFTER_BO}]){_ZH_PLAYBACK_NOT_NOMINALIZED})"

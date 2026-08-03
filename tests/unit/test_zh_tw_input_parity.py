@@ -2748,3 +2748,71 @@ def test_a_title_with_inner_punctuation_cannot_hide_a_trailing_question_mark():
     assert is_explicit_music_cancellation('我想停止播放《你好吗？》？') is False
     assert is_explicit_music_cancellation('我想停止播放《你好吗？》?') is False
     assert is_explicit_music_cancellation('停止正在播放的《你好吗？》') is True
+
+
+@pytest.mark.parametrize("space", [" ", "\u3000", "  "])
+def test_whitespace_before_de_does_not_bypass_the_nominalization_guard(space):
+    """⚠️⚠️ 「的」**前面**的空白同样要跳过（Codex P2 第十三轮，危险方向）。
+
+    入口的 normalize 只把连续空白压成一个、不会删掉它，于是
+    `我要停止播放 的代码` 里前视看到的是空格而不是「的」，守卫整个失效、
+    问代码照样把歌停掉。
+
+    ⚠️ tempered window 也要一起改：`我要停止播放 的播放器代码` 里窗口同样得把
+    「播放动词 + 空白 + 的」认成被拒的候选，否则它会跳到后面那个「播放」。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for obj in ("代码", "教程", "播放器代码"):
+        text = f'我要停止播放{space}的{obj}'
+        assert is_explicit_music_cancellation(text) is False, text
+    # 配对正向：空白跳过之后确实是音乐宾语时仍然是命令。
+    assert is_explicit_music_cancellation(f'停止正在播放{space}的音乐') is True
+
+
+@pytest.mark.parametrize(
+    "marker", ["是否适合", "能否换成", "可否换成", "是否合适"]
+)
+def test_a_quoted_title_after_the_marker_does_not_hide_the_guard(marker):
+    """⚠️ 疑问标记**之后**的尾巴也要能穿过配平跨度。
+
+    `我想停止播放是否适合《你好吗？》` 里标题自带问号，尾巴在它上面断掉、守卫
+    开不了火，一句提问被判成停止命令（base 是 False，危险方向；Codex P2 第十三
+    轮）。标记之前那一侧上一轮已经修过，这是对称的另一半。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}《你好吗？》'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要放的比刚才大声", "不要放的比剛才大聲"),
+        ("不要放的比之前小声", "不要放的比之前小聲"),
+        ("不要放的比昨天轻一点", "不要放的比昨天輕一點"),
+    ],
+)
+def test_a_comparative_degree_complement_is_still_a_command(simplified, traditional):
+    """⚠️ 比较对象是**开集**（比刚才/比之前/比昨天/比那首…），所以不枚举它，
+    改为要求整段以**程度词**收尾（base 全是 True，Codex P2 第十三轮）。
+
+    ⚠️ 配对反向断言：`停止播放的比赛结果` 不以程度词收尾，仍然是名物化。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('停止播放的比赛结果') is False
+
+
+@pytest.mark.parametrize(
+    "queue", ["播放队列", "播放隊列", "播放佇列", "队列", "隊列", "佇列"]
+)
+def test_a_playback_queue_after_de_is_still_a_command(queue):
+    """播放队列跟 `_ZH_PLAYBACK_COMPOUND_NOUN` 是同一族词，base 是 True。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{queue}') is True

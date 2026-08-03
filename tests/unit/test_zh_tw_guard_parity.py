@@ -1113,3 +1113,44 @@ def test_de_after_the_visibility_modifier_is_allowed(simplified, traditional):
 
     for text in (simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "latin_field", ["nickname", "field_name", "age2", "Signature Line", "_meta"]
+)
+@pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
+def test_a_latin_field_name_after_a_bare_quantifier_is_not_a_full_rewrite(
+    quantifier, latin_field
+):
+    """⚠️⚠️ P1：「非汉字收尾」不能把**拉丁字母/数字/下划线**算进去。
+
+    自定义字段名可以叫 nickname / field_name / age2（en 模板里本来就全是拉丁
+    字段名），于是 `把整个卡的全部 nickname重写` 又是一条绕过单字段保险的后门
+    （Codex P1 第十三轮）。合法的非汉字收尾只有**标点**。
+
+    ⚠️ 配对正向断言：真正的标点收尾和重写动词收尾都不能被误伤。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    blocked = f'把整个卡的{quantifier} {latin_field}重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+    allowed = f'把整个卡的{quantifier} 重写一遍'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    ["把所有字段值重写", "重写全部字段内容", "把所有欄位值重寫", "把每个字段内容重写"],
+)
+def test_a_direct_field_list_consumes_scope_suffixes(phrasing):
+    """⚠️ 字段清单那一支也要**先吃掉合法的范围续接再判边界**。
+
+    `把所有字段值重写` / `重写全部字段内容` 被自己刚加的边界挡掉了
+    （Codex P2 第十三轮，base 是 True）——加边界那一轮只在整卡级名词那一支
+    做了后缀消费，这一支漏了。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
+    # 反向：字段**名**照旧被挡。
+    assert router._chat_text_requests_full_rewrite('把所有字段名重写') is False
