@@ -1882,14 +1882,27 @@ def test_the_a_not_a_tail_table_is_derived_not_transcribed():
     断言**相等**：下界断言放不住「删掉一个词」，而删掉一个词就是放一族疑问句
     去当命令。往常量里加词时必须同步改这里——刻意的摩擦。
     """  # noqa: DOCSTRING_CJK
-    # ⚠️ 收的是**情态动词**的重叠式。A-not-A 本身是能产的（停不停/听不听/走不走
-    # ——任何动词都能重叠），那一侧枚举不完也不该枚举；情态那一族出现在句末时
-    # 几乎只能是「在问要不要这么做」，所以可以列。
-    assert set(A_NOT_A_TAILS) == {
-        "可不可以", "能不能", "会不会", "會不會", "该不该", "該不該",
-        "应不应该", "應不應該", "要不要", "想不想",
-        "行不行", "好不好", "是不是", "对不对", "對不對",
-    }, A_NOT_A_TAILS
+    # ⚠️⚠️ 钉的是**生成器的输入**（情态表），不是成品表。
+    #
+    # 前几轮一直在往成品表里补词，每补一轮 reviewer 就找出下一个（应该不应该 /
+    # 需不需要 / 愿不愿意…）。真正封闭的那一维是「能进这个位置的情态词」，成品
+    # 是它的两种构式（全叠 + 简叠），所以相等断言挂在情态表上。
+    #
+    # ⚠️ 边界不变：只收情态。能产的那一侧（停不停/听不听/走不走）不枚举——那是
+    # 开集，收了会把真命令判成提问。
+    from main_logic import music_requests as mr
+
+    assert set(mr._ZH_A_NOT_A_MODALS) == {
+        "可以", "能", "能够", "能夠", "会", "會", "该", "該", "应该", "應該",
+        "需要", "愿意", "願意", "要", "想", "行", "好", "是", "对", "對",
+    }, mr._ZH_A_NOT_A_MODALS
+    # 两种构式都要生成出来，外加用「没」做中缀的 有没有。
+    for form in ("应该不应该", "应不应该", "需不需要", "需要不需要",
+                 "可不可以", "可以不可以", "是不是", "有没有", "有沒有"):
+        assert form in A_NOT_A_TAILS, form
+    # 能产的那一侧绝不能混进来。
+    for open_form in ("停不停", "听不听", "走不走", "放不放"):
+        assert open_form not in A_NOT_A_TAILS, open_form
 
 
 @pytest.mark.parametrize("tail", A_NOT_A_TAILS)
@@ -2902,3 +2915,40 @@ def test_a_latin_audio_abbreviation_after_de_is_still_a_command(abbrev):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(f'停止正在播放的{abbrev}') is True
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["应该不应该", "應該不應該", "需不需要", "需要不需要", "愿不愿意",
+     "有没有", "有沒有", "能不能够"],
+)
+def test_generated_modal_a_not_a_forms_are_questions(marker):
+    """⚠️ 这一族改成**从情态表生成**，不再手抄成品。
+
+    前几轮每补一个成品词，reviewer 就找出下一个（能不能 → 会不会 → 该不该 →
+    应不应该 → 应该不应该 → 需不需要…）。封闭的那一维是情态词本身，成品是它的
+    两种构式（全叠 / 简叠），所以这里参数化的每一个都不是手工加进表里的。
+
+    ⚠️ 这条一直是危险方向：引号跨度藏住标题内疑问词之后，真标记没被认出来就会
+    执行取消。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}换成《你好吗？》'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "audio", ["白噪音", "白噪聲", "白噪声", "噪音", "录音", "錄音", "ASMR", "asmr"]
+)
+def test_a_non_song_audio_object_after_de_is_still_a_command(audio):
+    """⚠️ 非歌曲类音频对象也是播放对象（base 全是 True）。
+
+    ⚠️ 配对反向断言：**不收「广播」**——`我要停止播放的广播代码` 是第八轮修过的
+    缺陷本体（问代码却把歌停掉），收了它当场回归。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{audio}') is True
+    assert is_explicit_music_cancellation('我要停止播放的广播代码') is False
