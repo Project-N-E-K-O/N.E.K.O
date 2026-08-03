@@ -607,10 +607,27 @@ def _excluded_personalization_source(clause: str) -> str:
     return ""
 
 
+
+# 中文侧的「明确停止」判据，与 _EN_DIRECT_MUSIC_STOP 对偶。
+#
+# ⚠️ 之前只有英文那一张，中文没有对偶物，于是**任何提到来源的中文句子都被当成
+# 窄排除**——`停止播放红心歌单` 明明是「停止播放」，却被读成「以后别用红心这个
+# 来源」而不取消当前播放。简体侧长期如此；繁体侧此前是因为来源词表不认繁体才
+# 侥幸落到取消分支，补齐词表后就暴露出来了。
+#
+# 只收无歧义的停止动词，与英文那张的收词标准对齐（stop/pause/cancel/turn/shut）。
+# **不收**「不要再 / 別再」：`别放红心歌单，播放每日推荐` 是真正的窄排除——用户
+# 要换个来源接着听，不是要停。
+_ZH_DIRECT_MUSIC_STOP = re.compile(
+    r"停止|停掉|暂停|暫停|关掉|關掉|关闭|關閉|取消"
+)
+
+
 def _is_source_exclusion_preference(clause: str) -> bool:
     return bool(
         _excluded_personalization_source(clause)
         and not _EN_DIRECT_MUSIC_STOP.search(clause)
+        and not _ZH_DIRECT_MUSIC_STOP.search(clause)
     )
 
 

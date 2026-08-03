@@ -72,6 +72,31 @@ EXCLUSION_PAIRS = [
 ]
 
 
+DIRECT_STOP_PAIRS = [
+    ("停止播放红心歌单", "停止播放紅心歌單"),
+    ("暂停播放我喜欢的", "暫停播放我喜歡的"),
+    ("取消播放每日推荐", "取消播放每日推薦"),
+]
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), DIRECT_STOP_PAIRS)
+def test_an_explicit_stop_naming_a_source_still_cancels(simplified, traditional):
+    """⚠️ ``_is_source_exclusion_preference`` used only ``_EN_DIRECT_MUSIC_STOP``.
+
+    With no Chinese counterpart, *any* Chinese clause naming a personalization
+    source read as a narrow exclusion — so 「停止播放红心歌单」 ("stop playing…")
+    did not stop anything. Simplified had this all along; Traditional only fell
+    into it once the source lexicon started matching (Codex P2).
+
+    Both scripts must now cancel, which is a **behaviour change on the
+    Simplified side too** — it is the same bug, fixed on both.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, f"{text}: 明确停止却没取消"
+
+
 @pytest.mark.parametrize(("simplified", "traditional"), EXCLUSION_PAIRS)
 def test_excluding_one_source_is_not_read_as_stopping_playback(simplified, traditional):
     """⚠️ ``_ZH_NEGATIVE_MUSIC`` and ``_excluded_personalization_source`` are a
@@ -169,8 +194,8 @@ MAGIC_PAIRS = [
     ("停止搜索", "停止搜尋"),
     ("取消这个任务", "取消這個任務"),
     ("停下来", "停下來"),
-    ("去执行吧", "去執行吧"),
-    ("删吧", "刪吧"),
+    # `没问题 / 沒問題` 走的是**整句精确匹配**，不是子串触发词——见下面
+    # test_approve_substring_triggers_stay_simplified_only。
     ("没问题", "沒問題"),
 ]
 
@@ -202,57 +227,64 @@ def test_high_precision_negatives_still_suppress_in_both_scripts(simplified, tra
     assert OpenClawAdapter.rule_magic_command(traditional) is None
 
 
-def test_approve_guard_tokens_cover_both_scripts():
-    """⚠️ The guard has to be backfilled in the same commit as the triggers.
-
-    ``/daemon approve`` is suppressed when the text says 同意 without any of
-    执行 / 删 / 准. Leaving those three Simplified-only while adding Traditional
-    triggers would make the guard vacuously false for Traditional users — which
-    is a real reversal (approving something the guard was meant to hold back),
-    unlike the plain misses that only ever fail closed.
-    """  # noqa: DOCSTRING_CJK
-    from brain import openclaw_adapter
-
-    tokens = openclaw_adapter.APPROVE_GUARD_TOKENS
-    for simplified, traditional in (("执行", "執行"), ("删", "刪"), ("准", "準")):
-        assert simplified in tokens and traditional in tokens, (simplified, traditional)
-
-
-NEGATED_APPROVAL_PAIRS = [
-    ("我还没同意你去执行", "我還沒同意你去執行"),
-    ("我没同意去执行", "我沒同意去執行"),
-    ("别去执行", "別去執行"),
-    ("不要执行", "不要執行"),
-    ("先别执行", "先別執行"),
-]
-
-
-@pytest.mark.parametrize(("simplified", "traditional"), NEGATED_APPROVAL_PAIRS)
-def test_negated_approval_does_not_dispatch(simplified, traditional):
-    """A pre-existing hole (Simplified had it too), widened by this batch.
-
-    ``别去执行`` contains the approve trigger ``去执行``, and the guard only
-    refuses when 同意 appears *without* 执行/删/准 — so a sentence that literally
-    says "don't execute" dispatched ``/daemon approve``. Until this batch the
-    Traditional side was saved by missing every trigger; adding the triggers
-    without this would have handed Traditional users the same hole.
-    """  # noqa: DOCSTRING_CJK
-    from brain.openclaw_adapter import OpenClawAdapter
-
-    for text in (simplified, traditional):
-        assert OpenClawAdapter.rule_magic_command(text) is None, text
-
-
 @pytest.mark.parametrize(
     "text",
-    ["去执行吧", "去執行吧", "删吧", "刪吧", "没问题，去执行", "沒問題，去執行", "准了", "準了"],
+    [
+        "去執行吧", "刪吧", "準了", "沒問題，去執行",
+        # Traditional users writing an explicit refusal must not approve either.
+        "拒絕去執行", "禁止去執行", "要去執行嗎？", "他說去執行", "別去執行",
+    ],
 )
-def test_genuine_approval_still_dispatches(text):
-    """The negation phrases are full phrases, not bare 别/不 — a bare negator
-    would also kill 别找了, which is a legitimate /stop trigger."""  # noqa: DOCSTRING_CJK
+def test_approve_substring_triggers_stay_simplified_only(text):
+    """⚠️ Deliberate gap: ``/daemon approve``'s substring triggers are NOT
+    backfilled to Traditional in this batch.
+
+    That command makes the caller actually run a high-risk action, and it is
+    triggered by *substring containment over free text*. On main that already
+    approves 我准了假 (「准了」), 删吧台的记录 (「删吧」), 他说去执行,
+    可以去执行吗, 拒绝去执行. Adding Traditional triggers doubles the exposure
+    of that pre-existing hole.
+
+    A "reject when a negator precedes the trigger" guard was tried and an
+    adversarial pass broke it on 196 inputs: negation to the *right* of the
+    trigger (「去執行？我不要」), the anchor landing on an unrelated substring
+    (「这标准了不起，但不要去执行」 anchors on 「准了」), and questions
+    (「要去執行嗎？」) all sailed through — while it *also* rejected
+    「没错，去执行」/「没意见，去执行」, i.e. the affirmations that an approval
+    context is literally built out of negation words. A blacklist cannot work
+    here; the fix is a normalized whole-sentence whitelist, which changes
+    Simplified behaviour and so does not belong in a zh-TW batch.
+    """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
-    assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve"
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+def test_traditional_can_still_approve_by_whole_sentence():
+    """The exact-match branch is the safe shape — whole sentence, no substring,
+    no free text — so Traditional is backfilled there."""
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    for text in ("沒問題", "同意", "我同意", "没问题"):
+        assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve", text
+
+
+def test_simplified_approve_behaviour_is_untouched_by_this_batch():
+    """Pins the claim that this batch does not move the Simplified side at all.
+
+    Includes the known-bad pre-existing cases on purpose: they must keep
+    behaving exactly as on main, so that fixing them later is a visible,
+    deliberate change rather than something this batch smuggled in.
+    """
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    approve = "/daemon approve"
+    for text in ("去执行吧", "删吧", "准了", "没问题，去执行"):
+        assert OpenClawAdapter.rule_magic_command(text) == approve, text
+    # ⚠️ Known pre-existing false approvals (substring containment). Asserted as
+    # the *current* behaviour, not as desirable behaviour.
+    for text in ("我准了假", "删吧台的记录", "他说去执行", "可以去执行吗"):
+        assert OpenClawAdapter.rule_magic_command(text) == approve, text
 
 
 @pytest.mark.parametrize("text", ["别找了", "別找了", "算了别查了", "算了別查了"])
@@ -260,6 +292,31 @@ def test_stop_triggers_containing_a_negator_are_untouched(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) == "/stop"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("我不同意这个方案，换个话题", "/new"),
+        ("我不同意這個方案，換個話題", "/new"),
+        ("我还没同意，停止搜索", "/stop"),
+        ("我還沒同意，停止搜尋", "/stop"),
+        ("我不同意，清空聊天记录", "/clear"),
+        ("我不同意，清空聊天記錄", "/clear"),
+    ],
+)
+def test_negation_does_not_suppress_the_other_commands(text, expected):
+    """⚠️ The negation check is scoped to the approve branch on purpose.
+
+    A first attempt put the negated-approval phrases in the global
+    high-precision list, which is consulted before *every* mapping — so an
+    unrelated "I don't agree with the plan, change the topic" stopped
+    dispatching ``/new`` at all (Codex P2). Only ``/daemon approve`` executes
+    anything, so only it gets the fail-closed treatment.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected
 
 
 # ---------------------------------------------------------------------------
