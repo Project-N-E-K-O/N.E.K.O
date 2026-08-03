@@ -212,6 +212,26 @@ def focus_extra_body(model: str) -> dict | None:
     return copy.deepcopy(enabled) if enabled else None
 
 
+def get_extra_body_without_provider_tools(
+    model: str, *, thinking_on: bool = False,
+) -> dict | None:
+    """Return provider extras with provider-advertised tools removed.
+
+    Vision inputs can contain screenshots or other private image content.  They
+    must not inherit a model's built-in network tools merely because the text
+    and vision slots use the same model id.  Thinking controls are preserved;
+    only the provider-level ``tools`` / ``tool_choice`` keys are removed.  This
+    does not affect N.E.K.O's separately bound local ``tools=`` definitions.
+    """
+    body = focus_extra_body(model) if thinking_on else get_extra_body(model)
+    if not body:
+        return None
+    sanitized = copy.deepcopy(body)
+    sanitized.pop("tools", None)
+    sanitized.pop("tool_choice", None)
+    return sanitized or None
+
+
 def leaks_thinking_in_content(model: str) -> bool:
     """True for models that stream chain-of-thought into ``content`` (not the
     separate ``reasoning_content`` field), which a Focus (thinking-on) turn

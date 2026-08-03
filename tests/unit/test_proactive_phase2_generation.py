@@ -70,6 +70,40 @@ def _patch_runtime_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_proactive_vision_factory_disables_provider_search(
+    monkeypatch,
+) -> None:
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    sentinel = object()
+
+    async def fake_create(*args: object, **kwargs: object) -> object:
+        captured.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(generation, "create_chat_llm_async", fake_create)
+    model_config = generation.ProactiveModelConfig(
+        conversation_model="step-1o-turbo-vision",
+        conversation_base_url="https://api.stepfun.com/v1",
+        conversation_api_key="key",
+        conversation_provider_type=None,
+        vision_model="step-1o-turbo-vision",
+        vision_base_url="https://api.stepfun.com/v1",
+        vision_api_key="key",
+        vision_provider_type=None,
+    )
+
+    assert await generation._make_proactive_llm(
+        model_config, use_vision=True,
+    ) is sentinel
+    assert captured[-1][1]["extra_body"] is None
+
+    assert await generation._make_proactive_llm(
+        model_config, use_vision=False,
+    ) is sentinel
+    assert "extra_body" not in captured[-1][1]
+
+
 async def _generate(
     mgr: _FakeManager,
     chunks: list[str],

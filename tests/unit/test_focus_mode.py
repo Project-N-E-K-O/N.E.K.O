@@ -475,6 +475,19 @@ def test_focus_stream_overrides_decision():
     assert so["extra_body"] is not None and "tools" in so["extra_body"]
     # thinking off → no override (vision no longer gates thinking)
     assert _C._focus_stream_overrides(False, "step-1o-turbo-vision") == {}
+    # Image-bearing requests must not inherit Step's built-in web search even
+    # when conversation_model == vision_model. Local N.E.K.O tools are bound
+    # separately and are not affected by this provider-extra override.
+    assert _C._focus_stream_overrides(
+        False,
+        "step-1o-turbo-vision",
+        allow_provider_tools=False,
+    ) == {"extra_body": None}
+    assert _C._focus_stream_overrides(
+        True,
+        "step-1o-turbo-vision",
+        allow_provider_tools=False,
+    ) == {"extra_body": None}
 
     # ── max_completion_tokens bump (reasoning headroom) ──
     from config import FOCUS_THINKING_EXTRA_TOKENS
@@ -506,7 +519,10 @@ def test_focus_extra_body_provider_dialects():
     to disabled and flips to enabled; non-thinking extras and MiniMax's
     reasoning_split (no on/off semantics) are preserved unchanged."""
     from config.providers import (
-        focus_extra_body, get_extra_body, EXTRA_BODY_CLAUDE,
+        focus_extra_body,
+        get_extra_body,
+        get_extra_body_without_provider_tools,
+        EXTRA_BODY_CLAUDE,
     )
     from config.providers import EXTRA_BODY_MINIMAX  # not re-exported via config/__init__
 
@@ -534,6 +550,12 @@ def test_focus_extra_body_provider_dialects():
     assert focus_extra_body("MiniMax-M2.5") == EXTRA_BODY_MINIMAX
     # non-thinking provider extra (step web_search) preserved on a focus turn
     assert "tools" in focus_extra_body("step-1o-turbo-vision")
+    # Tool-free vision extras remove only provider-advertised tools while
+    # preserving unrelated thinking controls.
+    assert get_extra_body_without_provider_tools("step-1o-turbo-vision") is None
+    assert get_extra_body_without_provider_tools("qwen-flash") == {
+        "enable_thinking": False
+    }
     # unknown / empty model → no extra_body
     assert focus_extra_body("nonexistent") is None
     assert focus_extra_body("") is None
@@ -545,6 +567,22 @@ def test_focus_extra_body_provider_dialects():
     nested = focus_extra_body("glm-5.2")
     nested["thinking"]["type"] = "disabled"
     assert focus_extra_body("glm-5.2") == {"thinking": {"type": "enabled"}}
+
+
+def test_image_history_detection_keeps_provider_tools_disabled():
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import HumanMessage, SystemMessage
+
+    assert not OmniOfflineClient._messages_include_images([
+        SystemMessage(content="system"),
+        HumanMessage(content="text only"),
+    ])
+    assert OmniOfflineClient._messages_include_images([
+        HumanMessage(content=[
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,x"}},
+            {"type": "text", "text": "describe"},
+        ]),
+    ])
 
 
 async def test_focus_override_threads_through_visible_stream():
