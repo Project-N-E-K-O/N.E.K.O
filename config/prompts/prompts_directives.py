@@ -101,14 +101,24 @@ _TRIM_TRAIL = (
 _TRIM_TRAIL_TOKENS_BY_LOCALE: dict[str, Tuple[str, ...]] = {
     "zh": (
         "了", "啊", "呀", "吧", "嘛", "哦", "呗", "啦", "呢", "嘞", "诶",
-        # zh-TW / 台湾口语。``唄`` 是 ``呗`` 的繁体；喔/囉/唷/齁 在简体语料里少见
-        # 但台湾日常极常用——不补的话 "別再提工作喔" 存下来的 term 是 "工作喔"。
-        "喔", "囉", "啰", "唄", "唷", "齁",
+        # zh-TW / 台湾口语：简体语料里少见但台湾日常极常用——不补的话
+        # "別再提工作喔" 存下来的 term 是 "工作喔"。
+        # ⚠️ ``唄``（``呗`` 的繁体）**故意不进这张表**：它在日文里是"歌"，中文句子
+        # 里 ban 一个日文歌名（"别再提花の唄了。"）会被削成 "花の"。它只留在
+        # _ZH_FINAL_PARTICLES 里由正则消化，那条路不切 term。
+        "喔", "囉", "啰", "唷", "齁", "耶", "欸", "誒", "咧", "捏", "喲",
+        # 反问尾巴：跟在句末助词后面（"工作了好嗎"），正则的可选助词组只放行一个，
+        # 剩下的会并进 term，靠 trim 的循环逐层剥掉。
+        "好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎",
     ),
     "ja": ("ね", "よ", "わ", "の", "って", "なんて", "という"),
     "ko": ("요", "은", "는", "이", "가", "을", "를", "에", "에서"),
-    # ru / pt 鲜见词尾 particle
 }
+
+# ⚠️ 没有自己 CJK 助词表的 locale（en / ru / es / pt）回落到 zh：中英混说时
+# term 往往整段是中文（"stop talking about 前女友了"），不剥就把 ``了`` 存进去。
+# 这也是分表之前的既有行为，分表不该顺手把它改掉。
+_TRIM_TRAIL_FALLBACK_LOCALE = "zh"
 
 # 与 locale 无关的尾巴：ASCII 词，字形上不可能和别的语言撞。中英混说很常见
 # （"别提 my ex please"），所以这些对每个 locale 都剥。
@@ -153,16 +163,18 @@ def _norm_lang(lang: str) -> str:
 def _trim_term(term: str, locale: str = "") -> str:
     """Trim a term: strip trailing particles/modifiers first, then surrounding punctuation + whitespace.
 
-    ``locale`` selects which language's particle list applies. Passing nothing keeps
-    the old cross-locale behaviour for the ASCII tails only — a CJK tail is only
-    stripped when the caller says which template matched, because the same
-    codepoint is a different word per language (``唄``: Chinese particle, Japanese
-    "song"). Callers inside this module always pass it.
-    """
+    ``locale`` selects which language's particle list applies, because the same
+    codepoint is a different word per language: ``U+5504`` is a Chinese sentence
+    particle and the Japanese word for "song". Locales with no CJK list of their
+    own (en / ru / es / pt) fall back to Chinese — mixed-code input carries a
+    Chinese tail far more often than any other. ASCII tails are always stripped.
+    """  # noqa: DOCSTRING_CJK
     if not term:
         return ""
     family = (locale or "").split("-", 1)[0].split("_", 1)[0].lower()
-    tokens = _TRIM_TRAIL_TOKENS_ANY + _TRIM_TRAIL_TOKENS_BY_LOCALE.get(family, ())
+    if family not in _TRIM_TRAIL_TOKENS_BY_LOCALE:
+        family = _TRIM_TRAIL_FALLBACK_LOCALE
+    tokens = _TRIM_TRAIL_TOKENS_ANY + _TRIM_TRAIL_TOKENS_BY_LOCALE[family]
     s = term.strip()
     changed = True
     # 反复剥尾词，直到稳定（"了啊吧" 这种连续助词）
@@ -225,14 +237,54 @@ _BIE_COMPOUND_LEFT = "特性区區级級个個"
 _ZH_BIE = f"(?<![{_BIE_COMPOUND_LEFT}])[别別]"
 
 # ``休`` 反过来：作否定词是文言用法（"休提当年勇"），现代聊天里基本不出现；而
-# 退休 / 午休 / 调休 / 日文 休講 全是复合词。所以只在词首认它，不做字符枚举。
-_ZH_XIU = r"(?<!\w)休"
+# 退休 / 午休 / 调休 全是复合词。所以只在词首认它，不做字符枚举。
+# ⚠️ 再排掉 ``休講``：词首规则拦不住句首的它（"休講だって。" / "休講情報。"），而
+# ``講`` 是本 PR 新加的动词，等于给整条模板 1 开了个日文入口。中文没人写 "休講"
+# ——这个否定用法在现代中文里只剩 "休提 / 休想"（对抗排查）。
+_ZH_XIU = r"(?<!\w)休(?!講)"
 
 _ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
 
+# ---------------------------------------------------------------------------
+# 言说动词表 —— **生成**，不手写
+# ---------------------------------------------------------------------------
+# ⚠️ 手写清单在这里失败过两次：模板 1 的宾语是 ``(.{1,40}?)``，什么都能吃，所以
+# 单字 ``提`` 一旦匹配成功，剩余部分整体成功，正则**没有理由**回溯去试 ``提起``。
+# 于是复合动词必须排在它的单字前缀之前——这条不变量写进注释之后，手抄的那份清单
+# 仍然漏了 提到 / 聊起 / 講起 / 扯到 和整个 ``X及`` 族（54 格里漏 28 格）。
+# 两个维度都是闭集（言说动词字形 × 结果补语），直接做笛卡尔积。
+_ZH_SAY_VERBS = ("说", "說", "提", "聊", "讲", "講", "谈", "談", "扯")
+# 结果补语：``到 / 起 / 及`` 之后跟的才是话题本身，不带上就会把补语并进 term。
+_ZH_VERB_COMPLEMENTS = ("到", "起", "及")
+# 双字言说动词（不是「动词 + 补语」构成的，单列）
+_ZH_SAY_COMPOUNDS = ("讨论", "討論", "谈论", "談論")
+# 称呼类：结构是「动词 + 我 + 称呼」，与上面两族都不同
+_ZH_ADDRESS_VERBS = ("管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我")
+
+
+def _zh_verb_alternation(*, with_address: bool) -> str:
+    """Build the verb alternation, compounds always ahead of their single-char prefix."""
+    parts = [v + c for v in _ZH_SAY_VERBS for c in _ZH_VERB_COMPLEMENTS]
+    parts += list(_ZH_SAY_COMPOUNDS)
+    if with_address:
+        parts += list(_ZH_ADDRESS_VERBS)
+    parts += list(_ZH_SAY_VERBS)
+    return "(?:" + "|".join(parts) + ")"
+
+
+_ZH_VERBS_WITH_ADDRESS = _zh_verb_alternation(with_address=True)
+_ZH_VERBS_PLAIN = _zh_verb_alternation(with_address=False)
+
+# ``就`` 作为词的第二个字是闭集（成就 / 迁就 / 将就 / 造就 / 俯就 / 高就 / 屈就）。
+# 模板 2 的 ``(?:就)?`` 是给 "股票就别提了" 用的，但前缀是 lazy 的，正则会优先把
+# 话题的最后一个字塞进这个可选组——"他的成就别提了。" 于是存成 "他的成"（对抗排查）。
+_ZH_JIU = "(?<![成迁遷将將造俯高屈])就"
+
 # 模板 1 里 term 与终结符之间允许出现的句末助词。与 ``_TRIM_TRAIL_TOKENS`` 的 zh
 # 段成对：这里放行、那里剥掉，少一边 term 就带着助词存进去。
-_ZH_FINAL_PARTICLES = "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|囉|啰|唄|唷|齁))"
+_ZH_FINAL_PARTICLES = (
+    "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|囉|啰|唄|唷|齁|耶|欸|誒|咧|捏|喲))"
+)
 
 # (2) 假名。⚠️ 不能简单地"命中区间有假名就丢"——被 ban 的**对象本身**经常是日文
 # 专有名词（"别再提ドラえもん"、"別叫我お兄ちゃん"），那种句子结构是中文的，假名
@@ -245,7 +297,7 @@ _KANA_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]")
 # （叫我 / 不想 …）。命中区间里出现任意一个，这句就是中文，假名是话题名。
 # ⚠️ 不收 ``不要``：它本身是日文词（ふよう），"不要提出書類" 这种会被当成中文证据。
 _ZH_EVIDENCE_RE = re.compile(
-    r"[别说讲谈讨论关这话题愿懒没许称为說這關沒稱]|叫我|喊我|管我叫|不想|懶得|不願"
+    r"[别说讲谈讨论关这话题愿懒没许称为甭說這關沒稱]|叫我|喊我|管我叫|不想|懶得|不願"
 )
 
 # (2b) 日文的句法证据：助词 / 助动词 / 敬体词尾。日文**句子**几乎必然出现，而一个
@@ -270,7 +322,7 @@ _JA_GRAMMAR_RE = re.compile(
 )
 
 
-def _is_japanese_sentence_match(span: str, term: str) -> bool:
+def _is_japanese_sentence_match(span: str, term: str, before: str = "") -> bool:
     """Is this zh-template hit actually a Japanese sentence caught by shared kanji?
 
     ``別`` is the same codepoint in Japanese and ``提 / 講 / 談 / 討論`` are shared
@@ -287,12 +339,18 @@ def _is_japanese_sentence_match(span: str, term: str) -> bool:
     Japanese particles ("別提君の名は。") is indistinguishable from Japanese by any
     local rule and stays suppressed.
     """  # noqa: DOCSTRING_CJK
+    if _ZH_EVIDENCE_RE.search(span):
+        return False
+    # 命中区间**左边紧挨着**假名 → 触发词是日文能产的 ``〜別`` 后缀（カテゴリ別 /
+    # ジャンル別 / テーマ別），不是中文的祈使 ``別``。中文句子里 ``別`` 前面不会
+    # 直接贴假名。这一条打的是 span 之外的字符，所以 term 本身不含助词也拦得住
+    # （"ジャンル別討論スレ" 的 term 是 ``スレ``，(2b) 够不着）。
+    if before and _KANA_RE.search(before[-1]):
+        return True
     # 快速退出：没假名就不可能是日文句子。(2b) 的判据本身全是假名、且 term 是 span
-    # 的子串，所以这一行不是独立条件，只是省掉后面两次 regex——热路径每条用户消息
+    # 的子串，所以这一行不是独立条件，只是省掉一次 regex——热路径每条用户消息
     # 每条模板都会走到。
     if not _KANA_RE.search(span):
-        return False
-    if _ZH_EVIDENCE_RE.search(span):
         return False
     return bool(_JA_GRAMMAR_RE.search(term))
 
@@ -306,13 +364,9 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # ban_topic；"不允许" 这个义项繁体本来就写 ``不准``，已在表内。
     ("zh", "ban_topic",
      _ZH_NEG + r"\s*(?:再)?\s*"
-     # ⚠️ 复合动词必须排在它的单字前缀**之前**。本模板的宾语是 ``(.{1,40}?)``——
-     # 什么都能吃，所以 ``提`` 先匹配成功之后正则**不会**再回溯去试 ``提起``，
-     # "别提起工作。" 就存成了 ``起工作``（既有缺陷，简繁两侧都有；模板 2/4 要求
+     # 动词表见 _zh_verb_alternation：复合动词必须排在单字前缀之前（模板 2/4 要求
      # 动词后紧跟终结符，失败会回溯，所以没这个问题）。
-     r"(?:提起|提及|讲到|講到|聊到|谈起|談起|谈到|談到|说起|說起|说到|說到|"
-     r"讨论|討論|管我叫|称呼我为?|稱呼我為?|喊我|叫我|"
-     r"说|說|提|聊|讲|講|谈|談|扯)\s*"
+     + _ZH_VERBS_WITH_ADDRESS + r"\s*"
      r"(.{1,40}?)" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
     # ``关于 X 就别提了`` 归模板 4 管。本模板不排掉它的话，同一句会同时产出这里的
@@ -328,18 +382,26 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # 尾部的 ``的 / 的事 / 这个 / 就`` 与模板 4 对齐，让前缀停在真正的话题上；``的``
     # 单独可选是因为 "減肥的這件事別再說了。" 这种自然说法里它和指示词是分开的。
     ("zh", "ban_topic",
-     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(.{1,30}?)\s*"
-     r"(?:的事)?\s*(?:的)?\s*(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事)?\s*"
-     r"(?:就)?\s*[别別]\s*(?:再)?\s*"
+     # ⚠️ 前缀下限是 2 不是 1：三个可选填充组 + lazy 前缀会让正则优先把话题的最后
+     # 一个字塞进填充组，主语只有一个字时（"钱的事别提了。"）前缀被削成 1 字、撞上
+     # ``2 <= len(term)`` 的下限，整条指令消失。下限提到 2 之后正则会改选更长的
+     # 前缀；1 字前缀本来也只能产出 1 字 term、必然被丢，所以抬下限只赚不亏。
+     # ``的`` 绑在指示词里、不单独可选：单独可选会把 "目的这个别提了。" 的 目的 切成
+     # 目（对抗排查）。``就`` 见 _ZH_JIU。
+     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(.{2,30}?)\s*"
+     r"(?:的事)?\s*(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
+     + f"(?:{_ZH_JIU})?" + r"\s*[别別]\s*(?:再)?\s*"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
      r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
-     r"(?:说|說|提|聊|讲|講|谈|談|讨论|討論)\s*(.{1,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
+     + _ZH_VERBS_PLAIN
+     + r"\s*(.{1,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
-     r"(?:关于|關於)\s*(.{1,30}?)\s*(?:的事)?\s*(?:的)?\s*"
-     r"(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事)?\s*(?:就)?\s*[别別]\s*(?:再)?\s*"
+     r"(?:关于|關於)\s*(.{1,30}?)\s*(?:的事)?\s*"
+     r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
+     + f"(?:{_ZH_JIU})?" + r"\s*[别別]\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
 
     # ---------- en ----------
@@ -497,7 +559,9 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             # zh 模板与日文共用 別/提/講/談/討論 这些汉字，日文句子会被抓成
             # ban_topic（见 _is_japanese_sentence_match）。只对 zh 生效——ja 模板
             # 本身要求假名，套上去会把自己全部否掉。
-            if zh_family and _is_japanese_sentence_match(m.group(0), term):
+            if zh_family and _is_japanese_sentence_match(
+                m.group(0), term, text[: m.start()]
+            ):
                 continue
             key = (kind, term.casefold())
             if key in seen:

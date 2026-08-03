@@ -94,11 +94,55 @@ def test_every_simplified_glyph_in_zh_templates_has_its_traditional_twin(
 # ── 2. 召回：繁体祈使句能抽到 term ──────────────────────────────
 # 从否定词 × 动词 × 对象做笛卡尔积，而不是手抄几个句子。
 TW_NEGATIONS = ("別", "不要", "不許", "莫", "甭", "休")
-TW_VERBS = ("說", "提", "聊", "講", "談", "討論")
 CN_NEGATIONS = ("别", "不要", "不许", "莫", "甭", "休")
-CN_VERBS = ("说", "提", "聊", "讲", "谈", "讨论")
 TW_OBJECTS = ("工作", "前男友", "我的體重")
 CN_OBJECTS = ("工作", "前男友", "我的体重")
+
+# ⚠️ 动词维**从模块常量派生**，不手抄。手抄的那版在注释里写下了「复合动词必须排在
+# 单字前缀之前」这条不变量，然后自己漏了 提到 / 聊起 / 講起 / 扯到 和整个 X及 族
+# （54 格漏 28 格）。派生之后，往 _ZH_SAY_VERBS / _ZH_VERB_COMPLEMENTS 里加字会
+# 自动进笛卡尔积。
+ALL_VERBS = tuple(
+    [v + c for v in D._ZH_SAY_VERBS for c in D._ZH_VERB_COMPLEMENTS]
+    + list(D._ZH_SAY_COMPOUNDS)
+    + list(D._ZH_SAY_VERBS)
+)
+TW_VERBS = tuple(v for v in ALL_VERBS if not any(ch in "说讲谈论" for ch in v))
+CN_VERBS = tuple(v for v in ALL_VERBS if not any(ch in "說講談論" for ch in v))
+
+# 唯一被刻意排除的组合：``休`` + 以 ``講`` 开头的动词。``休講`` 是日文（＝停课），
+# 中文没人这么写，而 ``休`` 的词首规则拦不住句首的它。见 _ZH_XIU 的 ``(?!講)``。
+def _is_excluded_pair(negation: str, verb: str) -> bool:
+    return negation == "休" and verb.startswith("講")
+
+
+# ⚠️ 派生的笛卡尔积有个固有盲区：从常量派生的测试，**改常量的同时也改了测试**——
+# 把 谈论/談論 从 _ZH_SAY_COMPOUNDS 里删掉，上面的积会跟着缩小而全绿。所以三个
+# 构词维度各自用相等断言钉死（闭集），改动必须同时改这里。
+def test_verb_constants_are_pinned():
+    assert D._ZH_SAY_VERBS == ("说", "說", "提", "聊", "讲", "講", "谈", "談", "扯")
+    assert D._ZH_VERB_COMPLEMENTS == ("到", "起", "及")
+    assert D._ZH_SAY_COMPOUNDS == ("讨论", "討論", "谈论", "談論")
+    assert D._ZH_ADDRESS_VERBS == (
+        "管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我",
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("不要談論政治。", "政治"),
+        ("不要谈论政治。", "政治"),
+        ("別談論我的家人。", "我的家人"),
+        ("别谈论我的家人。", "我的家人"),
+        ("我不想談論政治。", "政治"),
+        ("我不想谈论政治。", "政治"),
+    ],
+)
+def test_tanlun_is_a_verb_not_a_cut_word(text, expected):
+    """``谈论/談論`` 缺席时单字 ``談`` 先匹配、``論`` 漏进宾语，存成非词「論政治」。
+    命中了但存错，比不命中更糟——模型对不上「政治」这个话题，禁令白设。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
 
 
 @pytest.mark.parametrize("negation", TW_NEGATIONS + CN_NEGATIONS)
@@ -121,8 +165,12 @@ def test_verb_is_actually_in_the_template(verb):
 @pytest.mark.parametrize("verb", TW_VERBS)
 @pytest.mark.parametrize("negation", TW_NEGATIONS)
 def test_traditional_imperative_extracts_the_object(negation, verb, obj):
-    assert obj in _zh_terms(f"{negation}{verb}{obj}。"), (
-        f"繁中 {negation}{verb}{obj} 抽不到 term"
+    if _is_excluded_pair(negation, verb):
+        pytest.skip(f"{negation}{verb} 是刻意排除的组合（日文 休講）")
+    # ⚠️ 断言的是**相等**而不是包含：包含判据放过 "起工作" / "到我前女友" 这类
+    # 复合动词被单字前缀吃掉的结果，正是那样才让 28 格漏了两轮没被发现。
+    assert _zh_terms(f"{negation}{verb}{obj}。") == {obj}, (
+        f"繁中 {negation}{verb}{obj} 抽不到干净的 term"
     )
 
 
@@ -131,7 +179,9 @@ def test_traditional_imperative_extracts_the_object(negation, verb, obj):
 @pytest.mark.parametrize("negation", CN_NEGATIONS)
 def test_simplified_imperative_still_extracts_the_object(negation, verb, obj):
     """The merge must not cost the Simplified side anything."""
-    assert obj in _zh_terms(f"{negation}{verb}{obj}。")
+    if _is_excluded_pair(negation, verb):
+        pytest.skip(f"{negation}{verb} 是刻意排除的组合（日文 休講）")
+    assert _zh_terms(f"{negation}{verb}{obj}。") == {obj}
 
 
 # 四条 zh 模板各自的代表句，繁简成对——单靠上面的笛卡尔积只压到模板 1。
@@ -177,11 +227,9 @@ def test_traditional_and_simplified_reach_the_same_term(tw, cn, expected):
 JAPANESE_KANA_GUARDED = [
     "地域別提案をお願いします。",
     "地域別講座の一覧。",
-    "休講のお知らせ",
     "年齢別講座の案内です。",
     "職種別談話会のお知らせ",
     "地域別談話をお願いします。",
-    "休講だそうです。",
     "年齢別講座に申し込みました。",
     # 助词表按闭集补全之前漏的（codex P2）：只列 のにをはがでと 时这些都会漏出去
     "地域別提案ください。",
@@ -196,6 +244,15 @@ JAPANESE_KANA_GUARDED = [
     "職種別提案したけど。",
     "地域別提案したら連絡。",
 ]
+# 假名开头的 ``〜別``：term 里一个助词都没有（``スレ`` / ``案書``），(2b) 够不着，
+# 只有「命中区间左边紧挨着假名」这条拦得住（对抗排查）。
+JAPANESE_KANA_PREFIXED = [
+    "ジャンル別討論スレ",
+    "カテゴリ別提案書。",
+    "テーマ別討論スレッド。",
+    "メーカー別提案資料",
+    "タイプ別提案書。",
+]
 JAPANESE_BLOCKED_ELSEWHERE = [
     "今日は休講です。",
     "特別講演について話しましょう。",
@@ -209,6 +266,13 @@ JAPANESE_BLOCKED_ELSEWHERE = [
     "個別提案書。",
     "個別提案資料。",
     "個別講座案内。",
+    # 句首的 休講 —— 休 的词首规则拦不住它，靠 _ZH_XIU 的 (?!講)（对抗排查）
+    "休講だそうです。",
+    "休講のお知らせ",
+    "休講だって。",
+    "休講情報。",
+    "休講案内。",
+    "休講、残念。",
 ]
 
 
@@ -225,7 +289,7 @@ def test_the_japanese_guard_is_what_stops_this_sample(text):
 
 
 @pytest.mark.parametrize(
-    "text", JAPANESE_KANA_GUARDED + JAPANESE_BLOCKED_ELSEWHERE,
+    "text", JAPANESE_KANA_GUARDED + JAPANESE_KANA_PREFIXED + JAPANESE_BLOCKED_ELSEWHERE,
 )
 def test_japanese_text_is_not_extracted_by_the_zh_templates(text):
     assert _zh_terms(text) == set(), f"日文 {text!r} 被 zh 模板抓成 ban_topic"
@@ -303,6 +367,21 @@ def test_each_zh_evidence_token_is_load_bearing(token, text, expected):
         f"{expected!r} 不含日文助词，这条样本走的是另一条判据，压不住中文证据这一维"
     )
     assert expected in _zh_terms(text), f"{text!r} 少了 {token!r} 这条证据就会被误丢"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("甭提あの日の記憶。", "あの日の記憶"),
+        ("甭再提ドラえもん了。", "ドラえもん"),
+    ],
+)
+def test_beng_counts_as_chinese_evidence(text, expected):
+    """``甭`` 是简体独有字，日文里根本没有这个汉字，所以带它的句子不可能是日文。
+    不收进证据表的话，"甭提 + 日文专名" 会被日文守卫整条抑制，而同结构的
+    "别提 + 日文专名" 不会——同一模板内的行为不对称（对抗排查）。"""  # noqa: DOCSTRING_CJK
+    assert "甭" in D._ZH_EVIDENCE_RE.pattern
+    assert expected in _zh_terms(text)
 
 
 def test_the_grammar_marker_set_excludes_mo():
@@ -418,7 +497,12 @@ def test_xiu_at_a_word_start_is_still_a_negation(text):
 # ── 5b. 台湾句末助词不能粘在 term 上 ─────────────────────────
 # 存进 user_directives 的是 term 本身，会逐字注进 system prompt。助词粘上去
 # ("工作喔") 就是把一个不存在的话题名喂给模型（codex P2）。
-TAIWANESE_FINAL_PARTICLES = ("喔", "囉", "啰", "唄", "唷", "齁")
+TAIWANESE_FINAL_PARTICLES = (
+    "喔", "囉", "啰", "唄", "唷", "齁", "耶", "欸", "誒", "咧", "捏", "喲",
+)
+# 反问尾巴跟在句末助词后面（"工作了好嗎"）：正则的可选助词组只放行一个，剩下的
+# 并进 term，靠 trim 的循环剥。
+INTERROGATIVE_TAILS = ("好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎")
 
 
 @pytest.mark.parametrize("particle", TAIWANESE_FINAL_PARTICLES)
@@ -426,11 +510,31 @@ def test_taiwanese_final_particle_is_stripped_from_the_term(particle):
     assert _zh_terms(f"別再提工作{particle}") == {"工作"}
 
 
+@pytest.mark.parametrize("tail", INTERROGATIVE_TAILS)
+def test_interrogative_tail_is_stripped_from_the_term(tail):
+    assert _zh_terms(f"別再提工作了{tail}？") == {"工作"}
+
+
 @pytest.mark.parametrize("particle", TAIWANESE_FINAL_PARTICLES)
-def test_particle_is_declared_in_both_places(particle):
-    """放行（正则）与剥离（trim）必须成对：少一边 term 就带着助词存进去。"""  # noqa: DOCSTRING_CJK
-    assert particle in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], f"{particle} 不在 zh trim 表"
+def test_particle_is_declared_in_the_regex(particle):
     assert particle in D._ZH_FINAL_PARTICLES, f"{particle} 不在 _ZH_FINAL_PARTICLES"
+
+
+@pytest.mark.parametrize(
+    "particle", tuple(p for p in TAIWANESE_FINAL_PARTICLES if p != "唄"),
+)
+def test_particle_is_also_declared_in_the_trim_table(particle):
+    """放行（正则）与剥离（trim）成对：少一边 term 就带着助词存进去。"""  # noqa: DOCSTRING_CJK
+    assert particle in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], f"{particle} 不在 zh trim 表"
+
+
+def test_bei_is_deliberately_kept_out_of_the_trim_table():
+    """⚠️ ``唄`` 只在正则里放行、不进 trim 表：它在日文里是"歌"，中文句子里 ban 一个
+    日文歌名（"别再提花の唄了。"）走 trim 会被削成 "花の"。正则那条路不切 term。"""  # noqa: DOCSTRING_CJK
+    assert "唄" in D._ZH_FINAL_PARTICLES
+    assert "唄" not in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]
+    assert _zh_terms("別再提工作唄") == {"工作"}
+    assert _zh_terms("别再提花の唄了。") == {"花の唄"}
 
 
 def test_stacked_particles_are_all_stripped():
@@ -441,8 +545,8 @@ def test_stacked_particles_are_all_stripped():
 # 是 ``呗`` 的繁体语气词，在日文是"歌"（子守唄＝摇篮曲）；``了`` 在日文是 完了/
 # 終了 的构词成分。拿中文那套去剥日文 term 会把词削掉一半（codex P2）。
 JAPANESE_TERMS_ENDING_IN_A_CHINESE_PARTICLE = [
-    ("子守唄のことはもう言わないで", "子守唄"),
     ("終了のことはもう言わないで", "終了"),
+    ("完了のことはもう言わないで", "完了"),
 ]
 
 
@@ -469,6 +573,24 @@ def test_ascii_tails_stay_global(locale):
     assert D._trim_term("my ex please", locale) == "my ex"
 
 
+@pytest.mark.parametrize(
+    ("text", "locale", "expected"),
+    [
+        ("stop talking about 前女友了", "en", "前女友"),
+        ("don't mention 加班了", "en", "加班"),
+        ("no hables de 相亲了", "es", "相亲"),
+        ("не говори про 前任了", "ru", "前任"),
+        ("não fale de 加班了", "pt", "加班"),
+    ],
+)
+def test_non_cjk_locales_fall_back_to_the_chinese_particle_list(text, locale, expected):
+    """⚠️ 按 locale 分表之后 en/ru/es/pt 就没有 CJK 助词表了，但中英混说时 term
+    往往整段是中文（"stop talking about 前女友了"），不回落就把 ``了`` 存进去——
+    那是分表**之前**的既有行为，分表不该顺手改掉它。"""  # noqa: DOCSTRING_CJK
+    terms = {t for loc, _k, t in extract_directives(text) if loc == locale}
+    assert expected in terms, f"{text!r} -> {terms}"
+
+
 # ── 5d. 复合动词不能被它的单字前缀吃掉 ───────────────────────
 # 模板 1 的宾语是 ``(.{1,40}?)``，什么都能吃，所以 ``提`` 一旦匹配成功正则**不会**
 # 回溯去试 ``提起`` —— 复合动词必须排在单字前缀之前（codex P2；简繁两侧都错过）。
@@ -491,6 +613,52 @@ def test_compound_verb_is_not_swallowed_by_its_prefix(tw, cn):
 
 
 # ── 5e. 的 + 指示词 的自然说法 ───────────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("減肥的這件事別再說了。", "減肥"),
+        ("减肥的这件事别再说了。", "减肥"),
+        ("搬家的這件事別提了。", "搬家"),
+        ("搬家的这件事别提了。", "搬家"),
+        ("關於減肥的這件事就別說了。", "減肥"),
+        ("关于减肥的这件事就别说了。", "减肥"),
+    ],
+)
+def test_possessive_before_the_demonstrative_is_consumed_pairs(text, expected):
+    assert _zh_terms(text) == {expected}
+
+
+# ⚠️ 模板 2 的三个可选填充组（的事 / 的+指示词 / 就）加上 lazy 前缀，会让正则优先
+# 把**话题的最后一个字**塞进填充组。三种破法各配一条（对抗排查）：
+@pytest.mark.parametrize(
+    ("text", "expected", "why"),
+    [
+        # (a) 就 切进词里 —— 靠 _ZH_JIU 的复合词左界挡
+        ("他的成就别提了。", "他的成就", "就"),
+        ("他的成就別提了。", "他的成就", "就"),
+        ("成就别提了。", "成就", "就"),
+        ("迁就别提了。", "迁就", "就"),
+        ("将就别提了。", "将就", "就"),
+        # (b) 的 单独可选会切 目的 / 标的 —— 靠把 的 绑进指示词分支挡
+        ("目的这个别提了。", "目的", "的"),
+        ("目的這個別提了。", "目的", "的"),
+        ("标的这个别提了。", "标的", "的"),
+        # ⚠️ 三字以上的话题才压得住这一维：话题只有两字时被削掉的那半撞上 2 字下限
+        # 被丢弃，正则会自己改选更长的前缀，看起来"没坏"。
+        ("有目的别提了。", "有目的", "的"),
+        ("有目的別提了。", "有目的", "的"),
+        ("这个标的别提了。", "这个标的", "的"),
+        # (c) 单字主语被填充组削到 1 字、撞长度下限 —— 靠前缀下限 2 挡
+        ("钱的事别提了。", "钱的事", "下限"),
+        ("我的事别提了。", "我的事", "下限"),
+        ("他的事别提了。", "他的事", "下限"),
+        ("关于钱的事别提了。", "钱的事", "下限"),
+    ],
+)
+def test_filler_groups_do_not_slice_the_topic(text, expected, why):
+    assert _zh_terms(text) == {expected}, f"{text!r}（{why}）"
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
