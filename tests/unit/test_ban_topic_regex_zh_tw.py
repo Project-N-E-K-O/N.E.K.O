@@ -770,19 +770,50 @@ def test_single_character_subject_survives_the_optional_de_shi(text, expected):
 def test_bracket_and_plain_branches_are_mutually_exclusive():
     """⚠️⚠️ 这是一条 ReDoS 护栏，不是风格问题。
 
-    单字分支原本也能匹配 ``《``，于是 ``《a》`` 既可以被括号分支整体吃掉、也可以被
-    单字分支逐字吃掉；这个歧义放进 ``{2,30}?`` 的重复里就是指数级回溯——``别提``
-    加 30 段 ``《a》`` 要跑 1.3 秒，而这条路径每条用户消息都会走（codex P1）。
+    单字分支也能匹配 ``《``，于是 ``《a》`` 既可以被括号分支整体吃掉、也可以被单字
+    分支逐字吃掉；这个歧义放进 ``{2,30}?`` 的重复里就是指数级回溯——``别提`` 加
+    30 段 ``《a》`` 要跑 1.3 秒，而这条路径每条用户消息都会走（codex P1）。
+
+    解法是把整个"单位"包进**原子组**：某个位置选了哪个分支就不再回头。比"把开括号
+    排除出单字分支"更好——落单的 ``"`` / ``(``（英寸号、颜文字）仍能被当普通字吃掉。
     """  # noqa: DOCSTRING_CJK
     import time
-    for opener, _closer in D._ZH_BRACKET_PAIRS:
-        assert opener in D._ZH_PLAIN_CHAR, (
-            f"开括号 {opener} 没被排除出单字分支，两个分支重叠 = 回溯爆炸"
-        )
-    started = time.perf_counter()
-    extract_directives("别提" + "《a》" * 120)
-    elapsed = time.perf_counter() - started
-    assert elapsed < 1.0, f"120 段括号跑了 {elapsed:.2f}s，回溯又爆了"
+
+    assert D._ZH_TOPIC_CHAR.startswith("(?>"), (
+        "话题单位不是原子组，括号分支与单字分支重叠 = 回溯爆炸"
+    )
+    for segment in ("《a》", '"a"', "(a)"):
+        started = time.perf_counter()
+        extract_directives("别提" + segment * 120)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.0, f"{segment} x120 跑了 {elapsed:.2f}s，回溯又爆了"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ASCII 成对定界符：这些在 parent 上是完整的，不收就是回归（codex P2）
+        ('"Everything, Everywhere"别提了。', "Everything, Everywhere"),
+        ("电影(Hello, World)别提了。", "电影(Hello, World"),
+        ('别提"你好，李焕英"了。', "你好，李焕英"),
+    ],
+)
+def test_ascii_paired_delimiters_keep_the_whole_title(text, expected):
+    assert expected in _zh_terms(text), f"{text!r} -> {_zh_terms(text)}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 落单的 ASCII 定界符不能变成硬边界——这正是原子组方案相对"排除开括号"
+        # 的关键好处（英寸号、颜文字 :( 、英文撇号）。
+        ("别提这个:(", {"这个"}),
+        ("别提 don't do it 了。", {"don't do it"}),
+        ('别提 5" 屏幕了。', {'5" 屏幕'}),
+    ],
+)
+def test_an_unpaired_ascii_delimiter_is_not_a_hard_boundary(text, expected):
+    assert _zh_terms(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -804,11 +835,10 @@ def test_all_four_zh_templates_share_one_topic_char_class():
     assert D._ZH_BRACKET_PAIRS == (
         ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
         ("（", "）"), ("〈", "〉"), ("〔", "〕"), ("［", "］"), ("〖", "〗"),
+        ('"', '"'), ("(", ")"),
     )
-    # ⚠️ ASCII 的 `"` `'` `(` 刻意不收：中文消息里它们经常落单（英文撇号、颜文字
-    # `:(`、英寸号），一旦进表就会被排除出单字分支、落单时变成硬边界。
-    for ascii_char in ('"', "'", "(", "[", "<"):
-        assert ascii_char not in D._ZH_BRACKET_OPENERS, ascii_char
+    # ⚠️ 单引号刻意不收：英文里它是词内撇号（don't / it's），配对没有意义。
+    assert "'" not in D._ZH_BRACKET_OPENERS
 
 
 def test_every_bracket_delimiter_is_also_trimmed():
@@ -824,8 +854,13 @@ def test_every_bracket_delimiter_is_also_trimmed():
         if ch not in D._TRIM_TRAIL
     )
     assert not missing, f"这些括号是话题分隔符但不会被 trim 剥掉：{missing}"
+    import re as _re
+
     for lo, hi in D._ZH_BRACKET_PAIRS:
-        assert f"{lo}[^{hi}" in D._ZH_BRACKET_RUN, f"{lo}{hi} 没进话题单位"
+        # ASCII 定界符在正则里是转义过的，比对时也要转义
+        assert f"{_re.escape(lo)}[^{_re.escape(hi)}" in D._ZH_BRACKET_RUN, (
+            f"{lo}{hi} 没进话题单位"
+        )
     for raw in _zh_pattern_sources():
         assert D._ZH_TOPIC_CHAR in raw, f"这条 zh 模板没走共用话题单位：{raw!r}"
 
