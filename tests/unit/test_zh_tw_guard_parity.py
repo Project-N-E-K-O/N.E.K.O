@@ -1251,3 +1251,17 @@ def test_data_is_a_whole_card_scope_noun(simplified, traditional):
 
     for text in (simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("space", [" ", "\u3000"])
+@pytest.mark.parametrize("quantifier", ["每一个", "每项", "各项", "所有"])
+def test_whitespace_before_quantified_scope_suffixes_is_skipped(quantifier, space):
+    """⚠️ 整卡那一支的续接前面也要跳空白——直接字段清单那一支上一轮改了，这一支
+    漏了（Codex P2 第十七轮，base 是 True）。又是同一件事两处漂开。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把整个卡的{quantifier}字段{space}内容重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把整个卡的{quantifier}字段{space}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked

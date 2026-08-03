@@ -1895,6 +1895,7 @@ def test_the_a_not_a_tail_table_is_derived_not_transcribed():
     assert set(mr._ZH_A_NOT_A_MODALS) == {
         "可以", "能", "能够", "能夠", "会", "會", "该", "該", "应该", "應該",
         "需要", "愿意", "願意", "要", "想", "行", "好", "是", "对", "對",
+        "敢", "肯", "值得", "舍得", "捨得", "用", "配",
     }, mr._ZH_A_NOT_A_MODALS
     # 两种构式都要生成出来，外加用「没」做中缀的 有没有。
     for form in ("应该不应该", "应不应该", "需不需要", "需要不需要",
@@ -2952,3 +2953,49 @@ def test_a_non_song_audio_object_after_de_is_still_a_command(audio):
 
     assert is_explicit_music_cancellation(f'停止正在播放的{audio}') is True
     assert is_explicit_music_cancellation('我要停止播放的广播代码') is False
+
+
+@pytest.mark.parametrize(
+    "ambient", ["环境音", "環境音", "雨声", "雨聲", "海浪声", "提示音", "风声", "白噪音"]
+)
+def test_an_audio_object_ending_in_a_sound_suffix_is_a_command(ambient):
+    """⚠️ 这一族改成**后缀规则**，不再逐个补词。
+
+    环境音/雨声/海浪声/提示音… 是开集，但它们的**构词是闭的**——音频对象几乎都
+    以「声/聲/音」收尾（Codex 第十五~十七轮各补一个词，同一个跑步机）。
+
+    ⚠️ 配对反向断言：缺陷本体那一族都不以 声/音 收尾，照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{ambient}') is True
+    for blocked in ('我要停止播放的代码', '我要停止播放的教程',
+                    '我要停止播放的听歌功能', '我要停止播放的广播代码'):
+        assert is_explicit_music_cancellation(blocked) is False, blocked
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要放的跟刚才一样大声", "不要放的跟剛才一樣大聲"),
+        ("不要放的像刚才那么大声", "不要放的像剛才那麼大聲"),
+        ("不要放的没有刚才那么大声", "不要放的沒有剛才那麼大聲"),
+        ("不要放的比刚才大声", "不要放的比剛才大聲"),
+    ],
+)
+def test_any_comparison_frame_before_a_degree_word_is_a_command(
+    simplified, traditional
+):
+    """⚠️ 比较框架本身是开集（比… / 跟…一样 / 像…那么 / 没…那么 / 不如…）。
+
+    所以不再要求以「比」开头，干活的从来是**以程度词收尾**这个条件
+    （base 全是 True，Codex P2 第十七轮）。
+
+    ⚠️ 配对反向断言：`停止播放的比赛结果` 不以程度词收尾，仍然是名物化。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('停止播放的比赛结果') is False
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False

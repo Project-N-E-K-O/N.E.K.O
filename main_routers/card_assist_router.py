@@ -936,7 +936,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # 自己的收尾要求（见 _WHOLE_CARD_BARE_QUANTIFIER_TAIL）。
     rf"(?:\s*的?\s*{_WHOLE_CARD_SCOPE_MODIFIER}"
     rf"(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
-    rf"(?>(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})*)"
+    rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
