@@ -3147,3 +3147,24 @@ def test_wh_question_markers_are_recognized(marker):
     for command in ('帮我停止播放红心歌单', '停止播放', '不要放晴天',
                     '停止正在播放的晴天'):
         assert is_explicit_music_cancellation(command) is True, command
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["什么时候", "什麼時候", "何时", "何時", "多久", "几时",
+     "哪里", "哪裡", "哪儿", "什么地方", "哪一首", "哪首"],
+)
+def test_compound_wh_markers_are_recognized(marker):
+    """⚠️ 复合疑问词（什么时候 / 何时 / 哪里 / 哪一首）。
+
+    第二十三轮我收 wh 那一族时刻意没收 `什么` / `哪` 的**裸形**——它们在
+    「没什么」「哪怕」里不是提问。但**复合形**只能用于提问，所以可以收
+    （Codex P2 第二十四轮）。收词边界没变，变的是我对边界的应用漏了复合形。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}会换成《你好吗？》'
+    ) is False
+    for command in ('帮我停止播放红心歌单', '停止播放', '不要放晴天'):
+        assert is_explicit_music_cancellation(command) is True, command
