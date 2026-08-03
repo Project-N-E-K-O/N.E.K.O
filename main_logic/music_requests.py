@@ -222,7 +222,8 @@ _ZH_CHANGED_MIND_PREFACE = r"(?:(?:算了|还是算了|還是算了)[，,\s]*)?"
 # ⚠️⚠️ 跟前缀一样，这道守卫必须**逐字同时**出现在 _ZH_NEGATIVE_MUSIC 和
 # _ZH_DIRECT_MUSIC_STOP 上。只加一边会让整句静默换类（见下面那条 lockstep 注释）。
 _ZH_PREFIXED_QUESTION_GUARD = (
-    rf"(?!{_ZH_POLITE}(?:(?:给我|給我|帮我|幫我)|(?:我)?(?:想|要))"
+    rf"(?!{_ZH_CHANGED_MIND_PREFACE}{_ZH_POLITE}"
+    r"(?:(?:给我|給我|帮我|幫我)|(?:我)?(?:想|要))"
     r"[^。！？!?]*[吗嗎呢]\s*[？?]?\s*$)"
 )
 # ⚠️ 逗号也要排除：这条作用在**未切分**的整句上，允许跨子句的话，
@@ -233,7 +234,8 @@ _ZH_PREFIXED_QUESTION_GUARD = (
 # 「我想停止播放」，看不到那个问号。所以这一条只能放在入口判，作用在**未切分**
 # 的原文上。两条机制互补：语气词在正则里（语气词不会被切分剥掉），裸问号在这里。
 _ZH_BARE_QUESTION_UTTERANCE = re.compile(
-    rf"^{_ZH_POLITE}(?:(?:给我|給我|帮我|幫我)|(?:我)?(?:想|要))[^。！？!?，,、；;]*[？?]\s*$"
+    rf"^{_ZH_CHANGED_MIND_PREFACE}{_ZH_POLITE}"
+    r"(?:(?:给我|給我|帮我|幫我)|(?:我)?(?:想|要))[^。！？!?，,、；;]*[？?]\s*$"
 )
 # ⚠️ 停止动词与**音乐名词**之间的闭集窗口。
 #
@@ -423,6 +425,11 @@ _ZH_SPEECH_TARGET = (
 )
 # ⚠️ 只收台湾用字「動畫」，**不要**写「动画」的日文形「動画」——日文里那是
 # 极常见的普通名词，收了会把日文输入判成「非音乐目标」。
+# 成对的引用符号——括起来的内容是歌名。闭集。
+_ZH_QUOTED_SPAN = re.compile(
+    r"《[^》]*》|〈[^〉]*〉|「[^」]*」|『[^』]*』|【[^】]*】"
+    r"|\"[^\"]*\"|'[^']*'"
+)
 _ZH_NON_MUSIC_TARGET = re.compile(
     r"(?:(?:一个|一個|一段|一些|这个|這個|那个|那個|我的|你的|他的|她的)\s*)?"
     # ⚠️ 台湾把 video 叫「影片」而不是「視頻」——只补字形转换会漏掉最常用的那个词，
@@ -967,9 +974,14 @@ def _has_explicit_non_music_target(clause: str) -> bool:
     # 非音乐目标「影片」。上一版撞上复合词就直接丢弃、不再往后扫，于是整句
     # 退化成取消音乐，把用户「别放视频」听成了「别放音乐」（Codex P2；简体
     # `不要播放电影歌曲的视频` 在基线上是 False）。
+    # ⚠️ 书名号/引号里的内容是**歌名**，不是非音乐目标。同一个模块的引用式
+    # 请求分支会把 `播放《影片》` 解析成 song_name='影片'，这里却把同一个词
+    # 当成视频目标、把明确取消压掉（Codex P2，base 是 True）。
+    # 成对符号是闭集，先把括起来的片段挖掉再找目标。
+    scan_clause = _ZH_QUOTED_SPAN.sub(lambda m: "　" * (m.end() - m.start()), clause)
     zh_target = None
-    for candidate in _ZH_NON_MUSIC_TARGET.finditer(clause):
-        if _ZH_MUSIC_NOUN_AFTER_TARGET.match(clause, candidate.end()):
+    for candidate in _ZH_NON_MUSIC_TARGET.finditer(scan_clause):
+        if _ZH_MUSIC_NOUN_AFTER_TARGET.match(scan_clause, candidate.end()):
             # 「這個影片的歌」「電影歌曲」——目标词自己构成了音乐复合词。
             continue
         zh_target = candidate

@@ -2640,6 +2640,22 @@ def expand_style_keyword(keyword: str) -> List[str]:
         # ---- 韩文风格 ----
         '케이팝': ['k-pop', 'korean pop', 'k-r&b', 'korean music'],
     }
+
+    # ⚠️ 上面这张表是简体写的，而路由关键词表（ROUTING_* ）已经补了繁体。
+    # 结果是 `來點電音的歌` 能选中 indie 分支，到这里却拿不到英文扩展词，
+    # 只带着未翻译的原词去搜 Bandcamp/SoundCloud，常常 track_not_found
+    # （Codex P2）。这里按繁→简折叠补出繁体键，指向同一份扩展词。
+    # ⚠️ 只列**简繁写法不同**的键；折叠表放在这里而不是逐条手抄，
+    # 是因为上面那张表会长，手抄必然落后。
+    _STYLE_KEY_TWINS = str.maketrans({
+        '电': '電', '独': '獨', '环': '環', '说': '說', '轻': '輕', '乐': '樂',
+        '钢': '鋼', '众': '眾', '国': '國', '风': '風', '摇': '搖', '滚': '滾',
+        '经': '經',
+    })
+    for _key in list(style_expansions):
+        _twin = _key.translate(_STYLE_KEY_TWINS)
+        if _twin != _key and _twin not in style_expansions:
+            style_expansions[_twin] = style_expansions[_key]
     
     # 先收集语言互补词
     lang_extras = []

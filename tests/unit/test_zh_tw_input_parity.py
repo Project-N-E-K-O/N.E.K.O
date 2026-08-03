@@ -1728,3 +1728,54 @@ def test_a_song_name_starting_with_a_compound_char_still_cancels(
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("算了我想停止播放吗？", "算了我想停止播放嗎？"),
+        ("还是算了我想停止播放吗？", "還是算了我想停止播放嗎？"),
+        ("算了我要停止播放？", "算了我要停止播放？"),
+    ],
+)
+def test_a_changed_mind_preface_does_not_defeat_the_question_guard(
+    simplified, traditional
+):
+    """⚠️ 两条疑问守卫都锚在 `^` 上，却没允许「算了」引导语——而真正的取消
+    正则是在守卫**之后**才消费引导语的。于是加个「算了」就绕过去了。
+
+    锚定守卫和它保护的正则必须消费同样的前缀，否则中间那段就是个缺口。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "title", ["影片", "電影", "動畫", "遊戲", "視頻", "晴天"]
+)
+def test_a_quoted_title_is_a_song_not_a_video_target(title):
+    """⚠️ 书名号里的内容是**歌名**。同一个模块的引用式请求分支会把
+    `播放《影片》` 解析成 song_name='影片'，非音乐目标检查却把同一个词当成
+    视频目标、把明确取消压掉（base 是 True）。
+
+    成对符号是闭集，扫描前先把括起来的片段挖掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'不要播放《{title}》') is True
+
+
+@pytest.mark.parametrize("style", ["電音", "獨立", "環境音", "說唱", "輕音樂"])
+def test_a_traditional_style_keyword_still_expands(style):
+    """⚠️ 路由关键词表已经补了繁体，曲风扩展表还是简体——`來點電音的歌` 能
+    选中 indie 分支，却只带着未翻译的原词去搜 Bandcamp/SoundCloud，
+    常常 track_not_found（Codex P2）。
+
+    按繁→简折叠补出繁体键指向同一份扩展词，而不是手抄——上面那张表会长，
+    手抄必然落后。
+    """  # noqa: DOCSTRING_CJK
+    from utils.music_crawlers import expand_style_keyword
+
+    assert len(expand_style_keyword(style)) > 1, style
