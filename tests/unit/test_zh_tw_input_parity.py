@@ -248,7 +248,20 @@ def test_the_single_char_negator_must_govern_a_playback_verb(simplified, traditi
 
 @pytest.mark.parametrize(
     ("simplified", "traditional"),
-    [("别放音乐了", "別放音樂了"), ("别再放了", "別再放了"), ("别再播音乐", "別再播音樂")],
+    [
+        ("别放音乐了", "別放音樂了"),
+        ("别再放了", "別再放了"),
+        ("别再播音乐", "別再播音樂"),
+        # ⚠️ A recipient phrase may sit between the negator and the verb. The
+        # first version of the positive rule allowed only whitespace and 再,
+        # which dropped these (Codex P2). What is allowed is a *closed* set —
+        # the same `_ZH_FOR_ME` fragment the request parser uses — not another
+        # wildcard window; that is what separates this from the blacklist it
+        # replaced.
+        ("别给我放歌", "別給我放歌"),
+        ("别帮我播放音乐", "別幫我播放音樂"),
+        ("别再给我放歌", "別再給我放歌"),
+    ],
 )
 def test_the_single_char_negator_still_matches_imperatives(simplified, traditional):
     from main_logic.music_requests import is_explicit_music_cancellation
@@ -293,6 +306,12 @@ def test_plural_second_person_speech_requests_are_rejected(simplified, tradition
 
 DIRECT_STOP_PAIRS = [
     ("停止播放红心歌单", "停止播放紅心歌單"),
+    # ⚠️ A stop verb may govern the **source noun** directly, with no separate
+    # playback verb. Requiring one dropped 「停止紅心歌單」 (Codex P2). The source
+    # nouns are a closed set and deliberately exclude 收藏, which is a verb in
+    # 「取消收藏这首歌」 and governs the favourite, not playback.
+    ("停止红心歌单", "停止紅心歌單"),
+    ("停止红心歌单音乐", "停止紅心歌單音樂"),
     ("暂停播放我喜欢的", "暫停播放我喜歡的"),
     ("取消播放每日推荐", "取消播放每日推薦"),
 ]
