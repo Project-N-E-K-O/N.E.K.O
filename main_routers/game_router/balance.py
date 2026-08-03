@@ -23,6 +23,9 @@ from .visible_events import _normalize_badminton_shot_type, _sanitize_badminton_
 
 from typing import Any, Dict
 from config.prompts.prompts_soccer import (
+    SOCCER_ANGER_CAP_STRONG_KEYWORDS,
+    SOCCER_ANGER_CAP_WEAK_KEYWORDS,
+    SOCCER_ANGER_CONTEXT_KEYWORDS,
     get_soccer_anger_pressure_cap_message,
     get_soccer_anger_pressure_cap_reason,
 )
@@ -130,28 +133,14 @@ def _soccer_anger_pressure_cap_applicable(pre_game_context: Any) -> bool:
         return True
 
     text_blob = _soccer_context_text_blob(pre_game_context).lower()
-    anger_context_keywords = (
-        "生气", "发火", "愤怒", "爆发", "惩罚", "教训", "报复", "泄愤",
-        "冷战", "冲突", "关系修复", "哄", "道歉", "补偿", "赔偿",
-        "angry", "punish", "punishment", "repair", "apology", "compensation",
-        "cold_war",
-    )
-    return any(keyword in text_blob for keyword in anger_context_keywords)
+    return any(keyword in text_blob for keyword in SOCCER_ANGER_CONTEXT_KEYWORDS)
 
 
 def _soccer_anger_pressure_cap_goals(pre_game_context: Any, lanlan_prompt: str = "") -> int:
     text_blob = f"{_soccer_context_text_blob(pre_game_context)} {lanlan_prompt}".lower()
-    weak_keywords = (
-        "不擅长运动", "运动差", "体力弱", "体弱", "虚弱", "病弱", "容易累",
-        "缺乏运动", "宅", "懒得动", "weak", "frail", "sickly",
-    )
-    strong_keywords = (
-        "擅长运动", "运动神经", "体育", "足球", "体力强", "耐力好", "精力充沛",
-        "敏捷", "athletic", "sporty", "stamina", "energetic",
-    )
-    if any(keyword in text_blob for keyword in weak_keywords):
+    if any(keyword in text_blob for keyword in SOCCER_ANGER_CAP_WEAK_KEYWORDS):
         return _SOCCER_ANGER_PRESSURE_CAP_WEAK
-    if any(keyword in text_blob for keyword in strong_keywords):
+    if any(keyword in text_blob for keyword in SOCCER_ANGER_CAP_STRONG_KEYWORDS):
         return _SOCCER_ANGER_PRESSURE_CAP_STRONG
     return _SOCCER_ANGER_PRESSURE_CAP_DEFAULT
 
