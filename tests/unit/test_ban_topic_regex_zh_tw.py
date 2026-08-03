@@ -250,6 +250,12 @@ JAPANESE_KANA_GUARDED = [
     "地域別提案だっけ。",
     "職種別講座でしょ。",
     "地域別提案かも。",
+    # 过去 / 义务 / 被动 / 进行 等谓语形式（codex P2）
+    "地域別講座だった。",
+    "世代別提案だって。",
+    "商品別提案すべき。",
+    "地域別提案される。",
+    "世代別講座している。",
     # 含「曾被误当成中文证据」的日文汉字：没（没収）/ 称（名称）。它们**就是**日文
     # 标准字形，不是 沒 / 稱 的简体专用形（codex P2）。
     "地域別提案で没になりました。",
@@ -306,22 +312,6 @@ def test_the_japanese_guard_is_what_stops_this_sample(text):
 )
 def test_japanese_text_is_not_extracted_by_the_zh_templates(text):
     assert _zh_terms(text) == set(), f"日文 {text!r} 被 zh 模板抓成 ban_topic"
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("仕事のことはもう言わないで", "仕事"),
-        # ⚠️ term 自带助词的 ja 命中才压得住 zh_family 这道作用域：守卫的判据是
-        # "没有中文证据 + term 含助词"，对一条 ja 命中永远成立，套上去就把 ja 自己
-        # 否掉了。term 不含假名的样本（"仕事"）证明不了这一点。
-        ("この前の話はもう言わないで", "この前"),
-        ("あの人のことは言わないで", "あの人"),
-    ],
-)
-def test_japanese_ban_topic_still_works_(text, expected):
-    hits = extract_directives(text)
-    assert expected in {term for locale, _kind, term in hits if locale == "ja"}, hits
 
 
 # ⚠️ 已知残留，**故意断言当前的错误行为**：日文能产的 ``〜別`` 后缀（地域別 /
@@ -583,10 +573,24 @@ def test_real_sentences_with_compound_xiu_do_not_fire(text):
     assert _zh_terms(text) == set()
 
 
-@pytest.mark.parametrize("text", ["休提舊事。", "休提旧事。"])
-def test_xiu_at_a_word_start_is_still_a_negation(text):
-    """守卫是词首规则，不是把 休 从表里删掉。"""  # noqa: DOCSTRING_CJK
-    assert _zh_terms(text), f"{text!r} 应当仍然命中"
+@pytest.mark.parametrize(
+    "text",
+    [
+        "休提舊事。", "休提旧事。",
+        # ⚠️ 不能用词首规则：Python 把相邻汉字都算 \w，一道 (?<!\w) 会把这些正常
+        # 句子全打死（codex P2）。改用和 别 同形的复合词左界表。
+        "你休提旧事。", "以后休提旧事。", "千万休提旧事。",
+        "你休提舊事。", "以後休提舊事。",
+    ],
+)
+def test_xiu_after_ordinary_context_is_still_a_negation(text):
+    assert "旧事" in _zh_terms(text) or "舊事" in _zh_terms(text), (
+        f"{text!r} 应当仍然命中：{_zh_terms(text)}"
+    )
+
+
+def test_xiu_compound_left_set_is_pinned():
+    assert D._XIU_COMPOUND_LEFT == "退午调調补補年病公轮輪全双雙不歇罢罷特半"
 
 
 # ── 5b. 台湾句末助词不能粘在 term 上 ─────────────────────────
@@ -745,14 +749,45 @@ def test_single_character_subject_survives_the_optional_de_shi(text, expected):
     assert expected in _zh_terms(text), f"{text!r} -> {_zh_terms(text)}"
 
 
+def test_bracket_and_plain_branches_are_mutually_exclusive():
+    """⚠️⚠️ 这是一条 ReDoS 护栏，不是风格问题。
+
+    单字分支原本也能匹配 ``《``，于是 ``《a》`` 既可以被括号分支整体吃掉、也可以被
+    单字分支逐字吃掉；这个歧义放进 ``{2,30}?`` 的重复里就是指数级回溯——``别提``
+    加 30 段 ``《a》`` 要跑 1.3 秒，而这条路径每条用户消息都会走（codex P1）。
+    """  # noqa: DOCSTRING_CJK
+    import time
+    for opener, _closer in D._ZH_BRACKET_PAIRS:
+        assert opener in D._ZH_PLAIN_CHAR, (
+            f"开括号 {opener} 没被排除出单字分支，两个分支重叠 = 回溯爆炸"
+        )
+    started = time.perf_counter()
+    extract_directives("别提" + "《a》" * 120)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"120 段括号跑了 {elapsed:.2f}s，回溯又爆了"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 一整段括号算**一个**单位，`{2,n}` 会把独立成句的书名卡掉（codex P2）
+        ("《你好，李焕英》别提了。", "你好，李焕英"),
+        ("「你好，李焕英」别提了。", "你好，李焕英"),
+        ("《你好，李煥英》別提了。", "你好，李煥英"),
+    ],
+)
+def test_a_standalone_quoted_title_is_a_valid_topic(text, expected):
+    assert _zh_terms(text) == {expected}
+
+
 def test_all_four_zh_templates_share_one_topic_char_class():
     """四条模板各写各的字符类正是漂移的起点——共用一份常量，加一条模板也自动跟上。"""  # noqa: DOCSTRING_CJK
-    assert r"[^，。！？；,.!?;\r\n]" in D._ZH_TOPIC_CHAR
+    assert r"[^，。！？；,.!?;\r\n" in D._ZH_PLAIN_CHAR
     assert D._ZH_BRACKET_PAIRS == (
         ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
     )
     for lo, hi in D._ZH_BRACKET_PAIRS:
-        assert f"{lo}[^{hi}" in D._ZH_TOPIC_CHAR, f"{lo}{hi} 没进话题单位"
+        assert f"{lo}[^{hi}" in D._ZH_BRACKET_RUN, f"{lo}{hi} 没进话题单位"
     for raw in _zh_pattern_sources():
         assert D._ZH_TOPIC_CHAR in raw, f"这条 zh 模板没走共用话题单位：{raw!r}"
 
@@ -844,9 +879,13 @@ def test_ascii_tails_stay_global(locale):
         ("no hables de 相亲了", "es", "相亲"),
         ("не говори про 前任了", "ru", "前任"),
         ("não fale de 加班了", "pt", "加班"),
+        # ⚠️ 混说的那一段也可能是**日文**，所以回落是 zh + ja 的并集，不是只有 zh
+        ("stop saying 仕事ね", "en", "仕事"),
+        ("stop talking about あの人よ", "en", "あの人"),
+        ("don't mention my ex 啊", "en", "my ex"),
     ],
 )
-def test_non_cjk_locales_fall_back_to_the_chinese_particle_list(text, locale, expected):
+def test_non_cjk_locales_fall_back_to_the_cjk_particle_lists(text, locale, expected):
     """⚠️ 按 locale 分表之后 en/ru/es/pt 就没有 CJK 助词表了，但中英混说时 term
     往往整段是中文（"stop talking about 前女友了"），不回落就把 ``了`` 存进去——
     那是分表**之前**的既有行为，分表不该顺手改掉它。"""  # noqa: DOCSTRING_CJK
@@ -876,19 +915,6 @@ def test_compound_verb_is_not_swallowed_by_its_prefix(tw, cn):
 
 
 # ── 5e. 的 + 指示词 的自然说法 ───────────────────────────────
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("減肥的這件事別再說了。", "減肥"),
-        ("减肥的这件事别再说了。", "减肥"),
-        ("搬家的這件事別提了。", "搬家"),
-        ("搬家的这件事别提了。", "搬家"),
-        ("關於減肥的這件事就別說了。", "減肥"),
-        ("关于减肥的这件事就别说了。", "减肥"),
-    ],
-)
-def test_possessive_before_the_demonstrative_is_consumed_pairs(text, expected):
-    assert _zh_terms(text) == {expected}
 
 
 # ⚠️ 模板 2 的三个可选填充组（的事 / 的+指示词 / 就）加上 lazy 前缀，会让正则优先
@@ -966,18 +992,6 @@ def test_a_title_containing_guanyu_still_yields_its_outer_topic(text):
 
 
 # ── 5c. 关于 X 只产出一条 term ───────────────────────────────
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("關於股票就別再講了", "股票"),
-        ("关于股票就别再讲了", "股票"),
-        ("關於前女友的事就別提了", "前女友"),
-        ("关于前女友的事就别提了", "前女友"),
-        ("關於股票別再講了", "股票"),
-    ],
-)
-def test_guanyu_produces_exactly_one_term_(text, expected):
-    assert _zh_terms(text) == {expected}
 
 
 # ── 5c-2. 填充词后置去重 ─────────────────────────────────────
@@ -1050,6 +1064,21 @@ def test_filler_dedup_keeps_genuinely_different_topics():
 def test_guanyu_produces_exactly_one_term(text, expected):
     """通用的 ``X + 别提`` 模板会把 "关于股票就" 整段当话题，和专用模板的 "股票"
     一起存下来。垃圾那条同样占一个 active 名额、注入三天。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ``关于`` 出现在句中时，通用模板的前缀不能逐字吃过它——否则多产出一条
+        # ``我觉得关于股票就``（codex P2）。单字分支 temper 掉裸的 关于，括号分支
+        # 排在它前面，所以书名里的 关于 仍然整体放行。
+        ("我觉得关于股票就别再讲了", "股票"),
+        ("我覺得關於股票就別再講了", "股票"),
+        ("其实关于工作别提了", "工作"),
+    ],
+)
+def test_a_leading_clause_before_guanyu_does_not_add_a_bogus_term(text, expected):
     assert _zh_terms(text) == {expected}
 
 

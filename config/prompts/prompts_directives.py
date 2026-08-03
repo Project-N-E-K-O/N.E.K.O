@@ -80,6 +80,7 @@ from __future__ import annotations
 import re
 from typing import List, Tuple
 
+from config.prompts._locale import normalize_prompt_locale, prompt_locale_fallback_key
 from config.prompts.prompts_sys import _loc
 
 
@@ -120,10 +121,11 @@ _TRIM_TRAIL_TOKENS_BY_LOCALE: dict[str, Tuple[str, ...]] = {
     "ko": ("요", "은", "는", "이", "가", "을", "를", "에", "에서"),
 }
 
-# ⚠️ 没有自己 CJK 助词表的 locale（en / ru / es / pt）回落到 zh：中英混说时
-# term 往往整段是中文（"stop talking about 前女友了"），不剥就把 ``了`` 存进去。
-# 这也是分表之前的既有行为，分表不该顺手把它改掉。
-_TRIM_TRAIL_FALLBACK_LOCALE = "zh"
+# ⚠️ 没有自己 CJK 助词表的 locale（en / ru / es / pt）回落到 **zh + ja** 的并集：
+# 混合语言是这个模块明确支持的路径（"stop talking about 前女友了" / "stop saying
+# 仕事ね"），term 整段可能是中文也可能是日文，不剥就把助词原样存进去（codex P2）。
+# 分表要隔离的是 zh/ja/ko **互相**污染——它们命中时用自己那张表，不受这里影响。
+_TRIM_TRAIL_FALLBACK_LOCALES = ("zh", "ja")
 
 # 与 locale 无关的尾巴：ASCII 词，字形上不可能和别的语言撞。中英混说很常见
 # （"别提 my ex please"），所以这些对每个 locale 都剥。
@@ -188,10 +190,21 @@ def _trim_term(term: str, locale: str = "") -> str:
     """  # noqa: DOCSTRING_CJK
     if not term:
         return ""
-    family = (locale or "").split("-", 1)[0].split("_", 1)[0].lower()
-    if family not in _TRIM_TRAIL_TOKENS_BY_LOCALE:
-        family = _TRIM_TRAIL_FALLBACK_LOCALE
-    tokens = _TRIM_TRAIL_TOKENS_ANY + _TRIM_TRAIL_TOKENS_BY_LOCALE[family]
+    # 走 config.prompts._locale 的公共归一化，不自己剥 region 后缀：
+    # tests/unit/test_prompt_locale_normalizer.py 明确禁止在 _locale.py 之外手写
+    # locale 匹配（手写的那六份正是 "esperanto" 被当成西语、Steam 码掉进英文的来源）。
+    family = normalize_prompt_locale(
+        locale, default="", simplified="zh", keep_traditional=False,
+    )
+    if family in _TRIM_TRAIL_TOKENS_BY_LOCALE:
+        cjk = _TRIM_TRAIL_TOKENS_BY_LOCALE[family]
+    else:
+        cjk = tuple(
+            tok
+            for fam in _TRIM_TRAIL_FALLBACK_LOCALES
+            for tok in _TRIM_TRAIL_TOKENS_BY_LOCALE[fam]
+        )
+    tokens = _TRIM_TRAIL_TOKENS_ANY + cjk
     s = term.strip()
     changed = True
     # 反复剥尾词，直到稳定（"了啊吧" 这种连续助词）
@@ -263,7 +276,8 @@ _ZH_BIE = f"(?<![{_BIE_COMPOUND_LEFT}])[别別]"
 # ⚠️ 再排掉 ``休講``：词首规则拦不住句首的它（"休講だって。" / "休講情報。"），而
 # ``講`` 是本 PR 新加的动词，等于给整条模板 1 开了个日文入口。中文没人写 "休講"
 # ——这个否定用法在现代中文里只剩 "休提 / 休想"（对抗排查）。
-_ZH_XIU = r"(?<!\w)休(?!講)"
+_XIU_COMPOUND_LEFT = "退午调調补補年病公轮輪全双雙不歇罢罷特半"
+_ZH_XIU = f"(?<![{_XIU_COMPOUND_LEFT}])休(?!講)"
 
 _ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
 
@@ -324,13 +338,38 @@ _ZH_TRAILING_FILLERS = (
 # 把 term 截成 "李焕英"（codex P2）。所以一个"单位"是「非句读非换行的单字」**或**
 # 「一整段配对括起来的内容」——括号内不限标点，但不许跨行。
 _ZH_BRACKET_PAIRS = (("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"))
-# ⚠️ 括号分支必须排在单字分支**之前**：单字分支能匹配 ``《`` 本身，排前面的话
-# 正则会把开括号当成一个普通字吃掉，括号分支永远轮不上，然后卡在里面的逗号上。
-# 括号没闭合（或跨行）时括号分支失败，自然回落到单字分支，不会把整条消息吞掉。
-_ZH_TOPIC_CHAR = "(?:" + "|".join(
-    [f"{lo}[^{hi}\\r\\n]*{hi}" for lo, hi in _ZH_BRACKET_PAIRS]
-    + [r"[^，。！？；,.!?;\r\n]"]
+_ZH_BRACKET_OPENERS = "".join(lo for lo, _hi in _ZH_BRACKET_PAIRS)
+_ZH_BRACKET_RUN = "(?:" + "|".join(
+    f"{lo}[^{hi}\\r\\n]*{hi}" for lo, hi in _ZH_BRACKET_PAIRS
 ) + ")"
+
+# ⚠️⚠️ 两个分支必须**互斥**，否则是一条 ReDoS。单字分支原本也能匹配 ``《``，于是
+# ``《a》`` 既可以被括号分支整体吃掉、也可以被单字分支逐字吃掉——这个歧义放进
+# ``{2,30}?`` 的重复里就是指数级回溯：``别提`` + 30 段 ``《a》`` 要跑 1.3 秒，而
+# 这条路径是**每条用户消息**都会走的（codex P1）。把开括号从单字分支里排掉之后，
+# 每个位置只有一个分支能匹配，歧义消失。
+# 代价：没闭合的 ``《`` 不再能被当成普通字吃进话题，它成了硬边界——可以接受。
+#
+# ⚠️ 单字分支还 temper 掉裸的 ``关于/關於``：``关于 X 就别提了`` 归模板 4 管，
+# 前缀能逐字吃过它的话，"我觉得关于股票就别再讲了" 会多产出一条 ``我觉得关于股票就``。
+# 括号分支不受影响，所以 ``电影《关于爱》`` 仍作为一个整体放行。
+_ZH_PLAIN_CHAR = (
+    r"(?!关于|關於)[^，。！？；,.!?;\r\n" + _ZH_BRACKET_OPENERS + "]"
+)
+_ZH_TOPIC_CHAR = f"(?:{_ZH_BRACKET_RUN}|{_ZH_PLAIN_CHAR})"
+
+
+def _zh_topic(minimum: int, maximum: int) -> str:
+    """Topic capture body: ``minimum`` units, except a single bracketed run counts.
+
+    ⚠️ 一整段括起来的内容算**一个**单位，所以 ``{2,30}`` 会把独立成句的
+    ``《你好，李焕英》别提了。`` 卡掉（只有 1 个单位）。但它本身就 ≥3 个字符，
+    长度闸根本不会丢它——所以单独放行"以一段括号开头"的形态（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    return (
+        f"(?:{_ZH_BRACKET_RUN}{_ZH_TOPIC_CHAR}{{0,{maximum - 1}}}?"
+        f"|{_ZH_TOPIC_CHAR}{{{minimum},{maximum}}}?)"
+    )
 
 # 模板 1 里 term 与终结符之间允许出现的句末助词。与 ``_TRIM_TRAIL_TOKENS`` 的 zh
 # 段成对：这里放行、那里剥掉，少一边 term 就带着助词存进去。
@@ -381,6 +420,9 @@ _JA_GRAMMAR_RE = re.compile(
         # 在专有名词里（お兄ちゃん），收了就把上面救回来的用例又打回去。
         "だね", "だよ", "だな", "だっけ", "でしょ", "かな", "かも", "じゃない",
         "らしい", "みたい", "そう？",
+        # 过去 / 义务 / 被动 / 进行 等谓语形式（codex P2）
+        "だった", "だって", "だろう", "すべき", "される", "された", "している",
+        "します", "しない", "できる", "しよう", "ている", "ておく", "てある",
         # 格助词・系助词・副助词（多字优先，单字放最后的字符组里）
         "から", "まで", "より", "など", "だけ", "でも", "しか", "ばかり",
         "[のにをはがでとへ]",
@@ -436,7 +478,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ⚠️ 宾语下限是 2 不是 1：可选助词组 + lazy 宾语会让正则优先把话题的最后一个字
      # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
      # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
-     r"(" + _ZH_TOPIC_CHAR + r"{2,40}?)" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
+     "(" + _zh_topic(2, 40) + r")" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
     # ``关于 X 就别提了`` 归模板 4 管。本模板不排掉它的话，同一句会同时产出这里的
     # "关于股票就" 和模板 4 的 "股票" 两条 term——前者是垃圾却照样占一个 active
@@ -457,7 +499,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 前缀；1 字前缀本来也只能产出 1 字 term、必然被丢，所以抬下限只赚不亏。
      # ``的`` 绑在指示词里、不单独可选：单独可选会把 "目的这个别提了。" 的 目的 切成
      # 目（对抗排查）。句尾的 ``就`` 不在正则里吃，见 _ZH_TRAILING_FILLERS。
-     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(" + _ZH_TOPIC_CHAR + r"{2,30}?)\s*"
+     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(" + _zh_topic(2, 30) + r")\s*"
      r"(?:的事)?\s*(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
@@ -465,14 +507,14 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     ("zh", "ban_topic",
      r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
      + _ZH_VERBS_PLAIN
-     + r"\s*(" + _ZH_TOPIC_CHAR + r"{2,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
+     + r"\s*(" + _zh_topic(2, 40) + r")(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
      # ⚠️ 只有本模板保留 ``(?:就)?``：它由句首的 ``关于`` 锚定，"关于 X 就别…" 的
      # 结构是显式的，被腰斩的风险仅限于 ``关于`` + 就尾词（"关于功成名就别提了"，
      # 极罕见）。模板 2 没有这个锚，覆盖的是全部 "X别提了" 句子——成就 / 迁就 /
      # 功成名就 都住在那里，所以那边一个字都不吃，交给 _drop_filler_suffixed_terms。
-     r"(?:关于|關於)\s*(" + _ZH_TOPIC_CHAR + r"{1,30}?)\s*(?:的事)?\s*"
+     r"(?:关于|關於)\s*(" + _zh_topic(1, 30) + r")\s*(?:的事)?\s*"
      r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*(?:就)?"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
@@ -624,7 +666,8 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
     out: List[Tuple[str, str, str]] = []
     spans: List[Tuple[int, int]] = []
     for locale, kind, pat in DIRECTIVE_PATTERNS:
-        zh_family = locale.startswith("zh")
+        # 同上：不手写 startswith("zh")，走公共的 fallback-family 判定。
+        zh_family = prompt_locale_fallback_key(locale) == "zh"
         for m in pat.finditer(text):
             try:
                 term_raw = m.group(1)
