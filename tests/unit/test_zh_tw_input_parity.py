@@ -1779,3 +1779,36 @@ def test_a_traditional_style_keyword_still_expands(style):
     from utils.music_crawlers import expand_style_keyword
 
     assert len(expand_style_keyword(style)) > 1, style
+
+
+@pytest.mark.parametrize(
+    "place", ["手机", "手機", "车", "車", "电脑", "電腦", "客厅", "客廳", "耳机"]
+)
+@pytest.mark.parametrize("localizer", ["里", "裡", "上"])
+def test_a_location_qualified_music_object_still_stops(place, localizer):
+    """⚠️ 设备/地点是**开集**（手机/车/电脑/客厅/耳机…），不能枚举。
+
+    但它们的结构是闭的：`X里的` / `X上的`——方位词是汉语的封闭词类。这跟
+    `_ZH_MUSIC_NOUN_AFTER_TARGET` 用的是同一招：枚举那个能枚举干净的维度。
+
+    ⚠️ 这已经是同一处闭集的**第四批**漏项（量词、所有格、服务名之后）。
+    每次都是「收紧一个开窗口时漏掉高频虚成分」——所以这次改成结构而非清单。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{place}{localizer}的音乐') is True
+
+
+@pytest.mark.parametrize(
+    ("opening", "closing"), [("《", "》"), ("“", "”"), ("‘", "’"), ('"', '"')]
+)
+def test_every_quote_pair_shields_a_title(opening, closing):
+    """⚠️ 同一个模块的 `_QUOTE_PAIRS` 认得弯引号，引用片段正则却不认——
+    「同一张表在一处认得、另一处不认得」在这个 PR 里已经是第三次了
+    （前两次是 播放清單、简繁孪生）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'不要播放{opening}影片{closing}'
+    ) is True
