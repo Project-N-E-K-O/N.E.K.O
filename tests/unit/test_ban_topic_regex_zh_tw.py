@@ -319,6 +319,60 @@ def test_japanese_text_is_not_extracted_by_the_zh_templates(text):
         ("あの人のことは言わないで", "あの人"),
     ],
 )
+def test_japanese_ban_topic_still_works_(text, expected):
+    hits = extract_directives(text)
+    assert expected in {term for locale, _kind, term in hits if locale == "ja"}, hits
+
+
+# ⚠️ 已知残留，**故意断言当前的错误行为**：日文能产的 ``〜別`` 后缀（地域別 /
+# 年齢別 / 世代別 / 商品別…）前缀是任意名词，是开集；三道守卫各自够不着——
+# _BIE_COMPOUND_LEFT 只收零反例的几个字，左邻假名判据要求 別 前面是假名（这里是
+# 汉字），助词判据要求 term 里有助词（这里是纯片假名名词）。
+#
+# 唯一想到的补法是「term 以该动词所领复合词的第二字开头 + term 含片假名」
+# （講座→座、提案→案），实测会把 ``你別提初音ミク。`` 一起打死——分界线要落在
+# 「別 前面那个汉字是不是名词」上，而 ``世代`` 和 ``你`` 都是汉字。代价方向：
+# 日文侧是一条三天后过期的垃圾 term，繁中侧是指令根本不落库，所以选择不修。
+#
+# 断言写成"当前长什么样"而不是"应该是空"，是为了将来真找到判据时这里现成就是
+# 回归测试——那时把它改成 == set() 即可。
+KNOWN_JAPANESE_RESIDUALS = [
+    ("世代別講座ガイド。", {"座ガイド"}),
+    ("商品別提案プラン。", {"案プラン"}),
+    ("部門別提案リスト", {"案リスト"}),
+    ("地域別提案書。", {"案書"}),
+]
+
+
+@pytest.mark.parametrize(("text", "current"), KNOWN_JAPANESE_RESIDUALS)
+def test_known_japanese_residual_is_documented_not_forgotten(text, current):
+    assert _zh_terms(text) == current, (
+        f"{text!r} 的行为变了。变好了（== set()）就把这条从残留清单挪走；"
+        f"变成别的样子说明有回归。"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("別提初音ミク。", "初音ミク"),
+        ("你別提初音ミク。", "初音ミク"),
+        ("别再提初音ミク", "初音ミク"),
+    ],
+)
+def test_the_fix_that_would_close_that_residual_must_not_break_these(text, expected):
+    """上面那个残留的候选补法会把这几条一起打死——真要修的时候先跑这里。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("仕事のことはもう言わないで", "仕事"),
+        ("この前の話はもう言わないで", "この前"),
+        ("あの人のことは言わないで", "あの人"),
+    ],
+)
 def test_japanese_ban_topic_still_works(text, expected):
     """The guard is zh-scoped: a ja match is Japanese *by construction*, so
     running the "is this Japanese?" test on it can only ever throw it away."""
