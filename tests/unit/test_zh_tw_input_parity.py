@@ -2043,3 +2043,144 @@ def test_an_audio_object_after_de_is_still_a_command(noun):
     )
     assert mr.is_explicit_music_cancellation(f'停止正在播放的{noun}') is True
     assert mr.is_explicit_music_cancellation(f'停止播放的{noun}') is True
+
+
+# --- Codex 第二轮：七条边界（全部 base=True/False 与我这一版不一致）----------
+
+
+@pytest.mark.parametrize("marker", QUESTION_MARKERS)
+def test_a_quote_after_the_marker_does_not_disable_the_guard(marker):
+    """⚠️⚠️ 判据是「标记**在不在**引号里」，不是「后面有没有闭合引号」。
+
+    第一版写成后者，于是 `我想停止播放是否会影响《原神》` 里一个跟标记无关的
+    书名号把整道守卫关掉，一句提问被当成停止命令（Codex P2，base 是 False）。
+    这是**危险方向**的误判：用户在问，歌被停了。
+
+    两种形状都必须仍然判成提问：标记后面出现引用、标记前面有**完整闭合**的引用。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}会影响《原神》'
+    ) is False
+    assert is_explicit_music_cancellation(
+        f'我想停止播放《晴天》{marker}'
+    ) is False
+
+
+def _soundtrack_nouns() -> list[str]:
+    from main_logic import music_requests as mr
+
+    return _alternation(mr._ZH_SOUNDTRACK_NOUN)
+
+
+SOUNDTRACK_NOUNS = _soundtrack_nouns()
+
+
+def test_the_soundtrack_table_has_exactly_one_definition():
+    """⚠️ 配乐类词表原本内联在 `_ZH_MUSIC_NOUN_AFTER_TARGET` 里，名物化守卫也要
+    用同一族词。提成常量而不是复制——这个文件已经因为「同一张表两处各写一份、
+    然后漂开」栽过四次。这里钉住「两处确实用的是同一个常量」。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert mr._ZH_SOUNDTRACK_NOUN in mr._ZH_MUSIC_NOUN_AFTER_TARGET.pattern
+    assert mr._ZH_SOUNDTRACK_NOUN in mr._ZH_MUSIC_HEAD_AFTER_DE
+    assert len(SOUNDTRACK_NOUNS) >= 12, SOUNDTRACK_NOUNS
+
+
+@pytest.mark.parametrize("noun", SOUNDTRACK_NOUNS)
+def test_a_soundtrack_noun_after_de_is_still_a_command(noun):
+    """`停止正在播放的配樂` base 是 True，只列歌/歌单会把这一族打成名物化。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{noun}') is True
+
+
+@pytest.mark.parametrize(
+    "determiner", ["这首", "這首", "下一首", "上一首", "那首", "这个", "這個", "我的"]
+)
+def test_a_determiner_before_the_music_head_is_still_a_command(determiner):
+    """⚠️ 「的」后面要求音乐名词**紧贴**是收得太死了。
+
+    `停止正在播放的這首歌` / `停止正在播放的下一首歌` base 都是 True，中间那个
+    限定词是 `_ZH_MUSIC_NOUN_MODIFIER` 里已经列过四批的闭集，直接复用它，而不是
+    再写第三张同族的表（Codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{determiner}歌') is True
+
+
+def _degree_words() -> list[str]:
+    from main_logic import music_requests as mr
+
+    return _alternation(mr._ZH_DEGREE_AFTER_DE)
+
+
+DEGREE_WORDS = _degree_words()
+
+
+def test_the_degree_table_is_derived_not_transcribed():
+    """⚠️ 相等断言：这张表少一个词就是一句「不要放的X大声」被判成名物化。"""  # noqa: DOCSTRING_CJK
+    assert set(DEGREE_WORDS) == {
+        "太", "很", "最", "更", "挺", "真", "非常", "特别", "特別",
+        "超级", "超級", "这么", "這麼", "那么", "那麼", "有点", "有點",
+        "大声", "大聲", "小声", "小聲",
+    }, DEGREE_WORDS
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要放的超级大声", "不要放的超級大聲"),
+        ("不要放的这么大声", "不要放的這麼大聲"),
+        ("不要放的那么大声", "不要放的那麼大聲"),
+        ("不要放的有点大声", "不要放的有點大聲"),
+        ("不要放的非常大声", "不要放的非常大聲"),
+    ],
+)
+def test_a_multi_char_degree_complement_is_still_a_command(simplified, traditional):
+    """⚠️ 用户把补语标记「得」写成「的」是高频误写，base 全是 True。
+
+    只收单音节程度副词时，`不要放的超級大聲` / `不要放的這麼大聲` 全被判成
+    名物化（Codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("请停止播放的同时关闭屏幕", "請停止播放的同時關閉螢幕"),
+        ("停止播放的同时把灯关了", "停止播放的同時把燈關了"),
+    ],
+)
+def test_the_coordination_construction_is_still_a_command(simplified, traditional):
+    """⚠️ 「V 的同时 W」里的「的」既不是名物化标记也不是补语标记（base 是 True）。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("帮我停止播放功能音乐", "幫我停止播放功能音樂")],
+)
+def test_a_ui_noun_prefixing_a_music_word_is_still_a_command(simplified, traditional):
+    """⚠️ 界面控件表是**前缀匹配**：`功能音樂` 里的「功能」是词头不是控件名。
+
+    base 是 True，被前缀匹配打成 False（Codex P2）。要求控件名后面**不是**
+    音乐名词就能分开，两侧都是已有的闭集。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    # 配对反向：控件名后面不是音乐名词时，仍然不是命令。
+    for text in ("帮我停止播放功能吧", "幫我停止播放功能吧"):
+        assert is_explicit_music_cancellation(text) is False, text

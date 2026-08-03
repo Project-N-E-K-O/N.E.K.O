@@ -856,8 +856,12 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     r"(?=$|[^一-鿿]|的|重|改|梳|完|全|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
     # 口子一：的 + 全称限定词 + （整卡级名词 | 限定词自己当中心语的合法收尾）。
     # 口子二：的 + 紧贴着当中心语就代表整卡的那几个词。
+    # ⚠️ 限定词和中心语之间可以有结构助词「的」：`把整个卡的所有的字段重写`
+    # 是最自然的说法之一，漏了它整卡补全不触发（Codex P2，base 是 True）。
+    # 单字段那道保险不受影响——`把整个卡的所有的名字重写` 仍然是 False，因为
+    # 「名字」照样不在整卡级名词表里。
     rf"(?:(?=的(?:{'|'.join(_WHOLE_CARD_QUANTIFIERS)})"
-    rf"(?:{_WHOLE_CARD_SCOPE_MODIFIER}(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
+    rf"(?:的?{_WHOLE_CARD_SCOPE_MODIFIER}(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     rf"|(?=的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
     r"|(?![的片]))"

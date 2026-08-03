@@ -928,3 +928,33 @@ def test_an_english_negation_is_case_insensitive(text):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("noun", ["字段", "欄位", "设定", "設定", "内容", "內容"])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+def test_de_between_a_quantifier_and_its_scope_noun_is_a_full_rewrite(
+    quantifier, noun
+):
+    """⚠️ 限定词和中心语之间可以有结构助词「的」。
+
+    `把整个卡的所有的字段重写` 是最自然的说法之一，漏了它整卡补全不触发
+    （Codex P2，base 是 True）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的{quantifier}的{noun}重写'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("field", CARD_TEMPLATE_FIELD_NAMES + ["名字", "昵称", "暱稱"])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+def test_de_between_a_quantifier_and_a_field_name_is_still_blocked(quantifier, field):
+    """⚠️ 上一条放开「的」时，单字段那道保险必须原样保住。
+
+    `把整个卡的所有的名字重写` 仍然只想改一个字段——放行它就等于把 P1 那条
+    整卡覆盖从另一个入口放回来。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的{quantifier}的{field}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
