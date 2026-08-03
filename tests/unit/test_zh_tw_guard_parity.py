@@ -574,10 +574,39 @@ def _negators() -> list[str]:
 NEGATORS = _negators()
 
 
+# ⚠️ 逐字对照表：只列**简繁写法不同**的那些字。这个 PR 是做繁体对等的，
+# 却在否定词表里漏了繁体「不準」（greptile P1）——所以这一维必须有结构守卫，
+# 不能靠 reviewer 一个一个揪。
+_SCRIPT_TWIN_CHARS = {
+    '准': '準', '许': '許', '无': '無', '请': '請', '严': '嚴',
+    '暂': '暫', '时': '時', '别': '別', '禁': '禁', '需': '需',
+}
+
+
+def test_every_negator_has_its_script_twin():
+    """⚠️⚠️ 否定词表里每个含简繁差异字的词，两种写法都必须在。
+
+    `不准` 有而 `不準` 没有 → 繁中用户说「不準重寫整個卡」照样把整张卡改了。
+    这条守卫是**自动发现**的：逐字扫简繁差异，两侧都要求在表里，
+    以后往表里加词漏了孪生会立刻变红。
+    """  # noqa: DOCSTRING_CJK
+    present = set(NEGATORS)
+    to_trad = str.maketrans(_SCRIPT_TWIN_CHARS)
+    to_simp = str.maketrans({v: k for k, v in _SCRIPT_TWIN_CHARS.items()})
+    missing = []
+    for word in NEGATORS:
+        # ⚠️ 整词一次性转换，不要逐字。逐字会要求 暫时不 / 暂時不 这种混写形式，
+        # 现实里没人这么打字——守卫过严会逼着往表里塞垃圾。
+        for twin in (word.translate(to_trad), word.translate(to_simp)):
+            if twin != word and twin not in present:
+                missing.append((word, twin))
+    assert missing == [], f'这些否定词缺简繁孪生: {missing}'
+
+
 def test_the_negator_table_is_derived_and_complete():
     """⚠️ 拆解失效会让下面的笛卡尔积静默缩水。钉住规模与几个曾漏掉的词。"""  # noqa: DOCSTRING_CJK
-    assert len(NEGATORS) >= 24, NEGATORS
-    for word in ("不准", "不許", "禁止", "嚴禁", "休要", "不得", "莫", "切勿"):
+    assert len(NEGATORS) >= 25, NEGATORS
+    for word in ("不准", "不準", "不許", "禁止", "嚴禁", "休要", "不得", "莫", "切勿"):
         assert word in NEGATORS, f'{word} 不在否定词闭集里'
 
 
