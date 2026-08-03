@@ -58,6 +58,13 @@ Convention: prefer false positives
 - Cost of a false positive = the user says it once more; model cost = one extra
   system-prompt line; cost of a miss = the user gets offended again. Hence the bias
   toward leniency.
+- ⚠️ The zh templates are the one exception, and only against *Japanese* input.
+  They carry both scripts in one pattern, and Traditional ``別`` is the same
+  codepoint as the Japanese kanji while ``提 / 講 / 談 / 討論`` are shared outright —
+  so "特別講演について話しましょう。" is structurally a zh hit. There the false
+  positive is not "one extra line": it pollutes a Japanese user's directive store
+  systematically, for three days at a time. Two guards keep that closed; see the
+  comment above ``_PATTERNS_RAW``.
 
 ban-topic regex vs. negative-keyword scan
 -----------------------------------------
@@ -169,28 +176,66 @@ def _trim_term(term: str) -> str:
 # 各 locale 内的"动词块"（说/提/talk about/言う/...）由各 locale 自己列。
 # pattern 全部 re.compile 以 IGNORECASE / UNICODE 跑。
 
+# ---------------------------------------------------------------------------
+# zh 的两道守卫：复合词左界 + 假名
+# ---------------------------------------------------------------------------
+# 繁体不另开一套 pattern，直接写进同一条（``[别別]`` / ``[说說]`` / ``讨论|討論``）。
+# 同一个句法结构维护两份 regex，改一侧忘另一侧是迟早的事（#2655 里同类漂移出现
+# 过四次）。代价：命中记录里的 locale 一律是 ``zh``——那个字段只做诊断，不查表。
+#
+# 但 ``別`` 与日文是同一码位（``說`` 不是，日文写作 ``説`` U+8AAC），而
+# ``提 / 講 / 談 / 討論`` 本来就是中日共用字，所以补繁体等于把日文输入拉进 zh
+# 模板的射程。下面两道守卫各管一维：
+
+# (1) 左界：``X别`` 是复合词词尾而非祈使否定。
+# ⚠️ 这一维**不可能枚举干净**——"这个别提了" 与 "个别说法"、"这部分别提了" 与
+# "分别说明" 在字面上完全同形，中文分词层面就是歧义。所以这里只收零反例的四组
+# （简繁各一个字形）：特别 / 性别 / 区别 / 级别 后面接 说/提/讲/谈 在中日文里都
+# 极常见（"他特别提到你的名字" 今天就会被抓成 ban_topic），而 "X特|别提" 这种
+# 切法在中文里不存在。
+# 其余（个别 / 分别 / 告别 / 类别…）保持既有的宽松口径：它们各自都有真实反例，
+# 收紧会把 "工作这个别提了" 这类主用例整片打死——宁可留既有误报。
+_BIE_COMPOUND_LEFT = "特性区區级級"
+_ZH_BIE = f"(?<![{_BIE_COMPOUND_LEFT}])[别別]"
+
+# ``休`` 反过来：作否定词是文言用法（"休提当年勇"），现代聊天里基本不出现；而
+# 退休 / 午休 / 调休 / 日文 休講 全是复合词。所以只在词首认它，不做字符枚举。
+_ZH_XIU = r"(?<!\w)休"
+
+_ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
+
+# (2) 假名：中文永远不含假名，日文句子几乎必然含。命中区间里出现假名 → 这句是
+# 日文，zh 侧放弃，交给 ja 模板（ja 模板全部要求假名，反向不会吃到中文）。
+# 残留风险：纯汉字的日文片段（"年齢別講座一覧"）仍可能命中——这一维没有码位差
+# 可用，接受。
+_KANA_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]")
+
 _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # ---------- zh ----------
     # 别/不要/不许/不准 + （再）+ 动词 + 对象
     # terminator 不放 ``\s``：zh 句子里中英混说时（"别叫我 John Smith"）lazy
     # ``(.{1,40}?)`` 会在第一个空格切断成 "John"。让终结符必须是标点 / EOL /
     # 句末助词，多词 NP 才能被完整捕获（codex P2）。
+    # 繁体 ``不準`` 不收：它是"不准确"的意思，"測量不準說明有問題" 会被抓成
+    # ban_topic；"不允许" 这个义项繁体本来就写 ``不准``，已在表内。
     ("zh", "ban_topic",
-     r"(?:别|不要|不许|不准|莫|休|甭)\s*(?:再)?\s*"
-     r"(?:说|提|聊|讲|谈|讨论|扯|提起|提及|讲到|聊到|谈起|谈到|说起|说到|喊我|叫我|管我叫|称呼我为?)\s*"
+     _ZH_NEG + r"\s*(?:再)?\s*"
+     r"(?:说|說|提|聊|讲|講|谈|談|讨论|討論|扯|提起|提及|讲到|講到|聊到|"
+     r"谈起|談起|谈到|談到|说起|說起|说到|說到|喊我|叫我|管我叫|称呼我为?|稱呼我為?)\s*"
      r"(.{1,40}?)(?:\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢))?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
     ("zh", "ban_topic",
-     r"(.{1,30}?)\s*(?:这个|这事|这话题|这件事)?\s*别\s*(?:再)?\s*"
-     r"(?:说|提|聊|讲|提了|提起|提及)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
+     r"(.{1,30}?)\s*(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事)?\s*"
+     + _ZH_BIE + r"\s*(?:再)?\s*"
+     r"(?:说|說|提|聊|讲|講|提了|提起|提及)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
-     r"(?:我)?\s*(?:不想|不愿意|不愿|懒得|没心情)\s*(?:再)?\s*"
-     r"(?:说|提|聊|讲|谈|讨论)\s*(.{1,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
+     r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
+     r"(?:说|說|提|聊|讲|講|谈|談|讨论|討論)\s*(.{1,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
-     r"关于\s*(.{1,30}?)\s*(?:的事)?\s*(?:就)?\s*别\s*(?:再)?\s*"
-     r"(?:说|提|聊|讲)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
+     r"(?:关于|關於)\s*(.{1,30}?)\s*(?:的事)?\s*(?:就)?\s*" + _ZH_BIE + r"\s*(?:再)?\s*"
+     r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
 
     # ---------- en ----------
     # stop/don't/quit + verb + (about|saying) + X
@@ -335,7 +380,13 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
     seen: set[tuple[str, str]] = set()
     out: List[Tuple[str, str, str]] = []
     for locale, kind, pat in DIRECTIVE_PATTERNS:
+        zh_family = locale.startswith("zh")
         for m in pat.finditer(text):
+            # zh 模板与日文共用 別/提/講/談/討論 这些汉字（见 _KANA_RE 处的注释）：
+            # 命中区间里出现假名说明这是日文句子，让 ja 模板去接。只对 zh 生效——
+            # ja 模板本身要求假名，套上去会把自己全部否掉。
+            if zh_family and _KANA_RE.search(m.group(0)):
+                continue
             try:
                 term_raw = m.group(1)
             except IndexError:
