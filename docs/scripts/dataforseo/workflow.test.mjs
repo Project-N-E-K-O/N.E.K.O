@@ -27,10 +27,48 @@ test('scheduled and manually dispatched paid runs force a depth-100 AIO baseline
   const workflow = await readWorkflow()
 
   assert.match(workflow, /cron: '15 0 \* \* \*'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && 'paid'/)
+  assert.match(workflow, /inputs\.run_mode != 'dry-run'/)
   assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && '100'/)
   assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && 'true'/)
   assert.doesNotMatch(workflow, /ENABLE_PAID_DATAFORSEO_SCHEDULE/)
+})
+
+test('manual CN brand verification is one keyword, depth 10, and AIO-free', async () => {
+  const workflow = await readWorkflow()
+  const fullConfig = JSON.parse(await readFile(
+    new URL('../../seo/dataforseo.cn.config.json', import.meta.url),
+    'utf8',
+  ))
+  const verificationConfig = JSON.parse(await readFile(
+    new URL('../../seo/dataforseo.cn-brand-verification.config.json', import.meta.url),
+    'utf8',
+  ))
+
+  assert.match(workflow, /- verify-cn-brand/)
+  assert.match(workflow, /inputs\.run_mode == 'verify-cn-brand' && '10'/)
+  assert.match(workflow, /inputs\.run_mode == 'verify-cn-brand' && 'false'/)
+  assert.match(workflow, /dataforseo\.cn-brand-verification\.config\.json/)
+  assert.match(workflow, /name: Enforce the one-keyword CN verification contract/)
+  assert.match(workflow, /\.keywordMetrics\[0\]\.keyword == "喵可智能"/)
+  assert.match(workflow, /env\.BRAND_VERIFICATION != 'true'/)
+  assert.equal(verificationConfig.keywords.length, 1)
+  assert.equal(verificationConfig.keywords[0].keyword, '喵可智能')
+  assert.deepEqual(
+    verificationConfig.keywords[0],
+    fullConfig.keywords.find(item => item.keyword === '喵可智能'),
+  )
+  for (const key of [
+    'targetDomain',
+    'locationCode',
+    'locale',
+    'serpLanguageCode',
+    'volumeLanguageCode',
+    'keywordDifficultyLanguageCode',
+    'device',
+  ]) {
+    assert.equal(verificationConfig[key], fullConfig[key])
+  }
+  assert.equal(verificationConfig.serpDepth, 10)
 })
 
 test('maintainer documentation cannot revive the obsolete paid-schedule kill switch', async () => {

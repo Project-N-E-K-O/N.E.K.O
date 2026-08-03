@@ -17,12 +17,13 @@ on:
   workflow_dispatch:
     inputs:
       run_mode:
-        description: 'dry-run costs $0; paid collects the full daily baseline'
+        description: 'dry-run costs $0; verify-cn-brand checks one CN keyword; paid collects the full baseline'
         required: true
         type: choice
         default: dry-run
         options:
           - dry-run
+          - verify-cn-brand
           - paid
       serp_depth:
         description: 'Dry-run only: organic results per keyword (paid is always 100)'
@@ -83,9 +84,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      COLLECTION_KIND: ${{ github.event_name == 'schedule' && 'paid' || inputs.run_mode }}
-      SERP_DEPTH: ${{ (github.event_name == 'schedule' || inputs.run_mode == 'paid') && '100' || inputs.serp_depth }}
-      INCLUDE_AI_OVERVIEW: ${{ (github.event_name == 'schedule' || inputs.run_mode == 'paid') && 'true' || inputs.include_ai_overview }}
+      COLLECTION_KIND: ${{ (github.event_name == 'schedule' || inputs.run_mode != 'dry-run') && 'paid' || 'dry-run' }}
+      SERP_DEPTH: ${{ inputs.run_mode == 'verify-cn-brand' && '10' || ((github.event_name == 'schedule' || inputs.run_mode == 'paid') && '100' || inputs.serp_depth) }}
+      INCLUDE_AI_OVERVIEW: ${{ inputs.run_mode == 'verify-cn-brand' && 'false' || ((github.event_name == 'schedule' || inputs.run_mode == 'paid') && 'true' || inputs.include_ai_overview) }}
+      BRAND_VERIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mode == 'verify-cn-brand' && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -157,7 +159,7 @@ jobs:
           fi
 
       - name: Reuse today's authoritative .cn ranking and metric artifact
-        if: env.COLLECTION_KIND == 'paid'
+        if: env.COLLECTION_KIND == 'paid' && env.BRAND_VERIFICATION != 'true'
         continue-on-error: true
         shell: bash
         working-directory: docs
@@ -225,7 +227,7 @@ jobs:
 
       - name: Collect .online English Volume and KD
         id: online_en_metrics
-        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        if: env.BRAND_VERIFICATION != 'true' && (env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success')
         continue-on-error: true
         shell: bash
         working-directory: docs
@@ -239,7 +241,7 @@ jobs:
 
       - name: Collect .online English rankings and AIO
         id: online_en_ranking
-        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        if: env.BRAND_VERIFICATION != 'true' && (env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success')
         continue-on-error: true
         shell: bash
         working-directory: docs
@@ -262,7 +264,9 @@ jobs:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
-          args=(--config seo/dataforseo.cn.config.json --mode keywords --output ".seo-reports/dataforseo-cn-metrics-${GITHUB_RUN_ID}.json")
+          config="seo/dataforseo.cn.config.json"
+          if [[ "$BRAND_VERIFICATION" == "true" ]]; then config="seo/dataforseo.cn-brand-verification.config.json"; fi
+          args=(--config "$config" --mode keywords --output ".seo-reports/dataforseo-cn-metrics-${GITHUB_RUN_ID}.json")
           if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
           npm run seo:dataforseo -- "${args[@]}"
 
@@ -276,14 +280,16 @@ jobs:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
-          args=(--config seo/dataforseo.cn.config.json --mode serp --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-cn-ranking-${GITHUB_RUN_ID}.json")
+          config="seo/dataforseo.cn.config.json"
+          if [[ "$BRAND_VERIFICATION" == "true" ]]; then config="seo/dataforseo.cn-brand-verification.config.json"; fi
+          args=(--config "$config" --mode serp --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-cn-ranking-${GITHUB_RUN_ID}.json")
           if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
           if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
           npm run seo:dataforseo -- "${args[@]}"
 
       - name: Collect .online Chinese documentation Volume
         id: online_zh_metrics
-        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        if: env.BRAND_VERIFICATION != 'true' && (env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success')
         continue-on-error: true
         shell: bash
         working-directory: docs
@@ -297,7 +303,7 @@ jobs:
 
       - name: Collect .online Chinese documentation rankings and AIO
         id: online_zh_ranking
-        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        if: env.BRAND_VERIFICATION != 'true' && (env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success')
         continue-on-error: true
         shell: bash
         working-directory: docs
@@ -400,7 +406,7 @@ jobs:
           retention-days: 30
 
       - name: Enforce the complete daily-source contract
-        if: always() && env.COLLECTION_KIND == 'paid'
+        if: always() && env.COLLECTION_KIND == 'paid' && env.BRAND_VERIFICATION != 'true'
         shell: bash
         working-directory: docs
         run: |
@@ -411,8 +417,37 @@ jobs:
           fi
           node scripts/seo-monitoring/assert-report.mjs --input "$report" --level daily
 
+      - name: Enforce the one-keyword CN verification contract
+        if: always() && env.BRAND_VERIFICATION == 'true'
+        shell: bash
+        working-directory: docs
+        run: |
+          source_report=".seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json"
+          source_status=".seo-reports/dataforseo-cn-execution-${GITHUB_RUN_ID}.json"
+          daily_report=".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
+          jq -e '
+            .status == "complete"
+            and .plan.keywordCount == 1
+            and .plan.serpDepth == 10
+            and .plan.includeAiOverview == false
+            and (.keywordMetrics | length) == 1
+            and (.serp | length) == 1
+            and .keywordMetrics[0].keyword == "喵可智能"
+            and .serp[0].keyword == "喵可智能"
+            and (.costs.totalUsd | numbers)
+          ' "$source_report" >/dev/null
+          jq -e '
+            .runStatus == "complete"
+            and .rankingStatus == "complete"
+            and .keywordMetricsStatus == "complete"
+          ' "$source_status" >/dev/null
+          jq -e '
+            [.keywordMaster[] | select(.segmentId == "cn" and .keyword == "喵可智能")]
+            | length == 1 and .[0].collectionStatus == "observed"
+          ' "$daily_report" >/dev/null
+
       - name: Publish verified paid comparison baseline
-        if: success() && env.COLLECTION_KIND == 'paid' && github.ref == 'refs/heads/main'
+        if: success() && env.COLLECTION_KIND == 'paid' && env.BRAND_VERIFICATION != 'true' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: seo-geo-daily-paid-baseline

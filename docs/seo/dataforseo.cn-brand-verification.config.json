@@ -1,0 +1,18 @@
+{
+  "targetDomain": "project-neko.cn",
+  "locationCode": 2156,
+  "locale": "zh-CN",
+  "serpLanguageCode": "zh-CN",
+  "volumeLanguageCode": null,
+  "keywordDifficultyLanguageCode": null,
+  "device": "desktop",
+  "serpDepth": 10,
+  "keywords": [
+    {
+      "keyword": "喵可智能",
+      "landingPage": "/",
+      "intent": "BOFU 品牌词",
+      "cta": "Steam 商店访问"
+    }
+  ]
+}

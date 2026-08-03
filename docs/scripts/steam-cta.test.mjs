@@ -22,11 +22,16 @@ const buyerGuideLocales = [
 const steamUrlPattern = /https:\/\/store\.steampowered\.com\/app\/4099310\/__NEKO\/\?[^\s'"`)]+/g
 const publishedSteamUrlPattern =
   /https:\/\/store\.steampowered\.com\/app\/4099310(?:\/[^\s'"`)>]*)?(?:[?#][^\s'"`)>]*)?(?=[\s'"`)>]|$)/g
+const unpublishedMarkdownDirectories = new Set(['.seo-reports', '.vitepress', 'node_modules'])
 
 function markdownFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const target = new URL(entry.name, directory)
-    if (entry.isDirectory()) return markdownFiles(new URL(`${entry.name}/`, directory))
+    if (entry.isDirectory()) {
+      return unpublishedMarkdownDirectories.has(entry.name)
+        ? []
+        : markdownFiles(new URL(`${entry.name}/`, directory))
+    }
     return entry.isFile() && entry.name.endsWith('.md') ? [target] : []
   })
 }
