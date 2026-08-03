@@ -469,6 +469,62 @@ async def test_model_selected_mixed_new_provenance_stays_fail_closed(
 
 
 @pytest.mark.asyncio
+async def test_correction_keep_new_preserves_explicit_event_window(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(pm, "Neko", "旧观察")
+    event_when = {"kind": "absolute", "value": "2026-07-01"}
+    await pm._aqueue_correction(
+        "Neko", "旧观察", "新观察", "master",
+        new_speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.8,
+            "event_when_raw": event_when,
+            "event_start_at": "2026-07-01T00:00:00",
+            "event_end_at": "2026-07-02T00:00:00",
+        },
+    )
+    correction = (await pm.aload_pending_corrections("Neko"))[0]
+    assert correction["new_event_start_at"] == "2026-07-01T00:00:00"
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "keep_new"}],
+    ) == 1
+    entry = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    assert entry["event_when_raw"] == event_when
+    assert entry["event_start_at"] == "2026-07-01T00:00:00"
+    assert entry["event_end_at"] == "2026-07-02T00:00:00"
+
+
+@pytest.mark.asyncio
+async def test_live_extreme_correction_trust_is_treated_as_stale(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明喜欢猫",
+        speaker_id="qq:1001", speaker_trust=0.3,
+    )
+    correction = {
+        "old_text": "小明喜欢猫", "new_text": "小明不喜欢猫",
+        "entity": "master",
+        "old_speaker_id": "qq:1001", "old_speaker_trust": 0.3,
+        "new_speaker_id": "qq:2002", "new_speaker_trust": 0.8,
+    }
+    live = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    live["speaker_trust"] = 10 ** 400
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "keep_old"}],
+    ) == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    assert [entry["text"] for entry in facts] == ["小明喜欢猫"]
+
+
+@pytest.mark.asyncio
 async def test_model_merge_keeps_mixed_new_provenance_fail_closed(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

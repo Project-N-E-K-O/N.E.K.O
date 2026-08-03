@@ -991,6 +991,7 @@ async def apply_scoped_persona_merge(
                 and eid not in consumed
                 and eid not in retry_ids
                 and e.get('text') == cluster_text_by_id.get(eid)
+                and scoped_prompt_trust_band(e) == cluster_trust_by_id.get(eid)
             ):
                 e['last_refine_cluster_hash'] = cluster_hash
                 e['last_refine_at'] = now_iso
@@ -1197,6 +1198,7 @@ async def apply_scoped_reflection_merge(
                 and rid not in consumed
                 and rid not in retry_ids
                 and r.get('text') == cluster_text_by_id.get(rid)
+                and scoped_prompt_trust_band(r) == cluster_trust_by_id.get(rid)
             ):
                 r['last_refine_cluster_hash'] = cluster_hash
                 r['last_refine_at'] = now_iso

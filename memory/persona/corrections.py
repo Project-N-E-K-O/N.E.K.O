@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import uuid
 
@@ -62,6 +63,7 @@ _LEGACY_CORRECTION_IDENTITY_FIELDS = (
     'old_speaker_provenance_mixed',
     'new_speaker_id', 'new_speaker_trust',
     'new_speaker_provenance_mixed',
+    'new_event_when_raw', 'new_event_start_at', 'new_event_end_at',
 )
 
 
@@ -102,6 +104,22 @@ def _normalized_correction_trust(value) -> float | None:
     return normalize_trust(score) if score is not None else None
 
 
+def _queued_new_event_fields(provenance: dict | None) -> dict:
+    """Keep an explicit new-observation window through deferred resolution."""
+    if not isinstance(provenance, dict):
+        return {}
+    from memory.temporal import explicit_event_window
+
+    start, end = explicit_event_window(provenance)
+    if start is None and end is None:
+        return {}
+    return {
+        'new_event_when_raw': deepcopy(provenance.get('event_when_raw')),
+        'new_event_start_at': start,
+        'new_event_end_at': end,
+    }
+
+
 def _detect_correction_prompt_language(
     pairs: list[tuple[int, dict]],
     *,
@@ -129,11 +147,20 @@ class CorrectionsMixin:
         new_speaker_provenance: dict | None = None,
     ) -> list[dict] | None:
         """Returns the modified list or None if duplicate (no change needed)."""
+        new_event_fields = _queued_new_event_fields(new_speaker_provenance)
         for existing in corrections:
             if (existing.get('old_text') == old_text
                     and existing.get('new_text') == new_text
                     and existing.get('entity') == entity
-                    and existing.get('scope') == (subject_fields or {}).get('scope')):
+                    and existing.get('scope') == (subject_fields or {}).get('scope')
+                    and all(
+                        existing.get(key) == new_event_fields.get(key)
+                        for key in (
+                            'new_event_when_raw',
+                            'new_event_start_at',
+                            'new_event_end_at',
+                        )
+                    )):
                 from memory.speaker_trust import stable_speaker_id
                 changed = False
                 for prefix, provenance in (
@@ -196,6 +223,7 @@ class CorrectionsMixin:
             # scoped correction 携带完整 subject 戳：section key 不含 scope，
             # resolve 分域与 apply 界定都需要它。
             item.update(subject_fields)
+        item.update(new_event_fields)
         from memory.speaker_trust import stable_speaker_id
         for prefix, provenance in (
             ('old', old_speaker_provenance),
@@ -711,17 +739,20 @@ class CorrectionsMixin:
                     if len(current_old_entries) == 1 else None
                 )
                 current_old_trust = (
-                    current_old.get('speaker_trust')
+                    _normalized_correction_trust(
+                        current_old.get('speaker_trust')
+                    )
                     if current_old is not None else None
                 )
+                queued_old_trust = _normalized_correction_trust(old_trust)
                 if (
                     current_old is None
                     or current_old.get('speaker_provenance_mixed') is True
                     or stable_speaker_id(current_old.get('speaker_id'))
                     != stable_old_speaker_id
-                    or not isinstance(current_old_trust, (int, float))
-                    or isinstance(current_old_trust, bool)
-                    or float(current_old_trust) != float(old_trust)
+                    or current_old_trust is None
+                    or queued_old_trust is None
+                    or current_old_trust != queued_old_trust
                 ):
                     preference = None
             if preference is not None and action != 'keep_both':
@@ -762,6 +793,13 @@ class CorrectionsMixin:
                     )
                     if trust is not None:
                         new_entry['speaker_trust'] = trust
+                for queued_key, entry_key in (
+                    ('new_event_when_raw', 'event_when_raw'),
+                    ('new_event_start_at', 'event_start_at'),
+                    ('new_event_end_at', 'event_end_at'),
+                ):
+                    if queued_key in item:
+                        new_entry[entry_key] = deepcopy(item[queued_key])
                 return new_entry
 
             def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:

@@ -655,7 +655,7 @@ class FactsMixin:
 
             merged_temporal = None
             if source_provenance is not None:
-                from memory.temporal import explicit_event_window
+                from memory.temporal import explicit_event_window, to_naive_local
 
                 explicit_windows = [
                     window for window in (
@@ -669,9 +669,7 @@ class FactsMixin:
                         parsed = datetime.fromisoformat(
                             value.replace('Z', '+00:00')
                         )
-                        if parsed.tzinfo is not None:
-                            parsed = parsed.astimezone().replace(tzinfo=None)
-                        return parsed
+                        return to_naive_local(parsed)
 
                     starts = [
                         start for start, _end in explicit_windows if start

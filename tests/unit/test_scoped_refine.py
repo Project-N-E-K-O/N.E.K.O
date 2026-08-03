@@ -1953,6 +1953,61 @@ async def test_apply_skips_stamp_for_survivor_whose_text_drifted(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_apply_skips_stamp_for_survivor_whose_trust_band_drifted(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("小天")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    for entry_id, trust in (("p0", 0.3), ("p1", 0.3)):
+        entry = pm._build_fact_entry(
+            f"条目{entry_id}", "manual", None, subject=GROUP_A,
+        )
+        entry.update({
+            "id": entry_id, "speaker_id": "qq:1001",
+            "speaker_trust": trust,
+        })
+        section.append(entry)
+    await pm.asave_persona("小天", persona)
+    persona_cluster = [dict(entry) for entry in section]
+    section[0]["speaker_trust"] = 0.9
+    await pm.asave_persona("小天", persona)
+
+    assert await apply_scoped_persona_merge(
+        pm, "小天", GROUP_A, persona_cluster, [], "hashTrustP",
+    ) == 0
+    persona_rows = {
+        entry["id"]: entry for entry in pm._get_section_facts(
+            await pm.aensure_persona("小天"), GROUP_A.kind, subject=GROUP_A,
+        )
+    }
+    assert not persona_rows["p0"].get("last_refine_cluster_hash")
+    assert persona_rows["p1"]["last_refine_cluster_hash"] == "hashTrustP"
+
+    reflections = [
+        _r_entry(
+            entry_id, f"反思{entry_id}", GROUP_A,
+            speaker_id="qq:1001", speaker_trust=0.3,
+        )
+        for entry_id in ("r0", "r1")
+    ]
+    await re.asave_reflections("小天", reflections)
+    reflection_cluster = [
+        dict(row) for row in await re.aload_reflections("小天")
+    ]
+    live = await re.aload_reflections("小天")
+    next(row for row in live if row["id"] == "r0")["speaker_trust"] = 0.9
+    await re.asave_reflections("小天", live)
+
+    assert await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, reflection_cluster, [], "hashTrustR",
+    ) == 0
+    reflection_rows = {
+        row["id"]: row for row in await re._aload_reflections_full("小天")
+    }
+    assert not reflection_rows["r0"].get("last_refine_cluster_hash")
+    assert reflection_rows["r1"]["last_refine_cluster_hash"] == "hashTrustR"
+
+
+@pytest.mark.asyncio
 async def test_apply_skips_action_on_produced_id_collision(tmp_path):
     """coderabbit round-3: produced ids derive from output text + time
     salt; two identical texts in one batch can collide. The colliding

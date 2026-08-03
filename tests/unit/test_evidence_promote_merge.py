@@ -163,6 +163,33 @@ async def test_amerge_into_emits_two_events_and_writes_view(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_amerge_into_handles_extreme_offset_event_boundaries(tmp_path):
+    _ev, _fs, pm, _re, _cm = _install(str(tmp_path))
+    target = _persona_entry('p_001', 'old text', rein=1.0)
+    target.update({
+        'event_when_raw': {'kind': 'absolute', 'value': '0001-01-02'},
+        'event_start_at': '0001-01-02T00:00:00+00:00',
+        'event_end_at': '0001-01-02T00:00:00+00:00',
+    })
+    await pm.asave_persona('小天', {'master': {'facts': [target]}})
+
+    result = await pm.amerge_into(
+        '小天', 'p_001', 'merged text',
+        reflection_evidence={'reinforcement': 1.0, 'disputation': 0.0},
+        source_reflection_id='ref_boundary',
+        source_provenance={
+            'event_when_raw': {'kind': 'absolute', 'value': '0001-01-01'},
+            'event_start_at': '0001-01-01T00:00:00+14:00',
+            'event_end_at': '0001-01-01T00:00:00+14:00',
+        },
+    )
+
+    assert result == 'merged'
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['event_start_at'] == '0001-01-01T00:00:00+14:00'
+
+
+@pytest.mark.asyncio
 async def test_amerge_into_idempotent_on_repeat(tmp_path):
     """RFC §3.9.6: re-calling amerge_into with the same
     source_reflection_id is a no-op (the source is already in
