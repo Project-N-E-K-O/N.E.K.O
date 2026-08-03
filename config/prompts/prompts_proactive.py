@@ -1303,6 +1303,22 @@ def _normalize_startup_greeting_language(lang: str) -> str:
     return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
 
 
+def normalize_mini_game_invite_locale(lang: str) -> str:
+    """Normalize a locale to a key of the mini-game invite dicts, which include zh-TW.
+
+    Public on purpose: the consumer lives in ``main_logic.proactive_chat`` and the
+    two tables it indexes (``MINI_GAME_INVITE_LINES_BY_GAME`` and
+    ``MINI_GAME_INVITE_OPTION_LABELS``) live here. Exporting the normalizer next to
+    the tables keeps "which key scheme does this dict use" answerable in one place —
+    ``config.prompts._locale`` itself stays package-private.
+
+    ⚠️ This only pays off if the caller hands over a locale that still carries the
+    script. ``zh-TW`` that was already collapsed to ``zh`` upstream cannot be
+    recovered here, and the ``zh-TW`` rows above become unreachable data.
+    """
+    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
+
+
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
     """Normalize master_name into a string that can go straight into the {master} placeholder.
 
@@ -3493,6 +3509,7 @@ PROACTIVE_SOURCE_LABELS = {
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     "soccer": {
         "zh": "{master_name}，要不要现在跟我一起踢一会儿足球小游戏？",
+        "zh-TW": "{master_name}，要不要現在跟我一起踢一下足球小遊戲？",
         "en": "{master_name}, want to play a quick round of the soccer mini-game with me?",
         "ja": "{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？",
         "ko": "{master_name}, 지금 같이 축구 미니게임 한 판 어때?",
@@ -3502,6 +3519,8 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     },
     "badminton": {
         "zh": "{master_name}，要不要现在来一局羽毛球挑战？",
+        # 台湾惯用「羽球」而非「羽毛球」——这不是字形转换，是词汇选择。
+        "zh-TW": "{master_name}，要不要現在來一局羽球挑戰？",
         "en": "{master_name}, want to try a quick badminton rally challenge with me?",
         "ja": "{master_name}、今ちょっとバドミントンチャレンジやらない？",
         "ko": "{master_name}, 지금 배드민턴 랠리 챌린지 한 판 어때?",
@@ -3521,6 +3540,12 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
         "accept": "来一局！",
         "decline": "现在不想玩",
         "later": "等一会儿",
+    },
+    "zh-TW": {
+        "accept": "來一局！",
+        "decline": "現在不想玩",
+        # 「等一会儿」的台湾口语说法是「等一下」，不是「等一會兒」。
+        "later": "等一下",
     },
     "en": {
         "accept": "Let's play!",
