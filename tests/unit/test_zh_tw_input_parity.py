@@ -2281,21 +2281,42 @@ def test_an_apostrophe_in_a_latin_name_is_not_a_quote_opener(name):
     assert is_explicit_music_cancellation('帮我停止播放《好不好》') is True
 
 
-@pytest.mark.parametrize("marker", A_NOT_A_TAILS + ["好吗", "好嗎"])
-def test_a_trailing_question_suppresses_the_whole_clause_by_design(marker):
-    """⚠️ 这是一条**刻意接受的代价**，不是漏改。
+@pytest.mark.parametrize("marker", ["好不好", "可不可以", "好吗", "好嗎", "是不是"])
+def test_a_question_after_a_coordination_boundary_does_not_suppress_the_stop(marker):
+    """⚠️⚠️ 这条**推翻了第三轮的判断**，理由记在这里。
 
-    `帮我停止播放再看看效果好不好` 里疑问尾管的是后半句「看看效果」，整句仍被
-    判成提问、不取消播放。要区分「疑问尾管的是哪个谓词」需要真正的句法分析，
-    不是这条正则能做的。
+    第三轮 reviewer 提 `帮我停止播放再看看效果好不好` 时我驳回了，依据是「同形状
+    的 吗 那一支在 base 上也是 False，不能让 A-not-A 比 吗 聪明」。
 
-    ⚠️ 关键是它跟 吗/嗎 那一支**行为一致**：`帮我停止播放再看看效果好吗` 在
-    base 上就是 False。只把 A-not-A 做得比 吗 聪明，就又制造了一处「同一个形状
-    两条判据给不同答案」——这个文件已经因为它栽过四次。要改就三族一起改。
+    第十八轮 reviewer 换了个说法：**并列连接词是一个结构信号**（然后/再/并/
+    接着…），不是逐句启发式。而且这正是第十一轮我已经接受过的同一个判据——
+    `的时候` 后面跟并列副词，就说明前一个动作也在被要求。同一个信号在这个文件里
+    应该给出同一个答案，所以改。
+
+    ⚠️ 代价：`帮我停止播放再看看效果好吗` 在 base 上是 False，现在是 True。
+    base 在这里**不是权威**——它把两句同构的话判成不同结果，纯粹因为 A-not-A
+    那一族根本不在它的标记表里。统一之后统一到语义上对的那侧：整句在要求两个
+    动作，「好吗」是请求的礼貌尾，不是在征求要不要停。
     """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
-    assert is_explicit_music_cancellation(f'帮我停止播放再看看效果{marker}') is False
+    for conjunction in ("然后", "再", "并", "接着", "顺便"):
+        text = f'帮我停止播放{conjunction}看看效果{marker}'
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize("marker", ["好不好", "可不可以", "行不行", "好吗", "是不是"])
+def test_a_trailing_question_without_coordination_is_still_a_question(marker):
+    """⚠️ 与上一条成对：**没有并列动作**时，句末疑问尾仍然把整句判成提问。
+
+    这是这个 PR 最初要修的那条 P2（`我想停止播放可不可以`）。上一条放开并列结构
+    时，最容易顺手把这一整类也放行——两条必须一起看。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for prefix in ("我想", "我要", "帮我"):
+        text = f'{prefix}停止播放{marker}'
+        assert is_explicit_music_cancellation(text) is False, text
 
 
 @pytest.mark.parametrize("marker", ["好不好", "是不是", "好吗"])
@@ -2999,3 +3020,11 @@ def test_any_comparison_frame_before_a_degree_word_is_a_command(
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('停止播放的比赛结果') is False
     assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize("station", ["电台", "電台", "网络电台", "網路電台"])
+def test_a_radio_station_after_de_is_still_a_command(station):
+    """电台不以 声/音 收尾，所以后缀规则盖不到，仍需进对象表（base 是 True）。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{station}') is True
