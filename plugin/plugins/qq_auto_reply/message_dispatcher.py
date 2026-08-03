@@ -317,6 +317,11 @@ class QQMessageDispatcher:
                 except (asyncio.TimeoutError, Exception) as e:
                     self.plugin._emit_log("DEBUG", f"[Voice] 语音转录超时或失败: {type(e).__name__}")
                 message.pop("_pending_record_files", None)
+            # 语音/引用/转发可能丰富了消息内容 → 复检黑名单
+            enriched_content = str(message.get("content") or "").strip()
+            if enriched_content != raw_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs):
+                self.plugin._emit_log("INFO", f"黑名单过滤(转录后): text={enriched_content[:40]}")
+                return
             # 主消息图片：调用 VLM 获取描述
             if self.plugin.qq_client._image_describer:
                 import asyncio as _asyncio
