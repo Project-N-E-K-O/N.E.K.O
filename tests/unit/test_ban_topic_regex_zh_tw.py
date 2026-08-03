@@ -100,13 +100,12 @@ CN_OBJECTS = ("工作", "前男友", "我的体重")
 
 # ⚠️ 动词维**从模块常量派生**，不手抄。手抄的那版在注释里写下了「复合动词必须排在
 # 单字前缀之前」这条不变量，然后自己漏了 提到 / 聊起 / 講起 / 扯到 和整个 X及 族
-# （54 格漏 28 格）。派生之后，往 _ZH_SAY_VERBS / _ZH_VERB_COMPLEMENTS 里加字会
+# （54 格漏 28 格）。派生之后，往 _ZH_SAY_VERBS / _ZH_SAY_COMPOUNDS 里加字会
 # 自动进笛卡尔积。
-ALL_VERBS = tuple(
-    [v + c for v in D._ZH_SAY_VERBS for c in D._ZH_VERB_COMPLEMENTS]
-    + list(D._ZH_SAY_COMPOUNDS)
-    + list(D._ZH_SAY_VERBS)
-)
+#
+# ⚠️ 「言说动词 × 结果补语」的那一维已经拿掉：见 _ZH_SAY_VERBS 上方的注释，
+# ``提／到达时间`` 与 ``提到／达时间`` 无法局部区分，吃掉补语会把话题首字一并吃掉。
+ALL_VERBS = tuple(list(D._ZH_SAY_COMPOUNDS) + list(D._ZH_SAY_VERBS))
 TW_VERBS = tuple(v for v in ALL_VERBS if not any(ch in "说讲谈论" for ch in v))
 CN_VERBS = tuple(v for v in ALL_VERBS if not any(ch in "說講談論" for ch in v))
 
@@ -121,8 +120,8 @@ def _is_excluded_pair(negation: str, verb: str) -> bool:
 # 构词维度各自用相等断言钉死（闭集），改动必须同时改这里。
 def test_verb_constants_are_pinned():
     assert D._ZH_SAY_VERBS == ("说", "說", "提", "聊", "讲", "講", "谈", "談", "扯")
-    assert D._ZH_VERB_COMPLEMENTS == ("到", "起", "及")
     assert D._ZH_SAY_COMPOUNDS == ("讨论", "討論", "谈论", "談論")
+    assert not hasattr(D, "_ZH_VERB_COMPLEMENTS")
     assert D._ZH_ADDRESS_VERBS == (
         "管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我",
     )
@@ -983,38 +982,56 @@ def test_non_cjk_locales_fall_back_to_the_cjk_particle_lists(text, locale, expec
     assert expected in terms, f"{text!r} -> {terms}"
 
 
-# ── 5d. 复合动词不能被它的单字前缀吃掉 ───────────────────────
-# 模板 1 的宾语是 ``(.{1,40}?)``，什么都能吃，所以 ``提`` 一旦匹配成功正则**不会**
-# 回溯去试 ``提起`` —— 复合动词必须排在单字前缀之前（codex P2；简繁两侧都错过）。
+# ── 5d. 「动词 + 结果补语」不切分，繁简一致 ──────────────────
+# ⚠️ 这里曾经断言 ``別提起工作。`` 得到 ``工作``（把 ``起`` 当补语吃掉）。撤掉了：
+# 同样的切分会把 ``别聊起点问题。`` 削成 ``点问题``（codex P2，简体也回归）。
+# 补语留在 term 里是 base 的既有行为，也是安全方向——多一个字话题仍完整。
 COMPOUND_VERB_PAIRS = [
-    ("別提起工作。", "别提起工作。"),
-    ("別提及工作。", "别提及工作。"),
-    ("別講到工作。", "别讲到工作。"),
-    ("別說到工作。", "别说到工作。"),
-    ("別說起工作。", "别说起工作。"),
-    ("別談到工作。", "别谈到工作。"),
-    ("別談起工作。", "别谈起工作。"),
-    ("別聊到工作。", "别聊到工作。"),
+    ("別提起工作。", "别提起工作。", "起工作"),
+    ("別提及工作。", "别提及工作。", "及工作"),
+    ("別講到工作。", "别讲到工作。", "到工作"),
+    ("別說到工作。", "别说到工作。", "到工作"),
+    ("別說起工作。", "别说起工作。", "起工作"),
+    ("別談到工作。", "别谈到工作。", "到工作"),
+    ("別談起工作。", "别谈起工作。", "起工作"),
+    ("別聊到工作。", "别聊到工作。", "到工作"),
 ]
 
 
-@pytest.mark.parametrize(("tw", "cn"), COMPOUND_VERB_PAIRS)
-def test_compound_verb_is_not_swallowed_by_its_prefix(tw, cn):
+@pytest.mark.parametrize(("tw", "cn", "expected"), COMPOUND_VERB_PAIRS)
+def test_verb_plus_complement_keeps_the_complement_in_both_scripts(tw, cn, expected):
     for text in (tw, cn):
-        assert _zh_terms(text) == {"工作"}, f"{text!r} 的复合动词被单字前缀吃掉了"
+        assert _zh_terms(text) == {expected}, f"{text!r} 繁简不一致"
 
 
 @pytest.mark.parametrize(
     "text",
-    ["别提起了。", "别提及了。", "别说起了。", "別提起了。", "別說到了。", "别谈及了。"],
+    [
+        # 模板 1（别/不要 + 动词）
+        "别提起了。", "别提及了。", "别说起了。",
+        "別提起了。", "別說到了。", "别谈及了。",
+        # ⚠️ 模板 3（不想/懒得 + 动词）也要各配一条：只钉模板 1 的话，把模板 3 的
+        # 前视删掉照样全绿，而它同样会产出 "起了" / "到了" / "及了" 这种假话题。
+        "我不想再提起了。", "我懒得再说起了。", "我不想聊到了。",
+        "我不想再提及了。", "我沒心情提起了。", "我懶得再說起了。",
+    ],
 )
 def test_an_objectless_directive_does_not_invent_an_object(text):
-    """⚠️ 复合动词排在单字前缀之前只解决"谁先匹配"，解决不了**回溯**：``提起`` 先中，
-    后面只剩 ``了`` 凑不够宾语下限，引擎就退回 ``提``、把 ``起了`` 当话题存下来。
-    而本模块 docstring 明确说不抽无宾语的指令（codex P2）。动词组原子化后，动词一旦
-    选定就不再回头，整条匹配直接失败——正是想要的结果。
+    """⚠️ 动词之后只剩「结果补语 + 语气词」就是没有宾语，本模块 docstring 明确说
+    不抽这种指令。靠 _ZH_OBJECTLESS_AHEAD 这道前视挡，**不能**改用把宾语下限降到 1
+    来代替——下限 1 会让 lazy 宾语把话题末字让给可选助词组，``别提钱的事。`` 退化成
+    ``钱`` 后撞长度下限整条消失（codex P2 两轮，方向相反）。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == set(), f"{text!r} 被造出了话题：{_zh_terms(text)}"
+
+
+def test_the_objectless_guard_is_not_the_topic_minimum():
+    """两道闸各管一头，谁都不能顶替谁——把下限调回 1 这条会红。"""  # noqa: DOCSTRING_CJK
+    assert "_ZH_OBJECTLESS_AHEAD" in D.__dict__
+    assert D._ZH_COMPLEMENT_CHARS == ("到", "起", "及")
+    for _loc, _kind, pat in D.DIRECTIVE_PATTERNS:
+        if _loc == "zh":
+            assert "{1," not in pat.pattern, pat.pattern[:80]
 
 
 def test_the_verb_alternation_is_atomic():
@@ -1254,3 +1271,87 @@ def test_guanyu_exclusion_does_not_eat_other_words_starting_with_guan(text, expe
 )
 def test_ordinary_traditional_talk_does_not_trigger(text):
     assert _zh_terms(text) == set()
+
+
+# ── 7. 话题首字是 到/起/及 时不被当成动词补语吃掉 ────────────
+# ⚠️ 全部**对照 origin/main 实测**过：base 这五条都保留了首字，是本 PR 一度吃掉的
+# （codex P2）。``提／到达时间`` 与 ``提到／达时间`` 是同一串字，局部无从分辨，所以
+# 不做「言说动词 × 结果补语」的笛卡尔积——留一个 ``到`` 话题仍完整，吃一个字变非词。
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别提到达时间。", "到达时间"),
+        ("別提到達時間。", "到達時間"),
+        ("别聊起点问题。", "起点问题"),
+        ("別聊起點問題。", "起點問題"),
+        ("别提及格线的事。", "及格线的事"),
+        ("別提及格線的事。", "及格線的事"),
+        ("别说起点站。", "起点站"),
+        ("別說起點站。", "起點站"),
+        ("别扯到我头上。", "到我头上"),
+    ],
+)
+def test_a_topic_beginning_with_a_complement_character_keeps_its_first_char(
+    text, expected,
+):
+    assert expected in _zh_terms(text)
+
+
+def test_the_verb_table_has_no_complement_cartesian_product():
+    """补语族一旦回到动词表，上面那批话题就会被削掉首字。"""  # noqa: DOCSTRING_CJK
+    verbs = D._ZH_VERBS_PLAIN
+    for verb in D._ZH_SAY_VERBS:
+        for complement in ("到", "起", "及"):
+            assert f"|{verb}{complement}|" not in verbs, f"{verb}{complement}"
+
+
+# ── 8. 反问尾巴只在没有括号时才剥 ────────────────────────────
+# 剥配对括号发生在剥语气词之前，所以「原 term 带不带括号」必须在剥之前判断。
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 不带括号：反问语气，剥掉（base 会留着整串，这是本 PR 的改进）
+        ("别再提工作好吗。", "工作"),
+        ("別再提工作好嗎。", "工作"),
+        ("别再提工作了好吗。", "工作"),
+        ("别再提工作好不好。", "工作"),
+        ("別再提工作好不好。", "工作"),
+        ("别再提加班可以吗。", "加班"),
+        ("別再提加班可以嗎。", "加班"),
+        # 剥完不够两个字就整条留着（trim 从不把 term 削到下限以下）
+        ("别提行吗。", "行吗"),
+        # 带括号：括号里是被引用的专名，反问短语是名字的一部分
+        ("別再提《最近你好嗎》。", "最近你好嗎"),
+        ("别再提《最近你好吗》。", "最近你好吗"),
+        ("别再提电影《我们好不好》。", "电影《我们好不好"),
+        ("別再提電影《我們好不好》。", "電影《我們好不好"),
+        ("别再提《你可以吗》。", "你可以吗"),
+        ('别再提"我们好不好"。', "我们好不好"),
+        ("別叫我《好不好》。", "好不好"),
+    ],
+)
+def test_interrogative_tails_are_stripped_only_outside_quoted_names(text, expected):
+    terms = _zh_terms(text)
+    if expected is None:
+        assert terms == set()
+    else:
+        assert expected in terms, terms
+
+
+def test_the_bracket_char_set_is_derived_from_the_pairs():
+    """两张表漂移过四次（#2655），这里钉死派生关系。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_BRACKET_CHARS == frozenset(
+        ch for pair in D._ZH_BRACKET_PAIRS for ch in pair
+    )
+
+
+def test_interrogative_tails_are_a_separate_table_from_the_particles():
+    """混进助词表就没法按括号分别对待了。"""  # noqa: DOCSTRING_CJK
+    assert D._TAIL_INTERROGATIVES_BY_LOCALE["zh"] == (
+        "好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎",
+    )
+    # zh 那张助词表必须只剩单字，否则多字反问短语会绕过括号判据被无条件剥掉。
+    for tok in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]:
+        assert len(tok) == 1, tok
+
+

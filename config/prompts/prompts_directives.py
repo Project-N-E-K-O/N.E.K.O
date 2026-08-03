@@ -115,12 +115,24 @@ _TRIM_TRAIL_TOKENS_BY_LOCALE: dict[str, Tuple[str, ...]] = {
         # 但罕见话题被腰斩成**非词**；不收，常见说法多带一个字（"工作耶"）——term
         # 里仍然完整含着真话题，模型对得上。宁可多一个字，不可少一个字。
         "喔", "囉", "啰", "唷", "齁", "欸", "誒", "咧", "喲",
-        # 反问尾巴：跟在句末助词后面（"工作了好嗎"），正则的可选助词组只放行一个，
-        # 剩下的会并进 term，靠 trim 的循环逐层剥掉。
-        "好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎",
     ),
     "ja": ("ね", "よ", "わ", "の", "って", "なんて", "という"),
     "ko": ("요", "은", "는", "이", "가", "을", "를", "에", "에서"),
+}
+
+# 反问尾巴：跟在句末助词后面（"工作了好嗎"），正则的可选助词组只放行一个，
+# 剩下的会并进 term，靠 trim 的循环逐层剥掉。
+#
+# ⚠️ 单列一张表、且**只在 term 不带括号时**才剥。这几个短语同时也是大量作品名的
+# 结尾（《我們好不好》/《最近你好嗎》），而剥括号发生在剥语气词之前——不设条件的
+# 话 "别再提电影《我们好不好》。" 存下来的是 "电影《我们"，把标题腰斩成非词
+# （codex P2）。
+#
+# 判据这一维是干净闭集：**原始 term 里有没有出现过括号字符**。带括号 = 里面是被
+# 引用的专名，专名尾部的 "好不好" 是名字的一部分；不带括号才是说话人的反问语气。
+# 反过来"哪些短语可能是作品名结尾"是开集，枚举不干净。
+_TAIL_INTERROGATIVES_BY_LOCALE: dict[str, Tuple[str, ...]] = {
+    "zh": ("好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎"),
 }
 
 # ⚠️ 没有自己 CJK 助词表的 locale（en / ru / es / pt）回落到 **zh + ja** 的并集：
@@ -201,13 +213,20 @@ def _trim_term(term: str, locale: str = "") -> str:
     family = normalize_prompt_locale(
         locale, default="", simplified="zh", keep_traditional=False,
     )
-    if family in _TRIM_TRAIL_TOKENS_BY_LOCALE:
-        cjk = _TRIM_TRAIL_TOKENS_BY_LOCALE[family]
-    else:
-        cjk = tuple(
+    families = (
+        (family,)
+        if family in _TRIM_TRAIL_TOKENS_BY_LOCALE
+        else _TRIM_TRAIL_FALLBACK_LOCALES
+    )
+    cjk = tuple(
+        tok for fam in families for tok in _TRIM_TRAIL_TOKENS_BY_LOCALE[fam]
+    )
+    # 带括号的 term 里，反问短语是被引用专名的一部分，不是语气（见该表的注释）。
+    if not any(ch in _ZH_BRACKET_CHARS for ch in term):
+        cjk += tuple(
             tok
-            for fam in _TRIM_TRAIL_FALLBACK_LOCALES
-            for tok in _TRIM_TRAIL_TOKENS_BY_LOCALE[fam]
+            for fam in families
+            for tok in _TAIL_INTERROGATIVES_BY_LOCALE.get(fam, ())
         )
     tokens = _TRIM_TRAIL_TOKENS_ANY + cjk
     s = term.strip()
@@ -291,12 +310,16 @@ _ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
 # ---------------------------------------------------------------------------
 # ⚠️ 手写清单在这里失败过两次：模板 1 的宾语是 ``(.{1,40}?)``，什么都能吃，所以
 # 单字 ``提`` 一旦匹配成功，剩余部分整体成功，正则**没有理由**回溯去试 ``提起``。
-# 于是复合动词必须排在它的单字前缀之前——这条不变量写进注释之后，手抄的那份清单
-# 仍然漏了 提到 / 聊起 / 講起 / 扯到 和整个 ``X及`` 族（54 格里漏 28 格）。
-# 两个维度都是闭集（言说动词字形 × 结果补语），直接做笛卡尔积。
+# 于是复合动词必须排在它的单字前缀之前。
+#
+# ⚠️ 这里**不**做「言说动词 × 结果补语」的笛卡尔积。曾经把 ``到 / 起 / 及`` 当补语
+# 一并吃掉，理由是 ``別提到我前女友。`` 该存 ``我前女友`` 而不是 ``到我前女友``。
+# 但 ``提／到达时间`` 和 ``提到／达时间`` 是同一串字，两种切分都合语法，局部没有任何
+# 规则能分开——于是 ``别提到达时间。`` 存成 ``达时间``、``别聊起点问题。`` 存成
+# ``点问题``、``别提及格线的事。`` 存成 ``格线的事``（codex P2，简体也回归）。
+# 「以 到/起/及 开头的词」是开集，枚不干净；而代价是不对称的：多留一个 ``到``，
+# term 里仍然完整含着真话题，模型对得上；吃掉一个字，存进去的是非词。
 _ZH_SAY_VERBS = ("说", "說", "提", "聊", "讲", "講", "谈", "談", "扯")
-# 结果补语：``到 / 起 / 及`` 之后跟的才是话题本身，不带上就会把补语并进 term。
-_ZH_VERB_COMPLEMENTS = ("到", "起", "及")
 # 双字言说动词（不是「动词 + 补语」构成的，单列）
 _ZH_SAY_COMPOUNDS = ("讨论", "討論", "谈论", "談論")
 # 称呼类：结构是「动词 + 我 + 称呼」，与上面两族都不同
@@ -305,8 +328,7 @@ _ZH_ADDRESS_VERBS = ("管我叫", "称呼我为?", "稱呼我為?", "喊我", "�
 
 def _zh_verb_alternation(*, with_address: bool) -> str:
     """Build the verb alternation, compounds always ahead of their single-char prefix."""
-    parts = [v + c for v in _ZH_SAY_VERBS for c in _ZH_VERB_COMPLEMENTS]
-    parts += list(_ZH_SAY_COMPOUNDS)
+    parts = list(_ZH_SAY_COMPOUNDS)
     if with_address:
         parts += list(_ZH_ADDRESS_VERBS)
     parts += list(_ZH_SAY_VERBS)
@@ -355,6 +377,9 @@ _ZH_BRACKET_PAIRS = (
     # ⚠️ 不收单引号 ``'``：英文里它是词内撇号（don't / it's），配对没有意义。
     ('"', '"'), ("(", ")"),
 )
+# term 里出现任一括号字符 = 里面有被引用的专名，_trim_term 据此关掉反问尾巴的剥离。
+# ⚠️ 从 _ZH_BRACKET_PAIRS 派生，不另抄一张：同一件事维护两张表必然漂移（#2655）。
+_ZH_BRACKET_CHARS = frozenset(ch for pair in _ZH_BRACKET_PAIRS for ch in pair)
 _ZH_BRACKET_RUN = "(?:" + "|".join(
     f"{re.escape(lo)}[^{re.escape(hi)}\\r\\n]*{re.escape(hi)}"
     for lo, hi in _ZH_BRACKET_PAIRS
@@ -396,6 +421,26 @@ def _zh_topic(minimum: int, maximum: int) -> str:
 # 就是北方口语词、台湾并不说 ``唄``，为它承担这个代价不划算。
 _ZH_FINAL_PARTICLES = (
     "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|囉|啰|唷|齁|欸|誒|咧|喲))"
+)
+
+# 无宾语指令的前视：动词之后到句读之间，如果只剩「结果补语 + 语气词」就没有宾语，
+# 整条不该抽（本模块的 docstring 明确说不抽无宾语的指令）。
+#
+# ⚠️ 这条是**独立于宾语下限**的一道闸，不能靠把下限降到 1 来代替。下限 1 会让
+# lazy 宾语 + 可选助词组优先把话题末字当助词：``别提钱的事。`` 的宾语退化成 ``钱``、
+# 撞长度下限后整条消失，``别再提好咧。`` 同理（这两条正是本 PR 修掉的 base 缺陷）。
+# 下限 2 保住它们，这条前视单独负责 ``别提起了。`` 不被造出 ``起了`` 这种宾语。
+#
+# 两个维度都是闭集：结果补语三个字（到/起/及，语法角色固定），语气词就是上面那张
+# 表。注意**不能**反过来把补语并进动词表——``提／到达时间`` 和 ``提到／达时间``
+# 是同一串字，见 _ZH_SAY_VERBS 上方的注释。
+_ZH_COMPLEMENT_CHARS = ("到", "起", "及")
+_ZH_OBJECTLESS_AHEAD = (
+    "(?!"
+    + f"\\s*(?:{'|'.join(_ZH_COMPLEMENT_CHARS)})?"
+    + _ZH_FINAL_PARTICLES + "{0,3}"
+    + r"\s*(?:的事)?\s*(?:[，。！？；,.!?;]|$)"
+    + ")"
 )
 
 # (2) 假名。⚠️ 不能简单地"命中区间有假名就丢"——被 ban 的**对象本身**经常是日文
@@ -495,7 +540,8 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ⚠️ 宾语下限是 2 不是 1：可选助词组 + lazy 宾语会让正则优先把话题的最后一个字
      # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
      # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
-     "(" + _zh_topic(2, 40) + r")" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
+     + _ZH_OBJECTLESS_AHEAD
+     + "(" + _zh_topic(2, 40) + r")" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
     # ``关于 X 就别提了`` 归模板 4 管。本模板不排掉它的话，同一句会同时产出这里的
     # "关于股票就" 和模板 4 的 "股票" 两条 term——前者是垃圾却照样占一个 active
@@ -524,6 +570,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     ("zh", "ban_topic",
      r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
      + _ZH_VERBS_PLAIN
+     + _ZH_OBJECTLESS_AHEAD
      + r"\s*(" + _zh_topic(2, 40) + r")(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
@@ -531,7 +578,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 结构是显式的，被腰斩的风险仅限于 ``关于`` + 就尾词（"关于功成名就别提了"，
      # 极罕见）。模板 2 没有这个锚，覆盖的是全部 "X别提了" 句子——成就 / 迁就 /
      # 功成名就 都住在那里，所以那边一个字都不吃，交给 _drop_filler_suffixed_terms。
-     r"(?:关于|關於)\s*(" + _zh_topic(1, 30) + r")\s*(?:的事)?\s*"
+     r"(?:关于|關於)\s*(" + _zh_topic(2, 30) + r")\s*(?:的事)?\s*"
      r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*(?:就)?"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
