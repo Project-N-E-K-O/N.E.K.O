@@ -366,6 +366,109 @@ async def test_documented_legacy_audio_flow_authorizes_before_session_and_pcm(
 
 
 @pytest.mark.asyncio
+async def test_same_socket_reclaims_voice_after_text_route_revokes_lease(
+    monkeypatch,
+) -> None:
+    class _TextRouteRevokesLeaseManager(_ProtocolManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.audio_authorization_count = 0
+            self.allow_text_revoke = asyncio.Event()
+            self.text_revoke_complete = asyncio.Event()
+
+        async def _ensure_voice_input_session_authorized(
+            self,
+            connection_id: str,
+        ) -> bool:
+            self.calls.append(("authorize", connection_id))
+            authorized = connection_id == self._voice_lease_connection_id
+            self.audio_authorization_count += 1
+            if self.audio_authorization_count == 2:
+                # The second audio request has already passed the router claim
+                # while the fire-and-forget text start still owns the lease.
+                # Let the delayed text task revoke only after that ordering is
+                # established, matching the production cross-mode race.
+                self.allow_text_revoke.set()
+            return authorized
+
+        async def start_session(self, *_args, **_kwargs) -> None:
+            input_mode = _args[2]
+            self.calls.append(("start_session", input_mode))
+            if input_mode == "text":
+                # Mirrors _start_independent_asr_if_enabled: a text session
+                # fail-closes the microphone route and vacates the lease while
+                # the browser WebSocket itself remains connected.
+                await self.allow_text_revoke.wait()
+                await self._revoke_voice_input_connection(
+                    self._voice_lease_connection_id
+                )
+                self.text_revoke_complete.set()
+            elif self.audio_authorization_count == 2:
+                # lifecycle._start_session_handle_inflight waits for the text
+                # start (including its revoke) before restarting audio. The
+                # frontend then sends its engaged lease_sync after receiving
+                # session_started(audio), which is the next gated WS message.
+                await self.text_revoke_complete.wait()
+
+    class _LeaseSyncAfterTextRevokeWebSocket(_EventWebSocket):
+        async def receive(self) -> dict:
+            next_event = self.events[0]
+            raw_message = next_event.get("text")
+            if isinstance(raw_message, str):
+                message = json.loads(raw_message)
+                if message.get("action") == "voice_input_control":
+                    await manager.text_revoke_complete.wait()
+            return await super().receive()
+
+    manager = _TextRouteRevokesLeaseManager()
+    websocket = _LeaseSyncAfterTextRevokeWebSocket(
+        [
+            {"action": "start_session", "input_type": "audio"},
+            {"action": "start_session", "input_type": "text"},
+            {"action": "start_session", "input_type": "audio"},
+            {
+                "action": "voice_input_control",
+                "event": "lease_sync",
+                "lease_generation": 1,
+                "owner": "core",
+                "hard_muted": False,
+                "focus_suppressed": False,
+                "engaged": True,
+            },
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert [
+        payload for name, payload in manager.calls if name == "start_session"
+    ] == ["audio", "text", "audio"]
+    begin_calls = [payload for name, payload in manager.calls if name == "begin"]
+    authorize_calls = [
+        payload for name, payload in manager.calls if name == "authorize"
+    ]
+    assert len(begin_calls) == 2
+    assert authorize_calls == begin_calls
+    call_names = [name for name, _payload in manager.calls]
+    authorize_indexes = [
+        index for index, name in enumerate(call_names) if name == "authorize"
+    ]
+    begin_indexes = [
+        index for index, name in enumerate(call_names) if name == "begin"
+    ]
+    text_revoke_index = call_names.index("revoke")
+    control_index = call_names.index("control")
+    assert authorize_indexes[1] < text_revoke_index
+    assert text_revoke_index < begin_indexes[1] < control_index
+    assert manager.statuses == []
+
+
+@pytest.mark.asyncio
 async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
     monkeypatch,
 ) -> None:
