@@ -42,6 +42,7 @@ from memory.scoped_refine import (
     apply_scoped_persona_merge,
     apply_scoped_reflection_merge,
     gather_scoped_refine_buckets,
+    scoped_prompt_trust_band,
     _trust_weighted_merge_text,
 )
 
@@ -621,6 +622,56 @@ async def test_refine_pass_hash_fresh_cluster_skipped_without_llm():
         )
     assert result['clusters_skipped'] >= 1
     assert create.await_count == 0  # 新鲜 hash → 零 LLM 成本
+
+
+@pytest.mark.asyncio
+async def test_refine_pass_trust_band_change_invalidates_fresh_stamp():
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        {
+            **_r_entry(f"a{i}", f"文本{i}", GROUP_A, va if i % 2 else vb),
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.3,
+        }
+        for i in range(8)
+    ]
+    hashes = []
+    stamped_ids = set()
+
+    async def _apply(_bucket, cluster, _actions, cluster_hash):
+        hashes.append(cluster_hash)
+        stamped_ids.update(e["id"] for e in cluster)
+
+    with patch(
+        'utils.llm_client.create_chat_llm_async',
+        AsyncMock(return_value=_make_llm([])),
+    ):
+        await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply, scope_label='t',
+            trust_of=scoped_prompt_trust_band,
+        )
+    for entry in entries:
+        if entry["id"] in stamped_ids:
+            entry["last_refine_cluster_hash"] = hashes[0]
+            entry["last_refine_at"] = datetime.now().isoformat()
+
+    next(entry for entry in entries if entry["id"] in stamped_ids)[
+        "speaker_trust"
+    ] = 0.9
+    create = AsyncMock(return_value=_make_llm([]))
+    with patch('utils.llm_client.create_chat_llm_async', create):
+        result = await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply, scope_label='t',
+            trust_of=scoped_prompt_trust_band,
+        )
+
+    assert result["clusters_skipped"] == 0
+    assert create.await_count == 1
+    assert len(hashes) == 2
+    assert hashes[1] != hashes[0]
 
 
 @pytest.mark.asyncio

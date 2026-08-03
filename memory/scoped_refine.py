@@ -567,8 +567,11 @@ class ScopedLiteRefineEngine:
 
     @staticmethod
     def _cluster_hash(cluster: list[dict]) -> str:
-        ids = sorted(str(e.get('id', '')) for e in cluster if e.get('id'))
-        return hashlib.sha1('|'.join(ids).encode('utf-8')).hexdigest()[:16]
+        signatures = sorted(
+            f"{e.get('id')}\0{scoped_prompt_trust_band(e)}"
+            for e in cluster if e.get('id')
+        )
+        return hashlib.sha1('|'.join(signatures).encode('utf-8')).hexdigest()[:16]
 
     @staticmethod
     def _all_stamped_fresh(cluster: list[dict], cluster_hash: str) -> bool:

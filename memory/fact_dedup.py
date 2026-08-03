@@ -73,6 +73,7 @@ from memory.facts import (
     safe_importance,
     safe_int_field,
 )
+from memory.temporal import to_naive_local
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
     atomic_write_json_async,
@@ -93,12 +94,24 @@ def _created_at_instant(value: object) -> datetime | None:
         return None
 
 
+def _event_window_instant(value: object) -> datetime | None:
+    """Parse one event boundary without dropping extreme aware values."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    # Imported boundaries may sit at datetime.min/max with an offset whose UTC
+    # conversion overflows. The shared normalizer preserves a comparable local
+    # instant normally and falls back to the explicit wall clock at the edge.
+    return to_naive_local(parsed)
+
+
 def _has_distinct_event_windows(first: dict, second: dict) -> bool:
     """Return True when facts describe different, at least partly explicit windows."""
     def _explicit_window(entry: dict) -> tuple[datetime | None, datetime | None]:
-        start = _created_at_instant(entry.get('event_start_at'))
-        end = _created_at_instant(entry.get('event_end_at'))
-        created = _created_at_instant(entry.get('created_at'))
+        start = _event_window_instant(entry.get('event_start_at'))
+        end = _event_window_instant(entry.get('event_end_at'))
+        created = _event_window_instant(entry.get('created_at'))
         # Fact extraction synthesizes start=created_at for timeless facts.
         # It is storage metadata, not an event boundary.  Imported start-only
         # windows remain explicit when they differ from created_at; any end is

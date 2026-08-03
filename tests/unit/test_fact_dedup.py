@@ -36,6 +36,7 @@ from memory.fact_dedup import (
     FACT_DEDUP_PAIRS_PER_NEW,
     FactDedupResolver,
     _created_at_instant,
+    _has_distinct_event_windows,
 )
 from memory.facts import _merge_archive_entries
 
@@ -465,6 +466,20 @@ def test_detect_candidates_compares_offset_timestamps_as_instants():
 ])
 def test_created_at_instant_rejects_utc_conversion_overflow(value):
     assert _created_at_instant(value) is None
+
+
+def test_distinct_event_windows_preserves_extreme_explicit_boundary():
+    explicit = {
+        "created_at": "2026-04-25T10:00:00",
+        "event_start_at": "0001-01-01T00:00:00+14:00",
+        "event_when_raw": {"start": {"offset": -1, "unit": "year"}},
+    }
+    undated = {
+        "created_at": "2026-04-25T10:00:00",
+        "event_start_at": "2026-04-25T10:00:00",
+    }
+
+    assert _has_distinct_event_windows(explicit, undated)
 
 
 def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():

@@ -13274,6 +13274,51 @@ async def test_cancelled_save_publishes_an_opt_in_that_did_land():
     assert published == [{"group_memory_enabled": True}]
 
 
+@pytest.mark.asyncio
+async def test_repeated_cancellation_keeps_consent_save_shielded():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    service = QQSettingsService.__new__(QQSettingsService)
+    published: list = []
+    rolled: list[bool] = []
+    service.plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": False},
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+    )
+    service._rollback_unpersisted_memory_toggles = (
+        lambda persisted, **_kwargs: rolled.append(persisted)
+    )
+    service._publish_consent_opt_ins = published.append
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_success(overlay=None):
+        started.set()
+        await release.wait()
+        return True
+
+    service.persist_business_config = _slow_success
+    task = asyncio.create_task(service._persist_with_consent_rollback(
+        deferred_opt_ins={"group_memory_enabled": True},
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+        cross_group_before=False,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert rolled == [True]
+    assert published == [{"group_memory_enabled": True}]
+
+
 def test_cross_group_section_normalizes_the_current_group_id():
     """Group ids arrive with whitespace from several call paths. Comparing
     them raw makes the CURRENT group look like another one, so its own

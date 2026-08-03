@@ -216,7 +216,15 @@ class QQSettingsService:
             success = await asyncio.shield(save_task)
         except asyncio.CancelledError:
             try:
-                success = await save_task
+                while not save_task.done():
+                    try:
+                        await asyncio.shield(save_task)
+                    except asyncio.CancelledError:
+                        # Repeated cancellation must not cancel the atomic
+                        # settings write or release the shared writer locks
+                        # while its to_thread worker can still publish.
+                        continue
+                success = save_task.result()
             except asyncio.CancelledError:
                 # 写盘本身也被取消（不是仅我们这次 await）：没落盘。
                 success = False
