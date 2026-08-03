@@ -784,8 +784,6 @@ def test_all_three_full_rewrite_predicates_share_a_case_policy():
     `Don't rewrite the whole card` 满足两条正向谓词却躲过守卫，直接走进整卡
     补全通路（Codex P1）。这是**自动发现**的守卫，不用逐句举例。
     """  # noqa: DOCSTRING_CJK
-    import re
-
     import main_routers.card_assist_router as router
 
     for name in (
