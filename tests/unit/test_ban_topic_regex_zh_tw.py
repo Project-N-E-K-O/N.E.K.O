@@ -171,27 +171,30 @@ def test_traditional_and_simplified_reach_the_same_term(tw, cn, expected):
 # 模板抓出 term（下面的 premise 断言就是这么验的），所以这张表不会悄悄退化成一堆无关
 # 句子而全绿。``特別講演について``、``今日は休講です`` 之类由 _BIE_COMPOUND_LEFT /
 # 休 词首规则先挡下，放在 JAPANESE_BLOCKED_ELSEWHERE 里另测。
+# ⚠️ 前缀一律用 ``地域別 / 年齢別 / 職種別``（日文能产的 ``〜別`` 后缀），不用
+# ``個別 / 特別``：后两者的左界字已经在 _BIE_COMPOUND_LEFT 里，会被守卫 1 先挡下，
+# 拿它们当样本压不住日文守卫（premise 测试会红）。
 JAPANESE_KANA_GUARDED = [
-    "個別提案をお願いします。",
+    "地域別提案をお願いします。",
     "地域別講座の一覧。",
     "休講のお知らせ",
     "年齢別講座の案内です。",
     "職種別談話会のお知らせ",
-    "個別談話をお願いします。",
+    "地域別談話をお願いします。",
     "休講だそうです。",
-    "個別講座に申し込みました。",
+    "年齢別講座に申し込みました。",
     # 助词表按闭集补全之前漏的（codex P2）：只列 のにをはがでと 时这些都会漏出去
-    "個別提案ください。",
+    "地域別提案ください。",
     "地域別講座へ申込。",
-    "個別提案から選択。",
-    "個別提案など検討。",
-    "地域別講座まで案内。",
-    "個別談話でも可。",
-    "個別提案だけ確認。",
+    "年齢別提案から選択。",
+    "地域別提案など検討。",
+    "職種別講座まで案内。",
+    "地域別談話でも可。",
+    "年齢別提案だけ確認。",
     "地域別講座について質問。",
     # 接续助词：这两条的 term 里**没有**单字格助词，只有 けど / たら 拦得住
-    "個別提案したけど。",
-    "個別提案したら連絡。",
+    "職種別提案したけど。",
+    "地域別提案したら連絡。",
 ]
 JAPANESE_BLOCKED_ELSEWHERE = [
     "今日は休講です。",
@@ -201,6 +204,11 @@ JAPANESE_BLOCKED_ELSEWHERE = [
     "特別談話を発表した。",
     "個別に提案します。",
     "部門別の説明会に出ます。",
+    # 纯汉字、一个假名都没有 —— 假名守卫够不着，只有 _BIE_COMPOUND_LEFT 收了
+    # ``個`` 才挡得住（codex P2）
+    "個別提案書。",
+    "個別提案資料。",
+    "個別講座案内。",
 ]
 
 
@@ -309,8 +317,9 @@ def test_the_grammar_marker_set_excludes_mo():
 # ── 4. 复合词左界守卫 ────────────────────────────────────────
 def test_compound_left_set_is_pinned():
     """闭集断言用相等：这张表里每个字都是一句"该字后面的 别 一定不是祈使"的主张，
-    加字要先确认没有自然反例（"这个别提了" 就是 个 的反例）。"""  # noqa: DOCSTRING_CJK
-    assert D._BIE_COMPOUND_LEFT == "特性区區级級"
+    加字要先确认没有自然反例。``个/個`` 能收进来是因为守卫收窄到了模板 1——
+    "工作这个别提了" 走模板 2，不受影响。"""  # noqa: DOCSTRING_CJK
+    assert D._BIE_COMPOUND_LEFT == "特性区區级級个個"
 
 
 @pytest.mark.parametrize("verb", ("说", "說", "提", "讲", "講", "谈", "談"))
@@ -420,12 +429,103 @@ def test_taiwanese_final_particle_is_stripped_from_the_term(particle):
 @pytest.mark.parametrize("particle", TAIWANESE_FINAL_PARTICLES)
 def test_particle_is_declared_in_both_places(particle):
     """放行（正则）与剥离（trim）必须成对：少一边 term 就带着助词存进去。"""  # noqa: DOCSTRING_CJK
-    assert particle in D._TRIM_TRAIL_TOKENS, f"{particle} 不在 _TRIM_TRAIL_TOKENS"
+    assert particle in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], f"{particle} 不在 zh trim 表"
     assert particle in D._ZH_FINAL_PARTICLES, f"{particle} 不在 _ZH_FINAL_PARTICLES"
 
 
 def test_stacked_particles_are_all_stripped():
     assert _zh_terms("不要再說這件事了喔") == {"這件事"}
+
+
+# ⚠️ trim 表必须按 locale 分开：同一个码位在不同语言里是不同的词。``唄`` 在中文
+# 是 ``呗`` 的繁体语气词，在日文是"歌"（子守唄＝摇篮曲）；``了`` 在日文是 完了/
+# 終了 的构词成分。拿中文那套去剥日文 term 会把词削掉一半（codex P2）。
+JAPANESE_TERMS_ENDING_IN_A_CHINESE_PARTICLE = [
+    ("子守唄のことはもう言わないで", "子守唄"),
+    ("終了のことはもう言わないで", "終了"),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"), JAPANESE_TERMS_ENDING_IN_A_CHINESE_PARTICLE,
+)
+def test_japanese_term_is_not_trimmed_with_chinese_particles(text, expected):
+    ja_terms = {term for locale, _kind, term in extract_directives(text) if locale == "ja"}
+    assert expected in ja_terms, f"{text!r} 的 ja term 被中文助词表削掉了：{ja_terms}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"), JAPANESE_TERMS_ENDING_IN_A_CHINESE_PARTICLE,
+)
+def test_those_japanese_terms_really_end_in_a_chinese_particle(text, expected):
+    """Premise：term 结尾确实是中文助词表里的字，否则这条样本证明不了分表的必要。"""  # noqa: DOCSTRING_CJK
+    assert expected[-1] in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], expected
+
+
+@pytest.mark.parametrize("locale", ("zh", "ja", "ko", "en", "ru", "es", "pt"))
+def test_ascii_tails_stay_global(locale):
+    """ASCII 尾巴字形上不可能跨语言撞，中英混说又很常见（"别提 my ex please"），
+    所以这些对每个 locale 都剥。"""  # noqa: DOCSTRING_CJK
+    assert D._trim_term("my ex please", locale) == "my ex"
+
+
+# ── 5d. 复合动词不能被它的单字前缀吃掉 ───────────────────────
+# 模板 1 的宾语是 ``(.{1,40}?)``，什么都能吃，所以 ``提`` 一旦匹配成功正则**不会**
+# 回溯去试 ``提起`` —— 复合动词必须排在单字前缀之前（codex P2；简繁两侧都错过）。
+COMPOUND_VERB_PAIRS = [
+    ("別提起工作。", "别提起工作。"),
+    ("別提及工作。", "别提及工作。"),
+    ("別講到工作。", "别讲到工作。"),
+    ("別說到工作。", "别说到工作。"),
+    ("別說起工作。", "别说起工作。"),
+    ("別談到工作。", "别谈到工作。"),
+    ("別談起工作。", "别谈起工作。"),
+    ("別聊到工作。", "别聊到工作。"),
+]
+
+
+@pytest.mark.parametrize(("tw", "cn"), COMPOUND_VERB_PAIRS)
+def test_compound_verb_is_not_swallowed_by_its_prefix(tw, cn):
+    for text in (tw, cn):
+        assert _zh_terms(text) == {"工作"}, f"{text!r} 的复合动词被单字前缀吃掉了"
+
+
+# ── 5e. 的 + 指示词 的自然说法 ───────────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("減肥的這件事別再說了。", "減肥"),
+        ("减肥的这件事别再说了。", "减肥"),
+        ("搬家的這件事別提了。", "搬家"),
+        ("搬家的这件事别提了。", "搬家"),
+        ("關於減肥的這件事就別說了。", "減肥"),
+        ("关于减肥的这件事就别说了。", "减肥"),
+    ],
+)
+def test_possessive_before_the_demonstrative_is_consumed(text, expected):
+    """``的事`` 与 ``這件事`` 各自可选还不够：``減肥的這件事`` 这种自然说法里
+    ``的`` 和指示词是分开的，不放行就会留一个悬空的 ``的`` 在 term 里。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
+
+
+# ── 5f. 书名 / 片名里含 关于 不能被当成构造前缀 ──────────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        "电影《关于爱》别提了。",
+        "電影《關於愛》別提了。",
+        "那本《关于时间的简史》别提了。",
+        "那本《關於時間的簡史》別提了。",
+    ],
+)
+def test_a_title_containing_guanyu_still_yields_its_outer_topic(text):
+    """挡 ``关于`` 构造只能挡**开头**：书名里带 关于 是正常的，挡整段会把整条
+    指令打没（codex P2）。"""  # noqa: DOCSTRING_CJK
+    terms = _zh_terms(text)
+    assert terms, f"{text!r} 一条 term 都没抽到"
+    assert any("关于" in t or "關於" in t for t in terms), (
+        f"{text!r} 只剩书名内层：{terms}"
+    )
 
 
 # ── 5c. 关于 X 只产出一条 term ───────────────────────────────

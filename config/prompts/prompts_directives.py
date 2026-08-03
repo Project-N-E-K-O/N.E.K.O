@@ -92,25 +92,27 @@ _TRIM_TRAIL = (
     "。！？，；：、…—·"
     "“”‘’（）【】《》「」『』"
 )
-# zh / ja 助词、句末 particle（出现在 term 尾部时一并剥掉）
-_TRIM_TRAIL_TOKENS = (
-    # zh
-    "了", "啊", "呀", "吧", "嘛", "哦", "呗", "啦", "呢", "嘞", "诶",
-    # zh-TW / 台湾口语句末助词。``唄`` 是 ``呗`` 的繁体，其余（喔/囉/唷/齁）在
-    # 简体语料里少见但台湾日常极常用——不补的话 "別再提工作喔" 存下来的 term 是
-    # "工作喔"，注进 system prompt 的话题名就是错的（codex P2）。
-    "喔", "囉", "啰", "唄", "唷", "齁",
-    # ja
-    "ね", "よ", "わ", "の", "って", "なんて", "という",
-    # ko
-    "요", "은", "는", "이", "가", "을", "를", "에", "에서",
-    # ru (鲜见词尾 particle)
-    # es
-    "porfa", "porfavor",
-    # pt
-    # en
-    "please",
-)
+# 各语言的句末助词 / 语气词（出现在 term 尾部时一并剥掉）。
+#
+# ⚠️ 按 locale 分开，不是一张全局表：CJK 助词在不同语言里是**同一个码位的不同
+# 词**。``唄`` 在中文是 ``呗`` 的繁体语气词，在日文是"歌"（子守唄 = 摇篮曲）；
+# 拿中文那套去剥日文 term，``子守唄`` 会被削成 ``子守``（codex P2）。``了`` 同理
+# （日文 完了 / 終了）。所以哪个 locale 的模板命中，就只剥哪个 locale 的助词。
+_TRIM_TRAIL_TOKENS_BY_LOCALE: dict[str, Tuple[str, ...]] = {
+    "zh": (
+        "了", "啊", "呀", "吧", "嘛", "哦", "呗", "啦", "呢", "嘞", "诶",
+        # zh-TW / 台湾口语。``唄`` 是 ``呗`` 的繁体；喔/囉/唷/齁 在简体语料里少见
+        # 但台湾日常极常用——不补的话 "別再提工作喔" 存下来的 term 是 "工作喔"。
+        "喔", "囉", "啰", "唄", "唷", "齁",
+    ),
+    "ja": ("ね", "よ", "わ", "の", "って", "なんて", "という"),
+    "ko": ("요", "은", "는", "이", "가", "을", "를", "에", "에서"),
+    # ru / pt 鲜见词尾 particle
+}
+
+# 与 locale 无关的尾巴：ASCII 词，字形上不可能和别的语言撞。中英混说很常见
+# （"别提 my ex please"），所以这些对每个 locale 都剥。
+_TRIM_TRAIL_TOKENS_ANY = ("please", "porfa", "porfavor")
 
 
 def _norm_lang(lang: str) -> str:
@@ -148,16 +150,25 @@ def _norm_lang(lang: str) -> str:
     return out or 'en'
 
 
-def _trim_term(term: str) -> str:
-    """Trim a term: strip trailing particles/modifiers first, then surrounding punctuation + whitespace."""
+def _trim_term(term: str, locale: str = "") -> str:
+    """Trim a term: strip trailing particles/modifiers first, then surrounding punctuation + whitespace.
+
+    ``locale`` selects which language's particle list applies. Passing nothing keeps
+    the old cross-locale behaviour for the ASCII tails only — a CJK tail is only
+    stripped when the caller says which template matched, because the same
+    codepoint is a different word per language (``唄``: Chinese particle, Japanese
+    "song"). Callers inside this module always pass it.
+    """
     if not term:
         return ""
+    family = (locale or "").split("-", 1)[0].split("_", 1)[0].lower()
+    tokens = _TRIM_TRAIL_TOKENS_ANY + _TRIM_TRAIL_TOKENS_BY_LOCALE.get(family, ())
     s = term.strip()
     changed = True
     # 反复剥尾词，直到稳定（"了啊吧" 这种连续助词）
     while changed:
         changed = False
-        for tok in _TRIM_TRAIL_TOKENS:
+        for tok in tokens:
             if s.endswith(tok) and len(s) > len(tok):
                 s = s[: -len(tok)].rstrip()
                 changed = True
@@ -205,7 +216,12 @@ def _trim_term(term: str) -> str:
 # 提了。"）守卫会把整条指令吃掉——而模板 2/4 要求动词后面**紧跟**终结符，本来就
 # 很难被复合词命中（残留只有 "他特别提了。" 这种退化形，term 是 2 字垃圾，与本
 # PR 之前同）。模板 1 相反：复合词后面接的是句子剩余部分，误报必然发生（codex P2）。
-_BIE_COMPOUND_LEFT = "特性区區级級"
+#
+# ``个/個`` 能收进来正是因为守卫已经收窄到模板 1：``工作这个别提了`` 这个设计上的
+# 主用例走模板 2，不受影响；而模板 1 里 "这个别提工作了" 这种切法在中文里不成立。
+# 收了它才挡得住 ``個別提案書。`` 这类**纯汉字**日文（没有假名，(2) 的守卫够不着），
+# 顺带修掉简体既有的 ``个别说法不太准确。``（codex P2）。
+_BIE_COMPOUND_LEFT = "特性区區级級个個"
 _ZH_BIE = f"(?<![{_BIE_COMPOUND_LEFT}])[别別]"
 
 # ``休`` 反过来：作否定词是文言用法（"休提当年勇"），现代聊天里基本不出现；而
@@ -290,30 +306,40 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # ban_topic；"不允许" 这个义项繁体本来就写 ``不准``，已在表内。
     ("zh", "ban_topic",
      _ZH_NEG + r"\s*(?:再)?\s*"
-     r"(?:说|說|提|聊|讲|講|谈|談|讨论|討論|扯|提起|提及|讲到|講到|聊到|"
-     r"谈起|談起|谈到|談到|说起|說起|说到|說到|喊我|叫我|管我叫|称呼我为?|稱呼我為?)\s*"
+     # ⚠️ 复合动词必须排在它的单字前缀**之前**。本模板的宾语是 ``(.{1,40}?)``——
+     # 什么都能吃，所以 ``提`` 先匹配成功之后正则**不会**再回溯去试 ``提起``，
+     # "别提起工作。" 就存成了 ``起工作``（既有缺陷，简繁两侧都有；模板 2/4 要求
+     # 动词后紧跟终结符，失败会回溯，所以没这个问题）。
+     r"(?:提起|提及|讲到|講到|聊到|谈起|談起|谈到|談到|说起|說起|说到|說到|"
+     r"讨论|討論|管我叫|称呼我为?|稱呼我為?|喊我|叫我|"
+     r"说|說|提|聊|讲|講|谈|談|扯)\s*"
      r"(.{1,40}?)" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
     # ``关于 X 就别提了`` 归模板 4 管。本模板不排掉它的话，同一句会同时产出这里的
     # "关于股票就" 和模板 4 的 "股票" 两条 term——前者是垃圾却照样占一个 active
     # 名额、往 system prompt 里注三天（codex P2；简繁两侧都有，既有缺陷）。
-    # 两道排除缺一不可：tempered token 挡住"前缀里含 关于"，前面的 lookahead 挡住
-    # "从 关于 的第二个字起匹配"（否则退化成 "于股票"）。lookahead 里带 lookbehind
-    # 是为了只挡 ``关|于`` 这一个切点——写成 ``(?<![关關])`` 会把 "有关工作别提了"
-    # 这种正常句子一起打死。
-    # 尾部的 ``的事 / 这个 / 就`` 与模板 4 对齐，让前缀停在真正的话题上。
+    # 两道排除缺一不可：前缀不能**以** 关于 开头，后一个 lookahead 挡住"从 关于 的
+    # 第二个字起匹配"（否则退化成 "于股票"）。lookahead 里带 lookbehind 是为了只挡
+    # ``关|于`` 这一个切点——写成 ``(?<![关關])`` 会把 "有关工作别提了" 一起打死。
+    # ⚠️ 只挡开头，不是 tempered token 挡"前缀里任意位置含 关于"：书名 / 片名里带
+    # 关于 是正常的（"电影《关于爱》别提了。"），挡整段会把整条指令打没（codex P2）。
+    # 代价是 ``关于`` 前面还有别的字时（"我觉得关于股票就别再讲了"）仍会多产出一条
+    # 长 term——那是既有行为，不是本 PR 引入的。
+    # 尾部的 ``的 / 的事 / 这个 / 就`` 与模板 4 对齐，让前缀停在真正的话题上；``的``
+    # 单独可选是因为 "減肥的這件事別再說了。" 这种自然说法里它和指示词是分开的。
     ("zh", "ban_topic",
-     r"(?!(?<=关)于)(?!(?<=關)於)((?:(?!关于|關於).){1,30}?)\s*"
-     r"(?:的事)?\s*(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事)?\s*(?:就)?\s*"
-     r"[别別]\s*(?:再)?\s*"
-     r"(?:说|說|提|聊|讲|講|提了|提起|提及)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
+     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(.{1,30}?)\s*"
+     r"(?:的事)?\s*(?:的)?\s*(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事)?\s*"
+     r"(?:就)?\s*[别別]\s*(?:再)?\s*"
+     r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
      r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講|谈|談|讨论|討論)\s*(.{1,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
-     r"(?:关于|關於)\s*(.{1,30}?)\s*(?:的事)?\s*(?:就)?\s*[别別]\s*(?:再)?\s*"
+     r"(?:关于|關於)\s*(.{1,30}?)\s*(?:的事)?\s*(?:的)?\s*"
+     r"(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事)?\s*(?:就)?\s*[别別]\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
 
     # ---------- en ----------
@@ -465,7 +491,7 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
                 term_raw = m.group(1)
             except IndexError:
                 continue
-            term = _trim_term(term_raw)
+            term = _trim_term(term_raw, locale)
             if not (2 <= len(term) <= 40):
                 continue
             # zh 模板与日文共用 別/提/講/談/討論 这些汉字，日文句子会被抓成
