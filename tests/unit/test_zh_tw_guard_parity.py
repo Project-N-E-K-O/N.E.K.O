@@ -569,3 +569,25 @@ def test_a_negated_rewrite_never_triggers_full_card_completion(target, negator):
 
     text = f'{negator}重写{target}'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("请勿把整个角色卡全部重写", "請勿把整個角色卡全部重寫"),
+        ("不要把整个卡的全部内容重写一遍", "不要把整個卡的全部內容重寫一遍"),
+        ("别把整张卡全部重写", "別把整張卡全部重寫"),
+        ("先不要把整个角色卡重写一遍", "先不要把整個角色卡重寫一遍"),
+    ],
+)
+def test_the_negation_guard_spans_the_whole_object_phrase(simplified, traditional):
+    """⚠️ 否定词和重写动词之间隔着整个宾语短语，窗口必须够宽。
+
+    `請勿把整個角色卡全部重寫` 里隔了八个字，{0,4} 够不着。
+    这里放宽是**安全方向**：否定守卫误触发＝整卡补全不跑（少补几个字段），
+    漏触发＝用户说「别改」却把整张卡改了并 autosave。两者代价不对称。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is False, text

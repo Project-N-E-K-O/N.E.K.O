@@ -189,7 +189,10 @@ _ZH_FOR_ME = r"(?:给我|給我|帮我|幫我)?"
 _ZH_REQ_PREFIX = rf"{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?(?:(?:想|要)(?!不))?"
 _ZH_ONE_TRACK = r"(?:一首|首|点|點)?"
 _ZH_SONG_NOUN = r"(?:歌|歌曲|音乐|音樂)"
-_ZH_PLAYLIST_NOUN = r"(?:歌单|歌單)"
+# ⚠️ 台湾说「播放清單」、大陆也说「播放列表」。缺了它们，
+# `聽一下我的健身播放清單` 会去搜歌手「我」的歌「健身播放清單」。
+# 这几个词在 _ZH_PLAYBACK_COMPOUND_NOUN 里已经作为「播放不是动词」的证据枚举过一次了。
+_ZH_PLAYLIST_NOUN = r"(?:播放清單|播放清单|播放列表|歌单|歌單)"
 _ZH_NETEASE = r"(?:网易云|網易雲)"
 _ZH_ONCE = r"(?:一下)?"
 # 「算了 / 还是算了」这类改主意的引导语。
@@ -296,7 +299,10 @@ _ZH_NON_PLAYBACK_AFTER_FANG = (
     "鴿鸽"
 )
 _ZH_NON_PLAYBACK_AFTER_BO = "種种報报出撒弄遷迁映"
-_ZH_NON_PLAYBACK_AFTER_TING = "信從从話话命憑凭勸劝取任著着膩腻煩烦夠够"
+# ⚠️ 「一」收进来是为了挡 `別聽一下X`：`別聽一下老師的意見` / `別聽一下他的解釋`
+# 不是取消播放。代价是 `別聽一下這首歌` 也不再算取消——它在基线上本来就是 False，
+# 而且「聽一下 后面能跟什么」是开集，正向枚举做不到。简体 base 是 True，一起修了。
+_ZH_NON_PLAYBACK_AFTER_TING = "信從从話话命憑凭勸劝取任著着膩腻煩烦夠够一"
 # ⚠️ 人称宾语（別聽他的）只对 聽 有效，而且**绝不能含「我」**：
 # `别听我喜欢的` 必须先命中 _ZH_NEGATIVE_MUSIC、再由 _excluded_personalization_source
 # 判成窄范围排除。把「我」收进来，窄排除会在**前提**上就失效。

@@ -1573,3 +1573,37 @@ def test_an_honorific_speech_subject_is_not_an_artist(text):
 
     result = parse_explicit_user_music_request(text)
     assert not getattr(result, 'song_artist', None), text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("别听一下老师的意见", "別聽一下老師的意見"),
+        ("别听一下他的解释", "別聽一下他的解釋"),
+        ("别听一下这个建议", "別聽一下這個建議"),
+    ],
+)
+def test_listening_to_a_person_is_not_playback(simplified, traditional):
+    """⚠️ `別聽一下X` 不是取消播放。「一」进 TING 表挡住整类。
+
+    代价是 `別聽一下這首歌` 也不再算取消——它在基线上本来就是 False，而
+    「聽一下 后面能跟什么」是开集，正向枚举做不到。简体 base 是 True，一起修了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text", ["聽一下我的健身播放清單", "听一下我的健身播放列表", "播放我的健身播放清单"],
+)
+def test_the_taiwanese_playlist_noun_is_a_playlist(text):
+    """台湾说「播放清單」、大陆也说「播放列表」。缺了它们，这句会去搜歌手
+    「我」的歌「健身播放清單」。这几个词在 `_ZH_PLAYBACK_COMPOUND_NOUN` 里
+    已经作为「播放不是动词」的证据枚举过一次了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    result = parse_explicit_user_music_request(text)
+    assert getattr(result, 'playlist_name', None) == '健身', f'{text} -> {result}'
