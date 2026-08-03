@@ -728,6 +728,62 @@ async def test_trust_reconciliation_rollback_restores_authored_provenance(
 
 
 @pytest.mark.asyncio
+async def test_trust_reconciliation_rollback_joins_repeated_cancellation(
+    tmp_path,
+):
+    from memory.facts import FactStore, _speaker_trust_fact_identity
+
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    authored = {
+        "id": "rollback", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        **target.as_entry_fields(),
+    }
+    reconciled = {**authored, "speaker_provenance_mixed": True}
+    identity = _speaker_trust_fact_identity(reconciled)
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [reconciled]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=[reconciled])
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _blocking_save(_name, *, _fact_lock_held=False):
+        started.set()
+        assert release.wait(timeout=5)
+        finished.set()
+
+    store.save_facts = MagicMock(side_effect=_blocking_save)
+
+    rollback = asyncio.create_task(
+        store.arollback_speaker_trust_reconciliations(
+            "Neko",
+            expected_reconciliations={identity: reconciled},
+            previous_facts={identity: authored},
+        )
+    )
+    for _ in range(200):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+    rollback.cancel()
+    await asyncio.sleep(0)
+    rollback.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await rollback
+
+    assert finished.is_set()
+
+
+@pytest.mark.asyncio
 async def test_trust_event_persists_when_source_moved_to_archive(tmp_path):
     """A route-time active fact may be archived before signal persistence."""
     from memory.facts import FactStore

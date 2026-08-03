@@ -858,8 +858,34 @@ async def apply_scoped_persona_merge(
             semantic_sources = (
                 provenance_sources if len(provenance_sources) == 1 else sources
             )
+            temporal_source = (
+                semantic_sources[0]
+                if len(semantic_sources) == 1
+                else _latest_temporal_source(semantic_sources)
+            )
+            explicit_windows = [
+                window for window in (
+                    explicit_event_window(source)
+                    for source in semantic_sources
+                )
+                if any(boundary is not None for boundary in window)
+            ]
+            starts = [start for start, _end in explicit_windows if start]
+            ends = [end for _start, end in explicit_windows]
             merged = persona_manager._normalize_entry(text)
             merged['id'] = persona_manager._refine_persona_id(text)
+            if explicit_windows:
+                merged.update({
+                    'event_when_raw': temporal_source.get('event_when_raw'),
+                    'event_start_at': _pick_temporal_boundary(
+                        starts, latest=False,
+                    ),
+                    'event_end_at': (
+                        None
+                        if any(end is None for end in ends)
+                        else _pick_temporal_boundary(ends, latest=True)
+                    ),
+                })
             history = []
             max_rein = 0.0
             max_disp = 0.0

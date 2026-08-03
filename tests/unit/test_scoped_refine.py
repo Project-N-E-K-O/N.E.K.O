@@ -830,6 +830,51 @@ async def test_apply_persona_merge_stamps_subject_and_consumes_sources(tmp_path)
     assert by_id['p2']['last_refine_cluster_hash'] == "hash123"
 
 
+@pytest.mark.asyncio
+async def test_apply_persona_merge_unions_explicit_event_windows(tmp_path):
+    _fs, pm, _re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    january = pm._build_fact_entry(
+        "小明住在巴黎", "reflection_time_driven", None, subject=GROUP_A,
+    )
+    june = pm._build_fact_entry(
+        "小明住在柏林", "reflection_time_driven", None, subject=GROUP_A,
+    )
+    january.update({
+        "id": "january",
+        "event_when_raw": {"kind": "absolute", "value": "2026-01"},
+        "event_start_at": "2026-01-01T00:00:00",
+        "event_end_at": "2026-01-31T23:59:59",
+    })
+    june.update({
+        "id": "june",
+        "event_when_raw": {"kind": "absolute", "value": "2026-06"},
+        "event_start_at": "2026-06-01T00:00:00",
+        "event_end_at": "2026-06-30T23:59:59",
+    })
+    section.extend([january, june])
+    await pm.asave_persona("Neko", persona)
+
+    assert await apply_scoped_persona_merge(
+        pm, "Neko", GROUP_A, [dict(january), dict(june)], [{
+            "action": "merge",
+            "source_ids": ["january", "june"],
+            "produce": {"text": "小明先住巴黎，后住柏林"},
+        }], "temporal-persona-hash",
+    ) == 1
+
+    merged = next(
+        entry for entry in pm._get_section_facts(
+            await pm.aensure_persona("Neko"), GROUP_A.kind, subject=GROUP_A,
+        )
+        if entry.get("merged_from_ids")
+    )
+    assert merged["event_when_raw"] == june["event_when_raw"]
+    assert merged["event_start_at"] == "2026-01-01T00:00:00"
+    assert merged["event_end_at"] == "2026-06-30T23:59:59"
+
+
 def test_scoped_refine_prompt_hides_residual_mixed_trust():
     from app.memory_server.refine_loops import _scoped_prompt_trust_band
 

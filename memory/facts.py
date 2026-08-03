@@ -1716,11 +1716,25 @@ class FactStore:
             rollback_task = asyncio.create_task(asyncio.to_thread(_rollback))
             try:
                 return await asyncio.shield(rollback_task)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancellation:
                 # ``to_thread`` keeps running after the caller is cancelled;
-                # explicitly consume its result before propagating cancellation.
-                _ = await rollback_task
-                raise
+                # keep shielding through any later cancellation (for example,
+                # request timeout followed by shutdown) until its mutation and
+                # disk writes have actually finished under the async lock.
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    while current_task.cancelling():
+                        current_task.uncancel()
+                while not rollback_task.done():
+                    try:
+                        await asyncio.shield(rollback_task)
+                    except asyncio.CancelledError:
+                        if current_task is not None:
+                            while current_task.cancelling():
+                                current_task.uncancel()
+                        continue
+                _ = rollback_task.result()
+                raise cancellation
 
     async def arestore_arbitrated_fact(
         self,
