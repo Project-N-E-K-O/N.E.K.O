@@ -228,13 +228,41 @@ def test_a_quantified_whole_card_request_is_a_full_rewrite(target, quantifier, n
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
+@pytest.mark.parametrize("field", ["名字", "简介", "性格", "頭像"])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
 @pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
-def test_an_inverted_quantifier_is_still_a_full_rewrite(target):
-    """语序倒置的「…的設定全部重寫」同样是整卡重写——判据要允许限定词晚一点出现。"""  # noqa: DOCSTRING_CJK
+def test_a_quantifier_after_a_single_field_is_not_a_full_rewrite(
+    target, quantifier, field
+):
+    """⚠️⚠️ 限定词必须紧贴「的」。
+
+    给它浮动窗口的版本连着被判了三次 P1，每次都是同一个破坏面：限定词修饰的
+    是单字段「名字」，窗口却跨过它匹配上了，于是
+    _complete_full_rewrite_actions 给其余所有字段合成重写，把用户从没提过的
+    内容静默覆盖掉并 autosave 落库。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{target}的{field}{quantifier}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_an_inverted_quantifier_is_deliberately_not_a_full_rewrite(target):
+    """⚠️ 这是一条**刻意接受的触发不足**，不是漏改。
+
+    「…的設定全部重寫」语序倒置，限定词没紧贴「的」，所以不触发整卡补全。
+    要救它就得给限定词一个浮动窗口，而窗口会把上一条那一整类破坏性误判
+    放进来——过度触发会静默覆盖用户没要求改的字段，触发不足只是少补几个
+    字段。两者代价不对称。
+
+    模型仍会照用户原话改设定，只是不跑补全那一趟。
+    ⚠️ 如果哪天有人为了「修好」这条重新加回窗口，上一条会立刻变红。
+    """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'把{target}的设定全部重写一遍'
-    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(text) is False, text
 
 
 # ⚠️ 限定词闭集要按**语法分布**再切一刀：全部/所有/每个/一切 是全称限定词，
