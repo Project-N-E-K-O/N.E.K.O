@@ -245,9 +245,18 @@ WHOLE_CARD_QUANTIFIERS = _whole_card_quantifiers()
 
 def test_the_quantifier_table_is_derived_not_transcribed():
     """⚠️ 拆解一旦失效，下面的笛卡尔积会静默缩水。这里钉住规模与几个必含项。"""  # noqa: DOCSTRING_CJK
-    assert len(WHOLE_CARD_QUANTIFIERS) >= 9, WHOLE_CARD_QUANTIFIERS
-    for word in ("全部", "所有", "每个", "每個", "一切", "每一個", "每項"):
-        assert word in WHOLE_CARD_QUANTIFIERS, f'{word} 不在拆出来的表里'
+    # ⚠️ 断言**相等**而不是「规模下界 + 几个必含项」。上一版钉了 11 个里的 7 个、
+    # 下界写 >= 9，于是删掉「各项」后 len 从 11 掉到 10 照样过，而下游笛卡尔积
+    # 只是少跑几条用例——闭集被悄悄缩小，整个文件全绿。
+    # 这跟「手抄表只测了闭集一半」是同一个毛病往上挪了一层：派生这一步做对了，
+    # 钉子这一步又漏了一半。
+    #
+    # 相等断言意味着往正则里加词时必须同步改这里。那是**刻意的摩擦**——闭集
+    # 变动应该被看见；而笛卡尔积的覆盖仍然是自动的，不用手工加用例。
+    assert set(WHOLE_CARD_QUANTIFIERS) == {
+        "全部", "所有", "每一个", "每一個", "每个", "每個",
+        "每项", "每項", "各项", "各項", "一切",
+    }, WHOLE_CARD_QUANTIFIERS
 
 
 WHOLE_CARD_TARGETS = ["整个角色卡", "整張卡", "整个卡片", "全卡"]
