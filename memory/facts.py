@@ -1597,7 +1597,120 @@ class FactStore:
             try:
                 return await asyncio.shield(persist_task)
             except asyncio.CancelledError:
-                await persist_task
+                try:
+                    await persist_task
+                except BaseException:
+                    with self._get_lock(name):
+                        self._facts.pop(name, None)
+                    raise
+                raise
+            except BaseException:
+                # _persist mutates cached rows before the atomic file write.
+                # If that write fails, retaining those event objects would
+                # make the retry treat them as durable replay entries and
+                # skip the write that actually failed. Reload from disk on
+                # the next attempt instead.
+                with self._get_lock(name):
+                    self._facts.pop(name, None)
+                raise
+
+    async def arollback_speaker_trust_reconciliations(
+        self,
+        name: str,
+        *,
+        expected_reconciliations: dict[
+            tuple[str, str, str, str], dict
+        ],
+        previous_facts: dict[tuple[str, str, str, str], dict],
+    ) -> bool:
+        """Restore authored provenance after trust-event persistence fails.
+
+        Exact dedup can reconcile a source row to mixed provenance before the
+        separately persisted trust event is attached.  A transient failure in
+        that second write must not leave the retry unable to reconstruct the
+        original speaker.  Restore only rows whose current provenance still
+        equals this request's reconciliation snapshot; concurrent provenance
+        changes are deliberately left untouched.
+        """
+        provenance_keys = (
+            'speaker_id', 'speaker_label', 'speaker_trust',
+            'speaker_provenance_mixed',
+        )
+
+        def _provenance(entry: dict) -> dict:
+            return {
+                key: entry[key] for key in provenance_keys if key in entry
+            }
+
+        expected = {
+            identity: _provenance(snapshot)
+            for identity, snapshot in (expected_reconciliations or {}).items()
+            if isinstance(snapshot, dict)
+        }
+        previous = {
+            identity: _provenance(snapshot)
+            for identity, snapshot in (previous_facts or {}).items()
+            if identity in expected and isinstance(snapshot, dict)
+        }
+        if not previous:
+            return False
+
+        async with self._get_persist_alock(name):
+            await self.aload_facts(name)
+
+            def _rollback() -> bool:
+                changed = False
+
+                def _restore(rows: list) -> bool:
+                    view_changed = False
+                    for fact in rows:
+                        if not isinstance(fact, dict):
+                            continue
+                        identity = _speaker_trust_fact_identity(fact)
+                        if (
+                            identity not in previous
+                            or _provenance(fact) != expected.get(identity)
+                        ):
+                            continue
+                        for key in provenance_keys:
+                            fact.pop(key, None)
+                        fact.update(previous[identity])
+                        view_changed = True
+                    return view_changed
+
+                with self._get_lock(name):
+                    facts = self._facts.get(name) or []
+                    if _restore(facts):
+                        self.save_facts(name, _fact_lock_held=True)
+                        changed = True
+
+                    archive_path = self._facts_archive_path(name)
+                    archived: list = []
+                    if os.path.exists(archive_path):
+                        with open(archive_path, encoding='utf-8') as fh:
+                            archived = json.load(fh)
+                        if not isinstance(archived, list):
+                            raise RuntimeError(
+                                'facts_archive is not a list during trust rollback'
+                            )
+                    if _restore(archived):
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation='save',
+                            target=f'memory/{name}/facts_archive.json',
+                        )
+                        atomic_write_json(
+                            archive_path, archived,
+                            indent=2, ensure_ascii=False,
+                        )
+                        changed = True
+                return changed
+
+            rollback_task = asyncio.create_task(asyncio.to_thread(_rollback))
+            try:
+                return await asyncio.shield(rollback_task)
+            except asyncio.CancelledError:
+                await rollback_task
                 raise
 
     async def arestore_arbitrated_fact(

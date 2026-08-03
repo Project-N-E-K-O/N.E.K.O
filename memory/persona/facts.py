@@ -653,6 +653,46 @@ class FactsMixin:
                     target_entry, source_provenance,
                 ])
 
+            merged_temporal = None
+            if source_provenance is not None:
+                from memory.temporal import explicit_event_window
+
+                explicit_windows = [
+                    window for window in (
+                        explicit_event_window(target_entry),
+                        explicit_event_window(source_provenance),
+                    )
+                    if any(boundary is not None for boundary in window)
+                ]
+                if explicit_windows:
+                    def _boundary_key(value: str) -> datetime:
+                        parsed = datetime.fromisoformat(
+                            value.replace('Z', '+00:00')
+                        )
+                        if parsed.tzinfo is not None:
+                            parsed = parsed.astimezone().replace(tzinfo=None)
+                        return parsed
+
+                    starts = [
+                        start for start, _end in explicit_windows if start
+                    ]
+                    ends = [end for _start, end in explicit_windows]
+                    merged_temporal = {
+                        'event_when_raw': deepcopy(
+                            source_provenance.get('event_when_raw')
+                            if any(explicit_event_window(source_provenance))
+                            else target_entry.get('event_when_raw')
+                        ),
+                        'event_start_at': min(
+                            starts, key=_boundary_key,
+                        ) if starts else None,
+                        'event_end_at': (
+                            None
+                            if any(end is None for end in ends)
+                            else max(ends, key=_boundary_key)
+                        ),
+                    }
+
             # Compute new audit list — dedup by id, preserve insertion order.
             # source_reflection_id MUST be in the final list because it is the
             # idempotency sentinel used at line ~911 (`if source_reflection_id
@@ -699,6 +739,8 @@ class FactsMixin:
                 # not reconcile provenance" from "this merge deliberately
                 # cleared mixed/unknown provenance" during event replay.
                 entry_payload['speaker_provenance'] = merged_provenance
+            if merged_temporal is not None:
+                entry_payload.update(merged_temporal)
 
             evidence_payload = {
                 'entity_key': entity_key,
@@ -749,6 +791,12 @@ class FactsMixin:
                     ):
                         target_entry.pop(key, None)
                     target_entry.update(merged_provenance)
+                if merged_temporal is not None:
+                    for key in (
+                        'event_when_raw', 'event_start_at', 'event_end_at',
+                    ):
+                        target_entry.pop(key, None)
+                    target_entry.update(deepcopy(merged_temporal))
                 # Token-count cache is derived from `text`; rewriting text
                 # must drop the cache so the next render recomputes. The
                 # fingerprint check would catch the drift anyway, but

@@ -490,13 +490,7 @@ async def test_merge_into_folds_and_replays_speaker_provenance(
         )
         if key in merged
     }
-    if expected_provenance.get('speaker_id'):
-        assert actual['speaker_id'] == expected_provenance['speaker_id']
-        assert actual['speaker_trust'] == pytest.approx(
-            expected_provenance['speaker_trust']
-        )
-    else:
-        assert actual == expected_provenance
+    assert actual == expected_provenance
 
     events_path = os.path.join(str(tmp_path), 'Neko', 'events.ndjson')
     with open(events_path, encoding='utf-8') as f:
@@ -527,13 +521,57 @@ async def test_merge_into_folds_and_replays_speaker_provenance(
         )
         if key in replayed
     }
-    if expected_provenance.get('speaker_id'):
-        assert replayed_provenance['speaker_id'] == expected_provenance['speaker_id']
-        assert replayed_provenance['speaker_trust'] == pytest.approx(
-            expected_provenance['speaker_trust']
-        )
-    else:
-        assert replayed_provenance == expected_provenance
+    assert replayed_provenance == expected_provenance
+
+
+@pytest.mark.asyncio
+async def test_merge_into_unions_and_replays_explicit_event_windows(tmp_path):
+    from memory.evidence_handlers import make_persona_entry_handler
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    target = _persona_entry('p_time', '早期说法', rein=1.0)
+    target.update({
+        'event_when_raw': {'type': 'range', 'start': '2026-01-01'},
+        'event_start_at': '2026-01-01T00:00:00',
+        'event_end_at': '2026-01-10T00:00:00',
+    })
+    await pm.asave_persona('Neko', {'master': {'facts': [target]}})
+    reflection = _reflection('ref_time', '后续补充', rein=2.5)
+    reflection.update({
+        'event_when_raw': {'type': 'range', 'start': '2026-02-01'},
+        'event_start_at': '2026-02-01T00:00:00',
+        'event_end_at': '2026-02-20T00:00:00',
+    })
+    await re.asave_reflections('Neko', [reflection])
+    decision = {
+        'action': 'merge_into',
+        'target_id': 'persona.master.p_time',
+        'merged_text': '合并后说法',
+    }
+    with patch.object(
+        re, '_allm_call_promotion_merge', AsyncMock(return_value=decision),
+    ):
+        assert await re._apromote_with_merge('Neko', reflection) == 'merge_into'
+
+    merged = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    assert merged['event_when_raw'] == reflection['event_when_raw']
+    assert merged['event_start_at'] == '2026-01-01T00:00:00'
+    assert merged['event_end_at'] == '2026-02-20T00:00:00'
+
+    events_path = os.path.join(str(tmp_path), 'Neko', 'events.ndjson')
+    with open(events_path, encoding='utf-8') as f:
+        entry_payload = [
+            json.loads(line)['payload']
+            for line in f if line.strip()
+            and json.loads(line)['type'] == 'persona.entry_updated'
+        ][-1]
+    replay_target = _persona_entry('p_time', '合并后说法', rein=1.0)
+    await pm.asave_persona('Neko', {'master': {'facts': [replay_target]}})
+    assert make_persona_entry_handler(pm)('Neko', entry_payload)
+    replayed = (await pm.aget_persona('Neko'))['master']['facts'][0]
+    assert replayed['event_when_raw'] == reflection['event_when_raw']
+    assert replayed['event_start_at'] == '2026-01-01T00:00:00'
+    assert replayed['event_end_at'] == '2026-02-20T00:00:00'
 
 
 @pytest.mark.asyncio

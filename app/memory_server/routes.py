@@ -1263,6 +1263,11 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             for fact in reconciled_facts
             if isinstance(fact, dict) and fact.get("id") is not None
         }
+        authored_by_key = {
+            _key(fact): dict(fact)
+            for fact in signal_facts or []
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
         active_signal_facts = []
         for authored_fact in signal_facts or []:
             if authored_fact.get("id") is None:
@@ -1280,15 +1285,10 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 else current_fact
             )
         replay_signal_facts = list(active_signal_facts)
-        load_archived_signals = getattr(
-            runtime.fact_store,
-            'aload_archived_speaker_trust_signal_facts',
-            None,
+        replay_signal_facts.extend(
+            await runtime.fact_store
+            .aload_archived_speaker_trust_signal_facts(lanlan_name)
         )
-        if load_archived_signals is not None:
-            replay_signal_facts.extend(
-                await load_archived_signals(lanlan_name)
-            )
         trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
             lanlan_name,
             input_history,
@@ -1299,14 +1299,31 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             replay_facts_snapshot=replay_signal_facts,
         )
         if trust_events:
-            persist_events = getattr(
-                runtime.fact_store, 'apersist_speaker_trust_events', None,
-            )
-            if persist_events is not None:
-                trust_events = await persist_events(
+            try:
+                trust_events = await (
+                    runtime.fact_store.apersist_speaker_trust_events(
+                        lanlan_name,
+                        trust_events,
+                        expected_reconciliations=reconciled_by_key,
+                    )
+                )
+            except Exception:
+                # Exact dedup and trust-event attachment are separate durable
+                # writes. Restore this request's provenance reconciliation
+                # before retrying the event write so a transient second-write
+                # failure cannot make the retained caller bucket lose its
+                # authored signal on retry.
+                await runtime.fact_store.arollback_speaker_trust_reconciliations(
                     lanlan_name,
-                    trust_events,
                     expected_reconciliations=reconciled_by_key,
+                    previous_facts=authored_by_key,
+                )
+                trust_events = await (
+                    runtime.fact_store.apersist_speaker_trust_events(
+                        lanlan_name,
+                        trust_events,
+                        expected_reconciliations=reconciled_by_key,
+                    )
                 )
     return {
         "status": "processed",
@@ -1584,14 +1601,11 @@ async def _process_scoped_history_segments(
             for fact in await runtime.fact_store.aload_facts(lanlan_name)
             if isinstance(fact, dict) and fact.get("id") is not None
         }
-        archived_signal_facts = []
-        load_archived_signals = getattr(
-            runtime.fact_store,
-            'aload_archived_speaker_trust_signal_facts',
-            None,
+        archived_signal_facts = await (
+            runtime.fact_store.aload_archived_speaker_trust_signal_facts(
+                lanlan_name,
+            )
         )
-        if load_archived_signals is not None:
-            archived_signal_facts = await load_archived_signals(lanlan_name)
         for job in owner_signal_jobs:
             segment = job["segment"]
             excluded_fact_identities = segment[
@@ -1642,16 +1656,32 @@ async def _process_scoped_history_segments(
                 ) not in excluded_fact_identities
             ]
             if segment["trust_events"]:
-                persist_events = getattr(
-                    runtime.fact_store, 'apersist_speaker_trust_events', None,
-                )
-                if persist_events is not None:
-                    segment["trust_events"] = await persist_events(
+                try:
+                    segment["trust_events"] = await (
+                        runtime.fact_store.apersist_speaker_trust_events(
+                            lanlan_name,
+                            segment["trust_events"],
+                            expected_reconciliations=job[
+                                "later_reconciled_by_key"
+                            ],
+                        )
+                    )
+                except Exception:
+                    await runtime.fact_store.arollback_speaker_trust_reconciliations(
                         lanlan_name,
-                        segment["trust_events"],
                         expected_reconciliations=job[
                             "later_reconciled_by_key"
                         ],
+                        previous_facts=job["facts_by_key"],
+                    )
+                    segment["trust_events"] = await (
+                        runtime.fact_store.apersist_speaker_trust_events(
+                            lanlan_name,
+                            segment["trust_events"],
+                            expected_reconciliations=job[
+                                "later_reconciled_by_key"
+                            ],
+                        )
                     )
     return {
         "status": "processed",

@@ -23,6 +23,10 @@ from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from utils.llm_client import AIMessage, HumanMessage
 
 
+async def _persist_trust_events(_name, events, **_kwargs):
+    return events
+
+
 def test_message_volume_cannot_cross_arbitration_margin():
     normal = PermissionManager([
         {"qq": "1001", "level": "normal"},
@@ -625,6 +629,80 @@ async def test_trust_event_persistence_accepts_request_owned_reconciliation(
 
 
 @pytest.mark.asyncio
+async def test_failed_trust_persist_evicts_optimistic_event_cache(tmp_path):
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    fact = {
+        "id": "transient", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", **target.as_entry_fields(),
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [fact]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=[fact])
+    store.save_facts = MagicMock(side_effect=OSError("transient write"))
+    event = (await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "Alice likes cats"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[fact],
+    ))[0]
+
+    with pytest.raises(OSError, match="transient write"):
+        await store.apersist_speaker_trust_events("Neko", [event])
+
+    assert "Neko" not in store._facts
+
+
+@pytest.mark.asyncio
+async def test_trust_reconciliation_rollback_restores_authored_provenance(
+    tmp_path,
+):
+    from memory.facts import FactStore, _speaker_trust_fact_identity
+
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    authored = {
+        "id": "rollback", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", "speaker_label": "Alice(1001)",
+        "speaker_trust": 0.8, **target.as_entry_fields(),
+    }
+    reconciled = dict(authored)
+    for key in ("speaker_id", "speaker_label", "speaker_trust"):
+        reconciled.pop(key)
+    reconciled["speaker_provenance_mixed"] = True
+    identity = _speaker_trust_fact_identity(reconciled)
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [reconciled]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=[reconciled])
+    store.save_facts = MagicMock()
+
+    assert await store.arollback_speaker_trust_reconciliations(
+        "Neko",
+        expected_reconciliations={identity: dict(reconciled)},
+        previous_facts={identity: authored},
+    )
+    assert reconciled["speaker_id"] == "qq:1001"
+    assert reconciled["speaker_label"] == "Alice(1001)"
+    assert reconciled["speaker_trust"] == pytest.approx(0.8)
+    assert "speaker_provenance_mixed" not in reconciled
+    store.save_facts.assert_called_once_with("Neko", _fact_lock_held=True)
+
+
+@pytest.mark.asyncio
 async def test_trust_event_persists_when_source_moved_to_archive(tmp_path):
     """A route-time active fact may be archived before signal persistence."""
     from memory.facts import FactStore
@@ -1077,6 +1155,7 @@ async def test_scoped_route_returns_request_derived_events_when_no_fact_created(
     }
     store = SimpleNamespace(
         aload_facts=AsyncMock(return_value=[]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
         apersist_speaker_trust_events=AsyncMock(return_value=[event]),
         extract_facts=AsyncMock(return_value=[]),
@@ -1262,7 +1341,9 @@ async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
 
     store = SimpleNamespace(
         aload_facts=_load_facts,
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts=_extract_facts,
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1331,6 +1412,7 @@ async def test_scoped_route_owner_signal_uses_pre_write_provenance(fact_id):
 
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts=_extract_facts,
         apersist_speaker_trust_events=_persist_events,
     )
@@ -1361,6 +1443,74 @@ async def test_scoped_route_owner_signal_uses_pre_write_provenance(fact_id):
 
 
 @pytest.mark.asyncio
+async def test_scoped_route_rolls_back_reconciliation_and_retries_trust_write():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore, _speaker_trust_fact_identity
+
+    prior = {
+        "id": "member-fact", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    reconciled = dict(prior)
+    reconciled.pop("speaker_id")
+    reconciled.pop("speaker_trust")
+    reconciled["speaker_provenance_mixed"] = True
+
+    async def _extract_facts(*_args, reconciled_facts=None, **_kwargs):
+        reconciled_facts.append(reconciled)
+        return []
+
+    persist = AsyncMock(side_effect=[
+        OSError("transient trust write"),
+        lambda _name, events, **_kwargs: events,
+    ])
+
+    async def _persist(_name, events, **kwargs):
+        result = await persist(_name, events, **kwargs)
+        return result(_name, events, **kwargs) if callable(result) else result
+
+    rollback = AsyncMock(return_value=True)
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
+        extract_facts=_extract_facts,
+        apersist_speaker_trust_events=_persist,
+        arollback_speaker_trust_reconciliations=rollback,
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    request = ScopedHistoryRequest(
+        input_history=json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        subject={
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        speaker_label="Owner(9999)", speaker_trust=1.0,
+        speaker_id="qq:9999", speaker_is_owner=True,
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    assert len(result["trust_events"]) == 1
+    assert persist.await_count == 2
+    identity = _speaker_trust_fact_identity(prior)
+    rollback.assert_awaited_once_with(
+        "Neko",
+        expected_reconciliations={identity: reconciled},
+        previous_facts={identity: prior},
+    )
+
+
+@pytest.mark.asyncio
 async def test_scoped_route_owner_signal_keeps_concurrent_provenance_change():
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest
@@ -1388,7 +1538,9 @@ async def test_scoped_route_owner_signal_keeps_concurrent_provenance_change():
 
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[prior], [concurrent_current]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts=_extract_facts,
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1470,7 +1622,9 @@ async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
     )
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[], [created_fact]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=results),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1537,6 +1691,7 @@ async def test_batch_owner_signal_ignores_later_segment_reconciliation():
     reconciled.pop("speaker_id")
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=[
             {"status": "ok", "created": [], "dropped": 0},
             {
@@ -1544,6 +1699,7 @@ async def test_batch_owner_signal_ignores_later_segment_reconciliation():
                 "reconciled": [reconciled], "dropped": 0,
             },
         ]),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1613,6 +1769,7 @@ async def test_batch_owner_signal_preserves_concurrent_provenance_update(fact_id
     concurrent_current["speaker_provenance_mixed"] = True
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[prior], [concurrent_current]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=[
             {"status": "ok", "created": [], "dropped": 0},
             {
@@ -1620,6 +1777,7 @@ async def test_batch_owner_signal_preserves_concurrent_provenance_update(fact_id
                 "reconciled": [batch_reconciled], "dropped": 0,
             },
         ]),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1679,6 +1837,7 @@ async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
     reconciled["speaker_provenance_mixed"] = True
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[existing], [reconciled]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=[
             {
                 "status": "ok", "created": [],
@@ -1686,6 +1845,7 @@ async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
             },
             {"status": "ok", "created": [], "dropped": 0},
         ]),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1751,6 +1911,7 @@ async def test_batch_reconciliation_keeps_same_id_in_other_scope():
         aload_facts=AsyncMock(side_effect=[
             [target, foreign], [reconciled, foreign],
         ]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=[
             {
                 "status": "ok", "created": [],
@@ -1758,6 +1919,7 @@ async def test_batch_reconciliation_keeps_same_id_in_other_scope():
             },
             {"status": "ok", "created": [], "dropped": 0},
         ]),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1833,10 +1995,12 @@ async def test_batch_route_revalidates_trust_signals_after_concurrent_forget():
 
     store = SimpleNamespace(
         aload_facts=_load_facts,
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=[
             {"status": "ok", "created": [], "dropped": 0},
             {"status": "ok", "created": [], "dropped": 0},
         ]),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
@@ -1890,9 +2054,11 @@ async def test_batch_route_refreshes_concurrently_reconciled_provenance():
     }
     store = SimpleNamespace(
         aload_facts=AsyncMock(side_effect=[[prior], [current]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
         extract_facts_batch=AsyncMock(return_value=[{
             "status": "ok", "created": [], "dropped": 0,
         }]),
+        apersist_speaker_trust_events=_persist_trust_events,
     )
     store.aevaluate_speaker_trust_events = (
         FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)

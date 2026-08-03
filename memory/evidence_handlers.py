@@ -62,7 +62,10 @@ _EVIDENCE_SNAPSHOT_KEYS = (
 _REFLECTION_EVIDENCE_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'last_promote_attempt_at', 'promote_attempt_count',
 )
-_PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + ('merged_from_ids',)
+_PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
+    'merged_from_ids',
+    'event_when_raw', 'event_start_at', 'event_end_at',
+)
 
 
 def make_reflection_evidence_handler(reflection_engine):
