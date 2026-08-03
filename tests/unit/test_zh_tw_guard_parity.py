@@ -495,3 +495,34 @@ def test_injection_warning_fires_in_both_scripts(simplified, traditional):
 )
 def test_ordinary_notes_do_not_trip_the_injection_warning(text):
     assert "ignore_previous_zh" not in _suspicious(text)
+
+
+@pytest.mark.parametrize(
+    "continuation", ["通角色", "组", "組", "牌組", "车", "通形象"]
+)
+@pytest.mark.parametrize("prefix", ["整个卡", "整個卡"])
+def test_a_whole_card_target_must_be_a_complete_word(prefix, continuation):
+    """⚠️⚠️ `整个卡` 同时是 整个卡通 / 整个卡组 / 整个卡牌 的**前缀**。
+
+    不要求完整匹配的话，`把整个卡通角色的名字重写` 会触发整卡补全、把用户
+    从没提过的字段全覆盖掉——跟前面三次 P1 是同一个破坏面。
+
+    续接字（通/组/牌/座/车…）是开集，拉黑不完；所以正向要求目标后面必须是
+    句末、非汉字、结构助词「的」，或一个重写动词的首字（动词表是闭集）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{prefix}{continuation}的名字重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["把整个卡重写一遍", "把整個卡重寫一遍", "重写整个卡片", "重寫整個卡片",
+     "重写整个卡的内容", "把全卡重写一遍", "把整个卡的每一个字段都重写"],
+)
+def test_the_completeness_guard_does_not_block_real_whole_card_requests(text):
+    """反向：要求完整匹配不能把真的整卡请求一起挡掉。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
