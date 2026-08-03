@@ -2307,17 +2307,26 @@ def test_quoted_span_matching_cannot_backtrack_exponentially():
     ⚠️ 断言**结构 + 耗时**两样：只测耗时的话，哪天体内又被放开、而 CI 机器
     恰好快一点，这条就悄悄过了。
     """  # noqa: DOCSTRING_CJK
+    import re
     import time
 
     from main_logic import music_requests as mr
 
-    # 结构：每个引用分支的体内都必须排除掉自己那对定界符。
+    # 结构断言按**行为**写，不按写法写：跨度体内必须排除自己那对定界符（这才是
+    # 「从任一开引号起只有唯一一种匹配方式」的来源），但**不**排除句末标点
+    # （`《你好吗？》` 是合法歌名，见 test_punctuation_inside_a_title_...）。
+    # ⚠️ 上一版直接断言正则字面量，于是「放开句末标点」这个正确改动把它打红了——
+    # 结构守卫钉到写法上就会这样。
+    span = re.compile(f"^(?:{mr._ZH_PAIRED_QUOTED_SPAN})$")
     for opening, closing in mr._QUOTE_PAIRS.items():
         if opening == mr._ZH_AMBIGUOUS_APOSTROPHE:
             continue
-        assert f"{opening}[^。！？!?{opening}{closing}]*{closing}" in (
-            mr._ZH_PAIRED_QUOTED_SPAN
-        ), f"{opening}{closing} 那一支的体内没有排除自己的定界符"
+        assert span.match(f"{opening}你好吗？{closing}"), (
+            f"{opening}{closing} 跨度不认带标点的歌名"
+        )
+        assert not span.match(f"{opening}a{opening}b{closing}{closing}"), (
+            f"{opening}{closing} 跨度体内没排除自己的定界符——相邻跨度会指数分段"
+        )
 
     # 耗时：入口卡 160 字，这里直接顶到上限。线性实现是微秒级。
     worst = "我想停止播放" + "《》" * 70 + "X"
@@ -2405,4 +2414,63 @@ def test_whitespace_before_a_playback_object_is_skipped(space):
     # 反向：跳过空白后仍然是非音乐中心语时，照旧判成名物化。
     for obj in ("代码", "教程"):
         text = f'我要停止播放的{space}{obj}'
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("punctuation", ["？", "?", "！", "!", "。", "，"])
+def test_punctuation_inside_a_title_does_not_break_the_span(punctuation):
+    """⚠️ 跨度体内只排除自己那对定界符，**不排除句末标点**。
+
+    `《你好吗？》` 是合法歌名。把 `？` 挡在跨度外面有两面后果，第二面更严重：
+
+    * `停止正在播放的《你好吗？》` base=True → 被打成名物化（少停一次歌）
+    * `我想停止播放《你好吗？》是否合适` base=False → **变成执行取消**：跨度过不去，
+      后面的「是否」就到不了，守卫开不了火（Codex P2 第七轮）
+
+    子句切分那一步本来就认引号（`_split_music_request_clauses`），带标点的歌名
+    根本不会被切开，所以这里也必须让它整段通过。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    title = f'《你好吗{punctuation}》'
+    assert is_explicit_music_cancellation(f'停止正在播放的{title}') is True
+    assert is_explicit_music_cancellation(f'我想停止播放{title}是否合适') is False
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        # 不带「的」，直接跟歌名/歌手——点歌功能最主要的用法
+        '停止播放晴天',
+        '停止播放周杰伦的歌',
+        # 「的」后面是引号歌名 / 限定词 / 通用音乐名词 / 省略
+        '停止正在播放的《晴天》',
+        '停止正在播放的这首歌',
+        '停止正在播放的音乐',
+        '停止正在播放的',
+    ],
+)
+def test_the_ways_to_stop_a_named_track_that_do_work(phrasing):
+    """⚠️ 这条是那个**刻意接受的代价**的配套说明，不是随手加的冒烟用例。
+
+    `停止正在播放的晴天`（「的」+ 不带引号的歌名）判不出来——它和
+    `停止播放的代码` 在句子表层完全同构，要分开得知道「晴天」是首歌，那是
+    开集，这个文件已经在「枚举播放动词后面能跟什么」上栽过两次。
+
+    代价被限制在很窄的一格：上面这些说法**全都仍然有效**。哪天有人想「修好」
+    那一格，先看看这条用例——放开它就等于把 `停止播放的代码` 一起放回去。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(phrasing) is True, phrasing
+
+
+def test_a_bare_name_after_de_is_deliberately_not_a_command():
+    """⚠️ 与上一条成对：这一格**故意**判不出来，而且它和缺陷本体同构。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ('停止正在播放的晴天', '停止播放的夜曲', '停止正在播放的周杰伦'):
+        assert is_explicit_music_cancellation(text) is False, text
+    # 同构的缺陷本体——放开上面那一格就等于把这些一起放回去。
+    for text in ('停止播放的代码', '停止播放的教程', '停止播放的文档'):
         assert is_explicit_music_cancellation(text) is False, text

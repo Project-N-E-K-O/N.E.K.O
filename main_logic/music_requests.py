@@ -256,8 +256,17 @@ _ZH_QUOTE_OPENERS = "".join(
     ch for ch in dict.fromkeys(_QUOTE_PAIRS.keys())
     if ch != _ZH_AMBIGUOUS_APOSTROPHE
 )
+# ⚠️ 跨度体内**只**排除自己那对定界符，**不排除句末标点**：`《你好吗？》` 是个
+# 合法歌名，把 `？` 挡在外面会让整个跨度匹配不上。后果有两面，第二面更严重：
+#   停止正在播放的《你好吗？》        → base=True，被打成名物化（少停一次歌）
+#   我想停止播放《你好吗？》是否合适   → base=False，**变成执行取消**——跨度过不去，
+#                                    后面的「是否」就到不了，守卫开不了火
+# 子句切分那一步本来就是**认引号的**（见 _split_music_request_clauses），带标点的
+# 歌名根本不会被切开，所以这里也必须让它整段通过（Codex P2 第七轮）。
+# ⚠️ 排除自己那对定界符这一条不能动——那是第四轮修回溯爆炸的关键，去掉就退回
+# 指数分段。
 _ZH_PAIRED_QUOTED_SPAN = "|".join(
-    f"{opening}[^。！？!?{opening}{closing}]*{closing}"
+    f"{opening}[^{opening}{closing}]*{closing}"
     for opening, closing in _QUOTE_PAIRS.items()
     if opening != _ZH_AMBIGUOUS_APOSTROPHE
 )
