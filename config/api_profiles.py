@@ -151,7 +151,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "step-1o-turbo-vision",
         'EMOTION_MODEL': "step-1o-turbo-vision",
         'VISION_MODEL': "step-1o-turbo-vision",
-        'AGENT_MODEL': "step-3",
+        'AGENT_MODEL': "step-3.7-flash",
     },
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",

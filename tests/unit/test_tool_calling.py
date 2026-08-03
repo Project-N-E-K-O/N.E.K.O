@@ -938,8 +938,10 @@ async def test_offline_switch_model_serializes_same_id_vision_config_switches(mo
     old_llm = _FakeLLM("old")
     client.llm = old_llm
     created: list[_FakeLLM] = []
+    captured_call = {}
 
-    async def fake_create_chat_llm_async(*_args, **_kwargs):
+    async def fake_create_chat_llm_async(*args, **kwargs):
+        captured_call.update(args=args, kwargs=kwargs)
         await asyncio.sleep(0)
         llm = _FakeLLM("vision")
         created.append(llm)
@@ -958,6 +960,12 @@ async def test_offline_switch_model_serializes_same_id_vision_config_switches(mo
     assert client.base_url == "https://vision.example/v1"
     assert client.api_key == "vision-key"
     assert client.provider_type == "openai_compatible"
+    assert captured_call["args"][:3] == (
+        "vision-model",
+        "https://vision.example/v1",
+        "vision-key",
+    )
+    assert captured_call["kwargs"]["provider_type"] == "openai_compatible"
     assert old_llm.closed == 1
 
 

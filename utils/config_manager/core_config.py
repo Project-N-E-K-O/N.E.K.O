@@ -1369,11 +1369,19 @@ class CoreConfigMixin:
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
                 saved_model = cfg_model.strip() if isinstance(cfg_model, str) else ''
+                follows_step = (
+                    (provider == 'follow_assist' and assist_api_value == 'step')
+                    or (provider == 'follow_core' and core_api_value == 'step')
+                )
                 is_retired_step_default = (
-                    provider == 'follow_assist'
-                    and assist_api_value == 'step'
-                    and prefix in ('conversation', 'summary', 'correction', 'emotion')
-                    and saved_model == 'step-2-mini'
+                    follows_step
+                    and (
+                        (
+                            prefix in ('conversation', 'summary', 'correction', 'emotion')
+                            and saved_model == 'step-2-mini'
+                        )
+                        or (prefix == 'agent' and saved_model == 'step-3')
+                    )
                 )
                 if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
@@ -1381,9 +1389,12 @@ class CoreConfigMixin:
                     config[model_key] = config.get('SUMMARY_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
                     uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
-                    if (
+                    if is_retired_step_default:
+                        step_profile = assist_api_profiles.get('step', {})
+                        if isinstance(step_profile, dict) and step_profile.get(model_key):
+                            config[model_key] = step_profile[model_key]
+                    elif (
                         not uses_fixed_free_assist_model
-                        and not is_retired_step_default
                         and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
                         and saved_model

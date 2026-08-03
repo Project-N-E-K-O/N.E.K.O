@@ -88,24 +88,30 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
-def test_step_follow_assist_ignores_retired_saved_default_model_ids():
+def test_step_follow_routes_ignore_retired_saved_default_model_ids():
     """Upgraded Step installs must not keep the retired default via saved follow fields."""
+    from config import DEFAULT_ASSIST_API_PROFILES
+
     config_dir = _make_workspace_temp_dir()
     try:
-        data = {
-            "coreApi": "step",
-            "assistApi": "step",
-            "assistApiKeyStep": "sk-step",
-            "enableCustomApi": True,
-        }
-        for prefix in ("conversation", "summary", "correction", "emotion"):
-            data[f"{prefix}ModelProvider"] = "follow_assist"
-            data[f"{prefix}ModelId"] = "step-2-mini"
+        for provider, assist_api in (("follow_assist", "step"), ("follow_core", "qwen")):
+            data = {
+                "coreApi": "step",
+                "assistApi": assist_api,
+                "assistApiKeyStep": "sk-step",
+                "assistApiKeyQwen": "sk-qwen",
+                "enableCustomApi": True,
+            }
+            for prefix in ("conversation", "summary", "correction", "emotion", "agent"):
+                data[f"{prefix}ModelProvider"] = provider
+                data[f"{prefix}ModelId"] = "step-3" if prefix == "agent" else "step-2-mini"
 
-        cfg = _manager_with_core_config(config_dir, data).get_core_config()
+            cfg = _manager_with_core_config(config_dir, data).get_core_config()
 
-        for key in ("CONVERSATION_MODEL", "SUMMARY_MODEL", "CORRECTION_MODEL", "EMOTION_MODEL"):
-            assert cfg[key] == "step-1o-turbo-vision"
+            for key in ("CONVERSATION_MODEL", "SUMMARY_MODEL", "CORRECTION_MODEL", "EMOTION_MODEL"):
+                assert cfg[key] == "step-1o-turbo-vision"
+            assert cfg["AGENT_MODEL"] == "step-3.7-flash"
+        assert DEFAULT_ASSIST_API_PROFILES["step"]["AGENT_MODEL"] == "step-3.7-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
 
