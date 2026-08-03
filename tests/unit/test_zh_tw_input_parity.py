@@ -2142,6 +2142,7 @@ def test_the_degree_table_is_derived_not_transcribed():
     assert set(DEGREE_WORDS) == {
         "太", "很", "最", "更", "挺", "真", "非常", "特别", "特別",
         "超级", "超級", "这么", "這麼", "那么", "那麼", "有点", "有點",
+        "有一点", "有一點", "稍微", "稍稍", "略微", "比较", "比較",
         "大声", "大聲", "小声", "小聲",
     }, DEGREE_WORDS
 
@@ -2708,3 +2709,42 @@ def test_a_bare_temporal_clause_is_deliberately_not_a_command(simplified, tradit
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止正在播放的周杰伦的《晴天》", "停止正在播放的周杰倫的《晴天》"),
+        ("停止正在播放的由周杰伦演唱的《晴天》", "停止正在播放的由周杰倫演唱的《晴天》"),
+        ("停止正在播放的古典版《晴天》", "停止正在播放的古典版《晴天》"),
+    ],
+)
+def test_a_free_modifier_before_a_quoted_title_is_still_a_command(
+    simplified, traditional
+):
+    """⚠️ 自由修饰语那一支的收尾**除了音乐名词也可以是引号歌名**。
+
+    括起来的就是歌名，跟显式音乐名词是同一等级的证据（base 全是 True，
+    Codex P2 第十二轮）。右边界仍然要求它落在子句末尾。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+def test_a_title_with_inner_punctuation_cannot_hide_a_trailing_question_mark():
+    """⚠️ 裸问号那条判据要能**穿过配平的引用跨度**。
+
+    `我想停止播放《你好吗？》？` 里歌名自带问号，字符类在标题内部那个 `？` 上
+    断掉，句末真正的裸问号就看不见了，一句提问被判成停止命令
+    （Codex P2 第十二轮，base 是 False——危险方向）。
+
+    ⚠️ 配对断言：同一个标题**不带**句末问号时仍然是命令。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation('我想停止播放《你好吗？》？') is False
+    assert is_explicit_music_cancellation('我想停止播放《你好吗？》?') is False
+    assert is_explicit_music_cancellation('停止正在播放的《你好吗？》') is True

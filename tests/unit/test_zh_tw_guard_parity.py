@@ -1035,3 +1035,81 @@ def test_whitespace_after_the_attributive_linker_is_skipped(quantifier, space, n
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
     blocked = f'把整个卡的{quantifier}的{space}名字重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize("suffix", ["名", "名称", "名稱", "标题", "標題"])
+@pytest.mark.parametrize("noun", ["字段", "欄位", "设定", "內容"])
+@pytest.mark.parametrize("quantifier", ["所有", "全部", "每一个"])
+def test_a_longer_noun_starting_with_a_scope_noun_is_not_a_full_rewrite(
+    quantifier, noun, suffix
+):
+    """⚠️⚠️ P1：整卡级名词是**前缀匹配**，必须要求右边界。
+
+    `把整个卡的所有字段名重写` 说的是「把所有字段**名**改掉」，却会触发
+    `_complete_full_rewrite_actions` 给每个字段合成**内容**并 autosave
+    （Codex P1 第十二轮，base 也是 True——属这个 PR 要修的同一族破坏）。
+
+    ⚠️ 字段清单那一支（`所有字段`）同样是前缀匹配，两处都要挂边界。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的{quantifier}{noun}{suffix}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        # 续接成分**仍是范围名词**时不能被边界误伤
+        "把整个卡的所有设定项重写",
+        "把整个卡的所有字段内容重写",
+        "把整个卡的所有属性值重写",
+        # 边界本身的合法收尾
+        "把整个卡的所有字段重写",
+        "把整个卡的每一个字段都重写",
+        "把所有字段的内容重写一遍",
+        "把整个卡的全部内容重写",
+    ],
+)
+def test_the_scope_noun_boundary_does_not_block_real_requests(phrasing):
+    """⚠️ 与上一条成对：加边界很容易顺手把「设定项 / 字段内容」这类真整卡请求
+    一起挡掉，所以续接允许量词化后缀和另一个整卡级名词（都是闭集），「的」也是
+    合法收尾。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
+
+
+@pytest.mark.parametrize(
+    "adverb",
+    ["一并", "一併", "一起", "统统", "統統", "通通", "全都", "彻底", "徹底",
+     "好好", "认真", "認真", "重新"],
+)
+@pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
+def test_an_adverb_between_a_bare_quantifier_and_the_verb(quantifier, adverb):
+    """⚠️ 限定词自己当中心语时，动词前面还可以夹并列/强调副词（base 是 True）。
+
+    ⚠️ 配对反向断言：副词位置换成字段名时仍然被挡——副词后面仍然要求重写动词。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把整个卡的{quantifier}{adverb}重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把整个卡的{quantifier}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("把整个卡的所有可见的字段重写", "把整個卡的所有可見的欄位重寫"),
+        ("把整个卡的每一个可见的设定重写", "把整個卡的每一個可見的設定重寫"),
+    ],
+)
+def test_de_after_the_visibility_modifier_is_allowed(simplified, traditional):
+    """`可见的字段` 是最常规的定语写法，base 是 True（Codex P2 第十二轮）。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
