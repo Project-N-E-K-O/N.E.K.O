@@ -873,7 +873,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # base 是 True）。单字段那道保险不受影响：`把整个卡的全部 名字重写` 里跳过
     # 空白之后「名字」照样不在整卡级名词表里，而限定词自己当中心语那一支有它
     # 自己的收尾要求（见 _WHOLE_CARD_BARE_QUANTIFIER_TAIL）。
-    rf"(?:\s*的?{_WHOLE_CARD_SCOPE_MODIFIER}(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
+    rf"(?:\s*的?\s*{_WHOLE_CARD_SCOPE_MODIFIER}(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
     r"|(?!\s*[的片]))"

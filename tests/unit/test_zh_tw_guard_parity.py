@@ -1018,3 +1018,20 @@ def test_whitespace_before_de_does_not_bypass_the_possessive_guard(target, space
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
     allowed = f'把{target}{space}的所有字段重写'
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+
+
+@pytest.mark.parametrize("noun", ["字段", "欄位", "设定"])
+@pytest.mark.parametrize("space", [" ", "\u3000"])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+def test_whitespace_after_the_attributive_linker_is_skipped(quantifier, space, noun):
+    """⚠️ 空白可能落在第二个「的」**后面**：`把整个卡的所有的 字段重写`（base 是
+    True）。这是空格绕过/挡路的第三个位置，前两个是限定词后面和目标与「的」之间。
+
+    ⚠️ 配对反向断言：跳过空白后仍然是字段名时照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把整个卡的{quantifier}的{space}{noun}重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把整个卡的{quantifier}的{space}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked

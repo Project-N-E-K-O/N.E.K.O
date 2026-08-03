@@ -2473,11 +2473,19 @@ def test_the_ways_to_stop_a_named_track_that_do_work(phrasing):
 
 
 def test_a_bare_name_after_de_is_deliberately_not_a_command():
-    """⚠️ 与上一条成对：这一格**故意**判不出来，而且它和缺陷本体同构。"""  # noqa: DOCSTRING_CJK
+    """⚠️ 与上一条成对：这一格**故意**判不出来，而且它和缺陷本体同构。
+
+    ⚠️ 这一格后来**缩小过一次**：`停止播放的夜曲` 现在能判出来了，因为「夜曲」
+    以音乐名词「曲」收尾、落在子句末尾（第十轮那条「自由修饰语 + 音乐名词 +
+    子句边界」）。剩下的才是真正判不出来的：歌名/歌手名里**没有任何音乐名词**
+    的那些（晴天 / 周杰伦）。
+    """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
-    for text in ('停止正在播放的晴天', '停止播放的夜曲', '停止正在播放的周杰伦'):
+    for text in ('停止正在播放的晴天', '停止正在播放的周杰伦'):
         assert is_explicit_music_cancellation(text) is False, text
+    # 反过来：以音乐名词收尾的那些现在判得出来了。
+    assert is_explicit_music_cancellation('停止播放的夜曲') is True
     # 同构的缺陷本体——放开上面那一格就等于把这些一起放回去。
     for text in ('停止播放的代码', '停止播放的教程', '停止播放的文档'):
         assert is_explicit_music_cancellation(text) is False, text
@@ -2581,3 +2589,55 @@ def test_a_location_char_inside_the_device_name_still_stops(simplified, traditio
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止正在播放的古典音乐", "停止正在播放的古典音樂"),
+        ("停止正在播放的轻柔音乐", "停止正在播放的輕柔音樂"),
+        ("停止正在播放的华语歌曲", "停止正在播放的華語歌曲"),
+        ("停止播放的民谣歌单", "停止播放的民謠歌單"),
+    ],
+)
+def test_a_free_modifier_before_a_music_head_is_still_a_command(
+    simplified, traditional
+):
+    """⚠️ 曲风/描述性修饰语是**开集**（古典/轻柔/华语/民谣/纯音乐…列不完）。
+
+    所以这一支不枚举修饰语，改为要求**音乐名词落在子句末尾**——跟这个文件里
+    名词尾那一支同一招（base 全是 True，Codex P2 第十轮）。
+
+    ⚠️⚠️ 右边界是必须的。只要求「后面某处有个音乐名词」的话，
+    `我要停止播放的听歌功能` 里「歌」在中间、中心语是「功能」，第八轮刚修好的
+    那一族（问功能却把歌停掉）会立刻回来——所以下面配对断言死钉着它。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的听歌功能') is False
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize(
+    "malformed", ["《晴天」", "「晴天》", "『晴天】", "【晴天』"]
+)
+def test_a_malformed_quote_span_fails_closed(malformed):
+    """⚠️ 写坏的引号要 **fail closed**（保住疑问守卫），不能当成「标记在引号里」。
+
+    `我想停止播放《晴天」是否合适` 里 `《` 没有配对的 `》`，跨度过不去、守卫就到
+    不了后面的「是否」，一句提问被判成停止命令（Codex P2 第十轮，base 是 False
+    ——又是危险方向）。
+
+    判据：开引号如果**不是某个完整跨度的开头**，就当普通字符吃掉。它跟跨度那一支
+    天然互斥（一个要求能闭合、一个要求不能），不引入歧义。
+
+    ⚠️ 配对断言：**配对正确**的引号仍然要挡住守卫（那是第三轮修的《好不好》）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{malformed}是否合适'
+    ) is False
+    assert is_explicit_music_cancellation('帮我停止播放《好不好》') is True

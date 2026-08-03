@@ -274,8 +274,19 @@ _ZH_PAIRED_QUOTED_SPAN = "|".join(
     for opening, closing in _QUOTE_PAIRS.items()
     if opening != _ZH_AMBIGUOUS_APOSTROPHE
 )
+# ⚠️ 写坏的引号要**fail closed**。`我想停止播放《晴天」是否合适` 里 `《` 没有
+# 配对的 `》`，跨度过不去、守卫也就到不了后面的「是否」，一句提问被判成停止命令
+# （Codex P2 第十轮，base 是 False——又是危险方向）。
+# 判据：一个开引号如果**不是某个完整跨度的开头**，就把它当普通字符吃掉。这跟
+# 跨度那一支天然互斥（一个要求能闭合、一个要求不能），不引入歧义。
+_ZH_UNPAIRED_QUOTE_OPENER = "|".join(
+    f"{opening}(?![^{opening}{closing}]*{closing})"
+    for opening, closing in _QUOTE_PAIRS.items()
+    if opening != _ZH_AMBIGUOUS_APOSTROPHE
+)
 _ZH_BEFORE_QUESTION_MARKER = (
-    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN})*"
+    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN}"
+    rf"|{_ZH_UNPAIRED_QUOTE_OPENER})*"
 )
 
 # ⚠️ 礼貌前缀与点歌解析器同一套（_ZH_POLITE + _ZH_FOR_ME）。此前只允许「请/麻烦」，
@@ -384,8 +395,9 @@ _ZH_MUSIC_NOUN_MODIFIER = (
 # 四批的闭集），配乐类复用 _ZH_SOUNDTRACK_NOUN——**不再新写第三张同族的表**。
 # 往这几张逃生表里加词只会恢复基线行为，不会造出新的误取消，所以这一侧可以
 # 放宽着列；真正要保守的是反方向（判成名物化那一侧）。
-_ZH_MUSIC_HEAD_AFTER_DE = (
-    rf"(?:{_ZH_MUSIC_NOUN_MODIFIER}"
+# 音乐宾语的中心语词表（不含限定词、不含引号跨度）。提出来是因为下面「自由
+# 修饰语 + 音乐名词」那一支要用同一张表。
+_ZH_MUSIC_OBJECT_NOUN = (
     rf"(?:{_ZH_SONG_NOUN}|{_ZH_PLAYLIST_NOUN}|{_ZH_SOUNDTRACK_NOUN}|曲|音频|音頻"
     r"|声音|聲音|音效|音轨|音軌|旋律|伴奏|曲子|铃声|鈴聲|[Bb][Gg][Mm]"
     r"|专辑|專輯|单曲|單曲|唱片"
@@ -393,12 +405,30 @@ _ZH_MUSIC_HEAD_AFTER_DE = (
     # 限定词那张表不能单独站住（它后面永远还要求一个中心语），所以把「首」也
     # 收成中心语（Codex P2 第八轮）。
     r"|首"
-    r"|红心|紅心|日推|每日推荐|每日推薦|我喜欢|我喜歡|收藏"
+    r"|红心|紅心|日推|每日推荐|每日推薦|我喜欢|我喜歡|收藏)"
+)
+_ZH_MUSIC_HEAD_AFTER_DE = (
     # ⚠️ 括起来的就是**歌名**，不用（也没法）进词表：`停止正在播放的《晴天》` /
     # `停止播放的「夜曲」` / `停止正在播放的那首《晴天》` base 全是 True，只认
     # 通用音乐名词会把「点名停某一首」整片打成名物化（Codex P2 第五轮）。
     # 复用上面那个**逐对配平**的跨度常量，不另写一份。
-    rf"|{_ZH_PAIRED_QUOTED_SPAN}))"
+    rf"(?:{_ZH_MUSIC_NOUN_MODIFIER}"
+    rf"(?:{_ZH_MUSIC_OBJECT_NOUN}|{_ZH_PAIRED_QUOTED_SPAN}))"
+)
+# 「的 + <自由修饰语> + 音乐名词 + 子句边界」。
+#
+# ⚠️ 曲风/描述性修饰语是**开集**（古典/轻柔/华语/民谣/纯音乐…列不完），所以这一支
+# 不枚举修饰语，改为要求**音乐名词落在子句末尾**——这跟这个文件里名词尾那一支
+# 用的是同一招（`(?:了|吧…)*\s*(?=$|[，,。！!？?])`）。
+# `停止正在播放的古典音乐` / `的輕柔音樂` / `的華語歌曲` base 全是 True，只认
+# 限定词表会把它们打成名物化（Codex P2 第十轮）。
+#
+# ⚠️⚠️ 右边界是**必须**的，不能只要求「后面某处有个音乐名词」：
+# `我要停止播放的听歌功能` 里「歌」在中间、中心语是「功能」——第八轮刚把这一族
+# 修好（问功能却把歌停掉），放开右边界等于把它放回来。
+_ZH_MODIFIED_MUSIC_OBJECT_AFTER_DE = (
+    rf"[^，,。！!？?]{{0,6}}?{_ZH_MUSIC_OBJECT_NOUN}"
+    r"(?:[了吧啊呀呢嘛喔哦])*\s*(?=$|[，,。！!？?])"
 )
 # ⚠️ 程度补语也要收够。`不要放的超級大聲` / `不要放的這麼大聲` base 都是 True，
 # 只列单音节程度副词会把它们打成名物化（Codex P2）。
@@ -429,7 +459,8 @@ _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # 成零宽，前视又在空格那个位置判一次「后面不是音乐名词」，于是照样判成名物化。
     # 内层写成 `(?!\s*(?:…))` 时，只要「跳过空白后能匹配上任一逃生项」整条前视就
     # 失败——这才是想要的语义。
-    rf"(?!的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_DEGREE_AFTER_DE}"
+    rf"(?!的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_MODIFIED_MUSIC_OBJECT_AFTER_DE}"
+    rf"|{_ZH_DEGREE_AFTER_DE}"
     rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE}))"
     rf"|{_ZH_PLAYBACK_UI_NOUN}"
     rf"(?![^，,。！!？?]{{0,4}}?{_ZH_MUSIC_HEAD_AFTER_DE}))"
