@@ -314,6 +314,10 @@ class QQReplyPostprocessNode:
                 reply_text = reply_text[:fw.start()] + reply_text[fw.end():]
                 reply_text = reply_text.strip()
 
+            # 刷新 wait_directive_text：上面可能剥离了 <feeling>/<emoji>/<mark>/<forward>，
+            # 用旧值会导致 buffer 把空 feeling 当成有待投递内容
+            wait_directive_text = reply_text
+
             # --- 处理 pre-tool 文本（core 在 tool-round start 捕获的模型文本）---
             explicit_prefix = ""
             parse_text = reply_text

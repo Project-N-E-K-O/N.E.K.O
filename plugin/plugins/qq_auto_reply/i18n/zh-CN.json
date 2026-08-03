@@ -621,5 +621,7 @@
   "ui.review.profiles.level_trusted": "信任",
   "ui.review.profiles.level_normal": "普通",
   "ui.review.profiles.level_none": "未授权",
-  "ui.review.profiles.level_unknown": "群成员"
+  "ui.review.profiles.level_unknown": "群成员",
+  "ui.proactive.tab_label": "主动话题",
+  "ui.shared.config.private_participant_memory": "记录私聊好友长期记忆（非管理员私聊；以对方为主体单独建档）"
 }

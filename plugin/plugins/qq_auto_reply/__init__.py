@@ -1349,7 +1349,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             if lid == "fatigue_tiers" and self.fatigue_service:
                 lines = []
                 for threshold, text in self.fatigue_service._FATIGUE_TIERS:
-                    lines.append(f"疲劳 ≤{threshold}:\n{text}\n")
+                    lines.append(f"{threshold}: {text}\n")
                 effective_text = "\n".join(lines)
             layers.append({
                 "id": lid,

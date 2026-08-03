@@ -807,14 +807,13 @@ class QQAttentionService:
         state.emotion_display_until = self._current_time() + 120
 
         if emotion in _EMOTION_FORCE_FOCUS:
-            # 抢焦点：标记 focus，大幅 boost
+            # 抢焦点：urgency/interest 直接拉满，确保 effective_score 压过其他群
             state.last_focus_at = self._current_time()
             state.focus_acquired_at = self._current_time()
             state.last_focus_reason = f"emotion:{emotion}"
-            if state.attention_score < 5.0:
-                state.urgency = max(state.urgency, 0.6)
-                state.interest = max(state.interest, 0.5)
-                state.recompute_score()
+            state.urgency = 1.0
+            state.interest = 1.0
+            state.recompute_score()
             self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 抢焦点: {emotion} score={state.attention_score:.1f}")
         elif emotion in _EMOTION_DROP_FOCUS:
             # 让焦点 + 降分：缩放四维度使 recompute_score 落到目标值

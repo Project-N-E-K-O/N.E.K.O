@@ -14890,7 +14890,7 @@ async def test_group_handler_snapshots_permission_before_first_await():
 
     async def evaluate(**_kwargs):
         permission["level"] = "admin"
-        return SimpleNamespace(action="reply", force_reply=False)
+        return SimpleNamespace(action="reply", force_reply=False, reason="test")
 
     run = AsyncMock(return_value=SimpleNamespace(
         action="skip", reply_text="", traces=[],

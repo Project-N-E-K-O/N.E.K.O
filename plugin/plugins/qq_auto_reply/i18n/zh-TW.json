@@ -120,7 +120,7 @@
   "ui.config.token.label": "QQ OneBot 存取令牌",
   "ui.config.token.placeholder": "請輸入 Token...",
   "ui.config.path.label": "NapCat 執行目錄 (PATH)",
-  "ui.config.path.placeholder": "",
+  "ui.config.path.placeholder": "Vacío para usar el integrado",
   "ui.config.show_napcat_window.label": "NapCat 控制台顯示方式",
   "ui.config.show_napcat_window.hint": "勾選為前台啟動（顯示 NapCat 控制台），取消為背景啟動。",
   "ui.config.reply_mode.label": "回覆模式",
@@ -621,5 +621,7 @@
   "ui.attention.focus_cooldown": "失去焦點冷卻 (秒)",
   "ui.attention.icebreaker": "冷場破冰閾值 (次, 0=禁用)",
   "ui.napcat.prompts.default_source": "Python 常數",
-  "ui.napcat.prompts.overview_default_source": "預設來源: prompt_fragment_templates.py"
+  "ui.napcat.prompts.overview_default_source": "預設來源: prompt_fragment_templates.py",
+  "ui.proactive.tab_label": "主動話題",
+  "ui.shared.config.private_participant_memory": "记录私聊好友长期记忆（非管理员私聊；以对方为主体单独建档）"
 }

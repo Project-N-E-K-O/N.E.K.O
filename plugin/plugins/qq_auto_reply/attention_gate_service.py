@@ -42,43 +42,12 @@ class QQAttentionGateService:
     """基于注意力的多群门控 + 回溯补回（含疲劳睡眠）"""
 
     async def start_proactive_loop(self) -> None:
-        """后台循环：焦点群静默超过 proactive_silence_seconds 时触发主动发言。"""
-        self._proactive_task = asyncio.create_task(self._proactive_loop())
+        """保留接口兼容性——破冰由焦点切换冷场计数触发。"""
+        pass
 
     async def stop_proactive_loop(self) -> None:
-        task = getattr(self, "_proactive_task", None)
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def _proactive_loop(self) -> None:
-        import asyncio as _asyncio
-        while True:
-            try:
-                await _asyncio.sleep(30)
-                attention = getattr(self.plugin, "attention_service", None)
-                if not attention or not attention._enabled():
-                    continue
-                focus_id = attention.get_focus_group_id()
-                if not focus_id:
-                    continue
-                state = attention.get_state(focus_id)
-                silence = int((self.plugin._qq_settings or {}).get("proactive_silence_seconds", 300) or 300)
-                if silence <= 0:
-                    continue
-                now = attention._current_time()
-                last_msg = int(state.last_message_at or 0)
-                last_reply = int(state.last_reply_at or 0)
-                last_activity = max(last_msg, last_reply)
-                if last_activity > 0 and (now - last_activity) >= silence:
-                    await self._try_icebreaker(focus_id)
-            except _asyncio.CancelledError:
-                raise
-            except Exception:
-                pass
+        """保留接口兼容性。"""
+        pass
 
     def _touch_group(self, group_id: str) -> None:
         """保留接口兼容性——冷场检测已改为焦点切换计数。"""
@@ -162,21 +131,17 @@ class QQAttentionGateService:
                 self.plugin.runtime_service.record_pipeline_outcome(
                     source="proactive_speech", request=request, outcome=outcome,
                 )
+                # 更新活跃时间，防止 proactive loop 重复触发
+                attn = getattr(self.plugin, "attention_service", None)
+                if attn:
+                    state = attn.get_state(group_id)
+                    state.last_reply_at = attn._current_time()
                 return True
             else:
                 self._logger.info("[Icebreaker] AI 决定不回应破冰话题")
         except Exception:
             self._logger.warning("[Icebreaker] 破冰话题发送失败", exc_info=True)
         return False
-
-    _RETROACTIVE_PICK_PROMPT = (
-        "你刚才没有太关注这个群，以下是这段时间群友们聊天的消息摘要：\n\n"
-        "{summary}\n\n"
-        "请判断：哪些消息是你需要回复的？只返回需要回复的消息编号列表，"
-        "用 JSON 数组格式如 [1, 3, 5]。"
-        "如果都不需要回复，返回空数组 []。"
-        "不要返回任何其他内容。"
-    )
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -345,11 +310,41 @@ class QQAttentionGateService:
                 new_focus_group=new_focus,
                 triggered_at=attention._current_time(),
             )
+        # 焦点未切换 → 定期检查当前焦点群是否冷场（单群也生效）
+        if new_focus and new_focus == previous:
+            now = attention._current_time()
+            last_check = getattr(self, "_last_proactive_check", 0)
+            if now - last_check >= 120:
+                self._last_proactive_check = now
+                await self._maybe_icebreaker_for_group(new_focus)
+
         if previous and not new_focus:
             # 全局休眠
             self._last_focus_group = ""
             self._logger.info("[AttentionGate] 全局休眠：所有群注意力过低")
         return None
+
+    async def _maybe_icebreaker_for_group(self, group_id: str) -> None:
+        """单群场景：检查是否满足冷场破冰条件。"""
+        attention = getattr(self.plugin, "attention_service", None)
+        if not attention:
+            return
+        silence = int((self.plugin._qq_settings or {}).get("proactive_silence_seconds", 300) or 300)
+        if silence <= 0:
+            return
+        state = attention.get_state(group_id)
+        now = attention._current_time()
+        last_activity = max(int(state.last_message_at or 0), int(state.last_reply_at or 0))
+        if last_activity <= 0 or (now - last_activity) < silence:
+            self._cold_focus_count.pop(group_id, None)  # 群活跃，重置计数
+            return
+        count = self._cold_focus_count.get(group_id, 0) + 1
+        self._cold_focus_count[group_id] = count
+        threshold = int((self.plugin._qq_settings or {}).get("icebreaker_cold_threshold", 3) or 3)
+        if threshold > 0 and count >= threshold:
+            self._logger.info(f"[Icebreaker] 群 {group_id} 连续 {count} 次冷场，尝试破冰")
+            await self._try_icebreaker(group_id)
+            self._cold_focus_count[group_id] = 0
 
     # ==========================================
     # 回溯补回流程
@@ -374,7 +369,6 @@ class QQAttentionGateService:
         unreviewed = await self.plugin.backlog_store.get_unreviewed_messages_since(group_id, since_timestamp=since, limit=max_messages)
         if not unreviewed:
             self._logger.info(f"[RetroReview] 群 {group_id} 无未审核消息，跳过回溯")
-            # 多次焦点切到此群都无人发言 → 冷场破冰
             count = self._cold_focus_count.get(group_id, 0) + 1
             self._cold_focus_count[group_id] = count
             threshold = int((self.plugin._qq_settings or {}).get("icebreaker_cold_threshold", 3) or 3)
@@ -390,169 +384,66 @@ class QQAttentionGateService:
 
         # 有未审消息 → 重置冷场计数
         self._cold_focus_count.pop(group_id, None)
-
-        max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
-
         self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
 
-        # 2. 生成摘要 → LLM 挑选
-        summary = self._build_ignored_summary(unreviewed)
-        pick_indices = await self._ask_llm_pick_messages(summary, len(unreviewed))
-        if not pick_indices:
-            self._logger.info(f"[RetroReview] LLM 判定无需补回任何消息")
-            attention.mark_focus(group_id)
+        # 2. 复用缓冲链路：构造总结 prompt，针对 1-2 条消息用 <reply> 回应
+        summary, id_map = self._build_ignored_summary(unreviewed)
+        id_hints = "\n".join(f"  · 编号[{n}]的 message_id = {mid}" for n, mid in sorted(id_map.items()))
+        try:
+            from .pipeline_models import QQReplyRequest
+            request = QQReplyRequest(
+                message_text=(
+                    f"[系统] 你刚才没有太关注这个群，以下是这段时间群友们聊天的消息摘要。\n"
+                    f"请针对其中 1-2 条你最感兴趣的，用 `<reply>消息ID</reply>` 引用后自然回应。不要逐条点评，不要超过两条。\n\n"
+                    f"消息ID映射：\n{id_hints}\n\n"
+                    f"摘要：\n{summary}"
+                ),
+                sender_id=self.plugin._admin_qq or "0",
+                is_group=True,
+                group_id=group_id,
+                is_at_bot=True,
+                source_kind="retroactive_review",
+                group_scene_mode="group_collective",
+                fallback_to_text_on_voice_failure=True,
+                use_memory_context=False,
+                ephemeral_session=False,
+            )
+            outcome = await self.plugin.reply_pipeline.run(request)
+            if outcome.action == "reply" and outcome.reply_text:
+                self._logger.info(f"[RetroReview] 回溯回复已发送: {outcome.reply_text[:50]}...")
+            else:
+                self._logger.info("[RetroReview] LLM 决定不回复回溯摘要")
+        except Exception as e:
+            self._logger.warning(f"[RetroReview] 回溯总结失败: {e}")
 
-            try:
-                await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
-            except Exception:
-                pass
-            return []
-
-        max_reply = int((self.plugin._qq_settings or {}).get("retroactive_review_max_reply", 5) or 5)
-        pick_indices = pick_indices[:max_reply]
-
-        # 3. 逐条补回
-        replied_ids: list[str] = []
-        for idx in pick_indices:
-            if idx < 1 or idx > len(unreviewed):
-                continue
-            msg = unreviewed[idx - 1]
-            try:
-                did_reply = await self._reply_to_ignored_message(group_id, msg)
-                if did_reply:
-                    replied_ids.append(str(msg.get("message_id") or ""))
-                    await attention.consume_attention(group_id, attention._reply_penalty(), reason="retro_reply")
-            except Exception as e:
-                self._logger.warning(f"[RetroReview] 补回消息 #{idx} 失败: {e}")
-
-        # 4. 清理 + 标记已读（猫娘已看过摘要，相当于已审阅）
+        # 3. 标记已读
         attention.mark_focus(group_id)
         try:
             await self.plugin.backlog_service.mark_group_reviewed_payload(group_id)
             self._logger.info(f"[RetroReview] 群 {group_id} 已标记为已审阅")
         except Exception as e:
             self._logger.warning(f"[RetroReview] 标记已审阅失败: {e}")
-        self._logger.info(f"[RetroReview] 群 {group_id} 回溯完成，共补回 {len(replied_ids)} 条")
-        return replied_ids
+        return []
 
     # ==========================================
     # 回溯辅助方法
     # ==========================================
 
     @staticmethod
-    def _build_ignored_summary(messages: list[dict[str, Any]]) -> str:
-        """把被忽略的消息列表生成 LLM 可读的摘要"""
+    def _build_ignored_summary(messages: list[dict[str, Any]]) -> tuple[str, dict[int, str]]:
+        """把被忽略的消息列表生成 LLM 可读的摘要，返回 (摘要文本, {编号: message_id})"""
         lines: list[str] = []
+        id_map: dict[int, str] = {}
         for i, msg in enumerate(messages, 1):
             nickname = str(msg.get("sender_nickname") or msg.get("sender_id") or "未知")
             text = str(msg.get("message_text") or "").strip()
             if len(text) > 100:
                 text = text[:97] + "..."
+            msg_id = str(msg.get("message_id") or "")
             lines.append(f"[{i}] {nickname}: {text}")
-        return "\n".join(lines)
-
-    async def _ask_llm_pick_messages(self, summary: str, total_count: int) -> list[int]:
-        """让 LLM 从摘要中挑选需要回复的消息编号"""
-        import json
-
-        prompt = self._RETROACTIVE_PICK_PROMPT.format(summary=summary)
-        try:
-            from utils.config_manager import get_config_manager
-            from utils.llm_client import create_chat_llm_async
-            from utils.token_tracker import set_call_type
-
-            model_config = get_config_manager().get_model_api_config("conversation")
-            base_url = str(model_config.get("base_url") or "").strip()
-            model = str(model_config.get("model") or "").strip()
-            api_key = str(model_config.get("api_key") or "").strip()
-            if not base_url or not model:
-                self._logger.warning("[RetroReview] agent 模型未配置，跳过回溯挑选")
-                return []
-
-            llm = await create_chat_llm_async(
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                max_completion_tokens=200,
-                timeout=15.0,
-                provider_type=model_config.get("provider_type"),
-            )
-            try:
-                set_call_type("conversation")
-                response = await llm.ainvoke([
-                    {"role": "user", "content": prompt},
-                ])
-                raw = str(getattr(response, "content", "") or "").strip()
-                # 提取 JSON 数组
-                json_str = raw
-                if "[" in raw and "]" in raw:
-                    json_str = raw[raw.find("["):raw.rfind("]") + 1]
-                picks = json.loads(json_str)
-                if isinstance(picks, list):
-                    return [int(p) for p in picks if isinstance(p, (int, float)) and 1 <= int(p) <= total_count]
-                return []
-            finally:
-                aclose = getattr(llm, "aclose", None)
-                if callable(aclose):
-                    try:
-                        await aclose()
-                    except Exception:
-                        pass
-        except Exception as e:
-            self._logger.warning(f"[RetroReview] LLM 挑选失败: {e}")
-            return []
-
-    async def _reply_to_ignored_message(self, group_id: str, msg: dict[str, Any]) -> bool:
-        """对单条被忽略的消息生成回复"""
-        message_text = str(msg.get("message_text") or "").strip()
-        sender_id = str(msg.get("sender_id") or "").strip()
-        sender_nickname = str(msg.get("sender_nickname") or "").strip()
-        if not message_text:
-            return False
-
-        request = QQReplyRequest(
-            message_text=f"[回溯补回] {sender_nickname} 之前说：{message_text}",
-            sender_id=sender_id,
-            is_group=True,
-            group_id=group_id,
-            user_nickname=sender_nickname or None,
-            is_at_bot=False,
-            source_kind="retroactive_review",
-            group_scene_mode="shared_context",
-            fallback_to_text_on_voice_failure=True,
-        )
-        # 发言时刻的群记忆政策随 backlog 行保存：OFF 时代被忽略的消息在
-        # ON 之后回放，其"[回溯补回]…"行不得以当前政策入 digest。存量行
-        # 缺字段按 False 处理（fail-closed）。ON 时代的消息回放照常入库。
-        consented_at_receipt = bool(msg.get("group_memory_enabled_at_receipt"))
-        try:
-            async def _run_retro():
-                svc = self.plugin.session_memory_service
-                before = svc.session_history_len(f"group:{group_id}")
-                try:
-                    return await self.plugin.reply_pipeline.run(request)
-                finally:
-                    if not consented_at_receipt:
-                        # ai 行同样衍生自 pre-opt-in 消息：一并排除，防止
-                        # 该消息经回复间接进入持久记忆。
-                        svc.record_synthetic_prompt_rows(
-                            f"group:{group_id}", before,
-                            include_ai_rows=True,
-                        )
-
-            outcome = await self.plugin._run_with_session_lock(
-                f"group:{group_id}", _run_retro,
-            )
-            self.plugin.runtime_service.record_pipeline_outcome(
-                source=request.source_kind, request=request, outcome=outcome,
-            )
-            if outcome.action == "reply" and outcome.reply_text:
-                self._logger.info(f"[RetroReview] 补回群 {group_id} 一条消息: {outcome.reply_text[:50]}...")
-                return True
-            return False
-        except Exception as e:
-            self._logger.warning(f"[RetroReview] 补回请求失败: {e}")
-            return False
+            if msg_id:
+                id_map[i] = msg_id
+        return "\n".join(lines), id_map
 
     async def _push_group_digest(self, group_id: str) -> None:
         """焦点切换时将旧焦点群的完整会话摘要推送到 Memory Server"""
