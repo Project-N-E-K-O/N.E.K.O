@@ -118,10 +118,8 @@ class _StreamingMixin:
             self._model_switch_lock = lock
 
         async with lock:
-            if not new_model or new_model == self.model:
+            if not new_model:
                 return
-
-            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置
             if use_vision_config:
@@ -132,6 +130,16 @@ class _StreamingMixin:
                 base_url = self.base_url
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
+
+            if (
+                new_model == self.model
+                and base_url == self.base_url
+                and api_key == self.api_key
+                and provider_type == getattr(self, "provider_type", None)
+            ):
+                return
+
+            logger.info(f"Switching model/API configuration from {self.model} to {new_model}")
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -152,6 +160,7 @@ class _StreamingMixin:
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
             self.base_url = base_url
             self.api_key = api_key
+            self.provider_type = provider_type
             # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
             # genai.Client 内部持有 httpx 连接池——直接 = None 靠 GC 回收虽不
             # 是 leak，但提早 close() 能马上释放底层连接（SDK 没暴露 aclose，
@@ -527,8 +536,7 @@ class _StreamingMixin:
         if has_images:
             # Switch to vision model permanently for this session
             # (cannot switch back because image data remains in conversation history)
-            if self.vision_model and self.vision_model != self.model:
-                logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
+            if self.vision_model:
                 await self.switch_model(self.vision_model, use_vision_config=True)
 
             # Multi-modal message: images + text

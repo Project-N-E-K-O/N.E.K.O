@@ -909,17 +909,19 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
+async def test_offline_switch_model_serializes_same_id_vision_config_switches(monkeypatch):
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     _init_bare(client)
-    client.model = "gpt-4o-mini"
+    client.model = "vision-model"
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "sk-fake"
+    client.provider_type = "anthropic"
     client.vision_model = "vision-model"
     client.vision_base_url = "https://vision.example/v1"
     client.vision_api_key = "vision-key"
+    client.vision_provider_type = "openai_compatible"
     client.max_response_length = 300
     client._genai_client = None
     client._use_genai_sdk = False
@@ -955,6 +957,7 @@ async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
     assert client.model == "vision-model"
     assert client.base_url == "https://vision.example/v1"
     assert client.api_key == "vision-key"
+    assert client.provider_type == "openai_compatible"
     assert old_llm.closed == 1
 
 

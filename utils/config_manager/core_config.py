@@ -1368,6 +1368,13 @@ class CoreConfigMixin:
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
+                saved_model = cfg_model.strip() if isinstance(cfg_model, str) else ''
+                is_retired_step_default = (
+                    provider == 'follow_assist'
+                    and assist_api_value == 'step'
+                    and prefix in ('conversation', 'summary', 'correction', 'emotion')
+                    and saved_model == 'step-2-mini'
+                )
                 if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':
@@ -1376,12 +1383,12 @@ class CoreConfigMixin:
                     uses_fixed_free_assist_model = provider == 'follow_assist' and assist_api_value == 'free'
                     if (
                         not uses_fixed_free_assist_model
+                        and not is_retired_step_default
                         and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
-                        and isinstance(cfg_model, str)
-                        and cfg_model.strip()
+                        and saved_model
                     ):
-                        config[model_key] = cfg_model.strip()
+                        config[model_key] = saved_model
                     else:
                         followed_model = _resolve_game_follow_model_id(prefix, provider)
                         if followed_model:

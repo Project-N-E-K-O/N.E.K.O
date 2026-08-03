@@ -88,6 +88,28 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
+def test_step_follow_assist_ignores_retired_saved_default_model_ids():
+    """Upgraded Step installs must not keep the retired default via saved follow fields."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        data = {
+            "coreApi": "step",
+            "assistApi": "step",
+            "assistApiKeyStep": "sk-step",
+            "enableCustomApi": True,
+        }
+        for prefix in ("conversation", "summary", "correction", "emotion"):
+            data[f"{prefix}ModelProvider"] = "follow_assist"
+            data[f"{prefix}ModelId"] = "step-2-mini"
+
+        cfg = _manager_with_core_config(config_dir, data).get_core_config()
+
+        for key in ("CONVERSATION_MODEL", "SUMMARY_MODEL", "CORRECTION_MODEL", "EMOTION_MODEL"):
+            assert cfg[key] == "step-1o-turbo-vision"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
 def test_free_follow_assist_ignores_stale_saved_model_id_for_text_tiers():
     """Free assist has fixed model names and must not reuse stale paid provider IDs."""
     config_dir = _make_workspace_temp_dir()

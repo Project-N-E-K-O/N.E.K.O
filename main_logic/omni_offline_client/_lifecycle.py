@@ -211,10 +211,7 @@ class _LifecycleMixin:
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
-            if self.vision_model and self.vision_model != self.model:
-                logger.info(
-                    f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
-                )
+            if self.vision_model:
                 await self.switch_model(self.vision_model, use_vision_config=True)
             _ephemeral_content: list = []
             for img_b64 in images:
