@@ -180,6 +180,18 @@ JAPANESE_KANA_GUARDED = [
     "個別談話をお願いします。",
     "休講だそうです。",
     "個別講座に申し込みました。",
+    # 助词表按闭集补全之前漏的（codex P2）：只列 のにをはがでと 时这些都会漏出去
+    "個別提案ください。",
+    "地域別講座へ申込。",
+    "個別提案から選択。",
+    "個別提案など検討。",
+    "地域別講座まで案内。",
+    "個別談話でも可。",
+    "個別提案だけ確認。",
+    "地域別講座について質問。",
+    # 接续助词：这两条的 term 里**没有**单字格助词，只有 けど / たら 拦得住
+    "個別提案したけど。",
+    "個別提案したら連絡。",
 ]
 JAPANESE_BLOCKED_ELSEWHERE = [
     "今日は休講です。",
@@ -285,6 +297,15 @@ def test_each_zh_evidence_token_is_load_bearing(token, text, expected):
     assert expected in _zh_terms(text), f"{text!r} 少了 {token!r} 这条证据就会被误丢"
 
 
+def test_the_grammar_marker_set_excludes_mo():
+    """⚠️ ``も`` 是助词，但它出现在 ``ドラえもん`` 里。把它收进标记表，上面那批
+    「中文句子 + 日文话题名」的用例就会被打回去——这是个反向的坑，写死在这里。"""  # noqa: DOCSTRING_CJK
+    assert not D._JA_GRAMMAR_RE.search("ドラえもん"), (
+        "助词表把 ドラえもん 判成了日文句子（多半是收了 も）"
+    )
+    assert not D._JA_GRAMMAR_RE.search("お兄ちゃん")
+
+
 # ── 4. 复合词左界守卫 ────────────────────────────────────────
 def test_compound_left_set_is_pinned():
     """闭集断言用相等：这张表里每个字都是一句"该字后面的 别 一定不是祈使"的主张，
@@ -318,6 +339,33 @@ def test_compound_noun_is_not_read_as_an_imperative(left, verb):
 )
 def test_real_sentences_with_compound_bie_do_not_fire(text):
     assert _zh_terms(text) == set()
+
+
+# ⚠️ 守卫**只挂在模板 1**。模板 2/4 的 ``别`` 前面是被捕获的话题本身，话题正好以
+# 守卫字结尾时（模特 / 可能性 / 等级 / 地区）挂上去会把整条指令吃掉（codex P2）。
+TOPIC_ENDING_IN_A_GUARDED_CHAR = [
+    ("模特别提了。", "模特"),
+    ("模特別提了。", "模特"),
+    ("这种可能性别提了。", "这种可能性"),
+    ("這種可能性別提了。", "這種可能性"),
+    ("等级别提了。", "等级"),
+    ("那个地区别提了。", "那个地区"),
+    # 模板 4 同理
+    ("關於模特別提了", "模特"),
+    ("关于模特别提了", "模特"),
+    ("關於可能性別說了", "可能性"),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), TOPIC_ENDING_IN_A_GUARDED_CHAR)
+def test_topic_ending_in_a_guarded_char_survives(text, expected):
+    assert expected in _zh_terms(text), f"{text!r} 的话题被复合词守卫吃掉了"
+
+
+@pytest.mark.parametrize(("text", "expected"), TOPIC_ENDING_IN_A_GUARDED_CHAR)
+def test_those_topics_really_do_end_in_a_guarded_char(text, expected):
+    """Premise: 话题最后一个字确实在守卫表里，否则这条样本证明不了守卫的作用域。"""  # noqa: DOCSTRING_CJK
+    assert expected[-1] in D._BIE_COMPOUND_LEFT, expected
 
 
 @pytest.mark.parametrize(
@@ -356,6 +404,54 @@ def test_real_sentences_with_compound_xiu_do_not_fire(text):
 def test_xiu_at_a_word_start_is_still_a_negation(text):
     """守卫是词首规则，不是把 休 从表里删掉。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms(text), f"{text!r} 应当仍然命中"
+
+
+# ── 5b. 台湾句末助词不能粘在 term 上 ─────────────────────────
+# 存进 user_directives 的是 term 本身，会逐字注进 system prompt。助词粘上去
+# ("工作喔") 就是把一个不存在的话题名喂给模型（codex P2）。
+TAIWANESE_FINAL_PARTICLES = ("喔", "囉", "啰", "唄", "唷", "齁")
+
+
+@pytest.mark.parametrize("particle", TAIWANESE_FINAL_PARTICLES)
+def test_taiwanese_final_particle_is_stripped_from_the_term(particle):
+    assert _zh_terms(f"別再提工作{particle}") == {"工作"}
+
+
+@pytest.mark.parametrize("particle", TAIWANESE_FINAL_PARTICLES)
+def test_particle_is_declared_in_both_places(particle):
+    """放行（正则）与剥离（trim）必须成对：少一边 term 就带着助词存进去。"""  # noqa: DOCSTRING_CJK
+    assert particle in D._TRIM_TRAIL_TOKENS, f"{particle} 不在 _TRIM_TRAIL_TOKENS"
+    assert particle in D._ZH_FINAL_PARTICLES, f"{particle} 不在 _ZH_FINAL_PARTICLES"
+
+
+def test_stacked_particles_are_all_stripped():
+    assert _zh_terms("不要再說這件事了喔") == {"這件事"}
+
+
+# ── 5c. 关于 X 只产出一条 term ───────────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("關於股票就別再講了", "股票"),
+        ("关于股票就别再讲了", "股票"),
+        ("關於前女友的事就別提了", "前女友"),
+        ("关于前女友的事就别提了", "前女友"),
+        ("關於股票別再講了", "股票"),
+    ],
+)
+def test_guanyu_produces_exactly_one_term(text, expected):
+    """通用的 ``X + 别提`` 模板会把 "关于股票就" 整段当话题，和专用模板的 "股票"
+    一起存下来。垃圾那条同样占一个 active 名额、注入三天。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("有关工作别提了", "有关工作"), ("有關工作別提了", "有關工作")],
+)
+def test_guanyu_exclusion_does_not_eat_other_words_starting_with_guan(text, expected):
+    """排除的是 ``关|于`` 这一个切点，不是"以 关/關 开头的一切"。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text)
 
 
 # ── 6. 普通繁体聊天不误触发 ──────────────────────────────────
