@@ -692,12 +692,27 @@ def test_particle_glyph_that_is_also_a_word_ending_survives(text, expected):
     assert _zh_terms(text) == {expected}
 
 
-@pytest.mark.parametrize(("text", "expected"), [("别再提工作咧。", "工作咧")])
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 话题只有两字、末字又是助词：剥掉就低于下限、整条指令消失，所以不剥。
+        ("别再提好咧。", {"好咧"}),
+        ("別再提好咧。", {"好咧"}),
+        # 对照：话题够长时助词照剥，下限守卫不是"永不剥"。
+        ("别再提工作咧。", {"工作"}),
+        ("別再提工作咧。", {"工作"}),
+    ],
+)
 def test_trim_never_shortens_a_term_below_the_storable_minimum(text, expected):
-    """Premise：这个 term 的最后一个字确实在助词表里，所以它真的会走到 trim 的
-    下限判据，而不是碰巧没被剥。"""  # noqa: DOCSTRING_CJK
-    assert expected[-1] in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]
-    assert D._trim_term("咧咧", "zh") == "咧咧"
+    """⚠️ 断言**完整集合**并且真的用上 text。
+
+    这条原本只断言 `_trim_term` 的直接行为、根本没跑 `text`——不但下限失效时不会
+    红，连我写在参数里的期望值本身是错的（`别再提工作咧。` 其实是 `工作`）都一直
+    没暴露（CodeRabbit）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected
+    # 直接压一下 trim 的下限判据本身
+    assert D._trim_term("好咧", "zh") == "好咧"
     assert D._TERM_MIN_LEN == 2
 
 
@@ -717,20 +732,23 @@ def test_template2_prefix_never_spans_a_sentence_boundary(text, expected):
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "expected"),
     [
-        "别提工作\n别提加班",
-        "別提工作\n別提加班",
-        "别提工作\r\n再说",
-        "我不想聊工作\n别提加班",
+        ("别提工作\n别提加班", {"加班"}),
+        ("別提工作\n別提加班", {"加班"}),
+        ("别提工作\r\n再说", set()),
+        ("我不想聊工作\n别提加班", {"加班"}),
     ],
 )
-def test_object_never_spans_a_line_break(text):
+def test_object_never_spans_a_line_break(text, expected):
     """⚠️ 换行必须在字符类里**显式**排除。这些捕获组原本写的是 ``.``，在没有
     DOTALL 时天然不匹配换行；改成负字符类之后这个性质就没了，多行消息里 term 会把
-    换行连同**下一条指令**一起吞掉（"别提工作\\n别提加班" → "工作\\n别提加班"）。"""  # noqa: DOCSTRING_CJK
-    for term in _zh_terms(text):
-        assert "\n" not in term and "\r" not in term, f"{text!r} 抽出了跨行 term：{term!r}"
+    换行连同**下一条指令**一起吞掉（"别提工作\\n别提加班" → "工作\\n别提加班"）。
+
+    ⚠️ 断言**完整集合**：只遍历结果检查"不含换行"的话，结果为空时是空跑
+    （CodeRabbit）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -785,7 +803,27 @@ def test_all_four_zh_templates_share_one_topic_char_class():
     assert r"[^，。！？；,.!?;\r\n" in D._ZH_PLAIN_CHAR
     assert D._ZH_BRACKET_PAIRS == (
         ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
+        ("（", "）"), ("〈", "〉"), ("〔", "〕"), ("［", "］"), ("〖", "〗"),
     )
+    # ⚠️ ASCII 的 `"` `'` `(` 刻意不收：中文消息里它们经常落单（英文撇号、颜文字
+    # `:(`、英寸号），一旦进表就会被排除出单字分支、落单时变成硬边界。
+    for ascii_char in ('"', "'", "(", "[", "<"):
+        assert ascii_char not in D._ZH_BRACKET_OPENERS, ascii_char
+
+
+def test_every_bracket_delimiter_is_also_trimmed():
+    """不变量：凡是被当作话题分隔符的括号，两端都必须在 _TRIM_TRAIL 里。
+
+    少一边 term 就带着括号存进去（`〔重要，紧急〕`）——新加一对括号忘了同步 trim
+    表，这里就红，不用靠人记得。
+    """  # noqa: DOCSTRING_CJK
+    missing = sorted(
+        ch
+        for pair in D._ZH_BRACKET_PAIRS
+        for ch in pair
+        if ch not in D._TRIM_TRAIL
+    )
+    assert not missing, f"这些括号是话题分隔符但不会被 trim 剥掉：{missing}"
     for lo, hi in D._ZH_BRACKET_PAIRS:
         assert f"{lo}[^{hi}" in D._ZH_BRACKET_RUN, f"{lo}{hi} 没进话题单位"
     for raw in _zh_pattern_sources():
@@ -802,6 +840,8 @@ def test_all_four_zh_templates_share_one_topic_char_class():
         ("别提《你好，李焕英》了。", "你好，李焕英"),
         ("别提「你好，李焕英」了。", "你好，李焕英"),
         ("别提【重要，紧急】了。", "重要，紧急"),
+        ("别提（重要，紧急）了。", "重要，紧急"),
+        ("别提〔重要，紧急〕了。", "重要，紧急"),
     ],
 )
 def test_punctuation_inside_a_quoted_title_stays_in_the_topic(text, expected):
@@ -809,31 +849,42 @@ def test_punctuation_inside_a_quoted_title_stays_in_the_topic(text, expected):
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "expected"),
     [
         # ⚠️ 样本必须让「闭合括号在下一行」——括号里根本没有闭合符号时，括号分支
         # 无论放不放行换行都失败，压不住这一维。
-        "别提《书名前半\n后半》了。",
-        "别提「引文前半\n后半」了。",
-        "别提《没闭合的书名\n别提加班。",
+        ("别提《书名前半\n后半》了。", set()),
+        ("别提「引文前半\n后半」了。", set()),
+        ("别提《没闭合的书名\n别提加班。", {"加班"}),
     ],
 )
-def test_a_bracket_run_must_not_cross_a_line_break(text):
+def test_a_bracket_run_must_not_cross_a_line_break(text, expected):
     """括号段放行标点，但不放行换行——否则一个跨行的书名号会把两行连同中间的
-    指令一起吞进 term。"""  # noqa: DOCSTRING_CJK
-    for term in _zh_terms(text):
-        assert "\n" not in term and "\r" not in term, f"{text!r} -> {term!r}"
+    指令一起吞进 term。
+
+    ⚠️ 断言**完整集合**而不是遍历结果逐条检查：结果为空时遍历零次，是空跑
+    （CodeRabbit）。这已经是这个文件里第三次栽在"断言弱于主张"上了。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected
 
 
-def test_object_never_spans_a_sentence_boundary():
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("功成名就别提了，功成名别提了。", {"功成名就", "功成名"}),
+        ("别提小明，也别提小红。", {"小明", "小红"}),
+        ("算了，工作别提了。", {"工作"}),
+    ],
+)
+def test_object_never_spans_a_sentence_boundary(text, expected):
     """宾语下限抬到 2 之后，lazy 捕获会跳过本该收尾的句读去够更长的匹配——
     "功成名就别提了，功成名别提了。" 一度吐出 "了，功成名别提"。宾语用排除句读的
-    字符类，话题本来也不该跨句子。"""  # noqa: DOCSTRING_CJK
-    for text in ("功成名就别提了，功成名别提了。", "别提小明，也别提小红。"):
-        for term in _zh_terms(text):
-            assert not any(ch in term for ch in "，。！？；,.!?;"), (
-                f"{text!r} 抽出了跨句读的 term：{term!r}"
-            )
+    字符类，话题本来也不该跨句子。
+
+    ⚠️ 断言完整集合，不是"遍历结果确认不含句读"：结果为空时遍历零次（CodeRabbit
+    在别处指出的同一个空跑模式，我扫了全文件把同类一起修了）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected
 
 
 # ⚠️ trim 表必须按 locale 分开：同一个码位在不同语言里是不同的词。``唄`` 在中文
@@ -1031,6 +1082,37 @@ def test_filler_dedup_runs_before_term_deduplication():
     assert _zh_terms("工作别提了。关于工作就别提了。") == {"工作"}
     # 反向：不同话题不能因为这个顺序被吞掉
     assert _zh_terms("股票别提了。关于加班就别提了。") == {"股票", "加班"}
+
+
+def test_filler_dedup_stays_linear_on_many_directives():
+    """填充词去重的重叠比对本身是 O(n²)。绝大多数消息里一条带填充词的 term 都没有，
+    所以先筛一遍再比——粘贴一大段聊天记录时 n 可以到几百（codex P2）。
+
+    ⚠️ 这条是纯性能改动，行为上没有差异。用时限钉不可靠（常数太小、CI 上还抖），
+    改成**确定性**判据：一条带填充词的 term 都没有时，函数应当**原样返回同一个
+    列表对象**——那正是"没有进入逐对比对"的证据。
+    """  # noqa: DOCSTRING_CJK
+    import inspect
+
+    source = inspect.getsource(D._drop_filler_suffixed_terms)
+    # 第二层：即使有一条带填充词的 term（早退不触发），也只让**它**去做重叠比对，
+    # 而不是全部 n 条。实测 800 条指令 + 1 条填充词：24.6ms → 74.4ms（3x）。
+    # 差距太小、不适合用时限钉，所以这里钉结构。
+    assert "index not in suspect_set" in source, (
+        "逐条跳过没了：有一条填充词 term 时，全部命中都会做 O(n) 的重叠比对"
+    )
+    hits = [("zh", "ban_topic", f"话题{i}") for i in range(50)]
+    spans = [(i * 10, i * 10 + 5) for i in range(50)]
+    assert not any(
+        t.endswith(f) for _l, _k, t in hits for f in D._ZH_TRAILING_FILLERS
+    ), "前提：这批 term 里不该有带填充词的"
+    assert D._drop_filler_suffixed_terms(hits, spans) is hits, (
+        "没有走早退：即使一条填充词后缀都没有，也做了 O(n²) 的重叠比对"
+    )
+    # 有填充词时照常工作
+    assert D._drop_filler_suffixed_terms(
+        [("zh", "ban_topic", "股票就"), ("zh", "ban_topic", "股票")], [(0, 9), (0, 9)],
+    ) == [("zh", "ban_topic", "股票")]
 
 
 def test_filler_dedup_only_touches_overlapping_matches():

@@ -91,7 +91,9 @@ _TRIM_TRAIL = (
     " \t\n\r"
     ".,!?;:\"'`()[]{}<>"
     "。！？，；：、…—·"
-    "“”‘’（）【】《》「」『』"
+    # ⚠️ 与 _ZH_BRACKET_PAIRS 成对：凡是被当作话题分隔符的括号，两端都必须在这里
+    # 剥掉，否则 term 会带着括号存进去（`〔重要，紧急〕`）。有测试钉这条不变量。
+    "“”‘’（）【】《》「」『』〈〉〔〕［］〖〗"
 )
 # 各语言的句末助词 / 语气词（出现在 term 尾部时一并剥掉）。
 #
@@ -337,7 +339,13 @@ _ZH_TRAILING_FILLERS = (
 # 标点属于话题本身**：`电影《你好，李焕英》别提了。` 的逗号在片名里，一刀切排除会
 # 把 term 截成 "李焕英"（codex P2）。所以一个"单位"是「非句读非换行的单字」**或**
 # 「一整段配对括起来的内容」——括号内不限标点，但不许跨行。
-_ZH_BRACKET_PAIRS = (("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"))
+# ⚠️ 只收**全角 / CJK** 的成对标点。ASCII 的 `"` `'` `(` 在中文消息里经常单独出现
+# （英文撇号、颜文字 `:(`、英寸号），而开括号一旦进了这张表就会被排除出单字分支、
+# 落单时变成硬边界，把话题拦腰截断——代价比它能救的那点书名大（codex P2）。
+_ZH_BRACKET_PAIRS = (
+    ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
+    ("（", "）"), ("〈", "〉"), ("〔", "〕"), ("［", "］"), ("〖", "〗"),
+)
 _ZH_BRACKET_OPENERS = "".join(lo for lo, _hi in _ZH_BRACKET_PAIRS)
 _ZH_BRACKET_RUN = "(?:" + "|".join(
     f"{lo}[^{hi}\\r\\n]*{hi}" for lo, hi in _ZH_BRACKET_PAIRS
@@ -499,7 +507,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 前缀；1 字前缀本来也只能产出 1 字 term、必然被丢，所以抬下限只赚不亏。
      # ``的`` 绑在指示词里、不单独可选：单独可选会把 "目的这个别提了。" 的 目的 切成
      # 目（对抗排查）。句尾的 ``就`` 不在正则里吃，见 _ZH_TRAILING_FILLERS。
-     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(" + _zh_topic(2, 30) + r")\s*"
+     r"(?!(?<=关)于)(?!(?<=關)於)(" + _zh_topic(2, 30) + r")\s*"
      r"(?:的事)?\s*(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
@@ -726,6 +734,17 @@ def _drop_filler_suffixed_terms(
     """  # noqa: DOCSTRING_CJK
     if len(hits) < 2 or not spans or len(spans) != len(hits):
         return hits
+    # 只有"末尾正好是一个填充词"的 term 才可能被抑制。绝大多数消息里一条都没有，
+    # 先筛一遍就把 O(n²) 的重叠扫描降到 O(n)——n 是同一条消息里的命中数，粘贴一大段
+    # 聊天记录时可以到几百（codex P2）。
+    suspects = [
+        index
+        for index, (_locale, _kind, term) in enumerate(hits)
+        if any(term.endswith(filler) for filler in _ZH_TRAILING_FILLERS)
+    ]
+    if not suspects:
+        return hits
+    suspect_set = set(suspects)
 
     def _overlaps(a: Tuple[int, int], b: Tuple[int, int]) -> bool:
         return a[0] < b[1] and b[0] < a[1]
@@ -758,7 +777,11 @@ def _drop_filler_suffixed_terms(
                     frontier.append(shorter)
         return False
 
-    return [hit for index, hit in enumerate(hits) if not _is_redundant(index)]
+    return [
+        hit
+        for index, hit in enumerate(hits)
+        if index not in suspect_set or not _is_redundant(index)
+    ]
 
 
 # ---------------------------------------------------------------------------
