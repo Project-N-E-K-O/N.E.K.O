@@ -10,7 +10,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .._base import BaseModule
-from ..live_events.provider_event import event_nickname, event_type, event_uid, public_text
+from ..live_events.provider_event import (
+    event_is_current_session,
+    event_nickname,
+    event_type,
+    event_uid,
+    public_text,
+)
 
 
 _PUBLIC_VIEWER_LIMIT = 30
@@ -35,7 +41,7 @@ class LiveAudienceSessionModule(BaseModule):
         self._ended_at = 0.0
         self._danmaku_count = 0
         self._support_event_count = 0
-        self._neko_output_count = 0
+        self._neko_handoff_count = 0
         self._unique_viewer_keys: set[str] = set()
         self._viewers: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._session_salt = secrets.token_bytes(32)
@@ -67,7 +73,7 @@ class LiveAudienceSessionModule(BaseModule):
         self._ended_at = 0.0
         self._danmaku_count = 0
         self._support_event_count = 0
-        self._neko_output_count = 0
+        self._neko_handoff_count = 0
         self._unique_viewer_keys = set()
         self._viewers = OrderedDict()
 
@@ -92,7 +98,9 @@ class LiveAudienceSessionModule(BaseModule):
             "interaction_viewer_count_capped": len(self._unique_viewer_keys) >= _UNIQUE_VIEWER_LIMIT,
             "danmaku_count": self._danmaku_count,
             "support_event_count": self._support_event_count,
-            "neko_output_count": self._neko_output_count,
+            # Compatibility key: this counts Dispatcher -> host handoffs, not
+            # audible or completed NEKO output.
+            "neko_output_count": self._neko_handoff_count,
             "viewers": [self._public_viewer(item) for item in viewers],
         }
 
@@ -105,7 +113,7 @@ class LiveAudienceSessionModule(BaseModule):
         }
 
     def _on_live_event(self, event: Any) -> None:
-        if not self._active:
+        if not self._active or not event_is_current_session(event, self.ctx):
             return
         kind = event_type(event)
         if kind == "danmaku":
@@ -157,12 +165,14 @@ class LiveAudienceSessionModule(BaseModule):
             return
         if str(result.get("status") or "").strip().lower() != "pushed":
             return
-        self._neko_output_count += 1
+        self._neko_handoff_count += 1
         uid = _result_uid(result)
         if not uid:
             return
         item = self._viewers.get(self._viewer_key(uid))
         if item is not None:
+            # Compatibility key: a host handoff associated with this viewer,
+            # not evidence that the viewer heard a completed reply.
             item["neko_reply_count"] += 1
 
     def _viewer_key(self, uid: str) -> str:

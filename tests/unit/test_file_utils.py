@@ -30,6 +30,7 @@ from utils.file_utils import (
     atomic_write_json_async,
     atomic_write_text,
     atomic_write_text_async,
+    read_bytes_tolerating_replace,
     read_json,
     read_json_async,
 )
@@ -289,6 +290,30 @@ def test_a_target_that_stays_busy_raises_the_real_replace_error(tmp_path, monkey
     assert sum(spy.delays) < 0.2, "重试预算必须留在亚秒级"
     assert read_json(target) == {"v": 1}, "失败的写不许动到目标"
     assert _tmp_siblings(target) == []
+
+
+def test_read_bytes_tolerating_replace_retries_busy_windows_read(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "state.bin"
+    target.write_bytes(b"persisted bytes")
+    attempts = 0
+    real_read_bytes = Path.read_bytes
+    spy = _SleepSpy()
+
+    def busy_twice(path):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise _busy_error(32)
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", busy_twice)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    assert read_bytes_tolerating_replace(target) == b"persisted bytes"
+    assert attempts == 3
+    assert spy.delays == [0.005, 0.01]
 
 
 @pytest.mark.parametrize(

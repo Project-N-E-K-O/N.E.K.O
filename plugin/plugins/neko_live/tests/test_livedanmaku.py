@@ -167,6 +167,20 @@ def test_from_danmaku_face_url_empty():
     assert ld.face_url == ""
 
 
+def test_from_danmaku_keeps_only_explicit_safe_provider_message_id():
+    packet = _danmu([[0, 1, 25], "hello", [333, "User"]])
+    packet["msg_id"] = "chat-42"
+
+    assert LiveDanmaku.from_danmaku(packet).provider_event_id == "chat-42"
+
+    packet["msg_id"] = {"token": "must-not-leak"}
+    packet["data"] = {"message_id": 43}
+    assert LiveDanmaku.from_danmaku(packet).provider_event_id == "43"
+
+    packet["data"] = {"message_id": "token=must-not-leak"}
+    assert LiveDanmaku.from_danmaku(packet).provider_event_id == ""
+
+
 def test_from_raw_json_routes_danmu_msg():
     """from_raw_json 兜底入口能正确路由 DANMU_MSG 到 from_danmaku。"""
     raw = json.dumps(

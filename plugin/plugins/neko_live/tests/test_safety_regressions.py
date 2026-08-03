@@ -46,6 +46,41 @@ def test_safety_snapshot_prunes_expired_failure_records(monkeypatch, patch_modul
     assert snapshot["output_failures"] == 0
 
 
+def test_safety_auto_stop_trips_once_for_an_in_flight_failure_burst(
+    monkeypatch,
+    patch_module_clock,
+):
+    records = []
+    audit = SimpleNamespace(
+        record=lambda op, message="", **kwargs: records.append(
+            {"op": op, "message": message, **kwargs}
+        )
+    )
+    guard = SafetyGuard(
+        LiveConfig(
+            safety_window_seconds=10,
+            safety_pipeline_failure_limit=2,
+        ),
+        audit,
+    )
+    from plugin.plugins.neko_live.core import safety_guard_failures
+
+    ticks = iter((100.0, 101.0, 102.0, 103.0))
+    patch_module_clock(
+        monkeypatch,
+        safety_guard_failures,
+        monotonic=lambda: next(ticks),
+    )
+
+    guard.record_failure("pipeline", "pipeline_failed: first")
+    guard.record_failure("pipeline", "pipeline_failed: threshold")
+    guard.record_failure("pipeline", "pipeline_failed: already_tripped")
+
+    assert guard.status() == "tripped"
+    assert guard.snapshot()["pipeline_failures"] == 3
+    assert [record["op"] for record in records].count("safety_auto_stop") == 1
+
+
 def test_dispatcher_failure_exposes_only_stable_exception_type():
     records = []
     ctx = SimpleNamespace(
@@ -552,3 +587,119 @@ def test_bili_identity_avatar_fetch_uses_validated_resolved_ip(monkeypatch):
         "host": "cdn.example.test:8443",
         "closed": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_routes_bili_cdn_avatar_through_proxy_client():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        avatar_cache=SimpleNamespace(get=lambda _key: None, put=lambda *_args: None),
+        config=SimpleNamespace(avatar_fetch_timeout_seconds=1),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+    module._fetch_avatar = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("Bilibili CDN avatars must use the proxy-aware path")
+    )
+
+    async def fetch_bili_avatar(url, timeout):
+        assert url == "https://i0.hdslb.com/bfs/face/avatar.jpg"
+        assert timeout == 1
+        return b"avatar", "image/jpeg"
+
+    module._fetch_bili_avatar = fetch_bili_avatar
+    module._inspect_avatar = lambda _data: (True, False)
+
+    identity = await module.resolve(
+        ViewerEvent(
+            uid="7",
+            nickname="viewer",
+            avatar_url="https://i0.hdslb.com/bfs/face/avatar.jpg",
+        )
+    )
+
+    assert identity.avatar_bytes == b"avatar"
+    assert identity.avatar_mime == "image/jpeg"
+    assert identity.avatar_vision_ok is True
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_proxy_fetch_streams_allowlisted_avatar(monkeypatch):
+    opened = {}
+
+    class Response:
+        status_code = 200
+        url = "https://i0.hdslb.com/bfs/face/avatar.jpg"
+        headers = {"content-type": "image/jpeg", "content-length": "6"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_bytes(self):
+            yield b"avatar"
+
+    class Client:
+        def stream(self, method, url, **kwargs):
+            opened.update(method=method, url=url, kwargs=kwargs)
+            return Response()
+
+    monkeypatch.setattr(
+        "plugin.plugins.neko_live.modules.bili_identity._external_http_client",
+        lambda: Client(),
+    )
+
+    data, mime = await BiliIdentityModule._fetch_bili_avatar(
+        "https://i0.hdslb.com/bfs/face/avatar.jpg",
+        timeout=3,
+    )
+
+    assert data == b"avatar"
+    assert mime == "image/jpeg"
+    assert opened["method"] == "GET"
+    assert opened["url"] == "https://i0.hdslb.com/bfs/face/avatar.jpg"
+    assert opened["kwargs"]["timeout"] == 3
+    assert opened["kwargs"]["follow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_proxy_fetch_rejects_private_redirect(monkeypatch):
+    class Response:
+        status_code = 302
+        url = "https://i0.hdslb.com/bfs/face/avatar.jpg"
+        headers = {"location": "http://127.0.0.1/private.png"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Client:
+        def stream(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(
+        "plugin.plugins.neko_live.modules.bili_identity._external_http_client",
+        lambda: Client(),
+    )
+
+    with pytest.raises(ValueError, match="avatar_redirect_not_allowed"):
+        await BiliIdentityModule._fetch_bili_avatar(
+            "https://i0.hdslb.com/bfs/face/avatar.jpg",
+            timeout=3,
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/avatar.png",
+        "https://hdslb.com.attacker.example/avatar.png",
+        "https://user@i0.hdslb.com/avatar.png",
+        "https://i0.hdslb.com:8080/avatar.png",
+    ],
+)
+def test_bili_identity_proxy_allowlist_rejects_unsafe_urls(url):
+    assert BiliIdentityModule._is_bili_avatar_url(url) is False

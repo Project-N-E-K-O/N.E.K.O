@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import deque
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from plugin.plugins.neko_live.core import active_topic_builder
 from plugin.plugins.neko_live.core.active_topic_candidate_picker import choose_fallback_candidate
 from plugin.plugins.neko_live.core.active_topic_selector import ActiveTopicSelector
 from plugin.plugins.neko_live.core.recent_output_families import spent_output_families
@@ -162,3 +164,38 @@ def test_spent_output_families_classifies_real_choice_food_drink_text():
 def test_active_topic_selector_topic_pack_classifies_reply_path():
     assert ActiveTopicSelector.topic_pack({"live_column": "NEKO micro poll", "title": "cup or keyboard"}) == "micro_poll"
     assert ActiveTopicSelector.topic_pack({"live_column": "room observation", "title": "keyboard patrol"}) == "room_observation"
+
+
+def test_shape_guard_keeps_ambient_danmaku_factual_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime()
+    used: list[int] = []
+    runtime.live_events = SimpleNamespace(
+        mark_ambient_chat_used=lambda seq: used.append(seq)
+    )
+    selector = ActiveTopicSelector(runtime)
+    monkeypatch.setattr(
+        ActiveTopicSelector,
+        "guarded_shape",
+        lambda _selector, _shape: "tiny_tease",
+    )
+
+    topic = active_topic_builder.build_topic(
+        selector,
+        {
+            "source": "recent_danmaku",
+            "key": "ambient_danmaku:7",
+            "title": "cats would win this challenge",
+            "preferred_shape": "light_stance",
+            "hint": "Treat this as a recent room remark without inventing who said it.",
+            "preserve_factual_hint": True,
+        },
+        runtime._active_engagement_fallback_topic_candidates()[0],
+        "light_stance",
+    )
+
+    assert topic["shape"] == "tiny_tease"
+    assert "recent room remark" in topic["hint"]
+    assert "playful tease" in topic["hint"]
+    assert used == [7]

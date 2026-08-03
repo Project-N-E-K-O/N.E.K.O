@@ -34,7 +34,7 @@ from .transport_event import (
     DouyinTransportState,
     safe_transport_event_time,
 )
-from .webcast import DouyinWebcastInfo, fetch_webcast_info
+from .webcast import DouyinWebcastInfo as DouyinWebcastInfo, fetch_webcast_info
 
 
 _PUBLIC_STATES = {

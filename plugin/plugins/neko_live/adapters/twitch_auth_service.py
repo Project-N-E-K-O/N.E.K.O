@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
-from utils.http.aiohttp_proxy import aiohttp_session_kwargs_for_url
-
 
 CredentialProvider = Callable[[], Awaitable[dict[str, Any] | None]]
 CredentialSaver = Callable[[dict[str, Any]], Awaitable[bool]]
@@ -28,6 +26,17 @@ _TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 _VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
 _SCOPES = ("user:read:chat",)
 _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9]{8,80}$")
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def aiohttp_session_kwargs_for_url(url: str) -> dict[str, object]:
+    """Use environment proxies for external OAuth without host-source imports."""
+
+    try:
+        host = (urlsplit(url).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    return {"trust_env": host not in _LOOPBACK_HOSTS}
 
 
 @dataclass(slots=True)

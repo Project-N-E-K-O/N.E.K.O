@@ -772,11 +772,13 @@ def test_markup_allowance_covers_the_worst_rendered_decoration():
     from datetime import timedelta
 
     from config import SCOPED_RENDER_ENTRY_MARKUP_TOKENS as MARKUP
-    from memory.temporal import time_since_label
+    from memory.temporal import _TIME_LABELS, time_since_label
 
     now = datetime.now()
     worst = count_tokens("- ") + count_tokens("\n")
-    for lang in ("zh", "en", "ja", "ko", "ru", "es", "pt"):
+    # Derived from the table, not a hardcoded list: an enumerated tuple stopped
+    # covering zh-TW the moment that entry landed, and would have kept passing.
+    for lang in _TIME_LABELS:
         for days in (1, 10, 45, 400):
             label = time_since_label(
                 (now - timedelta(days=days)).isoformat(), now=now, lang=lang,

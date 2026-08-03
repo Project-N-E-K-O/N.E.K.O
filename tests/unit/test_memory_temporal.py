@@ -224,6 +224,46 @@ def test_time_since_unknown_lang_falls_back_zh():
     assert out == '3 天前'
 
 
+@pytest.mark.parametrize("days,label", [
+    (0, '當下'),
+    (3, '3 天前'), (6, '6 天前'),
+    (7, '1 週前'), (14, '2 週前'), (29, '4 週前'),
+    (30, '1 個月前'), (60, '2 個月前'), (365, '12 個月前'),
+])
+def test_time_since_buckets_zh_tw(days, label):
+    """Both callers pass a FULL locale, so 'zh-TW' really does arrive here.
+
+    ``memory/persona/rendering.py`` takes it from ``get_global_language_full()``
+    and ``main_logic/core/tool_calling.py`` from ``_normalize_memory_prompt_lang``
+    (``keep_traditional=True``). Without a 'zh-TW' row the or-fallback quietly
+    served Simplified labels inside an otherwise Traditional memory block.
+    """
+    from memory.temporal import time_since_label
+    now = datetime(2026, 5, 20)
+    anchor = (now - timedelta(days=days)).isoformat()
+    assert time_since_label(anchor, now=now, lang='zh-TW') == label
+
+
+def test_time_since_traditional_has_no_simplified_characters():
+    """`周` is the Simplified time unit; Traditional needs `週`. Asserted on the
+    table itself so a future edit that reverts one field is caught even if no
+    parametrized case happens to cover that bucket."""  # noqa: DOCSTRING_CJK
+    from memory.temporal import _TIME_LABELS
+    blob = "".join(_TIME_LABELS['zh-TW'].values())
+    leaked = sorted({ch for ch in '周当个时钟' if ch in blob})
+    assert not leaked, f"zh-TW 时间标签里混进了简体字：{leaked}"
+
+
+def test_time_since_simplified_is_unchanged_by_the_traditional_row():
+    """zh-CN arrives via get_global_language_full() and rides the or-fallback to
+    the 'zh' row — adding 'zh-TW' must not have moved it."""
+    from memory.temporal import time_since_label
+    now = datetime(2026, 5, 20)
+    anchor = (now - timedelta(days=10)).isoformat()
+    assert time_since_label(anchor, now=now, lang='zh-CN') == '1 周前'
+    assert time_since_label(anchor, now=now, lang='zh') == '1 周前'
+
+
 def test_to_naive_local_converts_then_strips():
     """aware → 转本地再剥 tz（保留瞬时，不是直接 replace 丢墙钟）；naive /
     None 原样返回。"""

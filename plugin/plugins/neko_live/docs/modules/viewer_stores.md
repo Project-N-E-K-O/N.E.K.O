@@ -1,31 +1,50 @@
-# viewer_stores
+# Viewer And Security Stores
 
 ## Purpose
 
-说明观众档案、审计和凭据的边界。三者用途不同，不能混用。
+This store slice keeps viewer profiles, audit events, and encrypted platform credentials behind explicit single-writer boundaries. It adds safe profile projections and maintenance actions, bounded audit records with secret redaction, and isolated credential namespaces for multiple live providers.
 
-## Viewer Store
+## Ownership And Contracts
 
-`stores/viewer_store.py` 保存基础档案与安全派生偏好，支持首次出场判断、重置印象、删除档案和惰性清理。
+- `stores/viewer_store.py` is the only writer for `viewer_profiles.json`. It sanitizes loaded records, serializes writes with an async lock, uses atomic replacement, removes failed-write temporary files, and exposes recent, reset, delete, and clear operations whose results report whether persistence was applied. Storage status follows the file actually in use after a custom-directory fallback and treats a creatable nested directory as writable without creating it during a read-only status check.
+- `stores/audit_store.py` is the only audit-event sink. It bounds text, nesting, and list sizes and redacts sensitive text and structured sensitive keys.
+- `stores/credential_store.py` owns Fernet-encrypted credential files. The default `bili` namespace preserves legacy filenames while other providers use strictly validated, isolated filenames and field allowlists. Audit identity uses `DedeUserID` for Bili fields and `uid` for provider field sets that expose it; missing identities are recorded explicitly as `unidentified`, never as an empty account id.
+- `core/viewer_preferences.py` owns preference inference and the public profile projection returned by `recent_profiles()`.
 
-允许保存：平台前缀 UID、受限昵称/头像 metadata、首次/最近互动时间、安全派生偏好和必要计数。
+Store callers receive plain public dictionaries or contract objects. Viewer mutations require a sanitized provider identity. This identity is part of the existing product contract: `viewer_profiles.json` uses the sanitized value both as the JSON key and as the profile `uid` field; it is not an opaque or cross-provider anonymous identifier. Bili credential audit identity uses `DedeUserID`, while other provider credential fields use an allowlisted `uid` when available. Removing or hashing this persistent profile identity requires a separate schema migration; disabling personalized memory does not rewrite existing identity keys. Credential callers only receive the configured encrypted payload fields.
 
-不保存：原始弹幕、完整支持流水、cookie/token、头像 bytes/base64、跨平台无命名空间 UID。
+## Pipeline, Safety, And Data
 
-关闭个性化记忆不应破坏本场防复读或首次出场判断。写入采用原子替换和容量/保留期策略；路径失败时安全降级并暴露可写状态。
+Viewer data is derived from compact identity and interaction metadata after normal live-event handling. Store operations do not emit NEKO output. Any response using profile guidance still enters `core/pipeline.py`, passes `core/safety_guard.py`, and reaches NEKO only through `adapters/neko_dispatcher.py`.
 
-## Audit Store
+Viewer profiles contain local nicknames, avatar URLs, counters, compact preference summaries, and recent output summaries. Audit records must never retain cookies, tokens, authorization values, or provider credentials. Credential plaintext exists only in memory during encrypted save/load and must never enter audit, logs, config, or UI.
 
-`stores/audit_store.py` 记录模块、route、status、reason 和脱敏摘要，用于解释与复盘。audit 不是日志数据库，也不能成为保存 raw payload 的后门。
+Personalized viewer memory defaults to enabled. The switch controls only safe-derived preference learning and prompt use; basic identity, interaction counters, first-roast state, and same-session anti-repeat remain active. Profiles expire after 90 days of inactivity and are pruned lazily at startup and during normal store traffic. The store never keeps raw danmaku text or adds a background cleanup loop.
 
-未知 reason 和异常文本在投影前归一化；用户身份使用不可逆短关联 ID。
+## Decision Point: Viewer Memory V1
 
-## Credential Store
-
-`stores/credential_store.py` 按 provider namespace 加密保存登录凭据。公开状态只返回登录状态和必要的脱敏账号信息。
-
-凭据绝不进入 config、logger、audit、Dashboard、viewer profile 或事件 raw。注销删除本机凭据；失败时不回显秘密内容。
+- **Approved product behavior:** default on; fixed 90-day retention; ordinary-user toggle, clear-all, reset-impression, and delete-profile controls.
+- **Cost budget:** bounded local JSON I/O and existing prompt tokens only when enabled. No background timer, network request, dependency, raw-message archive, `watch_time`, or `contribution_rank`.
+- **Action semantics:** reset removes only derived impressions and preserves identity, counts, and first-roast state; delete removes the complete persistent UID record and its session claim; clear-all affects profiles only, not summaries, sandbox results, or safety queues.
+- **Rejected alternatives:** disabling the basic profile store with personalization would break first-roast dedup; background retention jobs add idle cost; retaining raw history increases privacy and migration risk.
+- **Degrade / rollback:** setting `viewer_memory_enabled=false` immediately stops learning and prompt use while preserving the basic live contract. Existing JSON remains schema-compatible if the UI controls are rolled back.
+- **Evidence:** config projection, disabled-learning, prompt gating, 90-day pruning, reset/delete/clear, panel parity, locale, and full plugin gates cover this decision.
 
 ## Testing
 
-覆盖原子写、并发、路径冲突、容量与保留期、重置/删除、跨平台 UID、敏感字段负例、加密保存、注销和 Dashboard 安全投影。
+Run:
+
+```powershell
+uv run pytest plugin/plugins/neko_live/tests/test_viewer_store.py plugin/plugins/neko_live/tests/test_credential_store.py plugin/plugins/neko_live/tests/test_audit_store.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+```
+
+Tests cover JSON persistence and fallback, disabled-memory behavior, 90-day retention, profile reset/delete/clear behavior, prompt gating, encrypted namespace isolation, and redaction of secrets in text and nested structured audit detail.
+
+## Limitations And Rollback
+
+- Viewer profiles are local plugin data and do not provide cross-device synchronization.
+- Ordinary profile updates degrade to the plugin data directory when a configured viewer directory cannot be written. Destructive maintenance actions report `applied: false` instead of claiming fallback-only persistence while a stale configured source remains authoritative.
+- Missing or undecryptable credential files degrade to a logged-out state.
+- Rolling back the maintenance APIs leaves existing profile JSON compatible. Rolling back provider namespaces must retain the default `bili_credential.*` files; other namespace files can remain unused without exposing plaintext.

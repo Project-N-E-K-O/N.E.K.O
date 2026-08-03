@@ -370,6 +370,90 @@ def test_prompt_ephemeral_no_visible_text_keeps_staged_screenshot():
     assert c._proactive_image_to_inject == "SCREEN_B64"
 
 
+def test_prompt_ephemeral_committed_text_callback_receives_sanitized_text_once():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks([
+        SimpleNamespace(content="[play_music:demo] "),
+        SimpleNamespace(content="欢迎回来 "),
+    ])
+    committed_texts = []
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+            on_committed_text=committed_texts.append,
+        )
+    )
+
+    assert committed is True
+    assert committed_texts == ["欢迎回来"]
+
+
+def test_prompt_ephemeral_committed_text_callback_skips_nonverbal_only_output():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks([SimpleNamespace(content="[play_music:demo]")])
+    committed_texts = []
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+            on_committed_text=committed_texts.append,
+        )
+    )
+
+    assert committed is False
+    assert committed_texts == []
+
+
+def test_prompt_ephemeral_committed_text_callback_failure_does_not_skip_done():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks([SimpleNamespace(content="欢迎回来")])
+
+    def _raise_on_committed_text(_text: str) -> None:
+        raise RuntimeError("callback failed")
+
+    committed = asyncio.run(
+        c.prompt_ephemeral(
+            "======启动问候======",
+            completion_mode="response",
+            persist_response=False,
+            on_committed_text=_raise_on_committed_text,
+        )
+    )
+
+    assert committed is True
+    c.on_response_done.assert_awaited_once_with()
+
+
+def test_prompt_ephemeral_commits_visible_text_before_cancelled_cleanup():
+    c, set_chunks = _make_offline_for_ephemeral()
+    set_chunks(
+        [
+            SimpleNamespace(content="[play_music:demo] "),
+            SimpleNamespace(content="欢迎回来"),
+        ]
+    )
+    c._notify_reasoning_done = AsyncMock(side_effect=asyncio.CancelledError())
+    committed_texts = []
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            c.prompt_ephemeral(
+                "======启动问候======",
+                completion_mode="response",
+                persist_response=False,
+                on_committed_text=committed_texts.append,
+            )
+        )
+
+    assert committed_texts == ["欢迎回来"]
+    c.on_response_done.assert_not_awaited()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. finish_proactive_delivery(vision_screenshot_b64=...) —— stage only on commit
 # ─────────────────────────────────────────────────────────────────────────────

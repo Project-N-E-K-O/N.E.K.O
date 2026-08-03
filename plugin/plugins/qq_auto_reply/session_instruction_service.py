@@ -587,6 +587,11 @@ class QQSessionInstructionService:
         is_group: bool = False,
         group_id: str | None = None,
         sender_id: str = "",
+        # Kept on the signature (callers and their tests pass it), but no
+        # longer forwarded to the memory bridge: what reaches here is this
+        # process's default locale, and sending that would outrank the memory
+        # server's durable per-subject locale. Wire it through again only if
+        # QQ ever gains a real per-conversation locale.
         locale: str = "",
         used_member_subject_out: list | None = None,
         participant_memory: bool = False,
@@ -626,7 +631,11 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,
-                    language=locale,
+                    # No language: ``locale`` here is this process's default
+                    # (get_global_language_full), not a per-conversation
+                    # locale — QQ has none. Forwarding it would outrank the
+                    # memory server's durable per-subject locale, which is
+                    # exactly what post_memory_history already avoids.
                 )
                 if not bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -653,7 +662,11 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,
-                    language=locale,
+                    # No language: ``locale`` here is this process's default
+                    # (get_global_language_full), not a per-conversation
+                    # locale — QQ has none. Forwarding it would outrank the
+                    # memory server's durable per-subject locale, which is
+                    # exactly what post_memory_history already avoids.
                 )
                 if not bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(

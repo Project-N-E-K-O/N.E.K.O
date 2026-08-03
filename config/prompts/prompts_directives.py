@@ -702,6 +702,27 @@ target_type 必须是字符串 "reflection" 或 "persona" 之一。
 {"targets": [{"target_type": "reflection",
               "target_id": "...",
               "reason": "简短理由"}]}""",
+    # 分隔符水印在每一条 locale 里都是同一串简体字面量（与其余 prompt 表同理），
+    # 繁中跟着走、不做转换——它是给模型认边界用的锚点，不是给用户看的文案。
+    "zh-TW": """你是一個使用者迴避意圖判定專家。
+
+======以下为用户最近消息======
+{USER_MESSAGES}
+======以上为用户最近消息======
+
+======以下为系统正在维护的观察列表======
+{OBSERVATIONS}
+======以上为观察列表======
+
+使用者訊息裡，「別提了 / 不想聊 / 換個話題 / 別再說」這類表達到底指上述哪一條？可能多條、也可能一條都沒有（使用者只是泛化情緒）。
+
+只能從「觀察列表」裡選 target_id，不要憑空產生。
+target_type 必須是字串 "reflection" 或 "persona" 其中之一。
+
+回傳合法 JSON（如果使用者只是泛化情緒，無明確 target，回傳 {"targets": []}）：
+{"targets": [{"target_type": "reflection",
+              "target_id": "...",
+              "reason": "簡短理由"}]}""",
     "en": """You are a user pushback target analyst.
 
 ======以下为用户最近消息======
@@ -833,6 +854,11 @@ def get_negative_target_check_prompt(lang: str = "zh") -> str:
 # 话题语境时基本都意味着"想结束这个话题"）。**不收纯情绪词**（焦虑/崩溃/
 # 难受/失望/痛苦…）——它们经常单独出现而无回避意图，会触发无用 LLM 调用。
 # 单字也避免（"烦"会被"麻烦你"/"麻烦了"误命中），双字以上更稳。
+#
+# zh 与 zh-TW 是**两块独立词表**，不是同一份的两种写法：这里拿词条去撞用户实际
+# 打出来的字，繁简是不同码位，简体词条对繁中输入是 0 命中。两块逐条对应（含繁
+# 简同形的那几条，照抄以便一侧改动时对照）。scan_negative_keywords 对整个 zh 系
+# 扫两块的并集——见该函数的 docstring。
 NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
     "zh": frozenset(
         [
@@ -878,6 +904,52 @@ NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
             "受不了",
             "无语",
             "真无语",
+        ]
+    ),
+    "zh-TW": frozenset(
+        [
+            # 顯式迴避型
+            "別說了",
+            "別再說",
+            "不要再說",
+            "不要說",
+            "別提了",
+            "別提",
+            "別再提",
+            "不要再提",
+            "不想提",
+            "不想再提",
+            "不想說",
+            "不想說了",
+            "不想再說",
+            "別講",
+            "別再講",
+            "不要講",
+            "不要再講",
+            "別聊",
+            "別聊這個",
+            "不要聊",
+            "不想聊",
+            "換個話題",
+            "換話題",
+            "聊點別的",
+            "說點別的",
+            "這個不用說了",
+            "閉嘴",
+            "別問了",
+            "不要問了",
+            # 嫌煩型（暗含「想結束此話題」）
+            "煩死",
+            "煩人",
+            "好煩",
+            "真煩",
+            "煩透",
+            "心煩",
+            "討厭",
+            "真討厭",
+            "受不了",
+            "無語",
+            "真無語",
         ]
     ),
     "en": frozenset(
@@ -993,11 +1065,19 @@ NEGATIVE_KEYWORDS_I18N: dict[str, frozenset[str]] = {
 }
 
 
+# 扫描侧的中文并集：预算一次存成常量。scan_negative_keywords 是每条用户消息都
+# 跑的热路径（post_turn 每轮 × user_msgs 条数），写成函数里现 union 会每条消息
+# 重建一个 80 元素 frozenset。
+_ZH_SCAN_KEYWORDS: frozenset[str] = (
+    NEGATIVE_KEYWORDS_I18N["zh"] | NEGATIVE_KEYWORDS_I18N["zh-TW"]
+)
+
+
 def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
     """Fast path: case-insensitive substring scan against NEGATIVE_KEYWORDS_I18N.
 
     Returns True if the message contains any negation keyword for the given
-    language; if lang is unknown, falls back to zh.
+    language; if lang is unknown, falls back to the Chinese union.
 
     ⚠️ Does NOT go through ``_norm_lang`` — that helper serves i18n template
     rendering, where unknown languages map to ``en`` (English is the lingua franca;
@@ -1005,8 +1085,17 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
     contract is "treat unrecognizable language as a Chinese user" (codex P2 /
     scan-only policy), a different policy from the render path. So only minimal
     normalization happens here: strip the region suffix (``en-US`` → ``en`` /
-    ``zh-CN`` → ``zh``) and leave unrecognized short codes to the
-    ``.get(..., zh)`` fallback.
+    ``zh-CN`` → ``zh``) and leave unrecognized short codes to the Chinese fallback.
+
+    ⚠️ The whole Chinese family scans Simplified plus Traditional, not one script.
+    Stripping the region suffix is what makes that necessary: by the time ``short``
+    is computed below, ``zh-TW`` is indistinguishable from ``zh-CN``, so there is no
+    ``zh-TW`` key left to look up and a per-locale lookup would leave that table as
+    unreachable data. Scanning both is also right on its own terms — users mix
+    scripts (pasting Simplified content into a Traditional UI, typing Traditional
+    with a Simplified IME) — and this module prefers false positives: a miss means
+    the model keeps stepping on the same landmine, while a false hit costs one
+    cheap-tier background LLM call that comes back with no target.
     """
     if not message:
         return False
@@ -1015,9 +1104,13 @@ def scan_negative_keywords(message: str, lang: str = "zh") -> bool:
     # split 后是 ``EN`` / `` en``，dict key 都是小写无空白会 miss → 错落 zh
     # 兜底（CodeRabbit Minor）。
     short = (lang or "").strip().lower().split('-', 1)[0].split('_', 1)[0]
-    # `zh` is always non-empty in the dict, so the fallback is guaranteed
-    # to yield a frozenset (CodeRabbit PR #929 dead-code cleanup).
-    kws = NEGATIVE_KEYWORDS_I18N.get(short, NEGATIVE_KEYWORDS_I18N["zh"])
+    kws = NEGATIVE_KEYWORDS_I18N.get(short)
+    # 判据必须是**归一化之后**的 short == "zh"：上一行已经把 region 剥掉了，
+    # 任何在这里去看原始 lang 有没有 "tw" 的写法都是恒假分支。zh / zh-CN /
+    # zh-TW / zh-Hant 以及全部未知语言都走并集，等于把"未知 → 当中文用户"
+    # 这条既有契约原样扩到两套字形上。
+    if kws is None or short == "zh":
+        kws = _ZH_SCAN_KEYWORDS
     lower = message.lower()
     for kw in kws:
         if kw.lower() in lower:

@@ -43,6 +43,7 @@ from ._shared import (
     _looks_like_recent_ai_echo,
     logger,
     _proactive_expected_sid,
+    _proactive_published_text_chunks,
     _get_chat_locale_text,
 )
 
@@ -154,6 +155,7 @@ class TurnMixin:
         # 整体丢弃（含前端显示和 TTS），避免污染用户当前轮次。user stream_text
         # 在自己的 task 里 contextvar 为 None，不受影响。
         expected_sid = _proactive_expected_sid.get()
+        published_text_chunks = _proactive_published_text_chunks.get()
         if expected_sid is not None and expected_sid != self.current_speech_id:
             logger.debug(
                 "handle_text_data drop: expected_sid=%s current_sid=%s len=%d",
@@ -166,6 +168,11 @@ class TurnMixin:
         # 误清掉本轮已经播放/排队的 prefix 音频。
         if is_first_chunk and self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
+                # The proactive sid may be preempted while this task waits for
+                # the cache lock.  Recheck before clearing anything owned by
+                # the replacement user turn.
+                if expected_sid is not None and self.current_speech_id != expected_sid:
+                    return
                 self.tts_pending_chunks.clear()
                 self._discard_pending_ai_voice_echo()
 
@@ -179,15 +186,36 @@ class TurnMixin:
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
         if ui_enabled:
-            await self.send_lanlan_response(
+            on_published = None
+            if expected_sid is not None and published_text_chunks is not None:
+                visible_text = self.emotion_pattern.sub('', text)
+
+                def _record_published_text(_published_at: float) -> None:
+                    published_text_chunks.append(visible_text)
+
+                on_published = _record_published_text
+
+            publish_result = await self.send_lanlan_response(
                 text,
                 is_first_chunk,
+                turn_id=expected_sid,
                 remember_voice_echo=not self.use_tts,
+                expected_speech_id=expected_sid,
+                on_published=on_published,
             )
+            # ``None`` means the guarded send lost ownership at its internal
+            # queue-write boundary.  Do not leak the same stale chunk into TTS.
+            if expected_sid is not None and publish_result is None:
+                return
 
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
+                # ``send_lanlan_response`` may await the WebSocket after its
+                # synchronous UI publish.  Recheck before the TTS write so an
+                # intervening user turn cannot inherit proactive audio.
+                if expected_sid is not None and self.current_speech_id != expected_sid:
+                    return
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送

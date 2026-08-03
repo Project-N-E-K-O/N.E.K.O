@@ -1451,6 +1451,55 @@ def test_badminton_pregame_context_normalize_and_prompt_injection():
 
 
 @pytest.mark.unit
+def test_badminton_duel_difficulty_addendum_is_localized_per_full_locale():
+    """The addendum used to be an inline ``if lang == "zh"`` fork in
+    ``main_routers/game_router/balance.py``, so Traditional Chinese — and every
+    locale other than Chinese and English — fell through to the English branch.
+
+    Asserted on the getter, which is the layer that has to keep zh-CN and zh-TW
+    apart. ``_normalize_prompt_lang`` (the short-locale scheme the rest of this
+    module's tables use) collapses every Chinese variant to ``zh``; routing this
+    table through it would leave the zh-TW entry unreachable while still reading
+    as compliant to the static ``check_prompt_zh_tw`` gate.
+    """
+    get = prompts_badminton.get_badminton_duel_difficulty_control_prompt
+
+    assert get("zh-TW") != get("zh-CN")
+    assert "對戰難度控制補充" in get("zh-TW")
+    assert "对战难度控制补充" in get("zh-CN") == get("zh")
+    for steam_code in ("tchinese", "zh-Hant", "zh-HK"):
+        assert get(steam_code) == get("zh-TW"), steam_code
+
+    # Every locale gets its own text; none silently rides the English branch.
+    rendered = {loc: get(loc) for loc in ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")}
+    assert len(set(rendered.values())) == len(rendered), "有 locale 拿到了别人的文案"
+
+    # Wire literals the runtime parses back out must survive translation.
+    for loc, text in rendered.items():
+        assert '"difficulty"' in text, loc
+        assert "max|lv2|lv3|lv4" in text, loc
+        assert "spectator" in text, loc
+        assert "balanceHint" in text, loc
+
+
+@pytest.mark.unit
+def test_badminton_duel_prompt_reaches_traditional_users_end_to_end():
+    """Guards the *other* collapse: the table can be perfect and still never be
+    reached, because ``session_pool`` used to pass ``char_info["user_language"]``
+    (already short-normalized to ``zh``) rather than ``user_language_full``.
+    """
+    prompt = gr_runtime._build_game_prompt(
+        "badminton",
+        "Neko",
+        "傲娇猫娘",
+        language="zh-TW",
+        mode="duel",
+    )
+    assert "對戰難度控制補充" in prompt
+    assert "对战难度控制补充" not in prompt
+
+
+@pytest.mark.unit
 def test_badminton_pregame_opening_line_keeps_spec_length_cap():
     context, invalid = gr_pregame._normalize_badminton_pregame_context(
         {

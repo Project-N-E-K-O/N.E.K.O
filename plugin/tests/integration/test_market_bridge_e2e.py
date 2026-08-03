@@ -2456,7 +2456,19 @@ async def test_oauth_status_refreshes_a_rejected_pending_access_token(
     [
         ("en-GB,zh-TW;q=0.1", "en"),
         ("fr-FR,ja-JP;q=0.9,zh-CN;q=0.8", "ja"),
-        ("zh-TW;q=0.7,ja;q=0.7", "zh-CN"),
+        # Traditional subtags get the Traditional page. Selecting on the primary
+        # subtag alone (`zh`) served every Chinese reader Simplified.
+        ("zh-TW;q=0.7,ja;q=0.7", "zh-TW"),
+        ("zh-TW", "zh-TW"),
+        ("zh-Hant-TW", "zh-TW"),
+        ("zh-HK,zh;q=0.9", "zh-TW"),
+        ("zh-MO", "zh-TW"),
+        ("zh-TW,zh;q=0.9,en;q=0.8", "zh-TW"),
+        # Simplified stays Simplified — including Singapore, which uses it.
+        ("zh", "zh-CN"),
+        ("zh-CN", "zh-CN"),
+        ("zh-Hans-CN", "zh-CN"),
+        ("zh-SG", "zh-CN"),
         ("fr-FR,*;q=0.5,ja;q=0.4", "en"),
         ("zh;q=0,ja;q=invalid", "en"),
     ],
@@ -2471,6 +2483,37 @@ def test_oauth_callback_locale_prefers_supported_weighted_language(
         market_bridge_module._preferred_oauth_callback_locale(accept_language)
         == expected
     )
+
+
+def test_oauth_callback_copy_covers_every_locale_the_resolver_can_return() -> None:
+    """The handler subscripts the copy table directly, so a locale the resolver
+    can return but the table lacks is a 500 on the OAuth callback, not a
+    fallback. Derived from ``supported`` rather than an enumerated list so a
+    locale added to the resolver later cannot slip past this guard.
+    """
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    reachable = {"zh-TW"}  # only produced by the Traditional-subtag branch
+    for tag in ("zh", "ja", "en", "fr"):
+        reachable.add(market_bridge_module._preferred_oauth_callback_locale(tag))
+
+    missing = reachable - set(market_bridge_module._OAUTH_CALLBACK_COPY)
+    assert not missing, f"copy table 缺 {sorted(missing)}，OAuth 回调页会 KeyError 成 500"
+
+    fields = {"title", "heading", "body", "close"}
+    for locale, copy in market_bridge_module._OAUTH_CALLBACK_COPY.items():
+        assert set(copy) == fields, locale
+        assert all(str(v).strip() for v in copy.values()), locale
+
+    zh_cn = market_bridge_module._OAUTH_CALLBACK_COPY["zh-CN"]
+    zh_tw = market_bridge_module._OAUTH_CALLBACK_COPY["zh-TW"]
+    assert zh_cn != zh_tw, "zh-TW 是 zh-CN 的拷贝，等于没做"
+    blob = "".join(zh_tw.values())
+    # Simplified-only forms of characters the zh-CN copy actually uses. `回` /
+    # `返` / `插` are deliberately absent — identical in both orthographies, so
+    # they would flag a correct Traditional string.
+    leaked = sorted({ch for ch in "浏览页关闭户确认账这个请状态" if ch in blob})
+    assert not leaked, f"zh-TW 文案里混进了简体字：{leaked}"
 
 
 @pytest.mark.asyncio

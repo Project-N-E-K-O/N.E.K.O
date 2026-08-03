@@ -105,20 +105,19 @@ class QQMemoryBridge:
     ) -> str:
         if not subjects:
             return ""
-        from utils.language_utils import (
-            get_global_language_full,
-            is_supported_language_code,
-        )
+        from utils.language_utils import is_supported_language_code
 
-        prompt_language = (
-            language
-            if is_supported_language_code(language)
-            else get_global_language_full()
-        )
+        # Same contract as the sibling methods: only a caller-supplied locale
+        # has explicit provenance. Omitting the field lets the server restore
+        # the durable per-subject locale, which the host process fallback
+        # would otherwise overwrite with a coarser guess.
+        payload: dict[str, Any] = {"subjects": subjects}
+        if is_supported_language_code(language):
+            payload["language"] = language
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-            json={"subjects": subjects, "language": prompt_language},
+            json=payload,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -191,6 +190,17 @@ class QQMemoryBridge:
             request_payload["subjects"] = subjects
         from utils.language_utils import get_global_language_full
 
+        # Deliberately still sends the process locale, unlike the sibling
+        # bootstrap/history methods. The difference is who renders: those
+        # receive server-rendered text, so omitting the field lets the server
+        # use the durable per-subject locale end to end. This one receives
+        # *structured* rows and renders the tier/entity tags locally (see
+        # render_relevant_memory), so omitting it here would only move the
+        # server half to the subject locale while the tags stayed on this
+        # process's — worse than today's self-consistent pair. Moving this
+        # path onto the subject locale needs the resolved locale returned in
+        # the response (or the tags rendered server-side); that is a response
+        # contract change and belongs in its own PR.
         request_payload["language"] = get_global_language_full()
         client = self._client()
         response = await client.post(

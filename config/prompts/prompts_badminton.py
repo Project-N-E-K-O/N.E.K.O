@@ -316,6 +316,70 @@ _MODE_SUFFIXES = {
     },
 }
 
+# FULL-locale table (zh-CN / zh-TW kept apart), same scheme as _MODE_SUFFIXES
+# above — it is the closest sibling: a mode-conditional block appended to the
+# badminton prompt. Moved here from main_routers/game_router/balance.py, which
+# had it as an inline `if lang == "zh"` fork, so Traditional Chinese (and every
+# non-Chinese locale except English) fell through to the English branch.
+#
+# duel / spectator / difficulty / max|lv2|lv3|lv4 / balanceHint are wire
+# literals — the runtime parses them out of the model's reply. Never translate.
+BADMINTON_DUEL_DIFFICULTY_CONTROL_PROMPTS = {
+    "zh-CN": (
+        "\n对战难度控制补充：duel 模式下你可以在台词后另起一行输出 "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"}。"
+        "max=最强/认真压制，lv2=强但略慢，lv3=明显放水，lv4=最弱/主要防守。"
+        "只在局势、情绪或 balanceHint 需要时调整；spectator 不使用 difficulty。\n"
+    ),
+    "zh-TW": (
+        "\n對戰難度控制補充：duel 模式下你可以在台詞後另起一行輸出 "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"}。"
+        "max=最強/認真壓制，lv2=強但略慢，lv3=明顯放水，lv4=最弱/主要防守。"
+        "只在局勢、情緒或 balanceHint 需要時調整；spectator 不使用 difficulty。\n"
+    ),
+    "en": (
+        "\nDuel difficulty control addendum: in duel mode, you may output "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"} on a separate line after the spoken line. "
+        "max=strongest/serious pressure, lv2=strong but slightly slower, "
+        "lv3=clear soft play, lv4=weakest/mostly defensive. Adjust only when the "
+        "score, emotion, or balanceHint calls for it; spectator does not use difficulty.\n"
+    ),
+    "ja": (
+        "\n対戦難度コントロールの補足：duel モードでは、台詞のあとに改行して "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"} を出力できます。"
+        "max=最強/本気で押す、lv2=強いがやや遅い、lv3=明らかな手加減、lv4=最弱/守り中心。"
+        "戦況・感情・balanceHint が必要とするときだけ調整してください。spectator では difficulty を使いません。\n"
+    ),
+    "ko": (
+        "\n대전 난이도 제어 보충: duel 모드에서는 대사 뒤에 줄을 바꿔 "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"} 를 출력할 수 있습니다. "
+        "max=가장 강함/진지하게 압박, lv2=강하지만 약간 느림, lv3=눈에 띄게 봐줌, lv4=가장 약함/주로 수비. "
+        "경기 흐름, 감정, balanceHint 가 필요로 할 때만 조정하세요. spectator 는 difficulty 를 쓰지 않습니다.\n"
+    ),
+    "ru": (
+        "\nДополнение об управлении сложностью: в режиме duel ты можешь вывести "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"} на отдельной строке после реплики. "
+        "max=сильнее всего/давишь всерьез, lv2=сильно, но чуть медленнее, "
+        "lv3=явно поддаешься, lv4=слабее всего/в основном защита. Меняй только когда этого "
+        "требуют счет, эмоции или balanceHint; в spectator difficulty не используется.\n"
+    ),
+    "es": (
+        "\nAnexo de control de dificultad: en modo duel puedes escribir "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"} en una línea aparte después de la frase. "
+        "max=lo más fuerte/presionando en serio, lv2=fuerte pero algo más lento, "
+        "lv3=te contienes claramente, lv4=lo más flojo/sobre todo defensa. Ajústalo solo cuando "
+        "el marcador, la emoción o balanceHint lo pidan; spectator no usa difficulty.\n"
+    ),
+    "pt": (
+        "\nAnexo de controle de dificuldade: no modo duel você pode escrever "
+        "{\"difficulty\":\"max|lv2|lv3|lv4\"} em uma linha separada depois da fala. "
+        "max=mais forte/pressionando a sério, lv2=forte mas um pouco mais lento, "
+        "lv3=pegando leve de forma clara, lv4=mais fraco/quase só defesa. Ajuste apenas quando o "
+        "placar, a emoção ou balanceHint pedirem; spectator não usa difficulty.\n"
+    ),
+}
+
+
 BADMINTON_QUICK_LINES_FALLBACKS = {
     "zh-CN": {
         "line_in": ["压线，算你准", "这落点够刁"],
@@ -1149,6 +1213,21 @@ def get_badminton_pregame_context_prompt(lang: str | None = None) -> str:
 def get_badminton_pregame_context_formatter_labels(lang: str | None = None) -> dict[str, str]:
     prompt_lang = _normalize_prompt_lang(lang)
     return BADMINTON_PREGAME_CONTEXT_FORMATTER_LABELS.get(prompt_lang) or BADMINTON_PREGAME_CONTEXT_FORMATTER_LABELS["en"]
+
+
+def get_badminton_duel_difficulty_control_prompt(lang: str | None = None) -> str:
+    """Return the duel-only difficulty-control addendum for the badminton prompt.
+
+    Uses ``normalize_badminton_prompt_locale`` (the FULL-locale scheme) rather
+    than ``_normalize_prompt_lang``: the latter collapses every Chinese variant
+    to ``zh``, which would make the ``zh-TW`` entry unreachable data while still
+    reading as compliant to the static ``check_prompt_zh_tw`` gate.
+    """
+    prompt_lang = normalize_badminton_prompt_locale(lang)
+    return (
+        BADMINTON_DUEL_DIFFICULTY_CONTROL_PROMPTS.get(prompt_lang)
+        or BADMINTON_DUEL_DIFFICULTY_CONTROL_PROMPTS["en"]
+    )
 
 
 def get_badminton_system_prompt(lang: str | None = None, mode: str = "spectator") -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from ..adapters.neko_dispatcher import NekoDispatcher
 from ..stores.audit_store import AuditStore
@@ -112,8 +113,8 @@ class LiveRuntime(
             ("live_listener", lambda: self._stop_live_listener(mark_disabled=False)),
             ("event_bus", self.event_bus.close),
             ("modules", lambda: self.registry.teardown_all(self)),
-            ("developer_instructions", lambda: self.restore_developer_instructions(force=True)),
-            ("live_instructions", lambda: self.restore_instructions(force=True)),
+            ("developer_instructions", self.restore_developer_instructions),
+            ("live_instructions", self.restore_instructions),
         )
         for step, operation in steps:
             try:
@@ -129,6 +130,11 @@ class LiveRuntime(
                     level="warning",
                     detail={"step": step},
                 )
+        # Restore calls use replaceable no-response overlays. Clear local
+        # markers even if host delivery was unavailable during shutdown.
+        self.developer_instructions_injected = False
+        self.instructions_injected = False
+        self.instructions_signature = ""
         self.audit.record(
             "runtime_stop",
             "neko_live runtime stopped",

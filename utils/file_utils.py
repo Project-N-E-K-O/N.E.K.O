@@ -756,6 +756,22 @@ def read_json_tolerating_replace(
     return read_json(path, encoding=encoding)
 
 
+def read_bytes_tolerating_replace(path: str | os.PathLike[str]) -> bytes:
+    """Read one byte snapshot while tolerating a concurrent Windows replace."""
+
+    target_path = Path(path)
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            return target_path.read_bytes()
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+            if running_on_event_loop():
+                raise
+        time.sleep(delay)
+    return target_path.read_bytes()
+
+
 def read_json(path: str | os.PathLike[str], *, encoding: str = "utf-8") -> Any:
     with open(path, "r", encoding=encoding) as f:
         return json.load(f)

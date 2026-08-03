@@ -87,14 +87,87 @@ async def _resolve_foreground_memory_language(
     lanlan_name: str,
     language: str | None,
 ) -> str:
-    """Resolve foreground prompt locale without persisting a process guess."""
+    """Resolve foreground prompt locale without persisting a process guess.
+
+    Fail-soft on a durable-state read error. ``_load_locale_state_unlocked``
+    raises ``PromptLocalePersistenceError`` on a transient ``OSError`` on
+    purpose — a *writer* must never cache that as empty state or it would
+    discard the real durable causal order. But this is a read for rendering
+    only: a temporarily unreadable sidecar must not turn into a 500 that drops
+    the caller's whole turn. Degrade to the request/process locale instead.
+    """
     if is_supported_language_code(language):
         return _activate_request_language(language)
-    durable_language = await asyncio.to_thread(
-        locale_state.get_character_prompt_locale,
-        lanlan_name,
-    )
+    try:
+        durable_language = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
+            lanlan_name,
+        )
+    except locale_state.PromptLocalePersistenceError:
+        logger.warning(
+            "[PromptLocale] %s: durable locale unreadable, rendering with the "
+            "process locale for this request",
+            lanlan_name,
+        )
+        return _activate_request_language(None)
     return _activate_request_language(durable_language)
+
+
+#: Upper bound on how many subjects one request may cost in durable-locale
+#: lookups. Matches the scoped endpoints' documented ``1..8`` subject contract,
+#: but is enforced independently so the resolver stays bounded even when it
+#: runs ahead of an endpoint's own validation.
+_SCOPED_LOCALE_LOOKUP_LIMIT = 8
+
+
+async def _resolve_scoped_memory_language(
+    lanlan_name: str,
+    subjects,
+    language: str | None,
+) -> str:
+    """Resolve scoped prompt locale: explicit request > subject > character.
+
+    ``subjects`` arrives in the caller's own priority order (see
+    ``_get_scoped_context``), so the first one carrying a durable locale wins.
+    Without this chain a group request falls straight through to the calling
+    process's locale, and the per-subject durable state is never read — which
+    is the whole point of storing it.
+    """
+    if is_supported_language_code(language):
+        return _activate_request_language(language)
+    # Bounded on purpose: this resolver runs before the endpoint's own
+    # ``1..8 subjects`` rejection, so an oversized list would otherwise
+    # schedule one thread-pool lookup per supplied item on its way to a 422.
+    # Bounding here (rather than requiring every caller to validate first)
+    # keeps the work bound a property of the resolver itself.
+    for subject in (subjects or [])[:_SCOPED_LOCALE_LOOKUP_LIMIT]:
+        descriptor = (
+            subject.model_dump()
+            if hasattr(subject, "model_dump")
+            else subject
+        )
+        try:
+            durable = await locale_state.aget_subject_prompt_locale(
+                lanlan_name,
+                descriptor,
+            )
+        except locale_state.PromptLocalePersistenceError:
+            # Same fail-soft contract as the character-level resolver: a
+            # transient sidecar read error must not bubble out of a rendering
+            # lookup and break the caller's fail-soft response contract.
+            logger.warning(
+                "[PromptLocale] %s: scoped locale unreadable, falling through "
+                "to the character locale for this request",
+                lanlan_name,
+            )
+            break
+        except ValueError:
+            # A malformed descriptor fails closed downstream (coerce_subject);
+            # locale lookup must not be the thing that rejects the request.
+            continue
+        if is_supported_language_code(durable):
+            return _activate_request_language(durable)
+    return await _resolve_foreground_memory_language(lanlan_name, None)
 
 
 class ExternalMemoryImportRequest(BaseModel):
@@ -603,7 +676,15 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         if is_supported_language_code(request.language)
         else None
     )
-    memory_language = _activate_request_language(request.language)
+    # Same resolution as the sibling /process /renew /settle endpoints. Today
+    # /cache runs update_history(compress=False), so nothing inside this
+    # context reaches a prompt and the asymmetry is invisible — but any future
+    # prompt work moved in here would silently render in the caller's process
+    # locale instead of the character's durable one.
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         try:
@@ -1395,7 +1476,16 @@ async def _process_scoped_history_segments(
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
-    with language_context(_activate_request_language(req.language)):
+    # Validate before the locale lookup: it keys per-character state files by
+    # this name, so it must not run on an unvalidated path component. The
+    # inner handler validates again — the helper is idempotent.
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    resolved_language = await _resolve_scoped_memory_language(
+        lanlan_name,
+        req.subjects,
+        req.language,
+    )
+    with language_context(resolved_language):
         return await _get_scoped_context(lanlan_name, req)
 
 
@@ -1661,6 +1751,14 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             detail="subjects must be omitted (legacy private) or contain 1..8 items",
         )
     subjects = [subject.to_domain() for subject in (req.subjects or [])]
+    # Recall renders tier/entity tags and rerank prompts, so it needs the
+    # subject's own durable locale when the caller has none — not whichever
+    # locale the calling process happens to sit in.
+    resolved_language = await _resolve_scoped_memory_language(
+        lanlan_name,
+        subjects,
+        req.language,
+    )
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
@@ -1677,7 +1775,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             elif not query_text:
                 # 只给 time、没 query → 按时间邻近返回最接近的若干条。
                 from memory.hybrid_recall import recall_by_time
-                with language_context(_activate_request_language(req.language)):
+                with language_context(resolved_language):
                     return await recall_by_time(
                         lanlan_name=lanlan_name,
                         time_spec=time_spec,
@@ -1688,7 +1786,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
-        with language_context(_activate_request_language(req.language)):
+        with language_context(resolved_language):
             return await hybrid_recall(
                 lanlan_name=lanlan_name,
                 query=query_text,

@@ -16,6 +16,7 @@ class DouyinBridgeBackend:
     backend_id: str
     executable_path: Path
     args_factory: Callable[[int], list[str]]
+    checksum_path: Path
     stale_process_cleaner: Callable[[Path], None] | None = None
 
 
@@ -24,6 +25,7 @@ def default_douyin_bridge_backend() -> DouyinBridgeBackend:
         backend_id="douyinlive",
         executable_path=_bundled_executable_path("douyinLive.exe"),
         args_factory=lambda port: ["--port", str(port), "--log-level", "warn"],
+        checksum_path=_bundled_executable_path("CHECKSUMS.txt"),
         stale_process_cleaner=cleanup_stale_windows_processes,
     )
 
