@@ -250,6 +250,12 @@ JAPANESE_KANA_GUARDED = [
     "地域別提案だっけ。",
     "職種別講座でしょ。",
     "地域別提案かも。",
+    # 含「曾被误当成中文证据」的日文汉字：没（没収）/ 称（名称）。它们**就是**日文
+    # 标准字形，不是 沒 / 稱 的简体专用形（codex P2）。
+    "地域別提案で没になりました。",
+    "地域別講座の名称を確認します。",
+    "地域別提案の名称です。",
+    "地域別講座は没収された。",
 ]
 # 假名开头的 ``〜別``：term 里一个助词都没有（``スレ`` / ``案書``），(2b) 够不着，
 # 只有「命中区间左边紧挨着假名」这条拦得住（对抗排查）。
@@ -393,6 +399,30 @@ def test_beng_counts_as_chinese_evidence(text, expected):
     "别提 + 日文专名" 不会——同一模板内的行为不对称（对抗排查）。"""  # noqa: DOCSTRING_CJK
     assert "甭" in D._ZH_EVIDENCE_RE.pattern
     assert expected in _zh_terms(text)
+
+
+def test_no_zh_evidence_glyph_appears_in_the_japanese_corpus():
+    """⚠️ 自动发现，不是逐字审：中文证据表里的字**一旦出现在日文语料里**，就说明
+    它不是"日文里不存在"的字，而这张表是用来 short-circuit 日文守卫的——收错一个字
+    等于把守卫整个关掉。``没``（没収）和 ``称``（名称）就是这么漏进来的。
+
+    这条随日文语料一起长：以后往语料里加句子，收错的字会被自动抓出来。
+    """  # noqa: DOCSTRING_CJK
+    charclass = D._ZH_EVIDENCE_RE.pattern.split("]", 1)[0].lstrip("[")
+    corpus = "".join(
+        JAPANESE_KANA_GUARDED + JAPANESE_KANA_PREFIXED + JAPANESE_BLOCKED_ELSEWHERE
+    )
+    offenders = sorted({ch for ch in charclass if ch in corpus})
+    assert not offenders, (
+        f"这些字既在中文证据表里、又出现在日文语料里：{offenders}"
+    )
+
+
+def test_zh_evidence_charclass_is_pinned():
+    """闭集用相等断言：每个字都是一句"日文里不存在这个字形"的主张，加字要先核对
+    日文新字体（别→別 说→説 关→関 为→為…）。"""  # noqa: DOCSTRING_CJK
+    charclass = D._ZH_EVIDENCE_RE.pattern.split("]", 1)[0].lstrip("[")
+    assert charclass == "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
 
 
 def test_the_grammar_marker_set_excludes_mo():
