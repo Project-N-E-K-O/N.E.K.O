@@ -83,24 +83,34 @@ async def test_proactive_vision_factory_disables_provider_search(
 
     monkeypatch.setattr(generation, "create_chat_llm_async", fake_create)
     model_config = generation.ProactiveModelConfig(
-        conversation_model="step-1o-turbo-vision",
-        conversation_base_url="https://api.stepfun.com/v1",
-        conversation_api_key="key",
+        conversation_model="conversation-model",
+        conversation_base_url="https://conversation.example/v1",
+        conversation_api_key="conversation-key",
         conversation_provider_type=None,
         vision_model="step-1o-turbo-vision",
         vision_base_url="https://api.stepfun.com/v1",
-        vision_api_key="key",
+        vision_api_key="vision-key",
         vision_provider_type=None,
     )
 
     assert await generation._make_proactive_llm(
         model_config, use_vision=True,
     ) is sentinel
+    assert captured[-1][0][:3] == (
+        "step-1o-turbo-vision",
+        "https://api.stepfun.com/v1",
+        "vision-key",
+    )
     assert captured[-1][1]["extra_body"] is None
 
     assert await generation._make_proactive_llm(
         model_config, use_vision=False,
     ) is sentinel
+    assert captured[-1][0][:3] == (
+        "conversation-model",
+        "https://conversation.example/v1",
+        "conversation-key",
+    )
     assert "extra_body" not in captured[-1][1]
 
 
