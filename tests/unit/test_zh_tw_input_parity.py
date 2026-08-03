@@ -2641,3 +2641,70 @@ def test_a_malformed_quote_span_fails_closed(malformed):
         f'我想停止播放{malformed}是否合适'
     ) is False
     assert is_explicit_music_cancellation('帮我停止播放《好不好》') is True
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止正在播放的由周杰伦演唱的歌曲", "停止正在播放的由周杰倫演唱的歌曲"),
+        ("停止正在播放的那首特别好听的华语歌曲", "停止正在播放的那首特別好聽的華語歌曲"),
+        ("停止播放的我上周收藏的那些歌", "停止播放的我上週收藏的那些歌"),
+    ],
+)
+def test_a_long_relative_clause_before_the_music_head_still_stops(
+    simplified, traditional
+):
+    """⚠️ 修饰语这一段**不设字数上限**，只受子句边界约束。
+
+    `由周杰伦演唱的` 是 7 个字，卡 `{0,6}` 当场失配（Codex P2 第十一轮，base 是
+    True）。定关系从句能有多长同样是开集，设几就会被下一个例子顶穿——真正干活
+    的是右边界（音乐名词必须落在子句末尾），窗口大小不承担判据。
+
+    ⚠️ 配对断言：右边界仍然拦住第八轮那一族。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的听歌功能') is False
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize(
+    "adverb", ["顺便", "順便", "同时", "同時", "一起", "一并", "一併", "也", "再"]
+)
+def test_a_temporal_clause_with_a_coordinating_adverb_is_a_command(adverb):
+    """⚠️ 「的时候」跟「的同时」要**分开看**。
+
+    `請停止播放的時候順便關閉螢幕` 里有「順便」这类并列副词，说明两个动作都在被
+    要求，停止是命令（base 是 True，Codex P2 第十一轮）。判据是「后一个动作被
+    标记成附加的」——附加意味着前一个动作同样是被要求的。并列副词是封闭词类。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'请停止播放的时候{adverb}关闭屏幕'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止播放的时候通知我", "停止播放的時候通知我"),
+        ("停止播放的时候提醒我", "停止播放的時候提醒我"),
+        ("停止播放的时候会有提示音吗", "停止播放的時候會有提示音嗎"),
+    ],
+)
+def test_a_bare_temporal_clause_is_deliberately_not_a_command(simplified, traditional):
+    """⚠️ 这是一条**刻意不跟随 base** 的判定，不是漏改。
+
+    「的时候」引出的是**时间条件**：用户要的是「到那时提醒我」，不是「现在停」。
+    base 在这里是 True，但那是 base 的错——真按它执行会无端把歌停掉，正是这个
+    PR 要修的那类破坏（问一件事、歌被停掉）。
+
+    ⚠️ 与上一条成对：只有并列副词出现时才认成命令。哪天有人把「的时候」整个
+    放行，上一条仍绿而这一条会红。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
