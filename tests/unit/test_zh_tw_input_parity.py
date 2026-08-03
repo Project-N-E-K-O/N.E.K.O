@@ -1896,6 +1896,7 @@ def test_the_a_not_a_tail_table_is_derived_not_transcribed():
         "可以", "能", "能够", "能夠", "会", "會", "该", "該", "应该", "應該",
         "需要", "愿意", "願意", "要", "想", "行", "好", "是", "对", "對",
         "敢", "肯", "值得", "舍得", "捨得", "用", "配",
+        "允许", "允許", "乐意", "樂意", "情愿", "情願",
     }, mr._ZH_A_NOT_A_MODALS
     # 两种构式都要生成出来，外加用「没」做中缀的 有没有。
     for form in ("应该不应该", "应不应该", "需不需要", "需要不需要",
@@ -3073,3 +3074,36 @@ def test_a_progressive_aspect_makes_any_following_name_a_playback_object(
     for blocked in ('我要停止播放的代码', '我想停止播放的教程',
                     '我要停止播放的听歌功能'):
         assert is_explicit_music_cancellation(blocked) is False, blocked
+
+
+@pytest.mark.parametrize("space", ["", " ", "\u3000", "  "])
+@pytest.mark.parametrize("name", ["晴天", "Taylor Swift", "周杰伦"])
+def test_the_progressive_exception_survives_whitespace(space, name):
+    """⚠️ 进行体后视要挂在**动词末尾**，不能挂在「的」后面。
+
+    挂在「的」后面就得写成 `(?<!正在播放的)` 这种定长后视，而 Python 的后视必须
+    定长——`停止正在播放 的晴天` 中间多个空格就对不上了（Codex P2 第二十一轮）。
+    ⚠️ 空白在这个文件里已经咬过五次（限定词后 / 目标与的之间 / 第二个的后 /
+    续接前 / 的前），这是第六次，所以这次直接换挂载点而不是再加一处 `\s*`。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放{space}的{name}') is True
+    # 配对反向：不带进行体时照旧被挡，空白也不例外。
+    assert is_explicit_music_cancellation(f'我要停止播放{space}的代码') is False
+
+
+@pytest.mark.parametrize(
+    "marker", ["允不允许", "允許不允許", "乐不乐意", "樂不樂意", "情不情愿"]
+)
+def test_permission_and_volition_modals_are_generated(marker):
+    """⚠️ 情态表补 允许/乐意/情愿。生成器不动——两种构式自动铺开。
+
+    ⚠️ 这条一直是危险方向：引号跨度正确藏住标题内疑问词之后，真标记不在表里就
+    没有任何标记能触发守卫，一句提问直接执行取消。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}换成《你好吗？》'
+    ) is False
