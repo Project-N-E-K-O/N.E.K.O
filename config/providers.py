@@ -114,7 +114,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     # Step
-    "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    "step-1o-turbo-vision": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，
     # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
     "free-model": EXTRA_BODY_CLAUDE,
@@ -167,7 +167,7 @@ def get_agent_extra_body(model: str) -> dict | None:
 # 凝神（thinking-on）时把各 provider 的「关思考」extra_body 翻成「开思考」形式。
 # 键 = 「关」常量的 id，值 = 对应「开」常量；按各家 API 语义一一对偶，不机械翻 bool。
 # 未收录的「关」常量（如 MiniMax 的 reasoning_split）表示「凝神保持原值不翻」；非
-# thinking 的 provider extra（如 step-2-mini 的 web_search tools）天然不在此表，在
+# thinking 的 provider extra（如 step-1o-turbo-vision 的 web_search tools）天然不在此表，在
 # MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、原样保留。
 _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_OPENAI): EXTRA_BODY_OPENAI_THINKING,
@@ -200,7 +200,7 @@ def focus_extra_body(model: str) -> dict | None:
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
       - reasoning.effort: none -> low                   (OpenRouter)
 
-    Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in
+    Provider extras that are NOT thinking knobs (e.g. ``step-1o-turbo-vision``'s built-in
     ``web_search`` tools, or MiniMax's reasoning_split) are preserved unchanged.
     Returns ``None`` when the model has no registered extra_body."""
     if not model:

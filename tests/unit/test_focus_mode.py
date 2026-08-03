@@ -470,11 +470,11 @@ def test_focus_stream_overrides_decision():
     }
     # unknown model → no resolved extra_body → None
     assert _C._focus_stream_overrides(True, "test-model") == {"extra_body": None}
-    # step-2-mini ships a web_search tool → it MUST survive (not nuked to None)
-    so = _C._focus_stream_overrides(True, "step-2-mini")
+    # step-1o-turbo-vision ships a web_search tool → it MUST survive (not nuked to None)
+    so = _C._focus_stream_overrides(True, "step-1o-turbo-vision")
     assert so["extra_body"] is not None and "tools" in so["extra_body"]
     # thinking off → no override (vision no longer gates thinking)
-    assert _C._focus_stream_overrides(False, "step-2-mini") == {}
+    assert _C._focus_stream_overrides(False, "step-1o-turbo-vision") == {}
 
     # ── max_completion_tokens bump (reasoning headroom) ──
     from config import FOCUS_THINKING_EXTRA_TOKENS
@@ -533,7 +533,7 @@ def test_focus_extra_body_provider_dialects():
     # MiniMax reasoning_split is not an on/off knob → preserved, not flipped
     assert focus_extra_body("MiniMax-M2.5") == EXTRA_BODY_MINIMAX
     # non-thinking provider extra (step web_search) preserved on a focus turn
-    assert "tools" in focus_extra_body("step-2-mini")
+    assert "tools" in focus_extra_body("step-1o-turbo-vision")
     # unknown / empty model → no extra_body
     assert focus_extra_body("nonexistent") is None
     assert focus_extra_body("") is None

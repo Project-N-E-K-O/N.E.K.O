@@ -89,5 +89,5 @@ def test_classifier_flags_qwen_hybrids_only():
                   "Qwen/Qwen3.5-397B-A17B", "qwen/qwen3.5-9b"):
         assert leaks_thinking_in_content(leaky) is True, leaky
     for clean in ("qwen3-vl-plus", "qwen3-vl-flash", "gpt-4o", "claude-opus-4-8",
-                  "step-2-mini", "", None):
+                  "step-1o-turbo-vision", "", None):
         assert leaks_thinking_in_content(clean) is False, clean

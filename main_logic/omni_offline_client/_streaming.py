@@ -367,7 +367,7 @@ class _StreamingMixin:
 
         When thinking-on, override extra_body with ``focus_extra_body(model)`` —
         the provider's thinking knob flipped to its ENABLED form (per provider
-        dialect) while PRESERVING non-thinking provider extras (e.g. step-2-mini's
+        dialect) while PRESERVING non-thinking provider extras (e.g. step-1o-turbo-vision's
         built-in web_search), which a blunt ``extra_body=None`` would drop.
         Returns ``{}`` (instance default, thinking off) otherwise.
 
