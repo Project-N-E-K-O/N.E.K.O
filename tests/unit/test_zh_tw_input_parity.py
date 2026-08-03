@@ -2544,11 +2544,14 @@ def test_the_determiner_table_matches_linearly():
 
     from main_logic import music_requests as mr
 
-    # 结构：扫描段里不能再出现方位词，否则「扫到第一个方位词」就不唯一。
-    assert re.search(
-        r"\[\^[^\]]*里裡上中内內裏\][{]1,5[}]\[里裡上中内內裏\]的",
-        mr._ZH_MUSIC_NOUN_MODIFIER,
-    ), "方位结构那一支又变回可变扫描了"
+    # 结构：那一支必须是**原子组**。
+    # ⚠️ 不能改成「扫描段排除方位词」——设备名自己就可能带方位字
+    # （`樓上音箱裡的` / `車內音響裡的` / `中控台上的`），排除法会把它们打死；
+    # 见 test_a_location_char_inside_the_device_name_still_stops。
+    assert "(?>" in mr._ZH_MUSIC_NOUN_MODIFIER, (
+        "方位结构那一支不再是原子组——多项式回溯会回来"
+    )
+    assert re.compile(mr._ZH_MUSIC_NOUN_MODIFIER), "限定词表编译不了"
 
     # 耗时：CodeRabbit 给的形状，顶到 160 字上限。
     worst = ("我要停止播放按钮" + "x里的" + "里的" * 40 + "代码")[:160]
@@ -2556,3 +2559,25 @@ def test_the_determiner_table_matches_linearly():
     for _ in range(5):
         mr.is_explicit_music_cancellation(worst)
     assert (time.perf_counter() - start) / 5 < 0.05, "限定词密集输入又开始回溯了"
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止楼上音箱里的音乐", "停止樓上音箱裡的音樂"),
+        ("停止车内音响里的音乐", "停止車內音響裡的音樂"),
+        ("停止正在播放的家里音箱里的音乐", "停止正在播放的家裡音箱裡的音樂"),
+        ("停止中控台上的音乐", "停止中控台上的音樂"),
+    ],
+)
+def test_a_location_char_inside_the_device_name_still_stops(simplified, traditional):
+    """⚠️ 设备名自己就可能带方位字（楼**上**音箱 / 车**内**音响 / **中**控台）。
+
+    修上一轮那个 20ms 回溯热点时，第一版把扫描段写成「排除方位词」，这一族当场
+    全失配（Codex P2 第九轮，base 全是 True）。原子组既保住了不回溯，也保住了
+    「在 1..6 个字里找那个方位词」的原语义——两个性质各取一半。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
