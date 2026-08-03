@@ -1209,7 +1209,10 @@ def test_scope_suffix_matching_is_unambiguous():
     worst = '把所有字段' + '项目' * 40 + '名字重写'
     start = time.perf_counter()
     assert router._chat_text_requests_full_rewrite(worst) is False
-    assert time.perf_counter() - start < 0.5, "范围续接又开始回溯了"
+    # ⚠️ 指数回溯是**秒级起跳**（修前 N=20 已经 370ms、N=40 跑不完），所以上限
+    # 留一个数量级余量：既能抓住回溯，又不会在共享 CI runner 上因负载抖动假红
+    # （CodeRabbit nitpick）。
+    assert time.perf_counter() - start < 5.0, "范围续接又开始回溯了"
 
 
 @pytest.mark.parametrize("adverb", ["一并", "一併", "彻底", "徹底", "统统", "重新"])
@@ -1265,3 +1268,51 @@ def test_whitespace_before_quantified_scope_suffixes_is_skipped(quantifier, spac
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
     blocked = f'把整个卡的{quantifier}字段{space}名字重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        # 「的」后面跟的是字段名 —— 跟 `字段名` 同族，只是中间多了个「的」
+        "把所有字段的名字重写",
+        "把整个卡的所有字段的名字重写",
+        "把整个卡的所有设定的名字重写",
+        # 头部名词那一支同样是前缀匹配
+        "把整个卡的内容名重写",
+        "把整个卡的内容概要重写",
+        "把整个卡的设定风格重写",
+    ],
+)
+def test_every_scope_branch_requires_a_right_boundary(phrasing):
+    """⚠️⚠️ 这条把「前缀匹配缺右边界」这一族的**最后两个入口**堵上。
+
+    整卡级名词、字段清单两处第十二/十三轮已经加了边界，但
+    * 收尾里的裸「的」不检查后续成分 → `字段的名字` 照样进整卡补全；
+    * 头部名词（整体/内容）那一支根本没挂边界 → `内容名` / `内容概要` 同理。
+    两处都会触发 `_complete_full_rewrite_actions` 覆盖用户没要求改的字段
+    （CodeRabbit Major ×2）。
+
+    ⚠️ 这一族在这个 PR 里出现了**四次**，每次都是同一个形状：白名单里的词是
+    另一个更长词的前缀。加白名单词时必须同时问「它后面凭什么结束」。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is False, phrasing
+
+
+@pytest.mark.parametrize(
+    "phrasing",
+    [
+        "把所有字段的内容重写一遍",
+        "把整个卡的所有字段的内容重写",
+        "重写整个卡的内容",
+        "重写整个卡片的内容",
+        "把整个卡的所有字段重写",
+        "把整张卡的所有内容重写",
+    ],
+)
+def test_the_right_boundary_does_not_block_real_whole_card_requests(phrasing):
+    """⚠️ 与上一条成对：加边界最容易顺手把「的内容」这类真整卡请求一起挡掉。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing

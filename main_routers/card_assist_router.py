@@ -817,14 +817,18 @@ _WHOLE_CARD_BARE_ADVERB = (
 
 # 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
 # _WHOLE_CARD_BARE_QUANTIFIER_TAIL 同一套，空白同样只跳过不算收尾。
-# ⚠️ 「的」也是合法收尾（`把所有字段的内容重写一遍` 是真正的整卡请求），而且它
-# **不会**削弱上面那道边界：`字段名` 卡住的是「名」，跟「的」无关。
+# ⚠️⚠️ 「的」是合法收尾，但**它后面必须再跟一个范围成分**。
+# 上一版把裸「的」当收尾，于是 `把所有字段的名字重写`（要改的是字段**名**）
+# 从这里绕过了单字段保险，照样触发整卡补全并 autosave（CodeRabbit Major）——
+# 跟 `字段名` 是同一族，只是中间多了个「的」。
+# `把所有字段的内容重写一遍` 仍然是 True：「内容」本身就是整卡级名词。
 # ⚠️ 名词收尾同样要接受并列副词（`把所有字段一并重写`，base 是 True，
 # Codex P2 第十四轮）——跟限定词那一支同一套副词表，两处别漂开。
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     r"(?=\s*(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
-    + r"|的|"
+    + r"|的\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
+    + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r")|"
     + _WHOLE_CARD_BARE_ADVERB
     + r"\s*(?:重|改|梳|完)"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
@@ -939,7 +943,9 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
-    rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
+    # ⚠️ 头部名词那一支同样是前缀匹配，也要右边界：`把整个卡的内容名重写` /
+    # `的内容概要重写` 会从这里进整卡补全通路（CodeRabbit Major）。
+    rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}){_WHOLE_CARD_SCOPE_NOUN_TAIL})"
     r"|(?!\s*[的片]))"
     r"|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
     r"all\s+visible\s+fields)",
