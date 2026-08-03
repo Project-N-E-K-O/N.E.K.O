@@ -1980,3 +1980,66 @@ def test_a_music_head_after_de_is_still_a_command(simplified, traditional):
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+# --- Codex 在本 PR 上评审出的三条（两条在这个文件里）--------------------------
+
+
+def _quote_pairs() -> list[tuple[str, str]]:
+    from main_logic import music_requests as mr
+
+    pairs = list(mr._QUOTE_PAIRS.items())
+    assert pairs, "_QUOTE_PAIRS 是空的"
+    return pairs
+
+
+QUOTE_PAIRS = _quote_pairs()
+# 《好不好》《是不是》《好嗎》都是真实歌名。前三个来自 A-not-A 表，后面几个是
+# 守卫里原有的疑问标记——这个洞在它们身上是**既有的**，一起收口。
+QUESTION_MARKERS = A_NOT_A_TAILS + ["好吗", "好嗎", "是否", "能否", "可否"]
+
+
+@pytest.mark.parametrize(("opening", "closing"), QUOTE_PAIRS)
+@pytest.mark.parametrize("marker", QUESTION_MARKERS)
+def test_a_question_marker_inside_a_title_is_still_a_command(marker, opening, closing):
+    """⚠️ 疑问标记落在书名号/引号里时那是**歌名**，不是在提问。
+
+    `帮我停止播放《好不好》` 会被读成「用户在问」，歌停不下来（Codex P2）。
+    闭合符号从 `_QUOTE_PAIRS` 取，跟引用式点歌解析同一张表。
+
+    ⚠️ 配对反向断言：**同一个标记不带引号时仍然是疑问**，否则把守卫整个删掉
+    这条也是绿的。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'帮我停止播放{opening}{marker}{closing}'
+    ) is True
+    assert is_explicit_music_cancellation(f'帮我停止播放{marker}') is False
+
+
+# ⚠️ 音频对象不止歌和歌单。这几个词都在 `_ZH_MUSIC_HEAD_AFTER_DE` 里，下面先断言
+# 「确实在表里」（表被缩掉就红），再断言行为——这张表是**逃生**用的，往里加词只
+# 会恢复基线行为，所以不做相等断言，只钉住不许减。
+AUDIO_HEAD_NOUNS = [
+    "声音", "聲音", "音效", "音轨", "音軌", "旋律", "伴奏", "曲子",
+    "铃声", "鈴聲", "BGM", "bgm", "音乐", "音樂", "歌", "歌单", "歌單",
+]
+
+
+@pytest.mark.parametrize("noun", AUDIO_HEAD_NOUNS)
+def test_an_audio_object_after_de_is_still_a_command(noun):
+    """⚠️ `停止正在播放的聲音` / `停止播放的音效` 是明确的停止命令（base 是 True）。
+
+    名物化守卫只放行歌/歌单时，这一族全被打成「不是命令」，歌停不下来
+    （Codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    import re as _re
+
+    from main_logic import music_requests as mr
+
+    assert _re.compile(mr._ZH_MUSIC_HEAD_AFTER_DE).match(noun), (
+        f'{noun} 不在 _ZH_MUSIC_HEAD_AFTER_DE 里，下面的断言只是碰巧绿'
+    )
+    assert mr.is_explicit_music_cancellation(f'停止正在播放的{noun}') is True
+    assert mr.is_explicit_music_cancellation(f'停止播放的{noun}') is True

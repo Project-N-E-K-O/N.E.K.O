@@ -767,6 +767,12 @@ _WHOLE_CARD_SCOPE_NOUNS = (
     "信息", "資訊", "资讯", "属性", "屬性", "项目", "項目",
     "条目", "條目", "细节", "細節", "部分", "东西", "東西",
 )
+# 整卡级名词前面可以带的限定成分。
+# ⚠️ 上面那条交替里本来就把 `所有可见字段` / `所有可見欄位` 当整卡目标，却没让
+# 逃生口认得 `的每个可见字段`——于是 `把整个卡的每个可见字段重写` 掉了下来
+# （Codex P2，base 是 True）。写成可选前缀而不是往名词表里塞四个合成词：它对
+# 表里每个名词都成立（可見設定 / 可见内容 …）。
+_WHOLE_CARD_SCOPE_MODIFIER = r"(?:可见|可見)?"
 # 限定词**自己当中心语**（`把整個卡的全部重寫一遍`，base 是 True）时的合法收尾：
 # 重写动词首字 / 副词「都」/ 语气词 / 句末 / 非汉字。闭集——字段名不长这样。
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
@@ -851,7 +857,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # 口子一：的 + 全称限定词 + （整卡级名词 | 限定词自己当中心语的合法收尾）。
     # 口子二：的 + 紧贴着当中心语就代表整卡的那几个词。
     rf"(?:(?=的(?:{'|'.join(_WHOLE_CARD_QUANTIFIERS)})"
-    rf"(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}"
+    rf"(?:{_WHOLE_CARD_SCOPE_MODIFIER}(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     rf"|(?=的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
     r"|(?![的片]))"

@@ -291,11 +291,11 @@ def _card_template_field_names() -> list[str]:
     所以反向用例的清单必须自动发现——模板改一个字段名，这条守卫跟着覆盖到
     新名字，而不是继续测一个已经不存在的词。
     """  # noqa: DOCSTRING_CJK
-    from main_routers.card_assist_router import _load_template_keys_for_locale
+    import main_routers.card_assist_router as router
 
     names: list[str] = []
     for locale in ("zh-CN", "zh-TW"):
-        keys = _load_template_keys_for_locale(locale)
+        keys = router._load_template_keys_for_locale(locale)
         assert keys, f'{locale} 模板字段读不出来，下面的守卫会退化成空跑'
         names.extend(keys)
     return names
@@ -344,6 +344,38 @@ def test_a_quantified_single_field_is_not_a_full_rewrite(simplified, traditional
 
     for text in (simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("modifier", ["可见", "可見"])
+@pytest.mark.parametrize("noun", WHOLE_CARD_NOUNS)
+def test_a_visible_qualified_scope_noun_is_still_a_full_rewrite(noun, modifier):
+    """⚠️ 整卡级名词前面可以带「可见/可見」。
+
+    同一条正则本来就把 `所有可见字段` 当整卡目标，逃生口却不认 `的每个可见字段`
+    ——`把整个卡的每个可见字段重写` 于是掉了下来（Codex P2，base 是 True）。
+    写成可选前缀而不是往名词表里塞几个合成词：它对表里每个名词都成立。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的每个{modifier}{noun}重写'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("把整个卡的每个可见字段重写", "把整個卡的每個可見欄位重寫"),
+        ("把整张卡的每一个可见字段都重写", "把整張卡的每一個可見欄位都重寫"),
+    ],
+)
+def test_the_visible_field_phrasings_codex_named_are_full_rewrites(
+    simplified, traditional
+):
+    """⚠️ 上一条是笛卡尔积，这两句是 Codex 点名的原句，另外钉死。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
 @pytest.mark.parametrize(
