@@ -2875,3 +2875,30 @@ def test_the_remaining_modal_a_not_a_forms(marker):
         f'我想停止播放{marker}换成《你好吗？》'
     ) is False
     assert is_explicit_music_cancellation(f'{marker}停止播放') is False
+
+
+@pytest.mark.parametrize("marker", ["有无", "有無"])
+def test_the_polar_question_marker_family_is_complete(marker):
+    """⚠️ 有无/有無 跟 是否/能否/可否 是同族的极性疑问标记。
+
+    漏了它又是危险方向：引号跨度把标题内的疑问词藏起来之后，真正的标记没被
+    认出来就会执行取消（`我想停止播放有无必要换成《你好吗？》`，base 是 False，
+    Codex P2 第十五轮）。这已经是同一个耦合第二次咬人（上一轮是 应不应该）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}必要换成《你好吗？》'
+    ) is False
+    assert is_explicit_music_cancellation(f'我想停止播放{marker}必要') is False
+
+
+@pytest.mark.parametrize("abbrev", ["OST", "ost", "Ost", "BGM", "bgm"])
+def test_a_latin_audio_abbreviation_after_de_is_still_a_command(abbrev):
+    """⚠️ OST/BGM 这类拉丁缩写写成字符类放在 `_ZH_MUSIC_OBJECT_NOUN` 里，
+    **不放进** `_ZH_SOUNDTRACK_NOUN`——那张表被测试按「扁平 CJK 词表」拆解做
+    笛卡尔积，混进字符类会让拆解当场报错（比较式补语那条已经踩过一次）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止正在播放的{abbrev}') is True

@@ -259,7 +259,7 @@ def test_the_scope_noun_table_is_derived_not_transcribed():
     """  # noqa: DOCSTRING_CJK
     assert set(WHOLE_CARD_NOUNS) == {
         "设定", "設定", "设置", "設置", "资料", "資料", "人设", "人設",
-        "描述", "内容", "內容", "字段", "欄位", "栏位",
+        "描述", "内容", "內容", "字段", "欄位", "栏位", "数据", "數據",
         "信息", "資訊", "资讯", "属性", "屬性", "项目", "項目",
         "条目", "條目", "细节", "細節", "部分", "东西", "東西",
     }, WHOLE_CARD_NOUNS
@@ -1222,3 +1222,32 @@ def test_an_adverb_after_a_scope_noun_is_still_a_full_rewrite(noun, adverb):
 
     text = f'把整个卡的所有{noun}{adverb}重写'
     assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("space", [" ", "\u3000"])
+@pytest.mark.parametrize("suffix", ["内容", "內容", "值", "项"])
+@pytest.mark.parametrize("prefix", ["所有字段", "全部欄位", "每个字段"])
+def test_whitespace_before_a_direct_scope_suffix_is_skipped(prefix, suffix, space):
+    """⚠️ 范围续接前面也可能有空白（`把所有字段 内容重写`，base 是 True）。
+
+    这是空白在这条判据里的**第四个位置**（前三个：限定词后、目标与「的」之间、
+    第二个「的」后）。⚠️ 配对反向断言：字段**名**照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把{prefix}{space}{suffix}重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把{prefix}{space}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("把整个卡的所有数据重写", "把整個卡的所有數據重寫")],
+)
+def test_data_is_a_whole_card_scope_noun(simplified, traditional):
+    """`数据/數據` 跟 `资料/資料` 同族，base 是 True（Codex P2 第十五轮）。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
