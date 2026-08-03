@@ -211,7 +211,7 @@ def test_every_simplified_marker_has_a_traditional_sibling():
 @pytest.mark.parametrize("marker", ["上一條", "接著做", "發給他", "繼續做", "剛才那個"])
 def test_traditional_only_markers_are_reachable(marker):
     """Each of these is Traditional-only *and* free of any script-neutral
-    marker, so it is genuinely pinned by the table rather than by 一下/那個."""
+    marker, so it is genuinely pinned by the table rather than by 一下/那個."""  # noqa: DOCSTRING_CJK
     # Padded past the 3-char length fallback with text carrying no marker.
     assert _needs_context(f"請你{marker}謝謝") is True
 
