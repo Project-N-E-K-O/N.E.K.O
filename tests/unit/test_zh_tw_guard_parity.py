@@ -604,10 +604,22 @@ def test_every_negator_has_its_script_twin():
 
 
 def test_the_negator_table_is_derived_and_complete():
-    """⚠️ 拆解失效会让下面的笛卡尔积静默缩水。钉住规模与几个曾漏掉的词。"""  # noqa: DOCSTRING_CJK
-    assert len(NEGATORS) >= 25, NEGATORS
-    for word in ("不准", "不準", "不許", "禁止", "嚴禁", "休要", "不得", "莫", "切勿"):
-        assert word in NEGATORS, f'{word} 不在否定词闭集里'
+    """⚠️ 钉住闭集**本身**，不用下界。
+
+    下界允许**成对删词**（成对删除连孪生守卫也抓不到），len 掉几个仍然满足
+    `>=`，下游笛卡尔积只是少跑几条用例、不会变红。上一轮
+    `WHOLE_CARD_QUANTIFIERS` 已经因为同样的理由改成相等断言了——「闭集变动
+    应该被看见」——否定词这边是同一个毛病换了个位置（CodeRabbit）。
+
+    而且这条守卫挡的是整卡补全通路，分支被静默删掉的代价更不对称。
+    """  # noqa: DOCSTRING_CJK
+    assert set(NEGATORS) == {
+        "不要", "不用", "不需要", "不必", "不想",
+        "不准", "不準", "不許", "不许", "不得", "不可", "不能",
+        "别", "別", "甭", "莫", "休要",
+        "先不", "暫不", "暂不", "暫時不", "暂时不",
+        "無需", "无需", "勿", "切勿", "請勿", "请勿", "禁止", "嚴禁", "严禁",
+    }, NEGATORS
 
 
 @pytest.mark.parametrize("negator", NEGATORS)
