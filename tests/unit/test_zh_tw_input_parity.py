@@ -1887,6 +1887,7 @@ def test_the_a_not_a_tail_table_is_derived_not_transcribed():
     # 几乎只能是「在问要不要这么做」，所以可以列。
     assert set(A_NOT_A_TAILS) == {
         "可不可以", "能不能", "会不会", "會不會", "该不该", "該不該",
+        "应不应该", "應不應該", "要不要", "想不想",
         "行不行", "好不好", "是不是", "对不对", "對不對",
     }, A_NOT_A_TAILS
 
@@ -2816,3 +2817,61 @@ def test_a_playback_queue_after_de_is_still_a_command(queue):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(f'停止正在播放的{queue}') is True
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要放的比刚才在客厅听到的大声", "不要放的比剛才在客廳聽到的大聲"),
+        ("不要放的比昨天在车里听的时候大声", "不要放的比昨天在車裡聽的時候大聲"),
+    ],
+)
+def test_a_long_comparative_target_is_still_a_command(simplified, traditional):
+    """⚠️ 比较对象不设字数上限——跟自由修饰语那一支同一个理由：设几都会被下一个
+    例子顶穿，干活的是「以程度词收尾」这个条件（base 是 True，Codex P2 第十四轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('停止播放的比赛结果') is False
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止播放功能正在自动循环的歌曲", "停止播放功能正在自動循環的歌曲"),
+        ("停止播放按钮所控制的客厅音乐", "停止播放按鈕所控制的客廳音樂"),
+        ("停止播放控件触发后出现的声音", "停止播放控件觸發後出現的聲音"),
+    ],
+)
+def test_a_control_noun_heading_a_long_music_object(simplified, traditional):
+    """⚠️ 控件名后面找音乐中心语的窗口也不设上限（base 全是 True）。
+
+    ⚠️ 配对反向断言：整句里根本没有音乐名词时仍然判成「在说控件」。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+    for text in ('帮我停止播放按钮换个颜色', '停止播放功能吧', '停止播放键'):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "marker", ["应不应该", "應不應該", "要不要", "想不想"]
+)
+def test_the_remaining_modal_a_not_a_forms(marker):
+    """⚠️ 情态重叠式补齐。`我想停止播放应不应该换成《你好吗？》` 是**危险方向**：
+    引号跨度正确地把标题里的疑问词藏了起来，而这个真正的情态标记没被认出来，
+    于是一句提问执行了取消（Codex P2 第十四轮）。
+
+    ⚠️ 句首那个 A-not-A（`要不要停止播放`）走的是 `_ZH_REQ_PREFIX` 里的
+    `(?!不)`，跟这张表互不干扰——两条都断言一下。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}换成《你好吗？》'
+    ) is False
+    assert is_explicit_music_cancellation(f'{marker}停止播放') is False

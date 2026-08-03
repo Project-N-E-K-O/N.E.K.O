@@ -782,13 +782,24 @@ _WHOLE_CARD_SCOPE_MODIFIER = r"(?:(?:可见|可見)的?)?"
 # 一刀切会把这类真整卡请求也挡掉。所以允许两种续接——量词化后缀（项/項/目/值）
 # 和另一个整卡级名词（设定内容 / 属性值…），它们都在闭集里。
 _WHOLE_CARD_SCOPE_SUFFIX = r"(?:项|項|目|值)"
-# 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
-# _WHOLE_CARD_BARE_QUANTIFIER_TAIL 同一套，空白同样只跳过不算收尾。
-# ⚠️ 「的」也是合法收尾（`把所有字段的内容重写一遍` 是真正的整卡请求），而且它
-# **不会**削弱上面那道边界：`字段名` 卡住的是「名」，跟「的」无关。
-_WHOLE_CARD_SCOPE_NOUN_TAIL = (
-    r"(?=\s*(?:$|[^\s一-鿿A-Za-z0-9_]|的|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
+# ⚠️⚠️ 「非汉字」不能把**拉丁字母/数字/下划线**算进去：自定义字段名可以叫
+# nickname / field_name / age2，于是 `把整个卡的全部 nickname重写` 又成了一条
+# 绕过单字段保险的后门（Codex P1 第十三轮）。合法的非汉字收尾只有**标点**。
+# ⚠️⚠️ 收尾必须**正向白名单标点**，不能写成「非汉字」的否定类。
+# 否定类挡掉拉丁之后还是把**其它所有文字**当标点：`把整个卡的全部 имя重写` /
+# ` 이름重写` / ` ニックネーム重写`（ja 模板的字段名本来就是片假名）照样进整卡
+# 补全通路（Codex P1 第十四轮；第十三轮那版只堵了拉丁，方向还是错的——
+# 「不是汉字的东西」是开集，枚举**标点**才是闭集）。
+_WHOLE_CARD_TERMINATOR_PUNCT = (
+    # ⚠️ 全角空格 `　` **不在**这张表里：它是空白不是标点，`\s*` 已经会跳过它。
+    # 收进来的话 `把整个卡的全部　名字重写` 又成了合法收尾——第四轮那条 P1 会
+    # 当场回来（我第一版真收进去了，是配对用例把它逮住的）。
+    # ⚠️ 只收**句读/成对符号/引号**。不要顺手把 `_ + / @ # 等` 也收进来：
+    # 字段名可以叫 `_meta`、`@type`，收了它们等于给 P1 再开一扇门（第一版把 `_`
+    # 收进去了，配对用例当场变红）。
+    r"[，,。．.！!？?；;：:、…·~～—–\-「」『』（）()【】《》〈〉\[\]\"'`]"
 )
+
 # 限定词**自己当中心语**（`把整個卡的全部重寫一遍`，base 是 True）时的合法收尾：
 # 重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点等非汉字。闭集——字段名不长这样。
 #
@@ -803,11 +814,23 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
 _WHOLE_CARD_BARE_ADVERB = (
     r"(?:一并|一併|一起|统统|統統|通通|全都|彻底|徹底|好好|认真|認真|重新)"
 )
-# ⚠️⚠️ 「非汉字」不能把**拉丁字母/数字/下划线**算进去：自定义字段名可以叫
-# nickname / field_name / age2，于是 `把整个卡的全部 nickname重写` 又成了一条
-# 绕过单字段保险的后门（Codex P1 第十三轮）。合法的非汉字收尾只有**标点**。
+
+# 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
+# _WHOLE_CARD_BARE_QUANTIFIER_TAIL 同一套，空白同样只跳过不算收尾。
+# ⚠️ 「的」也是合法收尾（`把所有字段的内容重写一遍` 是真正的整卡请求），而且它
+# **不会**削弱上面那道边界：`字段名` 卡住的是「名」，跟「的」无关。
+# ⚠️ 名词收尾同样要接受并列副词（`把所有字段一并重写`，base 是 True，
+# Codex P2 第十四轮）——跟限定词那一支同一套副词表，两处别漂开。
+_WHOLE_CARD_SCOPE_NOUN_TAIL = (
+    r"(?=\s*(?:$|"
+    + _WHOLE_CARD_TERMINATOR_PUNCT
+    + r"|的|"
+    + _WHOLE_CARD_BARE_ADVERB
+    + r"\s*(?:重|改|梳|完)"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
+)
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
-    r"\s*(?:$|[^\s一-鿿A-Za-z0-9_]|"
+    r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT + r"|"
     + _WHOLE_CARD_BARE_ADVERB
     + r"\s*(?:重|改|梳|完)"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
@@ -841,7 +864,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # ⚠️ 跟整卡级名词那一支同一套：先吃掉合法的范围续接（值/项/内容…）再判边界，
     # 否则 `把所有字段值重写` / `重写全部字段内容` 被自己的边界挡掉
     # （Codex P2 第十三轮，base 是 True）。
-    rf"(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})*"
+    rf"(?>(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})*)"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     r"|(?:整个角色卡片|整個角色卡片|整个角色卡|整個角色卡|"
     r"整张卡片|整張卡片|整张卡|整張卡|"
@@ -912,7 +935,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # 自己的收尾要求（见 _WHOLE_CARD_BARE_QUANTIFIER_TAIL）。
     rf"(?:\s*的?\s*{_WHOLE_CARD_SCOPE_MODIFIER}"
     rf"(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
-    rf"(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})*"
+    rf"(?>(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})*)"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"

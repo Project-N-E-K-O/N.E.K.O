@@ -1154,3 +1154,71 @@ def test_a_direct_field_list_consumes_scope_suffixes(phrasing):
     assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
     # 反向：字段**名**照旧被挡。
     assert router._chat_text_requests_full_rewrite('把所有字段名重写') is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    # 各语种模板 / 自定义字段名可能长的样子：拉丁、片假名、西里尔、谚文、希腊、
+    # 以及程序味的 `_meta` / `@type`。
+    ["nickname", "field_name", "ニックネーム", "имя", "이름", "Δname", "_meta", "@type"],
+)
+@pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
+def test_only_punctuation_can_terminate_a_bare_quantifier(quantifier, field):
+    """⚠️⚠️ P1：收尾必须**正向白名单标点**，不能写「非汉字」的否定类。
+
+    否定类挡掉拉丁之后照样把**其它所有文字**当标点——ja 模板的字段名本来就是
+    片假名（`ニックネーム`），俄/韩/希腊同理（Codex P1 第十三、十四轮各抓到
+    一半）。「不是汉字的东西」是开集，能枚举干净的是**标点**。
+
+    ⚠️ 白名单里也不能顺手收 `_ @ + / #`：字段名可以叫 `_meta` / `@type`。
+    ⚠️ 全角空格更不能收：它是空白不是标点，`\s*` 已经会跳过它；收进来第四轮
+    那条 P1 会当场回来（这两处第一版都写错了，是配对用例逮住的）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for space in (" ", "\u3000"):
+        blocked = f'把整个卡的{quantifier}{space}{field}重写'
+        assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+    # 配对正向：真正的标点收尾和重写动词收尾都不能被误伤。
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的{quantifier}…重写'
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的{quantifier} 重写一遍'
+    ) is True
+
+
+def test_scope_suffix_matching_is_unambiguous():
+    """⚠️⚠️ P1：范围续接的重复交替**不能有重叠解析**。
+
+    `项目` 既能当整卡级名词、也能拆成 `项` + `目` 两个后缀，于是
+    `把所有字段` + `项目`×N + `名字重写`（边界失败）在每个位置都有多种切法：
+    实测 N=16 → 23ms，N=20 → 370ms，再往上指数增长（Codex P1 第十四轮）。
+    这条判据处理的是**用户聊天原文**，没有长度上限。
+
+    原子组让重复只有一种切法（不同切法消费的字符数本来就相同，所以语义不变）。
+    ⚠️ 同一个片段在两处用（整卡前视 + 字段清单），两处都要原子化。
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    import main_routers.card_assist_router as router
+
+    assert router._CHAT_FULL_REWRITE_RE.pattern.count("(?>") >= 2, (
+        "范围续接不再是原子组——重叠解析会指数回溯"
+    )
+    worst = '把所有字段' + '项目' * 40 + '名字重写'
+    start = time.perf_counter()
+    assert router._chat_text_requests_full_rewrite(worst) is False
+    assert time.perf_counter() - start < 0.5, "范围续接又开始回溯了"
+
+
+@pytest.mark.parametrize("adverb", ["一并", "一併", "彻底", "徹底", "统统", "重新"])
+@pytest.mark.parametrize("noun", ["字段", "欄位", "设定"])
+def test_an_adverb_after_a_scope_noun_is_still_a_full_rewrite(noun, adverb):
+    """⚠️ 名词收尾也要认并列副词——跟限定词那一支同一张表，两处别漂开
+    （`把所有字段一并重写` base 是 True，Codex P2 第十四轮）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的所有{noun}{adverb}重写'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
