@@ -98,6 +98,7 @@ def test_step_provider_slots_ignore_retired_saved_default_model_ids():
             ("follow_assist", "step", "step"),
             ("follow_core", "step", "qwen"),
             ("step", "qwen", "qwen"),
+            ("", "qwen", "qwen"),
         ):
             data = {
                 "coreApi": core_api,
@@ -109,6 +110,9 @@ def test_step_provider_slots_ignore_retired_saved_default_model_ids():
             for prefix in ("conversation", "summary", "correction", "emotion", "agent"):
                 data[f"{prefix}ModelProvider"] = provider
                 data[f"{prefix}ModelId"] = "step-3" if prefix == "agent" else "step-2-mini"
+                if provider in ("", "step"):
+                    data[f"{prefix}ModelUrl"] = "https://api.stepfun.com/v1"
+                    data[f"{prefix}ModelApiKey"] = "sk-step"
 
             cfg = _manager_with_core_config(config_dir, data).get_core_config()
 

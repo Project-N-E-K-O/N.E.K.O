@@ -1369,13 +1369,14 @@ class CoreConfigMixin:
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
                 saved_model = cfg_model.strip() if isinstance(cfg_model, str) else ''
-                uses_step_provider = (
-                    provider == 'step'
+                # Empty provider is the pre-dropdown schema; the exact retired IDs below identify Step.
+                is_step_migration_slot = (
+                    provider in ('', 'step')
                     or (provider == 'follow_assist' and assist_api_value == 'step')
                     or (provider == 'follow_core' and core_api_value == 'step')
                 )
                 is_retired_step_default = (
-                    uses_step_provider
+                    is_step_migration_slot
                     and (
                         (
                             prefix in ('conversation', 'summary', 'correction', 'emotion')
