@@ -1241,3 +1241,133 @@ def test_the_modifier_closed_set_still_lets_real_refusals_through(text):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(text) is True, text
+
+
+# ---------------------------------------------------------------------------
+# 第十三轮：R1 的正向闭集后视枚举错了边，把主用例整片打死
+# ---------------------------------------------------------------------------
+
+SONG_TITLES = ["晴天", "稻香", "七里香", "凉凉", "涼涼", "平凡之路", "光年之外"]
+ARTIST_NAMES = ["周杰伦", "周杰倫", "林俊杰", "林俊傑", "五月天", "邓紫棋", "鄧紫棋"]
+SINGLE_CHAR_PLAY_VERBS = ["放", "播", "听", "聽"]
+
+
+@pytest.mark.parametrize("negator", ["别", "別"])
+@pytest.mark.parametrize("verb", SINGLE_CHAR_PLAY_VERBS + ["播放"])
+@pytest.mark.parametrize("target", SONG_TITLES + ARTIST_NAMES)
+def test_refusing_a_named_track_or_artist_cancels_playback(negator, verb, target):
+    """⚠️⚠️ 这是这个功能**最主要的用法**，上一轮被我整片打死了。
+
+    上一轮为了挡 `別放棄` / `別聽信` 加了一道**正向**闭集后视——播放动词后面
+    必须紧跟句末 / 语气词 / 标点 / 音乐名词。但动词后面跟的是**歌名和歌手**，
+    那是任意字符串：《晴天》《稻香》《七里香》里没有任何一个音乐名词，于是
+    `别放晴天` / `别听周杰伦` 全变成 False（简体在基线上是 True）。
+
+    枚举错了边。拿一个假阳性换来一整类假阴性，是坏交易。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'{negator}{verb}{target}'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+def _compound_tails():
+    """从三张常量表里把黑名单字拆出来，逐字生成用例。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    return (
+        [('放', ch) for ch in mr._ZH_NON_PLAYBACK_AFTER_FANG]
+        + [('播', ch) for ch in mr._ZH_NON_PLAYBACK_AFTER_BO]
+        + [('听', ch) for ch in mr._ZH_NON_PLAYBACK_AFTER_TING]
+        + [('聽', ch) for ch in mr._ZH_NON_PLAYBACK_AFTER_TING]
+    )
+
+
+COMPOUND_TAILS = _compound_tails()
+
+
+def test_the_compound_tables_are_not_empty():
+    """⚠️ 用例是从常量表拆出来的。表被清空的话参数化会退化成空集，下面那条
+    用例「全绿在没跑上」——所以先钉住规模。
+    """  # noqa: DOCSTRING_CJK
+    assert len(COMPOUND_TAILS) > 100
+
+
+@pytest.mark.parametrize(("verb", "tail"), COMPOUND_TAILS)
+def test_a_lexicalised_compound_is_not_a_playback_verb(verb, tail):
+    """⚠️ 放 / 聽 / 播 本身是高频非播放义动词的词头。
+
+    `別放棄` / `別放心上` / `別聽信` / `別播種` 都以播放动词字形开头，全都不是
+    取消播放。要枚举的是「以这些字为首的**词汇化复合**的第二个字」——那是
+    词典问题，有限；不是「别 后面能跟什么」也不是「播放动词后面能跟什么」，
+    那两侧都是开集，前面两版分别栽在上面。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'别{verb}{tail}') is False
+    assert is_explicit_music_cancellation(f'別{verb}{tail}') is False
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("别听他的歌", "別聽他的歌"),
+        ("别听她的音乐", "別聽她的音樂"),
+        ("别听你的歌单", "別聽你的歌單"),
+    ],
+)
+def test_a_pronoun_followed_by_a_music_noun_is_still_a_cancellation(
+    simplified, traditional
+):
+    """⚠️ 「别听他的」不是取消播放，「别听他的歌」是。
+
+    人称救援分支必须排在人称黑名单**前面**，否则 `別聽他的歌` 会被黑名单先吃掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+def test_the_hearsay_pronoun_set_never_contains_first_person():
+    """⚠️⚠️ `_ZH_HEARSAY_PRONOUN` 里绝不能有「我」。
+
+    `别听我喜欢的` 必须先命中 `_ZH_NEGATIVE_MUSIC`、再由
+    `_excluded_personalization_source` 判成窄范围来源排除。把「我」收进人称表，
+    窄排除会在**前提**上就失效——结果仍是 False，但机制错了，`别听我喜欢的，
+    放日推` 会退化成什么都不做。这类「结果对了但先在前提上错」的失败最难查。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert '我' not in mr._ZH_HEARSAY_PRONOUN
+    for text in ('别听我喜欢的', '別聽我喜歡的'):
+        assert mr._ZH_NEGATIVE_MUSIC.search(text), f'{text} 没进否定分支'
+        assert mr.is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("别放鸽子", "別放鴿子"),
+        ("别放我鸽子", "別放我鴿子"),
+        ("别放你鸽子", "別放你鴿子"),
+        ("别放弃", "別放棄"),
+        ("别放手", "別放手"),
+        ("别听信谣言", "別聽信謠言"),
+        ("别播种太早", "別播種太早"),
+        ("别听他的", "別聽他的"),
+    ],
+)
+def test_specific_compounds_stay_pinned(simplified, traditional):
+    """⚠️ 上面那条用例是从常量表拆出来的——**缩表会让它跟着缩水而不是变红**。
+
+    实测过：把「鴿鸽」从表里删掉，参数化少两条，878 条照样全绿。所以高价值的
+    几条必须另外钉死。同一个坑在这个文件里已经踩过一次（播放清單那组）。
+
+    ⚠️ 「别放我鸽子」走的是另一条后视（人称+鸽），不是字符表——「我」不能进
+    字符表，否则会打死 `别放我喜欢的`。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
