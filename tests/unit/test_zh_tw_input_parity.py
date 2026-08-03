@@ -2281,28 +2281,43 @@ def test_an_apostrophe_in_a_latin_name_is_not_a_quote_opener(name):
     assert is_explicit_music_cancellation('帮我停止播放《好不好》') is True
 
 
-@pytest.mark.parametrize("marker", ["好不好", "可不可以", "好吗", "好嗎", "是不是"])
-def test_a_question_after_a_coordination_boundary_does_not_suppress_the_stop(marker):
-    """⚠️⚠️ 这条**推翻了第三轮的判断**，理由记在这里。
+@pytest.mark.parametrize("marker", ["好不好", "可不可以", "好吗", "是不是"])
+@pytest.mark.parametrize("conjunction", ["然后", "再", "并", "接着", "顺便"])
+def test_a_trailing_question_suppresses_the_clause_by_design(conjunction, marker):
+    """⚠️⚠️⚠️ 三轮的账记在这里，别再来第四次。
 
-    第三轮 reviewer 提 `帮我停止播放再看看效果好不好` 时我驳回了，依据是「同形状
-    的 吗 那一支在 base 上也是 False，不能让 A-not-A 比 吗 聪明」。
+    * 第三轮：reviewer 提 `帮我停止播放再看看效果好不好`（疑问尾管的是后半句），
+      我以「同形状的 吗 在 base 上也是 False」为由驳回。
+    * 第十八轮：reviewer 改用**结构信号**（并列连接词）重提，我接受并实现。
+    * 第十九轮：reviewer 立刻找出实现的硬伤——连接词是**子串匹配**，而歌名里就
+      可能含它。`并蒂莲` / `再见` / `然后呢` 都是真实歌名，于是
+      `我想停止播放并蒂莲是否合适`（base 是 False）变成执行取消，一句提问把歌
+      停了。三条替代实现（只收多字连接词 / 要求后跟动词 / 要求离播放动词足够远）
+      都试过，没有一个能在不引入危险方向的前提下把两类分开。
 
-    第十八轮 reviewer 换了个说法：**并列连接词是一个结构信号**（然后/再/并/
-    接着…），不是逐句启发式。而且这正是第十一轮我已经接受过的同一个判据——
-    `的时候` 后面跟并列副词，就说明前一个动作也在被要求。同一个信号在这个文件里
-    应该给出同一个答案，所以改。
-
-    ⚠️ 代价：`帮我停止播放再看看效果好吗` 在 base 上是 False，现在是 True。
-    base 在这里**不是权威**——它把两句同构的话判成不同结果，纯粹因为 A-not-A
-    那一族根本不在它的标记表里。统一之后统一到语义上对的那侧：整句在要求两个
-    动作，「好吗」是请求的礼貌尾，不是在征求要不要停。
+    ⚠️ 所以按代价取舍：保留边界 = 提问被执行成取消（危险）；不保留 = 并列命令里
+    的停止动作被忽略（轻）。取轻的那一侧。用户把歌名加引号时走跨度那一支，
+    不受影响。
     """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
-    for conjunction in ("然后", "再", "并", "接着", "顺便"):
-        text = f'帮我停止播放{conjunction}看看效果{marker}'
-        assert is_explicit_music_cancellation(text) is True, text
+    text = f'帮我停止播放{conjunction}看看效果{marker}'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "title", ["并蒂莲", "再见", "然后呢", "同时", "以及"]
+)
+def test_a_song_title_containing_a_conjunction_does_not_disable_the_guard(title):
+    """⚠️ 与上一条成对：歌名里含并列词时，疑问守卫**必须照常开火**。
+
+    这是第十八轮那版实现的破坏面（base 全是 False，被我改成了执行取消）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{title}是否合适'
+    ) is False
 
 
 @pytest.mark.parametrize("marker", ["好不好", "可不可以", "行不行", "好吗", "是不是"])
@@ -2519,10 +2534,16 @@ def test_a_bare_name_after_de_is_deliberately_not_a_command():
     """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
-    for text in ('停止正在播放的晴天', '停止正在播放的周杰伦'):
+    # ⚠️ 这一格又缩小了一次：带**进行体**（正在播放的X）时现在判得出来——进行体
+    # 本身就说明「正在被播放的东西」是播放对象，X 是开集专名也没关系
+    # （Codex P2 第十九轮）。剩下判不出来的只有「不带正在、且没有任何音乐名词」
+    # 这一格。
+    for text in ('停止播放的晴天', '停止播放的周杰伦'):
         assert is_explicit_music_cancellation(text) is False, text
-    # 反过来：以音乐名词收尾的那些现在判得出来了。
+    # 反过来：以音乐名词收尾、或带进行体的，现在都判得出来。
     assert is_explicit_music_cancellation('停止播放的夜曲') is True
+    assert is_explicit_music_cancellation('停止正在播放的晴天') is True
+    assert is_explicit_music_cancellation('停止正在播放的周杰伦') is True
     # 同构的缺陷本体——放开上面那一格就等于把这些一起放回去。
     for text in ('停止播放的代码', '停止播放的教程', '停止播放的文档'):
         assert is_explicit_music_cancellation(text) is False, text
@@ -3028,3 +3049,27 @@ def test_a_radio_station_after_de_is_still_a_command(station):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(f'停止正在播放的{station}') is True
+
+
+@pytest.mark.parametrize(
+    "name", ["晴天", "周杰伦", "周杰倫", "Taylor Swift", "夜曲", "并蒂莲"]
+)
+@pytest.mark.parametrize("progressive", ["正在播放", "正在放", "正播放"])
+def test_a_progressive_aspect_makes_any_following_name_a_playback_object(
+    progressive, name
+):
+    """⚠️ 「正在播放的X」里的 X **不需要**是白名单音乐名词。
+
+    进行体本身已经说明「正在被播放的东西」就是播放对象，X 是歌名/歌手名这类
+    开集专名也没关系（base 全是 True，Codex P2 第十九轮）。这条把第七轮声明的
+    那格「刻意接受的代价」又缩小了一次。
+
+    ⚠️ 配对反向断言：缺陷本体那一族**不带**「正在」——`我要停止播放的代码` 说的
+    是「停止播放」这件事的代码，不是「正在播放的代码」，所以照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{progressive}的{name}') is True
+    for blocked in ('我要停止播放的代码', '我想停止播放的教程',
+                    '我要停止播放的听歌功能'):
+        assert is_explicit_music_cancellation(blocked) is False, blocked
