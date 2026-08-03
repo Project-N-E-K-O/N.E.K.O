@@ -15,7 +15,10 @@ glyphs":
    ``提 / 講 / 談 / 討論`` are shared kanji, so adding Traditional glyphs drags
    Japanese input into the zh templates' range ("特別講演について話しましょう。"
    → ban_topic "演について話しましょう"). ``說`` is safe by luck alone (Japanese
-   writes ``説`` U+8AAC). The kana guard is what keeps this closed.
+   writes ``説`` U+8AAC). ``_is_japanese_sentence_match`` is what keeps this
+   closed — and it has to stay narrow, because the thing being banned is very
+   often *itself* Japanese ("別叫我お兄ちゃん")：a blanket "kana in the match →
+   drop it" throws away exactly the preference the user just stated.
 3. **The compound-noun left edge** — "他特别提到你的名字。" was *already* being
    extracted as a ban_topic before this change; merging the scripts would have
    handed Traditional users the same bug. ``_BIE_COMPOUND_LEFT`` fixes the four
@@ -43,8 +46,8 @@ def _zh_pattern_sources() -> list[str]:
     return [raw for locale, _kind, raw in D._PATTERNS_RAW if locale == "zh"]
 
 
-def _zh_terms_without_kana_guard(text: str) -> set[str]:
-    """``extract_directives``'s zh loop with the kana guard lifted.
+def _zh_terms_without_japanese_guard(text: str) -> set[str]:
+    """``extract_directives``'s zh loop with ``_is_japanese_sentence_match`` lifted.
 
     This is the premise for the Japanese corpus: a sample only proves the guard
     is doing work if the templates *would* have matched it without one.
@@ -157,17 +160,17 @@ TEMPLATE_PAIRS = [
 
 @pytest.mark.parametrize("tw,cn,expected", TEMPLATE_PAIRS)
 def test_traditional_and_simplified_reach_the_same_term(tw, cn, expected):
-    """对偶性：同一句话的两种字形抽到对应的 term，一侧改坏另一侧就露馅。"""
+    """对偶性：同一句话的两种字形抽到对应的 term，一侧改坏另一侧就露馅。"""  # noqa: DOCSTRING_CJK
     tw_expected, cn_expected = expected
     assert tw_expected in _zh_terms(tw), f"繁体 {tw!r} 抽不到 {tw_expected!r}"
     assert cn_expected in _zh_terms(cn), f"简体 {cn!r} 抽不到 {cn_expected!r}"
 
 
 # ── 3. 日文不碰撞 ────────────────────────────────────────────
-# 只有假名守卫拦得住的样本 —— 每一条在守卫拿掉后都真的会被 zh 模板抓出 term
-# （下面的 premise 断言就是这么验的），所以这张表不会悄悄退化成一堆无关句子而全绿。
-# ``特別講演について``、``今日は休講です`` 之类由 _BIE_COMPOUND_LEFT / 休 词首规则
-# 先挡下，放在 JAPANESE_BLOCKED_ELSEWHERE 里另测。
+# 只有 _is_japanese_sentence_match 拦得住的样本 —— 每一条在守卫拿掉后都真的会被 zh
+# 模板抓出 term（下面的 premise 断言就是这么验的），所以这张表不会悄悄退化成一堆无关
+# 句子而全绿。``特別講演について``、``今日は休講です`` 之类由 _BIE_COMPOUND_LEFT /
+# 休 词首规则先挡下，放在 JAPANESE_BLOCKED_ELSEWHERE 里另测。
 JAPANESE_KANA_GUARDED = [
     "個別提案をお願いします。",
     "地域別講座の一覧。",
@@ -190,14 +193,14 @@ JAPANESE_BLOCKED_ELSEWHERE = [
 
 
 @pytest.mark.parametrize("text", JAPANESE_KANA_GUARDED)
-def test_kana_guard_is_what_stops_this_sample(text):
+def test_the_japanese_guard_is_what_stops_this_sample(text):
     """Premise: lift the guard and the sample really does get extracted.
 
     Without this the corpus below could silently degrade into sentences the
     templates never matched in the first place, and stay green.
     """
-    assert _zh_terms_without_kana_guard(text), (
-        f"{text!r} 没有假名守卫也不会命中，这条样本证明不了守卫在干活"
+    assert _zh_terms_without_japanese_guard(text), (
+        f"{text!r} 没有日文守卫也不会命中，这条样本证明不了守卫在干活"
     )
 
 
@@ -208,17 +211,78 @@ def test_japanese_text_is_not_extracted_by_the_zh_templates(text):
     assert _zh_terms(text) == set(), f"日文 {text!r} 被 zh 模板抓成 ban_topic"
 
 
-def test_japanese_ban_topic_still_works():
-    """The kana guard is zh-scoped; wiring it to every locale would silence ja
-    entirely, since every ja template *requires* kana."""
-    hits = extract_directives("仕事のことはもう言わないで")
-    assert any(locale == "ja" for locale, _kind, _term in hits), hits
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("仕事のことはもう言わないで", "仕事"),
+        # ⚠️ term 自带助词的 ja 命中才压得住 zh_family 这道作用域：守卫的判据是
+        # "没有中文证据 + term 含助词"，对一条 ja 命中永远成立，套上去就把 ja 自己
+        # 否掉了。term 不含假名的样本（"仕事"）证明不了这一点。
+        ("この前の話はもう言わないで", "この前"),
+        ("あの人のことは言わないで", "あの人"),
+    ],
+)
+def test_japanese_ban_topic_still_works(text, expected):
+    """The guard is zh-scoped: a ja match is Japanese *by construction*, so
+    running the "is this Japanese?" test on it can only ever throw it away."""
+    hits = extract_directives(text)
+    assert expected in {term for locale, _kind, term in hits if locale == "ja"}, hits
 
 
 def test_chinese_directive_survives_a_stray_kana_elsewhere_in_the_message():
     """The guard looks at the matched span, not the whole message — a Chinese
     sentence that merely mentions something Japanese keeps its directive."""
     assert "工作" in _zh_terms("剛看完 ドラえもん。別提工作。")
+
+
+# ⚠️ 反向的坑：被 ban 的**对象本身**经常就是日文专有名词。这类句子结构是中文的，
+# 假名只是话题名——「命中区间有假名就丢」会把用户明确说过的偏好扔掉（codex P2）。
+# 这个产品的用户尤其容易这么说话（"別叫我お兄ちゃん"）。
+CHINESE_WITH_JAPANESE_TOPIC = [
+    ("别再提ドラえもん。", "ドラえもん"),            # 简体触发词 = 日文没有的码位
+    ("別再提ドラえもん。", "ドラえもん"),            # 繁体触发词 + 共用动词，靠 term 无助词
+    ("別叫我お兄ちゃん。", "お兄ちゃん"),            # 叫我 = 日文不会出现的组合
+    ("别叫我お兄ちゃん", "お兄ちゃん"),              # 无句末标点
+    ("不想聊ドラえもん。", "ドラえもん"),            # 不想 = 中文证据
+    ("不要聊ドラえもん。", "ドラえもん"),            # 不要本身是日文词，靠 term 无助词过
+    ("别再提君の名は。", "君の名は"),                # 标题自带助词，只能靠中文证据救
+    ("我不想聊初音ミク", "初音ミク"),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), CHINESE_WITH_JAPANESE_TOPIC)
+def test_chinese_directive_about_a_japanese_topic_is_kept(text, expected):
+    assert expected in _zh_terms(text), f"{text!r} 的 ban 对象被日文守卫误丢"
+
+
+@pytest.mark.parametrize(("text", "expected"), CHINESE_WITH_JAPANESE_TOPIC)
+def test_those_samples_really_do_go_through_the_guard(text, expected):
+    """Premise: 这些样本命中区间里确实有假名，所以它们真的会走到守卫判据，
+    而不是因为压根没假名才侥幸通过。"""  # noqa: DOCSTRING_CJK
+    assert D._KANA_RE.search(text), f"{text!r} 没有假名，证明不了守卫放行"
+
+
+# 中文证据表里的每个 token 各配一条载荷样本：话题名自带助词时，只有这个 token 能
+# 把整条命中救回来（term 不含助词的样本走的是另一条判据，压不住这一维）。
+ZH_EVIDENCE_LOAD_BEARING = [
+    ("叫我", "別叫我ハルヒの妹。", "ハルヒの妹"),
+    ("喊我", "別喊我ハルヒの妹。", "ハルヒの妹"),
+    ("管我叫", "別管我叫ハルヒの妹。", "ハルヒの妹"),
+    ("不想", "不想聊君の名は。", "君の名は"),
+    ("懶得", "懶得聊君の名は。", "君の名は"),
+    ("不願", "我不願聊君の名は。", "君の名は"),
+    ("别", "别再提君の名は。", "君の名は"),
+    ("說", "別說君の名は。", "君の名は"),
+]
+
+
+@pytest.mark.parametrize(("token", "text", "expected"), ZH_EVIDENCE_LOAD_BEARING)
+def test_each_zh_evidence_token_is_load_bearing(token, text, expected):
+    assert token in D._ZH_EVIDENCE_RE.pattern, f"{token!r} 已不在中文证据表里"
+    assert D._JA_GRAMMAR_RE.search(expected), (
+        f"{expected!r} 不含日文助词，这条样本走的是另一条判据，压不住中文证据这一维"
+    )
+    assert expected in _zh_terms(text), f"{text!r} 少了 {token!r} 这条证据就会被误丢"
 
 
 # ── 4. 复合词左界守卫 ────────────────────────────────────────

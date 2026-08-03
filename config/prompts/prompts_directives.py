@@ -204,11 +204,51 @@ _ZH_XIU = r"(?<!\w)休"
 
 _ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
 
-# (2) 假名：中文永远不含假名，日文句子几乎必然含。命中区间里出现假名 → 这句是
-# 日文，zh 侧放弃，交给 ja 模板（ja 模板全部要求假名，反向不会吃到中文）。
-# 残留风险：纯汉字的日文片段（"年齢別講座一覧"）仍可能命中——这一维没有码位差
-# 可用，接受。
+# (2) 假名。⚠️ 不能简单地"命中区间有假名就丢"——被 ban 的**对象本身**经常是日文
+# 专有名词（"别再提ドラえもん"、"別叫我お兄ちゃん"），那种句子结构是中文的，假名
+# 只是话题名，丢掉等于把用户明确说过的偏好扔了（codex P2）。
+# 所以要求三个条件同时成立才判为"这是日文句子"：
 _KANA_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]")
+
+# (2a) 中文的正面证据：这些字形/组合在现代日文里不存在——简体字形、与日文新字体
+# 分道的繁体字形（說/説、這、關/関、沒/没、稱/称）、以及日文不会出现的组合
+# （叫我 / 不想 …）。命中区间里出现任意一个，这句就是中文，假名是话题名。
+# ⚠️ 不收 ``不要``：它本身是日文词（ふよう），"不要提出書類" 这种会被当成中文证据。
+_ZH_EVIDENCE_RE = re.compile(
+    r"[别说讲谈讨论关这话题愿懒没许称为說這關沒稱]|叫我|喊我|管我叫|不想|懶得|不願"
+)
+
+# (2b) 日文的句法证据：助词 / 助动词 / 敬体词尾。日文**句子**几乎必然出现，而一个
+# 被 ban 的专有名词基本不会（ドラえもん / お兄ちゃん 都不含）。判据打在 term 上而
+# 不是整段——触发词那一侧本来就是中日共用汉字，看它没有信息量。
+_JA_GRAMMAR_RE = re.compile(r"です|ます|[のにをはがでと]")
+
+
+def _is_japanese_sentence_match(span: str, term: str) -> bool:
+    """Is this zh-template hit actually a Japanese sentence caught by shared kanji?
+
+    ``別`` is the same codepoint in Japanese and ``提 / 講 / 談 / 討論`` are shared
+    kanji, so "個別提案をお願いします。" is structurally a zh hit whose "topic" is
+    just the tail of a cut-in-half Japanese sentence. Suppressing those is worth a
+    little recall — a bogus term sits in the user's directive store for three days
+    and gets injected into every system prompt.
+
+    What must NOT be suppressed is a Chinese sentence whose *ban target* happens to
+    be Japanese ("别再提ドラえもん"). Hence the three-way test; see the comments on
+    the regexes above.
+
+    Residual: a Traditional trigger + a shared verb + a title that itself carries
+    Japanese particles ("別提君の名は。") is indistinguishable from Japanese by any
+    local rule and stays suppressed.
+    """  # noqa: DOCSTRING_CJK
+    # 快速退出：没假名就不可能是日文句子。(2b) 的判据本身全是假名、且 term 是 span
+    # 的子串，所以这一行不是独立条件，只是省掉后面两次 regex——热路径每条用户消息
+    # 每条模板都会走到。
+    if not _KANA_RE.search(span):
+        return False
+    if _ZH_EVIDENCE_RE.search(span):
+        return False
+    return bool(_JA_GRAMMAR_RE.search(term))
 
 _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # ---------- zh ----------
@@ -382,17 +422,17 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
     for locale, kind, pat in DIRECTIVE_PATTERNS:
         zh_family = locale.startswith("zh")
         for m in pat.finditer(text):
-            # zh 模板与日文共用 別/提/講/談/討論 这些汉字（见 _KANA_RE 处的注释）：
-            # 命中区间里出现假名说明这是日文句子，让 ja 模板去接。只对 zh 生效——
-            # ja 模板本身要求假名，套上去会把自己全部否掉。
-            if zh_family and _KANA_RE.search(m.group(0)):
-                continue
             try:
                 term_raw = m.group(1)
             except IndexError:
                 continue
             term = _trim_term(term_raw)
             if not (2 <= len(term) <= 40):
+                continue
+            # zh 模板与日文共用 別/提/講/談/討論 这些汉字，日文句子会被抓成
+            # ban_topic（见 _is_japanese_sentence_match）。只对 zh 生效——ja 模板
+            # 本身要求假名，套上去会把自己全部否掉。
+            if zh_family and _is_japanese_sentence_match(m.group(0), term):
                 continue
             key = (kind, term.casefold())
             if key in seen:
