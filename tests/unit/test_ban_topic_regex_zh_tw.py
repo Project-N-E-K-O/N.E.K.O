@@ -587,12 +587,69 @@ def test_stacked_particles_are_all_stripped():
     assert _zh_terms("不要再說這件事了喔") == {"這件事"}
 
 
+# ⚠️ 这些助词同时也是普通的词尾字（拿捏 / 坎耶 / 好咧 / 耶稣）。台湾**确实**在用
+# 它们做语气词（不像 ``唄``），所以不能像 ``唄`` 那样整个删掉——只能保证"当成助词
+# 剥掉之后 term 短到存不下"时改走另一种切法（codex P2）。
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提拿捏。", "拿捏"),
+        ("別再提拿捏。", "拿捏"),
+        ("别再提坎耶。", "坎耶"),
+        ("別再提坎耶。", "坎耶"),
+        ("别再提好咧。", "好咧"),
+        ("别再提耶稣。", "耶稣"),
+        ("别再提咧嘴笑。", "咧嘴笑"),
+    ],
+)
+def test_particle_glyph_that_is_also_a_word_ending_survives(text, expected):
+    assert _zh_terms(text) == {expected}
+
+
+@pytest.mark.parametrize(("text", "expected"), [("别再提拿捏。", "拿捏")])
+def test_trim_never_shortens_a_term_below_the_storable_minimum(text, expected):
+    """Premise：这个 term 的最后一个字确实在助词表里，所以它真的会走到 trim 的
+    下限判据，而不是碰巧没被剥。"""  # noqa: DOCSTRING_CJK
+    assert expected[-1] in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]
+    assert D._trim_term(expected, "zh") == expected
+    assert len(expected) == D._TERM_MIN_LEN
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("提了，工作别提了。", "工作"),
+        ("说完了，工作别提了。", "工作"),
+        ("算了，工作别提了。", "工作"),
+        ("算了，工作別提了。", "工作"),
+    ],
+)
+def test_template2_prefix_never_spans_a_sentence_boundary(text, expected):
+    """模板 2 的前缀同理：下限抬到 2 之后 lazy 前缀会跨过句读，把上一句的尾巴
+    并进话题（"算了，工作"）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
+
+
+def test_object_never_spans_a_sentence_boundary():
+    """宾语下限抬到 2 之后，lazy 捕获会跳过本该收尾的句读去够更长的匹配——
+    "功成名就别提了，功成名别提了。" 一度吐出 "了，功成名别提"。宾语用排除句读的
+    字符类，话题本来也不该跨句子。"""  # noqa: DOCSTRING_CJK
+    for text in ("功成名就别提了，功成名别提了。", "别提小明，也别提小红。"):
+        for term in _zh_terms(text):
+            assert not any(ch in term for ch in "，。！？；,.!?;"), (
+                f"{text!r} 抽出了跨句读的 term：{term!r}"
+            )
+
+
 # ⚠️ trim 表必须按 locale 分开：同一个码位在不同语言里是不同的词。``唄`` 在中文
 # 是 ``呗`` 的繁体语气词，在日文是"歌"（子守唄＝摇篮曲）；``了`` 在日文是 完了/
 # 終了 的构词成分。拿中文那套去剥日文 term 会把词削掉一半（codex P2）。
 JAPANESE_TERMS_ENDING_IN_A_CHINESE_PARTICLE = [
     ("終了のことはもう言わないで", "終了"),
     ("完了のことはもう言わないで", "完了"),
+    # ⚠️ 三字以上的样本才压得住 locale 这一维：两字 term 被剥掉一个字就低于长度
+    # 下限，trim 的下限守卫会替它挡住，看起来"没坏"。
+    ("完全終了のことはもう言わないで", "完全終了"),
 ]
 
 
@@ -771,20 +828,35 @@ def test_filler_dedup_needs_the_shorter_term_to_actually_exist():
     因为 ``功成名`` 从来不是一条 term。把这条判据换成"猜哪个字是填充词"就会两边
     都错——这正是 _ZH_JIU 那版黑名单的下场。
     """  # noqa: DOCSTRING_CJK
+    overlapping = [(0, 10), (0, 10)]
     assert D._drop_filler_suffixed_terms([
         ("zh", "ban_topic", "股票就"), ("zh", "ban_topic", "股票"),
-    ]) == [("zh", "ban_topic", "股票")]
+    ], overlapping) == [("zh", "ban_topic", "股票")]
     assert D._drop_filler_suffixed_terms([
         ("zh", "ban_topic", "功成名就"),
-    ]) == [("zh", "ban_topic", "功成名就")]
+    ], [(0, 10)]) == [("zh", "ban_topic", "功成名就")]
     # 填充词会叠：前女友 + 的事 + 就
     assert D._drop_filler_suffixed_terms([
         ("zh", "ban_topic", "前女友的事就"), ("zh", "ban_topic", "前女友"),
-    ]) == [("zh", "ban_topic", "前女友")]
+    ], overlapping) == [("zh", "ban_topic", "前女友")]
     # kind 不同不互相影响
     assert len(D._drop_filler_suffixed_terms([
         ("zh", "ban_topic", "股票就"), ("zh", "other_kind", "股票"),
-    ])) == 2
+    ], overlapping)) == 2
+
+
+def test_filler_dedup_only_touches_overlapping_matches():
+    """⚠️ 同一条指令的两种切法才算重复。命中区间不重叠 = 两条独立指令，哪怕正好差
+    一个填充词也不能丢——"功成名就别提了，功成名别提了。" 是两条（codex P2）。"""  # noqa: DOCSTRING_CJK
+    disjoint = [(0, 7), (8, 15)]
+    assert len(D._drop_filler_suffixed_terms([
+        ("zh", "ban_topic", "功成名就"), ("zh", "ban_topic", "功成名"),
+    ], disjoint)) == 2
+    # spans 缺失 / 长度对不上时不做抑制——安全方向
+    assert len(D._drop_filler_suffixed_terms([
+        ("zh", "ban_topic", "股票就"), ("zh", "ban_topic", "股票"),
+    ], None)) == 2
+    assert _zh_terms("功成名就别提了，功成名别提了。") == {"功成名就", "功成名"}
 
 
 def test_filler_dedup_keeps_genuinely_different_topics():

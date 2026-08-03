@@ -160,6 +160,12 @@ def _norm_lang(lang: str) -> str:
     return out or 'en'
 
 
+# 可存储 term 的长度区间。``_trim_term`` 也要知道下限：把 term 剥到低于下限，结果
+# 是整条指令被丢弃，那还不如把有歧义的那个尾字留着（见 _trim_term）。
+_TERM_MIN_LEN = 2
+_TERM_MAX_LEN = 40
+
+
 def _trim_term(term: str, locale: str = "") -> str:
     """Trim a term: strip trailing particles/modifiers first, then surrounding punctuation + whitespace.
 
@@ -168,6 +174,12 @@ def _trim_term(term: str, locale: str = "") -> str:
     particle and the Japanese word for "song". Locales with no CJK list of their
     own (en / ru / es / pt) fall back to Chinese — mixed-code input carries a
     Chinese tail far more often than any other. ASCII tails are always stripped.
+
+    Stripping never takes a term below ``_TERM_MIN_LEN``. Several particles are
+    also ordinary word-final characters (拿捏 / 坎耶 / 好咧), and there is no local
+    rule that tells the two readings apart. When the choice is "particle reading →
+    term too short → the whole directive is dropped" versus "keep the character",
+    keeping it is the only option that preserves anything at all.
     """  # noqa: DOCSTRING_CJK
     if not term:
         return ""
@@ -181,9 +193,14 @@ def _trim_term(term: str, locale: str = "") -> str:
     while changed:
         changed = False
         for tok in tokens:
-            if s.endswith(tok) and len(s) > len(tok):
-                s = s[: -len(tok)].rstrip()
-                changed = True
+            if not s.endswith(tok):
+                continue
+            shorter = s[: -len(tok)].rstrip()
+            # 剥到低于下限 = 整条指令被丢；有歧义的尾字宁可留着（codex P2）。
+            if len(shorter) < _TERM_MIN_LEN:
+                continue
+            s = shorter
+            changed = True
         # 同时剥两端标点
         new_s = s.strip(_TRIM_TRAIL)
         if new_s != s:
@@ -391,7 +408,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 动词表见 _zh_verb_alternation：复合动词必须排在单字前缀之前（模板 2/4 要求
      # 动词后紧跟终结符，失败会回溯，所以没这个问题）。
      + _ZH_VERBS_WITH_ADDRESS + r"\s*"
-     r"(.{1,40}?)" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
+     # ⚠️ 宾语下限是 2 不是 1：可选助词组 + lazy 宾语会让正则优先把话题的最后一个字
+     # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
+     # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
+     r"([^，。！？；,.!?;]{2,40}?)" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
     # ``关于 X 就别提了`` 归模板 4 管。本模板不排掉它的话，同一句会同时产出这里的
     # "关于股票就" 和模板 4 的 "股票" 两条 term——前者是垃圾却照样占一个 active
@@ -412,7 +432,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 前缀；1 字前缀本来也只能产出 1 字 term、必然被丢，所以抬下限只赚不亏。
      # ``的`` 绑在指示词里、不单独可选：单独可选会把 "目的这个别提了。" 的 目的 切成
      # 目（对抗排查）。句尾的 ``就`` 不在正则里吃，见 _ZH_TRAILING_FILLERS。
-     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(.{2,30}?)\s*"
+     r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)([^，。！？；,.!?;]{2,30}?)\s*"
      r"(?:的事)?\s*(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
@@ -574,6 +594,7 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
         return []
     seen: set[tuple[str, str]] = set()
     out: List[Tuple[str, str, str]] = []
+    spans: List[Tuple[int, int]] = []
     for locale, kind, pat in DIRECTIVE_PATTERNS:
         zh_family = locale.startswith("zh")
         for m in pat.finditer(text):
@@ -582,7 +603,7 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             except IndexError:
                 continue
             term = _trim_term(term_raw, locale)
-            if not (2 <= len(term) <= 40):
+            if not (_TERM_MIN_LEN <= len(term) <= _TERM_MAX_LEN):
                 continue
             # zh 模板与日文共用 別/提/講/談/討論 这些汉字，日文句子会被抓成
             # ban_topic（见 _is_japanese_sentence_match）。只对 zh 生效——ja 模板
@@ -596,11 +617,13 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
                 continue
             seen.add(key)
             out.append((locale, kind, term))
-    return _drop_filler_suffixed_terms(out)
+            spans.append((m.start(), m.end()))
+    return _drop_filler_suffixed_terms(out, spans)
 
 
 def _drop_filler_suffixed_terms(
     hits: List[Tuple[str, str, str]],
+    spans: List[Tuple[int, int]] | None = None,
 ) -> List[Tuple[str, str, str]]:
     """Drop a term that is just another extracted term plus a trailing filler word.
 
@@ -618,15 +641,33 @@ def _drop_filler_suffixed_terms(
     Comparing after the fact needs no word-boundary guess at all: ``股票就`` goes
     because ``股票`` was also extracted from the same message, while ``功成名就``
     stays because ``功成名`` never was.
-    """  # noqa: DOCSTRING_CJK
-    if len(hits) < 2:
-        return hits
-    by_kind: dict[str, set[str]] = {}
-    for _locale, kind, term in hits:
-        by_kind.setdefault(kind, set()).add(term)
 
-    def _is_redundant(kind: str, term: str) -> bool:
-        # 填充词会叠（"前女友的事就"），所以逐层剥，任何一层撞上另一条 term 就丢。
+    ⚠️ The comparison is restricted to **overlapping** matches, i.e. the two
+    templates firing on the *same* directive. Without that,
+    "功成名就别提了，功成名别提了。" — two separate directives that happen to differ
+    by a ``就`` — would lose the first one (codex P2). ``spans`` carries that
+    provenance positionally alongside ``hits``; omit it and nothing is suppressed,
+    which is the safe direction.
+    """  # noqa: DOCSTRING_CJK
+    if len(hits) < 2 or not spans or len(spans) != len(hits):
+        return hits
+
+    def _overlaps(a: Tuple[int, int], b: Tuple[int, int]) -> bool:
+        return a[0] < b[1] and b[0] < a[1]
+
+    def _is_redundant(index: int) -> bool:
+        _locale, kind, term = hits[index]
+        # 只跟"命中区间和自己重叠"的同类 term 比 —— 那才是同一条指令的两种切法。
+        rivals = {
+            other_term
+            for other_index, (_l, other_kind, other_term) in enumerate(hits)
+            if other_index != index
+            and other_kind == kind
+            and _overlaps(spans[index], spans[other_index])
+        }
+        if not rivals:
+            return False
+        # 填充词会叠（"前女友的事就"），所以逐层剥，任何一层撞上对手就丢。
         seen_forms = {term}
         frontier = [term]
         while frontier:
@@ -635,18 +676,14 @@ def _drop_filler_suffixed_terms(
                 if not current.endswith(filler) or len(current) <= len(filler):
                     continue
                 shorter = current[: -len(filler)]
-                if shorter in by_kind[kind]:
+                if shorter in rivals:
                     return True
                 if shorter not in seen_forms:
                     seen_forms.add(shorter)
                     frontier.append(shorter)
         return False
 
-    return [
-        (locale, kind, term)
-        for locale, kind, term in hits
-        if not _is_redundant(kind, term)
-    ]
+    return [hit for index, hit in enumerate(hits) if not _is_redundant(index)]
 
 
 # ---------------------------------------------------------------------------
