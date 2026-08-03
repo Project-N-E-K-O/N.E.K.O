@@ -312,12 +312,25 @@ _ZH_TRAILING_FILLERS = (
     "这话题", "這話題", "这件事", "這件事",
 )
 
-# 话题里允许出现的字符。四条 zh 模板共用一份，别再各写各的。
+# 话题里允许出现的**一个单位**。四条 zh 模板共用一份，别再各写各的。
+#
 # ⚠️ 换行必须**显式**排除：原先这些捕获组写的是 ``.``，在没有 DOTALL 时天然不匹配
 # 换行；换成负字符类之后这个性质就没了，多行消息里 term 会把换行连同**下一条指令**
-# 一起吞掉（"别提工作\n别提加班" → term "工作\n别提加班"）。句读同理——话题不该跨
-# 句子，宾语下限抬到 2 之后 lazy 捕获会主动跳过本该收尾的句读去够更长的匹配。
-_ZH_TOPIC_CHAR = r"[^，。！？；,.!?;\r\n]"
+# 一起吞掉（"别提工作\n别提加班" → term "工作\n别提加班"）。
+#
+# ⚠️ 句读也要排除，否则捕获会跨过本该收尾的标点去够更长的匹配
+# （"功成名就别提了，功成名别提了。" → "了，功成名别提"）。但**书名号 / 引号里的
+# 标点属于话题本身**：`电影《你好，李焕英》别提了。` 的逗号在片名里，一刀切排除会
+# 把 term 截成 "李焕英"（codex P2）。所以一个"单位"是「非句读非换行的单字」**或**
+# 「一整段配对括起来的内容」——括号内不限标点，但不许跨行。
+_ZH_BRACKET_PAIRS = (("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"))
+# ⚠️ 括号分支必须排在单字分支**之前**：单字分支能匹配 ``《`` 本身，排前面的话
+# 正则会把开括号当成一个普通字吃掉，括号分支永远轮不上，然后卡在里面的逗号上。
+# 括号没闭合（或跨行）时括号分支失败，自然回落到单字分支，不会把整条消息吞掉。
+_ZH_TOPIC_CHAR = "(?:" + "|".join(
+    [f"{lo}[^{hi}\\r\\n]*{hi}" for lo, hi in _ZH_BRACKET_PAIRS]
+    + [r"[^，。！？；,.!?;\r\n]"]
+) + ")"
 
 # 模板 1 里 term 与终结符之间允许出现的句末助词。与 ``_TRIM_TRAIL_TOKENS`` 的 zh
 # 段成对：这里放行、那里剥掉，少一边 term 就带着助词存进去。
@@ -459,7 +472,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 结构是显式的，被腰斩的风险仅限于 ``关于`` + 就尾词（"关于功成名就别提了"，
      # 极罕见）。模板 2 没有这个锚，覆盖的是全部 "X别提了" 句子——成就 / 迁就 /
      # 功成名就 都住在那里，所以那边一个字都不吃，交给 _drop_filler_suffixed_terms。
-     r"(?:关于|關於)\s*(" + _ZH_TOPIC_CHAR + r"{2,30}?)\s*(?:的事)?\s*"
+     r"(?:关于|關於)\s*(" + _ZH_TOPIC_CHAR + r"{1,30}?)\s*(?:的事)?\s*"
      r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*(?:就)?"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
@@ -604,7 +617,10 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
     """  # noqa: DOCSTRING_CJK
     if not text:
         return []
-    seen: set[tuple[str, str]] = set()
+    # ⚠️ 去重必须放在 _drop_filler_suffixed_terms **之后**：填充词过滤靠命中区间
+    # 认「同一条指令的两种切法」，而去重会把重复 term 连同它的区间一起扔掉。
+    # "股票别提了。关于股票就别提了。" 里第二条指令的 ``股票`` 因为和第一条同名被去掉，
+    # 过滤器就只看得到第一条那个**不重叠**的区间，于是 ``股票就`` 逃过一劫（codex P2）。
     out: List[Tuple[str, str, str]] = []
     spans: List[Tuple[int, int]] = []
     for locale, kind, pat in DIRECTIVE_PATTERNS:
@@ -624,13 +640,17 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
                 m.group(0), term, text[: m.start()]
             ):
                 continue
-            key = (kind, term.casefold())
-            if key in seen:
-                continue
-            seen.add(key)
             out.append((locale, kind, term))
             spans.append((m.start(), m.end()))
-    return _drop_filler_suffixed_terms(out, spans)
+    seen: set[tuple[str, str]] = set()
+    deduped: List[Tuple[str, str, str]] = []
+    for locale, kind, term in _drop_filler_suffixed_terms(out, spans):
+        key = (kind, term.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((locale, kind, term))
+    return deduped
 
 
 def _drop_filler_suffixed_terms(

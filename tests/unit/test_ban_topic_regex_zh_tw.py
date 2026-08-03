@@ -747,9 +747,47 @@ def test_single_character_subject_survives_the_optional_de_shi(text, expected):
 
 def test_all_four_zh_templates_share_one_topic_char_class():
     """四条模板各写各的字符类正是漂移的起点——共用一份常量，加一条模板也自动跟上。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_TOPIC_CHAR == r"[^，。！？；,.!?;\r\n]"
+    assert r"[^，。！？；,.!?;\r\n]" in D._ZH_TOPIC_CHAR
+    assert D._ZH_BRACKET_PAIRS == (
+        ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
+    )
+    for lo, hi in D._ZH_BRACKET_PAIRS:
+        assert f"{lo}[^{hi}" in D._ZH_TOPIC_CHAR, f"{lo}{hi} 没进话题单位"
     for raw in _zh_pattern_sources():
-        assert D._ZH_TOPIC_CHAR in raw, f"这条 zh 模板没走共用字符类：{raw!r}"
+        assert D._ZH_TOPIC_CHAR in raw, f"这条 zh 模板没走共用话题单位：{raw!r}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 书名号 / 引号里的标点属于话题本身，不是句子边界。一刀切排除句读会把
+        # term 截成后半截（"电影《你好，李焕英》别提了。" → "李焕英"，codex P2）。
+        ("电影《你好，李焕英》别提了。", "电影《你好，李焕英"),
+        ("電影《你好，李煥英》別提了。", "電影《你好，李煥英"),
+        ("别提《你好，李焕英》了。", "你好，李焕英"),
+        ("别提「你好，李焕英」了。", "你好，李焕英"),
+        ("别提【重要，紧急】了。", "重要，紧急"),
+    ],
+)
+def test_punctuation_inside_a_quoted_title_stays_in_the_topic(text, expected):
+    assert expected in _zh_terms(text), f"{text!r} -> {_zh_terms(text)}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ⚠️ 样本必须让「闭合括号在下一行」——括号里根本没有闭合符号时，括号分支
+        # 无论放不放行换行都失败，压不住这一维。
+        "别提《书名前半\n后半》了。",
+        "别提「引文前半\n后半」了。",
+        "别提《没闭合的书名\n别提加班。",
+    ],
+)
+def test_a_bracket_run_must_not_cross_a_line_break(text):
+    """括号段放行标点，但不放行换行——否则一个跨行的书名号会把两行连同中间的
+    指令一起吞进 term。"""  # noqa: DOCSTRING_CJK
+    for term in _zh_terms(text):
+        assert "\n" not in term and "\r" not in term, f"{text!r} -> {term!r}"
 
 
 def test_object_never_spans_a_sentence_boundary():
@@ -965,6 +1003,20 @@ def test_filler_dedup_needs_the_shorter_term_to_actually_exist():
     assert len(D._drop_filler_suffixed_terms([
         ("zh", "ban_topic", "股票就"), ("zh", "other_kind", "股票"),
     ], overlapping)) == 2
+
+
+def test_filler_dedup_runs_before_term_deduplication():
+    """⚠️ 去重必须在填充词过滤**之后**：过滤器靠命中区间认「同一条指令的两种切法」，
+    而去重会把重复 term 连同它的区间一起扔掉。
+
+    "股票别提了。关于股票就别提了。" 里第二条指令的 ``股票`` 和第一条同名，先去重
+    的话它的区间就没了，过滤器只看得到第一条那个**不重叠**的区间，``股票就``
+    逃过一劫（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms("股票别提了。关于股票就别提了。") == {"股票"}
+    assert _zh_terms("工作别提了。关于工作就别提了。") == {"工作"}
+    # 反向：不同话题不能因为这个顺序被吞掉
+    assert _zh_terms("股票别提了。关于加班就别提了。") == {"股票", "加班"}
 
 
 def test_filler_dedup_only_touches_overlapping_matches():
