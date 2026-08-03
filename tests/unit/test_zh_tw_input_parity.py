@@ -3123,3 +3123,27 @@ def test_every_current_playback_aspect_marks_the_object(aspect, name):
 
     assert is_explicit_music_cancellation(f'停止{aspect}播放的{name}') is True
     assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize(
+    "marker", ["为什么", "為什麼", "为何", "為何", "怎么", "怎麼", "怎样", "如何", "干嘛"]
+)
+def test_wh_question_markers_are_recognized(marker):
+    """⚠️ 疑问标记到这里已经是**三族**：极性、情态 A-not-A、疑问代词/副词。
+
+    三族的触发方式一模一样：引号跨度正确地把标题里的 `？` 藏起来之后，只要真标记
+    不在表里，整句就没有任何标记能触发守卫，一句提问直接执行取消
+    （Codex P2 第二十三轮，前两族分别在第十四、十五、二十一轮）。
+
+    ⚠️ 疑问代词/副词是封闭类，可以列干净；只收**只能用于提问**的那些——
+    `什么` / `哪` 还能出现在「没什么」「哪怕」里，收了会把普通命令判成提问。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}会换成《你好吗？》'
+    ) is False
+    # 配对反向：普通命令不受影响。
+    for command in ('帮我停止播放红心歌单', '停止播放', '不要放晴天',
+                    '停止正在播放的晴天'):
+        assert is_explicit_music_cancellation(command) is True, command
