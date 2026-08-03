@@ -981,3 +981,20 @@ def test_a_separator_does_not_turn_a_field_edit_into_a_full_rewrite(
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
     allowed = f'把整个卡的{quantifier}{separator}重写一遍'
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+
+
+@pytest.mark.parametrize("noun", ["字段", "欄位", "设定", "內容"])
+@pytest.mark.parametrize("space", [" ", "\u3000", "  "])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+def test_whitespace_before_a_scope_noun_is_skipped(quantifier, space, noun):
+    """⚠️ 空白只在**中心语确实是整卡级名词**时才跳过（base 是 True）。
+
+    ⚠️ 配对反向断言：同样的空白后面跟字段名时仍然被挡——这两条合起来才说明
+    「跳过空白」没有把上一轮那条 P1（空格绕过单字段保险）放回来。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把整个卡的{quantifier}{space}{noun}重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把整个卡的{quantifier}{space}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked

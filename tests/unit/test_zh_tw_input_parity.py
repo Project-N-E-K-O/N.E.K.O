@@ -2385,3 +2385,24 @@ def test_a_quoted_title_after_de_is_still_a_command(determiner, opening, closing
     text = f'停止正在播放的{determiner}{opening}晴天{closing}'
     assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation(f'我要停止播放的{determiner}代码') is False
+
+
+@pytest.mark.parametrize("space", [" ", "\u3000", "  "])
+def test_whitespace_before_a_playback_object_is_skipped(space):
+    """⚠️ 逃生项前面的空白只能**跳过**，而且判据只在跳过后落到白名单上才放行。
+
+    `停止正在播放的 音乐` base 是 True，被判成名物化（Codex P2 第六轮）。
+
+    ⚠️⚠️ `\s*` 必须写在**内层前视里面**。写成 `的\s*(?!…)` 的话 `\s*` 会回溯成
+    零宽、前视在空格那个位置再判一次，等于没改——这条用例连同下面的反向断言
+    一起把这个坑钉住。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for obj in ("音乐", "音樂", "《晴天》", "这首歌"):
+        text = f'停止正在播放的{space}{obj}'
+        assert is_explicit_music_cancellation(text) is True, text
+    # 反向：跳过空白后仍然是非音乐中心语时，照旧判成名物化。
+    for obj in ("代码", "教程"):
+        text = f'我要停止播放的{space}{obj}'
+        assert is_explicit_music_cancellation(text) is False, text

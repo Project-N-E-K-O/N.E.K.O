@@ -256,7 +256,6 @@ _ZH_QUOTE_OPENERS = "".join(
     ch for ch in dict.fromkeys(_QUOTE_PAIRS.keys())
     if ch != _ZH_AMBIGUOUS_APOSTROPHE
 )
-_ZH_QUOTE_CLOSERS = "".join(dict.fromkeys(_QUOTE_PAIRS.values()))
 _ZH_PAIRED_QUOTED_SPAN = "|".join(
     f"{opening}[^。！？!?{opening}{closing}]*{closing}"
     for opening, closing in _QUOTE_PAIRS.items()
@@ -397,8 +396,12 @@ _ZH_ELLIPTICAL_AFTER_DE = r"(?:[了吧啊呀呢嘛喔哦]|\s)*(?=$|[，,。！!�
 # 窗口有界（{0,4}）且不跨子句标点，不会回溯爆炸。
 _ZH_PLAYBACK_UI_NOUN = r"(?:按钮|按鈕|功能|键|鍵|控件|組件|组件)"
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
-    rf"(?!的(?!{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_DEGREE_AFTER_DE}"
-    rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE})"
+    # ⚠️ `\s*` 写在**内层前视里面**，不能写成 `的\s*(?!…)`：后者里 `\s*` 会回溯
+    # 成零宽，前视又在空格那个位置判一次「后面不是音乐名词」，于是照样判成名物化。
+    # 内层写成 `(?!\s*(?:…))` 时，只要「跳过空白后能匹配上任一逃生项」整条前视就
+    # 失败——这才是想要的语义。
+    rf"(?!的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_DEGREE_AFTER_DE}"
+    rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE}))"
     rf"|{_ZH_PLAYBACK_UI_NOUN}"
     rf"(?![^，,。！!？?]{{0,4}}?{_ZH_MUSIC_HEAD_AFTER_DE}))"
 )
