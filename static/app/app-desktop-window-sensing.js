@@ -8,6 +8,7 @@
 
     const CAT_ACTIVE_EVENT = 'neko:cat-local-active-change';
     const CAT_TIER_EVENT = 'neko:auto-goodbye:state-change';
+    const GOODBYE_STATE_CLEARED_EVENT = 'neko:goodbye-state-cleared';
     const CAT1_TIER = 'cat1';
     const FALLBACK_OBSERVATION_EVENT = 'neko:cat-mind:observation';
     const FALLBACK_OBSERVATION_TYPE = 'desktop_occlusion_or_layer_change';
@@ -170,8 +171,21 @@
         const expectedGeneration = generation;
         startPending = true;
         removeChangedSubscription();
+        let ownUnsubscribe = null;
+        const removeOwnSubscription = () => {
+            const cleanup = ownUnsubscribe;
+            ownUnsubscribe = null;
+            if (unsubscribeChanged === cleanup) {
+                unsubscribeChanged = null;
+            }
+            if (typeof cleanup === 'function') {
+                try {
+                    cleanup();
+                } catch (_) {}
+            }
+        };
         try {
-            unsubscribeChanged = bridge.onChanged((value) => {
+            ownUnsubscribe = bridge.onChanged((value) => {
                 const changedSessionId = readSessionId(value && value.sessionId);
                 if (!cat1Active
                     || disposed
@@ -182,12 +196,13 @@
                 }
                 publishObservation(value);
             });
+            unsubscribeChanged = ownUnsubscribe;
             const result = await bridge.start();
             const startedSessionId = readSessionId(result && result.sessionId);
             if (disposed
                 || !cat1Active
                 || expectedGeneration !== generation) {
-                removeChangedSubscription();
+                removeOwnSubscription();
                 if (startedSessionId) {
                     try {
                         await bridge.stop(startedSessionId);
@@ -198,12 +213,10 @@
             sessionId = startedSessionId;
             publishObservation(result);
             if (!sessionId) {
-                removeChangedSubscription();
+                removeOwnSubscription();
             }
         } catch (_) {
-            if (expectedGeneration === generation) {
-                removeChangedSubscription();
-            }
+            removeOwnSubscription();
         } finally {
             if (expectedGeneration === generation) {
                 startPending = false;
@@ -241,6 +254,11 @@
         syncCat1Session(detail.tier);
     }
 
+    function handleGoodbyeStateCleared() {
+        catAppearanceActive = false;
+        stopSession();
+    }
+
     function dispose() {
         if (disposed) return;
         catAppearanceActive = false;
@@ -248,12 +266,14 @@
         disposed = true;
         window.removeEventListener(CAT_ACTIVE_EVENT, handleCatAppearanceChange);
         window.removeEventListener(CAT_TIER_EVENT, handleCatTierChange);
+        window.removeEventListener(GOODBYE_STATE_CLEARED_EVENT, handleGoodbyeStateCleared);
         window.removeEventListener('pagehide', dispose);
         window.removeEventListener('beforeunload', dispose);
     }
 
     window.addEventListener(CAT_ACTIVE_EVENT, handleCatAppearanceChange);
     window.addEventListener(CAT_TIER_EVENT, handleCatTierChange);
+    window.addEventListener(GOODBYE_STATE_CLEARED_EVENT, handleGoodbyeStateCleared);
     window.addEventListener('pagehide', dispose);
     window.addEventListener('beforeunload', dispose);
 })();

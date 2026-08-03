@@ -166,6 +166,12 @@ function createRuntime(options = {}) {
         { detail },
       ));
     },
+    publishGoodbyeStateCleared(detail = {}) {
+      window.dispatchEvent(new CustomEventLike(
+        'neko:goodbye-state-cleared',
+        { detail },
+      ));
+    },
     publishChanged(detail) {
       if (changedListener) changedListener(detail);
     },
@@ -323,6 +329,72 @@ test('leaving CAT1 stops a start result that arrives late', async () => {
   assert.deepEqual(runtime.stops, ['late-session']);
   assert.equal(runtime.observations.length, 0);
   assert.equal(runtime.unsubscribeCount, 1);
+});
+
+test('a late start result never breaks the next CAT1 session subscription', async () => {
+  const deferred = createDeferred();
+  let startCount = 0;
+  const runtime = createRuntime({
+    start: () => {
+      startCount += 1;
+      if (startCount === 1) return deferred.promise;
+      return Promise.resolve({
+        status: 'ready',
+        sessionId: 'session-2',
+        rect: { x: 10, y: 20, width: 300, height: 200 },
+      });
+    },
+  });
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  runtime.publishTierState({ type: 'visual-tier', tier: 'cat2' });
+  runtime.publishTierState({ type: 'visual-tier', tier: 'cat1' });
+  await flushPromises();
+
+  deferred.resolve({
+    status: 'ready',
+    sessionId: 'stale-session',
+    rect: { x: 10, y: 20, width: 300, height: 200 },
+  });
+  await flushPromises();
+
+  const before = runtime.observations.length;
+  runtime.publishChanged({
+    status: 'changed',
+    sessionId: 'session-2',
+    changes: ['size'],
+    movement: null,
+    rect: { x: 40, y: 50, width: 400, height: 220 },
+  });
+
+  assert.equal(runtime.observations.length, before + 1);
+  assert.deepEqual(runtime.stops, ['stale-session']);
+});
+
+test('character switch clears the active sensing session and allows a fresh CAT1 session', async () => {
+  const runtime = createRuntime();
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  runtime.publishGoodbyeStateCleared({ reason: 'character-switch' });
+  await flushPromises();
+
+  assert.deepEqual(runtime.stops, ['session-1']);
+  assert.equal(runtime.unsubscribeCount, 1);
+
+  const before = runtime.observations.length;
+  runtime.publishChanged({
+    status: 'changed',
+    sessionId: 'session-1',
+    changes: ['identity'],
+    movement: null,
+    rect: { x: 40, y: 50, width: 300, height: 200 },
+  });
+  assert.equal(runtime.observations.length, before);
+
+  runtime.publishCatState({ active: true, appearance: 'cat', tier: 'cat1' });
+  await flushPromises();
+  assert.equal(runtime.starts.length, 2);
 });
 
 test('switching to ball or unloading the page stops the current cat session', async () => {
