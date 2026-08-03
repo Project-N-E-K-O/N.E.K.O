@@ -322,6 +322,10 @@ DIRECT_STOP_PAIRS = [
     # 就会被判成窄排除而不是取消播放（greptile P1）。前缀已提成共用常量。
     ("算了停止播放红心歌单", "算了停止播放紅心歌單"),
     ("还是算了暂停播放每日推荐", "還是算了暫停播放每日推薦"),
+    # 前缀里的「我想/我要」——上一轮只统一了引导语，这一格还漂着。
+    ("我想停止播放红心歌单", "我想停止播放紅心歌單"),
+    ("算了我想停止播放红心歌单", "算了我想停止播放紅心歌單"),
+    ("我要暂停播放每日推荐", "我要暫停播放每日推薦"),
     ("暂停播放我喜欢的", "暫停播放我喜歡的"),
     ("取消播放每日推荐", "取消播放每日推薦"),
 ]
@@ -702,7 +706,14 @@ def test_the_two_cancellation_patterns_share_one_preface():
     """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
 
-    preface = mr._ZH_CHANGED_MIND_PREFACE
-    assert preface, "引导语常量是空的"
-    assert preface in mr._ZH_NEGATIVE_MUSIC.pattern
-    assert preface in mr._ZH_DIRECT_MUSIC_STOP.pattern
+    # ⚠️ 断言**完整前缀**而不只是引导语。第一版只对了引导语，结果没抓住
+    # `_ZH_DIRECT_MUSIC_STOP` 比对方多一个 `(?:想|要)?`——`我想停止播放紅心歌單`
+    # 因此被静默忽略（greptile P1 第二次）。守卫要覆盖到会漂的整段。
+    shared_prefix = "^" + mr._ZH_CHANGED_MIND_PREFACE + mr._ZH_REQ_PREFIX
+    assert mr._ZH_CHANGED_MIND_PREFACE, "引导语常量是空的"
+    assert mr._ZH_NEGATIVE_MUSIC.pattern.startswith(shared_prefix), (
+        "_ZH_NEGATIVE_MUSIC 的前缀与 _ZH_DIRECT_MUSIC_STOP 漂开了"
+    )
+    assert mr._ZH_DIRECT_MUSIC_STOP.pattern.startswith(shared_prefix), (
+        "_ZH_DIRECT_MUSIC_STOP 的前缀与 _ZH_NEGATIVE_MUSIC 漂开了"
+    )
