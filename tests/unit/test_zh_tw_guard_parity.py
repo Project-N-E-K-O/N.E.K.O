@@ -552,9 +552,34 @@ def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-@pytest.mark.parametrize(
-    "negator", ["不要", "不用", "不需要", "别", "別", "先不要", "暂不", "暫不", "无需", "無需"]
-)
+def _negators() -> list[str]:
+    """从 `_CHAT_NEGATED_REWRITE_RE` 里把否定词闭集拆出来。
+
+    ⚠️ 上一版是手抄 10 个，于是 不准/不許/禁止/嚴禁/休要/不得/莫 全没跑到——
+    reviewer 报了其中一个，实测才发现漏了七个。否定/禁止是**封闭词类**，
+    从常量推导就不会再落后于正则。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    head = router._CHAT_NEGATED_REWRITE_RE.pattern.split(')', 1)[0]
+    words = head.removeprefix('(?:').split('|')
+    assert all(
+        w and all('一' <= ch <= '鿿' for ch in w) for w in words
+    ), f'拆出了非汉字残片: {words}'
+    return words
+
+
+NEGATORS = _negators()
+
+
+def test_the_negator_table_is_derived_and_complete():
+    """⚠️ 拆解失效会让下面的笛卡尔积静默缩水。钉住规模与几个曾漏掉的词。"""  # noqa: DOCSTRING_CJK
+    assert len(NEGATORS) >= 24, NEGATORS
+    for word in ("不准", "不許", "禁止", "嚴禁", "休要", "不得", "莫", "切勿"):
+        assert word in NEGATORS, f'{word} 不在否定词闭集里'
+
+
+@pytest.mark.parametrize("negator", NEGATORS)
 @pytest.mark.parametrize("target", ["整个卡", "整個卡", "整个角色卡", "整張卡"])
 def test_a_negated_rewrite_never_triggers_full_card_completion(target, negator):
     """⚠️⚠️ 否定的整卡请求绝不能走整卡补全通路。
