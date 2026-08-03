@@ -1371,3 +1371,133 @@ def test_specific_compounds_stay_pinned(simplified, traditional):
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is False, text
+
+
+# ---------------------------------------------------------------------------
+# 第十四轮
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["我想停止播放？", "我要停止播放？", "請幫我停止播放？", "帮我停止播放？",
+     "我要关掉音乐?", "给我暂停播放？"],
+)
+def test_a_bare_question_mark_is_also_interrogative(text):
+    """⚠️ 裸问号挡不进那条语气词守卫——`_split_music_request_clauses` 会先把
+    句末标点剥掉，正则拿到的子句是「我想停止播放」，根本看不到问号。
+
+    所以这一条只能放在**入口**判，作用在未切分的原文上。两条机制互补：
+    语气词在正则里（语气词不会被切分剥掉），裸问号在入口。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止他的红心歌单", "停止他的紅心歌單"),
+        ("停止我们的红心歌单", "停止我們的紅心歌單"),
+        ("停止您的红心歌单", "停止您的紅心歌單"),
+        ("停止你们的歌单", "停止你們的歌單"),
+        ("停止她的歌单", "停止她的歌單"),
+    ],
+)
+def test_every_possessive_person_reaches_the_stop_target(simplified, traditional):
+    """⚠️ 所有格要列全人称。只有 我的/你的 时，`停止他的紅心歌單` 判 False。
+
+    人称是**封闭词类**，一次列干净。而且这张表必须在 `_ZH_MUSIC_NOUN_MODIFIER`
+    和 `_ZH_DIRECT_MUSIC_STOP` 里保持一致，否则两条判据对同一句话给出不同答案。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要听信谣言", "不要聽信謠言"),
+        ("无需听从他的安排", "無需聽從他的安排"),
+        ("不想听取意见", "不想聽取意見"),
+        ("不要放弃", "不要放棄"),
+        ("停止放松", "停止放鬆"),
+        ("不要播种", "不要播種"),
+    ],
+)
+def test_the_compound_guard_also_covers_the_multi_char_negator(
+    simplified, traditional
+):
+    """⚠️ 三张复合词表只挂在「别」那一支是不够的。
+
+    `不要` / `無需` / `停止` 这些多字否定词后面同样接单字播放动词，
+    `不要聽信謠言` 会走那一支。简体侧 base 就是 True，这条顺带一起修了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("取消音乐节的行程", "取消音樂節的行程"),
+        ("停止音乐课", "停止音樂課"),
+        ("不要音乐理论", "不要音樂理論"),
+        ("取消音乐比赛", "取消音樂比賽"),
+    ],
+)
+def test_a_music_noun_must_be_a_complete_target(simplified, traditional):
+    """⚠️ 音樂 / 歌 可以是更长复合词的**词头**：音樂節 / 音樂課 / 音樂理論。
+
+    名词尾那一支原本不校验后面跟什么，于是活动、课程、理论全被当成播放对象。
+    「音樂X 能组成什么词」是开集，所以正向要求右边界。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["停止音乐", "停止音樂", "关掉音乐", "關掉音樂", "不要音乐了", "不要音樂了",
+     "关掉音乐吗", "關掉音樂嗎", "暂停一下音乐", "暫停一下音樂", "关掉背景音乐",
+     "停止这个红心歌单", "停止這個紅心歌單", "停止红心歌单的音乐", "停止紅心歌單的音樂"],
+)
+def test_the_music_noun_boundary_does_not_over_tighten(text):
+    """⚠️ 右边界收得太紧会切断 `歌單`——`歌` 匹配后卡在 `單` 上。
+
+    音乐名词自身的后缀（单/單/曲/目）要先吃完再判边界；语气词也要收进来，
+    `关掉音乐吗` 在基线上是 True，不能被这道边界顺手改掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "pronoun", ["我", "你", "妳", "您", "他", "她", "它", "牠",
+                "我们", "我們", "你们", "你們", "他们", "他們", "她们", "她們"],
+)
+def test_a_pronoun_never_becomes_an_artist_search(pronoun):
+    """⚠️ 人称是封闭词类，简繁都要列全。漏了繁体的 妳 / 你們 / 您，
+    `來一首妳的歌` 会去搜一个名叫「妳」的歌手。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    result = parse_explicit_user_music_request(f'来一首{pronoun}的歌')
+    assert not getattr(result, 'song_artist', None), pronoun
+
+
+@pytest.mark.parametrize("artist", ["周杰伦", "周杰倫", "五月天", "邓紫棋", "鄧紫棋"])
+def test_a_real_artist_is_still_searchable(artist):
+    """反向：人称表不能宽到把真歌手也挡掉。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    result = parse_explicit_user_music_request(f'来一首{artist}的歌')
+    assert getattr(result, 'song_artist', None) == artist
