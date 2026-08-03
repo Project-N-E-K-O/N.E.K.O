@@ -56,6 +56,8 @@ jobs:
   # Job 1: Calculate version (shared by all build jobs)
   # ============================================================================
   calculate-version:
+    # Keep fork pushes from creating a runner job solely to calculate a version.
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     outputs:
       image_version: ${{ steps.version_calc.outputs.VERSION }}
