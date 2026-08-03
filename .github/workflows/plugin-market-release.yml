@@ -6,6 +6,10 @@ on:
       plugin-id:
         required: true
         type: string
+      neko-repository:
+        required: false
+        type: string
+        default: Project-N-E-K-O/N.E.K.O
       neko-ref:
         required: true
         type: string
@@ -18,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PLUGIN_ID: ${{ inputs.plugin-id }}
-      NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O
+      NEKO_REPOSITORY: ${{ inputs.neko-repository }}
       NEKO_REF: ${{ inputs.neko-ref }}
     steps:
       - name: Validate workflow inputs

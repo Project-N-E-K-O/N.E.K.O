@@ -656,7 +656,9 @@ def test_init_repo_generates_online_vendor_build_workflow(tmp_path: Path) -> Non
             str(tmp_path),
             "--no-git",
             "--neko-repo",
-            "Project-N-E-K-O/N.E.K.O",
+            "example/N.E.K.O-fork",
+            "--neko-ref",
+            "feature/plugin-actions",
         ]
     )
 
@@ -672,17 +674,17 @@ def test_init_repo_generates_online_vendor_build_workflow(tmp_path: Path) -> Non
 
     assert "vendor/" in gitignore.splitlines()
     assert (
-        "uses: Project-N-E-K-O/N.E.K.O/.github/workflows/"
-        "plugin-market-verify.yml@main"
+        "uses: example/N.E.K.O-fork/.github/workflows/"
+        "plugin-market-verify.yml@feature/plugin-actions"
     ) in verify_workflow
     assert (
-        "uses: Project-N-E-K-O/N.E.K.O/.github/workflows/"
-        "plugin-market-release.yml@main"
+        "uses: example/N.E.K.O-fork/.github/workflows/"
+        "plugin-market-release.yml@feature/plugin-actions"
     ) in release_workflow
     for workflow in (verify_workflow, release_workflow):
         assert "plugin-id: dependency_demo" in workflow
-        assert "neko-repository:" not in workflow
-        assert "neko-ref: main" in workflow
+        assert "neko-repository: example/N.E.K.O-fork" in workflow
+        assert "neko-ref: feature/plugin-actions" in workflow
         assert "Sync plugin dependencies" not in workflow
 
 
@@ -1027,6 +1029,80 @@ def test_setup_repo_upgrade_github_actions_replaces_recognized_legacy_templates(
         )
     captured = capsys.readouterr()
     assert captured.out.count("[UPGRADE]") == 3
+
+
+def test_setup_repo_upgrade_github_actions_replaces_real_inline_legacy_workflows(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "legacy_demo")
+    fixture_dir = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "neko_plugin_cli"
+        / "legacy_market_actions"
+        / "v0"
+    )
+    workflow_dir = plugin_dir / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    for workflow_name in ("verify.yml", "release.yml"):
+        (workflow_dir / workflow_name).write_text(
+            (fixture_dir / workflow_name).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    assert (
+        neko_plugin_cli.main(
+            ["setup-repo", str(plugin_dir), "--upgrade-github-actions"]
+        )
+        == 0
+    )
+
+    assert (plugin_dir / "ruff.toml").is_file()
+    for workflow_name in ("verify.yml", "release.yml"):
+        workflow = (workflow_dir / workflow_name).read_text(encoding="utf-8")
+        assert "managed-template: plugin-market-actions-v1" in workflow
+        assert "runs-on:" not in workflow
+    captured = capsys.readouterr()
+    assert captured.out.count("[ADD]") == 1
+    assert captured.out.count("[UPGRADE]") == 2
+
+
+def test_setup_repo_upgrade_github_actions_rejects_modified_legacy_workflow(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "legacy_demo")
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "neko_plugin_cli"
+        / "legacy_market_actions"
+        / "v0"
+        / "verify.yml"
+    ).read_text(encoding="utf-8")
+    verify_workflow = plugin_dir / ".github" / "workflows" / "verify.yml"
+    verify_workflow.parent.mkdir(parents=True)
+    modified = fixture.replace(
+        "name: Verify N.E.K.O Plugin",
+        "name: Custom Plugin Verification",
+        1,
+    )
+    verify_workflow.write_text(modified, encoding="utf-8")
+
+    assert (
+        neko_plugin_cli.main(
+            ["setup-repo", str(plugin_dir), "--upgrade-github-actions"]
+        )
+        == 1
+    )
+
+    assert verify_workflow.read_text(encoding="utf-8") == modified
+    assert not (plugin_dir / "ruff.toml").exists()
+    assert not (plugin_dir / ".github" / "workflows" / "release.yml").exists()
+    captured = capsys.readouterr()
+    assert "[CONFLICT] .github/workflows/verify.yml" in captured.err
+    assert "No files were changed." in captured.err
 
 
 def test_setup_repo_upgrade_github_actions_rejects_overwrite(

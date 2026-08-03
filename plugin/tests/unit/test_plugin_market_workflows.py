@@ -13,7 +13,13 @@ def test_reusable_verify_workflow_owns_the_market_checks_and_small_evidence() ->
     ).read_text(encoding="utf-8")
 
     assert "workflow_call:" in workflow
-    assert "NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O" in workflow
+    assert (
+        "      neko-repository:\n"
+        "        required: false\n"
+        "        type: string\n"
+        "        default: Project-N-E-K-O/N.E.K.O"
+    ) in workflow
+    assert "NEKO_REPOSITORY: ${{ inputs.neko-repository }}" in workflow
     assert "uvx ruff==0.12.4 check" in workflow
     assert "check -r" in workflow
     assert "market-evidence.json" in workflow
@@ -27,7 +33,13 @@ def test_reusable_release_workflow_publishes_package_digest_evidence() -> None:
     ).read_text(encoding="utf-8")
 
     assert "workflow_call:" in workflow
-    assert "NEKO_REPOSITORY: Project-N-E-K-O/N.E.K.O" in workflow
+    assert (
+        "      neko-repository:\n"
+        "        required: false\n"
+        "        type: string\n"
+        "        default: Project-N-E-K-O/N.E.K.O"
+    ) in workflow
+    assert "NEKO_REPOSITORY: ${{ inputs.neko-repository }}" in workflow
     assert "check -r --market-release" in workflow
     assert "market-evidence.json" in workflow
     assert "softprops/action-gh-release" in workflow
