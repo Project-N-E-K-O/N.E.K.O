@@ -1316,3 +1316,32 @@ def test_the_right_boundary_does_not_block_real_whole_card_requests(phrasing):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
+
+
+@pytest.mark.parametrize(
+    ("phrasing", "expected"),
+    [
+        # 范围后缀自己当中心语（base 是 True）
+        ("把整个卡的全部值都重写", True),
+        ("把整個卡的所有值重寫", True),
+        ("把整个卡的全部项重写", True),
+        # 头部名词后面先吃掉范围成分再判边界（base 是 True）
+        ("把整个卡的内容设定重写", True),
+        ("把整个卡的内容资料重写", True),
+        # ⚠️ 反向：边界放宽之后，单字段那一族仍然必须被挡
+        ("把整个卡的内容名重写", False),
+        ("把整个卡的内容概要重写", False),
+        ("把整个卡的全部名字重写", False),
+        ("把所有字段的名字重写", False),
+    ],
+)
+def test_the_scope_boundary_is_neither_too_tight_nor_too_loose(phrasing, expected):
+    """⚠️ 加右边界（第十二~十九轮）之后必然会有「收得太紧」的另一面。
+
+    这条把两个方向钉在**同一个用例**里：范围后缀能自己当中心语、头部名词后面
+    能先吃掉范围成分，同时 `内容名` / `全部名字` / `字段的名字` 这一族照旧被挡。
+    分开写的话，下次放宽边界的人只会看到自己那一半。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing

@@ -939,13 +939,21 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # 空白之后「名字」照样不在整卡级名词表里，而限定词自己当中心语那一支有它
     # 自己的收尾要求（见 _WHOLE_CARD_BARE_QUANTIFIER_TAIL）。
     rf"(?:\s*的?\s*{_WHOLE_CARD_SCOPE_MODIFIER}"
-    rf"(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
+    # ⚠️ 范围后缀（值/项/目）也能**自己当中心语**：`把整个卡的全部值都重写`
+    # base 是 True，只让它当续接会把这类挡掉（Codex P2 第二十轮）。
+    # 单字段保险不受影响——`名字` 既不是整卡级名词也不是范围后缀。
+    rf"(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}|{_WHOLE_CARD_SCOPE_SUFFIX})"
     rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     # ⚠️ 头部名词那一支同样是前缀匹配，也要右边界：`把整个卡的内容名重写` /
     # `的内容概要重写` 会从这里进整卡补全通路（CodeRabbit Major）。
-    rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}){_WHOLE_CARD_SCOPE_NOUN_TAIL})"
+    # ⚠️ 头部名词后面同样允许先吃掉范围成分再判边界：`把整个卡的内容设定重写`
+    # base 是 True（Codex P2 第二十轮）。`的内容名` 仍然被挡——「名」既不是范围
+    # 后缀也不是整卡级名词。
+    rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)})"
+    rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
+    rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL})"
     r"|(?!\s*[的片]))"
     r"|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
     r"all\s+visible\s+fields)",
