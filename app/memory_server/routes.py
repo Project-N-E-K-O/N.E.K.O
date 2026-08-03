@@ -1553,11 +1553,12 @@ async def _process_scoped_history_segments(
         if (
             signal_facts is not None
             and segment.get("speaker_is_owner")
-            and (
-                result.get("status") == "ok"
-                or bool(result.get("reconciled"))
-            )
         ):
+            # Every retained owner observation is evaluated, even when fact
+            # extraction wholly failed for that segment.  The durable event is
+            # hidden from a failed response below and replayed on retry, while
+            # freezing here prevents a later segment's reconciliation from
+            # erasing the provenance that was valid at authored time.
             # Freeze the authored-order rows as well as their allow-list.
             # The final reload below still revalidates concurrent changes,
             # except for ids reconciled by this or a later request segment:
