@@ -88,15 +88,19 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
-def test_step_follow_routes_ignore_retired_saved_default_model_ids():
-    """Upgraded Step installs must not keep the retired default via saved follow fields."""
+def test_step_provider_slots_ignore_retired_saved_default_model_ids():
+    """Upgraded Step installs must not keep retired defaults in saved provider slots."""
     from config import DEFAULT_ASSIST_API_PROFILES
 
     config_dir = _make_workspace_temp_dir()
     try:
-        for provider, assist_api in (("follow_assist", "step"), ("follow_core", "qwen")):
+        for provider, core_api, assist_api in (
+            ("follow_assist", "step", "step"),
+            ("follow_core", "step", "qwen"),
+            ("step", "qwen", "qwen"),
+        ):
             data = {
-                "coreApi": "step",
+                "coreApi": core_api,
                 "assistApi": assist_api,
                 "assistApiKeyStep": "sk-step",
                 "assistApiKeyQwen": "sk-qwen",
