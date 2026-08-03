@@ -889,7 +889,11 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
     # ⚠️ 动词侧也要收英文。整卡目标和重写动词那两张表本来就有英文分支，
     # 只补否定词而不补动词，`don't rewrite the whole card` 照样绕过去。
     r"(?:重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善"
-    r"|rewrite|revise|regenerate|redo|refresh|change|update)"
+    r"|rewrite|revise|regenerate|redo|refresh|change|update)",
+    # ⚠️ 整卡目标和重写动词那两条正则都带 re.IGNORECASE，否定守卫漏了就是
+    # 单边不对称：`Don't rewrite the whole card` 满足两条正向谓词却躲过守卫，
+    # 直接走进整卡补全通路（Codex P1）。三条谓词的大小写口径必须一致。
+    re.IGNORECASE,
 )
 
 

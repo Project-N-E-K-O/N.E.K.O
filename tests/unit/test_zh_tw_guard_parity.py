@@ -763,3 +763,33 @@ def test_the_target_and_the_verb_must_share_a_clause(simplified, traditional):
 
     for text in (simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_all_three_full_rewrite_predicates_share_a_case_policy():
+    """⚠️⚠️ 三条谓词的大小写口径必须一致。
+
+    整卡目标和重写动词都带 `re.IGNORECASE`，否定守卫漏了就是单边不对称：
+    `Don't rewrite the whole card` 满足两条正向谓词却躲过守卫，直接走进整卡
+    补全通路（Codex P1）。这是**自动发现**的守卫，不用逐句举例。
+    """  # noqa: DOCSTRING_CJK
+    import re
+
+    import main_routers.card_assist_router as router
+
+    for name in (
+        '_CHAT_FULL_REWRITE_RE', '_CHAT_REWRITE_VERB_RE', '_CHAT_NEGATED_REWRITE_RE'
+    ):
+        pattern = getattr(router, name)
+        assert pattern.flags & re.IGNORECASE, f'{name} 缺 re.IGNORECASE'
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Don't rewrite the whole card", "DO NOT REWRITE ALL FIELDS",
+     "Do Not Regenerate The Entire Card"],
+)
+def test_an_english_negation_is_case_insensitive(text):
+    """句首大写是英文最常见的写法，不能因为大小写就绕过守卫。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text

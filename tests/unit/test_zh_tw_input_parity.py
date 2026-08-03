@@ -1695,3 +1695,17 @@ def test_specific_adverbs_stay_pinned(simplified, traditional):
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "text", ["停止QQ音乐", "关掉QQ音乐", "取消QQ音樂", "停止qq音乐", "停止Qq音乐"],
+)
+def test_a_branded_service_name_matches_either_case(text):
+    """⚠️ 服务名的品牌写法是大写 QQ，而这条正则是大小写敏感的。
+
+    闭集里塞小写 `qq` 只覆盖了没人会打的那种写法——加词进闭集时要连大小写
+    一起想，这跟「加词要连简繁孪生一起想」是同一类疏漏。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is True, text
