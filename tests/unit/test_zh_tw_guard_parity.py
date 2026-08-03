@@ -535,3 +535,18 @@ def test_the_completeness_guard_does_not_block_real_whole_card_requests(text):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("particle", ["吧", "啊", "呀", "呢", "了", "嘛", "喔", "嗎", "吗"])
+@pytest.mark.parametrize("target", ["整个卡", "整個卡", "整个卡片", "整張卡"])
+def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
+    """⚠️ 完整性守卫的收尾集合必须含语气词。
+
+    只放行「的 + 重写动词首字」的话，`重寫整個卡吧` 被判成不是整卡请求
+    （base 是 True）——修一个前缀误判顺手制造了一个新的触发不足。
+    语气词是封闭词类，跟重写动词表一样可以列干净。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写{target}{particle}'
+    assert router._chat_text_requests_full_rewrite(text) is True, text

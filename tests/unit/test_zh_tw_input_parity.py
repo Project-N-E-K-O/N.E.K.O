@@ -1501,3 +1501,26 @@ def test_a_real_artist_is_still_searchable(artist):
 
     result = parse_explicit_user_music_request(f'来一首{artist}的歌')
     assert getattr(result, 'song_artist', None) == artist
+
+
+def test_named_targets_do_not_collide_with_the_compound_tables():
+    """⚠️ 两组用例断言**相反**的结果，靠首字不重合来共存。
+
+    `test_refusing_a_named_track_or_artist_cancels_playback` 要 True，
+    `test_a_lexicalised_compound_is_not_a_playback_verb` 要 False。哪天有人往
+    复合词表里加一个常用字、而它正好是某条歌名的首字，前一组会整片打红，
+    排查时看不出根因。让冲突在源头就报出来。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    blacklist = (
+        set(mr._ZH_NON_PLAYBACK_AFTER_FANG)
+        | set(mr._ZH_NON_PLAYBACK_AFTER_BO)
+        | set(mr._ZH_NON_PLAYBACK_AFTER_TING)
+    )
+    collisions = [
+        name for name in SONG_TITLES + ARTIST_NAMES if name[0] in blacklist
+    ]
+    assert collisions == [], (
+        f'这些用例的首字落进了复合词黑名单，两组断言会互相打架: {collisions}'
+    )
