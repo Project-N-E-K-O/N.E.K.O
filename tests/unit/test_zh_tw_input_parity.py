@@ -1672,3 +1672,26 @@ def test_a_service_or_time_qualifier_still_stops_playback(simplified, traditiona
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("别继续播放", "別繼續播放"),
+        ("别现在播放", "別現在播放"),
+        ("别马上放晴天", "別馬上放晴天"),
+        ("别一直放歌", "別一直放歌"),
+        ("别再放了", "別再放了"),
+    ],
+)
+def test_specific_adverbs_stay_pinned(simplified, traditional):
+    """⚠️ 上面那条用例是从常量拆出来的——**删词会让它跟着缩水而不是变红**。
+
+    实测：把「繼續|继续」从副词表里删掉，参数化少两条，1015 条照样全绿。
+    这个坑在这个文件里已经是第三次了（前两次是播放清單那组、复合词那组），
+    所以高价值的几条必须另外钉死。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
