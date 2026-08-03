@@ -422,7 +422,7 @@ class QQReplyBufferService:
                 hist_before = self._session_history_len(session_key)
                 try:
                     from .pipeline_models import QQReplyRequest
-                    combined = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(existing.buffered_texts[-5:]))
+                    combined = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(existing.buffered_user_texts[-5:]))
                     request = QQReplyRequest(
                         message_text=f"[系统] 对方连续发了多条消息，你需要发一句简短的话表示\"我在听\"吗？如果需要，只回复那句话（不超过10个字，要自然，符合人设）；如果不需要，回复空内容。以下是最近内容：\n{combined}",
                         sender_id=existing.sender_id or "0",
@@ -476,7 +476,7 @@ class QQReplyBufferService:
                 hist_before = self._session_history_len(session_key)
                 try:
                     from .pipeline_models import QQReplyRequest
-                    combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(existing.buffered_texts))
+                    combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(existing.buffered_user_texts))
                     request = QQReplyRequest(
                         message_text=f"[系统] 对方连续发了以下消息，请用一两句话自然总结回复：\n{combined}",
                         sender_id=existing.sender_id or "0",

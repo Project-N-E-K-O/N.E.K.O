@@ -283,8 +283,13 @@ class QQReplyPipelineRunner:
             )
 
         # 情绪/标记：内部状态，先于缓冲/冷却/交付更新
-        if outcome and outcome.feeling and delivery_plan:
-            group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
+        if outcome and outcome.feeling:
+            if delivery_plan and delivery_plan.target_type == "group":
+                group = delivery_plan.target_id
+            elif request and getattr(request, "is_group", False):
+                group = getattr(request, "group_id", "") or ""
+            else:
+                group = ""
             if group and self.plugin.attention_service:
                 await self.plugin.attention_service.set_emotion(group, outcome.feeling)
 

@@ -113,12 +113,13 @@ class QQSessionInstructionService:
     def _save_profile_cache_to_disk(self) -> None:
         import json, os, time
         try:
-            # 过滤过期条目再落盘，避免 PII 永久留存
             now = time.time()
             live = {
                 k: v for k, v in self._user_profile_cache.items()
                 if isinstance(v, (list, tuple)) and len(v) == 2 and v[1] > now
             }
+            # 同步清理内存中的过期条目，防止长期运行内存泄漏
+            self._user_profile_cache = live
             path = self._profile_cache_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -698,12 +699,18 @@ class QQSessionInstructionService:
             )
             text = (result.text or "").strip()
             if text:
+                # 读后复检：异步查询期间 consent 可能已被撤销
+                settings_now = getattr(self.plugin, "_qq_settings", {}) or {}
+                if is_group:
+                    if not settings_now.get("group_memory_enabled") or not settings_now.get("group_member_memory_enabled"):
+                        return ""
+                else:
+                    if not settings_now.get("private_participant_memory_enabled"):
+                        return ""
                 self._user_profile_cache[cache_key] = (text, now + self._USER_PROFILE_CACHE_TTL)
                 await asyncio.to_thread(self._save_profile_cache_to_disk)
                 return text
-            # 查询成功但无结果（该 subject 下没有事实数据）
         except Exception as exc:
-            # 记忆查询失败不阻塞回复生成，但要留日志
             logger = getattr(self.plugin, "logger", None)
             if logger:
                 logger.warning(f"[UserProfile] 记忆查询失败 sender={sender_id} is_group={is_group}: {exc}")

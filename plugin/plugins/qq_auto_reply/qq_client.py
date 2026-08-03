@@ -197,6 +197,7 @@ class QQClient(QQConnectionBase):
         if not isinstance(segments, list):
             return {
                 "quoted_message_id": "",
+                "quoted_sender_id": "",
                 "mentioned_user_ids": [],
                 "mentions_other_user": False,
                 "mentions_all": False,
@@ -707,12 +708,11 @@ class QQClient(QQConnectionBase):
                     message["content"] = message["raw_message"]
                     self._emit_log("INFO", f"[Voice] 语音转文字完成: {transcript[:40]}")
                     continue
-                # 回退：仅标记 [语音]
-                raw = str(message.get("raw_message") or "").strip()
+                # 回退：保留已有文本，仅标记 [语音]
+                existing = str(message.get("content") or message.get("raw_message") or "").strip()
                 marker = "[语音]"
-                if marker not in raw:
-                    message["raw_message"] = f"{marker} {raw}".strip() if raw else marker
-                    message["content"] = message["raw_message"]
+                if marker not in existing:
+                    message["content"] = f"{marker} {existing}".strip() if existing else marker
             except Exception:
                 if self.logger:
                     self.logger.exception(f"Failed to fetch record {file_id}")
@@ -1059,7 +1059,7 @@ class QQClient(QQConnectionBase):
         if str(reply_message_id or "").strip():
             segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
         segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
-        await self.send_private_message_segments(user_id, segments)
+        return await self.send_private_message_segments(user_id, segments)
 
     async def send_group_record(self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""):
         """发送群聊语音"""
@@ -1069,7 +1069,7 @@ class QQClient(QQConnectionBase):
         if str(at_user_id or "").strip():
             segments.append({"type": "at", "data": {"qq": str(at_user_id)}})
         segments.append({"type": "record", "data": {"file": str(file_uri or "")}})
-        await self.send_group_message_segments(group_id, segments)
+        return await self.send_group_message_segments(group_id, segments)
 
     async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True, keyboard: str = "") -> Optional[str]:
         """发送群聊消息片段，返回 message_id"""

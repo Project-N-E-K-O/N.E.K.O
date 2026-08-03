@@ -160,12 +160,14 @@ FORMAT_PROMPT_SECTION_NEKO_DYNAMIC = """\
   * `<poke>QQ号</poke>` → 戳一戳。单独`<msg>`。对方反复戳你时可以忽略不回——戳一戳是轻量互动，不需要每次都回复文字。最多回戳一次表示回应即可。
   * `<record>要说的话</record>` → 语音发送。单独`<msg>`或和`<text>`组合
   * `<keyboard>选项A | 选项B</keyboard>` → 消息下方按钮
+  <!-- rps/dice/contact/music/mface/file 待后端支持后再开放
   * `<rps/>` → 猜拳。单独`<msg>`
   * `<dice/>` → 骰子。单独`<msg>`
   * `<contact type="qq">QQ号</contact>` → 推荐好友/群
   * `<music type="qq">歌曲ID</music>` → 音乐分享(type: qq/163/kugou/custom)
   * `<mface id="ID" />` → QQ商城表情
   * `<file name="名">URL</file>` → 发送文件
+  -->
   * `<forward to="群号">内容</forward>` → 合并转发到指定群(不加to=当前群)，每行`[发送者]: 内容`
 
 ### 示例：

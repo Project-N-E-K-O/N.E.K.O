@@ -42,12 +42,43 @@ class QQAttentionGateService:
     """基于注意力的多群门控 + 回溯补回（含疲劳睡眠）"""
 
     async def start_proactive_loop(self) -> None:
-        """保留接口兼容性——破冰已改为焦点切换时触发，不再需要后台循环。"""
-        pass
+        """后台循环：焦点群静默超过 proactive_silence_seconds 时触发主动发言。"""
+        self._proactive_task = asyncio.create_task(self._proactive_loop())
 
     async def stop_proactive_loop(self) -> None:
-        """保留接口兼容性。"""
-        pass
+        task = getattr(self, "_proactive_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _proactive_loop(self) -> None:
+        import asyncio as _asyncio
+        while True:
+            try:
+                await _asyncio.sleep(30)
+                attention = getattr(self.plugin, "attention_service", None)
+                if not attention or not attention._enabled():
+                    continue
+                focus_id = attention.get_focus_group_id()
+                if not focus_id:
+                    continue
+                state = attention.get_state(focus_id)
+                silence = int((self.plugin._qq_settings or {}).get("proactive_silence_seconds", 300) or 300)
+                if silence <= 0:
+                    continue
+                now = attention._current_time()
+                last_msg = int(state.last_message_at or 0)
+                last_reply = int(state.last_reply_at or 0)
+                last_activity = max(last_msg, last_reply)
+                if last_activity > 0 and (now - last_activity) >= silence:
+                    await self._try_icebreaker(focus_id)
+            except _asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
 
     def _touch_group(self, group_id: str) -> None:
         """保留接口兼容性——冷场检测已改为焦点切换计数。"""
@@ -154,7 +185,25 @@ class QQAttentionGateService:
         self._retroactive_lock = asyncio.Lock()
         self._digest_tasks: set[asyncio.Task] = set()
         self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
+        self._reply_timestamps: dict[str, list[int]] = {}  # 群 → 最近回复时间戳列表
         self._logger = plugin.logger
+
+    def _check_reply_burst(self, group_id: str, now: int) -> bool:
+        """检查最近是否回复过于频繁：60秒内超过3条 → 强制静默。"""
+        timestamps = self._reply_timestamps.get(group_id, [])
+        window = 60  # 60 秒窗口
+        max_replies = 3  # 最多 3 条
+        # 清理过期记录
+        timestamps[:] = [t for t in timestamps if now - t < window]
+        return len(timestamps) >= max_replies
+
+    def _record_reply(self, group_id: str, now: int) -> None:
+        """记录一次回复时间戳。"""
+        ts = self._reply_timestamps.setdefault(group_id, [])
+        ts.append(now)
+        # 只保留最近 10 条
+        if len(ts) > 10:
+            ts[:] = ts[-10:]
 
     # ==========================================
     # 消息评估
@@ -221,15 +270,23 @@ class QQAttentionGateService:
             attention.wake_boost(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
-        # 5. 回复 bot 的消息 → 给注意力小幅 boost（不强制回复）
+        # 5. 回复 bot 的消息 → 等同于被点名，强制回复
         is_reply_to_bot = bool(
             quoted_message_id and self.plugin.qq_client
             and quoted_message_id in getattr(self.plugin.qq_client, "_sent_message_ids", {})
         )
         if is_reply_to_bot:
+            attention.mark_focus(normalized_group_id)
             attention.wake_boost(normalized_group_id)
+            return GateDecision("reply", reason="reply_to_bot", force_reply=True)
 
-        # 6. 当前焦点群 → 检查注意力是否足够
+        # 6. 回复频率门控：60秒内超过3条回复 → 强制静默
+        now_ts = attention._current_time()
+        if not is_at_bot and self._check_reply_burst(normalized_group_id, now_ts):
+            self.plugin._emit_log("INFO", f"[Gate] 群{normalized_group_id} 回复过于频繁，强制静默")
+            return GateDecision("ignore", reason="reply_burst_limit")
+
+        # 7. 当前焦点群 → 检查注意力是否足够
         focus_group = attention.get_focus_group()
         if focus_group == normalized_group_id:
             current_score = float(attention.get_state(normalized_group_id).attention_score)
@@ -241,7 +298,7 @@ class QQAttentionGateService:
             self.plugin._emit_log("INFO", f"[Attention] 焦点群 {normalized_group_id} 消息, LLM自行判断是否回复")
             return GateDecision("reply", reason="focus_group")
 
-        # 7. 非焦点群 → 忽略，消息记入 backlog_store 未审阅，
+        # 8. 非焦点群 → 忽略，消息记入 backlog_store 未审阅，
         #    等该群成为焦点时由回溯补回统一处理。
         self.plugin._emit_log("INFO", f"[Gate] 群{normalized_group_id} 忽略: 非焦点群 (score={attention.get_state(normalized_group_id).attention_score:.1f})")
         return GateDecision("ignore", reason="non_focus")
@@ -251,11 +308,15 @@ class QQAttentionGateService:
     # ==========================================
 
     async def on_reply_sent(self, group_id: str) -> None:
-        """回复已发送 → 消耗注意力 + 记录活跃"""
+        """回复已发送 → 消耗注意力 + 记录活跃 + 频率计数"""
         attention = self.plugin.attention_service
         if attention:
+            now = attention._current_time()
             await attention.update_on_reply(group_id)
+        else:
+            now = int(__import__("time").time())
         self._mark_active(group_id)
+        self._record_reply(str(group_id or "").strip(), now)
 
     async def check_focus_shift(self) -> FocusShiftResult | None:
         """检测焦点群是否切换"""
