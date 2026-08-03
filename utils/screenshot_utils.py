@@ -25,7 +25,6 @@ import asyncio
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 from utils.llm_client import create_chat_llm_async
-from config.providers import get_extra_body_without_provider_tools
 
 logger = get_module_logger(__name__)
 
@@ -218,7 +217,6 @@ async def analyze_image_with_vision_model(
             max_completion_tokens=max_completion_tokens,
             timeout=30,  # hang-guard for vision/screenshot analysis
             provider_type=api_config.get('provider_type'),
-            extra_body=get_extra_body_without_provider_tools(vision_model),
         )
         messages = [
             {

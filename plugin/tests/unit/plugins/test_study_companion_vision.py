@@ -512,7 +512,6 @@ async def test_call_model_uses_vision_config_for_image_messages(
     assert seen_client_kwargs[0]["base_url"] == "https://vision.example.test/v1"
     assert seen_client_kwargs[0]["model"] == "step-1o-turbo-vision"
     assert seen_client_kwargs[0]["api_key"] == "vision-key"
-    assert seen_client_kwargs[0]["extra_body"] is None
     content = seen_messages[0]["content"]
     assert isinstance(content, list)
     assert content[1]["type"] == "image_url"

@@ -33,7 +33,6 @@ from config import (
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS,
     focus_extra_body,
-    get_extra_body_without_provider_tools,
     leaks_thinking_in_content,
 )
 from config.prompts.prompts_directives import (
@@ -206,10 +205,6 @@ async def _make_proactive_llm(
     }
     if not disable_thinking:
         kwargs["extra_body"] = focus_extra_body(model)
-    if use_vision:
-        kwargs["extra_body"] = get_extra_body_without_provider_tools(
-            model, thinking_on=not disable_thinking,
-        )
     return await create_chat_llm_async(  # noqa: LLM_OUTPUT_BUDGET
         model,
         base_url,

@@ -133,13 +133,6 @@ class _StreamingMixin:
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
 
-            client_overrides: dict[str, Any] = {}
-            if use_vision_config:
-                from config.providers import get_extra_body_without_provider_tools
-                client_overrides["extra_body"] = (
-                    get_extra_body_without_provider_tools(new_model)
-                )
-
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
             # （和 __init__ 一致）。
@@ -150,7 +143,6 @@ class _StreamingMixin:
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
                 provider_type=provider_type,
-                **client_overrides,
             )
             old_llm = self.llm
             self.llm = new_llm
@@ -368,30 +360,8 @@ class _StreamingMixin:
         return summary
 
     @staticmethod
-    def _messages_include_images(messages) -> bool:
-        """Whether an outbound message list still carries image content."""
-        for message in messages or []:
-            content = (
-                message.get("content")
-                if isinstance(message, dict)
-                else getattr(message, "content", None)
-            )
-            if not isinstance(content, list):
-                continue
-            if any(
-                isinstance(item, dict) and item.get("type") == "image_url"
-                for item in content
-            ):
-                return True
-        return False
-
-    @staticmethod
     def _focus_stream_overrides(
-        thinking_on: bool,
-        model: str,
-        base_max_tokens: int | None = None,
-        *,
-        allow_provider_tools: bool = True,
+        thinking_on: bool, model: str, base_max_tokens: int | None = None,
     ) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
@@ -399,10 +369,7 @@ class _StreamingMixin:
         the provider's thinking knob flipped to its ENABLED form (per provider
         dialect) while PRESERVING non-thinking provider extras (e.g. step-1o-turbo-vision's
         built-in web_search), which a blunt ``extra_body=None`` would drop.
-        Returns ``{}`` (instance default, thinking off) otherwise.  When
-        ``allow_provider_tools`` is false, provider-advertised tools are removed
-        even on a regular turn while provider thinking controls stay intact.
-        This is used whenever the outbound history contains image content.
+        Returns ``{}`` (instance default, thinking off) otherwise.
 
         Also bumps ``max_completion_tokens`` by ``FOCUS_THINKING_EXTRA_TOKENS``
         — but ONLY when this turn actually flips thinking ON for the provider:
@@ -427,21 +394,11 @@ class _StreamingMixin:
         vision reasoning turn — unlike the short-windowed proactive Phase-2 path,
         which still keeps thinking off (its 16-25s window would time out).
         """
-        if not thinking_on and allow_provider_tools:
+        if not thinking_on:
             return {}
-        from config.providers import (
-            focus_extra_body,
-            get_extra_body,
-            get_extra_body_without_provider_tools,
-        )
-        regular_body = get_extra_body(model)
-        active_body = focus_extra_body(model) if thinking_on else regular_body
-        if not allow_provider_tools:
-            regular_body = get_extra_body_without_provider_tools(model)
-            active_body = get_extra_body_without_provider_tools(
-                model, thinking_on=thinking_on,
-            )
-        overrides: dict = {"extra_body": active_body}
+        from config.providers import focus_extra_body, get_extra_body
+        fb = focus_extra_body(model)
+        overrides: dict = {"extra_body": fb}
         # Headroom only when Focus actually enables thinking for this provider:
         # ``fb is None`` ⇒ no thinking-enable override at all (unknown model);
         # ``fb == get_extra_body(model)`` ⇒ focus form equals the regular
@@ -451,8 +408,8 @@ class _StreamingMixin:
         # output ceiling.
         if (
             base_max_tokens is not None
-            and active_body is not None
-            and active_body != regular_body
+            and fb is not None
+            and fb != get_extra_body(model)
         ):
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
@@ -792,9 +749,6 @@ class _StreamingMixin:
                             thinking_on, self.model,
                             base_max_tokens=(
                                 getattr(getattr(self, "llm", None), "max_completion_tokens", None)
-                            ),
-                            allow_provider_tools=not self._messages_include_images(
-                                self._conversation_history
                             ),
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)

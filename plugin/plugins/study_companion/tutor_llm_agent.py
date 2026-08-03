@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from config import get_extra_body_without_provider_tools
-
 from .tutor_llm_agent_common import (
     Any,
     Callable,
@@ -529,7 +527,6 @@ class TutorLLMAgent:
                 "vision stripped: model {} not in vision allowlist", model
             )
             messages = self._strip_image_content(messages)
-            has_image = False
         key = (
             model_group,
             operation,
@@ -537,24 +534,20 @@ class TutorLLMAgent:
             model,
             self._api_key_cache_fingerprint(api_key),
             api_config.get("provider_type"),
-            has_image,
         )
         timeout_seconds = (
             float(self._config.llm_call_timeout_seconds)
             + _LLM_CALL_TIMEOUT_GRACE_SECONDS
         )
-        client_kwargs: dict[str, Any] = {
-            "model": model,
-            "base_url": base_url,
-            "api_key": api_key,
-            "timeout": timeout_seconds,
-            "provider_type": api_config.get("provider_type"),
-        }
-        if has_image:
-            client_kwargs["extra_body"] = get_extra_body_without_provider_tools(model)
         llm = await self._client_cache.get_or_create(
             key,
-            lambda: create_chat_llm_async(**client_kwargs),
+            lambda: create_chat_llm_async(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout_seconds,
+                provider_type=api_config.get("provider_type"),
+            ),
         )
         if llm is None:
             raise SdkError("failed to initialize agent model")

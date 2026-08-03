@@ -228,11 +228,6 @@ class _LifecycleMixin:
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
         messages_to_send = self._conversation_history + [_ephemeral_msg]
-        _provider_overrides = self._focus_stream_overrides(
-            False,
-            getattr(self, "model", ""),
-            allow_provider_tools=not self._messages_include_images(messages_to_send),
-        )
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
@@ -276,9 +271,7 @@ class _LifecycleMixin:
                 try:
                     # 主动搭话同样走 tool-aware streaming —— agent 注入的 stage
                     # direction 也可能让模型决定调用工具（比如 "讲一下今天天气"）。
-                    async for chunk in self._astream_visible_with_tools(
-                        messages_to_send, **_provider_overrides,
-                    ):
+                    async for chunk in self._astream_visible_with_tools(messages_to_send):
                         if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                             logger.debug(f"🔍 [Usage-Proactive] {chunk.usage_metadata}")
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata:

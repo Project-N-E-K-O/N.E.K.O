@@ -7,7 +7,6 @@ import logging
 import re
 from typing import Any, Protocol, TYPE_CHECKING
 
-from config import get_extra_body_without_provider_tools
 from plugin.sdk.plugin import SdkError
 from utils.config_manager import get_config_manager
 from utils.file_utils import robust_json_loads
@@ -363,10 +362,10 @@ class GalgameLLMBackend:
         provider_type = api_config.get("provider_type")
         if not base_url or not model:
             raise SdkError(f"missing configured {model_role} model")
-        has_image = any(_message_has_image_content(message) for message in messages)
-        if has_image and not bool(_api_config_supports_vision(api_config, model)):
+        if any(_message_has_image_content(message) for message in messages) and not bool(
+            _api_config_supports_vision(api_config, model)
+        ):
             messages = _strip_image_content(messages)
-            has_image = False
 
         cfg = self._config
         if operation == "agent_reply":
@@ -380,7 +379,6 @@ class GalgameLLMBackend:
             model,
             max_completion_tokens,
             provider_type,
-            has_image,
         )
         llm = await self._get_or_create_llm(
             cache_key=cache_key,
@@ -389,7 +387,6 @@ class GalgameLLMBackend:
             api_key=api_key,
             max_completion_tokens=max_completion_tokens,
             provider_type=provider_type,
-            has_image=has_image,
         )
         return await self._invoke_llm_with_retry(
             model_role=model_role,
@@ -447,28 +444,19 @@ class GalgameLLMBackend:
         api_key: str,
         max_completion_tokens: int,
         provider_type: str | None = None,
-        has_image: bool = False,
     ) -> ChatOpenAI:
         async with self._cache_lock():
             cached = self._llm_cache.get(cache_key)
             if cached is not None:
                 return cached
-            client_kwargs: dict[str, Any] = {
-                "model": model,
-                "base_url": base_url,
-                "api_key": api_key,
-                "max_completion_tokens": max_completion_tokens,
-                "timeout": float(
-                    getattr(self._config, "llm_call_timeout_seconds", 30.0) or 30.0
-                )
-                + 0.5,
-                "provider_type": provider_type,
-            }
-            if has_image:
-                client_kwargs["extra_body"] = get_extra_body_without_provider_tools(
-                    model
-                )
-            llm = await create_chat_llm_async(**client_kwargs)
+            llm = await create_chat_llm_async(
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                max_completion_tokens=max_completion_tokens,
+                timeout=float(getattr(self._config, "llm_call_timeout_seconds", 30.0) or 30.0) + 0.5,
+                provider_type=provider_type,
+            )
             self._llm_cache[cache_key] = llm
             return llm
 

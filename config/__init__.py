@@ -427,7 +427,6 @@ from .providers import (  # noqa: F401
     get_extra_body,
     get_agent_extra_body,
     focus_extra_body,
-    get_extra_body_without_provider_tools,
     leaks_thinking_in_content,
 )
 
@@ -474,7 +473,6 @@ __all__ = [
     'get_extra_body',
     'get_agent_extra_body',
     'focus_extra_body',
-    'get_extra_body_without_provider_tools',
     'leaks_thinking_in_content',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',

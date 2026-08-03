@@ -24,53 +24,6 @@ from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMod
 DUMMY_IMAGE_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAFBABAAAAAAAAAAAAAAAAAAAACf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AE0A/9k="
 
 
-@pytest.mark.asyncio
-async def test_step_vision_analysis_disables_provider_web_search(
-    monkeypatch,
-) -> None:
-    from utils import config_manager, screenshot_utils
-
-    class _ConfigManager:
-        async def aget_model_api_config(self, model_type: str) -> dict:
-            assert model_type == "vision"
-            return {
-                "model": "step-1o-turbo-vision",
-                "api_key": "key",
-                "base_url": "https://api.stepfun.com/v1",
-                "provider_type": None,
-                "is_custom": False,
-            }
-
-    captured: dict[str, object] = {}
-
-    class _Result:
-        content = "description"
-
-    class _LLM:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_exc_info):
-            return None
-
-        async def ainvoke(self, _messages):
-            return _Result()
-
-    async def fake_create(**kwargs):
-        captured.update(kwargs)
-        return _LLM()
-
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
-    monkeypatch.setattr(screenshot_utils, "create_chat_llm_async", fake_create)
-    monkeypatch.setattr(screenshot_utils, "set_call_type", lambda _value: None)
-
-    assert await screenshot_utils.analyze_image_with_vision_model(
-        DUMMY_IMAGE_B64,
-        max_completion_tokens=32,
-    ) == "description"
-    assert captured["extra_body"] is None
-
-
 def _make_client(model: str, supports_native_image: bool = True, base_url: str = "wss://test.example.com") -> OmniRealtimeClient:
     """Helper to create a test OmniRealtimeClient with mocked ws."""
     client = OmniRealtimeClient(
