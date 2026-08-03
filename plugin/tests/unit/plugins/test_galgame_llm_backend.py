@@ -265,13 +265,14 @@ async def test_llm_backend_attaches_vision_image_when_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_messages: list[list[dict[str, object]]] = []
+    captured_client_kwargs: list[dict[str, object]] = []
 
     class _Config:
         def get_model_api_config(self, role: str) -> dict[str, str]:
             assert role == "agent"
             return {
                 "base_url": "https://llm.example.test",
-                "model": "gpt-4o-mini",
+                "model": "step-1o-turbo-vision",
                 "api_key": "sk-test",
                 "supports_vision": True,
             }
@@ -281,14 +282,18 @@ async def test_llm_backend_attaches_vision_image_when_requested(
             captured_messages.append(messages)
             return type("Response", (), {"content": '{"reply": "ok"}'})()
 
-    async def _fake_get_or_create_llm(**kwargs):
-        del kwargs
+    def _fake_create_chat_llm(**kwargs):
+        captured_client_kwargs.append(kwargs)
         return _FakeLLM()
 
     backend = GalgameLLMBackend(_Logger())
     monkeypatch.setattr(galgame_llm_backend, "get_config_manager", lambda: _Config())
-    monkeypatch.setattr(backend, "_get_or_create_llm", _fake_get_or_create_llm)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", _fake_create_chat_llm)
 
+    await backend._call_model(
+        operation="agent_reply",
+        messages=[{"role": "user", "content": "text only"}],
+    )
     result = await backend.invoke(
         operation="agent_reply",
         context={
@@ -299,11 +304,15 @@ async def test_llm_backend_attaches_vision_image_when_requested(
         },
     )
 
-    content = captured_messages[0][-1]["content"]
+    content = captured_messages[-1][-1]["content"]
     assert result["reply"] == "ok"
     assert isinstance(content, list)
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"] == "data:image/png;base64,abc123"
+    assert len(captured_client_kwargs) == 2
+    assert "extra_body" not in captured_client_kwargs[0]
+    assert captured_client_kwargs[1]["model"] == "step-1o-turbo-vision"
+    assert captured_client_kwargs[1]["extra_body"] is None
 
 
 @pytest.mark.asyncio
