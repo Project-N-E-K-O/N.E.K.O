@@ -1524,3 +1524,52 @@ def test_named_targets_do_not_collide_with_the_compound_tables():
     assert collisions == [], (
         f'这些用例的首字落进了复合词黑名单，两组断言会互相打架: {collisions}'
     )
+
+
+@pytest.mark.parametrize(
+    "quantifier", ["每", "整", "下一", "上一", "这", "這", "那一", "一"]
+)
+def test_a_track_quantifier_does_not_block_the_stop(quantifier):
+    """⚠️ 名词尾那个闭集窗口漏了量词/选择词。
+
+    `停止每首歌` / `停止整首歌` / `停止下一首歌` 在基线上都是 True，闭集少列
+    几个字就把它们打成 False——收紧一个开窗口时最容易漏的就是这类高频虚成分。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{quantifier}首歌') is True
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("我想先听一下，别播放音乐了，好吗？", "我想先聽一下，別播放音樂了，好嗎？"),
+        ("我要先看看，别放歌了，可以吗？", "我要先看看，別放歌了，可以嗎？"),
+    ],
+)
+def test_a_trailing_question_does_not_kill_an_earlier_stop_clause(
+    simplified, traditional
+):
+    """⚠️ 裸问号守卫作用在**未切分**的整句上，所以必须限定在单子句内。
+
+    允许跨子句的话，`我想先听一下，别播放音乐了，好吗？` 会被整句否掉——
+    里面那个明确的取消子句就丢了（base 是 True）。这是「入口守卫」这种做法
+    自带的风险：它绕过了子句切分，就得自己负责不越界。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "text", ["聽一下您說話的聲音", "听一下您说话的声音", "聽一下牠說話的聲音"]
+)
+def test_an_honorific_speech_subject_is_not_an_artist(text):
+    """人称是封闭词类，简繁都要列全。漏了敬语「您」，这句会变成搜歌手
+    「您說話」的歌「聲音」。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    result = parse_explicit_user_music_request(text)
+    assert not getattr(result, 'song_artist', None), text

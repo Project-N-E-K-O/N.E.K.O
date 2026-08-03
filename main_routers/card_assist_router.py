@@ -859,8 +859,22 @@ def _chat_text_requests_edits(text: str) -> bool:
     )
 
 
+# ⚠️ 否定的整卡重写请求**不能**走整卡补全通路——那是本 PR 里破坏性最强的一条
+# 路径（_complete_full_rewrite_actions 会给每个缺失字段合成内容并 autosave）。
+# `不要重写整个卡` 同时满足整卡目标和重写动词两条谓词。否定词是**封闭类虚词**，
+# 可以列干净；窗口 0-4 个非标点字符，保证「不要」管不到逗号后面。
+_CHAT_NEGATED_REWRITE_RE = re.compile(
+    r"(?:不要|不用|不需要|不必|不想|别|別|甭|先不|暫不|暂不|暫時不|暂时不"
+    r"|無需|无需|勿|請勿|请勿)"
+    r"[^。，、！？,.!?;；]{0,4}?"
+    r"(?:重写|重寫|重新写|重新寫|改写|改寫|重做|重生|梳理|完善)"
+)
+
+
 def _chat_text_requests_full_rewrite(text: str) -> bool:
     if not text:
+        return False
+    if _CHAT_NEGATED_REWRITE_RE.search(text or ""):
         return False
     return bool(
         _CHAT_FULL_REWRITE_RE.search(text)

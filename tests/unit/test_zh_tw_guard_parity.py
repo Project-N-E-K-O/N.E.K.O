@@ -550,3 +550,22 @@ def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
 
     text = f'重写{target}{particle}'
     assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "negator", ["不要", "不用", "不需要", "别", "別", "先不要", "暂不", "暫不", "无需", "無需"]
+)
+@pytest.mark.parametrize("target", ["整个卡", "整個卡", "整个角色卡", "整張卡"])
+def test_a_negated_rewrite_never_triggers_full_card_completion(target, negator):
+    """⚠️⚠️ 否定的整卡请求绝不能走整卡补全通路。
+
+    那是本 PR 里破坏性最强的一条路径：`_complete_full_rewrite_actions` 会给
+    每个缺失字段合成内容并 autosave。`不要重写整个卡` 同时满足整卡目标和重写
+    动词两条谓词，于是用户说「别改」反而把整张卡改了。
+
+    否定词是**封闭类虚词**，可以列干净。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{negator}重写{target}'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
