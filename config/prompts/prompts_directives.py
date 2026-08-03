@@ -275,15 +275,29 @@ def _zh_verb_alternation(*, with_address: bool) -> str:
 _ZH_VERBS_WITH_ADDRESS = _zh_verb_alternation(with_address=True)
 _ZH_VERBS_PLAIN = _zh_verb_alternation(with_address=False)
 
-# ``就`` 作为词的第二个字是闭集（成就 / 迁就 / 将就 / 造就 / 俯就 / 高就 / 屈就）。
-# 模板 2 的 ``(?:就)?`` 是给 "股票就别提了" 用的，但前缀是 lazy 的，正则会优先把
-# 话题的最后一个字塞进这个可选组——"他的成就别提了。" 于是存成 "他的成"（对抗排查）。
-_ZH_JIU = "(?<![成迁遷将將造俯高屈])就"
+# 模板 2 / 4 尾部会跟一个填充词（``就`` / ``的事`` / ``这个``…），它属于句子而不属于
+# 话题。⚠️ 这个不能在正则里"顺手吃掉"：前缀是 lazy 的，正则会优先把**话题的最后一个
+# 字**塞进可选组——"他的成就别提了。" 存成 "他的成"。用左界字符黑名单挡也不行，
+# ``就`` 作为词尾是开集（成就 / 迁就 / 功成名就 / 一蹴而就 / 練就 / 鑄就…），漏一个
+# 就腰斩一个真实话题（codex P2）。
+#
+# 改成在**抽完之后**比对：一条 term 如果正好等于"另一条 term + 一个填充词"，那它就是
+# 同一个话题多带了个尾巴，丢掉长的。这条判据不猜词边界，只看同一句话里实际抽出了
+# 什么——"股票就" 会因为 "股票" 也在结果里而被丢，"功成名就" 因为没有 "功成名"
+# 这条 term 而保留。
+_ZH_TRAILING_FILLERS = (
+    "就", "的事", "的", "这个", "這個", "这事", "這事",
+    "这话题", "這話題", "这件事", "這件事",
+)
 
 # 模板 1 里 term 与终结符之间允许出现的句末助词。与 ``_TRIM_TRAIL_TOKENS`` 的 zh
 # 段成对：这里放行、那里剥掉，少一边 term 就带着助词存进去。
+# ⚠️ ``唄`` 整个不收（正则和 trim 都不收）。它是 ``呗`` 的繁体，但在日文里是"歌"
+# （子守唄 / 花の唄）。留在 trim 表里会削掉 ja 模板的 term，只留在这里也一样会削掉
+# zh 模板的 term——"别再提花の唄。" 存成 "花の"（codex P2 两轮）。而 ``呗`` 本来
+# 就是北方口语词、台湾并不说 ``唄``，为它承担这个代价不划算。
 _ZH_FINAL_PARTICLES = (
-    "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|囉|啰|唄|唷|齁|耶|欸|誒|咧|捏|喲))"
+    "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|囉|啰|唷|齁|耶|欸|誒|咧|捏|喲))"
 )
 
 # (2) 假名。⚠️ 不能简单地"命中区间有假名就丢"——被 ban 的**对象本身**经常是日文
@@ -315,6 +329,10 @@ _JA_GRAMMAR_RE = re.compile(
         "である", "らしい", "そうです",
         # 接续 / 复合助词
         "について", "に関して", "という", "ながら", "ので", "けど", "たら",
+        # 口语系 copula / 终助词。⚠️ 只收**多字**形式：裸 ``だ`` / ``ちゃ`` 会出现
+        # 在专有名词里（お兄ちゃん），收了就把上面救回来的用例又打回去。
+        "だね", "だよ", "だな", "だっけ", "でしょ", "かな", "かも", "じゃない",
+        "らしい", "みたい", "そう？",
         # 格助词・系助词・副助词（多字优先，单字放最后的字符组里）
         "から", "まで", "より", "など", "だけ", "でも", "しか", "ばかり",
         "[のにをはがでとへ]",
@@ -387,10 +405,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ``2 <= len(term)`` 的下限，整条指令消失。下限提到 2 之后正则会改选更长的
      # 前缀；1 字前缀本来也只能产出 1 字 term、必然被丢，所以抬下限只赚不亏。
      # ``的`` 绑在指示词里、不单独可选：单独可选会把 "目的这个别提了。" 的 目的 切成
-     # 目（对抗排查）。``就`` 见 _ZH_JIU。
+     # 目（对抗排查）。句尾的 ``就`` 不在正则里吃，见 _ZH_TRAILING_FILLERS。
      r"(?!关于|關於)(?!(?<=关)于)(?!(?<=關)於)(.{2,30}?)\s*"
      r"(?:的事)?\s*(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
-     + f"(?:{_ZH_JIU})?" + r"\s*[别別]\s*(?:再)?\s*"
+     r"\s*[别別]\s*(?:再)?\s*"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
@@ -399,9 +417,13 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      + r"\s*(.{1,40}?)(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
+     # ⚠️ 只有本模板保留 ``(?:就)?``：它由句首的 ``关于`` 锚定，"关于 X 就别…" 的
+     # 结构是显式的，被腰斩的风险仅限于 ``关于`` + 就尾词（"关于功成名就别提了"，
+     # 极罕见）。模板 2 没有这个锚，覆盖的是全部 "X别提了" 句子——成就 / 迁就 /
+     # 功成名就 都住在那里，所以那边一个字都不吃，交给 _drop_filler_suffixed_terms。
      r"(?:关于|關於)\s*(.{1,30}?)\s*(?:的事)?\s*"
-     r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
-     + f"(?:{_ZH_JIU})?" + r"\s*[别別]\s*(?:再)?\s*"
+     r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*(?:就)?"
+     r"\s*[别別]\s*(?:再)?\s*"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
 
     # ---------- en ----------
@@ -568,7 +590,57 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
                 continue
             seen.add(key)
             out.append((locale, kind, term))
-    return out
+    return _drop_filler_suffixed_terms(out)
+
+
+def _drop_filler_suffixed_terms(
+    hits: List[Tuple[str, str, str]],
+) -> List[Tuple[str, str, str]]:
+    """Drop a term that is just another extracted term plus a trailing filler word.
+
+    "關於股票就別再講了" matches two templates: the generic one stops at ``股票就``
+    (the adverb ``就`` belongs to the sentence, not the topic) and the dedicated
+    ``关于`` one yields ``股票``. Both would be persisted and injected for three days.
+
+    Swallowing the filler inside the regex is the obvious fix and it is wrong: the
+    prefix is lazy, so the engine prefers to feed it the topic's **last character**
+    instead — "他的成就别提了。" comes out as ``他的成``. A left-edge character
+    blocklist cannot rescue that either, because words ending in ``就`` are an open
+    set (成就 / 迁就 / 功成名就 / 一蹴而就 / 練就 …) and one omission truncates a real
+    topic.
+
+    Comparing after the fact needs no word-boundary guess at all: ``股票就`` goes
+    because ``股票`` was also extracted from the same message, while ``功成名就``
+    stays because ``功成名`` never was.
+    """  # noqa: DOCSTRING_CJK
+    if len(hits) < 2:
+        return hits
+    by_kind: dict[str, set[str]] = {}
+    for _locale, kind, term in hits:
+        by_kind.setdefault(kind, set()).add(term)
+
+    def _is_redundant(kind: str, term: str) -> bool:
+        # 填充词会叠（"前女友的事就"），所以逐层剥，任何一层撞上另一条 term 就丢。
+        seen_forms = {term}
+        frontier = [term]
+        while frontier:
+            current = frontier.pop()
+            for filler in _ZH_TRAILING_FILLERS:
+                if not current.endswith(filler) or len(current) <= len(filler):
+                    continue
+                shorter = current[: -len(filler)]
+                if shorter in by_kind[kind]:
+                    return True
+                if shorter not in seen_forms:
+                    seen_forms.add(shorter)
+                    frontier.append(shorter)
+        return False
+
+    return [
+        (locale, kind, term)
+        for locale, kind, term in hits
+        if not _is_redundant(kind, term)
+    ]
 
 
 # ---------------------------------------------------------------------------

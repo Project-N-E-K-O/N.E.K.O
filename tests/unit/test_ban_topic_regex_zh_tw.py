@@ -243,6 +243,13 @@ JAPANESE_KANA_GUARDED = [
     # 接续助词：这两条的 term 里**没有**单字格助词，只有 けど / たら 拦得住
     "職種別提案したけど。",
     "地域別提案したら連絡。",
+    # 口语系 copula / 终助词（codex P2）
+    "地域別講座だね。",
+    "世代別講座だよ。",
+    "部門別提案かな。",
+    "地域別提案だっけ。",
+    "職種別講座でしょ。",
+    "地域別提案かも。",
 ]
 # 假名开头的 ``〜別``：term 里一个助词都没有（``スレ`` / ``案書``），(2b) 够不着，
 # 只有「命中区间左边紧挨着假名」这条拦得住（对抗排查）。
@@ -331,6 +338,10 @@ CHINESE_WITH_JAPANESE_TOPIC = [
     ("不要聊ドラえもん。", "ドラえもん"),            # 不要本身是日文词，靠 term 无助词过
     ("别再提君の名は。", "君の名は"),                # 标题自带助词，只能靠中文证据救
     ("我不想聊初音ミク", "初音ミク"),
+    # ⚠️ 裸 だ 不能进日文助词表：真实歌名里就有（だんご三兄弟）。这条必须用**繁体**
+    # 触发词——简体 ``别`` 是中文证据，守卫在查助词之前就短路了，压不住这一维。
+    ("別提だんご三兄弟。", "だんご三兄弟"),
+    ("别再提だんご三兄弟。", "だんご三兄弟"),
 ]
 
 
@@ -498,7 +509,7 @@ def test_xiu_at_a_word_start_is_still_a_negation(text):
 # 存进 user_directives 的是 term 本身，会逐字注进 system prompt。助词粘上去
 # ("工作喔") 就是把一个不存在的话题名喂给模型（codex P2）。
 TAIWANESE_FINAL_PARTICLES = (
-    "喔", "囉", "啰", "唄", "唷", "齁", "耶", "欸", "誒", "咧", "捏", "喲",
+    "喔", "囉", "啰", "唷", "齁", "耶", "欸", "誒", "咧", "捏", "喲",
 )
 # 反问尾巴跟在句末助词后面（"工作了好嗎"）：正则的可选助词组只放行一个，剩下的
 # 并进 term，靠 trim 的循环剥。
@@ -520,21 +531,26 @@ def test_particle_is_declared_in_the_regex(particle):
     assert particle in D._ZH_FINAL_PARTICLES, f"{particle} 不在 _ZH_FINAL_PARTICLES"
 
 
-@pytest.mark.parametrize(
-    "particle", tuple(p for p in TAIWANESE_FINAL_PARTICLES if p != "唄"),
-)
+@pytest.mark.parametrize("particle", TAIWANESE_FINAL_PARTICLES)
 def test_particle_is_also_declared_in_the_trim_table(particle):
     """放行（正则）与剥离（trim）成对：少一边 term 就带着助词存进去。"""  # noqa: DOCSTRING_CJK
     assert particle in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], f"{particle} 不在 zh trim 表"
 
 
-def test_bei_is_deliberately_kept_out_of_the_trim_table():
-    """⚠️ ``唄`` 只在正则里放行、不进 trim 表：它在日文里是"歌"，中文句子里 ban 一个
-    日文歌名（"别再提花の唄了。"）走 trim 会被削成 "花の"。正则那条路不切 term。"""  # noqa: DOCSTRING_CJK
-    assert "唄" in D._ZH_FINAL_PARTICLES
+def test_bei_is_not_treated_as_a_particle_at_all():
+    """⚠️ ``唄`` 正则和 trim 都不收。它是 ``呗`` 的繁体，但在日文里是"歌"：留在 trim
+    表里会削掉 ja 模板的 term（``子守唄``→``子守``），只留在正则放行组里同样会削掉
+    zh 模板的（``别再提花の唄。``→``花の``）——两轮各中一次。而 ``呗`` 本就是北方
+    口语词、台湾并不说 ``唄``，为它承担这个代价不划算。"""  # noqa: DOCSTRING_CJK
+    assert "唄" not in D._ZH_FINAL_PARTICLES
     assert "唄" not in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]
-    assert _zh_terms("別再提工作唄") == {"工作"}
+    # 代价说清楚：一个真写 ``唄`` 的台湾用户会多存一个字，这是刻意的取舍。
+    assert _zh_terms("別再提工作唄") == {"工作唄"}
+    # 换来的是日文歌名两种写法都完整
+    assert _zh_terms("别再提花の唄。") == {"花の唄"}
     assert _zh_terms("别再提花の唄了。") == {"花の唄"}
+    assert "子守唄" in {t for loc, _k, t in extract_directives(
+        "子守唄のことはもう言わないで") if loc == "ja"}
 
 
 def test_stacked_particles_are_all_stripped():
@@ -633,12 +649,18 @@ def test_possessive_before_the_demonstrative_is_consumed_pairs(text, expected):
 @pytest.mark.parametrize(
     ("text", "expected", "why"),
     [
-        # (a) 就 切进词里 —— 靠 _ZH_JIU 的复合词左界挡
+        # (a) 就 切进词里 —— 模板 2 一个字都不吃，交给 _drop_filler_suffixed_terms。
+        # ⚠️ 以 ``就`` 结尾的词是**开集**（成就 / 迁就 / 功成名就 / 一蹴而就 /
+        # 練就 / 鑄就 …），用左界字符黑名单挡漏一个就腰斩一个真实话题（codex P2）。
         ("他的成就别提了。", "他的成就", "就"),
         ("他的成就別提了。", "他的成就", "就"),
         ("成就别提了。", "成就", "就"),
         ("迁就别提了。", "迁就", "就"),
         ("将就别提了。", "将就", "就"),
+        ("功成名就别提了。", "功成名就", "就"),
+        ("功成名就別提了。", "功成名就", "就"),
+        ("一蹴而就别提了。", "一蹴而就", "就"),
+        ("努力练就别提了。", "努力练就", "就"),
         # (b) 的 单独可选会切 目的 / 标的 —— 靠把 的 绑进指示词分支挡
         ("目的这个别提了。", "目的", "的"),
         ("目的這個別提了。", "目的", "的"),
@@ -705,6 +727,48 @@ def test_a_title_containing_guanyu_still_yields_its_outer_topic(text):
         ("關於前女友的事就別提了", "前女友"),
         ("关于前女友的事就别提了", "前女友"),
         ("關於股票別再講了", "股票"),
+    ],
+)
+def test_guanyu_produces_exactly_one_term_(text, expected):
+    assert _zh_terms(text) == {expected}
+
+
+# ── 5c-2. 填充词后置去重 ─────────────────────────────────────
+def test_filler_dedup_needs_the_shorter_term_to_actually_exist():
+    """去重比对的是**同一句话里实际抽出来的 term**，不猜词边界。
+
+    ``股票就`` 被丢是因为 ``股票`` 也在结果里（模板 4 抽的）；``功成名就`` 留下是
+    因为 ``功成名`` 从来不是一条 term。把这条判据换成"猜哪个字是填充词"就会两边
+    都错——这正是 _ZH_JIU 那版黑名单的下场。
+    """  # noqa: DOCSTRING_CJK
+    assert D._drop_filler_suffixed_terms([
+        ("zh", "ban_topic", "股票就"), ("zh", "ban_topic", "股票"),
+    ]) == [("zh", "ban_topic", "股票")]
+    assert D._drop_filler_suffixed_terms([
+        ("zh", "ban_topic", "功成名就"),
+    ]) == [("zh", "ban_topic", "功成名就")]
+    # 填充词会叠：前女友 + 的事 + 就
+    assert D._drop_filler_suffixed_terms([
+        ("zh", "ban_topic", "前女友的事就"), ("zh", "ban_topic", "前女友"),
+    ]) == [("zh", "ban_topic", "前女友")]
+    # kind 不同不互相影响
+    assert len(D._drop_filler_suffixed_terms([
+        ("zh", "ban_topic", "股票就"), ("zh", "other_kind", "股票"),
+    ])) == 2
+
+
+def test_filler_dedup_keeps_genuinely_different_topics():
+    assert _zh_terms("别提小明和小红") == {"小明和小红"}
+    assert "工作" in _zh_terms("別提工作，也別提工作的事")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("關於股票就別再講了", "股票"),
+        ("关于股票就别再讲了", "股票"),
+        ("關於前女友的事就別提了", "前女友"),
+        ("關於減肥的這件事就別說了。", "減肥"),
     ],
 )
 def test_guanyu_produces_exactly_one_term(text, expected):
