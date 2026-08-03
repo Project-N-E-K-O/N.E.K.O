@@ -161,6 +161,7 @@ def test_traditional_advice_request_does_not_trigger_an_edit():
         # ⚠️ 「整个卡」是常用名词「整个卡片」的前缀——只挡「的」挡不住它
         # （Codex P1 第二轮）。
         ("重写整个卡片的名字", "重寫整個卡片的名字"),
+        ("重写整个角色卡片的简介", "重寫整個角色卡片的簡介"),
     ],
 )
 def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditional):
@@ -182,6 +183,11 @@ def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditiona
     [
         ("把整个卡重写一遍", "把整個卡重寫一遍"),
         ("所有可见字段都重写", "所有可見欄位都重寫"),
+        # ⚠️ 「…卡片」也是完整的重写目标。上一版只加 (?![的片]) 而没把 卡片
+        # 收进交替，把这三类真请求全挡掉了（Codex P2 第三轮）。
+        ("重写整个角色卡片", "重寫整個角色卡片"),
+        ("重写整张卡片", "重寫整張卡片"),
+        ("重写整个卡片", "重寫整個卡片"),
     ],
 )
 def test_a_genuine_full_rewrite_still_matches(simplified, traditional):

@@ -181,6 +181,44 @@ def test_a_compound_naming_music_is_still_a_cancellation(simplified, traditional
 
 @pytest.mark.parametrize(
     ("simplified", "traditional"),
+    [
+        ("不要播放唱歌的视频", "不要播放唱歌的影片"),
+        ("不要播放有歌曲的游戏", "不要播放有歌曲的遊戲"),
+    ],
+)
+def test_a_music_noun_elsewhere_does_not_override_a_video_target(simplified, traditional):
+    """⚠️ The explicit-music override must sit **next to** the target.
+
+    Searching the whole clause meant 「不要播放唱歌的影片」 — a refusal about a
+    video that merely mentions singing — had its video target discarded and
+    turned into a playback cancellation. Only a compound formed by the target
+    itself (電影歌曲 / 影片的歌) should override it (Codex P2).
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("听一下这个视频吧", "聽一下這個影片吧"), ("播放这个游戏呢", "播放這個遊戲呢")],
+)
+def test_a_trailing_particle_does_not_defeat_the_non_music_guard(simplified, traditional):
+    """The guard uses ``fullmatch``, so one trailing 吧/呢 used to make the
+    payload miss and fall through to a music search. Pre-existing and
+    script-symmetric — 「听一下这个视频吧」 searched for a song on main too
+    (Codex P2). ⚠️ Target *continuations* like 影片內容 are still missed; that
+    needs more than particle stripping and is not in this batch.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in (simplified, traditional):
+        assert parse_explicit_user_music_request(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
     [("别的歌播放不了吗", "別的歌播放不了嗎"), ("别的地方也播放音乐", "別的地方也播放音樂")],
 )
 def test_the_determiner_other_is_not_a_cancellation(simplified, traditional):

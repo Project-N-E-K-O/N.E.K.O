@@ -247,7 +247,11 @@ _ZH_NON_MUSIC_TARGET = re.compile(
 # `不要播放電影歌曲` / `不要播放這個影片的歌` 里的「電影 / 影片」会把整句判成
 # 非音乐目标、吞掉一次明确取消——尽管句子明明点名了「歌」。简体侧同样如此
 # （`不要播放电影歌曲` 在 main 上就不取消），两侧一起修（Codex P2）。
-_ZH_EXPLICIT_MUSIC_TARGET = re.compile(r"歌|音乐|音樂|曲")
+# ⚠️ 必须限定在**目标词紧邻其后**，不能在整句里搜。整句搜的话
+# `不要播放唱歌的影片` / `不要播放有歌曲的遊戲` 会因为句子别处出现「歌」而把
+# 视频/游戏目标撤销，把一次非音乐拒绝变成取消播放（Codex P2）。
+# 只认「電影歌曲」「影片的歌」这种目标词自己构成的复合。
+_ZH_MUSIC_NOUN_AFTER_TARGET = re.compile(r"的?(?:歌曲|歌|音乐|音樂|曲目|曲)")
 
 _ZH_NON_MUSIC_SPEECH_REQUEST = re.compile(
     rf"{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?(?:想|要)?"
@@ -293,6 +297,13 @@ _ZH_MUSIC_MOOD_OR_STYLE = {
     "治愈",
     "治癒",
 }
+
+
+# 句末语气词。非音乐目标判定用的是 fullmatch，所以 `這個影片吧` 会因为多一个
+# 「吧」而漏判、掉进点歌解析。剥掉再判。⚠️ 这是**两侧对称的既有缺口**
+# （`听一下这个视频吧` 在基线上同样会去搜歌），一并修（Codex P2）。
+# 只剥纯语气词；`影片內容` 这类目标词延伸仍然漏判，属既有限制，未在本批处理。
+_ZH_TRAILING_PARTICLES = re.compile(r"(?:吧|啊|呀|呢|嘛|哦|喔|吗|嗎)+$")
 
 
 def _strip_request_payload(value: str) -> str:
@@ -456,7 +467,7 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
     payload = _strip_request_payload(payload)
     if payload in {"", "歌", "歌曲", "音乐", "音樂", "一首歌", "首歌", "点音乐", "點音樂"}:
         return MusicRequest()
-    if _ZH_NON_MUSIC_TARGET.fullmatch(payload):
+    if _ZH_NON_MUSIC_TARGET.fullmatch(_ZH_TRAILING_PARTICLES.sub("", payload)):
         return None
     named_song_match = re.fullmatch(r"(?:歌曲?|曲目)\s*[:：]\s*(.{1,60})", payload)
     if named_song_match:
@@ -673,8 +684,8 @@ def _has_explicit_non_music_target(clause: str) -> bool:
     ):
         en_target = None
     zh_target = _ZH_NON_MUSIC_TARGET.search(clause)
-    if zh_target and _ZH_EXPLICIT_MUSIC_TARGET.search(clause):
-        # 「這個影片的歌」「電影歌曲」——复合词点名了音乐，不是非音乐目标。
+    if zh_target and _ZH_MUSIC_NOUN_AFTER_TARGET.match(clause, zh_target.end()):
+        # 「這個影片的歌」「電影歌曲」——目标词自己构成了音乐复合，不是非音乐目标。
         zh_target = None
     return bool(zh_target or en_target)
 
