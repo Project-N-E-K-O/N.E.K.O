@@ -40,7 +40,7 @@ export function rankBuckets(items, { maxRank = Infinity } = {}) {
     off100: maxRank >= 100 ? observedItems.filter(item => !Number.isFinite(item.organicRank)).length : null,
     tracked: items.length,
     observed: observedItems.length,
-    failed: items.filter(item => item?.error != null).length,
+    failed: items.filter(item => item?.error != null || item?.collectionStatus === 'failed').length,
     notRun: items.filter(item => item?.collectionStatus === 'not_run').length,
     unknown: items.filter(item => item?.collectionStatus === 'unknown').length,
   }
@@ -86,6 +86,7 @@ function inferExecution(report, execution) {
 
 function statusForRow(row, rankingStatus) {
   if (rankingStatus === 'not_run' || rankingStatus === 'unknown') return rankingStatus
+  if (rankingStatus === 'failed') return 'failed'
   if (row?.error) return 'failed'
   return 'observed'
 }
@@ -187,20 +188,41 @@ export function summarizeDataForSeoSegment(definition, report, execution) {
     reason: run.failureReason ?? run.reason ?? report?.reason ?? null,
     dryRun: report?.dryRun === true,
     generatedAt: report?.generatedAt ?? execution?.generatedAt ?? null,
-    target: report?.target ?? {
-      domain: definition.keywordConfig?.targetDomain ?? null,
-      locationCode: definition.keywordConfig?.locationCode ?? null,
-      languageCode: definition.keywordConfig?.languageCode ?? null,
-      device: definition.keywordConfig?.device ?? null,
-    },
+    target: normalizeDataForSeoTarget(report?.target, definition.keywordConfig),
     plan: report?.plan ?? null,
     ranks: rankBuckets(rows, { maxRank }),
     keywordRows: rows,
     errors: report?.errors ?? [],
-    costUsd: Number.isFinite(Number(report?.costs?.totalUsd)) ? Number(report.costs.totalUsd) : null,
+    costUsd: report?.costs?.totalUsd != null && Number.isFinite(Number(report.costs.totalUsd))
+      ? Number(report.costs.totalUsd)
+      : null,
     evidence: execution?.github?.runId
       ? `https://github.com/${execution.github.repository}/actions/runs/${execution.github.runId}`
       : null,
+  }
+}
+
+function normalizeDataForSeoTarget(reportTarget, keywordConfig = {}) {
+  const source = reportTarget ?? {}
+  const legacyLanguageCode = source.languageCode ?? keywordConfig.languageCode ?? null
+  return {
+    domain: source.domain ?? keywordConfig.targetDomain ?? null,
+    locationCode: source.locationCode ?? keywordConfig.locationCode ?? null,
+    locale: source.locale ?? keywordConfig.locale ?? legacyLanguageCode,
+    serpLanguageCode: source.serpLanguageCode
+      ?? keywordConfig.serpLanguageCode
+      ?? legacyLanguageCode,
+    volumeLanguageCode: Object.hasOwn(source, 'volumeLanguageCode')
+      ? source.volumeLanguageCode
+      : Object.hasOwn(keywordConfig, 'volumeLanguageCode')
+        ? keywordConfig.volumeLanguageCode
+        : legacyLanguageCode,
+    keywordDifficultyLanguageCode: Object.hasOwn(source, 'keywordDifficultyLanguageCode')
+      ? source.keywordDifficultyLanguageCode
+      : Object.hasOwn(keywordConfig, 'keywordDifficultyLanguageCode')
+        ? keywordConfig.keywordDifficultyLanguageCode
+        : legacyLanguageCode,
+    device: source.device ?? keywordConfig.device ?? null,
   }
 }
 
@@ -218,7 +240,7 @@ function rankingTargetSignature(segment) {
   return [
     target.domain,
     target.locationCode,
-    target.languageCode,
+    target.serpLanguageCode ?? target.languageCode,
     target.device,
     segment?.plan?.serpDepth,
   ].map(value => String(value ?? '')).join('|')

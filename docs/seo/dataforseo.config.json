@@ -1,7 +1,10 @@
 {
   "targetDomain": "project-neko.online",
   "locationCode": 2840,
-  "languageCode": "en",
+  "locale": "en",
+  "serpLanguageCode": "en",
+  "volumeLanguageCode": "en",
+  "keywordDifficultyLanguageCode": "en",
   "device": "desktop",
   "serpDepth": 100,
   "keywords": [

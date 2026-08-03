@@ -21,6 +21,8 @@ DataForSEO bills by request, but the daily baseline is deliberately **not** hidd
 - each SERP request sets `max_crawl_pages` from that depth, making the displayed page count a hard crawl limit;
 - asynchronous AI Overview loading can add a charge to every SERP request and is intentionally included in the scheduled visibility baseline;
 - one scheduled run tracks 19 `.online` English queries, 8 `.cn` Chinese queries, and 3 `.online` Chinese documentation queries;
+- each segment runs Volume/KD (`--mode keywords`) and ranking/AIO (`--mode serp`) as independent workflow steps, never as one scheduled `--mode all` process;
+- a failure in either step cannot prevent the other step from running or erase its report; the merger records the combined segment as `partial` and keeps separate component diagnostics;
 - explicit transient SERP API failures that report zero cost retry only the failed keyword, at most three attempts with backoff;
 - ambiguous network, response-body, or JSON failures are never retried automatically because the completed request may already have been billed;
 - a failed response reporting any nonzero cost is never retried automatically, preventing an accidental duplicate charge;
@@ -29,7 +31,7 @@ DataForSEO bills by request, but the daily baseline is deliberately **not** hidd
 - generated reports live under `docs/.seo-reports/`, are ignored by Git, and are retained as workflow artifacts for 30 days;
 - every segment writes an execution-status manifest even when collection fails; a missing expected report makes the workflow fail instead of silently producing a green empty run.
 
-The request plan always states the request count, maximum SERP pages, and number of AIO-enabled calls before execution. A completed paid report records the costs returned by DataForSEO.
+Each request plan states the request count, maximum SERP pages, and number of AIO-enabled calls before execution. The workflow retains both component reports plus a merged compatibility report. A completed paid merge records the combined costs returned by DataForSEO; if one component report is missing, `totalUsd` is `null` and `knownTotalUsd` contains only the cost proven by the surviving report.
 
 ::: danger Keep credentials server-side
 Never add credentials to `docs/public`, Markdown, tracked JSON, browser code, or a `VITE_*` variable. Vite exposes `VITE_*` values to the client bundle. Use the separate `DATAFORSEO_LOGIN` and `DATAFORSEO_PASSWORD` values from the DataForSEO API Access page; the account password is not the API password.
@@ -51,7 +53,10 @@ The English config is derived from existing documentation pages and targets `pro
 {
   "targetDomain": "project-neko.online",
   "locationCode": 2840,
-  "languageCode": "en",
+  "locale": "en",
+  "serpLanguageCode": "en",
+  "volumeLanguageCode": "en",
+  "keywordDifficultyLanguageCode": "en",
   "device": "desktop",
   "serpDepth": 100,
   "keywords": [
@@ -64,11 +69,20 @@ The English config is derived from existing documentation pages and targets `pro
 }
 ```
 
+Language configuration is provider-specific:
+
+- `locale` labels the tracked content segment and is never sent to DataForSEO;
+- `serpLanguageCode` is sent only to Google Organic SERP;
+- `volumeLanguageCode` is sent only to Google Ads Search Volume; `null` omits the optional API field;
+- `keywordDifficultyLanguageCode` is sent only to DataForSEO Labs; `null` disables KD collection for that segment even when the CLI default would otherwise enable it.
+
+The two Chinese configs use `locale: "zh-CN"` and `serpLanguageCode: "zh-CN"`, but set Volume and KD language to `null`. This keeps the China location target (`2156`), avoids sending the invalid Google Ads `zh-CN` language field, and records China KD as unsupported instead of making an unsupported paid request. The legacy single `languageCode` field remains readable for external local configs, but it cannot be combined with the provider-specific fields.
+
 Keep each keyword unique and mapped to one primary landing page. Missing Volume or KD remains `null`; the tool does not invent a replacement value.
 
 The committed US/English baseline contains 19 phrases. Twelve are strict AI desktop-pet or desktop-companion category terms; the remaining seven measure supporting capabilities such as memory, plugins, and self-hosting. The three Chinese documentation queries are kept in their own segment and point to concrete `.online` pages. The same phrases may also appear in the `.cn` segment because the two domains are measured independently.
 
-DataForSEO Labs does not list China location `2156` for organic keyword difficulty. China KD is therefore `UNSUPPORTED`, never `0` and never borrowed from another market. Google Ads Search Volume uses Google geographical targets, so the China segments still collect Volume; SERP rank, matched URL and AIO also remain available.
+DataForSEO Labs does not list China location `2156` for organic keyword difficulty. China KD is therefore `UNSUPPORTED`, never `0` and never borrowed from another market. Google Ads Search Volume uses Google geographical targets and its language field is optional, so the China segments keep `locationCode: 2156` while omitting `language_code`; SERP rank, matched URL and AIO continue to use their own `zh-CN` setting.
 
 Because the default `all` and `keywords` modes call Google Ads Search Volume, each tracked phrase is validated against that endpoint's limit of 80 characters and 10 words before any paid request is sent.
 
@@ -100,15 +114,26 @@ npm run seo:dataforseo -- --mode keywords
 # One paid Live SERP request per tracked keyword, depth 100.
 npm run seo:dataforseo -- --mode serp --depth 100 --include-ai-overview
 
-# Volume + KD + SERP.
+# Local convenience mode: Volume + KD + SERP in one process.
 npm run seo:dataforseo -- --mode all
 ```
+
+For the same failure isolation used by Actions, run the two paid groups separately and keep distinct output files:
+
+```bash
+npm run seo:dataforseo -- --mode keywords --output .seo-reports/dataforseo-online-en-metrics.json
+npm run seo:dataforseo -- --mode serp --depth 100 --include-ai-overview --output .seo-reports/dataforseo-online-en-ranking.json
+```
+
+The scheduled workflow does not use the local convenience `all` mode. It merges the independent component reports only after both tasks have had a chance to run.
 
 Use an alternate segment config explicitly when running outside Actions:
 
 ```bash
-npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview
-npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview
+npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode keywords --output .seo-reports/dataforseo-cn-metrics.json
+npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode serp --depth 100 --include-ai-overview --output .seo-reports/dataforseo-cn-ranking.json
+npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode keywords --output .seo-reports/dataforseo-online-zh-metrics.json
+npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode serp --depth 100 --include-ai-overview --output .seo-reports/dataforseo-online-zh-ranking.json
 ```
 
 Use `--output <path>` for a different report path and `--config <path>` for an alternate untracked keyword set.
@@ -143,7 +168,9 @@ The workflow also writes a unified GSC/GA4 Markdown and JSON summary. See [SEO/G
 | `serp[].aiOverviewCitedTarget` | Whether AIO referenced the segment's target domain or a subdomain |
 | `status` | `planned`, `complete`, `partial`, or `failed` |
 | `errors[]` | Sanitized per-keyword error, attempts, incurred cost, and cost-guard decisions, including uncertain billing |
-| `costs.totalUsd` | Sum of costs returned by the API responses |
+| `costs.totalUsd` | Sum of both component costs when both cost records are present; otherwise `null` |
+| `costs.knownTotalUsd` | Sum proven by the component reports that are present, including partial runs |
+| `components.keywordMetrics` / `components.ranking` | Independent task status and collection timestamp |
 
 SERP crawling stops only when the target is found in an `organic` result. Appearances in other result types do not stop the crawl before the natural ranking can be recorded.
 

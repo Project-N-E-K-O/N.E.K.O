@@ -66,13 +66,16 @@ jobs:
         run: npm test
         working-directory: docs
 
-      - name: Validate all three committed ranking plans without charge
+      - name: Validate all six independent ranking and metric plans without charge
         shell: bash
         working-directory: docs
         run: |
-          npm run seo:dataforseo -- --config seo/dataforseo.config.json --mode all --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-en.json
-          npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-cn.json
-          npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-zh.json
+          npm run seo:dataforseo -- --config seo/dataforseo.config.json --mode keywords --dry-run --output .seo-reports/dry-run-online-en-metrics.json
+          npm run seo:dataforseo -- --config seo/dataforseo.config.json --mode serp --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-en-ranking.json
+          npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode keywords --dry-run --output .seo-reports/dry-run-cn-metrics.json
+          npm run seo:dataforseo -- --config seo/dataforseo.cn.config.json --mode serp --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-cn-ranking.json
+          npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode keywords --dry-run --output .seo-reports/dry-run-online-zh-metrics.json
+          npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode serp --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-zh-ranking.json
 
   report:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -153,7 +156,7 @@ jobs:
             echo "The previous artifact has no unified JSON report."
           fi
 
-      - name: Reuse today's authoritative .cn ranking artifact
+      - name: Reuse today's authoritative .cn ranking and metric artifact
         if: env.COLLECTION_KIND == 'paid'
         continue-on-error: true
         shell: bash
@@ -168,7 +171,7 @@ jobs:
           repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
           record="$(gh api "repos/${repository}/actions/artifacts?name=dataforseo-cn-report&per_page=100" --jq '.artifacts | map(select(.expired == false and .name == "dataforseo-cn-report" and .workflow_run.head_branch == "main")) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
           if [[ -z "$record" ]]; then
-            echo "No .cn ranking artifact exists; this run will collect the fallback locally."
+            echo "No .cn ranking and metric artifact exists; this run will collect both fallbacks locally."
             exit 0
           fi
           IFS=$'\t' read -r run_id artifact_name <<< "$record"
@@ -220,8 +223,8 @@ jobs:
             exit 1
           fi
 
-      - name: Collect .online English rankings, metrics, and AIO
-        id: online_en
+      - name: Collect .online English Volume and KD
+        id: online_en_metrics
         if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
         continue-on-error: true
         shell: bash
@@ -230,13 +233,56 @@ jobs:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
-          args=(--config seo/dataforseo.config.json --mode all --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-online-en-${GITHUB_RUN_ID}.json")
+          args=(--config seo/dataforseo.config.json --mode keywords --output ".seo-reports/dataforseo-online-en-metrics-${GITHUB_RUN_ID}.json")
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Collect .online English rankings and AIO
+        id: online_en_ranking
+        if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          args=(--config seo/dataforseo.config.json --mode serp --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-online-en-ranking-${GITHUB_RUN_ID}.json")
           if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Collect .cn product Volume
+        id: cn_metrics
+        if: (env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success') && env.CN_EXTERNAL_REPORT == ''
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          args=(--config seo/dataforseo.cn.config.json --mode keywords --output ".seo-reports/dataforseo-cn-metrics-${GITHUB_RUN_ID}.json")
           if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
           npm run seo:dataforseo -- "${args[@]}"
 
       - name: Collect .cn product rankings and AIO
-        id: cn
+        id: cn_ranking
+        if: (env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success') && env.CN_EXTERNAL_REPORT == ''
+        continue-on-error: true
+        shell: bash
+        working-directory: docs
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          args=(--config seo/dataforseo.cn.config.json --mode serp --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-cn-ranking-${GITHUB_RUN_ID}.json")
+          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
+          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Collect .online Chinese documentation Volume
+        id: online_zh_metrics
         if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
         continue-on-error: true
         shell: bash
@@ -245,17 +291,12 @@ jobs:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
-          if [[ -n "${CN_EXTERNAL_REPORT:-}" ]]; then
-            echo "Reusing today's authoritative .cn source-repository artifact."
-            exit 0
-          fi
-          args=(--config seo/dataforseo.cn.config.json --mode all --skip-keyword-difficulty --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json")
-          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
+          args=(--config seo/dataforseo.online-zh.config.json --mode keywords --output ".seo-reports/dataforseo-online-zh-metrics-${GITHUB_RUN_ID}.json")
           if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
           npm run seo:dataforseo -- "${args[@]}"
 
       - name: Collect .online Chinese documentation rankings and AIO
-        id: online_zh
+        id: online_zh_ranking
         if: env.COLLECTION_KIND == 'dry-run' || steps.credentials.outcome == 'success'
         continue-on-error: true
         shell: bash
@@ -264,53 +305,50 @@ jobs:
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
-          args=(--config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-online-zh-${GITHUB_RUN_ID}.json")
+          args=(--config seo/dataforseo.online-zh.config.json --mode serp --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-online-zh-ranking-${GITHUB_RUN_ID}.json")
           if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then args+=(--include-ai-overview); fi
           if [[ "$COLLECTION_KIND" == "dry-run" ]]; then args+=(--dry-run); fi
           npm run seo:dataforseo -- "${args[@]}"
 
-      - name: Record .online English collection status
+      - name: Merge .online English ranking and metric evidence
         if: always()
         continue-on-error: true
         shell: bash
         working-directory: docs
         env:
           CREDENTIALS_OUTCOME: ${{ steps.credentials.outcome }}
-          COLLECTION_OUTCOME: ${{ steps.online_en.outcome }}
+          METRICS_OUTCOME: ${{ steps.online_en_metrics.outcome }}
+          RANKING_OUTCOME: ${{ steps.online_en_ranking.outcome }}
         run: |
-          mode="all"
-          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then mode="dry-run"; fi
-          node scripts/dataforseo/run-status.mjs --segment online-en --mode "$mode" --credentials-outcome "$CREDENTIALS_OUTCOME" --dry-run-outcome "$COLLECTION_OUTCOME" --paid-outcome "$COLLECTION_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --report ".seo-reports/dataforseo-online-en-${GITHUB_RUN_ID}.json" --output ".seo-reports/dataforseo-online-en-execution-${GITHUB_RUN_ID}.json"
+          node scripts/dataforseo/merge-reports.mjs --segment online-en --collection-kind "$COLLECTION_KIND" --credentials-outcome "$CREDENTIALS_OUTCOME" --metrics-outcome "$METRICS_OUTCOME" --ranking-outcome "$RANKING_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --metrics-report ".seo-reports/dataforseo-online-en-metrics-${GITHUB_RUN_ID}.json" --ranking-report ".seo-reports/dataforseo-online-en-ranking-${GITHUB_RUN_ID}.json" --output-report ".seo-reports/dataforseo-online-en-${GITHUB_RUN_ID}.json" --output-status ".seo-reports/dataforseo-online-en-execution-${GITHUB_RUN_ID}.json"
 
-      - name: Record .cn collection status
+      - name: Merge .cn ranking and metric evidence
         if: always()
         continue-on-error: true
         shell: bash
         working-directory: docs
         env:
           CREDENTIALS_OUTCOME: ${{ steps.credentials.outcome }}
-          COLLECTION_OUTCOME: ${{ steps.cn.outcome }}
+          METRICS_OUTCOME: ${{ steps.cn_metrics.outcome }}
+          RANKING_OUTCOME: ${{ steps.cn_ranking.outcome }}
         run: |
-          if [[ -n "${CN_EXTERNAL_STATUS:-}" ]]; then
-            echo "The source-repository status manifest is authoritative; no fallback status is needed."
+          if [[ -n "${CN_EXTERNAL_REPORT:-}" ]]; then
+            echo "The source-repository report and status are authoritative; no local merge is needed."
             exit 0
           fi
-          mode="all"
-          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then mode="dry-run"; fi
-          node scripts/dataforseo/run-status.mjs --segment cn --mode "$mode" --credentials-outcome "$CREDENTIALS_OUTCOME" --dry-run-outcome "$COLLECTION_OUTCOME" --paid-outcome "$COLLECTION_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --report ".seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json" --output ".seo-reports/dataforseo-cn-execution-${GITHUB_RUN_ID}.json"
+          node scripts/dataforseo/merge-reports.mjs --segment cn --collection-kind "$COLLECTION_KIND" --credentials-outcome "$CREDENTIALS_OUTCOME" --metrics-outcome "$METRICS_OUTCOME" --ranking-outcome "$RANKING_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --metrics-report ".seo-reports/dataforseo-cn-metrics-${GITHUB_RUN_ID}.json" --ranking-report ".seo-reports/dataforseo-cn-ranking-${GITHUB_RUN_ID}.json" --output-report ".seo-reports/dataforseo-cn-${GITHUB_RUN_ID}.json" --output-status ".seo-reports/dataforseo-cn-execution-${GITHUB_RUN_ID}.json"
 
-      - name: Record .online Chinese collection status
+      - name: Merge .online Chinese ranking and metric evidence
         if: always()
         continue-on-error: true
         shell: bash
         working-directory: docs
         env:
           CREDENTIALS_OUTCOME: ${{ steps.credentials.outcome }}
-          COLLECTION_OUTCOME: ${{ steps.online_zh.outcome }}
+          METRICS_OUTCOME: ${{ steps.online_zh_metrics.outcome }}
+          RANKING_OUTCOME: ${{ steps.online_zh_ranking.outcome }}
         run: |
-          mode="all"
-          if [[ "$COLLECTION_KIND" == "dry-run" ]]; then mode="dry-run"; fi
-          node scripts/dataforseo/run-status.mjs --segment online-zh --mode "$mode" --credentials-outcome "$CREDENTIALS_OUTCOME" --dry-run-outcome "$COLLECTION_OUTCOME" --paid-outcome "$COLLECTION_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --report ".seo-reports/dataforseo-online-zh-${GITHUB_RUN_ID}.json" --output ".seo-reports/dataforseo-online-zh-execution-${GITHUB_RUN_ID}.json"
+          node scripts/dataforseo/merge-reports.mjs --segment online-zh --collection-kind "$COLLECTION_KIND" --credentials-outcome "$CREDENTIALS_OUTCOME" --metrics-outcome "$METRICS_OUTCOME" --ranking-outcome "$RANKING_OUTCOME" --include-ai-overview "$INCLUDE_AI_OVERVIEW" --metrics-report ".seo-reports/dataforseo-online-zh-metrics-${GITHUB_RUN_ID}.json" --ranking-report ".seo-reports/dataforseo-online-zh-ranking-${GITHUB_RUN_ID}.json" --output-report ".seo-reports/dataforseo-online-zh-${GITHUB_RUN_ID}.json" --output-status ".seo-reports/dataforseo-online-zh-execution-${GITHUB_RUN_ID}.json"
 
       - name: Generate the dual-site SEO/GEO report
         id: unified

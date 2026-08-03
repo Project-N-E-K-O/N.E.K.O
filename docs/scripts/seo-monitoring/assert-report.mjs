@@ -9,19 +9,28 @@ const REQUIRED_SEGMENTS = new Map([
     keywords: 8,
     domain: 'project-neko.cn',
     locationCode: 2156,
-    languageCode: 'zh-CN',
+    locale: 'zh-CN',
+    serpLanguageCode: 'zh-CN',
+    volumeLanguageCode: null,
+    keywordDifficultyLanguageCode: null,
   }],
   ['online-en', {
     keywords: 19,
     domain: 'project-neko.online',
     locationCode: 2840,
-    languageCode: 'en',
+    locale: 'en',
+    serpLanguageCode: 'en',
+    volumeLanguageCode: 'en',
+    keywordDifficultyLanguageCode: 'en',
   }],
   ['online-zh', {
     keywords: 3,
     domain: 'project-neko.online',
     locationCode: 2156,
-    languageCode: 'zh-CN',
+    locale: 'zh-CN',
+    serpLanguageCode: 'zh-CN',
+    volumeLanguageCode: null,
+    keywordDifficultyLanguageCode: null,
   }],
 ])
 
@@ -243,7 +252,22 @@ function validateDataForSeo(report, failures) {
     add(failures, segment.plan?.includeAiOverview === true, `DataForSEO ${id} must request AI Overview`)
     add(failures, segment.target?.domain === expected.domain, `DataForSEO ${id} target domain is wrong`)
     add(failures, segment.target?.locationCode === expected.locationCode, `DataForSEO ${id} location is wrong`)
-    add(failures, segment.target?.languageCode === expected.languageCode, `DataForSEO ${id} language is wrong`)
+    add(failures, segment.target?.locale === expected.locale, `DataForSEO ${id} locale is wrong`)
+    add(
+      failures,
+      segment.target?.serpLanguageCode === expected.serpLanguageCode,
+      `DataForSEO ${id} SERP language is wrong`,
+    )
+    add(
+      failures,
+      segment.target?.volumeLanguageCode === expected.volumeLanguageCode,
+      `DataForSEO ${id} Volume language is wrong`,
+    )
+    add(
+      failures,
+      segment.target?.keywordDifficultyLanguageCode === expected.keywordDifficultyLanguageCode,
+      `DataForSEO ${id} KD language is wrong`,
+    )
     add(failures, segment.target?.device === 'desktop', `DataForSEO ${id} device must be desktop`)
 
     const rows = Array.isArray(segment.keywordRows) ? segment.keywordRows : []

@@ -27,16 +27,43 @@ test('committed configs keep each location/language/domain segment fixed', async
   ])
 
   assert.deepEqual(
-    [onlineEn.targetDomain, onlineEn.locationCode, onlineEn.languageCode, onlineEn.serpDepth, onlineEn.keywords.length],
-    ['project-neko.online', 2840, 'en', 100, 19],
+    [
+      onlineEn.targetDomain,
+      onlineEn.locationCode,
+      onlineEn.locale,
+      onlineEn.serpLanguageCode,
+      onlineEn.volumeLanguageCode,
+      onlineEn.keywordDifficultyLanguageCode,
+      onlineEn.serpDepth,
+      onlineEn.keywords.length,
+    ],
+    ['project-neko.online', 2840, 'en', 'en', 'en', 'en', 100, 19],
   )
   assert.deepEqual(
-    [cn.targetDomain, cn.locationCode, cn.languageCode, cn.serpDepth, cn.keywords.length],
-    ['project-neko.cn', 2156, 'zh-CN', 100, 8],
+    [
+      cn.targetDomain,
+      cn.locationCode,
+      cn.locale,
+      cn.serpLanguageCode,
+      cn.volumeLanguageCode,
+      cn.keywordDifficultyLanguageCode,
+      cn.serpDepth,
+      cn.keywords.length,
+    ],
+    ['project-neko.cn', 2156, 'zh-CN', 'zh-CN', null, null, 100, 8],
   )
   assert.deepEqual(
-    [onlineZh.targetDomain, onlineZh.locationCode, onlineZh.languageCode, onlineZh.serpDepth, onlineZh.keywords.length],
-    ['project-neko.online', 2156, 'zh-CN', 100, 3],
+    [
+      onlineZh.targetDomain,
+      onlineZh.locationCode,
+      onlineZh.locale,
+      onlineZh.serpLanguageCode,
+      onlineZh.volumeLanguageCode,
+      onlineZh.keywordDifficultyLanguageCode,
+      onlineZh.serpDepth,
+      onlineZh.keywords.length,
+    ],
+    ['project-neko.online', 2156, 'zh-CN', 'zh-CN', null, null, 100, 3],
   )
 })
 

@@ -29,7 +29,10 @@ const cnDefinition = {
   keywordConfig: {
     targetDomain: 'project-neko.cn',
     locationCode: 2156,
-    languageCode: 'zh-CN',
+    locale: 'zh-CN',
+    serpLanguageCode: 'zh-CN',
+    volumeLanguageCode: null,
+    keywordDifficultyLanguageCode: null,
     device: 'desktop',
     serpDepth: 100,
     keywords: [{ keyword: 'AI 桌面助手', landingPage: '/', intent: 'BOFU', cta: 'Steam' }],
@@ -45,7 +48,10 @@ const onlineDefinition = {
   keywordConfig: {
     targetDomain: 'project-neko.online',
     locationCode: 2840,
-    languageCode: 'en',
+    locale: 'en',
+    serpLanguageCode: 'en',
+    volumeLanguageCode: 'en',
+    keywordDifficultyLanguageCode: 'en',
     device: 'desktop',
     serpDepth: 100,
     keywords: [{ keyword: 'ai desktop pet', landingPage: '/', intent: 'BOFU' }],
@@ -208,6 +214,26 @@ test('rank buckets never count unknown rows as observed or off-100', () => {
   assert.equal(summary.unknown, 1)
 })
 
+test('a failed ranking task without a report cannot become a false off-100 result', () => {
+  const summarized = summarizeDataForSeoSegment(
+    cnDefinition,
+    null,
+    execution({
+      runStatus: 'failed',
+      rankingStatus: 'failed',
+      keywordMetricsStatus: 'failed',
+      aiOverviewStatus: 'failed',
+      failureReason: 'ranking task failed before producing a report',
+    }),
+  )
+
+  assert.equal(summarized.ranks.observed, 0)
+  assert.equal(summarized.ranks.off100, 0)
+  assert.equal(summarized.ranks.failed, 1)
+  assert.equal(summarized.keywordRows[0].collectionStatus, 'failed')
+  assert.equal(summarized.keywordRows[0].organicRank, null)
+})
+
 test('IndexNow keeps unreadable evidence distinct from a missing execution', () => {
   assert.deepEqual(normalizedIndexNow(unavailable('invalid JSON')), {
     status: 'unavailable',
@@ -252,6 +278,18 @@ test('segment summary preserves UNSUPPORTED KD and distinguishes a real zero fro
   assert.equal(planned.ranks.observed, 0)
   assert.equal(planned.keywordRows[0].collectionStatus, 'not_run')
   assert.equal(planned.keywordRows[0].aiOverviewTriggered, null)
+})
+
+test('partial split collection never converts an unknown total cost into a false zero', () => {
+  const summarized = summarizeDataForSeoSegment(
+    cnDefinition,
+    report('AI 桌面助手', {
+      costs: { totalUsd: null, knownTotalUsd: 0.02 },
+    }),
+    execution({ runStatus: 'partial', keywordMetricsStatus: 'failed' }),
+  )
+
+  assert.equal(summarized.costUsd, null)
 })
 
 test('dual-site report renders the skill contract and evidence-driven action queues', () => {

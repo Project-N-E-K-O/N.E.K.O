@@ -46,6 +46,21 @@ function normalizeDepth(value, fieldName = 'serpDepth') {
   return depth
 }
 
+function normalizeLanguageCode(value, fieldName, { nullable = false } = {}) {
+  if (nullable && value == null) return null
+  if (typeof value !== 'string' || !/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(value)) {
+    const suffix = nullable ? ' or null' : ''
+    throw new TypeError(`${fieldName} must be a DataForSEO language code such as en${suffix}`)
+  }
+  return value
+}
+
+function withLanguageCode(task, languageCode) {
+  return languageCode == null
+    ? task
+    : { ...task, language_code: languageCode }
+}
+
 export function validateConfig(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('DataForSEO config must be a JSON object')
@@ -57,10 +72,44 @@ export function validateConfig(input) {
     throw new TypeError('locationCode must be a positive integer')
   }
 
-  const languageCode = input.languageCode
-  if (typeof languageCode !== 'string' || !/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(languageCode)) {
-    throw new TypeError('languageCode must be a DataForSEO language code such as en')
+  const providerLanguageFields = [
+    'locale',
+    'serpLanguageCode',
+    'volumeLanguageCode',
+    'keywordDifficultyLanguageCode',
+  ]
+  const usesLegacyLanguageCode = input.languageCode != null
+  const usesProviderLanguageCodes = providerLanguageFields.some(field => Object.hasOwn(input, field))
+  if (usesLegacyLanguageCode && usesProviderLanguageCodes) {
+    throw new TypeError('languageCode cannot be combined with provider-specific language fields')
   }
+  if (!usesLegacyLanguageCode) {
+    const missingField = providerLanguageFields.find(field => !Object.hasOwn(input, field))
+    if (missingField) {
+      throw new TypeError(`${missingField} is required when languageCode is not used`)
+    }
+  }
+
+  const legacyLanguageCode = usesLegacyLanguageCode
+    ? normalizeLanguageCode(input.languageCode, 'languageCode')
+    : null
+  const locale = normalizeLanguageCode(input.locale ?? legacyLanguageCode, 'locale')
+  const serpLanguageCode = normalizeLanguageCode(
+    input.serpLanguageCode ?? legacyLanguageCode,
+    'serpLanguageCode',
+  )
+  const volumeLanguageCode = normalizeLanguageCode(
+    Object.hasOwn(input, 'volumeLanguageCode') ? input.volumeLanguageCode : legacyLanguageCode,
+    'volumeLanguageCode',
+    { nullable: true },
+  )
+  const keywordDifficultyLanguageCode = normalizeLanguageCode(
+    Object.hasOwn(input, 'keywordDifficultyLanguageCode')
+      ? input.keywordDifficultyLanguageCode
+      : legacyLanguageCode,
+    'keywordDifficultyLanguageCode',
+    { nullable: true },
+  )
 
   const device = input.device ?? 'desktop'
   if (!DEVICES.has(device)) {
@@ -109,7 +158,10 @@ export function validateConfig(input) {
   return {
     targetDomain,
     locationCode,
-    languageCode,
+    locale,
+    serpLanguageCode,
+    volumeLanguageCode,
+    keywordDifficultyLanguageCode,
     device,
     serpDepth: normalizeDepth(input.serpDepth ?? 10),
     keywords,
@@ -169,14 +221,18 @@ export function buildPlan(config, {
   const includesKeywords = normalizedMode === 'all' || normalizedMode === 'keywords'
   const includesSerp = normalizedMode === 'all' || normalizedMode === 'serp'
   const serpRequests = includesSerp ? config.keywords.length : 0
-  const keywordDifficultyRequests = includesKeywords && includeKeywordDifficulty ? 1 : 0
+  const keywordDifficultyRequests = includesKeywords
+    && includeKeywordDifficulty
+    && config.keywordDifficultyLanguageCode != null
+    ? 1
+    : 0
 
   return {
     mode: normalizedMode,
     keywordCount: config.keywords.length,
     serpDepth,
     includeAiOverview: Boolean(includeAiOverview && includesSerp),
-    includeKeywordDifficulty: Boolean(includeKeywordDifficulty && includesKeywords),
+    includeKeywordDifficulty: keywordDifficultyRequests > 0,
     requests: {
       searchVolume: includesKeywords ? 1 : 0,
       keywordDifficulty: keywordDifficultyRequests,
@@ -310,15 +366,16 @@ export function summarizeSerpResult(configEntry, targetDomain, result) {
 async function collectKeywordMetrics(client, config, { includeKeywordDifficulty = true } = {}) {
   const common = {
     location_code: config.locationCode,
-    language_code: config.languageCode,
     keywords: config.keywords.map(entry => entry.keyword),
   }
-  const searchVolumePayload = await client.post(DATAFORSEO_ENDPOINTS.searchVolume, [{
+  const searchVolumeTask = withLanguageCode({
     ...common,
     search_partners: false,
-  }])
+  }, config.volumeLanguageCode)
+  const difficultyTask = withLanguageCode(common, config.keywordDifficultyLanguageCode)
+  const searchVolumePayload = await client.post(DATAFORSEO_ENDPOINTS.searchVolume, [searchVolumeTask])
   const difficultyPayload = includeKeywordDifficulty
-    ? await client.post(DATAFORSEO_ENDPOINTS.keywordDifficulty, [common])
+    ? await client.post(DATAFORSEO_ENDPOINTS.keywordDifficulty, [difficultyTask])
     : { tasks: [], cost: 0 }
 
   return {
@@ -401,7 +458,7 @@ async function collectSerp(client, config, { depth, includeAiOverview, retryOpti
     const task = {
       keyword: entry.keyword,
       location_code: config.locationCode,
-      language_code: config.languageCode,
+      language_code: config.serpLanguageCode,
       device: config.device,
       depth,
       max_crawl_pages: Math.ceil(depth / 10),
@@ -462,7 +519,10 @@ export async function createDataForSeoReport({
     target: {
       domain: config.targetDomain,
       locationCode: config.locationCode,
-      languageCode: config.languageCode,
+      locale: config.locale,
+      serpLanguageCode: config.serpLanguageCode,
+      volumeLanguageCode: config.volumeLanguageCode,
+      keywordDifficultyLanguageCode: config.keywordDifficultyLanguageCode,
       device: config.device,
     },
     plan,

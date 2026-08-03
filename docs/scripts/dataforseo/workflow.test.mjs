@@ -47,9 +47,20 @@ test('maintainer documentation cannot revive the obsolete paid-schedule kill swi
 test('one run collects independent CN, online-English, and online-Chinese segments', async () => {
   const workflow = await readWorkflow()
 
-  assert.match(workflow, /dataforseo\.config\.json --mode all/)
-  assert.match(workflow, /dataforseo\.cn\.config\.json --mode all --skip-keyword-difficulty/)
-  assert.match(workflow, /dataforseo\.online-zh\.config\.json --mode all --skip-keyword-difficulty/)
+  for (const config of [
+    'dataforseo.config.json',
+    'dataforseo.cn.config.json',
+    'dataforseo.online-zh.config.json',
+  ]) {
+    assert.match(workflow, new RegExp(`${config.replaceAll('.', '\\.')} --mode keywords`))
+    assert.match(workflow, new RegExp(`${config.replaceAll('.', '\\.')} --mode serp`))
+  }
+  assert.doesNotMatch(workflow, /dataforseo(?:\.online-zh|\.cn)?\.config\.json --mode all/)
+  assert.equal((workflow.match(/id: (?:online_en|cn|online_zh)_metrics/gu) ?? []).length, 3)
+  assert.equal((workflow.match(/id: (?:online_en|cn|online_zh)_ranking/gu) ?? []).length, 3)
+  assert.equal((workflow.match(/node scripts\/dataforseo\/merge-reports\.mjs/gu) ?? []).length, 3)
+  assert.match(workflow, /METRICS_OUTCOME: \$\{\{ steps\.online_en_metrics\.outcome \}\}/)
+  assert.match(workflow, /RANKING_OUTCOME: \$\{\{ steps\.online_en_ranking\.outcome \}\}/)
   assert.match(workflow, /--segment online-en/)
   assert.match(workflow, /--segment cn/)
   assert.match(workflow, /--segment online-zh/)

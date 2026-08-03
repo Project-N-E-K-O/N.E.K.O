@@ -14,7 +14,10 @@ import {
 const rawConfig = {
   targetDomain: 'project-neko.online',
   locationCode: 2840,
-  languageCode: 'en',
+  locale: 'en',
+  serpLanguageCode: 'en',
+  volumeLanguageCode: 'en',
+  keywordDifficultyLanguageCode: 'en',
   device: 'desktop',
   serpDepth: 10,
   keywords: [
@@ -32,9 +35,22 @@ const rawConfig = {
   ],
 }
 
+const chineseRawConfig = {
+  ...rawConfig,
+  locationCode: 2156,
+  locale: 'zh-CN',
+  serpLanguageCode: 'zh-CN',
+  volumeLanguageCode: null,
+  keywordDifficultyLanguageCode: null,
+}
+
 test('config validation normalizes tracked entries and rejects duplicates', () => {
   const config = validateConfig(rawConfig)
   assert.equal(config.targetDomain, 'project-neko.online')
+  assert.equal(config.locale, 'en')
+  assert.equal(config.serpLanguageCode, 'en')
+  assert.equal(config.volumeLanguageCode, 'en')
+  assert.equal(config.keywordDifficultyLanguageCode, 'en')
   assert.equal(config.keywords[0].landingPage, '/frontend/live2d')
   assert.equal(config.keywords[0].cta, 'Read Live2D docs')
 
@@ -44,6 +60,31 @@ test('config validation normalizes tracked entries and rejects duplicates', () =
       keywords: ['Same Keyword', ' same keyword '],
     }),
     /Duplicate keyword/,
+  )
+})
+
+test('config validation keeps legacy languageCode readable but rejects ambiguous mixed fields', () => {
+  const {
+    locale: _locale,
+    serpLanguageCode: _serpLanguageCode,
+    volumeLanguageCode: _volumeLanguageCode,
+    keywordDifficultyLanguageCode: _keywordDifficultyLanguageCode,
+    ...legacyConfig
+  } = rawConfig
+  const config = validateConfig({ ...legacyConfig, languageCode: 'en' })
+
+  assert.equal(config.locale, 'en')
+  assert.equal(config.serpLanguageCode, 'en')
+  assert.equal(config.volumeLanguageCode, 'en')
+  assert.equal(config.keywordDifficultyLanguageCode, 'en')
+  assert.throws(
+    () => validateConfig({ ...rawConfig, languageCode: 'en' }),
+    /cannot be combined/,
+  )
+  const { volumeLanguageCode: _missingVolumeLanguageCode, ...missingVolumeConfig } = rawConfig
+  assert.throws(
+    () => validateConfig(missingVolumeConfig),
+    /volumeLanguageCode is required/,
   )
 })
 
@@ -83,7 +124,7 @@ test('request plan makes paid call volume visible before execution', () => {
 })
 
 test('China segments collect Google Ads search volume without unsupported Labs KD', () => {
-  const config = validateConfig({ ...rawConfig, locationCode: 2156, languageCode: 'zh-CN' })
+  const config = validateConfig(chineseRawConfig)
   const plan = buildPlan(config, {
     mode: 'all',
     depth: 30,
@@ -212,8 +253,8 @@ test('keywords mode calls only the two metric endpoints and reports API cost', a
   const config = validateConfig(rawConfig)
   const calls = []
   const client = {
-    async post(endpoint) {
-      calls.push(endpoint)
+    async post(endpoint, tasks) {
+      calls.push({ endpoint, tasks })
       if (endpoint === DATAFORSEO_ENDPOINTS.searchVolume) {
         return {
           cost: 0.01,
@@ -231,12 +272,42 @@ test('keywords mode calls only the two metric endpoints and reports API cost', a
   }
 
   const report = await createDataForSeoReport({ client, config, mode: 'keywords' })
-  assert.deepEqual(calls, [
+  assert.deepEqual(calls.map(call => call.endpoint), [
     DATAFORSEO_ENDPOINTS.searchVolume,
     DATAFORSEO_ENDPOINTS.keywordDifficulty,
   ])
+  assert.equal(calls[0].tasks[0].language_code, 'en')
+  assert.equal(calls[1].tasks[0].language_code, 'en')
   assert.equal(report.costs.totalUsd, 0.03)
   assert.equal(report.serp, null)
+})
+
+test('Chinese keyword metrics omit the unsupported Google Ads language and skip Labs KD', async () => {
+  const config = validateConfig(chineseRawConfig)
+  const calls = []
+  const client = {
+    async post(endpoint, tasks) {
+      calls.push({ endpoint, tasks })
+      return { cost: 0.01, tasks: [{ result: [] }] }
+    },
+  }
+
+  const report = await createDataForSeoReport({ client, config, mode: 'keywords' })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].endpoint, DATAFORSEO_ENDPOINTS.searchVolume)
+  assert.equal(calls[0].tasks[0].location_code, 2156)
+  assert.equal(Object.hasOwn(calls[0].tasks[0], 'language_code'), false)
+  assert.equal(report.plan.includeKeywordDifficulty, false)
+  assert.deepEqual(report.target, {
+    domain: 'project-neko.online',
+    locationCode: 2156,
+    locale: 'zh-CN',
+    serpLanguageCode: 'zh-CN',
+    volumeLanguageCode: null,
+    keywordDifficultyLanguageCode: null,
+    device: 'desktop',
+  })
 })
 
 test('SERP mode sends one organic-targeted task per keyword', async () => {
@@ -273,6 +344,30 @@ test('SERP mode sends one organic-targeted task per keyword', async () => {
   assert.deepEqual(report.errors, [])
   assert.equal(report.serp[0].requestAttempts, 1)
   assert.equal(report.serp[0].error, null)
+})
+
+test('Chinese SERP keeps zh-CN even when Volume has no language filter', async () => {
+  const config = validateConfig({
+    ...chineseRawConfig,
+    keywords: [chineseRawConfig.keywords[0]],
+  })
+  const calls = []
+  const client = {
+    async post(endpoint, tasks) {
+      calls.push({ endpoint, tasks })
+      return {
+        cost: 0.01,
+        tasks: [{ result: [{ items: [], item_types: [] }] }],
+      }
+    },
+  }
+
+  await createDataForSeoReport({ client, config, mode: 'serp' })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].endpoint, DATAFORSEO_ENDPOINTS.organicSerp)
+  assert.equal(calls[0].tasks[0].location_code, 2156)
+  assert.equal(calls[0].tasks[0].language_code, 'zh-CN')
 })
 
 test('SERP mode retries transient zero-cost failures with bounded exponential backoff', async () => {
