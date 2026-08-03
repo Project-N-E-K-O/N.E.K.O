@@ -2367,3 +2367,21 @@ def test_an_elliptical_object_after_de_is_still_a_command(simplified, traditiona
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize(("opening", "closing"), QUOTE_PAIRS)
+@pytest.mark.parametrize("determiner", ["", "那首", "這首", "我的"])
+def test_a_quoted_title_after_de_is_still_a_command(determiner, opening, closing):
+    """⚠️ 括起来的就是**歌名**，不用也没法进词表。
+
+    `停止正在播放的《晴天》` / `停止播放的「夜曲」` / `停止正在播放的那首《晴天》`
+    base 全是 True，只认通用音乐名词会把「点名停某一首」整片打成名物化
+    （Codex P2 第五轮）。跨度复用逐对配平那个常量。
+
+    ⚠️ 配对反向断言：不带引号的非音乐中心语仍然要挡住。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'停止正在播放的{determiner}{opening}晴天{closing}'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我要停止播放的{determiner}代码') is False
