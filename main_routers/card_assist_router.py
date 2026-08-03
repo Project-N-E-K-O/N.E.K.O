@@ -898,6 +898,7 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
 
 
 # 子句边界。和 _CHAT_NEGATED_REWRITE_RE 里那个「不许跨过」的字符类是同一张表。
+# 子句边界。和 _CHAT_NEGATED_REWRITE_RE 里那个「不许跨过」的字符类是同一张表。
 _CHAT_CLAUSE_SPLIT_RE = re.compile(r"[。，、！？,.!?;；]+")
 
 

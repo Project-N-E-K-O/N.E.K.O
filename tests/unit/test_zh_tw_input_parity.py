@@ -1575,24 +1575,15 @@ def test_an_honorific_speech_subject_is_not_an_artist(text):
     assert not getattr(result, 'song_artist', None), text
 
 
-@pytest.mark.parametrize(
-    ("simplified", "traditional"),
-    [
-        ("别听一下老师的意见", "別聽一下老師的意見"),
-        ("别听一下他的解释", "別聽一下他的解釋"),
-        ("别听一下这个建议", "別聽一下這個建議"),
-    ],
-)
-def test_listening_to_a_person_is_not_playback(simplified, traditional):
-    """⚠️ `別聽一下X` 不是取消播放。「一」进 TING 表挡住整类。
-
-    代价是 `別聽一下這首歌` 也不再算取消——它在基线上本来就是 False，而
-    「聽一下 后面能跟什么」是开集，正向枚举做不到。简体 base 是 True，一起修了。
-    """  # noqa: DOCSTRING_CJK
-    from main_logic.music_requests import is_explicit_music_cancellation
-
-    for text in (simplified, traditional):
-        assert is_explicit_music_cancellation(text) is False, text
+# ⚠️ 这里原本有一条 `test_listening_to_a_person_is_not_playback`，断言
+# `別聽一下老師的意見` 不是取消播放。它已被**刻意删除**：实现那一侧靠的是把
+# 「一」收进 _ZH_NON_PLAYBACK_AFTER_TING，而那违反了那张表自己的准入条件 (c)
+# 「X 不是高频歌名首字」——代价是 `别听一剪梅` / `别听一生所爱` / `别听一路向北`
+# 整类被打死（Codex P2）。两害相权，保住歌名。
+#
+# 现在 `別聽一下老師的意見` 会被误判成取消播放。那是简体侧既有的缺陷
+# （`别听一下老师的意见` 在 base 上就是 True），繁体与简体一致，不是新引入。
+# 见下面 test_a_song_name_starting_with_a_compound_char_still_cancels。
 
 
 @pytest.mark.parametrize(
@@ -1709,3 +1700,31 @@ def test_a_branded_service_name_matches_either_case(text):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("别听一剪梅", "別聽一剪梅"),
+        ("别听一生所爱", "別聽一生所愛"),
+        ("别听一路向北", "別聽一路向北"),
+        ("别听任贤齐", "別聽任賢齊"),
+        ("别放一千个伤心的理由", "別放一千個傷心的理由"),
+    ],
+)
+def test_a_song_name_starting_with_a_compound_char_still_cancels(
+    simplified, traditional
+):
+    """⚠️⚠️ 复合词黑名单的准入条件 (c) 是「X 不是高频歌名首字」。
+
+    我为了挡 `別聽一下老師的意見` 把「一」收了进去，直接违反了自己写下的规则——
+    一剪梅 / 一生所愛 / 一路向北 都是高频歌名，任賢齊 是知名歌手。拉黑它们的
+    首字等于把这个功能最主要的用法打死，跟之前 `别放晴天` 那次是同一个错误。
+
+    代价：`別聽一下老師的意見` 会被误判成取消播放。那是简体侧既有的缺陷
+    （`别听一下老师的意见` 在 base 上就是 True），繁体与简体一致。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
