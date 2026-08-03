@@ -680,6 +680,42 @@ class QQSettingsService:
         if sticker_cooldown_messages is not None:
             self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
             self.plugin._sticker_cooldown_messages = max(0, int(sticker_cooldown_messages))
+        group_attention_decay_per_second = kwargs.get("group_attention_decay_per_second")
+        if group_attention_decay_per_second is not None:
+            self.plugin._qq_settings["group_attention_decay_per_second"] = max(0.001, float(group_attention_decay_per_second))
+        group_attention_message_recovery = kwargs.get("group_attention_message_recovery")
+        if group_attention_message_recovery is not None:
+            self.plugin._qq_settings["group_attention_message_recovery"] = max(0.0, float(group_attention_message_recovery))
+        group_attention_reply_penalty = kwargs.get("group_attention_reply_penalty")
+        if group_attention_reply_penalty is not None:
+            self.plugin._qq_settings["group_attention_reply_penalty"] = max(0.0, float(group_attention_reply_penalty))
+        group_attention_keyword_boost_scale = kwargs.get("group_attention_keyword_boost_scale")
+        if group_attention_keyword_boost_scale is not None:
+            self.plugin._qq_settings["group_attention_keyword_boost_scale"] = max(0.1, float(group_attention_keyword_boost_scale))
+        group_attention_focus_lock_seconds = kwargs.get("group_attention_focus_lock_seconds")
+        if group_attention_focus_lock_seconds is not None:
+            self.plugin._qq_settings["group_attention_focus_lock_seconds"] = max(0, int(group_attention_focus_lock_seconds))
+        group_attention_max_score = kwargs.get("group_attention_max_score")
+        if group_attention_max_score is not None:
+            self.plugin._qq_settings["group_attention_max_score"] = max(1.0, float(group_attention_max_score))
+        group_attention_focus_threshold = kwargs.get("group_attention_focus_threshold")
+        if group_attention_focus_threshold is not None:
+            self.plugin._qq_settings["group_attention_focus_threshold"] = max(0.1, float(group_attention_focus_threshold))
+        group_attention_min_threshold = kwargs.get("group_attention_min_threshold")
+        if group_attention_min_threshold is not None:
+            self.plugin._qq_settings["group_attention_min_threshold"] = max(0.0, float(group_attention_min_threshold))
+        group_attention_message_gain = kwargs.get("group_attention_message_gain")
+        if group_attention_message_gain is not None:
+            self.plugin._qq_settings["group_attention_message_gain"] = max(0.0, float(group_attention_message_gain))
+        group_attention_focus_cooldown_seconds = kwargs.get("group_attention_focus_cooldown_seconds")
+        if group_attention_focus_cooldown_seconds is not None:
+            self.plugin._qq_settings["group_attention_focus_cooldown_seconds"] = max(10, int(group_attention_focus_cooldown_seconds))
+        group_attention_focus_rise_seconds = kwargs.get("group_attention_focus_rise_seconds")
+        if group_attention_focus_rise_seconds is not None:
+            self.plugin._qq_settings["group_attention_focus_rise_seconds"] = max(0, int(group_attention_focus_rise_seconds))
+        icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
+        if icebreaker_cold_threshold is not None:
+            self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))

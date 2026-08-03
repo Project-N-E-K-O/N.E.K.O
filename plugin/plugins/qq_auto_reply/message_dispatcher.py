@@ -279,6 +279,56 @@ class QQMessageDispatcher:
         # eligibility filters but before backlog/context work.  A filtered
         # first sender must never acquire owner-memory privileges.
         await self._maybe_reserve_open_platform_admin(message)
+
+        # 后台拉取引用/转发/语音内容（在独立 handler task 中 await，避免 WS handler 死锁）
+        if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
+            reply_ids = message.get("_pending_reply_ids")
+            if isinstance(reply_ids, list) and reply_ids:
+                await self.plugin.qq_client._fetch_reply_content(message, reply_ids)
+                message.pop("_pending_reply_ids", None)
+            forward_ids = message.get("_pending_forward_ids")
+            if isinstance(forward_ids, list) and forward_ids:
+                await self.plugin.qq_client._fetch_forward_content(message, forward_ids)
+                message.pop("_pending_forward_ids", None)
+            record_files = message.get("_pending_record_files")
+            if isinstance(record_files, list) and record_files:
+                await self.plugin.qq_client._fetch_record_content(message, record_files)
+                message.pop("_pending_record_files", None)
+            # 主消息图片：调用 VLM 获取描述
+            if self.plugin.qq_client._image_describer:
+                import asyncio as _asyncio
+                from .qq_client import QQClient
+                # 从 raw message 数组或 raw_message 字符串中提取图片 URL
+                raw_msg = message.get("raw") or {}
+                segments = raw_msg.get("message") or message.get("message") or []
+                if isinstance(segments, list):
+                    img_urls = []
+                    for seg in segments:
+                        if isinstance(seg, dict) and seg.get("type") == "image":
+                            sd = seg.get("data") or {}
+                            u = str(sd.get("url") or sd.get("file") or "").strip()
+                            if u:
+                                img_urls.append(u)
+                    if img_urls:
+                        self.plugin._emit_log("DEBUG", f"[VLM] 检测到 {len(img_urls)} 张主消息图片, 开始描述...")
+                    for img_url in img_urls:
+                        try:
+                            desc = await _asyncio.wait_for(
+                                self.plugin.qq_client._image_describer(img_url),
+                                timeout=8.0,
+                            )
+                            if desc:
+                                # 替换 content 中第一个未处理的图片 CQ 码
+                                import re as _re
+                                raw = str(message.get("raw_message") or message.get("content") or "")
+                                new_raw = _re.sub(r'\[CQ:image,[^\]]*\]', f"[Image {desc}]", raw, count=1)
+                                message["raw_message"] = new_raw
+                                message["content"] = new_raw
+                                self.plugin._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
+                            else:
+                                self.plugin._emit_log("DEBUG", "[VLM] 图片描述返回为空")
+                        except Exception as e:
+                            self.plugin._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
         await self.plugin._record_backlog_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
@@ -297,6 +347,8 @@ class QQMessageDispatcher:
         )
         attachments = list(message.get("attachments") or [])
         user_nickname = message.get("user_nickname")
+        # 引用上下文：仅注入 LLM prompt，不混入 message_text 以防污染会话历史
+        reply_context = str(message.get("_reply_context", "") or "").strip()
         if message_type == "private":
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
             if session_key in self.plugin._user_sessions:
@@ -307,6 +359,7 @@ class QQMessageDispatcher:
                 sender_id, message_text, attachments=attachments,
                 user_nickname=user_nickname, forward_sub_count=fwd_count,
                 current_message_id=current_message_id,
+                reply_context=reply_context,
                 participant_memory_at_receipt=(
                     message.get("_participant_memory_at_receipt")
                     if isinstance(message, dict) else None
@@ -323,6 +376,7 @@ class QQMessageDispatcher:
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
+            is_reply_to_bot = message.get("is_reply_to_bot", False)
             current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
             quoted_message_id = str(message.get("quoted_message_id") or "").strip()
             mentioned_user_ids = [
@@ -337,6 +391,10 @@ class QQMessageDispatcher:
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
+            # ── 禁言检查：bot 在该群被禁言 → 只记录不入 pipeline ──
+            if self.plugin.qq_client and self.plugin.qq_client.is_group_muted(group_id):
+                self.plugin._emit_log("INFO", f"[Mute] 群{group_id} 禁言中，跳过消息处理")
+                return
             await self.handle_group_message(
                 group_id,
                 sender_id,
@@ -363,6 +421,8 @@ class QQMessageDispatcher:
                 mentions_all=mentions_all,
                 message_timestamp=message_timestamp,
                 forward_sub_count=fwd_count,
+                reply_context=reply_context,
+                is_reply_to_bot=is_reply_to_bot,
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
@@ -371,6 +431,7 @@ class QQMessageDispatcher:
         attachments: Optional[list[dict[str, Any]]] = None,
         user_nickname: Optional[str] = None, forward_sub_count: int = 0,
         current_message_id: str = "",
+        reply_context: str = "",
         participant_memory_at_receipt: bool | None = None,
         private_permission_level_at_receipt: str | None = None,
         open_platform_admin_promoted_at_receipt: bool = False,
@@ -448,6 +509,8 @@ class QQMessageDispatcher:
         mentions_all: bool = False,
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
+        reply_context: str = "",
+        is_reply_to_bot: bool = False,
         group_memory_at_receipt: bool | None = None,
         member_memory_at_receipt: bool | None = None,
         synthetic_source: str = "",
@@ -467,7 +530,10 @@ class QQMessageDispatcher:
         group_memory_at_receipt = bool(group_memory_at_receipt)
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
-        if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
+        # 新人入群：绕过门控，必定让猫娘欢迎
+        if synthetic_source == "group_join_notice":
+            force_reply = True
+        elif strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
                 group_id=group_id,
                 sender_id=sender_id,
@@ -484,6 +550,10 @@ class QQMessageDispatcher:
                 )
                 return
             force_reply = gate_decision.force_reply
+            # 焦点群消息猫娘已看过，从 backlog 清除
+            if gate_decision.reason == "focus_group" and current_message_id:
+                if hasattr(self.plugin, "backlog_store") and self.plugin.backlog_store:
+                    await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
         group_scene_mode = "directed_user" if is_at_bot else "shared_context"
         # 猫娘动态模式下跳过插话抑制检测（由注意力门控替代）
@@ -508,6 +578,7 @@ class QQMessageDispatcher:
             group_id=group_id,
             user_nickname=user_nickname,
             is_at_bot=is_at_bot,
+            is_reply_to_bot=is_reply_to_bot,
             source_kind=synthetic_source or "incoming_group",
             forward_sub_count=forward_sub_count,
             group_scene_mode=group_scene_mode,

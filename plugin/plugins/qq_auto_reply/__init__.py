@@ -33,10 +33,22 @@ from .qq_open_plat import QQOpenPlatformConnection
 
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
-from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
-from utils.tts.providers.gemini import normalize_gemini_tts_voice
-from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
-from utils.voice_config import read_legacy_voice_id
+try:
+    from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
+except (ImportError, ModuleNotFoundError):
+    get_active_realtime_native_provider_for_ui = None
+try:
+    from utils.tts.providers.gemini import normalize_gemini_tts_voice
+except (ImportError, ModuleNotFoundError):
+    normalize_gemini_tts_voice = None
+try:
+    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+except (ImportError, ModuleNotFoundError):
+    MimoVoiceCloneClient = MimoVoiceCloneError = MinimaxVoiceCloneClient = MinimaxVoiceCloneError = None
+try:
+    from utils.voice_config import read_legacy_voice_id
+except (ImportError, ModuleNotFoundError):
+    read_legacy_voice_id = None
 from .dashboard_service import QQDashboardService
 from .feedback_classifier import QQFeedbackClassifier
 from .backlog_models import QQBacklogMessage
@@ -199,7 +211,214 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             token=str((self._qq_settings or {}).get("token") or ""),
             logger=self.logger,
             emit_log=self._emit_log,
+            image_describer=self._describe_reply_image,
+            voice_transcriber=self._transcribe_voice,
         )
+
+    async def _transcribe_voice(self, audio_base64: str = "", *, audio_url: str = "") -> str:
+        """语音转文字：优先本地 STT，其次云端 OpenAI/Qwen。audio_url 用于 Qwen。"""
+        try:
+            from utils.config_manager import get_config_manager
+            import httpx, base64 as b64
+
+            core_config = get_config_manager().get_core_config() or {}
+            audio_bytes = b64.b64decode(audio_base64) if audio_base64 else b""
+            # 如果没有 base64 但有 URL，下载音频
+            if not audio_bytes and audio_url:
+                try:
+                    async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as cl:
+                        dl = await cl.get(audio_url)
+                        if dl.status_code == 200:
+                            audio_bytes = dl.content
+                except Exception:
+                    pass
+
+            stt_filename = "voice.mp3"
+            stt_mime = "audio/mp3"
+
+            # ── 本地 STT（优先独立配置 local_stt_url，其次 tts_custom base_url 推导）──
+            if audio_bytes:
+                try:
+                    amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+                    stt_filename = "voice.amr" if amr_detected else "voice.mp3"
+                    stt_mime = "audio/amr" if amr_detected else "audio/mp3"
+                    # 优先使用 qq_settings 中的 local_stt_url
+                    local_stt_url = str((self._qq_settings or {}).get("local_stt_url", "") or "").strip()
+                    if not local_stt_url:
+                        # 回退：tts_custom base_url 推导
+                        tts_config = get_config_manager().get_model_api_config("tts_custom")
+                        local_base = str(tts_config.get("base_url") or "").strip()
+                        _is_ws = local_base.startswith("ws://") or local_base.startswith("wss://")
+                        _is_http = local_base.startswith("http://") or local_base.startswith("https://")
+                        if local_base and (_is_ws or _is_http):
+                            http_base = local_base.replace("ws://", "http://").replace("wss://", "https://")
+                            local_stt_url = http_base.rstrip("/") + "/v1/audio/transcriptions"
+                    if local_stt_url:
+                        async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                            resp = await client.post(
+                                local_stt_url,
+                                files={"file": (stt_filename, audio_bytes, stt_mime)},
+                                data={"model": "whisper-1", "language": "zh"},
+                            )
+                            if resp.status_code == 200:
+                                text = str(resp.json().get("text", "") or "").strip()
+                                if text:
+                                    self._emit_log("INFO", f"[Voice] 本地STT完成: {text[:40]}")
+                                    return text
+                            self._emit_log("DEBUG", f"[Voice] 本地STT: {resp.status_code}")
+                except Exception:
+                    pass
+
+            # ── OpenAI Whisper ──
+            openai_key = str(core_config.get("ASSIST_API_KEY_OPENAI") or "").strip()
+            if openai_key and audio_bytes:
+                async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {openai_key}"},
+                        files={"file": (stt_filename, audio_bytes, stt_mime)},
+                        data={"model": "whisper-1", "language": "zh"},
+                    )
+                    if resp.status_code == 200:
+                        return str(resp.json().get("text", "") or "").strip()
+                    self._emit_log("DEBUG", f"[Voice] OpenAI转录: {resp.status_code}")
+
+            # ── Qwen DashScope (SenseVoice) 异步模式 ──
+            import json as _json
+            qwen_key = str(core_config.get("ASSIST_API_KEY_QWEN") or "").strip()
+            if qwen_key and audio_bytes:
+                amr_detected = audio_bytes and (audio_bytes[:6] == b"#!AMR\n" or audio_bytes[:9].startswith(b"#!AMR-W"))
+                if amr_detected:
+                    self._emit_log("DEBUG", f"[Voice] 检测到AMR: magic={audio_bytes[:9]!r}")
+                self._emit_log("DEBUG", f"[Voice] Qwen异步转录: {len(audio_bytes)} bytes")
+                mime = "audio/amr-wb" if (amr_detected and audio_bytes[:9].startswith(b"#!AMR-W")) else ("audio/amr" if amr_detected else "audio/mpeg")
+                data_uri = f"data:{mime};base64,{b64.b64encode(audio_bytes).decode()}"
+                async with httpx.AsyncClient(timeout=90.0, proxy=None, trust_env=False) as client:
+                    submit_resp = await client.post(
+                        "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+                        headers={
+                            "Authorization": f"Bearer {qwen_key}",
+                            "X-DashScope-Async": "enable",
+                        },
+                        json={
+                            "model": "sensevoice-v1",
+                            "input": {"file_urls": [data_uri]},
+                        },
+                    )
+                    if submit_resp.status_code != 200:
+                        try:
+                            err = submit_resp.json()
+                            self._emit_log("DEBUG", f"[Voice] Qwen异步提交失败: {submit_resp.status_code} code={err.get('code','?')} msg={err.get('message','?')}")
+                        except Exception:
+                            self._emit_log("DEBUG", f"[Voice] Qwen异步提交失败: {submit_resp.status_code} {submit_resp.text[:200]}")
+                    else:
+                        submit_result = submit_resp.json()
+                        task_id = str(submit_result.get("output", {}).get("task_id") or "")
+                        if task_id:
+                            for _ in range(60):
+                                await asyncio.sleep(1.0)
+                                poll_resp = await client.get(
+                                    f"https://dashscope.aliyuncs.com/api/v1/tasks/{task_id}",
+                                    headers={"Authorization": f"Bearer {qwen_key}"},
+                                )
+                                if poll_resp.status_code != 200:
+                                    continue
+                                poll_result = poll_resp.json()
+                                task_status = str(poll_result.get("output", {}).get("task_status") or "")
+                                if task_status == "SUCCEEDED":
+                                    text = ""
+                                    output = poll_result.get("output") or {}
+                                    results = output.get("results") or []
+                                    for r in results:
+                                        transcripts = r.get("transcripts") or []
+                                        trans_url = r.get("transcription_url") or ""
+                                        if not transcripts and trans_url:
+                                            try:
+                                                async with httpx.AsyncClient(timeout=15.0, proxy=None, trust_env=False) as dl:
+                                                    dl_resp = await dl.get(trans_url)
+                                                if dl_resp.status_code == 200:
+                                                    trans_data = dl_resp.json()
+                                                    transcripts = trans_data.get("transcripts") or []
+                                                    props = trans_data.get("properties") or {}
+                                                    if props:
+                                                        dur = props.get("original_duration_in_milliseconds", 0)
+                                                        fmt = props.get("audio_format", "?")
+                                                        sr = props.get("original_sampling_rate", 0)
+                                                        self._emit_log("DEBUG", f"[Voice] Qwen音频属性: {fmt} {sr}Hz {dur}ms")
+                                                else:
+                                                    self._emit_log("DEBUG", f"[Voice] Qwen下载转录失败: status={dl_resp.status_code}")
+                                            except Exception as e:
+                                                self._emit_log("DEBUG", f"[Voice] Qwen下载转录异常: {type(e).__name__}: {e}")
+                                        if transcripts:
+                                            import re as _re
+                                            for t in transcripts:
+                                                raw_text = str(t.get("text", "") or "").strip()
+                                                if raw_text:
+                                                    cleaned = _re.sub(r'<\|/?\w+\|>', '', raw_text).strip()
+                                                    text += cleaned
+                                        else:
+                                            text += str(r.get("transcript", "") or r.get("text", "") or "").strip()
+                                    result_text = text.strip()
+                                    if result_text:
+                                        self._emit_log("INFO", f"[Voice] Qwen转录完成: {result_text[:80]}")
+                                    else:
+                                        self._emit_log("DEBUG", f"[Voice] Qwen转录成功但无文字, full_output={_json.dumps(output, ensure_ascii=False)[:2000]}")
+                                    return result_text
+                                elif task_status in ("FAILED", "ERROR"):
+                                    err_output = poll_result.get("output") or {}
+                                    self._emit_log("DEBUG", f"[Voice] Qwen异步任务失败: {task_status} code={err_output.get('code','?')} msg={err_output.get('message','?')}")
+                                    break
+                            else:
+                                self._emit_log("DEBUG", f"[Voice] Qwen异步任务超时: task_id={task_id}")
+                        else:
+                            self._emit_log("DEBUG", f"[Voice] Qwen异步提交无task_id: {submit_resp.text[:200]}")
+
+            return ""
+        except Exception:
+            return ""
+
+    async def _describe_reply_image(self, image_url: str) -> str:
+        """对引用回复中的图片做简短 VLM 描述（KiraAI 方案）。"""
+        import asyncio as _asyncio
+        try:
+            from utils.llm_client import create_chat_llm_async
+            from utils.config_manager import get_config_manager
+
+            model_config = get_config_manager().get_model_api_config("conversation")
+            base_url = str(model_config.get("base_url") or "").strip()
+            model = str(model_config.get("model") or "").strip()
+            api_key = str(model_config.get("api_key") or "").strip()
+            if not base_url or not model:
+                return ""
+
+            # 拉取图片并压缩为 JPEG base64
+            image_b64 = await self._prepare_attachment_image_b64({"url": image_url})
+            if not image_b64:
+                return ""
+
+            llm = await create_chat_llm_async(
+                model=model, base_url=base_url, api_key=api_key,
+                max_completion_tokens=60, timeout=15.0,
+                provider_type=model_config.get("provider_type"),
+            )
+            try:
+                response = await _asyncio.wait_for(
+                    llm.ainvoke([{"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                        {"type": "text", "text": "用简短的中文描述这张图片的内容（不超过20字）"},
+                    ]}]),
+                    timeout=15.0,
+                )
+                return str(getattr(response, "content", "") or "").strip()
+            finally:
+                aclose = getattr(llm, "aclose", None)
+                if callable(aclose):
+                    try:
+                        await aclose()
+                    except Exception:
+                        pass
+        except Exception:
+            return ""
 
     def _refresh_admin_qq(self) -> None:
         self._admin_qq = None
@@ -822,6 +1041,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         sticker_cooldown_messages: Optional[int] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
         group_memory_enabled: Optional[bool] = None,
@@ -848,6 +1079,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             truth_reply_probability=truth_reply_probability,
             backlog_labels=backlog_labels,
             sticker_cooldown_messages=sticker_cooldown_messages,
+            group_attention_decay_per_second=group_attention_decay_per_second,
+            group_attention_message_recovery=group_attention_message_recovery,
+            group_attention_reply_penalty=group_attention_reply_penalty,
+            group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+            group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+            group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+            group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+            group_attention_max_score=group_attention_max_score,
+            group_attention_focus_threshold=group_attention_focus_threshold,
+            group_attention_min_threshold=group_attention_min_threshold,
+            group_attention_message_gain=group_attention_message_gain,
+            icebreaker_cold_threshold=icebreaker_cold_threshold,
             retroactive_review_max_messages=retroactive_review_max_messages,
             retroactive_review_max_reply=retroactive_review_max_reply,
             group_memory_enabled=group_memory_enabled,
@@ -952,6 +1195,81 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         normalized_group_id = self._validate_group_id(group_id)
         return Ok(await self.backlog_service.mark_group_reviewed_payload(normalized_group_id))
 
+    @plugin_entry(
+        id="forget_group_memory",
+        name=tr("entries.forget_group_memory.name", default="清除群记忆"),
+        description=tr("entries.forget_group_memory.description", default="删除指定群聊的全部长期记忆（facts/reflections/persona）。幂等，重试安全。"),
+        input_schema={"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+    )
+    async def forget_group_memory(self, group_id: str, **_):
+        normalized_group_id = self._validate_group_id(group_id)
+        from utils.config_manager import get_config_manager
+        try:
+            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
+        except Exception:
+            her_name = "neko"
+        try:
+            result = await self.memory_bridge.post_scoped_forget(
+                her_name,
+                subject=self.memory_bridge.group_subject(normalized_group_id),
+            )
+            self._emit_log("INFO", f"群 {normalized_group_id} 记忆已清除: {result}")
+            return Ok({"group_id": normalized_group_id, "forgotten": True, "detail": result})
+        except Exception as exc:
+            self._emit_log("ERROR", f"清除群 {normalized_group_id} 记忆失败: {exc}")
+            return Err(SdkError(f"FORGET_FAILED: {exc}"))
+
+    @plugin_entry(
+        id="get_user_profiles",
+        name=tr("entries.get_user_profiles.name", default="获取用户画像"),
+        description=tr("entries.get_user_profiles.description", default="读取当前缓存的用户画像列表，包含身份信息和从长期记忆中提取的事实摘要。"),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def get_user_profiles(self, **_):
+        import time
+        profiles: list[dict[str, Any]] = []
+        now = time.time()
+        cache = getattr(self.session_instruction_service, "_user_profile_cache", {}) or {}
+        perm_mgr = self.permission_mgr
+
+        # 收集所有有缓存画像的用户
+        seen: set[str] = set()
+        for sender_id, (text, expire_at) in list(cache.items()):
+            if sender_id in seen:
+                continue
+            seen.add(sender_id)
+            nickname = ""
+            level = "none"
+            if perm_mgr:
+                nickname = perm_mgr.get_nickname(sender_id) or ""
+                level = perm_mgr.get_permission_level(sender_id)
+            profiles.append({
+                "sender_id": sender_id,
+                "nickname": nickname,
+                "permission_level": level,
+                "profile_text": text,
+                "cached": True,
+                "expires_in_seconds": max(0, int(expire_at - now)),
+            })
+
+        # 也列出信任用户中还没有画像的
+        if perm_mgr:
+            for u in perm_mgr.list_users():
+                sid = str(u.get("qq") or "").strip()
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    profiles.append({
+                        "sender_id": sid,
+                        "nickname": str(u.get("nickname") or ""),
+                        "permission_level": str(u.get("level") or "normal"),
+                        "profile_text": "",
+                        "cached": False,
+                        "expires_in_seconds": 0,
+                    })
+
+
+        return Ok({"profiles": profiles, "count": len(profiles), "cached_count": sum(1 for p in profiles if p["cached"])})
+
     # ==========================================
     # 提示词编辑器
     # ==========================================
@@ -1039,6 +1357,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                     effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
             if lid == "time" and self.fatigue_service:
                 effective_text = self.fatigue_service.get_dynamic_time_context()
+            if lid == "fatigue_tiers" and self.fatigue_service:
+                lines = []
+                for threshold, text in self.fatigue_service._FATIGUE_TIERS:
+                    lines.append(f"疲劳 ≤{threshold}:\n{text}\n")
+                effective_text = "\n".join(lines)
             layers.append({
                 "id": lid,
                 "i18n_key": i18n_key,
@@ -1051,11 +1374,21 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             })
         self._emit_log("INFO", f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
         self.logger.info(f"[PromptEditor] mode={mode} is_napcat={is_napcat} strategy={strategy_mode} locale={locale} layers={len(layers)}")
+        proactive_topics = list((self._qq_settings or {}).get("proactive_topics") or [])
+        if not proactive_topics and self.attention_gate_service:
+            proactive_topics = list(getattr(self.attention_gate_service, "_DEFAULT_PROACTIVE_TOPICS", []))
+        # 疲劳层级提示词（供前端查看和覆盖）
+        fatigue_tiers = []
+        if self.fatigue_service:
+            for threshold, text in self.fatigue_service._FATIGUE_TIERS:
+                fatigue_tiers.append({"threshold": threshold, "text": text})
         return Ok({
             "mode": mode,
             "locale": locale,
             "strategy_mode": strategy_mode,
             "layers": layers,
+            "proactive_topics": proactive_topics,
+            "fatigue_tiers": fatigue_tiers,
         })
 
     @plugin_entry(
@@ -1221,6 +1554,38 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             source_id,
             relay_probability=relay_probability,
         )
+
+    @plugin_entry(
+        id="save_proactive_topics",
+        name=tr("entries.save_proactive_topics.name", default="保存主动发言话题"),
+        description=tr("entries.save_proactive_topics.description", default="保存主动发言话题列表，每行一个话题。"),
+        input_schema={"type": "object", "properties": {"topics": {"type": "array", "items": {"type": "string"}}}, "required": ["topics"], "additionalProperties": False},
+    )
+    async def save_proactive_topics(self, topics: list[str] = None, **_):
+        topic_list = [str(t).strip() for t in (topics or []) if str(t).strip()]
+        self._qq_settings["proactive_topics"] = topic_list
+        success = await self._persist_business_config()
+        self._emit_log("INFO", f"主动发言话题已更新: {len(topic_list)}条")
+        return Ok({"count": len(topic_list), "persisted": success})
+
+    @plugin_entry(
+        id="save_fatigue_tiers",
+        name=tr("entries.save_fatigue_tiers.name", default="保存疲劳层级提示词"),
+        description=tr("entries.save_fatigue_tiers.description", default="覆盖默认的疲劳层级提示词。传入空列表恢复默认。"),
+        input_schema={"type": "object", "properties": {"tiers": {"type": "array", "items": {"type": "object", "properties": {"threshold": {"type": "integer"}, "text": {"type": "string"}}}}}, "additionalProperties": False},
+    )
+    async def save_fatigue_tiers(self, tiers: list[dict] = None, **_):
+        tier_list = []
+        for t in (tiers or []):
+            if isinstance(t, dict) and "threshold" in t and "text" in t:
+                tier_list.append({"threshold": int(t["threshold"]), "text": str(t["text"])})
+        if tier_list:
+            self._qq_settings["fatigue_tiers"] = tier_list
+        else:
+            self._qq_settings.pop("fatigue_tiers", None)
+        success = await self._persist_business_config()
+        self._emit_log("INFO", f"疲劳层级提示词已更新: {len(tier_list)}层")
+        return Ok({"count": len(tier_list), "persisted": success})
 
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         await self.handler_runtime_service.run_message_handler(message)

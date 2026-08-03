@@ -164,6 +164,10 @@ class QQReplyPipelineRunner:
             group_facing=request.group_facing,
             group_scene_mode=request.group_scene_mode,
             current_message_id=request.current_message_id,
+            is_reply_to_bot=getattr(request, "is_reply_to_bot", False),
+            quoted_message_id=getattr(request, "quoted_message_id", "") or "",
+            mentions_other_user=getattr(request, "mentions_other_user", False),
+            mentions_all=getattr(request, "mentions_all", False),
             force_reply=request.force_reply,
             source_kind=getattr(request, "source_kind", ""),
             member_memory_at_receipt=getattr(
@@ -273,6 +277,13 @@ class QQReplyPipelineRunner:
                 ),
                 outcome.history_ai_row,
             )
+
+        # 情绪/标记：内部状态，先于缓冲/冷却/交付更新
+        if outcome:
+            if outcome.feeling:
+                group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
+                if group and self.plugin.attention_service:
+                    await self.plugin.attention_service.set_emotion(group, outcome.feeling)
 
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')

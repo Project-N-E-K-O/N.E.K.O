@@ -117,6 +117,14 @@ class QQConnectionBase(ABC):
         """是否接收群聊全部消息（开放平台仅 @bot）"""
         return True
 
+    def is_group_muted(self, group_id: str) -> bool:
+        """检查 bot 是否在该群被禁言（含全体禁言）。
+
+        NapCat 通过 OneBot notice 事件跟踪禁言状态；
+        开放平台不跟踪此状态，默认返回 False。
+        """
+        return False
+
     @property
     @abstractmethod
     def onebot_url(self) -> str:
