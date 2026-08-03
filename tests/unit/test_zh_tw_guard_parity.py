@@ -18,6 +18,8 @@ Each pair is (Simplified, Traditional) of one sentence.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import re
+
 import pytest
 
 
@@ -213,9 +215,41 @@ def test_a_genuine_full_rewrite_still_matches(simplified, traditional):
 # 所以这里**刻意不只测「設定」一个词**：再加 資料 / 人設 / 描述。只测一个词的话，
 # 下次有人把判据写回名词白名单、只把「設定」加进去，这条测试照样绿。
 WHOLE_CARD_NOUNS = ["设定", "資料", "人设", "描述", "内容"]
-# ⚠️ 必须**穷举**正则里的限定词闭集。少列一个，那个分支被删掉时测试不会红——
-# 上面那条注释自己把这五个词当同一类来论证，覆盖就不能只做其中两个。
-WHOLE_CARD_QUANTIFIERS = ["全部", "所有", "每个", "每個", "一切"]
+def _whole_card_quantifiers() -> list[str]:
+    """从 `_CHAT_FULL_REWRITE_RE` 里把全称限定词闭集拆出来。
+
+    ⚠️ 手抄这张表已经落后过两次了：先是只写了 全部/所有（漏 每个/每個/一切），
+    补全之后正则又加了 每一个/每項/各項，测试再次落后。改成从正则本身推导，
+    以后往闭集里加词自动被笛卡尔积覆盖。
+
+    ⚠️ 只取「紧贴『的』」那个前视里的词，`整体/整體/内容/內容` 另有专门用例
+    （它们是副词和普通名词，语法分布不同）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    match = re.search(
+        r'\(\?=的\(\?:([^)]+)\)\)', router._CHAT_FULL_REWRITE_RE.pattern
+    )
+    assert match, '_CHAT_FULL_REWRITE_RE 的限定词前视结构变了，拆不出词表'
+    words = match.group(1).split('|')
+    adverbial = {"整体", "整體", "内容", "內容"}
+    quantifiers = [w for w in words if w not in adverbial]
+    assert all(
+        w and all('一' <= ch <= '鿿' for ch in w) for w in quantifiers
+    ), f'拆出了非汉字残片: {quantifiers}'
+    return quantifiers
+
+
+WHOLE_CARD_QUANTIFIERS = _whole_card_quantifiers()
+
+
+def test_the_quantifier_table_is_derived_not_transcribed():
+    """⚠️ 拆解一旦失效，下面的笛卡尔积会静默缩水。这里钉住规模与几个必含项。"""  # noqa: DOCSTRING_CJK
+    assert len(WHOLE_CARD_QUANTIFIERS) >= 9, WHOLE_CARD_QUANTIFIERS
+    for word in ("全部", "所有", "每个", "每個", "一切", "每一個", "每項"):
+        assert word in WHOLE_CARD_QUANTIFIERS, f'{word} 不在拆出来的表里'
+
+
 WHOLE_CARD_TARGETS = ["整个角色卡", "整張卡", "整个卡片", "全卡"]
 
 
