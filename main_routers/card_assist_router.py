@@ -829,12 +829,27 @@ _WHOLE_CARD_BARE_ADVERB = (
 # `把所有字段的内容重写一遍` 仍然是 True：「内容」本身就是整卡级名词。
 # ⚠️ 名词收尾同样要接受并列副词（`把所有字段一并重写`，base 是 True，
 # Codex P2 第十四轮）——跟限定词那一支同一套副词表，两处别漂开。
+# 名词短语的**闭集收尾**（不含「的」那一支，否则下面那条会无限递归）。
+_WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
+    r"(?=\s*(?:$|"
+    + _WHOLE_CARD_TERMINATOR_PUNCT
+    + "|" + _WHOLE_CARD_EN_REWRITE_VERB
+    + "|" + _WHOLE_CARD_BARE_ADVERB
+    + r"\s*(?:重|改|梳|完)"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
+)
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     r"(?=\s*(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB
-    + r"|的\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
-    + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r")|"
+    # ⚠️⚠️ 「的」这一支自己也要**递归到收尾**，不能只检查一个范围成分：
+    # `把所有字段的内容概要重写` 里 `内容` 匹配上了、`概要` 没人管，于是又从这里
+    # 进了整卡补全通路（CodeRabbit Major）。这是「白名单词是更长词的前缀」在本
+    # PR 里的**第五个入口**——前四个是 字段名 / 字段清单 / 的名字 / 内容名。
+    # 所以：吃掉一串范围成分（原子化，避免重叠解析），再要求那个闭集收尾。
+    + r"|的\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
+    + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
+    + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
     + _WHOLE_CARD_BARE_ADVERB
     + r"\s*(?:重|改|梳|完)"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"

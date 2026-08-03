@@ -1366,3 +1366,32 @@ def test_an_english_rewrite_verb_terminates_a_chinese_scope(scope, verb):
         f'{scope} {verb}X重写'
     ) is False
     assert router._chat_text_requests_full_rewrite('把整个卡的全部 nickname重写') is False
+
+
+@pytest.mark.parametrize(
+    ("phrasing", "expected"),
+    [
+        # ⚠️「的」这一支自己也要递归到收尾：只检查一个范围成分时 `内容` 匹配上、
+        # `概要` 没人管，于是又从这里进了整卡补全通路（CodeRabbit Major）。
+        ("把所有字段的内容概要重写", False),
+        ("把整个卡的所有设定的内容概要重写", False),
+        ("把所有字段的内容名重写", False),
+        ("把所有字段的设定风格重写", False),
+        # 反向：真正的整卡请求不能被这道递归收尾误伤
+        ("把所有字段的内容重写一遍", True),
+        ("把整个卡的所有字段的内容重写", True),
+        ("把整个卡的所有字段值重写", True),
+    ],
+)
+def test_the_de_branch_recurses_to_a_closed_tail(phrasing, expected):
+    """⚠️ 「白名单词是更长词的前缀」在本 PR 里的**第五个入口**。
+
+    前四个：字段名 / 字段清单 / 的名字 / 内容名。这一个是「的」分支自己——它只
+    检查一个范围成分就收工，后面跟什么都不管。修法是吃掉一串范围成分（原子化，
+    避免重叠解析）再要求闭集收尾。
+
+    ⚠️ 闭集收尾那份**刻意不含「的」那一支**，否则这条会无限递归。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing

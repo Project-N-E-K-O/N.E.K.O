@@ -3085,6 +3085,13 @@ def test_the_progressive_exception_survives_whitespace(space, name):
     定长——`停止正在播放 的晴天` 中间多个空格就对不上了（Codex P2 第二十一轮）。
     ⚠️ 空白在这个文件里已经咬过五次（限定词后 / 目标与的之间 / 第二个的后 /
     续接前 / 的前），这是第六次，所以这次直接换挂载点而不是再加一处 `\s*`。
+
+    ⚠️⚠️ 覆盖范围要说清楚（CodeRabbit）：`is_explicit_music_cancellation` 入口会先
+    做 `" ".join(text.split())`，而 `str.split()` 把 `　` 和连续空格**一起**
+    归一化成一个 ASCII 空格。所以这条参数化验的是**端到端行为**（含归一化），
+    并不能单独验证定长后视对全角空格的处理——那一半由下面
+    `test_the_lookbehind_mount_point_survives_raw_whitespace` 在**归一化之前**
+    直接打正则来验。
     """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
@@ -3094,7 +3101,8 @@ def test_the_progressive_exception_survives_whitespace(space, name):
 
 
 @pytest.mark.parametrize(
-    "marker", ["允不允许", "允許不允許", "乐不乐意", "樂不樂意", "情不情愿"]
+    "marker",
+    ["允不允许", "允許不允許", "乐不乐意", "樂不樂意", "情不情愿", "情不情願"],
 )
 def test_permission_and_volition_modals_are_generated(marker):
     """⚠️ 情态表补 允许/乐意/情愿。生成器不动——两种构式自动铺开。
@@ -3126,7 +3134,9 @@ def test_every_current_playback_aspect_marks_the_object(aspect, name):
 
 
 @pytest.mark.parametrize(
-    "marker", ["为什么", "為什麼", "为何", "為何", "怎么", "怎麼", "怎样", "如何", "干嘛"]
+    "marker",
+    ["为什么", "為什麼", "为何", "為何", "怎么", "怎麼", "怎样", "怎樣",
+     "如何", "干嘛", "幹嘛"],
 )
 def test_wh_question_markers_are_recognized(marker):
     """⚠️ 疑问标记到这里已经是**三族**：极性、情态 A-not-A、疑问代词/副词。
@@ -3151,8 +3161,8 @@ def test_wh_question_markers_are_recognized(marker):
 
 @pytest.mark.parametrize(
     "marker",
-    ["什么时候", "什麼時候", "何时", "何時", "多久", "几时",
-     "哪里", "哪裡", "哪儿", "什么地方", "哪一首", "哪首"],
+    ["什么时候", "什麼時候", "何时", "何時", "多久", "几时", "幾時",
+     "哪里", "哪裡", "哪儿", "哪兒", "什么地方", "什麼地方", "哪一首", "哪首"],
 )
 def test_compound_wh_markers_are_recognized(marker):
     """⚠️ 复合疑问词（什么时候 / 何时 / 哪里 / 哪一首）。
@@ -3185,3 +3195,19 @@ def test_the_progressive_exception_covers_every_playback_verb(aspect, verb):
     assert is_explicit_music_cancellation(f'停止{aspect}{verb}的晴天') is True
     # 配对反向：不带进行体时照旧被挡。
     assert is_explicit_music_cancellation(f'我要停止{verb}的代码') is False
+
+
+@pytest.mark.parametrize("space", ["", " ", "\u3000", "  ", "\t"])
+def test_the_lookbehind_mount_point_survives_raw_whitespace(space):
+    """⚠️ 这条在**归一化之前**直接打正则，补上端到端用例验不到的那一半。
+
+    入口的 `" ".join(text.split())` 会把 `\u3000`、Tab、连续空格一起归一化成一个
+    ASCII 空格，所以端到端参数化其实只验到了归一化行为（CodeRabbit）。进行体后视
+    挂在**动词末尾**这件事，只有绕过归一化才验得到。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    raw = f'停止正在播放{space}的晴天'
+    assert mr._ZH_NEGATIVE_MUSIC.search(raw), raw
+    # 反向：不带进行体时，同样的原始文本仍然被守卫挡住。
+    assert not mr._ZH_NEGATIVE_MUSIC.search(f'我要停止播放{space}的代码')
