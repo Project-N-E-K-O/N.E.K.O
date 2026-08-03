@@ -235,7 +235,17 @@ _ZH_A_NOT_A_QUESTION_TAIL = (
 #   我想停止播放《晴天》吗       → 「《晴天》」整段闭合 → 开火 → 是提问
 #   我想停止播放是否会影响《原神》 → 标记之前没有引号   → 开火 → 是提问
 # ⚠️ 两条分支按首字符互斥（一条排除开引号、一条要求开引号），不会回溯爆炸。
-_ZH_QUOTE_OPENERS = "".join(dict.fromkeys(_QUOTE_PAIRS.keys()))
+# ⚠️ ASCII 单引号**不算开引号**。`Guns N' Roses` / `Rock'n'Roll` 里它是撇号，
+# 一律当没闭合的开引号会把守卫关掉：`我想停止播放Guns N' Roses是否合适` base 是
+# False，却被判成停止命令（Codex P2，又是危险方向）。西文名字里的撇号比「用直
+# 单引号括歌名」常见得多，这一格按前者取舍。
+# ⚠️ 弯撇号 `’` 不用管：它在 _QUOTE_PAIRS 里是闭合符，`Don’t` 里出现的正是它，
+# 开引号那一侧只有 `‘`。
+_ZH_AMBIGUOUS_APOSTROPHE = "'"
+_ZH_QUOTE_OPENERS = "".join(
+    ch for ch in dict.fromkeys(_QUOTE_PAIRS.keys())
+    if ch != _ZH_AMBIGUOUS_APOSTROPHE
+)
 _ZH_QUOTE_CLOSERS = "".join(dict.fromkeys(_QUOTE_PAIRS.values()))
 _ZH_BEFORE_QUESTION_MARKER = (
     rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]"
@@ -340,6 +350,7 @@ _ZH_MUSIC_HEAD_AFTER_DE = (
     rf"(?:{_ZH_MUSIC_NOUN_MODIFIER}"
     rf"(?:{_ZH_SONG_NOUN}|{_ZH_PLAYLIST_NOUN}|{_ZH_SOUNDTRACK_NOUN}|曲|音频|音頻"
     r"|声音|聲音|音效|音轨|音軌|旋律|伴奏|曲子|铃声|鈴聲|[Bb][Gg][Mm]"
+    r"|专辑|專輯|单曲|單曲|唱片"
     r"|红心|紅心|日推|每日推荐|每日推薦|我喜欢|我喜歡|收藏))"
 )
 # ⚠️ 程度补语也要收够。`不要放的超級大聲` / `不要放的這麼大聲` base 都是 True，
@@ -351,13 +362,22 @@ _ZH_DEGREE_AFTER_DE = (
 # 「V 的同时 W」的连动结构：这里的「的」既不是名物化也不是补语标记。
 _ZH_COORDINATION_AFTER_DE = r"(?:同时|同時)"
 # 界面控件名。小闭集——`播放按鈕` / `播放功能` / `播放鍵` 这类复合词就这几种写法。
-# ⚠️ 这张表是**前缀匹配**，所以要求它后面**不是音乐名词**：`停止播放功能音樂`
-# 里的「功能」是「功能音樂」的词头，不是控件名（Codex P2，base 是 True）。
+#
+# ⚠️ 这张表是**前缀匹配**，而 键/功能 又都是更长名词的词头（键盘 / 功能性 /
+# 功能音樂）。`停止播放鍵盤音樂` / `幫我停止播放功能性音樂` 因此被判成「在说控件」
+# （Codex P2 两轮，base 都是 True）。
+# ⚠️ 反向要求右边界（「控件名后面不许再跟汉字」）行不通：`停止播放按鈕換個顏色`
+# 里控件名后面正是一个动词，那一侧是开集。所以判据放在**宾语中心语**上：控件名
+# 后面**几个字之内**如果出现音乐名词，那整段就是个音乐宾语而不是控件名。
+#   停止播放鍵盤音樂 / 功能性音樂 → 窗口内有「音樂」→ 不算控件 → 仍是命令
+#   停止播放按鈕換個顏色 / 停止播放功能吧 / 停止播放鍵 → 窗口内没有 → 是控件
+# 窗口有界（{0,4}）且不跨子句标点，不会回溯爆炸。
 _ZH_PLAYBACK_UI_NOUN = r"(?:按钮|按鈕|功能|键|鍵|控件|組件|组件)"
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
     rf"(?!的(?!{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_DEGREE_AFTER_DE}"
     rf"|{_ZH_COORDINATION_AFTER_DE})"
-    rf"|{_ZH_PLAYBACK_UI_NOUN}(?!{_ZH_MUSIC_HEAD_AFTER_DE}))"
+    rf"|{_ZH_PLAYBACK_UI_NOUN}"
+    rf"(?![^，,。！!？?]{{0,4}}?{_ZH_MUSIC_HEAD_AFTER_DE}))"
 )
 # ⚠️⚠️ 单字播放动词（放 / 播 / 听 / 聽）后面的**词汇化动词复合第二字**黑名单。
 #

@@ -1986,9 +1986,19 @@ def test_a_music_head_after_de_is_still_a_command(simplified, traditional):
 
 
 def _quote_pairs() -> list[tuple[str, str]]:
+    """⚠️ 排除 ASCII 单引号，而且是**按模块常量**排除、不是手写跳过。
+
+    它在西文名字里是撇号（Guns N' Roses），当开引号会把疑问守卫整个关掉，所以
+    实现里刻意把它从开引号集合里去掉了（见 `_ZH_AMBIGUOUS_APOSTROPHE`）。这里
+    跟着排除，并单独有一条用例说明这个取舍——不能让它变成「测试悄悄少跑一格」。
+    """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
 
-    pairs = list(mr._QUOTE_PAIRS.items())
+    pairs = [
+        (o, c) for o, c in mr._QUOTE_PAIRS.items()
+        if o != mr._ZH_AMBIGUOUS_APOSTROPHE
+    ]
+    assert len(pairs) == len(mr._QUOTE_PAIRS) - 1, "撇号那一格没被排除掉"
     assert pairs, "_QUOTE_PAIRS 是空的"
     return pairs
 
@@ -2024,6 +2034,8 @@ def test_a_question_marker_inside_a_title_is_still_a_command(marker, opening, cl
 AUDIO_HEAD_NOUNS = [
     "声音", "聲音", "音效", "音轨", "音軌", "旋律", "伴奏", "曲子",
     "铃声", "鈴聲", "BGM", "bgm", "音乐", "音樂", "歌", "歌单", "歌單",
+    # 第三轮补的核心音乐宾语——`停止正在播放的專輯` base 也是 True。
+    "专辑", "專輯", "单曲", "單曲", "唱片",
 ]
 
 
@@ -2184,3 +2196,99 @@ def test_a_ui_noun_prefixing_a_music_word_is_still_a_command(simplified, traditi
     # 配对反向：控件名后面不是音乐名词时，仍然不是命令。
     for text in ("帮我停止播放功能吧", "幫我停止播放功能吧"):
         assert is_explicit_music_cancellation(text) is False, text
+
+
+# --- Codex 第三轮 -----------------------------------------------------------
+
+
+def _playback_ui_nouns() -> list[str]:
+    from main_logic import music_requests as mr
+
+    return _alternation(mr._ZH_PLAYBACK_UI_NOUN)
+
+
+UI_NOUNS = _playback_ui_nouns()
+
+
+@pytest.mark.parametrize("ui_noun", UI_NOUNS)
+def test_a_ui_noun_heading_a_music_object_is_still_a_command(ui_noun):
+    """⚠️ 控件名表是前缀匹配，键/功能 又是 键盘/功能性 的词头。
+
+    `停止播放鍵盤音樂` / `幫我停止播放功能性音樂` base 都是 True，被当成「在说
+    控件」（Codex P2 第三轮）。判据放在**宾语中心语**上：控件名后面几个字之内
+    出现音乐名词，那整段就是音乐宾语。
+
+    ⚠️ 配对反向断言：同一个控件名后面没有音乐名词时，仍然不是命令——反向要求
+    「控件名后不许跟汉字」行不通，`停止播放按鈕換個顏色` 后面跟的正是动词。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止播放{ui_noun}音乐') is True
+    assert is_explicit_music_cancellation(f'帮我停止播放{ui_noun}换个颜色') is False
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止播放键盘音乐", "停止播放鍵盤音樂"),
+        ("帮我停止播放功能性音乐", "幫我停止播放功能性音樂"),
+    ],
+)
+def test_the_ui_prefix_phrasings_codex_named_are_commands(simplified, traditional):
+    """上一条是笛卡尔积，这两句是 Codex 点名的原句（词头比控件名长），另外钉死。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "name", ["Guns N' Roses", "Rock'n'Roll", "Sittin' On The Dock"]
+)
+def test_an_apostrophe_in_a_latin_name_is_not_a_quote_opener(name):
+    """⚠️ ASCII 单引号在西文名字里是**撇号**，不是开引号。
+
+    把它当成没闭合的开引号会把疑问守卫整个关掉：
+    `我想停止播放Guns N' Roses是否合适` base 是 False，却被判成停止命令
+    （Codex P2 第三轮，又是危险方向——用户在问，歌被停了）。
+
+    ⚠️ 配对断言：真正的成对引号仍然要挡住守卫（那是上一轮修的《好不好》）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'我想停止播放{name}是否合适') is False
+    assert is_explicit_music_cancellation(f'我想停止播放{name}可不可以') is False
+    assert is_explicit_music_cancellation('帮我停止播放《好不好》') is True
+
+
+@pytest.mark.parametrize("marker", A_NOT_A_TAILS + ["好吗", "好嗎"])
+def test_a_trailing_question_suppresses_the_whole_clause_by_design(marker):
+    """⚠️ 这是一条**刻意接受的代价**，不是漏改。
+
+    `帮我停止播放再看看效果好不好` 里疑问尾管的是后半句「看看效果」，整句仍被
+    判成提问、不取消播放。要区分「疑问尾管的是哪个谓词」需要真正的句法分析，
+    不是这条正则能做的。
+
+    ⚠️ 关键是它跟 吗/嗎 那一支**行为一致**：`帮我停止播放再看看效果好吗` 在
+    base 上就是 False。只把 A-not-A 做得比 吗 聪明，就又制造了一处「同一个形状
+    两条判据给不同答案」——这个文件已经因为它栽过四次。要改就三族一起改。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'帮我停止播放再看看效果{marker}') is False
+
+
+@pytest.mark.parametrize("marker", ["好不好", "是不是", "好吗"])
+def test_a_straight_single_quote_no_longer_shields_a_title(marker):
+    """⚠️ 刻意接受的代价：直单引号括起来的歌名不再被当成歌名。
+
+    `帮我停止播放'好不好'` 于是被判成提问而不是命令。换来的是西文名字里的撇号
+    （`Guns N' Roses` / `Rock'n'Roll` / `Don't`）不再把守卫关掉——后者在真实
+    歌单里常见得多，而且它的失败方向更危险（用户在问，歌被停了）。
+
+    ⚠️ 中文书名号/引号那几对**不受影响**，上面那条笛卡尔积仍然覆盖它们。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f"帮我停止播放'{marker}'") is False
+    assert is_explicit_music_cancellation(f'帮我停止播放《{marker}》') is True
