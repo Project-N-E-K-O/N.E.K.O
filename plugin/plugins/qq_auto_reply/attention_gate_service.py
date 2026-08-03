@@ -131,11 +131,12 @@ class QQAttentionGateService:
                 self.plugin.runtime_service.record_pipeline_outcome(
                     source="proactive_speech", request=request, outcome=outcome,
                 )
-                # 更新活跃时间，防止 proactive loop 重复触发
+                # 更新活跃时间并持久化，防止重复触发
                 attn = getattr(self.plugin, "attention_service", None)
                 if attn:
                     state = attn.get_state(group_id)
                     state.last_reply_at = attn._current_time()
+                    attn._write_state(state)
                 return True
             else:
                 self._logger.info("[Icebreaker] AI 决定不回应破冰话题")
@@ -310,41 +311,11 @@ class QQAttentionGateService:
                 new_focus_group=new_focus,
                 triggered_at=attention._current_time(),
             )
-        # 焦点未切换 → 定期检查当前焦点群是否冷场（单群也生效）
-        if new_focus and new_focus == previous:
-            now = attention._current_time()
-            last_check = getattr(self, "_last_proactive_check", 0)
-            if now - last_check >= 120:
-                self._last_proactive_check = now
-                await self._maybe_icebreaker_for_group(new_focus)
-
         if previous and not new_focus:
             # 全局休眠
             self._last_focus_group = ""
             self._logger.info("[AttentionGate] 全局休眠：所有群注意力过低")
         return None
-
-    async def _maybe_icebreaker_for_group(self, group_id: str) -> None:
-        """单群场景：检查是否满足冷场破冰条件。"""
-        attention = getattr(self.plugin, "attention_service", None)
-        if not attention:
-            return
-        silence = int((self.plugin._qq_settings or {}).get("proactive_silence_seconds", 300) or 300)
-        if silence <= 0:
-            return
-        state = attention.get_state(group_id)
-        now = attention._current_time()
-        last_activity = max(int(state.last_message_at or 0), int(state.last_reply_at or 0))
-        if last_activity <= 0 or (now - last_activity) < silence:
-            self._cold_focus_count.pop(group_id, None)  # 群活跃，重置计数
-            return
-        count = self._cold_focus_count.get(group_id, 0) + 1
-        self._cold_focus_count[group_id] = count
-        threshold = int((self.plugin._qq_settings or {}).get("icebreaker_cold_threshold", 3) or 3)
-        if threshold > 0 and count >= threshold:
-            self._logger.info(f"[Icebreaker] 群 {group_id} 连续 {count} 次冷场，尝试破冰")
-            await self._try_icebreaker(group_id)
-            self._cold_focus_count[group_id] = 0
 
     # ==========================================
     # 回溯补回流程
@@ -408,7 +379,19 @@ class QQAttentionGateService:
                 use_memory_context=False,
                 ephemeral_session=False,
             )
-            outcome = await self.plugin.reply_pipeline.run(request)
+            async def _run_retro():
+                svc = self.plugin.session_memory_service
+                before = svc.session_history_len(f"group:{group_id}")
+                try:
+                    return await self.plugin.reply_pipeline.run(request)
+                finally:
+                    svc.record_synthetic_prompt_rows(f"group:{group_id}", before)
+            outcome = await self.plugin._run_with_session_lock(
+                f"group:{group_id}", _run_retro,
+            )
+            self.plugin.runtime_service.record_pipeline_outcome(
+                source=request.source_kind, request=request, outcome=outcome,
+            )
             if outcome.action == "reply" and outcome.reply_text:
                 self._logger.info(f"[RetroReview] 回溯回复已发送: {outcome.reply_text[:50]}...")
             else:

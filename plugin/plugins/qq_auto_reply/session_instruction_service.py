@@ -415,15 +415,18 @@ class QQSessionInstructionService:
         used_member_subject = bool(core_used_member)
         if core_memory_text:
             sections.append(core_memory_text)
-        await self._append_user_profile_section(
-            sections=sections,
-            sender_id=sender_id,
-            user_title=user_title,
-            permission_level=permission_level,
-            is_group=is_group,
-            group_id=group_id,
-            her_name=her_name,
-        )
+        # 用户画像：合成轮（buffer总结/破冰/回溯）memory_sender_id 为空，
+        # 此时 sender_id 是占位符（如 admin QQ），不应注入画像
+        if core_sender_id:
+            await self._append_user_profile_section(
+                sections=sections,
+                sender_id=core_sender_id,
+                user_title=user_title,
+                permission_level=permission_level,
+                is_group=is_group,
+                group_id=group_id,
+                her_name=her_name,
+            )
         self._append_role_card_section(
             sections=sections,
             character_card_fields=character_card_fields,
@@ -650,7 +653,7 @@ class QQSessionInstructionService:
         """从记忆服务器查询用户维度的近期事实，带 5 分钟缓存。"""
         import time
 
-        # 检查对应的记忆开关
+        # 检查对应的记忆开关（含 receipt-time 快照：接受时未授权则拒绝）
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         if is_group:
             if not settings.get("group_memory_enabled", False):

@@ -112,7 +112,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
             <div><span class="form-label" data-i18n="ui.shared.status.onebot">OneBot</span><span id="st-onebot" class="tag tag-offline" data-i18n="ui.shared.topbar.disconnected">未连接</span></div>
             <div><span class="form-label" data-i18n="ui.shared.status.account">账号</span><span id="st-self-id">-</span></div>
             <div><span class="form-label" data-i18n="ui.shared.status.nickname">昵称</span><span id="st-nickname">-</span></div>
-            <div id="st-buffer" style="display:none"><span class="form-label">回复缓冲</span><span id="st-buffer-text"></span></div>
+            <div id="st-buffer" style="display:none"><span class="form-label" data-i18n="ui.napcat.config.buffer_title">回复缓冲</span><span id="st-buffer-text"></span></div>
         </div>
     </div>
     <div class="card" id="attention-card"><div class="card-title"><span data-i18n="ui.shared.attention.title">注意力状态</span> <button class="btn btn-sm btn-ghost" onclick="loadAttention()" style="margin-left:8px" data-i18n="ui.shared.btn.refresh">刷新</button><span id="att-sleep" style="font-size:11px;color:var(--danger);margin-left:8px;display:none" data-i18n="ui.shared.attention.global_sleep_badge">全局休眠</span></div>
@@ -267,7 +267,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
         <div class="form-row"><div class="form-group"><label class="form-label" data-i18n="ui.attention.focus_cooldown">失去焦点冷却 (秒)</label><input class="form-input" id="cfg-att-focus-cooldown" type="number" min="10" max="600" step="10"></div><div class="form-group"><label class="form-label" data-i18n="ui.attention.icebreaker">冷场破冰阈值 (次, 0=禁用)</label><input class="form-input" id="cfg-icebreaker-threshold" type="number" min="0" max="20" step="1"></div></div>
     </div>
     <div class="card"><div class="card-title" data-i18n="ui.napcat.config.gating_title">门控配置</div>
-        <div class="form-group"><label class="form-label">主动发言沉默阈值（秒，0=禁用）</label><input class="form-input" id="cfg-proactive-silence" type="number" min="0" max="3600" step="60"></div>
+        <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.proactive_silence">主动发言沉默阈值（秒，0=禁用）</label><input class="form-input" id="cfg-proactive-silence" type="number" min="0" max="3600" step="60"></div>
         <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.sticker_cooldown">表情包间隔（消息数，0=不限制）</label><input class="form-input" id="cfg-sticker-cooldown" type="number" min="0" max="100" step="1"></div>
         <div id="cfg-retro-group"><div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.retro_review_max_msgs">回溯审核最多取多少条消息</label><input class="form-input" id="cfg-retro-max-msgs" type="number" min="1" max="100" step="1"></div>
         <div class="form-group"><label class="form-label" data-i18n="ui.napcat.config.retro_review_max_reply">回溯审核最多补回多少条</label><input class="form-input" id="cfg-retro-max-reply" type="number" min="1" max="20" step="1"></div></div>
@@ -336,14 +336,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="card"><div class="card-title" data-i18n="ui.review.memory.title">群记忆管理</div>
         <p style="color:#999;font-size:12px;margin-bottom:12px" data-i18n="ui.review.memory.desc">查看信任群聊的记忆状态。清除记忆将删除该群的全部 facts/reflections/persona，操作不可撤销。</p>
         <button class="btn btn-sm btn-ghost" onclick="loadGroupMemory()" style="margin-bottom:10px" data-i18n="ui.shared.btn.refresh_list">刷新列表</button>
-        <div id="group-memory-list" style="color:#999;font-size:13px">点击刷新加载</div>
+        <div id="group-memory-list" style="color:#999;font-size:13px" data-i18n="ui.shared.topbar.loading">点击刷新加载</div>
     </div>
 </div>
 <div class="page" id="page-review-profiles">
     <div class="card"><div class="card-title" data-i18n="ui.review.profiles.title">用户画像</div>
         <p style="color:#999;font-size:12px;margin-bottom:12px" data-i18n="ui.review.profiles.desc">信任用户的画像摘要，数据来自长期记忆，每5分钟自动刷新。未命中缓存时显示暂无画像。</p>
         <button class="btn btn-sm btn-ghost" onclick="loadUserProfiles()" style="margin-bottom:10px" data-i18n="ui.shared.btn.refresh_list">刷新列表</button>
-        <div id="user-profiles-list" style="color:#999;font-size:13px">点击刷新加载</div>
+        <div id="user-profiles-list" style="color:#999;font-size:13px" data-i18n="ui.shared.topbar.loading">点击刷新加载</div>
     </div>
 </div>
 <div class="page" id="page-logs">

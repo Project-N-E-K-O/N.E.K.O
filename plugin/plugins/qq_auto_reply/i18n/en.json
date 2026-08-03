@@ -120,7 +120,7 @@
   "ui.config.token.label": "QQ OneBot Access Token",
   "ui.config.token.placeholder": "Please whisper the token to me...",
   "ui.config.path.label": "NapCat Home Path",
-  "ui.config.path.placeholder": "Vacío para usar el integrado",
+  "ui.config.path.placeholder": "",
   "ui.config.show_napcat_window.label": "Show NapCat Console",
   "ui.config.show_napcat_window.hint": "Checked means NapCat shows its own little console window. Unchecked means it works quietly in the background.",
   "ui.probability.section": "QQ Reply Mood Settings",

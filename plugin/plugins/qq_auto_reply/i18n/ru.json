@@ -120,7 +120,7 @@
   "ui.config.token.label": "Токен доступа QQ OneBot",
   "ui.config.token.placeholder": "Введите Token...",
   "ui.config.path.label": "Каталог NapCat (PATH)",
-  "ui.config.path.placeholder": "Vacío para usar el integrado",
+  "ui.config.path.placeholder": "Пусто — использовать встроенный",
   "ui.config.show_napcat_window.label": "Показ консоли NapCat",
   "ui.config.show_napcat_window.hint": "Включено — запуск на переднем плане с окном NapCat; выключено — работа в фоне.",
   "ui.probability.section": "Настройка вероятностей ответа QQ",
@@ -338,7 +338,7 @@
   "ui.shared.render.load_failed": "Ошибка загрузки",
   "ui.shared.render.no_backlog": "Нет непрочитанных сообщений",
   "ui.shared.render.unread_prefix": "Непрочитано ",
-  "ui.shared.render.count_suffix": " mensajes",
+  "ui.shared.render.count_suffix": " сообщений",
   "ui.shared.render.group_prefix": "Группа ",
   "ui.shared.render.unread_detail": " непрочитанных (",
   "ui.shared.render.items_suffix": ")",
@@ -386,7 +386,7 @@
   "ui.shared.sticker.no_file": "Файл не выбран",
   "ui.shared.sticker.images_count": " картинок",
   "ui.shared.sticker.complete_prefix": "Готово ",
-  "ui.shared.sticker.complete_suffix": " imágenes",
+  "ui.shared.sticker.complete_suffix": " изображений",
   "ui.shared.sticker.select_file": "Выбери или перетащи картинку",
   "ui.shared.sticker.enter_desc": "Введи описание",
   "ui.shared.sticker.read_failed": "Ошибка чтения",
@@ -598,7 +598,8 @@
   "ui.review.profiles.level_trusted": "Trusted",
   "ui.review.profiles.level_normal": "Normal",
   "ui.review.profiles.level_none": "Unauthorized",
-  "ui.review.profiles.level_unknown": "Member",
-  "ui.proactive.tab_label": "Proactive",
-  "ui.shared.config.private_participant_memory": "Record long-term memory for private friend chats (non-admin; filed under the friend as its own subject)"
+  "ui.review.profiles.level_unknown": "Участник",
+  "ui.proactive.tab_label": "Проактивный",
+  "ui.shared.config.private_participant_memory": "Записывать долговременную память для приватных чатов (не админ; сохраняется под профилем собеседника)",
+  "core_memory_section": "## Core Memory\nBelow is stable memory, personality context, or bootstrapping context from the memory system. If relevant, naturally reflect it in your reply — but do not recite it verbatim or expose the internal memory structure.\n{memory_context}\n{context_ready}"
 }

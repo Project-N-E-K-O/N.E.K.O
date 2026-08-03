@@ -598,7 +598,8 @@
   "ui.review.profiles.level_trusted": "Trusted",
   "ui.review.profiles.level_normal": "Normal",
   "ui.review.profiles.level_none": "Unauthorized",
-  "ui.review.profiles.level_unknown": "Member",
-  "ui.proactive.tab_label": "Proactive",
-  "ui.shared.config.private_participant_memory": "Record long-term memory for private friend chats (non-admin; filed under the friend as its own subject)"
+  "ui.review.profiles.level_unknown": "Miembro",
+  "ui.proactive.tab_label": "Proactivo",
+  "ui.shared.config.private_participant_memory": "Registrar memoria a largo plazo para chats privados (no admin; archivado bajo el amigo como su propio sujeto)",
+  "core_memory_section": "## Core Memory\nBelow is stable memory, personality context, or bootstrapping context from the memory system. If relevant, naturally reflect it in your reply — but do not recite it verbatim or expose the internal memory structure.\n{memory_context}\n{context_ready}"
 }

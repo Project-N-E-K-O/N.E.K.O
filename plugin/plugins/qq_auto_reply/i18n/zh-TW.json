@@ -120,7 +120,7 @@
   "ui.config.token.label": "QQ OneBot 存取令牌",
   "ui.config.token.placeholder": "請輸入 Token...",
   "ui.config.path.label": "NapCat 執行目錄 (PATH)",
-  "ui.config.path.placeholder": "Vacío para usar el integrado",
+  "ui.config.path.placeholder": "",
   "ui.config.show_napcat_window.label": "NapCat 控制台顯示方式",
   "ui.config.show_napcat_window.hint": "勾選為前台啟動（顯示 NapCat 控制台），取消為背景啟動。",
   "ui.config.reply_mode.label": "回覆模式",
@@ -598,7 +598,7 @@
   "ui.review.profiles.level_trusted": "Trusted",
   "ui.review.profiles.level_normal": "Normal",
   "ui.review.profiles.level_none": "Unauthorized",
-  "ui.review.profiles.level_unknown": "Member",
+  "ui.review.profiles.level_unknown": "成員",
   "core_memory_section": "## 核心記憶（Core Memory）\n以下是來自本体記憶系統的穩定記憶、人格背景或啟動上下文。如果其中有相關內容，請自然地在回覆中體現，但不要生硬地複述，也不要暴露内部記憶结构。\n{memory_context}\n{context_ready}",
   "ui.napcat.status.pid": "NapCat PID",
   "ui.napcat.guide.modal_linux": "Linux/Docker 部署指南",
@@ -623,5 +623,5 @@
   "ui.napcat.prompts.default_source": "Python 常數",
   "ui.napcat.prompts.overview_default_source": "預設來源: prompt_fragment_templates.py",
   "ui.proactive.tab_label": "主動話題",
-  "ui.shared.config.private_participant_memory": "记录私聊好友长期记忆（非管理员私聊；以对方为主体单独建档）"
+  "ui.shared.config.private_participant_memory": "記錄私聊好友長期記憶（非管理員私聊；以對方為主體單獨建檔）"
 }
