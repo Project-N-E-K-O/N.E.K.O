@@ -376,12 +376,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         )
 
     async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = "") -> None:
-        """发送私聊语音 — 开放平台不支持，降级为文本"""
-        segments: list[dict[str, Any]] = []
-        if str(reply_message_id or "").strip():
-            segments.append({"type": "reply", "data": {"id": str(reply_message_id)}})
-        segments.append({"type": "text", "data": {"text": "[语音消息]"}})
-        await self.send_private_message_segments(user_id, segments)
+        """发送私聊语音 — 开放平台不支持，返回 None 让上层回退到文本"""
 
     async def send_private_message_segments(
         self, user_id: str, segments: list[dict[str, Any]], *, record_sent: bool = True
@@ -459,7 +454,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         return True
 
     async def send_group_image(
-        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""
+        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "", sub_type: str = ""
     ) -> Optional[str]:
         segments: list[dict[str, Any]] = []
         if reply_message_id:
@@ -472,13 +467,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
     async def send_group_record(
         self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
     ) -> None:
-        segments: list[dict[str, Any]] = []
-        if reply_message_id:
-            segments.append({"type": "reply", "data": {"id": reply_message_id}})
-        if at_user_id:
-            segments.append({"type": "at", "data": {"qq": at_user_id}})
-        segments.append({"type": "text", "data": {"text": "[语音消息]"}})
-        await self.send_group_message_segments(group_id, segments, record_sent=False)
+        """发送群聊语音 — 开放平台不支持，返回 None 让上层回退到文本"""
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:

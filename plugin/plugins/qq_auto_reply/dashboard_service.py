@@ -201,6 +201,7 @@ class QQDashboardService:
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        local_stt_url: Optional[str] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -239,6 +240,7 @@ class QQDashboardService:
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                local_stt_url=local_stt_url,
             )
         except ValueError as exc:
             message = str(exc)

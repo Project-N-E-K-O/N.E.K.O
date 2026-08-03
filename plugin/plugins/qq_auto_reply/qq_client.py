@@ -549,7 +549,7 @@ class QQClient(QQConnectionBase):
                 desc = ""
                 if img_url and self._image_describer and depth <= self._MAX_REPLY_DEPTH:
                     try:
-                        desc = await self._image_describer(img_url)
+                        desc = await asyncio.wait_for(self._image_describer(img_url), timeout=8.0)
                     except Exception:
                         pass
                 if desc:

@@ -216,8 +216,9 @@ class QQReplyDeliveryNode:
                 result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
             result = await self.plugin.qq_client.send_message(plan.target_id, text)
-        # 两个平台的文本发送现在都有回执：开放平台失败吞异常返回 None，
-        # NapCat 走 echo 往返（超时返回 None）。显式 None = 未确认送达。
+        # NapCat 是 fire-and-forget（无异常=成功），开放平台显式返回 None = 失败
+        if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
+            return True  # NapCat: no exception means delivered
         return result is not None
 
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:

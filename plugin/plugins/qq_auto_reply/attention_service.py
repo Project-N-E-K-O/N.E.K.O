@@ -136,7 +136,9 @@ class QQGroupAttentionState:
             "last_focus_at": int(self.last_focus_at),
             "focus_acquired_at": int(self.focus_acquired_at),
             "emotion": str(self.emotion or "calm"),
+            "emotion_updated_at": int(self.emotion_updated_at),
             "emotion_display": str(self.emotion_display or "calm"),
+            "emotion_display_until": int(self.emotion_display_until),
         }
 
     @classmethod
@@ -166,6 +168,10 @@ class QQGroupAttentionState:
             last_sender_id=str(data.get("last_sender_id") or ""),
             last_focus_at=int(data.get("last_focus_at") or 0),
             focus_acquired_at=int(data.get("focus_acquired_at") or data.get("last_focus_at") or 0),
+            emotion=str(data.get("emotion") or "calm"),
+            emotion_updated_at=int(data.get("emotion_updated_at") or 0),
+            emotion_display=str(data.get("emotion_display") or "calm"),
+            emotion_display_until=int(data.get("emotion_display_until") or 0),
         )
         # 从旧数据迁移：如果没有维度数据但有关键词加分，给 urgency 初值
         if float(st.urgency) <= 0 and float(st.interest) <= 0 and float(st.momentum) <= 0 and float(st.intimacy) <= 0:
@@ -278,7 +284,7 @@ class QQAttentionService:
         return float((self.plugin._qq_settings or {}).get("group_attention_message_gain", 0.25) or 0.25)
 
     def _focus_rise_seconds(self) -> int:
-        return max(0, int((self.plugin._qq_settings or {}).get("group_attention_focus_rise_seconds", 0) or 0))
+        return max(0, int((self.plugin._qq_settings or {}).get("group_attention_focus_rise_seconds", 30) or 30))
 
     def _focus_rise_bonus(self, state: QQGroupAttentionState, now: int) -> float:
         """焦点获取后的软性加分：在 rise_seconds 内线性增长，给焦点群一个
@@ -311,18 +317,18 @@ class QQAttentionService:
             ),
         ).group_id
 
-    def _top_candidate_group_id(self, states: list[QQGroupAttentionState]) -> str:
-        candidate = self._top_candidate_state(states)
+    def _top_candidate_group_id(self, states: list[QQGroupAttentionState], now: int) -> str:
+        candidate = self._top_candidate_state(states, now)
         return candidate.group_id if candidate else ""
 
-    def _top_candidate_state(self, states: list[QQGroupAttentionState]) -> QQGroupAttentionState | None:
+    def _top_candidate_state(self, states: list[QQGroupAttentionState], now: int) -> QQGroupAttentionState | None:
         eligible = [state for state in states if float(state.attention_score) >= self._minimum_threshold()]
         if not eligible:
             return None
         return max(
             eligible,
             key=lambda item: (
-                float(item.attention_score),
+                self._effective_focus_score(item, now),
                 int(item.last_message_at or 0),
                 float(item.keyword_boost_score),
             ),
@@ -337,7 +343,7 @@ class QQAttentionService:
     ) -> QQGroupAttentionState | None:
         if not states:
             return None
-        candidate = self._top_candidate_state(states)
+        candidate = self._top_candidate_state(states, now)
         if candidate is None:
             return None
         current_id = self._current_focus_group_id(states)
@@ -415,7 +421,11 @@ class QQAttentionService:
             state.urgency = min(1.0, float(state.urgency) + gain)
 
         # ── interest 更新 ──
-        her_name = getattr(getattr(self.plugin, "reply_context_node", None), "_her_name", "") or ""
+        try:
+            from utils.config_manager import get_config_manager
+            _, her_name, _, _, _, _, _, _, _ = get_config_manager().get_character_data()
+        except Exception:
+            her_name = ""
         if her_name and her_name.lower() in str(text or "").lower():
             if self._is_in_post_reply_cooldown(state, now):
                 state.interest = min(1.0, float(state.interest) + 0.15)
@@ -807,15 +817,17 @@ class QQAttentionService:
                 state.recompute_score()
             self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 抢焦点: {emotion} score={state.attention_score:.1f}")
         elif emotion in _EMOTION_DROP_FOCUS:
-            # 让焦点 + 降分
+            # 让焦点 + 降分：缩放四维度使 recompute_score 落到目标值
             if emotion == "sulking":
                 floor = self._minimum_threshold()
             else:
                 floor = 4.0
-            if state.attention_score > floor:
-                state.attention_score = floor
-                state.urgency = min(state.urgency, 0.3)
-                state.interest = min(state.interest, 0.3)
+            current = state.attention_score
+            if current > floor:
+                scale = floor / max(current, 0.01)
+                for dim in _DIMENSION_ORDER:
+                    setattr(state, dim, max(0.0, float(getattr(state, dim, 0.0)) * scale))
+                state.recompute_score()
             state.focus_lock_until = 0
             self.plugin._emit_log("INFO", f"[Emotion] 群{normalized_group_id} 让焦点: {emotion} score={state.attention_score:.1f}")
 

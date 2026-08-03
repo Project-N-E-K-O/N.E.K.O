@@ -834,6 +834,9 @@ class QQSettingsService:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:
             self.plugin._qq_settings["qq_open_client_secret"] = str(qq_open_client_secret or "").strip()
+        local_stt_url = kwargs.get("local_stt_url")
+        if local_stt_url is not None:
+            self.plugin._qq_settings["local_stt_url"] = str(local_stt_url or "").strip()
         if napcat_directory is not None:
             self.plugin._qq_settings["napcat_directory"] = str(napcat_directory or "").strip()
         if show_napcat_window is not None:
@@ -913,6 +916,12 @@ class QQSettingsService:
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
+        enable_group_attention = kwargs.get("enable_group_attention")
+        if enable_group_attention is not None:
+            self.plugin._qq_settings["enable_group_attention"] = bool(enable_group_attention)
+        locale = kwargs.get("locale")
+        if locale is not None:
+            self.plugin._qq_settings["locale"] = str(locale or "").strip()
         group_memory_before = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )

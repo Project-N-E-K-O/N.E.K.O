@@ -309,7 +309,13 @@ class QQMessageDispatcher:
                 message.pop("_pending_forward_ids", None)
             record_files = message.get("_pending_record_files")
             if isinstance(record_files, list) and record_files:
-                await self.plugin.qq_client._fetch_record_content(message, record_files)
+                try:
+                    await asyncio.wait_for(
+                        self.plugin.qq_client._fetch_record_content(message, record_files),
+                        timeout=60.0,
+                    )
+                except (asyncio.TimeoutError, Exception) as e:
+                    self.plugin._emit_log("DEBUG", f"[Voice] 语音转录超时或失败: {type(e).__name__}")
                 message.pop("_pending_record_files", None)
             # 主消息图片：调用 VLM 获取描述
             if self.plugin.qq_client._image_describer:
@@ -503,6 +509,7 @@ class QQMessageDispatcher:
             fallback_to_text_on_voice_failure=True,
             source_kind="incoming_private",
             forward_sub_count=forward_sub_count,
+            reply_context=reply_context,
             # 接收边界的 participant 记忆政策章（None=旁路调用者，build
             # 内回退实时读）：排队期间 OFF→ON 不得让收到时无授权的私聊
             # 被收集。
@@ -617,6 +624,7 @@ class QQMessageDispatcher:
             mentioned_user_ids=list(mentioned_user_ids or []),
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
+            reply_context=reply_context,
             reply_message_id=current_message_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
             at_user_id=sender_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
             fallback_to_text_on_voice_failure=True,

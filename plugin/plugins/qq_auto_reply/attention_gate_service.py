@@ -40,7 +40,6 @@ class FocusShiftResult:
 
 class QQAttentionGateService:
     """基于注意力的多群门控 + 回溯补回（含疲劳睡眠）"""
-    _cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
 
     async def start_proactive_loop(self) -> None:
         """保留接口兼容性——破冰已改为焦点切换时触发，不再需要后台循环。"""
@@ -154,6 +153,7 @@ class QQAttentionGateService:
         self._focus_shifting: bool = False
         self._retroactive_lock = asyncio.Lock()
         self._digest_tasks: set[asyncio.Task] = set()
+        self._cold_focus_count: dict[str, int] = {}  # 群 → 连续冷场切换次数
         self._logger = plugin.logger
 
     # ==========================================
@@ -233,8 +233,9 @@ class QQAttentionGateService:
         focus_group = attention.get_focus_group()
         if focus_group == normalized_group_id:
             current_score = float(attention.get_state(normalized_group_id).attention_score)
-            if current_score < 2.0:
-                self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<2.0), 忽略")
+            min_threshold = attention._minimum_threshold()
+            if current_score < min_threshold:
+                self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold}), 忽略")
                 return GateDecision("ignore", reason=f"focus_low_attention({current_score:.1f})")
             self._mark_active(normalized_group_id)
             self.plugin._emit_log("INFO", f"[Attention] 焦点群 {normalized_group_id} 消息, LLM自行判断是否回复")

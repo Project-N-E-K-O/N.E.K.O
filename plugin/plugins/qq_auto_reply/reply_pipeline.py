@@ -168,6 +168,7 @@ class QQReplyPipelineRunner:
             quoted_message_id=getattr(request, "quoted_message_id", "") or "",
             mentions_other_user=getattr(request, "mentions_other_user", False),
             mentions_all=getattr(request, "mentions_all", False),
+            reply_context=getattr(request, "reply_context", "") or "",
             force_reply=request.force_reply,
             source_kind=getattr(request, "source_kind", ""),
             member_memory_at_receipt=getattr(
@@ -282,11 +283,10 @@ class QQReplyPipelineRunner:
             )
 
         # 情绪/标记：内部状态，先于缓冲/冷却/交付更新
-        if outcome:
-            if outcome.feeling:
-                group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
-                if group and self.plugin.attention_service:
-                    await self.plugin.attention_service.set_emotion(group, outcome.feeling)
+        if outcome and outcome.feeling and delivery_plan:
+            group = delivery_plan.target_id if delivery_plan.target_type == "group" else ""
+            if group and self.plugin.attention_service:
+                await self.plugin.attention_service.set_emotion(group, outcome.feeling)
 
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')

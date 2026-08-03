@@ -25,7 +25,9 @@ except (ImportError, ModuleNotFoundError):
 try:
     from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
 except (ImportError, ModuleNotFoundError):
-    MimoVoiceCloneClient = MimoVoiceCloneError = MinimaxVoiceCloneClient = MinimaxVoiceCloneError = None
+    MimoVoiceCloneClient = MinimaxVoiceCloneClient = None
+    class _MissingVoiceCloneError(Exception): pass
+    MimoVoiceCloneError = MinimaxVoiceCloneError = _MissingVoiceCloneError
 try:
     from utils.voice_config import read_legacy_voice_id
 except (ImportError, ModuleNotFoundError):

@@ -111,12 +111,18 @@ class QQSessionInstructionService:
             pass
 
     def _save_profile_cache_to_disk(self) -> None:
-        import json, os
+        import json, os, time
         try:
+            # 过滤过期条目再落盘，避免 PII 永久留存
+            now = time.time()
+            live = {
+                k: v for k, v in self._user_profile_cache.items()
+                if isinstance(v, (list, tuple)) and len(v) == 2 and v[1] > now
+            }
             path = self._profile_cache_path()
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self._user_profile_cache, f, ensure_ascii=False)
+                json.dump(live, f, ensure_ascii=False)
         except Exception:
             pass
 
@@ -643,20 +649,9 @@ class QQSessionInstructionService:
         """从记忆服务器查询用户维度的近期事实，带 5 分钟缓存。"""
         import time
 
-        cache_key = sender_id
-        now = time.time()
-        cached = self._user_profile_cache.get(cache_key)
-        if cached is not None:
-            text, expire_at = cached
-            if now < expire_at:
-                return text
-            # 过期，删掉
-            del self._user_profile_cache[cache_key]
-
         # 检查对应的记忆开关
         settings = getattr(self.plugin, "_qq_settings", {}) or {}
         if is_group:
-            # 群成员画像需要群记忆 + 成员记忆两个开关都打开
             if not settings.get("group_memory_enabled", False):
                 return ""
             if not settings.get("group_member_memory_enabled", False):
@@ -669,11 +664,23 @@ class QQSessionInstructionService:
         if bridge is None:
             return ""
 
-        # 构造用户维度的 subject
-        if is_group and group_id:
+        # 构造用户维度的 subject（先于缓存 key 构造，确保 scope 纳入 key）
+        if is_group:
+            if not (group_id and str(group_id).strip()):
+                return ""  # 群聊但无 group_id，拒绝用错私聊 subject
             subject = bridge.group_participant_subject(group_id, sender_id)
         else:
             subject = bridge.participant_subject(sender_id)
+        scope_key = str(subject.get("subject_id") or sender_id)
+
+        cache_key = f"{sender_id}:{scope_key}"
+        now = time.time()
+        cached = self._user_profile_cache.get(cache_key)
+        if cached is not None:
+            text, expire_at = cached
+            if now < expire_at:
+                return text
+            del self._user_profile_cache[cache_key]
 
         try:
             # 按时间召回最近事实（不走语义，embedding 服务不可用时也能工作）
@@ -692,7 +699,7 @@ class QQSessionInstructionService:
             text = (result.text or "").strip()
             if text:
                 self._user_profile_cache[cache_key] = (text, now + self._USER_PROFILE_CACHE_TTL)
-                self._save_profile_cache_to_disk()
+                await asyncio.to_thread(self._save_profile_cache_to_disk)
                 return text
             # 查询成功但无结果（该 subject 下没有事实数据）
         except Exception as exc:

@@ -85,6 +85,7 @@ class QQReplyRequest:
     mentions_other_user: bool = False
     mentions_all: bool = False
     reply_message_id: str = ""
+    reply_context: str = ""
     at_user_id: str = ""
     fallback_to_text_on_voice_failure: bool = True
     # 内嵌合成轮（ack / 强制总结 / 缓冲汇总）继承缓冲里那些草稿的授权

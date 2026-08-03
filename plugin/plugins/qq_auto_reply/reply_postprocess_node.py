@@ -282,26 +282,32 @@ class QQReplyPostprocessNode:
             wm = re.search(r"<wait>(\d+(?:\.\d+)?)</wait>", reply_text, re.IGNORECASE)
             if wm:
                 pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
-            # --- 提取独立标签（位于 <msg> 之外的独立标签）---
-            # extract <emoji>ID</emoji> (standalone reaction tag, outside <msg>)
+            # --- 提取独立标签（仅限 <msg> 之外的标签，不碰块内内容）---
+            # 计算 <msg> 块区间，辅助判断标签是否在块外
+            _msg_ranges = [(m.start(), m.end()) for m in re.finditer(r"<msg[\s>][\s\S]*?</msg>", reply_text, re.IGNORECASE)]
+            def _outside_msg(pos: int) -> bool:
+                return not any(start <= pos < end for start, end in _msg_ranges)
+            # extract <emoji>ID</emoji> (standalone reaction tag)
             em = re.search(r"<emoji>(\d+)</emoji>", reply_text, re.IGNORECASE)
-            if em:
+            if em and _outside_msg(em.start()):
                 emoji_reaction_id = em.group(1).strip()
                 reply_text = reply_text[:em.start()] + reply_text[em.end():]
                 reply_text = reply_text.strip()
-            # extract <mark/> (forward bookmark, marks argument start)
-            mark_flag = bool(re.search(r"<mark\s*/>", reply_text, re.IGNORECASE))
-            if mark_flag:
-                reply_text = re.sub(r"<mark\s*/>", "", reply_text).strip()
-            # extract <feeling>emotion</feeling> (mood tag, outside <msg>)
+            # extract <mark/> (forward bookmark)
+            mk = re.search(r"<mark\s*/>", reply_text, re.IGNORECASE)
+            if mk and _outside_msg(mk.start()):
+                reply_text = reply_text[:mk.start()] + reply_text[mk.end():]
+                reply_text = reply_text.strip()
+                mark_flag = True
+            # extract <feeling>emotion</feeling> (mood tag)
             fm = re.search(r"<feeling>(\w+)</feeling>", reply_text, re.IGNORECASE)
-            if fm:
+            if fm and _outside_msg(fm.start()):
                 feeling = fm.group(1).strip().lower()
                 reply_text = reply_text[:fm.start()] + reply_text[fm.end():]
                 reply_text = reply_text.strip()
             # extract <forward to="群号" count="30">content</forward>
             fw = re.search(r"<forward(\s+to\s*=\s*\"(\d+)\")?(\s+count\s*=\s*\"(\d+)\")?\s*>(.*?)</forward>", reply_text, re.DOTALL | re.IGNORECASE)
-            if fw:
+            if fw and _outside_msg(fw.start()):
                 forward_content = fw.group(5).strip() if fw.group(5) else ""
                 forward_target = fw.group(2) or ""
                 forward_count = int(fw.group(4)) if fw.group(4) else 0

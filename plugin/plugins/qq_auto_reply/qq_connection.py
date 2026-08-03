@@ -68,7 +68,7 @@ class QQConnectionBase(ABC):
 
     @abstractmethod
     async def send_group_image(
-        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""
+        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "", sub_type: str = ""
     ) -> Optional[str]:
         """发送群聊图片"""
         ...

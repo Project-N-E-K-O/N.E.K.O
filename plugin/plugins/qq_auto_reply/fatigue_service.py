@@ -53,8 +53,13 @@ class QQFatigueService:
             tiers = []
             for t in stored:
                 if isinstance(t, dict) and "threshold" in t and "text" in t:
-                    tiers.append((int(t["threshold"]), str(t["text"])))
+                    try:
+                        threshold = int(t["threshold"])
+                    except (ValueError, TypeError):
+                        continue
+                    tiers.append((threshold, str(t["text"])))
             if tiers:
+                tiers.sort(key=lambda x: x[0])
                 return tiers
         return self._DEFAULT_FATIGUE_TIERS
 
