@@ -188,6 +188,10 @@ def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditiona
         ("重写整个角色卡片", "重寫整個角色卡片"),
         ("重写整张卡片", "重寫整張卡片"),
         ("重写整个卡片", "重寫整個卡片"),
+        # ⚠️ 「字段/欄位」类不该被那条挡定语的 lookahead 波及——这里的「的」后面
+        # 跟的是内容，不是某个单一字段（Codex P2 第四轮）。
+        ("把所有字段的内容重写一遍", "把所有欄位的內容重寫一遍"),
+        ("重写每个字段的内容", "重寫每個欄位的內容"),
     ],
 )
 def test_a_genuine_full_rewrite_still_matches(simplified, traditional):

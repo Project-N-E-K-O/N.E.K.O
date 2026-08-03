@@ -219,15 +219,76 @@ def test_a_trailing_particle_does_not_defeat_the_non_music_guard(simplified, tra
 
 @pytest.mark.parametrize(
     ("simplified", "traditional"),
-    [("别的歌播放不了吗", "別的歌播放不了嗎"), ("别的地方也播放音乐", "別的地方也播放音樂")],
+    [
+        ("别的歌播放不了吗", "別的歌播放不了嗎"),
+        ("别的地方也播放音乐", "別的地方也播放音樂"),
+        ("别致的音乐", "別緻的音樂"),
+        ("别具一格的音乐", "別具一格的音樂"),
+        ("别有风味的歌曲", "別有風味的歌曲"),
+    ],
 )
-def test_the_determiner_other_is_not_a_cancellation(simplified, traditional):
-    """别的/別的 is a determiner, not an imperative — same class as 别人/別人,
-    found on the next review round (Codex P2)."""  # noqa: DOCSTRING_CJK
+def test_the_single_char_negator_must_govern_a_playback_verb(simplified, traditional):
+    """⚠️ Positive requirement, not a blacklist.
+
+    Earlier rounds tried excluding the nouns that follow 别/別 one by one —
+    first 别人, then 别的 — but what can follow a one-character negator is an
+    open set (別緻 / 別具一格 / 別有風味 …), so the blacklist could never close.
+    The single-char branch now requires 别/別 to sit directly on a playback verb
+    (with an optional 再), which covers all of them at once and keeps the
+    genuine imperatives.
+
+    ⚠️ Simplified benefits too: 「别致的音乐」 and 「别的歌播放不了吗」 both
+    cancelled playback on main.
+    """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("别放音乐了", "別放音樂了"), ("别再放了", "別再放了"), ("别再播音乐", "別再播音樂")],
+)
+def test_the_single_char_negator_still_matches_imperatives(simplified, traditional):
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("取消收藏这首歌", "取消收藏這首歌"), ("请取消收藏这首歌", "請取消收藏這首歌")],
+)
+def test_a_source_edit_is_not_a_playback_cancellation(simplified, traditional):
+    """⚠️ 取消 here governs 收藏 (unfavourite), not playback.
+
+    Anchoring the stop verb at the clause start was not enough — it also has to
+    govern a playback verb, or a source-management command cancels the pending
+    request instead (Codex P2). Simplified returned False on main.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("帮我放一段你们说话的声音", "幫我放一段你們說話的聲音"),
+        ("听一下你们说话的声音", "聽一下你們說話的聲音"),
+    ],
+)
+def test_plural_second_person_speech_requests_are_rejected(simplified, traditional):
+    """他們/她們/我們 were all listed; 你們 was simply missed — and Simplified
+    「你们」 was missing too, so 「帮我放一段你们说话的声音」 searched for a song
+    called 声音 by the artist 一段你们说话 on main (Codex P2)."""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    for text in (simplified, traditional):
+        assert parse_explicit_user_music_request(text) is None, text
 
 
 DIRECT_STOP_PAIRS = [
