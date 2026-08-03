@@ -998,3 +998,23 @@ def test_whitespace_before_a_scope_noun_is_skipped(quantifier, space, noun):
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
     blocked = f'把整个卡的{quantifier}{space}名字重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize("space", [" ", "\u3000", "  "])
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+def test_whitespace_before_de_does_not_bypass_the_possessive_guard(target, space):
+    """⚠️ 目标和「的」之间的空白也要跳过。
+
+    `(?![的片])` 只看一个字符，看到空格就放行，于是 `把整个卡 的名字重写` 被判成
+    整卡重写、覆盖用户没要求改的字段（CodeRabbit）。这是空格绕过保险的**第二个**
+    入口——第一个是限定词后面那个（见上面那条 P1）。
+
+    ⚠️ 配对正向断言：跳过空白之后确实是整卡请求时仍然是 True，否则把空白一刀切
+    禁掉也能让这条变绿。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    blocked = f'把{target}{space}的名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+    allowed = f'把{target}{space}的所有字段重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed

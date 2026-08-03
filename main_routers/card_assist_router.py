@@ -865,15 +865,18 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # 是最自然的说法之一，漏了它整卡补全不触发（Codex P2，base 是 True）。
     # 单字段那道保险不受影响——`把整个卡的所有的名字重写` 仍然是 False，因为
     # 「名字」照样不在整卡级名词表里。
-    rf"(?:(?=的(?:{'|'.join(_WHOLE_CARD_QUANTIFIERS)})"
+    # ⚠️ 目标和「的」之间也可能有空白：`把整个卡 的名字重写` 里 `(?![的片])` 只看
+    # 一个字符、看到的是空格，于是整句被判成整卡重写、覆盖用户没要求改的字段
+    # （CodeRabbit）。三处都要跳过空白，否则「加个空格」就是一条绕过保险的后门。
+    rf"(?:(?=\s*的(?:{'|'.join(_WHOLE_CARD_QUANTIFIERS)})"
     # ⚠️ 空白只在**中心语确实是整卡级名词**时才跳过（`把整个卡的所有 字段重写`
     # base 是 True）。单字段那道保险不受影响：`把整个卡的全部 名字重写` 里跳过
     # 空白之后「名字」照样不在整卡级名词表里，而限定词自己当中心语那一支有它
     # 自己的收尾要求（见 _WHOLE_CARD_BARE_QUANTIFIER_TAIL）。
     rf"(?:\s*的?{_WHOLE_CARD_SCOPE_MODIFIER}(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)})"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
-    rf"|(?=的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
-    r"|(?![的片]))"
+    rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)}))"
+    r"|(?!\s*[的片]))"
     r"|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
     r"all\s+visible\s+fields)",
     re.IGNORECASE,

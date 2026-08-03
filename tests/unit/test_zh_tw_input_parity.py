@@ -1882,8 +1882,12 @@ def test_the_a_not_a_tail_table_is_derived_not_transcribed():
     断言**相等**：下界断言放不住「删掉一个词」，而删掉一个词就是放一族疑问句
     去当命令。往常量里加词时必须同步改这里——刻意的摩擦。
     """  # noqa: DOCSTRING_CJK
+    # ⚠️ 收的是**情态动词**的重叠式。A-not-A 本身是能产的（停不停/听不听/走不走
+    # ——任何动词都能重叠），那一侧枚举不完也不该枚举；情态那一族出现在句末时
+    # 几乎只能是「在问要不要这么做」，所以可以列。
     assert set(A_NOT_A_TAILS) == {
-        "可不可以", "能不能", "行不行", "好不好", "是不是", "对不对", "對不對",
+        "可不可以", "能不能", "会不会", "會不會", "该不该", "該不該",
+        "行不行", "好不好", "是不是", "对不对", "對不對",
     }, A_NOT_A_TAILS
 
 
@@ -2393,7 +2397,10 @@ def test_a_quoted_title_after_de_is_still_a_command(determiner, opening, closing
 
     text = f'停止正在播放的{determiner}{opening}晴天{closing}'
     assert is_explicit_music_cancellation(text) is True, text
-    assert is_explicit_music_cancellation(f'我要停止播放的{determiner}代码') is False
+    # ⚠️ 反向断言**不带限定词**：`的这首` / `的那首` 里的「首」本身就是完整的
+    # 播放对象（`停止正在播放的这首` base 是 True），所以 `的这首代码` 逃生是
+    # 对的——那也不是一句中文。把限定词叠进反向句里只会测出一个假缺陷。
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
 
 
 @pytest.mark.parametrize("space", [" ", "\u3000", "  "])
@@ -2474,3 +2481,78 @@ def test_a_bare_name_after_de_is_deliberately_not_a_command():
     # 同构的缺陷本体——放开上面那一格就等于把这些一起放回去。
     for text in ('停止播放的代码', '停止播放的教程', '停止播放的文档'):
         assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止正在播放的这首", "停止正在播放的這首"),
+        ("停止正在播放的这一首", "停止正在播放的這一首"),
+        ("停止正在播放的下一首", "停止正在播放的下一首"),
+    ],
+)
+def test_a_measure_phrase_can_end_the_playback_object(simplified, traditional):
+    """⚠️ `_ZH_MUSIC_NOUN_MODIFIER` 不能单独站住——它后面永远还要求一个中心语。
+
+    `停止正在播放的这首` / `的下一首` base 都是 True，被打成名物化
+    （Codex P2 第八轮）。把「首」收成中心语即可。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("我要停止播放的播放器代码", "我要停止播放的播放器代碼"),
+        ("我要停止播放的广播代码", "我要停止播放的廣播代碼"),
+        ("我要停止播放的听歌功能", "我要停止播放的聽歌功能"),
+    ],
+)
+def test_the_window_cannot_skip_a_rejected_playback_verb(simplified, traditional):
+    """⚠️⚠️ 窗口不能跨过一个**已经被名物化守卫否掉**的播放动词。
+
+    `我要停止播放的播放器代码` 里第一个「播放」被守卫拦下之后，`.{0,6}` 直接
+    跳到「播放器」里那个「播放」再匹配一次——那时守卫看到的是「器」而不是
+    「的」，缺陷本体（问代码却把歌停掉）就从后门回来了（Codex P2 第八轮）。
+
+    ⚠️ 配对正向断言：同样含两个播放动词、但不是名物化的句子仍然是命令。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation('别给我放歌') is True
+    assert is_explicit_music_cancellation('停止播放清單裡的紅心歌') is True
+
+
+def test_the_determiner_table_matches_linearly():
+    """⚠️ `_ZH_MUSIC_NOUN_MODIFIER` 的扫描段必须排除方位词本身。
+
+    留着 `[^，,。！!？?]{1,6}?[里裡上中内內裏]的` 的话，`x里的里的里的…` 在每个
+    位置都有多种切法（懒扫描 × 外层 `{0,8}`）。这张表本来只在名词尾那一支用，
+    我把它嵌进名物化守卫的前视之后会在每个播放动词位置各评估一次、界面控件
+    那一支还套了个 `{0,4}` 窗口再乘一遍——实测 93 字输入单次 20ms、基线
+    0.02ms（CodeRabbit）。
+
+    ⚠️ 断言**结构 + 耗时**：只测耗时会因机器快而假绿，只测结构不知道代价。
+    """  # noqa: DOCSTRING_CJK
+    import re
+    import time
+
+    from main_logic import music_requests as mr
+
+    # 结构：扫描段里不能再出现方位词，否则「扫到第一个方位词」就不唯一。
+    assert re.search(
+        r"\[\^[^\]]*里裡上中内內裏\][{]1,5[}]\[里裡上中内內裏\]的",
+        mr._ZH_MUSIC_NOUN_MODIFIER,
+    ), "方位结构那一支又变回可变扫描了"
+
+    # 耗时：CodeRabbit 给的形状，顶到 160 字上限。
+    worst = ("我要停止播放按钮" + "x里的" + "里的" * 40 + "代码")[:160]
+    start = time.perf_counter()
+    for _ in range(5):
+        mr.is_explicit_music_cancellation(worst)
+    assert (time.perf_counter() - start) / 5 < 0.05, "限定词密集输入又开始回溯了"
