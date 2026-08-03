@@ -1511,6 +1511,88 @@ async def test_scoped_route_rolls_back_reconciliation_and_retries_trust_write():
 
 
 @pytest.mark.asyncio
+async def test_batch_trust_failure_rolls_back_only_owner_reconciliation():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore, _speaker_trust_fact_identity
+
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)", "speaker_id": "qq:9999",
+        "speaker_trust": 1.0, "speaker_is_owner": True,
+    }
+    member = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:2002",
+        },
+        "speaker_label": "Member(2002)", "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+    }
+    prior = {
+        "id": "member-fact", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    owner_reconciled = {**prior, "speaker_label": "Owner-seen"}
+    later_reconciled = {**prior, "speaker_label": "Member-later"}
+    persist = AsyncMock(side_effect=[
+        OSError("transient trust write"),
+        lambda _name, events, **_kwargs: events,
+    ])
+
+    async def _persist(_name, events, **kwargs):
+        result = await persist(_name, events, **kwargs)
+        return result(_name, events, **kwargs) if callable(result) else result
+
+    rollback = AsyncMock(return_value=True)
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [later_reconciled]]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(return_value=[]),
+        extract_facts_batch=AsyncMock(return_value=[
+            {
+                "status": "ok", "created": [], "dropped": 0,
+                "reconciled": [owner_reconciled],
+            },
+            {
+                "status": "ok", "created": [], "dropped": 0,
+                "reconciled": [later_reconciled],
+            },
+        ]),
+        apersist_speaker_trust_events=_persist,
+        arollback_speaker_trust_reconciliations=rollback,
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[owner, member]),
+        )
+
+    identity = _speaker_trust_fact_identity(prior)
+    rollback.assert_awaited_once_with(
+        "Neko",
+        expected_reconciliations={identity: owner_reconciled},
+        previous_facts={identity: prior},
+    )
+
+
+@pytest.mark.asyncio
 async def test_scoped_route_owner_signal_keeps_concurrent_provenance_change():
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest
@@ -2350,6 +2432,42 @@ async def test_cancelled_trust_writer_waits_for_the_inflight_save(persisted):
     else:
         assert profiles == {}
         assert plugin._qq_settings["speaker_trust_profiles"] == {}
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_keeps_trust_save_shielded():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    plugin = SimpleNamespace(
+        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
+    )
+    service = QQSettingsService(plugin)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _persist(**_kwargs):
+        started.set()
+        await release.wait()
+        return True
+
+    service._persist_business_config_locked = _persist
+    task = asyncio.create_task(service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="cancelled-twice", trust_events=[],
+    ))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await task
+    assert exc_info.value.speaker_trust_persisted is True
+    assert manager.speaker_trust_profiles()["1001"]["message_count"] == 1
 
 
 @pytest.mark.asyncio

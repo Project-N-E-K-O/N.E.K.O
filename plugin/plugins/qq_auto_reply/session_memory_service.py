@@ -1484,32 +1484,30 @@ class QQSessionMemoryService:
                 successful_message_ids: dict[str, set[int]] = {}
                 chronological_predecessor_failed = False
 
-                def _remember_later_fact_exclusions(
-                    spec: dict, segment_index: int,
-                ) -> None:
-                    """Keep already-persisted later facts out of owner replay."""
-                    sender_id = str(spec.get("sender_id") or "")
-                    if not self._speaker_is_owner_for(
-                        sender_id, spec.get("permission_level"),
-                    ):
-                        return
-                    later_fact_identities = {
+                def _created_fact_identities(result: dict) -> set[tuple[str, ...]]:
+                    return {
                         tuple(str(part) for part in identity)
-                        for later_result in segment_results[segment_index + 1:]
-                        if isinstance(later_result, dict)
-                        and later_result.get("status") == "ok"
                         for identity in (
-                            later_result.get("created_fact_identities")
+                            result.get("created_fact_identities")
                             if isinstance(
-                                later_result.get("created_fact_identities"), list,
+                                result.get("created_fact_identities"), list,
                             )
-                            else later_result.get("fact_identities") or []
+                            else result.get("fact_identities") or []
                         )
                         if isinstance(identity, (list, tuple))
                         and len(identity) == 4
                         and all(identity)
                     }
-                    if not later_fact_identities:
+
+                def _add_fact_exclusions(
+                    spec: dict, fact_identities: set[tuple[str, ...]],
+                ) -> None:
+                    if not fact_identities:
+                        return
+                    sender_id = str(spec.get("sender_id") or "")
+                    if not self._speaker_is_owner_for(
+                        sender_id, spec.get("permission_level"),
+                    ):
                         return
                     for message in spec["messages"]:
                         if not isinstance(message, dict):
@@ -1526,10 +1524,33 @@ class QQSessionMemoryService:
                             and len(identity) == 4
                             and all(identity)
                         }
-                        excluded.update(later_fact_identities)
+                        excluded.update(fact_identities)
                         message[
                             "_trust_signal_excluded_fact_identities"
                         ] = [list(identity) for identity in sorted(excluded)]
+
+                def _remember_later_fact_exclusions(
+                    spec: dict, segment_index: int,
+                ) -> None:
+                    """Keep already-persisted later facts out of owner replay."""
+                    later_fact_identities: set[tuple[str, ...]] = set()
+                    for later_result in segment_results[segment_index + 1:]:
+                        if (
+                            isinstance(later_result, dict)
+                            and later_result.get("status") == "ok"
+                        ):
+                            later_fact_identities.update(
+                                _created_fact_identities(later_result)
+                            )
+                    _add_fact_exclusions(spec, later_fact_identities)
+
+                def _remember_current_fact_for_earlier_owners(
+                    segment_result: dict, segment_index: int,
+                ) -> None:
+                    """Attach this durable fact to every retained earlier owner."""
+                    created = _created_fact_identities(segment_result)
+                    for earlier_spec in batch_specs[:segment_index]:
+                        _add_fact_exclusions(earlier_spec, created)
 
                 for segment_index, (spec, segment_result) in enumerate(zip(
                     batch_specs, segment_results,
@@ -1554,7 +1575,9 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} {role_label} "
                                 f"{sender_id} 的前序段失败，保留本段重试"
                             )
-                            _remember_later_fact_exclusions(spec, segment_index)
+                            _remember_current_fact_for_earlier_owners(
+                                segment_result, segment_index,
+                            )
                             failed.add(sender_id)
                             continue
                         try:

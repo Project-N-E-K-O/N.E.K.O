@@ -739,7 +739,15 @@ class QQSettingsService:
                     persisted = await asyncio.shield(save_task)
                 except asyncio.CancelledError as cancelled:
                     try:
-                        persisted = await save_task
+                        while not save_task.done():
+                            try:
+                                await asyncio.shield(save_task)
+                            except asyncio.CancelledError:
+                                # A second cancellation must not cancel the
+                                # in-flight settings write. Keep both writer
+                                # locks until the worker publishes an outcome.
+                                continue
+                        persisted = save_task.result()
                     except asyncio.CancelledError:
                         persisted = False
                     except Exception as exc:

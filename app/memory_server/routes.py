@@ -1549,6 +1549,7 @@ async def _process_scoped_history_segments(
     owner_signal_jobs = []
     for segment, result in zip(parsed, segment_results):
         segment["trust_events"] = []
+        owner_signal_job = None
         if (
             signal_facts is not None
             and segment.get("speaker_is_owner")
@@ -1559,7 +1560,7 @@ async def _process_scoped_history_segments(
             # except for ids reconciled by this or a later request segment:
             # those changes occurred after this owner's observation and must
             # not flow backward into its trust decision.
-            owner_signal_jobs.append({
+            owner_signal_job = {
                 "segment": segment,
                 "facts_by_key": {
                     _fact_identity(fact): dict(fact)
@@ -1567,7 +1568,9 @@ async def _process_scoped_history_segments(
                     if isinstance(fact, dict) and fact.get("id") is not None
                 },
                 "later_reconciled_by_key": {},
-            })
+                "own_reconciled_by_key": {},
+            }
+            owner_signal_jobs.append(owner_signal_job)
         if signal_facts is not None:
             reconciled_by_key = {
                 _fact_identity(fact): dict(fact)
@@ -1577,6 +1580,10 @@ async def _process_scoped_history_segments(
             if reconciled_by_key:
                 for job in owner_signal_jobs:
                     job["later_reconciled_by_key"].update(reconciled_by_key)
+                if owner_signal_job is not None:
+                    owner_signal_job["own_reconciled_by_key"].update(
+                        reconciled_by_key
+                    )
                 signal_facts[:] = [
                     reconciled_by_key.get(_fact_identity(fact), fact)
                     for fact in signal_facts
@@ -1670,7 +1677,7 @@ async def _process_scoped_history_segments(
                     await runtime.fact_store.arollback_speaker_trust_reconciliations(
                         lanlan_name,
                         expected_reconciliations=job[
-                            "later_reconciled_by_key"
+                            "own_reconciled_by_key"
                         ],
                         previous_facts=job["facts_by_key"],
                     )
