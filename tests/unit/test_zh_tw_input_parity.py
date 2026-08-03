@@ -1857,3 +1857,126 @@ def test_the_two_predicates_share_one_particle_table(simplified, traditional):
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+# ---------------------------------------------------------------------------
+# 第十二轮：#2655 合并后 Codex 核实成立、当时没修的两条（base 均为 False）
+# ---------------------------------------------------------------------------
+
+
+QUESTION_GUARD_PREFIXES = ["我想", "我要", "帮我", "幫我", "给我", "給我"]
+
+
+def _a_not_a_tails() -> list[str]:
+    from main_logic import music_requests as mr
+
+    return _alternation(mr._ZH_A_NOT_A_QUESTION_TAIL)
+
+
+A_NOT_A_TAILS = _a_not_a_tails()
+
+
+def test_the_a_not_a_tail_table_is_derived_not_transcribed():
+    """⚠️ 表是从常量拆出来的，拆法一旦失效下面的笛卡尔积会静默缩水。
+
+    断言**相等**：下界断言放不住「删掉一个词」，而删掉一个词就是放一族疑问句
+    去当命令。往常量里加词时必须同步改这里——刻意的摩擦。
+    """  # noqa: DOCSTRING_CJK
+    assert set(A_NOT_A_TAILS) == {
+        "可不可以", "能不能", "行不行", "好不好", "是不是", "对不对", "對不對",
+    }, A_NOT_A_TAILS
+
+
+@pytest.mark.parametrize("tail", A_NOT_A_TAILS)
+@pytest.mark.parametrize("prefix", QUESTION_GUARD_PREFIXES)
+def test_an_a_not_a_tail_is_not_a_command(prefix, tail):
+    """⚠️ A-not-A 尾（可不可以/行不行/好不好）跟 是否/能否/可否 是同一族疑问
+    标记，守卫上一版只收了后者，于是 `我想停止播放可不可以` 被当成命令、当场把
+    用户的歌停掉（Codex P2，base 是 False）。
+
+    ⚠️ 配对的正向断言在同一个参数上跑：去掉疑问尾的**同一句话**必须仍然是命令。
+    没有它，判据整个失效（永远返回 False）时这条也是绿的。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'{prefix}停止播放{tail}') is False
+    assert is_explicit_music_cancellation(f'{prefix}停止播放') is True
+
+
+# ⚠️ 四条播放动词分支**逐条**过一遍。守卫只挂在「播放」那条是没用的：
+# `我要停止播放的代碼` 里 `.{0,6}` 会把「播」吃掉再由单字 `放` 命中，或者由单字
+# `播` 命中（它后面跟的是「放」，看不到那个「的」）。所以这里既逐条挂守卫，也
+# 要求「播放」是完整的词（`播(?!放)` / `(?<!播)放`）。
+PLAYBACK_VERBS = ["播放", "放", "播", "听", "聽"]
+
+
+@pytest.mark.parametrize("verb", PLAYBACK_VERBS)
+def test_a_nominalized_playback_verb_is_not_a_command(verb):
+    """⚠️ 「停止播放」后面紧跟「的」时它是**名词性成分的词头**，不是命令。
+
+    `我要停止播放的代碼` / `我想停止播放的教程` 问的是代码和教程，却被判成取消
+    播放、把歌停掉（Codex P2，base 是 False）。
+
+    ⚠️ 配对正向断言同参数：换成音乐名词的**同一句话**必须仍然是命令。缺了它，
+    这条在「整条判据失效」时照样绿。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'我要停止{verb}的代码') is False
+    assert is_explicit_music_cancellation(f'我要停止{verb}的教程') is False
+    assert is_explicit_music_cancellation(f'我要停止{verb}音乐') is True
+
+
+def _playback_ui_nouns() -> list[str]:
+    from main_logic import music_requests as mr
+
+    return _alternation(mr._ZH_PLAYBACK_UI_NOUN)
+
+
+PLAYBACK_UI_NOUNS = _playback_ui_nouns()
+
+
+def test_the_ui_noun_table_is_derived_not_transcribed():
+    assert set(PLAYBACK_UI_NOUNS) == {
+        "按钮", "按鈕", "功能", "键", "鍵", "控件", "組件", "组件",
+    }, PLAYBACK_UI_NOUNS
+
+
+@pytest.mark.parametrize("ui_noun", PLAYBACK_UI_NOUNS)
+@pytest.mark.parametrize("stop_verb", ["停止", "关掉", "關掉", "取消"])
+def test_a_playback_ui_control_is_not_a_command(stop_verb, ui_noun):
+    """⚠️ `幫我停止播放按鈕換個顏色` 说的是界面控件，不是要停歌（base 是 False）。
+
+    「播放X」这类界面控件名是小闭集，跟「播放后面能跟什么」（歌名歌手，开集）
+    不是一回事——后者这个文件已经栽过两次，不再去枚举。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'帮我{stop_verb}播放{ui_noun}换个颜色'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        # 「的」后面是音乐名词 → 仍是命令（这才是「停止正在播放的音乐」）。
+        ("停止正在播放的音乐", "停止正在播放的音樂"),
+        ("暂停正在播放的歌", "暫停正在播放的歌"),
+        ("取消正在播放的歌曲", "取消正在播放的歌曲"),
+        ("停止播放的红心歌单", "停止播放的紅心歌單"),
+        # 「的」是补语标记「得」的误写 → 仍是命令。
+        ("不要放的太大声", "不要放的太大聲"),
+        ("不要放的很大声", "不要放的很大聲"),
+    ],
+)
+def test_a_music_head_after_de_is_still_a_command(simplified, traditional):
+    """⚠️ 反向用例：名物化守卫不能一刀切拒绝所有「播放 + 的」。
+
+    没有这一条，把守卫写成裸 `(?!的)` 也是绿的——那会把 `停止正在播放的音樂`
+    这类最自然的说法（base 是 True）整片打成不取消。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text

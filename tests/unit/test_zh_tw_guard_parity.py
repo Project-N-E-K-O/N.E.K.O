@@ -208,43 +208,34 @@ def test_a_genuine_full_rewrite_still_matches(simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-# ⚠️ 判定「是不是整卡重写」的信号是**「的」后面有没有全量限定词**，不是后面那个
-# 名词恰好叫什么。上一版只白名单了「内容」，于是 `把整個角色卡的全部設定重寫一遍`
-# 被守卫挡掉，整卡补全通路不触发、只落库半张卡（简繁两侧都坏，共 22 条）。
+# ⚠️ 判定「是不是整卡重写」的信号是**限定词 + 它管着的中心语**，两半都要。
 #
-# 所以这里**刻意不只测「設定」一个词**：再加 資料 / 人設 / 描述。只测一个词的话，
-# 下次有人把判据写回名词白名单、只把「設定」加进去，这条测试照样绿。
-WHOLE_CARD_NOUNS = ["设定", "資料", "人设", "描述", "内容"]
-def _whole_card_quantifiers() -> list[str]:
-    """从 `_CHAT_FULL_REWRITE_RE` 里把全称限定词闭集拆出来。
-
-    ⚠️ 手抄这张表已经落后过两次了：先是只写了 全部/所有（漏 每个/每個/一切），
-    补全之后正则又加了 每一个/每項/各項，测试再次落后。改成从正则本身推导，
-    以后往闭集里加词自动被笛卡尔积覆盖。
-
-    ⚠️ 只取「紧贴『的』」那个前视里的词，`整体/整體/内容/內容` 另有专门用例
-    （它们是副词和普通名词，语法分布不同）。
-    """  # noqa: DOCSTRING_CJK
+# 只看名词不行：上一版只白名单了「内容」，于是 `把整個角色卡的全部設定重寫一遍`
+# 被守卫挡掉，整卡补全通路不触发、只落库半张卡（简繁两侧都坏，共 22 条）。
+# 只看限定词也不行：`把整个卡的全部名字重写` 里限定词管的是单字段「名字」，
+# 却被判成整卡重写，把用户没要求改的字段全覆盖掉（Codex P1，base 是 False）。
+#
+# 两张表都**从 router 的常量取**，不手抄：
+#   · 手抄这张表已经落后过两次（先漏 每个/每個/一切，补全之后又漏 每一个/每項/各項）。
+#   · 上一版改成从正则源码 scrape，正则一改结构 scrape 就静默换了个前视捞出
+#     另一张表——只剩下面那条相等断言把它兜住。表提成常量之后不用再 scrape。
+def _router_table(name: str) -> list[str]:
     import main_routers.card_assist_router as router
 
-    match = re.search(
-        r'\(\?=的\(\?:([^)]+)\)\)', router._CHAT_FULL_REWRITE_RE.pattern
-    )
-    assert match, '_CHAT_FULL_REWRITE_RE 的限定词前视结构变了，拆不出词表'
-    words = match.group(1).split('|')
-    adverbial = {"整体", "整體", "内容", "內容"}
-    quantifiers = [w for w in words if w not in adverbial]
+    table = list(getattr(router, name))
+    assert table, f'{name} 是空的'
     assert all(
-        w and all('一' <= ch <= '鿿' for ch in w) for w in quantifiers
-    ), f'拆出了非汉字残片: {quantifiers}'
-    return quantifiers
+        w and all('一' <= ch <= '鿿' for ch in w) for w in table
+    ), f'{name} 里有非汉字残片: {table}'
+    return table
 
 
-WHOLE_CARD_QUANTIFIERS = _whole_card_quantifiers()
+WHOLE_CARD_QUANTIFIERS = _router_table("_WHOLE_CARD_QUANTIFIERS")
+WHOLE_CARD_NOUNS = _router_table("_WHOLE_CARD_SCOPE_NOUNS")
 
 
 def test_the_quantifier_table_is_derived_not_transcribed():
-    """⚠️ 拆解一旦失效，下面的笛卡尔积会静默缩水。这里钉住规模与几个必含项。"""  # noqa: DOCSTRING_CJK
+    """⚠️ 取表一旦失效，下面的笛卡尔积会静默缩水。这里钉住整张表。"""  # noqa: DOCSTRING_CJK
     # ⚠️ 断言**相等**而不是「规模下界 + 几个必含项」。上一版钉了 11 个里的 7 个、
     # 下界写 >= 9，于是删掉「各项」后 len 从 11 掉到 10 照样过，而下游笛卡尔积
     # 只是少跑几条用例——闭集被悄悄缩小，整个文件全绿。
@@ -259,18 +250,120 @@ def test_the_quantifier_table_is_derived_not_transcribed():
     }, WHOLE_CARD_QUANTIFIERS
 
 
+def test_the_scope_noun_table_is_derived_not_transcribed():
+    """⚠️ 整卡级名词表同样钉死——往里加一个词就是放开一次整卡覆盖。
+
+    这张表是开集里刻意只列安全侧的那一半：多一个词，`把整个卡的全部<词>重写`
+    就会从「只改那一个字段」变成「给其余所有字段合成内容并 autosave」。所以
+    改动必须被看见，不能靠下界断言放过去。
+    """  # noqa: DOCSTRING_CJK
+    assert set(WHOLE_CARD_NOUNS) == {
+        "设定", "設定", "设置", "設置", "资料", "資料", "人设", "人設",
+        "描述", "内容", "內容", "字段", "欄位", "栏位",
+        "信息", "資訊", "资讯", "属性", "屬性", "项目", "項目",
+        "条目", "條目", "细节", "細節", "部分", "东西", "東西",
+    }, WHOLE_CARD_NOUNS
+
+
 WHOLE_CARD_TARGETS = ["整个角色卡", "整張卡", "整个卡片", "全卡"]
+# ⚠️ 笛卡尔积按「名词 × 限定词 × 目标」会到四位数。目标那一维在正则里是**另一
+# 条交替**（跟限定词/名词那两张表互不影响），而且上面已经有整整一组 4 目标的
+# 用例覆盖它，所以下面两个大积各只跑两个目标：一简一繁。这是刻意的裁剪，写在
+# 这里是为了别让人以为目标维度也被这两个积覆盖了。
+WHOLE_CARD_TARGETS_MINIMAL = ["整个卡", "整張卡"]
 
 
 @pytest.mark.parametrize("noun", WHOLE_CARD_NOUNS)
 @pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
-@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS)
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS_MINIMAL)
 def test_a_quantified_whole_card_request_is_a_full_rewrite(target, quantifier, noun):
-    """「<整卡目标>的<全量限定词><任意整卡级名词>重写」必须是整卡重写。"""  # noqa: DOCSTRING_CJK
+    """「<整卡目标>的<全量限定词><整卡级名词>重写」必须是整卡重写。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'把{target}的{quantifier}{noun}重写一遍'
     assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+def _card_template_field_names() -> list[str]:
+    """中文角色卡模板里**真实存在**的字段名，从 config/characters 读。
+
+    ⚠️ 手写字段清单会漏。判据是「限定词管着的是整卡级名词还是某个字段名」，
+    所以反向用例的清单必须自动发现——模板改一个字段名，这条守卫跟着覆盖到
+    新名字，而不是继续测一个已经不存在的词。
+    """  # noqa: DOCSTRING_CJK
+    from main_routers.card_assist_router import _load_template_keys_for_locale
+
+    names: list[str] = []
+    for locale in ("zh-CN", "zh-TW"):
+        keys = _load_template_keys_for_locale(locale)
+        assert keys, f'{locale} 模板字段读不出来，下面的守卫会退化成空跑'
+        names.extend(keys)
+    return names
+
+
+CARD_TEMPLATE_FIELD_NAMES = _card_template_field_names()
+
+
+@pytest.mark.parametrize("field", CARD_TEMPLATE_FIELD_NAMES)
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+@pytest.mark.parametrize("target", WHOLE_CARD_TARGETS_MINIMAL)
+def test_a_quantifier_governing_a_field_name_is_not_a_full_rewrite(
+    target, quantifier, field
+):
+    """⚠️⚠️ 限定词必须管着**整卡级名词**，管着字段名不算。
+
+    `把整个卡的全部名字重写` / `把整个卡的所有昵称重写` 里用户只想改一个字段，
+    上一版光看「的」后面有没有限定词就放行，于是
+    `_complete_full_rewrite_actions` 给其余所有字段合成内容并 autosave，把用户
+    从没提过的数据静默覆盖掉（Codex P1，base 是 False）。
+
+    清单从模板自动发现：**任何一个真实字段名都不许被当成整卡级名词**。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{target}的{quantifier}{field}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("把整个卡的全部名字重写", "把整個卡的全部名字重寫"),
+        ("把整个卡的所有昵称重写", "把整個卡的所有暱稱重寫"),
+        ("把整个卡的每一个名字重写", "把整個卡的每一個名字重寫"),
+        ("把整张卡的各项性格重写一下", "把整張卡的各項性格重寫一下"),
+    ],
+)
+def test_a_quantified_single_field_is_not_a_full_rewrite(simplified, traditional):
+    """⚠️ 上一条是自动发现的守卫，这几句是**另外钉死**的高价值样本。
+
+    模板字段清单缩水（改名/减字段）时那条参数化会跟着缩水，这几句不会——
+    「名字」「昵称」「性格」都不是模板字段名，正是用户实际会打出来的说法。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        # 限定词自己当中心语，后面直接跟重写动词（base 是 True，别改掉）。
+        ("把整个卡的全部重写一遍", "把整個卡的全部重寫一遍"),
+        ("把整个卡的所有都重写", "把整個卡的所有都重寫"),
+    ],
+)
+def test_a_bare_quantifier_head_is_still_a_full_rewrite(simplified, traditional):
+    """⚠️ 要求「限定词后面得有个整卡级名词」时容易顺手把这一类也毙掉。
+
+    `把整個卡的全部重寫一遍` 里限定词自己就是中心语，是明确的整卡请求。
+    合法收尾（重写动词首字/都/语气词/句末）是闭集，字段名不长这样。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (simplified, traditional):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
 @pytest.mark.parametrize("field", ["名字", "简介", "性格", "頭像"])
