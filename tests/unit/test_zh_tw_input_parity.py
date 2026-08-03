@@ -3168,3 +3168,20 @@ def test_compound_wh_markers_are_recognized(marker):
     ) is False
     for command in ('帮我停止播放红心歌单', '停止播放', '不要放晴天'):
         assert is_explicit_music_cancellation(command) is True, command
+
+
+@pytest.mark.parametrize("verb", ["播放", "放", "播", "听", "聽"])
+@pytest.mark.parametrize("aspect", ["正在", "当前", "目前"])
+def test_the_progressive_exception_covers_every_playback_verb(aspect, verb):
+    """⚠️ 进行体那边另抄了一份只有 播放/放/播 的动词表，漏了 听/聽。
+
+    `_ZH_NEGATIVE_MUSIC` / `_ZH_DIRECT_MUSIC_STOP` 都把 听/聽 当播放动词，
+    于是 `停止正在听的晴天` 掉了下来（Codex P2 第二十五轮）。「同一张表两处各写
+    一份、然后漂开」在这个文件里已经是第 N 次——这次提成共用常量
+    `_ZH_PLAYBACK_VERBS`，进行体那边直接引用。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{aspect}{verb}的晴天') is True
+    # 配对反向：不带进行体时照旧被挡。
+    assert is_explicit_music_cancellation(f'我要停止{verb}的代码') is False

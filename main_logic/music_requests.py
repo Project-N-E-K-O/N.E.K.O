@@ -601,8 +601,13 @@ _ZH_PLAYBACK_UI_NOUN = r"(?:按钮|按鈕|功能|键|鍵|控件|組件|组件)"
 # **生成**每个组合的定长后视，而不是手写一串——第二十二轮 reviewer 指出
 # `当前播放的X` / `目前播放的X` 跟 `正在播放的X` 是同一个构式，手写那三条漏了它们。
 # 副词和播放动词都是封闭词类，笛卡尔积一次铺开。
+# ⚠️ 播放动词表**一处定义**。`_ZH_NEGATIVE_MUSIC` / `_ZH_DIRECT_MUSIC_STOP` 都把
+# 听/聽 当播放动词，进行体这边却另抄了一份只有 播放/放/播 的——于是
+# `停止正在听的晴天` 掉了下来（Codex P2 第二十五轮）。「同一张表两处各写一份、
+# 然后漂开」在这个文件里已经是第 N 次，所以这次提成共用常量。
+_ZH_PLAYBACK_VERBS = ("播放", "放", "播", "听", "聽")
 _ZH_PROGRESSIVE_ADVERBS = ("正在", "正", "当前", "當前", "目前", "现在", "現在")
-_ZH_PROGRESSIVE_VERBS = ("播放", "放", "播")
+_ZH_PROGRESSIVE_VERBS = _ZH_PLAYBACK_VERBS
 _ZH_PROGRESSIVE_LOOKBEHIND = "".join(
     f"(?<!{adverb}{verb})"
     for adverb in _ZH_PROGRESSIVE_ADVERBS
