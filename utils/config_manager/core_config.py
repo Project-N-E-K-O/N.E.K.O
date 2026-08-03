@@ -1368,28 +1368,7 @@ class CoreConfigMixin:
 
                 # Model ID: 空值回退到已有配置
                 cfg_model = core_cfg.get(f'{prefix}ModelId')
-                saved_model = cfg_model.strip() if isinstance(cfg_model, str) else ''
-                # Empty provider is the pre-dropdown schema; the exact retired IDs below identify Step.
-                is_step_migration_slot = (
-                    provider in ('', 'step')
-                    or (provider == 'follow_assist' and assist_api_value == 'step')
-                    or (provider == 'follow_core' and core_api_value == 'step')
-                )
-                is_retired_step_default = (
-                    is_step_migration_slot
-                    and (
-                        (
-                            prefix in ('conversation', 'summary', 'correction', 'emotion')
-                            and saved_model == 'step-2-mini'
-                        )
-                        or (prefix == 'agent' and saved_model == 'step-3')
-                    )
-                )
-                if is_retired_step_default:
-                    step_profile = assist_api_profiles.get('step', {})
-                    if isinstance(step_profile, dict) and step_profile.get(model_key):
-                        config[model_key] = step_profile[model_key]
-                elif provider == 'follow_conversation':
+                if provider == 'follow_conversation':
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
@@ -1399,9 +1378,10 @@ class CoreConfigMixin:
                         not uses_fixed_free_assist_model
                         and
                         prefix not in ('gameMain', 'gameSummary', 'omni', 'tts')
-                        and saved_model
+                        and isinstance(cfg_model, str)
+                        and cfg_model.strip()
                     ):
-                        config[model_key] = saved_model
+                        config[model_key] = cfg_model.strip()
                     else:
                         followed_model = _resolve_game_follow_model_id(prefix, provider)
                         if followed_model:

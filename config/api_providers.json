@@ -136,7 +136,7 @@
       "correction_model": "step-1o-turbo-vision",
       "emotion_model": "step-1o-turbo-vision",
       "vision_model": "step-1o-turbo-vision",
-      "agent_model": "step-3.7-flash"
+      "agent_model": "step-3"
     },
     "silicon": {
       "key": "silicon",

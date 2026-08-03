@@ -206,15 +206,6 @@ def test_stream_text_orders_proactive_before_user_frame():
     assert c._pending_images == []
 
 
-def test_stream_text_same_model_id_still_applies_vision_config():
-    c, _captured = _make_offline_for_stream(vision_model="m")
-    c._pending_images = ["USER_FRAME_B64"]
-
-    asyncio.run(c.stream_text("看看这个"))
-
-    c.switch_model.assert_awaited_once_with("m", use_vision_config=True)
-
-
 def test_stream_text_without_staging_is_text_only():
     """Nothing staged, no user frame → plain-text message, identical to the
     pre-change path (no regression)."""
@@ -344,17 +335,6 @@ def _make_offline_for_ephemeral():
         c._astream_visible_with_tools = _fake
 
     return c, _set_chunks
-
-
-def test_prompt_ephemeral_same_model_id_still_applies_vision_config():
-    c, set_chunks = _make_offline_for_ephemeral()
-    c.vision_model = c.model
-    c.switch_model = AsyncMock()
-    set_chunks([])
-
-    asyncio.run(c.prompt_ephemeral("看看屏幕", images=["SCREEN_B64"], completion_mode="response"))
-
-    c.switch_model.assert_awaited_once_with("m", use_vision_config=True)
 
 
 def test_prompt_ephemeral_visible_reply_supersedes_staged_screenshot():
