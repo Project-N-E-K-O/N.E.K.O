@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
+import uuid
 
 
 import json
@@ -50,6 +52,125 @@ from ._shared import (
     logger,
 )
 
+_VALID_CORRECTION_ACTIONS = frozenset({
+    'merge', 'keep_new', 'keep_old', 'keep_both',
+})
+
+_LEGACY_CORRECTION_IDENTITY_FIELDS = (
+    'created_at', 'entity', 'old_text', 'new_text',
+    'subject_kind', 'subject_id', 'scope',
+    'old_speaker_id', 'old_speaker_trust',
+    'old_speaker_provenance_mixed',
+    'new_speaker_id', 'new_speaker_trust',
+    'new_speaker_provenance_mixed',
+    'new_event_when_raw', 'new_event_start_at', 'new_event_end_at',
+)
+
+
+def _correction_queue_identity(item: dict) -> tuple[str, ...] | None:
+    """Return a stable row identity, including a legacy-schema fallback."""
+    if not isinstance(item, dict):
+        return None
+    correction_id = str(item.get('correction_id') or '').strip()
+    if correction_id:
+        return ('id', correction_id)
+    return ('legacy', *(
+        repr(item.get(field)) for field in _LEGACY_CORRECTION_IDENTITY_FIELDS
+    ))
+
+
+def _correction_prompt_trust_band(item: dict, side: str) -> str:
+    """Return exactly the provenance band exposed to the correction model."""
+    from memory.speaker_trust import trust_band
+
+    if item.get(f'{side}_speaker_provenance_mixed') is True:
+        return 'unknown'
+    return trust_band(item.get(f'{side}_speaker_trust'))
+
+
+def _correction_prompt_trust_signature(item: dict) -> tuple[str, str]:
+    """Capture the prompt-visible provenance used to choose an action."""
+    return (
+        _correction_prompt_trust_band(item, 'old'),
+        _correction_prompt_trust_band(item, 'new'),
+    )
+
+
+def _normalized_correction_trust(value) -> float | None:
+    """Normalize finite numeric provenance without inventing unknown trust."""
+    from memory.speaker_trust import finite_trust_score, normalize_trust
+
+    score = finite_trust_score(value)
+    return normalize_trust(score) if score is not None else None
+
+
+def _queued_new_event_fields(provenance: dict | None) -> dict:
+    """Keep an explicit new-observation window through deferred resolution."""
+    if not isinstance(provenance, dict):
+        return {}
+    from memory.temporal import explicit_event_window
+
+    start, end = explicit_event_window(provenance)
+    if start is None and end is None:
+        return {}
+    return {
+        'new_event_when_raw': deepcopy(provenance.get('event_when_raw')),
+        'new_event_start_at': start,
+        'new_event_end_at': end,
+    }
+
+
+def _queued_event_entry(item: dict) -> dict:
+    """Expose a queued observation using the persisted temporal schema."""
+    return {
+        'event_when_raw': item.get('new_event_when_raw'),
+        'event_start_at': item.get('new_event_start_at'),
+        'event_end_at': item.get('new_event_end_at'),
+    }
+
+
+def _has_distinct_correction_event_windows(old_entry: dict, item: dict) -> bool:
+    """Return True when trust would collapse different event contexts."""
+    from memory.temporal import explicit_event_window
+
+    old_window = explicit_event_window(old_entry)
+    new_window = explicit_event_window(_queued_event_entry(item))
+    return old_window != new_window and any((*old_window, *new_window))
+
+
+def _merged_correction_event_fields(existing: dict, item: dict) -> dict:
+    """Union explicit old/new windows for a model-selected correction merge."""
+    from memory.temporal import explicit_event_window, to_naive_local
+
+    queued_entry = _queued_event_entry(item)
+    old_window = explicit_event_window(existing)
+    new_window = explicit_event_window(queued_entry)
+    explicit_windows = [
+        window for window in (old_window, new_window)
+        if any(boundary is not None for boundary in window)
+    ]
+    if not explicit_windows:
+        return {}
+
+    def _boundary_key(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return to_naive_local(parsed)
+
+    starts = [start for start, _end in explicit_windows if start]
+    ends = [end for _start, end in explicit_windows]
+    return {
+        'event_when_raw': deepcopy(
+            queued_entry.get('event_when_raw')
+            if any(new_window) else existing.get('event_when_raw')
+        ),
+        'event_start_at': min(starts, key=_boundary_key) if starts else None,
+        'event_end_at': (
+            None
+            if any(end is None for end in ends)
+            else max(ends, key=_boundary_key)
+        ),
+    }
+
 
 def _detect_correction_prompt_language(
     pairs: list[tuple[int, dict]],
@@ -74,34 +195,117 @@ class CorrectionsMixin:
     def _build_correction_list(
         corrections: list[dict], old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> list[dict] | None:
         """Returns the modified list or None if duplicate (no change needed)."""
+        new_event_fields = _queued_new_event_fields(new_speaker_provenance)
         for existing in corrections:
             if (existing.get('old_text') == old_text
                     and existing.get('new_text') == new_text
                     and existing.get('entity') == entity
-                    and existing.get('scope') == (subject_fields or {}).get('scope')):
-                return None
+                    and existing.get('scope') == (subject_fields or {}).get('scope')
+                    and all(
+                        existing.get(key) == new_event_fields.get(key)
+                        for key in (
+                            'new_event_when_raw',
+                            'new_event_start_at',
+                            'new_event_end_at',
+                        )
+                    )):
+                from memory.speaker_trust import stable_speaker_id
+                changed = False
+                for prefix, provenance in (
+                    ('old', old_speaker_provenance),
+                    ('new', new_speaker_provenance),
+                ):
+                    if not isinstance(provenance, dict):
+                        continue
+                    mixed_key = f'{prefix}_speaker_provenance_mixed'
+                    if provenance.get('speaker_provenance_mixed') is True:
+                        for residual_key in (
+                            f'{prefix}_speaker_id',
+                            f'{prefix}_speaker_trust',
+                        ):
+                            if residual_key in existing:
+                                existing.pop(residual_key)
+                                changed = True
+                        if existing.get(mixed_key) is not True:
+                            existing[mixed_key] = True
+                            changed = True
+                        continue
+                    speaker_id = stable_speaker_id(provenance.get('speaker_id'))
+                    if speaker_id is None:
+                        continue
+                    if existing.get(mixed_key) is True:
+                        continue
+                    raw_trust = provenance.get('speaker_trust')
+                    trust = _normalized_correction_trust(raw_trust)
+                    current_id = existing.get(f'{prefix}_speaker_id')
+                    raw_current_trust = existing.get(f'{prefix}_speaker_trust')
+                    current_trust = _normalized_correction_trust(
+                        raw_current_trust
+                    )
+                    if current_id is None:
+                        existing[f'{prefix}_speaker_id'] = speaker_id
+                        changed = True
+                    elif stable_speaker_id(current_id) != speaker_id:
+                        existing.pop(f'{prefix}_speaker_id', None)
+                        existing.pop(f'{prefix}_speaker_trust', None)
+                        existing[mixed_key] = True
+                        changed = True
+                        continue
+                    if current_trust is None and trust is not None:
+                        existing[f'{prefix}_speaker_trust'] = trust
+                        changed = True
+                    elif trust is not None and current_trust is not None:
+                        conservative = min(current_trust, trust)
+                        if conservative != current_trust:
+                            existing[f'{prefix}_speaker_trust'] = conservative
+                            changed = True
+                return corrections if changed else None
         item = {
             'old_text': old_text,
             'new_text': new_text,
             'entity': entity,
             'created_at': datetime.now().isoformat(),
+            'correction_id': uuid.uuid4().hex,
         }
         if subject_fields:
             # scoped correction 携带完整 subject 戳：section key 不含 scope，
             # resolve 分域与 apply 界定都需要它。
             item.update(subject_fields)
+        item.update(new_event_fields)
+        from memory.speaker_trust import stable_speaker_id
+        for prefix, provenance in (
+            ('old', old_speaker_provenance),
+            ('new', new_speaker_provenance),
+        ):
+            if not isinstance(provenance, dict):
+                continue
+            if provenance.get('speaker_provenance_mixed') is True:
+                item[f'{prefix}_speaker_provenance_mixed'] = True
+                continue
+            speaker_id = stable_speaker_id(provenance.get('speaker_id'))
+            if speaker_id is not None:
+                item[f'{prefix}_speaker_id'] = speaker_id
+                raw_trust = provenance.get('speaker_trust')
+                trust = _normalized_correction_trust(raw_trust)
+                if trust is not None:
+                    item[f'{prefix}_speaker_trust'] = trust
         corrections.append(item)
         return corrections
 
     def _queue_correction(
         self, name: str, old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> None:
         corrections = self.load_pending_corrections(name)
         updated = self._build_correction_list(
             corrections, old_text, new_text, entity, subject_fields,
+            old_speaker_provenance, new_speaker_provenance,
         )
         if updated is None:
             return
@@ -116,23 +320,29 @@ class CorrectionsMixin:
     async def _aqueue_correction(
         self, name: str, old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> None:
         """Public async entry — acquires the per-character lock.
         Callers already holding the lock must use _aqueue_correction_locked."""
         async with self._get_alock(name):
             await self._aqueue_correction_locked(
                 name, old_text, new_text, entity, subject_fields,
+                old_speaker_provenance, new_speaker_provenance,
             )
 
     async def _aqueue_correction_locked(
         self, name: str, old_text: str, new_text: str, entity: str,
         subject_fields: dict | None = None,
+        old_speaker_provenance: dict | None = None,
+        new_speaker_provenance: dict | None = None,
     ) -> None:
         """Inner body. Caller must hold self._get_alock(name).
         Used by aadd_fact which already has the lock."""
         corrections = await self.aload_pending_corrections(name)
         updated = self._build_correction_list(
             corrections, old_text, new_text, entity, subject_fields,
+            old_speaker_provenance, new_speaker_provenance,
         )
         if updated is None:
             return
@@ -315,7 +525,9 @@ class CorrectionsMixin:
             )
             batch_text = "\n".join(
                 f"[{i}] {old_label}: {item['old_text']} | "
-                f"{new_label}: {item['new_text']}"
+                f"{new_label}: {item['new_text']} | old trust="
+                f"{_correction_prompt_trust_band(item, 'old')} | new trust="
+                f"{_correction_prompt_trust_band(item, 'new')}"
                 for i, item in pairs
             )
             prompt = get_persona_correction_prompt(prompt_language).format(
@@ -370,21 +582,34 @@ class CorrectionsMixin:
                 return 0
 
             # ── 短临界 2: load fresh persona + apply + save ──
+            stale_prompt_indices: set[int] = set()
             resolved = await self._apply_correction_results(
                 name, corrections, allowed_indices, results,
+                refresh_pending=True,
+                stale_prompt_indices=stale_prompt_indices,
             )
             # 对偶 fact_dedup：LLM 返了 list 但 ``_apply_correction_results_locked``
             # 没消费任何 correction（全 invalid index / 全 unknown action），
             # corrections queue 原样保留 → 队头同样 N 条下次 tick 重新喂同样
             # prompt → 仍然 0 resolved → 永久卡死。算 attempts 一次。
             if resolved == 0:
+                attempted_items = [
+                    item for idx, item in pairs
+                    if idx not in stale_prompt_indices
+                ]
+                if not attempted_items:
+                    logger.info(
+                        f"[Persona] {name}: correction provenance changed "
+                        f"while the model was running; left batch queued"
+                    )
+                    return 0
                 logger.warning(
                     f"[Persona] {name}: correction model 输出 {len(results)} "
                     f"条 action 全部无效（invalid index / unknown action），"
                     f"batch 0 条 correction 消费，按 attempt 失败计"
                 )
                 await self._abump_correction_attempts_and_dead_letter(
-                    name, [item for _, item in pairs],
+                    name, attempted_items,
                 )
             return resolved
 
@@ -394,12 +619,21 @@ class CorrectionsMixin:
         corrections: list[dict],
         allowed_indices: set,
         results: list,
+        *,
+        refresh_pending: bool = False,
+        stale_prompt_indices: set[int] | None = None,
     ) -> int:
         """The post-LLM apply phase of resolve_corrections. Runs inside the data lock."""
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
+            fresh_corrections = (
+                await self.aload_pending_corrections(name)
+                if refresh_pending else None
+            )
             return await self._apply_correction_results_locked(
                 name, persona, corrections, allowed_indices, results,
+                fresh_corrections=fresh_corrections,
+                stale_prompt_indices=stale_prompt_indices,
             )
 
     async def _apply_correction_results_locked(
@@ -409,9 +643,25 @@ class CorrectionsMixin:
         corrections: list[dict],
         allowed_indices: set,
         results: list,
+        *,
+        fresh_corrections: list[dict] | None = None,
+        stale_prompt_indices: set[int] | None = None,
     ) -> int:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
+        resolved_indices: set[int] = set()
+        fresh_by_identity = None
+        ambiguous_fresh_identities: set[tuple[str, ...]] = set()
+        if fresh_corrections is not None:
+            fresh_by_identity = {}
+            for fresh_item in fresh_corrections:
+                identity = _correction_queue_identity(fresh_item)
+                if identity is None:
+                    continue
+                if identity in fresh_by_identity:
+                    ambiguous_fresh_identities.add(identity)
+                    continue
+                fresh_by_identity[identity] = fresh_item
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -419,11 +669,46 @@ class CorrectionsMixin:
                 idx = int(result.get('index', -1))
                 if idx < 0 or idx >= len(corrections) or idx not in allowed_indices:
                     continue
+                if idx in resolved_indices:
+                    continue
                 item = corrections[idx]
+                if fresh_by_identity is not None:
+                    prompt_trust = _correction_prompt_trust_signature(item)
+                    identity = _correction_queue_identity(item)
+                    if identity in ambiguous_fresh_identities:
+                        # Exact duplicate legacy rows cannot be safely mapped
+                        # back to one model index. Leave them queued.
+                        continue
+                    fresh_item = fresh_by_identity.get(identity)
+                    if fresh_item is None:
+                        # Removed while the model was running: its stale
+                        # snapshot must not be applied or trusted.
+                        continue
+                    if (
+                        _correction_prompt_trust_signature(fresh_item)
+                        != prompt_trust
+                    ):
+                        # The action was chosen from different prompt-visible
+                        # provenance. Requeue without charging a liveness
+                        # attempt; a later pass will ask the model again.
+                        if stale_prompt_indices is not None:
+                            stale_prompt_indices.add(idx)
+                        continue
+                    item = fresh_item
             except (ValueError, TypeError):
                 continue
 
-            action = result.get('action', 'keep_both')
+            raw_action = result.get('action')
+            action = (
+                raw_action.strip().lower()
+                if isinstance(raw_action, str) else None
+            )
+            # Trust may choose between valid model alternatives, but it must
+            # never turn malformed model output into a destructive decision.
+            # Invalid/missing actions remain queued for the existing liveness
+            # retry/dead-letter path.
+            if action not in _VALID_CORRECTION_ACTIONS:
+                continue
             merged_text = result.get('text', item.get('new_text', ''))
             entity_raw = item.get('entity')
             entity = entity_raw.strip() if isinstance(entity_raw, str) else ''
@@ -434,6 +719,33 @@ class CorrectionsMixin:
                 continue
             old_text = item.get('old_text', '')
             new_text = item.get('new_text', '')
+            from memory.speaker_trust import (
+                deterministic_relation,
+                preferred_by_trust,
+                stable_speaker_id,
+            )
+            old_speaker_id = item.get('old_speaker_id')
+            new_speaker_id = item.get('new_speaker_id')
+            stable_old_speaker_id = stable_speaker_id(old_speaker_id)
+            stable_new_speaker_id = stable_speaker_id(new_speaker_id)
+            preference = None
+            old_trust = item.get('old_speaker_trust')
+            new_trust = item.get('new_speaker_trust')
+            if (
+                stable_old_speaker_id is not None
+                and stable_new_speaker_id is not None
+                and stable_old_speaker_id != stable_new_speaker_id
+                and item.get('old_speaker_provenance_mixed') is not True
+                and item.get('new_speaker_provenance_mixed') is not True
+                and isinstance(old_trust, (int, float))
+                and not isinstance(old_trust, bool)
+                and isinstance(new_trust, (int, float))
+                and not isinstance(new_trust, bool)
+                and deterministic_relation(old_text, new_text) == 'correction'
+            ):
+                preference = preferred_by_trust(
+                    old_trust, new_trust,
+                )
             section_facts = self._get_section_facts(persona, entity)
 
             # scoped correction 的一切匹配/删除/新建都限定在 item 自己的
@@ -467,6 +779,48 @@ class CorrectionsMixin:
                     return True
                 return isinstance(entry, dict) and entry_matches_subject(entry, _subj)
 
+            if preference is not None:
+                current_old_entries = [
+                    entry for entry in section_facts
+                    if isinstance(entry, dict)
+                    and entry.get('text', '') == old_text
+                    and _entry_in_scope(entry)
+                ]
+                current_old = (
+                    current_old_entries[0]
+                    if len(current_old_entries) == 1 else None
+                )
+                current_old_trust = (
+                    _normalized_correction_trust(
+                        current_old.get('speaker_trust')
+                    )
+                    if current_old is not None else None
+                )
+                queued_old_trust = _normalized_correction_trust(old_trust)
+                if (
+                    current_old is None
+                    or current_old.get('speaker_provenance_mixed') is True
+                    or stable_speaker_id(current_old.get('speaker_id'))
+                    != stable_old_speaker_id
+                    or current_old_trust is None
+                    or queued_old_trust is None
+                    or current_old_trust != queued_old_trust
+                ):
+                    preference = None
+                elif _has_distinct_correction_event_windows(current_old, item):
+                    # Trust scores cannot choose between claims anchored to
+                    # different periods (including dated versus undated).
+                    preference = None
+            if preference is not None and action != 'keep_both':
+                forced = 'keep_old' if preference == 'old' else 'keep_new'
+                if action != forced:
+                    logger.info(
+                        f"[Persona] {name}: trust 仲裁覆盖模型动作 "
+                        f"entity={entity} old_speaker={old_speaker_id} "
+                        f"new_speaker={new_speaker_id} action={action!r}->{forced}"
+                    )
+                action = forced
+
             def _stamped_new_entry(text_value, _subj=item_subject) -> dict:
                 new_entry = self._normalize_entry_for_section(
                     persona, entity, text_value,
@@ -486,7 +840,43 @@ class CorrectionsMixin:
                     new_entry['id'] = (
                         f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
                     )
+                if item.get('new_speaker_provenance_mixed') is True:
+                    new_entry['speaker_provenance_mixed'] = True
+                elif item.get('new_speaker_id'):
+                    new_entry['speaker_id'] = item['new_speaker_id']
+                    trust = _normalized_correction_trust(
+                        item.get('new_speaker_trust')
+                    )
+                    if trust is not None:
+                        new_entry['speaker_trust'] = trust
+                for queued_key, entry_key in (
+                    ('new_event_when_raw', 'event_when_raw'),
+                    ('new_event_start_at', 'event_start_at'),
+                    ('new_event_end_at', 'event_end_at'),
+                ):
+                    if queued_key in item:
+                        new_entry[entry_key] = deepcopy(item[queued_key])
                 return new_entry
+
+            def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:
+                snapshot = {
+                    'text': text_value,
+                    'replaced_at': datetime.now().isoformat(),
+                    'reason': reason,
+                    'source_fact_id': None,
+                }
+                if item.get(f'{prefix}_speaker_provenance_mixed') is True:
+                    snapshot['speaker_provenance_mixed'] = True
+                    return snapshot
+                speaker_id = item.get(f'{prefix}_speaker_id')
+                if speaker_id:
+                    snapshot['speaker_id'] = speaker_id
+                    trust = _normalized_correction_trust(
+                        item.get(f'{prefix}_speaker_trust')
+                    )
+                    if trust is not None:
+                        snapshot['speaker_trust'] = trust
+                return snapshot
 
             if action == 'merge':
                 # `replace` means "new observation is an update/correction to
@@ -498,26 +888,55 @@ class CorrectionsMixin:
                 # and provenance survive the rewrite. Rebuilding via
                 # `_normalize_entry(merged_text)` would wipe all of that,
                 # reducing a confirmed persona entry to a blank slate.
-                history_entry = {
-                    'text': old_text,
-                    'replaced_at': datetime.now().isoformat(),
-                    'reason': 'correction',
-                    # `source_fact_id` stays None: the pending-correction
-                    # record has no upstream fact id today. Follow-up work
-                    # can plumb one through _queue_correction without
-                    # changing this structure.
-                    'source_fact_id': None,
-                }
+                history_entry = _history_snapshot(
+                    old_text, 'old', 'correction',
+                )
                 for j, existing in enumerate(section_facts):
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text and _entry_in_scope(existing):
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
+                            from memory.speaker_trust import provenance_of_entries
+                            new_source = {
+                                'speaker_id': new_speaker_id,
+                                'speaker_trust': item.get('new_speaker_trust'),
+                            }
+                            if item.get(
+                                'new_speaker_provenance_mixed'
+                            ) is True:
+                                new_source['speaker_provenance_mixed'] = True
+                            folded_provenance = provenance_of_entries([
+                                existing, new_source,
+                            ])
+                            mixed_speakers = not folded_provenance.get(
+                                'speaker_id'
+                            )
+                            merged_history = list(prior_history) + [history_entry]
+                            if mixed_speakers and new_speaker_id:
+                                merged_history.append(_history_snapshot(
+                                    new_text, 'new', 'correction_merge_source',
+                                ))
                             existing['text'] = merged_text
-                            existing['version_history'] = (
-                                list(prior_history) + [history_entry]
-                            )[-_VH_MAX:]
+                            existing['version_history'] = merged_history[-_VH_MAX:]
+                            existing.update(
+                                _merged_correction_event_fields(existing, item)
+                            )
+                            # Replace provenance even for the same speaker:
+                            # the merged text must carry the conservative
+                            # minimum of both authored snapshots, never borrow
+                            # the older stronger score. Mixed/unknown sources
+                            # yield an empty fold and clear single-speaker
+                            # provenance entirely.
+                            for key in (
+                                'speaker_id', 'speaker_trust', 'speaker_label',
+                            ):
+                                existing.pop(key, None)
+                            existing.update(folded_provenance)
+                            if new_source.get(
+                                'speaker_provenance_mixed'
+                            ) is True:
+                                existing['speaker_provenance_mixed'] = True
                             # Text changed → invalidate the derived
                             # caches so the next render recomputes
                             # against the new text instead of serving
@@ -533,14 +952,73 @@ class CorrectionsMixin:
                             section_facts[j] = new_entry
                         break
             elif action == 'keep_new':
+                old_entries = [
+                    e for e in section_facts
+                    if (e.get('text', '') if isinstance(e, dict) else str(e)) == old_text
+                    and _entry_in_scope(e)
+                ]
                 section_facts[:] = [
                     e for e in section_facts
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
                     or not _entry_in_scope(e)
                 ]
-                section_facts.append(_stamped_new_entry(new_text))
+                replacement = _stamped_new_entry(new_text)
+                from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                if preference == 'new':
+                    prior_history = (
+                        list(old_entries[0].get('version_history') or [])
+                        if old_entries and isinstance(old_entries[0], dict)
+                        else []
+                    )
+                    replacement['version_history'] = (
+                        prior_history
+                        + list(replacement.get('version_history') or [])
+                        + [
+                            _history_snapshot(
+                                old_text, 'old', 'trust_superseded',
+                            )
+                            for _ in old_entries[:1]
+                        ]
+                    )[-_VH_MAX:]
+                section_facts.append(replacement)
             elif action == 'keep_old':
-                pass
+                # trust 仲裁选中旧观察时，新观察不能静默蒸发：嵌入赢家的
+                # version_history，保留全文、speaker 与 trust，可人工回滚。
+                if preference == 'old':
+                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                    for existing in section_facts:
+                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
+                        if et == old_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                            history = list(existing.get('version_history') or [])
+                            correction_identity = hashlib.sha256('|'.join((
+                                str(item.get('created_at') or ''),
+                                entity,
+                                old_text,
+                                new_text,
+                                str(item.get('subject_kind') or ''),
+                                str(item.get('subject_id') or ''),
+                                str(item.get('scope') or ''),
+                            )).encode('utf-8')).hexdigest()[:24]
+                            already_recorded = any(
+                                isinstance(snapshot, dict)
+                                and snapshot.get('reason') == (
+                                    'trust_rejected_observation'
+                                )
+                                and snapshot.get('correction_id') == (
+                                    correction_identity
+                                )
+                                for snapshot in history
+                            )
+                            if not already_recorded:
+                                rejected = _history_snapshot(
+                                    new_text, 'new',
+                                    'trust_rejected_observation',
+                                )
+                                rejected['correction_id'] = correction_identity
+                                existing['version_history'] = (
+                                    history + [rejected]
+                                )[-_VH_MAX:]
+                            break
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))
@@ -551,27 +1029,27 @@ class CorrectionsMixin:
                     section_facts.append(_stamped_new_entry(new_text))
 
             resolved += 1
+            resolved_indices.add(idx)
 
         if resolved:
             await self.asave_persona(name, persona)
-            # 收集已处理条目的 created_at 作为精确匹配键
-            processed_keys: set[str] = set()
-            for r in results:
-                raw_idx = r.get('index')
-                if raw_idx is None:
-                    continue
-                try:
-                    idx = int(raw_idx)
-                    if 0 <= idx < len(corrections) and idx in allowed_indices:
-                        key = corrections[idx].get('created_at', '')
-                        if key:
-                            processed_keys.add(key)
-                except (ValueError, TypeError):
-                    continue
+            # New rows carry a generated id. Legacy rows use their complete
+            # immutable payload, so equal timestamps cannot cross-apply.
+            processed_identities = [
+                _correction_queue_identity(corrections[idx])
+                for idx in resolved_indices
+            ]
             # 重新读取文件，仅删除已处理的条目，保留 LLM 期间新增的
             # （防止并发 _aqueue_correction 新追加的矛盾被覆盖丢失）
             current = await self.aload_pending_corrections(name)
-            remaining = [c for c in current if c.get('created_at', '') not in processed_keys]
+            remaining = list(current)
+            for identity in processed_identities:
+                if identity is None:
+                    continue
+                for position, correction in enumerate(remaining):
+                    if _correction_queue_identity(correction) == identity:
+                        remaining.pop(position)
+                        break
             assert_cloudsave_writable(
                 self._config_manager,
                 operation="save",
@@ -601,7 +1079,8 @@ class CorrectionsMixin:
         if not batch_items:
             return
         bumped_keys = {
-            it.get('created_at', '') for it in batch_items if it.get('created_at')
+            identity for it in batch_items
+            if (identity := _correction_queue_identity(it)) is not None
         }
         if not bumped_keys:
             return
@@ -610,7 +1089,7 @@ class CorrectionsMixin:
             kept: list[dict] = []
             dropped = 0
             for c in current:
-                key = c.get('created_at', '')
+                key = _correction_queue_identity(c)
                 if key in bumped_keys:
                     new_attempts = safe_int_field(c, 'resolve_attempts') + 1
                     if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:

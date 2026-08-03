@@ -421,8 +421,17 @@ def _select_archive_distant_fact(
 ) -> tuple[dict[str, Any] | None, dict[str, int]]:
     if not raw_archive:
         return None, {"archiveRawCount": 0, "archiveFilteredCount": 0}
+    archive_raw_count = len([
+        item for item in raw_archive if isinstance(item, dict)
+    ])
+    eligible_archive = [
+        item for item in raw_archive
+        if isinstance(item, dict)
+        and not item.get("arbitration_archived_at")
+        and not item.get("arbitration_reason")
+    ]
     candidates, stats = _select_forge_facts_with_stats(
-        raw_archive,
+        eligible_archive,
         min_importance=min_importance,
         include_absorbed=include_absorbed,
         limit=len(raw_archive) + 1,
@@ -431,7 +440,7 @@ def _select_archive_distant_fact(
     )
     dated = [item for item in candidates if _fact_memory_datetime(item) is not None]
     archive_stats = {
-        "archiveRawCount": stats.get("rawCount", 0),
+        "archiveRawCount": archive_raw_count,
         "archiveFilteredCount": stats.get("filteredCount", 0),
     }
     if not dated:

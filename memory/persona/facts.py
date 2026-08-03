@@ -18,6 +18,7 @@ from __future__ import annotations
 
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 
@@ -207,6 +208,7 @@ class FactsMixin:
 
     def _build_fact_entry(
         self, text: str, source: str, source_id: str | None, *, subject=None,
+        speaker_provenance: dict | None = None,
     ) -> dict:
         entry = self._normalize_entry(text)
         # scoped 条目 ID 掺隔离域：同 section 双 scope 同秒同文本会撞 ID，
@@ -223,11 +225,41 @@ class FactsMixin:
         entry['source_id'] = source_id
         if subject is not None:
             entry.update(subject.as_entry_fields())
+        if speaker_provenance:
+            if source.startswith('reflection'):
+                from memory.temporal import explicit_event_window
+                event_start_at, event_end_at = explicit_event_window(
+                    speaker_provenance,
+                )
+                if event_start_at is not None or event_end_at is not None:
+                    entry['event_when_raw'] = deepcopy(
+                        speaker_provenance.get('event_when_raw')
+                    )
+                    entry['event_start_at'] = event_start_at
+                    entry['event_end_at'] = event_end_at
+            from memory.speaker_trust import (
+                finite_trust_score,
+                normalize_trust,
+                stable_speaker_id,
+            )
+            if speaker_provenance.get('speaker_provenance_mixed') is True:
+                entry['speaker_provenance_mixed'] = True
+                return entry
+            speaker_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
+            if speaker_id is not None:
+                entry['speaker_id'] = speaker_id
+                trust = speaker_provenance.get('speaker_trust')
+                trust_score = finite_trust_score(trust)
+                if trust_score is not None:
+                    entry['speaker_trust'] = normalize_trust(trust_score)
+            label = str(speaker_provenance.get('speaker_label') or '').strip()
+            if label:
+                entry['speaker_label'] = label[:64]
         return entry
 
     def add_fact(self, name: str, text: str, entity: str = 'master',
                  source: str = 'manual', source_id: str | None = None,
-                 subject=None) -> str:
+                 subject=None, speaker_provenance: dict | None = None) -> str:
         """Add a confirmed fact to persona. Checks for contradictions first.
 
         Args:
@@ -285,18 +317,25 @@ class FactsMixin:
                     memory_subject.as_entry_fields()
                     if memory_subject is not None else None
                 ),
+                old_speaker_provenance=next((
+                    e for e in scan_facts
+                    if isinstance(e, dict) and e.get('text') == old_text
+                ), None),
+                new_speaker_provenance=speaker_provenance,
             )
             return self.FACT_QUEUED_CORRECTION
 
         section_facts.append(self._build_fact_entry(
             text, source, source_id, subject=memory_subject,
+            speaker_provenance=speaker_provenance,
         ))
         self.save_persona(name, persona)
         return self.FACT_ADDED
 
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None,
-                        subject=None) -> str:
+                        subject=None,
+                        speaker_provenance: dict | None = None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
@@ -350,11 +389,17 @@ class FactsMixin:
                         memory_subject.as_entry_fields()
                         if memory_subject is not None else None
                     ),
+                    old_speaker_provenance=next((
+                        e for e in scan_facts
+                        if isinstance(e, dict) and e.get('text') == old_text
+                    ), None),
+                    new_speaker_provenance=speaker_provenance,
                 )
                 return self.FACT_QUEUED_CORRECTION
 
             section_facts.append(self._build_fact_entry(
                 text, source, source_id, subject=memory_subject,
+                speaker_provenance=speaker_provenance,
             ))
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
@@ -493,6 +538,7 @@ class FactsMixin:
         reflection_evidence: dict,
         source_reflection_id: str,
         merged_from_ids: list[str] | None = None,
+        source_provenance: dict | None = None,
     ) -> str:
         """Merge a reflection's content into an existing persona entry.
 
@@ -600,6 +646,51 @@ class FactsMixin:
                 )
                 return 'noop'
 
+            merged_provenance = None
+            if source_provenance is not None:
+                from memory.speaker_trust import provenance_of_entries
+                merged_provenance = provenance_of_entries([
+                    target_entry, source_provenance,
+                ])
+
+            merged_temporal = None
+            if source_provenance is not None:
+                from memory.temporal import explicit_event_window, to_naive_local
+
+                explicit_windows = [
+                    window for window in (
+                        explicit_event_window(target_entry),
+                        explicit_event_window(source_provenance),
+                    )
+                    if any(boundary is not None for boundary in window)
+                ]
+                if explicit_windows:
+                    def _boundary_key(value: str) -> datetime:
+                        parsed = datetime.fromisoformat(
+                            value.replace('Z', '+00:00')
+                        )
+                        return to_naive_local(parsed)
+
+                    starts = [
+                        start for start, _end in explicit_windows if start
+                    ]
+                    ends = [end for _start, end in explicit_windows]
+                    merged_temporal = {
+                        'event_when_raw': deepcopy(
+                            source_provenance.get('event_when_raw')
+                            if any(explicit_event_window(source_provenance))
+                            else target_entry.get('event_when_raw')
+                        ),
+                        'event_start_at': min(
+                            starts, key=_boundary_key,
+                        ) if starts else None,
+                        'event_end_at': (
+                            None
+                            if any(end is None for end in ends)
+                            else max(ends, key=_boundary_key)
+                        ),
+                    }
+
             # Compute new audit list — dedup by id, preserve insertion order.
             # source_reflection_id MUST be in the final list because it is the
             # idempotency sentinel used at line ~911 (`if source_reflection_id
@@ -641,6 +732,13 @@ class FactsMixin:
                 'merged_from_ids': new_merged_from,
                 'source': EVIDENCE_SOURCE_PROMOTE_MERGE,
             }
+            if merged_provenance is not None:
+                # Explicit nested snapshot distinguishes "legacy caller did
+                # not reconcile provenance" from "this merge deliberately
+                # cleared mixed/unknown provenance" during event replay.
+                entry_payload['speaker_provenance'] = merged_provenance
+            if merged_temporal is not None:
+                entry_payload.update(merged_temporal)
 
             evidence_payload = {
                 'entity_key': entity_key,
@@ -685,6 +783,18 @@ class FactsMixin:
                 target_entry['disp_last_signal_at'] = now_iso
                 target_entry['sub_zero_days'] = 0
                 target_entry['merged_from_ids'] = new_merged_from
+                if merged_provenance is not None:
+                    for key in (
+                        'speaker_id', 'speaker_trust', 'speaker_label',
+                    ):
+                        target_entry.pop(key, None)
+                    target_entry.update(merged_provenance)
+                if merged_temporal is not None:
+                    for key in (
+                        'event_when_raw', 'event_start_at', 'event_end_at',
+                    ):
+                        target_entry.pop(key, None)
+                    target_entry.update(deepcopy(merged_temporal))
                 # Token-count cache is derived from `text`; rewriting text
                 # must drop the cache so the next render recomputes. The
                 # fingerprint check would catch the drift anyway, but

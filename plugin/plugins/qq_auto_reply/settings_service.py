@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from contextlib import asynccontextmanager
+from copy import deepcopy
 
 from typing import Any
 
@@ -11,6 +14,9 @@ from .group_permission import GroupPermissionManager
 class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        # trust 演化的唯一写者锁：不同群/私聊会话可能同时结算同一个 QQ，
+        # 所有 read-modify-persist 必须在这里串行，不能依赖 session lock。
+        self._speaker_trust_lock = asyncio.Lock()
 
     def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
         """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理
@@ -193,14 +199,32 @@ class QQSettingsService:
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
         # 直接按"没写成"回滚会让磁盘与运行时永久相反（重启后才暴露）。
         # 取消时先把 task 等出真实结果，再决定是否回滚，然后再抛。
+        # Preserve the established instance-level persistence seam used by
+        # lightweight hosts/tests. Normal instances do not shadow the method
+        # and therefore use the lock-aware internal writer, avoiding a
+        # non-reentrant call back into persist_business_config.
+        persist_override = self.__dict__.get("persist_business_config")
+        persist_call = (
+            persist_override
+            if callable(persist_override)
+            else self._persist_business_config_locked
+        )
         save_task = asyncio.ensure_future(
-            self.persist_business_config(overlay=deferred_opt_ins)
+            persist_call(overlay=deferred_opt_ins)
         )
         try:
             success = await asyncio.shield(save_task)
         except asyncio.CancelledError:
             try:
-                success = await save_task
+                while not save_task.done():
+                    try:
+                        await asyncio.shield(save_task)
+                    except asyncio.CancelledError:
+                        # Repeated cancellation must not cancel the atomic
+                        # settings write or release the shared writer locks
+                        # while its to_thread worker can still publish.
+                        continue
+                success = save_task.result()
             except asyncio.CancelledError:
                 # 写盘本身也被取消（不是仅我们这次 await）：没落盘。
                 success = False
@@ -298,6 +322,15 @@ class QQSettingsService:
         if lock is None:
             lock = asyncio.Lock()
             self._consent_lock = lock
+        return lock
+
+    @property
+    def _speaker_trust_write_lock(self) -> asyncio.Lock:
+        """Return the global trust/settings writer lock, creating it lazily."""
+        lock = getattr(self, "_speaker_trust_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._speaker_trust_lock = lock
         return lock
 
     def _rollback_unpersisted_memory_toggles(
@@ -548,22 +581,78 @@ class QQSettingsService:
         开关自己弹回去），而运行时要等写盘成功、由调用方显式发布。save()
         会返回规范化后的新 dict 并顶替 _qq_settings——发布之前得把这些键
         按旧值压回去，不然"延迟"会被这次顶替悄悄抵消。"""
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                return await self._persist_business_config_locked(overlay)
+
+    async def mutate_business_config(
+        self, mutation: Callable[[dict[str, Any]], bool],
+    ) -> bool:
+        """Run a direct settings read-modify-write under both writer locks."""
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                if not mutation(self.plugin._qq_settings):
+                    return True
+                return await self._persist_business_config_locked()
+
+    async def _persist_business_config_locked(
+        self,
+        overlay: dict[str, Any] | None = None,
+        *,
+        refresh_backlog_store: bool = True,
+        preserve_published_permissions: bool = False,
+    ) -> bool:
+        """Persist while the shared settings writer locks are already held."""
         try:
+            published_permissions = {
+                key: deepcopy(self.plugin._qq_settings[key])
+                for key in ("trusted_users", "trusted_groups")
+                if key in self.plugin._qq_settings
+            }
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
+            live_trust_profiles = (
+                self.plugin.permission_mgr.speaker_trust_profiles()
+                if self.plugin.permission_mgr else {}
+            )
+            self.plugin._qq_settings["speaker_trust_profiles"] = live_trust_profiles
+            staged_trust_profiles = getattr(
+                self, "_staged_speaker_trust_profiles", None,
+            )
             pre_publish = {
                 key: bool(self.plugin._qq_settings.get(key, False))
                 for key in (overlay or {})
             }
             payload = dict(self.plugin._qq_settings)
+            if isinstance(staged_trust_profiles, dict):
+                payload["speaker_trust_profiles"] = staged_trust_profiles
+            if preserve_published_permissions:
+                payload.update(published_permissions)
             payload.update(overlay or {})
             saved = await self.plugin.config_store.save(payload)
             for key, value in pre_publish.items():
                 saved[key] = value
+            if isinstance(staged_trust_profiles, dict):
+                # The durable writer may publish the staged profile only
+                # after save succeeds; readers keep seeing the live snapshot.
+                saved["speaker_trust_profiles"] = live_trust_profiles
+            if preserve_published_permissions:
+                saved.update(published_permissions)
             self.plugin._qq_settings = saved
-            self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
+            if refresh_backlog_store:
+                self.plugin.backlog_store = (
+                    self.plugin._create_backlog_store_from_settings(
+                        self.plugin._qq_settings,
+                    )
+                )
             return True
         except Exception as e:
+            if preserve_published_permissions:
+                # The live managers may contain a dashboard mutation whose
+                # owning action has not entered this transaction yet. A
+                # failed trust-only save must not publish that staged state
+                # into the runtime settings snapshot used by the next save.
+                self.plugin._qq_settings.update(published_permissions)
             self.plugin.logger.error(f"持久化 QQ 配置失败: {e}")
             return False
 
@@ -597,9 +686,110 @@ class QQSettingsService:
             self.plugin._qq_settings["enable_group_attention"] = True
 
     def rebuild_permission_managers(self, config: dict[str, Any]) -> None:
-        self.plugin.permission_mgr = PermissionManager(config.get("trusted_users", []))
+        self.plugin.permission_mgr = PermissionManager(
+            config.get("trusted_users", []),
+            config.get("speaker_trust_profiles", {}),
+        )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
         self.plugin._refresh_admin_qq()
+
+    @asynccontextmanager
+    async def permission_manager_rebuild_guard(self):
+        """Serialize reloads with the global trust read-modify-write path."""
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                yield
+
+    async def apply_speaker_trust_update(
+        self,
+        *,
+        sender_id: str,
+        message_count: int,
+        activity_event_id: str,
+        trust_events: list[dict] | None = None,
+    ) -> bool:
+        """Single durable writer for global per-QQ trust evolution."""
+        async with self._speaker_trust_write_lock:
+            # Share the full settings transaction lock as well: a dashboard
+            # save writes the same config file and could otherwise publish a
+            # stale snapshot over this trust update.
+            async with self._consent_transaction_lock:
+                # Dashboard reloads replace the manager object. Resolve it
+                # only after both writer locks so a queued update cannot
+                # mutate a detached instance and then report success.
+                manager = self.plugin.permission_mgr
+                if manager is None:
+                    return False
+                before = manager.speaker_trust_profiles()
+                staged_manager = PermissionManager(
+                    speaker_trust_profiles=before,
+                )
+                changed = staged_manager.record_speaker_activity(
+                    sender_id, message_count, activity_event_id,
+                )
+                changed = (
+                    bool(staged_manager.apply_speaker_trust_events(
+                        trust_events or [],
+                    ))
+                    or changed
+                )
+                if not changed:
+                    return True
+                after = staged_manager.speaker_trust_profiles()
+                self._staged_speaker_trust_profiles = after
+                save_task = asyncio.ensure_future(
+                    self._persist_business_config_locked(
+                        refresh_backlog_store=False,
+                        preserve_published_permissions=True,
+                    )
+                )
+                try:
+                    persisted = await asyncio.shield(save_task)
+                except asyncio.CancelledError as cancelled:
+                    try:
+                        while not save_task.done():
+                            try:
+                                await asyncio.shield(save_task)
+                            except asyncio.CancelledError:
+                                # A second cancellation must not cancel the
+                                # in-flight settings write. Keep both writer
+                                # locks until the worker publishes an outcome.
+                                continue
+                        persisted = save_task.result()
+                    except asyncio.CancelledError:
+                        persisted = False
+                    except Exception as exc:
+                        self.plugin.logger.error(
+                            f"取消期间的 speaker trust 写盘失败: {exc}"
+                        )
+                        persisted = False
+                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
+                    if persisted:
+                        manager.replace_speaker_trust_profiles(after)
+                        if isinstance(runtime_settings, dict):
+                            runtime_settings['speaker_trust_profiles'] = after
+                    elif isinstance(runtime_settings, dict):
+                        runtime_settings['speaker_trust_profiles'] = before
+                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
+                    cancelled.speaker_trust_persisted = bool(persisted)
+                    raise
+                except Exception:
+                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
+                    raise
+                self.__dict__.pop('_staged_speaker_trust_profiles', None)
+                if persisted:
+                    manager.replace_speaker_trust_profiles(after)
+                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
+                    if isinstance(runtime_settings, dict):
+                        runtime_settings['speaker_trust_profiles'] = after
+                    return True
+                runtime_settings = getattr(self.plugin, '_qq_settings', None)
+                if isinstance(runtime_settings, dict):
+                    runtime_settings['speaker_trust_profiles'] = before
+                self.plugin.logger.warning(
+                    f"speaker trust 写盘失败，已回滚 sender={sender_id}"
+                )
+                return False
 
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
         """Serialize the whole settings transaction.
@@ -609,8 +799,9 @@ class QQSettingsService:
         url, token, reply mode, probabilities) are silently dropped when
         the winner replaces the dict, and the consent rollback cannot
         reason about a `before` value another request already changed."""
-        async with self._consent_transaction_lock:
-            return await self._save_settings_locked(**kwargs)
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                return await self._save_settings_locked(**kwargs)
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
         onebot_url = kwargs.get("onebot_url")

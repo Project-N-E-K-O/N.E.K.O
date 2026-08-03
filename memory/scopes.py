@@ -85,6 +85,15 @@ class MemorySubject:
         if kind not in SUBJECT_KINDS:
             raise MemoryScopeError(f"unsupported subject_kind: {kind!r}")
         subject_id = _clean_component(self.subject_id, field="subject_id")
+        if kind == SUBJECT_GROUP_PARTICIPANT:
+            components = subject_id.split(':')
+            if (
+                len(components) != 3
+                or any(not component for component in components)
+            ):
+                raise MemoryScopeError(
+                    "group_participant subject_id must be platform:group:speaker"
+                )
         scope = _clean_component(self.scope, field="scope")
         if scope == LEGACY_PRIVATE_SCOPE:
             raise MemoryScopeError("new subjects cannot use legacy_private scope")

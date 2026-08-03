@@ -57,11 +57,29 @@ def test_greeting_preserves_full_locale_for_holiday_selection():
     assert GreetingMixin._greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
 
 
-def test_traditional_holiday_prompt_falls_back_to_simplified_chinese():
-    from config.prompts.prompts_proactive import HOLIDAY_HINT_TODAY
+def test_traditional_holiday_prompt_uses_its_own_templates():
+    """Was ``..._falls_back_to_simplified_chinese``: it pinned the gap itself.
+
+    The four holiday tables now carry ``zh-TW``, so the key selector picks it
+    instead of collapsing to ``zh``. ⚠️ All four must be asserted together —
+    ``_holiday_hint_language_key`` derives the key from ``HOLIDAY_HINT_TODAY``
+    alone and then indexes the other three with it, so a half-backfill selects
+    ``zh-TW`` and then misses, dropping the other three lines to English.
+    """
+    from config.prompts.prompts_proactive import (
+        HOLIDAY_HINT_SOON,
+        HOLIDAY_HINT_TODAY,
+        HOLIDAY_HINT_WEEK,
+        WEEKEND_HINT,
+    )
     from utils.holiday_cache import _holiday_hint_language_key
 
-    assert _holiday_hint_language_key("zh-TW", HOLIDAY_HINT_TODAY) == "zh"
+    key = _holiday_hint_language_key("zh-TW", HOLIDAY_HINT_TODAY)
+    assert key == "zh-TW"
+    for table in (HOLIDAY_HINT_TODAY, HOLIDAY_HINT_SOON, HOLIDAY_HINT_WEEK, WEEKEND_HINT):
+        assert key in table
+    # Simplified is unchanged.
+    assert _holiday_hint_language_key("zh-CN", HOLIDAY_HINT_TODAY) == "zh"
 
 
 def _localized_tables() -> list[tuple[str, dict[str, str]]]:

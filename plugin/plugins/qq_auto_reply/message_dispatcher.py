@@ -168,6 +168,23 @@ class QQMessageDispatcher:
                                 "private_participant_memory_enabled", False,
                             )
                         )
+                        if message.get("message_type") == "group":
+                            sender_at_receipt = str(
+                                message.get("user_id") or ""
+                            ).strip()
+                            permission_at_receipt = None
+                            permission_mgr = getattr(
+                                self.plugin, "permission_mgr", None,
+                            )
+                            if permission_mgr is not None:
+                                permission_at_receipt = (
+                                    permission_mgr.get_permission_level(
+                                        sender_at_receipt
+                                    )
+                                )
+                            message[
+                                "_group_speaker_permission_level_at_receipt"
+                            ] = permission_at_receipt
                         if message.get("message_type") == "private":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""
@@ -408,6 +425,12 @@ class QQMessageDispatcher:
                     message.get("_member_memory_at_receipt")
                     if isinstance(message, dict) else None
                 ),
+                group_speaker_permission_level_at_receipt=(
+                    message.get(
+                        "_group_speaker_permission_level_at_receipt"
+                    )
+                    if isinstance(message, dict) else None
+                ),
                 synthetic_source=(
                     str(message.get("_synthetic_source") or "")
                     if isinstance(message, dict) else ""
@@ -513,6 +536,7 @@ class QQMessageDispatcher:
         is_reply_to_bot: bool = False,
         group_memory_at_receipt: bool | None = None,
         member_memory_at_receipt: bool | None = None,
+        group_speaker_permission_level_at_receipt: str | None = None,
         synthetic_source: str = "",
     ):
         # 群记忆政策快照优先取消息接收边界（process_messages 在 task 创建
@@ -528,6 +552,12 @@ class QQMessageDispatcher:
                 )
             )
         group_memory_at_receipt = bool(group_memory_at_receipt)
+        if group_speaker_permission_level_at_receipt is None:
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            if permission_mgr is not None:
+                group_speaker_permission_level_at_receipt = (
+                    permission_mgr.get_permission_level(str(sender_id))
+                )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
         # 新人入群：绕过门控，必定让猫娘欢迎
@@ -595,6 +625,9 @@ class QQMessageDispatcher:
             use_memory_context=group_memory_enabled,
             persist_memory=group_memory_enabled,
             member_memory_at_receipt=member_memory_at_receipt,
+            group_speaker_permission_level_at_receipt=(
+                group_speaker_permission_level_at_receipt
+            ),
         )
         if synthetic_source:
             # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，

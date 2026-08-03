@@ -253,6 +253,17 @@ SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
     "none": 0.3,
 }
 
+# 信赖度仲裁 / 演化（群记忆系列 7/7）。trust 池由 QQ 插件按稳定 QQ 号
+# 全局持有：同一人在不同群、以及非 admin 私聊 participant 中共用一份。
+# 这是产品拍板的跨 scope 通道，不得误改成 subject-local。
+SPEAKER_TRUST_ARBITRATION_MARGIN = 0.15
+SPEAKER_TRUST_ACTIVITY_WEIGHT = 0.001
+SPEAKER_TRUST_ACTIVITY_MAX_BONUS = 0.02
+SPEAKER_TRUST_CONFIRMATION_DELTA = 0.04
+SPEAKER_TRUST_CORRECTION_DELTA = 0.08
+SPEAKER_TRUST_ADJUSTMENT_LIMIT = 0.30
+SPEAKER_TRUST_EVENT_HISTORY_LIMIT = 128
+
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
 # cosine 召回，两路各自阈值过滤 + 限 top-K，RRF 融合后整体再限 N 条返回。

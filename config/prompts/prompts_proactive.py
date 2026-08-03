@@ -5274,8 +5274,23 @@ def get_cat_greeting_reason_hint(was_auto: bool, lang: str = "zh") -> str:
 # Consumed by utils.holiday_cache for proactive holiday/weekend hint
 # injection. Templates carry {name} (holiday name) and optionally {days}.
 
+# ⚠️ 用中性的「假期」而不是「連假」：HolidayPeriod 允许单日节日
+# （_inject_global_extras 就会塞「情人節」这类），而 SOON / WEEK 两条只按
+# days_away 选模板、不看 period.is_multi_day。写「連假」会对单日节日做出一句
+# 假陈述——`再過3天就是情人節連假了`（Codex P2）。
+#
+# ⚠️⚠️ 这四张表必须**同批**补 zh-TW，不能只补一两张。
+# utils/holiday_cache.py 的 _holiday_hint_language_key 固定拿
+# HOLIDAY_HINT_TODAY 的键集做判断（:608 / :663），选出的 lang_key 再拿去索引
+# SOON / WEEK / WEEKEND。所以只补 TODAY 的话，lang_key 会选成 'zh-TW'，而其余
+# 三张没有该键 → `.get(lang_key, ...['en'])` 直接掉英文。半补比不补更糟。
+#
+# 这四张是 prompts_proactive 里少数**补键即生效**的表：上游
+# main_logic/core/greeting.py 的 _greeting_locale_keys 用 format='full' 取值，
+# zh-TW 一路传到底，不需要任何调用点改动。
 HOLIDAY_HINT_TODAY: dict[str, str] = {
     "zh": "今天是{name}！这是一个特别的日子。",
+    "zh-TW": "今天是{name}！這是一個特別的日子。",
     "en": "Today is {name}! It is a special day.",
     "ja": "今日は{name}だ！特別な日だね。",
     "ko": "오늘은 {name}이다! 특별한 날이야.",
@@ -5286,6 +5301,7 @@ HOLIDAY_HINT_TODAY: dict[str, str] = {
 
 HOLIDAY_HINT_SOON: dict[str, str] = {
     "zh": "再过{days}天就是{name}假期了，可以期待一下。",
+    "zh-TW": "再過{days}天就是{name}假期了，可以期待一下。",
     "en": "The {name} holiday is coming in {days} days — something to look forward to.",
     "ja": "あと{days}日で{name}の休日だ。楽しみだね。",
     "ko": "{days}일 후면 {name} 연휴다. 기대되네.",
@@ -5296,6 +5312,7 @@ HOLIDAY_HINT_SOON: dict[str, str] = {
 
 HOLIDAY_HINT_WEEK: dict[str, str] = {
     "zh": "这周就是{name}假期了哦。",
+    "zh-TW": "這週就是{name}假期了喔。",
     "en": "The {name} holiday is coming up this week.",
     "ja": "今週は{name}の休日がやってくるよ。",
     "ko": "이번 주에 {name} 연휴가 다가오고 있어.",
@@ -5306,6 +5323,7 @@ HOLIDAY_HINT_WEEK: dict[str, str] = {
 
 WEEKEND_HINT: dict[str, str] = {
     "zh": "今天是周末，好好放松吧。",
+    "zh-TW": "今天是週末，好好放鬆吧。",
     "en": "It is the weekend — time to relax.",
     "ja": "今日は週末だ。ゆっくり過ごしてね。",
     "ko": "오늘은 주말이다. 푹 쉬어.",

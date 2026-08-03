@@ -173,6 +173,9 @@ class QQReplyPipelineRunner:
             member_memory_at_receipt=getattr(
                 request, "member_memory_at_receipt", None,
             ),
+            group_speaker_permission_level_at_receipt=getattr(
+                request, "group_speaker_permission_level_at_receipt", None,
+            ),
             participant_memory_at_receipt=getattr(
                 request, "participant_memory_at_receipt", None,
             ),

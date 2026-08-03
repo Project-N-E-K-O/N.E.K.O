@@ -261,8 +261,8 @@ async def test_corrections_dead_letter_at_threshold(tmp_path):
     pm = PersonaManager()
     name = 'neko_test_corr'
     corr_path = tmp_path / f'{name}_corrections.json'
-    # Seed disk first—helper reads from `aload_pending_corrections`，不读
-    # batch_items 的值，只用 batch_items 提取 ``created_at`` 当 match key。
+    # Seed disk first—helper re-loads current rows, then uses the stable queue
+    # identity from batch_items to find only this failed batch.
     seed_items = [
         {
             'old_text': f'old_{i}',
@@ -273,12 +273,10 @@ async def test_corrections_dead_letter_at_threshold(tmp_path):
         for i in range(3)
     ]
     corr_path.write_text(json.dumps(seed_items), encoding='utf-8')
-    batch_keys_only = [{'created_at': it['created_at']} for it in seed_items]
-
     with patch.object(pm, '_corrections_path', return_value=str(corr_path)):
         # 模拟 LLM 失败 N 次（每次 LLM 看到队头同样 N 条）
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS):
-            await pm._abump_correction_attempts_and_dead_letter(name, batch_keys_only)
+            await pm._abump_correction_attempts_and_dead_letter(name, seed_items)
 
         remaining = json.loads(corr_path.read_text(encoding='utf-8')) or []
         # 所有 entry 都该被 dead-letter
@@ -305,15 +303,41 @@ async def test_corrections_under_threshold_keeps_items(tmp_path):
         }
     ]
     corr_path.write_text(json.dumps(seed_items), encoding='utf-8')
-    batch_keys_only = [{'created_at': seed_items[0]['created_at']}]
-
     with patch.object(pm, '_corrections_path', return_value=str(corr_path)):
         for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS - 1):
-            await pm._abump_correction_attempts_and_dead_letter(name, batch_keys_only)
+            await pm._abump_correction_attempts_and_dead_letter(name, seed_items)
 
         remaining = json.loads(corr_path.read_text(encoding='utf-8')) or []
         assert len(remaining) == 1
         assert remaining[0]['resolve_attempts'] == MEMORY_LIVENESS_MAX_ATTEMPTS - 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_correction_attempt_bump_uses_full_identity_not_timestamp(tmp_path):
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    name = 'neko_test_corr_identity'
+    corr_path = tmp_path / f'{name}_corrections.json'
+    shared_time = '2026-05-18T10:00:00'
+    seed_items = [{
+        'old_text': 'old_a', 'new_text': 'new_a', 'entity': 'master',
+        'created_at': shared_time,
+    }, {
+        'old_text': 'old_b', 'new_text': 'new_b', 'entity': 'master',
+        'created_at': shared_time,
+    }]
+    corr_path.write_text(json.dumps(seed_items), encoding='utf-8')
+
+    with patch.object(pm, '_corrections_path', return_value=str(corr_path)):
+        await pm._abump_correction_attempts_and_dead_letter(
+            name, [seed_items[0]],
+        )
+
+    remaining = json.loads(corr_path.read_text(encoding='utf-8'))
+    assert remaining[0]['resolve_attempts'] == 1
+    assert 'resolve_attempts' not in remaining[1]
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -8279,6 +8279,20 @@ async def test_speaker_shadow_abba_cannot_change_provider_authority(
         (SpeechActivityEvent.CANDIDATE_PAUSE,),
         (SpeechActivityEvent.SPEECH_STARTED,),
     )
+    # Metrics derived from wall-clock, excluded from the snapshot comparison
+    # because their value depends on how the runner happened to schedule us.
+    #
+    # ⚠️ Audio-duration metrics (local_audio_ms / cloud_audio_ms /
+    # provider_wire_audio_ms / suppressed_silence_ms / shadow_suppressed_audio_ms)
+    # are deliberately NOT here: they are computed from the frames fed in, so they
+    # are deterministic and are part of what this test asserts.
+    #
+    # ⚠️ Any new wall-clock metric must be added here. Nothing on the dataclass
+    # marks a field as wall-clock, so this list cannot be derived — which is how
+    # asr_audio_command_queue_ms was missed when it landed: it measures
+    # `time.monotonic() - queued_at` (asr_client/audio.py), reads 0 on an idle
+    # machine, and came back as 16 (the Windows timer granularity) on a busy CI
+    # runner, failing whole-snapshot equality on a single value.
     volatile_metric_names = frozenset(
         {
             "connect_latency_ms",
@@ -8290,6 +8304,7 @@ async def test_speaker_shadow_abba_cannot_change_provider_authority(
             "detector_queue_audio_ms",
             "detector_queue_high_water_ms",
             "detector_oldest_frame_age_ms",
+            "asr_audio_command_queue_ms",
         }
     )
     real_detector_runtime = DetectorRuntime
