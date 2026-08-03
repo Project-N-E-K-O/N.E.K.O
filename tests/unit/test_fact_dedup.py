@@ -854,6 +854,47 @@ async def test_aresolve_merge_caps_importance_at_ten(tmp_path):
     assert survivor["importance"] == 10
 
 
+@pytest.mark.parametrize(
+    ("action", "candidate_importance", "existing_importance", "survivor_id", "expected"),
+    [
+        ("merge", 4, "unknown", "e1", 6),
+        ("replace", "unknown", "invalid", "c1", 5),
+    ],
+)
+@pytest.mark.asyncio
+async def test_aresolve_parses_malformed_persisted_importance(
+    tmp_path,
+    action,
+    candidate_importance,
+    existing_importance,
+    survivor_id,
+    expected,
+):
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact(
+        "c1", "new", embedding=[1.0, 0.0],
+        importance=candidate_importance,
+    )
+    existing = _fact(
+        "e1", "old", embedding=[0.99, 0.05],
+        importance=existing_importance,
+    )
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "new", "existing_text": "old",
+        "entity": "master", "cosine": 0.99,
+    }])
+    fake_llm = _make_llm_mock([{"index": 0, "action": action}])
+
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await resolver.aresolve("小天") == 1
+
+    survivor = (await fs.aload_facts("小天"))[0]
+    assert survivor["id"] == survivor_id
+    assert survivor["importance"] == expected
+
+
 @pytest.mark.asyncio
 async def test_aresolve_replace_keeps_candidate_and_carries_provenance(tmp_path):
     """replace ⇒ keep candidate, drop existing. Existing's

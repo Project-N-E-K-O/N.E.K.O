@@ -688,6 +688,65 @@ async def test_failed_trust_persist_evicts_optimistic_event_cache(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trust_event_persist_joins_repeated_cancellation(tmp_path):
+    from memory.facts import FactStore
+
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    fact = {
+        "id": "persist-cancel", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", **target.as_entry_fields(),
+    }
+    event = {
+        "kind": "confirmation",
+        "speaker_id": "qq:1001",
+        "event_id": "persist-cancel-event",
+        "source_speaker_id": "qq:9999",
+        "source_fact_id": "persist-cancel",
+        "source_subject_kind": target.kind,
+        "source_subject_id": target.subject_id,
+        "source_scope": target.scope,
+        "observation_id": "persist-cancel-observation",
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [fact]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=[fact])
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _blocking_save(_name, *, _fact_lock_held=False):
+        started.set()
+        assert release.wait(timeout=5)
+        finished.set()
+
+    store.save_facts = MagicMock(side_effect=_blocking_save)
+    persist = asyncio.create_task(
+        store.apersist_speaker_trust_events("Neko", [event])
+    )
+    for _ in range(200):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+    persist.cancel()
+    await asyncio.sleep(0)
+    persist.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await persist
+
+    assert finished.is_set()
+    assert fact["_speaker_trust_signal_events"] == [event]
+
+
+@pytest.mark.asyncio
 async def test_trust_reconciliation_rollback_restores_authored_provenance(
     tmp_path,
 ):

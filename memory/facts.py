@@ -1603,14 +1603,25 @@ class FactStore:
             persist_task = asyncio.create_task(asyncio.to_thread(_persist))
             try:
                 return await asyncio.shield(persist_task)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancellation:
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    while current_task.cancelling():
+                        current_task.uncancel()
                 try:
-                    await persist_task
+                    while not persist_task.done():
+                        try:
+                            await asyncio.shield(persist_task)
+                        except asyncio.CancelledError:
+                            if current_task is not None:
+                                while current_task.cancelling():
+                                    current_task.uncancel()
+                    _ = persist_task.result()
                 except BaseException:
                     with self._get_lock(name):
                         self._facts.pop(name, None)
                     raise
-                raise
+                raise cancellation
             except BaseException:
                 # _persist mutates cached rows before the atomic file write.
                 # If that write fails, retaining those event objects would

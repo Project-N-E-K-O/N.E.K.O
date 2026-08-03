@@ -70,6 +70,7 @@ from typing import TYPE_CHECKING
 from memory.facts import (
     _fact_scoped_identity,
     _speaker_trust_fact_id,
+    safe_importance,
     safe_int_field,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
@@ -1353,7 +1354,7 @@ class FactDedupResolver:
                     merged.append(cand_id)
                 existing['merged_from_ids'] = merged
                 if preference != 'old':
-                    cur_imp = int(existing.get('importance', 5) or 5)
+                    cur_imp = safe_importance(existing)
                     existing['importance'] = min(10, cur_imp + 1)
                 # A trust-arbitrated correction is replacement semantics even
                 # when the surviving side is represented by ``merge``.  The
@@ -1383,8 +1384,8 @@ class FactDedupResolver:
                 # Importance: max of the two so a "replace" doesn't
                 # silently demote a high-importance row.
                 if preference != 'new':
-                    cur = int(cand.get('importance', 5) or 5)
-                    old = int(existing.get('importance', 5) or 5)
+                    cur = safe_importance(cand)
+                    old = safe_importance(existing)
                     cand['importance'] = max(cur, old)
                 # ``replace`` selects the candidate assertion rather than
                 # corroborating it with the rejected row. Keep the selected
