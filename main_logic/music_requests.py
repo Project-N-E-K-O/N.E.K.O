@@ -189,12 +189,15 @@ _ZH_PLAYLIST_NOUN = r"(?:歌单|歌單)"
 _ZH_NETEASE = r"(?:网易云|網易雲)"
 _ZH_ONCE = r"(?:一下)?"
 
+# ⚠️ 礼貌前缀与点歌解析器同一套（_ZH_POLITE + _ZH_FOR_ME）。此前只允许「请/麻烦」，
+# 于是 `请帮我停止播放红心歌单` 压根进不了否定分支——两侧对称的既有缺口，不是繁体
+# 补齐引入的。只放宽前缀、仍然要求出现否定/停止动词，所以不会把肯定句吃进来。
 _ZH_NEGATIVE_MUSIC = re.compile(
-    r"^(?:(?:算了|还是算了|還是算了)[，,\s]*)?(?:请|請|麻烦|麻煩)?(?:我)?"
+    rf"^(?:(?:算了|还是算了|還是算了)[，,\s]*)?{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?"
     # ⚠️ 单字「别 / 別」必须排除名词「别人 / 別人」：`別人都在聽音樂` 里的「別」
     # 是名词的前半，不是祈使否定。简体侧此前就有这个 bug（`别人都在听音乐` 会被
     # 判成取消播放），一并修掉——两侧同一个毛病，只修一侧反而更难解释。
-    r"(?:(?:不要|别(?!人)|別(?!人)|不想|不听|不聽|无需|無需|停止|暂停|暫停|关掉|關掉"
+    r"(?:(?:不要|别(?![人的])|別(?![人的])|不想|不听|不聽|无需|無需|停止|暂停|暫停|关掉|關掉"
     r"|关闭|關閉|停掉|取消)"
     r".{0,6}(?:播放|放|播|听|聽|音乐|音樂|歌)"
     r"|把(?:音乐|音樂|歌).{0,4}(?:关了|關了|关掉|關掉|停掉))"
@@ -240,6 +243,12 @@ _ZH_NON_MUSIC_TARGET = re.compile(
     r"|播客|有声书|有聲書)"
     rf"|{_ZH_SPEECH_TARGET}"
 )
+# 与 _EN_EXPLICIT_MUSIC_TARGET 对偶。中文侧此前没有这一条，所以
+# `不要播放電影歌曲` / `不要播放這個影片的歌` 里的「電影 / 影片」会把整句判成
+# 非音乐目标、吞掉一次明确取消——尽管句子明明点名了「歌」。简体侧同样如此
+# （`不要播放电影歌曲` 在 main 上就不取消），两侧一起修（Codex P2）。
+_ZH_EXPLICIT_MUSIC_TARGET = re.compile(r"歌|音乐|音樂|曲")
+
 _ZH_NON_MUSIC_SPEECH_REQUEST = re.compile(
     rf"{_ZH_POLITE}{_ZH_FOR_ME}(?:我)?(?:想|要)?"
     r"(?:播放|放|听|聽|想听|想聽|要听|要聽)(?:一下)?"
@@ -628,8 +637,11 @@ def _excluded_personalization_source(clause: str) -> str:
 # 于是「别取消」被读反成「取消」——上一版就是这么写的，两侧都坏。
 # 锚定之后：`停止播放紅心歌單` 命中（停止在句首），`不要取消紅心歌單` 不命中
 # （句首是「不要」），落回窄排除，与用户实际意思一致。
+# 前缀直接复用 _ZH_REQ_PREFIX，与点歌解析器同一套：只手写「请/麻烦」会漏掉
+# 「帮我/给我」，于是 `请帮我停止播放红心歌单` 匹配不上、被当成窄排除而不取消
+# （greptile P1）。
 _ZH_DIRECT_MUSIC_STOP = re.compile(
-    r"^(?:请|請|麻烦|麻煩)?(?:我)?(?:把)?(?:停止|停掉|暂停|暫停|关掉|關掉|关闭|關閉|取消)"
+    rf"^{_ZH_REQ_PREFIX}(?:把)?(?:停止|停掉|暂停|暫停|关掉|關掉|关闭|關閉|取消)"
 )
 
 
@@ -660,10 +672,11 @@ def _has_explicit_non_music_target(clause: str) -> bool:
         )
     ):
         en_target = None
-    return bool(
-        _ZH_NON_MUSIC_TARGET.search(clause)
-        or en_target
-    )
+    zh_target = _ZH_NON_MUSIC_TARGET.search(clause)
+    if zh_target and _ZH_EXPLICIT_MUSIC_TARGET.search(clause):
+        # 「這個影片的歌」「電影歌曲」——复合词点名了音乐，不是非音乐目标。
+        zh_target = None
+    return bool(zh_target or en_target)
 
 
 def parse_explicit_user_music_request(text: str) -> MusicRequest | None:

@@ -68,7 +68,12 @@ def test_music_requests_parse_the_same_in_both_scripts(simplified, traditional):
 EXCLUSION_PAIRS = [
     ("别放红心歌单，播放每日推荐", "別放紅心歌單，播放每日推薦"),
     ("别听我喜欢的", "別聽我喜歡的"),
-    ("不要日推", "不要日推薦"),
+    # ⚠️ 原本这条写的是 ("不要日推", "不要日推薦")，两个毛病：左右不是同一句
+    # （「日推」简繁同形，右边是换了措辞不是换了字形），而且 _ZH_NEGATIVE_MUSIC
+    # 要求否定词后 6 字内出现 播放/放/听/音乐/歌，「不要日推」一个都没有 → 根本
+    # 进不了否定分支，断言 False 恒真、测的是「没被识别成否定」而不是「窄排除
+    # 生效」。和之前那条 `None == None` 是同一类空测试（CodeRabbit）。
+    ("不要放每日推荐的歌", "不要放每日推薦的歌"),
 ]
 
 
@@ -132,6 +137,61 @@ def test_a_negated_stop_verb_is_not_a_cancellation(simplified, traditional):
         assert is_explicit_music_cancellation(text) is False, text
 
 
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("请帮我停止播放红心歌单", "請幫我停止播放紅心歌單"),
+        ("给我暂停播放每日推荐", "給我暫停播放每日推薦"),
+    ],
+)
+def test_a_polite_prefix_does_not_defeat_cancellation(simplified, traditional):
+    """⚠️ The blocker was ``_ZH_NEGATIVE_MUSIC``, not the stop pattern.
+
+    Its polite prefix only allowed 请/麻烦, so 「请帮我停止播放红心歌单」 never
+    entered the refusal branch at all — a pre-existing, script-symmetric gap
+    (greptile pointed at ``_ZH_DIRECT_MUSIC_STOP``, which by then already
+    matched). Both now reuse the same prefix fragments as the request parser.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("不要播放电影歌曲", "不要播放電影歌曲"),
+        ("不要播放这个视频的歌", "不要播放這個影片的歌"),
+    ],
+)
+def test_a_compound_naming_music_is_still_a_cancellation(simplified, traditional):
+    """⚠️ 電影歌曲 / 影片的歌 name music explicitly — the video word inside them
+    must not suppress the refusal.
+
+    The English side already had ``_EN_EXPLICIT_MUSIC_TARGET`` for this; Chinese
+    had no counterpart, so 「不要播放电影歌曲」 silently stopped cancelling on the
+    Simplified side too (Codex P2). Fixed for both.
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [("别的歌播放不了吗", "別的歌播放不了嗎"), ("别的地方也播放音乐", "別的地方也播放音樂")],
+)
+def test_the_determiner_other_is_not_a_cancellation(simplified, traditional):
+    """别的/別的 is a determiner, not an imperative — same class as 别人/別人,
+    found on the next review round (Codex P2)."""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is False, text
+
+
 DIRECT_STOP_PAIRS = [
     ("停止播放红心歌单", "停止播放紅心歌單"),
     ("暂停播放我喜欢的", "暫停播放我喜歡的"),
@@ -155,6 +215,21 @@ def test_an_explicit_stop_naming_a_source_still_cancels(simplified, traditional)
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, f"{text}: 明确停止却没取消"
+
+
+@pytest.mark.parametrize(("simplified", "traditional"), EXCLUSION_PAIRS)
+def test_exclusion_pairs_actually_reach_the_negative_branch(simplified, traditional):
+    """Premise guard for the test below.
+
+    ``is_explicit_music_cancellation`` returns False both when a clause is a
+    narrow exclusion *and* when it was never recognised as a refusal at all — so
+    asserting False alone cannot tell those apart. Pin that these inputs do match
+    the negative pattern, otherwise the next assertion is vacuous.
+    """
+    from main_logic.music_requests import _ZH_NEGATIVE_MUSIC
+
+    for text in (simplified, traditional):
+        assert _ZH_NEGATIVE_MUSIC.search(text), f"{text}: 没进否定分支，下面那条断言是空的"
 
 
 @pytest.mark.parametrize(("simplified", "traditional"), EXCLUSION_PAIRS)
@@ -480,4 +555,7 @@ def test_routing_tables_are_module_level_so_they_can_be_asserted():
 
     for name in ROUTING_TABLES:
         table = getattr(music_crawlers, name)
-        assert isinstance(table, list) and table
+        # 只要求「可迭代且非空」——这几张表只做成员查找，将来改成 tuple/frozenset
+        # 是自然的优化，钉死 list 会无谓地红（CodeRabbit nitpick）。
+        assert isinstance(table, (list, tuple, set, frozenset)), name
+        assert table, f"{name}: 表为空"

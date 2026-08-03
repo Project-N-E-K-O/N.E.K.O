@@ -158,6 +158,9 @@ def test_traditional_advice_request_does_not_trigger_an_edit():
         ("把整个卡的名字重写一下", "把整個卡的名字重寫一下"),
         ("重写整个卡的简介", "重寫整個卡的簡介"),
         ("调整整张卡的性格", "調整整張卡的性格"),
+        # ⚠️ 「整个卡」是常用名词「整个卡片」的前缀——只挡「的」挡不住它
+        # （Codex P1 第二轮）。
+        ("重写整个卡片的名字", "重寫整個卡片的名字"),
     ],
 )
 def test_a_field_specific_edit_is_not_a_full_card_rewrite(simplified, traditional):
