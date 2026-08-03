@@ -126,14 +126,29 @@ def test_traditional_advice_request_does_not_trigger_an_edit():
 
     text = "給我一些修改建議"
     simplified = "给我一些修改建议"
-    # ⚠️ This line first read `advice_only(text) or not edits(text)`, whose left
-    # operand the line above already asserts True — so the whole expression was
-    # vacuous and the reversal it claims to pin could have come straight back
-    # without turning this red (CodeRabbit). Assert the decisive predicate, and
-    # assert it against the Simplified side rather than a literal, so the claim
-    # stays "these two agree" rather than a hardcoded expectation.
-    assert router._chat_text_requests_advice_only(text) is True
-    assert router._chat_text_requests_advice_only(simplified) is True
+
+    # ⚠️ Assert the *composed* decision, not a single predicate.
+    #
+    # The first version of this test read `advice_only(text) or not edits(text)`,
+    # whose left operand the line above already asserted True — vacuous.
+    # The obvious repair, `assert not edits(text)`, is also wrong: 「修改」 is a
+    # legitimate member of the edit lexicon, so `_chat_text_requests_edits` is
+    # True for *both* scripts here and always was. The reversal was never
+    # "edits should be False" — it was "advice_only must be True, so that the
+    # caller suppresses the edit". Mirroring the caller is what actually pins it.
+    def _caller_edit_intent(message: str) -> bool:
+        # card_assist_router.py: `edit_intent = False if advice_only else ...`
+        # plus `if advice_only: actions = []`.
+        advice_only = router._chat_text_requests_advice_only(message)
+        return False if advice_only else router._chat_text_requests_edits(message)
+
+    assert _caller_edit_intent(text) is False, "繁中只要建议，却会被直接改卡"
+    assert _caller_edit_intent(simplified) is False
+    # And the underlying predicates agree across scripts, so a future edit
+    # cannot fix one side while quietly regressing the other.
+    assert router._chat_text_requests_advice_only(text) is (
+        router._chat_text_requests_advice_only(simplified)
+    )
     assert router._chat_text_requests_edits(text) == router._chat_text_requests_edits(simplified)
 
 
