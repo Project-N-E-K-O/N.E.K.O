@@ -539,7 +539,7 @@ def test_xiu_at_a_word_start_is_still_a_negation(text):
 # 存进 user_directives 的是 term 本身，会逐字注进 system prompt。助词粘上去
 # ("工作喔") 就是把一个不存在的话题名喂给模型（codex P2）。
 TAIWANESE_FINAL_PARTICLES = (
-    "喔", "囉", "啰", "唷", "齁", "耶", "欸", "誒", "咧", "捏", "喲",
+    "喔", "囉", "啰", "唷", "齁", "欸", "誒", "咧", "喲",
 )
 # 反问尾巴跟在句末助词后面（"工作了好嗎"）：正则的可选助词组只放行一个，剩下的
 # 并进 term，靠 trim 的循环剥。
@@ -565,6 +565,34 @@ def test_particle_is_declared_in_the_regex(particle):
 def test_particle_is_also_declared_in_the_trim_table(particle):
     """放行（正则）与剥离（trim）成对：少一边 term 就带着助词存进去。"""  # noqa: DOCSTRING_CJK
     assert particle in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], f"{particle} 不在 zh trim 表"
+
+
+@pytest.mark.parametrize("glyph", ("唄", "耶", "捏"))
+def test_ambiguous_particle_glyphs_are_not_treated_as_particles(glyph):
+    """⚠️ 这三个字正则和 trim 都不收，理由是**代价方向**而不是"它们不是助词"。
+
+    收了：常见说法能拿到干净的 term（"工作耶"→"工作"），但罕见话题被腰斩成非词
+    （"精准拿捏"→"精准拿"、"音樂人坎耶"→"音樂人坎"、"花の唄"→"花の"）。
+    不收：常见说法多带一个字，term 里仍然完整含着真话题，模型对得上。
+    宁可多一个字，不可少一个字。``唄`` 另有一层——它在日文里是"歌"。
+    """  # noqa: DOCSTRING_CJK
+    assert glyph not in D._ZH_FINAL_PARTICLES
+    assert glyph not in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提精准拿捏。", "精准拿捏"),
+        ("別再提精準拿捏。", "精準拿捏"),
+        ("別再提音樂人坎耶。", "音樂人坎耶"),
+        ("别再提揉捏。", "揉捏"),
+        ("别再提花の唄了。", "花の唄"),
+    ],
+)
+def test_longer_topics_ending_in_an_ambiguous_glyph_survive(text, expected):
+    """长度下限只护住"剥完不足 2 字"的那一档，3 字以上的照样被吃（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
 
 
 def test_bei_is_not_treated_as_a_particle_at_all():
@@ -606,13 +634,13 @@ def test_particle_glyph_that_is_also_a_word_ending_survives(text, expected):
     assert _zh_terms(text) == {expected}
 
 
-@pytest.mark.parametrize(("text", "expected"), [("别再提拿捏。", "拿捏")])
+@pytest.mark.parametrize(("text", "expected"), [("别再提工作咧。", "工作咧")])
 def test_trim_never_shortens_a_term_below_the_storable_minimum(text, expected):
     """Premise：这个 term 的最后一个字确实在助词表里，所以它真的会走到 trim 的
     下限判据，而不是碰巧没被剥。"""  # noqa: DOCSTRING_CJK
     assert expected[-1] in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]
-    assert D._trim_term(expected, "zh") == expected
-    assert len(expected) == D._TERM_MIN_LEN
+    assert D._trim_term("咧咧", "zh") == "咧咧"
+    assert D._TERM_MIN_LEN == 2
 
 
 @pytest.mark.parametrize(
@@ -628,6 +656,46 @@ def test_template2_prefix_never_spans_a_sentence_boundary(text, expected):
     """模板 2 的前缀同理：下限抬到 2 之后 lazy 前缀会跨过句读，把上一句的尾巴
     并进话题（"算了，工作"）。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {expected}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "别提工作\n别提加班",
+        "別提工作\n別提加班",
+        "别提工作\r\n再说",
+        "我不想聊工作\n别提加班",
+    ],
+)
+def test_object_never_spans_a_line_break(text):
+    """⚠️ 换行必须在字符类里**显式**排除。这些捕获组原本写的是 ``.``，在没有
+    DOTALL 时天然不匹配换行；改成负字符类之后这个性质就没了，多行消息里 term 会把
+    换行连同**下一条指令**一起吞掉（"别提工作\\n别提加班" → "工作\\n别提加班"）。"""  # noqa: DOCSTRING_CJK
+    for term in _zh_terms(text):
+        assert "\n" not in term and "\r" not in term, f"{text!r} 抽出了跨行 term：{term!r}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 模板 3：可选的 ``的事`` 会把单字主语削到长度下限之下（既有对称缺陷）
+        ("我不想聊钱的事", "钱的事"),
+        ("我不想聊錢的事", "錢的事"),
+        ("我不想聊我的事", "我的事"),
+        # 模板 4 同理
+        ("关于钱的事别提了。", "钱的事"),
+        ("關於錢的事別提了。", "錢的事"),
+    ],
+)
+def test_single_character_subject_survives_the_optional_de_shi(text, expected):
+    assert expected in _zh_terms(text), f"{text!r} -> {_zh_terms(text)}"
+
+
+def test_all_four_zh_templates_share_one_topic_char_class():
+    """四条模板各写各的字符类正是漂移的起点——共用一份常量，加一条模板也自动跟上。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_TOPIC_CHAR == r"[^，。！？；,.!?;\r\n]"
+    for raw in _zh_pattern_sources():
+        assert D._ZH_TOPIC_CHAR in raw, f"这条 zh 模板没走共用字符类：{raw!r}"
 
 
 def test_object_never_spans_a_sentence_boundary():
