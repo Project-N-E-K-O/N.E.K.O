@@ -22,6 +22,7 @@ from plugin._types.plugin_types import (
 )
 
 from ..paths import CliDefaults
+from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..templates.generator import PluginSpec, generate_plugin, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
 from ._prompt import ask_checkbox, ask_confirm, ask_select, ask_text
@@ -87,6 +88,22 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     setup_parser.add_argument("plugin", help="Plugin directory name under plugin/plugins or explicit plugin path")
     setup_parser.add_argument("--plugins-root", help="Plugin root directory (default: N.E.K.O/plugin/plugins)")
     setup_parser.add_argument("--github-actions", action="store_true", help="Generate a GitHub Actions verification workflow")
+    setup_parser.add_argument(
+        "--upgrade-github-actions",
+        action="store_true",
+        help=(
+            "Safely upgrade standard GitHub Actions / "
+            "安全升级标准 GitHub Actions / 標準 GitHub Actions を安全に更新"
+        ),
+    )
+    setup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Preview without writing / 仅预览、不写入 / "
+            "プレビューのみ（書き込みなし）"
+        ),
+    )
     setup_parser.add_argument("--neko-repo", default=_DEFAULT_NEKO_REPOSITORY, help="N.E.K.O repository used by generated GitHub Actions")
     setup_parser.add_argument("--neko-ref", default="main", help="N.E.K.O git ref used by generated GitHub Actions")
     setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
@@ -142,6 +159,22 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
     if args.remote and not args.git:
         print("[FAIL] --remote requires --git", file=sys.stderr)
         return 1
+    if args.dry_run and not args.upgrade_github_actions:
+        print(
+            "[FAIL] --dry-run requires --upgrade-github-actions / "
+            "--dry-run 需要 --upgrade-github-actions / "
+            "--dry-run には --upgrade-github-actions が必要です",
+            file=sys.stderr,
+        )
+        return 1
+    if args.upgrade_github_actions and args.overwrite:
+        print(
+            "[FAIL] --upgrade-github-actions cannot be used with --overwrite / "
+            "--upgrade-github-actions 不能与 --overwrite 同时使用 / "
+            "--upgrade-github-actions と --overwrite は併用できません",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         plugin_dir = _resolve_existing_plugin_dir(args.plugin, args=args, defaults=defaults)
@@ -161,10 +194,41 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             create_tests=not args.no_tests,
             create_gitignore=not args.no_gitignore,
             create_vscode=not args.no_vscode,
-            create_github_actions=args.github_actions,
+            create_github_actions=args.github_actions or args.upgrade_github_actions,
             neko_repository=args.neko_repo,
             neko_ref=args.neko_ref,
         )
+        if args.upgrade_github_actions:
+            changes = migrate_github_actions(spec, plugin_dir, dry_run=args.dry_run)
+            conflicts = [
+                change
+                for change in changes
+                if change.status is ActionFileStatus.CONFLICT
+            ]
+            if conflicts:
+                for change in conflicts:
+                    print(f"[CONFLICT] {change.relative_path.as_posix()}", file=sys.stderr)
+                print(
+                    "No files were changed. / 未修改任何文件。 / "
+                    "ファイルは変更されませんでした。",
+                    file=sys.stderr,
+                )
+                return 1
+            for change in changes:
+                print(f"[{change.status}] {change.relative_path.as_posix()}")
+            if args.dry_run:
+                print(
+                    "\nDry run; no files were changed. / "
+                    "预览模式；未修改任何文件。 / "
+                    "ドライランのため、ファイルは変更されませんでした。"
+                )
+            else:
+                print(
+                    "\n[OK] Standard GitHub Actions migration completed. / "
+                    "标准 GitHub Actions 迁移完成。 / "
+                    "標準 GitHub Actions の移行が完了しました。"
+                )
+            return 0
         _preflight_git_request(plugin_dir, initialize_git=args.git, remote=args.remote)
         created = generate_repo_support_files(spec, plugin_dir, overwrite=args.overwrite)
         git_initialized = False
