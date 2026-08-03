@@ -120,7 +120,7 @@
   "ui.config.token.label": "Токен доступа QQ OneBot",
   "ui.config.token.placeholder": "Введите Token...",
   "ui.config.path.label": "Каталог NapCat (PATH)",
-  "ui.config.path.placeholder": "Пусто — использовать встроенный",
+  "ui.config.path.placeholder": "Пусто — использовать встроенный компонент",
   "ui.config.show_napcat_window.label": "Показ консоли NapCat",
   "ui.config.show_napcat_window.hint": "Включено — запуск на переднем плане с окном NapCat; выключено — работа в фоне.",
   "ui.probability.section": "Настройка вероятностей ответа QQ",
@@ -384,7 +384,7 @@
   "ui.shared.sticker.or_click": "или нажми, чтобы выбрать",
   "ui.shared.sticker.desc_placeholder": "Описание (например: котик машет лапкой)",
   "ui.shared.sticker.no_file": "Файл не выбран",
-  "ui.shared.sticker.images_count": " картинок",
+  "ui.shared.sticker.images_count": " изображений",
   "ui.shared.sticker.complete_prefix": "Готово ",
   "ui.shared.sticker.complete_suffix": " изображений",
   "ui.shared.sticker.select_file": "Выбери или перетащи картинку",
@@ -601,5 +601,5 @@
   "ui.review.profiles.level_unknown": "Участник",
   "ui.proactive.tab_label": "Проактивный",
   "ui.shared.config.private_participant_memory": "Записывать долговременную память для приватных чатов (не админ; сохраняется под профилем собеседника)",
-  "core_memory_section": "## Core Memory\nBelow is stable memory, personality context, or bootstrapping context from the memory system. If relevant, naturally reflect it in your reply — but do not recite it verbatim or expose the internal memory structure.\n{memory_context}\n{context_ready}"
+  "core_memory_section": "## Основная память (Core Memory)\nНиже приведена стабильная память, личностный контекст или загрузочный контекст из системы памяти. Если есть что-то уместное, естественно отрази это в ответе — но не пересказывай дословно и не раскрывай внутреннюю структуру памяти.\n{memory_context}\n{context_ready}"
 }

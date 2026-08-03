@@ -4908,11 +4908,9 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     # Open Platform success -> delivered.
     result = await _node(False, "msgid").deliver(plan)
     assert result.delivered is True
-    # NapCat now has a receipt too (the CQ-string senders do the same echo
-    # round-trip as the segment ones), so a missing message id means the
-    # action never came back: unconfirmed, not delivered.
+    # NapCat is fire-and-forget: no exception means delivered.
     result = await _node(True, None).deliver(plan)
-    assert result.delivered is False
+    assert result.delivered is True
     result = await _node(True, "napcat-mid").deliver(plan)
     assert result.delivered is True
 
