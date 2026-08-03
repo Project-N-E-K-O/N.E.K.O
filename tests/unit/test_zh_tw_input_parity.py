@@ -1607,3 +1607,18 @@ def test_the_taiwanese_playlist_noun_is_a_playlist(text):
 
     result = parse_explicit_user_music_request(text)
     assert getattr(result, 'playlist_name', None) == '健身', f'{text} -> {result}'
+
+
+@pytest.mark.parametrize("artist", ["周杰倫", "周杰伦", "五月天"])
+def test_the_speech_subject_guard_does_not_block_a_real_artist(artist):
+    """⚠️ 前提守卫：上面那条敬语「您」的用例断言的是「不是歌手」，而
+    `result is None` 时它同样通过。
+
+    所以需要证明 `聽一下X的歌` 这个句式**确实会**走到歌手解析——否则那条
+    用例测的就不是「敬语在人称表里」，而是「这句压根没进解析分支」。
+    隔壁 `来一首{artist}的歌` 那组有同样的兜底，这组之前漏了（CodeRabbit）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    result = parse_explicit_user_music_request(f'聽一下{artist}的歌')
+    assert getattr(result, 'song_artist', None) == artist

@@ -563,10 +563,12 @@ def _negators() -> list[str]:
 
     head = router._CHAT_NEGATED_REWRITE_RE.pattern.split(')', 1)[0]
     words = head.removeprefix('(?:').split('|')
-    assert all(
-        w and all('一' <= ch <= '鿿' for ch in w) for w in words
-    ), f'拆出了非汉字残片: {words}'
-    return words
+    # ⚠️ 闭集里现在也有英文分支（`don't rewrite the whole card` 曾经整类绕过
+    # 守卫，因为否定词和动词两侧都是纯中文）。笛卡尔积只吃中文那一半，英文
+    # 另有专门用例——但英文分支的存在必须被断言，否则删掉它没人发现。
+    chinese = [w for w in words if all('一' <= ch <= '鿿' for ch in w)]
+    assert len(words) - len(chinese) >= 5, f'英文否定分支丢了: {words}'
+    return chinese
 
 
 NEGATORS = _negators()
@@ -616,3 +618,46 @@ def test_the_negation_guard_spans_the_whole_object_phrase(simplified, traditiona
 
     for text in (simplified, traditional):
         assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["don't rewrite the whole card", "do not regenerate the entire card",
+     "dont rewrite the whole card", "please don't rewrite the whole card"],
+)
+def test_an_english_negation_also_blocks_full_card_completion(text):
+    """⚠️ 整卡目标和重写动词那两张表本来就有英文分支，只有否定守卫是纯中文——
+    于是英文否定请求整类绕过去，直接走进整卡补全通路（CodeRabbit）。
+
+    补齐时**两侧都要补**：只加英文否定词而不加英文动词，照样绕过。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text", ["rewrite the whole card", "regenerate the entire card"]
+)
+def test_an_english_full_rewrite_still_matches(text):
+    """反向：英文否定守卫不能宽到把正常的英文整卡请求也挡掉。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("停止这些红心歌单", "停止這些紅心歌單"),
+        ("停止那些歌单", "停止那些歌單"),
+    ],
+)
+def test_plural_demonstratives_reach_the_stop_target(simplified, traditional):
+    """限定词闭集漏了复数指示词。`停止这些红心歌单` 命中否定判据却撞不上
+    直接停止判据，于是降级成窄范围来源排除、音乐继续放（CodeRabbit）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (simplified, traditional):
+        assert is_explicit_music_cancellation(text) is True, text
