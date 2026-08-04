@@ -790,6 +790,24 @@ _WHOLE_CARD_SCOPE_NOUNS = (
 # 但 `把整个卡的每一项重写` base 是 False——`每一项` 指的是「每一个条目」，
 # 是在点名而不是在说整卡。逐项类（每个/每项/每一个/每一项/各项/逐一…）一律
 # 不进这张窄表。
+# ⚠️⚠️ **`每一项` 这一个词是本 PR 引进的整卡目标，base 从来不认。**
+# base 侧根本没有这张表（它是本 PR 从内联正则里提出来的常量）。逐条跑差分：
+# 全称类（全部/所有/一切）base 全是 True；逐项类里 每个/每一个/每项/各项 base
+# 也是 True；**只有 `每一项`/`每一項` base 是 False**。
+#
+# 第五十八轮已经把它从「限定词自己当中心语」那一支收回去了，但「限定词 + 范围
+# 名词」这一支还留着，于是 `整个卡的每一项内容` 成了一个 base 不存在的整卡目标。
+# 第六十八/六十九/七十轮 reviewer 报的 **7 条 P1 全部挂在它身上**——wh 头、
+# 后置否定、介词参照、情态 A-not-A、延后确认、已完成动作报告，每一条都是拿
+# 这个目标当例子。收掉源头之后它们一起消失。
+#
+# ⚠️ 刀只落在这两个词上，不是整个逐项类：实测 264 条逐项类组合 base 是 True，
+# 一刀切会把它们全打掉。
+_WHOLE_CARD_PR_ONLY_QUANTIFIERS = ("每一项", "每一項")
+_WHOLE_CARD_SCOPED_QUANTIFIERS = tuple(
+    word for word in _WHOLE_CARD_QUANTIFIERS
+    if word not in _WHOLE_CARD_PR_ONLY_QUANTIFIERS
+)
 _WHOLE_CARD_BARE_QUANTIFIERS = tuple(
     word for word in _WHOLE_CARD_QUANTIFIERS
     if not word.startswith(("每", "各", "逐"))
@@ -1228,7 +1246,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # ⚠️ 目标和「的」之间也可能有空白：`把整个卡 的名字重写` 里 `(?![的片])` 只看
     # 一个字符、看到的是空格，于是整句被判成整卡重写、覆盖用户没要求改的字段
     # （CodeRabbit）。三处都要跳过空白，否则「加个空格」就是一条绕过保险的后门。
-    rf"(?:(?=\s*的(?:{'|'.join(_WHOLE_CARD_QUANTIFIERS)})"
+    rf"(?:(?=\s*的(?:{'|'.join(_WHOLE_CARD_SCOPED_QUANTIFIERS)})"
     # ⚠️ 空白只在**中心语确实是整卡级名词**时才跳过（`把整个卡的所有 字段重写`
     # base 是 True）。单字段那道保险不受影响：`把整个卡的全部 名字重写` 里跳过
     # 空白之后「名字」照样不在整卡级名词表里，而限定词自己当中心语那一支有它

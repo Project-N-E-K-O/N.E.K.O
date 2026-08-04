@@ -230,7 +230,14 @@ def _router_table(name: str) -> list[str]:
     return table
 
 
-WHOLE_CARD_QUANTIFIERS = _router_table("_WHOLE_CARD_QUANTIFIERS")
+# ⚠️⚠️ 下面那几个「限定词 + 范围名词」的笛卡尔积从**收窄后**的表派生。
+# `每一项`/`每一項` 是本 PR 引进的整卡目标，**base 从来不认**（base 侧根本没有
+# 这张表，它是本 PR 从内联正则里提出来的常量）。逐条差分：全称类 base 全是
+# True，逐项类里 每个/每一个/每项/各项 base 也是 True，只有这两个是 False。
+# 拿它们当「必须是整卡重写」的正例，等于把一个 PR 自造的目标钉成期望值——
+# 第六十八/六十九/七十轮 reviewer 报的 7 条 P1 全部拿它当例子，就是这么来的。
+WHOLE_CARD_QUANTIFIERS = _router_table("_WHOLE_CARD_SCOPED_QUANTIFIERS")
+WHOLE_CARD_ALL_QUANTIFIERS = _router_table("_WHOLE_CARD_QUANTIFIERS")
 WHOLE_CARD_BARE_QUANTIFIERS = _router_table("_WHOLE_CARD_BARE_QUANTIFIERS")
 WHOLE_CARD_NOUNS = _router_table("_WHOLE_CARD_SCOPE_NOUNS")
 
@@ -245,7 +252,11 @@ def test_the_quantifier_table_is_derived_not_transcribed():
     #
     # 相等断言意味着往正则里加词时必须同步改这里。那是**刻意的摩擦**——闭集
     # 变动应该被看见；而笛卡尔积的覆盖仍然是自动的，不用手工加用例。
-    assert set(WHOLE_CARD_QUANTIFIERS) == {
+    # ⚠️ 这条钉的是**全表**，所以用 WHOLE_CARD_ALL_QUANTIFIERS；上面那个
+    # WHOLE_CARD_QUANTIFIERS 从第七十轮起是**收窄后**的表（排除了 `每一项`），
+    # 供「限定词 + 范围名词」的笛卡尔积用。两者的差由
+    # test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch 钉住。
+    assert set(WHOLE_CARD_ALL_QUANTIFIERS) == {
         "全部", "所有", "每一个", "每一個", "每个", "每個",
         "每一项", "每一項", "每项", "每項", "各项", "各項", "一切",
     }, WHOLE_CARD_QUANTIFIERS
@@ -3133,10 +3144,13 @@ def test_reference_material_is_not_the_rewrite_target(preposition):
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    text = f'{preposition}整个卡的每一项内容重写名字'
+    # ⚠️ 目标用 `整个卡的全部内容`（base 是 True）而不是 `整个卡的每一项内容`——
+    # 后者是本 PR 自造的目标、base 从来不认，第七十轮已经收掉。拿它当例子的话
+    # 这条用例就算通过也说明不了介词左界在起作用。
+    text = f'{preposition}整个卡的全部内容重写名字'
     assert router._chat_text_requests_full_rewrite(text) is False, text
     # ⚠️ 反向：没有介词时它照旧是整卡目标。
-    assert router._chat_text_requests_full_rewrite('把整个卡的每一项内容重写') is True
+    assert router._chat_text_requests_full_rewrite('把整个卡的全部内容重写') is True
 
 
 @pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ('"', '"')])
@@ -3224,3 +3238,28 @@ def test_a_quoted_reference_target_is_not_the_rewrite_target(preposition, opener
 
     text = f'{preposition}{opener}整个卡的每一项内容{closer}重写标题'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch():
+    """⚠️⚠️ `每一项` 只从「限定词 + 范围名词」那一支排除，**不是**整个逐项类。
+
+    实测 264 条逐项类组合（每个/每一个/每项/各项 × 范围名词）base 是 True，
+    一刀切会把它们全打掉；只有 `每一项`/`每一項` 那 66 条 base 是 False。
+
+    第五十八轮已经把它从「限定词自己当中心语」那一支收回去过一次，当时留下了
+    这一支，于是 `整个卡的每一项内容` 继续当整卡目标，第六十八/六十九/七十轮
+    的 7 条 P1 全挂在它身上。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._WHOLE_CARD_PR_ONLY_QUANTIFIERS == ("每一项", "每一項")
+    assert set(WHOLE_CARD_ALL_QUANTIFIERS) - set(WHOLE_CARD_QUANTIFIERS) == {
+        "每一项", "每一項",
+    }
+    # ⚠️ 逐项类的其余成员必须还在——它们 base 是 True。
+    for kept in ("每个", "每個", "每一个", "每一個", "每项", "每項", "各项", "各項"):
+        assert kept in WHOLE_CARD_QUANTIFIERS, kept
+    assert router._chat_text_requests_full_rewrite('把整个卡的每一项内容重写') is False
+    assert router._chat_text_requests_full_rewrite('把整个卡的每个内容重写') is True
+    # ⚠️ 第四十八轮那条（限定词修饰**另一个**整卡目标）不受影响。
+    assert router._chat_text_requests_full_rewrite('把所有字段里的每一项内容重写') is True

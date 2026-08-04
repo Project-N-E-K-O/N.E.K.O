@@ -681,7 +681,14 @@ _ZH_PREFIXED_QUESTION_GUARD = (
     # ⚠️ 标记**之后**的尾巴同样要能穿过配平跨度：`我想停止播放是否适合《你好吗？》`
     # 里标题自带问号，尾巴在它上面断掉、守卫开不了火（base 是 False，危险方向；
     # Codex P2 第十三轮）。用跟标记之前同一套跨度常量。
-    rf"|{_ZH_A_NOT_A_QUESTION_TAIL}{_ZH_CORRELATIVE_RIGHT})"
+    rf"|{_ZH_A_NOT_A_QUESTION_TAIL}{_ZH_CORRELATIVE_RIGHT}"
+    # ⚠️ **裸问号**也算标记：标题自带的 `吗？` 被遮蔽之后，用户那个 `？` 可能是
+    # 整句唯一的疑问信号。只在这条守卫里加——它已经要求了 `(?:我)?(?:想|要)`
+    # 那个前缀形状，所以 `停止播放？` / `别放音乐了？`（base 都是 True）不受影响。
+    # ⚠️ 要**消耗**掉那个问号，不能写成零宽前视：守卫的尾巴段字符类不含 `？`，
+    # 零宽的话尾巴匹配不上，整条守卫静默失效（第一版就是这么写的）。
+    rf"|[？?](?=\s*$)"
+    rf")"
     rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN}"
     rf"|{_ZH_UNPAIRED_QUOTE_OPENER})*\s*$)"
 )
@@ -1209,6 +1216,8 @@ _ZH_FRAME_SCOPE_COORDINATORS = (
     # 列全**。这次按「顺承/转折/因果/并列」四族逐族过了一遍。
     "随后", "隨後", "继而", "繼而", "而后", "而後",
     "紧接着", "緊接著", "跟着", "跟著", "于是", "於是",
+    # ⚠️ 并行类（同时/同時）第七十轮补——第四次补这张表了。
+    "同时", "同時",
     "因而", "从而", "從而",
     "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
     "另外", "再说", "再說", "所以", "因此",
@@ -1684,9 +1693,15 @@ def _split_music_request_clauses(text: str) -> list[str]:
             is_separator = bool(_EN_CLAUSE_AFTER_PERIOD.match(text, index + 1))
         if not is_separator:
             continue
+        # ⚠️ **问号要跟着子句留下来**。`我想停止播放《你好吗？》？我还没决定` 里
+        # 标题自带的 `吗？` 被正确遮蔽掉之后，用户真正的那个 `？` 是整句唯一的
+        # 疑问信号；切分把它丢掉，前缀疑问守卫（它要求标记在**末尾**）就永远
+        # 看不到它，一句提问执行了取消（base 是 False——危险方向，第七十轮）。
+        # ⚠️ 只留问号，别的分隔符照旧丢：留逗号会让「否定只在自己子句内」那条
+        # 判据的窗口跨过去，那是另一个方向的风险。
         clause = text[start:index].strip()
         if clause:
-            clauses.append(clause)
+            clauses.append(clause + char if char in "？?" else clause)
         start = index + 1
     clause = text[start:].strip()
     if clause:

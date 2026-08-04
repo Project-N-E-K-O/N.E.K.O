@@ -5613,6 +5613,7 @@ def test_the_frame_scope_coordinator_table_is_pinned():
         "然后", "然後", "然而", "接着", "接著", "接下来", "接下來",
         "随后", "隨後", "继而", "繼而", "而后", "而後",
         "紧接着", "緊接著", "跟着", "跟著", "于是", "於是",
+        "同时", "同時",
         "因而", "从而", "從而",
         "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
         "另外", "再说", "再說", "所以", "因此",
@@ -6290,3 +6291,56 @@ def test_a_conditional_frame_still_opens_on_a_real_clause(frame, head):
 
     text = f'我想停止播放因为{frame}{head}都不想听'
     assert mr._ZH_FREE_CHOICE_FRAME_RE.search(text) is not None, text
+
+
+@pytest.mark.parametrize("coordinator", ["同时", "同時"])
+def test_simultaneous_coordinators_end_the_frame_scope(coordinator):
+    """并行类连词第七十轮补——这张表已经是**第四次**补了（第六十一轮建表时写着
+    「连词是封闭词类，一次列全」，六十四轮补 却/卻，六十七轮补顺承一族，现在补并行）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放如果会影响歌单就算了{coordinator}这样是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("title", ["你好吗？", "是不是？", "好不好？"])
+def test_a_bare_question_mark_before_a_following_clause_still_counts(title):
+    """⚠️ 标题自带的 `吗？` 被正确遮蔽之后，用户那个**裸问号**可能是整句唯一的疑问
+    信号；切分把它丢掉，前缀疑问守卫（它要求标记在末尾）就永远看不到它
+    （base 是 False——危险方向，第七十轮）。
+
+    ⚠️ 两处都要改才生效：切分时**保留问号**（别的分隔符照旧丢——留逗号会让
+    「否定只在自己子句内」那条判据的窗口跨过去），以及守卫里要**消耗**掉那个问号
+    而不是零宽前视（尾巴段的字符类不含 `？`，零宽的话整条守卫静默失效）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放《{title}》？我还没决定'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_question_marked_commands_without_the_inquiry_prefix_still_work():
+    """⚠️ 反向：那条裸问号分支只挂在 `(?:我)?(?:想|要)` 那个前缀形状上。
+
+    `停止播放？` / `别放音乐了？` / `帮我停止播放红心歌单？谢谢` base 全是 True，
+    不能被一起打掉——base 在「问号结尾」这件事上本来就不一致，不能一刀切。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ('停止播放？', '别放音乐了？'):
+        assert is_explicit_music_cancellation(text) is True, text
+    # ⚠️⚠️ **这一条是 by-design 的代价**：`帮我停止播放红心歌单？谢谢`
+    # base 是 True、现在是 False。
+    #
+    # `帮我` 也在那条守卫的前缀集合里，所以保留问号之后第一个子句变成
+    # `帮我停止播放红心歌单？`，守卫开火。base 在这件事上本来就**自相矛盾**——
+    # 同一句话单独出现（`帮我停止播放红心歌单？`）base 就是 False，只有后面再跟
+    # 一个子句时才是 True，因为那个问号被切分丢掉了。这次改动只是让两者一致。
+    #
+    # 交易：修掉 1 条第 1 类（提问被执行成取消），引进 1 条第 3 类（少停一次歌）。
+    # 方向上成立。⚠️ 对照第六十五轮那次**相反**的判断：那次是 1 条第 3 类换来
+    # 2 条第 1 类，所以整个退回。同一条判据，方向不同结论就不同。
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单？谢谢') is False
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单？') is False
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
