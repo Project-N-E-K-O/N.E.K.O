@@ -117,6 +117,86 @@
             return this;
         }
 
+        static normalizeLocale(locale) {
+            const raw = String(locale || 'en').trim().replace('_', '-');
+            const lower = raw.toLowerCase();
+            if (lower === 'zh-cn' || lower === 'zh-hans' || lower.startsWith('zh-hans-')) return 'zh-CN';
+            if (lower === 'zh-tw' || lower === 'zh-hk' || lower === 'zh-hant'
+                || lower.startsWith('zh-hant-')) return 'zh-TW';
+            const base = lower.split('-')[0];
+            return ['en', 'ja', 'ko', 'ru', 'es', 'pt'].includes(base) ? base : 'en';
+        }
+
+        static sourceName(asset) {
+            const sources = asset && Array.isArray(asset.src) ? asset.src : [];
+            const source = String(sources[0] || asset && asset.f || asset && asset.id || '');
+            const leaf = source.split('/').pop() || source;
+            return leaf.replace(/\.vrma(?:\.gz)?$/i, '').trim();
+        }
+
+        static localizedName(asset, locale) {
+            if (!asset) return '';
+            const normalized = MotionPlayer.normalizeLocale(locale);
+            const names = asset.names && typeof asset.names === 'object' ? asset.names : {};
+            if (typeof names[normalized] === 'string' && names[normalized].trim()) {
+                return names[normalized].trim();
+            }
+            if (normalized === 'zh-CN' && typeof asset.nameZh === 'string' && asset.nameZh.trim()) {
+                return asset.nameZh.trim();
+            }
+            // Community/local cards are allowed to ship a Chinese semantic name
+            // before translators cover every locale. Non-Chinese UIs fall back
+            // to the source title (normally the creator/Mixamo title), never to
+            // an unrelated hard-coded Chinese label.
+            if (typeof names.en === 'string' && names.en.trim()) return names.en.trim();
+            const sourceName = MotionPlayer.sourceName(asset);
+            if (sourceName) return sourceName;
+            return String(asset.nameZh || asset.id || '');
+        }
+
+        catalog(locale) {
+            return this.assets.map(function (asset) {
+                const suffix = asset.compression === 'gzip' ? '.gz' : '';
+                return {
+                    id: asset.id,
+                    name: MotionPlayer.localizedName(asset, locale),
+                    nameZh: asset.nameZh,
+                    filename: MotionPlayer.sourceName(asset),
+                    path: ASSET_ROOT + asset.f + suffix,
+                    url: ASSET_ROOT + asset.f + suffix,
+                    type: 'vrma',
+                    compression: asset.compression,
+                    playback: asset.mode,
+                    systemMotion: true
+                };
+            });
+        }
+
+        async playAsset(assetId, options) {
+            if (!this.manifest) await this.load();
+            const asset = this.assets.find(function (candidate) {
+                return candidate.id === assetId;
+            });
+            if (!asset) throw new Error('Unknown motion asset: ' + assetId);
+            const card = asset.card || {};
+            const decision = {
+                intent: asset.m,
+                kind: card.kind || 'manual',
+                intensity: asset.i || 2,
+                count: 1,
+                style: Array.isArray(asset.s) && asset.s.length ? asset.s[0] : '',
+                preferredStyles: Array.isArray(asset.s) ? asset.s.slice() : [],
+                evidence: {
+                    assetId: asset.id,
+                    assetExplicit: true,
+                    canonicalZh: asset.nameZh || ''
+                }
+            };
+            return this.playPlan([decision], Object.assign({
+                seed: 'catalog-preview:' + asset.id + ':' + Date.now()
+            }, options || {}));
+        }
+
         _manager() {
             const manager = window.vrmManager;
             return manager && manager.currentModel && manager.currentModel.vrm

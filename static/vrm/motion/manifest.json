@@ -88,6 +88,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "开心地回应喜欢和亲近",
+        "zh-TW": "開心地回應喜歡與親近",
+        "en": "Happily respond with affection",
+        "ja": "嬉しそうに好意を返す",
+        "ko": "기쁘게 호감에 반응하기",
+        "ru": "Радостно ответить на симпатию",
+        "es": "Responder con alegría al cariño",
+        "pt": "Responder com alegria ao carinho"
       }
     },
     {
@@ -146,6 +156,16 @@
         "resultPose": "stand",
         "playback": "loop",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "放松地站着小幅晃动等待",
+        "zh-TW": "放鬆地站著小幅晃動等待",
+        "en": "Wait with a relaxed gentle sway",
+        "ja": "リラックスして軽く揺れながら待つ",
+        "ko": "편안하게 살짝 흔들며 기다리기",
+        "ru": "Расслабленно ждать, слегка покачиваясь",
+        "es": "Esperar relajadamente con un suave balanceo",
+        "pt": "Esperar relaxadamente com um leve balanço"
       }
     },
     {
@@ -205,6 +225,16 @@
         "resultPose": "stand",
         "playback": "loop",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "站着抬动右臂并转动视线等待",
+        "zh-TW": "站著抬動右臂並轉動視線等待",
+        "en": "Wait while moving the right arm and gaze",
+        "ja": "右腕と視線を動かしながら立って待つ",
+        "ko": "오른팔과 시선을 움직이며 서서 기다리기",
+        "ru": "Ждать стоя, двигая правой рукой и взглядом",
+        "es": "Esperar de pie moviendo el brazo derecho y la mirada",
+        "pt": "Esperar em pé movendo o braço direito e o olhar"
       }
     },
     {
@@ -265,6 +295,16 @@
         "resultPose": "stand",
         "playback": "loop",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "站着轻动双手手指等待",
+        "zh-TW": "站著輕動雙手手指等待",
+        "en": "Wait while gently moving both hands",
+        "ja": "両手の指を軽く動かしながら待つ",
+        "ko": "양손 손가락을 가볍게 움직이며 기다리기",
+        "ru": "Ждать, слегка двигая пальцами обеих рук",
+        "es": "Esperar moviendo suavemente los dedos de ambas manos",
+        "pt": "Esperar movendo suavemente os dedos das duas mãos"
       }
     },
     {
@@ -333,6 +373,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "害羞的撩起头发",
+        "zh-TW": "害羞地撩起頭髮",
+        "en": "Shyly brush back the hair",
+        "ja": "恥ずかしそうに髪をかき上げる",
+        "ko": "수줍게 머리카락을 쓸어 넘기기",
+        "ru": "Застенчиво поправить волосы",
+        "es": "Apartarse el cabello con timidez",
+        "pt": "Afastar o cabelo com timidez"
       }
     },
     {
@@ -391,6 +441,16 @@
         "resultPose": "stand",
         "playback": "loop",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "活泼地站着晃动等待",
+        "zh-TW": "活潑地站著晃動等待",
+        "en": "Wait with a lively standing sway",
+        "ja": "元気に体を揺らしながら立って待つ",
+        "ko": "활기차게 몸을 흔들며 서서 기다리기",
+        "ru": "Бодро ждать стоя, покачиваясь",
+        "es": "Esperar de pie con un balanceo animado",
+        "pt": "Esperar em pé com um balanço animado"
       }
     },
     {
@@ -450,6 +510,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "自信地转身展示全身",
+        "zh-TW": "自信地轉身展示全身",
+        "en": "Turn confidently to show the full outfit",
+        "ja": "自信を持って振り向き全身を見せる",
+        "ko": "자신 있게 돌아서 전신을 보여 주기",
+        "ru": "Уверенно повернуться и показать образ целиком",
+        "es": "Girar con confianza para mostrar el conjunto completo",
+        "pt": "Girar com confiança para mostrar o visual completo"
       }
     },
     {
@@ -509,6 +579,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "坚定地举手摆出射击姿态",
+        "zh-TW": "堅定地舉手擺出射擊姿態",
+        "en": "Raise the hands in a firm shooting pose",
+        "ja": "しっかりと手を上げて射撃姿勢を取る",
+        "ko": "단호하게 손을 들어 사격 자세 취하기",
+        "ru": "Решительно поднять руки в стрелковой позе",
+        "es": "Alzar las manos con firmeza en pose de disparo",
+        "pt": "Erguer as mãos com firmeza em pose de tiro"
       }
     },
     {
@@ -575,6 +655,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "站立的放松身体",
+        "zh-TW": "站立時放鬆身體",
+        "en": "Relax and stretch while standing",
+        "ja": "立ったまま体をほぐす",
+        "ko": "서서 몸을 편안하게 풀기",
+        "ru": "Расслабиться и потянуться стоя",
+        "es": "Relajarse y estirarse de pie",
+        "pt": "Relaxar e alongar o corpo em pé"
       }
     },
     {
@@ -633,6 +723,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "轻快地原地旋转一圈",
+        "zh-TW": "輕快地原地旋轉一圈",
+        "en": "Make a light spin in place",
+        "ja": "軽やかにその場で一回転する",
+        "ko": "가볍게 제자리에서 한 바퀴 돌기",
+        "ru": "Легко повернуться на месте",
+        "es": "Dar una vuelta ligera en el sitio",
+        "pt": "Dar uma volta leve no lugar"
       }
     },
     {
@@ -692,6 +792,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "自信地摆出模特姿势",
+        "zh-TW": "自信地擺出模特兒姿勢",
+        "en": "Strike a confident model pose",
+        "ja": "自信たっぷりにモデルポーズを取る",
+        "ko": "자신 있게 모델 포즈 취하기",
+        "ru": "Уверенно принять модельную позу",
+        "es": "Posar con confianza como modelo",
+        "pt": "Fazer uma pose confiante de modelo"
       }
     },
     {
@@ -753,6 +863,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "开心地抬手比出胜利手势",
+        "zh-TW": "開心地抬手比出勝利手勢",
+        "en": "Happily raise a victory sign",
+        "ja": "嬉しそうに手を上げてピースする",
+        "ko": "기쁘게 손을 들어 브이 포즈 하기",
+        "ru": "Радостно показать жест победы",
+        "es": "Alzar alegremente la mano haciendo la señal de victoria",
+        "pt": "Erguer a mão com alegria fazendo o sinal de vitória"
       }
     },
     {
@@ -811,6 +931,16 @@
         "resultPose": "stand",
         "playback": "once",
         "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "正式地抬手致意问候",
+        "zh-TW": "正式地抬手致意問候",
+        "en": "Raise a hand in a formal greeting",
+        "ja": "丁寧に手を上げて挨拶する",
+        "ko": "격식 있게 손을 들어 인사하기",
+        "ru": "Официально поприветствовать поднятой рукой",
+        "es": "Alzar la mano en un saludo formal",
+        "pt": "Erguer a mão em uma saudação formal"
       }
     }
   ],

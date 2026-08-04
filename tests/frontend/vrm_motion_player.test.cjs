@@ -50,6 +50,24 @@ function response(body, status) {
     assert.equal(player.assets.length, 13);
     assert.equal(player.assets.every(function (asset) { return asset.compression === 'none'; }), true);
 
+    const zhCatalog = player.catalog('zh-CN');
+    const enCatalog = player.catalog('en-US');
+    assert.equal(zhCatalog.length, 13);
+    assert.equal(zhCatalog[0].name, '开心地回应喜欢和亲近');
+    assert.equal(enCatalog[0].name, 'Happily respond with affection');
+    assert.equal(enCatalog[0].path, '/static/vrm/animation/liked.vrma');
+    assert.equal(enCatalog[0].systemMotion, true);
+
+    let previewPlan = null;
+    player.playPlan = async function (plan) {
+        previewPlan = plan;
+        return true;
+    };
+    await player.playAsset('official_liked');
+    assert.equal(previewPlan.length, 1);
+    assert.equal(previewPlan[0].intent, 'like');
+    assert.equal(previewPlan[0].evidence.assetId, 'official_liked');
+
     const unlicensed = JSON.parse(JSON.stringify(manifest));
     unlicensed.assets[0].license = '?';
     global.fetch = async function () { return response(unlicensed); };

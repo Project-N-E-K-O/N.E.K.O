@@ -6,6 +6,7 @@ const path = require('node:path');
 const root = process.cwd();
 const motionRoot = path.join(root, 'static/vrm/motion');
 const manifest = JSON.parse(fs.readFileSync(path.join(motionRoot, 'manifest.json'), 'utf8'));
+const requiredLocales = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
 assert.equal(manifest.policy.distribution, 'public-release');
 assert.equal(manifest.policy.localTestEnabled, false);
@@ -19,6 +20,10 @@ manifest.assets.forEach(function (asset) {
     assert.equal(asset.compression, 'none', asset.id);
     assert.equal(asset.card.descriptionStatus, 'human-verified', asset.id);
     assert.equal(asset.f, asset.src[0].replace(/^static\/vrm\//, ''), asset.id);
+    requiredLocales.forEach(function (locale) {
+        assert.equal(typeof asset.names[locale], 'string', asset.id + ':' + locale);
+        assert.notEqual(asset.names[locale].trim(), '', asset.id + ':' + locale);
+    });
 
     const source = path.join(root, asset.src[0]);
     const bytes = fs.readFileSync(source);
@@ -62,4 +67,15 @@ assert.match(relaySource, /neko:motion-lifecycle-relay/);
 assert.equal(runtimeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
 assert.match(runtimeSource, /neko:motion-lifecycle-relay/);
 
-console.log('VRM motion policy and source integrity: OK (13 official assets)');
+const modelManagerSource = fs.readFileSync(
+    path.join(root, 'static/js/model_manager/page-controller.js'),
+    'utf8'
+);
+const modelManagerTemplate = fs.readFileSync(path.join(root, 'templates/model_manager.html'), 'utf8');
+assert.match(modelManagerSource, /new window\.NekoMotionPlayer\(\)/);
+assert.match(modelManagerSource, /mergeVrmAnimationLists/);
+assert.match(modelManagerSource, /data-motion-asset-id/);
+assert.match(modelManagerSource, /playSelectedVrmAnimationOption/);
+assert.match(modelManagerTemplate, /static\/vrm\/motion\/player\.js/);
+
+console.log('VRM motion policy and source integrity: OK (13 localized official assets)');
