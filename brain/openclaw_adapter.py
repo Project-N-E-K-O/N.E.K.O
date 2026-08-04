@@ -183,6 +183,7 @@ _NEUTRAL_LEAD = (
     r"那么|那麼|快点|快點|"
     r"帮我|幫我|给我|給我|麻烦|麻煩|拜托|拜託|"
     r"赶紧|趕緊|马上|馬上|立刻|立即|现在|現在|尽快|盡快|直接|"
+    r"你们|你們|您们|您們|您|"
     r"那|就|先|快|请|請|你|妳"
 )
 # 仅 /stop 与 /new：试探提议（要不/不如/还是/干脆）、第一人称意图（我想/我要/想）、
@@ -216,8 +217,12 @@ _SOFT_TAIL = (
     r"好不好|好吗|好嗎|行不行|行吗|行嗎|可以吗|可以嗎|怎么样|怎麼樣|吗|嗎|呢|了"
 )
 _TAIL_ALTERNATION = f"{_SOFT_TAIL}|{_NEUTRAL_TAIL}"
-_CLAUSE_TAIL = re.compile(rf"(?:{_TAIL_ALTERNATION})+$")
-# ⚠️⚠️ 剥词尾**不能用正则一次性吃掉整串**，也不能只试正则挑中的那一个词尾。两个坑：
+# ⚠️⚠️ 词尾**只以 token 元组的形式存在，没有对应的正则**，是刻意的：这里唯一正确的
+# 剥法是下面 `_clause_hits` 那套逐个试，留一个 `(?:…)+$` 的正则在旁边只会被人拿去用，
+# 然后重新踩进下面这两个坑。同理这里没有 `_normalize_clause` 之类的通用归一化函数——
+# 判据只有一份，就在 `_clause_hits` 里。
+#
+# 剥词尾不能用正则一次性吃掉整串，也不能只试正则挑中的那一个词尾。两个坑：
 #
 # 1. 整串吃会连表内条目自带的那个字一起吃掉：`别找了吧` 的 `了吧` 被整串剥成
 #    `别找`，而表里的条目是 `别找了`——一句再自然不过的话就停不掉任务了（Codex P2）。
@@ -235,19 +240,6 @@ _TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
 # 这个区别是有意的：黑名单在这里堵不完（本文件 approve 那段注释自己写过），
 # 白名单要放宽必须显式加词。
 _APPROVE_QUESTION_MARK = re.compile(r"[?？]")
-
-
-def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
-    """Strip leading function words and (optionally) trailing particles.
-
-    Uses the wide (soft) sets — approve goes through _approve_clause_hits, which
-    passes the narrow ones explicitly.
-    """
-    text = str(clause or "").strip()
-    text = _CLAUSE_LEAD_SOFT.sub("", text)
-    if strip_tail:
-        text = _CLAUSE_TAIL.sub("", text)
-    return text.strip()
 
 
 def _clause_hits(

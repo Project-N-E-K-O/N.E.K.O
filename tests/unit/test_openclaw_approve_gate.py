@@ -13,14 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``/daemon approve`` is dropped unless a live OpenClaw task exists.
+"""``/daemon approve`` is dropped unless this sender just completed a task.
 
 The command makes the upstream QwenPaw daemon actually run a pending high-risk
 action, and nothing on the path ever checked that the utterance was answering a
 pending approval — the repo holds no approval state at all (that state lives
 only inside the upstream daemon, which the adapter reaches over a one-shot
-POST). With no live task there is nothing an approval could refer to, so the
-dispatch is dropped.
+POST).
+
+The local approximation asks one question: **could the user have seen the
+approval prompt?** The upstream reply reaches them only via
+``_emit_task_result`` after the task flips to ``completed``, so that is the one
+status the window accepts — see
+test_statuses_that_cannot_carry_an_approval_prompt for why every other one is
+excluded.
 """
 
 import asyncio
@@ -136,24 +142,29 @@ def _register(
         "start_time": _iso((ended_seconds_ago or 0) + 5),
         "params": {},
     }
-    if status not in {"queued", "running"} and ended_seconds_ago is not None:
+    # ⚠️ 连 queued / running 也带上 end_time，明知生产里它们不会有。
+    # 目的是**隔离状态判据**：不带的话，把 running 塞进窗口集合的变异会被
+    # 「判不了龄 → fail-closed」那条挡掉，测试照样绿——为错误的理由而绿，
+    # 状态过滤根本没被验到（变异验证抓出来的）。想测判龄有专门的用例，
+    # 走 ended_seconds_ago=None。
+    if ended_seconds_ago is not None:
         info["end_time"] = _iso(ended_seconds_ago)
     registry[task_id] = info
 
 
-def test_approve_is_dropped_without_a_live_openclaw_task(wired):
+def test_approve_is_dropped_with_no_task_on_record(wired):
     fake, emitted = wired
 
     _dispatch("/daemon approve")
 
-    assert fake.magic_calls == [], "没有活任务时不该把批准发给上游"
+    assert fake.magic_calls == [], "没有任何任务记录时不该把批准发给上游"
     # 静默：不 emit task_result，所以前端不会念出「收到许可！Neko 这就放手去干喵！」
     assert emitted == [], "静默丢弃不该产生任何 task_result"
 
 
-def test_approve_goes_through_when_a_task_is_live(wired):
+def test_approve_goes_through_after_a_recent_completion(wired):
     fake, emitted = wired
-    _register(oc._shared.Modules.task_registry, "t-running", status="running")
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
 
     _dispatch("/daemon approve")
 
@@ -161,10 +172,17 @@ def test_approve_goes_through_when_a_task_is_live(wired):
     assert emitted and emitted[0].get("success") is True
 
 
-@pytest.mark.parametrize("status", ["cancelled", "failed"])
-def test_terminal_statuses_that_cannot_carry_an_approval_prompt(wired, status):
+@pytest.mark.parametrize("status", ["queued", "running", "cancelled", "failed"])
+def test_statuses_that_cannot_carry_an_approval_prompt(wired, status):
     """⚠️ The window's test is "could the user have SEEN the prompt", not "did the
-    task end".
+    task end" and not "is any task active".
+
+    ``queued`` / ``running`` — the reply has not come back yet;
+    ``_run_openclaw_dispatch`` only calls ``_emit_task_result`` after
+    ``run_instruction`` returns and the entry flips to ``completed``. Letting an
+    in-flight entry open the gate means an *unrelated* piece of active work
+    authorizes a high-risk action — which is the very scenario this gate exists
+    to close.
 
     ``failed`` — the reply text only ships on the success branch
     (``_emit_task_result(detail=reply)``); the failure branches send the fixed
@@ -207,12 +225,11 @@ def test_partial_is_not_reachable_for_openclaw_tasks():
         if f'"{status}"' in source:
             written.add(status)
     assert "partial" not in written, "partial 现在可达了，窗口集合要重新评估"
-    assert oc._APPROVAL_WINDOW_TERMINAL_STATUSES <= written
+    assert oc._APPROVAL_WINDOW_STATUSES <= written
 
 
-@pytest.mark.parametrize("status", ["queued", "running", "completed"])
-def test_a_registry_entry_in_any_status_opens_the_gate(wired, status):
-    """⚠️ Terminal statuses count on purpose — requiring "running" is backwards.
+def test_a_recently_completed_task_opens_the_gate(wired):
+    """⚠️ ``completed`` counts on purpose — requiring "running" is backwards.
 
     ``run_instruction`` is a one-shot POST, so QwenPaw's "I need permission"
     surfaces as that POST's reply, and ``_run_openclaw_dispatch`` writes
@@ -220,15 +237,22 @@ def test_a_registry_entry_in_any_status_opens_the_gate(wired, status):
     ``_emit_task_result`` speaks the reply. By the time the user can say 同意,
     the task is necessarily terminal. Gating on "running" would drop every
     legitimate approval and leave open only the unrelated-task case, i.e. exactly
-    inverted. ``TASK_REGISTRY_CLEANUP_TTL`` purges terminal entries, so the
-    registry itself bounds the window.
+    inverted.
+
+    ⚠️ The window is bounded by the explicit ``end_time`` age check in
+    ``_has_recent_openclaw_task`` — NOT by the registry cleanup, which the
+    dispatch path never invokes. Do not "simplify" that check away; see
+    test_a_stale_terminal_entry_does_not_open_the_gate.
+
+    The other terminal statuses are excluded — see
+    test_statuses_that_cannot_carry_an_approval_prompt.
     """  # noqa: DOCSTRING_CJK
     fake, _ = wired
-    _register(oc._shared.Modules.task_registry, "t-live", status=status)
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
 
     _dispatch("/daemon approve")
 
-    assert fake.magic_calls, f"status={status} 仍在 registry 里，应该放行批准"
+    assert fake.magic_calls, "刚 completed 的任务是唯一可能承载审批提示的状态"
 
 
 def test_a_stale_terminal_entry_does_not_open_the_gate(wired):
@@ -282,8 +306,8 @@ def test_a_proactive_turn_can_never_authorize(wired):
     # 时闸会先被 sender 过滤挡掉——那样这条测试就永远绿，验不到 proactive 这道判据。
     _register(
         oc._shared.Modules.task_registry,
-        "t-running",
-        status="running",
+        "t-done",
+        status="completed",
         sender=fake.default_sender_id,
     )
 
@@ -341,7 +365,7 @@ def test_another_senders_task_does_not_open_the_gate(wired):
     """⚠️ Multi-user setups: approving under someone else's pending action is
     exactly the confused-deputy shape the gate exists to prevent."""
     fake, _ = wired
-    _register(oc._shared.Modules.task_registry, "t-other", status="running", sender="USER_B")
+    _register(oc._shared.Modules.task_registry, "t-other", status="completed", sender="USER_B")
 
     _dispatch("/daemon approve", sender="USER_A")
 
@@ -350,7 +374,7 @@ def test_another_senders_task_does_not_open_the_gate(wired):
 
 def test_another_characters_task_does_not_open_the_gate(wired):
     fake, _ = wired
-    _register(oc._shared.Modules.task_registry, "t-other", status="running", lanlan="other")
+    _register(oc._shared.Modules.task_registry, "t-other", status="completed", lanlan="other")
 
     _dispatch("/daemon approve")
 
@@ -360,7 +384,7 @@ def test_another_characters_task_does_not_open_the_gate(wired):
 def test_a_non_openclaw_task_does_not_open_the_gate(wired):
     """A running browser/plugin task has no QwenPaw approval to grant."""
     fake, _ = wired
-    _register(oc._shared.Modules.task_registry, "t-browser", status="running", kind="browser_use")
+    _register(oc._shared.Modules.task_registry, "t-browser", status="completed", kind="browser_use")
 
     _dispatch("/daemon approve")
 
@@ -375,7 +399,7 @@ def test_the_approve_task_itself_never_counts_as_its_own_live_task(wired):
     must not be satisfied by the approve dispatch itself.
     """  # noqa: DOCSTRING_CJK
     fake, _ = wired
-    _register(oc._shared.Modules.task_registry, "magic-1", status="running")
+    _register(oc._shared.Modules.task_registry, "magic-1", status="completed")
 
     _dispatch("/daemon approve", task_id="magic-1")
 

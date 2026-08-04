@@ -100,21 +100,15 @@ def _collect_active_openclaw_task_ids(
     return task_ids
 
 
-# 能承载「上游回了一句需要许可」的终态——**只有 completed**。
+# 能承载「上游回了一句需要许可」的状态——**只有 completed**。逐条理由见
+# _has_recent_openclaw_task 里那张表；判据只有一句：**用户有没有可能看见那句审批提示**。
 #
-# ⚠️ 判据是「用户有没有可能看见那句审批提示」，不是「任务是不是结束了」。
-# reply 文本只在 success 分支经 _emit_task_result(detail=reply) 投递；failed 分支发的是
-# openclaw_failed / openclaw_dispatch_failed 这两句固定文案，**reply 一个字都不出去**。
-# 所以超时、连不上、HTTP 失败、没拿到 final reply 这几种 failed，用户都不可能知道有东西
-# 待批准，随后那句「同意」在定义上就不是在回应它——收进窗口只会给**误判的**批准开门，
-# 而且恰好是在「上游动作可能还挂着」的时刻（Codex P1）。
-# ⚠️ cancelled 同理且更糟：用户刚亲手掐掉，见下面函数里的说明。
 # ⚠️ partial 对 openclaw 不可达——本文件只写 running/completed/failed/cancelled，
-# 列进来是死条目，所以不列。
+# 列进来是死条目、还像是一次刻意的放行，所以不列（有测试从源码自动核对）。
 #
 # 真的从别处（比如 QwenPaw 自己的控制台）得知需要批准的用户，仍可直接敲字面
 # `/openclaw approve`——显式命令一律豁免闸。
-_APPROVAL_WINDOW_TERMINAL_STATUSES = frozenset({"completed"})
+_APPROVAL_WINDOW_STATUSES = frozenset({"completed"})
 
 
 def _has_recent_openclaw_task(
@@ -123,17 +117,20 @@ def _has_recent_openclaw_task(
     lanlan_name: Optional[str],
     exclude_task_id: Optional[str] = None,
 ) -> bool:
-    """Whether this sender has a live or recently-ended OpenClaw task.
+    """Whether this sender recently completed an OpenClaw task.
 
-    Deliberately looser than _collect_active_openclaw_task_ids (terminal entries
-    count) and deliberately tighter than "present in the registry" (their age is
-    checked here rather than assumed). See the notes below.
+    "Recently completed" is the whole rule: only ``completed`` (see
+    _APPROVAL_WINDOW_STATUSES) and only within the age check below. Note this is
+    *disjoint* from _collect_active_openclaw_task_ids, which matches exactly the
+    in-flight statuses this one rejects.
     """
-    # ⚠️ 只认 running/queued 是**反的**。run_instruction 是一次性 POST，上游「需要
-    # 许可」只能作为这次 POST 的 reply 回来，而 _run_openclaw_dispatch 在 POST 一返回
-    # 就写 status=completed，_emit_task_result 念出 reply 在那之后——用户得知要批准时，
-    # 任务必然已经终态。只认 running 等于丢掉每一条合法批准，只放行「另一个无关任务
-    # 在跑」，恰好是反的。
+    # ⚠️ 这道闸和 _collect_active_openclaw_task_ids **状态集合互不相交**，不是笔误：
+    # 那个是给 /stop 用的「谁还在跑」，这个是「谁刚把一次回复给到用户」。同一个判据
+    # 贯穿始终——**用户有没有可能看见那句审批提示**：
+    #   queued / running  reply 还没返回，_emit_task_result 还没发   → 不算
+    #   failed            发的是固定失败文案，reply 一个字不出去      → 不算
+    #   cancelled         用户刚亲手掐掉，正是他不想要的那个动作      → 不算
+    #   completed         reply 经 _emit_task_result(detail=reply) 出去 → 算
     #
     # ⚠️ 但也**不能**靠「还在 registry 里」当窗口。_cleanup_task_registry 只在
     # capabilities.py 的状态发射路径上调用，正常的分析/派单路径根本不碰它；一个长连
@@ -149,14 +146,12 @@ def _has_recent_openclaw_task(
             continue
         if lanlan_name and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip():
             continue
-        if info.get("status") in {"queued", "running"}:
-            return True
-        # ⚠️ cancelled **不算**。用户刚把任务掐掉，上游那个动作正是他不想要的；把它
-        # 当成「有东西待批准」，随后一句随口的「同意」就会**推翻用户自己的取消**。
-        # 而且 _cancel_openclaw_tasks_for_stop 即便上游 stop_running 失败也照样写
-        # end_time，所以这种条目恰恰对应「动作可能还挂着」的最坏情况（Codex P1）。
-        # 窗口只收「可能承载一次审批请求响应」的终态。
-        if info.get("status") not in _APPROVAL_WINDOW_TERMINAL_STATUSES:
+        # ⚠️ queued / running 也**不算**。同一个判据：在途请求的 reply 还没返回，
+        # _run_openclaw_dispatch 要等 run_instruction 返回、把状态写成 completed
+        # 之后才 _emit_task_result，所以一个还在跑的任务**不可能**已经把审批提示给到
+        # 用户。放行它等于让「另一个无关任务正在跑」这件事本身去授权一个高风险动作，
+        # 而那恰恰是这道闸最初要挡的场景（Codex P1）。
+        if info.get("status") not in _APPROVAL_WINDOW_STATUSES:
             continue
         end_time = str(info.get("end_time") or "").strip()
         if not end_time:

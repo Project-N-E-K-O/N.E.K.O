@@ -805,6 +805,11 @@ def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
         ("请停下来", "/stop"), ("請停下來", "/stop"),
         ("帮我停下来", "/stop"), ("幫我停下來", "/stop"),
         ("那你去执行吧", "/daemon approve"),
+        # ⚠️ 第二人称的复数/敬称写法要**整词**排在单字 `你` 前面，否则 `你们停下来`
+        # 被 `你` 吃掉首字、剩下 `们停下来`。这条和 `那么`/`快点` 是同一个坑。
+        ("你们停下来", "/stop"), ("你們停下來", "/stop"),
+        ("您换个话题吧", "/new"), ("您們換個話題", "/new"),
+        ("您去执行吧", "/daemon approve"), ("你们去执行吧", "/daemon approve"),
         # ⚠️ 多字前缀必须整词剥。`那` 排在 `那么` 前面时正则会吃掉首字、留下一个
         # `么` 粘在后面（子句变成「么停下来」），整条判据失效。`快`/`快点` 同理。
         ("那么停下来吧", "/stop"), ("那麼換個話題吧", "/new"),
@@ -1008,8 +1013,9 @@ def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
         assert token in soft_tail, f"{token} 不在 soft 词尾表里"
         assert token not in narrow_tail, f"{token} 混进了 approve 的窄词尾表"
 
-    # 反向：第二人称主语必须留在中性表——`你去执行吧` 正是指向 agent 的授权
-    for token in ("你", "妳"):
+    # 反向：第二人称主语必须留在中性表——`你去执行吧` 正是指向 agent 的授权。
+    # 复数/敬称写法一并要有，否则单字 `你` 会把 `你们` 咬断。
+    for token in ("你", "妳", "你们", "你們", "您", "您们", "您們"):
         assert token in narrow_lead, f"{token} 是第二人称，不该被挪走"
 
 
