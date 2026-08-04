@@ -43,6 +43,7 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
+from main_logic.omni_realtime_client import _transport as _transport_module
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 from main_logic.omni_realtime_client._shared import (
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
@@ -380,7 +381,14 @@ async def test_response_created_resets_the_per_response_output_state():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_transcript_flush_failure_does_not_stop_the_receive_loop(caplog):
+async def test_transcript_flush_failure_does_not_stop_the_receive_loop(monkeypatch):
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        _transport_module.logger,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+
     async def _raise_from_output_transcript(_text: str, _is_first: bool) -> None:
         raise RuntimeError("host transcript sink disconnected")
 
@@ -395,13 +403,14 @@ async def test_transcript_flush_failure_does_not_stop_the_receive_loop(caplog):
     client._audio_delta_count = 1
     client._output_transcript_buffer = "already spoken"
 
-    with caplog.at_level(logging.WARNING):
-        socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
-        await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
 
     assert receive_loop.done() is False
     assert client._output_transcript_buffer == ""
-    assert "response.done transcript flush failed" in caplog.text
+    assert warnings == [
+        ("response.done transcript flush failed (%s); continuing", "RuntimeError")
+    ]
 
     socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
     await _settle()
