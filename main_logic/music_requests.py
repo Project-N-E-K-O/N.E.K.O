@@ -530,9 +530,14 @@ _ZH_FREE_CHOICE_LEFT = (
 # （base 都是 True，Codex P2 第五十二轮）。
 # ⚠️ 跟框架机制不同：这里的标记（都/就）在疑问词**后面**，所以用前视；
 # 窗口有界且不跨子句标点，关联构式的辖域到句读为止。
-_ZH_CORRELATIVE_RIGHT = r"(?![^，,。！!？?；;]{0,8}?[都就])"
+# ⚠️ 关联标记不止 都/就，还有 也（`谁听了也难受` / `哪首歌也不好听`，
+# base 都是 True，Codex P2 第五十七轮）。这一族是闭集。
+_ZH_CORRELATIVE_RIGHT = r"(?![^，,。！!？?；;]{0,8}?[都就也])"
 _ZH_WH_QUESTION_MARKER = (
-    rf"(?:为{_ZH_WHAT}|為{_ZH_WHAT}|为何|為何"
+    # ⚠️ 左界挡 `因`：`因为什么歌听了也难受` 里 `为什么` 只是子串，
+    # base 是 True（第五十七轮自查发现）。这是本 PR 里第**六**个「白名单词是更长词
+    # 的子串」入口（任何人 / 哪吒哪怕 / 没有什么 / 任何时候 / 不是什么 / 因为什么）。
+    rf"(?:(?<!因)为{_ZH_WHAT}|(?<!因)為{_ZH_WHAT}|为何|為何"
     # ⚠️ `干嘛` 和 `干什么/干啥` 是同一个词的不同写法，别只列前者
     # （`我想停止播放《你好吗？》干什么` base 是 False，Codex P2 第四十五轮）。
     # 三种 什么 的写法直接复用 _ZH_WHAT，不另抄。
@@ -843,6 +848,10 @@ _ZH_FREE_CHOICE_TOKEN_RE = re.compile(
 )
 
 
+# 框架词后面紧跟这些谓词时，它引的是真小句而不是标题的一部分。
+_ZH_FRAME_PREDICATE_RE = re.compile(r"(?:有|是|没|沒|要|能|会|會|想|可以|不)")
+
+
 def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
     """配平的引用跨度区间，跟子句切分用的是同一张引号表。"""  # noqa: DOCSTRING_CJK
     spans: list[tuple[int, int]] = []
@@ -874,6 +883,18 @@ def _zh_neutralize_free_choice(text: str) -> str:
         if marker.start() < cursor:
             continue
         if any(lo <= marker.start() < hi for lo, hi in spans):
+            continue
+        # ⚠️ 紧跟播放动词的框架词是**标题的一部分**，不是框架：
+        # `停止播放如果爱是否会影响歌单` 里的 `如果` 属于歌名《如果爱》
+        # （Codex P2 第五十七轮，base 是 False——危险方向）。带引号的标题上一轮
+        # 已经处理，这条补的是**不带引号**的那一半。
+        # ⚠️ 但不能一刀切：`停止播放如果有什么新歌再告诉我` 里的 `如果`
+        # 真是条件框架（第四十八轮修的）。判据：框架词后面紧跟**谓词**
+        # （有/是/没/要/能/会…）时它引的是小句，跟着其它字时更像标题。
+        # 代价写在这里：《如果有一天》这类以谓词开头的歌名会被当成条件框架，
+        # 少拦一次提问——轻的那一侧。
+        if (any(text[:marker.start()].endswith(verb) for verb in _ZH_PLAYBACK_VERBS)
+                and not _ZH_FRAME_PREDICATE_RE.match(text, marker.end())):
             continue
         pieces.append(text[cursor:marker.end()])
         # ⚠️ 找边界时要**跳过引用跨度**：标题里的逗号/分号不是句读

@@ -807,7 +807,13 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
     # `把整个卡的每一项《正文》重写` 里那个把范围收窄到子字段的引用被无视，
     # 整卡补全照跑并 autosave（Codex P1 第五十五轮，base 是 False——数据覆盖方向）。
     # ⚠️ 只留**闭合**的那一半：闭引号出现时前面必然已经有过开引号，目标确实说完了。
-    r"[，,。．.！!？?；;：:、…·~～—–\-」』）)】》〉\]'`]"
+    # ⚠️⚠️ **成对定界符一个都不留**——上一轮只去掉了开的那一半，闭的那一半仍然
+    # 可以出现在收窄成分**前面**：`把（整个卡的每一项）的名字重写` 里 `）` 满足收尾，
+    # 后面的 `的名字` 被无视，整卡补全照跑并 autosave（Codex P1 第五十七轮）。
+    # 判「这个闭符是否配对着一个目标级开符」需要位置信息，纯正则做不到；而两个方向
+    # 的代价差着量级，所以取安全那一侧：收尾只认**句读**，不认定界符。
+    # 代价：`把整个卡的全部设定重写一遍）` 这类以闭符收尾的说法少触发一次——轻的一侧。
+    r"[，,。．.！!？?；;：:、…·~～—–\-]"
 )
 
 # 限定词**自己当中心语**（`把整個卡的全部重寫一遍`，base 是 True）时的合法收尾：
@@ -853,7 +859,13 @@ _WHOLE_CARD_BARE_ADVERBS = (
 # 白名单在真正的重写动词之前就把目标判掉了（Codex P2 第四十二轮）。
 # ⚠️ 它跟副词可以**互相穿插**（全部进行重写 / 进行统一重写），所以直接并进那个
 # `+` 循环，而不是在动词前面单加一节。词类不同，所以表分开列、正则合起来用。
-_WHOLE_CARD_LIGHT_VERBS = ("进行", "進行")
+# ⚠️ 受事/礼貌短语（给我/帮我/替我/为我）占的也是「目标 + X + 重写动词」那个槽，
+# `把所有字段给我重写` base 是 True（Codex P2 第五十七轮）。跟轻动词同族，
+# 一起并进那个 `+` 循环；词类不同所以表分开列、正则合起来用。
+_WHOLE_CARD_LIGHT_VERBS = (
+    "进行", "進行",
+    "给我", "給我", "帮我", "幫我", "替我", "为我", "為我",
+)
 _WHOLE_CARD_PREVERB_WORDS = _WHOLE_CARD_BARE_ADVERBS + _WHOLE_CARD_LIGHT_VERBS
 _WHOLE_CARD_BARE_ADVERB = r"(?:" + "|".join(_WHOLE_CARD_PREVERB_WORDS) + r")"
 # ⚠️ 副词可以**叠着用**：`把所有字段再统一重写` / `把整个卡的所有内容批量统一重写`
@@ -971,8 +983,12 @@ _WHOLE_CARD_CONTINUATION_NOT_ATTRIBUTIVE = (
     # ⚠️ 两边要用**同一个并集**：动量补语那边就是
     # 「数词字符 | \d+ | 不定量词」三支。只拿其中一支时 `最后数行` / `最后好几段`
     # 又从守卫底下漏过去——这正是手抄表的典型后果，并集才是真的同源。
+    # ⚠️ 数量成分还可以是**范围**：`最后2-3段` / `2～3段`（Codex P1 第五十七轮）。
+    # 只要求数字后面紧跟一个汉字时，中间的连接号把守卫整个绕开了。
     r"(?:[" + _WHOLE_CARD_NUMERAL_CHARS + r"]+|\d+|"
-    + "|".join(_WHOLE_CARD_INDEFINITE_QUANTITIES) + r")\s*[一-鿿])"
+    + "|".join(_WHOLE_CARD_INDEFINITE_QUANTITIES) + r")"
+    r"(?:\s*[-–—~～至到]\s*(?:[" + _WHOLE_CARD_NUMERAL_CHARS + r"]+|\d+))?"
+    r"\s*[一-鿿])"
 )
 _WHOLE_CARD_CLAUSE_CONTINUATION = (
     r"(?:" + "|".join(_WHOLE_CARD_CLAUSE_CONTINUATIONS) + r")"
@@ -995,7 +1011,15 @@ _WHOLE_CARD_SCOPE_RUN_ONE = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"+)"
 # `把所有字段自身重新写`（base 都是 True，Codex P2 第五十二轮）。
 # 它加强的是已经明确的整卡范围，不是在点名某一个字段，所以它是**透明的**：
 # 后面该接什么还接什么（句末 / 副词 + 动词 / 标点 …）。
-_WHOLE_CARD_REFLEXIVE_PREFIX = r"(?:(?:本身|自身|本体|本體)\s*)?"
+# ⚠️⚠️ 闭合定界符是**透明**的，不是收尾。当收尾用时，
+# `把（整个卡的每一项）的名字重写` 里 `）` 满足收尾、后面的 `的名字` 被无视，
+# 整卡补全照跑并 autosave（Codex P1 第五十七轮，base 是 False）。
+# 但也不能直接从表里删掉：`把「所有字段」重写` 里用户就是用引号强调目标，
+# base 是 True。所以跟反身强调一样做成**透明前缀**：跳过它、接着真正地判收尾。
+_WHOLE_CARD_CLOSER_PREFIX = r"(?:[」』）)】》〉\]”’'`\"]\s*)*"
+_WHOLE_CARD_REFLEXIVE_PREFIX = (
+    _WHOLE_CARD_CLOSER_PREFIX + r"(?:(?:本身|自身|本体|本體)\s*)?"
+)
 _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     r"(?=\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
@@ -1007,7 +1031,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|" + _WHOLE_CARD_RESULT_PHRASE
-    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗|啦|喽|嘍|咯|嘞|咧))"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|嘛|喔|哦|啦|喽|嘍|咯|嘞|咧))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     r"(?=\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|"
@@ -1031,7 +1055,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|" + _WHOLE_CARD_RESULT_PHRASE
-    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗|啦|喽|嘍|咯|嘞|咧))"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|嘛|喔|哦|啦|喽|嘍|咯|嘞|咧))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     r"\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
@@ -1043,7 +1067,7 @@ _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|" + _WHOLE_CARD_RESULT_PHRASE
-    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗|啦|喽|嘍|咯|嘞|咧)"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|嘛|喔|哦|啦|喽|嘍|咯|嘞|咧)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。
 # ⚠️ 只在紧贴「的」时算数：`把整个卡的名字整体重写` 里「整体」修饰的是单字段。
@@ -1129,7 +1153,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # ⚠️ 语气词也是完整目标的合法收尾。上一版只放行「的 + 重写动词首字」，
     # 于是 `重寫整個卡吧` / `重寫整個卡啊` 被判成不是整卡请求（base 是 True）。
     # 语气词是封闭词类，跟重写动词表一样可以列干净。
-    r"(?=$|[^一-鿿]|的|重|改|梳|完|全|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
+    r"(?=$|[^一-鿿]|的|重|改|梳|完|全|都|了|吧|啊|呀|嘛|喔|哦|啦|喽|嘍|咯|嘞|咧)"
     # 口子一：的 + 全称限定词 + （整卡级名词 | 限定词自己当中心语的合法收尾）。
     # 口子二：的 + 紧贴着当中心语就代表整卡的那几个词。
     # ⚠️ 限定词和中心语之间可以有结构助词「的」：`把整个卡的所有的字段重写`
@@ -1344,6 +1368,22 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
     )
 
 
+# ⚠️⚠️ 疑问句**不是编辑命令**。卡片侧原先完全没有疑问守卫（音乐侧有一整套），
+# 于是 `把整个卡的每一项都需要重写吗` / `是否要把整个卡的每一项重写` 会一路走进
+# `_complete_full_rewrite_actions`，给每个缺失字段合成内容并 autosave——用户只是
+# 在问要不要改（Codex P1 第五十七轮，base 是 False）。
+# ⚠️ 代价方向是安全的：这道守卫误触发 = 少补几个字段（用户换个说法再说一遍），
+# 漏触发 = 把用户只是问问的东西真改了并存盘。所以宁可判得宽一点。
+# ⚠️ 只认**封闭**的疑问标记：句末语气词、极性词、以及情态动词的 A-not-A 重叠式。
+# 不认裸问号——`重写整个卡?` 在基线上就是命令，一刀切会改既有行为。
+_CHAT_QUESTION_CLAUSE_RE = re.compile(
+    r"(?:[吗嗎呢]\s*[？?]?\s*$"
+    r"|是否|能否|可否|有没有|有沒有"
+    r"|需不需要|要不要|该不该|該不該|应不应该|應不應該|用不用|可不可以|能不能"
+    r"|是不是|好不好|行不行|对不对|對不對)"
+)
+
+
 def _chat_text_requests_full_rewrite(text: str) -> bool:
     """整卡重写判据——三条谓词必须落在**同一个子句**里。
 
@@ -1374,6 +1414,9 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         # （Codex P1 第四十四轮）。
         # ⚠️ 否定守卫读**原句**：引号里的禁止一律算数。
         if _CHAT_NEGATED_REWRITE_RE.search(clause):
+            continue
+        # ⚠️ 疑问子句同样跳过：用户在问要不要改，不是在下命令。
+        if _CHAT_QUESTION_CLAUSE_RE.search(clause):
             continue
         readable = _chat_clause_without_quoted_prohibitions(clause)
         if (

@@ -4378,3 +4378,34 @@ def test_the_neutralizer_covers_every_marker_form(wh):
     assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False, wh
     framed = f'我想停止播放因为无论{wh}都不好听'
     assert is_explicit_music_cancellation(framed) is True, framed
+
+
+@pytest.mark.parametrize("correlative", ["都", "就", "也"])
+@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪首歌", "哪里", "什么歌"])
+def test_all_three_correlative_markers(wh, correlative):
+    """关联标记不止 都/就，还有 也（base 都是 True，Codex P2 第五十七轮）。这一族是闭集。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{wh}听了{correlative}难受'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}好听') is False
+
+
+@pytest.mark.parametrize("verb", ["播放", "放", "听", "聽"])
+def test_frame_words_in_unquoted_titles_do_not_govern(verb):
+    """⚠️ 紧跟播放动词的框架词是**标题的一部分**，不是框架。
+
+    `停止播放如果爱是否会影响歌单` 里的 `如果` 属于歌名《如果爱》——带引号的标题
+    上一轮已经处理，这条补的是**不带引号**的那一半（Codex P2 第五十七轮，
+    base 是 False——危险方向）。
+
+    ⚠️ 但不能一刀切：框架词后面紧跟**谓词**（有/是/没/要/能/会…）时它引的是真小句，
+    第四十八轮修的 `停止播放如果有什么新歌再告诉我` 必须保住。下面两条断言分列两侧。
+    ⚠️ 已知代价：《如果有一天》这类以谓词开头的歌名会被当成条件框架——轻的那一侧。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    titled = f'我想停止{verb}如果爱是否会影响歌单'
+    assert is_explicit_music_cancellation(titled) is False, titled
+    framed = f'我想停止{verb}如果有什么新歌再告诉我'
+    assert is_explicit_music_cancellation(framed) is True, framed

@@ -663,7 +663,9 @@ def test_the_completeness_guard_does_not_block_real_whole_card_requests(text):
     assert router._chat_text_requests_full_rewrite(text) is True, text
 
 
-@pytest.mark.parametrize("particle", ["吧", "啊", "呀", "呢", "了", "嘛", "喔", "嗎", "吗"])
+# ⚠️ 吗/嗎/呢 已移出：它们是**疑问**语气词，归疑问守卫管（Codex P1 第五十七轮）。
+# 用例体里的反向断言钉住这条分工。
+@pytest.mark.parametrize("particle", ["吧", "啊", "呀", "了", "嘛", "喔"])
 @pytest.mark.parametrize("target", ["整个卡", "整個卡", "整个卡片", "整張卡"])
 def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
     """⚠️ 完整性守卫的收尾集合必须含语气词。
@@ -671,11 +673,22 @@ def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
     只放行「的 + 重写动词首字」的话，`重寫整個卡吧` 被判成不是整卡请求
     （base 是 True）——修一个前缀误判顺手制造了一个新的触发不足。
     语气词是封闭词类，跟重写动词表一样可以列干净。
+
+    ⚠️ 但 `吗`/`嗎`/`呢` **不属于**这一族：它们是疑问语气词，用户在问要不要改，
+    不是在下命令（Codex P1 第五十七轮）。下面的反向断言钉住这条分工。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'重写{target}{particle}'
     assert router._chat_text_requests_full_rewrite(text) is True, text
+    # ⚠️ 两道防线各自管一段：句末的由疑问守卫拦，句中的由收尾表拦
+    # （它们不在中性语气词那张表里）。只写句末那一半的话，
+    # 「把 吗/呢 放回中性表」那个变异会照样绿（变异 SURVIVED 才发现）。
+    for interrogative in ('吗', '嗎', '呢'):
+        question = f'重写{target}{interrogative}'
+        assert router._chat_text_requests_full_rewrite(question) is False, question
+    for mid_clause in (f'重写{target}吗然后保存', f'重写{target}呢还是算了'):
+        assert router._chat_text_requests_full_rewrite(mid_clause) is False, mid_clause
 
 
 def _negators() -> list[str]:
@@ -1705,7 +1718,11 @@ def test_the_adverb_table_is_a_prefix_code():
         "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
         "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
     }
-    assert set(WHOLE_CARD_LIGHT_VERBS) == {"进行", "進行"}
+    assert set(WHOLE_CARD_LIGHT_VERBS) == {
+        "进行", "進行",
+        # 受事/礼貌短语占同一个槽（Codex P2 第五十七轮，base 都是 True）。
+        "给我", "給我", "帮我", "幫我", "替我", "为我", "為我",
+    }
     assert list(WHOLE_CARD_PREVERBS) == [
         *WHOLE_CARD_ADVERBS, *WHOLE_CARD_LIGHT_VERBS,
     ]
@@ -2232,7 +2249,9 @@ def test_an_opening_delimiter_does_not_complete_a_target(opener, closer):
     assert router._chat_text_requests_full_rewrite(complete) is True, complete
 
 
-@pytest.mark.parametrize("particle", ["啦", "喽", "嘍", "咯", "嘞", "咧", "吧", "了", "呢"])
+# ⚠️ `呢`/`吗`/`嗎` **不在**这张表里：它们是**疑问**语气词，归疑问守卫管
+# （Codex P1 第五十七轮）。下面的反向断言钉住这条分工。
+@pytest.mark.parametrize("particle", ["啦", "喽", "嘍", "咯", "嘞", "咧", "吧", "了"])
 def test_terminal_particles_after_a_target(particle):
     """句末语气词是**闭集**，一次补齐（base 都是 True，Codex P2 第五十五轮）。
 
@@ -2243,3 +2262,83 @@ def test_terminal_particles_after_a_target(particle):
 
     assert router._chat_text_requests_full_rewrite(f'重写所有字段{particle}') is True
     assert router._chat_text_requests_full_rewrite(f'重写所有字段名{particle}') is False
+    for interrogative in ('吗', '嗎', '呢'):
+        text = f'重写所有字段{interrogative}'
+        assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), [("（", "）"), ("(", ")"), ("「", "」"), ("『", "』"),
+                           ("【", "】"), ("《", "》"), ("[", "]")]
+)
+def test_a_closing_delimiter_is_transparent_not_terminal(opener, closer):
+    """⚠️⚠️ 闭合定界符是**透明**的，不是收尾（Codex P1 第五十七轮，base 是 False）。
+
+    当收尾用时 `把（整个卡的每一项）的名字重写` 里 `）` 满足收尾、后面的 `的名字`
+    被无视，整卡补全照跑并 autosave。
+
+    ⚠️ 但也不能直接从表里删掉：`把「所有字段」重写` 里用户就是用引号强调目标，
+    base 是 True——下面第二条正向断言钉的就是这个，两边必须同时成立。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    narrowed = f'把{opener}整个卡的每一项{closer}的名字重写'
+    assert router._chat_text_requests_full_rewrite(narrowed) is False, narrowed
+    quoted_target = f'把{opener}所有字段{closer}重写'
+    assert router._chat_text_requests_full_rewrite(quoted_target) is True, quoted_target
+
+
+@pytest.mark.parametrize("dash", ["-", "–", "—", "~", "～", "至", "到"])
+@pytest.mark.parametrize(("low", "high"), [("2", "3"), ("一", "两"), ("10", "12")])
+def test_numeric_ranges_are_attributive(dash, low, high):
+    """数量成分可以是**范围**：`最后2-3段`（Codex P1 第五十七轮，base 是 False）。
+
+    只要求数字后面紧跟一个汉字时，中间的连接号把定语守卫整个绕开了。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的每一项最后{low}{dash}{high}段重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["把整个卡的每一项都需要重写吗", "是否要把整个卡的每一项重写",
+     "需要重写整个卡的每一项吗", "要不要把所有字段重写",
+     "该不该重写整个角色卡的全部设定", "能不能把所有字段重写呢",
+     "重写整个卡的所有内容好不好"],
+)
+def test_interrogative_clauses_are_not_edit_commands(question):
+    """⚠️⚠️ 疑问句**不是编辑命令**（Codex P1 第五十七轮，base 都是 False）。
+
+    卡片侧原先完全没有疑问守卫（音乐侧有一整套），于是用户只是在问要不要改，
+    却一路走进 `_complete_full_rewrite_actions` 给每个缺失字段合成内容并 autosave。
+
+    ⚠️ 代价方向是安全的：守卫误触发 = 少补几个字段；漏触发 = 把用户只是问问的
+    东西真改了并存盘。所以宁可判得宽一点。
+    ⚠️ 配对正向断言：陈述式的整卡请求照旧是 True。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(question) is False, question
+    for command in ('把整个角色卡的全部设定重写一遍', '重写所有字段吧',
+                    '把整个卡的每一项重写'):
+        assert router._chat_text_requests_full_rewrite(command) is True, command
+
+
+@pytest.mark.parametrize(
+    "recipient", ["给我", "給我", "帮我", "幫我", "替我", "为我", "為我"]
+)
+@pytest.mark.parametrize("target", ["所有字段", "全部字段", "整个卡的所有内容"])
+def test_recipient_phrases_between_target_and_verb(target, recipient):
+    """受事/礼貌短语占的是跟轻动词同一个槽（base 都是 True，Codex P2 第五十七轮）。
+
+    ⚠️ 配对反向断言：单字段那条保险没被顺手打开。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把{target}{recipient}重写'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'把{target}的名字{recipient}重写'
+    ) is False
