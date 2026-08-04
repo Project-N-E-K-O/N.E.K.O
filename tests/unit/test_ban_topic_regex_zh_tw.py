@@ -2447,8 +2447,8 @@ def test_the_preposed_template_spacing_is_atomic():
     head = raw.split("(?:提了|")[0]
     assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
     assert r"(?>\s*)(?>\s*)" not in head, head
-    # 模板 2 撤掉 (?:的事)? 之后剩 4 个（原先 5 个，删的那个和相邻的合掉了）
-    assert head.count(r"(?>\s*)") == 4, head.count(r"(?>\s*)")
+    # 模板自己的 4 个 + 停顿标点常量里的 1 个
+    assert head.count(r"(?>\s*)") == 5, head.count(r"(?>\s*)")
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -2836,3 +2836,42 @@ def test_the_japanese_label_tail_covers_more_than_han_and_kana():
     probe = _re.compile(f"[{tail}]")
     for punctuation in "，。！？；、：":
         assert not probe.match(punctuation), punctuation
+
+
+# ── 35. 前置话题和触发词之间的停顿标点 ───────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("工作，别提了。", "工作"),
+        ("工作，別提了。", "工作"),
+        ("工作、别提了。", "工作"),
+        ("工作,别提了。", "工作"),
+        ("功成名就，别提了。", "功成名就"),
+        ("关于工作，就别提了。", "工作"),
+        ("關於工作，就別提了。", "工作"),
+    ],
+)
+def test_a_pause_before_the_trigger_is_consumed(text, expected):
+    """⚠️ 停顿标点在**两侧**都会出现：动词后宾语那一侧上一轮补过，前置话题这一侧
+    漏了——话题字符类排掉了 ``，``，而模板 2/4 原先只允许空白，整条 0 命中（codex P2）。
+    两侧用同一个常量。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+def test_the_separator_is_shared_by_both_sides():
+    """两侧共用同一个常量，别各写各的——同一件事维护两份必然漂移（#2655）。"""  # noqa: DOCSTRING_CJK
+    sources = _zh_pattern_sources()
+    assert sum(D._ZH_TOPIC_SEPARATOR in raw for raw in sources) == 4
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 反向：停顿标点不能把两条独立指令并成一条
+        ("工作，别提加班。", {"加班"}),
+        ("别提工作，别提加班。", {"工作", "加班"}),
+    ],
+)
+def test_the_pause_does_not_merge_two_directives(text, expected):
+    assert _zh_terms(text) == expected, _zh_terms(text)
