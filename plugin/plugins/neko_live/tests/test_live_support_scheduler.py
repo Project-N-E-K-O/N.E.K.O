@@ -872,6 +872,50 @@ async def test_dispatch_failure_audits_without_duplicate_retry_and_continues():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_tracks_bounded_pipeline_result_status_without_payload_data():
+    audit = _Audit()
+
+    class _Result:
+        def __init__(self, status: str, private_output: str) -> None:
+            self.status = status
+            self.output = private_output
+
+    results = {
+        "dry": _Result("dry_run", "private dry-run output"),
+        "skip": _Result("skipped", "private skipped output"),
+        "invalid": _Result("invented", "private invalid output"),
+    }
+
+    async def dispatch(payload: dict):
+        return results[payload["provider_event_id"]]
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    for event_id in results:
+        assert scheduler.submit(_payload(event_id)) is True
+    await scheduler.wait_idle()
+
+    status = scheduler.status()
+    assert status["pipeline_result_dry_run_count"] == 1
+    assert status["pipeline_result_skipped_count"] == 1
+    assert status["pipeline_result_unknown_count"] == 1
+    assert status["pipeline_result_pushed_count"] == 0
+    history_text = repr(scheduler._dispatched_history)
+    audit_text = repr(audit.records)
+    assert "private dry-run output" not in history_text
+    assert "private skipped output" not in history_text
+    assert "private invalid output" not in history_text
+    assert "private dry-run output" not in audit_text
+    assert "private skipped output" not in audit_text
+    assert "private invalid output" not in audit_text
+    assert all(
+        record["detail"]["pipeline_result_status"] in {"dry_run", "skipped", "unknown"}
+        for record in audit.records
+        if record["op"] == "support.dispatch_submission_finalized"
+    )
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_failure_does_not_escape_when_audit_write_fails():
     attempts = 0
 
@@ -1017,6 +1061,7 @@ async def test_unknown_completion_is_stray_and_audit_is_payload_free():
         "priority": "light",
         "classification": "stray",
         "outcome": "submitted",
+        "pipeline_result_status": "unknown",
     }
     audit_text = repr(audit.records)
     assert "viewer-1" not in audit_text

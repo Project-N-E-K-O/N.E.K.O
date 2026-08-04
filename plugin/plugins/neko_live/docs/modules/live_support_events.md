@@ -65,7 +65,7 @@ Submission finalization has three internal classifications:
 - `retroactive`: a known dispatched task finishes after reset, cancellation, or ownership rotation; it is audited but cannot release a newer task.
 - `stray`: the scheduler cannot prove the finishing task belongs to the current slot or bounded history; it is warning-only and cannot mutate a newer owner.
 
-Each finalization records `support.dispatch_submission_finalized` with sanitized task ID, event category, priority, classification, outcome, and optional exception type. `submitted` means the plugin-side Pipeline/Dispatcher submission awaitable returned. It does not mean the host generated audio, TTS started, browser playback began, or the audience heard the line.
+Each finalization records `support.dispatch_submission_finalized` with sanitized task ID, event category, priority, classification, submission outcome, bounded Pipeline result status, and optional exception type. The scheduler counts only the fixed Pipeline status enum (`queued`, `dry_run`, `pushed`, `skipped`, `failed`, or `unknown`) and never retains result output, reason text, viewer data, or payload data. This distinguishes a returned dry-run/skip/failure from an unexplained missing result without adding another completion API. `submitted` means the plugin-side Pipeline/Dispatcher submission awaitable returned. It does not mean the host generated audio, TTS started, browser playback began, or the audience heard the line.
 
 ## Decision Points
 

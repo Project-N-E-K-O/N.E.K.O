@@ -10,6 +10,16 @@ from enum import IntEnum
 from typing import Any, Awaitable, Callable
 
 
+_PIPELINE_RESULT_STATUSES = (
+    "queued",
+    "dry_run",
+    "pushed",
+    "skipped",
+    "failed",
+    "unknown",
+)
+
+
 class SupportPriority(IntEnum):
     MILESTONE = 0
     HIGH = 1
@@ -54,7 +64,7 @@ class SupportEventScheduler:
     def __init__(
         self,
         *,
-        dispatch: Callable[[dict[str, Any]], Awaitable[None]],
+        dispatch: Callable[[dict[str, Any]], Awaitable[Any]],
         audit: Any = None,
         queue_limit: int = 64,
         combo_idle_seconds: float = 1.0,
@@ -94,6 +104,9 @@ class SupportEventScheduler:
             "current": 0,
             "retroactive": 0,
             "stray": 0,
+        }
+        self._pipeline_result_counts = {
+            status: 0 for status in _PIPELINE_RESULT_STATUSES
         }
         self._processed_ids: OrderedDict[str, float] = OrderedDict()
         self._processed_id_seconds = max(1.0, min(3_600.0, float(processed_id_seconds)))
@@ -422,8 +435,9 @@ class SupportEventScheduler:
                     return
                 outcome = "cancelled"
                 error_type = ""
+                pipeline_result_status = "unknown"
                 try:
-                    outcome, error_type = await self._dispatch_once(
+                    outcome, error_type, pipeline_result_status = await self._dispatch_once(
                         task.payload,
                         task=task,
                     )
@@ -432,6 +446,7 @@ class SupportEventScheduler:
                         task,
                         outcome=outcome,
                         error_type=error_type,
+                        pipeline_result_status=pipeline_result_status,
                     )
         finally:
             if self._worker is worker:
@@ -464,7 +479,11 @@ class SupportEventScheduler:
         *,
         outcome: str,
         error_type: str = "",
+        pipeline_result_status: str = "unknown",
     ) -> str:
+        pipeline_result_status = self._safe_pipeline_result_status(
+            pipeline_result_status
+        )
         async with self._ownership_lock:
             current = self._current_dispatch
             if current is task and task.generation == self._dispatch_generation:
@@ -477,10 +496,12 @@ class SupportEventScheduler:
             else:
                 classification = "stray"
             self._finalization_counts[classification] += 1
+            self._pipeline_result_counts[pipeline_result_status] += 1
             history = self._dispatched_history.get(task.task_id)
             if history is not None:
                 history["outcome"] = outcome
                 history["classification"] = classification
+                history["pipeline_result_status"] = pipeline_result_status
                 if error_type:
                     history["error_type"] = error_type
                 self._dispatched_history.move_to_end(task.task_id)
@@ -490,6 +511,7 @@ class SupportEventScheduler:
             {
                 "classification": classification,
                 "outcome": outcome,
+                "pipeline_result_status": pipeline_result_status,
             }
         )
         if error_type:
@@ -507,9 +529,9 @@ class SupportEventScheduler:
         payload: dict[str, Any],
         *,
         task: _DispatchTask | None = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         try:
-            await self._dispatch(payload)
+            result = await self._dispatch(payload)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -525,8 +547,20 @@ class SupportEventScheduler:
                 level="error",
                 detail=detail,
             )
-            return "failed", type(exc).__name__
-        return "submitted", ""
+            return "failed", type(exc).__name__, "unknown"
+        return "submitted", "", self._pipeline_result_status(result)
+
+    @classmethod
+    def _pipeline_result_status(cls, result: Any) -> str:
+        if isinstance(result, dict):
+            status = result.get("status")
+        else:
+            status = getattr(result, "status", None)
+        return cls._safe_pipeline_result_status(status)
+
+    @staticmethod
+    def _safe_pipeline_result_status(value: Any) -> str:
+        return value if value in _PIPELINE_RESULT_STATUSES else "unknown"
 
     @staticmethod
     def _event_type_for_audit(payload: dict[str, Any]) -> str:
@@ -634,6 +668,10 @@ class SupportEventScheduler:
             "current_finalization_count": self._finalization_counts["current"],
             "retroactive_finalization_count": self._finalization_counts["retroactive"],
             "stray_finalization_count": self._finalization_counts["stray"],
+            **{
+                f"pipeline_result_{status}_count": count
+                for status, count in self._pipeline_result_counts.items()
+            },
             "processed_id_count": len(self._processed_ids),
             "processed_id_limit": self._processed_id_limit,
             "processed_id_seconds": self._processed_id_seconds,

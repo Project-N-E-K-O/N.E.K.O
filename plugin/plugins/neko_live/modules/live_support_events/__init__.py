@@ -120,6 +120,24 @@ class LiveSupportEventsModule(BaseModule):
             "dispatch_stray_finalization_count": scheduler_status.get(
                 "stray_finalization_count", 0
             ),
+            "dispatch_pipeline_result_queued_count": scheduler_status.get(
+                "pipeline_result_queued_count", 0
+            ),
+            "dispatch_pipeline_result_dry_run_count": scheduler_status.get(
+                "pipeline_result_dry_run_count", 0
+            ),
+            "dispatch_pipeline_result_pushed_count": scheduler_status.get(
+                "pipeline_result_pushed_count", 0
+            ),
+            "dispatch_pipeline_result_skipped_count": scheduler_status.get(
+                "pipeline_result_skipped_count", 0
+            ),
+            "dispatch_pipeline_result_failed_count": scheduler_status.get(
+                "pipeline_result_failed_count", 0
+            ),
+            "dispatch_pipeline_result_unknown_count": scheduler_status.get(
+                "pipeline_result_unknown_count", 0
+            ),
             "last_event_at": self._last_event_at,
             "last_event_type": self._last_event_type,
         }
@@ -254,10 +272,10 @@ class LiveSupportEventsModule(BaseModule):
             payload["gift_total_coin"] = payload["gift_value"]
         return payload
 
-    async def _handle_payload(self, payload: dict[str, Any]) -> None:
+    async def _handle_payload(self, payload: dict[str, Any]) -> Any:
         if self.ctx is None:
             return
-        await self.ctx.handle_live_payload(payload)
+        return await self.ctx.handle_live_payload(payload)
 
     def build_request(
         self,
