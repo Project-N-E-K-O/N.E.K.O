@@ -196,18 +196,16 @@ def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
 def _clause_hits(clause: str, table: frozenset, *, strip_tail: bool = True) -> bool:
     """Match a clause against a table: raw, lead-stripped, then lead+tail.
 
-    ⚠️ All three forms are load-bearing, and never the other way round (deriving
-    the stripped spellings INTO the table). The tables hold literal spellings and
-    some of those end in a particle the tail regex eats — 别找了 -> 别找,
-    删吧 -> 删. An earlier revision closed the tables under the normalizer, which
-    put bare single characters like 删 and 准 in them; 帮我删一下 (a fresh delete
-    request, not an approval) then dispatched /daemon approve. Keep the tables
-    literal and widen the *lookup* instead.
-
-    ⚠️ Lead-only is a separate probe from lead+tail, not an intermediate step:
-    现在别找了 lead-strips to 别找了, which IS a table entry, but stripping the
-    tail as well takes it to 别找, which is not.
+    All three probes are load-bearing, and the widening must happen here rather
+    than by deriving stripped spellings INTO the table. See the notes below.
     """
+    # ⚠️ 表保持字面量，widen 的是**查表**不是表。表里有些条目自带语气词尾，
+    # 归一化会把它们吃掉（别找了→别找、删吧→删）。上一版反过来做——把表闭包到
+    # 归一化形态——于是单字「删 / 准」进了 approve 表，`帮我删一下`（一条**新的
+    # 删除请求**，不是对待审批动作的应答）就派成了 /daemon approve。
+    #
+    # ⚠️ lead-only 是**独立一档**，不是 lead+tail 的中间步骤：`现在别找了` 剥掉
+    # 首部是 `别找了`（表内条目），再剥尾就成了 `别找`（不在表内），少这一档就丢了。
     text = str(clause or "").strip()
     if not text:
         return False
