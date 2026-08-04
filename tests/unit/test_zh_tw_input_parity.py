@@ -2732,8 +2732,10 @@ def test_the_two_predicates_share_one_particle_table(simplified, traditional):
     [
         ("对，去执行", "對，去執行"),
         ("对，删吧", "對，刪吧"),
-        ("对，同意", "對，同意"),
         ("对，去执行吧", "對，去執行吧"),
+        # ⚠️ 这里全是「应答 + **动作**」。`对，同意` 那种「应答 + 裸应答」两侧都是 None
+        # ——它在 main 上也是 None，不在本次要补的召回里，见
+        # test_an_affirmation_needs_a_real_action_beside_it。
     ],
 )
 def test_the_companion_clause_works_in_both_scripts(simplified, traditional):
@@ -2816,3 +2818,47 @@ def test_the_new_boundaries_do_not_manufacture_commands(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 裸应答带任何句尾标点 —— 子句切分器替它做掉了它自己拒绝做的归一化
+        "同意。", "同意！", "同意……", "同意…", "同意——", "我同意——", "没问题……",
+        "沒問題⋯⋯", "沒問題。", "我同意…", "同意、", "同意：",
+        # 「应答词 + 裸应答」凑不出授权 —— 要补的召回是「应答 + **动作**」
+        "好的，同意", "嗯，同意", "对，同意", "對，同意", "可以，我同意",
+        "行了，没问题", "批准，同意", "同意，同意", "我同意，没问题",
+    ],
+)
+def test_an_affirmation_needs_a_real_action_beside_it(text):
+    """⚠️ 这些在 main 上全是 None，收口改动不该把它们变成批准。
+
+    Two separate leaks, both letting a bare affirmation authorize on its own:
+
+    1. ``_APPROVE_AFFIRMATIONS`` says bare affirmations are matched verbatim with
+       no normalization — but the clause splitter performs that normalization for
+       it, so ``同意……`` arrives as the exact string ``同意``. The widened set is
+       precisely the hesitant, unfinished register.
+    2. An affirmation clause used to satisfy the "at least one real clause"
+       requirement even with company, so ``好的，同意`` approved. The recall this
+       change set out to restore is 应答 + **动作** (``好的，去执行``), not this.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "同意", "我同意", "没问题", "沒問題", "同意 ", " 同意",
+        "同意，去执行", "同意……去执行", "同意——去执行", "好的，去执行",
+        "对，去执行", "對，去執行", "好的，删吧", "没问题去执行", "去执行", "删吧",
+    ],
+)
+def test_the_affirmation_narrowing_keeps_every_real_authorization(text):
+    """收窄不能连真授权一起收掉：整句就是裸应答、或带了动作子句的，都必须保住。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve", text

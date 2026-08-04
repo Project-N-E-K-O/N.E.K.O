@@ -410,8 +410,17 @@ def test_one_completion_authorizes_only_one_inferred_approval(wired):
     assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
 
 
-def test_a_failed_dispatch_does_not_consume_the_window(wired):
-    """派单失败时不兑现——那次批准没送出去，用户重说一遍应该还能用。"""  # noqa: DOCSTRING_CJK
+def test_a_failed_dispatch_still_consumes_the_window(wired):
+    """⚠️ ``success=False`` 不等于「那次批准没送出去」。
+
+    ``run_instruction`` returns success=False when the POST came back fine but no
+    final reply could be extracted — so the flag conflates "never sent" with
+    "sent, possibly executed, unreadable". Keeping the window open on the second
+    reading hands the same 同意 a free second shot at a *different* pending
+    action. The two are indistinguishable here, so take the fail-closed side.
+
+    Cost: a genuinely failed dispatch now needs the literal command typed.
+    """  # noqa: DOCSTRING_CJK
     fake, _ = wired
     _register(oc._shared.Modules.task_registry, "t-done", status="completed")
 
@@ -425,7 +434,53 @@ def test_a_failed_dispatch_does_not_consume_the_window(wired):
 
     fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
     _dispatch("/daemon approve")
-    assert len(fake.magic_calls) == 2, "失败的那次不该把窗口兑现掉"
+    assert len(fake.magic_calls) == 1, "失败的那次也把窗口兑现掉了"
+
+    # 逃生口：显式敲字面命令一律豁免闸
+    _dispatch("/daemon approve", user_text="/daemon approve")
+    assert len(fake.magic_calls) == 2
+
+
+def test_an_inferred_approval_consumes_every_indistinguishable_window(wired):
+    """⚠️ `/daemon approve` 不带 task id，分不出是哪条 completed 带出了那句提示。
+
+    Consuming only one leaves the other standing, so a later casual 同意
+    authorizes some *other* pending action with no new prompt behind it. Since
+    the records are indistinguishable at this layer, one inferred approval
+    spends the whole ambiguous batch.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-old", status="completed", ended_seconds_ago=4.0)
+    _register(registry, "t-prompt", status="completed", ended_seconds_ago=1.0)
+
+    _dispatch("/daemon approve", task_id="magic-1")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+    assert registry["t-old"][oc._APPROVAL_CONSUMED_KEY] is True
+    assert registry["t-prompt"][oc._APPROVAL_CONSUMED_KEY] is True
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-2")
+    assert fake.magic_calls == [], "第二条窗口不该再授权一次"
+
+
+def test_the_window_is_consumed_before_the_upstream_call(wired):
+    """兑现排在 await 之前，上游抛异常不能把它跳过。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    async def _boom(command, *, sender_id=None, role_name=None):
+        fake.magic_calls.append((command, sender_id, role_name))
+        raise RuntimeError("connection reset")
+
+    fake.run_magic_command = _boom
+    _dispatch("/daemon approve", task_id="magic-1")
+    assert oc._shared.Modules.task_registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
+
+    fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-2")
+    assert fake.magic_calls == []
 
 
 def test_a_completion_from_a_rotated_session_does_not_open_the_gate(wired):
@@ -661,7 +716,7 @@ def test_an_explicitly_typed_approve_survives_stop(wired):
 def test_only_stop_retires_windows(wired, command):
     """⚠️ 作废只挂在 /stop 上。
 
-    ``/daemon approve`` consumes exactly one entry through its own success path;
+    ``/daemon approve`` spends the whole ambiguous batch through its own path;
     widening retirement to every command would make an unrelated ``/clear`` eat
     a prompt the user never answered.
     """  # noqa: DOCSTRING_CJK
@@ -673,7 +728,7 @@ def test_only_stop_retires_windows(wired, command):
     _dispatch(command, task_id="magic-1")
 
     consumed = [t for t in ("t-a", "t-b") if registry[t].get(oc._APPROVAL_CONSUMED_KEY)]
-    expected = 1 if command == "/daemon approve" else 0
+    expected = 2 if command == "/daemon approve" else 0
     assert len(consumed) == expected
 
 

@@ -563,14 +563,12 @@ async def dispatch(
                     lanlan_name,
                 )
                 return
-            approval_window_task_id = None
             if magic_command == "/daemon approve" and not explicitly_typed:
-                approval_window_task_id = _find_approval_window_task(
+                if _find_approval_window_task(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
                     exclude_task_id=result.task_id,
-                )
-                if approval_window_task_id is None:
+                ) is None:
                     logger.info(
                         "[OpenClaw] /daemon approve dropped: no openclaw task on record "
                         "for sender=%s lanlan=%s",
@@ -578,6 +576,30 @@ async def dispatch(
                         lanlan_name,
                     )
                     return
+                # ⚠️ 一次推断批准兑现掉**全部**窗口，而且**不看这一趟的成败**。
+                #
+                # 兑现全部：`/daemon approve` 不带 task id，我们**无从知道**是哪一条
+                # completed 带出了那句提示。只兑现一条的话，另一条仍然站着，下一句随口的
+                # 「同意」就能在没有新提示的情况下批到别的挂起动作上（Codex P1）。
+                # 代价：两个任务先后各问一次时，第二句「好」会被丢，得手敲字面命令。
+                #
+                # 不看成败：`run_instruction` 在 POST **成功返回之后**取不到 reply 也返回
+                # success=False（openclaw_adapter「did not return a final reply」那支），
+                # 所以这个 flag 把「压根没发出去」和「发了、可能已经执行了、只是读不到
+                # 回复」混在一起。前一种保留窗口是对的，后一种保留就是给同一句「同意」
+                # 第二次机会去批另一个动作。两者分不开，取 fail-closed 的那边。
+                #
+                # 放在 await **之前**，理由和 /stop 那边一样：异常穿出时不能把它跳过。
+                consumed = _retire_approval_windows(
+                    sender_id=nk_sender_id,
+                    lanlan_name=lanlan_name,
+                    exclude_task_id=result.task_id,
+                )
+                logger.info(
+                    "[OpenClaw] inferred /daemon approve consumed %d window(s): %s",
+                    len(consumed),
+                    ", ".join(consumed),
+                )
             if magic_command == "/stop":
                 cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
                     sender_id=nk_sender_id,
@@ -627,12 +649,9 @@ async def dispatch(
                 )
                 success = bool(nk_result.get("success"))
                 reply = str(nk_result.get("reply") or "")
-                # ⚠️ 兑现掉开闸的那条记录：一次审批提示只授权一次推断批准。
-                # 派单失败时**不**消费——那次批准没送出去，用户重说一遍应该还能用。
-                if success and approval_window_task_id:
-                    window_info = _shared.Modules.task_registry.get(approval_window_task_id)
-                    if isinstance(window_info, dict):
-                        window_info[_APPROVAL_CONSUMED_KEY] = True
+                # 兑现已经在派单**之前**做掉了（见上面那段注释）。这里曾经按 success
+                # 兑现单条，两个前提都不成立：success=False 不等于「没送出去」，
+                # 单条也不等于「那条带提示的」。
                 if success:
                     await _emit_task_result(
                         lanlan_name,

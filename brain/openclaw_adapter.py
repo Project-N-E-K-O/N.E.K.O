@@ -919,11 +919,32 @@ class OpenClawAdapter:
         # 由 _approve_clause_hits 的窄首尾表结构性挡住，不在这里枚举。
         # ⚠️ 每个子句都得有归属（fail-closed），且**至少有一个**是动作短语或裸应答——
         # 光有应答子句不算授权（`好的` / `好的，好的` → None），必须有实质内容。
+        # ⚠️ 裸应答只在**它就是整句**时算数，而且要跟原文逐字相等。
+        # 「裸应答不做任何归一化」这条规则写在 _APPROVE_AFFIRMATIONS 上，但**子句切分器
+        # 会替它把归一化做掉**：`同意。` / `同意！` / `同意……` / `我同意——` 切完都只剩
+        # 一个子句 `同意`，于是精确匹配当场通过。这几条在 main 上全是 None（旧表是整句
+        # 精确匹配，带标点就不算），所以是简体侧的净扩面，而且扩的正是「犹豫/未说完」
+        # 这一类——`同意……` 恰恰是不确定的语气。
+        # 有动作子句时照旧切（`同意……去执行` 仍然是批准），只有整句就一个裸应答时才要求原样。
+        bare_affirmation_only = (
+            len(clauses) == 1
+            and clauses[0] in _APPROVE_AFFIRMATIONS
+            and text.strip() != clauses[0]
+        )
         approve_kinds = [_approve_clause_kind(c) for c in clauses]
+        # ⚠️ 多子句时必须有**动作**子句，光凑够「应答 + 裸应答」不算。
+        # 本次收口要补回的召回是「应答子句 + **动作**子句」（`好的，去执行`）；而
+        # `好的，同意` / `嗯，同意` 在 main 上是 None（既不整句精确匹配、也不含
+        # 删吧/准了/去执行 任何子串），把它们一起带进来是没人要过的扩面。
+        needs_action = len(clauses) > 1
         if (
             not _APPROVE_QUESTION_MARK.search(text)
+            and not bare_affirmation_only
             and all(approve_kinds)
-            and any(kind in ("action", "affirmation") for kind in approve_kinds)
+            and any(
+                kind == "action" or (kind == "affirmation" and not needs_action)
+                for kind in approve_kinds
+            )
         ):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
         # ⚠️ 末子句要跳过「只有语气词/装饰」的尾巴，见 _command_clause。
