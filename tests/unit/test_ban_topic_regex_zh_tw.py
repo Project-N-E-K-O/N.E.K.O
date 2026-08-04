@@ -1742,6 +1742,9 @@ def test_the_unavoidable_taolun_overlap_is_symmetric(text, expected):
         ("例子.測試別提了。", "例子.測試"),
         ("价格１,０００元别提了。", "价格１,０００元"),
         ("價格１,０００元別提了。", "價格１,０００元"),
+        # ⚠️ 全角逗号也要收：中文排版的数字就是这个写法
+        ("价格1，000元别提了。", "价格1，000元"),
+        ("價格1，000元別提了。", "價格1，000元"),
         # ⚠️ 组合符号：Python 的 \w 不含 Mn/Mc 类，NFD 分解形和天城文照样被截断
         (unicodedata.normalize("NFD", "café.com") + "别提了。",
          unicodedata.normalize("NFD", "café.com")),
@@ -2415,11 +2418,17 @@ def test_an_unmatched_outer_opener_before_a_nested_run_still_counts(text, expect
         ("我不想聊，工作", "工作"),
         ("不要说，加班的事。", "加班的事"),
         ("别叫我，“笨蛋”。", "笨蛋"),
-        # ⚠️ 顿号 / 冒号不在分隔符表里也照样过：它们本来就不在话题字符类的排除表
-        # 里，会被当普通字吃进话题、再由 _trim_term 从两端剥掉
         ("别再提、工作。", "工作"),
         ("别再提：工作。", "工作"),
         ("别再提,工作。", "工作"),
+        # ⚠️ 顿号 / 冒号**必须**进分隔符表。一度以为不用——它们不在话题字符类的排除
+        # 表里，会被当普通字吃进话题再由 trim 剥掉，上面三条靠这条也能过。但话题很短
+        # 且以**有歧义的尾字**结尾时就不成立：话题变成 ``：好``（标点凑满了两个单位的
+        # 下限），``咧`` 被可选助词组吃掉，trim 完只剩一个字被丢弃（codex P2）。
+        ("别提：好咧。", "好咧"),
+        ("别提、好咧。", "好咧"),
+        ("别提，好咧。", "好咧"),
+        ("別提：好咧。", "好咧"),
     ],
 )
 def test_a_separator_between_verb_and_object_is_consumed(text, expected):
@@ -2530,3 +2539,18 @@ def test_the_ambiguity_criterion_is_the_presence_of_han():
         for tok in D._TRIM_TRAIL_TOKENS_BY_LOCALE[fam]:
             assert not D._HAN_RE.search(tok), (fam, tok)
     assert all(D._HAN_RE.search(t) for t in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"])
+
+
+def test_the_full_width_comma_is_only_identifier_punctuation_between_digits():
+    """⚠️ 全角逗号是中文最常见的分句符，无条件当词内字符会让前置话题跨小句；
+    而它真正的标识符用途就是千分位。⚠️ 全角句号完全不收——没有标识符用它。
+    """  # noqa: DOCSTRING_CJK
+    import re as _re
+
+    probe = _re.compile(D._ZH_IDENT_PUNCT)
+    assert probe.search("价格1，000元")
+    assert not probe.search("算了，工作")
+    assert not probe.search("工作。加班")
+    assert _zh_terms("别提工作。别提加班。") == {"工作", "加班"}
+    assert _zh_terms("算了，别提工作。") == {"工作"}
+    assert _zh_terms("算了,别提工作。") == {"工作"}
