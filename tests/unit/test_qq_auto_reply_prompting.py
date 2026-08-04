@@ -138,13 +138,16 @@ def test_open_platform_group_mentions_distinguish_bot_from_other_users():
 
 
 def test_focus_rise_window_boosts_the_focus_until_the_window_expires():
-    """rise 窗口给刚拿到焦点的群一份线性加成（0 → +2.0），窗口一过加成
-    归零、回落到原始分。
+    """The rise window hands a freshly focused group a linear bonus
+    (0 -> +2.0); once the window passes the bonus is gone and the score
+    falls back to the raw one.
 
-    断言跟着 attention_service 的实现走：这条用例最初断言的是反方向的
-    语义（新焦点先被压到一半分数、再爬升回满分），跟同一次提交里的实现
-    相反，从来没有通过过。加成的方向是插件侧的产品取舍，这里只钉住实际
-    生效的那一份。"""
+    These assertions follow attention_service as implemented. The case
+    originally asserted the opposite semantic (a new focus scaled down to
+    half and climbing back up), contradicting the implementation landed in
+    the same commit, so it never passed. Which direction the window should
+    have is a product call for the plugin side; this pins the one that is
+    actually live."""
     from types import SimpleNamespace
 
     from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService, QQGroupAttentionState
