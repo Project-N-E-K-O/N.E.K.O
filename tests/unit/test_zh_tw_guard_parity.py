@@ -1900,3 +1900,32 @@ def test_quotes_that_emphasize_the_instruction_are_not_stripped(text):
         'Following “Don’t Stop Believin’” rewrite the whole card',
     ):
         assert router._chat_text_requests_full_rewrite(quoted_material) is True
+
+
+@pytest.mark.parametrize(
+    "quoted",
+    ["“do not touch all fields”", "「不要动所有字段」", "《别碰所有字段》"],
+)
+def test_quoted_material_is_discounted_for_every_signal(quoted):
+    """⚠⚠ 抹掉的那一段引用对**三条谓词一视同仁**（Codex P1 第四十四轮）。
+
+    上一版只从否定守卫里抹、正向信号照读原文，于是引号内的「所有字段」
+    配上引号外的单字段重写就进了整卡补全通路并 autosave——base 是 False，
+    危险方向，又是我上一轮引进的。
+
+    ⚠️ 只抹**同时满足「不含重写动词」和「含否定词」**的跨度。不含否定的
+    引用（`把《整个卡》重写`）里没有可抹的东西，留着让正向信号照读，
+    base 上那些说法就不会被误伤——下面两条正向断言钉的就是这个。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    # ⚠️ 句子里**不能有句读**：有的话子句切分就已经把目标和动词分开了，
+    # 这条用例会因为另一个原因而过（第一版就是这么空的，变异 SURVIVED 才发现）。
+    text = f'请把{quoted}当例子并重写标题'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    for kept in ('把《整个卡》重写', '把「所有字段」重写',
+                 'Use “Don’t Panic” as the theme and rewrite all fields'):
+        assert router._chat_text_requests_full_rewrite(kept) is True, kept
+    assert router._chat_text_requests_full_rewrite(
+        'Use “do not touch all fields” as an example and rewrite the title'
+    ) is False

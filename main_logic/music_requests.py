@@ -476,7 +476,7 @@ _ZH_DECLARATIVE_LEFT = r"(?<![没沒])(?<!没有)(?<!沒有)"
 # ⚠️ `不怎么X` / `不怎样` 是**程度否定**（“not very”），不是提问：
 # `我想停止播放这首不怎么好听的歌` base 是 True，嵌在定语里的程度短语把疑问
 # 守卫踩了，用户明确不想听的歌反而停不下来（Codex P2 第四十三轮）。
-_ZH_DEGREE_NEGATION_LEFT = r"(?<![不没沒])"
+_ZH_DEGREE_NEGATION_LEFT = r"(?<![不没沒])(?<!没有)(?<!沒有)"
 _ZH_FREE_CHOICE_LEFT = (
     r"(?<!任)(?<!无论)(?<!無論)(?<!不论)(?<!不論)(?<!不管)(?<!随便)(?<!隨便)"
 )
@@ -490,7 +490,7 @@ rf"|{_ZH_DEGREE_NEGATION_LEFT}(?:怎么|怎麼|怎样|怎樣)|如何|干嘛|幹�
     # `我想停止播放谁唱的《你好吗？》` 执行取消（危险方向）；收 =
     # `帮我停止播放谁的歌都行` 判成提问、少停一次歌（轻）。取轻的那一侧，
     # 跟这个文件里其它十几处取舍一致（Codex P2 第二十六轮）。
-    r"|谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少"
+    rf"|{_ZH_FREE_CHOICE_LEFT}(?:谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少)"
     # 口语/其它疑问复合式（Codex P2 第三十二轮）。
     rf"|咋|咋办|咋辦|何处|何處|几点|幾點|凭{_ZH_WHAT}|憑{_ZH_WHAT}|多会儿"
     # ⚠️ 「有/是 + 什么/啥」：`有什么影响` / `是什么原因` / `有啥影响`
@@ -531,7 +531,8 @@ rf"|{_ZH_DEGREE_NEGATION_LEFT}(?:怎么|怎麼|怎样|怎樣)|如何|干嘛|幹�
     # 四十一轮）。
     # ⚠️ `哪` 在现代汉语里**只有这两个**非疑问的词化组合，不是开集——下次再被要求
     # 往这里加东西之前，先确认那真是个词，而不是「哪 + 量词」。
-    rf"|(?:{_ZH_DECLARATIVE_LEFT}{_ZH_WHAT}|哪(?![吒怕])|几|幾)"
+    rf"|{_ZH_FREE_CHOICE_LEFT}"
+rf"(?:{_ZH_DECLARATIVE_LEFT}{_ZH_WHAT}|哪(?![吒怕])|几|幾)"
 rf"一?[一-鿿]?{_ZH_MUSIC_OBJECT_NOUN})"
 )
 _ZH_PREFIXED_QUESTION_GUARD = (
@@ -798,6 +799,22 @@ def _zh_progressive_lookbehind() -> str:
 
 
 _ZH_PROGRESSIVE_LOOKBEHIND = _zh_progressive_lookbehind()
+# 状态/结果补语：`不要播放的断断续续` / `不要放的忽快忽慢`。这里的「的」是补语
+# 标记「得」的常见误打，跟程度补语、比较补语同一族（base 都是 True，
+# Codex P2 第四十四轮）。
+# ⚠️ **不列成品词表**：这一族的构词是闭的——状态补语几乎都是四字重叠式，
+# AABB（断断续续 / 结结巴巴）或 ABAC（忽快忽慢 / 一顿一顿）。按重叠**结构**判，
+# 一次收干净，不用追着补词。
+# ⚠️ 用**命名**反向引用而不是 `\1`：编号反向引用要数整条正则里前面有多少个括号，
+# 这条前视一旦被复制多份就会指错人。为此上面那四条播放动词分支已经合并成一次
+# 展开——命名组在一次编译里必须唯一。
+# ⚠️ 右边界要求落到子句末尾：`的代码` / `的教程` / `的听歌功能` 都不是四字重叠式，
+# 照旧被挡（那正是本 PR 缺陷三的本体）。
+_ZH_STATE_COMPLEMENT_AFTER_DE = (
+    r"(?:(?P<redup_aa>[一-鿿])(?P=redup_aa)(?P<redup_bb>[一-鿿])(?P=redup_bb)"
+    r"|(?P<redup_ab>[一-鿿])[一-鿿](?P=redup_ab)[一-鿿])"
+    r"\s*(?=$|[，,。！!？?])"
+)
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # ⚠️ `\s*` 写在**内层前视里面**，不能写成 `的\s*(?!…)`：后者里 `\s*` 会回溯
     # 成零宽，前视又在空格那个位置判一次「后面不是音乐名词」，于是照样判成名物化。
@@ -816,7 +833,8 @@ _ZH_PLAYBACK_NOT_NOMINALIZED = (
     rf"(?!{_ZH_PROGRESSIVE_LOOKBEHIND}"
     rf"\s*的(?!\s*(?:{_ZH_MUSIC_HEAD_AFTER_DE}|{_ZH_MODIFIED_MUSIC_OBJECT_AFTER_DE}"
     rf"|{_ZH_DEGREE_AFTER_DE}|{_ZH_COMPARATIVE_AFTER_DE}"
-    rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_ELLIPTICAL_AFTER_DE}))"
+    rf"|{_ZH_COORDINATION_AFTER_DE}|{_ZH_STATE_COMPLEMENT_AFTER_DE}"
+    rf"|{_ZH_ELLIPTICAL_AFTER_DE}))"
     rf"|\s*{_ZH_PLAYBACK_UI_NOUN}"
     # ⚠️ 这个窗口同样不设上限：`停止播放功能正在自动循环的歌曲` /
     # `停止播放按钮所控制的客厅音乐` base 都是 True，卡 {0,4} 够不到后面的音乐
@@ -916,10 +934,16 @@ _ZH_NEGATIVE_MUSIC = re.compile(
     # `的广播代码` / `的听歌功能` 同理）。
     # 用 tempered dot：窗口里的每个字都不许是「播放动词 + 的」的起点。每次迭代
     # 恰好吃一个字，没有嵌套量词，仍是线性。
-    rf"(?:(?:(?!(?:播放|[放播听聽])\s*的).){{0,6}}(?:播放{_ZH_PLAYBACK_NOT_NOMINALIZED}"
-    rf"|[听聽](?![{_ZH_NON_PLAYBACK_AFTER_TING}]){_ZH_PLAYBACK_NOT_NOMINALIZED}"
-    rf"|放(?![{_ZH_NON_PLAYBACK_AFTER_FANG}]){_ZH_PLAYBACK_NOT_NOMINALIZED}"
-    rf"|播(?!放)(?![{_ZH_NON_PLAYBACK_AFTER_BO}]){_ZH_PLAYBACK_NOT_NOMINALIZED})"
+    # ⚠️⚠️ 名物化守卫提到四条分支**外面**，只出现一次。
+    # 语义不变（四条分支本来就各挂一份同样的守卫），但这样它在整条正则里
+    # 只展开一次，里面才能用**命名反向引用**判重叠式状态补语
+    # （同一个子模式重复四次时，命名组会重名、编号反向引用也会指错人）。
+    # ⚠️ 顺带消掉了本 PR 里又一处「同一件事写四份」。
+    rf"(?:(?:(?!(?:播放|[放播听聽])\s*的).){{0,6}}(?:播放"
+    rf"|[听聽](?![{_ZH_NON_PLAYBACK_AFTER_TING}])"
+    rf"|放(?![{_ZH_NON_PLAYBACK_AFTER_FANG}])"
+    rf"|播(?!放)(?![{_ZH_NON_PLAYBACK_AFTER_BO}]))"
+    rf"{_ZH_PLAYBACK_NOT_NOMINALIZED}"
     # ⚠️ 名词尾也要**右边界**。音樂/歌 可以是更长复合词的词头：
     # `取消音樂節的行程` / `停止音樂課` / `不要音樂理論` 全被判成取消播放
     # （简体 base 同样错）。「音樂X 能组成什么词」是开集，所以正向要求边界。

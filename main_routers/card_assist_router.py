@@ -1140,7 +1140,10 @@ def _chat_text_requests_edits(text: str) -> bool:
 # 放进同一个类里。第一版另开了个 `don[…]t` 分支，结果 `n[o…]t` 早就覆盖了它，
 # 变异「把这个常量收回 ASCII」照样全绿——两条写法重叠时常量根本不受力。
 _EN_APOSTROPHE_CHARS = "'’ʼ"
-_CHAT_NEGATED_REWRITE_RE = re.compile(
+# 否定/禁止词本身（不带后面那个重写动词）。
+# ⚠️ 提成单独常量是为了让 _chat_clause_without_quotes 判断「这段引号里到底有没有
+# 禁止」，两处必须同源——另抄一张表就是下一个漂移点。
+_CHAT_NEGATION_LEXEME = (
     # ⚠️ 否定/禁止是**封闭词类**，一次列全，不要被 reviewer 一个一个揪。
     # greptile 只报了「不准」，实测同时漏的还有 不許/不许/禁止/嚴禁/严禁/
     # 休要/不得/莫——逐个补是打地鼠，这一维本来就可以枚举干净。
@@ -1154,6 +1157,10 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
     # `dont`（整个撇号都不打）中间没有字符，只能单列。
     rf"|(?:do\s*n[o{_EN_APOSTROPHE_CHARS}]t|dont|never|no\s+need\s+to"
     rf"|please\s+do\s*n[o{_EN_APOSTROPHE_CHARS}]t)\s*)"
+)
+_CHAT_NEGATED_REWRITE_LEXEME_RE = re.compile(_CHAT_NEGATION_LEXEME, re.IGNORECASE)
+_CHAT_NEGATED_REWRITE_RE = re.compile(
+    _CHAT_NEGATION_LEXEME +
     # ⚠️ 窗口要盖住整个宾语短语。`請勿把整個角色卡全部重寫` 里 請勿 和 重寫
     # 之间隔了八个字，{0,4} 够不着。
     # 这里放宽是**安全方向**：否定守卫误触发 = 整卡补全不跑（少补几个字段），
@@ -1217,9 +1224,27 @@ def _chat_clause_without_quotes(clause: str) -> str:
 
     ⚠️ 已知代价在安全那一侧：`Use “Don’t Rewrite Me” as the title and rewrite
     all fields` 里引号既有否定又有动词，会被当成指令、少补几个字段。
+
+    ⚠️⚠️ 抹掉的那一段对**三条谓词一视同仁**，不能只从否定守卫里抹掉、正向信号
+    还照读。上一版就是这么不对称的，于是
+    `Use “do not touch all fields” as an example and rewrite the title` 里
+    引号内的禁止被抹掉、引号内的 `all fields` 却仍然算整卡目标，配上引号外那个
+    单字段的 `rewrite` 就进了整卡补全通路并 autosave（Codex P1 第四十四轮，
+    base 是 False——危险方向，又是我上一轮引进的）。
+
+    ⚠️ 所以只抹**同时满足「不含重写动词」和「含否定词」**的跨度：那才是「被引用
+    的禁止」。不含否定的跨度（`把《整个卡》重写` / `把「所有字段」重写`）里没有
+    可抹的东西，留着让正向信号照读，base 上那些说法就不会被误伤。
     """  # noqa: DOCSTRING_CJK
     return _CHAT_QUOTED_SPAN_RE.sub(
-        lambda m: m.group(0) if _CHAT_REWRITE_VERB_RE.search(m.group(0)) else " ",
+        lambda m: (
+            " "
+            if (
+                _CHAT_NEGATED_REWRITE_LEXEME_RE.search(m.group(0))
+                and not _CHAT_REWRITE_VERB_RE.search(m.group(0))
+            )
+            else m.group(0)
+        ),
         clause,
     )
 
@@ -1248,11 +1273,16 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     if not text:
         return False
     for clause in _chat_clauses(text):
-        if _CHAT_NEGATED_REWRITE_RE.search(_chat_clause_without_quotes(clause)):
+        # ⚠️ 三条谓词读的必须是**同一份文本**：抹掉的那段引用对否定和正向信号
+        # 一视同仁。上一版只从否定守卫里抹，正向信号照读原文，于是引号里的
+        # `all fields` 配上引号外的单字段 `rewrite` 进了整卡补全通路
+        # （Codex P1 第四十四轮）。
+        readable = _chat_clause_without_quotes(clause)
+        if _CHAT_NEGATED_REWRITE_RE.search(readable):
             continue
         if (
-            _CHAT_FULL_REWRITE_RE.search(clause)
-            and _CHAT_REWRITE_VERB_RE.search(clause)
+            _CHAT_FULL_REWRITE_RE.search(readable)
+            and _CHAT_REWRITE_VERB_RE.search(readable)
         ):
             return True
     return False

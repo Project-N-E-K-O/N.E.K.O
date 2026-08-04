@@ -3796,3 +3796,58 @@ def test_free_choice_applies_to_the_what_time_compound_too(prefix, what):
     text = f'我想停止播放{prefix}{what}都行'
     assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation(f'我想停止播放{what}合适') is False
+
+
+@pytest.mark.parametrize("verb", ["播放", "放", "听", "聽", "播"])
+@pytest.mark.parametrize(
+    "complement", ["断断续续", "斷斷續續", "结结巴巴", "忽快忽慢",
+                   "一顿一顿", "忽高忽低"],
+)
+def test_reduplicated_state_complements_after_a_mistyped_de(verb, complement):
+    """状态/结果补语里的「的」是补语标记「得」的误打（base 全是 True）。
+
+    ⚠️ **不列成品词表**：这一族的构词是闭的——四字重叠式，AABB 或 ABAC。
+    按重叠**结构**判，一次收干净（Codex P2 第四十四轮）。
+
+    ⚠️ 反向断言钉住缺陷三的本体：`的代码` / `的教程` / `的听歌功能`
+    都不是四字重叠式，照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'不要{verb}的{complement}'
+    assert is_explicit_music_cancellation(text) is True, text
+    # ⚠️ 重叠式要求落到**子句末尾**：后面还跟着名词时它是定语不是补语，
+    # `停止播放的断断续续的问题` 问的是问题、不是要停歌。
+    for kept in ('我要停止播放的代码', '我想停止播放的教程',
+                 '我要停止播放的听歌功能',
+                 f'我想停止播放的{complement}的问题'):
+        assert is_explicit_music_cancellation(kept) is False, kept
+
+
+@pytest.mark.parametrize("prefix", ["无论", "無論", "不论", "不管", "任", "随便"])
+@pytest.mark.parametrize("wh", ["什么歌", "啥歌", "谁唱的歌", "哪个唱的歌"])
+def test_free_choice_covers_the_music_and_pronoun_branches(prefix, wh):
+    """任指左界要盖住**每一支** wh 分支（Codex P2 第四十四轮）。
+
+    上一轮只盖了时间和 `何…` 两支，音乐复合式和代词组还漏着。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{prefix}{wh}都不好听'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False
+
+
+@pytest.mark.parametrize("negator", ["不", "没", "沒", "没有", "沒有"])
+def test_two_character_negators_before_a_degree_marker(negator):
+    """⚠️ `没有怎么` 的否定词是**两个字**，单字后视挡不住。
+
+    跟 `没有什么` 是同一个形状，上一轮只在 `什么` 那边单列了两字后视，
+    `怎么` 这边漏了（Codex P2 第四十四轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for marker in ("怎么", "怎麼", "怎样", "怎樣"):
+        text = f'我想停止播放这首{negator}{marker}听过的歌'
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放怎么会卡') is False
