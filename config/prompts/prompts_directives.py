@@ -550,34 +550,49 @@ def _zh_quoted_span_end(text: str) -> int:
     paired_symmetric = {
         ch for ch in _ZH_SYMMETRIC_DELIMS if text.count(ch) % 2 == 0
     }
+    end, stack = _zh_scan_quoted(text, paired_symmetric, frozenset())
+    # ⚠️ 落单的 ASCII 开括号不只是"最后别当成引文"——它压在栈底，会让**后面**每一段
+    # 合法引文都记不上收尾位置（``别再提价格<预算《你好吗》。`` 里那个 ``<`` 一开，
+    # ``《你好吗》`` 就白闭合了，``好吗`` 被当句子级语气剥掉、书名腰斩成 ``《你``，
+    # parent 是完整的，codex P2）。所以要把它们当**普通字符**重扫一遍，而不是扫完
+    # 再丢掉栈——那时候位置信息已经没了。
+    if stack and all(_is_ascii_delim(ch) for ch, _pos in stack):
+        end, stack = _zh_scan_quoted(
+            text, paired_symmetric, frozenset(pos for _ch, pos in stack)
+        )
+    # 还剩没闭合的**非对称**开括号 = 有一段引文一直延伸到末尾（``电影《好不好``）。
+    # ⚠️ 落单的对称引号不算——它是英寸号 / 颜文字，见 _ZH_SYMMETRIC_DELIMS 的注释。
+    # ⚠️ 落单的 ASCII 开括号也不算：``（ 「 《 【`` 这些全角括号在中文里只用来引起一段
+    # 引文，落单＝标题被截断；而 ``< { ( [`` 在中文行文里常常是比较号 / 代码片段，本来
+    # 就不配对。判据是「开括号是不是 ASCII」，闭集、不用枚举运算符。
+    return len(text) if stack else end
+
+
+def _zh_scan_quoted(
+    text: str, paired_symmetric: set, ignored: frozenset
+) -> Tuple[int, List[Tuple[str, int]]]:
+    """One depth-aware pass; ``ignored`` holds indices to treat as plain text."""
     end = 0
-    stack: List[str] = []
+    stack: List[Tuple[str, int]] = []
     symmetric_open: str | None = None
     for index, char in enumerate(text):
+        if index in ignored:
+            continue
         if symmetric_open is not None:
             if char == symmetric_open:
                 symmetric_open = None
                 if not stack:
                     end = index + 1
             continue
-        if stack and char == _ZH_CLOSE_FOR_OPEN[stack[-1]]:
+        if stack and char == _ZH_CLOSE_FOR_OPEN[stack[-1][0]]:
             stack.pop()
             if not stack:
                 end = index + 1
         elif char in _ZH_CLOSE_FOR_OPEN:
-            stack.append(char)
+            stack.append((char, index))
         elif char in paired_symmetric:
             symmetric_open = char
-    # 还剩没闭合的**非对称**开括号 = 有一段引文一直延伸到末尾（``电影《好不好``）。
-    # ⚠️ 落单的对称引号不算——它是英寸号 / 颜文字，见 _ZH_SYMMETRIC_DELIMS 的注释。
-    # ⚠️ 落单的 **ASCII** 开括号也不算。``（ 「 《 【`` 这些全角括号在中文里只用来引
-    # 起一段引文，落单＝标题被截断；而 ``< { ( [`` 在中文行文里常常是比较号 / 代码
-    # 片段，本来就不配对——``别再提价格<预算好吗？`` 里那个 ``<`` 一旦被当成没写完的
-    # 书名号，末尾的 ``好吗`` 就永远剥不掉（codex P2）。判据是「开括号是不是 ASCII」，
-    # 闭集、不用枚举运算符。
-    if any(not _is_ascii_delim(ch) for ch in stack):
-        return len(text)
-    return end
+    return end, stack
 
 
 _ZH_PLAIN_CHAR = r"[^，。！？；,.!?;\r\n]"
@@ -789,15 +804,33 @@ _ZH_NEG_UNAMBIGUOUS = tuple(
     for neg in _ZH_NEG_SINGLES
     if neg not in _ZH_NEG_JA_AMBIGUOUS
 )
+# ⚠️ 「左邻是分句起点」这个否定式判据里，**串首**要单独拆出来。日文的 ``別`` 除了当
+# 后缀（地域別），还能当**前缀**：``別提案`` ＝ 另一份提案、``別談話`` 同理，而这类句子
+# 往往就从 ``別`` 开头。串首的 lookbehind 是空真，于是 ``別提案をお願いします。`` 被判
+# 成中文、存下 ``案をお願いします``（codex P2）。
+#
+# 这一维和 ``X，Y别提了`` 那条一样**没有结构判据**——中文的 ``別提〈日文标题〉`` 和日文
+# 的 ``別提案…`` 在串首完全同形，差别纯粹是后面那段是名词短语还是句子。所以按代价方向
+# 选边：存下一段日文残片当禁忌话题（模型会回避它三天）比少触发一次坏得多。
+#
+# 但 ``再`` 能消歧：``別再`` 后面直接跟言说动词的形态在日文里不成立（日文要写
+# ``別の再提案``）。所以串首这一支**要求 ``再``**，``別再提君の名は。`` 照旧认得出来，
+# 而 ``別提案をお願いします。`` 交给日文守卫。⚠️ 串首支不能省掉 ``^``——省了就等于
+# 给 ``地域別再提案`` 开洞，``〜別`` 后缀那一维会从这里漏回来。
 _ZH_NEG_VERB_EVIDENCE = (
-    "(?:"
-    + f"(?<![^{_ZH_CLAUSE_START_LEFT}])(?:"
+    "(?:(?:"
+    + f"(?<=[{_ZH_CLAUSE_START_LEFT}])(?:"
     + "|".join(_ZH_NEG_JA_AMBIGUOUS)
-    + ")|"
+    + r")\s*(?:再)?"
+    + "|^(?:"
+    + "|".join(_ZH_NEG_JA_AMBIGUOUS)
+    + r")\s*再"
+    + "|(?:"
     + "|".join(_ZH_NEG_UNAMBIGUOUS)
-    + r")\s*(?:再)?\s*(?:"
+    + r")\s*(?:再)?"
+    + r")\s*(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
-    + ")"
+    + "))"
 )
 # 多字否定词不需要左界：``不要 / 不许 / 不許 / 不准`` 都不可能是日文的名词后缀，
 # 上面那条左界只为单字的 ``別`` 而设。带上左界反而把正常的中文主语挡在外面——

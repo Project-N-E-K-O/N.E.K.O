@@ -1668,8 +1668,13 @@ def test_every_negation_counts_as_chinese_evidence(negation):
     """⚠️ 单字类覆盖不到 不准/莫/休/不要——它们一个字都不在里面，于是含日文语法标记
     的标题被当成日文句子整条丢掉（codex P2）。补的是**结构**不是共用汉字：往字类里
     塞 准/莫/休 会像 没/称 那样把守卫整个短路掉。
+
+    ⚠️ 和日文共用码位的那两个（``别 別``）用带 ``再`` 的形态：串首、又没有 ``再``
+    的 ``別提X`` 在日文里是"另一份 X"（別提案），刻意交给日文守卫，见
+    test_a_clause_initial_bie_compound_stays_behind_the_japanese_guard。
     """  # noqa: DOCSTRING_CJK
-    assert _zh_terms(f"{negation}提君の名は。") == {"君の名は"}
+    again = "再" if negation in D._ZH_NEG_JA_AMBIGUOUS else ""
+    assert _zh_terms(f"{negation}{again}提君の名は。") == {"君の名は"}
 
 
 @pytest.mark.parametrize(
@@ -2982,11 +2987,16 @@ def test_the_clause_start_boundary_needs_no_enumeration(text):
     assert _zh_terms(text) == set(), _zh_terms(text)
 
 
-def test_the_left_boundary_is_a_negated_class_not_an_enumeration():
-    """结构面：判据必须写成「不是分句起点」的否定式，不能退回枚举标签字符。"""  # noqa: DOCSTRING_CJK
+def test_the_left_boundary_is_a_clause_start_class_not_an_enumeration():
+    """结构面：判据必须是「左邻属于分句起点字符」，不能退回枚举日文标签字符。
+
+    ⚠️ 曾经写成否定式 ``(?<![^X])``。等价，但串首是**空真**——日文的 ``別提案``
+    从这个洞漏进来了，所以改成正向的 ``(?<=[X])``，串首单独一支并要求 ``再``。
+    """  # noqa: DOCSTRING_CJK
     assert not hasattr(D, "_ZH_JA_LABEL_TAIL")
     assert "一-鿿" not in D._ZH_CLAUSE_START_LEFT
-    assert f"(?<![^{D._ZH_CLAUSE_START_LEFT}])" in D._ZH_NEG_VERB_EVIDENCE
+    assert f"(?<=[{D._ZH_CLAUSE_START_LEFT}])" in D._ZH_NEG_VERB_EVIDENCE
+    assert f"(?<![^{D._ZH_CLAUSE_START_LEFT}])" not in D._ZH_NEG_VERB_EVIDENCE
     # 反向：能起小句的那些左邻照常放行。
     # ⚠️ 判别得出这张表大小的用例有两个前提，缺一个就测不出来：
     # 1. 话题要**带日文语法**（``君の名は``）。话题是纯中文时守卫的第三条判据本来就
@@ -3157,3 +3167,103 @@ def test_an_unmatched_ascii_opener_is_an_operator_not_a_title(opener):
 def test_an_unmatched_fullwidth_opener_is_still_a_truncated_title(opener):
     """全角开括号在中文里只用来引起引文，落单＝标题被截断，语气词不能剥。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms(f"别再提电影{opener}好不好") == {f"电影{opener}好不好"}
+
+
+# ── 39. 串首的 別 复合词 / 落单 ASCII 括号遮蔽后面的引文 ─────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別提案をお願いします。",
+        "別提案について説明します。",
+        "別談話でも可。",
+        "別提案。",
+    ],
+)
+def test_a_clause_initial_bie_compound_stays_behind_the_japanese_guard(text):
+    """日文的 ``別`` 也能当**前缀**（別提案 ＝ 另一份提案），而这类句子常从它开头。
+
+    串首的 lookbehind 是空真，于是结构证据抢在日文守卫之前短路，存下
+    ``案をお願いします``（codex P2）。这一维和 ``X，Y别提了`` 一样没有结构判据——
+    中文的 ``別提〈日文标题〉`` 和日文的 ``別提案…`` 在串首完全同形。按代价方向选边：
+    存下一段日文残片当禁忌话题比少触发一次坏得多。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別再提君の名は。",
+        "算了，別提君の名は。",
+        "「別提君の名は。」",
+        "我們別再提君の名は。",
+        "別提工作。",
+        "別再提工作。",
+    ],
+)
+def test_the_traditional_directive_still_works_where_it_is_unambiguous(text):
+    """选边的代价要收窄到只有串首**且没有 ``再``** 那一格。
+
+    ``再`` 能消歧：``別再`` 后面直接跟言说动词的形态在日文里不成立（日文写
+    ``別の再提案``）。左邻是真分句起点、有主语、纯中文话题的那几路都照旧。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text), text
+
+
+def test_the_string_start_branch_still_needs_the_left_boundary():
+    """⚠️ 串首那一支不能省掉 ``^``——省了 ``地域別再提案`` 就从这里漏回来。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("地域別再提案をお願いします。") == set()
+    assert _zh_terms("地域別提案をお願いします。") == set()
+    # 结构面：串首支必须锚在 ``^`` 上，且必须要求 ``再``。
+    assert "^(?:别|別)" in D._ZH_NEG_VERB_EVIDENCE.replace("\s*", "")
+    start_branch = D._ZH_NEG_VERB_EVIDENCE.split("^(?:")[1]
+    assert start_branch.split(")")[1].replace("\s*", "").startswith("再")
+
+
+@pytest.mark.parametrize(
+    "opener", sorted(o for o in D._ZH_CLOSE_FOR_OPEN if o.isascii())
+)
+def test_an_unmatched_ascii_opener_does_not_mask_a_later_quote(opener):
+    """落单的 ASCII 开括号压在栈底，会让**后面**每段合法引文都记不上收尾位置。
+
+    ``别再提价格<预算《你好吗》。`` 里 ``《你好吗》`` 白闭合，``好吗`` 被当句子级
+    语气剥掉、书名腰斩成 ``《你``（parent 是完整的，codex P2）。所以要把落单的
+    ASCII 开括号当**普通字符重扫一遍**，而不是扫完再丢掉栈——那时位置已经没了。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提价格{opener}预算《你好吗》。") == {
+        f"价格{opener}预算《你好吗"
+    }
+    # 引文之外的尾巴照旧要剥掉。
+    assert _zh_terms(f"别再提价格{opener}预算《你好吗》好吗？") == {
+        f"价格{opener}预算《你好吗"
+    }
+
+
+@pytest.mark.parametrize(
+    ("lone", "opener", "closer"),
+    [
+        (lone, opener, closer)
+        for lone in sorted(o for o in D._ZH_CLOSE_FOR_OPEN if o.isascii())
+        for opener, closer in sorted(D._ZH_CLOSE_FOR_OPEN.items())
+        if opener.isascii() and opener != lone
+    ],
+)
+def test_the_rescan_only_ignores_the_unmatched_positions(lone, opener, closer):
+    """重扫只忽略**落单**的那几个下标，同句里配对的 ASCII 括号仍然算引文段。
+
+    ⚠️ 这条是「重扫时把所有 ASCII 开括号一起忽略」那种偷懒改法的唯一判别用例：
+    要同时有一个落单的（触发重扫）和一个配对的（内容必须受保护），而且配对那段
+    要以有歧义的尾词结尾，被误判成句子级语气才看得出来。
+    """  # noqa: DOCSTRING_CJK
+    text = f"别再提价格{lone}预算{opener}你好吗{closer}。"
+    assert _zh_terms(text) == {f"价格{lone}预算{opener}你好吗"}, _zh_terms(text)
+
+
+def test_the_quoted_span_end_boundaries():
+    """直接打 _zh_quoted_span_end 的三条下标断言。"""  # noqa: DOCSTRING_CJK
+    assert D._zh_quoted_span_end("价格<预算《你好吗》") == len("价格<预算《你好吗》")
+    assert D._zh_quoted_span_end("《你好吗》好吗") == len("《你好吗》")
+    # 全角落单仍然一路延伸到末尾。
+    assert D._zh_quoted_span_end("电影《好不好") == len("电影《好不好")
