@@ -982,7 +982,7 @@ def test_all_four_zh_templates_share_one_topic_char_class():
     assert D._ZH_BRACKET_PAIRS == (
         ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
         ("（", "）"), ("〈", "〉"), ("〔", "〕"), ("［", "］"), ("〖", "〗"),
-        ('"', '"'), ("(", ")"), ("[", "]"),
+        ('"', '"'), ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"),
     )
     # ⚠️ 单引号刻意不收：英文里它是词内撇号（don't / it's），配对没有意义。
     assert "'" not in {lo for lo, _hi in D._ZH_BRACKET_PAIRS}
@@ -2450,7 +2450,8 @@ def test_the_preposed_template_spacing_is_atomic():
     assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
     assert r"(?>\s*)(?>\s*)" not in head, head
     # 模板自己的 4 个 + 停顿标点常量里的 1 个
-    assert head.count(r"(?>\s*)") == 5, head.count(r"(?>\s*)")
+    # 模板自己的 4 个 + 两处停顿标点常量各 1 个
+    assert head.count(r"(?>\s*)") == 6, head.count(r"(?>\s*)")
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -2821,23 +2822,9 @@ def test_the_quoted_span_scanner_ignores_odd_symmetric_delimiters():
     assert end('"甲"好吗') == 3              # 成对的仍然算
 
 
-def test_the_japanese_label_tail_covers_more_than_han_and_kana():
-    """⚠️ 判据是「左邻不是词的结尾」。只挡汉字假名的话，``A別提案`` / ``タイプ2別提案``
-    / ``「地域」別提案`` 全部漏网——它们都是真实的日文写法（codex P2）。
-    收尾括号从 _ZH_BRACKET_PAIRS 派生，不另抄一张。
-    """  # noqa: DOCSTRING_CJK
-    import re as _re
-
-    tail = D._ZH_JA_LABEL_TAIL
-    for span in ("一-鿿", "぀-ゟ", "゠-ヿ", "0-9A-Za-z", "０-９"):
-        assert span in tail, span
-    for _lo, hi in D._ZH_BRACKET_PAIRS:
-        assert _re.escape(hi) in tail, hi
-    # 而中文指令里 别 前面是句首 / 代词 / 标点——代词都是汉字（在 一-鿿 里），
-    # 标点则必须不在表内，否则 ``算了，别提工作。`` 会被挡掉
-    probe = _re.compile(f"[{tail}]")
-    for punctuation in "，。！？；、：":
-        assert not probe.match(punctuation), punctuation
+# ⚠️「日文标签左界枚举」那条护栏已删：判据改成否定式之后不再有那张表，
+# 由 test_the_clause_start_boundary_needs_no_enumeration 和
+# test_the_left_boundary_is_a_negated_class_not_an_enumeration 接管。
 
 
 # ── 35. 前置话题和触发词之间的停顿标点 ───────────────────────
@@ -2927,3 +2914,80 @@ def test_case_insensitive_matching_does_not_change_the_stored_casing(text, expec
     """比 lower 只用来判断要不要剥，term 本身的大小写原样保留。"""  # noqa: DOCSTRING_CJK
     terms = {t for _loc, _kind, t in extract_directives(text)}
     assert expected in terms, terms
+
+
+# ── 37. ASCII {} <> / 填充词后的停顿 / 左界改否定式 ──────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("{Hello, World}别提了。", "Hello, World"),
+        ("<Hello, World>别提了。", "Hello, World"),
+        ("{Hello, World}別提了。", "Hello, World"),
+        ("别提{Hello, World}了。", "Hello, World"),
+    ],
+)
+def test_all_ascii_delimiters_that_trim_strips_are_also_paired(text, expected):
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+def test_every_trimmed_delimiter_pair_is_in_the_bracket_table():
+    """自动发现：``_TRIM_TRAIL`` 当分隔符剥的 ASCII 括号，配对表里必须都有——
+    两处不一致就会让内部标点变成硬边界（codex P2 报了 ``[]``、``{}``、``<>`` 三轮）。
+    """  # noqa: DOCSTRING_CJK
+    paired = {ch for pair in D._ZH_BRACKET_PAIRS for ch in pair}
+    for opener, closer in (("(", ")"), ("[", "]"), ("{", "}"), ("<", ">")):
+        if opener in D._TRIM_TRAIL and closer in D._TRIM_TRAIL:
+            assert opener in paired and closer in paired, (opener, closer)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("工作，这件事，别提了。", "工作"),
+        ("工作，這件事，別提了。", "工作"),
+        ("关于工作，这件事，就别提了。", "工作"),
+        ("關於工作，這件事，就別提了。", "工作"),
+    ],
+)
+def test_a_pause_after_the_filler_is_consumed_too(text, expected):
+    """⚠️ 停顿标点会出现**不止一次**：``工作，这件事，别提了。`` 里填充词两侧各一个。
+    只收前面那个的话，正则会从第一个逗号之后重新起匹配、存下 ``这件事``（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "モデルβ別提案をお願いします。",
+        "モデルＸ別提案をお願いします。",
+        "ΑΒΓ別提案をお願いします。",
+        "Модель別提案をお願いします。",
+    ],
+)
+def test_the_clause_start_boundary_needs_no_enumeration(text):
+    """⚠️ 这一维栽过三次：先只挡汉字、漏片假名；补假名后漏拉丁字母 / 数字 / 收尾括号；
+    补上之后又漏 ``β``。字符集是开的，枚举永远差一格。
+
+    换成**否定式**——中文指令的否定词总是**起一个小句**，左邻只可能是串首、空白、或
+    分句标点；别的（任何文字的字母、数字、收尾括号）都说明 ``別`` 挂在一个词后面。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+def test_the_left_boundary_is_a_negated_class_not_an_enumeration():
+    """结构面：判据必须写成「不是分句起点」的否定式，不能退回枚举标签字符。"""  # noqa: DOCSTRING_CJK
+    assert not hasattr(D, "_ZH_JA_LABEL_TAIL")
+    assert "一-鿿" not in D._ZH_CLAUSE_START_LEFT
+    assert f"(?<![^{D._ZH_CLAUSE_START_LEFT}])" in D._ZH_NEG_VERB_EVIDENCE
+    # 反向：能起小句的那些左邻照常放行。
+    # ⚠️ 判别得出这张表大小的用例有两个前提，缺一个就测不出来：
+    # 1. 话题要**带日文语法**（``君の名は``）。话题是纯中文时守卫的第三条判据本来就
+    #    不成立，整个守卫都不会启动，缩小左界表也看不出差异。
+    # 2. 否定词要用**繁体 別**。简体 ``别`` 本身就在 _ZH_EVIDENCE_CHARS 里，单字证据
+    #    先一步救下它；繁体 ``別`` 和日文共用码位、不能进那张字表，所以只剩结构证据
+    #    这一条命——正是这个 PR 服务的那批用户。
+    for text in ("算了，別提君の名は。", "算了。別提君の名は。", "工作、別提君の名は。"):
+        assert _zh_terms(text) == {"君の名は"}, text
+    assert _zh_terms("算了，别提工作。") == {"工作"}
+    assert _zh_terms("别再提工作。") == {"工作"}
