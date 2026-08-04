@@ -355,6 +355,65 @@ async def test_a_terminal_resets_the_per_turn_output_state():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_response_created_resets_the_per_response_output_state():
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    client._interrupted = True
+    client._output_transcript_buffer = "previous buffered transcript"
+    client._current_response_transcript = "previous repetition transcript"
+    client._last_response_created_time = 0.0
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-new"}})
+    await _settle()
+
+    assert client._interrupted is False
+    assert client._output_transcript_buffer == ""
+    assert client._current_response_transcript == ""
+    assert client._last_response_created_time > 0.0
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_flush_failure_does_not_stop_the_receive_loop(caplog):
+    async def _raise_from_output_transcript(_text: str, _is_first: bool) -> None:
+        raise RuntimeError("host transcript sink disconnected")
+
+    client = _native_client()
+    client.on_output_transcript = _raise_from_output_transcript
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    client._audio_delta_count = 1
+    client._output_transcript_buffer = "already spoken"
+
+    with caplog.at_level(logging.WARNING):
+        socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+        await _settle()
+
+    assert receive_loop.done() is False
+    assert client._output_transcript_buffer == ""
+    assert "response.done transcript flush failed" in caplog.text
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    await _settle()
+    assert client._current_response_id == "resp-2"
+    assert client._response_created_total == 2
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_a_terminal_clears_the_in_progress_flags():
     # The other half of ending a turn: the flags that say a response is in
     # flight. Untested before this, same as the per-turn reset was.

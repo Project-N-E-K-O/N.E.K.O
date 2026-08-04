@@ -1834,7 +1834,15 @@ class _TransportMixin:
                     # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
                     # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
                     # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
-                    await self._flush_pending_output_transcript()
+                    try:
+                        await self._flush_pending_output_transcript()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "response.done transcript flush failed (%s); continuing",
+                            type(exc).__name__,
+                        )
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished()
                 elif event_type == "response.created":
