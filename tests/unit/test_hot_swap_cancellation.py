@@ -293,6 +293,37 @@ async def test_final_swap_happy_path_still_promotes():
         await _drain_task(old_listener_task)
 
 
+@pytest.mark.asyncio
+async def test_final_swap_does_not_emit_prime_context(monkeypatch, capsys):
+    sentinel = "PRIVATE_FINAL_PRIME_SENTINEL_2635"
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    mgr.message_cache_for_new_session = [object()]
+    mgr._convert_cache_to_str = lambda _cache: sentinel
+
+    logged = []
+
+    def _capture_log(message, *args, **kwargs):
+        del kwargs
+        logged.append(str(message) % args if args else str(message))
+
+    for level in ("debug", "info", "warning", "error", "exception"):
+        monkeypatch.setattr(core_module.logger, level, _capture_log)
+
+    try:
+        await mgr._perform_final_swap_sequence()
+        captured = capsys.readouterr()
+        emitted = captured.out + captured.err + "\n".join(logged)
+        assert sentinel not in emitted
+    finally:
+        await _drain_task(mgr.message_handler_task)
+
+
 def _extra_entry(delivery_id, summary):
     """A pending_extra_replies entry in the exact shape enqueue_agent_callback produces."""
     return {

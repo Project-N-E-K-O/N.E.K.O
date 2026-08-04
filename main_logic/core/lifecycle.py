@@ -1544,7 +1544,8 @@ class LifecycleMixin:
 
         logger.info("✅ LLM Session 已连接")
         logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
-        print(initial_prompt)  #只在控制台显示，不输出到日志文件
+        # ``initial_prompt`` contains memory and raw conversation context.
+        # Never emit it to stdout or a persistent logger.
         return next_context_count
 
     async def _start_session_reset_state_for_new(self):
@@ -1821,7 +1822,6 @@ class LifecycleMixin:
                 + self._convert_cache_to_str(next_session_context_messages)
                 + self._convert_cache_to_str(self.message_cache_for_new_session)
             )
-            print(initial_prompt)
             self._bind_session_lifecycle_callbacks(self.pending_session)
             await self.pending_session.connect(initial_prompt, native_audio=not self.pending_use_tts)
 
@@ -2324,8 +2324,6 @@ class LifecycleMixin:
                         logger.warning(
                             f"Final Swap Sequence: passive ride-along prime failed (kept queued): {e}"
                         )
-
-            print(final_prime_text) #只在控制台显示，不输出到日志文件
 
             # 2. Start temporary listener for PENDING session's *second* ignored response
             if self.pending_session_final_prime_complete_event:
