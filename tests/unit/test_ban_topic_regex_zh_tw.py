@@ -1531,7 +1531,7 @@ def test_the_bracket_char_set_is_derived_from_the_pairs():
 def test_interrogative_tails_are_a_separate_table_from_the_particles():
     """混进助词表就没法按括号分别对待了。"""  # noqa: DOCSTRING_CJK
     assert D._TAIL_INTERROGATIVES_BY_LOCALE["zh"] == (
-        "好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎",
+        "好吗", "好嗎", "好不好", "可以吗", "可以嗎", "行吗", "行嗎", "吗", "嗎",
     )
     # zh 那张助词表必须只剩单字，否则多字反问短语会绕过括号判据被无条件剥掉。
     for tok in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"]:
@@ -2263,3 +2263,110 @@ def test_relaxing_to_word_chars_does_not_merge_two_directives(text, expected):
     凑不出合法匹配时才会把 ``.`` 吃进话题。这条钉住那个前提。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == expected, _zh_terms(text)
+
+
+# ── 27. 左界只给有日文 〜別 歧义的那两个字形 ─────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("我莫再提君の名は。", "君の名は"),
+        ("她莫再提地域の話。", "地域の話"),
+        ("我休再提君の名は。", "君の名は"),
+        ("他甭再提君の名は。", "君の名は"),
+    ],
+)
+def test_only_bie_needs_the_han_left_boundary(text, expected):
+    """⚠️ 日文的 ``〜別`` 后缀歧义是 ``别/別`` 独有的，``莫 / 休 / 甭`` 都不是日文的
+    名词后缀。套给全族的话正常的中文主语会把它们一起挡掉（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_ambiguous_negations_are_a_pinned_subset():
+    assert D._ZH_NEG_JA_AMBIGUOUS == ("别", "別")
+    assert set(D._ZH_NEG_JA_AMBIGUOUS) <= set(D._ZH_NEG_SINGLES)
+    # 其余的都进无左界那一支，且 休 仍然排掉 講
+    assert D._ZH_NEG_UNAMBIGUOUS == ("莫", "休(?!講)", "甭")
+
+
+# ── 28. 引号里的中文不算日文守卫的证据 ───────────────────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        "世代別講座で中国映画「這就是愛」について話します。",
+        "世代別講座で中国映画「这就是爱」について話します。",
+        "地域別提案で映画『這就是愛』について話します。",
+        # ⚠️ 挖空必须**等长**替换：直接删掉的话引文两侧的字会被拼到一起，凭空造出
+        # 多字证据（叫+我 / 不+想 / 懶+得 / 不+願 / 喊+我），日文句子照样被放行进来。
+        "世代別講座で叫「這就是愛」我について話します。",
+        "地域別提案は不「這」想について話します。",
+        "地域別提案で懶「愛」得について話します。",
+        "世代別講座で不「愛」願について話します。",
+        "地域別講座は喊「愛」我だそうです。",
+    ],
+)
+def test_a_quoted_chinese_title_does_not_disable_the_japanese_guard(text):
+    """⚠️ 日文句子引用一个中文片名是正常的。引号里的 ``這`` 把整条守卫短路掉，
+    日文句子的残片就进了指令表、注三天（codex P2）。挖空配对引文再搜证据。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set()
+
+
+def test_blanking_the_quotes_keeps_evidence_outside_them():
+    """反向：引号**外面**的证据照旧算数，否则整族中文指令会被打死。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("别再提《想見你喔》。") == {"想見你喔"}
+    assert _zh_terms("別叫我「お兄ちゃん」。") == {"お兄ちゃん"}
+    assert _zh_terms("别提《我很好吗》这件事。") == {"我很好吗》这件事"}
+
+
+# ── 29. 裸的疑问语气词 ───────────────────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("別再提工作嗎？", "工作"),
+        ("别再提工作吗？", "工作"),
+        ("不要再說工作了嗎？", "工作"),
+        ("不要再说工作了吗？", "工作"),
+        # ⚠️ 引号里的同一个字仍受保护
+        ("别再提《你可以吗》。", "你可以吗"),
+        ("別再提《你可以嗎》。", "你可以嗎"),
+        # 剥完不够两个字就整条留着
+        ("别提行吗。", "行吗"),
+        ("別提行嗎。", "行嗎"),
+    ],
+)
+def test_a_bare_question_particle_is_a_tail_too(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_a_whitespace_only_message_does_not_blow_up():
+    """⚠️ 前置话题的单字分支也匹配空格，于是话题和后面每个 ``\s*`` 能任意瓜分同一串
+    空白，把「在哪切」变成组合爆炸——``" " * 60`` 一度要 0.42 秒，而这条路径是每条
+    用户消息同步跑的，发一条纯空白消息就能卡住（codex P1）。
+
+    ⚠️ 用**增长倍率**而不是绝对秒数：这个形状本身在 parent 上就是三次方（60/120/240
+    实测 0.006/0.05/0.43），本 PR 要守的是「不比 parent 更差」，不是把它变成线性。
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    timings = {}
+    for n in (30, 60):
+        started = time.perf_counter()
+        extract_directives(" " * n)
+        timings[n] = time.perf_counter() - started
+    assert timings[60] < 0.15, timings
+    # 组合爆炸时 60 是 30 的几十倍；三次方是 8 倍左右，给足余量取 25
+    assert timings[60] < timings[30] * 25 + 0.02, timings
+
+
+def test_the_preposed_template_spacing_is_atomic():
+    """结构面：模板 2 里**动词之前**的每个 ``\s*`` 都必须原子化。
+
+    ⚠️ 动词**之后**那个 ``\s*(?:了)?`` 不能原子化——它后面的终结符字符类里含 ``\s``，
+    原子化会把本该当终结符的那个空格吃掉（``工作别提 然后…`` 会从命中变成不命中）。
+    """  # noqa: DOCSTRING_CJK
+    raw = _zh_pattern_sources()[1]
+    head = raw.split("(?:提了|")[0]
+    assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
+    assert r"(?>\s*)(?>\s*)" not in head, head
+    assert head.count(r"(?>\s*)") == 5, head.count(r"(?>\s*)")
