@@ -18,6 +18,7 @@ from main_logic.asr_client.endpointing.detector_runtime import (
 )
 from main_logic.asr_client.endpointing.detector import (
     DetectorActivityEvent,
+    DetectorCandidateKey,
     DetectorIngressIdentity,
     DetectorPrewarmEvent,
     DetectorSubmitStatus,
@@ -300,6 +301,43 @@ async def test_speaker_shadow_default_none_installs_no_smart_turn_callbacks() ->
     await detector.close()
 
 
+async def test_smart_turn_shadow_opens_only_at_authoritative_speech_onset() -> None:
+    shadow = _SpeakerShadowSpy()
+    gate = _Gate()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        resource_optimization_enabled=False,
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        speaker_shadow=shadow,
+        on_turn_complete=AsyncMock(),
+    )
+    idle_pcm = b"\x00\x00" * 160
+    speech_pcm = b"\x01\x00" * 160
+
+    await detector.feed(
+        idle_pcm,
+        speech_probability=0.0,
+        ingress_token=_ingress_token(),
+    )
+
+    assert shadow.frames == []
+    assert detector._speaker_shadow_candidate is None
+
+    gate.events = (SpeechActivityEvent.SPEECH_STARTED,)
+    await detector.feed(
+        speech_pcm,
+        speech_probability=0.9,
+        ingress_token=_ingress_token(),
+    )
+
+    candidate = SpeakerShadowCandidateKey(0, 0, "smart_turn_turn")
+    assert shadow.frames == [(speech_pcm, 16_000, candidate)]
+    assert detector._speaker_shadow_candidate == candidate
+    await detector.close()
+
+
 async def test_provider_shadow_observes_admitted_pcm_until_explicit_seal() -> None:
     shadow = _SpeakerShadowSpy()
     gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
@@ -362,6 +400,48 @@ async def test_provider_shadow_observes_admitted_pcm_until_explicit_seal() -> No
 
     await detector.close()
     assert shadow.close_calls == 1
+
+
+async def test_shadow_correlation_never_replaces_detector_authority() -> None:
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_provider_endpoint_policy(),
+        speaker_shadow=shadow,
+    )
+    await detector.feed(
+        b"\x01\x00" * 160,
+        speech_probability=0.9,
+        ingress_token=_ingress_token(),
+    )
+    detector.observe_provider_audio(b"\x01\x00" * 160, sample_rate_hz=16_000)
+    shadow_candidate = SpeakerShadowCandidateKey(0, 0, "provider_candidate")
+    detector_candidate = DetectorCandidateKey(0, 0)
+
+    assert await detector.current_candidate() == detector_candidate
+    assert await detector.candidate_is_current(detector_candidate) is True
+    assert (
+        await detector.correlate_speaker_shadow_candidate(shadow_candidate)
+        == detector_candidate
+    )
+    assert (
+        await detector.correlate_speaker_shadow_candidate(
+            SpeakerShadowCandidateKey(0, 1, "provider_candidate")
+        )
+        is None
+    )
+
+    assert (
+        await detector.reset(expected_candidate=DetectorCandidateKey(0, 1))
+        is False
+    )
+    assert detector.detector_epoch == 0
+    assert await detector.candidate_is_current(detector_candidate) is True
+    assert await detector.reset(expected_candidate=detector_candidate) is True
+    assert detector.detector_epoch == 1
+    assert await detector.current_candidate() is None
+    await detector.close()
 
 
 async def test_speaker_shadow_reset_and_close_advance_generation_fail_open() -> None:
@@ -528,7 +608,12 @@ async def test_stale_provider_ingress_does_not_mutate_throttle_policy() -> None:
 
 async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     coordinator = _BlockingSemanticCoordinator()
-    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    gate = _Gate(
+        (
+            SpeechActivityEvent.SPEECH_STARTED,
+            SpeechActivityEvent.CANDIDATE_PAUSE,
+        )
+    )
     completed = asyncio.Event()
     shadow = _SpeakerShadowSpy()
     detector = DetectorRuntime(
@@ -575,17 +660,11 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     assert successor.candidate.candidate_generation == 0
     assert gate.inputs.count(successor_pcm) == 2
     assert coordinator.audio.count(successor_pcm) == 2
-    successor_candidate = SpeakerShadowCandidateKey(0, 1, "smart_turn_turn")
-    assert shadow.frames == [
-        (first_pcm, 16_000, predecessor),
-        (successor_pcm, 16_000, successor_candidate),
-    ]
-    assert shadow.frames[1][0] is successor_pcm
+    assert shadow.frames == [(first_pcm, 16_000, predecessor)]
     assert shadow.finished == [predecessor]
     assert shadow.events == [
         ("submit", predecessor),
         ("finish", predecessor),
-        ("submit", successor_candidate),
     ]
     await detector.close()
 
@@ -608,7 +687,12 @@ async def test_speaker_shadow_keeps_stale_or_incomplete_tail_on_predecessor(
     tail_events: tuple[SpeechActivityEvent, ...],
 ) -> None:
     coordinator = _BlockingResultCoordinator(status=status, decision=decision)
-    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    gate = _Gate(
+        (
+            SpeechActivityEvent.SPEECH_STARTED,
+            SpeechActivityEvent.CANDIDATE_PAUSE,
+        )
+    )
     shadow = _SpeakerShadowSpy()
     detector = DetectorRuntime(
         vad=_Vad(),

@@ -1167,6 +1167,32 @@ def test_voice_identity_contract_accepts_in_memory_dependency_direction(
 
 
 @pytest.mark.unit
+def test_voice_identity_contract_allows_only_the_bounded_asr_composition_bridge(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    composition = package / "asr_composition.py"
+    composition.write_text(
+        "from main_logic.asr_client.runtime import IndependentAsrRuntime\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+    composition.write_text(
+        "from main_logic.core import LLMSessionManager\n",
+        encoding="utf-8",
+    )
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+        if violation.path == composition
+    ]
+    assert messages == ["voice_identity domain must not import main_logic.core"]
+
+
+@pytest.mark.unit
 def test_voice_identity_contract_fails_closed_when_package_is_missing(
     contract_checker,
     tmp_path: Path,

@@ -5396,6 +5396,27 @@ async def test_core_passes_only_configured_speaker_shadow_factory(
     factory.assert_not_called()
 
 
+async def test_core_composition_seam_has_no_voice_identity_or_shadow_imports() -> None:
+    tree = ast.parse(inspect.getsource(core_asr_runtime_module))
+    imported = {
+        node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    }
+    imported.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+
+    assert not any(
+        module.startswith("main_logic.voice_identity")
+        or module.startswith("main_logic.asr_client.speaker_shadow")
+        for module in imported
+    )
+
+
 async def test_provider_restart_reuses_accepted_session_optimization(
     monkeypatch,
 ) -> None:

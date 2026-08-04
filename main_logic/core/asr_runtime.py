@@ -20,7 +20,6 @@ from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartStatus,
     IndependentAsrRuntime,
-    SpeakerShadowFactory,
 )
 from main_logic.voice_input import (
     BuiltinVoiceInputConsumer,
@@ -254,7 +253,10 @@ class AsrRuntimeMixin:
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
-        self._speaker_shadow_factory: SpeakerShadowFactory | None = None
+        # Opaque app-owned composition seam. Core only forwards the callable;
+        # it never imports or inspects voice identity, Shadow, models, scores,
+        # candidate identities, or profile material.
+        self._speaker_shadow_factory: Callable[[], object] | None = None
         self._voice_input_resource_optimization_handshake_override: bool | None = None
         self._voice_input_resource_optimization_session_value: bool | None = None
         self._voice_input_noise_reduction_enabled = True

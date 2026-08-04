@@ -23,6 +23,14 @@ from main_logic.asr_client._registry_meta import (
     ASR_PROVIDER_REGISTRY,
     CORE_ASR_ROUTES,
 )
+from main_logic.asr_client.candidate_control import (
+    CandidateRejectionOutcome,
+    CandidateRejectionRequest,
+)
+from main_logic.asr_client.endpointing.detector import (
+    DetectorCandidateKey,
+    ProviderCandidateFence,
+)
 from main_logic.asr_client.workers.dummy import dummy_asr_worker
 from main_logic.asr_client.lifecycle import (
     VoiceInputLifecycleController,
@@ -37,6 +45,7 @@ from main_logic.asr_client.runtime import (
 )
 from main_logic.asr_client.transcript import TranscriptDispatcher
 from main_logic.voice_turn.contracts import SpeechActivityEvent
+from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 
 
 async def _scripted_worker(request_queue, response_queue, api_key, config):
@@ -2274,6 +2283,543 @@ def _replace_runtime_identity_same_epoch(
         route_generation=2,
     )
     return session, lifecycle, detector
+
+
+def _install_candidate_rejection_state(
+    runtime: IndependentAsrRuntime,
+    detector: _RuntimeDetectorStub,
+    *,
+    draining: bool = False,
+) -> tuple[
+    CandidateRejectionRequest,
+    object,
+    object,
+    DetectorCandidateKey,
+]:
+    _install_active_runtime_state(runtime, detector)
+    lifecycle = runtime._asr_lifecycle
+    assert lifecycle is not None
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    turn_token = runtime._capture_turn_token(lifecycle)
+    final_key = asr_runtime_module.FinalKey.from_turn(turn_token)
+    assert runtime._asr_transcript_dispatcher.try_reserve(final_key)
+    runtime._asr_reserved_final_key = final_key
+    runtime._asr_turn_prepared = True
+    runtime._asr_partial_turn_token = turn_token
+    runtime._asr_audio_dispatcher = SimpleNamespace(
+        active_turn=turn_token,
+        abort=MagicMock(),
+    )
+    if draining:
+        lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
+        runtime._asr_sealed_turn_token = runtime._capture_transport_token(lifecycle)
+    candidate = DetectorCandidateKey(4, 9)
+    detector.candidate_is_current = AsyncMock(
+        side_effect=lambda observed: observed == candidate
+    )
+    detector.current_candidate = AsyncMock(return_value=candidate)
+    detector.reset = AsyncMock(return_value=True)
+    snapshot = lifecycle.snapshot
+    request = CandidateRejectionRequest(
+        session_epoch=runtime._asr_session_epoch,
+        audio_generation=runtime._asr_audio_generation,
+        transport_generation=snapshot.transport_generation,
+        turn_id=snapshot.turn_id,
+        candidate=candidate,
+        profile_generation="profile-7",
+        filter_generation="beta-v1",
+    )
+    return request, turn_token, final_key, candidate
+
+
+@pytest.mark.parametrize(
+    ("request_change", "active_profile", "active_filter"),
+    [
+        ({"session_epoch": 1}, "profile-7", "beta-v1"),
+        ({"audio_generation": 1}, "profile-7", "beta-v1"),
+        ({"transport_generation": 1}, "profile-7", "beta-v1"),
+        ({"turn_id": 1}, "profile-7", "beta-v1"),
+        (
+            {"candidate": DetectorCandidateKey(4, 10)},
+            "profile-7",
+            "beta-v1",
+        ),
+        ({}, "profile-8", "beta-v1"),
+        ({}, "profile-7", "beta-v2"),
+    ],
+)
+async def test_candidate_rejection_fails_open_for_every_stale_fence(
+    request_change,
+    active_profile,
+    active_filter,
+) -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, _ = _install_candidate_rejection_state(runtime, detector)
+    values = {
+        "session_epoch": request.session_epoch,
+        "audio_generation": request.audio_generation,
+        "transport_generation": request.transport_generation,
+        "turn_id": request.turn_id,
+        "candidate": request.candidate,
+        "profile_generation": request.profile_generation,
+        "filter_generation": request.filter_generation,
+    }
+    for field, delta in request_change.items():
+        values[field] = (
+            values[field] + delta if isinstance(delta, int) else delta
+        )
+    stale = CandidateRejectionRequest(**values)
+    session = runtime._asr_session
+
+    result = await runtime._reject_candidate(
+        stale,
+        active_profile_generation=active_profile,
+        active_filter_generation=active_filter,
+    )
+
+    assert result is CandidateRejectionOutcome.STALE
+    assert runtime._asr_session is session
+    session.close.assert_not_awaited()
+
+
+async def test_candidate_pause_before_rejection_closes_exact_rejection_window() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, turn_token, final_key, candidate = _install_candidate_rejection_state(
+        runtime,
+        detector,
+    )
+    session = runtime._asr_session
+    lifecycle = runtime._asr_lifecycle
+    audio_dispatcher = runtime._asr_audio_dispatcher
+    assert session is not None
+    assert lifecycle is not None
+    transport_generation = lifecycle.snapshot.transport_generation
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        request.session_epoch,
+        candidate=candidate,
+    )
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.STALE
+    assert runtime._asr_session is session
+    session.close.assert_not_awaited()
+    assert lifecycle.snapshot.transport_generation == transport_generation
+    audio_dispatcher.abort.assert_not_called()
+    assert runtime._asr_candidate_rejection is None
+    assert runtime._asr_turn_prepared is True
+    assert runtime._asr_partial_turn_token == turn_token
+    assert runtime._asr_reserved_final_key == final_key
+    assert final_key in runtime._asr_transcript_dispatcher._reservations
+
+
+async def test_blocked_partial_callback_does_not_block_candidate_rejection() -> None:
+    partial_started = asyncio.Event()
+    release_partial = asyncio.Event()
+
+    async def on_partial(_event) -> None:
+        partial_started.set()
+        await release_partial.wait()
+
+    callbacks = replace(_runtime_callbacks(), on_partial=on_partial)
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, _, _ = _install_candidate_rejection_state(
+        runtime,
+        detector,
+    )
+    audio_dispatcher = runtime._asr_audio_dispatcher
+    preview_task = asyncio.create_task(
+        runtime._send_independent_asr_preview("blocked preview", request.session_epoch)
+    )
+    rejection_task: asyncio.Task[CandidateRejectionOutcome] | None = None
+
+    try:
+        await asyncio.wait_for(partial_started.wait(), 1)
+        rejection_task = asyncio.create_task(
+            runtime._reject_candidate(
+                request,
+                active_profile_generation="profile-7",
+                active_filter_generation="beta-v1",
+            )
+        )
+
+        result = await asyncio.wait_for(asyncio.shield(rejection_task), 1)
+
+        assert result is CandidateRejectionOutcome.APPLIED
+        assert preview_task.done() is False
+        assert runtime._asr_session is None
+        assert runtime._asr_candidate_rejection is not None
+        audio_dispatcher.abort.assert_called_once_with(turn_token)
+    finally:
+        release_partial.set()
+        tasks = [preview_task]
+        if rejection_task is not None:
+            tasks.append(rejection_task)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_candidate_rejection_suppresses_tail_until_exact_pause() -> None:
+    callbacks = _runtime_callbacks()
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, final_key, candidate = _install_candidate_rejection_state(
+        runtime,
+        detector,
+    )
+    other_key = replace(final_key, turn_id=final_key.turn_id + 100)
+    assert runtime._asr_transcript_dispatcher.try_reserve(other_key)
+    session = runtime._asr_session
+    runtime._ensure_transport_restart_task = MagicMock()
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.APPLIED
+    session.close.assert_awaited_once_with()
+    assert final_key not in runtime._asr_transcript_dispatcher._reservations
+    assert other_key in runtime._asr_transcript_dispatcher._reservations
+    assert runtime._asr_candidate_rejection is not None
+    detector.feed = AsyncMock(
+        return_value=SimpleNamespace(
+            events=(),
+            endpointing_available=True,
+            throttle_action=None,
+            throttle_available=True,
+        )
+    )
+    frame = ProcessedVoiceFrame(b"\x01\x00" * 160, 16_000, 0.9, True)
+    submitted = await runtime.submit(
+        frame,
+        ingress_token=turn_token.ingress,
+    )
+    assert submitted.status is asr_runtime_module.AsrSubmitStatus.ACCEPTED
+    detector.feed.assert_awaited_once()
+    runtime._ensure_transport_restart_task.assert_not_called()
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        request.session_epoch,
+        candidate=DetectorCandidateKey(4, 10),
+    )
+    assert runtime._asr_candidate_rejection is not None
+    detector.reset.assert_not_awaited()
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        request.session_epoch,
+        candidate=candidate,
+    )
+
+    detector.reset.assert_awaited_once_with(expected_candidate=candidate)
+    assert runtime._asr_candidate_rejection is None
+    assert runtime._asr_lifecycle.snapshot.state.value == "local_listen"
+    callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+    runtime._ensure_transport_restart_task.assert_called_once_with()
+
+
+async def test_candidate_rejection_cleanup_failure_recovers_upload() -> None:
+    callbacks = _runtime_callbacks()
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, _, _ = _install_candidate_rejection_state(
+        runtime,
+        detector,
+    )
+    runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    runtime._ensure_transport_restart_task = MagicMock()
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.FAILED
+    assert runtime._asr_candidate_rejection is None
+    callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+    runtime._ensure_transport_restart_task.assert_called_once_with()
+
+
+async def test_candidate_rejection_cleanup_failure_resets_detector_before_restart() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, _ = _install_candidate_rejection_state(runtime, detector)
+    runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    recovery_steps: list[str] = []
+
+    async def reset_detector(*, expected_candidate=None) -> bool:
+        assert expected_candidate is None
+        recovery_steps.append("reset")
+        return True
+
+    detector.reset = AsyncMock(side_effect=reset_detector)
+    runtime._ensure_transport_restart_task = MagicMock(
+        side_effect=lambda: recovery_steps.append("restart")
+    )
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.FAILED
+    assert recovery_steps == ["reset", "restart"]
+
+
+async def test_candidate_rejection_recovery_restarts_after_detector_reset_error() -> None:
+    callbacks = _runtime_callbacks()
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, _, _ = _install_candidate_rejection_state(runtime, detector)
+    runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    detector.reset = AsyncMock(side_effect=RuntimeError("reset failed"))
+    runtime._ensure_transport_restart_task = MagicMock()
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.FAILED
+    detector.reset.assert_awaited_once_with()
+    callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+    runtime._ensure_transport_restart_task.assert_called_once_with()
+
+
+async def test_candidate_rejection_recovery_preserves_detector_reset_cancellation() -> None:
+    callbacks = _runtime_callbacks()
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, _, _ = _install_candidate_rejection_state(runtime, detector)
+    runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    detector.reset = AsyncMock(side_effect=asyncio.CancelledError())
+    runtime._ensure_transport_restart_task = MagicMock()
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime._reject_candidate(
+            request,
+            active_profile_generation="profile-7",
+            active_filter_generation="beta-v1",
+        )
+
+    callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+    runtime._ensure_transport_restart_task.assert_not_called()
+
+
+async def test_resumed_candidate_reopens_exact_rejection_window() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, candidate = _install_candidate_rejection_state(runtime, detector)
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+        request.session_epoch,
+        candidate=candidate,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        request.session_epoch,
+        candidate=candidate,
+    )
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.APPLIED
+
+
+@pytest.mark.parametrize("teardown", ["close", "abort", "error"])
+async def test_candidate_rejection_teardown_notifies_abandoned_turn(
+    teardown: str,
+) -> None:
+    callbacks = _runtime_callbacks()
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, _, _ = _install_candidate_rejection_state(runtime, detector)
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+    assert result is CandidateRejectionOutcome.APPLIED
+    runtime._asr_audio_dispatcher.close = AsyncMock()
+    runtime._asr_audio_dispatcher.asr_abort_discarded_command_count = 0
+
+    if teardown == "close":
+        await runtime.close()
+    elif teardown == "abort":
+        await runtime.abort("route_closed")
+    else:
+        await runtime._handle_independent_asr_error(
+            request.session_epoch,
+            "qwen",
+        )
+
+    callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+
+
+async def test_candidate_rejection_teardown_swallows_abandon_callback_error() -> None:
+    callbacks = replace(
+        _runtime_callbacks(),
+        on_turn_abandoned=AsyncMock(side_effect=RuntimeError("callback failed")),
+    )
+    runtime = IndependentAsrRuntime(callbacks)
+    detector = _RuntimeDetectorStub()
+    request, turn_token, _, _ = _install_candidate_rejection_state(runtime, detector)
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+    assert result is CandidateRejectionOutcome.APPLIED
+    runtime._asr_audio_dispatcher.close = AsyncMock()
+
+    await runtime.close()
+
+    callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
+
+
+async def test_close_tolerates_lease_and_session_cleanup_errors() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    runtime._asr_smart_turn_lease = SimpleNamespace(
+        release=AsyncMock(side_effect=RuntimeError("release failed"))
+    )
+    runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
+
+    await runtime.close()
+
+    detector.close.assert_awaited_once_with()
+
+
+async def test_abort_continues_after_detector_reset_error() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    detector.reset = AsyncMock(side_effect=RuntimeError("reset failed"))
+
+    await runtime.abort("hard_mute")
+
+    detector.reset.assert_awaited_once_with()
+
+
+async def test_abort_routes_current_ingress_backpressure_to_local_recovery() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+    runtime._asr_current_ingress_token = ingress_token
+    runtime._handle_audio_ingress_backpressure = AsyncMock()
+
+    await runtime.abort("ingress_backpressure")
+
+    runtime._handle_audio_ingress_backpressure.assert_awaited_once_with(ingress_token)
+
+
+async def test_provider_final_wins_rejection_waiting_on_detector_completion() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, candidate = _install_candidate_rejection_state(
+        runtime,
+        detector,
+        draining=True,
+    )
+    runtime._asr_lifecycle.provider_policy = resolve_provider_policy(
+        "qwen",
+        "provider",
+    )
+    runtime._asr_provider_candidate_fence = ProviderCandidateFence(4, 9, 10)
+    completion_started = asyncio.Event()
+    release_completion = asyncio.Event()
+
+    async def complete_provider_candidate(_fence):
+        completion_started.set()
+        await release_completion.wait()
+        return False
+
+    detector.complete_provider_candidate = AsyncMock(
+        side_effect=complete_provider_candidate
+    )
+    final = asyncio.create_task(
+        runtime._handle_independent_asr_final(
+            "accepted",
+            request.session_epoch,
+            "qwen",
+        )
+    )
+    await asyncio.wait_for(completion_started.wait(), 1)
+    rejection = asyncio.create_task(
+        runtime._reject_candidate(
+            request,
+            active_profile_generation="profile-7",
+            active_filter_generation="beta-v1",
+        )
+    )
+    release_completion.set()
+
+    await asyncio.wait_for(final, 1)
+    assert await asyncio.wait_for(rejection, 1) is CandidateRejectionOutcome.STALE
+    await runtime.wait_transcript_idle()
+    runtime._callbacks.on_final.assert_awaited_once()
+    detector.candidate_is_current.assert_not_awaited()
+    assert candidate == request.candidate
+
+
+async def test_rejection_wins_and_old_final_permanently_loses_eligibility() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, _ = _install_candidate_rejection_state(
+        runtime,
+        detector,
+        draining=True,
+    )
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def close_session() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    runtime._asr_session.close = AsyncMock(side_effect=close_session)
+    rejection = asyncio.create_task(
+        runtime._reject_candidate(
+            request,
+            active_profile_generation="profile-7",
+            active_filter_generation="beta-v1",
+        )
+    )
+    await asyncio.wait_for(close_started.wait(), 1)
+
+    await runtime._handle_independent_asr_final(
+        "stale final",
+        request.session_epoch,
+        "glm",
+    )
+    release_close.set()
+
+    assert await asyncio.wait_for(rejection, 1) is CandidateRejectionOutcome.APPLIED
+    runtime._callbacks.on_final.assert_not_awaited()
 
 
 async def test_stale_detector_failure_callback_cannot_close_new_runtime(
