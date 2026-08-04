@@ -33,6 +33,15 @@ test('scheduled and manually dispatched paid runs force a depth-100 AIO baseline
   assert.doesNotMatch(workflow, /ENABLE_PAID_DATAFORSEO_SCHEDULE/)
 })
 
+test('forks cannot run validation or paid report jobs', async () => {
+  const workflow = await readWorkflow()
+
+  assert.equal(
+    (workflow.match(/github\.repository == 'Project-N-E-K-O\/N\.E\.K\.O'/gu) ?? []).length,
+    2,
+  )
+})
+
 test('maintainer documentation cannot revive the obsolete paid-schedule kill switch', async () => {
   const guide = await readMaintainerGuide()
 
