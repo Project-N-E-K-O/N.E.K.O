@@ -75,7 +75,10 @@ jobs:
           npm run seo:dataforseo -- --config seo/dataforseo.online-zh.config.json --mode all --skip-keyword-difficulty --depth 100 --include-ai-overview --dry-run --output .seo-reports/dry-run-online-zh.json
 
   report:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: >-
+      github.repository == 'Project-N-E-K-O/N.E.K.O' &&
+      (github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule')
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 45
