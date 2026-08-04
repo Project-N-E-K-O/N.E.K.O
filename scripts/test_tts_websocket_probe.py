@@ -24,7 +24,7 @@ Use when debugging HTTP 503 (or other non-101) during the WebSocket upgrade: the
 Examples:
   python scripts/test_tts_websocket_probe.py --token free-access --no-proxy
   python scripts/test_tts_websocket_probe.py --from-config --no-proxy
-  python scripts/test_tts_websocket_probe.py --from-config --no-proxy --protocol-roundtrip --text "测试"
+  python scripts/test_tts_websocket_probe.py --from-config --no-proxy --protocol-roundtrip --text "测试"  # noqa: DOCSTRING_CJK
 
 Env (optional): TTS_PROBE_TOKEN, AUDIO_API_KEY. Override URL only with --url if you must.
 """
