@@ -36,9 +36,13 @@ test('scheduled and manually dispatched paid runs force a depth-100 AIO baseline
 test('forks cannot run validation or paid report jobs', async () => {
   const workflow = await readWorkflow()
 
-  assert.equal(
-    (workflow.match(/github\.repository == 'Project-N-E-K-O\/N\.E\.K\.O'/gu) ?? []).length,
-    2,
+  assert.match(
+    workflow,
+    /jobs:\r?\n  test:\r?\n    if: github\.repository == 'Project-N-E-K-O\/N\.E\.K\.O'/,
+  )
+  assert.match(
+    workflow,
+    /\r?\n  report:\r?\n    if: >-\r?\n      github\.repository == 'Project-N-E-K-O\/N\.E\.K\.O' &&/,
   )
 })
 
