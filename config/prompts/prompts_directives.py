@@ -228,13 +228,17 @@ def _trim_term(term: str, locale: str = "") -> str:
     interrogatives = tuple(
         tok for fam in families for tok in _TAIL_INTERROGATIVES_BY_LOCALE.get(fam, ())
     )
-    quoted = any(ch in _ZH_BRACKET_CHARS for ch in term)
     # 引号里的语气词判据对**所有** CJK 尾词生效，不只多字反问短语：单字的也一样是
     # 名字的一部分（``《想見你喔》`` / ``《就是愛唷》``，codex P2）。ASCII 的
     # please / porfa 不受这条约束——它们不会出现在 CJK 作品名里。
     gated = cjk + interrogatives
     tokens = _TRIM_TRAIL_TOKENS_ANY + gated
-    s = term.strip()
+    original = term.strip()
+    quoted_until = _zh_quoted_span_end(original)
+    s = original
+    # 剥掉的尾部字符数。⚠️ 判据要的是尾词在**原始 term** 里的位置，而 s 会被两端反复
+    # 削短；只有右端的削减会影响绝对下标，所以只需累计这一侧。
+    right_removed = 0
     changed = True
     # 反复剥尾词，直到稳定（"了啊吧" 这种连续助词）
     while changed:
@@ -242,27 +246,28 @@ def _trim_term(term: str, locale: str = "") -> str:
         for tok in tokens:
             if not s.endswith(tok):
                 continue
-            shorter = s[: -len(tok)].rstrip()
+            trimmed = s[: -len(tok)]
+            shorter = trimmed.rstrip()
             # 剥到低于下限 = 整条指令被丢；有歧义的尾字宁可留着（codex P2）。
             if len(shorter) < _TERM_MIN_LEN:
                 continue
-            # 反问短语同时也是大量作品名的结尾，所以只在它**落在引号之外**时才剥：
-            #   ``《最近你好嗎》``  → 剥括号后是 ``最近你好嗎``，``好嗎`` 在名字里面，
-            #                        剥了就把标题腰斩（codex P2）；
-            #   ``《你好》好嗎``    → 剥掉之后前缀正好以收尾括号结束，说明这个 ``好嗎``
-            #                        是句子级的语气，该剥（codex P2，方向相反的一条）。
-            # 判据取「剥完之后前缀是不是以**收尾**括号结尾」——原 term 一个括号都没有
-            # 时无条件可剥。⚠️ 不能只看「原 term 有没有括号」：剥配对括号发生在剥语气
-            # 词之前，等轮到语气词时括号已经没了。
-            if tok in gated and quoted and not any(
-                shorter.endswith(hi) for _lo, hi in _ZH_BRACKET_PAIRS
-            ):
+            # 语气词 / 反问短语同时也是大量作品名的结尾，所以只在它**落在引号之外**
+            # 时才剥。判据是这个尾词在原 term 里的起点有没有越过最后一段括号的收尾：
+            #   ``《最近你好嗎》``        → ``好嗎`` 在括号内，剥了就腰斩标题；
+            #   ``《你好》好嗎``          → 越过了收尾括号，是句子级语气，该剥；
+            #   ``電影《你好》續集好嗎``  → 同样越过了，中间隔着普通修饰词也一样该剥。
+            # ⚠️ 早先用的代理判据是「剥完之后前缀是不是正好以收尾括号结尾」，第三行
+            # 就判错（codex P2）——中间隔一个 ``續集`` 它就不认了。
+            tail_start = len(original) - right_removed - len(tok)
+            if tok in gated and tail_start < quoted_until:
                 continue
+            right_removed += len(s) - len(shorter)
             s = shorter
             changed = True
         # 同时剥两端标点
         new_s = s.strip(_TRIM_TRAIL)
         if new_s != s:
+            right_removed += len(s) - len(s.rstrip(_TRIM_TRAIL))
             s = new_s
             changed = True
     return s.strip()
@@ -431,6 +436,27 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
 _ZH_BRACKET_RUN = "(?:" + "|".join(
     _zh_bracket_body(lo, hi) for lo, hi in _ZH_BRACKET_PAIRS
 ) + ")"
+
+_ZH_BRACKET_RUN_RE = re.compile(_ZH_BRACKET_RUN)
+_ZH_BRACKET_OPEN_CHARS = frozenset(lo for lo, _hi in _ZH_BRACKET_PAIRS)
+
+
+def _zh_quoted_span_end(text: str) -> int:
+    """Index past the last quoted run: a tail starting there is outside the quotes.
+
+    ⚠️ ``_trim_term`` 拿它判「这个语气词是句子的还是作品名的一部分」。用「前缀是不是
+    正好以收尾括号结尾」当代理判据是不够的——``電影《你好》續集好嗎`` 中间隔了一个
+    普通修饰词就判错（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    end = 0
+    for match in _ZH_BRACKET_RUN_RE.finditer(text):
+        end = match.end()
+    # 最后一段闭合引文之后还出现开括号 = 有一段没闭合的引文一直延伸到末尾
+    # （``电影《好不好``），里面的一切都算引号内。
+    if any(ch in _ZH_BRACKET_OPEN_CHARS for ch in text[end:]):
+        return len(text)
+    return end
+
 
 _ZH_PLAIN_CHAR = r"[^，。！？；,.!?;\r\n]"
 # ⚠️ 只有模板 2 的**前置**话题 temper 掉裸的 ``关于/關於``：``关于 X 就别提了`` 归

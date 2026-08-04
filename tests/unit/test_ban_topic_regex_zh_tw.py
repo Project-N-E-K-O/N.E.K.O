@@ -1706,6 +1706,20 @@ def test_only_symmetric_pairs_temper_the_negation():
         ("别再提电影《好不好》。", "电影《好不好"),
         ("別再提電影《好不好》。", "電影《好不好"),
         ("别再提剧集《可以吗》。", "剧集《可以吗"),
+        # ⚠️ 引号和尾巴之间隔着普通修饰词也一样该剥——代理判据「前缀正好以收尾
+        # 括号结尾」在这三行会判错（codex P2）
+        ("我不想再聊電影《你好》續集好嗎。", "電影《你好》續集"),
+        ("我不想再聊电影《你好》续集好吗。", "电影《你好》续集"),
+        ("别再提電影《你好》續集好嗎。", "電影《你好》續集"),
+        # ⚠️ 叠加的尾巴：剥掉外层之后，内层的下标必须把已剥的字数算进去，
+        # 否则 ``好吗`` 会被当成引号外的（变异跑出来的）
+        ("别再提《最近你好吗》好不好。", "最近你好吗"),
+        ("別再提《最近你好嗎》好不好。", "最近你好嗎"),
+        ("别再提「最近你好吗」好不好。", "最近你好吗"),
+        # ⚠️ 多段括号要看**最后**一段的收尾，不是第一段（变异跑出来的）
+        ("别再提《甲》《乙》好吗。", "甲》《乙"),
+        ("别再提《甲》和《乙》好吗。", "甲》和《乙"),
+        ("别再提电影《甲》《乙》好吗。", "电影《甲》《乙"),
         # 一个括号都没有 = 无条件可剥
         ("别再提工作好吗。", "工作"),
         ("別再提工作好嗎。", "工作"),
@@ -1787,3 +1801,32 @@ def test_the_japanese_guard_gets_one_character_not_the_whole_prefix(monkeypatch)
     extract_directives("工作别提了。" * 50 + "别提加班。")
     assert seen, "日文守卫根本没被调用，这条测试是空的"
     assert max(seen) <= 1, max(seen)
+
+
+def test_the_quoted_span_end_marks_where_the_quotes_stop():
+    """⚠️ 判据是位置不是形状：``電影《你好》續集好嗎`` 的收尾括号在中间，代理判据
+    「前缀正好以收尾括号结尾」在这里判错（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    end = D._zh_quoted_span_end
+    # 没有括号 → 任何尾巴都在引号外
+    assert end("工作好吗") == 0
+    # 完整一段括号 → 越过它的部分在引号外，中间隔多少修饰词都一样
+    assert end("《最近你好嗎》") == 7
+    assert end("電影《你好》續集好嗎") == 6
+    assert end('"你的名字"好吗') == 6
+    # 只有收尾括号（开括号已被前一步剥掉）→ 后面的在引号外
+    assert end("你的名字》好吗") == 0
+    # 没闭合的开括号 → 一直延伸到末尾，里面的一切都算引号内
+    assert end("电影《我们好不好") == 8
+    assert end("电影《好不好") == 6
+    # 多段括号取**最后**一段的收尾
+    assert end("《甲》《乙》好吗") == 6
+    assert end("《甲》《乙好吗》") == 8
+
+
+def test_the_quoted_span_end_is_derived_from_the_bracket_run():
+    """别另开一张括号表——同一件事维护两份必然漂移（#2655）。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_BRACKET_RUN_RE.pattern == D._ZH_BRACKET_RUN
+    assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
+        lo for lo, _hi in D._ZH_BRACKET_PAIRS
+    )
