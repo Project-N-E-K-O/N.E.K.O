@@ -3942,3 +3942,39 @@ def test_free_choice_frame_neutralizes_every_wh_in_scope(frame, body):
         '无论如何，我想停止播放何时合适',
     ):
         assert is_explicit_music_cancellation(later_question) is False, later_question
+
+
+@pytest.mark.parametrize(
+    "conditional", ["如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若"]
+)
+@pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
+def test_conditional_frames_make_wh_existential(conditional, what):
+    """⚠️ **条件框架**辖域里的疑问词是存在量词，不是提问（base 全是 True）。
+
+    `如果有什么新歌再告诉我` 不是在问哪首歌（Codex P2 第四十八轮）。
+    它跟任指框架是同一件事，所以共用同一张表、同一个辖域规则（到句读为止）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{conditional}有{what}新歌再告诉我'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放有{what}影响') is False
+
+
+@pytest.mark.parametrize("negator", ["不", "没", "沒", "没有", "沒有"])
+@pytest.mark.parametrize("stem", ["干", "幹"])
+@pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
+def test_negated_what_are_you_doing_is_an_indefinite(negator, stem, what):
+    """⚠️ `没干什么` 里的 `干什么` 是**不定指**，不是提问（base 是 True）。
+
+    上一轮刚把 `干什么` 收成疑问标记，就漏了它的否定形
+    （Codex P2 第四十八轮）——跟 `不怎么` / `没什么` 同一个形状，
+    复用同一个程度否定左界。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为我{negator}{stem}{what}它却自己响了'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(
+        f'我想停止播放《你好吗？》{stem}{what}'
+    ) is False

@@ -246,7 +246,7 @@ def test_the_quantifier_table_is_derived_not_transcribed():
     # 变动应该被看见；而笛卡尔积的覆盖仍然是自动的，不用手工加用例。
     assert set(WHOLE_CARD_QUANTIFIERS) == {
         "全部", "所有", "每一个", "每一個", "每个", "每個",
-        "每项", "每項", "各项", "各項", "一切",
+        "每一项", "每一項", "每项", "每項", "各项", "各項", "一切",
     }, WHOLE_CARD_QUANTIFIERS
 
 
@@ -1827,29 +1827,38 @@ def test_light_verb_between_target_and_rewrite_verb(phrasing, light):
         'Use “Don’t Panic” as the theme and rewrite all fields',
         'Following “Don’t Stop Believin’” rewrite the whole card',
         "Use \"Don't Panic\" as the theme and rewrite all fields",
-        '用《别再犹豫》当主题，把整个卡的全部设定重写一遍',
     ],
 )
-def test_quoted_material_is_not_an_instruction(text):
-    """⚠️ 引号里的内容是**被引用的素材**，不是对我们下的指令。
+def test_a_quoted_negation_still_blocks_even_inside_a_song_title(text):
+    """⚠⚠ **按设计少触发**：引号里的否定词一律算数，哪怕它只是歌名的一部分。
 
-    歌名里的 `Don’t` 被否定守卫当成「别重写」，整卡补全被跳过
-    （Codex P2 第四十二轮）。ASCII 双引号那条在 base 上就已经是 False，
-    只是没人报过——所以修的是判据形状，不是擇号那一版的尾巴。
+    第四十二轮 reviewer 要求把这一类放行（base 是 True），我改了三版，
+    每一版都在下一轮被报成 P1，而且**都在危险那一侧**：
 
-    ⚠️ 反向断言钉住**引号外**的否定仍然生效，包括句子里同时有一个带擇号的
-    歌名和一个真正的 `don’t` 的情况——那是危险方向，不能被抹掉。
+    * 「引用跨度一律抹掉」      → `请“不要重写”所有字段` 的禁止没了（第四十三轮）
+    * 「含重写动词才算指令」  → `Please “do not” rewrite all fields` 漏（第四十七轮）
+    * 「去掉否定词还剩字」  → `请“千万不要”重写所有字段` 漏（第四十八轮）
+
+    三轮三个新形状，说明这条线**划不出来**：引号里是歌名还是被强调的禁止，
+    句法上完全同形。而两个方向的代价差着量级：放过一个歌名只是少补几个字段，
+    放过一个真禁止是把用户明说不要动的数据覆盖掉并 autosave。
+
+    所以停在安全那一侧：**否定守卫读原句**。引号只对正向信号生效（见
+    test_quoted_prohibitions_do_not_supply_a_target）。这条用例钉的就是这个取舍本身，
+    不是待办——要改它得先回答「怎么区分歌名和被强调的禁止」。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    # 没有否定词的引用照常走得通。
+    for kept in (
+        '用《别再犹豫》当主题，把整个卡的全部设定重写一遍',
+        '把《整个卡》重写',
+        '把「所有字段」重写',
+    ):
+        assert router._chat_text_requests_full_rewrite(kept) is True, kept
     for negated in (
-        'don’t rewrite the whole card',
-        "don't rewrite the whole card",
-        'Don’t Stop Believin’ — don’t rewrite the whole card',
         '不要重写整个卡',
-        # ⚠️ ASCII 单引号不能进引用体系：这句里两个擇号一配对，
-        # 会把真正的否定词一起抹掉——那是危险方向。
         "don't rewrite the whole card because it's fine",
     ):
         assert router._chat_text_requests_full_rewrite(negated) is False, negated
@@ -1908,18 +1917,15 @@ def test_quotes_that_emphasize_the_instruction_are_not_stripped(text):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    for quoted_material in (
-        'Use “Don’t Panic” as the theme and rewrite all fields',
-        'Following “Don’t Stop Believin’” rewrite the whole card',
-    ):
-        assert router._chat_text_requests_full_rewrite(quoted_material) is True
+    for kept in ('把《整个卡》重写', '把「所有字段」重写'):
+        assert router._chat_text_requests_full_rewrite(kept) is True, kept
 
 
 @pytest.mark.parametrize(
     "quoted",
     ["“do not touch all fields”", "「不要动所有字段」", "《别碰所有字段》"],
 )
-def test_quoted_material_is_discounted_for_every_signal(quoted):
+def test_quoted_prohibitions_do_not_supply_a_target(quoted):
     """⚠⚠ 抹掉的那一段引用对**三条谓词一视同仁**（Codex P1 第四十四轮）。
 
     上一版只从否定守卫里抹、正向信号照读原文，于是引号内的「所有字段」
@@ -1936,8 +1942,14 @@ def test_quoted_material_is_discounted_for_every_signal(quoted):
     # 这条用例会因为另一个原因而过（第一版就是这么空的，变异 SURVIVED 才发现）。
     text = f'请把{quoted}当例子并重写标题'
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    for kept in ('把《整个卡》重写', '把「所有字段」重写',
-                 'Use “Don’t Panic” as the theme and rewrite all fields'):
+    # ⚠️ 上面那句话其实被**否定守卫**拦下了（否定在前、动词在后），
+    # 所以它对「正向信号跳过引用」那一步是**空断言**（变异 SURVIVED）。
+    # 真正需要它的是动词在**前**、引用在后的形状：否定守卫要求
+    # 「否定词 → 重写动词」的顺序，这时候它不开火，只剩引用里那个目标。
+    assert router._chat_text_requests_full_rewrite(
+        f'重写标题就像{quoted}那样'
+    ) is False
+    for kept in ('把《整个卡》重写', '把「所有字段」重写'):
         assert router._chat_text_requests_full_rewrite(kept) is True, kept
     assert router._chat_text_requests_full_rewrite(
         'Use “do not touch all fields” as an example and rewrite the title'
@@ -2013,12 +2025,27 @@ def test_a_separately_quoted_negation_still_governs(text):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is False, text
-    for material in (
-        "Use “Don’t Panic” as the theme and rewrite all fields",
-        "Following “Don’t Stop Believin’” rewrite the whole card",
-        "把《整个卡》重写",
-    ):
-        assert router._chat_text_requests_full_rewrite(material) is True, material
+    for kept in ("把《整个卡》重写", "把「所有字段」重写"):
+        assert router._chat_text_requests_full_rewrite(kept) is True, kept
     assert router._chat_text_requests_full_rewrite(
         "Use “do not touch all fields” as an example and rewrite the title"
     ) is False
+
+
+@pytest.mark.parametrize(
+    "locative",
+    ["之中的", "之内的", "之內的", "内部的", "內部的", "里头的", "裡頭的"],
+)
+def test_compound_locative_continuations(locative):
+    """复合方位词跟单字方位词同族（base 全是 True，Codex P2 第四十八轮）。
+
+    ⚠️ 方位词后面仍然要求是范围名词，单字段保险不受影响。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'重写所有字段{locative}内容'
+    ) is True
+    for kept in (f'重写所有字段{locative}名字',
+                 f'重写所有字段{locative}名字内容'):
+        assert router._chat_text_requests_full_rewrite(kept) is False, kept

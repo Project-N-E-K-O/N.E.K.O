@@ -748,7 +748,7 @@ _CHAT_EDIT_INTENT_RE = re.compile(
 # 触发，只落库部分字段（Codex P2）。
 _WHOLE_CARD_QUANTIFIERS = (
     "全部", "所有", "每一个", "每一個", "每个", "每個",
-    "每项", "每項", "各项", "各項", "一切",
+    "每一项", "每一項", "每项", "每項", "各项", "各項", "一切",
 )
 # 限定词管着的**整卡级名词**。
 #
@@ -897,7 +897,9 @@ _WHOLE_CARD_MEASURE_COMPLEMENT = (
 # ⚠️ 方位词后面**仍然要求是范围名词**，所以单字段保险不受影响：
 # `重写所有字段里的名字` 仍然是 False（base 是 True，本 PR 故意改掉）。
 _WHOLE_CARD_SCOPE_LOCATIVE = (
-    r"(?:(?:里面|裡面|里边|裡邊|当中|當中|里|裡|中|内|內)的?\s*)?"
+    # ⚠️ 复合方位词（之中/之内/内部/里头）同族，Codex P2 第四十八轮。
+    r"(?:(?:之中|之内|之內|内部|內部|里头|裡頭"
+    r"|里面|裡面|里边|裡邊|当中|當中|里|裡|中|内|內)的?\s*)?"
 )
 # ⚠️ 方位短语和范围名词之间还能夹一个全称限定词：`重写所有字段里的全部内容` /
 # `把全部欄位裡的每個內容重寫`（base 都是 True，Codex P2 第四十六轮）。
@@ -1226,68 +1228,52 @@ def _chat_clauses(text: str) -> list[str]:
 # ⚠️ **不收 ASCII 单引号和左单引号**：`Don't Stop Believin'` 里它们是撇号不是引号，
 # 收了会把 `'t Stop Believin'` 当成一段引用、把真正的否定词抹掉——那是危险方向。
 # music_requests 的 _ZH_AMBIGUOUS_QUOTE_OPENERS 是同一条取舍。
-# 引号、标点、空白——判「去掉否定词之后还剩不剩东西」时要先把它们抹平。
-_CHAT_QUOTE_RESIDUE_RE = re.compile(r"[\W_]+", re.UNICODE)
 _CHAT_QUOTED_SPAN_RE = re.compile(
     r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
 )
 
 
-def _chat_span_is_quoted_material(span: str) -> bool:
-    """这一段引号里装的是**被引用的素材**（而不是指令本身）吗？
+def _chat_span_carries_a_prohibition(span: str) -> bool:
+    """这一段引号里带着禁止吗？——只用于**正向信号**，否定守卫永远看原文。
 
-    引号在这里有三种用法，只有第一种该抹掉：
+    ⚠️⚠️ 这里的判据经历了三轮反复，最后收在**安全那一侧**，别再往回改：
 
-    * 引用素材——`Use “Don’t Panic” as the theme…`，`Don’t` 是歌名的一部分；
-    * 强调整条指令——`请“不要重写”所有字段`，引号里带着重写动词；
-    * **只强调否定词**——`Please “do not” rewrite all fields` / `请“不要”重写所有字段`
-      / `Please “never” regenerate the whole card`。这一种上一版没认出来：引号里
-      有否定、没有动词，正好落进「引用素材」那一格，于是用户明确的禁止被抹掉、
-      整卡补全照跑并 autosave（Codex P1 第四十七轮，base 是 False——危险方向，
-      连着两轮都是我自己引进的）。
+    * 第四十二轮：为了让 `Use “Don’t Panic” as the theme and rewrite all fields`
+      不被歌名里的 `Don’t` 挡住，把引用跨度从否定守卫里抹掉；
+    * 第四十三轮 P1：`请“不要重写”所有字段` 的禁止被抹没了 → 改成「引号里含重写
+      动词就是指令」；
+    * 第四十七轮 P1：`Please “do not” rewrite all fields` 又漏 → 改成「去掉否定词
+      还剩别的字才算素材」；
+    * 第四十八轮 P1：`请“千万不要”重写所有字段` / `Please “do not ever” …` 里
+      「千万」「ever」就是那个「剩下的字」，再次漏掉。
 
-    判据：**把否定词去掉之后还剩别的字**，才算素材。
-    `“do not”` / `“不要”` / `“never”` 去掉否定词就空了，那是被强调的指令；
-    `“Don’t Panic”` 去掉 `Don’t` 还剩 `Panic`，那是个名字。
+    **三轮三个新形状，说明这条线划不出来**：引号里是歌名还是被强调的禁止，
+    句法上完全同形，只有语义能分。而两个方向的代价差着量级——放过一个被引用的
+    歌名只是少补几个字段，放过一个真禁止是把用户明说不要动的数据覆盖掉并 autosave。
+
+    所以停在这里：**否定守卫读原文，引号里的禁止一律算数**。引号只对正向信号
+    生效——被引用的禁止不该顺便提供整卡目标（第四十四轮 P1 的
+    `Use “do not touch all fields” as an example and rewrite the title`）。
+    代价是 `“Don’t Panic”` 那条仍然少触发一次整卡补全，那是轻的一侧，接受。
     """  # noqa: DOCSTRING_CJK
-    if _CHAT_REWRITE_VERB_RE.search(span):
-        return False
-    if not _CHAT_NEGATED_REWRITE_LEXEME_RE.search(span):
-        return False
-    residue = _CHAT_NEGATED_REWRITE_LEXEME_RE.sub(" ", span)
-    return bool(_CHAT_QUOTE_RESIDUE_RE.sub("", residue))
+    return bool(_CHAT_NEGATED_REWRITE_LEXEME_RE.search(span))
 
 
-def _chat_clause_without_quotes(clause: str) -> str:
-    """把**引用素材**的跨度换成空格，只用于否定守卫。
+def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
+    """把**带着禁止的引用跨度**换成空格，只用于正向信号。
 
-    ⚠️⚠️ 引号有两种用法，只能抹掉其中一种：
+    被引用的禁止不该顺便提供整卡目标：
+    `Use “do not touch all fields” as an example and rewrite the title`
+    里的 `all fields` 在引号里，配上引号外的单字段 `rewrite` 不能算整卡请求
+    （Codex P1 第四十四轮）。
 
-    * 引用素材——`Use “Don’t Panic” as the theme and rewrite all fields`，
-      里面的 `Don’t` 是歌名的一部分，抹掉才对；
-    * 强调指令本身——`请“不要重写”所有字段` / `请不要“重写”所有字段`，
-      抹掉就把用户明确的禁止弄丢了，整卡补全照样跑并 autosave
-      （Codex P1 第四十三轮，base 是 False——**危险方向**，是上一轮我引进的）。
-
-    判据：**引号里含重写动词，那段就是指令本身**。指令一定带着动词，被引用的
-    素材（歌名/主题）通常不带。
-
-    ⚠️ 已知代价在安全那一侧：`Use “Don’t Rewrite Me” as the title and rewrite
-    all fields` 里引号既有否定又有动词，会被当成指令、少补几个字段。
-
-    ⚠️⚠️ 抹掉的那一段对**三条谓词一视同仁**，不能只从否定守卫里抹掉、正向信号
-    还照读。上一版就是这么不对称的，于是
-    `Use “do not touch all fields” as an example and rewrite the title` 里
-    引号内的禁止被抹掉、引号内的 `all fields` 却仍然算整卡目标，配上引号外那个
-    单字段的 `rewrite` 就进了整卡补全通路并 autosave（Codex P1 第四十四轮，
-    base 是 False——危险方向，又是我上一轮引进的）。
-
-    ⚠️ 所以只抹**同时满足「不含重写动词」和「含否定词」**的跨度：那才是「被引用
-    的禁止」。不含否定的跨度（`把《整个卡》重写` / `把「所有字段」重写`）里没有
-    可抹的东西，留着让正向信号照读，base 上那些说法就不会被误伤。
+    ⚠️ 没有禁止的引用（`把《整个卡》重写` / `把「所有字段」重写`）不抹：
+    用户就是用引号强调目标，base 上那些说法都是 True。
+    ⚠️ **否定守卫不用这份文本**，它永远读原句——理由见
+    _chat_span_carries_a_prohibition 的注释。
     """  # noqa: DOCSTRING_CJK
     return _CHAT_QUOTED_SPAN_RE.sub(
-        lambda m: " " if _chat_span_is_quoted_material(m.group(0)) else m.group(0),
+        lambda m: " " if _chat_span_carries_a_prohibition(m.group(0)) else m.group(0),
         clause,
     )
 
@@ -1320,9 +1306,10 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         # 一视同仁。上一版只从否定守卫里抹，正向信号照读原文，于是引号里的
         # `all fields` 配上引号外的单字段 `rewrite` 进了整卡补全通路
         # （Codex P1 第四十四轮）。
-        readable = _chat_clause_without_quotes(clause)
-        if _CHAT_NEGATED_REWRITE_RE.search(readable):
+        # ⚠️ 否定守卫读**原句**：引号里的禁止一律算数。
+        if _CHAT_NEGATED_REWRITE_RE.search(clause):
             continue
+        readable = _chat_clause_without_quoted_prohibitions(clause)
         if (
             _CHAT_FULL_REWRITE_RE.search(readable)
             and _CHAT_REWRITE_VERB_RE.search(readable)
