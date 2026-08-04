@@ -1,0 +1,75 @@
+[plugin]
+id = "rvc_cover"
+name = "RVC 翻唱"
+description = "说「给我唱一首…」时联网搜歌，用项目内 vendor/rvc 音色翻唱并推到播放器（不修改你原来的 D:\\RVC）。支持本机声音训练 UI。"
+short_description = "联网搜歌 + 本机 RVC 翻唱；保留声音训练入口。"
+keywords = ["rvc", "翻唱", "唱歌", "音色", "训练"]
+passive = false
+version = "0.2.2"
+type = "plugin"
+entry = "plugin.plugins.rvc_cover:RvcCoverPlugin"
+
+[plugin.author]
+name = "N.E.K.O"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.store]
+enabled = true
+
+[plugin.ui]
+enabled = true
+
+[[plugin.ui.panel]]
+id = "main"
+title = "RVC 翻唱"
+entry = "static/index.html"
+context = "rvc_cover"
+permissions = ["state:read", "action:call", "config:read", "config:write"]
+
+[[plugin.ui.guide]]
+id = "quickstart"
+title = "快速开始"
+entry = "doc/README.md"
+permissions = ["state:read"]
+
+[[plugin.ui.guide]]
+id = "training"
+title = "声音训练"
+entry = "doc/training.md"
+permissions = ["state:read"]
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+# Paths are relative to the N.E.K.O repo root (vendor copy).
+# Refresh with: scripts/setup_rvc_vendor.ps1
+# Never point this at your original D:\RVC if you want that install left untouched.
+[rvc]
+rvc_root = "vendor/rvc"
+python_path = "vendor/rvc/runtime/python.exe"
+model_name = "Ai糯糯雫.pth"
+index_path = ""
+f0_up_key = 0
+f0_method = "rmvpe"
+device = "cuda:0"
+index_rate = 0.0
+filter_radius = 3
+resample_sr = 0
+rms_mix_rate = 1.0
+protect = 0.33
+infer_timeout_seconds = 600
+use_uvr = false
+# Plugin manager Start/Stop also launches/stops vendored infer-web (Gradio+API).
+auto_start_web = true
+web_port = 7897
+web_server_name = "127.0.0.1"
+web_startup_timeout_seconds = 90
+web_shutdown_timeout_seconds = 8

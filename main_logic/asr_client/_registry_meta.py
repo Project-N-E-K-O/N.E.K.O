@@ -237,4 +237,20 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         warm_transport_ms=0,
         replay_policy="none",
     ),
+    # Local faster-whisper: segmented like glm/dummy. Selected via
+    # ASR_PROVIDER=faster_whisper or core_config.asrProvider, not CORE_ASR_ROUTES.
+    "faster_whisper": AsrProviderMeta(
+        provider_key="faster_whisper",
+        category="segmented_request",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual"}),
+        implementation_status="implemented",
+        requires_smart_turn=True,
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
+        # CPU transcription of up to ~28 s can be slow on first load.
+        provider_final_timeout_ms=120_000,
+    ),
 }

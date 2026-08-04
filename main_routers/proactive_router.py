@@ -108,7 +108,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveMemeEnabled": True,
         "proactiveMiniGameInviteEnabled": True,
         "proactiveChatInterval": 15,
-        "proactiveVisionInterval": 10,
+        "proactiveVisionInterval": 5,
     },
     # 低打扰：保留搭话与个人动态，关掉新闻/视频/音乐等噪声源，间隔放长。
     # 不动 vision/隐私开关——是否允许看屏幕由用户自己决定。

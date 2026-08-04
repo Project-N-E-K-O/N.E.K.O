@@ -217,6 +217,8 @@ export default {
     noPlugins: '暂无插件',
     adapterNotFound: '适配器不存在',
     pluginNotFound: '插件不存在',
+    runtimeHintTitle: '插件未运行',
+    runtimeHintBody: '点开插件只会进入管理页，不会自动启停。请先点右上角「启动」，面板和 UI 才会可用。',
     pluginDetail: '插件详情',
     basicInfo: '基本信息',
     entries: '入口点',

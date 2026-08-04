@@ -235,9 +235,21 @@ async def proxy_music(url: str, request: Request):
             logger.warning(f"[Music Proxy] 非法域名请求: {hostname}")
             return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
 
+        referer = f'{parsed.scheme}://{hostname}/'
+        if any(
+            hostname == domain or hostname.endswith('.' + domain)
+            for domain in (
+                'bilivideo.com',
+                'bilivideo.cn',
+                'hdslb.com',
+                'akamaized.net',
+            )
+        ):
+            # B站 DASH 音轨常见防盗链校验：Referer 需落到主站而非 CDN 主机名。
+            referer = 'https://www.bilibili.com/'
         request_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Referer': f'{parsed.scheme}://{hostname}/',
+            'Referer': referer,
             'Accept': '*/*',
             'Accept-Encoding': 'identity',
         }

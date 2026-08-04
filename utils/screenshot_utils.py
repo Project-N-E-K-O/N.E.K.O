@@ -183,8 +183,23 @@ async def analyze_image_with_vision_model(
             return None
         
         if not vision_api_key:
-            logger.warning("Vision API key not configured, skipping image analysis")
-            return None
+            # Local OpenAI-compatible providers often leave the vision key empty.
+            # Fall back to the conversation key, then a placeholder so analysis
+            # still hits vision_base_url instead of being skipped entirely.
+            try:
+                conversation_config = await config_manager.aget_model_api_config('conversation')
+                vision_api_key = (conversation_config.get('api_key') or '').strip()
+            except Exception:
+                vision_api_key = ''
+            if not vision_api_key and vision_base_url:
+                vision_api_key = 'local'
+                logger.info(
+                    "Vision API key empty; using local placeholder with VISION_MODEL URL %s",
+                    vision_base_url,
+                )
+            elif not vision_api_key:
+                logger.warning("Vision API key not configured, skipping image analysis")
+                return None
         
         if api_config['is_custom']:
             logger.info(f"🖼️ Using custom VISION_MODEL ({vision_model}) to analyze image")

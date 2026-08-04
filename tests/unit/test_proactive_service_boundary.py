@@ -434,6 +434,33 @@ def test_non_music_commands_do_not_trigger_immediate_playback(text) -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "keyword", "song"),
+    (
+        ("点首歌", "", ""),
+        ("点首歌晴天", "晴天", "晴天"),
+        ("来首B站的晴天", "晴天", "晴天"),
+        ("放首哔哩哔哩周杰伦", "周杰伦", "周杰伦"),
+        ("BV1xx411c7mD", "BV1xx411c7mD", "BV1xx411c7mD"),
+        (
+            "播一下 https://www.bilibili.com/video/BV1xx411c7mD",
+            "BV1xx411c7mD",
+            "BV1xx411c7mD",
+        ),
+        (
+            "https://b23.tv/abcdefg",
+            "https://b23.tv/abcdefg",
+            "https://b23.tv/abcdefg",
+        ),
+    ),
+)
+def test_voice_music_phrases_include_diange_and_bilibili(text, keyword, song) -> None:
+    request = music_requests.parse_explicit_user_music_request(text)
+    assert request is not None
+    assert request.keyword == keyword
+    assert request.song_name == song
+
+
+@pytest.mark.parametrize(
     "text",
     (
         "don't play games with me",
@@ -816,6 +843,82 @@ async def test_direct_music_request_preserves_failure_reason() -> None:
     assert result["error_code"] == "cookie_invalid"
 
 
+@pytest.mark.asyncio
+async def test_play_music_tool_queues_same_playback_payload(monkeypatch) -> None:
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.music_requests import MusicRequest
+
+    queued = []
+
+    def fake_queue(manager, request):
+        queued.append((manager, request))
+        return 9
+
+    monkeypatch.setattr(
+        "main_logic.music_playback.queue_user_music_request",
+        fake_queue,
+    )
+
+    class Dummy(ToolCallingMixin):
+        def __init__(self):
+            self.lanlan_name = "YUI"
+            self.user_language = "zh"
+
+    helper = Dummy()
+    message = await helper._handle_play_music_call(
+        {"query": "晴天", "song": "晴天", "artist": "周杰伦"}
+    )
+
+    assert "request_id=9" in message
+    assert len(queued) == 1
+    assert queued[0][0] is helper
+    assert isinstance(queued[0][1], MusicRequest)
+    assert queued[0][1].keyword == "晴天 周杰伦"
+    assert queued[0][1].song_name == "晴天"
+    assert queued[0][1].song_artist == "周杰伦"
+
+    queued.clear()
+    await helper._handle_play_music_call({"bvid": "bv1xx411c7md"})
+    assert queued[0][1].keyword == "BV1xx411c7md"
+
+
+@pytest.mark.asyncio
+async def test_control_music_tool_stop_and_unsupported_next(monkeypatch) -> None:
+    from main_logic.core.tool_calling import ToolCallingMixin
+
+    calls = []
+
+    async def fake_control(manager, action):
+        calls.append(action)
+        if action == "stop":
+            return {"status": "ok", "action": "stop", "request_id": 3}
+        if action == "next":
+            return {
+                "status": "unsupported",
+                "action": "next",
+                "message": "next track is not supported",
+            }
+        return {"status": "ok", "action": action}
+
+    monkeypatch.setattr(
+        "main_logic.music_playback.control_user_music_playback",
+        fake_control,
+    )
+
+    class Dummy(ToolCallingMixin):
+        def __init__(self):
+            self.lanlan_name = "YUI"
+            self.user_language = "zh"
+
+    helper = Dummy()
+    stop_msg = await helper._handle_control_music_call({"action": "stop"})
+    next_msg = await helper._handle_control_music_call({"action": "next"})
+
+    assert calls == ["stop", "next"]
+    assert "stop" in stop_msg
+    assert "暂不支持" in next_msg or "下一首" in next_msg
+
+
 def test_music_playback_keeps_core_entrypoints_thin() -> None:
     core_dir = Path(__file__).parents[2] / "main_logic" / "core"
     streaming_source = (core_dir / "streaming.py").read_text(encoding="utf-8")
@@ -824,9 +927,13 @@ def test_music_playback_keeps_core_entrypoints_thin() -> None:
 
     assert "music_request" not in streaming_source
     assert "music_request" not in turn_source
+    # Builtin play/control tools live in tool_calling but must reuse the
+    # music_playback helper — never embed the fetch/push loop themselves.
     assert "_execute_music_request" not in tool_source
-    assert "music_playback" not in tool_source
-    assert "play_music" not in tool_source
+    assert "play_music" in tool_source
+    assert "control_music" in tool_source
+    assert "queue_user_music_request" in tool_source
+    assert "control_user_music_playback" in tool_source
 
 
 def test_confirmed_user_music_playback_uses_existing_callback_delivery() -> None:

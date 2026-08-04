@@ -239,6 +239,55 @@ async def test_music_proxy_forwards_range_and_preserves_partial_response(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_music_proxy_uses_bilibili_referer_for_cdn(monkeypatch):
+    sent_requests = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {
+            "Content-Type": "audio/mp4",
+            "Content-Length": "4",
+            "Accept-Ranges": "bytes",
+        }
+
+        async def aclose(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size):
+            yield b"abcd"
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def aclose(self):
+            return None
+
+        def build_request(self, method, url, headers):
+            request = SimpleNamespace(method=method, url=url, headers=headers)
+            sent_requests.append(request)
+            return request
+
+        async def send(self, _request, stream):
+            assert stream is True
+            return FakeResponse()
+
+    monkeypatch.setattr(music_router.httpx, "AsyncClient", FakeClient)
+    request = Request({"type": "http", "method": "GET", "path": "/api/music/proxy", "headers": []})
+    response = await music_router.proxy_music(
+        "https://upos-sz-mirrorcos.bilivideo.com/audio.m4s",
+        request,
+    )
+
+    assert response.status_code == 200
+    assert sent_requests[0].headers["Referer"] == "https://www.bilibili.com/"
+    assert await _read_streaming_body(response) == b"abcd"
+
+
+@pytest.mark.asyncio
 async def test_music_proxy_yields_first_chunk_before_upstream_finishes(monkeypatch):
     can_finish = False
 

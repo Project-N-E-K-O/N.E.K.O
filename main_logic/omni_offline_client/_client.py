@@ -217,6 +217,10 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
         self._genai_client = None  # initialized lazily inside _stream_text_genai
         self._genai_tools_unsupported = False  # set True if genai path falls back at runtime
+        # Ollama vision models (llava etc.) reject Chat Completions ``tools``.
+        # Flip True after the first 400 "does not support tools" so later
+        # turns skip the failed round-trip.
+        self._openai_tools_unsupported = False
 
         # State management
         self._is_responding = False

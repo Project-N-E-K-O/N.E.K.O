@@ -120,7 +120,10 @@ class ProactiveModelConfig:
 
     @property
     def has_vision_model(self) -> bool:
-        return bool(self.vision_model and self.vision_api_key)
+        # Local OpenAI-compatible stacks (Ollama etc.) often leave the vision
+        # API key empty on purpose. Require a model id plus either a key or a
+        # base URL so screen/vision turns are not silently skipped.
+        return bool(self.vision_model and (self.vision_api_key or self.vision_base_url))
 
 
 @dataclass(frozen=True, slots=True)

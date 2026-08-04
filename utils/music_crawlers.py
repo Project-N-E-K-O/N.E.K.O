@@ -123,10 +123,17 @@ MUSIC_SOURCE_DOMAINS = {
     'bandcamp.com', 'bcbits.com',
     # 通用图片
     'i.imgur.com',
-    # B站 (部分音乐)
-    'hdslb.com', 'bilivideo.com',
+    # B站 (部分音乐 / DASH 音轨 CDN)
+    'hdslb.com', 'bilivideo.com', 'bilivideo.cn',
+    'akamaized.net',
     'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
 }
+
+_BILIBILI_BVID_RE = re.compile(r"\b(BV[\w]+)\b", re.IGNORECASE)
+_BILIBILI_URL_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:bilibili\.com/video/(BV[\w]+)|b23\.tv/[\w]+)",
+    re.IGNORECASE,
+)
 
 # 主动音乐推荐面向单曲播放。超长 DJ 合集、播客和整张专辑虽然通常有封面，
 # 但其音频直链经常受 CDN、试听权限或文件大小限制，不应进入歌曲播放器。
@@ -2159,6 +2166,222 @@ class BandcampCrawler(BaseMusicCrawler):
             
         return results
 
+class BilibiliMusicCrawler(BaseMusicCrawler):
+    """Search Bilibili videos and resolve DASH audio URLs for the music player."""
+
+    def __init__(self) -> None:
+        super().__init__("Bilibili")
+
+    @staticmethod
+    def extract_bvid(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        match = _BILIBILI_BVID_RE.search(raw)
+        if match:
+            return match.group(1)
+        url_match = _BILIBILI_URL_RE.search(raw)
+        if url_match and url_match.group(1):
+            return url_match.group(1)
+        return ""
+
+    async def _credential(self):
+        try:
+            from utils.web_scraper.platform_helpers import _get_bilibili_credential
+
+            return _get_bilibili_credential()
+        except Exception:
+            return None
+
+    async def _resolve_b23(self, url: str) -> str:
+        try:
+            response = await self.client.get(url, follow_redirects=True)
+            final = str(response.url)
+            return self.extract_bvid(final)
+        except Exception as exc:
+            logger.debug("[%s] b23 resolve failed: %s", self.platform_name, exc)
+            return ""
+
+    @staticmethod
+    def _pick_audio_url(download_info: dict) -> str:
+        if not isinstance(download_info, dict):
+            return ""
+        dash = download_info.get("dash")
+        if not isinstance(dash, dict):
+            return ""
+        audio_list = dash.get("audio") or []
+        if not isinstance(audio_list, list) or not audio_list:
+            return ""
+        # Prefer the lowest bandwidth audio-only track for music playback.
+        ordered = sorted(
+            (item for item in audio_list if isinstance(item, dict)),
+            key=lambda item: int(item.get("bandwidth") or 0) or 10**12,
+        )
+        for item in ordered:
+            for key in ("baseUrl", "base_url"):
+                url = str(item.get(key) or "").strip()
+                if url.startswith("https://"):
+                    return url
+            backups = item.get("backupUrl") or item.get("backup_url") or []
+            if isinstance(backups, list):
+                for backup in backups:
+                    url = str(backup or "").strip()
+                    if url.startswith("https://"):
+                        return url
+        return ""
+
+    async def resolve_bvid(self, bvid: str) -> Dict[str, Any] | None:
+        bvid = str(bvid or "").strip()
+        if not bvid:
+            return None
+        if not bvid.startswith("BV"):
+            # Keep original casing from extract; normalize common lowercase.
+            if bvid.lower().startswith("bv"):
+                bvid = "BV" + bvid[2:]
+            else:
+                return None
+        try:
+            from bilibili_api import video as bili_video
+
+            resource = bili_video.Video(
+                bvid=bvid,
+                credential=await self._credential(),
+            )
+            info = await resource.get_info()
+            duration_seconds = _parse_duration_seconds(
+                info.get("duration") if isinstance(info, dict) else None
+            )
+            if not _is_recommendable_duration(duration_seconds):
+                logger.info(
+                    "[%s] 跳过超长 BV: %s (%ss)",
+                    self.platform_name,
+                    bvid,
+                    int(duration_seconds or 0),
+                )
+                return None
+            download_info = await resource.get_download_url(page_index=0)
+            audio_url = self._pick_audio_url(download_info)
+            if not audio_url:
+                logger.warning("[%s] BV %s 无可用音轨", self.platform_name, bvid)
+                return None
+            owner = info.get("owner") if isinstance(info, dict) else {}
+            title = str((info or {}).get("title") or bvid).strip()
+            artist = str((owner or {}).get("name") or "Bilibili").strip()
+            cover = str((info or {}).get("pic") or "").strip()
+            item = self._format_item(
+                name=title,
+                url=audio_url,
+                artist=artist or "Bilibili",
+                cover=cover,
+                duration_seconds=duration_seconds,
+            )
+            item["source"] = "bilibili"
+            item["bvid"] = bvid
+            return item
+        except Exception as exc:
+            logger.warning(
+                "[%s] 解析 BV %s 失败: %s",
+                self.platform_name,
+                bvid,
+                exc,
+            )
+            return None
+
+    async def resolve_text(self, text: str) -> Dict[str, Any] | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        bvid = self.extract_bvid(raw)
+        if not bvid and "b23.tv" in raw.lower():
+            url_match = re.search(r"https?://b23\.tv/[\w]+", raw, re.IGNORECASE)
+            if url_match:
+                bvid = await self._resolve_b23(url_match.group(0))
+        if not bvid:
+            return None
+        return await self.resolve_bvid(bvid)
+
+    async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
+        keyword = str(keyword or "").strip()
+        if not keyword:
+            return []
+        direct = await self.resolve_text(keyword)
+        if direct:
+            return [direct]
+
+        self._refresh_user_agent()
+        logger.info("[%s] 正在搜索: %s", self.platform_name, keyword)
+        results: List[Dict[str, Any]] = []
+        try:
+            from bilibili_api import search as bili_search
+            from bilibili_api.video_zone import VideoZoneTypes
+
+            credential = await self._credential()
+            payload = None
+            try:
+                payload = await bili_search.search_by_type(
+                    keyword,
+                    search_type=bili_search.SearchObjectType.VIDEO,
+                    video_zone_type=VideoZoneTypes.MUSIC,
+                    page=1,
+                    page_size=max(5, min(int(limit) * 4, 20)),
+                )
+            except Exception as music_zone_exc:
+                logger.debug(
+                    "[%s] 音乐区搜索失败，回退全站: %s",
+                    self.platform_name,
+                    music_zone_exc,
+                )
+            if not isinstance(payload, dict) or not payload.get("result"):
+                payload = await bili_search.search_by_type(
+                    keyword,
+                    search_type=bili_search.SearchObjectType.VIDEO,
+                    page=1,
+                    page_size=max(5, min(int(limit) * 4, 20)),
+                )
+            entries = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(entries, list):
+                return []
+
+            for entry in entries:
+                if len(results) >= max(1, int(limit)):
+                    break
+                if not isinstance(entry, dict):
+                    continue
+                bvid = str(entry.get("bvid") or "").strip()
+                if not bvid:
+                    continue
+                title = re.sub(r"<[^>]+>", "", str(entry.get("title") or "")).strip()
+                # Light relevance gate: skip clearly unrelated when keyword is short.
+                if keyword and title and keyword.casefold() not in title.casefold():
+                    # Still allow high-play music covers that only partially match.
+                    duration_seconds = _parse_duration_seconds(entry.get("duration"))
+                    if duration_seconds is None:
+                        # duration may be "mm:ss"
+                        raw_duration = str(entry.get("duration") or "")
+                        if ":" in raw_duration:
+                            parts = raw_duration.split(":")
+                            try:
+                                duration_seconds = int(parts[-2]) * 60 + int(parts[-1])
+                            except (TypeError, ValueError, IndexError):
+                                duration_seconds = None
+                    if not _is_recommendable_duration(duration_seconds):
+                        continue
+                item = await self.resolve_bvid(bvid)
+                if item:
+                    if title:
+                        item["name"] = title
+                    results.append(item)
+        except Exception as exc:
+            logger.error(
+                "[%s] 搜索 '%s' 失败: %s",
+                self.platform_name,
+                keyword,
+                exc,
+                exc_info=True,
+            )
+        return results
+
+
 # =======================================================
 # 全局爬虫实例 (利用 httpx 连接池复用提升 30% 速度)
 # 懒加载：在首次访问时才实例化，避免模块导入时创建 AsyncClient
@@ -2170,6 +2393,7 @@ def get_crawlers() -> Dict[str, BaseMusicCrawler]:
     if _crawlers_cache is None:
         _crawlers_cache = {
             'netease': NeteaseCrawler(),
+            'bilibili': BilibiliMusicCrawler(),
             'fma': FMACrawler(),
             'musopen': MusopenCrawler(),
             'soundcloud': SoundCloudCrawler(),
@@ -2245,6 +2469,23 @@ async def fetch_music_content(
         or requested_artist
         or personalization_source != "auto"
     )
+
+    # BV / b23 直链：跳过网易云调度，直接解析 B站音轨。
+    bilibili_crawler = all_crawlers.get("bilibili")
+    if keyword and bilibili_crawler is not None:
+        bvid_hint = BilibiliMusicCrawler.extract_bvid(keyword)
+        if bvid_hint or "b23.tv" in keyword.lower() or "bilibili.com/video/" in keyword.lower():
+            try:
+                direct_item = await bilibili_crawler.resolve_text(keyword)
+            except Exception as exc:
+                logger.warning("[智能调度] B站直链解析失败: %s", exc)
+                direct_item = None
+            if direct_item:
+                return {
+                    "success": True,
+                    "data": [direct_item],
+                    "netease_cookie_invalid": False,
+                }
     use_account_personalization = (
         personalized
         and not (requested_song or requested_artist)
@@ -2303,11 +2544,13 @@ async def fetch_music_content(
             logger.info(f"[智能调度] 识别到古典/纯正乐器意图，优先调度 Musopen: {keyword}")
             primary_tasks.append(all_crawlers['musopen'].search(keyword, limit))
         
-        # 2. 华语/流行路由：命中华语歌手或关键词
+        # 2. 华语/流行路由：命中华语歌手或关键词 → 网易云 + B站并行
         elif any(kw in kw_lower for kw in chinese_keywords):
-            logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云: {keyword}")
+            logger.info(f"[智能调度] 识别到华语检索意图，优先调度网易云+B站: {keyword}")
             primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
             netease_used = True
+            if bilibili_crawler is not None:
+                primary_tasks.append(bilibili_crawler.search(keyword, limit))
 
         # 3. 独立/电子/Lofi 路由
         elif any(kw in kw_lower for kw in ROUTING_INDIE_KEYWORDS):
@@ -2322,19 +2565,32 @@ async def fetch_music_content(
             if china:
                 primary_tasks.append(all_crawlers['netease'].search(keyword, limit))
                 netease_used = True
+                if bilibili_crawler is not None:
+                    primary_tasks.append(bilibili_crawler.search(keyword, limit))
             else:
                 # 非中文区默认首选
                 primary_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
                 primary_tasks.append(all_crawlers['itunes'].search(keyword, limit))
 
-        # 执行第一梯队 - 竞速模式：任一源返回结果即停止等待
+        # 执行第一梯队。
+        # 中国区网易云+B站：并行搜完再合并候选（播放器需要两边结果）。
+        # 其它多源路由仍走竞速：任一源命中即取消剩余任务。
         if primary_tasks:
-            # 创建任务以便后续取消
-            primary_task_objs = [asyncio.create_task(coro) for coro in primary_tasks]
-            
-            for completed_task in asyncio.as_completed(primary_task_objs):
-                try:
-                    res = await completed_task
+            merge_china_music_sources = (
+                china
+                and bilibili_crawler is not None
+                and netease_used
+                and len(primary_tasks) == 2
+            )
+            if merge_china_music_sources:
+                logger.info("[智能调度] 中国区并行合并网易云+B站结果")
+                gathered = await asyncio.gather(*primary_tasks, return_exceptions=True)
+                for res in gathered:
+                    if isinstance(res, Exception):
+                        if isinstance(res, asyncio.CancelledError):
+                            raise res
+                        logger.warning("[智能调度] 第一梯队某源异常: %s", res)
+                        continue
                     if isinstance(res, list) and res:
                         res = _filter_requested_music_results(
                             res,
@@ -2343,22 +2599,37 @@ async def fetch_music_content(
                         )
                     if isinstance(res, list) and res:
                         all_results.extend(res)
-                        logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
-                        # 取消剩余任务
+            else:
+                # 创建任务以便后续取消
+                primary_task_objs = [asyncio.create_task(coro) for coro in primary_tasks]
+
+                for completed_task in asyncio.as_completed(primary_task_objs):
+                    try:
+                        res = await completed_task
+                        if isinstance(res, list) and res:
+                            res = _filter_requested_music_results(
+                                res,
+                                requested_song=requested_song,
+                                requested_artist=requested_artist,
+                            )
+                        if isinstance(res, list) and res:
+                            all_results.extend(res)
+                            logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
+                            # 取消剩余任务
+                            for task in primary_task_objs:
+                                if not task.done():
+                                    task.cancel()
+                            # 等待取消完成
+                            await asyncio.gather(*primary_task_objs, return_exceptions=True)
+                            break
+                    except asyncio.CancelledError:
                         for task in primary_task_objs:
                             if not task.done():
                                 task.cancel()
-                        # 等待取消完成
                         await asyncio.gather(*primary_task_objs, return_exceptions=True)
-                        break
-                except asyncio.CancelledError:
-                    for task in primary_task_objs:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*primary_task_objs, return_exceptions=True)
-                    raise
-                except Exception as e:
-                    logger.warning(f"[智能调度] 第一梯队某源异常: {e}")
+                        raise
+                    except Exception as e:
+                        logger.warning(f"[智能调度] 第一梯队某源异常: {e}")
                 
         # --- 组建第二梯队（兜底截断逻辑） ---
         if not all_results:
@@ -2368,6 +2639,8 @@ async def fetch_music_content(
             # 不要在这里将关键词篡改为 "relax"
             # 必须透传原始 keyword，这样搜不到才会真实返回空，让路由层去触发真正的随机逻辑
             # netease 不重试（cookies 失败重试也没意义），直接换其他平台兜底
+            if china and bilibili_crawler is not None:
+                fallback_tasks.append(bilibili_crawler.search(keyword, limit))
             fallback_tasks.append(all_crawlers['fma'].search(keyword, limit))
             fallback_tasks.append(all_crawlers['soundcloud'].search(keyword, limit))
             fallback_tasks.append(all_crawlers['bandcamp'].search(keyword, limit))

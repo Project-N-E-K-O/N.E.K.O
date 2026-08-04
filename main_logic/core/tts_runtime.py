@@ -31,6 +31,7 @@ from utils.frontend_utils import (
     replace_corner_mark,
     remove_bracket,
     is_only_punctuation,
+    strip_tts_muted_symbols,
 )
 from main_logic.omni_offline_client import _is_safety_violation_signal
 from main_logic.tts_client import (
@@ -154,6 +155,9 @@ class TtsRuntimeMixin:
         text = self._tts_bracket_stripper.feed(text)
         if not text:
             return
+        text = strip_tts_muted_symbols(text)
+        if not text:
+            return
         self.tts_request_queue.put((speech_id, text))
         self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)
@@ -164,6 +168,7 @@ class TtsRuntimeMixin:
         self._tts_markdown_stripper.reset()
         self._tts_bracket_stripper.reset()
         self._tts_norm_speech_id = None
+        self._reset_bilingual_speech_splitter()
 
     def _request_tts_done_locked(self) -> str:
         """Request that a TTS end signal be enqueued for the current turn.
@@ -194,6 +199,8 @@ class TtsRuntimeMixin:
         if flushed:
             flushed = self._tts_bracket_stripper.feed(flushed)
         self._tts_bracket_stripper.flush()
+        if flushed:
+            flushed = strip_tts_muted_symbols(flushed)
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
             self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
@@ -585,9 +592,6 @@ class TtsRuntimeMixin:
         self._last_tts_error_code = ''
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
-        notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
-        if notified_error_keys is not None:
-            notified_error_keys.clear()
         self._tts_done_queued_for_turn = False
         self._tts_fallback_uses_default_voice = False
         self._reset_tts_replay_state()
@@ -927,12 +931,12 @@ class TtsRuntimeMixin:
             text = re.sub(r'[，、]+$', '。', text)
         else:
             text = remove_bracket(text)
+        text = strip_tts_muted_symbols(text)
         text = self.emoji_pattern2.sub('', text)
         text = self.emoji_pattern.sub('', text)
         if is_only_punctuation(text) and text not in ['<', '>']:
             return ""
         return text
-
     async def send_speech(self, tts_audio, speech_id: Optional[str] = None):
         """Send speech data to the frontend, sending the speech_id header first for precise interruption control"""
         try:
@@ -999,14 +1003,6 @@ class TtsRuntimeMixin:
 
     async def tts_response_handler(self):
         q = self.tts_response_queue
-        pending_failed_speech_id = ""
-        notified_error_keys = getattr(self, "_tts_notified_error_keys", None)
-        if notified_error_keys is None:
-            # Some tests and compatibility callers construct the manager with
-            # ``__new__``. Lazily initialize while keeping normal runtimes on
-            # the manager-owned set created in ``LLMSessionManager.__init__``.
-            notified_error_keys = set()
-            self._tts_notified_error_keys = notified_error_keys
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
         while True:
             try:
@@ -1028,11 +1024,6 @@ class TtsRuntimeMixin:
                     and data[0] in {"__tts_sentence_done__", "__tts_sentence_failed__"}
                 ):
                     _, speech_id, sentence = data
-                    if data[0] == "__tts_sentence_failed__":
-                        # Sentence workers put this marker immediately before the
-                        # matching ``__error__`` item.  Keep the speech identity so
-                        # parallel failures from one reply can share one user notice.
-                        pending_failed_speech_id = str(speech_id or "")
                     if speech_id == getattr(self, "_tts_replay_speech_id", None):
                         # marker 排在该句所有音频之后；只有音频实际送达前端才推进边界。
                         # 失败句若已播放过前缀也整体跳过，避免 fallback 从句首重念；
@@ -1049,13 +1040,6 @@ class TtsRuntimeMixin:
                         # __audio__/裸 bytes 之后。fire-and-forget 会插到尾音
                         # 前面，前端提前收尾——正是本信号要解决的问题。
                         await self.send_audio_done(data[1])
-                        completed_speech_id = str(data[1] or "")
-                        if completed_speech_id:
-                            completed_keys = {
-                                key for key in notified_error_keys
-                                if key[0] == completed_speech_id
-                            }
-                            notified_error_keys.difference_update(completed_keys)
                         continue
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
@@ -1119,10 +1103,6 @@ class TtsRuntimeMixin:
                     elif data[0] == "__error__":
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
-                        error_speech_id = pending_failed_speech_id or str(
-                            getattr(self, "current_speech_id", "") or ""
-                        )
-                        pending_failed_speech_id = ""
                         logger.error(f"TTS Worker Error: {error_msg}")
 
                         # A configured endpoint failure is observable in the
@@ -1219,21 +1199,6 @@ class TtsRuntimeMixin:
                             if self._tts_retry_notify_count < 3:
                                 logger.info(f"TTS 错误重试 {self._tts_retry_notify_count}/3，暂不通知前端")
                                 continue
-                        error_code = str(self._last_tts_error_code or "")
-                        notification_key = (error_speech_id, error_code)
-                        if (
-                            error_speech_id
-                            and error_code
-                            and notification_key in notified_error_keys
-                        ):
-                            logger.info(
-                                "TTS user notice deduplicated: code=%s speech_id=%s",
-                                error_code,
-                                error_speech_id,
-                            )
-                            continue
-                        if error_speech_id and error_code:
-                            notified_error_keys.add(notification_key)
                         self._fire_task(self.send_status(user_msg))
                         continue
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":

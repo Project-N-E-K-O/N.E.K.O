@@ -93,6 +93,188 @@ _AVATAR_INTERACTION_TOUCH_ZONE_FACTS = {
         "body": "A interação aconteceu na frente do seu corpo ou no ombro.",
     },
 }
+# Fist/hammer poke: one-line zone reaction + preferred emotion cue for the LLM.
+# Keep single-line (no \\n) — avatar instruction contract forbids multiline facts.
+_AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS = {
+    "zh": {
+        "ear": "请按被捏耳朵来回应：又痒又惊，短句娇嗔，情绪偏向surprised。",
+        "head": "请按被摸头顶来回应：柔软开心，短句撒娇，情绪偏向happy。",
+        "face": "请按被碰脸颊来回应：害羞慌乱，短句躲闪，情绪偏向surprised。",
+        "body": "请按被戳身体来回应：轻嗔无奈，短句抗议，情绪偏向angry。",
+    },
+    "zh-TW": {
+        "ear": "請按被捏耳朵來回應：又癢又驚，短句嬌嗔，情緒偏向surprised。",
+        "head": "請按被摸頭頂來回應：柔軟開心，短句撒嬌，情緒偏向happy。",
+        "face": "請按被碰臉頰來回應：害羞慌亂，短句躲閃，情緒偏向surprised。",
+        "body": "請按被戳身體來回應：輕嗔無奈，短句抗議，情緒偏向angry。",
+    },
+    "en": {
+        "ear": "React as if your ear was pinched: ticklish and startled, short line, lean surprised.",
+        "head": "React as if your head was patted: soft and happy, short line, lean happy.",
+        "face": "React as if your cheek was poked: shy and flustered, short line, lean surprised.",
+        "body": "React as if your body was poked: mild pouty protest, short line, lean angry.",
+    },
+    "ja": {
+        "ear": "耳を摘まれた反応で：くすぐったく驚いて、短く、surprised寄りで答えて。",
+        "head": "頭を撫でられた反応で：ふんわり嬉しそうに、短く、happy寄りで答えて。",
+        "face": "頬を突かれた反応で：照れて慌てて、短く、surprised寄りで答えて。",
+        "body": "体を突かれた反応で：少し怒ったように抗議して、短く、angry寄りで答えて。",
+    },
+    "ko": {
+        "ear": "귀를 살짝 잡힌 반응으로: 간질간질하고 놀라며 짧게, surprised 쪽으로.",
+        "head": "머리를 쓰다듬긴 반응으로: 포근하고 기쁘게 짧게, happy 쪽으로.",
+        "face": "볼을 찔린 반응으로: 수줍고 당황해서 짧게, surprised 쪽으로.",
+        "body": "몸을 찔린 반응으로: 살짝 투덜거리며 짧게, angry 쪽으로.",
+    },
+    "ru": {
+        "ear": "Реагируй как на щипок уха: щекотно и с удивлением, коротко, lean surprised.",
+        "head": "Реагируй как на поглаживание головы: мягко и радостно, коротко, lean happy.",
+        "face": "Реагируй как на тычок в щёку: смущённо и растерянно, коротко, lean surprised.",
+        "body": "Реагируй как на тычок в тело: лёгкий протест, коротко, lean angry.",
+    },
+    "es": {
+        "ear": "Reacciona como si te pellizcaran la oreja: cosquillas y sorpresa, frase corta, lean surprised.",
+        "head": "Reacciona como si te acariciaran la cabeza: suave y feliz, frase corta, lean happy.",
+        "face": "Reacciona como si te tocaran la mejilla: tímida y nerviosa, frase corta, lean surprised.",
+        "body": "Reacciona como si te tocaran el cuerpo: protesta leve, frase corta, lean angry.",
+    },
+    "pt": {
+        "ear": "Reaja como se beliscaram sua orelha: coceira e surpresa, frase curta, lean surprised.",
+        "head": "Reaja como se acariciaram sua cabeça: suave e feliz, frase curta, lean happy.",
+        "face": "Reaja como se tocaram sua bochecha: tímida e confusa, frase curta, lean surprised.",
+        "body": "Reaja como se cutucaram seu corpo: protesto leve, frase curta, lean angry.",
+    },
+}
+# Preferred Live2D emotion label per touch zone (frontend motion fallback).
+_AVATAR_INTERACTION_TOUCH_ZONE_PREFERRED_EMOTION = {
+    "ear": "surprised",
+    "head": "happy",
+    "face": "surprised",
+    "body": "angry",
+}
+# Finger poke on the Live2D model (text_context marker live2d_model_poke).
+# Must NOT reuse fist/cat-paw wording — that made speech unrelated to the poke.
+_LIVE2D_MODEL_POKE_TEXT_CONTEXT = "live2d_model_poke"
+_AVATAR_INTERACTION_MODEL_POKE_ZONE_FACTS = {
+    "zh": {
+        "ear": "{actor}刚刚用手戳了一下你的耳朵。",
+        "head": "{actor}刚刚用手摸了摸你的头顶。",
+        "face": "{actor}刚刚用手戳了一下你的脸颊。",
+        "body": "{actor}刚刚用手戳了一下你的身体。",
+    },
+    "zh-TW": {
+        "ear": "{actor}剛剛用手戳了一下你的耳朵。",
+        "head": "{actor}剛剛用手摸了摸你的頭頂。",
+        "face": "{actor}剛剛用手戳了一下你的臉頰。",
+        "body": "{actor}剛剛用手戳了一下你的身體。",
+    },
+    "en": {
+        "ear": "{actor} just poked your ear with a finger.",
+        "head": "{actor} just patted the top of your head with a hand.",
+        "face": "{actor} just poked your cheek with a finger.",
+        "body": "{actor} just poked your body with a finger.",
+    },
+    "ja": {
+        "ear": "{actor}が今、指であなたの耳を突いた。",
+        "head": "{actor}が今、手であなたの頭のてっぺんを撫でた。",
+        "face": "{actor}が今、指であなたの頬を突いた。",
+        "body": "{actor}が今、指であなたの体を突いた。",
+    },
+    "ko": {
+        "ear": "{actor} 방금 손가락으로 네 귀를 찔렀다.",
+        "head": "{actor} 방금 손으로 네 머리 위를 쓰다듬었다.",
+        "face": "{actor} 방금 손가락으로 네 볼을 찔렀다.",
+        "body": "{actor} 방금 손가락으로 네 몸을 찔렀다.",
+    },
+    "ru": {
+        "ear": "{actor} только что ткнул пальцем тебе в ухо.",
+        "head": "{actor} только что погладил тебя по макушке рукой.",
+        "face": "{actor} только что ткнул пальцем тебе в щёку.",
+        "body": "{actor} только что ткнул пальцем тебе в тело.",
+    },
+    "es": {
+        "ear": "{actor} acaba de pincharte la oreja con un dedo.",
+        "head": "{actor} acaba de acariciarte la cabeza con la mano.",
+        "face": "{actor} acaba de pincharte la mejilla con un dedo.",
+        "body": "{actor} acaba de pincharte el cuerpo con un dedo.",
+    },
+    "pt": {
+        "ear": "{actor} acabou de cutucar sua orelha com um dedo.",
+        "head": "{actor} acabou de acariciar o topo da sua cabeça com a mão.",
+        "face": "{actor} acabou de cutucar sua bochecha com um dedo.",
+        "body": "{actor} acabou de cutucar seu corpo com um dedo.",
+    },
+}
+# Short location nouns used to bake touch_zone into fist/hammer event facts.
+_AVATAR_INTERACTION_ZONE_LOCATION_NOUN = {
+    "zh": {"ear": "耳侧", "head": "头顶", "face": "脸颊", "body": "身体"},
+    "zh-TW": {"ear": "耳側", "head": "頭頂", "face": "臉頰", "body": "身體"},
+    "en": {"ear": "ear", "head": "head", "face": "cheek", "body": "body"},
+    "ja": {"ear": "耳", "head": "頭", "face": "頬", "body": "体"},
+    "ko": {"ear": "귀", "head": "머리", "face": "볼", "body": "몸"},
+    "ru": {"ear": "уха", "head": "макушки", "face": "щёки", "body": "тела"},
+    "es": {"ear": "oreja", "head": "cabeza", "face": "mejilla", "body": "cuerpo"},
+    "pt": {"ear": "orelha", "head": "cabeça", "face": "bochecha", "body": "corpo"},
+}
+# Keep speech locked to THIS interaction (history often hijacked the reply).
+_AVATAR_INTERACTION_RESPONSE_LOCK = {
+    "zh": {
+        "model_poke": "请只针对刚才被手指碰到的部位立刻用一句短台词回应，必须点明被戳/被摸的部位感受，不要接上一段聊天话题，不要提无关内容。",
+        "lollipop": "请只针对刚才被喂棒棒糖这件事立刻用一句短台词回应，必须点明棒棒糖或嘴里的甜味，不要接上一段聊天话题，不要提无关内容。",
+        "fist": "请只针对刚才被猫爪轻碰这件事立刻用一句短台词回应，必须点明猫爪触感和碰到的部位，不要接上一段聊天话题，不要提无关内容。",
+        "hammer": "请只针对刚才被锤子敲到这件事立刻用一句短台词回应，必须点明锤子和敲到的部位，不要接上一段聊天话题，不要提无关内容。",
+        "rps": "请只针对刚才这一局猜拳立刻用一句短台词回应，必须点明胜负或手势感受，不要接上一段聊天话题，不要提无关内容。",
+    },
+    "zh-TW": {
+        "model_poke": "請只針對剛才被手指碰到的部位立刻用一句短台詞回應，必須點明被戳/被摸的部位感受，不要接上一段聊天話題，不要提無關內容。",
+        "lollipop": "請只針對剛才被餵棒棒糖這件事立刻用一句短台詞回應，必須點明棒棒糖或嘴裡的甜味，不要接上一段聊天話題，不要提無關內容。",
+        "fist": "請只針對剛才被貓爪輕碰這件事立刻用一句短台詞回應，必須點明貓爪觸感和碰到的部位，不要接上一段聊天話題，不要提無關內容。",
+        "hammer": "請只針對剛才被槌子敲到這件事立刻用一句短台詞回應，必須點明槌子和敲到的部位，不要接上一段聊天話題，不要提無關內容。",
+        "rps": "請只針對剛才這一局猜拳立刻用一句短台詞回應，必須點明勝負或手勢感受，不要接上一段聊天話題，不要提無關內容。",
+    },
+    "en": {
+        "model_poke": "Reply in one short spoken line only to this finger poke/pat; name the body part that was touched; do not continue the previous chat topic.",
+        "lollipop": "Reply in one short spoken line only to being fed the lollipop; mention the candy or sweetness; do not continue the previous chat topic.",
+        "fist": "Reply in one short spoken line only to the cat-paw touch; mention the paw feel and where it landed; do not continue the previous chat topic.",
+        "hammer": "Reply in one short spoken line only to the hammer bonk; mention the hammer and where it landed; do not continue the previous chat topic.",
+        "rps": "Reply in one short spoken line only to this rock-paper-scissors round; reflect the result or gestures; do not continue the previous chat topic.",
+    },
+    "ja": {
+        "model_poke": "今指で触られた部位だけに、短い一言で反応して。部位の感触に触れ、直前の話題は続けないで。",
+        "lollipop": "今ペロペロキャンディを食べさせられたことだけに、短い一言で反応して。キャンディや甘さに触れ、直前の話題は続けないで。",
+        "fist": "今猫の肉球で触られたことだけに、短い一言で反応して。肉球の感触と当たった部位に触れ、直前の話題は続けないで。",
+        "hammer": "今ハンマーで当たったことだけに、短い一言で反応して。ハンマーと当たった部位に触れ、直前の話題は続けないで。",
+        "rps": "今のじゃんけんの結果だけに、短い一言で反応して。勝敗や手に触れ、直前の話題は続けないで。",
+    },
+    "ko": {
+        "model_poke": "방금 손가락으로 닿은 부위에만 짧은 한 마디로 반응해. 부위의 느낌을 말하고, 이전 대화 주제를 이어가지 마.",
+        "lollipop": "방금 막대사탕을 먹여 준 일에만 짧은 한 마디로 반응해. 사탕이나 단맛을 말하고, 이전 대화 주제를 이어가지 마.",
+        "fist": "방금 고양이 발로 건드린 일에만 짧은 한 마디로 반응해. 발 감촉과 닿은 부위를 말하고, 이전 대화 주제를 이어가지 마.",
+        "hammer": "방금 망치로 맞은 일에만 짧은 한 마디로 반응해. 망치와 맞은 부위를 말하고, 이전 대화 주제를 이어가지 마.",
+        "rps": "방금 가위바위보 한 판에만 짧은 한 마디로 반응해. 승패나 손을 말하고, 이전 대화 주제를 이어가지 마.",
+    },
+    "ru": {
+        "model_poke": "Ответь одной короткой репликой только на этот тычок пальцем; назови часть тела; не продолжай прошлую тему разговора.",
+        "lollipop": "Ответь одной короткой репликой только на угощение леденцом; упомяни конфету или сладость; не продолжай прошлую тему.",
+        "fist": "Ответь одной короткой репликой только на касание кошачьей лапкой; упомяни лапку и место касания; не продолжай прошлую тему.",
+        "hammer": "Ответь одной короткой репликой только на удар молотком; упомяни молоток и место удара; не продолжай прошлую тему.",
+        "rps": "Ответь одной короткой репликой только на этот раунд камень-ножницы-бумага; отрази результат; не продолжай прошлую тему.",
+    },
+    "es": {
+        "model_poke": "Responde con una frase corta solo a este toque con el dedo; nombra la parte del cuerpo; no continúes el tema anterior.",
+        "lollipop": "Responde con una frase corta solo a que te dieron la piruleta; menciona el dulce; no continúes el tema anterior.",
+        "fist": "Responde con una frase corta solo al toque de la patita; menciona la pata y dónde tocó; no continúes el tema anterior.",
+        "hammer": "Responde con una frase corta solo al golpe del martillo; menciona el martillo y dónde pegó; no continúes el tema anterior.",
+        "rps": "Responde con una frase corta solo a esta ronda de piedra-papel-tijera; refleja el resultado; no continúes el tema anterior.",
+    },
+    "pt": {
+        "model_poke": "Responda com uma fala curta só a este toque com o dedo; nomeie a parte do corpo; não continue o assunto anterior.",
+        "lollipop": "Responda com uma fala curta só a receber o pirulito; mencione o doce; não continue o assunto anterior.",
+        "fist": "Responda com uma fala curta só ao toque da patinha; mencione a pata e onde tocou; não continue o assunto anterior.",
+        "hammer": "Responda com uma fala curta só à batida do martelo; mencione o martelo e onde acertou; não continue o assunto anterior.",
+        "rps": "Responda com uma fala curta só a esta rodada de pedra-papel-tesoura; reflita o resultado; não continue o assunto anterior.",
+    },
+}
 _AVATAR_INTERACTION_REACTION_PROFILES = {
     "zh": {
         "lollipop": {
@@ -655,6 +837,12 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "poke": "[{master}用猫爪轻轻碰了你]",
             "rapid": "[{master}用猫爪连续轻轻碰了你几下]",
         },
+        "model_poke": {
+            "ear": "[{master}用手戳了你的耳朵]",
+            "head": "[{master}用手摸了你的头]",
+            "face": "[{master}用手戳了你的脸]",
+            "body": "[{master}用手戳了你的身体]",
+        },
         "hammer": {
             "bonk": "[{master}用锤子敲了你一下]",
             "rapid": "[{master}连续用锤子敲了你好几下]",
@@ -675,6 +863,12 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
         "fist": {
             "poke": "[{master} lightly touched you with the cat paw]",
             "rapid": "[{master} lightly touched you several times with the cat paw]",
+        },
+        "model_poke": {
+            "ear": "[{master} poked your ear with a finger]",
+            "head": "[{master} patted your head with a hand]",
+            "face": "[{master} poked your cheek with a finger]",
+            "body": "[{master} poked your body with a finger]",
         },
         "hammer": {
             "bonk": "[{master} bonked you once with a hammer]",
@@ -935,6 +1129,97 @@ def _sanitize_avatar_interaction_text_context(
     return json.dumps(cleaned, ensure_ascii=False)
 
 
+def _decode_avatar_interaction_text_context(payload: dict) -> str:
+    """Decode sanitized or raw text_context for reserved markers only."""
+    raw = payload.get("text_context") if isinstance(payload, dict) else None
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, str):
+            text = parsed.strip()
+    except Exception:
+        pass
+    return str(text).strip()
+
+
+def _is_live2d_model_poke(payload: dict) -> bool:
+    marker = _decode_avatar_interaction_text_context(payload).lower()
+    return marker == _LIVE2D_MODEL_POKE_TEXT_CONTEXT
+
+
+def _append_avatar_interaction_clause(
+    locale: str, base: str, clause: str
+) -> str:
+    text = str(base or "").strip()
+    extra = str(clause or "").strip()
+    if not extra:
+        return text
+    if not text:
+        return extra
+    separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
+    return f"{text}{separator}{extra}"
+
+
+def _bake_touch_zone_into_tool_focus(
+    locale: str, reaction_focus: str, tool_id: str, touch_zone: str
+) -> str:
+    """Put the body part into the main event sentence for fist/hammer."""
+    noun = (
+        _AVATAR_INTERACTION_ZONE_LOCATION_NOUN.get(
+            locale, _AVATAR_INTERACTION_ZONE_LOCATION_NOUN["en"]
+        ).get(touch_zone, "")
+    )
+    focus = str(reaction_focus or "")
+    if not noun or not focus or tool_id not in {"fist", "hammer"}:
+        return focus
+
+    if locale in {"zh", "zh-TW"}:
+        replacements = (
+            ("碰了你一下", f"碰了你的{noun}一下"),
+            ("碰了你幾下", f"碰了你的{noun}幾下"),
+            ("碰了你几下", f"碰了你的{noun}几下"),
+            ("碰你時", f"碰你的{noun}時"),
+            ("碰你时", f"碰你的{noun}时"),
+            ("敲中了你一次", f"敲中了你的{noun}一次"),
+            ("敲中了你好幾次", f"敲中了你的{noun}好幾次"),
+            ("敲中了你好几次", f"敲中了你的{noun}好几次"),
+        )
+    elif locale == "en":
+        replacements = (
+            ("touched you once with the cat paw", f"touched your {noun} once with the cat paw"),
+            (
+                "touched you several times with the cat paw",
+                f"touched your {noun} several times with the cat paw",
+            ),
+            ("touched you with the cat paw", f"touched your {noun} with the cat paw"),
+            ("hit you once with the hammer", f"hit your {noun} once with the hammer"),
+            (
+                "hit you again with the hammer",
+                f"hit your {noun} again with the hammer",
+            ),
+            (
+                "hit you several times quickly with the hammer",
+                f"hit your {noun} several times quickly with the hammer",
+            ),
+            (
+                "hit you once with the enlarged easter-egg hammer",
+                f"hit your {noun} once with the enlarged easter-egg hammer",
+            ),
+        )
+    else:
+        # Other locales keep the appended zone fact; grammar baking is fragile.
+        return focus
+
+    for old, new in replacements:
+        if old in focus:
+            return focus.replace(old, new, 1)
+    return focus
+
+
 def _build_avatar_interaction_instruction(
     language: str | None,
     lanlan_name: str,
@@ -944,6 +1229,7 @@ def _build_avatar_interaction_instruction(
     """Build the localized event fact sent to the model for an interaction."""
     locale = _avatar_interaction_locale(language)
     tool_id = payload["tool_id"]
+    is_model_poke = tool_id == "fist" and _is_live2d_model_poke(payload)
     if tool_id == "rps":
         user_gesture, avatar_gesture, round_result = _require_rps_round_facts(payload)
         profile = _AVATAR_INTERACTION_RPS_PROMPT_PROFILES.get(
@@ -954,15 +1240,51 @@ def _build_avatar_interaction_instruction(
         result = str(profile["results"][round_result]).format(
             actor=actor, avatar=avatar
         )
-        return str(profile["template"]).format(
+        reaction_focus = str(profile["template"]).format(
             actor=actor,
             avatar=avatar,
             user_gesture=profile["gestures"][user_gesture],
             avatar_gesture=profile["gestures"][avatar_gesture],
             result=result,
         )
+        return _append_avatar_interaction_clause(
+            locale,
+            reaction_focus,
+            _AVATAR_INTERACTION_RESPONSE_LOCK.get(
+                locale, _AVATAR_INTERACTION_RESPONSE_LOCK["en"]
+            ).get("rps", ""),
+        )
+
     action_id = str(payload.get("action_id") or "").strip().lower()
     intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
+    actor = _avatar_interaction_prompt_actor(locale, master_name)
+    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
+
+    if is_model_poke:
+        zone_key = touch_zone if touch_zone in {"ear", "head", "face", "body"} else "body"
+        poke_template = (
+            _AVATAR_INTERACTION_MODEL_POKE_ZONE_FACTS.get(
+                locale, _AVATAR_INTERACTION_MODEL_POKE_ZONE_FACTS["en"]
+            ).get(zone_key, "")
+        )
+        reaction_focus = str(poke_template).format(
+            lanlan_name=lanlan_name, master_name=actor, actor=actor
+        )
+        zone_hint = (
+            _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS.get(
+                locale, _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS["en"]
+            ).get(zone_key, "")
+        )
+        reaction_focus = _append_avatar_interaction_clause(
+            locale, reaction_focus, zone_hint
+        )
+        return _append_avatar_interaction_clause(
+            locale,
+            reaction_focus,
+            _AVATAR_INTERACTION_RESPONSE_LOCK.get(
+                locale, _AVATAR_INTERACTION_RESPONSE_LOCK["en"]
+            ).get("model_poke", ""),
+        )
 
     action_profiles = (
         _AVATAR_INTERACTION_REACTION_PROFILES.get(
@@ -984,22 +1306,40 @@ def _build_avatar_interaction_instruction(
             f"{locale}/{tool_id}/{action_id}/{intensity}"
         )
 
-    actor = _avatar_interaction_prompt_actor(locale, master_name)
     reaction_focus = str(reaction_profile["reaction_focus"]).format(
         lanlan_name=lanlan_name, master_name=actor, actor=actor
     )
-    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
-    touch_zone_fact = (
-        _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
-            locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
-        ).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
-        else ""
+    baked_zone = False
+    if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS and touch_zone:
+        baked = _bake_touch_zone_into_tool_focus(
+            locale, reaction_focus, tool_id, touch_zone
+        )
+        baked_zone = baked != reaction_focus
+        reaction_focus = baked
+        if not baked_zone:
+            touch_zone_fact = (
+                _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
+                    locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
+                ).get(touch_zone, "")
+            )
+            reaction_focus = _append_avatar_interaction_clause(
+                locale, reaction_focus, touch_zone_fact
+            )
+        zone_hint = (
+            _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS.get(
+                locale, _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS["en"]
+            ).get(touch_zone, "")
+        )
+        reaction_focus = _append_avatar_interaction_clause(
+            locale, reaction_focus, zone_hint
+        )
+    return _append_avatar_interaction_clause(
+        locale,
+        reaction_focus,
+        _AVATAR_INTERACTION_RESPONSE_LOCK.get(
+            locale, _AVATAR_INTERACTION_RESPONSE_LOCK["en"]
+        ).get(tool_id, ""),
     )
-    if touch_zone_fact:
-        fact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
-        reaction_focus = f"{reaction_focus}{fact_separator}{touch_zone_fact}"
-    return reaction_focus
 
 
 def _build_avatar_interaction_memory_meta(
@@ -1048,15 +1388,30 @@ def _build_avatar_interaction_memory_meta(
             memory_note = templates.get("lollipop", {}).get("offer", "")
             dedupe_rank = 1
     elif tool_id == "fist":
-        dedupe_key = "fist_touch"
-        if intensity in {"rapid", "burst"}:
-            memory_note = templates.get("fist", {}).get(
-                "rapid", templates.get("fist", {}).get("poke", "")
+        touch_zone = str(payload.get("touch_zone") or "").strip().lower()
+        if _is_live2d_model_poke(payload):
+            dedupe_key = "model_poke"
+            zone_key = touch_zone if touch_zone in {"ear", "head", "face", "body"} else "body"
+            memory_note = (
+                templates.get("model_poke", {}).get(zone_key, "")
+                or _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.get("en", {})
+                .get("model_poke", {})
+                .get(zone_key, "")
+                or _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.get("zh", {})
+                .get("model_poke", {})
+                .get(zone_key, "")
             )
-            dedupe_rank = 3 if intensity == "burst" else 2
-        else:
-            memory_note = templates.get("fist", {}).get("poke", "")
             dedupe_rank = 1
+        else:
+            dedupe_key = "fist_touch"
+            if intensity in {"rapid", "burst"}:
+                memory_note = templates.get("fist", {}).get(
+                    "rapid", templates.get("fist", {}).get("poke", "")
+                )
+                dedupe_rank = 3 if intensity == "burst" else 2
+            else:
+                memory_note = templates.get("fist", {}).get("poke", "")
+                dedupe_rank = 1
     elif tool_id == "hammer":
         dedupe_key = "hammer_bonk"
         if intensity == "easter_egg":
@@ -1079,11 +1434,15 @@ def _build_avatar_interaction_memory_meta(
     if formatted_note and "{master}" in formatted_note:
         formatted_note = formatted_note.format(master=master)
     touch_zone = str(payload.get("touch_zone") or "").strip().lower()
+    # Model-poke notes already name the body part; skip redundant zone fact.
     touch_zone_fact = (
         _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
             locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
         ).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
+        if (
+            tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
+            and not _is_live2d_model_poke(payload)
+        )
         else ""
     )
     if formatted_note and touch_zone_fact:

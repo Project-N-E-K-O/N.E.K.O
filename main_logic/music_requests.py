@@ -577,11 +577,73 @@ def _split_music_request_clauses(text: str) -> list[str]:
     return clauses
 
 
+_ZH_BILIBILI_SOURCE = r"(?:B站|b站|哔哩哔哩|嗶哩嗶哩|bilibili)"
+_BILIBILI_BVID_IN_TEXT = re.compile(r"\b(BV[\w]{8,})\b", re.IGNORECASE)
+_BILIBILI_VIDEO_URL = re.compile(
+    r"(?:https?://)?(?:www\.)?bilibili\.com/video/(BV[\w]+)",
+    re.IGNORECASE,
+)
+_BILIBILI_B23_URL = re.compile(r"https?://b23\.tv/[\w]+", re.IGNORECASE)
+
+
+def _parse_bilibili_direct_request(clause: str) -> MusicRequest | None:
+    """Recognize BV / bilibili / b23 links without requiring a play verb."""
+    url_match = _BILIBILI_VIDEO_URL.search(clause)
+    if url_match:
+        bvid = url_match.group(1)
+        if bvid.lower().startswith("bv") and not bvid.startswith("BV"):
+            bvid = "BV" + bvid[2:]
+        return MusicRequest(keyword=bvid, song_name=bvid)
+    b23_match = _BILIBILI_B23_URL.search(clause)
+    if b23_match:
+        url = b23_match.group(0)
+        return MusicRequest(keyword=url, song_name=url)
+    bvid_match = _BILIBILI_BVID_IN_TEXT.search(clause)
+    if not bvid_match:
+        return None
+    bvid = bvid_match.group(1)
+    if bvid.lower().startswith("bv") and not bvid.startswith("BV"):
+        bvid = "BV" + bvid[2:]
+    # Bare BV / "播一下 BV..." / "这个 BV..." all count as direct resolve.
+    return MusicRequest(keyword=bvid, song_name=bvid)
+
+
 def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
     if not clause or _ZH_NEGATIVE_MUSIC.search(clause):
         return None
     if _ZH_NON_MUSIC_SPEECH_REQUEST.fullmatch(clause):
         return None
+
+    direct_bili = _parse_bilibili_direct_request(clause)
+    if direct_bili is not None:
+        return direct_bili
+
+    # 「点首歌 / 點歌」— soft song-request without a classic 播放 verb.
+    diange_match = re.fullmatch(
+        rf"{_ZH_REQ_PREFIX}(?:点首歌|點首歌|点歌|點歌)"
+        rf"(?:听|聽|放)?{_ZH_ONCE}(?:一首|首)?"
+        r"(.{0,60})",
+        clause,
+    )
+    if diange_match:
+        payload = _strip_request_payload(diange_match.group(1))
+        if payload in {"", "歌", "歌曲", "音乐", "音樂", "一首歌", "首歌"}:
+            return MusicRequest()
+        return MusicRequest(keyword=payload, song_name=payload)
+
+    # 「来首B站的… / 放首哔哩哔哩…」
+    bili_match = re.fullmatch(
+        rf"{_ZH_REQ_PREFIX}(?:播放|放|播|听|聽|来|來|点|點)?{_ZH_ONCE}"
+        rf"(?:一首|首|个|個)?"
+        rf"{_ZH_BILIBILI_SOURCE}(?:上|里|裡|的)?"
+        r"(.{0,60})",
+        clause,
+    )
+    if bili_match:
+        payload = _strip_request_payload(bili_match.group(1))
+        if payload in {"", "歌", "歌曲", "音乐", "音樂", "一首歌", "首歌", "的"}:
+            return MusicRequest()
+        return MusicRequest(keyword=payload, song_name=payload)
 
     if re.fullmatch(
         rf"{_ZH_REQ_PREFIX}(?:只)?"
@@ -687,6 +749,7 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         r"|放一首|放首|放一下"
         r"|听一首|聽一首|听首|聽首|听一下|聽一下"
         r"|想听|想聽|要听|要聽"
+        r"|点首歌|點首歌|点歌|點歌"
         # ⚠️ 「来点 / 來點」是这组里最短也最歧义的动作：「点」还能当别的动词的头
         # （点评 / 点击 / 点赞 / 点名 / 点菜）。`來點評一下這張卡` 会被切成
         # 「來點」+「評一下這張卡」拿去搜歌（Codex P2）。加否定 lookahead 挡掉。
@@ -727,6 +790,10 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
         "來一首",
         "来首",
         "來首",
+        "点首歌",
+        "點首歌",
+        "点歌",
+        "點歌",
     }:
         return MusicRequest(keyword=payload, song_name=payload)
     return MusicRequest(keyword=payload)
@@ -735,6 +802,9 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
 def _parse_explicit_en_clause(clause: str) -> MusicRequest | None:
     if not clause or _EN_NEGATIVE_MUSIC.search(clause):
         return None
+    direct_bili = _parse_bilibili_direct_request(clause)
+    if direct_bili is not None:
+        return direct_bili
     normalized = clause.strip()
     request_prefix = (
         r"(?:(?:please\s+)?(?:i\s+(?:want|would like)\s+to\s+)?"
@@ -1003,10 +1073,131 @@ def _has_explicit_non_music_target(clause: str) -> bool:
     return bool(zh_target or en_target)
 
 
+@dataclass(frozen=True)
+class SingCoverRequest:
+    """User asked the character to sing/cover a song via RVC (not plain playback)."""
+
+    query: str = ""
+    song_name: str = ""
+    song_artist: str = ""
+    model_hint: str = ""
+
+    @property
+    def display_query(self) -> str:
+        return " ".join(
+            part for part in (self.song_name or self.query, self.song_artist) if part
+        )
+
+
+_ZH_SING_COVER_PREFIX = rf"{_ZH_REQ_PREFIX}"
+_ZH_SING_COVER_VOICE = re.compile(
+    rf"^{_ZH_SING_COVER_PREFIX}"
+    r"用(.{1,20}?)的?(?:声音|聲音|音色|嗓音)唱"
+    r"(?:一首|首|一下)?"
+    r"(.{0,60})$"
+)
+_ZH_SING_COVER_PATTERNS = (
+    # 翻唱晴天 / 用 RVC 唱…
+    re.compile(
+        rf"^{_ZH_SING_COVER_PREFIX}"
+        r"(?:翻唱|用RVC唱|用rvc唱)"
+        r"(?:一首|首|一下)?"
+        r"(.{0,60})$"
+    ),
+    # 给我唱一首… / 帮我唱…
+    re.compile(
+        rf"^{_ZH_SING_COVER_PREFIX}"
+        r"(?:给我唱|給我唱|帮我唱|幫我唱|为我唱|為我唱)"
+        r"(?:一首|首|个|個|一下)?"
+        r"(.{0,60})$"
+    ),
+    # 唱一首晴天 / 唱首…
+    re.compile(
+        rf"^{_ZH_SING_COVER_PREFIX}"
+        r"(?:唱一首|唱首|唱一下|唱个|唱個|唱首歌)"
+        r"(.{0,60})$"
+    ),
+)
+_EN_SING_COVER = re.compile(
+    r"^(?:(?:please\s+)?(?:can|could|would)\s+you\s+)?"
+    r"(?:sing(?:\s+me)?|cover)\s+"
+    r"(?:(?:a|the)\s+)?(?:song\s+)?(.{1,60})$",
+    re.IGNORECASE,
+)
+
+
+def _strip_sing_payload(payload: str) -> str:
+    text = _strip_request_payload(payload)
+    text = re.sub(
+        r"(?:这首歌|這首歌|这首|這首|歌曲|歌|给我听|給我聽)$",
+        "",
+        text,
+    ).strip()
+    if text in {"", "歌", "歌曲", "音乐", "音樂", "一首歌", "首歌"}:
+        return ""
+    return text
+
+
+def _parse_explicit_sing_cover_clause(clause: str) -> SingCoverRequest | None:
+    if not clause or _ZH_NEGATIVE_MUSIC.search(clause):
+        return None
+    # Avoid swallowing plain 播放/点歌.
+    if re.search(r"(?:播放|点歌|點歌)", clause) and not re.search(
+        r"(?:唱|翻唱|cover|sing)", clause, re.IGNORECASE
+    ):
+        return None
+
+    voice_match = _ZH_SING_COVER_VOICE.fullmatch(clause)
+    if voice_match:
+        model_hint = _strip_request_payload(voice_match.group(1))
+        payload = _strip_sing_payload(voice_match.group(2))
+        return SingCoverRequest(
+            query=payload,
+            song_name=payload,
+            model_hint=model_hint,
+        )
+
+    for pattern in _ZH_SING_COVER_PATTERNS:
+        match = pattern.fullmatch(clause)
+        if not match:
+            continue
+        payload = _strip_sing_payload(match.group(1))
+        return SingCoverRequest(query=payload, song_name=payload)
+
+    en_match = _EN_SING_COVER.fullmatch(clause.strip())
+    if en_match:
+        payload = _strip_request_payload(en_match.group(1))
+        payload = re.sub(r"\b(?:for me|please)\b", "", payload, flags=re.I).strip(" '\"")
+        return SingCoverRequest(query=payload, song_name=payload)
+    return None
+
+
+def parse_explicit_sing_cover_request(text: str) -> SingCoverRequest | None:
+    """Return high-confidence sing/cover requests for the RVC cover plugin."""
+    normalized = " ".join(str(text or "").strip().split())
+    if not normalized or len(normalized) > 160:
+        return None
+    for clause in reversed(_split_music_request_clauses(normalized)):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if _ZH_NEGATIVE_MUSIC.search(clause) or _EN_NEGATIVE_MUSIC.search(clause):
+            if _has_explicit_non_music_target(clause):
+                continue
+            return None
+        request = _parse_explicit_sing_cover_clause(clause)
+        if request is not None:
+            return request
+    return None
+
+
 def parse_explicit_user_music_request(text: str) -> MusicRequest | None:
     """Return only high-confidence, user-initiated playback requests."""
     normalized = " ".join(str(text or "").strip().split())
     if not normalized or len(normalized) > 160:
+        return None
+    # Sing/cover intents are handled by the RVC plugin, not plain playback.
+    if parse_explicit_sing_cover_request(normalized) is not None:
         return None
     excluded_sources: set[str] = set()
     for clause in reversed(_split_music_request_clauses(normalized)):

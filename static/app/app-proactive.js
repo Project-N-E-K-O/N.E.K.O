@@ -852,16 +852,21 @@
             delay *= 1 + (Math.random() - 0.5) * 0.24;
         }
 
-        // 首次启动时额外等待 6 秒，避免程序刚启动就触发音乐推荐。
+        // 首次启动时额外等待，避免和启动问候（早上好/内置开场）叠成两段语音。
         // 用一次性 flag 而非 backoffLevel === 0 —— 后者在 user_input reset 或
-        // speaking-skip 重排时也会命中，导致每次都重新叠 6s，把 skip 路径期望的
-        // "等待 ∈ [0, interval)" 变成 "interval + 6s"。
+        // speaking-skip 重排时也会命中，导致每次都重新叠延迟。
         var startupDelay = 0;
         if (!S._proactiveStartupDelayApplied) {
-            startupDelay = 6000;
+            // Keep proactive behind the ordinary startup greeting TTS window.
+            startupDelay = 18000;
             S._proactiveStartupDelayApplied = true;
         }
         delay += startupDelay;
+        // If a startup greeting was just requested, wait until that speech slot clears.
+        var greetingGuardUntil = Number(S._startupGreetingSpeechGuardUntil || 0);
+        if (greetingGuardUntil > Date.now()) {
+            delay = Math.max(delay, greetingGuardUntil - Date.now() + 500);
+        }
 
         // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
         // 不管处于屏幕专注态还是常规态。两边都套这个下限。
@@ -2004,11 +2009,14 @@
         }
 
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
+        // 手动屏幕分享开启时走 1fps 实时流；关闭时走 proactiveVisionInterval（默认 5s）低频监控
         if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
 
-        S.proactiveVisionFrameTimer = setInterval(async function () {
+        var intervalMs = Math.max(1, Number(S.proactiveVisionInterval) || 5) * 1000;
+
+        async function tickProactiveVisionFrame() {
             // 在每次执行前再做一次检查，避免竞态
             if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
                 stopProactiveVisionDuringSpeech();
@@ -2028,7 +2036,13 @@
             }
 
             await sendOneProactiveVisionFrame();
-        }, S.proactiveVisionInterval * 1000);
+        }
+
+        // 立刻发一帧，再按间隔轮询（避免开麦后空等整个间隔）
+        void tickProactiveVisionFrame();
+        S.proactiveVisionFrameTimer = setInterval(function () {
+            void tickProactiveVisionFrame();
+        }, intervalMs);
     }
     mod.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;
 

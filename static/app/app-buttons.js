@@ -1195,6 +1195,181 @@
     };
     window.applyEmotion = mod.applyEmotion;
 
+    // Live2D 戳模型：语音后按「文本情绪优先 / 部位默认情绪兜底」做临时动作，播完回归。
+    var MODEL_POKE_REACTION_TTL_MS = 90000;
+    var MODEL_POKE_ZONE_PREFERRED_EMOTION = Object.freeze({
+        ear: 'surprised',
+        head: 'happy',
+        face: 'surprised',
+        body: 'angry'
+    });
+    var modelPokeReactionPending = Object.create(null);
+
+    function pruneModelPokeReactions(nowMs) {
+        var now = Number.isFinite(nowMs) ? nowMs : Date.now();
+        Object.keys(modelPokeReactionPending).forEach(function (id) {
+            var entry = modelPokeReactionPending[id];
+            if (!entry || (now - Number(entry.sentAt || 0)) > MODEL_POKE_REACTION_TTL_MS) {
+                delete modelPokeReactionPending[id];
+            }
+        });
+    }
+
+    function preferredEmotionForTouchZone(touchZone) {
+        var zone = String(touchZone || '').trim().toLowerCase();
+        return MODEL_POKE_ZONE_PREFERRED_EMOTION[zone] || '';
+    }
+
+    function registerModelPokeReaction(interactionId, meta) {
+        var id = String(interactionId || '').trim();
+        if (!id) return;
+        pruneModelPokeReactions();
+        var touchZone = meta && meta.touchZone ? String(meta.touchZone) : 'body';
+        var preferredOverride = meta && meta.preferredEmotion
+            ? String(meta.preferredEmotion).trim()
+            : '';
+        modelPokeReactionPending[id] = {
+            sentAt: Date.now(),
+            hitAreaId: meta && meta.hitAreaId ? String(meta.hitAreaId) : 'default',
+            touchZone: touchZone,
+            preferredEmotion: preferredOverride || preferredEmotionForTouchZone(touchZone)
+        };
+    }
+
+    function consumeModelPokeReaction(interactionId) {
+        var id = String(interactionId || '').trim();
+        if (!id) return null;
+        pruneModelPokeReactions();
+        var entry = modelPokeReactionPending[id] || null;
+        if (entry) delete modelPokeReactionPending[id];
+        return entry;
+    }
+
+    function peekModelPokeReaction(interactionId) {
+        var id = String(interactionId || '').trim();
+        if (!id) return null;
+        pruneModelPokeReactions();
+        return modelPokeReactionPending[id] || null;
+    }
+
+    function isActionableTextEmotion(emotion) {
+        var label = String(emotion || '').trim().toLowerCase();
+        if (!label) return false;
+        // 无明确情绪：不做动作（与 emotion API 的 neutral 对齐）
+        if (label === 'neutral' || label === 'idle' || label === 'none' || label === '平静' || label === '平靜') {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Resolve motion emotion for a model poke:
+     * actionable text emotion wins; otherwise zone preferred emotion.
+     */
+    function resolveModelPokeMotionEmotion(textEmotion, pokeMeta) {
+        if (isActionableTextEmotion(textEmotion)) {
+            return {
+                emotion: String(textEmotion).trim(),
+                source: 'text'
+            };
+        }
+        var zoneEmotion = pokeMeta && pokeMeta.preferredEmotion
+            ? String(pokeMeta.preferredEmotion).trim()
+            : preferredEmotionForTouchZone(pokeMeta && pokeMeta.touchZone);
+        if (isActionableTextEmotion(zoneEmotion)) {
+            return {
+                emotion: zoneEmotion,
+                source: 'touch_zone'
+            };
+        }
+        return { emotion: '', source: 'none' };
+    }
+
+    /**
+     * Apply text/zone emotion as a temporary click effect that restores idle afterward.
+     * Returns true if a motion/expression was started.
+     */
+    mod.applyTemporaryEmotionFromText = async function applyTemporaryEmotionFromText(emotion, pokeMeta) {
+        var resolved = resolveModelPokeMotionEmotion(emotion, pokeMeta || null);
+        if (!resolved.emotion) {
+            console.log('[ModelPoke] no actionable emotion, skip motion:', emotion);
+            return false;
+        }
+        var label = resolved.emotion;
+        var modelType = String(window.lanlan_config && window.lanlan_config.model_type || '').toLowerCase();
+        if (modelType === 'pngtuber') {
+            // PNGTuber 无统一临时恢复 API，退化为普通 setEmotion
+            mod.applyEmotion(label);
+            return true;
+        }
+        var manager = window.live2dManager;
+        if (manager && typeof manager._playTemporaryClickEffect === 'function') {
+            var duration = Number(manager.CLICK_EFFECT_DURATION) || 5000;
+            console.log(
+                '[ModelPoke] temporary emotion:',
+                label,
+                'source=',
+                resolved.source,
+                'zone=',
+                pokeMeta && pokeMeta.touchZone,
+                'durationMs=',
+                duration
+            );
+            return !!(await manager._playTemporaryClickEffect(label, 2, duration));
+        }
+        if (window.LanLan1 && typeof window.LanLan1.setEmotion === 'function') {
+            window.LanLan1.setEmotion(label);
+            return true;
+        }
+        return false;
+    };
+
+    mod.registerModelPokeReaction = registerModelPokeReaction;
+    mod.consumeModelPokeReaction = consumeModelPokeReaction;
+    mod.peekModelPokeReaction = peekModelPokeReaction;
+    mod.isActionableTextEmotion = isActionableTextEmotion;
+    mod.preferredEmotionForTouchZone = preferredEmotionForTouchZone;
+    mod.resolveModelPokeMotionEmotion = resolveModelPokeMotionEmotion;
+    window.registerModelPokeReaction = registerModelPokeReaction;
+    window.consumeModelPokeReaction = consumeModelPokeReaction;
+    window.peekModelPokeReaction = peekModelPokeReaction;
+    window.isActionableTextEmotion = isActionableTextEmotion;
+    window.preferredEmotionForTouchZone = preferredEmotionForTouchZone;
+    window.resolveModelPokeMotionEmotion = resolveModelPokeMotionEmotion;
+    window.applyTemporaryEmotionFromText = mod.applyTemporaryEmotionFromText;
+
+    // 语音戳 / 道具交互被后端拒绝时：清 pending，回退本地动作
+    if (!mod._modelPokeAckBound) {
+        mod._modelPokeAckBound = true;
+        if (typeof window.addEventListener === 'function') {
+            window.addEventListener('neko-avatar-interaction-ack', function (event) {
+                var detail = (event && event.detail) || {};
+                if (detail.accepted === true) return;
+                var pending = consumeModelPokeReaction(detail.interactionId);
+                if (!pending) return;
+                console.warn('[ModelPoke] voice rejected:', detail.reason, 'fallback local reaction');
+                var area = pending.hitAreaId || 'default';
+                // Chat tools use hitAreaId=default + preferredEmotion; prefer temporary emotion.
+                if (area === 'default'
+                        && pending.preferredEmotion
+                        && typeof mod.applyTemporaryEmotionFromText === 'function') {
+                    Promise.resolve(mod.applyTemporaryEmotionFromText(pending.preferredEmotion, pending))
+                        .catch(function (err) {
+                            console.warn('[ModelPoke] local tool emotion fallback failed:', err);
+                        });
+                    return;
+                }
+                var manager = window.live2dManager;
+                if (manager && typeof manager._playTouchSetWithFallback === 'function') {
+                    // Debounce already consumed on poke dispatch; skip _canTriggerTouchSetArea.
+                    Promise.resolve(manager._playTouchSetWithFallback(area)).catch(function (err) {
+                        console.warn('[ModelPoke] local fallback failed:', err);
+                    });
+                }
+            });
+        }
+    }
+
     var AVATAR_INTERACTION_CONTRACT = Object.freeze({
         touchZones: Object.freeze(['ear', 'head', 'face', 'body']),
         tools: Object.freeze({
@@ -1750,6 +1925,72 @@
         return normalized;
     }
 
+    var AVATAR_TOOL_PREFERRED_EMOTION = Object.freeze({
+        lollipop: 'happy',
+        fist: '',
+        hammer: '',
+        rps: 'surprised'
+    });
+    var AVATAR_TOOL_RPS_RESULT_EMOTION = Object.freeze({
+        user_win: 'angry',
+        avatar_win: 'happy',
+        draw: 'surprised'
+    });
+
+    function preferredEmotionForAvatarTool(normalized) {
+        if (!normalized || typeof normalized !== 'object') return '';
+        var toolId = String(normalized.tool_id || '').trim().toLowerCase();
+        if (toolId === 'rps') {
+            var roundEmotion = AVATAR_TOOL_RPS_RESULT_EMOTION[String(normalized.round_result || '').trim().toLowerCase()];
+            if (roundEmotion) return roundEmotion;
+        }
+        if (toolId === 'hammer' && normalized.easter_egg === true) {
+            return 'surprised';
+        }
+        var zone = String(normalized.touch_zone || '').trim().toLowerCase();
+        if (zone) {
+            var zoneEmotion = preferredEmotionForTouchZone(zone);
+            if (zoneEmotion) return zoneEmotion;
+        }
+        return AVATAR_TOOL_PREFERRED_EMOTION[toolId] || 'happy';
+    }
+
+    function buildAvatarToolReactionMeta(normalized) {
+        var touchZone = String(normalized.touch_zone || '').trim().toLowerCase() || 'body';
+        return {
+            touchZone: touchZone,
+            // Tools are not Live2D HitAreas; keep fallback touchSet on default.
+            hitAreaId: 'default',
+            preferredEmotion: preferredEmotionForAvatarTool(normalized)
+        };
+    }
+
+    function registerAvatarToolCharacterReaction(normalized) {
+        if (!normalized || !normalized.interaction_id) return;
+        registerModelPokeReaction(normalized.interaction_id, buildAvatarToolReactionMeta(normalized));
+    }
+
+    function playLocalAvatarToolFeedback(normalized) {
+        if (!normalized) return Promise.resolve(false);
+        var meta = buildAvatarToolReactionMeta(normalized);
+        if (typeof mod.applyTemporaryEmotionFromText === 'function') {
+            return Promise.resolve(mod.applyTemporaryEmotionFromText(meta.preferredEmotion, meta))
+                .catch(function (err) {
+                    console.warn('[AvatarInteraction] local tool feedback failed:', err);
+                    return false;
+                });
+        }
+        var manager = window.live2dManager;
+        if (manager && typeof manager._playTouchSetWithFallback === 'function') {
+            return Promise.resolve(manager._playTouchSetWithFallback(meta.hitAreaId || 'default'))
+                .catch(function (err) {
+                    console.warn('[AvatarInteraction] local touchSet fallback failed:', err);
+                    return false;
+                });
+        }
+        return Promise.resolve(false);
+    }
+
     async function sendAvatarInteractionPayload(payload) {
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
@@ -1764,15 +2005,28 @@
                 normalized.tool_id,
                 normalized.action_id
             );
+            // Chat tools: still move the character. Model poke keeps its own pending.
+            if (!peekModelPokeReaction(normalized.interaction_id)) {
+                playLocalAvatarToolFeedback(normalized);
+            }
             return false;
         }
 
         if (!reserveAvatarInteractionDispatch(normalized.interaction_id)) {
             console.debug('[AvatarInteraction] host gate skipped: host_pending_dispatch');
+            if (!peekModelPokeReaction(normalized.interaction_id)) {
+                playLocalAvatarToolFeedback(normalized);
+            }
             return false;
         }
 
         beginAvatarInteractionTextContinuation(normalized.interaction_id);
+        // Model poke registers before send; do not overwrite its hitArea metadata.
+        var ownedToolReaction = false;
+        if (!peekModelPokeReaction(normalized.interaction_id)) {
+            registerAvatarToolCharacterReaction(normalized);
+            ownedToolReaction = true;
+        }
 
         try {
             await window.ensureWebSocketOpen();
@@ -1780,17 +2034,23 @@
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
             S.socket.send(JSON.stringify(normalized));
-            window.dispatchEvent(new CustomEvent('neko:avatar-interaction-sent', {
-                detail: {
-                    requestId: normalized.interaction_id,
-                    interactionId: normalized.interaction_id,
-                    source: 'avatar-tool'
-                }
-            }));
+            try {
+                window.dispatchEvent(new CustomEvent('neko:avatar-interaction-sent', {
+                    detail: {
+                        requestId: normalized.interaction_id,
+                        interactionId: normalized.interaction_id,
+                        source: 'avatar-tool'
+                    }
+                }));
+            } catch (_dispatchError) { /* optional host notify */ }
             setActiveAvatarInteractionDispatch(normalized.interaction_id, Date.now());
             return true;
         } catch (error) {
             console.error('[AvatarInteraction] send failed:', error);
+            if (ownedToolReaction) {
+                consumeModelPokeReaction(normalized.interaction_id);
+                playLocalAvatarToolFeedback(normalized);
+            }
             if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
                 releaseDeferredTextAfterAvatarInteraction();
             }
@@ -1804,6 +2064,7 @@
     mod.ensureAvatarInteractionTextContinuationLifecycle = bindAvatarInteractionTextContinuationLifecycle;
     mod.normalizeAvatarInteractionPayload = normalizeAvatarInteractionPayload;
     mod.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
+    window.sendAvatarInteractionPayload = sendAvatarInteractionPayload;
 
     function clearReactChatWindowHostBindingPoll() {
         if (!mod._reactChatWindowHostBindingPollId) {
@@ -2482,7 +2743,12 @@
                 // why this asks the claim sequence and not who holds it now.
                 if (micStartMustStandDown()) return;
 
-                if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                // When independent ASR already fail-closed, tearDownBlockedVoiceRoute
+                // (or pause_session from stopMicCapture) owns teardown. A second
+                // end_session here races a floating-mic retry into a start/end flap.
+                if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut)
+                        && S.voiceInputRouteBlocked !== true
+                        && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
                     console.log(window.t('console.sessionStartFailedEndSession'));
                 }

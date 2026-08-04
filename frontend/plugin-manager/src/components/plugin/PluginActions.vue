@@ -1,7 +1,7 @@
 <template>
-  <div class="plugin-actions">
+  <div class="plugin-actions" :class="{ 'plugin-actions--compact': compact }">
     <el-button
-      v-if="uiAction"
+      v-if="uiAction && !compact"
       type="primary"
       plain
       :icon="Monitor"
@@ -15,7 +15,8 @@
         v-if="status !== 'running'"
         type="success"
         :icon="VideoPlay"
-        @click="handleStart"
+        :size="compact ? 'small' : 'default'"
+        @click.stop="handleStart"
         :loading="loading"
       >
         {{ t('plugins.start') }}
@@ -24,12 +25,14 @@
         v-if="status === 'running'"
         type="warning"
         :icon="VideoPause"
-        @click="handleStop"
+        :size="compact ? 'small' : 'default'"
+        @click.stop="handleStop"
         :loading="loading"
       >
         {{ t('plugins.stop') }}
       </el-button>
       <el-button
+        v-if="!compact"
         type="primary"
         :icon="Refresh"
         @click="handleReload"
@@ -54,9 +57,13 @@ import { formatHttpError } from '@/utils/request'
 
 interface Props {
   pluginId: string
+  /** Card/list compact mode: start/stop only (no UI / reload). */
+  compact?: boolean
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  compact: false,
+})
 const pluginStore = usePluginStore()
 const router = useRouter()
 const { t, locale } = useI18n()
@@ -85,13 +92,8 @@ const uiActionLabel = computed(() =>
 )
 
 function showActionError(error: any, fallbackMessage: string) {
-  const status = error?.response?.status
-  if (error?.request && !error?.response) {
-    return
-  }
-  if (typeof status === 'number' && ![401, 403, 404].includes(status)) {
-    return
-  }
+  // Always surface lifecycle failures — silent returns made Start/Stop look dead.
+  if (error === 'cancel' || error === 'close') return
   ElMessage.error(formatHttpError(error) || fallbackMessage)
 }
 
@@ -215,5 +217,10 @@ async function handleReload() {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.plugin-actions--compact {
+  gap: 4px;
+  flex-wrap: nowrap;
 }
 </style>

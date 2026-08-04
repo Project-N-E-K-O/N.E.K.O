@@ -19,6 +19,16 @@
         </div>
       </template>
 
+      <el-alert
+        v-if="pluginStatus !== 'running' && (panelSurfaces.length > 0 || guideSurfaces.length > 0 || hasStaticUI)"
+        class="plugin-detail-runtime-hint"
+        type="info"
+        show-icon
+        :closable="false"
+        :title="$t('plugins.runtimeHintTitle')"
+        :description="$t('plugins.runtimeHintBody')"
+      />
+
       <el-tabs v-model="activeTab" data-yui-guide-id="plugin-detail-tabs">
         <el-tab-pane v-if="panelSurfaces.length > 0" :label="$t('plugins.ui.panel')" name="panel">
           <div class="surface-section" data-yui-guide-id="plugin-detail-panel">
@@ -377,16 +387,7 @@ async function fetchStaticUI() {
 }
 
 onMounted(async () => {
-  try {
-    await pluginStore.fetchPlugins()
-    await pluginStore.fetchPluginStatus(pluginId.value)
-    await fetchSurfaces()
-    await fetchStaticUI()
-    activeTab.value = resolveDefaultTab(route.query.tab)
-    pluginStore.setSelectedPlugin(pluginId.value)
-  } finally {
-    loading.value = false
-  }
+  await loadPluginDetail({ forceList: true })
 })
 
 watch(
@@ -398,22 +399,41 @@ watch(
 )
 
 watch(pluginId, async () => {
-  loading.value = true
-  try {
-    await pluginStore.fetchPluginStatus(pluginId.value)
-    await fetchSurfaces()
-    await fetchStaticUI()
-    activeTab.value = resolveDefaultTab(route.query.tab)
-    pluginStore.setSelectedPlugin(pluginId.value)
-  } finally {
-    loading.value = false
-  }
+  await loadPluginDetail({ forceList: true })
 })
 
 watch(locale, () => {
   if (!plugin.value) return
   void fetchSurfaces()
 })
+
+async function loadPluginDetail(options: { forceList?: boolean } = {}) {
+  loading.value = true
+  const currentId = pluginId.value
+  try {
+    // Always refresh the list when opening/switching detail — stale store
+    // otherwise leaves an empty "plugin not found" flash that looks dead.
+    await pluginStore.fetchPlugins(Boolean(options.forceList))
+    if (currentId !== pluginId.value) return
+    if (!pluginStore.pluginsWithStatus.some((p) => p.id === currentId)) {
+      // One forced retry in case the first response raced a registry refresh.
+      await pluginStore.fetchPlugins(true)
+      if (currentId !== pluginId.value) return
+    }
+    await pluginStore.fetchPluginStatus(currentId)
+    if (currentId !== pluginId.value) return
+    await fetchSurfaces()
+    if (currentId !== pluginId.value) return
+    await fetchStaticUI()
+    if (currentId !== pluginId.value) return
+    activeTab.value = resolveDefaultTab(route.query.tab)
+    pluginStore.setSelectedPlugin(currentId)
+  } finally {
+    if (currentId === pluginId.value) {
+      loading.value = false
+    }
+  }
+}
 </script>
 
 <style scoped>
@@ -439,6 +459,10 @@ watch(locale, () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.plugin-detail-runtime-hint {
+  margin: 0 0 12px;
 }
 
 .header-left {

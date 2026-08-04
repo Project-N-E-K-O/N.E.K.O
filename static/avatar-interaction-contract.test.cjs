@@ -17,7 +17,16 @@ function loadAppButtons(options = {}) {
       appConst: {},
       appState: {},
       appUtils: {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() { return true; },
       ...(options.window || {}),
+    },
+    CustomEvent: class CustomEvent {
+      constructor(type, init = {}) {
+        this.type = type;
+        this.detail = init.detail;
+      }
     },
     ...(options.globals || {}),
   };
@@ -66,6 +75,12 @@ function createLifecycleHarness(windowOverrides = {}) {
     removeEventListener(type, listener) {
       listeners.set(type, (listeners.get(type) || []).filter(item => item !== listener));
     },
+    dispatchEvent(event) {
+      const type = event && event.type;
+      if (!type) return true;
+      for (const listener of listeners.get(type) || []) listener(event);
+      return true;
+    },
     setTimeout(callback, delayMs) {
       const id = ++nextTimerId;
       timers.set(id, { callback, dueAt: now + Number(delayMs || 0) });
@@ -82,6 +97,12 @@ function createLifecycleHarness(windowOverrides = {}) {
     globals: {
       Date: FakeDate,
       WebSocket: { OPEN: 1 },
+      CustomEvent: class CustomEvent {
+        constructor(type, init = {}) {
+          this.type = type;
+          this.detail = init.detail;
+        }
+      },
     },
   });
   appButtons.ensureAvatarInteractionTextContinuationLifecycle();
@@ -578,7 +599,7 @@ print(json.dumps(normalize_avatar_interaction_payload(json.loads(sys.argv[1])), 
   assert.equal(backend.intensity, undefined);
 });
 
-test('avatar interaction host sends without owning model emotion state', async () => {
+test('avatar interaction host sends without applying model emotion immediately', async () => {
   const appliedEmotions = [];
   const harness = createLifecycleHarness({
     LanLan1: {
@@ -595,6 +616,9 @@ test('avatar interaction host sends without owning model emotion state', async (
   );
   assert.equal(harness.sent.length, 1);
   assert.deepEqual(appliedEmotions, []);
+  // Pending reaction is registered for reply-driven temporary motion; not applied yet.
+  assert.ok(typeof harness.appButtons.peekModelPokeReaction === 'function');
+  assert.ok(harness.appButtons.peekModelPokeReaction('no-host-emotion'));
 
   harness.dispatch('neko-assistant-emotion-ready', {
     turnId: 'assistant-turn',

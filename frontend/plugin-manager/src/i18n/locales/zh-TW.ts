@@ -217,6 +217,8 @@ export default {
     noPlugins: '暫無外掛',
     adapterNotFound: '適配器不存在',
     pluginNotFound: '外掛不存在',
+    runtimeHintTitle: '外掛未執行',
+    runtimeHintBody: '點外掛只會進入管理頁，不會自動啟停。請先點右上角「啟動」，面板與 UI 才會可用。',
     pluginDetail: '外掛詳情',
     basicInfo: '基本資訊',
     entries: '進入點',

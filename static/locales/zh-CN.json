@@ -936,6 +936,7 @@
         "independentAsrActive": "当前使用独立 ASR：{{providerKey}}",
         "independentAsrFallback": "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
         "audioPreprocessingFailed": "麦克风音频处理失败，本次会话的语音输入已停止。请重新开始一次语音会话。",
+        "asrIngressBackpressure": "语音识别有点忙不过来，刚才那句可能丢了。可以说慢一点，或改用更轻的本地识别模型。",
         "independentAsrProviderUnavailable": "{{providerKey}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
         "independentAsrNextSession": "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
         "independentAsrNative": "当前使用 Omni 原生语音识别",

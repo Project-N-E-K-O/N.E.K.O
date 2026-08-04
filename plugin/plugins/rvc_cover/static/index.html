@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="ui.page.title">RVC 翻唱</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app-container">
+    <header>
+      <h1 class="page-title" data-i18n="ui.page.title">RVC 翻唱</h1>
+      <p class="page-sub" data-i18n="ui.page.subtitle">联网搜歌，用本机音色翻唱并推到播放器。</p>
+    </header>
+
+    <section class="config-section">
+      <div class="status-head">
+        <span class="status-title" data-i18n="ui.status.title">运行状态</span>
+        <span id="ready-pill" class="status-pill">检查中</span>
+      </div>
+      <p id="status-summary" class="field-hint">正在读取环境与任务状态…</p>
+      <p id="job-summary" class="meta-line"></p>
+      <div id="problem-list" class="problem-box"></div>
+      <div class="save-row">
+        <button id="btn-refresh" class="ghost-action" type="button" data-i18n="ui.status.refresh">刷新状态</button>
+      </div>
+    </section>
+
+    <section class="config-section">
+      <div class="status-head">
+        <span class="status-title" data-i18n="ui.features.title">功能菜单</span>
+      </div>
+      <p class="field-hint" data-i18n="ui.features.hint">也可在聊天中说「给我唱一首…」，或让 AI 调用 sing_cover。</p>
+      <div class="feature-list">
+        <div class="feature-item">
+          <div>
+            <strong>试唱翻唱</strong>
+            <span>联网搜歌 → RVC 转换 → 推到播放器</span>
+          </div>
+          <code>sing_cover</code>
+        </div>
+        <div class="feature-item">
+          <div>
+            <strong>列出音色</strong>
+            <span>扫描 assets/weights 下的 .pth</span>
+          </div>
+          <code>list_models</code>
+        </div>
+        <div class="feature-item">
+          <div>
+            <strong>任务状态</strong>
+            <span>查看当前翻唱进度 / 结果</span>
+          </div>
+          <code>cover_status</code>
+        </div>
+        <div class="feature-item">
+          <div>
+            <strong>声音训练（原版 Gradio）</strong>
+            <span>模型训练 / 实验项目，与移植前同一套界面</span>
+          </div>
+          <a id="btn-open-gradio" class="ghost-action" href="http://127.0.0.1:7897" target="_blank" rel="noopener">打开训练页</a>
+        </div>
+      </div>
+      <p id="training-summary" class="meta-line"></p>
+    </section>
+
+    <section class="config-section">
+      <div class="status-head">
+        <span class="status-title" data-i18n="ui.cover.title">试唱</span>
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="cover-query" data-i18n="ui.cover.query">歌名 / 关键词</label>
+        <input id="cover-query" class="input-control" type="text" placeholder="例如：晴天 / 周杰伦 晴天" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="field-label" for="cover-artist" data-i18n="ui.cover.artist">原唱歌手（可选）</label>
+          <input id="cover-artist" class="input-control" type="text" placeholder="可选" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="cover-model" data-i18n="ui.cover.model">本次音色（可选）</label>
+          <select id="cover-model" class="input-control"></select>
+        </div>
+      </div>
+      <div class="save-row">
+        <button id="btn-cover" class="primary-action" type="button" data-i18n="ui.cover.start">开始翻唱</button>
+      </div>
+    </section>
+
+    <section class="config-section" id="config-section">
+      <div class="status-head">
+        <span class="status-title" data-i18n="ui.settings.title">推理设置</span>
+      </div>
+      <p class="field-hint">设置保存在本机插件数据目录，不依赖配置档案（profile）。</p>
+      <div class="form-group">
+        <label class="field-label" for="cfg-model" data-i18n="ui.settings.model">默认音色</label>
+        <select id="cfg-model" class="input-control"></select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="field-label" for="cfg-device" data-i18n="ui.settings.device">推理设备</label>
+          <input id="cfg-device" class="input-control mono" type="text" placeholder="cuda:0 / cpu">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="cfg-f0-method" data-i18n="ui.settings.f0_method">音高算法</label>
+          <select id="cfg-f0-method" class="input-control">
+            <option value="rmvpe">rmvpe</option>
+            <option value="pm">pm</option>
+            <option value="harvest">harvest</option>
+            <option value="crepe">crepe</option>
+            <option value="fcpe">fcpe</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="field-label" for="cfg-f0-up-key" data-i18n="ui.settings.f0_up_key">升降调（半音）</label>
+          <input id="cfg-f0-up-key" class="input-control" type="number" step="1" value="0">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="cfg-index-rate" data-i18n="ui.settings.index_rate">索引比例</label>
+          <input id="cfg-index-rate" class="input-control" type="number" min="0" max="1" step="0.05" value="0">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="field-label" for="cfg-protect" data-i18n="ui.settings.protect">保护清辅音</label>
+          <input id="cfg-protect" class="input-control" type="number" min="0" max="0.5" step="0.01" value="0.33">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="cfg-timeout" data-i18n="ui.settings.timeout">超时（秒）</label>
+          <input id="cfg-timeout" class="input-control" type="number" min="30" max="3600" step="10" value="600">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="cfg-rvc-root" data-i18n="ui.settings.rvc_root">RVC 根目录</label>
+        <input id="cfg-rvc-root" class="input-control mono" type="text" spellcheck="false">
+        <div class="field-hint">相对仓库根目录，默认 vendor/rvc（勿指向你的 D:\RVC）</div>
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="cfg-python-path" data-i18n="ui.settings.python_path">Python 路径</label>
+        <input id="cfg-python-path" class="input-control mono" type="text" spellcheck="false">
+      </div>
+      <p id="config-path" class="meta-line"></p>
+      <div class="save-row">
+        <button id="btn-save" class="primary-action" type="button" data-i18n="ui.settings.save">保存设置</button>
+      </div>
+    </section>
+
+    <section class="config-section">
+      <div class="status-head">
+        <span class="status-title" data-i18n="ui.notes.title">说明与注释</span>
+      </div>
+      <ul class="notes">
+        <li>所有推理 / 训练写入都在 <code>vendor/rvc</code>，不会修改原来的 <code>D:\RVC</code>。</li>
+        <li>首次部署请运行 <code>scripts\setup_rvc_vendor.ps1</code>。</li>
+        <li>声音训练：<code>scripts\start_rvc_training.bat</code> → <code>http://127.0.0.1:7897</code>。</li>
+        <li>训练完成后可用 <code>scripts\sync_rvc_weights.ps1</code> 同步音色。</li>
+        <li id="phrase-hints">触发例句加载中…</li>
+      </ul>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="./i18n.js"></script>
+  <script src="./script.js?v=0.2.3"></script>
+</body>
+</html>

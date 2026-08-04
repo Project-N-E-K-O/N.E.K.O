@@ -239,4 +239,35 @@ tests/testbench/docs/dev_note.txt
 # Plugin runtime and local live-screen artifacts
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
-plugin/plugins/data/user_profile_cache.json
+
+# Vendored RVC: keep only README in git; sync the rest with setup_rvc_vendor.ps1.
+# Never commit runtime / weights / training experiment outputs (logs/).
+/vendor/rvc/**
+!/vendor/rvc/README.md
+/vendor/rvc/runtime/
+/vendor/rvc/assets/
+/vendor/rvc/logs/
+/vendor/rvc/TEMP/
+/vendor/rvc/.env
+/vendor/rvc/configs/inuse/
+/vendor/rvc/ffmpeg.exe
+/vendor/rvc/ffprobe.exe
+
+# Local AI model caches / tools downloads (not part of the published source tree)
+.models/
+.tmp_models/
+.tools/
+
+# Plugin local runtime / personal profiles (not for open-source tree)
+plugin/plugins/**/.runtime_state.json
+plugin/plugins/qq_auto_reply/profiles.toml
+plugin/plugins/qq_auto_reply/profiles/
+
+# Local Steam Electron shell copy (large binaries)
+desktop_release/
+.tmp_asar_extract/
+.tmp_*
+.neko_tmp/
+.neko_requirements.txt
+neko_requirements.txt
+.neko_tmp_sync_rvc_logs.ps1

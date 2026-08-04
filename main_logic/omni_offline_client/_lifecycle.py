@@ -123,8 +123,9 @@ class _LifecycleMixin:
         and ``prompt_ephemeral`` (instruction discarded after response),
         messages injected here become permanent conversation history.
 
-        No active callers at present; kept as a stable interface for
-        future mid-conversation injection needs.
+        Local-AI voice (independent ASR + external TTS) uses
+        ``submit_external_voice_turn`` → ``stream_text`` instead of this
+        stub, which historically only appended history.
 
         Args:
             instructions: Text to inject as a HumanMessage.
@@ -134,6 +135,21 @@ class _LifecycleMixin:
         """
         if instructions and instructions.strip():
             self._conversation_history.append(HumanMessage(content=instructions))
+
+    async def prepare_external_voice_turn(self, *, turn_id: str) -> None:
+        """Pause any in-flight offline reply before an independent-ASR final."""
+
+        _ = turn_id
+        await self.handle_interruption()
+
+    async def submit_external_voice_turn(self, text: str, *, turn_id: str) -> None:
+        """Drive a local conversation-model reply from a completed ASR turn."""
+
+        _ = turn_id
+        utterance = str(text or "").strip()
+        if not utterance:
+            return
+        await self.stream_text(utterance)
 
     @_with_dialog_slop
     async def prompt_ephemeral(
@@ -211,7 +227,8 @@ class _LifecycleMixin:
         if images:
             # 一旦带图就永久切到 vision model（既定设计，见上）。vision model 也能
             # 跑后续纯文本轮，且凝神不再因 vision 而关闭思考。
-            if self.vision_model and self.vision_model != self.model:
+            # Same-id mismatch: still call switch_model so vision URL/key apply.
+            if self.vision_model:
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
@@ -405,6 +422,12 @@ class _LifecycleMixin:
             # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
+            try:
+                from utils.bilingual_speech import strip_bilingual_tags_for_history
+                committed_text = strip_bilingual_tags_for_history(committed_text)
+            except Exception:
+                pass
+            committed_text = committed_text.strip()
             content_committed = bool(committed_text)
             # 一条可见的 ephemeral 回复（greeting / agent 回调 / 戳头像的 quip）是
             # 用户接下来要回应的「新一条 AI 轮」，它让之前为「下一条用户回复」暂存的
@@ -540,4 +563,5 @@ class _LifecycleMixin:
                 logger.warning(f"OmniOfflineClient.close: genai client close failed: {e}")
             self._genai_client = None
         self._genai_tools_unsupported = False
+        self._openai_tools_unsupported = False
         logger.info("OmniOfflineClient closed")

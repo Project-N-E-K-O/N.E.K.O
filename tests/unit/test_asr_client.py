@@ -208,10 +208,47 @@ def test_dummy_requires_explicit_override_and_manual_mode(monkeypatch):
             on_connection_error=callback,
         )
 
+    monkeypatch.setenv("ASR_PROVIDER", "faster_whisper")
+    local_session = create_asr_session(
+        "free",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+    assert local_session is not None
+    with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
+        create_asr_session(
+            "free",
+            config=AsrSessionConfig(endpointing_mode="provider"),
+            on_input_transcript=callback,
+            on_connection_error=callback,
+        )
+
+
+def test_asr_provider_config_overrides_blocked_free_core(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"asrProvider": "faster_whisper"},
+    )
+    session = create_asr_session(
+        "free",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+    assert session is not None
+    selection = asr_client._resolve_asr_selection("free")
+    assert selection.provider_key == "faster_whisper"
+    assert asr_client.builtin_independent_asr_forced() is True
+    follow = asr_client._resolve_core_follow_selection("free")
+    assert follow.provider_key == "faster_whisper"
+
 
 def test_phase2_registry_routes_and_capabilities():
     assert set(asr_client._IMPLEMENTED_WORKERS) == {
         "dummy",
+        "faster_whisper",
         "qwen",
         "openai",
         "step",
@@ -249,10 +286,11 @@ def test_phase2_registry_routes_and_capabilities():
     assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
     assert ASR_PROVIDER_REGISTRY["step"].requires_smart_turn is False
     assert ASR_PROVIDER_REGISTRY["qwen"].requires_smart_turn is False
-    for provider_key in ("glm", "gemini"):
+    for provider_key in ("glm", "gemini", "faster_whisper"):
         meta = ASR_PROVIDER_REGISTRY[provider_key]
         assert meta.implementation_status == "implemented"
         assert meta.requires_smart_turn is True
+        assert meta.supported_endpointing_modes == {"manual"}
     soniox_meta = ASR_PROVIDER_REGISTRY["soniox"]
     assert soniox_meta.implementation_status == "implemented"
     assert soniox_meta.supported_endpointing_modes == {"manual", "provider"}

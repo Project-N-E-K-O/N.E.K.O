@@ -876,6 +876,35 @@
         showMusicRequestFailure(response);
     }
 
+    function handleMusicControlResponse(response) {
+        var action = String((response && response.action) || '').toLowerCase();
+        if (action === 'stop') {
+            if (typeof window.cancelActiveMusicPlayback === 'function') {
+                window.cancelActiveMusicPlayback();
+            }
+            return;
+        }
+        var player = typeof window.getMusicPlayerInstance === 'function'
+            ? window.getMusicPlayerInstance()
+            : null;
+        if (!player) return;
+        try {
+            if (typeof window.setMusicUserDriven === 'function') {
+                window.setMusicUserDriven();
+            }
+            if (action === 'pause' && typeof player.pause === 'function') {
+                player.pause();
+            } else if (action === 'resume' && typeof player.play === 'function') {
+                if (player.audio && player.audio.ended && typeof player.seek === 'function') {
+                    player.seek(0);
+                }
+                player.play();
+            }
+        } catch (err) {
+            console.warn('[Music] music_control failed:', action, err);
+        }
+    }
+
     function handleMusicRequestCancelledResponse(response) {
         var requestId = Number(response && response.request_id);
         if (!Number.isFinite(requestId) || requestId <= 0) {
@@ -1386,6 +1415,7 @@
     function finalizeAssistantTurn(assistantTurnId, options) {
         options = options || {};
         var enableMusic = options.enableMusic !== false;
+        var turnMeta = options.meta && typeof options.meta === 'object' ? options.meta : null;
 
         var bufferedFullText = typeof window._geminiTurnFullText === 'string'
             ? window._geminiTurnFullText
@@ -1421,13 +1451,42 @@
                     setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
-                if (emotionResult && emotionResult.emotion) {
+                var interactionId = turnMeta
+                    ? String(turnMeta.interaction_id || turnMeta.interactionId || '').trim()
+                    : '';
+                var pokeMeta = (interactionId && typeof window.consumeModelPokeReaction === 'function')
+                    ? window.consumeModelPokeReaction(interactionId)
+                    : null;
+                var isModelPokeTurn = !!pokeMeta;
+                var textEmotion = emotionResult && emotionResult.emotion
+                    ? emotionResult.emotion
+                    : '';
+                if (textEmotion) {
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
-                    if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
+                }
+                if (isModelPokeTurn) {
+                    // 文本情绪优先；neutral/缺失时用部位默认情绪；仍无则跳过。
+                    if (typeof window.applyTemporaryEmotionFromText === 'function') {
+                        await window.applyTemporaryEmotionFromText(textEmotion, pokeMeta);
+                    }
+                    if (assistantTurnId) {
+                        var resolved = (typeof window.resolveModelPokeMotionEmotion === 'function')
+                            ? window.resolveModelPokeMotionEmotion(textEmotion, pokeMeta)
+                            : { emotion: textEmotion, source: 'model_poke_emotion' };
+                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                            turnId: assistantTurnId,
+                            emotion: resolved.emotion || textEmotion || pokeMeta.preferredEmotion || '',
+                            source: 'model_poke_emotion',
+                            touchZone: pokeMeta.touchZone || '',
+                            emotionSource: resolved.source || ''
+                        });
+                    }
+                } else if (textEmotion && typeof window.applyEmotion === 'function') {
+                    window.applyEmotion(textEmotion);
                     if (assistantTurnId) {
                         emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
                             turnId: assistantTurnId,
-                            emotion: emotionResult.emotion,
+                            emotion: textEmotion,
                             source: 'emotion_analysis'
                         });
                     }
@@ -1437,6 +1496,10 @@
                     console.warn(window.t('console.emotionAnalysisTimeout'));
                 } else {
                     console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
+                }
+                if (turnMeta && typeof window.consumeModelPokeReaction === 'function') {
+                    var failPokeId = String(turnMeta.interaction_id || turnMeta.interactionId || '').trim();
+                    if (failPokeId) window.consumeModelPokeReaction(failPokeId);
                 }
             }
         }, 100);
@@ -1932,6 +1995,18 @@
 
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
+
+        // 主动关掉旧 socket，避免服务端仍把它当“旧会话”挂着；
+        // 旧连接后续心跳会触发 CHARACTER_SWITCHING_TERMINAL 并和 3s 重连互相抢占。
+        if (S.socket
+            && (S.socket.readyState === WebSocket.OPEN || S.socket.readyState === WebSocket.CONNECTING)) {
+            try {
+                var _prevSocket = S.socket;
+                // 先摘掉引用语义：onclose 里 stale guard 会跳过自动重连。
+                S.socket = null;
+                _prevSocket.close();
+            } catch (_closePrevErr) { /* best-effort */ }
+        }
 
         console.log(window.t('console.websocketConnecting'), currentLanlanName, window.t('console.websocketUrl'), wsUrl);
         S.socket = new WebSocket(wsUrl);
@@ -2794,6 +2869,20 @@
                             window.showStatusToast(
                                 window.t ? window.t('microphone.audioPreprocessingFailed') : 'Microphone audio processing failed. Voice input has stopped for this session. Please start a new voice session.',
                                 5000
+                            );
+                        }
+                        return;
+                    }
+
+                    if (statusCode === 'ASR_INGRESS_BACKPRESSURE') {
+                        // Recoverable: backend drops/resets the lagged turn.
+                        // Showing the raw code scares users; keep the mic up.
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t
+                                    ? window.t('microphone.asrIngressBackpressure')
+                                    : '语音识别有点忙不过来，刚才那句可能丢了。可以说慢一点，或换更轻的本地识别模型。',
+                                3500
                             );
                         }
                         return;
@@ -3780,7 +3869,7 @@
                     // 若再走普通聊天 finalizeAssistantTurn，会用 Gemini buffer /
                     // 当前聊天气泡的旧文本二次翻译，覆盖破冰字幕。
                     if (!isNewUserIcebreakerMirrorTurnEnd(response)) {
-                        finalizeAssistantTurn(assistantTurnId);
+                        finalizeAssistantTurn(assistantTurnId, { meta: response.meta || null });
                     }
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
@@ -4278,6 +4367,9 @@
                 } else if (response.type === 'music_request_cancelled') {
                     handleMusicRequestCancelledResponse(response);
 
+                } else if (response.type === 'music_control') {
+                    handleMusicControlResponse(response);
+
                 // -------- repetition_warning --------
                 } else if (response.type === 'repetition_warning') {
                     console.log(window.t('console.repetitionWarningReceived'), response.name);
@@ -4739,6 +4831,8 @@
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';
+                // Keep proactive chat from speaking over the single startup greeting.
+                S._startupGreetingSpeechGuardUntil = Date.now() + 45000;
                 _resetGreetingCheckRetry(true);
                 console.log('[greeting_check] sent, is_switch=' + greetingIsSwitch + ', reason=' + greetingReason);
             }

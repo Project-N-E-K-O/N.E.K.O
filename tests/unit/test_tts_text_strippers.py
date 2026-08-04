@@ -14,7 +14,7 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper
+from utils.frontend_utils import TtsBracketStripper, TtsMarkdownStripper, strip_tts_muted_symbols
 
 
 # ============================================================================
@@ -345,3 +345,36 @@ def test_markdown_chained_with_bracket_image_dropped():
     out += br.feed(md.flush())
     out += br.flush()
     assert out == "前  后"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("开心＝开心了", "开心开心了"),
+        ("A=B", "AB"),
+        ("比值﹦1", "比值1"),
+        ("没有等号", "没有等号"),
+        ("", ""),
+        # technical / math symbols — do not speak
+        ("进度100%", "进度100"),
+        ("标签#热门", "标签热门"),
+        ("邮箱@测试", "邮箱测试"),
+        ("A+B*C", "ABC"),
+        ("路径a/b\\c", "路径abc"),
+        ("温度≈25℃", "温度25"),
+        ("价格￥10$5", "价格105"),
+        # prose punctuation kept for pauses / intonation
+        ("你好，世界！", "你好，世界！"),
+        ("真的吗？嗯。", "真的吗？嗯。"),
+        ("Hello, world!", "Hello, world!"),
+        ("他说：“好的。”", "他说：“好的。”"),
+    ],
+)
+def test_strip_tts_muted_symbols(text, expected):
+    assert strip_tts_muted_symbols(text) == expected
+
+
+def test_strip_tts_muted_symbols_preserves_chunk_edge_space():
+    # Streaming chunks may carry a leading/trailing space for word glue.
+    assert strip_tts_muted_symbols(" 你好=") == " 你好"
+    assert strip_tts_muted_symbols("=世界 ") == "世界 "

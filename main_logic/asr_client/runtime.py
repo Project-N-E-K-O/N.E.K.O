@@ -275,6 +275,12 @@ class IndependentAsrRuntime:
 
     async def abort(self, reason: str) -> None:
         if reason == "ingress_backpressure":
+            logger.warning(
+                "[%s] ASR ingress backpressure (audio arriving faster than "
+                "local recognition can drain). Prefer NEKO_WHISPER_MODEL=base "
+                "on CPU, or install CUDA 12 + cublas for GPU Whisper.",
+                self.display_name,
+            )
             token = self._asr_current_ingress_token
             if token is not None and self._ingress_token_matches(token):
                 await self._handle_audio_ingress_backpressure(token)

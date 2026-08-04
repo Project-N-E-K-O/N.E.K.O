@@ -1025,10 +1025,17 @@ async def test_stale_socket_after_voice_takeover_is_closed_without_reclaim(
     call_names = [name for name, _payload in manager.calls]
     assert call_names.count("begin") == 2
     assert call_names.count("stream_data") == 1
-    assert {
+    switching = {
         "code": "CHARACTER_SWITCHING_TERMINAL",
         "details": {"name": "Lan"},
-    } in manager.statuses
+    }
+    assert switching not in manager.statuses
+    stale_statuses = [
+        json.loads(json.loads(payload)["message"])
+        for payload in stale_socket.sent_text
+        if json.loads(payload).get("type") == "status"
+    ]
+    assert switching in stale_statuses
 
 
 @pytest.mark.asyncio
@@ -1393,10 +1400,17 @@ async def test_superseded_voice_socket_non_voice_message_is_still_closed(
     assert recording_socket.closed is True
     assert "authorize" not in [name for name, _payload in manager.calls]
     assert "start_session" not in [name for name, _payload in manager.calls]
-    assert {
+    switching = {
         "code": "CHARACTER_SWITCHING_TERMINAL",
         "details": {"name": "Lan"},
-    } in manager.statuses
+    }
+    assert switching not in manager.statuses
+    recording_statuses = [
+        json.loads(json.loads(payload)["message"])
+        for payload in recording_socket.sent_text
+        if json.loads(payload).get("type") == "status"
+    ]
+    assert switching in recording_statuses
 
     chat_socket.release.set()
     await chat_task
@@ -1565,10 +1579,17 @@ async def test_pause_from_a_socket_that_lost_voice_is_still_a_character_switch(
 
     assert recording_socket.closed is True
     assert "end_session" not in [name for name, _payload in manager.calls]
-    assert {
+    switching = {
         "code": "CHARACTER_SWITCHING_TERMINAL",
         "details": {"name": "Lan"},
-    } in manager.statuses
+    }
+    assert switching not in manager.statuses
+    recording_statuses = [
+        json.loads(json.loads(payload)["message"])
+        for payload in recording_socket.sent_text
+        if json.loads(payload).get("type") == "status"
+    ]
+    assert switching in recording_statuses
 
     takeover_socket.release.set()
     await takeover_task

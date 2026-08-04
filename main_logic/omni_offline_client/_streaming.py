@@ -118,20 +118,30 @@ class _StreamingMixin:
             self._model_switch_lock = lock
 
         async with lock:
-            if not new_model or new_model == self.model:
+            if not new_model:
                 return
-
-            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 选择使用的 API 配置
             if use_vision_config:
                 base_url = self.vision_base_url
-                api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
+                # Empty vision key is common for local providers; fall back to
+                # the conversation key, then a placeholder so the client still
+                # targets the vision endpoint instead of silently no-op'ing.
+                api_key = self.vision_api_key if self.vision_api_key else (self.api_key or "local")
                 provider_type = getattr(self, "vision_provider_type", None)
             else:
                 base_url = self.base_url
                 api_key = self.api_key
                 provider_type = getattr(self, "provider_type", None)
+
+            # Same model id with a different vision URL/key still needs a switch
+            # — otherwise screen frames keep hitting the text-only endpoint.
+            same_model = new_model == self.model
+            same_endpoint = (base_url == self.base_url and api_key == self.api_key)
+            if same_model and same_endpoint:
+                return
+
+            logger.info(f"Switching model from {self.model} to {new_model}")
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -160,6 +170,17 @@ class _StreamingMixin:
             self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)
             self._genai_client = None
             self._genai_tools_unsupported = False
+            # Local vision stacks (llava / bakllava / moondream) almost never
+            # accept tool schemas; skip tools up front so the first screen-
+            # aware reply is not a 400 toast.
+            model_l = str(new_model or "").strip().lower()
+            if use_vision_config and any(
+                marker in model_l
+                for marker in ("llava", "bakllava", "moondream", "minicpm-v")
+            ):
+                self._openai_tools_unsupported = True
+            else:
+                self._openai_tools_unsupported = False
             if old_genai is not None and hasattr(old_genai, "close"):
                 try:
                     await asyncio.to_thread(old_genai.close)
@@ -525,10 +546,15 @@ class _StreamingMixin:
 
         # Prepare user message content
         if has_images:
-            # Switch to vision model permanently for this session
-            # (cannot switch back because image data remains in conversation history)
-            if self.vision_model and self.vision_model != self.model:
-                logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
+            # Always route image turns through the vision slot when configured.
+            # Do not require vision_model != chat model: same id on a different
+            # URL/key (or a multimodal chat model used as vision) must still
+            # apply vision_base_url / vision_api_key, or shared-screen frames
+            # never reach a vision-capable endpoint.
+            if self.vision_model:
+                logger.info(
+                    f"🖼️ Switching to vision model for image turn: {self.vision_model} (from {self.model})"
+                )
                 await self.switch_model(self.vision_model, use_vision_config=True)
 
             # Multi-modal message: images + text

@@ -216,6 +216,7 @@ class CharactersMixin:
             lanlan_prompt_map[name] = _append_persona_guidance_to_prompt(
                 prompt_value,
                 raw_character_data.get(name, {}),
+                master_payload=master_basic_config,
             )
 
         memory_base = str(self.memory_dir)
