@@ -46,7 +46,7 @@ def _has_generated_asset_version(query_string: bytes) -> bool:
         if key != "v":
             continue
         version_tail = value.rsplit("-", 1)[-1]
-        if version_tail.isdigit() and len(version_tail) >= 9:
+        if version_tail.isascii() and version_tail.isdigit() and len(version_tail) >= 9:
             return True
     return False
 
