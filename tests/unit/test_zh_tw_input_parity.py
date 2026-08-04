@@ -3725,3 +3725,45 @@ def test_lexicalized_na_compounds_are_not_classifier_phrases(word, noun):
     ):
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation(f'我想停止播放哪种{noun}') is False
+
+
+@pytest.mark.parametrize(
+    "marker", ["任何时候都行", "任何時候都行", "无论何时都行",
+               "不论何时都行", "不管何时都行", "无论何人唱的都行",
+               "不管何人唱的都行"]
+)
+def test_free_choice_phrases_are_not_questions(marker):
+    """⚠️ 任指/无定构式里的疑问词**不是提问**（base 全是 True，Codex P2 第四十二轮）。
+
+    `任何时候` 里 `何时` 只是子串。这跟 任何人 / 哪吒 / 哪怕 / 没有什么
+    是同一族——**白名单词是更长词的子串**，本 PR 里的第四个入口。
+    左界这一族是闭集（任/无论/不论/不管/随便），一次列全。
+    ⚠️ 反向断言钉住真正的 `何时` / `何人` 仍然算提问。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{marker}'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放何时合适') is False
+    assert is_explicit_music_cancellation(
+        '我想停止播放何人唱的《你好吗？》才会换歌'
+    ) is False
+
+
+@pytest.mark.parametrize("negator", ["没", "沒", "没有", "沒有"])
+@pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
+@pytest.mark.parametrize("noun", ["音乐", "歌", "歌曲"])
+def test_declarative_negated_what_is_not_a_question(negator, what, noun):
+    """⚠️ 陈述句里的 `没什么X` / `没有什么X` 是**否定**不是提问。
+
+    `我想停止播放因为没什么音乐好听` base 是 True，音乐复合式把 `什么音乐`
+    当成疑问头，一句明确的取消反而停不下来（Codex P2 第四十二轮）。
+
+    ⚠️ `没有什么` 要单独列：中间隔着个 `有`，单字后视挡不住——参数化里
+    四个否定词就是为了把这两种宽度都盖到。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{negator}{what}{noun}好听'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{what}{noun}') is False

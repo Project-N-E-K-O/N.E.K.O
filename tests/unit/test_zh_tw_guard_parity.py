@@ -1662,6 +1662,8 @@ def test_batch_rewrite_modifiers(scope, adverb):
 
 
 WHOLE_CARD_ADVERBS = _router_table("_WHOLE_CARD_BARE_ADVERBS")
+WHOLE_CARD_LIGHT_VERBS = _router_table("_WHOLE_CARD_LIGHT_VERBS")
+WHOLE_CARD_PREVERBS = _router_table("_WHOLE_CARD_PREVERB_WORDS")
 
 
 def test_the_adverb_table_is_a_prefix_code():
@@ -1676,14 +1678,14 @@ def test_the_adverb_table_is_a_prefix_code():
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    assert len(WHOLE_CARD_ADVERBS) == len(set(WHOLE_CARD_ADVERBS)), WHOLE_CARD_ADVERBS
+    assert len(WHOLE_CARD_PREVERBS) == len(set(WHOLE_CARD_PREVERBS)), WHOLE_CARD_PREVERBS
     violations = [
         (short, long)
-        for short in WHOLE_CARD_ADVERBS
-        for long in WHOLE_CARD_ADVERBS
+        for short in WHOLE_CARD_PREVERBS
+        for long in WHOLE_CARD_PREVERBS
         if short != long and long.startswith(short)
     ]
-    assert violations == [], f'副词表不再是前缀码: {violations}'
+    assert violations == [], f'动词前词表不再是前缀码: {violations}'
     assert set(WHOLE_CARD_ADVERBS) == {
         "一并", "一併", "一起", "统统", "統統", "通通", "全都", "彻底", "徹底",
         "好好", "认真", "認真", "重新", "全面", "一律", "统一", "統一",
@@ -1692,12 +1694,16 @@ def test_the_adverb_table_is_a_prefix_code():
         "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
         "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
     }
+    assert set(WHOLE_CARD_LIGHT_VERBS) == {"进行", "進行"}
+    assert list(WHOLE_CARD_PREVERBS) == [
+        *WHOLE_CARD_ADVERBS, *WHOLE_CARD_LIGHT_VERBS,
+    ]
     assert router._WHOLE_CARD_BARE_ADVERB == (
-        r"(?:" + "|".join(WHOLE_CARD_ADVERBS) + r")"
+        r"(?:" + "|".join(WHOLE_CARD_PREVERBS) + r")"
     )
 
 
-@pytest.mark.parametrize("adverb", WHOLE_CARD_ADVERBS)
+@pytest.mark.parametrize("adverb", WHOLE_CARD_PREVERBS)
 def test_stacked_rewrite_modifiers_across_all_three_tails(adverb):
     """副词可以叠着用（base 是 True，Codex P2 第三十五轮）。
 
@@ -1791,3 +1797,57 @@ def test_visibility_modifier_on_direct_scope_continuations(target, modifier):
     assert router._chat_text_requests_full_rewrite(
         f'{target}{modifier}名字重写'
     ) is False
+
+
+@pytest.mark.parametrize("light", ["进行", "進行"])
+@pytest.mark.parametrize(
+    "phrasing", ["请对所有字段{v}重写", "请把所有字段{v}重写",
+                 "请将所有字段全部{v}重写", "对所有字段{v}统一重写"],
+)
+def test_light_verb_between_target_and_rewrite_verb(phrasing, light):
+    """轻动词「进行」占的是跟副词同一个槽（base 全是 True，Codex P2 第四十二轮）。
+
+    ⚠️ 它跟副词可以**互相穿插**（全部进行重写 / 进行统一重写），所以直接并进
+    那个 `+` 循环，而不是在动词前面单加一节。词类不同所以表分开列、正则合起来用。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = phrasing.format(v=light)
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'请对所有字段的名字{light}重写'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Use “Don’t Panic” as the theme and rewrite all fields',
+        'Following “Don’t Stop Believin’” rewrite the whole card',
+        "Use \"Don't Panic\" as the theme and rewrite all fields",
+        '用《别再犹豫》当主题，把整个卡的全部设定重写一遍',
+    ],
+)
+def test_quoted_material_is_not_an_instruction(text):
+    """⚠️ 引号里的内容是**被引用的素材**，不是对我们下的指令。
+
+    歌名里的 `Don’t` 被否定守卫当成「别重写」，整卡补全被跳过
+    （Codex P2 第四十二轮）。ASCII 双引号那条在 base 上就已经是 False，
+    只是没人报过——所以修的是判据形状，不是擇号那一版的尾巴。
+
+    ⚠️ 反向断言钉住**引号外**的否定仍然生效，包括句子里同时有一个带擇号的
+    歌名和一个真正的 `don’t` 的情况——那是危险方向，不能被抹掉。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    for negated in (
+        'don’t rewrite the whole card',
+        "don't rewrite the whole card",
+        'Don’t Stop Believin’ — don’t rewrite the whole card',
+        '不要重写整个卡',
+        # ⚠️ ASCII 单引号不能进引用体系：这句里两个擇号一配对，
+        # 会把真正的否定词一起抹掉——那是危险方向。
+        "don't rewrite the whole card because it's fine",
+    ):
+        assert router._chat_text_requests_full_rewrite(negated) is False, negated

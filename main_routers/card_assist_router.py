@@ -839,7 +839,14 @@ _WHOLE_CARD_BARE_ADVERBS = (
     # 去松动否定守卫，方向反了。
     "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
 )
-_WHOLE_CARD_BARE_ADVERB = r"(?:" + "|".join(_WHOLE_CARD_BARE_ADVERBS) + r")"
+# ⚠️ 轻动词「进行」占的是**跟副词同一个槽**（目标 + X + 重写动词）：
+# `请对所有字段进行重写` / `请将所有字段全部进行重写` base 都是 True，上一版的收尾
+# 白名单在真正的重写动词之前就把目标判掉了（Codex P2 第四十二轮）。
+# ⚠️ 它跟副词可以**互相穿插**（全部进行重写 / 进行统一重写），所以直接并进那个
+# `+` 循环，而不是在动词前面单加一节。词类不同，所以表分开列、正则合起来用。
+_WHOLE_CARD_LIGHT_VERBS = ("进行", "進行")
+_WHOLE_CARD_PREVERB_WORDS = _WHOLE_CARD_BARE_ADVERBS + _WHOLE_CARD_LIGHT_VERBS
+_WHOLE_CARD_BARE_ADVERB = r"(?:" + "|".join(_WHOLE_CARD_PREVERB_WORDS) + r")"
 # ⚠️ 副词可以**叠着用**：`把所有字段再统一重写` / `把整个卡的所有内容批量统一重写`
 # base 都是 True，上一版只吃一个副词就要求重写动词，这些请求全掉了
 # （Codex P2 第三十五轮）。
@@ -1164,6 +1171,26 @@ def _chat_clauses(text: str) -> list[str]:
     return [c for c in _CHAT_CLAUSE_SPLIT_RE.split(text or "") if c.strip()]
 
 
+# ⚠️ 引号里的内容是**被引用的素材**，不是对我们下的指令。
+# `Use “Don’t Panic” as the theme and rewrite all fields` 里的 `Don’t` 是歌名的
+# 一部分，否定守卫却把它当成「别重写」，整卡补全被跳过（Codex P2 第四十二轮）。
+# ⚠️ 这不只是撇号那一版引进的：ASCII 的 `"Don't Panic"` 在 base 上就已经是 False，
+# 只是没人报过。所以修的是**判据形状**——查否定之前先把引用跨度抹掉。
+# ⚠️ 只给否定守卫抹，整卡目标和重写动词仍然看原文：目标写在引号里
+# （`把《整个卡》重写`）时抹掉会把它一起弄丢。
+# ⚠️ **不收 ASCII 单引号和左单引号**：`Don't Stop Believin'` 里它们是撇号不是引号，
+# 收了会把 `'t Stop Believin'` 当成一段引用、把真正的否定词抹掉——那是危险方向。
+# music_requests 的 _ZH_AMBIGUOUS_QUOTE_OPENERS 是同一条取舍。
+_CHAT_QUOTED_SPAN_RE = re.compile(
+    r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
+)
+
+
+def _chat_clause_without_quotes(clause: str) -> str:
+    """把子句里的引用跨度换成空格，只用于否定守卫。"""  # noqa: DOCSTRING_CJK
+    return _CHAT_QUOTED_SPAN_RE.sub(" ", clause)
+
+
 def _chat_text_requests_full_rewrite(text: str) -> bool:
     """整卡重写判据——三条谓词必须落在**同一个子句**里。
 
@@ -1188,7 +1215,7 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     if not text:
         return False
     for clause in _chat_clauses(text):
-        if _CHAT_NEGATED_REWRITE_RE.search(clause):
+        if _CHAT_NEGATED_REWRITE_RE.search(_chat_clause_without_quotes(clause)):
             continue
         if (
             _CHAT_FULL_REWRITE_RE.search(clause)
