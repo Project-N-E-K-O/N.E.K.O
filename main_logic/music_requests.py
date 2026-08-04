@@ -656,12 +656,27 @@ _ZH_PROGRESSIVE_VERBS = _ZH_PLAYBACK_VERBS
 # ⚠️ 体标记和播放动词之间也可能有空格。Python 后视必须定长，`\s*` 塞不进去，
 # 所以把「有无空格」也做进笛卡尔积——入口的 normalize 把连续空白压成**一个**
 # ASCII 空格，所以只需要 "" 和 " " 两种（Codex P2 第三十轮）。
-_ZH_PROGRESSIVE_LOOKBEHIND = "".join(
-    f"(?<!{adverb}{sep}{verb})"
-    for adverb in _ZH_PROGRESSIVE_ADVERBS
-    for verb in _ZH_PROGRESSIVE_VERBS
-    for sep in ("", " ")
-)
+# ⚠️ 体标记和播放动词之间还可能夹一个**播放方式修饰语**（循环/后台/单曲/随机…）：
+# `停止正在循环播放的晴天` base 是 True（Codex P2 第三十一轮）。修饰语是开集，
+# 不枚举，用 `.` 占位；但 Python 的后视必须**定长**，所以按「总宽度」分组——
+# 同宽度的组合塞进一个 `(?<!(?:…|…))`，几百种组合收敛成十几条后视。
+def _zh_progressive_lookbehind() -> str:
+    """按总宽度分组生成定长后视：体标记 + 可选空格 + 0~2 字修饰语 + 播放动词。"""  # noqa: DOCSTRING_CJK
+    by_width: dict[int, list[str]] = {}
+    for adverb in _ZH_PROGRESSIVE_ADVERBS:
+        for sep in ("", " "):
+            for filler in range(3):
+                for verb in _ZH_PROGRESSIVE_VERBS:
+                    piece = f"{adverb}{sep}{'.' * filler}{verb}"
+                    width = len(adverb) + len(sep) + filler + len(verb)
+                    by_width.setdefault(width, []).append(piece)
+    return "".join(
+        f"(?<!(?:{'|'.join(dict.fromkeys(pieces))}))"
+        for _, pieces in sorted(by_width.items())
+    )
+
+
+_ZH_PROGRESSIVE_LOOKBEHIND = _zh_progressive_lookbehind()
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # ⚠️ `\s*` 写在**内层前视里面**，不能写成 `的\s*(?!…)`：后者里 `\s*` 会回溯
     # 成零宽，前视又在空格那个位置判一次「后面不是音乐名词」，于是照样判成名物化。

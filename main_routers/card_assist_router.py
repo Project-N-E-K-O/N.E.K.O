@@ -859,11 +859,18 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     # ⚠️ 「的」和范围成分之间还能夹一个**全称限定词**：`把所有字段的所有内容重写`
     # base 是 True（Codex P2 第二十六轮）。限定词表就是上面那张闭集，直接复用。
     + r"|的\s*(?:(?:" + "|".join(_WHOLE_CARD_QUANTIFIERS) + r")\s*的?)?"
+    # ⚠️ 嵌套范围也要允许「可见/可見」修饰（`把所有字段的可见内容重写`，
+    # base 是 True，Codex P2 第三十一轮）——外层那一支早就允许了，这一支漏了。
+    + r"\s*" + _WHOLE_CARD_SCOPE_MODIFIER
     + r"\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
     + _WHOLE_CARD_BARE_ADVERB
     + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
+    # ⚠️ 动量补语也是合法收尾：`重写所有字段一遍` / `请重写所有字段一次` 里动词
+    # 在**目标前面**，目标后面跟的是 一遍/一次/一下（base 是 True，
+    # Codex P2 第三十一轮）。这一族是封闭词类。
+    + r"|一遍|一次|一下|一轮|一輪|一遭"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (

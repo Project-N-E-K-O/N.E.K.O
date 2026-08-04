@@ -3336,3 +3336,24 @@ def test_whitespace_inside_the_aspect_phrase(aspect, space):
 
     assert is_explicit_music_cancellation(f'停止{aspect}{space}播放的晴天') is True
     assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize(
+    "modifier", ["", "循环", "循環", "后台", "後台", "单曲", "随机", "自动"]
+)
+@pytest.mark.parametrize("aspect", ["正在", "当前", "还在"])
+def test_a_playback_modifier_inside_the_aspect_phrase(aspect, modifier):
+    """⚠️ 体标记和播放动词之间还可能夹一个**播放方式修饰语**（循环/后台/单曲…）。
+
+    修饰语是开集，所以用 `.` 占位而不是枚举；但 Python 的后视必须**定长**，
+    于是按「总宽度」分组——同宽度的组合塞进一个 `(?<!(?:…|…))`，两百多种组合
+    收敛成 6 条后视（Codex P2 第三十一轮）。
+
+    ⚠️ 配对反向断言：缺陷本体那族不带体标记，照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'停止{aspect}{modifier}播放的晴天'
+    assert is_explicit_music_cancellation(text) is True, text
+    for blocked in ('我要停止播放的代码', '帮我停止播放按钮换个颜色'):
+        assert is_explicit_music_cancellation(blocked) is False, blocked

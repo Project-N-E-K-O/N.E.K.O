@@ -1514,3 +1514,27 @@ def test_a_chinese_suffix_may_follow_an_english_rewrite_verb(verb, suffix):
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡的全部 {verb}X重写'
     ) is False
+
+
+@pytest.mark.parametrize(
+    ("phrasing", "expected"),
+    [
+        # 嵌套范围也允许「可见」修饰（外层那支早就允许了，这支漏了）
+        ("把所有字段的可见内容重写", True),
+        ("把全部欄位的可見內容重寫", True),
+        ("把整个卡的所有字段的可见内容重写", True),
+        # 动词在目标**前面**时，目标后面跟的是动量补语
+        ("重写所有字段一遍", True),
+        ("请重写所有字段一次", True),
+        ("全部重做所有欄位一遍", True),
+        ("重新写所有字段一下", True),
+        # ⚠️ 反向：单字段保险不受这两处放宽影响
+        ("把所有字段的名字重写", False),
+        ("把整个卡的全部 nickname重写", False),
+    ],
+)
+def test_nested_visibility_and_measure_complements(phrasing, expected):
+    """两处「收得太紧」的放宽，与 P1 保险钉在同一个用例里（Codex P2 第三十一轮）。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
