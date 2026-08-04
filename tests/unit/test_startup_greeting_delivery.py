@@ -7,6 +7,7 @@ import pytest
 
 import main_logic.core as core_module
 import main_logic.core.greeting as greeting_module
+from config.prompts.prompts_proactive import _STARTUP_GREETING_VARIANTS
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import ProactivePhase, SessionEvent, SessionStateMachine
 from memory.startup_greeting_history import (
@@ -330,6 +331,185 @@ async def test_committed_then_completion_failure_still_records_and_releases_sm(
     assert memory_client.post_calls
     holiday_commit.assert_called_once()
     assert manager.state.phase is ProactivePhase.IDLE
+
+
+@pytest.mark.asyncio
+async def test_both_avoidance_layers_reach_the_instruction_in_the_right_block(
+    monkeypatch,
+):
+    """The 3-day read must be split, not just widened.
+
+    Guards the call site: a single-window regression here still passes every
+    policy-level unit test, because the splitter itself would stay correct.
+    """
+
+    now = 10 * 24 * 60 * 60.0
+    session = _GreetingSession(delivered=True)
+    manager = _make_manager(session)
+    memory_client = _GreetingMemoryClient()
+    history = _HistoryDouble(
+        records=[
+            StartupGreetingRecord(
+                ts=now - 3600.0,
+                text="STRICT-LAYER-OPENING",
+                variant_key="simple_presence",
+            ),
+            StartupGreetingRecord(
+                ts=now - 40 * 3600.0,
+                text="EARLIER-LAYER-OPENING",
+                variant_key="light_question",
+            ),
+        ]
+    )
+    anti_repeat = _AntiRepeatDouble()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, MagicMock()
+    )
+    patch_module_clock(monkeypatch, greeting_module, time=lambda: now)
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+    await asyncio.gather(*manager._post_commit_tasks)
+
+    assert len(session.instructions) == 1
+    instruction = session.instructions[0]
+    strict_block = instruction.split("<recent-startup-openings>")[1].split(
+        "</recent-startup-openings>"
+    )[0]
+    earlier_block = instruction.split("<earlier-startup-openings>")[1].split(
+        "</earlier-startup-openings>"
+    )[0]
+
+    assert "STRICT-LAYER-OPENING" in strict_block
+    assert "EARLIER-LAYER-OPENING" not in strict_block
+    assert "EARLIER-LAYER-OPENING" in earlier_block
+    assert "STRICT-LAYER-OPENING" not in earlier_block
+
+
+@pytest.mark.asyncio
+async def test_variant_rotation_reads_only_the_strict_layer_at_the_call_site(
+    monkeypatch,
+):
+    """Angles rotate against 1 day even though the read spans 3.
+
+    Recorded angles are laid out so the two windows disagree: the strict layer
+    still has unused angles, while the full recall set is exhausted and would
+    fall through to round-robin. Asserting the rendered guidance pins which
+    window the call site actually passes down.
+    """
+
+    now = 10 * 24 * 60 * 60.0
+    session = _GreetingSession(delivered=True)
+    manager = _make_manager(session)
+    memory_client = _GreetingMemoryClient()
+    history = _HistoryDouble(
+        records=[
+            StartupGreetingRecord(
+                ts=now - 3600.0, text="Inside one day.", variant_key="light_question"
+            ),
+            StartupGreetingRecord(
+                ts=now - 2 * 24 * 3600.0,
+                text="Two days back.",
+                variant_key="recent_continuity",
+            ),
+            StartupGreetingRecord(
+                ts=now - 2 * 24 * 3600.0 - 1,
+                text="Also two days back.",
+                variant_key="personal_share",
+            ),
+            StartupGreetingRecord(
+                ts=now - 2 * 24 * 3600.0 - 2,
+                text="Oldest.",
+                variant_key="simple_presence",
+            ),
+        ]
+    )
+    anti_repeat = _AntiRepeatDouble()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, MagicMock()
+    )
+    patch_module_clock(monkeypatch, greeting_module, time=lambda: now)
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+    await asyncio.gather(*manager._post_commit_tasks)
+
+    assert len(session.instructions) == 1
+    instruction = session.instructions[0]
+    # Strict layer holds only light_question, so the first unused angle wins.
+    assert _STARTUP_GREETING_VARIANTS["recent_continuity"]["en"] in instruction
+    # Rotating against all three days would exhaust every angle and land here.
+    assert _STARTUP_GREETING_VARIANTS["simple_presence"]["en"] not in instruction
+
+
+@pytest.mark.asyncio
+async def test_memory_angle_reopens_after_a_day_with_a_different_topic(monkeypatch):
+    """The memory angle is on a 1-day cooldown; its topics are on a 3-day one."""
+
+    now = 10 * 24 * 60 * 60.0
+    session = _GreetingSession(delivered=True)
+    manager = _make_manager(session)
+    memory_client = _GreetingMemoryClient(
+        topics=[
+            {"id": "ref_old", "text": "The topic already used two days ago."},
+            {"id": "ref_fresh", "text": "A topic never surfaced before."},
+        ]
+    )
+    history = _HistoryDouble(
+        records=[
+            StartupGreetingRecord(
+                ts=now - 2 * 24 * 3600.0,
+                text="Memory opening from two days ago.",
+                variant_key="memory_followup",
+                topic_key="ref_old",
+            ),
+        ]
+    )
+    anti_repeat = _AntiRepeatDouble()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, MagicMock()
+    )
+    patch_module_clock(monkeypatch, greeting_module, time=lambda: now)
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+    await asyncio.gather(*manager._post_commit_tasks)
+
+    assert len(session.instructions) == 1
+    instruction = session.instructions[0]
+    assert "<memory-cue>A topic never surfaced before.</memory-cue>" in instruction
+    assert "The topic already used two days ago." not in instruction
+
+
+@pytest.mark.asyncio
+async def test_topic_cooldown_spans_the_full_three_day_recall_window(monkeypatch):
+    """A topic used two days ago must not be offered again as a memory cue."""
+
+    now = 10 * 24 * 60 * 60.0
+    session = _GreetingSession(delivered=True)
+    manager = _make_manager(session)
+    memory_client = _GreetingMemoryClient(
+        topics=[{"id": "ref_book", "text": "Continue discussing the book ending."}]
+    )
+    history = _HistoryDouble(
+        records=[
+            StartupGreetingRecord(
+                ts=now - 2 * 24 * 3600.0,
+                text="An opening from two days ago.",
+                variant_key="memory_followup",
+                topic_key="ref_book",
+            ),
+        ]
+    )
+    anti_repeat = _AntiRepeatDouble()
+    _patch_dependencies(
+        monkeypatch, memory_client, history, anti_repeat, MagicMock()
+    )
+    patch_module_clock(monkeypatch, greeting_module, time=lambda: now)
+
+    await core_module.LLMSessionManager.trigger_greeting(manager)
+    await asyncio.gather(*manager._post_commit_tasks)
+
+    assert len(session.instructions) == 1
+    assert "Continue discussing the book ending." not in session.instructions[0]
+    assert "<memory-cue>" not in session.instructions[0]
 
 
 @pytest.mark.asyncio

@@ -104,3 +104,84 @@ def test_group_persist_policy_decoupled_from_turn_recall():
     assert on.should_persist_memory(
         should_use_memory_context=False, requested=None,
     ) is False
+
+
+def test_open_platform_group_mentions_distinguish_bot_from_other_users():
+    from plugin.plugins.qq_auto_reply.qq_open_plat import QQOpenPlatformConnection
+
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = "10000"
+
+    bot_only = conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "m1",
+            "group_id": "g1",
+            "author": {"id": "u1", "username": "Alice"},
+            "content": "<@!10000> hello",
+        },
+    )
+    assert bot_only["mentioned_user_ids"] == ["10000"]
+    assert bot_only["mentions_other_user"] is False
+
+    with_other_user = conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "m2",
+            "group_id": "g1",
+            "author": {"id": "u1", "username": "Alice"},
+            "content": "<@!10000> <@!20000> hello",
+        },
+    )
+    assert with_other_user["mentioned_user_ids"] == ["10000", "20000"]
+    assert with_other_user["mentions_other_user"] is True
+
+
+def test_focus_rise_seconds_scales_new_focus_before_stabilizing():
+    from types import SimpleNamespace
+
+    from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService, QQGroupAttentionState
+
+    plugin = SimpleNamespace(
+        _qq_settings={
+            "enable_group_attention": True,
+            "group_attention_focus_rise_seconds": 10,
+            "group_attention_focus_threshold": 4,
+            "group_attention_min_threshold": 1,
+            "group_attention_decay_per_second": 0.02,
+        },
+        backlog_store=None,
+        group_permission_mgr=None,
+        permission_mgr=None,
+        _emit_log=lambda *args, **kwargs: None,
+    )
+    service = QQAttentionService(plugin)
+    service._current_time = lambda: 100
+    service._cache = {
+        "focus": QQGroupAttentionState(
+            group_id="focus",
+            attention_score=8.0,
+            urgency=0.8,
+            interest=0.8,
+            momentum=0.8,
+            intimacy=0.4,
+            focus_acquired_at=95,
+        ).to_dict(),
+        "other": QQGroupAttentionState(
+            group_id="other",
+            attention_score=6.5,
+            urgency=0.7,
+            interest=0.7,
+            momentum=0.7,
+            intimacy=0.3,
+        ).to_dict(),
+    }
+
+    # 刚拿到焦点时，焦点有效分数被爬升窗口压低，避免立刻把其他群压死。
+    assert service.get_focus_score() == pytest.approx(4.0, rel=1e-3)
+    assert service.get_snapshot()["focus_group_id"] == "focus"
+
+    # 窗口结束后恢复完整分数。
+    service._current_time = lambda: 106
+    assert service.get_focus_score() > 7.5
+    assert service.get_snapshot()["focus_group_id"] == "focus"

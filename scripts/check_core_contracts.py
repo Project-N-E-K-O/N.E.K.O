@@ -101,6 +101,13 @@ VOICE_INPUT_LAYERING
     processing, routers, or arbitrary utility modules. ASR runtime code emits
     neutral callbacks and cannot import the Core-owned Registry in reverse.
 
+VOICE_IDENTITY_LAYERING
+    The in-memory speaker identity domain owns only model identity, normalized
+    references, and profiles. Its package initializer is inert; its domain
+    modules cannot depend on ASR, Core, Voice Turn, routers, app runtime, model
+    runtimes, or persistence/cryptography libraries. Trusted outer layers may
+    consume these provider-neutral contracts without reversing that direction.
+
 Every violation prints as ``path:line:col  CODE  message``. Exit 1 on any
 violation, 0 otherwise, 2 when the expected layout itself is missing (this
 gate hard-fails rather than silently skipping when paths move — see the
@@ -933,6 +940,872 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
     return violations
 
 
+def _assignment_target_names(target: ast.AST) -> set[str]:
+    """Return names directly bound by one assignment target."""
+
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _assignment_target_names(target.value)
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return {
+            name
+            for element in target.elts
+            for name in _assignment_target_names(element)
+        }
+    return set()
+
+
+def _match_pattern_binding_names(pattern: ast.pattern) -> set[str]:
+    """Return names captured by one structural pattern."""
+
+    names: set[str] = set()
+    for node in ast.walk(pattern):
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+            names.add(node.rest)
+    return names
+
+
+def _class_global_binding_sites(node: ast.ClassDef) -> list[tuple[str, ast.AST]]:
+    """Return bindings redirected to module scope by class-body ``global``."""
+
+    global_names: set[str] = set()
+    nested_classes: list[ast.ClassDef] = []
+    stack: list[ast.AST] = list(reversed(node.body))
+    while stack:
+        child = stack.pop()
+        if isinstance(child, ast.Global):
+            global_names.update(child.names)
+            continue
+        if isinstance(child, ast.ClassDef):
+            nested_classes.append(child)
+            continue
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        stack.extend(reversed(list(ast.iter_child_nodes(child))))
+
+    synthetic = ast.Module(body=node.body, type_ignores=[])
+    sites = [
+        (name, binding_node)
+        for name, binding_node in _module_scope_binding_sites(
+            synthetic,
+            include_class_globals=False,
+        )
+        if name in global_names
+    ]
+    for nested_class in nested_classes:
+        sites.extend(_class_global_binding_sites(nested_class))
+    return sites
+
+
+def _module_scope_binding_sites(
+    tree: ast.Module,
+    *,
+    include_class_globals: bool = True,
+) -> list[tuple[str, ast.AST]]:
+    """Return lexical module bindings without descending into local scopes.
+
+    This intentionally models ordinary Python binding syntax, not reflective
+    mutation through globals(), exec(), or arbitrary object state.
+    """
+
+    sites: list[tuple[str, ast.AST]] = []
+    stack: list[ast.AST] = list(reversed(tree.body))
+    while stack:
+        node = stack.pop()
+        names: set[str] = set()
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sites.append((node.name, node))
+            evaluated_expressions: list[ast.AST] = [
+                *node.decorator_list,
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ]
+            stack.extend(reversed(evaluated_expressions))
+            continue
+        if isinstance(node, ast.ClassDef):
+            sites.append((node.name, node))
+            if include_class_globals:
+                sites.extend(_class_global_binding_sites(node))
+            evaluated_expressions = [
+                *node.decorator_list,
+                *node.bases,
+                *(keyword.value for keyword in node.keywords),
+            ]
+            stack.extend(reversed(evaluated_expressions))
+            continue
+        if isinstance(node, ast.Lambda):
+            evaluated_expressions = [
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ]
+            stack.extend(reversed(evaluated_expressions))
+            continue
+        if isinstance(node, ast.Assign):
+            names = {
+                name
+                for target in node.targets
+                for name in _assignment_target_names(target)
+            }
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            names = _assignment_target_names(node.target)
+        elif isinstance(node, ast.AugAssign):
+            names = _assignment_target_names(node.target)
+        elif isinstance(node, ast.NamedExpr):
+            names = _assignment_target_names(node.target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            names = _assignment_target_names(node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            names = {
+                name
+                for item in node.items
+                if item.optional_vars is not None
+                for name in _assignment_target_names(item.optional_vars)
+            }
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            names = {node.name}
+        elif isinstance(node, ast.match_case):
+            names = _match_pattern_binding_names(node.pattern)
+        sites.extend((name, node) for name in names)
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+    return sites
+
+
+def _voice_identity_call_scope_metadata(
+    tree: ast.Module,
+    alias_paths: dict[str, str],
+    module_import_names: set[str],
+) -> tuple[set[int], set[int]]:
+    """Return shadowed import calls and statically NumPy-backed dump calls."""
+
+    def scope_bindings(body: list[ast.stmt]) -> tuple[set[str], set[str]]:
+        synthetic = ast.Module(body=body, type_ignores=[])
+        bound = {
+            name
+            for name, _ in _module_scope_binding_sites(
+                synthetic,
+                include_class_globals=False,
+            )
+        }
+        global_names: set[str] = set()
+        nonlocal_names: set[str] = set()
+        stack: list[ast.AST] = list(reversed(body))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.Global):
+                global_names.update(node.names)
+                continue
+            if isinstance(node, ast.Nonlocal):
+                nonlocal_names.update(node.names)
+                continue
+            if isinstance(node, ast.Import):
+                bound.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+                continue
+            if isinstance(node, ast.ImportFrom):
+                bound.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name != "*"
+                )
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+        return bound - global_names - nonlocal_names, global_names
+
+    def argument_names(arguments: ast.arguments) -> set[str]:
+        names = {
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+        }
+        if arguments.vararg is not None:
+            names.add(arguments.vararg.arg)
+        if arguments.kwarg is not None:
+            names.add(arguments.kwarg.arg)
+        return names
+
+    def numpy_result_bindings(
+        body: list[ast.stmt],
+        shadowed_imports: set[str],
+    ) -> set[str]:
+        bindings: set[str] = set()
+        stack: list[ast.AST] = list(reversed(body))
+        while stack:
+            node = stack.pop()
+            targets: list[ast.AST] = []
+            value: ast.AST | None = None
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                targets = [node.target]
+                value = node.value
+            elif isinstance(node, ast.NamedExpr):
+                targets = [node.target]
+                value = node.value
+            if isinstance(value, ast.Call):
+                chain = dotted_node_path(value.func)
+                if chain is not None and chain.split(".", 1)[0] not in shadowed_imports:
+                    resolved = resolve_chain(chain, alias_paths) or chain
+                    if resolved.startswith("numpy."):
+                        bindings.update(
+                            name
+                            for target in targets
+                            for name in _assignment_target_names(target)
+                        )
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+        return bindings
+
+    protected_call_names = module_import_names | {
+        "__import__",
+        "eval",
+        "exec",
+        "open",
+    }
+
+    def statement_binding_names(
+        statement: ast.stmt,
+        *,
+        include_class_globals: bool,
+    ) -> set[str]:
+        synthetic = ast.Module(body=[statement], type_ignores=[])
+        return {
+            name
+            for name, _ in _module_scope_binding_sites(
+                synthetic,
+                include_class_globals=include_class_globals,
+            )
+        }
+
+    class ScopeVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            module_shadowed: set[str] = set()
+            module_numpy: set[str] = set()
+            self.shadowed_stack: list[set[str]] = [module_shadowed]
+            self.numpy_stack: list[set[str]] = [module_numpy]
+            self.lexical_shadowed_stack: list[set[str]] = [module_shadowed]
+            self.lexical_numpy_stack: list[set[str]] = [module_numpy]
+            self.shadowed_call_ids: set[int] = set()
+            self.numpy_dump_call_ids: set[int] = set()
+
+        def _visit_statement_sequence(
+            self,
+            body: list[ast.stmt],
+            *,
+            global_names: set[str],
+            include_class_globals: bool,
+        ) -> None:
+            for statement in body:
+                self.visit(statement)
+                bound_names = statement_binding_names(
+                    statement,
+                    include_class_globals=include_class_globals,
+                ) - global_names
+                numpy_bindings = numpy_result_bindings(
+                    [statement],
+                    self.shadowed_stack[-1],
+                ) - global_names
+                self.numpy_stack[-1].difference_update(bound_names)
+                self.numpy_stack[-1].update(numpy_bindings)
+                self.shadowed_stack[-1].update(
+                    bound_names & protected_call_names
+                )
+
+        def visit_Module(self, node: ast.Module) -> None:  # noqa: N802
+            self._visit_statement_sequence(
+                node.body,
+                global_names=set(),
+                include_class_globals=True,
+            )
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802 - ast visitor API
+            chain = dotted_node_path(node.func)
+            if (
+                chain is not None
+                and chain.split(".", 1)[0] in self.shadowed_stack[-1]
+            ):
+                self.shadowed_call_ids.add(id(node))
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "dump"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.numpy_stack[-1]
+            ):
+                self.numpy_dump_call_ids.add(id(node))
+            self.generic_visit(node)
+
+        def _visit_function(
+            self,
+            node: ast.FunctionDef | ast.AsyncFunctionDef,
+        ) -> None:
+            outer_expressions: list[ast.AST] = [
+                *node.decorator_list,
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ]
+            for expression in outer_expressions:
+                self.visit(expression)
+            local_names, global_names = scope_bindings(node.body)
+            local_names.update(argument_names(node.args))
+            shadowed = (
+                self.lexical_shadowed_stack[-1] - global_names
+            ) | (local_names & protected_call_names)
+            numpy_names = self.lexical_numpy_stack[-1] - local_names
+            self.shadowed_stack.append(shadowed)
+            self.numpy_stack.append(numpy_names)
+            self.lexical_shadowed_stack.append(shadowed)
+            self.lexical_numpy_stack.append(numpy_names)
+            self._visit_statement_sequence(
+                node.body,
+                global_names=global_names,
+                include_class_globals=False,
+            )
+            self.lexical_numpy_stack.pop()
+            self.lexical_shadowed_stack.pop()
+            self.numpy_stack.pop()
+            self.shadowed_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            self._visit_function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+            self._visit_function(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            outer_expressions: list[ast.AST] = [
+                *node.decorator_list,
+                *node.bases,
+                *(keyword.value for keyword in node.keywords),
+            ]
+            for expression in outer_expressions:
+                self.visit(expression)
+            _, global_names = scope_bindings(node.body)
+            shadowed = self.shadowed_stack[-1] - global_names
+            numpy_names = set(self.numpy_stack[-1])
+            self.shadowed_stack.append(shadowed)
+            self.numpy_stack.append(numpy_names)
+            self.lexical_shadowed_stack.append(self.lexical_shadowed_stack[-1])
+            self.lexical_numpy_stack.append(self.lexical_numpy_stack[-1])
+            self._visit_statement_sequence(
+                node.body,
+                global_names=global_names,
+                include_class_globals=False,
+            )
+            self.lexical_numpy_stack.pop()
+            self.lexical_shadowed_stack.pop()
+            self.numpy_stack.pop()
+            self.shadowed_stack.pop()
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                if default is not None:
+                    self.visit(default)
+            local_names = argument_names(node.args)
+            shadowed = self.lexical_shadowed_stack[-1] | (
+                local_names & protected_call_names
+            )
+            numpy_names = self.lexical_numpy_stack[-1] - local_names
+            self.shadowed_stack.append(shadowed)
+            self.numpy_stack.append(numpy_names)
+            self.lexical_shadowed_stack.append(shadowed)
+            self.lexical_numpy_stack.append(numpy_names)
+            self.visit(node.body)
+            self.lexical_numpy_stack.pop()
+            self.lexical_shadowed_stack.pop()
+            self.numpy_stack.pop()
+            self.shadowed_stack.pop()
+
+        def _visit_comprehension(
+            self,
+            generators: list[ast.comprehension],
+            result_nodes: tuple[ast.AST, ...],
+        ) -> None:
+            if not generators:
+                for result in result_nodes:
+                    self.visit(result)
+                return
+            self.visit(generators[0].iter)
+            shadowed = set(self.lexical_shadowed_stack[-1])
+            numpy_names = set(self.lexical_numpy_stack[-1])
+            self.shadowed_stack.append(shadowed)
+            self.numpy_stack.append(numpy_names)
+            self.lexical_shadowed_stack.append(shadowed)
+            self.lexical_numpy_stack.append(numpy_names)
+            for index, generator in enumerate(generators):
+                if index:
+                    self.visit(generator.iter)
+                target_names = _assignment_target_names(generator.target)
+                self.shadowed_stack[-1].update(
+                    target_names & protected_call_names
+                )
+                self.numpy_stack[-1].difference_update(target_names)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for result in result_nodes:
+                self.visit(result)
+            self.lexical_numpy_stack.pop()
+            self.lexical_shadowed_stack.pop()
+            self.numpy_stack.pop()
+            self.shadowed_stack.pop()
+
+        def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802
+            self._visit_comprehension(node.generators, (node.elt,))
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:  # noqa: N802
+            self._visit_comprehension(node.generators, (node.elt,))
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
+            self._visit_comprehension(node.generators, (node.elt,))
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
+            self._visit_comprehension(node.generators, (node.key, node.value))
+
+    visitor = ScopeVisitor()
+    visitor.visit(tree)
+    return visitor.shadowed_call_ids, visitor.numpy_dump_call_ids
+
+
+def check_voice_identity_contracts(root: Path) -> list[Violation]:
+    """Cooperatively lint the provider-neutral voice-identity boundary.
+
+    This check covers module-scope imports and direct call sites. It is an
+    architecture guard for trusted repository code, not a Python sandbox or a
+    proof against reflection and intentionally obscured runtime behavior.
+    """
+
+    package_dir = root / "main_logic" / "voice_identity"
+    violations: list[Violation] = []
+    if not package_dir.exists():
+        violations.append(Violation(
+            package_dir,
+            1,
+            0,
+            "VOICE_IDENTITY_LAYERING",
+            "required voice_identity package is missing",
+        ))
+
+    init_path = package_dir / "__init__.py"
+    domain_paths = tuple(
+        package_dir / name
+        for name in ("contracts.py", "reference.py", "profile.py")
+    )
+    for required in (init_path, *domain_paths):
+        if not required.exists():
+            violations.append(Violation(
+                required,
+                1,
+                0,
+                "VOICE_IDENTITY_LAYERING",
+                "required voice_identity domain file is missing",
+            ))
+
+    for packaged_path in sorted(
+        candidate
+        for candidate in package_dir.rglob("*")
+        if candidate.is_file()
+    ):
+        relative_path = packaged_path.relative_to(package_dir)
+        if packaged_path.suffix == ".py" or "__pycache__" in relative_path.parts:
+            continue
+        violations.append(Violation(
+            packaged_path,
+            1,
+            0,
+            "VOICE_IDENTITY_LAYERING",
+            "voice_identity domain must not contain packaged assets; "
+            f"found {relative_path.as_posix()}",
+        ))
+
+    if init_path.exists():
+        init_tree = parse(init_path)
+        docstring_only = (
+            len(init_tree.body) == 1
+            and isinstance(init_tree.body[0], ast.Expr)
+            and isinstance(init_tree.body[0].value, ast.Constant)
+            and isinstance(init_tree.body[0].value.value, str)
+        )
+        if not docstring_only:
+            offender = init_tree.body[1] if len(init_tree.body) > 1 else (
+                init_tree.body[0] if init_tree.body else None
+            )
+            violations.append(Violation(
+                init_path,
+                getattr(offender, "lineno", 1),
+                getattr(offender, "col_offset", 0),
+                "VOICE_IDENTITY_LAYERING",
+                "voice_identity/__init__.py may contain only a package docstring",
+            ))
+
+    forbidden_domain_prefixes = (
+        "main_logic.asr_client",
+        "main_logic.core",
+        "main_logic.voice_turn",
+        "main_routers",
+        "app",
+        "onnxruntime",
+        "keyring",
+        "cryptography",
+    )
+    allowed_import_prefixes = {
+        package_dir / "contracts.py": (
+            "__future__",
+            "dataclasses",
+        ),
+        package_dir / "reference.py": (
+            "__future__",
+            "math",
+            "threading",
+            "numpy",
+            "main_logic.voice_identity.contracts",
+        ),
+        package_dir / "profile.py": (
+            "__future__",
+            "threading",
+            "main_logic.voice_identity.contracts",
+            "main_logic.voice_identity.reference",
+        ),
+    }
+    direct_dynamic_calls = {
+        "eval",
+        "exec",
+        "__import__",
+        "builtins.eval",
+        "builtins.exec",
+        "builtins.__import__",
+        "importlib.import_module",
+    }
+    direct_file_io_calls = {
+        "open",
+        "builtins.open",
+        "numpy.fromfile",
+        "numpy.fromregex",
+        "numpy.genfromtxt",
+        "numpy.lib.format.open_memmap",
+        "numpy.load",
+        "numpy.loadtxt",
+        "numpy.memmap",
+        "numpy.ndarray.dump",
+        "numpy.recfromtxt",
+        "numpy.save",
+        "numpy.savetxt",
+        "numpy.savez",
+        "numpy.savez_compressed",
+    }
+    direct_native_loading_calls = {
+        "numpy.ctypeslib.load_library",
+    }
+    direct_native_compilation_calls = {
+        "numpy.f2py.compile",
+    }
+    allowed_numpy_calls = {
+        "numpy.all",
+        "numpy.array",
+        "numpy.asarray",
+        "numpy.ascontiguousarray",
+        "numpy.copy",
+        "numpy.divide",
+        "numpy.empty",
+        "numpy.errstate",
+        "numpy.iscomplexobj",
+        "numpy.isfinite",
+        "numpy.linalg.norm",
+        "numpy.ones",
+        "numpy.zeros",
+    }
+    allowed_threading_calls = {
+        "threading.Lock",
+    }
+    direct_file_io_methods = {
+        "tofile",
+    }
+
+    scanned_paths = sorted(
+        path
+        for path in package_dir.rglob("*.py")
+        if path != init_path
+    )
+    for path in scanned_paths:
+        tree = parse(path)
+        pkg = ".".join(path.relative_to(root).parts[:-1])
+        alias_paths = module_alias_paths(tree, pkg)
+        module_scope_imports = {
+            id(node)
+            for node in tree.body
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        }
+        module_scope_import_bindings: set[str] = set()
+        for import_node in tree.body:
+            if isinstance(import_node, ast.Import):
+                bound_names = (
+                    alias.asname or alias.name.split(".", 1)[0]
+                    for alias in import_node.names
+                )
+            elif (
+                isinstance(import_node, ast.ImportFrom)
+                and import_node.module != "__future__"
+            ):
+                bound_names = (
+                    alias.asname or alias.name
+                    for alias in import_node.names
+                    if alias.name != "*"
+                )
+            else:
+                continue
+            for bound_name in bound_names:
+                if bound_name in module_scope_import_bindings:
+                    violations.append(Violation(
+                        path,
+                        import_node.lineno,
+                        import_node.col_offset,
+                        "VOICE_IDENTITY_LAYERING",
+                        "voice_identity module-scope import bindings must not "
+                        f"be rebound; found {bound_name}",
+                    ))
+                else:
+                    module_scope_import_bindings.add(bound_name)
+        reported_rebindings: set[tuple[str, int, int]] = set()
+        for bound_name, binding_node in _module_scope_binding_sites(tree):
+            if bound_name not in module_scope_import_bindings:
+                continue
+            location = (
+                bound_name,
+                getattr(binding_node, "lineno", 1),
+                getattr(binding_node, "col_offset", 0),
+            )
+            if location in reported_rebindings:
+                continue
+            reported_rebindings.add(location)
+            violations.append(Violation(
+                path,
+                location[1],
+                location[2],
+                "VOICE_IDENTITY_LAYERING",
+                "voice_identity module-scope import bindings must not "
+                f"be rebound; found {bound_name}",
+            ))
+        shadowed_import_call_ids, numpy_dump_call_ids = (
+            _voice_identity_call_scope_metadata(
+                tree,
+                alias_paths,
+                module_scope_import_bindings,
+            )
+        )
+        allowed = allowed_import_prefixes.get(path)
+        if allowed is None:
+            violations.append(Violation(
+                path,
+                1,
+                0,
+                "VOICE_IDENTITY_LAYERING",
+                "voice_identity module is missing an explicit dependency allowlist",
+            ))
+            allowed = ()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and id(node) not in module_scope_imports
+            ):
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    "voice_identity imports must be declared at module scope",
+                ))
+            if (
+                isinstance(node, ast.ImportFrom)
+                and any(alias.name == "*" for alias in node.names)
+            ):
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    "voice_identity domain must not use wildcard imports",
+                ))
+            imported_paths = _imported_paths(node, pkg)
+            if imported_paths:
+                allowed_paths = {
+                    imported
+                    for imported in imported_paths
+                    if any(
+                        imported == prefix
+                        or imported.startswith(f"{prefix}.")
+                        for prefix in allowed
+                    )
+                }
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and any(
+                        imported in allowed_paths
+                        for imported in imported_paths[1:]
+                    )
+                ):
+                    # ``from . import contracts`` imports the package anchor
+                    # alongside the approved member. That structural base is
+                    # allowed only for this exact ImportFrom node; a broad
+                    # standalone ``import main_logic`` remains forbidden.
+                    allowed_paths.add(imported_paths[0])
+                disallowed = next(
+                    (
+                        imported
+                        for imported in dict.fromkeys(imported_paths)
+                        if imported not in allowed_paths
+                    ),
+                    None,
+                )
+                if disallowed is not None:
+                    forbidden = next(
+                        (
+                            prefix
+                            for prefix in forbidden_domain_prefixes
+                            if disallowed == prefix
+                            or disallowed.startswith(f"{prefix}.")
+                        ),
+                        None,
+                    )
+                    message = (
+                        f"voice_identity domain must not import {forbidden}"
+                        if forbidden is not None
+                        else "voice_identity domain may only import approved "
+                        f"in-memory dependencies; found {disallowed}"
+                    )
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "VOICE_IDENTITY_LAYERING",
+                        message,
+                    ))
+
+            if not isinstance(node, ast.Call):
+                continue
+            direct_file_io_method = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in direct_file_io_methods
+            )
+            direct_numpy_ndarray_dump = False
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "dump"
+                and isinstance(node.func.value, ast.Call)
+                and id(node.func.value) not in shadowed_import_call_ids
+            ):
+                receiver_chain = dotted_node_path(node.func.value.func)
+                if receiver_chain is not None:
+                    resolved_receiver = (
+                        resolve_chain(receiver_chain, alias_paths) or receiver_chain
+                    )
+                    direct_numpy_ndarray_dump = resolved_receiver.startswith("numpy.")
+            direct_bound_numpy_dump = id(node) in numpy_dump_call_ids
+            if direct_numpy_ndarray_dump or direct_bound_numpy_dump:
+                dump_path = (
+                    "numpy.ndarray.dump"
+                    if direct_numpy_ndarray_dump
+                    else dotted_node_path(node.func) or ".dump"
+                )
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    "voice_identity domain must not perform file I/O via "
+                    f"{dump_path}",
+                ))
+                continue
+            chain = dotted_node_path(node.func)
+            if chain is None:
+                if direct_file_io_method:
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "VOICE_IDENTITY_LAYERING",
+                        "voice_identity domain must not perform file I/O via "
+                        f".{node.func.attr}",
+                    ))
+                continue
+            if (
+                id(node) in shadowed_import_call_ids
+                and isinstance(node.func, ast.Name)
+            ):
+                continue
+            resolved = (
+                chain
+                if id(node) in shadowed_import_call_ids
+                else resolve_chain(chain, alias_paths) or chain
+            )
+            if resolved in direct_dynamic_calls:
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    f"voice_identity domain must not call {resolved}",
+                ))
+            elif resolved in direct_file_io_calls or direct_file_io_method:
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    f"voice_identity domain must not perform file I/O via {resolved}",
+                ))
+            elif resolved in direct_native_loading_calls:
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    "voice_identity domain must not load a native library via "
+                    f"{resolved}",
+                ))
+            elif resolved in direct_native_compilation_calls:
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    f"voice_identity domain must not compile native code via {resolved}",
+                ))
+            elif (
+                resolved.startswith("numpy.")
+                and resolved not in allowed_numpy_calls
+            ):
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    "voice_identity domain may only call approved in-memory "
+                    f"NumPy APIs; found {resolved}",
+                ))
+            elif (
+                resolved.startswith("threading.")
+                and resolved not in allowed_threading_calls
+            ):
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "VOICE_IDENTITY_LAYERING",
+                    "voice_identity domain may only call threading.Lock; "
+                    f"found {resolved}",
+                ))
+
+    return violations
+
+
 def run(root: Path) -> list[Violation]:
     core_dir = root / "main_logic" / "core"
     tests_dir = root / "tests"
@@ -946,6 +1819,7 @@ def run(root: Path) -> list[Violation]:
             sys.exit(2)
 
     violations: list[Violation] = []
+    violations.extend(check_voice_identity_contracts(root))
     violations.extend(check_fail_closed_chokepoint(core_dir))
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)

@@ -239,3 +239,4 @@ tests/testbench/docs/dev_note.txt
 # Plugin runtime and local live-screen artifacts
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
+plugin/plugins/data/user_profile_cache.json

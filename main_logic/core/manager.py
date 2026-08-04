@@ -283,6 +283,9 @@ class LLMSessionManager(
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
+        # User-facing TTS notices must survive handler replacement during a
+        # worker respawn. Entries are released by audio_done or session reset.
+        self._tts_notified_error_keys: set[tuple[str, str]] = set()
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         # Keep one utterance ledger so a replacement worker can replay consumed text.
