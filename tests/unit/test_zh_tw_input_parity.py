@@ -5617,6 +5617,7 @@ def test_the_frame_scope_coordinator_table_is_pinned():
         "紧接着", "緊接著", "跟着", "跟著", "于是", "於是",
         "同时", "同時",
         "反而", "反倒", "况且", "況且", "何况", "何況", "再者", "此外",
+        "只是", "不过是", "不過是", "无非", "無非",
         "因而", "从而", "從而",
         "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
         "另外", "再说", "再說", "所以", "因此",
@@ -6669,3 +6670,53 @@ def test_correlatives_are_not_treated_as_consequent_markers():
     assert mr.is_explicit_music_cancellation(
         '我想停止播放如果有什么新歌再告诉我'
     ) is True
+
+
+@pytest.mark.parametrize("transition", ["只是", "不过是", "不過是", "无非", "無非"])
+def test_adversative_transitions_end_the_reason_scope(transition):
+    """`因为音质差只是不知道是否合适` —— 理由属于 `只是` 之前那一小句，管不到后面的
+    犹豫（base 是 False，第七十八轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为音质差{transition}不知道是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("frame", ["如果", "假如", "要是", "万一", "倘若"])
+def test_bare_jiu_ends_a_conditional_scope_but_not_a_free_choice_one(frame):
+    """⚠️⚠️ 裸 `就` 只对**条件族**算后件边界。
+
+    `如果有什么新歌就告诉我这样是否合适` 里 `就` 引出后件、前件到此为止；
+    可 `无论唱什么歌都不好听` 里的 `就/都` 是任指框架的**关联词**，收了会把那一族
+    的辖域提前截断——第七十七轮就是因为这个没敢收裸 `就`。
+
+    **同一个字在两族里语法角色相反**，所以按框架词属于哪一族分流，不能一刀切。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{frame}有什么新歌就告诉我这样是否合适'
+    ) is False, frame
+    # ⚠️ 反向：任指族的关联词 就/都 不能被当成边界。
+    for correlative in ("都", "就"):
+        assert is_explicit_music_cancellation(
+            f'我想停止播放因为无论唱什么歌{correlative}不好听'
+        ) is True, correlative
+
+
+@pytest.mark.parametrize("verb", ["问", "問", "说", "說"])
+@pytest.mark.parametrize("frame", ["不管", "无论", "如果", "即使"])
+def test_a_frame_word_after_an_inquiry_verb_is_a_mention(verb, frame):
+    """⚠️ 言说/探询动词后面的框架词是**被讨论的词**，不是框架：
+    `问不管这个词是否合适`（base 是 False，第七十八轮）。
+
+    ⚠️ 这一格是我第七十六轮建左邻白名单时**顺手加的**（把 `问/说` 当成了合法左邻），
+    没有失败用例支撑，然后它自己造出了缺陷。已从白名单移除。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    for banned in ("问", "問", "说", "說"):
+        assert banned not in mr._ZH_FRAME_LEFT_CONTEXT, banned
+    text = f'我想停止播放前{verb}{frame}这个词是否合适'
+    assert mr.is_explicit_music_cancellation(text) is False, text

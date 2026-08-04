@@ -1127,7 +1127,11 @@ _ZH_FRAME_LEFT_CONTEXT = (
     "为為于於以然且但而或"
     "我你他她它们們家伙"
     "是的了着著过過"
-    "算说說问問知道得"
+    # ⚠️ 这里**不能**放 `问/問/说/說`：它们恰恰是引出**元语言提及**的动词，
+    # `问不管这个词是否合适` 里 `不管` 是被讨论的**词**，不是框架
+    # （base 是 False——危险方向，第七十八轮）。这一格是我第七十六轮建这张
+    # 白名单时顺手加的，没有失败用例支撑，现在它自己造出了缺陷。
+    "算知道得"
 )
 _ZH_FRAME_LEFT_BOUND = (
     r"(?:^|(?<=[" + re.escape(_ZH_FRAME_LEFT_CONTEXT) + r"])|(?<=[^\u4e00-\u9fff]))"
@@ -1221,8 +1225,18 @@ def _zh_neutralize_free_choice(text: str) -> str:
         # ⚠️ 找边界时要**跳过引用跨度**：标题里的逗号/分号不是句读
         # （`《晴天，雨天》`）。子句切分器本来就把跨度当不透明的，这里不跟上
         # 就会在标题内部提前断掉（Codex P2 第五十四轮）。
+        # ⚠️⚠️ 裸 `就` 只对**条件族**算后件边界。`如果有什么新歌就告诉我` 里
+        # `就` 引出后件、前件到此为止；可 `无论唱什么歌都不好听` 里的 `就/都`
+        # 是任指框架的**关联词**，收了会把那一族的辖域提前截断
+        # （第七十七轮就是因为这个没敢收裸 `就`）。按**框架词属于哪一族**分流，
+        # 不是一刀切——同一个字在两族里语法角色相反。
+        scope_end = (
+            _ZH_CONDITIONAL_SCOPE_END_RE
+            if marker.group(0) in _ZH_CONDITIONAL_FRAMES
+            else _ZH_FRAME_SCOPE_END_RE
+        )
         stop = len(text)
-        for hit in _ZH_FRAME_SCOPE_END_RE.finditer(text, marker.end()):
+        for hit in scope_end.finditer(text, marker.end()):
             if any(lo <= hit.start() < hi for lo, hi in spans):
                 continue
             stop = hit.start()
@@ -1293,6 +1307,7 @@ _ZH_FRAME_SCOPE_COORDINATORS = (
     # 「连词是封闭词类，一次列全」，五轮下来那句话一次都没兑现过——记在这里，
     # 不是为了再保证一次，是为了让下一个人知道这张表历史上一直在漏。
     "反而", "反倒", "况且", "況且", "何况", "何況", "再者", "此外",
+    "只是", "不过是", "不過是", "无非", "無非",
     "因而", "从而", "從而",
     "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
     "另外", "再说", "再說", "所以", "因此",
@@ -1311,6 +1326,11 @@ _ZH_FRAME_SCOPE_END_RE = re.compile(
     _ZH_CLAUSE_BOUNDARY_RE.pattern
     + "|" + "|".join(_ZH_FRAME_SCOPE_COORDINATORS)
     + "|" + "|".join(_ZH_CONDITIONAL_CONSEQUENT_MARKERS)
+)
+# 条件族专用的辖域终点：通用那套之外再加裸 `就`（条件句的后件标记）。
+# ⚠️ 任指族**不能**用这一份：那里 `就/都` 是关联词，不是边界。
+_ZH_CONDITIONAL_SCOPE_END_RE = re.compile(
+    _ZH_FRAME_SCOPE_END_RE.pattern + r"|就"
 )
 # ⚠️ 后一子句是**否定**时不能合并：`播放的时候，不要再放音乐了` 里的 `再`
 # 恰好是关联副词，合并之后 `不要再放` 跟前半句连成一体，整条取消请求丢掉

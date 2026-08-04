@@ -2587,6 +2587,9 @@ _SIMPLIFIED_TO_TRADITIONAL.update({
     # ⚠️ 第四次了（一并/暂时不、准备、紧接着，现在是 无须）。这条断言真正在拦的
     # 不是「词表少收一个词」，而是「映射表说不出这个词有繁体形」。
     "须": ("须", "須"),
+    # ⚠️ 第五次了（一并/暂时不、准备、紧接着、无须，现在是 只是）。`只` 同样是
+    # 多形字：「只有」的 `只` 繁体不变，「一隻」的 `隻` 才变。
+    "只": ("只", "隻"),
     "几": ("幾",),
     "后": ("後",),
     "么": ("麼",),
@@ -2675,7 +2678,14 @@ def test_every_simplified_entry_has_its_traditional_twin(table_name):
         # 所以映射值是候选集，只要**任一**候选形在表里就算成对。
         options = [_SIMPLIFIED_TO_TRADITIONAL.get(ch, (ch,)) for ch in word]
         twins = {"".join(combo) for combo in itertools.product(*options)}
-        twins.discard(word)
+        # ⚠️⚠️ 多形字的候选里**含恒等形**时，这个词本身就已经是合法繁体写法，
+        # 不该再要求另一个形也在表里。`只是` 就是这样——「只有」的 `只` 繁体不变，
+        # 「一隻」的 `隻` 才变；映射写成 `只 → (只, 隻)` 是对的，可原来的写法
+        # 先把原词从候选里 discard 掉，于是永远只剩 `隻是`，报一个假缺口
+        # （第七十八轮）。同族的 `准`（批准/準備）之前没暴露，是因为表里恰好
+        # 两个形都有。这是**断言自己的洞**，不是词表的。
+        if word in twins:
+            continue
         if twins and not (twins & entries):
             missing.append((word, sorted(twins)))
     assert missing == [], f'{table_name} 只收了简体形，缺繁体: {missing}'
