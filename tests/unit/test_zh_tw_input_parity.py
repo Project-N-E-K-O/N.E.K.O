@@ -899,10 +899,19 @@ def test_particles_are_peeled_one_at_a_time(text, expected):
     ],
 )
 def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
-    import brain.openclaw_adapter as adapter
+    from brain.openclaw_adapter import (
+        _APPROVE_ACTIONS,
+        _NEW_CLAUSES,
+        _STOP_CLAUSES,
+        _clause_hits,
+    )
 
-    table = getattr(adapter, table_name)
-    assert adapter._clause_hits(clause, table), f"{clause} 剥不出 {table_name} 里的条目"
+    tables = {
+        "_APPROVE_ACTIONS": _APPROVE_ACTIONS,
+        "_NEW_CLAUSES": _NEW_CLAUSES,
+        "_STOP_CLAUSES": _STOP_CLAUSES,
+    }
+    assert _clause_hits(clause, tables[table_name]), f"{clause} 剥不出 {table_name} 里的条目"
 
 
 @pytest.mark.parametrize(
@@ -917,22 +926,46 @@ def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
         "能不能去執行", "能不能去执行", "可不可以去執行", "可不可以去执行",
         "去執行行不行", "去执行好不好", "要不要去执行", "是不是该去执行",
         "是否可以去执行", "去执行怎么样", "去執行怎麼樣",
+        # ⚠️ 试探/提议型首部词同理——归一化把它们剥掉之后，一句「要不就去执行？」
+        # 的**提议**就变成了授权。这些也全是首部虚词表新放行出来的暴露面。
+        "要不去執行", "要不去执行", "要不去执行吧", "要不然去執行",
+        "不如去執行", "不如去执行", "不如刪吧", "不如删吧", "不如準了",
+        "還是去執行", "还是去执行", "还是去执行吧", "乾脆去執行", "干脆去执行",
     ],
 )
 def test_a_question_never_approves(text):
-    """⚠️ 一个**问句**绝不能授权高风险动作。
+    """⚠️ 问句和提议都不是授权。
 
-    Normalization erases the interrogative mood: 去執行嗎 loses its 嗎 and
-    能不能去執行 loses its 能不能, both landing on the whitelisted 去執行. The
-    Traditional spellings here were all None on main — the whole-clause switch
-    newly exposed them, which is exactly backwards for a hardening change.
+    Normalization erases the mood entirely and everything lands on a whitelisted
+    action phrase: 去執行嗎 loses its 嗎, 能不能去執行 loses its 能不能, 要不去執行
+    loses its 要不. The Traditional spellings here were all None on main — the
+    whole-clause switch newly exposed them, which is exactly backwards for a
+    hardening change.
 
     Vetoing the whole utterance is fail-closed and costs nothing: nobody granting
-    permission phrases it as a question.
+    permission phrases it as a question or floats it as a suggestion.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["马上去执行", "赶紧去执行", "立刻去执行", "现在就去执行", "直接去执行",
+     "那就去执行吧", "先去執行吧", "馬上去執行", "趕緊去執行", "盡快去執行"],
+)
+def test_decisive_adverbs_still_approve(text):
+    """⚠️ The hedge veto must not swallow decisive adverbs.
+
+    馬上 / 趕緊 / 立刻 / 現在 / 盡快 / 直接 / 那就 / 先 intensify an imperative
+    rather than propose one; every Simplified spelling here approves on main, so
+    rejecting them would be pure recall loss with no safety gain. The line is
+    "tentative proposal vs. emphasised command", not "has an adverb".
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve", text
 
 
 @pytest.mark.parametrize(
@@ -947,6 +980,10 @@ def test_a_question_never_approves(text):
         ("能不能停下来", "/stop"), ("可不可以停下來", "/stop"),
         ("停下来吗", "/stop"), ("停下来行不行", "/stop"),
         ("换个话题怎么样", "/new"), ("換個話題怎麼樣", "/new"),
+        # 试探/提议型对 /stop 和 /new 同样是完全正常的祈使
+        ("要不换个话题", "/new"), ("不如换个话题", "/new"), ("还是换个话题吧", "/new"),
+        ("要不停下来", "/stop"), ("不如停下來", "/stop"), ("還是停下來吧", "/stop"),
+        ("干脆换个话题", "/new"), ("乾脆停下來", "/stop"),
     ],
 )
 def test_the_question_veto_is_scoped_to_approve(text, expected):
