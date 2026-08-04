@@ -1002,13 +1002,76 @@
         return 'local-' + S.assistantTurnSeq;
     }
 
-    function emitAssistantLifecycleEvent(eventName, detail) {
-        window.dispatchEvent(new CustomEvent(eventName, {
-            detail: Object.assign({
-                timestamp: Date.now()
-            }, detail || {})
-        }));
+    var motionLifecycleChannel = null;
+    var motionLifecycleLastClosedText = '';
+
+    function getMotionLifecycleChannel() {
+        if (motionLifecycleChannel) return motionLifecycleChannel;
+        if (typeof BroadcastChannel === 'undefined') return null;
+        try {
+            motionLifecycleChannel = new BroadcastChannel('neko_motion_lifecycle');
+        } catch (_) {
+            motionLifecycleChannel = null;
+        }
+        return motionLifecycleChannel;
     }
+
+    function broadcastMotionLifecycle(eventName, detail) {
+        var channel = getMotionLifecycleChannel();
+        if (!channel) return;
+        var payload = Object.assign({}, detail || {});
+        payload.lanlan_name = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        if (typeof payload.text === 'string') payload.text = payload.text.slice(0, 24000);
+        channel.postMessage({
+            action: 'motion_lifecycle',
+            eventName: eventName,
+            detail: payload,
+            timestamp: Date.now()
+        });
+    }
+
+    function emitAssistantLifecycleEvent(eventName, detail) {
+        if (eventName === 'neko-assistant-turn-start') {
+            motionLifecycleLastClosedText = '';
+        }
+        var payload = Object.assign({
+            timestamp: Date.now()
+        }, detail || {});
+        window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+        if (eventName === 'neko-assistant-turn-end') {
+            payload = Object.assign({}, payload, {
+                text: typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : ''
+            });
+        }
+        broadcastMotionLifecycle(eventName, payload);
+    }
+
+    // The standalone chat and pet/VRM surfaces are different Electron pages.
+    // Only relay when a stage direction has actually closed. Visible prose is
+    // sent once by turn-end above, so the bridge never needs to poll or publish
+    // the growing full reply on every streaming chunk.
+    function relayClosedMotionStage() {
+        var text = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+        if (!text) {
+            motionLifecycleLastClosedText = '';
+            return;
+        }
+        var closedAt = Math.max(text.lastIndexOf(')'), text.lastIndexOf('）'));
+        if (closedAt < 0) return;
+        var closedText = text.slice(0, closedAt + 1);
+        if (closedText === motionLifecycleLastClosedText) return;
+        motionLifecycleLastClosedText = closedText;
+        broadcastMotionLifecycle('neko-assistant-text-update', {
+            turnId: resolveAssistantLifecycleTurnId(),
+            text: closedText
+        });
+    }
+    window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
+    window.addEventListener('pagehide', function () {
+        window.removeEventListener('neko-compact-caption-update', relayClosedMotionStage);
+        if (motionLifecycleChannel) motionLifecycleChannel.close();
+        motionLifecycleChannel = null;
+    }, { once: true });
 
     function getRenderableAssistantChunkText(text) {
         return String(text || '')
@@ -1495,8 +1558,10 @@
             turnId: S.assistantTurnId,
             requestId: resolveAssistantRequestId(requestId, responseMeta),
             source: source || 'visible_gemini_bubble',
-            meta: responseMeta
+            meta: responseMeta,
+            userText: String(window._nekoMotionPendingUserText || window._lastSubmittedText || '').slice(0, 1000)
         });
+        window._nekoMotionPendingUserText = '';
         logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
             source: source || 'visible_gemini_bubble',
             serverTurnId: normalizeAssistantTurnId(serverTurnId),
@@ -2469,6 +2534,7 @@
                     removeExternalAsrPreview();
                     var normalizedVoiceTranscript = String(response.text || '').trim();
                     if (normalizedVoiceTranscript) {
+                        window._nekoMotionPendingUserText = normalizedVoiceTranscript.slice(0, 1000);
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),

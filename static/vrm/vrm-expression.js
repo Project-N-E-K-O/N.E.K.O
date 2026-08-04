@@ -45,7 +45,58 @@ class VRMExpression {
             // 悲伤类 (偶尔用一下)
             'sad': ['sad', 'sorrow', 'grief'],
             // 生气类
-            'angry': ['angry', 'anger']
+            'angry': ['angry', 'anger'],
+            // 兴奋：模型没有独立 excited 时回退到 happy/Joy
+            'excited': ['excited', 'excitement', 'delighted', 'happy', 'joy'],
+            // 害羞：优先使用模型自带羞涩/脸红，VRM0 常以 Fun 表现柔和羞涩
+            'shy': ['shy', 'bashful', 'blush', 'embarrassed', 'relaxed', 'fun', 'happy'],
+            // 哭泣：优先独立哭泣表情，否则使用 Sorrow
+            'cry': ['cry', 'crying', 'tearful', 'tears', 'sad', 'sorrow'],
+            // 害怕：Aozame 是 VRM0 常见的青脸/惊恐表情
+            'fearful': ['fearful', 'fear', 'scared', 'aozame', 'surprised'],
+            // 厌恶：没有独立 disgust 时使用较接近的愤怒表情
+            'disgusted': ['disgusted', 'disgust', '嫌悪', 'angry'],
+            // 困倦：优先 sleepy/tired，缺失时使用低唤醒度表情
+            'tired': ['tired', 'sleepy', 'drowsy', 'relaxed', 'sad']
+        };
+
+        // When a model does not author an extended expression, build a small,
+        // bounded blend from its standard VRM expressions. Native expressions
+        // always win; these profiles only provide a visual fallback.
+        this.compositeMoodMap = {
+            'excited': [
+                { mood: 'happy', weight: 0.9 },
+                { mood: 'surprised', weight: 0.3 }
+            ],
+            'shy': [
+                { mood: 'relaxed', weight: 0.55 },
+                { mood: 'happy', weight: 0.18 }
+            ],
+            'cry': [
+                { mood: 'sad', weight: 1.0 },
+                { mood: 'surprised', weight: 0.08 }
+            ],
+            'fearful': [
+                { mood: 'surprised', weight: 0.68 },
+                { mood: 'sad', weight: 0.32 }
+            ],
+            'disgusted': [
+                { mood: 'angry', weight: 0.7 },
+                { mood: 'sad', weight: 0.18 }
+            ],
+            'tired': [
+                { mood: 'relaxed', weight: 0.28 },
+                { mood: 'sad', weight: 0.22 }
+            ]
+        };
+
+        this.nativeExtendedMoodMap = {
+            'excited': ['excited', 'excitement', 'delighted'],
+            'shy': ['shy', 'bashful', 'blush', 'embarrassed'],
+            'cry': ['cry', 'crying', 'tearful', 'tears'],
+            'fearful': ['fearful', 'fear', 'scared', 'aozame'],
+            'disgusted': ['disgusted', 'disgust', '嫌悪'],
+            'tired': ['tired', 'sleepy', 'drowsy']
         };
 
         this.currentWeights = {};
@@ -119,6 +170,50 @@ class VRMExpression {
         return null;
     }
 
+    _findExpression(expressionNames, candidates) {
+        const names = Array.isArray(expressionNames) ? expressionNames : [];
+        const wanted = Array.isArray(candidates) ? candidates : [];
+        for (const candidate of wanted) {
+            const normalized = String(candidate || '').toLowerCase();
+            const match = names.find(name => String(name).toLowerCase() === normalized);
+            if (match) return match;
+        }
+        return null;
+    }
+
+    _resolveMoodWeights(moodName, expressionNames) {
+        const mood = String(moodName || 'neutral');
+        const weights = {};
+        if (mood === 'neutral') return weights;
+
+        const direct = this._findExpression(expressionNames, [mood]);
+        if (direct) {
+            weights[direct] = 1.0;
+            return weights;
+        }
+
+        const nativeCandidates = this.nativeExtendedMoodMap[mood];
+        if (nativeCandidates) {
+            const nativeExpression = this._findExpression(expressionNames, nativeCandidates);
+            if (nativeExpression) {
+                weights[nativeExpression] = 1.0;
+                return weights;
+            }
+
+            const composite = this.compositeMoodMap[mood] || [];
+            composite.forEach(item => {
+                const candidates = this.moodMap[item.mood] || [item.mood];
+                const expression = this._findExpression(expressionNames, candidates);
+                if (expression) weights[expression] = Math.max(weights[expression] || 0, item.weight);
+            });
+            return weights;
+        }
+
+        const mappedExpression = this._findExpression(expressionNames, this.moodMap[mood] || [mood]);
+        if (mappedExpression) weights[mappedExpression] = 1.0;
+        return weights;
+    }
+
     /**
      * 设置情绪映射配置（运行时更新）
      * @param {Object} newMoodMap - 新的情绪映射表
@@ -182,9 +277,6 @@ class VRMExpression {
         const expressionManager = this.manager.currentModel.vrm.expressionManager;
         const expressionNames = this._getExpressionNames(expressionManager);
 
-        // 如果 moodMap 中有对应条目，使用映射；否则将 moodName 本身作为候选
-        const moodCandidates = this.moodMap[moodName] || [moodName];
-
         // 先清除所有表情（除了口型和视线控制）
         expressionNames.forEach(exprName => {
             const lowerExprName = exprName.toLowerCase();
@@ -201,26 +293,17 @@ class VRMExpression {
             return;
         }
 
-        // 查找匹配的表情并立即应用（仅精确匹配，避免短名称误匹配）
-        for (const candidate of moodCandidates) {
-            const matchedExpression = expressionNames.find(exprName => {
-                return exprName.toLowerCase() === candidate.toLowerCase();
-            });
-
-            if (matchedExpression) {
-                // 设置手动表情标志，防止 _updateWeights 干扰
-                this.manualExpressionInProgress = matchedExpression;
-
-                // 立即设置为1.0
-                expressionManager.setValue(matchedExpression, 1.0);
-                this.currentWeights[matchedExpression] = 1.0;
-                return; // 找到匹配的表情后立即返回
-            }
-        }
-
-        // 如果没有找到匹配的表情，清除标志
+        const resolvedWeights = this._resolveMoodWeights(moodName, expressionNames);
+        const matchedExpressions = Object.keys(resolvedWeights);
         this.manualExpressionInProgress = null;
-        console.warn(`[VRM Expression] 未找到匹配的表情 (名称: ${moodName}, 候选: ${moodCandidates.join(', ')})`);
+        matchedExpressions.forEach(name => {
+            const weight = resolvedWeights[name];
+            expressionManager.setValue(name, weight);
+            this.currentWeights[name] = weight;
+        });
+        if (!matchedExpressions.length) {
+            console.warn(`[VRM Expression] 未找到匹配的表情 (名称: ${moodName})`);
+        }
     }
 
     // ... 下面是原有的 update(delta) ...
@@ -361,6 +444,7 @@ class VRMExpression {
 
         // 2. 获取当前目标表情 (例如 "angry" 或 "blinkLeft")
         const targetName = this.currentMood;
+        const resolvedWeights = this._resolveMoodWeights(targetName, modelExpressionNames);
 
         // 判断用户是否正在手动测试眨眼
         const isUserTestingBlink = targetName.toLowerCase().includes('blink');
@@ -369,15 +453,9 @@ class VRMExpression {
         modelExpressionNames.forEach(name => {
             let targetWeight = 0.0;
             const lowerName = name.toLowerCase();
-            const targetNameLower = targetName.toLowerCase();
 
             // 如果是正在手动播放的单眼眨眼，跳过自动更新
             if (this.manualBlinkInProgress && name === this.manualBlinkInProgress) {
-                return; // 跳过，让手动设置的值保持
-            }
-
-            // 如果是正在手动播放的表情，跳过自动更新（除非是 neutral）
-            if (this.manualExpressionInProgress && name === this.manualExpressionInProgress && targetName !== 'neutral') {
                 return; // 跳过，让手动设置的值保持
             }
 
@@ -390,28 +468,7 @@ class VRMExpression {
                 return;
             }
 
-            // 判断是否为选中项 (最高优先级)
-            // 注意：当 currentMood = 'neutral' 时，不应用任何表情，让模型保持默认状态
-            if (targetName === 'neutral') {
-                targetWeight = 0.0;
-            } else {
-                // 直接名字匹配
-                let isMatch = (name === targetName || lowerName === targetNameLower);
-                // 如果没有直接匹配，检查映射表 (moodMap)
-                // 解决 pickRandomMood 选出 'happy' 但模型只有 'Joy' 的情况
-                if (!isMatch && this.moodMap[targetName]) {
-                    const candidates = this.moodMap[targetName];
-                    // 检查候选词里是否有当前这个 name
-                    isMatch = candidates.some(candidate => candidate.toLowerCase() === lowerName);
-                }
-
-                if (isMatch) {
-                    targetWeight = 1.0;
-                } else {
-                    // 只有在没有匹配到目标表情时，才将权重设为 0
-                    targetWeight = 0.0;
-                }
-            }
+            targetWeight = resolvedWeights[name] || 0.0;
             
             // 处理自动眨眼 (次优先级)
             // 条件：

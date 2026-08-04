@@ -2950,6 +2950,7 @@
             // Clear stale text for pure-screenshot submissions.
             window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
             window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
+            window._nekoMotionPendingUserText = window._lastSubmittedText;
             var isReactWindowSource = options.source === 'react-chat-window';
             var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';

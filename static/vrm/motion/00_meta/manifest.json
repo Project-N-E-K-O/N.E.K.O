@@ -1,0 +1,824 @@
+{
+  "v": 4,
+  "ai": {
+    "required": [],
+    "model": "none",
+    "tokenUsagePerMotion": 0,
+    "decisionSource": "locale to Chinese action frame, then structured action-card retrieval",
+    "intensity": {
+      "1": "轻",
+      "2": "中",
+      "3": "强"
+    },
+    "noMotion": "empty local plan",
+    "authoritativeLanguage": "zh-CN",
+    "fileNaming": "descriptive Chinese filename with stable id"
+  },
+  "policy": {
+    "distribution": "public-release",
+    "localTestEnabled": false,
+    "previewUnrated": false,
+    "unknownLicense": "block-public-distribution",
+    "unknown": "no_motion"
+  },
+  "counts": {
+    "source": 13,
+    "files": 13,
+    "motions": 10,
+    "activeMotions": 10,
+    "disabledMotions": 0,
+    "official": 13
+  },
+  "assets": [
+    {
+      "id": "official_liked",
+      "m": "like",
+      "label": "官方喜欢回应",
+      "f": "00_official/开心地回应喜欢和亲近.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "positive",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.8,
+      "sha": "7109fb6e4f30c5905201f6abb2b8e327327b7d3107b9ddd1300d7bf3e2b3f583",
+      "src": [
+        "static/vrm/animation/liked.vrma"
+      ],
+      "packedSha": "c6fbaa623937967984be71cacab8aaab57ed11b3440b2119ef118c0a41cd2d7d",
+      "decodedSha": "7109fb6e4f30c5905201f6abb2b8e327327b7d3107b9ddd1300d7bf3e2b3f583",
+      "packedBytes": 29168,
+      "decodedBytes": 93828,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "开心地回应喜欢和亲近",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_liked",
+        "intent": "like",
+        "kind": "gesture",
+        "nameZh": "开心地回应喜欢和亲近",
+        "positiveZh": [
+          "回应喜欢",
+          "表达亲近",
+          "有你真好"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_wait_01",
+      "m": "idle",
+      "label": "官方休闲待机 A",
+      "f": "00_official/放松地站着小幅晃动等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "relaxed",
+        "official"
+      ],
+      "i": 1,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 20.5,
+      "sha": "b39d588f223851fd17fb59e792c773472a7eca0b5bf77db54074aae9f24fbf7e",
+      "src": [
+        "static/vrm/animation/wait01.vrma"
+      ],
+      "packedSha": "93e48ce38f2c1d2eaa7e4703cd6318e61316446d5b5494cc19059e34f52a3565",
+      "decodedSha": "b39d588f223851fd17fb59e792c773472a7eca0b5bf77db54074aae9f24fbf7e",
+      "packedBytes": 106162,
+      "decodedBytes": 208324,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "放松地站着小幅晃动等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_01",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "放松地站着小幅晃动等待",
+        "positiveZh": [
+          "放松等待",
+          "轻轻晃动",
+          "小幅晃动着站立"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "relaxed",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_wait_02",
+      "m": "idle",
+      "label": "官方休闲待机 B",
+      "f": "00_official/站着抬动右臂并转动视线等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "neutral",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.667,
+      "sha": "7c7cd0574c34b20a1e9cccbae3abcdc7999cd406edb7f0323e5e2aa0be4e02d5",
+      "src": [
+        "static/vrm/animation/wait02.vrma"
+      ],
+      "packedSha": "a17dc91bd4770cb7c5b6b51ac9c2af16e63c0e3162fd0aaead673bf0f5c13b1a",
+      "decodedSha": "7c7cd0574c34b20a1e9cccbae3abcdc7999cd406edb7f0323e5e2aa0be4e02d5",
+      "packedBytes": 55821,
+      "decodedBytes": 152516,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "站着抬动右臂并转动视线等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_02",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "站着抬动右臂并转动视线等待",
+        "positiveZh": [
+          "站着抬动右臂并转动视线等待",
+          "等待时抬起右手转动目光",
+          "站着活动右臂同时改变视线",
+          "右手动作明显地观察着等待",
+          "抬动右臂四处看看再继续等"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_wait_03",
+      "m": "idle",
+      "label": "官方休闲待机 C",
+      "f": "00_official/站着轻动双手手指等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "neutral",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 13.667,
+      "sha": "3ee058e29c870b617fc8958914256b6129b79a972ef07e9a23702a7133c7c9b6",
+      "src": [
+        "static/vrm/animation/wait03.vrma"
+      ],
+      "packedSha": "9002cd6b69d2d3857525860273d1b915c9423017f9a26cf1d0b78987ca95af41",
+      "decodedSha": "3ee058e29c870b617fc8958914256b6129b79a972ef07e9a23702a7133c7c9b6",
+      "packedBytes": 74617,
+      "decodedBytes": 165964,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "站着轻动双手手指等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_03",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "站着轻动双手手指等待",
+        "positiveZh": [
+          "站着轻动双手手指等待",
+          "等待时轻轻活动两只手",
+          "站着用细小手指动作打发时间",
+          "双手和手指微微动着等待",
+          "平静站着同时轻动双手"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_wait_04",
+      "m": "shy",
+      "label": "官方害羞撩发",
+      "f": "00_official/害羞的撩起头发.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "shy",
+        "gentle",
+        "official"
+      ],
+      "i": 1,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 12.1,
+      "sha": "1210f1291925824363fdf473c64116831cca838837781c8bc9c27e2d81dc3b4d",
+      "src": [
+        "static/vrm/animation/wait04.vrma"
+      ],
+      "packedSha": "a6b64e108035a1959c303f2d3a61ae2a2addc145961ecd4d1d225694f0e79029",
+      "decodedSha": "1210f1291925824363fdf473c64116831cca838837781c8bc9c27e2d81dc3b4d",
+      "packedBytes": 60950,
+      "decodedBytes": 155768,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "害羞的撩起头发",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_04",
+        "intent": "shy",
+        "kind": "emotion-body",
+        "nameZh": "害羞的撩起头发",
+        "positiveZh": [
+          "害羞的撩起头发",
+          "害羞地撩头发",
+          "羞涩地撩头发",
+          "把头发撩到耳后",
+          "轻轻撩起头发"
+        ],
+        "negativeZh": [
+          "从容等待",
+          "站着等待"
+        ],
+        "styles": [
+          "shy",
+          "gentle",
+          "official"
+        ],
+        "body": [
+          "头",
+          "手",
+          "头发"
+        ],
+        "emotions": [
+          "shy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_wait_05",
+      "m": "idle",
+      "label": "官方休闲待机 E",
+      "f": "00_official/活泼地站着晃动等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "lively",
+        "official"
+      ],
+      "i": 3,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 10.833,
+      "sha": "aa9a913e199a1a224bd15826a51c350d6a395700a89d62c4fddc3176ae87fb24",
+      "src": [
+        "static/vrm/animation/wait05.vrma"
+      ],
+      "packedSha": "f1a0826e5090f9c23f3af26bb91ad6696c42d6797ce9b690c4adadb703481abe",
+      "decodedSha": "aa9a913e199a1a224bd15826a51c350d6a395700a89d62c4fddc3176ae87fb24",
+      "packedBytes": 63855,
+      "decodedBytes": 148276,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "活泼地站着晃动等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_05",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "活泼地站着晃动等待",
+        "positiveZh": [
+          "活泼等待",
+          "开心晃动",
+          "轻快地晃动身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_showcase",
+      "m": "showcase",
+      "label": "官方全身展示",
+      "f": "00_official/自信地转身展示全身.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "confident",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.8,
+      "sha": "f45abc44800c647fa106537a2e31a84cb83b74cf3dd8a0ee71c6915f1555ac57",
+      "src": [
+        "static/vrm/animation/全身展示.vrma"
+      ],
+      "packedSha": "66a9e48fedbe34d325387bacc0a130afd7e442c966297aca2cbf1a691367b94a",
+      "decodedSha": "f45abc44800c647fa106537a2e31a84cb83b74cf3dd8a0ee71c6915f1555ac57",
+      "packedBytes": 613818,
+      "decodedBytes": 1348388,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "自信地转身展示全身",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_showcase",
+        "intent": "showcase",
+        "kind": "activity",
+        "nameZh": "自信地转身展示全身",
+        "positiveZh": [
+          "展示全身",
+          "自信展示",
+          "转身给人看"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "confident",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_shoot",
+      "m": "shoot",
+      "label": "官方射击姿态",
+      "f": "00_official/坚定地举手摆出射击姿态.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "firm",
+        "official"
+      ],
+      "i": 3,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.6,
+      "sha": "c40c1a7b0dbcac5aa9582f45498474255e4b0ca5642a71ffaf43878c27bedf70",
+      "src": [
+        "static/vrm/animation/射击姿态.vrma"
+      ],
+      "packedSha": "4c690ca9c02a3456bfffb738af166a956e8e6bb1cb4d8a4aea853441bc08974f",
+      "decodedSha": "c40c1a7b0dbcac5aa9582f45498474255e4b0ca5642a71ffaf43878c27bedf70",
+      "packedBytes": 498110,
+      "decodedBytes": 1108548,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "坚定地举手摆出射击姿态",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_shoot",
+        "intent": "shoot",
+        "kind": "activity",
+        "nameZh": "坚定地举手摆出射击姿态",
+        "positiveZh": [
+          "射击姿态",
+          "举手瞄准",
+          "摆出开枪姿势"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "firm",
+          "official"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_exercise",
+      "m": "exercise",
+      "label": "站立放松身体",
+      "f": "00_official/放松地伸展四肢和身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "relaxed",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.517,
+      "sha": "b0096525231e9f49947a6fad0295575b1c2bfbc33c042d07f125c7c2fbe88995",
+      "src": [
+        "static/vrm/animation/屈伸运动.vrma"
+      ],
+      "packedSha": "3bedf1a53e18e9962126ee98738d4a788f18161c233be1c8f0a3c10e56553462",
+      "decodedSha": "b0096525231e9f49947a6fad0295575b1c2bfbc33c042d07f125c7c2fbe88995",
+      "packedBytes": 542548,
+      "decodedBytes": 771944,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "站立的放松身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_exercise",
+        "intent": "exercise",
+        "kind": "activity",
+        "nameZh": "站立的放松身体",
+        "aliasesZh": [
+          "放松地伸展四肢和身体",
+          "站立放松身体",
+          "站着放松身体",
+          "站立舒展身体",
+          "放松伸展身体"
+        ],
+        "positiveZh": [
+          "伸展运动",
+          "活动四肢",
+          "舒展身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "relaxed",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_spin",
+      "m": "spin",
+      "label": "官方旋转",
+      "f": "00_official/轻快地原地旋转一圈.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "lively",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.317,
+      "sha": "cc508712ca4db8833ffe982d2eecd427e9374a04c005db2a7a45775f0ca45586",
+      "src": [
+        "static/vrm/animation/旋转.vrma"
+      ],
+      "packedSha": "8fa713c4812b98586acec2c857040e33c3c0d3ed104345cdb9b0a13f130bc8aa",
+      "decodedSha": "cc508712ca4db8833ffe982d2eecd427e9374a04c005db2a7a45775f0ca45586",
+      "packedBytes": 438552,
+      "decodedBytes": 632316,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "轻快地原地旋转一圈",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_spin",
+        "intent": "spin",
+        "kind": "activity",
+        "nameZh": "轻快地原地旋转一圈",
+        "positiveZh": [
+          "原地旋转",
+          "转了一圈",
+          "轻快转身"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_pose",
+      "m": "pose",
+      "label": "官方模特姿势",
+      "f": "00_official/自信地摆出模特姿势.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "confident",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 7.517,
+      "sha": "a2c86633690e911cf935c5b8cae6553aea0445567f88c2861f7597fc1bf08af1",
+      "src": [
+        "static/vrm/animation/模特姿势.vrma"
+      ],
+      "packedSha": "9d20376d5689ad4aa5521f4c6bf741d02773c7270743c05783991336afe2f8f4",
+      "decodedSha": "a2c86633690e911cf935c5b8cae6553aea0445567f88c2861f7597fc1bf08af1",
+      "packedBytes": 352153,
+      "decodedBytes": 518364,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "自信地摆出模特姿势",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_pose",
+        "intent": "pose",
+        "kind": "gesture",
+        "nameZh": "自信地摆出模特姿势",
+        "positiveZh": [
+          "模特姿势",
+          "自信摆姿势",
+          "摆好造型"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "confident",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_victory",
+      "m": "victory",
+      "label": "官方比 V 手势",
+      "f": "00_official/开心地抬手比出胜利手势.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "positive",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.684,
+      "sha": "6f66b6b5c0214a7b825498050380ea43a3f782b5ea24ce46f7096acf15866d75",
+      "src": [
+        "static/vrm/animation/比 V 手势.vrma"
+      ],
+      "packedSha": "1dcd1b7e7e12df02dd4045fafc5093607dbe6476e3bab114ebca37fbe55a22b7",
+      "decodedSha": "6f66b6b5c0214a7b825498050380ea43a3f782b5ea24ce46f7096acf15866d75",
+      "packedBytes": 592169,
+      "decodedBytes": 1335704,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "开心地抬手比出胜利手势",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_victory",
+        "intent": "victory",
+        "kind": "gesture",
+        "nameZh": "开心地抬手比出胜利手势",
+        "positiveZh": [
+          "比出胜利手势",
+          "比V",
+          "剪刀手"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive",
+          "official"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    },
+    {
+      "id": "official_greet",
+      "m": "greet",
+      "label": "官方致意问候",
+      "f": "00_official/正式地抬手致意问候.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "formal",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 7.267,
+      "sha": "6322bbe2df7716529dd53e2a61816e67b946416d3761c672b8d50ee2829825bb",
+      "src": [
+        "static/vrm/animation/致意问候.vrma"
+      ],
+      "packedSha": "7753fe66adceea83a1231f5d24fd0df3e6f5a0f9e1e84b21997161e58ccf5d63",
+      "decodedSha": "6322bbe2df7716529dd53e2a61816e67b946416d3761c672b8d50ee2829825bb",
+      "packedBytes": 387573,
+      "decodedBytes": 854284,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "正式地抬手致意问候",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_greet",
+        "intent": "greet",
+        "kind": "gesture",
+        "nameZh": "正式地抬手致意问候",
+        "positiveZh": [
+          "正式问候",
+          "抬手致意",
+          "礼貌打招呼"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "formal",
+          "official"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "provisional-local-review"
+      }
+    }
+  ],
+  "runtimeIntegrity": {
+    "compression": "gzip",
+    "packedHash": "sha256",
+    "decodedHash": "sha256",
+    "decodedFormat": "glb-v2",
+    "actionCardSchema": 1
+  }
+}

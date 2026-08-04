@@ -1,0 +1,901 @@
+(function () {
+    'use strict';
+
+    // Declare playback ownership before VRM model initialization. The official
+    // multi-idle rotator otherwise injects a new idle at every loop boundary or
+    // after its 20-second fallback timer.
+    window.__nekoMotionOwnsVrmPlayback = true;
+
+    const SEMANTICS_URL = '/static/motion/motion-semantics.json';
+    const POLL_INTERVAL_MS = 120;
+    const BUFFER_SEAL_GRACE_MS = 1200;
+    const TURN_END_GRACE_MS = 240;
+    const EMOTION_READY_WAIT_MS = 900;
+    const HISTORY_LIMIT = 80;
+    const EMOTION_CONTEXT_WINDOW_MS = 45000;
+    const EMOTION_EVIDENCE_DEBOUNCE_MS = 700;
+    const EMOTION_PULSE_BASE_MS = 3000;
+    const EMOTION_PULSE_STEP_MS = 1200;
+    const EMOTION_PULSE_MAX_MS = 7200;
+    const EMOTION_BODY_INTENT = Object.freeze({
+        happy: 'happy',
+        excited: 'excited',
+        surprised: 'surprise',
+        sad: 'sad',
+        cry: 'cry',
+        angry: 'angry',
+        shy: 'shy',
+        fearful: 'overwhelm',
+        disgusted: 'dismiss',
+        tired: 'yawn'
+    });
+    const PERSONA_PROFILES = Object.freeze({
+        classic_genki: Object.freeze({ energy: 0.82, restraint: 0.25, warmth: 0.88 }),
+        tsundere_helper: Object.freeze({ energy: 0.62, restraint: 0.55, warmth: 0.55 }),
+        elegant_butler: Object.freeze({ energy: 0.30, restraint: 0.82, warmth: 0.74 })
+    });
+    const PERSONA_NAME_TO_ID = Object.freeze({
+        '经典元气猫娘': 'classic_genki',
+        '傲娇毒舌小猫': 'tsundere_helper',
+        '优雅全能管家': 'elegant_butler'
+    });
+
+    let core = null;
+    let player = null;
+    let activeTurn = null;
+    let lastFinishedTurn = null;
+    let bridgedText = '';
+    let motionLifecycleChannel = null;
+    let latestOfficialEmotion = '';
+    let casualRepliesSinceTalk = 0;
+    let lastCasualTalkAt = 0;
+    let selectedMode = configuredMode();
+    let readyPromise = null;
+    let activeCharacterProfile = null;
+    const emotionState = {
+        value: 'neutral',
+        since: 0,
+        lastEvidenceAt: 0,
+        expiresAt: 0,
+        neutralStreak: 0,
+        continuationCount: 0,
+        pulseUntil: 0,
+        pulseDurationMs: 0,
+        lastAppliedAt: 0,
+        applyCount: 0,
+        source: null,
+        expression: null
+    };
+    const history = [];
+    const metrics = {
+        turns: 0, closedStages: 0, plans: 0, noMotion: 0,
+        modelCalls: 0, motionTokens: 0, rawDialoguePersisted: false,
+        nonVrmTurns: 0, deferredUntilVrmReady: 0,
+        bufferRecoveredTurns: 0, conversationalFallbacks: 0,
+        bridgeMessages: 0, duplicateStartsIgnored: 0,
+        coalescedTurnEnds: 0, casualTalkSkipped: 0,
+        casualTalkSuppressedByEmotion: 0
+    };
+
+    function configuredMode() {
+        const config = window.lanlan_config || {};
+        const modelType = String(config.model_type || '').toLowerCase();
+        const subType = String(config.live3d_sub_type || '').toLowerCase();
+        if (modelType === 'vrm') return 'vrm';
+        if (modelType === 'live3d' && subType !== 'mmd') return 'vrm';
+        return modelType || 'live2d';
+    }
+
+    function stopOfficialIdleRotation() {
+        if (typeof window._stopVrmIdleRotation === 'function') {
+            window._stopVrmIdleRotation();
+            return true;
+        }
+        return false;
+    }
+
+    function currentLocale() {
+        return String(window.i18next && window.i18next.language
+            || document.documentElement.lang || navigator.language || 'zh-CN');
+    }
+
+    function refreshMode() {
+        const configured = configuredMode();
+        if (configured) selectedMode = configured;
+        if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) selectedMode = 'vrm';
+        return selectedMode;
+    }
+
+    function vrmReady() {
+        refreshMode();
+        return selectedMode === 'vrm' && window.vrmManager && window.vrmManager.currentModel
+            && window.vrmManager.currentModel.vrm && typeof window.vrmManager.playVRMAAnimation === 'function';
+    }
+
+    function inferredCharacterProfile() {
+        const config = window.lanlan_config || {};
+        const source = [config.personality, config.personality_prompt, config.character_prompt, config.prompt]
+            .filter(function (value) { return typeof value === 'string'; }).join(' ').slice(0, 12000);
+        const energetic = /元气|活泼|热情|外向|俏皮|energetic|lively|playful|outgoing/iu.test(source);
+        const restrained = /克制|沉稳|冷静|优雅|安静|内向|reserved|composed|calm|quiet/iu.test(source);
+        const gentle = /温柔|体贴|柔和|害羞|gentle|tender|shy|soft/iu.test(source);
+        return {
+            energy: energetic ? 0.78 : restrained ? 0.32 : 0.5,
+            restraint: restrained ? 0.76 : energetic ? 0.34 : 0.5,
+            warmth: gentle ? 0.76 : 0.5,
+            key: String(config.lanlan_name || config.name || 'default').slice(0, 80),
+            rawProfileStored: false
+        };
+    }
+
+    function characterProfile() {
+        return activeCharacterProfile || inferredCharacterProfile();
+    }
+
+    async function resolveCharacterProfile() {
+        const inferred = inferredCharacterProfile();
+        const config = window.lanlan_config || {};
+        const name = String(config.lanlan_name || config.name || '').trim();
+        let preset = '';
+        if (name) {
+            try {
+                const response = await fetch('/api/characters/character/' + encodeURIComponent(name) + '/persona-selection', {
+                    cache: 'no-store'
+                });
+                if (response.ok) {
+                    const payload = await response.json();
+                    const selection = payload && payload.selection || {};
+                    preset = String(selection.preset_id || '').trim();
+                    if (!preset) {
+                        const prototypeName = String(selection.profile && selection.profile['性格原型'] || '').trim();
+                        preset = PERSONA_NAME_TO_ID[prototypeName] || '';
+                    }
+                }
+            } catch (error) {
+                console.warn('[NekoMotion] persona selection unavailable; using local profile hints:', error);
+            }
+        }
+        const exact = PERSONA_PROFILES[preset];
+        activeCharacterProfile = Object.assign({}, inferred, exact || {}, {
+            preset: exact ? preset : '',
+            key: inferred.key + ':' + (exact ? preset : 'custom'),
+            rawProfileStored: false
+        });
+        if (player) player.setProfile(activeCharacterProfile);
+        return activeCharacterProfile;
+    }
+
+    function normalizeEmotion(value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        const aliases = {
+            joy: 'happy', happiness: 'happy', content: 'relaxed', calm: 'relaxed',
+            excitement: 'excited', delighted: 'excited',
+            surprise: 'surprised', shock: 'surprised', sadness: 'sad', sorrow: 'sad',
+            crying: 'cry', tearful: 'cry', embarrassment: 'shy', embarrassed: 'shy',
+            anger: 'angry', mad: 'angry', fear: 'fearful', scared: 'fearful',
+            disgust: 'disgusted', sleepy: 'tired', drowsy: 'tired',
+            none: 'neutral', normal: 'neutral'
+        };
+        return aliases[normalized] || normalized || 'neutral';
+    }
+
+    function currentVrmExpression() {
+        const manager = window.vrmManager;
+        const expression = manager && manager.currentModel && manager.currentModel.vrm && manager.expression;
+        return expression && typeof expression.setMood === 'function' ? expression : null;
+    }
+
+    function releaseExpressionControl(applyNeutral) {
+        const expression = emotionState.expression;
+        if (!expression) return;
+        if (applyNeutral && typeof expression.setMood === 'function') expression.setMood('neutral');
+        emotionState.expression = null;
+        emotionState.pulseUntil = 0;
+    }
+
+    function applyPersistentEmotion(reason) {
+        if (emotionState.value === 'neutral' || refreshMode() !== 'vrm') return false;
+        const expression = currentVrmExpression();
+        if (!expression) return false;
+        if (expression.moodMap && !expression.moodMap[emotionState.value]) return false;
+        if (emotionState.expression !== expression) {
+            releaseExpressionControl(false);
+            emotionState.expression = expression;
+        }
+        const duration = Math.max(500, Number(emotionState.pulseDurationMs) || EMOTION_PULSE_BASE_MS);
+        const previousDelay = Number(expression.neutralReturnDelay) || EMOTION_PULSE_BASE_MS;
+        expression.autoReturnToNeutral = true;
+        expression.neutralReturnDelay = duration;
+        expression.setMood(emotionState.value);
+        expression.neutralReturnDelay = previousDelay;
+        emotionState.lastAppliedAt = Date.now();
+        emotionState.pulseUntil = emotionState.lastAppliedAt + duration;
+        emotionState.applyCount += 1;
+        console.info('[NekoMotion] emotion pulse:', emotionState.value, duration, reason || 'evidence');
+        return true;
+    }
+
+    function clearPersistentEmotion(reason) {
+        if (emotionState.value === 'neutral' && !emotionState.expression) return;
+        emotionState.value = 'neutral';
+        emotionState.since = 0;
+        emotionState.lastEvidenceAt = Date.now();
+        emotionState.expiresAt = 0;
+        emotionState.neutralStreak = 0;
+        emotionState.continuationCount = 0;
+        emotionState.pulseDurationMs = 0;
+        emotionState.source = reason || 'clear';
+        releaseExpressionControl(true);
+        console.info('[NekoMotion] persistent emotion cleared:', emotionState.source);
+    }
+
+    function updatePersistentEmotion(value, source) {
+        const emotion = normalizeEmotion(value);
+        const now = Date.now();
+        if (emotion === 'neutral') {
+            if (emotionState.value === 'neutral') return { emotion: emotion, changed: false };
+            emotionState.neutralStreak += 1;
+            // A neutral result does not immediately erase recent emotional
+            // context, but it must stop the action layer from reviving the old
+            // face after the official expression has started returning.
+            emotionState.pulseUntil = 0;
+            if (emotionState.neutralStreak >= 2 || now >= emotionState.expiresAt) {
+                clearPersistentEmotion('confirmed_neutral');
+            }
+            return { emotion: emotion, changed: false };
+        }
+        const changed = emotionState.value !== emotion;
+        const sameEvidenceWindow = !changed
+            && now - emotionState.lastEvidenceAt <= EMOTION_CONTEXT_WINDOW_MS;
+        if (sameEvidenceWindow && now - emotionState.lastEvidenceAt < EMOTION_EVIDENCE_DEBOUNCE_MS) {
+            return { emotion: emotion, changed: false, renewed: false, debounced: true };
+        }
+        if (changed) {
+            releaseExpressionControl(true);
+            emotionState.value = emotion;
+            emotionState.since = now;
+        }
+        emotionState.continuationCount = sameEvidenceWindow
+            ? Math.min(5, emotionState.continuationCount + 1) : 1;
+        emotionState.pulseDurationMs = Math.min(
+            EMOTION_PULSE_MAX_MS,
+            EMOTION_PULSE_BASE_MS + (emotionState.continuationCount - 1) * EMOTION_PULSE_STEP_MS
+        );
+        emotionState.lastEvidenceAt = now;
+        emotionState.expiresAt = now + EMOTION_CONTEXT_WINDOW_MS;
+        emotionState.neutralStreak = 0;
+        emotionState.source = source || 'official';
+        applyPersistentEmotion(sameEvidenceWindow ? 'continued_evidence' : 'new_evidence');
+        return {
+            emotion: emotion,
+            changed: changed,
+            renewed: sameEvidenceWindow,
+            pulseDurationMs: emotionState.pulseDurationMs
+        };
+    }
+
+    function maintainPersistentEmotion() {
+        if (emotionState.value === 'neutral') return;
+        if (Date.now() >= emotionState.expiresAt) {
+            clearPersistentEmotion('expired');
+            return;
+        }
+        const expression = currentVrmExpression();
+        const pulseActive = Date.now() < emotionState.pulseUntil;
+        if (expression && pulseActive && (
+            expression !== emotionState.expression
+            || normalizeEmotion(expression.currentMood) !== emotionState.value
+        )) {
+            applyPersistentEmotion('restore_active_pulse');
+        }
+    }
+
+    function decoratePlan(plan) {
+        const profile = characterProfile();
+        return plan.map(function (decision) {
+            const item = Object.assign({}, decision);
+            const emotion = normalizeEmotion(item.emotion || emotionState.value || latestOfficialEmotion);
+            if (!item.intensityExplicit) {
+                if (['shy', 'sad', 'fearful'].includes(emotion)
+                    && ['talk', 'look', 'nod', 'wave', 'plead'].includes(item.intent)) {
+                    item.intensity = 1;
+                } else if (emotion === 'angry'
+                    && ['argue', 'shake', 'dismiss', 'point'].includes(item.intent)) {
+                    item.intensity = 3;
+                } else if (emotion === 'happy'
+                    && ['wave', 'clap', 'victory', 'spin', 'dance'].includes(item.intent)) {
+                    item.intensity = profile.restraint > 0.7 ? 2 : 3;
+                } else if (profile.restraint > 0.7
+                    && ['talk', 'happy', 'look', 'nod', 'wave'].includes(item.intent)) {
+                    item.intensity = 1;
+                } else if (profile.energy > 0.7
+                    && ['talk', 'happy', 'excited', 'dance', 'argue', 'spin'].includes(item.intent)) {
+                    item.intensity = 3;
+                }
+            }
+            item.preferredStyles = profile.restraint > 0.7
+                ? ['thoughtful', 'neutral', 'breathing', 'composed', 'formal']
+                : profile.energy > 0.7
+                    ? ['positive', 'firm', 'stylized', 'lively']
+                    : ['neutral', 'thoughtful', 'relaxed'];
+            return item;
+        });
+    }
+
+    async function initialize() {
+        if (readyPromise) return readyPromise;
+        readyPromise = (async function () {
+            const response = await fetch(SEMANTICS_URL, { cache: 'no-store' });
+            if (!response.ok) throw new Error('Motion semantics HTTP ' + response.status);
+            core = new window.NekoMotionCore(await response.json());
+            player = new window.NekoMotionPlayer();
+            await player.load();
+            core.registerActionCards(player.assets);
+            await resolveCharacterProfile();
+            stopOfficialIdleRotation();
+            if (vrmReady()) {
+                await player.enterRest({
+                    profile: characterProfile(),
+                    seed: 'initialize',
+                    force: true,
+                    reselect: true
+                });
+            }
+            console.info('[NekoMotion] runtime ready; one playback owner, no prompt injection and no model call');
+            return true;
+        })().catch(function (error) {
+            console.error('[NekoMotion] initialization failed:', error);
+            readyPromise = null;
+            return false;
+        });
+        return readyPromise;
+    }
+
+    function remember(result) {
+        history.push({
+            at: Date.now(), locale: result.locale,
+            intents: result.plan.map(function (item) { return item.intent; }),
+            clauseCount: result.clauses.length,
+            modelUsed: false, tokenTotal: 0
+        });
+        if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
+    }
+
+    async function processStage(stage, turn) {
+        if (!core || !player || !vrmReady()) return;
+        const result = core.analyze(stage.raw, {
+            locale: currentLocale(),
+            officialEmotion: turn && turn.officialEmotion || '',
+            profilePreset: characterProfile().preset || '',
+            stageDirection: true
+        });
+        const plan = decoratePlan(result.plan);
+        if (turn) {
+            turn.explicitPlanCount += plan.length;
+            plan.forEach(function (item) {
+                if (!turn.explicitIntents.includes(item.intent)) turn.explicitIntents.push(item.intent);
+            });
+        }
+        metrics.closedStages += 1;
+        remember(Object.assign({}, result, { plan: plan }));
+        window.dispatchEvent(new CustomEvent('neko-motion-decision', {
+            detail: {
+                stageId: stage.id,
+                canonicalZh: result.canonicalZh,
+                plan: plan.map(function (item) {
+                    return { intent: item.intent, intensity: item.intensity, style: item.style, evidence: item.evidence };
+                }),
+                modelUsed: false,
+                tokenUsage: result.tokenUsage,
+                rawDialoguePersisted: false
+            }
+        }));
+        if (!plan.length) {
+            metrics.noMotion += 1;
+            console.info('[NekoMotion] closed stage produced no supported motion');
+            return;
+        }
+        const semanticEmotion = plan.map(function (item) { return item.emotion; })
+            .find(function (value) { return value && normalizeEmotion(value) !== 'neutral'; });
+        if (semanticEmotion) updatePersistentEmotion(semanticEmotion, 'stage_semantic');
+        metrics.plans += 1;
+        console.info('[NekoMotion] playing', plan.map(function (item) { return item.intent; }).join(','));
+        const context = { seed: turn && turn.id + ':' + stage.id };
+        if (turn && !turn.playerStarted) {
+            turn.playerStarted = true;
+            await player.playPlan(plan, context);
+        } else {
+            await player.enqueuePlan(plan, context);
+        }
+    }
+
+    async function processSpeechFallback(turn) {
+        if (!turn || turn.speechProcessed || !core || !player || !vrmReady()) return;
+        turn.speechProcessed = true;
+        // Closed stage directions are handled as soon as their bracket closes;
+        // visible prose is still meaningful and is analyzed at turn end. Only an
+        // intent already played from brackets is removed, so “(yawns) I will lie
+        // down to sleep” can progress from yawn -> sleep without replaying either.
+        const text = String(turn.capturedText || '');
+        if (!text.trim()) return;
+        const result = core.analyzeSpeech(text, {
+            locale: currentLocale(),
+            officialEmotion: turn.officialEmotion || '',
+            profilePreset: characterProfile().preset || '',
+            userText: turn.userText || ''
+        });
+        let plan = decoratePlan(result.plan);
+        const explicitIntents = new Set(turn.explicitIntents || []);
+        plan = plan.filter(function (item) { return !explicitIntents.has(item.intent); });
+        if (!plan.length && turn.explicitPlanCount === 0) {
+            const posture = player.stats().posture;
+            const officialEmotion = normalizeEmotion(turn.officialEmotion);
+            const talkEmotionAllowed = turn.emotionReady
+                && !['sad', 'cry', 'shy', 'fearful', 'tired', 'surprised', 'disgusted'].includes(officialEmotion);
+            if (!talkEmotionAllowed) {
+                metrics.casualTalkSuppressedByEmotion += 1;
+            } else if (posture === 'stand' || posture === 'sit') {
+                const visibleText = text
+                    .replace(/（[^（）]*）|\([^()]*\)/gu, ' ')
+                    .replace(/\s+/gu, ' ')
+                    .trim();
+                casualRepliesSinceTalk += 1;
+                const now = Date.now();
+                const expressive = /[？?！!]|(?:但是|不过|其实|所以|因为|我觉得|听我说|告诉你|你知道|总之|首先|然后|当然|真的)|(?:but|because|actually|listen|you know|I think)/iu.test(visibleText);
+                const cooldownReady = now - lastCasualTalkAt >= 12000;
+                const cadenceReady = casualRepliesSinceTalk >= 3;
+                if (visibleText.length >= 4 && cooldownReady && (expressive || cadenceReady)) {
+                    const energetic = /[!！]{2,}|太好了|真的|当然|一定|绝对|哈哈|嘿嘿/iu.test(visibleText);
+                    const restrained = /抱歉|对不起|小声|轻轻|慢慢|可能|也许|嗯/u.test(visibleText);
+                    plan = decoratePlan([{
+                        intent: 'talk',
+                        kind: 'conversation',
+                        intensity: energetic ? 3 : restrained || visibleText.length < 18 ? 1 : 2,
+                        intensityExplicit: false,
+                        count: 1,
+                        emotion: turn.officialEmotion || null,
+                        style: restrained ? 'gentle' : energetic ? 'lively' : 'neutral',
+                        evidence: { source: 'assistant:conversation-fallback' }
+                    }]);
+                    result.source = 'assistant:conversation-fallback';
+                    metrics.conversationalFallbacks += 1;
+                    casualRepliesSinceTalk = 0;
+                    lastCasualTalkAt = now;
+                } else {
+                    metrics.casualTalkSkipped += 1;
+                }
+            }
+        }
+        remember(Object.assign({}, result, { plan: plan }));
+        window.dispatchEvent(new CustomEvent('neko-motion-decision', {
+            detail: {
+                stageId: 'speech:' + turn.id,
+                source: result.source || 'assistant-speech',
+                canonicalZh: result.canonicalZh,
+                plan: plan.map(function (item) {
+                    return { intent: item.intent, intensity: item.intensity, style: item.style, evidence: item.evidence };
+                }),
+                modelUsed: false,
+                tokenUsage: result.tokenUsage,
+                rawDialoguePersisted: false
+            }
+        }));
+        if (!plan.length) {
+            metrics.noMotion += 1;
+            return;
+        }
+        const semanticEmotion = plan.map(function (item) { return item.emotion; })
+            .find(function (value) { return value && normalizeEmotion(value) !== 'neutral'; });
+        if (semanticEmotion) updatePersistentEmotion(semanticEmotion, 'speech_semantic');
+        metrics.plans += 1;
+        console.info('[NekoMotion] playing inferred speech motion', plan.map(function (item) { return item.intent; }).join(','));
+        turn.playerStarted = true;
+        turn.speechIntents = Array.from(new Set(
+            (turn.explicitIntents || []).concat(plan.map(function (item) { return item.intent; }))
+        ));
+        await player.playPlan(plan, { seed: turn.id + ':speech' });
+    }
+
+    async function processEmotionBodyFallback(turn, update) {
+        if (!turn || !update || !update.changed || !player || !vrmReady()) return;
+        const intent = EMOTION_BODY_INTENT[update.emotion];
+        if (!intent || turn.explicitPlanCount > 0 || turn.bodyEmotionPlayed === update.emotion) return;
+        if (Array.isArray(turn.speechIntents) && turn.speechIntents.includes(intent)) return;
+        const intensity = update.emotion === 'angry' ? 3
+            : ['shy', 'sad', 'cry', 'fearful', 'tired'].includes(update.emotion) ? 1 : 2;
+        const plan = decoratePlan([{
+            intent: intent,
+            kind: 'emotion-body',
+            intensity: intensity,
+            intensityExplicit: false,
+            count: 1,
+            emotion: update.emotion,
+            evidence: { source: 'official-emotion-change' }
+        }]);
+        const alreadyPlaying = turn.playerStarted;
+        turn.playerStarted = true;
+        turn.bodyEmotionPlayed = update.emotion;
+        metrics.plans += 1;
+        console.info('[NekoMotion] playing body emotion change', update.emotion, 'as', intent);
+        if (alreadyPlaying) await player.enqueuePlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
+        else await player.playPlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
+    }
+
+    function scanTurnText() {
+        if (!core || !player || !vrmReady()) return;
+        const localText = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+        const text = bridgedText || localText;
+        if (!text) return;
+        if (!activeTurn || activeTurn.ended && text !== activeTurn.capturedText) {
+            beginTurn(window._nekoAssistantTurnId || 'buffer-' + Date.now(), 'buffer');
+            metrics.bufferRecoveredTurns += 1;
+            console.info('[NekoMotion] recovered assistant turn from reply buffer');
+        }
+        if (text === activeTurn.lastText) {
+            if (activeTurn.source === 'buffer'
+                && window._geminiTurnEndSealed === true
+                && Date.now() - activeTurn.lastTextAt >= BUFFER_SEAL_GRACE_MS
+                && !activeTurn.ended) {
+                finishTurn(activeTurn, 'buffer-sealed');
+            }
+            return;
+        }
+        if (activeTurn.finishTimer) {
+            clearTimeout(activeTurn.finishTimer);
+            activeTurn.finishTimer = null;
+            metrics.coalescedTurnEnds += 1;
+        }
+        activeTurn.lastText = text;
+        activeTurn.lastTextAt = Date.now();
+        activeTurn.capturedText = text;
+        const stages = window.NekoMotionText.extractClosedStages(text);
+        stages.forEach(function (stage) {
+            if (activeTurn.seen.has(stage.id)) return;
+            activeTurn.seen.add(stage.id);
+            const turn = activeTurn;
+            turn.processing = turn.processing.then(function () {
+                return processStage(stage, turn);
+            });
+        });
+    }
+
+    function beginTurn(turnId, source, userText) {
+        let resolveEmotionReady;
+        const emotionReadyPromise = new Promise(function (resolve) {
+            resolveEmotionReady = resolve;
+        });
+        const pendingUserText = String(
+            userText || window._nekoMotionPendingUserText || window._lastSubmittedText || ''
+        ).slice(0, 1000);
+        window._nekoMotionPendingUserText = '';
+        activeTurn = {
+            id: String(turnId || 'local-' + Date.now()),
+            source: source || 'lifecycle',
+            seen: new Set(),
+            lastText: '',
+            lastTextAt: 0,
+            capturedText: '',
+            userText: pendingUserText,
+            officialEmotion: '',
+            emotionReady: false,
+            emotionReadyPromise: emotionReadyPromise,
+            resolveEmotionReady: resolveEmotionReady,
+            playerStarted: false,
+            explicitPlanCount: 0,
+            explicitIntents: [],
+            speechProcessed: false,
+            speechIntents: [],
+            bodyEmotionPlayed: null,
+            finishTimer: null,
+            processing: Promise.resolve()
+        };
+        metrics.turns += 1;
+    }
+
+    function waitForOfficialEmotion(turn) {
+        if (!turn || turn.emotionReady) return Promise.resolve();
+        return Promise.race([
+            turn.emotionReadyPromise,
+            new Promise(function (resolve) {
+                setTimeout(resolve, EMOTION_READY_WAIT_MS);
+            })
+        ]);
+    }
+
+    function finishTurn(turn, source) {
+        if (!turn || turn.ended) return;
+        if (turn.finishTimer) {
+            clearTimeout(turn.finishTimer);
+            turn.finishTimer = null;
+        }
+        turn.ended = true;
+        turn.endSource = source || 'lifecycle';
+        lastFinishedTurn = {
+            id: String(turn.id || ''),
+            text: String(turn.capturedText || ''),
+            at: Date.now()
+        };
+        turn.processing = turn.processing
+            .then(function () { return waitForOfficialEmotion(turn); })
+            .then(function () { return processSpeechFallback(turn); })
+            .then(function () {
+                if (player && typeof player.resumeIdleCountdown === 'function') {
+                    player.resumeIdleCountdown('assistant-turn-finished:' + turn.id);
+                }
+            });
+    }
+
+    function scheduleFinishTurn(turn, source) {
+        if (!turn || turn.ended) return;
+        if (turn.finishTimer) {
+            clearTimeout(turn.finishTimer);
+            metrics.coalescedTurnEnds += 1;
+        }
+        turn.finishTimer = setTimeout(function () {
+            turn.finishTimer = null;
+            finishTurn(turn, source);
+        }, TURN_END_GRACE_MS);
+    }
+
+    function startObservedTurn(event) {
+        const turnId = event && event.detail && event.detail.turnId;
+        const userText = event && event.detail && event.detail.userText;
+        void initialize().then(function (ready) {
+            if (!ready) return;
+            const mode = refreshMode();
+            if (mode !== 'vrm') {
+                metrics.nonVrmTurns += 1;
+                console.info('[NekoMotion] ignored assistant turn because avatar mode is', mode);
+                return;
+            }
+            const candidateText = bridgedText || (typeof window._geminiTurnFullText === 'string'
+                ? window._geminiTurnFullText : '');
+            const duplicateId = turnId && lastFinishedTurn
+                && String(turnId) === lastFinishedTurn.id;
+            const duplicateStaleBuffer = candidateText && lastFinishedTurn
+                && candidateText === lastFinishedTurn.text
+                && Date.now() - lastFinishedTurn.at < 2500;
+            if (activeTurn && activeTurn.ended && (duplicateId || duplicateStaleBuffer)) {
+                metrics.duplicateStartsIgnored += 1;
+                console.info('[NekoMotion] ignored duplicate assistant turn start');
+                return;
+            }
+            if (typeof player.noteActivity === 'function') {
+                player.noteActivity('assistant-turn:' + String(turnId || Date.now()));
+            }
+            if (activeTurn && !activeTurn.ended && activeTurn.capturedText) {
+                if (turnId) activeTurn.id = String(turnId);
+                activeTurn.source = 'lifecycle';
+                if (userText && !activeTurn.userText) {
+                    activeTurn.userText = String(userText).slice(0, 1000);
+                }
+            } else {
+                beginTurn(turnId, 'lifecycle', userText);
+            }
+            maintainPersistentEmotion();
+            if (!vrmReady()) {
+                metrics.deferredUntilVrmReady += 1;
+                console.info('[NekoMotion] assistant turn accepted; waiting for VRM model readiness');
+                return;
+            }
+            console.info('[NekoMotion] assistant turn accepted in VRM mode');
+            scanTurnText();
+        });
+    }
+
+    function bindMotionLifecycleBridge() {
+        if (motionLifecycleChannel || typeof BroadcastChannel === 'undefined') return false;
+        try {
+            motionLifecycleChannel = new BroadcastChannel('neko_motion_lifecycle');
+            motionLifecycleChannel.onmessage = function (event) {
+                const message = event && event.data;
+                if (!message || message.action !== 'motion_lifecycle') return;
+                const detail = message.detail && typeof message.detail === 'object' ? message.detail : {};
+                const currentName = String(window.lanlan_config && window.lanlan_config.lanlan_name || '');
+                if (detail.lanlan_name && currentName && String(detail.lanlan_name) !== currentName) return;
+                metrics.bridgeMessages += 1;
+                if (message.eventName === 'neko-assistant-text-update') {
+                    bridgedText = String(detail.text || '');
+                    if (!bridgedText) return;
+                    if (!activeTurn || activeTurn.ended && bridgedText !== activeTurn.capturedText) {
+                        beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer');
+                    }
+                    scanTurnText();
+                    return;
+                }
+                if (message.eventName === 'neko-assistant-turn-end' && typeof detail.text === 'string') {
+                    bridgedText = detail.text;
+                }
+                if ([
+                    'neko-assistant-turn-start',
+                    'neko-assistant-turn-end',
+                    'neko-assistant-emotion-ready',
+                    'neko-assistant-speech-cancel'
+                ].includes(message.eventName)) {
+                    window.dispatchEvent(new CustomEvent(message.eventName, {
+                        detail: Object.assign({}, detail, { via: 'motion-lifecycle-bridge' })
+                    }));
+                }
+            };
+            window.addEventListener('pagehide', function () {
+                if (motionLifecycleChannel) motionLifecycleChannel.close();
+                motionLifecycleChannel = null;
+            }, { once: true });
+            return true;
+        } catch (error) {
+            console.warn('[NekoMotion] cross-window lifecycle bridge unavailable:', error);
+            motionLifecycleChannel = null;
+            return false;
+        }
+    }
+
+    bindMotionLifecycleBridge();
+
+    window.addEventListener('neko-assistant-turn-start', function (event) {
+        if (event && event.detail && event.detail.via === 'motion-lifecycle-bridge') bridgedText = '';
+        startObservedTurn(event);
+    });
+
+    window.addEventListener('neko-assistant-turn-end', function () {
+        scanTurnText();
+        scheduleFinishTurn(activeTurn, 'lifecycle');
+    });
+
+    window.addEventListener('neko-assistant-emotion-ready', function (event) {
+        const value = event && event.detail && event.detail.emotion;
+        const turnId = event && event.detail && event.detail.turnId;
+        if (!value) return;
+        latestOfficialEmotion = String(value).toLowerCase();
+        if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
+            activeTurn.officialEmotion = latestOfficialEmotion;
+            activeTurn.emotionReady = true;
+            if (activeTurn.resolveEmotionReady) {
+                activeTurn.resolveEmotionReady();
+                activeTurn.resolveEmotionReady = null;
+            }
+        }
+        const update = updatePersistentEmotion(latestOfficialEmotion, 'official_emotion');
+        if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
+            const turn = activeTurn;
+            turn.processing = turn.processing.then(function () {
+                return processEmotionBodyFallback(turn, update);
+            });
+        }
+    });
+
+    window.addEventListener('vrm-model-loaded', function () {
+        void initialize().then(function (ready) {
+            if (!ready || !vrmReady()) return;
+            stopOfficialIdleRotation();
+            player.setProfile(characterProfile());
+            return player.enterRest({
+                profile: characterProfile(),
+                seed: 'model-loaded',
+                force: true,
+                reselect: false
+            });
+        }).then(function () {
+            maintainPersistentEmotion();
+        }).catch(function (error) {
+            console.warn('[NekoMotion] failed to enter rest after model load:', error);
+        });
+    });
+
+    window.addEventListener('neko:character-personality-updated', function () {
+        activeCharacterProfile = null;
+        void resolveCharacterProfile().then(function (profile) {
+            if (!player || !vrmReady()) return;
+            player.setProfile(profile);
+        });
+    });
+
+    window.addEventListener('neko-assistant-speech-cancel', function () {
+        if (player) player.cancel('assistant_speech_cancel');
+    });
+
+    window.addEventListener('neko-model-manager-mode-set', function (event) {
+        selectedMode = String(event && event.detail && event.detail.mode || configuredMode()).toLowerCase();
+        if (selectedMode !== 'vrm' && player) player.cancel('model_mode_changed');
+        if (selectedMode === 'vrm') {
+            stopOfficialIdleRotation();
+            if (player && vrmReady()) {
+                player.setProfile(characterProfile());
+                void player.enterRest({
+                    profile: characterProfile(),
+                    seed: 'mode-set',
+                    force: true,
+                    reselect: false
+                });
+            }
+            scanTurnText();
+            maintainPersistentEmotion();
+        } else {
+            releaseExpressionControl(false);
+        }
+    });
+
+    setInterval(function () {
+        if (activeTurn && !activeTurn.ended) scanTurnText();
+    }, POLL_INTERVAL_MS);
+    setInterval(maintainPersistentEmotion, 1000);
+    void initialize();
+
+    window.NekoMotion = Object.freeze({
+        analyze: async function (text, options) {
+            await initialize();
+            return core.analyze(text, Object.assign({
+                locale: currentLocale(),
+                officialEmotion: activeTurn && activeTurn.officialEmotion || '',
+                profilePreset: characterProfile().preset || ''
+            }, options || {}));
+        },
+        analyzeSpeech: async function (text, options) {
+            await initialize();
+            return core.analyzeSpeech(text, Object.assign({
+                locale: currentLocale(),
+                officialEmotion: activeTurn && activeTurn.officialEmotion || '',
+                profilePreset: characterProfile().preset || ''
+            }, options || {}));
+        },
+        normalizeToChinese: async function (text, locale) {
+            await initialize();
+            return core.toChineseFrame(text, locale || currentLocale());
+        },
+        extract: function (text) { return window.NekoMotionText.extractClosedStages(text); },
+        play: async function (intent, options) {
+            await initialize();
+            const decision = Object.assign({ intent: String(intent || ''), kind: 'manual', intensity: 2, count: 1 }, options || {});
+            return player.playPlan([decision], { seed: 'manual:' + Date.now() });
+        },
+        rest: async function (options) {
+            await initialize();
+            return player.enterRest(Object.assign({
+                profile: characterProfile(),
+                seed: 'manual-rest',
+                force: true
+            }, options || {}));
+        },
+        stats: function () {
+            refreshMode();
+            return {
+                mode: selectedMode,
+                ready: !!(core && player),
+                officialEmotion: latestOfficialEmotion || null,
+                persistentEmotion: {
+                    value: emotionState.value,
+                    since: emotionState.since || null,
+                    expiresInMs: emotionState.expiresAt ? Math.max(0, emotionState.expiresAt - Date.now()) : 0,
+                    neutralStreak: emotionState.neutralStreak,
+                    continuationCount: emotionState.continuationCount,
+                    pulseDurationMs: emotionState.pulseDurationMs,
+                    pulseRemainingMs: Math.max(0, emotionState.pulseUntil - Date.now()),
+                    applyCount: emotionState.applyCount,
+                    source: emotionState.source,
+                    mappedMoods: currentVrmExpression() && currentVrmExpression().moodMap
+                        ? Object.keys(currentVrmExpression().moodMap) : [],
+                    availableExpressionCount: currentVrmExpression()
+                        && typeof currentVrmExpression().getExpressionList === 'function'
+                        ? currentVrmExpression().getExpressionList().length : 0
+                },
+                persona: {
+                    preset: characterProfile().preset || 'custom',
+                    energy: characterProfile().energy,
+                    restraint: characterProfile().restraint,
+                    warmth: characterProfile().warmth
+                },
+                core: core && core.stats(),
+                player: player && player.stats(),
+                runtime: Object.assign({}, metrics),
+                recent: history.slice(),
+                design: {
+                    authority: 'clause-keyword-composition',
+                    model: 'none',
+                    addedTokenPerMotion: 0,
+                    rawDialoguePersisted: false,
+                    adapters: ['vrm']
+                }
+            };
+        }
+    });
+
+})();
