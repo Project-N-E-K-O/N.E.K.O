@@ -6372,3 +6372,40 @@ def test_a_concessive_frame_still_opens_on_a_real_clause(frame, head):
 
     text = f'我想停止播放因为{frame}{head}都不想听'
     assert mr._ZH_FREE_CHOICE_FRAME_RE.search(text) is not None, text
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    ["Can you play Yellow?", "Could you play Yellow?", "Would you play Yellow?",
+     "Could you please play Yellow by Coldplay?"],
+)
+def test_english_question_form_requests_still_parse(sentence):
+    """⚠️⚠️ 切分只保留**全角** `？`，不保留 ASCII `?`。
+
+    第七十轮「保留问号」的第一版两个都留，英文疑问式点歌当场全线失效——
+    `Can you play Yellow?` 后面挂着 `?` 就匹配不上英文解析器
+    （tests/unit/test_proactive_service_boundary.py 6 条红）。
+
+    ⚠️ 那个文件不在我常跑的几个文件里，是**跑全量**才抓到的。这条用例把它挪到
+    这里，让改动这条判据的人在常跑的文件里就能见红。
+
+    ⚠️⚠️ 入口必须是 `parse_explicit_user_music_request`，不是 `parse_music_request`——
+    后者是宽松兜底，**永远返回一个对象**，拿它写 `is not None` 是空断言。
+    第一版就是这么写的，变异（把 ASCII `?` 也留下）当场存活才发现。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    request = parse_explicit_user_music_request(sentence)
+    assert request is not None, sentence
+    assert "Yellow" in request.keyword, (sentence, request.keyword)
+    assert "?" not in request.keyword, (sentence, request.keyword)
+
+
+def test_only_the_fullwidth_question_mark_survives_clause_splitting():
+    """⚠️ 直接钉住切分本身：全角 `？` 留下、ASCII `?` 丢掉。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert mr._split_music_request_clauses('停止播放？后面还有') == ['停止播放？', '后面还有']
+    assert mr._split_music_request_clauses('stop playing? more text') == [
+        'stop playing', 'more text'
+    ]

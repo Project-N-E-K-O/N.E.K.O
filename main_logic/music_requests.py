@@ -1710,7 +1710,14 @@ def _split_music_request_clauses(text: str) -> list[str]:
         # 判据的窗口跨过去，那是另一个方向的风险。
         clause = text[start:index].strip()
         if clause:
-            clauses.append(clause + char if char in "？?" else clause)
+            # ⚠️⚠️ **只留全角 `？`，不留 ASCII `?`。**
+            # 第一版两个都留，英文疑问式点歌当场全线失效——`Can you play Yellow?` /
+            # `Could you please play Yellow by Coldplay?` 后面挂着 `?` 就匹配不上
+            # 英文解析器了（tests/unit/test_proactive_service_boundary.py 6 条红）。
+            # ⚠️ 那个文件不在我常跑的几个文件里，是**全量**抓到的。
+            # 需要保留问号的那条用例（`我想停止播放《你好吗？》？我还没决定`）
+            # 用的是全角 `？`，中文侧的问号本来就是全角。
+            clauses.append(clause + char if char == "？" else clause)
         start = index + 1
     clause = text[start:].strip()
     if clause:
