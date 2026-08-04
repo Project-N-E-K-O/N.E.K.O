@@ -32,6 +32,7 @@ identically on both scripts. Tightening further kills the main use case.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import pytest
 
@@ -1739,6 +1740,11 @@ def test_the_unavoidable_taolun_overlap_is_symmetric(text, expected):
         ("例子.測試別提了。", "例子.測試"),
         ("价格１,０００元别提了。", "价格１,０００元"),
         ("價格１,０００元別提了。", "價格１,０００元"),
+        # ⚠️ 组合符号：Python 的 \w 不含 Mn/Mc 类，NFD 分解形和天城文照样被截断
+        (unicodedata.normalize("NFD", "café.com") + "别提了。",
+         unicodedata.normalize("NFD", "café.com")),
+        ("देवनागरी.com别提了。", "देवनागरी.com"),
+        ("Ωμέγα.gr别提了。", "Ωμέγα.gr"),
     ],
 )
 def test_identifier_internal_punctuation_is_not_a_topic_boundary(text, expected):
@@ -1757,16 +1763,22 @@ def test_sentence_final_punctuation_is_still_a_boundary(text):
 
 def test_the_identifier_punct_rule_needs_both_sides():
     """⚠️ 两侧都要，而且判据必须 Unicode 感知——写死 ASCII 只修一半（codex P2 两轮）。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_IDENT_PUNCT.startswith(r"(?<=\w)")
-    assert D._ZH_IDENT_PUNCT.endswith(r"(?=\w)")
+    # ⚠️ 判据必须是**否定式**（不是空白、不是句读），不是「列出哪些字算词字符」——
+    # 列举法修了三轮还在漏（ASCII → \w → 组合符号）。
     assert "0-9A-Za-z" not in D._ZH_IDENT_PUNCT
+    assert r"\w" not in D._ZH_IDENT_PUNCT
+    assert D._ZH_IDENT_PUNCT.startswith(r"(?<=[^\s")
+    assert D._ZH_IDENT_PUNCT.endswith(r"])")
     for unit in (D._ZH_TOPIC_CHAR, D._ZH_TOPIC_CHAR_NO_GUANYU):
         assert D._ZH_IDENT_PUNCT in unit
     # 前提守卫：这条判据在非 ASCII 上真的命中
     import re as _re
 
     probe = _re.compile(D._ZH_IDENT_PUNCT)
-    for ident in ("café.com", "Дом.ру", "例子.测试", "１,０００"):
+    for ident in (
+        "café.com", "Дом.ру", "例子.测试", "１,０００",
+        unicodedata.normalize("NFD", "café.com"), "देवनागरी.com",
+    ):
         assert probe.search(ident), ident
     # 而句尾的点号（后面是空白或串尾）不命中
     for tail in ("工作. ", "工作."):
@@ -2349,12 +2361,16 @@ def test_a_whitespace_only_message_does_not_blow_up():
     """  # noqa: DOCSTRING_CJK
     import time
 
+    # 预热：别把首次正则编译算进 timings[30]，那会让倍率虚低、判据失灵（CodeRabbit）
+    extract_directives(" ")
     timings = {}
     for n in (30, 60):
         started = time.perf_counter()
         extract_directives(" " * n)
         timings[n] = time.perf_counter() - started
-    assert timings[60] < 0.15, timings
+    # ⚠️ 主判据是**倍率**。绝对秒数只当一道很松的天花板——共享 CI runner 上负载不可控，
+    # 卡得紧会偶发变红（CodeRabbit）。组合爆炸时这里是 0.4 秒往上。
+    assert timings[60] < 0.5, timings
     # 组合爆炸时 60 是 30 的几十倍；三次方是 8 倍左右，给足余量取 25
     assert timings[60] < timings[30] * 25 + 0.02, timings
 
