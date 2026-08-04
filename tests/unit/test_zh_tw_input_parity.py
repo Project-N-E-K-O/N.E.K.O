@@ -3524,3 +3524,65 @@ def test_nezha_is_a_word_not_a_quantified_wh_phrase():
     for text in ('我要停止播放哪吒的歌', '帮我停止播放哪吒里的插曲'):
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我想停止播放哪种唱片') is False
+
+
+@pytest.mark.parametrize("marker", ["何人", "何者", "何故", "何事", "莫非"])
+def test_literary_wh_pronouns(marker):
+    """书面语的「何 + X」疑问代词（Codex P2 第三十七轮）。
+
+    ⚠️ 这一族**故意不做成结构化**（`何` + 任意汉字），跟量词槽那边相反：
+    《何日君再来》是真实点播，`何` 后面接任意字会把它吃进去。文言疑问
+    代词本来就是那几个，枚举得干净。下面的反向断言就盯这一点。
+    ⚠️ `任何人` / `任何事` 里 何人/何事 只是子串，base 是 True，不加左界当场掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}唱的《你好吗？》'
+    ) is False
+    for text in (
+        '我想停止播放任何人的歌',
+        '我要停止播放任何事相关的歌',
+        '我想停止播放何日君再来',
+    ):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "aspect", ["刚", "剛", "刚刚", "剛剛", "刚开始", "剛開始", "刚才", "剛才"]
+)
+def test_just_started_playback_aspect(aspect):
+    """起始体 `刚/剛`（base 全是 True，Codex P2 第三十七轮）。
+
+    ⚠️ 实现里只加了**单字** 刚/剛：刚刚/刚开始/刚才 都由修饰语槽
+    （0~4 个任意字）接住，不单列成品。这条用例列的是成品形式，就是为了钉住
+    「一个单字 + 修饰语槽」确实盖得住它们。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (f'停止{aspect}播放的晴天',
+                 f'帮我停止{aspect}播放的Taylor Swift'):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize("punct", ["，", ",", "；", ";", "、", ""])
+@pytest.mark.parametrize(
+    "coordinator", ["也", "再", "就", "顺便", "顺手", "一起", "同时"]
+)
+def test_coordinator_after_a_punctuated_temporal_clause(coordinator, punct):
+    """「的时候」和并列副词之间隔着标点也算并列（base 是 True）。
+
+    ⚠️ 逗号是**子句分隔符**，并列副词落在下一个子句里，单子句正则
+    永远看不见它——所以修在**切分之前**把这个位置的逗号抹掉，而不是把
+    标点塞进那条正则（第一版就是塞进正则，完全无效）。
+    ⚠️ 句末标点不算：`。` 之后是另一句话。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'停止播放的时候{punct}{coordinator}帮我关灯'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(
+        f'停止播放的时候。{coordinator}帮我关灯'
+    ) is False
+    assert is_explicit_music_cancellation('停止播放的时候通知我') is False

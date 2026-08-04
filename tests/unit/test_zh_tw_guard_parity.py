@@ -1673,6 +1673,7 @@ def test_the_adverb_table_is_a_prefix_code():
         "逐一", "逐个", "逐個", "挨个", "挨個", "再",
         "全部", "所有", "逐项", "逐項", "逐条", "逐條",
         "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
+        "均", "依序", "一概", "悉数", "悉數", "分开", "分開",
     }
     assert router._WHOLE_CARD_BARE_ADVERB == (
         r"(?:" + "|".join(WHOLE_CARD_ADVERBS) + r")"
@@ -1711,3 +1712,22 @@ def test_the_reported_stacked_modifier_cases(text):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("text", ["把所有字段分别重写", "把全部欄位分別重寫"])
+def test_separately_is_not_added_to_the_adverb_table(text):
+    """⚠️ 「分别/分別」**故意不收**（Codex 第三十七轮报了它，但 base 就是 False）。
+
+    它 base 不成立的原因不是副词表没收，而是撞上了否定守卫
+    `_CHAT_NEGATED_REWRITE_RE` 里的 `别|別`。那条守卫的取舍写得很清楚：
+    漏触发 = 用户说「别改」却把整张卡改了并 autosave。为一个 base 从来没成立过
+    的说法去松动否定守卫，方向反了。
+
+    ⚠️ 这条用例是**有意的边界**，不是待办：哪天真要收 分别，得先回答
+    「它跟 `别改` 怎么区分」，而不是直接往副词表里塞一个词。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    assert router._chat_text_requests_full_rewrite('把所有字段别重写') is False
+    assert router._chat_text_requests_full_rewrite('把所有字段分開重写') is True
