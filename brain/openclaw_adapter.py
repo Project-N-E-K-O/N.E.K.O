@@ -176,12 +176,27 @@ _CLAUSE_LEAD = re.compile(
 # `_APPROVE_CLAUSES` 上方那段。多字的征询尾（好吗/行不行）同样要排在单字前面。
 # ⚠️ 语气词也是简繁两侧的东西：囉/啰/咯/喽/嘍、呗/唄 必须同批收，否则同一句话
 # 繁体命中简体不命中——那正是这一系列改动要修的毛病。
-_CLAUSE_TAIL = re.compile(
-    r"(?:"
+_TAIL_ALTERNATION = (
     r"好不好|好吗|好嗎|行不行|行吗|行嗎|可以吗|可以嗎|怎么样|怎麼樣|好了|"
     r"吧|啊|呀|喔|哦|呢|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|了|一下|喵|吗|嗎|~|～"
-    r")+$"
 )
+_CLAUSE_TAIL = re.compile(rf"(?:{_TAIL_ALTERNATION})+$")
+# ⚠️⚠️ 剥词尾**不能用正则一次性吃掉整串**，也不能只试正则挑中的那一个词尾。两个坑：
+#
+# 1. 整串吃会连表内条目自带的那个字一起吃掉：`别找了吧` 的 `了吧` 被整串剥成
+#    `别找`，而表里的条目是 `别找了`——一句再自然不过的话就停不掉任务了（Codex P2）。
+# 2. 只试正则挑中的那一个也不行：多选支从左优先，`去执行吗` 会被 `行吗` 命中，
+#    剥成 `去执`——它吃掉的是「执**行**」的字。这跟首部咬断多字词是同一类错误，
+#    只是方向相反，而且换词表顺序解决不了（`行吗` 本身必须收）。
+#
+# 所以改成：每一步对**所有**能匹配的词尾各试一次，每剥一个查一次表。
+_TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
+
+# ⚠️ 问号是**唯一**被子句切分器吃掉后还改变语义的分隔符：`去執行？` 切完就是
+# `去執行`，一个疑问句于是授权了一个高风险动作（Codex P1）。approve 因此对含问号的
+# 输入一律拒绝——`要去執行嗎？` 这类本来就该 None，而真要批准的人不会打问号。
+# 只作用于 approve：`停下来好吗？` 对 /stop 是完全正常的礼貌祈使。
+_INTERROGATIVE = re.compile(r"[?？]")
 
 
 def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
@@ -194,27 +209,45 @@ def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
 
 
 def _clause_hits(clause: str, table: frozenset, *, strip_tail: bool = True) -> bool:
-    """Match a clause against a table: raw, lead-stripped, then lead+tail.
+    """Match a clause against a table: raw, lead-stripped, then peeled tails.
 
-    All three probes are load-bearing, and the widening must happen here rather
-    than by deriving stripped spellings INTO the table. See the notes below.
+    The widening happens here rather than by deriving stripped spellings INTO the
+    table, and particles come off one at a time. See the notes below.
     """
     # ⚠️ 表保持字面量，widen 的是**查表**不是表。表里有些条目自带语气词尾，
     # 归一化会把它们吃掉（别找了→别找、删吧→删）。上一版反过来做——把表闭包到
     # 归一化形态——于是单字「删 / 准」进了 approve 表，`帮我删一下`（一条**新的
     # 删除请求**，不是对待审批动作的应答）就派成了 /daemon approve。
     #
-    # ⚠️ lead-only 是**独立一档**，不是 lead+tail 的中间步骤：`现在别找了` 剥掉
-    # 首部是 `别找了`（表内条目），再剥尾就成了 `别找`（不在表内），少这一档就丢了。
+    # ⚠️ 语气词**逐个剥、每剥一个查一次表**，不能一次性剥光：`别找了吧` 一次剥完
+    # 是 `别找`（不在表内），逐个剥则先得到 `别找了`（表内条目）就停住。
+    #
+    # ⚠️ lead-only 是**独立一档**：`现在别找了` 剥掉首部才露出表内的 `别找了`。
     text = str(clause or "").strip()
     if not text:
         return False
-    if text in table:
-        return True
-    lead_only = _normalize_clause(text, strip_tail=False)
-    if lead_only in table:
-        return True
-    return strip_tail and _normalize_clause(text, strip_tail=True) in table
+    seen: set = set()
+    pending = []
+    for candidate in (text, _normalize_clause(text, strip_tail=False)):
+        if candidate and candidate not in seen:
+            if candidate in table:
+                return True
+            seen.add(candidate)
+            pending.append(candidate)
+    if not strip_tail:
+        return False
+    while pending:
+        current = pending.pop()
+        for token in _TAIL_TOKENS:
+            if len(current) <= len(token) or not current.endswith(token):
+                continue
+            peeled = current[: -len(token)]
+            if peeled in table:
+                return True
+            if peeled not in seen:
+                seen.add(peeled)
+                pending.append(peeled)
+    return False
 
 
 # ⚠️ 这三张表撞的是用户实际打出来的字，简繁不同码位，两侧必须同批收词。
@@ -276,14 +309,16 @@ _CLEAR_TRIGGERS = (
 def _approve_clause_hits(clause: str) -> bool:
     """Whether one clause counts toward /daemon approve.
 
-    Bare affirmations match the clause verbatim; action phrases also match after
-    the leading function words are stripped. Never strip the tail here — see the
-    note above _APPROVE_AFFIRMATIONS.
+    Bare affirmations must match the clause verbatim; action phrases go through
+    the normal lead/tail probing. See the note above _APPROVE_AFFIRMATIONS for
+    why the two halves cannot share one judgement.
     """
     text = str(clause or "").strip()
     if text in _APPROVE_AFFIRMATIONS:
         return True
-    return _clause_hits(text, _APPROVE_ACTIONS, strip_tail=False)
+    # 动作短语可以剥首尾：它们在改造前是**子串**触发，句子里含就命中，所以归一化
+    # 不可能超出旧召回。裸应答不行——那一支改造前是整句精确匹配。
+    return _clause_hits(text, _APPROVE_ACTIONS, strip_tail=True)
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -644,7 +679,12 @@ class OpenClawAdapter:
         # 命中 /stop，现在是 None。它和 `停下来，这是我当时唯一的念头`（叙述）在**任何
         # 子句位置判据下都不可区分**——两句的祈使短语都在首子句。子串包含把前者接住
         # 是顺带的，代价是把后者也接住。要真的分开得看语义，不是这一层能做的事。
-        if all(_approve_clause_hits(c) for c in clauses):
+        # ⚠️ 问号一票否决 approve：子句切分把 `？` 吃掉之后，`去執行？` 就是 `去執行`，
+        # 一个疑问句于是授权了高风险动作（Codex P1）。/stop 和 /new 不受影响——
+        # `停下来好吗？` 是完全正常的礼貌祈使。
+        if not _INTERROGATIVE.search(text) and all(
+            _approve_clause_hits(c) for c in clauses
+        ):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
         if _clause_hits(clauses[-1], _NEW_CLAUSES):
             return {"is_magic_intent": True, "command": "/new", "source": "rule"}

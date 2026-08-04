@@ -18,6 +18,7 @@ bounded enable probe plus its reason-code helpers."""
 
 import json
 import asyncio
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from config import (
@@ -36,6 +37,7 @@ from .._shared import (
     logger,
     OPENCLAW_ENABLE_CHECK_ATTEMPTS,
     OPENCLAW_ENABLE_CHECK_INTERVAL,
+    TASK_REGISTRY_CLEANUP_TTL,
     _set_capability,
     _bump_state_revision,
 )
@@ -104,21 +106,23 @@ def _has_recent_openclaw_task(
     lanlan_name: Optional[str],
     exclude_task_id: Optional[str] = None,
 ) -> bool:
-    """Whether this sender has any OpenClaw task still in the registry.
+    """Whether this sender has a live or recently-ended OpenClaw task.
 
-    Deliberately looser than _collect_active_openclaw_task_ids: it counts
-    terminal tasks too, because the registry entry is what bounds the window.
-
-    ⚠️ Requiring a *running* task would be backwards. run_instruction is a
-    one-shot POST, so whatever QwenPaw says about needing permission arrives as
-    that POST's reply — and _run_openclaw_dispatch writes status=completed the
-    moment the POST returns, BEFORE _emit_task_result speaks the reply. The user
-    therefore learns an approval is wanted only after the task has already gone
-    terminal; gating on "running" would drop every legitimate approval and keep
-    open only the unrelated-task case. Terminal entries are purged after
-    TASK_REGISTRY_CLEANUP_TTL, so "present in the registry" is a self-bounding
-    recency window and needs no separate constant.
+    Deliberately looser than _collect_active_openclaw_task_ids (terminal entries
+    count) and deliberately tighter than "present in the registry" (their age is
+    checked here rather than assumed). See the notes below.
     """
+    # ⚠️ 只认 running/queued 是**反的**。run_instruction 是一次性 POST，上游「需要
+    # 许可」只能作为这次 POST 的 reply 回来，而 _run_openclaw_dispatch 在 POST 一返回
+    # 就写 status=completed，_emit_task_result 念出 reply 在那之后——用户得知要批准时，
+    # 任务必然已经终态。只认 running 等于丢掉每一条合法批准，只放行「另一个无关任务
+    # 在跑」，恰好是反的。
+    #
+    # ⚠️ 但也**不能**靠「还在 registry 里」当窗口。_cleanup_task_registry 只在
+    # capabilities.py 的状态发射路径上调用，正常的分析/派单路径根本不碰它；一个长连
+    # 会话里终态条目可以无限期留着，闸就被一个几小时前的任务永久顶开（Codex P1）。
+    # 所以这里显式按 end_time 判龄，不依赖清理被调用。
+    now = datetime.now(timezone.utc)
     for task_id, info in _shared.Modules.task_registry.items():
         if task_id == exclude_task_id or not isinstance(info, dict):
             continue
@@ -128,7 +132,18 @@ def _has_recent_openclaw_task(
             continue
         if lanlan_name and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip():
             continue
-        return True
+        if info.get("status") in {"queued", "running"}:
+            return True
+        end_time = str(info.get("end_time") or "").strip()
+        if not end_time:
+            # 终态却没有 end_time：判不了龄，fail-closed 不放行。
+            continue
+        try:
+            ended = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if (now - ended).total_seconds() <= TASK_REGISTRY_CLEANUP_TTL:
+            return True
     return False
 
 
@@ -414,6 +429,17 @@ async def dispatch(
                     )
                     == magic_command
                 )
+            # ⚠️ 主动搭话轮**没有用户**。task_executor 在 proactive 轮把意图换成猫娘
+            # 自己那句最新台词再喂进分类器，所以她随口一句「没问题」就会被判成批准，
+            # 而这一轮里用户一个字都没说过（Codex P1）。批准是唯一一条会让上游真的
+            # 执行高风险动作的命令，proactive 轮一律不放行，跟 registry 里有什么无关。
+            if magic_command == "/daemon approve" and proactive:
+                logger.info(
+                    "[OpenClaw] /daemon approve dropped: proactive turn has no user "
+                    "authorization (lanlan=%s)",
+                    lanlan_name,
+                )
+                return
             if magic_command == "/daemon approve" and not explicitly_typed:
                 if not _has_recent_openclaw_task(
                     sender_id=nk_sender_id,

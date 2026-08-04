@@ -24,9 +24,11 @@ dispatch is dropped.
 """
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.agent_server._shared import TASK_REGISTRY_CLEANUP_TTL
 from app.agent_server.channels import openclaw as oc
 
 
@@ -94,7 +96,9 @@ def wired(monkeypatch):
     return fake, emitted
 
 
-def _dispatch(command, *, sender="USER_A", task_id="magic-1", user_text="没问题"):
+def _dispatch(
+    command, *, sender="USER_A", task_id="magic-1", user_text="没问题", proactive=False
+):
     messages = [{"role": "user", "content": user_text, "sender_id": sender}]
     asyncio.run(
         oc.dispatch(
@@ -103,21 +107,38 @@ def _dispatch(command, *, sender="USER_A", task_id="magic-1", user_text="没问�
             lanlan_name="lan",
             conversation_id="c",
             trigger_user_msg_sig=None,
-            proactive=False,
+            proactive=proactive,
         )
     )
 
 
-def _register(registry, task_id, *, status, sender="USER_A", lanlan="lan", kind="openclaw"):
-    registry[task_id] = {
+def _iso(seconds_ago: float) -> str:
+    stamp = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    return stamp.isoformat().replace("+00:00", "Z")
+
+
+def _register(
+    registry,
+    task_id,
+    *,
+    status,
+    sender="USER_A",
+    lanlan="lan",
+    kind="openclaw",
+    ended_seconds_ago=1.0,
+):
+    info = {
         "id": task_id,
         "type": kind,
         "status": status,
         "sender_id": sender,
         "lanlan_name": lanlan,
-        "start_time": "2026-08-04T00:00:00",
+        "start_time": _iso((ended_seconds_ago or 0) + 5),
         "params": {},
     }
+    if status not in {"queued", "running"} and ended_seconds_ago is not None:
+        info["end_time"] = _iso(ended_seconds_ago)
+    registry[task_id] = info
 
 
 def test_approve_is_dropped_without_a_live_openclaw_task(wired):
@@ -161,6 +182,83 @@ def test_a_registry_entry_in_any_status_opens_the_gate(wired, status):
     _dispatch("/daemon approve")
 
     assert fake.magic_calls, f"status={status} 仍在 registry 里，应该放行批准"
+
+
+def test_a_stale_terminal_entry_does_not_open_the_gate(wired):
+    """⚠️ Age is checked here, not assumed from the cleanup having run.
+
+    ``_cleanup_task_registry`` is only called from capabilities.py's status
+    emission paths — the ordinary analysis/dispatch path never touches it. In a
+    long-lived session a terminal entry can therefore sit in the registry
+    indefinitely, and "still present" would let a task from hours ago hold the
+    gate open for every later everyday 同意.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-stale",
+        status="completed",
+        ended_seconds_ago=TASK_REGISTRY_CLEANUP_TTL + 60,
+    )
+
+    _dispatch("/daemon approve")
+
+    assert fake.magic_calls == []
+
+
+def test_a_terminal_entry_without_an_end_time_fails_closed(wired):
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-noend",
+        status="completed",
+        ended_seconds_ago=None,
+    )
+
+    _dispatch("/daemon approve")
+
+    assert fake.magic_calls == [], "判不了龄就不该放行"
+
+
+def test_a_proactive_turn_can_never_authorize(wired):
+    """⚠️ A proactive turn has no user at all.
+
+    ``task_executor`` swaps the intent for the character's own latest utterance
+    on proactive turns, so her everyday 「没问题」 classifies as an approval while
+    the user has said nothing this turn. Approve is the one command that makes
+    the upstream daemon really run a high-risk action, so a proactive turn never
+    dispatches it — regardless of what the registry holds.
+    """  # noqa: DOCSTRING_CJK
+    fake, emitted = wired
+    # ⚠️ 必须注册在 default_sender_id 名下。proactive 轮会把 nk_sender_id 强制成
+    # default（见 _resolve_openclaw_sender_id 上方的说明），登记在别的 sender 名下
+    # 时闸会先被 sender 过滤挡掉——那样这条测试就永远绿，验不到 proactive 这道判据。
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-running",
+        status="running",
+        sender=fake.default_sender_id,
+    )
+
+    _dispatch("/daemon approve", proactive=True, sender=fake.default_sender_id)
+
+    assert fake.magic_calls == [], "主动搭话轮没有用户，绝不能批准"
+    assert emitted == []
+
+    # sanity: 同一个 registry 状态、同一个 sender，非 proactive 轮照常放行——
+    # 证明上面拦住它的确实是 proactive 而不是别的条件
+    _dispatch("/daemon approve", proactive=False, sender=fake.default_sender_id)
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+@pytest.mark.parametrize("command", ["/stop", "/new", "/clear"])
+def test_the_proactive_block_is_scoped_to_approve(wired, command):
+    """A proactive /stop is a designed feature (see _resolve_openclaw_sender_id)."""
+    fake, _ = wired
+
+    _dispatch(command, proactive=True)
+
+    assert [c[0] for c in fake.magic_calls] == [command]
 
 
 def test_an_empty_registry_still_closes_the_gate(wired):

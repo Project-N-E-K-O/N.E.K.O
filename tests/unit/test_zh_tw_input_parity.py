@@ -849,14 +849,71 @@ def test_clause_normalization_strips_only_function_words(text, expected):
         # 一旦查表改成「把表闭包到归一化形态」而不是「把查询归一化后去比对」，这些
         # 残形会全部命中——那正是单字「删 / 准」混进 approve 表的同一个错误。
         "别找", "別找", "算了别查", "算了別查",
-        # 过去时叙述不是祈使：approve 的动作支刻意不剥尾，所以它停在 None
-        "去执行了", "去執行了",
+        # 单字动词同理——它们曾因表闭包进过 approve 表
+        "删", "刪", "准", "準", "删了吧", "删一下",
     ],
 )
 def test_truncated_table_entries_are_not_commands(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 语气词必须**逐个剥、每剥一个查一次表**。一次性把词尾整串吃掉会连表内
+        # 条目自带的那个字一起吃掉：`别找了吧` 的 `了吧` 被整串剥成 `别找`，而表里
+        # 的条目是 `别找了`——一句再自然不过的话就停不掉任务了。
+        ("别找了吧", "/stop"), ("別找了吧", "/stop"),
+        ("算了别查了吧", "/stop"), ("算了別查了吧", "/stop"),
+        ("快别找了吧", "/stop"), ("别找了啊", "/stop"), ("別找了囉", "/stop"),
+        ("准了吧", "/daemon approve"), ("準了吧", "/daemon approve"),
+        # ⚠️ 每一步要对**所有**能匹配的词尾各试一次，不能只试正则挑中的那一个。
+        # 多选支从左优先：`去执行吗` 会被 `行吗` 命中、剥成 `去执` —— 它吃掉的是
+        # 「执行」的字。换词表顺序解决不了，`行吗` 本身必须收。
+        ("去执行吗", "/daemon approve"), ("去執行嗎", "/daemon approve"),
+        ("停下来行吗", "/stop"), ("停下來行嗎", "/stop"), ("换个话题行吗", "/new"),
+    ],
+)
+def test_particles_are_peeled_one_at_a_time(text, expected):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["去執行？", "去执行？", "刪吧？", "删吧？", "准了？", "準了？", "去執行?",
+     "没问题，去执行？", "沒問題，去執行？", "同意？", "我同意？"],
+)
+def test_a_question_never_approves(text):
+    """⚠️ 问号一票否决 approve。
+
+    The clause splitter treats ？/? as a separator, so 去執行？ collapses to
+    去執行 and a *question* would authorize a high-risk action. Rejecting the
+    whole utterance is fail-closed and costs nothing: nobody granting permission
+    types a question mark.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 问号否决**只作用于 approve**：对 /stop 和 /new 而言，
+        # 「停下来好吗？」是完全正常的礼貌祈使，不能一并毙掉。
+        ("停下来好吗？", "/stop"), ("停下來好嗎？", "/stop"),
+        ("换个话题好吗？", "/new"), ("換個話題好嗎？", "/new"),
+        ("能不能停下来？", "/stop"),
+    ],
+)
+def test_the_question_veto_is_scoped_to_approve(text, expected):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
 
 
 def test_no_magic_command_fires_on_the_projects_own_ui_copy():
