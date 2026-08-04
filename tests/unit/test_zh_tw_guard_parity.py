@@ -1479,3 +1479,20 @@ def test_adverb_and_nested_quantifier_widening_keeps_the_p1_guard(phrasing, expe
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
+
+
+@pytest.mark.parametrize("verb", ["rewrite", "regenerate", "revise"])
+@pytest.mark.parametrize("adverb", ["全部", "全面", "一并", "彻底"])
+def test_an_adverb_may_precede_an_english_rewrite_verb(adverb, verb):
+    """副词 + 英文重写动词的组合（base 是 True，Codex P2 第二十九轮）。
+
+    ⚠️ 配对反向断言：拉丁**字段名**照旧被挡——放开的是闭集里的英文动词。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'把所有字段{adverb} {verb}'
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        '把整个卡的全部 nickname重写'
+    ) is False

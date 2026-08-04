@@ -858,14 +858,16 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
     + _WHOLE_CARD_BARE_ADVERB
-    + r"\s*(?:重|改|梳|完)"
+    + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB + r"|"
     + _WHOLE_CARD_BARE_ADVERB
-    + r"\s*(?:重|改|梳|完)"
+    # ⚠️ 副词后面也可能是**英文**重写动词：`把所有字段全部 rewrite`
+    # （base 是 True，Codex P2 第二十九轮）。
+    + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。

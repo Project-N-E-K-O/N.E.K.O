@@ -3249,3 +3249,43 @@ def test_music_specific_wh_compounds_are_questions(wh, measure, noun):
     assert is_explicit_music_cancellation(text) is False, text
     for command in ('帮我停止播放红心歌单', '停止播放', '停止正在播放的晴天'):
         assert is_explicit_music_cancellation(command) is True, command
+
+
+@pytest.mark.parametrize("aspect", ["还在", "還在", "仍在", "仍", "还"])
+@pytest.mark.parametrize("verb", ["播放", "听", "聽"])
+def test_continuative_aspect_also_marks_the_object(aspect, verb):
+    """「还在/仍在」是同一个当下体，只是带持续义（base 是 True）。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{aspect}{verb}的晴天') is True
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+def test_the_control_noun_lookahead_stays_linear():
+    """⚠️ 控件名那条前瞻扫的是「后面还有没有音乐宾语」，**不需要**带限定词的
+    完整 `_ZH_MUSIC_HEAD_AFTER_DE`。
+
+    带限定词的版本开头是 `{0,8}` 的限定词组，会在扫描的每个位置重算一遍：
+    149 字对抗输入单次 47ms（Codex P2 第二十九轮）。换成便宜的「音乐名词 |
+    配平引号跨度」之后 0.13ms，语义不变——限定词只影响宾语从哪里起算，不影响
+    「有没有音乐宾语」这个判断。
+
+    ⚠️ 结构 + 耗时双断言：只测耗时会因机器快而假绿。
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    from main_logic import music_requests as mr
+
+    after_ui = mr._ZH_PLAYBACK_NOT_NOMINALIZED.split(mr._ZH_PLAYBACK_UI_NOUN)[-1]
+    assert mr._ZH_MUSIC_NOUN_MODIFIER not in after_ui, (
+        "控件名前瞻又把带 {0,8} 限定词组的表达式放回扫描里了"
+    )
+
+    worst = ("我要停止播放按钮" + "这个里的" * 35 + "X")[:160]
+    start = time.perf_counter()
+    for _ in range(3):
+        mr.is_explicit_music_cancellation(worst)
+    assert (time.perf_counter() - start) / 3 < 5.0, "控件名前瞻又变回非线性了"
+    # 语义没变：句尾有音乐宾语的仍然是命令，没有的仍然当控件。
+    assert mr.is_explicit_music_cancellation('停止播放键盘音乐') is True
+    assert mr.is_explicit_music_cancellation('帮我停止播放按钮换个颜色') is False
