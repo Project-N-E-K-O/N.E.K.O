@@ -1370,6 +1370,29 @@ class DetectorRuntime:
                 and candidate.candidate_generation == self._candidate_generation
             )
 
+    async def candidate_is_bound_to(
+        self,
+        candidate: DetectorCandidateKey,
+        turn_token: VoiceTurnToken,
+    ) -> bool:
+        """Require current candidate authority to belong to one exact turn."""
+
+        if (
+            type(candidate) is not DetectorCandidateKey
+            or not isinstance(turn_token, VoiceTurnToken)
+        ):
+            return False
+        async with self._lock:
+            bound = self._bound_turns.get(candidate)
+            return bool(
+                not self._closed
+                and self._candidate_open
+                and candidate.detector_epoch == self._detector_epoch
+                and candidate.candidate_generation == self._candidate_generation
+                and bound is not None
+                and bound.turn_token == turn_token
+            )
+
     async def correlate_speaker_shadow_candidate(
         self,
         shadow_candidate: SpeakerShadowCandidateKey,

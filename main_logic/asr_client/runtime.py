@@ -2671,6 +2671,10 @@ class IndependentAsrRuntime:
                 or not self._ingress_token_matches(turn_token.ingress)
                 or not self._asr_turn_prepared
                 or self._asr_audio_dispatcher.active_turn != turn_token
+                or not await detector.candidate_is_bound_to(
+                    request.candidate,
+                    turn_token,
+                )
             ):
                 return CandidateRejectionOutcome.STALE
             final_key = FinalKey.from_turn(turn_token)
@@ -2761,7 +2765,7 @@ class IndependentAsrRuntime:
         await self._notify_asr_turn_abandoned(suppression.turn_token)
         if should_restart:
             try:
-                await suppression.detector.reset()
+                reset_applied = await suppression.detector.reset()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2769,7 +2773,15 @@ class IndependentAsrRuntime:
                     "[%s] detector reset failed during rejection recovery",
                     self.display_name,
                 )
-            self._ensure_transport_restart_task()
+                reset_applied = False
+            if reset_applied:
+                self._ensure_transport_restart_task()
+            else:
+                await self._handle_independent_asr_error(
+                    suppression.request.session_epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_ENDPOINTING_FAILED",
+                )
 
     async def _finish_candidate_rejection(
         self,
@@ -2792,6 +2804,23 @@ class IndependentAsrRuntime:
                 "[%s] rejected candidate reset failed open",
                 self.display_name,
             )
+            try:
+                reset_applied = await suppression.detector.reset()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "[%s] unconditional rejected candidate reset failed",
+                    self.display_name,
+                )
+                reset_applied = False
+        if not reset_applied:
+            await self._handle_independent_asr_error(
+                suppression.request.session_epoch,
+                self._asr_provider or "unknown",
+                status_code="ASR_ENDPOINTING_FAILED",
+            )
+            return False
         should_restart = False
         async with self._asr_final_lock:
             if self._asr_candidate_rejection is not suppression:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -206,6 +207,71 @@ async def test_stale_shadow_correlation_and_callback_failure_are_fail_open() -> 
     runtime._reject_candidate.assert_not_awaited()
     profile.close()
     factory.close()
+
+
+async def test_rejection_transaction_survives_observation_callback_cancellation() -> (
+    None
+):
+    runtime = _runtime()
+    profile = _profile()
+    candidate = DetectorCandidateKey(8, 12)
+    runtime._asr_detector = SimpleNamespace(
+        correlate_speaker_shadow_candidate=AsyncMock(return_value=candidate)
+    )
+    runtime._asr_lifecycle = SimpleNamespace(
+        snapshot=SimpleNamespace(transport_generation=4, turn_id=6)
+    )
+    transaction_started = asyncio.Event()
+    transaction_release = asyncio.Event()
+    transaction_completed = asyncio.Event()
+
+    async def reject_candidate(*_args, **_kwargs) -> None:
+        transaction_started.set()
+        await transaction_release.wait()
+        transaction_completed.set()
+
+    runtime._reject_candidate = AsyncMock(side_effect=reject_candidate)
+    factory = OwnerVoiceAsrCompositionFactory(
+        runtime,
+        profile,
+        backend_factory_builder=_fake_backend_builder,
+    )
+    callback = factory()._on_observation
+    shadow_candidate = SpeakerShadowCandidateKey(8, 2, "provider_candidate")
+
+    try:
+        await callback(
+            SpeakerShadowObservation(
+                candidate=shadow_candidate,
+                similarity=0.39,
+                would_block=((0.40, True),),
+                audio_ms=1_500,
+                checkpoint_ms=1_500,
+            )
+        )
+        callback_task = asyncio.create_task(
+            callback(
+                SpeakerShadowObservation(
+                    candidate=shadow_candidate,
+                    similarity=0.38,
+                    would_block=((0.40, True),),
+                    audio_ms=3_000,
+                    checkpoint_ms=3_000,
+                )
+            )
+        )
+        await asyncio.wait_for(transaction_started.wait(), 1)
+
+        callback_task.cancel()
+        await asyncio.sleep(0)
+        transaction_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await callback_task
+        await asyncio.wait_for(transaction_completed.wait(), 1)
+    finally:
+        transaction_release.set()
+        profile.close()
+        factory.close()
 
 
 def test_closed_factory_cannot_capture_a_later_session() -> None:

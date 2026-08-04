@@ -5,7 +5,7 @@ import gc
 import weakref
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -2176,6 +2176,7 @@ class _RuntimeDetectorStub:
         self.close = AsyncMock()
         self.reset = AsyncMock()
         self.bind_candidate = bind_candidate or AsyncMock(return_value=object())
+        self.candidate_is_bound_to = AsyncMock(return_value=True)
         self.release_deferred_turn = release_deferred_turn or AsyncMock()
         self._turn_token = None
 
@@ -2318,6 +2319,11 @@ def _install_candidate_rejection_state(
     detector.candidate_is_current = AsyncMock(
         side_effect=lambda observed: observed == candidate
     )
+    detector.candidate_is_bound_to = AsyncMock(
+        side_effect=lambda observed, bound_turn: (
+            observed == candidate and bound_turn == turn_token
+        )
+    )
     detector.current_candidate = AsyncMock(return_value=candidate)
     detector.reset = AsyncMock(return_value=True)
     snapshot = lifecycle.snapshot
@@ -2419,6 +2425,36 @@ async def test_candidate_pause_before_rejection_closes_exact_rejection_window() 
     assert runtime._asr_partial_turn_token == turn_token
     assert runtime._asr_reserved_final_key == final_key
     assert final_key in runtime._asr_transcript_dispatcher._reservations
+
+
+async def test_candidate_rejection_refuses_current_candidate_bound_to_pending_turn() -> (
+    None
+):
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, previous_turn, final_key, _ = _install_candidate_rejection_state(
+        runtime,
+        detector,
+        draining=True,
+    )
+    detector.candidate_is_bound_to = AsyncMock(return_value=False)
+    session = runtime._asr_session
+
+    result = await runtime._reject_candidate(
+        request,
+        active_profile_generation="profile-7",
+        active_filter_generation="beta-v1",
+    )
+
+    assert result is CandidateRejectionOutcome.STALE
+    detector.candidate_is_bound_to.assert_awaited_once_with(
+        request.candidate,
+        previous_turn,
+    )
+    assert runtime._asr_session is session
+    assert runtime._asr_reserved_final_key == final_key
+    assert final_key in runtime._asr_transcript_dispatcher._reservations
+    session.close.assert_not_awaited()
 
 
 async def test_blocked_partial_callback_does_not_block_candidate_rejection() -> None:
@@ -2529,6 +2565,69 @@ async def test_candidate_rejection_suppresses_tail_until_exact_pause() -> None:
     runtime._ensure_transport_restart_task.assert_called_once_with()
 
 
+async def test_candidate_pause_retries_unconditional_reset_before_restart() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, candidate = _install_candidate_rejection_state(runtime, detector)
+    assert (
+        await runtime._reject_candidate(
+            request,
+            active_profile_generation="profile-7",
+            active_filter_generation="beta-v1",
+        )
+        is CandidateRejectionOutcome.APPLIED
+    )
+    recovery_steps: list[object] = []
+
+    async def reset_detector(*, expected_candidate=None) -> bool:
+        recovery_steps.append(expected_candidate)
+        if expected_candidate is not None:
+            raise RuntimeError("exact reset failed")
+        return True
+
+    detector.reset = AsyncMock(side_effect=reset_detector)
+    runtime._ensure_transport_restart_task = MagicMock(
+        side_effect=lambda: recovery_steps.append("restart")
+    )
+
+    reset_applied = await runtime._finish_candidate_rejection(candidate)
+
+    assert reset_applied is True
+    assert recovery_steps == [candidate, None, "restart"]
+    assert runtime._asr_candidate_rejection is None
+
+
+async def test_candidate_pause_escalates_when_all_detector_resets_fail() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, candidate = _install_candidate_rejection_state(runtime, detector)
+    assert (
+        await runtime._reject_candidate(
+            request,
+            active_profile_generation="profile-7",
+            active_filter_generation="beta-v1",
+        )
+        is CandidateRejectionOutcome.APPLIED
+    )
+    detector.reset = AsyncMock(side_effect=RuntimeError("reset failed"))
+    runtime._ensure_transport_restart_task = MagicMock()
+    runtime._handle_independent_asr_error = AsyncMock()
+
+    reset_applied = await runtime._finish_candidate_rejection(candidate)
+
+    assert reset_applied is False
+    assert detector.reset.await_args_list == [
+        call(expected_candidate=candidate),
+        call(),
+    ]
+    runtime._handle_independent_asr_error.assert_awaited_once_with(
+        request.session_epoch,
+        "glm",
+        status_code="ASR_ENDPOINTING_FAILED",
+    )
+    runtime._ensure_transport_restart_task.assert_not_called()
+
+
 async def test_candidate_rejection_cleanup_failure_recovers_upload() -> None:
     callbacks = _runtime_callbacks()
     runtime = IndependentAsrRuntime(callbacks)
@@ -2579,7 +2678,7 @@ async def test_candidate_rejection_cleanup_failure_resets_detector_before_restar
     assert recovery_steps == ["reset", "restart"]
 
 
-async def test_candidate_rejection_recovery_restarts_after_detector_reset_error() -> None:
+async def test_candidate_rejection_recovery_escalates_detector_reset_error() -> None:
     callbacks = _runtime_callbacks()
     runtime = IndependentAsrRuntime(callbacks)
     detector = _RuntimeDetectorStub()
@@ -2587,6 +2686,7 @@ async def test_candidate_rejection_recovery_restarts_after_detector_reset_error(
     runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
     detector.reset = AsyncMock(side_effect=RuntimeError("reset failed"))
     runtime._ensure_transport_restart_task = MagicMock()
+    runtime._handle_independent_asr_error = AsyncMock()
 
     result = await runtime._reject_candidate(
         request,
@@ -2597,7 +2697,12 @@ async def test_candidate_rejection_recovery_restarts_after_detector_reset_error(
     assert result is CandidateRejectionOutcome.FAILED
     detector.reset.assert_awaited_once_with()
     callbacks.on_turn_abandoned.assert_awaited_once_with(turn_token)
-    runtime._ensure_transport_restart_task.assert_called_once_with()
+    runtime._handle_independent_asr_error.assert_awaited_once_with(
+        request.session_epoch,
+        "glm",
+        status_code="ASR_ENDPOINTING_FAILED",
+    )
+    runtime._ensure_transport_restart_task.assert_not_called()
 
 
 async def test_candidate_rejection_recovery_preserves_detector_reset_cancellation() -> None:

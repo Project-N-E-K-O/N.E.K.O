@@ -421,6 +421,14 @@ async def test_shadow_correlation_never_replaces_detector_authority() -> None:
 
     assert await detector.current_candidate() == detector_candidate
     assert await detector.candidate_is_current(detector_candidate) is True
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    other_turn_token = VoiceTurnToken(_ingress_token(), turn_id=2)
+    assert await detector.bind_candidate(detector_candidate, turn_token) is not None
+    assert await detector.candidate_is_bound_to(detector_candidate, turn_token) is True
+    assert (
+        await detector.candidate_is_bound_to(detector_candidate, other_turn_token)
+        is False
+    )
     assert (
         await detector.correlate_speaker_shadow_candidate(shadow_candidate)
         == detector_candidate

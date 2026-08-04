@@ -7,7 +7,10 @@ import copy
 import threading
 from collections.abc import Callable
 
-from main_logic.asr_client.candidate_control import CandidateRejectionRequest
+from main_logic.asr_client.candidate_control import (
+    CandidateRejectionOutcome,
+    CandidateRejectionRequest,
+)
 from main_logic.asr_client.runtime import IndependentAsrRuntime
 from main_logic.asr_client.speaker_shadow.asset_manifest import (
     CAMPPLUS_MODEL_ID,
@@ -101,6 +104,16 @@ class OwnerVoiceAsrCompositionFactory:
 
         policy = OwnerVoiceBetaPolicy()
         runtime = self._runtime
+        rejection_tasks: set[asyncio.Task[CandidateRejectionOutcome]] = set()
+
+        def reap_rejection(task: asyncio.Task[CandidateRejectionOutcome]) -> None:
+            rejection_tasks.discard(task)
+            if task.cancelled():
+                return
+            try:
+                task.exception()
+            except Exception:
+                return
 
         async def on_observation(observation: SpeakerShadowObservation) -> None:
             try:
@@ -141,11 +154,17 @@ class OwnerVoiceAsrCompositionFactory:
                     profile_generation=profile_generation,
                     filter_generation=policy.VERSION,
                 )
-                await runtime._reject_candidate(
-                    request,
-                    active_profile_generation=profile_generation,
-                    active_filter_generation=policy.VERSION,
+                rejection_task = asyncio.create_task(
+                    runtime._reject_candidate(
+                        request,
+                        active_profile_generation=profile_generation,
+                        active_filter_generation=policy.VERSION,
+                    ),
+                    name="owner-voice-candidate-rejection",
                 )
+                rejection_tasks.add(rejection_task)
+                rejection_task.add_done_callback(reap_rejection)
+                await asyncio.shield(rejection_task)
             except asyncio.CancelledError:
                 raise
             except Exception:
