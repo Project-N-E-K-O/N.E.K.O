@@ -990,39 +990,51 @@ class QQClient(QQConnectionBase):
         data = await self.call_action("get_group_list", timeout=10.0)
         return data if isinstance(data, list) else []
 
-    async def send_message(self, user_id: str, message: str):
-        """发送私聊消息"""
+    async def send_message(self, user_id: str, message: str) -> Optional[str]:
+        """发送私聊消息（CQ 码字符串），返回 message_id。
+
+        与 segments 版同一个 action，只是 message 字段是字符串——编码不能
+        改（把 CQ 码塞进 text 段会让 [CQ:at,qq=…] 原样显示给用户），但回执
+        可以要：没有它就分不清"发出去了"和"没发出去"，投递确认链只能无条件
+        判成功，未送达的回复会被当已投递清掉排除标、进 scoped 记忆。"""
+        return await self._send_text_action(
+            "send_private_msg", {"user_id": int(user_id), "message": message},
+            log_target=f"private {user_id}",
+        )
+
+    async def send_group_message(self, group_id: str, message: str) -> Optional[str]:
+        """发送群聊消息（CQ 码字符串），返回 message_id。见 send_message。"""
+        return await self._send_text_action(
+            "send_group_msg", {"group_id": int(group_id), "message": message},
+            log_target=f"group {group_id}", record_sent=True,
+        )
+
+    async def _send_text_action(
+        self, action: str, params: Dict[str, Any], *,
+        log_target: str, record_sent: bool = False,
+    ) -> Optional[str]:
+        """One echo round-trip for the CQ-string senders (same plumbing as
+        the segment senders; responses are dispatched by echo, not action)."""
         if not self._main_client:
             raise RuntimeError("No Napcat client connected")
 
-        payload = {
-            "action": "send_private_msg",
-            "params": {
-                "user_id": int(user_id),
-                "message": message,
-            },
-        }
-
-        await self._main_client.send(json.dumps(payload))
-        if self.logger:
-            self.logger.debug(f"Sent message to {user_id}")
-
-    async def send_group_message(self, group_id: str, message: str):
-        """发送群聊消息"""
-        if not self._main_client:
-            raise RuntimeError("No Napcat client connected")
-
-        payload = {
-            "action": "send_group_msg",
-            "params": {
-                "group_id": int(group_id),
-                "message": message,
-            },
-        }
-
-        await self._main_client.send(json.dumps(payload))
-        if self.logger:
-            self.logger.debug(f"Sent group message to {group_id}")
+        echo = secrets.token_hex(8)
+        payload = {"action": action, "params": params, "echo": echo}
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_actions[echo] = future
+        try:
+            await self._main_client.send(json.dumps(payload))
+            response = await asyncio.wait_for(future, timeout=10.0)
+            message_id = str((response.get("data") or {}).get("message_id") or "")
+            if message_id and record_sent:
+                self.record_sent_message_id(message_id)
+            if self.logger:
+                self.logger.debug(f"Sent message to {log_target}")
+            return message_id if message_id else None
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._pending_actions.pop(echo, None)
 
     async def send_private_message_segments(self, user_id: str, segments: list[Dict[str, Any]], *, record_sent: bool = True) -> Optional[str]:
         """发送私聊消息片段，返回 message_id。"""

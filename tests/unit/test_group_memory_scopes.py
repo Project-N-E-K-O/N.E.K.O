@@ -4908,9 +4908,11 @@ async def test_delivery_result_reflects_open_platform_send_failure():
     # Open Platform success -> delivered.
     result = await _node(False, "msgid").deliver(plan)
     assert result.delivered is True
-    # NapCat is fire-and-forget: no exception means delivered.
+    # NapCat now has a receipt too (the CQ-string senders do the same echo
+    # round-trip as the segment ones), so a missing message id means the
+    # action never came back: unconfirmed, not delivered.
     result = await _node(True, None).deliver(plan)
-    assert result.delivered is True
+    assert result.delivered is False
     result = await _node(True, "napcat-mid").deliver(plan)
     assert result.delivered is True
 
@@ -10344,6 +10346,8 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     client = QQClient.__new__(QQClient)
     client._pending_actions = {}
     client.logger = None
+    client._sent_message_ids = []
+    client.record_sent_message_id = client._sent_message_ids.append
     sent: list = []
 
     class _WS:
@@ -10361,6 +10365,9 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     assert await client.send_private_record("2046", "file:///a.wav") == "pm-1"
     assert sent[-1]["action"] == "send_private_msg"
     assert not client._pending_actions  # no leaked futures
+    # A confirmed private send records its id too (the quoted-reply check
+    # asks "is this one of mine?" for private chats as well).
+    assert client._sent_message_ids == ["pm-1"]
 
     # No receipt -> None (the caller falls back to text).
     class _SilentWS:

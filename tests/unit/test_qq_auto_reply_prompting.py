@@ -137,7 +137,17 @@ def test_open_platform_group_mentions_distinguish_bot_from_other_users():
     assert with_other_user["mentions_other_user"] is True
 
 
-def test_focus_rise_seconds_scales_new_focus_before_stabilizing():
+def test_focus_rise_window_boosts_the_focus_until_the_window_expires():
+    """The rise window hands a freshly focused group a linear bonus
+    (0 -> +2.0); once the window passes the bonus is gone and the score
+    falls back to the raw one.
+
+    These assertions follow attention_service as implemented. The case
+    originally asserted the opposite semantic (a new focus scaled down to
+    half and climbing back up), contradicting the implementation landed in
+    the same commit, so it never passed. Which direction the window should
+    have is a product call for the plugin side; this pins the one that is
+    actually live."""
     from types import SimpleNamespace
 
     from plugin.plugins.qq_auto_reply.attention_service import QQAttentionService, QQGroupAttentionState
@@ -177,11 +187,11 @@ def test_focus_rise_seconds_scales_new_focus_before_stabilizing():
         ).to_dict(),
     }
 
-    # 刚拿到焦点时，焦点有效分数被爬升窗口压低，避免立刻把其他群压死。
-    assert service.get_focus_score() == pytest.approx(4.0, rel=1e-3)
+    # 窗口过半（5s / 10s）：原始分 8.0 之上加满额 2.0 的一半。
+    assert service.get_focus_score() == pytest.approx(9.0, rel=1e-3)
     assert service.get_snapshot()["focus_group_id"] == "focus"
 
-    # 窗口结束后恢复完整分数。
+    # 窗口结束后加成归零，回到原始分。
     service._current_time = lambda: 106
-    assert service.get_focus_score() > 7.5
+    assert service.get_focus_score() == pytest.approx(8.0, rel=1e-3)
     assert service.get_snapshot()["focus_group_id"] == "focus"
