@@ -884,7 +884,24 @@ _WHOLE_CARD_LIGHT_VERBS = (
     "进行", "進行",
     "给我", "給我", "帮我", "幫我", "替我", "为我", "為我",
 )
-_WHOLE_CARD_PREVERB_WORDS = _WHOLE_CARD_BARE_ADVERBS + _WHOLE_CARD_LIGHT_VERBS
+# ⚠️ 必要性/义务情态动词占的**还是同一个槽**：`所有字段必须重写` base 是 True，
+# 这一版的收尾语法在情态词那里就把目标判掉了（Codex P2 第六十一轮）。
+# ⚠️ Codex 只报了 必须/務必 两个，实测同族一起丢的还有
+# 需要/应该/得/一定要/最好——能愿动词是**封闭词类**，一次列全，别一个一个补。
+# ⚠️ 只收**必要性**那一支。可能性那一支（能/会/可以/想/愿意）不进来：
+# `所有字段能重写` 是在问能力不是在下命令，收进来就是往数据覆盖那侧放。
+# ⚠️ `需` 和 `一定` 单列、不列 `需要`/`一定要`：run 是 `(?:词地?\s*)+`，
+# 复合形由 需+要 / 一定+要 自己拼出来，同时保住那张表的**前缀码**性质
+# （列了 `需要` 又列 `需` 就破了，测试会当场见红）。
+# ⚠️ 否定形不必在这里排除：`所有字段不需要重写` 走的是 _CHAT_NEGATED_REWRITE_RE，
+# `所有字段该不该重写` 走的是 _CHAT_QUESTION_CLAUSE_RE，两道守卫都在这之前。
+_WHOLE_CARD_MODAL_VERBS = (
+    "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
+    "应该", "應該", "应当", "應當", "该", "該", "一定", "最好",
+)
+_WHOLE_CARD_PREVERB_WORDS = (
+    _WHOLE_CARD_BARE_ADVERBS + _WHOLE_CARD_LIGHT_VERBS + _WHOLE_CARD_MODAL_VERBS
+)
 _WHOLE_CARD_BARE_ADVERB = r"(?:" + "|".join(_WHOLE_CARD_PREVERB_WORDS) + r")"
 # ⚠️ 副词可以**叠着用**：`把所有字段再统一重写` / `把整个卡的所有内容批量统一重写`
 # base 都是 True，上一版只吃一个副词就要求重写动词，这些请求全掉了

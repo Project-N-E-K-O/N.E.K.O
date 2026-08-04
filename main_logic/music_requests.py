@@ -874,7 +874,16 @@ _ZH_FRAME_PREDICATE_RE = re.compile(r"(?:有|是|没|沒|要|能|会|會|想|可
 
 
 def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
-    """配平的引用跨度区间，跟子句切分用的是同一张引号表。"""  # noqa: DOCSTRING_CJK
+    """引用跨度区间，跟子句切分用的是同一张引号表。
+
+    ⚠️ **没配平的开引号一直管到文末**：`停止播放《如果爱是否合适` 里用户漏了书名号
+    的右半边，上一版直接把这段丢掉，于是 `如果` 被当成条件框架、把后面那个真
+    疑问词 `是否` 中和掉，一句提问执行了取消（Codex P2 第六十一轮，base 是
+    False——危险方向）。
+
+    ⚠️ 这也是跟 `_ZH_UNPAIRED_QUOTE_OPENER` **对齐**：疑问守卫那边早就把没配平的
+    开引号当标题起点了，这边却当它不存在，同一个字符两套读法。
+    """  # noqa: DOCSTRING_CJK
     spans: list[tuple[int, int]] = []
     opener = ""
     start = -1
@@ -887,6 +896,8 @@ def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
         if char in _QUOTE_PAIRS and char not in _ZH_AMBIGUOUS_QUOTE_OPENERS:
             opener = char
             start = index
+    if opener:
+        spans.append((start, len(text)))
     return spans
 
 
@@ -933,7 +944,7 @@ def _zh_neutralize_free_choice(text: str) -> str:
         # （`《晴天，雨天》`）。子句切分器本来就把跨度当不透明的，这里不跟上
         # 就会在标题内部提前断掉（Codex P2 第五十四轮）。
         stop = len(text)
-        for hit in _ZH_CLAUSE_BOUNDARY_RE.finditer(text, marker.end()):
+        for hit in _ZH_FRAME_SCOPE_END_RE.finditer(text, marker.end()):
             if any(lo <= hit.start() < hi for lo, hi in spans):
                 continue
             stop = hit.start()
@@ -949,6 +960,20 @@ def _zh_neutralize_free_choice(text: str) -> str:
 # （Codex P2 第五十二轮，base 是 False——危险方向）。
 _ZH_CLAUSE_BOUNDARY_RE = re.compile(
     "[" + re.escape("".join(sorted(_CLAUSE_SEPARATOR_CHARS))) + "]"
+)
+# ⚠️ 辖域**也止于并列连词**，不只是标点：`如果会影响歌单就算了然后这样是否合适`
+# 里那个 `如果` 管不到 `然后` 后面的真问题，上一版一路扫到子句尾、把 `是否`
+# 中和掉，提问执行了取消（Codex P2 第六十一轮，base 是 False——危险方向）。
+# ⚠️ Codex 只报了 然后/但/接着，但连词跟标点一样是**封闭词类**，一次列全。
+# ⚠️ 标点那一半仍然从 `_CLAUSE_SEPARATOR_CHARS` 同源派生，只是在外面并上连词；
+# 别把连词塞进那个字符类里，那张表要跟子句切分器保持一致。
+_ZH_FRAME_SCOPE_COORDINATORS = (
+    "然后", "然後", "然而", "接着", "接著", "接下来", "接下來",
+    "但是", "但", "不过", "不過", "可是", "而且", "并且", "並且",
+    "另外", "再说", "再說", "所以", "因此",
+)
+_ZH_FRAME_SCOPE_END_RE = re.compile(
+    _ZH_CLAUSE_BOUNDARY_RE.pattern + "|" + "|".join(_ZH_FRAME_SCOPE_COORDINATORS)
 )
 _ZH_TEMPORAL_CLAUSE_JOIN_RE = re.compile(
     rf"(的(?:时候|時候))\s*[，,；;、]\s*(?=[^，,。！!？?]{{0,4}}?{_ZH_COORDINATION_ADVERB})"

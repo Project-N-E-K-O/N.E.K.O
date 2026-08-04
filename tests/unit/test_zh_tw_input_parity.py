@@ -4498,3 +4498,102 @@ def test_frame_words_after_unquoted_target_modifiers(modifier):
     assert is_explicit_music_cancellation(questioned) is False, questioned
     framed = '我想停止播放如果有什么新歌再告诉我'
     assert is_explicit_music_cancellation(framed) is True
+
+
+def test_the_frame_scope_coordinator_table_is_pinned():
+    """⚠️ 下面那条笛卡尔积从这张表派生，先把表钉住（相等，不是包含）。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests
+
+    assert music_requests._ZH_FRAME_SCOPE_COORDINATORS == (
+        "然后", "然後", "然而", "接着", "接著", "接下来", "接下來",
+        "但是", "但", "不过", "不過", "可是", "而且", "并且", "並且",
+        "另外", "再说", "再說", "所以", "因此",
+    )
+
+
+def _frame_scope_coordinators() -> list[str]:
+    from main_logic.music_requests import _ZH_FRAME_SCOPE_COORDINATORS
+
+    table = list(_ZH_FRAME_SCOPE_COORDINATORS)
+    assert table, "_ZH_FRAME_SCOPE_COORDINATORS 是空的"
+    return table
+
+
+@pytest.mark.parametrize("coordinator", _frame_scope_coordinators())
+def test_a_frame_stops_at_a_coordinator(coordinator):
+    """任指/条件框架的辖域**止于并列连词**，不只是止于标点
+    （base 是 False——危险方向，Codex P2 第六十一轮）。
+
+    `如果会影响歌单就算了然后这样是否合适` 里那个 `如果` 管不到 `然后` 后面的
+    真问题；上一版一路扫到子句尾，把 `是否` 中和掉，一句提问执行了取消。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放如果会影响歌单就算了{coordinator}这样是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_coordinators_do_not_break_real_frames():
+    """⚠️ 反向：连词只截**辖域**，不连词的真框架照旧成立。
+
+    第四十八轮的条件框架、第五十八轮的认知谓语框架都钉在这里。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ('我想停止播放如果有什么新歌再告诉我',
+                 '我想停止播放因为无论唱什么歌都不好听',
+                 '我想停止播放因为我知道谁唱的',
+                 '停止播放', '帮我停止播放红心歌单'):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize("opener", ["《", "「", "“", "『", "〈"])
+@pytest.mark.parametrize("frame", ["如果", "无论", "無論", "不管", "即使"])
+def test_an_unmatched_quote_opener_runs_to_the_end_of_the_text(opener, frame):
+    """⚠️ **没配平的开引号一直管到文末**（base 是 False——危险方向，
+    Codex P2 第六十一轮）。
+
+    `停止播放《如果爱是否合适` 里用户漏了书名号的右半边。上一版直接把这段丢掉，
+    于是 `如果` 被当成条件框架、把后面那个真疑问词 `是否` 中和掉，提问执行了取消。
+
+    ⚠️ 这同时是跟 `_ZH_UNPAIRED_QUOTE_OPENER` **对齐**：疑问守卫那边早就把没配平
+    的开引号当标题起点了，跨度这边却当它不存在——同一个字符两套读法。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{opener}{frame}爱是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_unmatched_openers_report_a_span_to_the_end():
+    """⚠️ 直接钉住助手本身，别只从外层行为反推。
+
+    外层还有疑问守卫等好几道，只测外层的话，跨度算错但恰好被别的守卫兜住时
+    这条就成了假绿。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests
+
+    text = '我想停止播放《如果爱是否合适'
+    assert music_requests._zh_quoted_spans(text) == [(text.index('《'), len(text))]
+    paired = '我想停止播放《好不好》有什么影响'
+    assert music_requests._zh_quoted_spans(paired) == [
+        (paired.index('《'), paired.index('》') + 1)
+    ]
+
+
+def test_a_bare_a_not_a_after_an_unmatched_opener_is_read_as_a_question():
+    """⚠️ 这是上面那条的**代价**，写成用例钉住，别当缺陷再修一次。
+
+    `停止播放《好不好` base 是 True（把 `好不好` 当歌名），现在是 False
+    （当提问）。它跟 `停止播放《如果爱是否合适` 在结构上**无法区分**——都是
+    「没配平的开引号 + 里面有疑问式」。两条只能取一条：
+
+    - 让引号内的疑问式失效 → `《如果爱是否合适` 这类提问执行取消（重）
+    - 让引号内的疑问式照旧生效 → `《好不好` 少停一次歌（轻）
+
+    取轻的那一侧。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation('我想停止播放《好不好') is False
+    assert is_explicit_music_cancellation('我想停止播放《好不好》') is True

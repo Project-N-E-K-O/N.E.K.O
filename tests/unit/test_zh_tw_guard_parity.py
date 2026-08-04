@@ -1734,8 +1734,14 @@ def test_the_adverb_table_is_a_prefix_code():
         # 受事/礼貌短语占同一个槽（Codex P2 第五十七轮，base 都是 True）。
         "给我", "給我", "帮我", "幫我", "替我", "为我", "為我",
     }
+    # ⚠️ 必要性情态动词是第三张表，占同一个槽（Codex P2 第六十一轮）。
+    assert set(router._WHOLE_CARD_MODAL_VERBS) == {
+        "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
+        "应该", "應該", "应当", "應當", "该", "該", "一定", "最好",
+    }
     assert list(WHOLE_CARD_PREVERBS) == [
         *WHOLE_CARD_ADVERBS, *WHOLE_CARD_LIGHT_VERBS,
+        *router._WHOLE_CARD_MODAL_VERBS,
     ]
     assert router._WHOLE_CARD_BARE_ADVERB == (
         r"(?:" + "|".join(WHOLE_CARD_PREVERBS) + r")"
@@ -2540,25 +2546,58 @@ _SIMPLIFIED_TO_TRADITIONAL.update({
 })
 
 
+# 上一轮这里是**手写清单**，于是新加一张表就漏一张——第六十一轮加
+# `_WHOLE_CARD_MODAL_VERBS` / `_ZH_FRAME_SCOPE_COORDINATORS` 时当场撞上。
+# 改成**自动发现**：两个模块里所有「全大写名 + 字符串元组 + 含汉字」的常量。
+# ⚠️ 这条断言是自限的——只有当某个词按字映射出**不同于自己**的繁体形时才要求
+# 配对，纯数字/量词/标点那些表天然免检，不必再维护豁免名单。
+_PAIRED_TABLE_FLOOR = frozenset({
+    "_ZH_NON_INTERROGATIVE_FRAMES", "_ZH_A_NOT_A_MODALS", "_ZH_FREE_CHOICE_WH_WORDS",
+    "_ZH_TARGET_MODIFIER_NOUNS", "_WHOLE_CARD_QUANTIFIERS", "_WHOLE_CARD_BARE_ADVERBS",
+    "_WHOLE_CARD_LIGHT_VERBS", "_WHOLE_CARD_MEASURE_WORDS",
+    "_WHOLE_CARD_INDEFINITE_QUANTITIES", "_WHOLE_CARD_CLAUSE_CONTINUATIONS",
+    "_WHOLE_CARD_RESULT_PHRASES", "_CHAT_NEGATION_WORDS",
+    "_WHOLE_CARD_MODAL_VERBS", "_ZH_FRAME_SCOPE_COORDINATORS",
+})
+
+
 def _paired_tables():
-    """本 PR 里所有「简繁成对」的实现侧词表。"""  # noqa: DOCSTRING_CJK
+    """两个实现模块里所有「简繁成对」的词表，**自动发现**。"""  # noqa: DOCSTRING_CJK
     import main_logic.music_requests as music
     import main_routers.card_assist_router as router
 
-    return {
-        "_ZH_NON_INTERROGATIVE_FRAMES": music._ZH_NON_INTERROGATIVE_FRAMES,
-        "_ZH_A_NOT_A_MODALS": music._ZH_A_NOT_A_MODALS,
-        "_ZH_FREE_CHOICE_WH_WORDS": music._ZH_FREE_CHOICE_WH_WORDS,
-        "_ZH_TARGET_MODIFIER_NOUNS": music._ZH_TARGET_MODIFIER_NOUNS,
-        "_WHOLE_CARD_QUANTIFIERS": router._WHOLE_CARD_QUANTIFIERS,
-        "_WHOLE_CARD_BARE_ADVERBS": router._WHOLE_CARD_BARE_ADVERBS,
-        "_WHOLE_CARD_LIGHT_VERBS": router._WHOLE_CARD_LIGHT_VERBS,
-        "_WHOLE_CARD_MEASURE_WORDS": router._WHOLE_CARD_MEASURE_WORDS,
-        "_WHOLE_CARD_INDEFINITE_QUANTITIES": router._WHOLE_CARD_INDEFINITE_QUANTITIES,
-        "_WHOLE_CARD_CLAUSE_CONTINUATIONS": router._WHOLE_CARD_CLAUSE_CONTINUATIONS,
-        "_WHOLE_CARD_RESULT_PHRASES": router._WHOLE_CARD_RESULT_PHRASES,
-        "_CHAT_NEGATION_WORDS": router._CHAT_NEGATION_WORDS,
-    }
+    found = {}
+    for module in (music, router):
+        for name, value in vars(module).items():
+            # ⚠️ 只看**私有**常量。公开的那些是**数据契约**而不是匹配词表——
+            # `CHARACTER_RESERVED_FIELDS` 存的是角色卡 JSON 的字段名，
+            # 把 `原始数据` 配成 `原始數據` 会凭空造出一个读不到的键。
+            # 判据不是「这张表我审过」而是「它是不是拿去匹配用户输入的」。
+            if not name.startswith("_"):
+                continue
+            if not name.isupper() or not isinstance(value, tuple) or not value:
+                continue
+            if not all(isinstance(entry, str) for entry in value):
+                continue
+            if any("\u4e00" <= ch <= "\u9fff" for entry in value for ch in entry):
+                found[name] = value
+    return found
+
+
+def test_the_paired_table_discovery_still_sees_the_known_tables():
+    """⚠️ 自动发现的**下限**：过滤条件写错（比如全都被滤掉）时上面那条
+    参数化会退化成空集合、静默变成零覆盖。这里钉住已知的 12 张一张都不能少。
+
+    ⚠️ 只钉下限不钉上限——钉了上限就等于把手写清单换个地方写，新表照样漏。
+    """  # noqa: DOCSTRING_CJK
+    discovered = set(_paired_tables())
+    assert _PAIRED_TABLE_FLOOR <= discovered
+    # ⚠️ 并且**确实比手写清单宽**：换成自动发现之后多盖到了 7 张表
+    # （_WHOLE_CARD_SCOPE_NOUNS / _ZH_PROGRESSIVE_ADVERBS / _WHOLE_CARD_HEAD_NOUNS
+    # 这三张里都有真的简繁对，删掉繁体形会当场见红——变异验证过）。
+    # 这条不是凑数——它拦的是「过滤条件收得太紧、退化回原来那张清单」。
+    assert len(discovered) > len(_PAIRED_TABLE_FLOOR)
+    assert "CHARACTER_RESERVED_FIELDS" not in discovered
 
 
 @pytest.mark.parametrize("table_name", sorted(_paired_tables()))
@@ -2587,3 +2626,83 @@ def test_every_simplified_entry_has_its_traditional_twin(table_name):
         if twins and not (twins & entries):
             missing.append((word, sorted(twins)))
     assert missing == [], f'{table_name} 只收了简体形，缺繁体: {missing}'
+
+
+def test_the_modal_verb_table_is_pinned():
+    """⚠️ 下面那条笛卡尔积是从这张表派生的，改表就改测试——所以先把表本身钉住。
+
+    ⚠️ 用相等而不是包含：只有相等才拦得住「悄悄删掉一个词」。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._WHOLE_CARD_MODAL_VERBS == (
+        "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
+        "应该", "應該", "应当", "應當", "该", "該", "一定", "最好",
+    )
+
+
+@pytest.mark.parametrize("modal", _router_table("_WHOLE_CARD_MODAL_VERBS"))
+@pytest.mark.parametrize("target", ["所有字段", "整个卡的全部内容", "全部欄位"])
+def test_necessity_modals_sit_in_the_preverb_slot(target, modal):
+    """必要性情态动词占的是「目标 + X + 重写动词」那个槽（base 全是 True，
+    Codex P2 第六十一轮）。
+
+    ⚠️ Codex 只报了 必须/務必，实测同族一起丢的还有 需要/应该/得/一定要/最好。
+    能愿动词是封闭词类，一次列全。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{target}{modal}重写'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("compound", "parts"),
+    [("需要", ("需", "要")), ("一定要", ("一定", "要")), ("必须要", ("必须", "要"))],
+)
+def test_modal_compounds_come_from_the_run_not_from_the_table(compound, parts):
+    """⚠️ 复合情态形（需要 / 一定要）**不在表里**，是 `_WHOLE_CARD_ADVERB_RUN`
+    那个 `+` 自己拼出来的。
+
+    列了 `需要` 又列 `需` 就破了那张表的**前缀码**性质，而前缀码正是这个 `+`
+    不会指数回溯的依据。所以这里同时断言：复合形能用，且它的两截都在表里、
+    复合形本身不在。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'所有字段{compound}重写') is True
+    assert compound not in router._WHOLE_CARD_MODAL_VERBS
+    for part in parts:
+        assert part in router._WHOLE_CARD_PREVERB_WORDS, part
+
+
+@pytest.mark.parametrize("modal", ["必须", "必須", "需要", "应该", "一定要", "得"])
+def test_necessity_modals_do_not_defeat_the_earlier_guards(modal):
+    """⚠️ 情态词开的口子**不能穿过前面两道守卫**。
+
+    否定（`不要…`）和疑问（`…吗` / `该不该`）都在这一步之前判掉，情态词只是
+    在两道守卫**之后**的那个槽里放宽。这三条反向断言钉住这个顺序。
+
+    ⚠️ 第四条钉住缺陷一本体：`把整个卡的全部名字重写` 仍然不是整卡命令。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'不要把所有字段{modal}重写') is False
+    assert router._chat_text_requests_full_rewrite(f'所有字段{modal}重写吗') is False
+    assert router._chat_text_requests_full_rewrite('所有字段该不该重写') is False
+    assert router._chat_text_requests_full_rewrite('把整个卡的全部名字重写') is False
+
+
+@pytest.mark.parametrize("modal", ["能", "会", "會", "可以", "想", "愿意", "願意"])
+def test_possibility_modals_stay_out(modal):
+    """⚠️ 只收**必要性**那一支。可能性/意愿那一支不进来——`所有字段能重写`
+    是在问能力不是在下命令，收进来就是往数据覆盖那一侧放。
+
+    ⚠️ 这条是**方向断言**而不是覆盖断言：它规定的是这张表的边界在哪，
+    往表里顺手加个 `能` 会当场见红。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert modal not in router._WHOLE_CARD_MODAL_VERBS
+    text = f'所有字段{modal}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
