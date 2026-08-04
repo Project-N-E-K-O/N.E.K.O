@@ -373,7 +373,9 @@ _APPROVE_AFFIRMATIONS = frozenset({"同意", "我同意", "没问题", "沒問�
 # ⚠️ 和裸应答同理，应答子句只认**整条子句原样**，`好的喵~` 不算。
 _APPROVE_COMPANIONS = frozenset({
     "好", "好的", "好吧", "行", "行了", "可以", "嗯", "对", "没错", "沒錯",
-    "没意见", "沒意見", "批准", "允许", "允許", "ok", "okay",
+    "没意见", "沒意見", "批准", "允许", "允許",
+    # ⚠️ OK / okay 不在这里：它们已经进了 _NEUTRAL_LEAD，独立成句时由上面
+    # 「纯中性首部词 → companion」那一档接住，重复登记只会多一条判据、两处漂移。
 })
 
 # 动作短语支：这些在改造前是**子串**触发，只要句子里含就命中，所以对它们剥首部虚词
@@ -434,8 +436,15 @@ def _approve_clause_kind(clause: str) -> Optional[str]:
     # 这里用**窄**首部表是保守选择，不是安全必需：改成宽表跑 140239 条新旧差分，
     # 简体侧扩大仍是 0（应答子句 + 动作子句的任意组合在旧实现里都被子串命中过）。
     # 所以别为这一行写「必须是窄表」的测试——那是个等价变异，钉不住。
+    # ⚠️ 独立成句的**中性首部词**也算应答子句：`请，去执行` / `麻烦，去执行` /
+    # `那，去执行` 在旧实现里靠子串命中，而同样的词直接贴着写（`请去执行`）一直是通的。
+    # 它们本来就被判定为「剥掉不改变谁被授权做什么」，单独成句自然也不改变。
+    # 和其它应答子句一样：单独出现永远不算授权，必须同句里还有动作短语或裸应答。
+    lead_only = _CLAUSE_LEAD_NEUTRAL.sub("", _DECORATION.sub("", text).strip()).strip()
+    if text and not lead_only:
+        return "companion"
     if _clause_hits(
-        text.lower(),
+        text,
         _APPROVE_COMPANIONS,
         strip_tail=True,
         lead_re=_CLAUSE_LEAD_NEUTRAL,
@@ -486,19 +495,19 @@ def _command_clause(clauses: list) -> str:
         stripped = _DECORATION.sub("", clause).strip()
         if not stripped:
             continue
+        # ⚠️ 剥词要试**所有**能匹配的词尾、并且优先剥最长的那个，不能像早先那样
+        # 只取词表里第一个匹配到的：`_TAIL_TOKENS` 里 `了` 排在 `好了` 前面，
+        # `换个话题 好了` 的尾巴会被剥成 `好`，于是这段尾巴不被认成「纯语气词」、
+        # 反倒被当成命令子句，整条落空。这跟 _clause_hits 里那个坑是同一个。
+        # ⚠️ 同样要有硬上界：一串很长的语气词会让这里做 O(串长) 次切片。
         peeled = stripped
-        # ⚠️ 和 _clause_hits 同理，剥词要有硬上界：一串很长的语气词会让这里做
-        # O(串长) 次切片、每次 O(串长)。分类器在用户输入路径上，不能让它二次爆。
         for _ in range(_MAX_PEEL_CANDIDATES):
-            for token in _TAIL_TOKENS:
-                if peeled.endswith(token) and len(peeled) > len(token):
-                    peeled = peeled[: -len(token)]
-                    break
-                if peeled == token:
-                    peeled = ""
-                    break
-            else:
+            matches = [t for t in _TAIL_TOKENS if peeled.endswith(t)]
+            if not matches:
                 break
+            longest = max(matches, key=len)
+            peeled = peeled[: -len(longest)] if len(peeled) > len(longest) else ""
+            peeled = _DECORATION.sub("", peeled).strip()
             if not peeled:
                 break
         if peeled:

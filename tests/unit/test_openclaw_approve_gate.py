@@ -387,6 +387,47 @@ def test_the_proactive_block_is_scoped_to_approve(wired, command):
     assert [c[0] for c in fake.magic_calls] == [command]
 
 
+def test_one_completion_authorizes_only_one_inferred_approval(wired):
+    """⚠️ 一次审批提示只授权一次推断批准。
+
+    Without consuming the entry, the same completion keeps the gate open for
+    every 同意 / 沒問題 in the remaining TTL — and those later ones have no
+    corresponding prompt, so they may approve a *different* pending action that
+    showed up later in the same upstream session.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    _dispatch("/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve")
+    assert fake.magic_calls == [], "同一条 completed 记录不该授权第二次"
+
+    # 显式敲字面 magic word 仍然豁免闸，不受兑现影响
+    _dispatch("/daemon approve", user_text="/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+def test_a_failed_dispatch_does_not_consume_the_window(wired):
+    """派单失败时不兑现——那次批准没送出去，用户重说一遍应该还能用。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    async def _fail(command, *, sender_id=None, role_name=None):
+        fake.magic_calls.append((command, sender_id, role_name))
+        return {"success": False, "error": "boom", "command": command}
+
+    fake.run_magic_command = _fail
+    _dispatch("/daemon approve")
+    assert len(fake.magic_calls) == 1
+
+    fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
+    _dispatch("/daemon approve")
+    assert len(fake.magic_calls) == 2, "失败的那次不该把窗口兑现掉"
+
+
 def test_a_completion_from_a_rotated_session_does_not_open_the_gate(wired):
     """⚠️ ``/new`` rotates the persistent session, and the old prompt belonged to
     the old one.

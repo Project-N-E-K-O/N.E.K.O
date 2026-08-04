@@ -110,19 +110,27 @@ def _collect_active_openclaw_task_ids(
 # `/openclaw approve`——显式命令一律豁免闸。
 _APPROVAL_WINDOW_STATUSES = frozenset({"completed"})
 
+# ⚠️ 兑现标记。一条 completed 记录**只能授权一次**推断批准：不消费的话，同一条记录会在
+# 整个 TTL 内给每一句「同意」「沒問題」放行，而后面那些并没有对应的新审批提示——很可能
+# 批到同一个上游会话里更晚出现的另一个挂起动作上（Codex P1）。
+_APPROVAL_CONSUMED_KEY = "_approval_window_consumed"
 
-def _has_recent_openclaw_task(
+
+def _find_approval_window_task(
     *,
     sender_id: Optional[str],
     lanlan_name: Optional[str],
     exclude_task_id: Optional[str] = None,
-) -> bool:
-    """Whether this sender recently completed an OpenClaw task.
+) -> Optional[str]:
+    """The task id whose recent completion may carry an approval prompt, or None.
 
     "Recently completed" is the whole rule: only ``completed`` (see
     _APPROVAL_WINDOW_STATUSES) and only within the age check below. Note this is
     *disjoint* from _collect_active_openclaw_task_ids, which matches exactly the
     in-flight statuses this one rejects.
+
+    Returns the id so the caller can consume the entry — one prompt authorizes
+    one approval.
     """
     # ⚠️ 这道闸和 _collect_active_openclaw_task_ids **状态集合互不相交**，不是笔误：
     # 那个是给 /stop 用的「谁还在跑」，这个是「谁刚把一次回复给到用户」。同一个判据
@@ -165,6 +173,9 @@ def _has_recent_openclaw_task(
         # 而那恰恰是这道闸最初要挡的场景（Codex P1）。
         if info.get("status") not in _APPROVAL_WINDOW_STATUSES:
             continue
+        # ⚠️ 已经兑现过一次推断批准的条目不再算数：一次审批提示只授权一次。
+        if info.get(_APPROVAL_CONSUMED_KEY):
+            continue
         if current_session and str(info.get("session_id") or "").strip() != current_session:
             continue
         end_time = str(info.get("end_time") or "").strip()
@@ -179,8 +190,8 @@ def _has_recent_openclaw_task(
         # (now - ended) 为负，只判上界就恒成立，窗口会一直开到时钟追上来再过 5 分钟。
         age = (now - ended).total_seconds()
         if 0 <= age <= TASK_REGISTRY_CLEANUP_TTL:
-            return True
-    return False
+            return task_id
+    return None
 
 
 async def _cancel_openclaw_tasks_for_stop(
@@ -476,12 +487,14 @@ async def dispatch(
                     lanlan_name,
                 )
                 return
+            approval_window_task_id = None
             if magic_command == "/daemon approve" and not explicitly_typed:
-                if not _has_recent_openclaw_task(
+                approval_window_task_id = _find_approval_window_task(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
                     exclude_task_id=result.task_id,
-                ):
+                )
+                if approval_window_task_id is None:
                     logger.info(
                         "[OpenClaw] /daemon approve dropped: no openclaw task on record "
                         "for sender=%s lanlan=%s",
@@ -505,6 +518,12 @@ async def dispatch(
                 )
                 success = bool(nk_result.get("success"))
                 reply = str(nk_result.get("reply") or "")
+                # ⚠️ 兑现掉开闸的那条记录：一次审批提示只授权一次推断批准。
+                # 派单失败时**不**消费——那次批准没送出去，用户重说一遍应该还能用。
+                if success and approval_window_task_id:
+                    window_info = _shared.Modules.task_registry.get(approval_window_task_id)
+                    if isinstance(window_info, dict):
+                        window_info[_APPROVAL_CONSUMED_KEY] = True
                 if success:
                     await _emit_task_result(
                         lanlan_name,

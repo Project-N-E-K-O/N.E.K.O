@@ -873,9 +873,17 @@ def test_clause_normalization_strips_only_function_words(text, expected):
         # ⚠️ 应答子句剥两端装饰是安全的（它单独出现永远不算授权），而这些形态在旧
         # 实现里靠子串命中，逐字原样匹配会丢。裸应答不能这么放宽——对比
         # test_a_question_never_approves 里的 `没问题喵~`。
-        ("好的喵~，去执行", "/daemon approve"), ("OK，去执行", "/daemon approve"),
+        ("好的喵~，去执行", "/daemon approve"), ("OK，去执行", "/daemon approve"), ("okay，去执行", "/daemon approve"),
         # 中英混排且不带分隔符的写法走中性首部表
         ("OK去执行", "/daemon approve"), ("ok去执行", "/daemon approve"),
+        # ⚠️ 中性首部词**独立成句**时也算应答子句：`请，去执行` 在旧实现里靠子串
+        # 命中，而同样的词贴着写（`请去执行`）一直是通的。判据一致：剥掉它不改变
+        # 「谁被授权做什么」，那么它单独成句同样不改变。
+        ("请，去执行", "/daemon approve"), ("麻烦，去执行", "/daemon approve"),
+        ("拜託，去執行", "/daemon approve"), ("那，去执行", "/daemon approve"),
+        ("你，去执行", "/daemon approve"), ("马上，去执行", "/daemon approve"),
+        # 但礼貌词单独出现仍不算授权
+        ("请", None), ("麻烦", None), ("那", None), ("请，麻烦", None),
         ("okay去执行", "/daemon approve"),
         ("好的👌，去执行", "/daemon approve"), ("好的喵~", None),
         # ⚠️ 单字应答**不做前缀剥离**：`对方去执行` 不是授权
@@ -924,6 +932,10 @@ def test_an_affirmative_clause_needs_a_real_command_beside_it(text, expected):
         ("「停下來」", "/stop"), ("『別找了』", "/stop"), ("（换个话题）", "/new"),
         # ⚠️ 空白也是分隔符，会把语气词切成独立末子句；末子句判据要往回跳过它们
         ("停下来 吧", "/stop"), ("停下來 👍", "/stop"), ("换个话题 喵", "/new"),
+        # ⚠️ 剥这段尾巴要试**所有**匹配的词尾并取最长：`_TAIL_TOKENS` 里 `了` 排在
+        # `好了` 前面，只取第一个匹配会把 `好了` 剥成 `好`，于是这段尾巴不被认成
+        # 「纯语气词」、反倒被当成命令子句。和 _clause_hits 里那个坑是同一个。
+        ("换个话题 好了", "/new"), ("停下来 好了", "/stop"), ("別找了 好了", "/stop"),
         ("别找了 吧", "/stop"),
         # ⚠️ 但**不给 approve 用**：那样 `同意 吧` 会变成裸应答被批准（旧实现是 None）。
         # 代价是 `去执行 吧` 也丢了，二选一，选了 fail-closed 那边。
