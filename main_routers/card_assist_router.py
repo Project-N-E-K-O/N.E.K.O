@@ -874,7 +874,9 @@ _WHOLE_CARD_ADVERB_RUN = r"(?:" + _WHOLE_CARD_BARE_ADVERB + r"地?\s*)+"
 # True（Codex P2 第三十九轮）。不定量词是闭集，跟确数并列成一支，别拿「多」去
 # 扩数词字符类——那会让 `多` 混进 `十多` 这类组合里说不清。
 _WHOLE_CARD_MEASURE_WORDS = ("遍", "次", "下", "轮", "輪", "遭", "回")
-_WHOLE_CARD_NUMERAL_CHARS = "一二两兩三四五六七八九十几幾半"
+# ⚠️ 数词字符类要带**位值**：`一百遍` / `几百遍` / `千次` / `一万次` base 都是 True
+# （Codex P2 第四十三轮）。位值字是闭集，一次列全，别一个一个补。
+_WHOLE_CARD_NUMERAL_CHARS = "一二两兩三四五六七八九十百千万萬亿億零几幾半"
 _WHOLE_CARD_INDEFINITE_QUANTITIES = (
     "好几", "好幾", "若干", "若幹", "许多", "許多", "数", "數", "多",
 )
@@ -894,6 +896,16 @@ _WHOLE_CARD_SCOPE_RUN_BODY = (
     r"(?:\s*" + _WHOLE_CARD_SCOPE_MODIFIER
     + r"(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))"
+)
+# 子句续接：目标说完之后接一个并列/承接连词再讲下一件事。
+# `请重写所有字段并保存` / `重写所有字段然后告诉我` base 都是 True，上一版的收尾
+# 白名单把它们连同目标一起判掉了（Codex P2 第四十三轮）。
+# ⚠️⚠️ **不收裸的「后/後」**，虽然 reviewer 举的例子里有 `重写所有字段后发给我`：
+# 收了它 `重写所有字段后缀` 会一起放行，而那正是这个 PR 要修的单字段破坏本体
+# （base 是 True，本 PR 故意改成 False）。`后` 后面是动词还是名词是开集，分不干净，
+# 所以取安全那一侧——用 之后/然后 的说法仍然走得通，少认一种说法只是少补几个字段。
+_WHOLE_CARD_CLAUSE_CONTINUATION = (
+    r"(?:并且|並且|然后|然後|之后|之後|接着|接著|以及|同时|同時|而且|并|並|且)"
 )
 _WHOLE_CARD_SCOPE_RUN_OPT = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"*)"
 _WHOLE_CARD_SCOPE_RUN_ONE = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"+)"
@@ -917,6 +929,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     # 漏了这一张——同一件事三处各写一份，漏一处就静默失效（CodeRabbit）。
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
+    + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
@@ -939,6 +952,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     # 动量补语也是合法收尾（定义与三表共用见 _WHOLE_CARD_MEASURE_COMPLEMENT）。
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
+    + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
@@ -949,6 +963,7 @@ _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     # （base 是 True，Codex P2 第二十九轮）。
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
+    + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。
@@ -1187,8 +1202,26 @@ _CHAT_QUOTED_SPAN_RE = re.compile(
 
 
 def _chat_clause_without_quotes(clause: str) -> str:
-    """把子句里的引用跨度换成空格，只用于否定守卫。"""  # noqa: DOCSTRING_CJK
-    return _CHAT_QUOTED_SPAN_RE.sub(" ", clause)
+    """把**引用素材**的跨度换成空格，只用于否定守卫。
+
+    ⚠️⚠️ 引号有两种用法，只能抹掉其中一种：
+
+    * 引用素材——`Use “Don’t Panic” as the theme and rewrite all fields`，
+      里面的 `Don’t` 是歌名的一部分，抹掉才对；
+    * 强调指令本身——`请“不要重写”所有字段` / `请不要“重写”所有字段`，
+      抹掉就把用户明确的禁止弄丢了，整卡补全照样跑并 autosave
+      （Codex P1 第四十三轮，base 是 False——**危险方向**，是上一轮我引进的）。
+
+    判据：**引号里含重写动词，那段就是指令本身**。指令一定带着动词，被引用的
+    素材（歌名/主题）通常不带。
+
+    ⚠️ 已知代价在安全那一侧：`Use “Don’t Rewrite Me” as the title and rewrite
+    all fields` 里引号既有否定又有动词，会被当成指令、少补几个字段。
+    """  # noqa: DOCSTRING_CJK
+    return _CHAT_QUOTED_SPAN_RE.sub(
+        lambda m: m.group(0) if _CHAT_REWRITE_VERB_RE.search(m.group(0)) else " ",
+        clause,
+    )
 
 
 def _chat_text_requests_full_rewrite(text: str) -> bool:

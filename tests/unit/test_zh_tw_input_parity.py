@@ -3767,3 +3767,32 @@ def test_declarative_negated_what_is_not_a_question(negator, what, noun):
     text = f'我想停止播放因为{negator}{what}{noun}好听'
     assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation(f'我想停止播放{what}{noun}') is False
+
+
+@pytest.mark.parametrize("negator", ["不", "没", "沒"])
+@pytest.mark.parametrize("marker", ["怎么", "怎麼", "怎样", "怎樣"])
+def test_negated_degree_phrases_are_not_questions(negator, marker):
+    """⚠️ `不怎么X` 是**程度否定**（not very），不是提问（base 全是 True）。
+
+    嵌在定语里的程度短语踩了疑问守卫，用户明确不想听的歌反而停不下来
+    （Codex P2 第四十三轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放这首{negator}{marker}好听的歌'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{marker}会卡') is False
+
+
+@pytest.mark.parametrize("prefix", ["无论", "無論", "不论", "不管", "任"])
+@pytest.mark.parametrize("what", ["什么时候", "什麼時候", "啥时候"])
+def test_free_choice_applies_to_the_what_time_compound_too(prefix, what):
+    """任指左界要同样盖住 `什么时候` 那一支（Codex P2 第四十三轮）。
+
+    上一轮只把左界挂在 `何时` 上，`无论什么时候都行` 还是掉了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{prefix}{what}都行'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{what}合适') is False

@@ -1587,7 +1587,9 @@ def test_the_measure_and_numeral_tables_are_derived_not_transcribed():
     import main_routers.card_assist_router as router
 
     assert set(WHOLE_CARD_MEASURES) == {"遍", "次", "下", "轮", "輪", "遭", "回"}
-    assert set(WHOLE_CARD_NUMERALS) == set("一二两兩三四五六七八九十几幾半")
+    assert set(WHOLE_CARD_NUMERALS) == set(
+        "一二两兩三四五六七八九十百千万萬亿億零几幾半"
+    )
     assert set(WHOLE_CARD_INDEFINITE) == {
         "好几", "好幾", "若干", "若幹", "许多", "許多", "数", "數", "多",
     }
@@ -1851,3 +1853,50 @@ def test_quoted_material_is_not_an_instruction(text):
         "don't rewrite the whole card because it's fine",
     ):
         assert router._chat_text_requests_full_rewrite(negated) is False, negated
+
+
+@pytest.mark.parametrize(
+    "conjunction",
+    ["并", "並", "并且", "並且", "然后", "然後", "之后", "之後",
+     "接着", "接著", "以及", "同时", "同時", "而且", "且"],
+)
+def test_clause_continuation_after_a_completed_target(conjunction):
+    """目标说完之后接一个并列/承接连词再讲下一件事（base 是 True）。
+
+    ⚠⚠ **没有收裸的「后/後」**，虽然 reviewer 举的例子里有 `重写所有字段后发给我`：
+    收了它 `重写所有字段后缀` 会一起放行，而那正是这个 PR 要修的单字段破坏
+    本体（base 是 True，本 PR 故意改成 False）。`后` 后面是动词还是名词是开集。
+    下面的反向断言就钉这一条。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段{conjunction}保存'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    for kept in ('重写所有字段后缀', '重写所有字段名',
+                 '重写所有字段的名字'):
+        assert router._chat_text_requests_full_rewrite(kept) is False, kept
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['请“不要重写”所有字段', '请不要“重写”所有字段',
+     'Please “do not rewrite” all fields', '请「不要重写」整个卡'],
+)
+def test_quotes_that_emphasize_the_instruction_are_not_stripped(text):
+    """⚠⚠ 引号有两种用法，只能抹掉其中一种（Codex P1 第四十三轮）。
+
+    上一轮我把**所有**引用跨度都从否定守卫里抹掉了，于是用引号**强调指令**的
+    写法把用户明确的禁止弄丢了，整卡补全照跑并 autosave——base 是 False，危险方向，
+    是我自己上一轮引进的。
+
+    判据：**引号里含重写动词，那段就是指令本身**。指令一定带着动词，
+    被引用的素材（歌名/主题）通常不带。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    for quoted_material in (
+        'Use “Don’t Panic” as the theme and rewrite all fields',
+        'Following “Don’t Stop Believin’” rewrite the whole card',
+    ):
+        assert router._chat_text_requests_full_rewrite(quoted_material) is True
