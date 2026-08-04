@@ -70,13 +70,16 @@
                     <span></span><span></span>
                 </div>
                 <div id="voice-identity-step" class="wizard-step">
-                    <p class="step-kicker" id="voice-identity-step-count"></p>
-                    <h2 id="voice-identity-step-title" data-i18n="voiceIdentity.privacyTitle">开始前请了解</h2>
-                    <p id="voice-identity-step-body" class="step-body"
-                        data-i18n="voiceIdentity.privacyBody">
-                        声纹仅在本机处理和保存，不会发送给 ASR Provider。
-                    </p>
-                    <blockquote id="voice-identity-prompt" hidden></blockquote>
+                    <div id="voice-identity-step-announcement" class="step-announcement"
+                        role="status" aria-live="polite" aria-atomic="true">
+                        <p class="step-kicker" id="voice-identity-step-count"></p>
+                        <h2 id="voice-identity-step-title" data-i18n="voiceIdentity.privacyTitle">开始前请了解</h2>
+                        <p id="voice-identity-step-body" class="step-body"
+                            data-i18n="voiceIdentity.privacyBody">
+                            声纹仅在本机处理和保存，不会发送给 ASR Provider。
+                        </p>
+                        <blockquote id="voice-identity-prompt" hidden></blockquote>
+                    </div>
                     <p class="recording-timer" id="voice-identity-timer" aria-live="polite"></p>
                     <div class="wizard-actions">
                         <button type="button" class="primary-button" id="voice-identity-start"

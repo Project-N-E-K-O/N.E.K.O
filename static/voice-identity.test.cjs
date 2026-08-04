@@ -98,6 +98,7 @@ function createElement({ withRecordLabel = false } = {}) {
 function createHarness({
     route,
     audio = false,
+    audioBlocks = 120,
     audioSample,
     nativeConfirm,
     showConfirm,
@@ -221,7 +222,7 @@ function createHarness({
         clearInterval() {},
         setTimeout(callback) {
             if (audio && processor?.onaudioprocess) {
-                for (let index = 0; index < 120; index += 1) {
+                for (let index = 0; index < audioBlocks; index += 1) {
                     const input = new Float32Array(2048);
                     for (let sampleIndex = 0; sampleIndex < input.length; sampleIndex += 1) {
                         input[sampleIndex] = typeof audioSample === 'function'
@@ -237,6 +238,7 @@ function createHarness({
             callback();
             return 1;
         },
+        clearTimeout() {},
         AudioContext: audio ? MockAudioContext : undefined,
         confirm: nativeConfirm,
         showConfirm,
@@ -506,6 +508,36 @@ test('starting enrollment releases the permission-check microphone before the fi
     assert.equal(harness.elements.get('voice-identity-record').hidden, false);
 });
 
+test('ambiguous enrollment start failure reconciles the server session', async () => {
+    let statusRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse(statusRequests === 1
+                    ? { enrollment: { stage: 'idle' } }
+                    : { enrollment: { session_id: 'session-1', stage: 'fixed_1' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                throw new Error('connection_lost');
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(statusRequests, 2);
+    assert.equal(harness.elements.get('voice-identity-start').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-record').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-cancel').hidden, false);
+});
+
 test('recording upload is capped at four seconds of source samples', async () => {
     let segmentBody = null;
     let segmentHeaders = null;
@@ -541,6 +573,73 @@ test('recording upload is capped at four seconds of source samples', async () =>
         'audio/pcm;format=pcm_s16le;rate=16000;channels=1',
     );
     assert.deepEqual(Array.from(new Uint8Array(segmentBody, 0, 2)), [0xff, 0x1f]);
+});
+
+test('underfilled recording times out without uploading a partial segment', async () => {
+    let segmentRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        audioBlocks: 92,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/segment') {
+                segmentRequests += 1;
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_2' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    assert.equal(segmentRequests, 0);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
+    assert.equal(
+        harness.getMediaStreams()[0].getTracks().every(track => track.stopped),
+        true,
+    );
+});
+
+test('ambiguous segment upload failure refreshes the next recording stage', async () => {
+    let statusRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse({
+                    enrollment: {
+                        session_id: 'session-1',
+                        stage: statusRequests === 1 ? 'fixed_1' : 'fixed_2',
+                    },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/segment') {
+                throw new Error('connection_lost');
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    assert.equal(statusRequests, 2);
+    assert.equal(harness.elements.get('voice-identity-prompt').textContent, 'English two');
+    assert.equal(harness.elements.get('voice-identity-record').disabled, false);
 });
 
 test('microphone resources are released and reacquired between recording steps', async () => {

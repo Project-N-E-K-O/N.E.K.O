@@ -62,7 +62,8 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
 
     assert 'data-i18n="voiceIdentity.title"' in template
     assert 'id="voice-identity-step"' in template
-    assert 'aria-live="polite"' in template
+    assert 'id="voice-identity-step-announcement"' in template
+    assert 'role="status" aria-live="polite" aria-atomic="true"' in template
     assert 'id="voice-identity-record"' in template
     assert 'id="voice-identity-filter"' in template
     assert 'aria-labelledby="voice-filter-title"' in template
@@ -99,7 +100,8 @@ def test_browser_capture_is_fixed_pcm16_and_cancels_on_close() -> None:
         "pagehide",
     ):
         assert contract in script
-    assert "window.setTimeout(resolve, RECORDING_MS)" in script
+    assert "RECORDING_MS + CAPTURE_TIMEOUT_GRACE_MS" in script
+    assert "new Error('incomplete_capture')" in script
     assert "maxSourceSamples - capturedSamples" in script
     assert "input.subarray(0, length)" in script
     assert "MAX_RECORDING_MS" not in script

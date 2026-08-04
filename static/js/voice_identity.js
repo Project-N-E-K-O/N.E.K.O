@@ -3,6 +3,7 @@
 
     const TARGET_SAMPLE_RATE = 16000;
     const RECORDING_MS = 4000;
+    const CAPTURE_TIMEOUT_GRACE_MS = 1000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const API_ROOT = '/api/voice-identity';
 
@@ -109,6 +110,16 @@
         state.persistenceState = profile.state || 'empty';
         state.filterEnabled = filter.enabled === true;
         render();
+    }
+
+    async function reconcileStatus() {
+        try {
+            const status = await apiRequest('/status', { method: 'GET' });
+            applyStatus(status);
+            return true;
+        } catch (_) {
+            return false;
+        }
     }
 
     function setMessage(message, isError) {
@@ -374,14 +385,6 @@
         );
         let capturedSamples = 0;
         mute.gain.value = 0;
-        processor.onaudioprocess = function (event) {
-            const input = event.inputBuffer.getChannelData(0);
-            const remaining = maxSourceSamples - capturedSamples;
-            if (remaining <= 0) return;
-            const length = Math.min(input.length, remaining);
-            chunks.push(new Float32Array(input.subarray(0, length)));
-            capturedSamples += length;
-        };
         source.connect(processor);
         processor.connect(mute);
         mute.connect(context.destination);
@@ -395,15 +398,38 @@
                 { seconds: (elapsed / 1000).toFixed(1) }
             );
         }, 100);
-        await new Promise(function (resolve) {
-            window.setTimeout(resolve, RECORDING_MS);
-        });
-        window.clearInterval(timer);
-        processor.disconnect();
-        source.disconnect();
-        mute.disconnect();
-        processor.onaudioprocess = null;
-        elements.timer.textContent = '';
+        try {
+            await new Promise(function (resolve, reject) {
+                let settled = false;
+                let timeoutId = null;
+                const finish = function (error) {
+                    if (settled) return;
+                    settled = true;
+                    if (timeoutId !== null) window.clearTimeout(timeoutId);
+                    if (error) reject(error);
+                    else resolve();
+                };
+                processor.onaudioprocess = function (event) {
+                    const input = event.inputBuffer.getChannelData(0);
+                    const remaining = maxSourceSamples - capturedSamples;
+                    if (remaining <= 0) return;
+                    const length = Math.min(input.length, remaining);
+                    chunks.push(new Float32Array(input.subarray(0, length)));
+                    capturedSamples += length;
+                    if (capturedSamples >= maxSourceSamples) finish();
+                };
+                timeoutId = window.setTimeout(function () {
+                    finish(new Error('incomplete_capture'));
+                }, RECORDING_MS + CAPTURE_TIMEOUT_GRACE_MS);
+            });
+        } finally {
+            window.clearInterval(timer);
+            processor.disconnect();
+            source.disconnect();
+            mute.disconnect();
+            processor.onaudioprocess = null;
+            elements.timer.textContent = '';
+        }
 
         const sampleCount = chunks.reduce(function (sum, chunk) {
             return sum + chunk.length;
@@ -438,18 +464,22 @@
 
     async function startEnrollment() {
         if (state.busy || state.filterPending) return;
+        let startRequestPending = false;
         state.busy = true;
         setMessage('');
         render();
         try {
             await ensureMicrophone();
             stopMicrophone();
+            startRequestPending = true;
             const payload = await apiRequest('/enrollment/start', {
                 method: 'POST'
             });
+            startRequestPending = false;
             applyStatus(payload);
         } catch (error) {
             stopMicrophone();
+            if (startRequestPending) await reconcileStatus();
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'
@@ -496,6 +526,7 @@
         if (
             state.busy || state.recording || state.cancelPending || !state.sessionId
         ) return;
+        let uploadRequestPending = false;
         state.busy = true;
         state.recording = true;
         setMessage('');
@@ -512,6 +543,7 @@
                 stopMicrophone();
             }
             const verification = state.stage.startsWith('free_verify_');
+            uploadRequestPending = true;
             const payload = await apiRequest(
                 verification ? '/enrollment/verify' : '/enrollment/segment',
                 {
@@ -522,6 +554,7 @@
                     }
                 }
             );
+            uploadRequestPending = false;
             applyStatus(payload);
             if (verification) {
                 const passed = payload.verification && payload.verification.passed;
@@ -542,6 +575,7 @@
                 await commitEnrollment();
             }
         } catch (error) {
+            if (uploadRequestPending) await reconcileStatus();
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'

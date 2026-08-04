@@ -216,6 +216,13 @@ input:focus-visible {
     text-align: center;
 }
 
+.step-announcement {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    flex-direction: column;
+}
+
 .step-kicker {
     min-height: 1.4em;
     margin: 0 0 8px;
