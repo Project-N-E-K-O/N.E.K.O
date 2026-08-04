@@ -859,7 +859,7 @@ def test_every_bracket_delimiter_is_also_trimmed():
 
     for lo, hi in D._ZH_BRACKET_PAIRS:
         # ASCII 定界符在正则里是转义过的，比对时也要转义
-        assert f"{_re.escape(lo)}[^{_re.escape(hi)}" in D._ZH_BRACKET_RUN, (
+        assert f"{_re.escape(lo)}(?:" in D._ZH_BRACKET_RUN, (
             f"{lo}{hi} 没进话题单位"
         )
     # 模板 2 的前置话题走 NO_GUANYU 变体（见 _ZH_PLAIN_CHAR_NO_GUANYU），其余走共用的。
@@ -1472,10 +1472,16 @@ def test_japanese_betsu_suffix_before_kou_is_not_chinese_evidence(text):
 
 
 def test_the_negation_evidence_is_derived_from_the_verb_tables():
+    sources = (
+        D._ZH_NEG_VERB_EVIDENCE,
+        D._ZH_MULTI_NEG_EVIDENCE,
+        D._ZH_SUBJECT_BEFORE_NEG,
+    )
     for verb in D._ZH_SAY_VERBS + D._ZH_SAY_COMPOUNDS:
-        assert verb in D._ZH_NEG_VERB_EVIDENCE, verb
+        for source in sources:
+            assert verb in source, (verb, source)
     for negation in NEGATIONS_FOR_EVIDENCE:
-        assert negation in D._ZH_NEG_VERB_EVIDENCE, negation
+        assert any(negation in source for source in sources), negation
 
 
 # ── 12. 以 论/論 开头的话题不被 谈论 吃掉 ────────────────────
@@ -1569,3 +1575,68 @@ def test_normalizing_does_not_merge_two_separate_directives():
     """⚠️ 归一化只在**重叠**的命中之间比，两条独立指令差一个 ``就`` 不能被吞掉。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms("功成名就别提了，功成名别提了。") == {"功成名就", "功成名"}
     assert _zh_terms("他的成就别提了。") == {"他的成就"}
+
+
+# ── 15. 主语打头的指令仍算中文证据 ───────────────────────────
+# ⚠️ 日文的 ``〜別`` 后缀问题只存在于**单字**否定词；多字的 不要/不许/不許/不准
+# 不可能是日文名词后缀，给它们套左界纯属误伤。
+ZH_ONLY_SUBJECTS = ("你", "妳", "您", "咱", "请")
+
+
+@pytest.mark.parametrize("subject", ZH_ONLY_SUBJECTS)
+@pytest.mark.parametrize("negation", ["别", "別"])
+def test_a_subject_before_a_one_char_negation_keeps_the_evidence(subject, negation):
+    text = f"{subject}{negation}提君の名は。"
+    assert _zh_terms(text) == {"君の名は"}, text
+
+
+@pytest.mark.parametrize("subject", ["我", "你", "他", "她", "咱", "您"])
+@pytest.mark.parametrize("negation", ["不要", "不许", "不許", "不准"])
+def test_multi_char_negations_need_no_left_boundary(subject, negation):
+    text = f"{subject}{negation}提君の名は。"
+    assert _zh_terms(text) == {"君の名は"}, text
+
+
+def test_the_subject_allowlist_holds_no_japanese_kanji():
+    """⚠️ 只收日文里根本没有的汉字。``我 / 他 / 請`` 刻意不收——它们是日文汉字，
+    收了 ``他別提案をお願いします。`` 这类句子就会被放行进来（实测过）。
+    """  # noqa: DOCSTRING_CJK
+    for subject in ZH_ONLY_SUBJECTS:
+        assert subject in D._ZH_SUBJECT_BEFORE_NEG, subject
+    for kanji in ("我", "他", "她", "請", "貴"):
+        assert kanji not in D._ZH_SUBJECT_BEFORE_NEG, kanji
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["他別提案をお願いします。", "我々は地域別提案を検討。", "貴社別提案の件。"],
+)
+def test_japanese_kanji_subjects_do_not_unlock_the_evidence(text):
+    assert _zh_terms(text) == set()
+
+
+# ── 16. 对称引号不吞掉一整条逗号分隔的指令 ───────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('尺寸5"别提了，尺寸6"别提了。', {"尺寸5", "尺寸6"}),
+        ('尺寸5"別提了，尺寸6"別提了。', {"尺寸5", "尺寸6"}),
+        # 逗号本身仍然放行——真作品名带逗号的不少
+        ('"Everything, Everywhere"别提了。', {"Everything, Everywhere"}),
+        ('别提"你好，李焕英"了。', {"你好，李焕英"}),
+        # 带否定词但不带标点的引文走单字分支，照样完整
+        ('别提"再别康桥"了。', {"再别康桥"}),
+        ('别提"我不是药神"了。', {"我不是药神"}),
+    ],
+)
+def test_a_symmetric_quote_run_cannot_swallow_a_whole_directive(text, expected):
+    assert _zh_terms(text) == expected
+
+
+def test_only_symmetric_pairs_temper_the_negation():
+    """非对称括号不会被误当收尾，不需要 temper——``电影(Hello, World)`` 要保住。"""  # noqa: DOCSTRING_CJK
+    assert "(?![别別])" in D._ZH_BRACKET_RUN
+    assert D._ZH_BRACKET_RUN.count("(?![别別])") == sum(
+        1 for lo, hi in D._ZH_BRACKET_PAIRS if lo == hi
+    )
+    assert _zh_terms("电影(Hello, World)别提了。") == {"电影(Hello, World"}
