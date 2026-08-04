@@ -325,7 +325,28 @@ _ZH_BIE = f"(?<![{_BIE_COMPOUND_LEFT}])[别別]"
 _XIU_COMPOUND_LEFT = "退午调調补補年病公轮輪全双雙不歇罢罷特半"
 _ZH_XIU = f"(?<![{_XIU_COMPOUND_LEFT}])休(?!講)"
 
-_ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
+# ⚠️ 否定词是**闭集**，而且 _ZH_NEG 与下面三条日文守卫的证据正则必须用同一份源。
+# 手抄了四份的时候，往 _ZH_NEG 加一个词（比如 ``勿``）而忘了同步证据，中文侧照常
+# 工作、但 ``勿提君の名は。`` 会被日文守卫整条吞掉，而同结构的 ``莫提君の名は。``
+# 不会——同一模板内否定词之间的行为不对称，且全文件没有一条测试会红。
+#
+# 单字与多字分开：日文的 ``〜別`` 后缀问题只存在于单字（见 _ZH_NEG_VERB_EVIDENCE
+# 的左界注释），多字的 ``不要 / 不准`` 不可能是日文名词后缀。
+_ZH_NEG_SINGLES = ("别", "別", "莫", "休", "甭")
+_ZH_NEG_MULTIS = ("不要", "不许", "不許", "不准")
+# 正则里用的单字形态带各自的复合词守卫（_ZH_BIE 的左界 / _ZH_XIU 的 ``(?!講)``）；
+# 证据正则用的是上面那份**裸字形**，它自己另配左界。
+_ZH_NEG_SINGLES_GUARDED = (_ZH_BIE, "莫", _ZH_XIU, "甭")
+# 证据正则用的裸字形，但 ``休`` 仍要排掉 ``講``：``休講``（日文＝停课）本身会命中
+# 「否定词 + 言说动词」这条结构证据。端到端上它不可达（_ZH_XIU 的 ``(?!講)`` 让
+# ``休講…`` 根本产不出 zh 匹配），所以一度当死分支删掉过；但**证据正则自己不许在
+# 日文语料里命中**是一条更强、也更该守的性质——有测试按分支逐条扫。
+_ZH_NEG_SINGLES_FOR_EVIDENCE = tuple(
+    "休(?!講)" if neg == "休" else neg for neg in _ZH_NEG_SINGLES
+)
+_ZH_NEG = (
+    "(?:" + "|".join(_ZH_NEG_SINGLES_GUARDED + _ZH_NEG_MULTIS) + ")"
+)
 
 # ---------------------------------------------------------------------------
 # 言说动词表 —— **生成**，不手写
@@ -407,9 +428,6 @@ _ZH_BRACKET_PAIRS = (
     # ⚠️ 不收单引号 ``'``：英文里它是词内撇号（don't / it's），配对没有意义。
     ('"', '"'), ("(", ")"),
 )
-# term 里出现任一括号字符 = 里面有被引用的专名，_trim_term 据此关掉反问尾巴的剥离。
-# ⚠️ 从 _ZH_BRACKET_PAIRS 派生，不另抄一张：同一件事维护两张表必然漂移（#2655）。
-_ZH_BRACKET_CHARS = frozenset(ch for pair in _ZH_BRACKET_PAIRS for ch in pair)
 def _zh_bracket_body(lo: str, hi: str) -> str:
     """One bracketed run: bounded body, and symmetric pairs never span a sentence."""
     banned = re.escape(hi) + "\\r\\n"
@@ -591,7 +609,7 @@ _ZH_NEG_VERB_EVIDENCE = (
     r"(?<![一-鿿぀-ゟ゠-ヿｦ-ﾟ])(?:"
     # ⚠️ ``休`` 这里**不用**再排 ``講``：``_ZH_XIU`` 的 ``(?!講)`` 已经让 ``休講…``
     # 根本产不出 zh 匹配，证据判据永远走不到（变异验证过，加了是不可达分支）。
-    + "|".join(("莫", "甭", "别", "別", "休"))
+    + "|".join(_ZH_NEG_SINGLES_FOR_EVIDENCE)
     + r")\s*(?:再)?\s*(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
@@ -600,26 +618,33 @@ _ZH_NEG_VERB_EVIDENCE = (
 # 上面那条左界只为单字的 ``別`` 而设。带上左界反而把正常的中文主语挡在外面——
 # ``我不要提君の名は。`` / ``你不准提君の名は。`` 在 parent 上都是好的（codex P2）。
 _ZH_MULTI_NEG_EVIDENCE = (
-    "(?:" + "|".join(("不要", "不许", "不許", "不准")) + r")\s*(?:再)?\s*(?:"
+    "(?:" + "|".join(_ZH_NEG_MULTIS) + r")\s*(?:再)?\s*(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
 )
-# 单字否定词前面允许出现的主语 / 敬语。⚠️ 只收**日文里根本没有的**汉字：``你 妳 您
+# 单字否定词前面允许出现的主语 / 敬语。⚠️ 这张字类是闭集，有相等断言钉着：往里加
+# 任何一个日文汉字就是在守卫的左界上开洞（``俺`` 是北方口语主语、同时是日文常用汉字，
+# 加进来 ``俺別提案をお願いします。`` 就会被当成中文指令存下来）。
+_ZH_SUBJECT_CHARS = "你妳您咱请"
+# ⚠️ 只收**日文里根本没有的**汉字：``你 妳 您
 # 咱 请`` 都不是日文汉字，所以它们后面的 ``別`` 不可能是日文的 ``〜別`` 后缀。
 # ``我 / 他 / 請`` 刻意不收——它们是日文汉字，``他別提案をお願いします。`` 这类句子
 # 会被放行进来（实测过）。宁可漏判一次，不可把日文残片存进指令表。
 _ZH_SUBJECT_BEFORE_NEG = (
-    "(?<=[你妳您咱请])(?:"
-    + "|".join(("莫", "甭", "别", "別", "休"))
+    "(?<=[" + _ZH_SUBJECT_CHARS + "])(?:"
+    + "|".join(_ZH_NEG_SINGLES_FOR_EVIDENCE)
     + r")\s*(?:再)?\s*(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
 )
+_ZH_EVIDENCE_CHARS = "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
+_ZH_EVIDENCE_WORDS = ("叫我", "喊我", "管我叫", "不想", "懶得", "不願")
 _ZH_EVIDENCE_RE = re.compile(
-    r"[别说讲谈讨论关这话题愿懒许为甭說這關沒稱]|叫我|喊我|管我叫|不想|懶得|不願"
-    + "|" + _ZH_NEG_VERB_EVIDENCE
-    + "|" + _ZH_MULTI_NEG_EVIDENCE
-    + "|" + _ZH_SUBJECT_BEFORE_NEG
+    "|".join(
+        (f"[{_ZH_EVIDENCE_CHARS}]",)
+        + _ZH_EVIDENCE_WORDS
+        + (_ZH_NEG_VERB_EVIDENCE, _ZH_MULTI_NEG_EVIDENCE, _ZH_SUBJECT_BEFORE_NEG)
+    )
 )
 
 # (2b) 日文的句法证据：助词 / 助动词 / 敬体词尾。日文**句子**几乎必然出现，而一个

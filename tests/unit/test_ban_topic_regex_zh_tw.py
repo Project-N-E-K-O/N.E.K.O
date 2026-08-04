@@ -31,6 +31,8 @@ identically on both scripts. Tightening further kills the main use case.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from config.prompts import prompts_directives as D
@@ -89,6 +91,61 @@ def test_every_simplified_glyph_in_zh_templates_has_its_traditional_twin(
             f"zh 模板里有简体 {simplified!r} 却没有繁体 {traditional!r}：{raw!r}"
         )
     assert seen, f"{simplified!r} 已不在任何 zh 模板里，请从对照表删掉这一行"
+
+
+def _script_twin(branch: str) -> str:
+    """把一个分支里的简体字逐个换成繁体孪生字。"""  # noqa: DOCSTRING_CJK
+    return "".join(SIMPLIFIED_TO_TRADITIONAL.get(ch, ch) for ch in branch)
+
+
+def _alternation_groups(pattern: str) -> list[list[str]]:
+    """取出 pattern 里每个 ``(?:a|b|c)`` / ``(?>a|b|c)`` 组的分支列表。
+
+    ⚠️ 原子组 ``(?>`` 一定要一起读：动词组正是原子的，只读 ``(?:`` 的话
+    整条模板最要紧的那一维根本没进对偶检查。
+    """  # noqa: DOCSTRING_CJK
+    groups = []
+    for match in re.finditer(r"\(\?[:>]([^()\[\]]*?)\)", pattern):
+        body = match.group(1)
+        if "|" in body:
+            groups.append(body.split("|"))
+    return groups
+
+
+def test_the_alternation_group_reader_finds_the_verb_groups():
+    """前提守卫：读不出分支组的话，下面那条逐分支对偶是空的。"""  # noqa: DOCSTRING_CJK
+    groups = [g for raw in _zh_pattern_sources() for g in _alternation_groups(raw)]
+    assert groups, "一个分支组都没读出来"
+    flat = {b for g in groups for b in g}
+    # 四条模板里各挑一个只出现在自己那条上的分支
+    for expected in ("提了", "不愿意", "懒得", "这话题"):
+        assert expected in flat, expected
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_every_branch_has_its_script_twin_in_the_same_group(index):
+    """⚠️ 逐**分支**对偶，不是「整条 pattern 里有没有这个码位」。
+
+    同一条模板里只要还有别的分支带着那个繁体字，删掉某一个繁体分支照样绿：模板 3 的
+    ``(?:不想|不愿意|不願意|不愿|不願|…)`` 里两个含 ``願`` 的分支互相打掩护，删掉
+    ``|不願意`` 之后 ``我不願意聊工作`` 整条不落库，而按码位查的那条断言全绿。
+
+    ⚠️ 双向：留繁体删简体同样要红——受害的是简体用户，方向和本 PR 的主张相反，
+    但一样是回归（删掉模板 2 的 ``|讲`` 保留 ``|講`` 曾经无人看守）。
+    """  # noqa: DOCSTRING_CJK
+    raw = _zh_pattern_sources()[index]
+    trad_to_simp = {v: k for k, v in SIMPLIFIED_TO_TRADITIONAL.items()}
+    missing = []
+    for group in _alternation_groups(raw):
+        branches = set(group)
+        for branch in group:
+            twin = _script_twin(branch)
+            if twin != branch and twin not in branches:
+                missing.append((branch, twin))
+            back = "".join(trad_to_simp.get(ch, ch) for ch in branch)
+            if back != branch and back not in branches:
+                missing.append((branch, back))
+    assert not missing, f"模板 {index} 的这些分支缺孪生字形：{missing}"
 
 
 # ── 2. 召回：繁体祈使句能抽到 term ──────────────────────────────
@@ -275,6 +332,11 @@ JAPANESE_KANA_PREFIXED = [
 ]
 JAPANESE_BLOCKED_ELSEWHERE = [
     "今日は休講です。",
+    # ⚠️ 这两条是给中文证据的逐分支扫描当靶子的：往证据正则尾部追加 ``|題``、或者
+    # 往主语白名单里混进日文汉字 ``俺``，都会在这里现形（变异跑出来的）。
+    "話題別提案について検討します。",
+    "俺別提案をお願いします。",
+    "俺別講座のご案内。",
     "特別講演について話しましょう。",
     "特別提供の商品です。",
     "特別講座に申し込んだ。",
@@ -403,9 +465,25 @@ def test_chinese_directive_about_a_japanese_topic_is_kept(text, expected):
 
 @pytest.mark.parametrize(("text", "expected"), CHINESE_WITH_JAPANESE_TOPIC)
 def test_those_samples_really_do_go_through_the_guard(text, expected):
-    """Premise: 这些样本命中区间里确实有假名，所以它们真的会走到守卫判据，
-    而不是因为压根没假名才侥幸通过。"""  # noqa: DOCSTRING_CJK
-    assert D._KANA_RE.search(text), f"{text!r} 没有假名，证明不了守卫放行"
+    """Premise: 这些样本**命中区间**里确实有假名，所以它们真的会走到守卫判据，
+    而不是因为压根没假名才侥幸通过。
+
+    ⚠️ 判据必须打在命中区间和 term 上，不能打在整条消息上：守卫收到的是
+    ``m.group(0)`` 和 ``term``，消息里别处的假名对它毫无意义。
+    ``剛看完 ドラえもん。別提工作。`` 这种句子整条有假名、命中区间却没有——
+    打在整条上的话它会被当成"证明了守卫放行"，而实际上守卫根本没被考验到。
+    """  # noqa: DOCSTRING_CJK
+    assert D._KANA_RE.search(expected), f"{expected!r} 里没有假名，这条样本不吃守卫"
+    spans = [
+        m.group(0)
+        for locale, _kind, pat in D.DIRECTIVE_PATTERNS
+        if locale == "zh"
+        for m in pat.finditer(text)
+    ]
+    assert spans, f"{text!r} 没有 zh 命中，证明不了任何东西"
+    assert any(D._KANA_RE.search(span) for span in spans), (
+        f"{text!r} 的命中区间里没有假名：{spans}"
+    )
 
 
 # 中文证据表里的每个 token 各配一条载荷样本：话题名自带助词时，只有这个 token 能
@@ -446,28 +524,82 @@ def test_beng_counts_as_chinese_evidence(text, expected):
     assert expected in _zh_terms(text)
 
 
-def test_no_zh_evidence_glyph_appears_in_the_japanese_corpus():
-    """⚠️ 自动发现，不是逐字审：中文证据表里的字**一旦出现在日文语料里**，就说明
-    它不是"日文里不存在"的字，而这张表是用来 short-circuit 日文守卫的——收错一个字
-    等于把守卫整个关掉。``没``（没収）和 ``称``（名称）就是这么漏进来的。
+def _split_top_level_alternatives(pattern: str) -> list[str]:
+    """按 ``|`` 切顶层分支，不切进 ``(...)`` / ``[...]`` 里面。"""  # noqa: DOCSTRING_CJK
+    parts, depth, in_class, buf, escaped = [], 0, False, [], False
+    for ch in pattern:
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            buf.append(ch)
+            escaped = True
+            continue
+        if in_class:
+            buf.append(ch)
+            if ch == "]":
+                in_class = False
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
 
-    这条随日文语料一起长：以后往语料里加句子，收错的字会被自动抓出来。
+
+def test_the_alternative_splitter_does_not_cut_inside_groups():
+    """前提守卫：切分器本身要正确，否则下面那条扫描是空的。"""  # noqa: DOCSTRING_CJK
+    assert _split_top_level_alternatives("a|b") == ["a", "b"]
+    assert _split_top_level_alternatives("[a|b]|c") == ["[a|b]", "c"]
+    assert _split_top_level_alternatives("(?:a|b)|c") == ["(?:a|b)", "c"]
+    assert _split_top_level_alternatives(chr(92) + chr(124)) == [chr(92) + chr(124)]
+
+
+def test_no_zh_evidence_alternative_matches_the_japanese_corpus():
+    """⚠️ 自动发现，不是逐字审：中文证据的**每一条分支**都不许在日文语料里命中。
+    这张表是用来 short-circuit 日文守卫的——命中一次等于把守卫整个关掉。
+    ``没``（没収）和 ``称``（名称）就是这么漏进来的。
+
+    ⚠️ 判据打在**整条正则的每个顶层分支**上，不是只打第一个字符类。只扫第一个
+    字符类的话，写在它后面的证据（第二个字符类、或裸的 ``|題``）完全隐形——实测
+    追加 ``|題`` 之后 ``話題別提案について検討します。`` 就会被当成中文指令存下来，
+    而字符串比对那条断言一字未变、全绿。
+
+    这条随日文语料一起长：以后往语料里加句子，收错的分支会被自动抓出来。
     """  # noqa: DOCSTRING_CJK
-    charclass = D._ZH_EVIDENCE_RE.pattern.split("]", 1)[0].lstrip("[")
-    corpus = "".join(
+    corpus = (
         JAPANESE_KANA_GUARDED + JAPANESE_KANA_PREFIXED + JAPANESE_BLOCKED_ELSEWHERE
     )
-    offenders = sorted({ch for ch in charclass if ch in corpus})
+    offenders = []
+    for alt in _split_top_level_alternatives(D._ZH_EVIDENCE_RE.pattern):
+        probe = re.compile(alt)
+        for sentence in corpus:
+            hit = probe.search(sentence)
+            if hit:
+                offenders.append((alt, sentence, hit.group(0)))
     assert not offenders, (
-        f"这些字既在中文证据表里、又出现在日文语料里：{offenders}"
+        f"这些中文证据分支在日文语料里命中了：{offenders}"
     )
 
 
 def test_zh_evidence_charclass_is_pinned():
     """闭集用相等断言：每个字都是一句"日文里不存在这个字形"的主张，加字要先核对
     日文新字体（别→別 说→説 关→関 为→為…）。"""  # noqa: DOCSTRING_CJK
-    charclass = D._ZH_EVIDENCE_RE.pattern.split("]", 1)[0].lstrip("[")
-    assert charclass == "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
+    assert D._ZH_EVIDENCE_CHARS == "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
+    assert D._ZH_EVIDENCE_WORDS == ("叫我", "喊我", "管我叫", "不想", "懶得", "不願")
+    # 字类必须是整条正则的第一个分支——上面那条扫描不依赖这点，但 pin 住它能让
+    # 「有人往字类前面插了新分支」这件事在 review 里显形。
+    first = _split_top_level_alternatives(D._ZH_EVIDENCE_RE.pattern)[0]
+    assert first == f"[{D._ZH_EVIDENCE_CHARS}]"
 
 
 def test_the_grammar_marker_set_excludes_mo():
@@ -1387,9 +1519,10 @@ def test_interrogative_tails_are_stripped_only_outside_quoted_names(text, expect
 
 def test_the_bracket_char_set_is_derived_from_the_pairs():
     """两张表漂移过四次（#2655），这里钉死派生关系。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_BRACKET_CHARS == frozenset(
-        ch for pair in D._ZH_BRACKET_PAIRS for ch in pair
+    assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
+        lo for lo, _hi in D._ZH_BRACKET_PAIRS
     )
+    assert D._ZH_BRACKET_RUN_RE.pattern == D._ZH_BRACKET_RUN
 
 
 def test_interrogative_tails_are_a_separate_table_from_the_particles():
@@ -1405,10 +1538,30 @@ def test_interrogative_tails_are_a_separate_table_from_the_particles():
 
 
 # ── 9. 括号段有界 + 对称引号不跨句 ──────────────────────────
-def test_bracket_bodies_are_bounded():
-    """无界的 ``*`` 在每个开括号处都会扫到串尾，是二次方（codex P2）。"""  # noqa: DOCSTRING_CJK
-    assert "]*" not in D._ZH_BRACKET_RUN, D._ZH_BRACKET_RUN
-    assert f"{{0,{D._TERM_MAX_LEN}}}" in D._ZH_BRACKET_RUN
+@pytest.mark.parametrize("pair", D._ZH_BRACKET_PAIRS)
+def test_bracket_bodies_are_bounded(pair):
+    """无界的 ``*`` 在每个开括号处都会扫到串尾，是二次方（codex P2）。
+
+    ⚠️ 判据是**全称**不是存在：12 对括号里只要有一对还有界，`in` 那种写法就通过，
+    而只把 ``「」`` 放成无界就足以让 ``"「" * 8000`` 从 0.04s 涨到 2.5s（变异跑出来的）。
+    """  # noqa: DOCSTRING_CJK
+    lo, hi = pair
+    body = D._zh_bracket_body(lo, hi)
+    assert f"{{0,{D._TERM_MAX_LEN}}}" in body, body
+    for unbounded in ("*", "+", "{0,}"):
+        assert f"){unbounded}" not in body, (body, unbounded)
+
+
+@pytest.mark.parametrize("pair", D._ZH_BRACKET_PAIRS)
+def test_no_bracket_pair_scans_to_the_end(pair):
+    """行为面：每一对括号单独喂 8000 个未配对开括号都必须是线性的。"""  # noqa: DOCSTRING_CJK
+    import time
+
+    lo, _hi = pair
+    started = time.perf_counter()
+    extract_directives(lo * 8000)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"{lo!r} * 8000 跑了 {elapsed:.2f}s"
 
 
 def test_unmatched_openers_stay_linear():
@@ -1643,7 +1796,13 @@ def test_multi_char_negations_need_no_left_boundary(subject, negation):
 def test_the_subject_allowlist_holds_no_japanese_kanji():
     """⚠️ 只收日文里根本没有的汉字。``我 / 他 / 請`` 刻意不收——它们是日文汉字，
     收了 ``他別提案をお願いします。`` 这类句子就会被放行进来（实测过）。
+
+    ⚠️ 主断言是**相等**：白名单是开放可加的，而「不许出现的日文汉字」是开集，
+    手抄一份黑名单挡不住没写进去的那些（``俺`` 是北方口语主语、同时是日文常用汉字，
+    加进来 ``俺別提案をお願いします。`` 就会被当成中文指令存下来——变异跑出来的）。
     """  # noqa: DOCSTRING_CJK
+    assert D._ZH_SUBJECT_CHARS == "你妳您咱请"
+    assert tuple(D._ZH_SUBJECT_CHARS) == ZH_ONLY_SUBJECTS
     for subject in ZH_ONLY_SUBJECTS:
         assert subject in D._ZH_SUBJECT_BEFORE_NEG, subject
     for kanji in ("我", "他", "她", "請", "貴"):
@@ -1736,7 +1895,7 @@ def test_an_interrogative_outside_the_quotes_is_still_a_tail(text, expected):
 def test_the_interrogative_gate_uses_closing_delimiters():
     closers = {hi for _lo, hi in D._ZH_BRACKET_PAIRS}
     # 对称的一对里开合同字，所以收尾集必然是括号字符集的真子集或相等
-    assert closers <= D._ZH_BRACKET_CHARS
+    assert closers <= frozenset(ch for pair in D._ZH_BRACKET_PAIRS for ch in pair)
     assert "》" in closers and "《" not in closers
 
 
@@ -1830,3 +1989,144 @@ def test_the_quoted_span_end_is_derived_from_the_bracket_run():
     assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
         lo for lo, _hi in D._ZH_BRACKET_PAIRS
     )
+
+
+# ── 21. 每条模板的每个分支都要真的驱动一次抽取 ───────────────
+# ⚠️ 字形对偶抓不到繁简**同形**的分支（``聊`` / ``提及`` / ``不想``）——删掉模板 2 的
+# ``|聊``，两侧一起丢指令而所有结构断言全绿（变异跑出来的）。这里改成行为驱动：
+# 从模板自己的分支组里读出分支，逐个塞进该模板的句型，必须都能抽到同一个话题。
+def _group_containing(raw: str, needle: str) -> list[str]:
+    """取出这条模板里**含有 needle** 的那个分支组。"""  # noqa: DOCSTRING_CJK
+    for group in _alternation_groups(raw):
+        if needle in group:
+            return group
+    raise AssertionError(f"这条模板里没有含 {needle!r} 的分支组：{raw!r}")
+
+
+# ⚠️ 分支表**钉死成字面量**，不从 pattern 里读。从 pattern 读的话「删掉一个分支」
+# 同时也删掉了驱动它的那条用例，测试跟着缩水、照样全绿——本仓库栽过的 derived-test
+# 盲区。钉死之后删分支必然红，加分支必须同时改这里（顺便被迫补一条繁简对照）。
+#
+# (模板下标, 分支组的定位分支, 钉死的分支表, 句型, 期望话题)
+BRANCH_DRIVE_CASES = [
+    (1, "提了", ("提了", "提起", "提及", "说", "說", "提", "聊", "讲", "講"),
+     "工作别{branch}。", "工作"),
+    (1, "提了", ("提了", "提起", "提及", "说", "說", "提", "聊", "讲", "講"),
+     "工作別{branch}。", "工作"),
+    (2, "聊", ("讨论", "討論", "说", "說", "提", "聊", "讲", "講", "谈", "談", "扯"),
+     "我不想{branch}工作。", "工作"),
+    (2, "不想", ("不想", "不愿意", "不願意", "不愿", "不願", "懒得", "懶得",
+                 "没心情", "沒心情"),
+     "我{branch}聊工作。", "工作"),
+    (3, "提", ("说", "說", "提", "聊", "讲", "講"),
+     "关于工作就别{branch}了。", "工作"),
+    (3, "提", ("说", "說", "提", "聊", "讲", "講"),
+     "關於工作就別{branch}了。", "工作"),
+]
+
+
+@pytest.mark.parametrize(
+    ("index", "anchor", "pinned", "skeleton", "expected"), BRANCH_DRIVE_CASES,
+)
+def test_every_branch_in_the_group_actually_drives_extraction(
+    index, anchor, pinned, skeleton, expected,
+):
+    raw = _zh_pattern_sources()[index]
+    # 前提守卫：钉死的表必须和实现里那组分支**相等**，否则驱动的是一张过时的表
+    assert tuple(_group_containing(raw, anchor)) == pinned, (
+        f"模板 {index} 的分支组变了，请同步这里并给新分支补繁简对照"
+    )
+    for branch in pinned:
+        text = skeleton.format(branch=branch)
+        assert expected in _zh_terms(text), f"{text!r} -> {_zh_terms(text)}"
+
+
+def test_negation_constants_are_pinned():
+    """⚠️ 闭集用相等断言。往 _ZH_NEG 加否定词而忘了同步日文守卫的证据，中文侧照常
+    工作、但「新否定词 + 日文专名」会被整条吞掉，而同结构的旧否定词不会——同一模板内
+    的行为不对称。现在三条证据正则都从这两张表派生，加词自动同步；这条断言负责让
+    「加词」这个动作停下来过一次 review。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_NEG_SINGLES == ("别", "別", "莫", "休", "甭")
+    assert D._ZH_NEG_MULTIS == ("不要", "不许", "不許", "不准")
+    # 三条证据正则必须真的从上面两张表派生
+    for neg in D._ZH_NEG_SINGLES:
+        assert neg in D._ZH_NEG_VERB_EVIDENCE, neg
+        assert neg in D._ZH_SUBJECT_BEFORE_NEG, neg
+    for neg in D._ZH_NEG_MULTIS:
+        assert neg in D._ZH_MULTI_NEG_EVIDENCE, neg
+    # 而 _ZH_NEG 自己也从同一张表拼出来
+    for neg in D._ZH_NEG_MULTIS:
+        assert neg in D._ZH_NEG, neg
+
+
+def test_the_branch_drive_cases_cover_every_template_but_the_first():
+    """模板 1 的动词/否定词维已有第 2 节的笛卡尔积；2/3/4 靠上面这条。"""  # noqa: DOCSTRING_CJK
+    covered = {case[0] for case in BRANCH_DRIVE_CASES}
+    assert covered == {1, 2, 3}
+    assert len(_zh_pattern_sources()) == 4
+
+
+# ── 22. 共用常量装在哪几条模板上，就要在哪几条上钉住 ─────────
+# ⚠️ 下面这批守卫/分支都**同时装在多条模板**上，而原先只有模板 1（或只有模板 2）
+# 有样本。删掉其他模板上的那一份，行为回归而测试全绿——变异逐条跑出来的。
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # (a) 独立成句的书名号话题：_zh_topic 的前导括号分支，四条模板共用，
+        #     模板 3（不想/懒得 + 动词 + 宾语）原先一条样本都没有
+        ("我不想聊《你好，李焕英》", "你好，李焕英"),
+        ("我不想聊「加班的事」", "加班的事"),
+        ("懶得聊《你好，李煥英》", "你好，李煥英"),
+        ("我沒心情談《你好，李煥英》", "你好，李煥英"),
+    ],
+)
+def test_template_three_also_takes_a_quoted_topic(text, expected):
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # (b) `的?+指示词` 填充组同时装在模板 2 和模板 4 上，原先只有模板 2 有样本
+        ("关于减肥这话题就别说了。", "减肥"),
+        ("關於減肥這話題就別說了。", "減肥"),
+        ("关于工作这事就别提了。", "工作"),
+        ("關於工作這事就別提了。", "工作"),
+        ("关于减肥这个就别说了。", "减肥"),
+        ("關於減肥的這個就別說了。", "減肥"),
+        ("关于工作这件事就别提了。", "工作"),
+        ("關於工作這件事就別提了。", "工作"),
+    ],
+)
+def test_template_four_consumes_the_demonstrative_filler(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # (c) `(?:的事)?` 同时装在模板 2 和模板 4 上。模板 2 原先唯一带「的事」的
+        #     样本是 `钱的事别提了。`，而它的期望值恰恰是 `钱的事`——那个填充组
+        #     在那里根本没被消费，等于一条断言都没有。
+        ("工作的事别提了。", "工作"),
+        ("工作的事別提了。", "工作"),
+        ("前女友的事别提了。", "前女友"),
+        ("前女友的事別提了。", "前女友"),
+    ],
+)
+def test_template_two_consumes_the_deshi_filler(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_preposed_topic_unit_excludes_newlines_too():
+    """⚠️ 模板 2 的前置话题走的是 _ZH_PLAIN_CHAR_NO_GUANYU 这个**另一个**常量，
+    原先全文件没有一条断言碰过它的内容——把换行排除丢掉，term 会跨行吞掉下一条指令，
+    而所有换行样本都只走模板 1 和模板 3（变异跑出来的）。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_PLAIN_CHAR_NO_GUANYU.endswith(D._ZH_PLAIN_CHAR)
+    assert D._ZH_PLAIN_CHAR_NO_GUANYU == r"(?!关于|關於)" + D._ZH_PLAIN_CHAR
+    # 行为面：前置话题不许跨行
+    for text in ("工作\n股票别提了。", "工作\r\n股票別提了。"):
+        for term in _zh_terms(text):
+            assert "\n" not in term and "\r" not in term, (text, term)
