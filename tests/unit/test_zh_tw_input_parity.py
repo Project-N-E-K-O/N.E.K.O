@@ -6572,3 +6572,68 @@ def test_jiushi_shares_the_same_seam_as_jiusuan(verb):
     assert mr.is_explicit_music_cancellation(
         f'我想停止播放这个{verb}就是有奖励的是否合适'
     ) is False, verb
+
+
+# ⚠️⚠️⚠️ 这一组是**统一左界**的守卫。它替代了「逐个往黑名单补字」那条路。
+_FRAME_SEAM_WORDS = [
+    # X要（名词/副词）+ 是
+    "摘要是", "纪要是", "概要是", "提要是", "纲要是", "简要是",
+    "主要是", "次要是", "首要是", "重要是", "需要是", "只要是", "想要是",
+    "硬要是", "非要是",
+    # X就（动词）+ 是/算
+    "成就是", "迁就是", "造就是", "将就是", "俯就是", "屈就是", "高就是",
+    "另就是", "早就是", "也就是", "这就是",
+    "迁就算", "成就算", "造就算", "将就算",
+    # X即 + 使 / X不 + 管 / X忘 + 了
+    "立即使", "随即使", "当即使", "旋即使",
+    "才不管", "就不管", "都不管", "全不管",
+    "别忘了", "差忘了", "难忘了", "遗忘了",
+]
+
+
+@pytest.mark.parametrize("seam", _FRAME_SEAM_WORDS)
+def test_a_frame_word_on_a_compound_seam_never_opens_a_frame(seam):
+    """⚠️⚠️⚠️ **这条守的是一条判据路线，不是一个缺陷。**
+
+    框架词是 2 字中文词、靠**子串匹配**打在任意文本上，而含
+    `就是`/`要是`/`即使`/`不管`/`忘了` 接缝的汉语复合词是**无界**的。
+    第六十三轮起我一直在往左界黑名单里补字，七十五轮下来随手列 42 个候选
+    **还有 10 个是活的第 1 类**——补词这条路不收敛，因为要枚举的是
+    「所有含该接缝的复合词」。
+
+    换成统一左界（框架词只在句首 / 标点后 / 非汉字后 / 一个**闭集**汉字后才算
+    框架）之后，这 42 个一次全堵住。反过来看是成立的：真框架的左邻是闭集
+    ——句首、标点、播放动词尾字、连词尾字、代词、几个助词。
+
+    ⚠️ 判错方向是轻的那一侧：漏认一个框架 ＝ 少中和 ＝ 疑问守卫更容易开火 ＝
+    少停一次歌；误认一个框架 ＝ 提问被执行成取消（重）。
+
+    ⚠️ 逐词的左/右黑名单**保留**，两层各管一半：`也就是`/`这就是` 的左邻
+    （`也`/`这`）正好落在闭集里，得靠黑名单挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前确认{seam}有用的是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["我想停止播放如果有什么新歌再告诉我",
+     "我想停止播放因为无论唱什么歌都不好听",
+     "我想停止播放因为就是什么歌都不好听",
+     "我想停止播放要是有新歌再告诉我",
+     "我想停止播放因为万一有新歌就麻烦了",
+     "我想停止播放因为不知道是不是好歌都不想听",
+     "我想停止播放，如果有新歌再说",
+     "我想停止播放因为即使换一首也不好听"],
+)
+def test_real_frames_survive_the_unified_left_bound(text):
+    """⚠️ 统一左界的反向断言：真框架的左邻确实都落在那个闭集里。
+
+    这八句覆盖了闭集的每一类来源——播放动词（放）、连词（为/且）、标点（，）、
+    句首。少一类就说明闭集列漏了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(text) is True, text
