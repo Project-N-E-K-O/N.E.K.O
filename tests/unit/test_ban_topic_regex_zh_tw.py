@@ -3267,3 +3267,44 @@ def test_the_quoted_span_end_boundaries():
     assert D._zh_quoted_span_end("《你好吗》好吗") == len("《你好吗》")
     # 全角落单仍然一路延伸到末尾。
     assert D._zh_quoted_span_end("电影《好不好") == len("电影《好不好")
+
+
+# ── 40. 对称引号里的句读：刻意不排除 ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 带句点 / 逗号的真作品名要完整（parent 两条都被腰斩，本 PR 修好的）
+        ('别再提"Everything. Everywhere"。', "Everything. Everywhere"),
+        ('别再提"Everything, Everywhere"。', "Everything, Everywhere"),
+        ('别再提"你好。世界"好吗？', "你好。世界"),
+        ('我不想聊"工作。加班"。', "工作。加班"),
+        # 前置话题那两条模板：排掉句读就会在这里产出非词
+        ('"工作。加班"别提了。', "工作。加班"),
+        ('关于"工作。加班"就别提了。', "工作。加班"),
+    ],
+)
+def test_sentence_punctuation_stays_inside_symmetric_quotes(text, expected):
+    """对称引号的字符类**不**排除句读，是量过之后的选择，不是遗漏。
+
+    排掉句读能让两个落单英寸号不跨句配对，但代价是腰斩带句点的真作品名，
+    并在模板 2/4 上产出非词（``加班`` / ``加班"就``，两条都比 parent 还差）。
+    代价方向和 ``耶 / 捏 / 囉`` 那批一致：宁可多带一段，不可吃字造非词。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_symmetric_quote_guard_is_the_temper_not_a_punctuation_class():
+    """结构面：护栏是 ``(?![别別])`` temper，不是从字符类里排句读。
+
+    ⚠️ 这条同时钉住「别再往对称分支里塞死代码」：曾经有一行 ``banned += 句读``
+    排在 ``unit`` 组装**之后**，看着像实现了护栏、实际是死变量（coderabbit 报的）。
+    """  # noqa: DOCSTRING_CJK
+    body = D._zh_bracket_body('"', '"')
+    assert "(?![别別])" in body
+    for punct in "。！？；":
+        assert punct not in body, punct
+    # 而 temper 确实挡住了两条指令被并成一条。
+    assert _zh_terms('尺寸5"别提了。尺寸6"别提了。') == {"尺寸5", "尺寸6"}
+    assert _zh_terms('尺寸5"别提了，尺寸6"别提了。') == {"尺寸5", "尺寸6"}
