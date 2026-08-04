@@ -103,7 +103,7 @@ def test_versioned_embed_assets_use_immutable_cache_headers() -> None:
     assert 'static/js/card_maker_embed_bootstrap.js' in pages_router
 
 
-def test_live2d_embed_runtime_assets_change_static_asset_version(monkeypatch) -> None:
+def test_versioned_runtime_assets_change_static_asset_version(monkeypatch) -> None:
     runtime_paths = tuple(
         ROOT / relative_path
         for relative_path in (
@@ -114,6 +114,8 @@ def test_live2d_embed_runtime_assets_change_static_asset_version(monkeypatch) ->
             "static/live2d/live2d-core.js",
             "static/live2d/live2d-emotion.js",
             "static/live2d/live2d-model.js",
+            "static/mmd/mmd-init.js",
+            "static/social-embed.js",
         )
     )
     tracked_paths = set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)

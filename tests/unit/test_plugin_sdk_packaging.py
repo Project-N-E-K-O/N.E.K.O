@@ -38,6 +38,7 @@ def _sdk_module_names() -> list[str]:
 
 
 def test_current_sdk_modules_are_importable() -> None:
+    _ensure_project_root_first()
     for module_name in _sdk_module_names():
         importlib.import_module(module_name)
 
