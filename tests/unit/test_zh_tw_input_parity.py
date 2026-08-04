@@ -874,6 +874,9 @@ def test_clause_normalization_strips_only_function_words(text, expected):
         # 实现里靠子串命中，逐字原样匹配会丢。裸应答不能这么放宽——对比
         # test_a_question_never_approves 里的 `没问题喵~`。
         ("好的喵~，去执行", "/daemon approve"), ("OK，去执行", "/daemon approve"),
+        # 中英混排且不带分隔符的写法走中性首部表
+        ("OK去执行", "/daemon approve"), ("ok去执行", "/daemon approve"),
+        ("okay去执行", "/daemon approve"),
         ("好的👌，去执行", "/daemon approve"), ("好的喵~", None),
         # ⚠️ 单字应答**不做前缀剥离**：`对方去执行` 不是授权
         ("对方去执行", None), ("好人去执行", None),
@@ -892,7 +895,15 @@ def test_an_affirmative_clause_needs_a_real_command_beside_it(text, expected):
         # _CLAUSE_SPLIT 也不是语气词，整条就落不到白名单上——而中文聊天里这是最常见
         # 的收尾方式之一。用「非词字符」的补集来剥，不去枚举符号（符号是开集）。
         ("去执行…", "/daemon approve"), ("去执行……", "/daemon approve"),
-        ("去执行👌", "/daemon approve"), ("去执行~", "/daemon approve"),
+        ("去执行~", "/daemon approve"), ("去执行！", "/daemon approve"),
+        ("去执行。", "/daemon approve"),
+        # ⚠️ 句尾同样能带否定：`去執行❌` 也是「别执行」。「哪些符号带否定语义」
+        # 是开集（❌✖✗🚫⛔🙅🆖……），黑名单堵不完——所以 approve 的句尾装饰改成
+        # 一张**明确无语义**的标点闭集，emoji 一律不剥。代价：`去执行👌` 相对旧
+        # 实现丢了（👌 和 ❌ 在这一层区分不了），记账在此。
+        ("去執行❌", None), ("去执行❌", None), ("去執行🚫", None),
+        ("去执行✖", None), ("删吧❌", None), ("准了❌", None),
+        ("去执行👌", None),
         ("停下来…", "/stop"), ("停下來……", "/stop"), ("停下來——", "/stop"),
         ("別找了…", "/stop"), ("「停下來」", "/stop"), ("“停下来”", "/stop"),
         ("換個話題…", "/new"), ("换个话题👍", "/new"), ("重新開始……", "/new"),
@@ -900,6 +911,9 @@ def test_an_affirmative_clause_needs_a_real_command_beside_it(text, expected):
         ("雨停下来了…", None), ("我准了假👌", None), ("比賽即將重新開始……", None),
         # ⚠️ 中文省略号是**句中分隔符**，不只是句尾装饰
         ("同意……去执行", "/daemon approve"), ("同意⋯⋯去执行", "/daemon approve"),
+        # 破折号同理，也是句中分隔符
+        ("同意——去执行", "/daemon approve"), ("同意—去执行", "/daemon approve"),
+        ("好吧——换个话题", "/new"), ("停下來——別找了", "/stop"),
         ("好吧……换个话题", "/new"), ("停下來……別找了", "/stop"),
         # ⚠️⚠️ approve **只剥句尾装饰**：句首那一格是语义位。`❌去執行` 是「别执行」，
         # `「去執行」` 是在**提及**这个词而不是下令。一律当装饰剥掉就全变成了授权。
@@ -934,8 +948,18 @@ def test_peeling_is_bounded_for_pathological_input():
     from brain.openclaw_adapter import OpenClawAdapter
 
     start = time.perf_counter()
+    # 走 _clause_hits 的剥词
     assert OpenClawAdapter.rule_magic_command("去执行" + "吧" * 20000) is None
     assert OpenClawAdapter.rule_magic_command("停下来" + "啊呀" * 10000) is None
+    # ⚠️ 也要走 _command_clause 的剥词：空格把语气词切成独立末子句之后，往回跳过
+    # 它们的那段循环是**另一处**剥词，界得单独加（变异验证抓出来的）。
+    OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 60000)
+    OpenClawAdapter.rule_magic_command("随便说说 " + "啊" * 60000)
+    # ⚠️ _command_clause 里那段剥词的界只能**按行为**断言，不能按耗时：实测无界版
+    # 120k 个语气词也只要 0.34s（切片走 memcpy，没到能卡住事件循环的量级）。
+    # 界的可观察后果是「超长尾巴剥不完 → 不跳过它 → 返回 None」。
+    assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 5) == "/stop"
+    assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 200) is None
     elapsed = time.perf_counter() - start
     assert elapsed < 1.0, f"病态输入耗时 {elapsed:.2f}s，剥词的界没生效"
 
@@ -1098,6 +1122,7 @@ def test_function_word_tables_are_pinned():
     )
 
     assert set(_NEUTRAL_LEAD.split("|")) == {
+        "OKAY", "Okay", "okay", "OK", "Ok", "ok",
         "没错", "沒錯", "没意见", "沒意見", "批准", "允许", "允許", "同意",
         "好的", "好吧", "行了", "可以",
         "那么", "那麼", "快点", "快點", "就这么", "就這麼", "这就", "這就",

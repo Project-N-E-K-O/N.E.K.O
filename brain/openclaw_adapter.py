@@ -154,9 +154,9 @@ _HIGH_PRECISION_NON_MAGIC = (
 # 现在的判据：按标点/空白切子句 → 每个子句剥掉首部虚词和尾部语气词 → 查白名单。
 # 词汇量**一个没加**，还是原来那些词，只是要求它们**独立成句**而不是嵌在任意
 # 长句里。`/clear` 不在本批（不在本次拍板的三条里），仍走子串包含。
-# ⚠️ 中文省略号 …／⋯ 是**句中分隔符**，不只是句尾装饰：`同意……去执行` /
-# `好吧……换个话题` 在旧实现里靠子串命中，不切它整条就落空。
-_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:…⋯‥\s]+")
+# ⚠️ 中文省略号 …／⋯ 和破折号 ——／— 都是**句中分隔符**，不只是句尾装饰：
+# `同意……去执行` / `好吧——换个话题` 在旧实现里靠子串命中，不切它整条就落空。
+_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:…⋯‥—–―─\s]+")
 
 # ── 首部虚词：**两套白名单**，approve 用窄的那套 ──────────────────────
 #
@@ -186,6 +186,8 @@ _NEUTRAL_LEAD = (
     # 单字的 好 / 行 / 对 / 嗯 当前缀太糙（`对方去执行` 会被剥成 `方去执行`，
     # `行不行` 更是词尾），它们只作为**应答子句**参与，见 _APPROVE_COMPANIONS——
     # 那条路要求有分隔符，语义上也更接近「先应一声再下令」。
+    # 中英混排的应答前缀也常见：`OK去执行` / `okay去执行` 在旧实现里靠子串命中。
+    r"OKAY|Okay|okay|OK|Ok|ok|"
     r"没错|沒錯|没意见|沒意見|批准|允许|允許|同意|好的|好吧|行了|可以|"
     r"那么|那麼|快点|快點|就这么|就這麼|这就|這就|"
     r"帮我|幫我|帮忙|幫忙|给我|給我|替我|麻烦|麻煩|拜托|拜託|"
@@ -254,11 +256,19 @@ _TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
 # 回归。用「非词字符」这个**补集**来剥，而不是去枚举符号：符号是开集，枚举必漏。
 # `\w` 在 Python3 下含 CJK，所以这条只吃标点、符号与 emoji。
 _DECORATION = re.compile(r"^\W+|\W+$")
-# ⚠️⚠️ approve **只剥句尾装饰，不剥句首**。句首那一格是**语义**位：`❌去執行` /
-# `🚫去執行` 是「别执行」，`「去執行」` 是在**提及**这个词而不是在下令。一律当装饰剥掉
-# 就把它们全变成了授权——本 PR 一度如此（繁体侧 main 是 None，等于我新开的口子）。
-# 句尾的 … 👌 ~ 才是纯装饰。/stop 与 /new 后果小，两端照剥（`「停下來」` → /stop）。
+# ⚠️⚠️ approve 的装饰剥离是**另一套**，只剥句尾、且只认一张**闭集**标点表。
+#
+# 句首那一格是语义位：`❌去執行` / `🚫去執行` 是「别执行」，`「去執行」` 是在**提及**
+# 这个词而不是在下令。但句尾同样能带否定：`去執行❌` / `去執行🚫` 也是「别执行」。
+# 用 `\W`（非词字符的补集）去剥，两端都会把这些符号当装饰吃掉——本 PR 一度如此，
+# 繁体侧 main 是 None，等于我新开的口子。
+#
+# 「哪些符号带否定语义」是**开集**（❌✖✗🚫⛔🙅🆖🚷……），黑名单堵不完——这跟本文件
+# 上面那段关于前缀的论证是同一件事。所以 approve 反过来只认一张**明确无语义**的标点
+# 表；emoji 一律不剥，代价是 `去执行👌` 相对旧实现丢了（👌 和 ❌ 在这一层区分不了）。
+# /stop 与 /new 后果小（掐任务 / 换话题），仍用宽的 `\W` 两端剥，`「停下來」` → /stop。
 _DECORATION_TAIL = re.compile(r"\W+$")
+_DECORATION_TAIL_APPROVE = re.compile(r"[…⋯‥~～!！.。·・、,，\s]+$")
 
 # ⚠️ 剥词尾的候选是原串的各级前缀，句尾语气词能连着写（`去执行吧吧吧吧…`），所以
 # 候选数随词尾连串长度增长、每个候选还要做一次切片——对超长输入是二次的，实测 20k
@@ -430,6 +440,9 @@ def _approve_clause_kind(clause: str) -> Optional[str]:
         strip_tail=True,
         lead_re=_CLAUSE_LEAD_NEUTRAL,
         tail_tokens=_NEUTRAL_TAIL_TOKENS,
+        # ⚠️ 应答子句用**宽**的装饰表（含 emoji），只有动作支用严格那张。
+        # 理由同上：应答子句单独出现永远不算授权，放宽它的写法不会扩大批准面；
+        # 而「否定符号」的风险落在**动作**子句上（`去執行❌` 才是「别执行」）。
         decoration_re=_DECORATION_TAIL,
     ):
         return "companion"
@@ -453,7 +466,7 @@ def _approve_clause_hits(clause: str) -> bool:
         strip_tail=True,
         lead_re=_CLAUSE_LEAD_NEUTRAL,
         tail_tokens=_NEUTRAL_TAIL_TOKENS,
-        decoration_re=_DECORATION_TAIL,
+        decoration_re=_DECORATION_TAIL_APPROVE,
     )
 
 
@@ -474,7 +487,9 @@ def _command_clause(clauses: list) -> str:
         if not stripped:
             continue
         peeled = stripped
-        while True:
+        # ⚠️ 和 _clause_hits 同理，剥词要有硬上界：一串很长的语气词会让这里做
+        # O(串长) 次切片、每次 O(串长)。分类器在用户输入路径上，不能让它二次爆。
+        for _ in range(_MAX_PEEL_CANDIDATES):
             for token in _TAIL_TOKENS:
                 if peeled.endswith(token) and len(peeled) > len(token):
                     peeled = peeled[: -len(token)]
