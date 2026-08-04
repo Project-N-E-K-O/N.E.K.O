@@ -3669,3 +3669,99 @@ def test_the_existence_predicates_are_anchored_at_the_end(text, expected):
     不锚就会打死以同样假名开头的专有名词。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+# ── 44. 主语不跨行 / 剥尾巴后重扫 / 谓语左界 / 裸 だ ────────
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_subject_evidence_does_not_leak_across_lines(newline):
+    """``\s`` 连换行一起吃，上一行末尾恰好是白名单里的字就能关掉下一行的守卫。
+
+    ``你\n別提案をお願いします。`` 存下 ``案をお願いします``（codex P2）。
+    主语和它管的谓语不可能跨行，所以只收横向空白。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"你{newline}別提案をお願いします。") == set()
+
+
+@pytest.mark.parametrize("gap", [" ", "\t", "　", "  "])
+def test_horizontal_gaps_still_carry_the_subject(gap):
+    """反向：同一行里的横向空白照旧要认（半角 / Tab / 全角空格）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"你{gap}別提君の名は。") == {"君の名は"}
+
+
+def test_the_subject_gap_is_horizontal_only():
+    """结构面：这条不许再用 ``\s``。"""  # noqa: DOCSTRING_CJK
+    assert r"\s" not in D._ZH_SUBJECT_GAP
+    assert D._ZH_SUBJECT_GAP in D._ZH_SUBJECT_ACROSS_SPACE.pattern
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("我不想聊工作好吗呢？", "工作"),
+        ("我没心情说工作可以吗呢？", "工作"),
+        ("别再提工作好吗呢？", "工作"),
+        ("我不想聊工作了好吗。", "工作"),
+    ],
+)
+def test_stripping_a_tail_restarts_the_longest_first_scan(text, expected):
+    """剥掉一个尾词会**露出**更长的那个，而这一轮的游标已经走过它了。
+
+    于是接着匹配到的是它的后缀：``呢`` → 露出 ``好吗`` → 却剥了 ``吗``，存下非词
+    ``工作好``（parent 是 ``工作好吗``；codex P2）。改成剥完就 break、从头重扫。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_length_floor_still_wins_over_the_restart():
+    """⚠️ 重扫不能把长度下限那道闸顶掉：短话题 + 有歧义尾巴仍然整个留着。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("别提钱好吗？") == {"钱好吗"}
+    assert _zh_terms("别提猫可以吗？") == {"猫可以吗"}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 谓语用法：前面是汉语词干
+        ("別提案なし。", set()),
+        ("別提案あり。", set()),
+        ("別提案書あり。", set()),
+        # 词汇用法：前面是假名，或者整个词以它开头
+        ("別提おもてなし。", {"おもてなし"}),
+        ("别提おもてなし。", {"おもてなし"}),
+        ("別再提おもてなし。", {"おもてなし"}),
+        ("別提なしくずし。", {"なしくずし"}),
+        # ⚠️ 右锚在补了左界之后**仍然有用**：汉字接着 なし、但 なし 不在句末时，
+        # 它是词的一部分而不是谓语。这条是构造用例（不是自然日文），目的就是把
+        # 「谓语＝句末」这个判据钉死——去掉右锚它会被整条吞掉（变异跑出来的）。
+        ("別提案なしくずし。", {"案なしくずし"}),
+    ],
+)
+def test_the_existence_predicate_needs_a_kanji_stem(text, expected):
+    """``なし`` 两侧都要卡死，缺一边就误伤。
+
+    右边锚句末挡住 ``ありがとう``；左边要求汉字挡住 ``おもてなし``——只锚右边的话
+    繁中 ``別提おもてなし。`` 整条 0 命中，而同一句简体是好的（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["別提案だ。", "今回は、別提案だ。", "「別講座だ。」", "別談話だ。"]
+)
+def test_a_bare_sentence_final_copula_is_grammar_evidence(text):
+    """裸 ``だ`` 在句末是日文系动词，不收的话 ``別提案だ。`` 存下 ``案だ``。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["別提だんご三兄弟。", "别再提だんご三兄弟。", "別再提だんご三兄弟。"]
+)
+def test_the_bare_copula_is_anchored_so_titles_survive(text):
+    """⚠️ 上面那批口语 copula 只收多字形式，正是因为 ``だんご三兄弟``。
+
+    锚在句末之后那条顾虑不再成立（``だんご`` 的 ``だ`` 后面是 ``ん``），所以裸
+    ``だ`` 可以收——但锚必须在，去掉就把这几条打回去。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {"だんご三兄弟"}
