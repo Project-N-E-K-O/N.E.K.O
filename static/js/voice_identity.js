@@ -518,7 +518,7 @@
                     method: 'POST',
                     body: pcm16,
                     headers: {
-                        'Content-Type': 'audio/L16;rate=16000;channels=1'
+                        'Content-Type': 'audio/pcm;format=pcm_s16le;rate=16000;channels=1'
                     }
                 }
             );
@@ -616,24 +616,25 @@
     }
 
     async function deleteProfile() {
-        const message = translate(
-            'voiceIdentity.deleteConfirm',
-            '删除后需要重新录入才能使用声纹过滤。'
-        );
-        let confirmed = false;
-        if (typeof window.showConfirm === 'function') {
-            confirmed = await window.showConfirm(
-                message,
-                translate('voiceIdentity.delete', '删除 Profile'),
-                { danger: true }
-            );
-        } else if (typeof window.confirm === 'function') {
-            confirmed = window.confirm(message);
-        }
-        if (!confirmed) return;
+        if (state.busy || state.filterPending) return;
         state.busy = true;
         render();
         try {
+            const message = translate(
+                'voiceIdentity.deleteConfirm',
+                '删除后需要重新录入才能使用声纹过滤。'
+            );
+            let confirmed = false;
+            if (typeof window.showConfirm === 'function') {
+                confirmed = await window.showConfirm(
+                    message,
+                    translate('voiceIdentity.delete', '删除 Profile'),
+                    { danger: true }
+                );
+            } else if (typeof window.confirm === 'function') {
+                confirmed = window.confirm(message);
+            }
+            if (!confirmed) return;
             const payload = await apiRequest('/profile', { method: 'DELETE' });
             applyStatus(payload);
             setMessage('');

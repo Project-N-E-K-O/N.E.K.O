@@ -95,7 +95,13 @@ function createElement({ withRecordLabel = false } = {}) {
     return element;
 }
 
-function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}) {
+function createHarness({
+    route,
+    audio = false,
+    audioSample,
+    nativeConfirm,
+    showConfirm,
+} = {}) {
     const elementIds = [
         'voice-identity-status-dot',
         'voice-identity-profile-status',
@@ -125,6 +131,7 @@ function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}
     let audioContext = null;
     let mediaRequests = 0;
     let sourceSampleIndex = 0;
+    const mediaStreams = [];
 
     const translations = {
         en: {
@@ -149,13 +156,6 @@ function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}
         ja: ['日本語一', '日本語二', '日本語三'],
     };
     const translate = key => translations[locale]?.[key] || key;
-
-    const mediaStream = {
-        active: true,
-        getTracks() {
-            return [{ stop() {} }];
-        },
-    };
 
     class MockAudioContext {
         constructor() {
@@ -239,6 +239,7 @@ function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}
         },
         AudioContext: audio ? MockAudioContext : undefined,
         confirm: nativeConfirm,
+        showConfirm,
     };
     const context = vm.createContext({
         window,
@@ -247,6 +248,19 @@ function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}
             mediaDevices: {
                 getUserMedia: async () => {
                     mediaRequests += 1;
+                    const track = {
+                        stopped: false,
+                        stop() {
+                            this.stopped = true;
+                        },
+                    };
+                    const mediaStream = {
+                        active: true,
+                        getTracks() {
+                            return [track];
+                        },
+                    };
+                    mediaStreams.push(mediaStream);
                     return mediaStream;
                 },
             },
@@ -283,6 +297,9 @@ function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}
         },
         getMediaRequests() {
             return mediaRequests;
+        },
+        getMediaStreams() {
+            return mediaStreams;
         },
         beforeClose() {
             return window.nekoBeforeWindowClose();
@@ -386,6 +403,7 @@ test('filter updates block competing profile mutations with a scoped pending sta
 
     assert.equal(filter.checked, true);
     assert.equal(filter.disabled, false);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
     assert.equal(harness.elements.get('voice-identity-reenroll').disabled, false);
     assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
 });
@@ -481,11 +499,16 @@ test('starting enrollment releases the permission-check microphone before the fi
 
     assert.equal(harness.getMediaRequests(), 1);
     assert.equal(harness.getAudioContext().state, 'closed');
+    assert.equal(
+        harness.getMediaStreams()[0].getTracks().every(track => track.stopped),
+        true,
+    );
     assert.equal(harness.elements.get('voice-identity-record').hidden, false);
 });
 
 test('recording upload is capped at four seconds of source samples', async () => {
     let segmentBody = null;
+    let segmentHeaders = null;
     const harness = createHarness({
         audio: true,
         route(url, options) {
@@ -499,6 +522,7 @@ test('recording upload is capped at four seconds of source samples', async () =>
             }
             if (url === '/api/voice-identity/enrollment/segment') {
                 segmentBody = options.body;
+                segmentHeaders = options.headers;
                 return jsonResponse({
                     enrollment: { session_id: 'session-1', stage: 'fixed_2' },
                 });
@@ -512,6 +536,11 @@ test('recording upload is capped at four seconds of source samples', async () =>
 
     assert.equal(Object.prototype.toString.call(segmentBody), '[object ArrayBuffer]');
     assert.equal(segmentBody.byteLength, 16000 * 4 * Int16Array.BYTES_PER_ELEMENT);
+    assert.equal(
+        segmentHeaders.get('Content-Type'),
+        'audio/pcm;format=pcm_s16le;rate=16000;channels=1',
+    );
+    assert.deepEqual(Array.from(new Uint8Array(segmentBody, 0, 2)), [0xff, 0x1f]);
 });
 
 test('microphone resources are released and reacquired between recording steps', async () => {
@@ -547,6 +576,10 @@ test('microphone resources are released and reacquired between recording steps',
 
     assert.equal(firstContext.state, 'closed');
     assert.equal(harness.getMediaRequests(), 1);
+    assert.equal(
+        harness.getMediaStreams()[0].getTracks().every(track => track.stopped),
+        true,
+    );
 
     await record.emit('click');
     const secondContext = harness.getAudioContext();
@@ -555,6 +588,12 @@ test('microphone resources are released and reacquired between recording steps',
     assert.notEqual(secondContext, firstContext);
     assert.equal(secondContext.state, 'closed');
     assert.equal(harness.getMediaRequests(), 2);
+    assert.equal(
+        harness.getMediaStreams().every(stream => (
+            stream.getTracks().every(track => track.stopped)
+        )),
+        true,
+    );
 });
 
 test('downsampling attenuates microphone energy above the target Nyquist limit', async () => {
@@ -619,6 +658,50 @@ test('delete falls back to native confirmation when the shared dialog is unavail
     await harness.elements.get('voice-identity-delete').emit('click');
 
     assert.equal(confirmations, 1);
+    assert.equal(
+        harness.fetchCalls.some(call => call.url === '/api/voice-identity/profile'),
+        false,
+    );
+});
+
+test('async delete confirmation locks mutations and restores them when declined', async () => {
+    const confirmation = deferred();
+    const harness = createHarness({
+        showConfirm() {
+            return confirmation.promise;
+        },
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                    filter: { enabled: true },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const deletion = harness.elements.get('voice-identity-delete').emit('click');
+
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-filter').disabled, true);
+    await harness.elements.get('voice-identity-reenroll').emit('click');
+    assert.equal(harness.getMediaRequests(), 0);
+
+    confirmation.resolve(false);
+    await deletion;
+
+    assert.equal(harness.elements.get('voice-identity-start').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-filter').disabled, false);
     assert.equal(
         harness.fetchCalls.some(call => call.url === '/api/voice-identity/profile'),
         false,
