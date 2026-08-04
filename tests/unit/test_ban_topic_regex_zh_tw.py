@@ -3398,13 +3398,15 @@ def test_a_japanese_bie_prefix_compound_is_suppressed_anywhere(text):
     assert _zh_terms(text) == set(), _zh_terms(text)
 
 
-@pytest.mark.parametrize("verb", ["聊", "扯", "說", "说", "讲", "谈"])
+@pytest.mark.parametrize("verb", sorted(D._ZH_ZH_ONLY_VERBS))
 def test_a_verb_japanese_does_not_have_needs_no_disambiguation(verb):
     """日文里组不出 ``別X`` 的动词：不设左界、也不要求 ``再``。
 
     否则 ``別聊君の名は。`` / ``請別扯君の名は。`` 整条 0 命中，而同一句简体
     因为 ``别`` 在 _ZH_EVIDENCE_CHARS 里有单字证据就是好的（codex P2）。
     ⚠️ ``請`` 进不了主语白名单（它是日文汉字），所以这一族只能靠动词消歧。
+    ⚠️ 从 _ZH_ZH_ONLY_VERBS **派生**，不是手点清单：手点那版漏了复合动词
+    ``讨论``（coderabbit）。以后往动词表里加字，这条自动跟着覆盖。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(f"別{verb}君の名は。") == {"君の名は"}
     assert _zh_terms(f"請別{verb}君の名は。") == {"君の名は"}
@@ -3473,19 +3475,18 @@ def test_a_lone_opener_of_the_same_type_still_shields_the_inner_run(opener):
 
 
 def test_symmetric_quotes_need_no_dedicated_peel():
-    """结构面：对称引号不进 _ZH_COUNTERPART，通用 strip 就够，别再写一支死代码。"""  # noqa: DOCSTRING_CJK
+    """行为面：对称引号靠通用 strip 就能两端一起剥，不需要专用分支。
+
+    ⚠️ 这里**没有**「别再写那支死代码」的断言，是想清楚之后不写的：那支分支
+    压根没有行为（正是它对应的变异被判为等价的原因），所以不存在能钉住它的行为
+    断言；而用源码文本去钉两个方向都不成立——换个写法（``s[0] == s[-1] == '"'``）
+    照样绿，实现侧注释里提一句常量名反而红（coderabbit）。判据写在 _strip_trail
+    的注释里，那才是它该待的地方。
+    """  # noqa: DOCSTRING_CJK
     for delim in D._ZH_SYMMETRIC_DELIMS:
-        assert delim not in D._ZH_COUNTERPART, delim
         assert delim in D._TRIM_TRAIL, delim
-    assert "_ZH_SYMMETRIC_DELIMS" not in _strip_trail_source()
     assert _zh_terms('别再提"Everything, Everywhere"。') == {"Everything, Everywhere"}
     assert _zh_terms('别再提"你好吗"。') == {"你好吗"}
-
-
-def _strip_trail_source() -> str:
-    import inspect
-
-    return inspect.getsource(D._strip_trail)
 
 
 def test_the_counterpart_table_covers_every_asymmetric_pair():
@@ -3577,3 +3578,94 @@ def test_evidence_still_reads_only_the_adjacent_character(text, expected):
     （超过 _ZH_SUBJECT_LEFT_MAX）也看不出。必须恰好落在加宽窗口里、又不紧邻。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == expected, _zh_terms(text)
+
+
+# ── 43. 句号不是词内标点 / 日文存在谓语 ──────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ``. `` 是英文句界，前面整句话不该被吃进话题
+        ("That was bad. Work别提了。", "Work"),
+        ("I am sad. Work别提了。", "Work"),
+        # 逗号那一格照旧要放行一个空格
+        ("Hello, World别提了。", "Hello, World"),
+        ("关于Hello, World就别提了。", "Hello, World"),
+        # 不带空白的句号照旧是词内标点
+        ("版本v1.2别提了。", "版本v1.2"),
+    ],
+)
+def test_only_the_comma_tolerates_a_following_space(text, expected):
+    """空白只给逗号，句号不给。
+
+    ⚠️ 这跟同一轮里把 ``。！？`` 挡在 _ZH_PAUSE_CHARS 外面是同一条理由——它们
+    结束的是**句子**。一开始图省事套在 ``[.,]`` 整个字符类上，是自己制造的不一致
+    （coderabbit）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_two_identifier_punctuations_have_different_lookaheads():
+    """结构面：两个符号必须分开写，别再合并回一个字符类。"""  # noqa: DOCSTRING_CJK
+    space = "[ " + chr(92) + "t]?"
+    assert D._ZH_IDENT_PUNCT.count(space) == 1
+    branches = [b for b in D._ZH_IDENT_PUNCT.split("|") if b.startswith("(?<=")]
+    # ⚠️ 判据用「这一支匹配的是哪个字符」，别拿字符类里的标点当特征——字符类里
+    # 本来就含逗号和句号。取 lookbehind 和 lookahead **之间**那一段。
+    def _matched(branch: str) -> str:
+        return branch.split("])", 1)[1].split("(?=", 1)[0]
+
+    dot = [b for b in branches if _matched(b) == chr(92) + "."]
+    comma = [b for b in branches if _matched(b) == ","]
+    assert len(dot) == 1 and len(comma) == 1, branches
+    assert space not in dot[0], dot[0]
+    assert space in comma[0], comma[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別提案あり。",
+        "別提案なし。",
+        "今回は、別提案あり。",
+        "「別提案あり。」",
+        "別提案書あり。",
+        "別講座あり。",
+        "別談話なし。",
+    ],
+)
+def test_japanese_existence_predicates_are_grammar_evidence(text):
+    """日文电报体整句只有 ``あり`` / ``なし`` 两个假名，谓语表里每一条都够不着。
+
+    于是 ``案あり`` 被当成中文 ban 存三天（codex P2）。这一条和 ``別提案書。``
+    那条不同——那条无解（局部同形），这条有干净的判据：``あり/なし`` 是纯假名，
+    中文里根本不存在。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ``なし`` 是 ``なしくずし`` 的**前缀**，不锚在词尾就会把它整条吞掉。
+        # ⚠️ 这一条是这条锚**唯一**判别得出来的形态（变异跑出来的）：
+        #   · 简体 ``别…`` 有单字证据，守卫根本不启动；
+        #   · ``別再提…`` / ``別聊…`` 有结构证据，同样不启动；
+        #   · ``ありがとう`` 里的 ``が`` ``と`` 本来就在单字助词类里，锚不锚都被判日文。
+        # 只有「繁体 + 共用动词 + 无再 + 话题以 なし 开头且不含单字助词」这一格
+        # 才落到谓语表这一步。
+        ("別提なしくずし。", "なしくずし"),
+        ("别再提なしくずし。", "なしくずし"),
+        ("别再提ありがとう。", "ありがとう"),
+        ("別再提ありがとう。", "ありがとう"),
+        # parent 就救回来的那几个别再打回去
+        ("别再提ドラえもん。", "ドラえもん"),
+        ("別叫我「お兄ちゃん」。", "お兄ちゃん"),
+    ],
+)
+def test_the_existence_predicates_are_anchored_at_the_end(text, expected):
+    """⚠️ 存在谓语必须锚在词尾：日文里它们做谓语时永远在句末，锚定不损失召回，
+    不锚就会打死以同样假名开头的专有名词。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
