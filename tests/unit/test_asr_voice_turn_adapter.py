@@ -790,7 +790,7 @@ async def test_incomplete_waits_for_continuation_and_resume_cancels_fallback() -
     await adapter.push_audio(
         generation=1, buffer_epoch=2, utterance_id=3, pcm16=b"\x01\x00"
     )
-    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await _eventually(lambda: adapter._fallback_task is not None)
     fallback_task = adapter._fallback_task
     assert fallback_task is not None
     await adapter.push_audio(
