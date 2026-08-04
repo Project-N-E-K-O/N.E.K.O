@@ -220,6 +220,111 @@ async def test_bili_login_check_clears_session_when_credential_save_fails():
     assert cleanup_calls == 1
 
 
+class _CredentialCheckStub:
+    dedeuserid = "42"
+
+    def __init__(self, *, valid: bool = True) -> None:
+        self.valid = valid
+        self.validity_checks = 0
+
+    async def check_valid(self) -> bool:
+        self.validity_checks += 1
+        return self.valid
+
+
+def _bili_auth_for_credential(credential: object) -> BiliAuthService:
+    async def provide_credential() -> object:
+        return credential
+
+    return BiliAuthService(
+        credential_provider=provide_credential,
+        credential_saver=lambda _payload: True,
+        credential_reloader=lambda: None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_bili_credential_normal_profile_success_does_not_add_validity_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub()
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            return {"name": "alice"}
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+
+    result = await _bili_auth_for_credential(credential).check_credential()
+
+    assert result["logged_in"] is True
+    assert result["username"] == "alice"
+    assert credential.validity_checks == 0
+
+
+@pytest.mark.asyncio
+async def test_bili_credential_profile_failure_falls_back_to_valid_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=True)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("temporary profile outage with private detail")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+
+    result = await _bili_auth_for_credential(credential).check_credential()
+
+    assert result == {
+        "logged_in": True,
+        "uid": "42",
+        "username": "",
+        "message": "credential valid; account profile temporarily unavailable",
+    }
+    assert credential.validity_checks == 1
+    assert "private detail" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_bili_credential_profile_failure_rejects_invalid_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=False)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("profile unavailable")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+
+    result = await _bili_auth_for_credential(credential).check_credential()
+
+    assert result == {
+        "logged_in": False,
+        "message": "credential may be invalid; please login again",
+    }
+    assert credential.validity_checks == 1
+
+
 @pytest.mark.asyncio
 async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
     class Audit:
