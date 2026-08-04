@@ -968,7 +968,7 @@ def test_all_four_zh_templates_share_one_topic_char_class():
     assert D._ZH_BRACKET_PAIRS == (
         ("《", "》"), ("「", "」"), ("『", "』"), ("“", "”"), ("【", "】"),
         ("（", "）"), ("〈", "〉"), ("〔", "〕"), ("［", "］"), ("〖", "〗"),
-        ('"', '"'), ("(", ")"),
+        ('"', '"'), ("(", ")"), ("[", "]"),
     )
     # ⚠️ 单引号刻意不收：英文里它是词内撇号（don't / it's），配对没有意义。
     assert "'" not in {lo for lo, _hi in D._ZH_BRACKET_PAIRS}
@@ -2370,3 +2370,66 @@ def test_the_preposed_template_spacing_is_atomic():
     assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
     assert r"(?>\s*)(?>\s*)" not in head, head
     assert head.count(r"(?>\s*)") == 5, head.count(r"(?>\s*)")
+
+
+# ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 外层开括号在内层完整引文**之前**：只扫「最后一段完整引文之后」会漏掉它，
+        # ``好吗`` 被当成句子级语气剥掉、连内层的 ``」`` 一起削（codex P2）
+        ("别再提电影《续集「你好」好吗。", "电影《续集「你好」好吗"),
+        ("別再提電影《續集「你好」好嗎。", "電影《續集「你好」好嗎"),
+        ("别再提《甲「乙」好吗。", "甲「乙」好吗"),
+    ],
+)
+def test_an_unmatched_outer_opener_before_a_nested_run_still_counts(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 打字和 ASR 都会在动宾之间产生停顿标点；parent 靠 ``.{1,40}?`` 吃进去再 trim 掉
+        ("别再提，工作。", "工作"),
+        ("別再提，工作。", "工作"),
+        ("我不想聊，工作。", "工作"),
+        ("我不想聊，工作", "工作"),
+        ("不要说，加班的事。", "加班的事"),
+        ("别叫我，“笨蛋”。", "笨蛋"),
+        # ⚠️ 顿号 / 冒号不在分隔符表里也照样过：它们本来就不在话题字符类的排除表
+        # 里，会被当普通字吃进话题、再由 _trim_term 从两端剥掉
+        ("别再提、工作。", "工作"),
+        ("别再提：工作。", "工作"),
+        ("别再提,工作。", "工作"),
+    ],
+)
+def test_a_separator_between_verb_and_object_is_consumed(text, expected):
+    """⚠️ 分隔符必须排在无宾语前视**之前**：那道前视认「动词之后直接是句读」＝没有
+    宾语，没先吃掉分隔符的话这批指令会被它整条否掉（实现顺序写反过一次）。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["别提，。", "别提。", "别提，", "别提起了。", "别说完了。"],
+)
+def test_a_separator_alone_is_still_objectless(text):
+    """分隔符不能把无宾语判据绕过去。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[Hello, World]别提了。", "Hello, World"),
+        ("[Hello, World]別提了。", "Hello, World"),
+        ("别提[Hello, World]了。", "Hello, World"),
+        ("別提[重要，緊急]了。", "重要，緊急"),
+    ],
+)
+def test_ascii_square_brackets_are_a_paired_delimiter(text, expected):
+    """``_TRIM_TRAIL`` 本来就把它们当两端分隔符剥，却没进配对表，于是内部的逗号
+    变成硬边界（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)

@@ -439,7 +439,9 @@ _ZH_BRACKET_PAIRS = (
     # ASCII 也要收：``"Everything, Everywhere"别提了。`` / ``电影(Hello, World)别提了。``
     # 在 parent 上是完整的，不收就成了回归（codex P2）。
     # ⚠️ 不收单引号 ``'``：英文里它是词内撇号（don't / it's），配对没有意义。
-    ('"', '"'), ("(", ")"),
+    # ⚠️ ASCII 方括号也要收：``_TRIM_TRAIL`` 本来就把它们当两端分隔符剥，却没进配对
+    # 表，于是 ``[Hello, World]别提了。`` 在逗号处被截成 ``World``（codex P2）。
+    ('"', '"'), ("(", ")"), ("[", "]"),
 )
 def _zh_bracket_body(lo: str, hi: str) -> str:
     """One bracketed run: bounded body, and symmetric pairs never span a sentence."""
@@ -489,9 +491,15 @@ def _zh_quoted_span_end(text: str) -> int:
     end = 0
     for match in _ZH_BRACKET_RUN_RE.finditer(text):
         end = match.end()
-    # 最后一段闭合引文之后还出现开括号 = 有一段没闭合的引文一直延伸到末尾
-    # （``电影《好不好``），里面的一切都算引号内。
-    if any(ch in _ZH_BRACKET_OPEN_CHARS for ch in text[end:]):
+    # 还剩没闭合的开括号 = 有一段引文一直延伸到末尾（``电影《好不好``），里面的
+    # 一切都算引号内。
+    #
+    # ⚠️ 要**挖空完整引文之后扫全串**，不能只扫 ``text[end:]``：外层开括号出现在
+    # 内层完整引文**之前**时（``电影《续集「你好」好吗``），只看末段就漏掉了外层那个
+    # 还开着的 ``《``，``好吗`` 会被当成句子级语气剥掉、连内层的 ``」`` 一起削
+    # （codex P2）。
+    rest = _ZH_BRACKET_RUN_RE.sub(lambda m: " " * len(m.group(0)), text)
+    if any(ch in _ZH_BRACKET_OPEN_CHARS for ch in rest):
         return len(text)
     return end
 
@@ -560,6 +568,15 @@ _ZH_BASE_FINAL_PARTICLES = "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢))"
 _ZH_FINAL_PARTICLES = (
     "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|囉|啰|唷|齁|欸|誒|咧|喲))"
 )
+
+# 动词和宾语之间的停顿标点：打字和 ASR 都会产生（``别再提，工作。`` / ``别叫我，"笨蛋"。``）。
+# parent 靠 ``.{1,40}?`` 把它吃进话题、再由 _trim_term 剥掉；本 PR 把句读排除出话题
+# 单位之后，这类指令整条 0 命中（codex P2）。放在**捕获组之外**，不进 term。
+# ⚠️ 必须排在 _ZH_OBJECTLESS_AHEAD **之前**：那道前视认「动词之后直接是句读」
+# ＝没有宾语，分隔符没先吃掉的话 ``别再提，工作。`` 会被它整条否掉。
+# ⚠️ 只收 ``，`` 和 ASCII ``,``：``、 ： …`` 本来就不在话题字符类的排除表里，会被
+# 当普通字吃进话题、再由 _trim_term 从两端剥掉，不需要在这里再收一遍。
+_ZH_TOPIC_SEPARATOR = r"(?:[，,]\s*)?"
 
 # 无宾语指令的前视：动词之后到句读之间，如果只剩**一个字 + 句末助词**，那个字是
 # 结果补语（说完 / 提上 / 聊死）而不是宾语，整条不该抽——本模块的 docstring 明确说
@@ -777,6 +794,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ⚠️ 宾语下限是 2 不是 1：可选助词组 + lazy 宾语会让正则优先把话题的最后一个字
      # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
      # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
+     + _ZH_TOPIC_SEPARATOR
      + _ZH_OBJECTLESS_AHEAD
      + "(" + _zh_topic(2, 40) + r")" + _ZH_FINAL_PARTICLES + r"?(?:[，。！？；,.!?;]|\s*$)"),
     # X + 这个? + 别(再)+ 提
@@ -815,8 +833,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     ("zh", "ban_topic",
      r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
      + _ZH_VERBS_PLAIN
+     + r"\s*"
+     + _ZH_TOPIC_SEPARATOR
      + _ZH_OBJECTLESS_AHEAD
-     + r"\s*(" + _zh_topic(2, 40) + r")(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
+     + r"(" + _zh_topic(2, 40) + r")(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
      # ⚠️ 只有本模板保留 ``(?:就)?``：它由句首的 ``关于`` 锚定，"关于 X 就别…" 的
