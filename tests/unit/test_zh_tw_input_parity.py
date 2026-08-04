@@ -5618,6 +5618,7 @@ def test_the_frame_scope_coordinator_table_is_pinned():
         "同时", "同時",
         "反而", "反倒", "况且", "況且", "何况", "何況", "再者", "此外",
         "只是", "不过是", "不過是", "无非", "無非",
+        "倒",
         "可",
         "因而", "从而", "從而",
         "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
@@ -6802,3 +6803,35 @@ def test_bare_ke_is_an_adversative_boundary_but_not_inside_keyi_keneng():
     assert is_explicit_music_cancellation(
         '我想停止播放因为无论什么歌可以停就停'
     ) is True
+
+
+@pytest.mark.parametrize("form", ["倒是", "倒"])
+def test_the_contrastive_dao_ends_the_reason_scope(form):
+    """转折副词 `倒`：`因为音质差倒是不知道是否合适` 里理由属于 `倒` 之前那一小句
+    （base 是 False，第八十一轮）。
+
+    ⚠️ reviewer 报的是 `倒是`，实现收的是**裸 `倒`**——`倒不知道` 同族也漏。
+    41 条含 `倒` 的用例（倒是 / 倒着放 / 颠倒了 / 倒带 / 倒霉 / 压倒性 × 5 种框架）
+    实测：现状第 1 类 2 条，加 `倒是` 剩 1 条，加裸 `倒` **归零**；而第 3 类三种
+    配置都是 8 条（与 `倒` 无关，不加也有）。
+
+    ⚠️ 这次的收窄是**量出来的**。上一轮给裸 `可` 加 `(?![以能])` 右界是**凭预测**，
+    结果那个右界跨 43 条用例零作用，最后删掉了。加边界先量风险面。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为音质差{form}不知道是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_dao_in_ordinary_words_does_not_break_real_frames():
+    """⚠️ 反向：含 `倒` 的普通词（倒着放 / 颠倒 / 倒带 / 倒霉）不影响真框架。
+    这四句 base 都是 True，实测加 `倒` 之后照旧。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ('我想停止播放因为无论什么歌倒着放也行',
+                 '我想停止播放因为不管什么歌颠倒了顺序也没关系',
+                 '我想停止播放因为无论唱什么歌都不好听',
+                 '帮我停止播放红心歌单'):
+        assert is_explicit_music_cancellation(text) is True, text
