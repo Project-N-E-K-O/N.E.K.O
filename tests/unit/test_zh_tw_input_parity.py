@@ -3411,3 +3411,42 @@ def test_colloquial_wh_compounds_are_questions(marker):
         f'我想停止播放{marker}换成《你好吗？》'
     ) is False
     assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+@pytest.mark.parametrize("measure", ["", "张", "首", "个", "部"])
+@pytest.mark.parametrize("wh", ["什么", "哪", "几"])
+def test_a_numeral_inside_a_music_wh_compound(wh, measure):
+    """⚠️ 量词前面还能有「一」（`哪一张专辑` / `哪一首歌`）——这是最常见的写法。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{wh}一{measure}歌才会换成《你好吗？》'
+    assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+@pytest.mark.parametrize(
+    "coordinator",
+    ["顺便", "順便", "顺手", "順手", "顺带", "順帶", "一起", "一块", "一道", "就"],
+)
+def test_more_coordinators_after_the_temporal_clause(coordinator):
+    """并列副词表补齐（base 全是 True，Codex P2 第三十三轮）。
+
+    ⚠️ 判据没变：`的时候` 后面**跟着并列副词**才认成命令；裸的时间从句
+    （`停止播放的时候通知我`）仍然刻意判成提问（见第十一轮那条 by-design 用例）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'请停止播放的时候{coordinator}关闭屏幕'
+    ) is True
+    assert is_explicit_music_cancellation('停止播放的时候通知我') is False
+
+
+@pytest.mark.parametrize("degree", ["高", "低", "轻", "响", "快", "慢"])
+@pytest.mark.parametrize("suffix", ["一点", "一點", "一些", "点"])
+def test_high_low_comparative_complements(degree, suffix):
+    """程度补语补 高/低（base 是 True）。⚠️ 单字仍要求后跟量度成分，否则易撞名词。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'不要放的比刚才{degree}{suffix}') is True
+    assert is_explicit_music_cancellation('停止播放的比赛结果') is False

@@ -843,7 +843,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     r"(?=\s*(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB
-    + "|" + _WHOLE_CARD_BARE_ADVERB
+    + "|" + _WHOLE_CARD_BARE_ADVERB + r"地?"
     # ⚠️ 副词后面也可能是英文重写动词。第二十九轮改了另外**两张**收尾表，唯独
     # 漏了这一张——同一件事三处各写一份，漏一处就静默失效（CodeRabbit）。
     + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
@@ -867,18 +867,20 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
-    + _WHOLE_CARD_BARE_ADVERB
+    + _WHOLE_CARD_BARE_ADVERB + r"地?"
     + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     # ⚠️ 动量补语也是合法收尾：`重写所有字段一遍` / `请重写所有字段一次` 里动词
     # 在**目标前面**，目标后面跟的是 一遍/一次/一下（base 是 True，
     # Codex P2 第三十一轮）。这一族是封闭词类。
-    + r"|一遍|一次|一下|一轮|一輪|一遭"
+    # ⚠️ 动量补语是**能产**的：一遍/两遍/三次/几遍… 数词是闭集、量词也是闭集，
+    # 所以写成「数词 + 量词」而不是逐个列成品（Codex P2 第三十三轮）。
+    + r"|(?:[一二两兩三四五六七八九十几幾半]+|\d+)\s*(?:遍|次|下|轮|輪|遭|回)"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB + r"|"
-    + _WHOLE_CARD_BARE_ADVERB
+    + _WHOLE_CARD_BARE_ADVERB + r"地?"
     # ⚠️ 副词后面也可能是**英文**重写动词：`把所有字段全部 rewrite`
     # （base 是 True，Codex P2 第二十九轮）。
     + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"

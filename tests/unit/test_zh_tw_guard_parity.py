@@ -1561,3 +1561,35 @@ def test_all_three_tails_accept_an_adverb_plus_english_verb(adverb, verb):
     assert router._chat_text_requests_full_rewrite(
         '把整个卡的全部 nickname重写'
     ) is False
+
+
+@pytest.mark.parametrize(
+    "numeral", ["一", "两", "兩", "三", "五", "十", "几", "幾", "半", "2", "10"]
+)
+@pytest.mark.parametrize("measure", ["遍", "次", "下", "轮", "輪", "回"])
+def test_numeral_measure_complements_are_productive(numeral, measure):
+    """⚠️ 动量补语是**能产**的（一遍/两遍/三次/2遍/几遍…），不是六个成品。
+
+    数词是闭集、量词也是闭集，所以写成「数词 + 量词」而不是逐个列成品
+    （Codex P2 第三十三轮）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段{numeral}{measure}'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("adverb", ["彻底", "徹底", "统一", "統一", "全面", "认真"])
+def test_an_adverbial_de_suffix_is_accepted(adverb):
+    """副词的常规「地」后缀（base 是 True，Codex P2 第三十三轮）。
+
+    ⚠️ 配对反向断言：单字段保险不受影响。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'把所有字段{adverb}地重写'
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        '把所有字段的所有名字重写'
+    ) is False
