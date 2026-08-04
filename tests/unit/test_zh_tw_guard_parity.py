@@ -260,6 +260,7 @@ def test_the_scope_noun_table_is_derived_not_transcribed():
     assert set(WHOLE_CARD_NOUNS) == {
         "设定", "設定", "设置", "設置", "资料", "資料", "人设", "人設",
         "描述", "内容", "內容", "字段", "欄位", "栏位", "数据", "數據",
+        "文本", "文字", "文案",
         "信息", "資訊", "资讯", "属性", "屬性", "项目", "項目",
         "条目", "條目", "细节", "細節", "部分", "东西", "東西",
     }, WHOLE_CARD_NOUNS
@@ -1425,4 +1426,19 @@ def test_a_quantifier_may_sit_between_de_and_the_scope_noun(quantifier, noun):
     allowed = f'把所有字段的{quantifier}{noun}重写'
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
     blocked = f'把所有字段的{quantifier}名字重写'
+    assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize("noun", ["文本", "文字", "文案"])
+@pytest.mark.parametrize("quantifier", ["所有", "全部", "每一个"])
+def test_textual_content_nouns_are_whole_card_scopes(quantifier, noun):
+    """文本/文字/文案 跟 内容/资料/数据 同族（base 是 True，Codex P2 第二十七轮）。
+
+    ⚠️ 配对反向断言：加了后缀的更长词照旧被右边界挡住。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    allowed = f'把整个卡的{quantifier}{noun}重写'
+    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    blocked = f'把整个卡的{quantifier}{noun}名重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked

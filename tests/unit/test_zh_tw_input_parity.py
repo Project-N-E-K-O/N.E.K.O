@@ -3229,3 +3229,23 @@ def test_indefinite_capable_wh_markers_are_still_treated_as_questions(marker):
     ) is False
     for command in ('帮我停止播放红心歌单', '停止播放', '不要放晴天'):
         assert is_explicit_music_cancellation(command) is True, command
+
+
+@pytest.mark.parametrize("wh", ["什么", "什麼", "哪", "几", "幾"])
+@pytest.mark.parametrize("measure", ["", "张", "首", "个", "部"])
+@pytest.mark.parametrize("noun", ["歌", "音乐", "音樂", "专辑", "歌单"])
+def test_music_specific_wh_compounds_are_questions(wh, measure, noun):
+    """⚠️ 「裸形歧义、复合形不歧义」那条规则的另一半。
+
+    `什么` / `哪` / `几` 裸用时可能是「没什么」「哪怕」「几乎」，但后面跟**音乐
+    名词**时只能是提问（Codex P2 第二十七轮）。音乐名词直接复用
+    `_ZH_MUSIC_OBJECT_NOUN`（为此把那张表的定义挪到了疑问表之前），量词是闭集。
+
+    ⚠️ 配对反向断言：普通命令不受影响。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{wh}{measure}{noun}换成《你好吗？》'
+    assert is_explicit_music_cancellation(text) is False, text
+    for command in ('帮我停止播放红心歌单', '停止播放', '停止正在播放的晴天'):
+        assert is_explicit_music_cancellation(command) is True, command
