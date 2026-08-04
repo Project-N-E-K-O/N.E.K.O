@@ -598,6 +598,7 @@ def test_zh_evidence_charclass_is_pinned():
     assert D._ZH_EVIDENCE_CHARS == "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
     assert D._ZH_EVIDENCE_WORDS == (
         "叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情",
+        "称呼我", "稱呼我",
     )
     # 字类必须是整条正则的第一个分支——上面那条扫描不依赖这点，但 pin 住它能让
     # 「有人往字类前面插了新分支」这件事在 review 里显形。
@@ -2554,3 +2555,72 @@ def test_the_full_width_comma_is_only_identifier_punctuation_between_digits():
     assert _zh_terms("别提工作。别提加班。") == {"工作", "加班"}
     assert _zh_terms("算了，别提工作。") == {"工作"}
     assert _zh_terms("算了,别提工作。") == {"工作"}
+
+
+# ── 32. 同种括号嵌套 / 称呼类动词 / 模板 4 的空白 ────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 同种括号嵌套：正则会把外层开括号跟**内层**收尾配成一对，按深度扫才对
+        ("别再提《电影《你好吗》续集好吗》。", "电影《你好吗》续集好吗"),
+        ("別再提《電影《你好嗎》續集好嗎》。", "電影《你好嗎》續集好嗎"),
+        ("别再提《电影《你好》续集好吗》。", "电影《你好》续集好吗"),
+        ("别再提「甲「乙好吗」丙好吗」。", "甲「乙好吗」丙好吗"),
+    ],
+)
+def test_nested_same_type_delimiters_track_depth(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_quoted_span_scanner_is_depth_aware():
+    end = D._zh_quoted_span_end
+    assert end("《电影《你好吗》续集好吗》") == 13
+    assert end("《甲》《乙》好吗") == 6
+    assert end("电影《我们好不好") == 8
+    # 落单的对称引号不算未闭合——它是英寸号
+    assert end('5"屏幕好吗') == 0
+    assert end('"甲"好吗') == 3
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("不要称呼我「君の名は」。", "君の名は"),
+        ("不准称呼我《君の名は》。", "君の名は"),
+        ("莫称呼我“君の名は”。", "君の名は"),
+        ("不要稱呼我「君の名は」。", "君の名は"),
+        ("不准稱呼我《君の名は》。", "君の名は"),
+    ],
+)
+def test_address_verbs_are_chinese_structural_evidence(text, expected):
+    """⚠️ 模板 1 也收 _ZH_ADDRESS_VERBS，但证据表里原先只有 叫我 / 喊我 / 管我叫。
+    ``称`` 是日文标准字形（名称）不能进字类，但 ``称呼我`` 三个字连在一起是中文独有的
+    ——不收的话这批指令整条被吞，而 ``别称呼我…`` 因为 ``别`` 在字类里侥幸活着
+    （codex P2，跟 甭 / 没心情 是同一族不对称）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_every_address_verb_has_evidence_coverage():
+    """自动发现：往 _ZH_ADDRESS_VERBS 加动词而忘了同步证据，这里会红。"""  # noqa: DOCSTRING_CJK
+    for verb in D._ZH_ADDRESS_VERBS:
+        stem = verb.replace("?", "").replace("为", "").replace("為", "")
+        assert any(word in stem or stem in word for word in D._ZH_EVIDENCE_WORDS), stem
+
+
+def test_the_guanyu_template_spacing_is_atomic_too():
+    """⚠️ 上一轮只原子化了模板 2、漏了模板 4，``"关于" + " " * 80`` 要 3 秒。"""  # noqa: DOCSTRING_CJK
+    import time
+
+    raw = _zh_pattern_sources()[3]
+    head = raw.split("(?:说|說|提|聊|讲|講)")[0]
+    assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
+
+    extract_directives(" ")  # 预热
+    timings = {}
+    for n in (40, 80):
+        started = time.perf_counter()
+        extract_directives("关于" + " " * n)
+        timings[n] = time.perf_counter() - started
+    assert timings[80] < 0.5, timings
+    assert timings[80] < timings[40] * 25 + 0.02, timings

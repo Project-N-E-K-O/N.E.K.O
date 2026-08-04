@@ -485,6 +485,8 @@ _ZH_BRACKET_RUN_RE = re.compile(_ZH_BRACKET_RUN)
 _ZH_BRACKET_OPEN_CHARS = frozenset(
     lo for lo, hi in _ZH_BRACKET_PAIRS if lo != hi
 )
+_ZH_CLOSE_FOR_OPEN = {lo: hi for lo, hi in _ZH_BRACKET_PAIRS if lo != hi}
+_ZH_SYMMETRIC_DELIMS = frozenset(lo for lo, hi in _ZH_BRACKET_PAIRS if lo == hi)
 
 
 def _zh_quoted_span_end(text: str) -> int:
@@ -494,18 +496,31 @@ def _zh_quoted_span_end(text: str) -> int:
     正好以收尾括号结尾」当代理判据是不够的——``電影《你好》續集好嗎`` 中间隔了一个
     普通修饰词就判错（codex P2）。
     """  # noqa: DOCSTRING_CJK
+    # ⚠️ 按**深度**扫，不能拿 _ZH_BRACKET_RUN_RE 找「最后一段完整引文」：正则会把
+    # 外层的开括号跟**内层**的收尾配成一对，同种括号嵌套时就记错了收尾位置——
+    # ``《电影《你好吗》续集好吗》`` 会被当成到内层 ``》`` 为止，末尾的 ``好吗`` 被
+    # 当句子级语气剥掉（codex P2）。
     end = 0
-    for match in _ZH_BRACKET_RUN_RE.finditer(text):
-        end = match.end()
-    # 还剩没闭合的开括号 = 有一段引文一直延伸到末尾（``电影《好不好``），里面的
-    # 一切都算引号内。
-    #
-    # ⚠️ 要**挖空完整引文之后扫全串**，不能只扫 ``text[end:]``：外层开括号出现在
-    # 内层完整引文**之前**时（``电影《续集「你好」好吗``），只看末段就漏掉了外层那个
-    # 还开着的 ``《``，``好吗`` 会被当成句子级语气剥掉、连内层的 ``」`` 一起削
-    # （codex P2）。
-    rest = _ZH_BRACKET_RUN_RE.sub(lambda m: " " * len(m.group(0)), text)
-    if any(ch in _ZH_BRACKET_OPEN_CHARS for ch in rest):
+    stack: List[str] = []
+    symmetric_open: str | None = None
+    for index, char in enumerate(text):
+        if symmetric_open is not None:
+            if char == symmetric_open:
+                symmetric_open = None
+                if not stack:
+                    end = index + 1
+            continue
+        if stack and char == _ZH_CLOSE_FOR_OPEN[stack[-1]]:
+            stack.pop()
+            if not stack:
+                end = index + 1
+        elif char in _ZH_CLOSE_FOR_OPEN:
+            stack.append(char)
+        elif char in _ZH_SYMMETRIC_DELIMS:
+            symmetric_open = char
+    # 还剩没闭合的**非对称**开括号 = 有一段引文一直延伸到末尾（``电影《好不好``）。
+    # ⚠️ 落单的对称引号不算——它是英寸号 / 颜文字，见 _ZH_BRACKET_OPEN_CHARS 的注释。
+    if stack:
         return len(text)
     return end
 
@@ -722,7 +737,11 @@ _ZH_EVIDENCE_CHARS = "别说讲谈讨论关这话题愿懒许为甭說這關沒�
 # ⚠️ ``没心情`` 要整条收：``没`` 是日文标准字形（没収），不能进上面的字类，但三个字
 # 连在一起是中文独有的。不收的话 ``我没心情聊君の名は。`` 整条被吞，而繁体的
 # ``沒心情`` 因为 ``沒`` 在字类里侥幸活着——同一模板内的行为不对称（codex P2）。
-_ZH_EVIDENCE_WORDS = ("叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情")
+_ZH_EVIDENCE_WORDS = ("叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情",
+    # ⚠️ 模板 1 也收 _ZH_ADDRESS_VERBS，但只有 叫我 / 喊我 / 管我叫 在上面这批里。
+    # ``称`` 是日文标准字形（名称）不能进字类，但 ``称呼我`` 三个字连在一起是中文
+    # 独有的。不收的话 ``不要称呼我「君の名は」。`` 整条被吞（codex P2）。
+    "称呼我", "稱呼我")
 _ZH_EVIDENCE_RE = re.compile(
     "|".join(
         (f"[{_ZH_EVIDENCE_CHARS}]",)
@@ -869,9 +888,12 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 结构是显式的，被腰斩的风险仅限于 ``关于`` + 就尾词（"关于功成名就别提了"，
      # 极罕见）。模板 2 没有这个锚，覆盖的是全部 "X别提了" 句子——成就 / 迁就 /
      # 功成名就 都住在那里，所以那边一个字都不吃，交给 _drop_filler_suffixed_terms。
-     r"(?:关于|關於)\s*(" + _zh_topic(2, 30) + r")\s*(?:的事)?\s*"
-     r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*(?:就)?"
-     r"\s*[别別]\s*(?:再)?\s*"
+     # ⚠️ 触发词之前的每个 ``\s*`` 都要原子化，理由同模板 2：话题的单字分支也匹配
+     # 空格，能和后面每个 ``\s*`` 任意瓜分同一串空白。上一轮只改了模板 2、漏了这条，
+     # ``"关于" + " " * 80`` 要 3 秒（codex P1 第二轮）。
+     r"(?:关于|關於)(?>\s*)(" + _zh_topic(2, 30) + r")(?>\s*)(?:的事)?(?>\s*)"
+     r"(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?(?>\s*)(?:就)?"
+     r"(?>\s*)[别別](?>\s*)(?:再)?(?>\s*)"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
 
     # ---------- en ----------
