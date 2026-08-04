@@ -731,6 +731,22 @@ _ZH_COORDINATION_AFTER_DE = (
 # ⚠️ 只抹**子句级**标点（，,；;）和顿号，不碰 `。！？`：句号之后是另一句话，
 # 那里的 也/再 说的是别的事，放行就退回 base 那个「把时间条件当命令」的错。
 # ⚠️ 只作用在喂给切分器的那份文本上，不动 _ZH_BARE_QUESTION_UTTERANCE 看的原文。
+# 任指框架（无论/不管/不论/任凭/随便 … 都/也）里的疑问词是**非疑问**的，但框架词
+# 和疑问词之间可以隔一个谓语：`无论唱什么歌都不好听` / `不管问谁都一样`
+# （base 都是 True，Codex P2 第四十六轮）。这个距离**不定长**，定长后视够不着，
+# 所以在切分之前把框架里的疑问词换成中性的「某」——跟 _ZH_TEMPORAL_CLAUSE_JOIN_RE
+# 一个思路：正则表达不了的上下文，在喂给正则之前先消化掉。
+# ⚠️ 相邻那一族仍然靠 _ZH_FREE_CHOICE_LEFT 的定长后视：`任何时候` 里的 `任何` 是个
+# **词**、不是任指框架词，进不了这条替换。两条机制分工不同，都要留着。
+# ⚠️ 窗口有界且不跨子句标点，框架词的辖域到句读为止。
+# 长的写法按惯例排在前面，但这里**不是承重的**：就算 `哪` 先匹配上，
+# 把它换成「某」之后副下的 `首`/`个` 也不再是疑问头了。变异验证过：
+# 把 `哪` 提到最前面，行为不变。
+_ZH_FREE_CHOICE_FRAME_RE = re.compile(
+    r"(?:无论|無論|不论|不論|不管|任凭|任憑|随便|隨便)"
+    r"[^，,。！!？?]{0,8}?"
+    rf"({_ZH_WHAT}|谁|誰|哪一首|哪首|哪个|哪個|哪些|哪位|何时|何時|几时|幾時|哪)"
+)
 _ZH_TEMPORAL_CLAUSE_JOIN_RE = re.compile(
     rf"(的(?:时候|時候))\s*[，,；;、]\s*(?=[^，,。！!？?]{{0,4}}?{_ZH_COORDINATION_ADVERB})"
 )
@@ -1669,7 +1685,10 @@ def is_explicit_music_cancellation(text: str) -> bool:
         and not _is_source_exclusion_preference(clause.strip())
         and not _has_explicit_non_music_target(clause.strip())
         for clause in _split_music_request_clauses(
-            _ZH_TEMPORAL_CLAUSE_JOIN_RE.sub(r"\1", normalized)
+            _ZH_FREE_CHOICE_FRAME_RE.sub(
+                lambda m: m.group(0)[: m.start(1) - m.start(0)] + "某",
+                _ZH_TEMPORAL_CLAUSE_JOIN_RE.sub(r"\1", normalized),
+            )
         )
         if clause.strip()
     )

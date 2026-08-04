@@ -899,8 +899,16 @@ _WHOLE_CARD_MEASURE_COMPLEMENT = (
 _WHOLE_CARD_SCOPE_LOCATIVE = (
     r"(?:(?:里面|裡面|里边|裡邊|当中|當中|里|裡|中|内|內)的?\s*)?"
 )
+# ⚠️ 方位短语和范围名词之间还能夹一个全称限定词：`重写所有字段里的全部内容` /
+# `把全部欄位裡的每個內容重寫`（base 都是 True，Codex P2 第四十六轮）。
+# 「的」那一支早就允许了，方位这一支上一轮漏了——限定词表直接复用，别另抄。
+# ⚠️ 限定词后面**仍然要求是范围名词**，`重写所有字段里的全部名字` 照旧是 False。
+_WHOLE_CARD_SCOPE_QUANTIFIER = (
+    r"(?:(?:" + "|".join(_WHOLE_CARD_QUANTIFIERS) + r")\s*的?\s*)?"
+)
 _WHOLE_CARD_SCOPE_RUN_BODY = (
-    r"(?:\s*" + _WHOLE_CARD_SCOPE_LOCATIVE + _WHOLE_CARD_SCOPE_MODIFIER
+    r"(?:\s*" + _WHOLE_CARD_SCOPE_LOCATIVE + _WHOLE_CARD_SCOPE_QUANTIFIER
+    + _WHOLE_CARD_SCOPE_MODIFIER
     + r"(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))"
 )

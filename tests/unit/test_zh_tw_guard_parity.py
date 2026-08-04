@@ -1955,3 +1955,25 @@ def test_locative_linker_between_target_and_scope_noun(locative, de):
                  f'重写所有字段{locative}{de}名字内容',
                  f'重写所有字段{locative}{de}标题设定'):
         assert router._chat_text_requests_full_rewrite(kept) is False, kept
+
+
+@pytest.mark.parametrize("locative", ["里的", "中的", "裡的", "里面的", "当中的", ""])
+@pytest.mark.parametrize("quantifier", WHOLE_CARD_QUANTIFIERS)
+def test_quantifier_after_a_locative_continuation(locative, quantifier):
+    """方位短语和范围名词之间还能夹一个全称限定词（base 全是 True）。
+
+    「的」那一支早就允许了，方位这一支上一轮漏了（Codex P2 第四十六轮）。
+    限定词表直接复用，不另抄。
+
+    ⚠️ 限定词后面**仍然要求是范围名词**：反向断言钉住单字段保险。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段{locative}{quantifier}内容'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    # ⚠️ 跟方位那条一样：光钉 `{quantifier}名字` 不够——「限定词多吞几个字」
+    # 那个变异会照样绿，能区分的是后面还接着范围名词的形式。
+    for kept in (f'重写所有字段{locative}{quantifier}名字',
+                 f'重写所有字段{locative}{quantifier}名字内容',
+                 f'重写所有字段{locative}{quantifier}标题设定'):
+        assert router._chat_text_requests_full_rewrite(kept) is False, kept

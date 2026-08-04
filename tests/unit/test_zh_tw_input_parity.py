@@ -3888,3 +3888,28 @@ def test_negated_or_free_choice_copulas_are_declarative(governor, what):
         text = f'我想停止播放因为{governor}{what}{noun}都不好听'
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation(f'我想停止播放有{what}影响') is False
+
+
+@pytest.mark.parametrize(
+    "frame", ["无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便"]
+)
+@pytest.mark.parametrize(
+    "predicate", ["", "唱", "播放", "听", "问", "换成"]
+)
+@pytest.mark.parametrize("wh", ["什么歌", "啥歌", "谁", "哪首", "哪个"])
+def test_free_choice_frame_with_an_intervening_predicate(frame, predicate, wh):
+    """⚠️ 任指框架词和疑问词之间可以隔一个谓语，距离**不定长**。
+
+    定长后视只能挡紧贴的那一种，所以这一族改成在**切分之前**把框架里的
+    疑问词换成中性的「某」（base 全是 True，Codex P2 第四十六轮）。
+
+    ⚠️ 相邻那一族仍然靠定长后视：`任何时候` 里的 `任何` 是个**词**、
+    不是任指框架词，进不了这条替换。两条机制分工不同，下面两条反向断言
+    分别钉住它们。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{frame}{predicate}{wh}都一样'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放任何时候都行') is True
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False
