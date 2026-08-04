@@ -1815,11 +1815,15 @@ class _TransportMixin:
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
-                    self._response_arbiter.notify_response_terminal(event)
+                    finalize_response = (
+                        self._response_arbiter.notify_response_terminal(event)
+                    )
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
                     # 解析实时 API 返回的 token 用量
                     self._record_response_usage(event.get("response"))
+                    if finalize_response is False:
+                        continue
                     self._clear_turn_response_state()
                     # 响应完成，检测重复度
                     await self._record_response_repetition(

@@ -78,7 +78,7 @@ async def test_idless_orphan_terminal_does_not_complete_id_bearing_owner():
         arbiter.notify_response_created({"type": "response.created"})
 
         successor = await arbiter.enqueue(source="successor")
-        arbiter.notify_response_terminal(
+        assert not arbiter.notify_response_terminal(
             {"type": "response.done", "response": {"status": "completed"}}
         )
         for _ in range(5):
@@ -94,6 +94,61 @@ async def test_idless_orphan_terminal_does_not_complete_id_bearing_owner():
         )
         await asyncio.wait_for(owner.done, 0.2)
         await asyncio.wait_for(successor.sent, 0.2)
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retired_created_precedes_pending_server_vad_created():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+
+        arbiter.notify_server_vad_response_pending(arm_timeout=False)
+
+        assert not arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-retired"}}
+        )
+        assert arbiter._retired_created_deadline is None
+        assert arbiter._server_vad_response_pending
+        assert "resp-retired" not in arbiter._server_response_ids
+
+        assert arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-vad"}}
+        )
+        assert not arbiter._server_vad_response_pending
+        assert "resp-vad" in arbiter._server_response_ids
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_expired_retired_created_gate_is_not_rearmed_at_zero_delay():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    loop = asyncio.get_running_loop()
+    try:
+        arbiter._server_response_ids["resp-server"] = loop.time()
+        arbiter._retired_created_deadline = loop.time() - 1
+
+        arbiter._release_lane_if_clear()
+
+        assert arbiter._retired_created_deadline is None
+        assert arbiter._stale_release_handle is not None
+        assert arbiter._stale_release_handle.when() > loop.time()
     finally:
         await arbiter.shutdown()
 
@@ -251,5 +306,36 @@ async def test_transport_ignores_retired_created_before_exposing_successor():
         assert client._announces_responses is True
         assert client._current_response_id == "resp-successor"
         assert client._is_responding is True
+    finally:
+        await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transport_records_but_does_not_finalize_idless_orphan_terminal():
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="gpt-test",
+        api_type="gpt",
+    )
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+    ]
+    client._response_arbiter.notify_response_terminal = Mock(return_value=False)
+    client._notify_turn_finished = AsyncMock()
+    client._current_response_id = "resp-owner"
+    client._is_responding = True
+
+    try:
+        await client.handle_messages()
+
+        assert client._response_done_total == 1
+        assert client._current_response_id == "resp-owner"
+        assert client._is_responding is True
+        client._notify_turn_finished.assert_not_awaited()
     finally:
         await client.close()
