@@ -1,6 +1,6 @@
 # NEKO Live Independent Mode Product Plan
 
-> Updated: 2026-08-03
+> Updated: 2026-08-04
 >
 > This document is the canonical product plan for Independent Mode. It describes product priorities, MVP scope, validation sequence, non-goals, and only the implementation status needed to evaluate those product gates. Internal architecture and runtime-observability contracts remain canonical in their dedicated documents.
 
@@ -23,14 +23,16 @@ Product success is not measured by the number of supported event types. It is me
 
 ## Current Priority
 
-Independent Mode remains the primary product target. The current delivery task is the consolidated NEKO Live acceptance pass: solo pacing and content quality, co-stream response/passive-context visibility, support-event single-dispatch behavior, instruction restoration, packaged UI, and real audible playback are reviewed together.
+Independent Mode remains the primary product target. The current delivery task is the consolidated NEKO Live acceptance pass: solo pacing and content quality, conservative co-stream behavior, support-event single-dispatch behavior, instruction restoration, packaged UI, and real audible playback are reviewed together.
 
-Companion Mode is now part of that acceptance baseline rather than a hidden follow-up. Every provider-verified Gift, Super Chat, and Guard tier uses the bounded active acknowledgement path in both modes; co-stream additionally keeps passive `read` context. More elaborate reading, welcome, ranking, privilege, or reward flows remain optional later enhancements.
+Companion Mode is deliberately conservative while the host exposes neither a reliable floor signal nor correlated playback completion. Ordinary room context stays passive through `read`; only selected high-value interaction and verified support milestones may submit one active `respond`. The plugin does not retry, compensate, infer that the streamer has yielded the floor, or translate `submitted` / `pushed` into audible completion.
 
-The release gate must eventually validate two promises:
+The current release gate validates two bounded promises:
 
-1. The streamer can safely hand the room to NEKO.
-2. NEKO does not let a low-danmaku room fall into dead air.
+1. NEKO can sustain a low-danmaku Independent Mode room without unsafe or awkward pacing.
+2. Companion Mode preserves the human host as the primary speaker and reports only plugin-to-host submission evidence.
+
+Reliable pause-window participation, playback-completion backflow, and interrupted-support compensation are deferred host capabilities, not hidden plugin acceptance requirements.
 
 ## Current Implementation Status
 
@@ -39,7 +41,7 @@ Independent Mode is past its first implementation and offline acceptance checks.
 - Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
 - Slice 4 base is landed: activity level gives the streamer a small quiet / standard / active pacing control instead of many parameters. It now controls both quiet/idle state thresholds and Idle Hosting minimum intervals.
-- Danmaku Response transition slice is implemented in the current development branch: first appearance still uses `avatar_roast`; later ordinary danmaku from the same UID uses `danmaku_response` instead of being blocked by the first-appearance once gate.
+- Danmaku Response transition slice is implemented: first appearance still uses `avatar_roast`; later ordinary danmaku from the same UID uses `danmaku_response` instead of being blocked by the first-appearance once gate.
 - Active Engagement is implemented as a solo-stream quiet-moment trigger with both automatic and manual paths: one small replyable topic, standard pacing around a 90-second minimum interval, active pacing around a 60-second minimum interval, and no direct Gift / SC / Guard coupling.
 - Active Engagement v1 topic material now avoids stale or single-viewer-biased material: when recent useful danmaku material is older than the live-topic freshness window, or all comes from the same UID repeatedly, NEKO should fall back to neutral topics instead of turning old or single-viewer message streams into the whole room's topic.
 - Next-test tuning now treats only real danmaku as viewer reply activity for idle detection, so entry / gift / SC / Guard health rows do not block cold-room hosting. Active Engagement fallback topics now bias toward concrete reply handles such as A/B choices, one-word answers, tiny stances, or small playful challenges.

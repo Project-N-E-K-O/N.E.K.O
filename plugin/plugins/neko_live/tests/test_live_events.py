@@ -203,7 +203,7 @@ async def test_co_stream_danmaku_keeps_snapshot_and_selects_bounded_candidates()
     assert "message-3" in snapshot["text"]
     for payload in ctx.payloads:
         if payload["danmaku_text"] in snapshot["text"]:
-            assert f"{payload['danmaku_text']}｜已回复" in snapshot["text"]
+            assert f"{payload['danmaku_text']}｜已选中" in snapshot["text"]
     assert "message-1" not in snapshot["text"]
     assert hub.status()["ambient_publish_count"] == 1
     await hub.teardown()
@@ -327,7 +327,7 @@ async def test_co_stream_selected_danmaku_keeps_latest_position_as_fact_only():
     assert len(ctx.payloads) == 1
     assert len(ctx.dispatcher.messages) == 1
     assert ctx.dispatcher.messages[0]["expired"] is False
-    assert "权威｜最新｜昵称=u42｜弹幕=active-only｜已回复" in (
+    assert "权威｜最新｜昵称=u42｜弹幕=active-only｜已选中" in (
         ctx.dispatcher.messages[0]["text"]
     )
     assert "权威｜上一条｜昵称=u41｜弹幕=still-previous" in (
@@ -368,7 +368,7 @@ async def test_co_stream_selection_marks_existing_authoritative_snapshot_replied
     assert ctx.dispatcher.messages[-1]["session_key"] == (
         ctx.dispatcher.messages[0]["session_key"]
     )
-    assert "queued-before-selection｜已回复" in ctx.dispatcher.messages[-1]["text"]
+    assert "queued-before-selection｜已选中" in ctx.dispatcher.messages[-1]["text"]
     assert hub.status()["ambient_expiry_count"] == 0
     assert hub.status()["ambient_publish_count"] == 2
     assert hub.status()["ambient_publish_last_reason"] == "submitted_unconfirmed"

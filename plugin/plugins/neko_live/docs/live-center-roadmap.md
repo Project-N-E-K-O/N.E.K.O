@@ -1,7 +1,7 @@
 # NEKO Live（neko_live）开发总结与路线图
 
 > 本文只记录阶段定位、完成状态和下一阶段路线。架构规范、协作规范和测试门禁以 `development.md` 为准；文档职责矩阵以 `docs/README.md` 为准；宿主 / SDK 历史问题以 `devlog.md` 为准。
-> 更新日期：2026-08-03
+> 更新日期：2026-08-04
 
 ---
 
@@ -36,7 +36,7 @@ Independent Mode 的产品命题、Slice 顺序、MVP、非目标和内测节奏
 1. Live Status / 开播前检查 / 为什么没说话：基础能力已落地并完成首轮验收。
 2. Idle Hosting / 冷场陪播：状态推导、手动触发和自动触发基础能力已落地并完成首轮验收。
 3. Pacing Control / 节奏控制：quiet / standard / active 三档基础能力已落地并完成首轮验收；当前三档会同时影响 quiet/idle 状态阈值、Idle Hosting 最小间隔和独播首评节流窗口。
-4. Danmaku Response / 后续弹幕接话：作为 Active Engagement 前的过渡 Slice，已在当前开发分支接入。同一 UID 首次出场仍走 `avatar_roast`，后续普通弹幕走 `danmaku_response`。
+4. Danmaku Response / 后续弹幕接话：作为 Active Engagement 前的过渡 Slice，已经接入当前基线。同一 UID 首次出场仍走 `avatar_roast`，后续普通弹幕走 `danmaku_response`。
 5. Active Engagement / 主动营业：已接入保守 v0，只在猫猫独播的安静状态下触发一次轻话题；支持自动触发与手动触发，不接 Gift / SC / Guard（这些事件由 `live_support_events` 单独处理）。
 6. Warmup Hosting / 开场暖场：已接入猫猫独播开场状态，避免开播第一句被当成冷场陪播。
 7. 2026-06-24 已完成第一轮真实猫猫独播验证：真实直播间连接、真实输出、后续弹幕接话、主动营业和冷场陪播均跑通；当时礼物 / 灯牌 / 上舰类信号已被 ingest 捕获但仍可能走普通弹幕路径，后续已在 Live Feel Pack v1.6 收口为 signal-only。已离线补齐短回复约束、弹幕后主动营业等待、首评 / 接话 / 冷场 / 主动营业结果标签和 Gift Signal v0 标记。
@@ -96,7 +96,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——provider ingest 把富模型包成 `LiveEvent` 统一信封发布到 `EventBus`；`EventBus` 提供隔离、归属与 audit。`live_events` 只订阅 `"danmaku"`，`live_support_events` 独立订阅 `"gift"` / `"super_chat"` / `"guard"`，确保每个事件族只有一个生产消费者。**这是「分发给其他开发者各写各事件 handler」的核心契约** | `test_event_bus.py`、listener lifecycle、live events 与 support scheduler 契约共同覆盖；rich event 经 bus 到唯一 handler，支持事件不会重复进入普通弹幕窗口 |
 | **可靠性收尾（兜底层②④收口）** | ① UI 错误边界：`panel_components.tsx` 的 `ModuleRenderBoundary` 用 try/catch 包每张互动模块卡的同步渲染，单卡失败不黑屏整盘。② `ModuleRegistry.enable/disable` 对真实模块生命周期调用做隔离，单点失败标 degraded + audit | 地基、单测、契约和 panel transpile 已完成。普通功能偏好开关继续使用明确 runtime config gate，不把偏好开关误接成模块卸载；后续只有真实模块需要动态装卸时才使用 lifecycle API |
 
-历史阶段测试基线（2026-06-20；当前基线以 `development.md`「测试门禁」为准）：`uv run pytest plugin/plugins/neko_live/tests -q` → **546 passed**；CLI check **0 error**（6 条模板 warning 允许）。`Plugin Tests` workflow 已在 `roast` 分支通过，新增 `NEKO Roast gate (Windows)` 自动运行 neko_live 测试套件与 CLI check；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
+测试命令和门禁只在 `development.md` 维护；通过数量与 CI 结果以对应提交或 PR 的实际记录为准。后续改动继续按协作规范拆分 Slice，不混入非本插件改动。
 
 ---
 
@@ -164,12 +164,12 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 按性价比 / 依赖排序。A 组是健壮性、可独立小步做；B 组是功能路线（详见 §7）。
 
-### 当前执行顺序（2026-08-03）
+### 当前执行顺序（2026-08-04）
 
 1. ✅ **插件侧派发所有权**：支持事件复用现有 scheduler/worker，完成原子认领、旧完成隔离、三类 finalization、无自动重试和有界脱敏历史；不新增第二套语音队列。
 2. ✅ **双模式可见性与支持事件一致性**：独播与同播的已验证支持事件都走同一个有界主动致谢路径；同播额外保留 `read` 被动事实和面板计数，但不把提交计数表述为播放完成。
 3. ✅ **提示词、上下文与隐私边界**：直播/开发者语境切换串行化，迟到 restore 不覆盖新会话；动态公开字段按不可信数据投影，pipeline route 是 `response_module_hint` 的唯一来源，异常和对象不得被字符串化泄露。
-4. ✅ **开发文档同步**：当前能力、测试基线、同播行为、限制和回滚入口按 Canonical Source 重新归位；历史验证段落继续保留历史标记。
+4. 🔄 **开发文档收敛**：当前能力、同播边界、限制和回滚入口按 Canonical Source 归位；日期化验证记录和单次测试数字不再作为长期规范继续扩写。
 5. ⏸ **统一直播插件总验收**：真实独播、同播、打包版 UI 和浏览器出声仍统一在总验收中确认；当前不为此修改主程序核心，也不把插件 `pushed/submitted` 当成播放完成。
 
 ### 下一阶段
@@ -322,22 +322,9 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 ---
 
-## 12. 项目成熟度与分发就绪度评估（2026-07-03）
+## 12. 分发就绪条件
 
-> 这是 2026-07-03 的历史自评快照，不代表当前测试数量或完成状态；当前测试基线以 `development.md`「测试门禁」为准，当前阶段状态以本路线图后续更新为准。当时的结论是：**架构与可靠性产品级，测试治理和 CI gate 已进入可交付轨道，功能完成度已从 v0.1 单切片进入 Independent Mode 产品验证期**。
-
-| 维度 | 评级 | 依据 |
-|---|---|---|
-| 架构设计 | A− | 清晰分层 + 四条不变量，且用契约测试**锁死设计意图**（不只测行为）|
-| 可靠性工程 | A− | 五层兜底是真功夫：`safety_guard`（滑窗失败计数→自动急停 / 队列溢出→降级 / 限流）、`pipeline`（每步审计 + `finally` 清队列）、`dispatcher`（dry_run + 头像压不进预算则降级纯文字）|
-| 代码质量 | B+ | `pipeline`/`safety_guard`/`dispatcher` 教科书级；Hosted UI 已从单一 `panel.tsx` 入口拆出 `panel_components.tsx` 与 `panel_helpers.ts`，但仍需继续控制面板复杂度 |
-| 文档 | A | 「无文档=未完成」真在执行；但偏厚、跨文档有同事实冗余 |
-| 测试 | B+ | 截至该快照，`plugin/plugins/neko_live/tests` 为 546 passed；原 100KB+ 测试大文件已按 config / pipeline / runtime active engagement / monitor 主题拆分，最大测试文件约 56KB；硬骨头（真连 B站 / 视觉 / 消息面 / 面板渲染）仍主要靠真机验证 |
-| 工程治理 | B | `Plugin Tests` workflow 已新增 `NEKO Roast gate (Windows)`，在 `roast` 分支自动跑 neko_live 测试套件与 CLI check；PR 评审轨迹与发布节奏仍需后续补齐 |
-| 功能完成度 | Independent Mode 验证期 | 「首评锐评」闭环已稳定，后续弹幕接话、Idle/Warmup Hosting、Active Engagement、Runtime Timeline、Gift/SC/Guard 短句致谢均已接入；下一步看真实直播验证和产品体验收口 |
-
-**优点（有代码支撑）**：可靠性刻进代码而非口号；对抗真实世界的疤痕（-352 风控、配置写竞争免疫、消息面吞图 bug 修复）；契约测试锁架构红线；克制复用 + 隐私自觉（凭据加密不落 log/UI、头像 bytes 不落盘）。
-
+当前处于 Independent Mode 产品验证期。离线测试证明插件边界和降级路径，不替代真实直播、网页播放或 Electron 分发验证。
 
 **分发就绪 TODO（按优先级）**：
 1. ⏸ **真实直播验证**：仍是发布门槛，重点看 `live_support_events` 的 Gift / SC / Guard 致谢是否短、是否不索要更多支持、是否不污染普通弹幕接话 / 主动营业节奏；维护者恢复真机测试前不执行。

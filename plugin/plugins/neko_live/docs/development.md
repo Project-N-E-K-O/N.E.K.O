@@ -19,7 +19,7 @@
 - 本场直播统计、观众档案和运行态解释；
 - 开发者沙盒、监控和压力工具。
 
-更新日期：2026-08-03
+更新日期：2026-08-04
 
 核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_live` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
 
@@ -1185,7 +1185,7 @@ uv run pytest plugin/plugins/neko_live/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
-当前基线（2026-08-03）：`uv run pytest plugin/plugins/neko_live/tests -q` → **1764 passed, 1 skipped, 2 warnings**；CLI check **0 error**（6 条模板 warning 允许）。模板 warning 来自插件目录不是独立 git 仓库且没有独立 `.github` / `.vscode` 配置；**不能存在 error**。
+验证结果以当前提交或 PR 的 CI / 本地输出为准，长期规范不维护单次通过数量。CLI check 允许插件模板缺失类 warning，但**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_live 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

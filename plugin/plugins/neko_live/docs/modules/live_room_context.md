@@ -138,7 +138,8 @@ answer. Conversation history, summaries, long-term memory, viewer profiles, and
 old-session content are explicitly excluded as fallback fact sources.
 The positional tail includes selected as well as unselected danmaku so selecting
 an active reply cannot silently relabel the real previous row as latest.
-Selected rows carry the compact `已回复` state and are fact-only: they may answer
+Selected rows carry the compact `已选中` state and are fact-only. The marker
+records active-path selection, not host submission or playback: they may answer
 an explicit positional question but cannot be brought up again during ordinary
 conversation.
 
@@ -169,7 +170,7 @@ characters; truncation receives an ellipsis and cannot be completed from memory.
 It adds no model call, network request, durable storage, dependency, timer, or
 new queue. The only added steady-state cost is one short, invisible, coalesced
 `read` context when a co-stream session starts before any authoritative row.
-Selected rows add at most three compact `已回复` state fields. Because host
+Selected rows add at most three compact `已选中` state fields. Because host
 `read` has no native per-message expiry, replacement is approximated with the same key;
 already-consumed text may remain in host conversation history.
 
@@ -185,7 +186,8 @@ proactive speech.
 - **Approved implementation:** explicit per-row authority plus an explicit empty
   current-session snapshot, using the existing passive dispatcher and
   same-session coalescing key. Selected rows stay in their true position and
-  carry `已回复` so they remain queryable without becoming ordinary pickup.
+  carry `已选中` so they remain queryable without becoming ordinary pickup or
+  claiming that a response was submitted or played.
 - **Expected budget:** one bounded local formatting pass and at most one
   additional short pending context at empty-session start, plus at most three
   short state fields; zero additional model calls, tools, network polling,

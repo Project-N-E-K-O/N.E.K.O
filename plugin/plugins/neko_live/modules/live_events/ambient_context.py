@@ -153,9 +153,9 @@ class AmbientRoomContext:
             if not text:
                 continue
             text = _escape_structured_field(text)
-            reply_state = "｜已回复" if row.get("selected") is True else ""
+            selection_state = "｜已选中" if row.get("selected") is True else ""
             chat_lines.append(
-                f"- 权威｜{position}｜昵称={nickname}｜弹幕={text}{reply_state}"
+                f"- 权威｜{position}｜昵称={nickname}｜弹幕={text}{selection_state}"
             )
         support_lines = []
         # Positional labels, never elapsed time. A passive snapshot is
@@ -208,7 +208,7 @@ class AmbientRoomContext:
         if support_lines:
             sections.extend(("平台验证事件：", *support_lines))
         sections.append(
-            "边界：先回应当前说话者；“已回复”仅供明确查证；普通对话只可"
+            "边界：先回应当前说话者；“已选中”非播放证明，仅供明确查证；普通对话只可"
             "在相关时承接“接梗候选”；省略号表示截短，禁止补写。"
         )
         return _join_bounded(sections, max_chars=AMBIENT_CONTEXT_MAX_CHARS)
