@@ -116,21 +116,21 @@ _APPROVAL_WINDOW_STATUSES = frozenset({"completed"})
 _APPROVAL_CONSUMED_KEY = "_approval_window_consumed"
 
 
-def _find_approval_window_task(
+def _iter_approval_window_tasks(
     *,
     sender_id: Optional[str],
     lanlan_name: Optional[str],
     exclude_task_id: Optional[str] = None,
-) -> Optional[str]:
-    """The task id whose recent completion may carry an approval prompt, or None.
+) -> list[str]:
+    """Task ids whose recent completion may carry an unanswered approval prompt.
 
     "Recently completed" is the whole rule: only ``completed`` (see
     _APPROVAL_WINDOW_STATUSES) and only within the age check below. Note this is
     *disjoint* from _collect_active_openclaw_task_ids, which matches exactly the
     in-flight statuses this one rejects.
 
-    Returns the id so the caller can consume the entry — one prompt authorizes
-    one approval.
+    Returns ids so callers can consume entries — one prompt authorizes one
+    approval, and `/stop` retires every prompt still standing.
     """
     # ⚠️ 这道闸和 _collect_active_openclaw_task_ids **状态集合互不相交**，不是笔误：
     # 那个是给 /stop 用的「谁还在跑」，这个是「谁刚把一次回复给到用户」。同一个判据
@@ -157,6 +157,7 @@ def _find_approval_window_task(
             current_session = str(peek(role_name=lanlan_name, sender_id=sender_id) or "")
         except Exception:
             logger.debug("[OpenClaw] peek_persistent_session_id failed", exc_info=True)
+    matches: list[str] = []
     for task_id, info in _shared.Modules.task_registry.items():
         if task_id == exclude_task_id or not isinstance(info, dict):
             continue
@@ -190,8 +191,51 @@ def _find_approval_window_task(
         # (now - ended) 为负，只判上界就恒成立，窗口会一直开到时钟追上来再过 5 分钟。
         age = (now - ended).total_seconds()
         if 0 <= age <= TASK_REGISTRY_CLEANUP_TTL:
-            return task_id
-    return None
+            matches.append(task_id)
+    return matches
+
+
+def _find_approval_window_task(
+    *,
+    sender_id: Optional[str],
+    lanlan_name: Optional[str],
+    exclude_task_id: Optional[str] = None,
+) -> Optional[str]:
+    """The first task id that may carry an unanswered approval prompt, or None."""
+    return next(
+        iter(
+            _iter_approval_window_tasks(
+                sender_id=sender_id,
+                lanlan_name=lanlan_name,
+                exclude_task_id=exclude_task_id,
+            )
+        ),
+        None,
+    )
+
+
+def _retire_approval_windows(
+    *,
+    sender_id: Optional[str],
+    lanlan_name: Optional[str],
+    exclude_task_id: Optional[str] = None,
+) -> list[str]:
+    """Consume every standing approval window. Returns the ids retired.
+
+    Called when the user cancels: a prompt they just answered with "stop" must
+    not keep authorizing anything.
+    """
+    retired: list[str] = []
+    for task_id in _iter_approval_window_tasks(
+        sender_id=sender_id,
+        lanlan_name=lanlan_name,
+        exclude_task_id=exclude_task_id,
+    ):
+        info = _shared.Modules.task_registry.get(task_id)
+        if isinstance(info, dict):
+            info[_APPROVAL_CONSUMED_KEY] = True
+            retired.append(task_id)
+    return retired
 
 
 async def _cancel_openclaw_tasks_for_stop(
@@ -510,6 +554,29 @@ async def dispatch(
                 )
                 if cancelled_task_ids:
                     task_params["cancelled_task_ids"] = cancelled_task_ids
+                # ⚠️ 掐任务掐不掉**已经问出口的那句审批提示**：_cancel_… 只挑
+                # queued/running，而窗口是 completed 开的，两个状态集合互不相交。不
+                # 兑现的话，用户「停下来」之后随口一句「同意」还能在整个 TTL 里把他刚
+                # 撤销的动作放回去（Codex P1）。同一个判据的延伸——窗口问的是「用户有
+                # 没有可能看见那句提示」，而 `/stop` 正是他对着那句提示给出的回答。
+                #
+                # ⚠️ 必须在 if cancelled_task_ids 之外：Codex 描述的场景恰恰是**没有**
+                # 在跑的任务可掐（任务刚 completed 在等审批），那时上面那个列表是空的。
+                #
+                # 也不等 run_magic_command 的成败：本地取消（上面那个 helper 写
+                # status=cancelled）本来就不回滚，而「用户说了停」这件事跟上游那一趟调
+                # 用成没成无关。真想在停之后批准，直接敲 /daemon approve——显式命令豁免。
+                retired = _retire_approval_windows(
+                    sender_id=nk_sender_id,
+                    lanlan_name=lanlan_name,
+                    exclude_task_id=result.task_id,
+                )
+                if retired:
+                    logger.info(
+                        "[OpenClaw] /stop retired %d approval window(s): %s",
+                        len(retired),
+                        ", ".join(retired),
+                    )
             try:
                 nk_result = await _shared.Modules.openclaw.run_magic_command(
                     magic_command,

@@ -561,3 +561,114 @@ def test_the_gate_does_not_leak_to_the_other_magic_commands(wired, command):
 
     assert [call[0] for call in fake.magic_calls] == [command]
     assert emitted, f"{command} 应该照常产生 task_result"
+
+
+def test_stop_retires_a_standing_approval_window(wired):
+    """⚠️ 掐任务掐不掉已经问出口的那句审批提示。
+
+    ``_cancel_openclaw_tasks_for_stop`` only touches queued/running entries, and
+    the window is opened by a *completed* one — two disjoint status sets. Left
+    standing, a casual 同意 anywhere in the remaining TTL puts back the very
+    action the user just cancelled.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-live",
+        status="running",
+        ended_seconds_ago=None,
+    )
+
+    _dispatch("/stop", task_id="magic-stop")
+    assert [c[0] for c in fake.magic_calls] == ["/stop"]
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-approve")
+    assert fake.magic_calls == [], "/stop 之后那条 completed 不该再授权"
+
+
+def test_stop_retires_the_window_with_nothing_left_to_cancel(wired):
+    """⚠️ 兑现不能挂在「掐到了东西」上。
+
+    The reported sequence has *nothing* queued or running — the task completed
+    and is waiting on the prompt — so ``cancelled_task_ids`` comes back empty.
+    Gating retirement on that list reproduces the bug exactly.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    _dispatch("/stop", task_id="magic-stop")
+    assert fake.stop_calls == [], "前提：这一轮没有在跑的任务可掐"
+    assert oc._shared.Modules.task_registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-approve")
+    assert fake.magic_calls == [], "没掐到东西也要把窗口作废"
+
+
+def test_stop_retires_the_window_even_when_the_upstream_call_fails(wired):
+    """本地取消不回滚，「用户说了停」也跟上游那趟调用的成败无关。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    async def _fail(command, *, sender_id=None, role_name=None):
+        fake.magic_calls.append((command, sender_id, role_name))
+        return {"success": False, "error": "boom", "command": command}
+
+    fake.run_magic_command = _fail
+    _dispatch("/stop", task_id="magic-stop")
+
+    fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-approve")
+    assert fake.magic_calls == [], "上游 /stop 失败也不该让旧窗口活下来"
+
+
+def test_stop_only_retires_windows_it_owns(wired):
+    """⚠️ 一个用户的「停下来」不该作废另一个用户 / 另一个角色的待批准提示。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-other-sender", status="completed", sender="USER_B")
+    _register(registry, "t-other-lanlan", status="completed", lanlan="other")
+
+    _dispatch("/stop", sender="USER_A", task_id="magic-stop")
+
+    assert registry["t-other-sender"].get(oc._APPROVAL_CONSUMED_KEY) is None
+    assert registry["t-other-lanlan"].get(oc._APPROVAL_CONSUMED_KEY) is None
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", sender="USER_B", task_id="magic-approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+def test_an_explicitly_typed_approve_survives_stop(wired):
+    """作废是 fail-closed 收窄，逃生口还在：直接敲字面命令一律豁免闸。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    _dispatch("/stop", task_id="magic-stop")
+    fake.magic_calls.clear()
+
+    _dispatch("/daemon approve", task_id="magic-approve", user_text="/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+@pytest.mark.parametrize("command", ["/new", "/clear", "/daemon approve"])
+def test_only_stop_retires_windows(wired, command):
+    """⚠️ 作废只挂在 /stop 上。
+
+    ``/daemon approve`` consumes exactly one entry through its own success path;
+    widening retirement to every command would make an unrelated ``/clear`` eat
+    a prompt the user never answered.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-a", status="completed", ended_seconds_ago=1.0)
+    _register(registry, "t-b", status="completed", ended_seconds_ago=2.0)
+
+    _dispatch(command, task_id="magic-1")
+
+    consumed = [t for t in ("t-a", "t-b") if registry[t].get(oc._APPROVAL_CONSUMED_KEY)]
+    expected = 1 if command == "/daemon approve" else 0
+    assert len(consumed) == expected
