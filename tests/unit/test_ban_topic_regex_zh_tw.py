@@ -1385,7 +1385,8 @@ def test_filler_dedup_keeps_genuinely_different_topics():
     [
         ("關於股票就別再講了", "股票"),
         ("关于股票就别再讲了", "股票"),
-        ("關於前女友的事就別提了", "前女友"),
+        # ⚠️ `的事` 归话题所有（见 test_the_guanyu_template_keeps_deshi_in_the_topic）
+        ("關於前女友的事就別提了", "前女友的事"),
         ("關於減肥的這件事就別說了。", "減肥"),
     ],
 )
@@ -2172,14 +2173,40 @@ def test_the_preposed_template_keeps_deshi_in_the_topic(text, expected):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # 模板 4 保留 `(?:的事)?`——那里由句首的 `关于` 锚定，`的事` 确实是填充词
-        ("关于工作的事就别提了。", "工作"),
-        ("關於工作的事就別提了。", "工作"),
-        ("关于我们的事就别提了。", "我们"),
-        ("關於我們的事就別提了。", "我們"),
+        # ⚠️ 模板 4 也**不吃** `的事`——这条一开始写反了。`的事` 是领属加名物化，
+        # 可以是名字本身的一部分；更糟的是那个被截短的 term 会让
+        # `_drop_filler_suffixed_terms` 把模板 2 抽到的**正确** term 当成
+        # 「它 + 一个填充词」删掉，于是只剩截短的那个（codex P2）。
+        ("关于工作的事就别提了。", "工作的事"),
+        ("關於工作的事就別提了。", "工作的事"),
+        ("关于我们的事别提了。", "我们的事"),
+        ("關於我們的事別提了。", "我們的事"),
+        ("关于我前女友的事就别提了。", "我前女友的事"),
     ],
 )
-def test_the_guanyu_template_still_consumes_deshi(text, expected):
+def test_the_guanyu_template_keeps_deshi_in_the_topic(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 指示词那组**保留**：它们无歧义地是填充（话题就是 `减肥`）
+        ("关于减肥这话题就别说了。", "减肥"),
+        ("關於減肥這話題就別說了。", "減肥"),
+        ("关于工作这件事就别提了。", "工作"),
+        ("關於工作這件事就別提了。", "工作"),
+        # `(?:就)?` 也保留：删掉它这两条会退成带 `就` 的垃圾
+        ("关于股票就别提了。", "股票"),
+        ("关于工作就别提了。", "工作"),
+        ("關於股票就別提了。", "股票"),
+    ],
+)
+def test_the_guanyu_template_still_consumes_unambiguous_fillers(text, expected):
+    """⚠️ 判据是**有没有歧义**，不是「是不是填充位」：指示词和句末 `就` 无歧义，
+    `的事` 有——三者都装在同一条模板上，但只撤掉有歧义的那个（实测比较过两个方案，
+    连 `就` 一起撤会把这三条干净结果变成垃圾）。
+    """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {expected}, _zh_terms(text)
 
 
