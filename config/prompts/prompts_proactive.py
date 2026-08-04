@@ -3919,27 +3919,27 @@ def get_proactive_music_strict_constraint(lang: str = "zh") -> str:
 # 根据当前小时数给AI额外的时间感知，让问候更贴合实际场景
 
 _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
-    # 凌晨 0:00-5:59 —— 只提供事实时间，不推断对方睡眠状态
+    # 凌晨 0:00-5:59 —— 保留时段特征作为开场素材，只禁止断言对方的状态
     "late_night": {
-        "zh": "现在是凌晨。只把它当作当前时段，不要推断{master}刚睡醒、还没睡或刚开机。",
-        "zh-TW": "現在是凌晨。只把它當作目前時段，不要推斷{master}剛睡醒、還沒睡或剛開機。",
-        "en": "It is currently late at night. Treat this only as the current time of day; do not infer that {master} just woke up, has not slept, or just started the device.",
-        "ja": "今は深夜だ。これは現在の時間帯としてだけ扱い、{master}が起きたばかり、まだ寝ていない、端末を起動したばかりだとは推測しないこと。",
-        "ko": "지금은 한밤중이다. 현재 시간대로만 받아들이고, {master}가 방금 일어났거나 아직 자지 않았거나 기기를 방금 켰다고 추측하지 마.",
-        "ru": "Сейчас глубокая ночь. Считай это лишь текущим временем суток и не делай выводов, что {master} только что проснулся, ещё не спал или включил устройство.",
-        "es": "Ahora es de madrugada. Tómalo solo como la hora actual; no deduzcas que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
-        "pt": "Agora é madrugada. Trate isso apenas como o horário atual; não deduza que {master} acabou de acordar, ainda não dormiu ou acabou de ligar o dispositivo.",
+        "zh": "现在是凌晨，夜已经很深了。夜色、安静、这个时段本身都可以成为开场的话题方向；但不要断言{master}刚睡醒、还没睡或刚开机。",
+        "zh-TW": "現在是凌晨，夜已經很深了。夜色、安靜、這個時段本身都可以成為開場的話題方向；但不要斷言{master}剛睡醒、還沒睡或剛開機。",
+        "en": "It is the middle of the night. The hour itself — the dark, the quiet, being awake this late — is fair material for an opening; but do not assert that {master} just woke up, has not slept, or just started the device.",
+        "ja": "今は深夜。夜の暗さや静けさ、この時間に起きていること自体は話の糸口にしていい。ただし{master}が起きたばかり、まだ寝ていない、端末を起動したばかりだとは断定しない。",
+        "ko": "지금은 한밤중이다. 어둠과 고요함, 이 시간까지 깨어 있다는 것 자체는 말을 꺼낼 소재로 삼아도 된다. 다만 {master}가 방금 일어났거나 아직 자지 않았거나 기기를 방금 켰다고 단정하지 마.",
+        "ru": "Сейчас глубокая ночь. Сама эта пора — темнота, тишина, бодрствование в такой час — годится как повод для начала разговора. Но не утверждай, что {master} только что проснулся, ещё не спал или включил устройство.",
+        "es": "Es de madrugada. La hora en sí —la oscuridad, el silencio, estar despierto tan tarde— sirve como material para abrir. Pero no afirmes que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
+        "pt": "É madrugada. A hora em si — o escuro, o silêncio, estar acordado tão tarde — serve como material para abrir. Mas não afirme que {master} acabou de acordar, não dormiu ou acabou de ligar o dispositivo.",
     },
-    # 清晨 6:00-8:59 —— 早上好，新一天开始
+    # 清晨 6:00-8:59 —— 新一天开始，保留早安方向
     "early_morning": {
-        "zh": "现在是清晨，新的一天刚刚开始。适合温暖地问候早安。",
-        "zh-TW": "現在是清晨，新的一天剛剛開始。適合溫暖地問候早安。",
-        "en": "It is early morning — a new day is just beginning. A warm good-morning greeting would be fitting.",
-        "ja": "今は早朝、新しい一日の始まりだ。温かくおはようと挨拶するのがぴったり。",
-        "ko": "지금은 이른 아침, 새로운 하루가 시작되었다. 따뜻하게 좋은 아침 인사를 건네면 좋겠다.",
-        "ru": "Сейчас раннее утро — новый день только начинается. Тёплое утреннее приветствие будет к месту.",
-        "es": "Es temprano por la mañana; acaba de empezar un nuevo día. Un saludo cálido de buenos días encajaría bien.",
-        "pt": "É bem cedo; um novo dia está começando. Uma saudação calorosa de bom dia combinaria.",
+        "zh": "现在是清晨，天刚亮，新的一天正在开始。可以道一句早安，也可以聊清晨本身的感觉；但不要断言{master}睡得好不好或刚起床。",
+        "zh-TW": "現在是清晨，天剛亮，新的一天正在開始。可以道一句早安，也可以聊清晨本身的感覺；但不要斷言{master}睡得好不好或剛起床。",
+        "en": "It is early morning; the day is just starting. A good-morning line fits, and the feel of early morning is fair material; but do not assert how {master} slept or that they just got up.",
+        "ja": "今は早朝で、一日が始まったところ。おはようの一言も、早朝の空気の話も自然だ。ただし{master}がよく眠れたかどうか、起きたばかりかどうかは断定しない。",
+        "ko": "지금은 이른 아침이고 하루가 막 시작됐다. 좋은 아침 인사도, 이른 아침의 공기 이야기도 자연스럽다. 다만 {master}가 잘 잤는지, 방금 일어났는지는 단정하지 마.",
+        "ru": "Сейчас раннее утро, день только начинается. Уместно пожелать доброго утра или заговорить о самом утреннем ощущении. Но не утверждай, как {master} спал и что он только что встал.",
+        "es": "Es temprano por la mañana y el día apenas empieza. Cabe un buenos días, y la sensación del amanecer también sirve de material. Pero no afirmes cómo durmió {master} ni que acaba de levantarse.",
+        "pt": "É bem cedo e o dia está começando. Cabe um bom dia, e a sensação da manhã cedo também serve de material. Mas não afirme como {master} dormiu nem que acabou de levantar.",
     },
     # 上午 9:00-11:59
     "morning": {
@@ -3952,16 +3952,16 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es por la mañana.",
         "pt": "É de manhã.",
     },
-    # 中午 12:00-13:59
+    # 中午 12:00-13:59 —— 午饭时段，保留吃饭这个搭话方向
     "noon": {
-        "zh": "现在是中午。只把它当作当前时段，不要默认{master}正在吃饭或刚忙完。",
-        "zh-TW": "現在是中午。只把它當作目前時段，不要預設{master}正在吃飯或剛忙完。",
-        "en": "It is around noon. Treat this only as the current time of day; do not assume {master} is eating or has just finished being busy.",
-        "ja": "今はお昼頃だ。現在の時間帯としてだけ扱い、{master}が食事中、または忙しい用事を終えたばかりだとは決めつけないこと。",
-        "ko": "지금은 정오 무렵이다. 현재 시간대로만 받아들이고, {master}가 식사 중이거나 방금 바쁜 일을 마쳤다고 단정하지 마.",
-        "ru": "Сейчас около полудня. Считай это лишь текущим временем суток и не предполагай, что {master} ест или только что освободился.",
-        "es": "Es alrededor del mediodía. Tómalo solo como la hora actual; no supongas que {master} está comiendo o que acaba de desocuparse.",
-        "pt": "É por volta do meio-dia. Trate isso apenas como o horário atual; não suponha que {master} está comendo ou que acabou de ficar livre.",
+        "zh": "现在是中午，通常是午饭时段。可以把吃饭聊成一个轻松的方向；但不要断言{master}正在吃、已经吃过或刚忙完。",
+        "zh-TW": "現在是中午，通常是午餐時段。可以把吃飯聊成一個輕鬆的方向；但不要斷言{master}正在吃、已經吃過或剛忙完。",
+        "en": "It is around midday, which is usually lunchtime. Food is a fine light direction to open with; but do not assert that {master} is eating, has eaten, or just got free.",
+        "ja": "今は昼どきで、ふつうは昼食の時間帯。食事は軽い話の方向として使っていい。ただし{master}が食べている、食べ終えた、手が空いたばかりだとは断定しない。",
+        "ko": "지금은 정오 무렵이고 보통 점심시간이다. 음식은 가볍게 말을 꺼낼 방향으로 써도 된다. 다만 {master}가 먹는 중이거나 이미 먹었거나 방금 한가해졌다고 단정하지 마.",
+        "ru": "Сейчас около полудня — обычно это обеденное время. Еда вполне годится как лёгкое направление для начала. Но не утверждай, что {master} ест, уже поел или только что освободился.",
+        "es": "Es alrededor del mediodía, que suele ser la hora de comer. La comida es una dirección ligera perfectamente válida para abrir. Pero no afirmes que {master} está comiendo, ya comió o acaba de desocuparse.",
+        "pt": "É por volta do meio-dia, normalmente a hora do almoço. Comida é uma direção leve perfeitamente válida para abrir. Mas não afirme que {master} está comendo, já comeu ou acabou de ficar livre.",
     },
     # 下午 14:00-17:59
     "afternoon": {
@@ -3974,27 +3974,27 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
         "es": "Es por la tarde.",
         "pt": "É à tarde.",
     },
-    # 傍晚 18:00-20:59
+    # 傍晚 18:00-20:59 —— 一天转入夜晚，保留氛围与晚饭方向
     "evening": {
-        "zh": "现在是傍晚。只把它当作当前时段，不要默认{master}刚下班、刚吃饭或忙了一天。",
-        "zh-TW": "現在是傍晚。只把它當作目前時段，不要預設{master}剛下班、剛吃飯或忙了一天。",
-        "en": "It is evening. Treat this only as the current time of day; do not assume {master} just finished work, ate, or had a busy day.",
-        "ja": "今は夕方だ。現在の時間帯としてだけ扱い、{master}が仕事を終えた、食事をした、忙しい一日を過ごしたとは決めつけないこと。",
-        "ko": "지금은 저녁이다. 현재 시간대로만 받아들이고, {master}가 방금 퇴근했거나 식사했거나 바쁜 하루를 보냈다고 단정하지 마.",
-        "ru": "Сейчас вечер. Считай это лишь текущим временем суток и не предполагай, что {master} только что закончил работу, поел или провёл занятый день.",
-        "es": "Es por la tarde-noche. Tómalo solo como la hora actual; no supongas que {master} acaba de salir del trabajo, de comer o de tener un día ocupado.",
-        "pt": "É início da noite. Trate isso apenas como o horário atual; não suponha que {master} acabou de sair do trabalho, comer ou ter um dia corrido.",
+        "zh": "现在是傍晚，天正在暗下来，一天开始转入夜晚。可以聊这个时段的氛围，或把晚饭当作轻松方向；但不要断言{master}刚下班、刚吃完或忙了一整天。",
+        "zh-TW": "現在是傍晚，天正在暗下來，一天開始轉入夜晚。可以聊這個時段的氛圍，或把晚餐當作輕鬆方向；但不要斷言{master}剛下班、剛吃完或忙了一整天。",
+        "en": "It is evening; the light is going and the day is turning into night. The mood of this hour, or dinner, is a fine light direction; but do not assert that {master} just finished work, just ate, or had a busy day.",
+        "ja": "今は夕方。日が落ちて、一日が夜に向かう時間だ。この時間帯の雰囲気や夕食は軽い話の方向にしていい。ただし{master}が仕事を終えた、食べたばかり、忙しい一日だったとは断定しない。",
+        "ko": "지금은 저녁이다. 해가 지고 하루가 밤으로 넘어가는 시간이다. 이 시간대의 분위기나 저녁 식사는 가벼운 방향으로 삼아도 된다. 다만 {master}가 방금 퇴근했거나 막 먹었거나 바쁜 하루를 보냈다고 단정하지 마.",
+        "ru": "Сейчас вечер: свет уходит, день переходит в ночь. Настроение этого часа или ужин — нормальное лёгкое направление. Но не утверждай, что {master} только что закончил работу, поел или провёл занятый день.",
+        "es": "Es el atardecer: cae la luz y el día pasa a la noche. El ambiente de esta hora, o la cena, sirven como dirección ligera. Pero no afirmes que {master} acaba de salir del trabajo, de comer o de tener un día ocupado.",
+        "pt": "É o fim da tarde: a luz vai embora e o dia vira noite. O clima desta hora, ou o jantar, servem como direção leve. Mas não afirme que {master} acabou de sair do trabalho, de comer ou de ter um dia corrido.",
     },
-    # 夜晚 21:00-23:59
+    # 夜晚 21:00-23:59 —— 保留夜的氛围，但休息只跟不提
     "night": {
-        "zh": "现在是夜晚。只把它当作当前时段；除非近期对话明确提到休息，否则不要默认{master}要睡了。",
-        "zh-TW": "現在是夜晚。只把它當作目前時段；除非近期對話明確提到休息，否則不要預設{master}要睡了。",
-        "en": "It is nighttime. Treat this only as the current time of day; unless recent context explicitly mentions rest, do not assume {master} is going to sleep.",
-        "ja": "今は夜だ。現在の時間帯としてだけ扱い、直近の会話で休むことが明示されていない限り、{master}が寝るところだとは決めつけないこと。",
-        "ko": "지금은 밤이다. 현재 시간대로만 받아들이고, 최근 대화에서 휴식을 명확히 언급하지 않았다면 {master}가 자려 한다고 단정하지 마.",
-        "ru": "Сейчас ночь. Считай это лишь текущим временем суток; если недавний контекст прямо не упоминает отдых, не предполагай, что {master} собирается спать.",
-        "es": "Es de noche. Tómalo solo como la hora actual; salvo que el contexto reciente mencione explícitamente descansar, no supongas que {master} va a dormir.",
-        "pt": "É noite. Trate isso apenas como o horário atual; a menos que o contexto recente mencione descanso explicitamente, não suponha que {master} vai dormir.",
+        "zh": "现在是夜晚，时间不早了。可以聊夜里的氛围；只有近期对话明确提到休息时才顺着聊休息，不要主动断言{master}要睡了。",
+        "zh-TW": "現在是夜晚，時間不早了。可以聊夜裡的氛圍；只有近期對話明確提到休息時才順著聊休息，不要主動斷言{master}要睡了。",
+        "en": "It is late evening. The feel of the night is fair material; follow up on rest only if recent context explicitly raised it, and do not assert on your own that {master} is about to sleep.",
+        "ja": "今は夜で、もう遅い時間。夜の雰囲気は話の糸口にしていい。休むことに触れるのは直近の会話で明示された場合だけにして、自分から{master}が寝るところだとは断定しない。",
+        "ko": "지금은 밤이고 시간이 늦었다. 밤의 분위기는 말을 꺼낼 소재가 된다. 휴식 이야기는 최근 대화에서 명시적으로 나왔을 때만 이어가고, 먼저 나서서 {master}가 자려 한다고 단정하지 마.",
+        "ru": "Сейчас поздний вечер. Атмосфера ночи годится как повод заговорить. Тему отдыха поддерживай только если недавний разговор прямо её поднял, и не утверждай сама, что {master} собирается спать.",
+        "es": "Es de noche y ya es tarde. El ambiente nocturno sirve como material. Retoma el tema del descanso solo si el contexto reciente lo mencionó explícitamente, y no afirmes por tu cuenta que {master} va a dormir.",
+        "pt": "É noite e já está tarde. O clima noturno serve como material. Só retome o assunto de descansar se o contexto recente tiver levantado isso explicitamente, e não afirme por conta própria que {master} vai dormir.",
     },
 }
 
@@ -4512,6 +4512,32 @@ _STARTUP_REFERENCE_NOTICE = {
 }
 
 
+# 强约束层：24 小时内已经真正说出口的开场，必须完全另起说法。
+_STARTUP_RECENT_OPENINGS_LABEL = {
+    "zh": "过去 24 小时内已经说过的开场，绝对不要复述、翻译或近义改写：",
+    "zh-TW": "過去 24 小時內已經說過的開場，絕對不要複述、翻譯或近義改寫：",
+    "en": "Openings already said in the last 24 hours. Never repeat, translate, or closely paraphrase these:",
+    "ja": "過去24時間で実際に言った切り出し。繰り返しも、訳し直しも、近い言い換えも禁止：",
+    "ko": "지난 24시간 안에 이미 말한 첫마디. 반복도, 번역도, 비슷한 바꿔 말하기도 금지:",
+    "ru": "Приветствия, уже сказанные за последние 24 часа. Не повторяй, не переводи и близко не перефразируй их:",
+    "es": "Aperturas ya dichas en las últimas 24 horas. Nunca las repitas, traduzcas ni parafrasees de cerca:",
+    "pt": "Aberturas já ditas nas últimas 24 horas. Nunca as repita, traduza nem parafraseie de perto:",
+}
+
+
+# 弱约束层：1~3 天前的开场，只要求明显区别，不要求完全另起。
+_STARTUP_EARLIER_OPENINGS_LABEL = {
+    "zh": "更早（三天内）说过的开场，本次要和它们有明显区别：",
+    "zh-TW": "更早（三天內）說過的開場，本次要和它們有明顯區別：",
+    "en": "Earlier openings from the past three days. This one should be clearly different from them:",
+    "ja": "さらに前（三日以内）の切り出し。今回はこれらとはっきり違うものにする：",
+    "ko": "그보다 이전(사흘 이내)의 첫마디. 이번에는 이것들과 뚜렷이 달라야 한다:",
+    "ru": "Более ранние приветствия за последние три дня. Нынешнее должно заметно отличаться от них:",
+    "es": "Aperturas anteriores de los últimos tres días. Esta debe ser claramente distinta de ellas:",
+    "pt": "Aberturas anteriores dos últimos três dias. Esta deve ser claramente diferente delas:",
+}
+
+
 def startup_crossed_conversation_day(gap_seconds: float, observed_at=None) -> bool:
     """Whether the gap crosses the local 06:00 conversation-day boundary.
 
@@ -4526,6 +4552,10 @@ def startup_crossed_conversation_day(gap_seconds: float, observed_at=None) -> bo
     last_observed = observed - timedelta(seconds=max(0.0, float(gap_seconds)))
     shift = timedelta(hours=6)
     return (last_observed - shift).date() != (observed - shift).date()
+
+
+# 每层参考开场最多列几条。调用方按窗口自己封顶，这里是渲染侧的兜底。
+_STARTUP_OPENING_SAMPLE_CAP = 6
 
 
 def _sanitize_startup_reference(value, *, limit: int = 240) -> str:
@@ -4546,9 +4576,15 @@ def get_startup_greeting_guidance(
     master: str = "",
     memory_cue: str = "",
     recent_openings=(),
+    earlier_openings=(),
     observed_at=None,
 ) -> str:
-    """Render factual, varied constraints for one ordinary startup greeting."""
+    """Render factual, varied constraints for one ordinary startup greeting.
+
+    ``recent_openings`` is the strict layer (last 24h, must not be reworded)
+    and ``earlier_openings`` the weaker 1-3 day layer (must merely read as
+    different).  Both are caller-capped; this function only bounds each entry.
+    """
     lang_key = _normalize_startup_greeting_language(lang)
     template = _STARTUP_GREETING_CONSTRAINTS.get(
         lang_key,
@@ -4578,17 +4614,42 @@ def get_startup_greeting_guidance(
     safe_memory = _sanitize_startup_reference(memory_cue)
     if safe_memory:
         references.append(f"<memory-cue>{safe_memory}</memory-cue>")
-    safe_recent = [
-        cleaned
-        for value in list(recent_openings)[:3]
-        if (cleaned := _sanitize_startup_reference(value, limit=160))
-    ]
-    if safe_recent:
-        references.append(
-            "<recent-startup-openings>\n"
-            + "\n".join(f"- {text}" for text in safe_recent)
-            + "\n</recent-startup-openings>"
+
+    def _opening_block(values, *, tag: str, label_table: dict, char_limit: int) -> str:
+        # Second line of defence only: the caller already caps how many records
+        # each layer contributes.  Everything here stays character-bounded and
+        # deterministic because this runs on the event loop, where cold-starting
+        # the tokenizer for a token budget would stall the greeting.
+        entries = [
+            cleaned
+            for value in list(values)[:_STARTUP_OPENING_SAMPLE_CAP]
+            if (cleaned := _sanitize_startup_reference(value, limit=char_limit))
+        ]
+        if not entries:
+            return ""
+        label = label_table.get(lang_key, label_table.get("en", label_table["zh"]))
+        return (
+            f"{label}\n<{tag}>\n"
+            + "\n".join(f"- {text}" for text in entries)
+            + f"\n</{tag}>"
         )
+
+    recent_block = _opening_block(
+        recent_openings,
+        tag="recent-startup-openings",
+        label_table=_STARTUP_RECENT_OPENINGS_LABEL,
+        char_limit=160,
+    )
+    if recent_block:
+        references.append(recent_block)
+    earlier_block = _opening_block(
+        earlier_openings,
+        tag="earlier-startup-openings",
+        label_table=_STARTUP_EARLIER_OPENINGS_LABEL,
+        char_limit=100,
+    )
+    if earlier_block:
+        references.append(earlier_block)
     reference_block = ""
     if references:
         reference_notice = _STARTUP_REFERENCE_NOTICE.get(

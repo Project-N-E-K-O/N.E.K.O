@@ -44,7 +44,9 @@ logger = get_module_logger(__name__, "Memory")
 
 _SCHEMA_VERSION = 1
 _DEFAULT_KEY = "default"
-_MAX_RECORDS = 96
+# 召回窗是 3 天。30 分钟 burst 闸下每天最多 48 条，三天 144 条，所以上限必须
+# 高于 144，否则最早那一天会在还该被参考时就被挤掉。
+_MAX_RECORDS = 192
 _MAX_STORED_TEXT_CHARS = 160
 
 

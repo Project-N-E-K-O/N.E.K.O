@@ -77,8 +77,10 @@ def test_startup_avoidance_survives_trigger_gap_and_expires_after_24_hours(tmp_p
 
 
 def test_history_is_newest_first_and_count_capped(tmp_path):
+    cap = startup_history_module._MAX_RECORDS
+    overflow = 8
     history = _build_history(tmp_path)
-    for index in range(104):
+    for index in range(cap + overflow):
         history.stage_committed(
             "Neko",
             f"opening {index}",
@@ -86,10 +88,35 @@ def test_history_is_newest_first_and_count_capped(tmp_path):
             committed_at=float(index + 1),
         )
 
-    records = history.recent("Neko", now=200.0, max_age_seconds=1000, limit=100)
-    assert len(records) == 96
-    assert records[0].text == "opening 103"
-    assert records[-1].text == "opening 8"
+    records = history.recent(
+        "Neko",
+        now=float(cap + overflow),
+        max_age_seconds=10 * (cap + overflow),
+        limit=cap + overflow,
+    )
+    assert len(records) == cap
+    assert records[0].text == f"opening {cap + overflow - 1}"
+    assert records[-1].text == f"opening {overflow}"
+
+
+def test_record_cap_outlasts_the_full_recall_window():
+    """The rolling cap must not evict records the recall window still cites.
+
+    Without this the two windows drift apart silently: widening the recall
+    window (or loosening the burst gate) would start dropping the oldest day
+    while the prompt still claims to avoid three days of openings.
+    """
+
+    from main_logic.startup_greeting_policy import (
+        _STARTUP_GREETING_BURST_SECONDS,
+        _STARTUP_GREETING_RECALL_SECONDS,
+    )
+
+    # The burst gate admits at most one committed greeting per burst window.
+    max_commits_in_recall_window = (
+        _STARTUP_GREETING_RECALL_SECONDS / _STARTUP_GREETING_BURST_SECONDS
+    )
+    assert startup_history_module._MAX_RECORDS >= max_commits_in_recall_window
 
 
 @pytest.mark.asyncio

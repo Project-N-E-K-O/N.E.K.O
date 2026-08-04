@@ -25,11 +25,14 @@ from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_d
 from main_logic.session_state import SessionEvent
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
-    _STARTUP_GREETING_HISTORY_SECONDS,
+    _STARTUP_GREETING_EARLIER_SAMPLES,
+    _STARTUP_GREETING_RECALL_SECONDS,
+    _STARTUP_GREETING_STRICT_SAMPLES,
     _STARTUP_GREETING_VARIANT_MEMORY,
     _select_startup_followup,
     _select_startup_greeting_variant,
     _startup_greeting_burst_age,
+    split_startup_history_windows,
 )
 from memory.anti_repeat import get_anti_repeat_corpus
 from memory.startup_greeting_history import get_startup_greeting_history
@@ -344,8 +347,9 @@ class GreetingMixin:
             return
 
         # 普通 anti-repeat 的前景 TTL 是 10 分钟，而 greeting 的硬门槛是 15 分钟，
-        # 所以它天然无法承担同日开屏轮换。这里预热专用的已提交历史；其读取只看
-        # 24 小时，且只有真正送达的文本才会在下方 callback 中写入。
+        # 所以它天然无法承担同日开屏轮换。这里预热专用的已提交历史；只有真正送达
+        # 的文本才会在下方 callback 中写入。一次读满 3 天召回窗，随后就地切成
+        # 1 天强约束层 + 1~3 天弱约束层，避免为两级窗口读两次盘。
         greeting_history = get_startup_greeting_history()
         anti_repeat_corpus = get_anti_repeat_corpus()
         observed_at = time.time()
@@ -354,10 +358,10 @@ class GreetingMixin:
                 greeting_history.apreload(greeting_name),
                 anti_repeat_corpus.apreload(greeting_name),
             )
-            recent_greetings = greeting_history.recent(
+            recall_greetings = greeting_history.recent(
                 greeting_name,
                 now=observed_at,
-                max_age_seconds=_STARTUP_GREETING_HISTORY_SECONDS,
+                max_age_seconds=_STARTUP_GREETING_RECALL_SECONDS,
             )
         except Exception as e:
             logger.debug(
@@ -365,13 +369,17 @@ class GreetingMixin:
                 self.lanlan_name,
                 e,
             )
-            recent_greetings = []
+            recall_greetings = []
+        recent_greetings, earlier_greetings = split_startup_history_windows(
+            recall_greetings,
+            observed_at=observed_at,
+        )
 
         # 同一个逻辑启动 burst 最多说一次。15 分钟内原 gap gate 已覆盖，这里保守
         # 补齐 15~30 分钟的反复启动/多窗口重连。投递前的原子 reservation 会再
         # 校验一次已提交历史，避免两个错峰启动任务都拿到同一份空快照。
         burst_age = _startup_greeting_burst_age(
-            recent_greetings,
+            recall_greetings,
             observed_at=observed_at,
             last_user_engagement_at=getattr(
                 self, "last_user_engagement_time", None
@@ -430,10 +438,12 @@ class GreetingMixin:
 
         # Reflection endpoint is read-only: selection does not start synthesis and
         # does not consume cooldown.  We mark one candidate surfaced only from the
-        # committed-text callback below.  The local 24h topic-key history is stricter
-        # than reflection's ordinary short cooldown and prevents same-day resurfacing.
+        # committed-text callback below.  Topic keys are held off for the whole
+        # 3-day recall window — re-raising the same remembered topic reads as far
+        # more repetitive than reusing a generic opening shape, which only rotates
+        # against the 1-day strict layer.
         recently_used_topic_keys = {
-            record.topic_key for record in recent_greetings if record.topic_key
+            record.topic_key for record in recall_greetings if record.topic_key
         }
         startup_followup = None
         memory_variant_available = all(
@@ -500,7 +510,14 @@ class GreetingMixin:
             variant_key=startup_variant,
             master=self.master_name,
             memory_cue=startup_memory_cue,
-            recent_openings=tuple(record.text for record in recent_greetings[:3]),
+            recent_openings=tuple(
+                record.text
+                for record in recent_greetings[:_STARTUP_GREETING_STRICT_SAMPLES]
+            ),
+            earlier_openings=tuple(
+                record.text
+                for record in earlier_greetings[:_STARTUP_GREETING_EARLIER_SAMPLES]
+            ),
         )
 
         async def _record_committed_side_effects() -> None:
@@ -608,12 +625,13 @@ class GreetingMixin:
 
         logger.debug(
             "[%s] trigger_greeting: instruction built "
-            "(len=%d variant=%s has_memory_cue=%s recent_openings=%d)",
+            "(len=%d variant=%s has_memory_cue=%s strict=%d earlier=%d)",
             greeting_name,
             len(instruction),
             startup_variant,
             bool(startup_memory_cue),
-            min(len(recent_greetings), 3),
+            min(len(recent_greetings), _STARTUP_GREETING_STRICT_SAMPLES),
+            min(len(earlier_greetings), _STARTUP_GREETING_EARLIER_SAMPLES),
         )
         logger.info("[%s] trigger_greeting: gap=%.0fs elapsed=%s, delivering", greeting_name, gap_seconds, elapsed)
 
