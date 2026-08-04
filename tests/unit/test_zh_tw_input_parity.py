@@ -979,9 +979,12 @@ def test_peeling_is_bounded_for_pathological_input():
     # 它们的那段循环是**另一处**剥词，界得单独加（变异验证抓出来的）。
     OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 60000)
     OpenClawAdapter.rule_magic_command("随便说说 " + "啊" * 60000)
-    # ⚠️ _command_clause 里那段剥词的界只能**按行为**断言，不能按耗时：实测无界版
-    # 120k 个语气词也只要 0.34s（切片走 memcpy，没到能卡住事件循环的量级）。
-    # 界的可观察后果是「超长尾巴剥不完 → 不跳过它 → 返回 None」。
+    # ⚠️ _command_clause 里那段剥词的界按**行为**断言而不是按耗时。
+    # 耗时断言在这里不可靠：阈值要写多大取决于机器，而它的可观察后果是确定的——
+    # 超长尾巴剥不完 → 不跳过它 → 返回 None。
+    # （早先我按耗时写过一版并据此宣称「无界版也不慢」，那是拿**改剥词逻辑之前**的
+    # 数字说话。现在每步都多一次整串正则，无界版实测连 120k 那一档都跑不完，
+    # 界是必需的。）
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 5) == "/stop"
     assert OpenClawAdapter.rule_magic_command("停下来 " + "吧" * 200) is None
     elapsed = time.perf_counter() - start

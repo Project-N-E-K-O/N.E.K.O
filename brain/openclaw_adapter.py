@@ -511,7 +511,9 @@ def _command_clause(clauses: list) -> str:
         # 只取词表里第一个匹配到的：`_TAIL_TOKENS` 里 `了` 排在 `好了` 前面，
         # `换个话题 好了` 的尾巴会被剥成 `好`，于是这段尾巴不被认成「纯语气词」、
         # 反倒被当成命令子句，整条落空。这跟 _clause_hits 里那个坑是同一个。
-        # ⚠️ 同样要有硬上界：一串很长的语气词会让这里做 O(串长) 次切片。
+        # ⚠️ 硬上界是**必需**的，不是最坏情况护栏：每一步都要对整串跑一次
+        # _DECORATION 正则，无界版实测连 12 万个语气词那一档都跑不完（600s 超时）。
+        # rule_magic_command 在用户输入路径上，且被廉价前置闸同步调用。
         peeled = stripped
         for _ in range(_MAX_PEEL_CANDIDATES):
             matches = [t for t in _TAIL_TOKENS if peeled.endswith(t)]
