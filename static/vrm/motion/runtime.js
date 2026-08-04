@@ -6,7 +6,7 @@
     // after its 20-second fallback timer.
     window.__nekoMotionOwnsVrmPlayback = true;
 
-    const SEMANTICS_URL = '/static/motion/motion-semantics.json';
+    const SEMANTICS_URL = '/static/vrm/motion/semantics.json';
     const POLL_INTERVAL_MS = 120;
     const BUFFER_SEAL_GRACE_MS = 1200;
     const TURN_END_GRACE_MS = 240;
@@ -45,7 +45,6 @@
     let activeTurn = null;
     let lastFinishedTurn = null;
     let bridgedText = '';
-    let motionLifecycleChannel = null;
     let latestOfficialEmotion = '';
     let casualRepliesSinceTalk = 0;
     let lastCasualTalkAt = 0;
@@ -683,50 +682,43 @@
         });
     }
 
-    function bindMotionLifecycleBridge() {
-        if (motionLifecycleChannel || typeof BroadcastChannel === 'undefined') return false;
-        try {
-            motionLifecycleChannel = new BroadcastChannel('neko_motion_lifecycle');
-            motionLifecycleChannel.onmessage = function (event) {
-                const message = event && event.data;
-                if (!message || message.action !== 'motion_lifecycle') return;
-                const detail = message.detail && typeof message.detail === 'object' ? message.detail : {};
-                const currentName = String(window.lanlan_config && window.lanlan_config.lanlan_name || '');
-                if (detail.lanlan_name && currentName && String(detail.lanlan_name) !== currentName) return;
-                metrics.bridgeMessages += 1;
-                if (message.eventName === 'neko-assistant-text-update') {
-                    bridgedText = String(detail.text || '');
-                    if (!bridgedText) return;
-                    if (!activeTurn || activeTurn.ended && bridgedText !== activeTurn.capturedText) {
-                        beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer');
-                    }
-                    scanTurnText();
-                    return;
-                }
-                if (message.eventName === 'neko-assistant-turn-end' && typeof detail.text === 'string') {
-                    bridgedText = detail.text;
-                }
-                if ([
-                    'neko-assistant-turn-start',
-                    'neko-assistant-turn-end',
-                    'neko-assistant-emotion-ready',
-                    'neko-assistant-speech-cancel'
-                ].includes(message.eventName)) {
-                    window.dispatchEvent(new CustomEvent(message.eventName, {
-                        detail: Object.assign({}, detail, { via: 'motion-lifecycle-bridge' })
-                    }));
-                }
-            };
-            window.addEventListener('pagehide', function () {
-                if (motionLifecycleChannel) motionLifecycleChannel.close();
-                motionLifecycleChannel = null;
-            }, { once: true });
-            return true;
-        } catch (error) {
-            console.warn('[NekoMotion] cross-window lifecycle bridge unavailable:', error);
-            motionLifecycleChannel = null;
-            return false;
+    function handleMotionLifecycleBridge(event) {
+        const message = event && event.detail;
+        if (!message || message.action !== 'motion_lifecycle') return;
+        const detail = message.detail && typeof message.detail === 'object' ? message.detail : {};
+        const currentName = String(window.lanlan_config && window.lanlan_config.lanlan_name || '');
+        if (detail.lanlan_name && currentName && String(detail.lanlan_name) !== currentName) return;
+        metrics.bridgeMessages += 1;
+        if (message.eventName === 'neko-assistant-text-update') {
+            bridgedText = String(detail.text || '');
+            if (!bridgedText) return;
+            if (!activeTurn || activeTurn.ended && bridgedText !== activeTurn.capturedText) {
+                beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer');
+            }
+            scanTurnText();
+            return;
         }
+        if (message.eventName === 'neko-assistant-turn-end' && typeof detail.text === 'string') {
+            bridgedText = detail.text;
+        }
+        if ([
+            'neko-assistant-turn-start',
+            'neko-assistant-turn-end',
+            'neko-assistant-emotion-ready',
+            'neko-assistant-speech-cancel'
+        ].includes(message.eventName)) {
+            window.dispatchEvent(new CustomEvent(message.eventName, {
+                detail: Object.assign({}, detail, { via: 'motion-lifecycle-bridge' })
+            }));
+        }
+    }
+
+    function bindMotionLifecycleBridge() {
+        window.addEventListener('neko:motion-lifecycle-relay', handleMotionLifecycleBridge);
+        window.addEventListener('pagehide', function () {
+            window.removeEventListener('neko:motion-lifecycle-relay', handleMotionLifecycleBridge);
+        }, { once: true });
+        return true;
     }
 
     bindMotionLifecycleBridge();

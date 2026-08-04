@@ -74,6 +74,20 @@
                 }
 
                 switch (event.data.action) {
+                    case 'motion_lifecycle': {
+                        var motionDetail = event.data.detail && typeof event.data.detail === 'object'
+                            ? event.data.detail : {};
+                        var motionCurrentName = I.getCurrentLanlanName();
+                        if (
+                            motionDetail.lanlan_name
+                            && motionCurrentName
+                            && motionDetail.lanlan_name !== motionCurrentName
+                        ) break;
+                        window.dispatchEvent(new CustomEvent('neko:motion-lifecycle-relay', {
+                            detail: event.data
+                        }));
+                        break;
+                    }
                     case 'reload_model':
                         await I.handleModelReload(event.data?.lanlan_name, event.data?.reloadOptions);
                         break;

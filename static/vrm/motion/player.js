@@ -1,8 +1,8 @@
 (function () {
     'use strict';
 
-    const MANIFEST_URL = '/static/vrm/motion/00_meta/manifest.json';
-    const ASSET_ROOT = '/static/vrm/motion/';
+    const MANIFEST_URL = '/static/vrm/motion/manifest.json';
+    const ASSET_ROOT = '/static/vrm/';
     const LOW_POSES = new Set(['sit', 'lie', 'sleep']);
     const POSE_DEPTH = Object.freeze({ stand: 0, sit: 1, lie: 2, sleep: 2 });
     const LOW_POSE_PRESERVING_KINDS = new Set(['gesture', 'emotion-body']);
@@ -102,7 +102,8 @@
                 return asset && asset.id && asset.m && asset.f
                     && asset.nameZh && asset.card && asset.card.stableId === asset.id
                     && asset.card.nameZh === asset.nameZh
-                    && asset.packedSha && asset.decodedSha && asset.compression === 'gzip';
+                    && asset.packedSha && asset.decodedSha
+                    && ['none', 'gzip'].includes(asset.compression);
             });
             if (isPublicRelease && this.assets.some(function (asset) {
                 return asset.ok !== true || asset.license === '?' || !asset.license;
@@ -262,16 +263,18 @@
         }
 
         async _assetUrl(asset) {
-            // 动作仅在实际播放时读取和解压。不要长期缓存解压后的 Blob URL：
-            // 动作库越大，永久缓存会让每个已播放动作的 decoded payload 都常驻。
-            const response = await fetch(ASSET_ROOT + asset.f + '.gz', { cache: 'no-store' });
+            // 官方内置动作直接复用 static/vrm/animation，避免在源码和安装包
+            // 同时保存 VRMA 与 gzip 副本。外部已授权动作包仍可声明 gzip transport。
+            // 无论 transport 为何，解码后的 Blob URL 都只在当前播放期间存在。
+            const suffix = asset.compression === 'gzip' ? '.gz' : '';
+            const response = await fetch(ASSET_ROOT + asset.f + suffix, { cache: 'no-store' });
             if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
             const packed = await response.arrayBuffer();
             if (await sha256(packed) !== asset.packedSha) {
                 this.metrics.integrityFailures += 1;
                 throw new Error(asset.id + ' packed SHA-256 mismatch');
             }
-            const decoded = await gunzip(packed);
+            const decoded = asset.compression === 'gzip' ? await gunzip(packed) : packed;
             if (await sha256(decoded) !== asset.decodedSha) {
                 this.metrics.integrityFailures += 1;
                 throw new Error(asset.id + ' decoded SHA-256 mismatch');

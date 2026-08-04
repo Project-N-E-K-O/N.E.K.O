@@ -1002,31 +1002,21 @@
         return 'local-' + S.assistantTurnSeq;
     }
 
-    var motionLifecycleChannel = null;
     var motionLifecycleLastClosedText = '';
-
-    function getMotionLifecycleChannel() {
-        if (motionLifecycleChannel) return motionLifecycleChannel;
-        if (typeof BroadcastChannel === 'undefined') return null;
-        try {
-            motionLifecycleChannel = new BroadcastChannel('neko_motion_lifecycle');
-        } catch (_) {
-            motionLifecycleChannel = null;
-        }
-        return motionLifecycleChannel;
-    }
+    var motionLifecycleLastBroadcastAt = 0;
 
     function broadcastMotionLifecycle(eventName, detail) {
-        var channel = getMotionLifecycleChannel();
+        var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
         if (!channel) return;
         var payload = Object.assign({}, detail || {});
         payload.lanlan_name = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
         if (typeof payload.text === 'string') payload.text = payload.text.slice(0, 24000);
+        motionLifecycleLastBroadcastAt = Math.max(Date.now(), motionLifecycleLastBroadcastAt + 1);
         channel.postMessage({
             action: 'motion_lifecycle',
             eventName: eventName,
             detail: payload,
-            timestamp: Date.now()
+            timestamp: motionLifecycleLastBroadcastAt
         });
     }
 
@@ -1069,8 +1059,6 @@
     window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
     window.addEventListener('pagehide', function () {
         window.removeEventListener('neko-compact-caption-update', relayClosedMotionStage);
-        if (motionLifecycleChannel) motionLifecycleChannel.close();
-        motionLifecycleChannel = null;
     }, { once: true });
 
     function getRenderableAssistantChunkText(text) {

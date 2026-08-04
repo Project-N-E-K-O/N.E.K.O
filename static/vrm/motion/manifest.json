@@ -34,7 +34,7 @@
       "id": "official_liked",
       "m": "like",
       "label": "官方喜欢回应",
-      "f": "00_official/开心地回应喜欢和亲近.vrma",
+      "f": "animation/liked.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -53,11 +53,11 @@
       "src": [
         "static/vrm/animation/liked.vrma"
       ],
-      "packedSha": "c6fbaa623937967984be71cacab8aaab57ed11b3440b2119ef118c0a41cd2d7d",
+      "packedSha": "7109fb6e4f30c5905201f6abb2b8e327327b7d3107b9ddd1300d7bf3e2b3f583",
       "decodedSha": "7109fb6e4f30c5905201f6abb2b8e327327b7d3107b9ddd1300d7bf3e2b3f583",
-      "packedBytes": 29168,
+      "packedBytes": 93828,
       "decodedBytes": 93828,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "开心地回应喜欢和亲近",
       "card": {
@@ -87,14 +87,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_wait_01",
       "m": "idle",
       "label": "官方休闲待机 A",
-      "f": "00_official/放松地站着小幅晃动等待.vrma",
+      "f": "animation/wait01.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "loop",
@@ -113,11 +113,11 @@
       "src": [
         "static/vrm/animation/wait01.vrma"
       ],
-      "packedSha": "93e48ce38f2c1d2eaa7e4703cd6318e61316446d5b5494cc19059e34f52a3565",
+      "packedSha": "b39d588f223851fd17fb59e792c773472a7eca0b5bf77db54074aae9f24fbf7e",
       "decodedSha": "b39d588f223851fd17fb59e792c773472a7eca0b5bf77db54074aae9f24fbf7e",
-      "packedBytes": 106162,
+      "packedBytes": 208324,
       "decodedBytes": 208324,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "放松地站着小幅晃动等待",
       "card": {
@@ -145,14 +145,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "loop",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_wait_02",
       "m": "idle",
       "label": "官方休闲待机 B",
-      "f": "00_official/站着抬动右臂并转动视线等待.vrma",
+      "f": "animation/wait02.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "loop",
@@ -171,11 +171,11 @@
       "src": [
         "static/vrm/animation/wait02.vrma"
       ],
-      "packedSha": "a17dc91bd4770cb7c5b6b51ac9c2af16e63c0e3162fd0aaead673bf0f5c13b1a",
+      "packedSha": "7c7cd0574c34b20a1e9cccbae3abcdc7999cd406edb7f0323e5e2aa0be4e02d5",
       "decodedSha": "7c7cd0574c34b20a1e9cccbae3abcdc7999cd406edb7f0323e5e2aa0be4e02d5",
-      "packedBytes": 55821,
+      "packedBytes": 152516,
       "decodedBytes": 152516,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "站着抬动右臂并转动视线等待",
       "card": {
@@ -204,14 +204,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "loop",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_wait_03",
       "m": "idle",
       "label": "官方休闲待机 C",
-      "f": "00_official/站着轻动双手手指等待.vrma",
+      "f": "animation/wait03.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "loop",
@@ -230,11 +230,11 @@
       "src": [
         "static/vrm/animation/wait03.vrma"
       ],
-      "packedSha": "9002cd6b69d2d3857525860273d1b915c9423017f9a26cf1d0b78987ca95af41",
+      "packedSha": "3ee058e29c870b617fc8958914256b6129b79a972ef07e9a23702a7133c7c9b6",
       "decodedSha": "3ee058e29c870b617fc8958914256b6129b79a972ef07e9a23702a7133c7c9b6",
-      "packedBytes": 74617,
+      "packedBytes": 165964,
       "decodedBytes": 165964,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "站着轻动双手手指等待",
       "card": {
@@ -264,14 +264,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "loop",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_wait_04",
       "m": "shy",
       "label": "官方害羞撩发",
-      "f": "00_official/害羞的撩起头发.vrma",
+      "f": "animation/wait04.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -291,11 +291,11 @@
       "src": [
         "static/vrm/animation/wait04.vrma"
       ],
-      "packedSha": "a6b64e108035a1959c303f2d3a61ae2a2addc145961ecd4d1d225694f0e79029",
+      "packedSha": "1210f1291925824363fdf473c64116831cca838837781c8bc9c27e2d81dc3b4d",
       "decodedSha": "1210f1291925824363fdf473c64116831cca838837781c8bc9c27e2d81dc3b4d",
-      "packedBytes": 60950,
+      "packedBytes": 155768,
       "decodedBytes": 155768,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "害羞的撩起头发",
       "card": {
@@ -332,14 +332,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_wait_05",
       "m": "idle",
       "label": "官方休闲待机 E",
-      "f": "00_official/活泼地站着晃动等待.vrma",
+      "f": "animation/wait05.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "loop",
@@ -358,11 +358,11 @@
       "src": [
         "static/vrm/animation/wait05.vrma"
       ],
-      "packedSha": "f1a0826e5090f9c23f3af26bb91ad6696c42d6797ce9b690c4adadb703481abe",
+      "packedSha": "aa9a913e199a1a224bd15826a51c350d6a395700a89d62c4fddc3176ae87fb24",
       "decodedSha": "aa9a913e199a1a224bd15826a51c350d6a395700a89d62c4fddc3176ae87fb24",
-      "packedBytes": 63855,
+      "packedBytes": 148276,
       "decodedBytes": 148276,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "活泼地站着晃动等待",
       "card": {
@@ -390,14 +390,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "loop",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_showcase",
       "m": "showcase",
       "label": "官方全身展示",
-      "f": "00_official/自信地转身展示全身.vrma",
+      "f": "animation/全身展示.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -416,11 +416,11 @@
       "src": [
         "static/vrm/animation/全身展示.vrma"
       ],
-      "packedSha": "66a9e48fedbe34d325387bacc0a130afd7e442c966297aca2cbf1a691367b94a",
+      "packedSha": "f45abc44800c647fa106537a2e31a84cb83b74cf3dd8a0ee71c6915f1555ac57",
       "decodedSha": "f45abc44800c647fa106537a2e31a84cb83b74cf3dd8a0ee71c6915f1555ac57",
-      "packedBytes": 613818,
+      "packedBytes": 1348388,
       "decodedBytes": 1348388,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "自信地转身展示全身",
       "card": {
@@ -449,14 +449,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_shoot",
       "m": "shoot",
       "label": "官方射击姿态",
-      "f": "00_official/坚定地举手摆出射击姿态.vrma",
+      "f": "animation/射击姿态.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -475,11 +475,11 @@
       "src": [
         "static/vrm/animation/射击姿态.vrma"
       ],
-      "packedSha": "4c690ca9c02a3456bfffb738af166a956e8e6bb1cb4d8a4aea853441bc08974f",
+      "packedSha": "c40c1a7b0dbcac5aa9582f45498474255e4b0ca5642a71ffaf43878c27bedf70",
       "decodedSha": "c40c1a7b0dbcac5aa9582f45498474255e4b0ca5642a71ffaf43878c27bedf70",
-      "packedBytes": 498110,
+      "packedBytes": 1108548,
       "decodedBytes": 1108548,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "坚定地举手摆出射击姿态",
       "card": {
@@ -508,14 +508,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_exercise",
       "m": "exercise",
       "label": "站立放松身体",
-      "f": "00_official/放松地伸展四肢和身体.vrma",
+      "f": "animation/屈伸运动.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -534,11 +534,11 @@
       "src": [
         "static/vrm/animation/屈伸运动.vrma"
       ],
-      "packedSha": "3bedf1a53e18e9962126ee98738d4a788f18161c233be1c8f0a3c10e56553462",
+      "packedSha": "b0096525231e9f49947a6fad0295575b1c2bfbc33c042d07f125c7c2fbe88995",
       "decodedSha": "b0096525231e9f49947a6fad0295575b1c2bfbc33c042d07f125c7c2fbe88995",
-      "packedBytes": 542548,
+      "packedBytes": 771944,
       "decodedBytes": 771944,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "站立的放松身体",
       "card": {
@@ -574,14 +574,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_spin",
       "m": "spin",
       "label": "官方旋转",
-      "f": "00_official/轻快地原地旋转一圈.vrma",
+      "f": "animation/旋转.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -600,11 +600,11 @@
       "src": [
         "static/vrm/animation/旋转.vrma"
       ],
-      "packedSha": "8fa713c4812b98586acec2c857040e33c3c0d3ed104345cdb9b0a13f130bc8aa",
+      "packedSha": "cc508712ca4db8833ffe982d2eecd427e9374a04c005db2a7a45775f0ca45586",
       "decodedSha": "cc508712ca4db8833ffe982d2eecd427e9374a04c005db2a7a45775f0ca45586",
-      "packedBytes": 438552,
+      "packedBytes": 632316,
       "decodedBytes": 632316,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "轻快地原地旋转一圈",
       "card": {
@@ -632,14 +632,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_pose",
       "m": "pose",
       "label": "官方模特姿势",
-      "f": "00_official/自信地摆出模特姿势.vrma",
+      "f": "animation/模特姿势.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -658,11 +658,11 @@
       "src": [
         "static/vrm/animation/模特姿势.vrma"
       ],
-      "packedSha": "9d20376d5689ad4aa5521f4c6bf741d02773c7270743c05783991336afe2f8f4",
+      "packedSha": "a2c86633690e911cf935c5b8cae6553aea0445567f88c2861f7597fc1bf08af1",
       "decodedSha": "a2c86633690e911cf935c5b8cae6553aea0445567f88c2861f7597fc1bf08af1",
-      "packedBytes": 352153,
+      "packedBytes": 518364,
       "decodedBytes": 518364,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "自信地摆出模特姿势",
       "card": {
@@ -691,14 +691,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_victory",
       "m": "victory",
       "label": "官方比 V 手势",
-      "f": "00_official/开心地抬手比出胜利手势.vrma",
+      "f": "animation/比 V 手势.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -717,11 +717,11 @@
       "src": [
         "static/vrm/animation/比 V 手势.vrma"
       ],
-      "packedSha": "1dcd1b7e7e12df02dd4045fafc5093607dbe6476e3bab114ebca37fbe55a22b7",
+      "packedSha": "6f66b6b5c0214a7b825498050380ea43a3f782b5ea24ce46f7096acf15866d75",
       "decodedSha": "6f66b6b5c0214a7b825498050380ea43a3f782b5ea24ce46f7096acf15866d75",
-      "packedBytes": 592169,
+      "packedBytes": 1335704,
       "decodedBytes": 1335704,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "开心地抬手比出胜利手势",
       "card": {
@@ -752,14 +752,14 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     },
     {
       "id": "official_greet",
       "m": "greet",
       "label": "官方致意问候",
-      "f": "00_official/正式地抬手致意问候.vrma",
+      "f": "animation/致意问候.vrma",
       "in": "stand",
       "out": "stand",
       "mode": "once",
@@ -778,11 +778,11 @@
       "src": [
         "static/vrm/animation/致意问候.vrma"
       ],
-      "packedSha": "7753fe66adceea83a1231f5d24fd0df3e6f5a0f9e1e84b21997161e58ccf5d63",
+      "packedSha": "6322bbe2df7716529dd53e2a61816e67b946416d3761c672b8d50ee2829825bb",
       "decodedSha": "6322bbe2df7716529dd53e2a61816e67b946416d3761c672b8d50ee2829825bb",
-      "packedBytes": 387573,
+      "packedBytes": 854284,
       "decodedBytes": 854284,
-      "compression": "gzip",
+      "compression": "none",
       "origin": "Project-N-E-K-O/N.E.K.O",
       "nameZh": "正式地抬手致意问候",
       "card": {
@@ -810,15 +810,16 @@
         "inputPose": "stand",
         "resultPose": "stand",
         "playback": "once",
-        "descriptionStatus": "provisional-local-review"
+        "descriptionStatus": "human-verified"
       }
     }
   ],
   "runtimeIntegrity": {
-    "compression": "gzip",
+    "compression": "per-asset: none or gzip",
     "packedHash": "sha256",
     "decodedHash": "sha256",
     "decodedFormat": "glb-v2",
-    "actionCardSchema": 1
+    "actionCardSchema": 1,
+    "sourcePolicy": "bundled official assets reuse static/vrm/animation; generated transports are not committed"
   }
 }
