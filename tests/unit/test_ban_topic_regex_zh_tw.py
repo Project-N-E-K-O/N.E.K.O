@@ -1671,8 +1671,12 @@ def test_a_topic_may_contain_guanyu_in_the_middle(text, expected):
 
 def test_the_guanyu_temper_applies_only_to_the_first_unit():
     """结构面：temper 只能出现一次，不能套在重复单位上。"""  # noqa: DOCSTRING_CJK
+    # ⚠️ 判据是「temper 过的那个**单位**只出现一次」，不是数字面串 ``(?!关于|關於)``。
+    # 那个前缀住在 _ZH_TOPIC_CHAR_NO_GUANYU 里，实现侧换个等价写法（比如调两个分支
+    # 的顺序）这条就会假红，而它要防的事和字面写法无关（coderabbit）。
     body = D._zh_topic(2, 30, block_guanyu=True)
-    assert body.count("(?!关于|關於)") == 1, body
+    assert body.count(D._ZH_TOPIC_CHAR_NO_GUANYU) == 1, body
+    assert D._ZH_TOPIC_CHAR_NO_GUANYU != D._ZH_TOPIC_CHAR
 
 
 def test_the_guanyu_guard_is_scoped_to_one_template():
@@ -4171,14 +4175,9 @@ def test_a_semicolon_inside_a_closed_ascii_pair_is_content(text, expected):
     assert _zh_terms(text) == {expected}, _zh_terms(text)
 
 
-@pytest.mark.parametrize(
-    ("opener", "closer"),
-    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
-)
-def test_ascii_pairs_still_do_not_span_a_sentence(opener, closer):
-    """反向：跨**句号**配对照旧挡着。"""  # noqa: DOCSTRING_CJK
-    text = f"别再提价格{opener}预算。别再提收入{closer}目标。"
-    assert _zh_terms(text) == {f"价格{opener}预算", f"收入{closer}目标"}, _zh_terms(text)
+# 跨**句号**配对照旧挡着的反向用例，见第 45 节
+# test_ascii_operators_do_not_pair_across_a_sentence——这里写第二份逐字相同的会
+# 变成两处要一起改的同体测试，正是本文件反复防的那种漂移（coderabbit）。
 
 
 def test_the_ascii_bracket_exclusion_keeps_semicolons():
