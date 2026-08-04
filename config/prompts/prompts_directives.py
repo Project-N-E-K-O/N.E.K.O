@@ -576,8 +576,6 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
     # 带句号的确实有。⚠️ 对称的 ``"`` 也不设——那是上一轮量过之后专门定的（排掉句读会
     # 腰斩 ``"Everything. Everywhere"``，并在模板 2/4 上产出非词），见下面 lo == hi 那段。
     ascii_pair = lo != hi and _is_ascii_delim(lo)
-    if ascii_pair:
-        banned += "。！？；.!?;"
     unit = f"[^{banned}]"
     if lo != hi:
         # ⚠️ 认**一层**同种嵌套：正则本身只会在第一个同种收尾处闭合，所以
@@ -591,8 +589,14 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
         # ⚠️ 嵌套那一支也要一起排掉句读，否则上面那条形同虚设——引擎会走这一支把
         # ``<预算。别再提收入>`` 整段当成一层嵌套吃下去（自测抓到的）。
         inner_banned = re.escape(lo) + re.escape(hi) + "\\r\\n"
+        # ⚠️ 只排**句末**标点，分号留着。分号在闭合的 ASCII 代码段里是合法内容
+        # （``代码{foo;bar}别提了。`` 被截成 ``bar``，parent 是 ``代码{foo;bar``；
+        # codex P2），而跨句合并那一族靠 ``。！？`` 就挡住了。
+        # ⚠️ 只加在 inner_banned 上。ASCII 那几对全是**非对称**的，上面那个
+        # ``unit = f"[^{banned}]"`` 在这个分支里会被整个覆盖掉——往 banned 上加是
+        # 死代码（变异跑出来的）。
         if ascii_pair:
-            inner_banned += "。！？；.!?;"
+            inner_banned += "。！？.!?"
         nested = (
             f"{re.escape(lo)}[^{inner_banned}]{{0,{_TERM_MAX_LEN}}}{re.escape(hi)}"
         )
@@ -1186,7 +1190,10 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      _ZH_NEG + f"{_ZH_HSPACE}(?:再)?{_ZH_HSPACE}"
      # 动词表见 _zh_verb_alternation：复合动词必须排在单字前缀之前（模板 2/4 要求
      # 动词后紧跟终结符，失败会回溯，所以没这个问题）。
-     + _ZH_VERBS_WITH_ADDRESS + r"\s*"
+     # ⚠️ 动宾之间的空白也只收横向：触发词齐了但换了行的话，下一行会被当成宾语接上来
+     # ——``別再提`` 换行 ``案をお願いします。`` 存下 ``案をお願いします``（codex P2）。
+     # 和触发词内部、主语间隔、停顿之后同一条判据：一条指令不跨行。
+     + _ZH_VERBS_WITH_ADDRESS + _ZH_HSPACE
      # ⚠️ 宾语下限是 2 不是 1：可选助词组 + lazy 宾语会让正则优先把话题的最后一个字
      # 当成助词（"别再提拿捏。" → 宾语 "拿"、助词 "捏"），削到 1 字后撞长度下限、
      # 整条指令消失。1 字宾语本来也只能产出 1 字 term 必被丢，抬下限只赚不亏。
@@ -1240,9 +1247,11 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
-     r"(?:我)?\s*(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)\s*(?:再)?\s*"
+     r"(?:我)?" + _ZH_HSPACE
+     + r"(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)"
+     + _ZH_HSPACE + r"(?:再)?" + _ZH_HSPACE
      + _ZH_VERBS_PLAIN
-     + r"\s*"
+     + _ZH_HSPACE
      + _ZH_TOPIC_SEPARATOR
      # ⚠️ 本模板也**不吃** ``的事``（模板 1/2/4 已经各撤过一次，同一个理由）：它是
      # 领属加名物化，可以是名字本身的一部分——``我沒心情聊我們的事。`` 会存成

@@ -4118,3 +4118,72 @@ def test_a_trigger_still_tolerates_horizontal_gaps(gap):
     """反向：同一行里的横向空白照旧收。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms(f"别{gap}再{gap}提{gap}工作。") == {"工作"}
     assert _zh_terms(f"不要{gap}再{gap}提工作。") == {"工作"}
+
+
+# ── 48. 动宾不跨行 / ASCII 括号里的分号 ─────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別再提\n案をお願いします。",
+        "請別再提\n案をお願いします。",
+        "別再提\r\n案をお願いします。",
+        "我不想聊\n案をお願いします。",
+    ],
+)
+def test_a_verb_object_gap_does_not_span_a_line(text):
+    """触发词齐了但换了行的话，下一行会被当成宾语接上来。
+
+    ``別再提`` 换行 ``案をお願いします。`` 存下 ``案をお願いします``，而 ``別再提``
+    这个结构证据又把日文守卫短路掉了（codex P2）。和触发词内部、主语间隔、停顿
+    之后同一条判据：一条指令不跨行。
+    ⚠️ 代价：``别再提`` 换行 ``工作。`` 也跟着 0 命中（parent 有）。这是把同一条
+    判据贯彻到底的必然结果——上一轮只收窄了触发词内部，就被喂了这一处。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize("gap", [" ", "  ", "\t", "　", ""])
+def test_a_verb_object_gap_still_tolerates_horizontal_space(gap):
+    """反向：同一行里的横向空白照旧收。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提{gap}工作。") == {"工作"}
+    assert _zh_terms(f"我不想聊{gap}工作。") == {"工作"}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("代码{foo;bar}别提了。", "代码{foo;bar}"),
+        ("关于代码{foo;bar}就别提了。", "代码{foo;bar}"),
+        ("别再提代码{foo;bar}。", "代码{foo;bar}"),
+        ("别再提代码[foo;bar]。", "代码[foo;bar]"),
+        ("别再提代码(foo;bar)。", "代码(foo;bar)"),
+    ],
+)
+def test_a_semicolon_inside_a_closed_ascii_pair_is_content(text, expected):
+    """分号在**闭合**的 ASCII 代码段里是合法内容。
+
+    上一轮为了挡跨句配对把 ``；;`` 一起排掉了，结果 ``代码{foo;bar}别提了。``
+    被截成 ``bar``（parent 是 ``代码{foo;bar``；codex P2）。跨句合并那一族靠
+    ``。！？`` 就够。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+def test_ascii_pairs_still_do_not_span_a_sentence(opener, closer):
+    """反向：跨**句号**配对照旧挡着。"""  # noqa: DOCSTRING_CJK
+    text = f"别再提价格{opener}预算。别再提收入{closer}目标。"
+    assert _zh_terms(text) == {f"价格{opener}预算", f"收入{closer}目标"}, _zh_terms(text)
+
+
+def test_the_ascii_bracket_exclusion_keeps_semicolons():
+    """结构面：ASCII 括号体排的是句末标点，不含分号。"""  # noqa: DOCSTRING_CJK
+    body = D._zh_bracket_body("{", "}")
+    assert "。" in body and "！" in body, body
+    assert "；" not in body, body
+    assert ";" not in body, body
