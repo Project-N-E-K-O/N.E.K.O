@@ -803,7 +803,11 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
     # ⚠️ 只收**句读/成对符号/引号**。不要顺手把 `_ + / @ # 等` 也收进来：
     # 字段名可以叫 `_meta`、`@type`，收了它们等于给 P1 再开一扇门（第一版把 `_`
     # 收进去了，配对用例当场变红）。
-    r"[，,。．.！!？?；;：:、…·~～—–\-「」『』（）()【】《》〈〉\[\]\"'`]"
+    # ⚠️⚠️ **开引号/开括号不是收尾**。算进收尾时目标匹配会停在 `《` 上，于是
+    # `把整个卡的每一项《正文》重写` 里那个把范围收窄到子字段的引用被无视，
+    # 整卡补全照跑并 autosave（Codex P1 第五十五轮，base 是 False——数据覆盖方向）。
+    # ⚠️ 只留**闭合**的那一半：闭引号出现时前面必然已经有过开引号，目标确实说完了。
+    r"[，,。．.！!？?；;：:、…·~～—–\-」』）)】》〉\]'`]"
 )
 
 # 限定词**自己当中心语**（`把整個卡的全部重寫一遍`，base 是 True）时的合法收尾：
@@ -957,7 +961,10 @@ _WHOLE_CARD_CONTINUATION_NOT_ATTRIBUTIVE = (
     # ⚠️ 留一个口子：`一起` / `一并` 这些本身就是副词的「数词+字」组合，
     # `重写所有字段最后一起保存` base 是 True，不能跟定语一起挡掉。
     r"(?!\s*(?!一起|一并|一併|一同|一块|一塊|一律|一概|一直|一次性)"
-    r"[一二两兩三四五六七八九十几幾数數]\s*[一-鿿])"
+    # ⚠️ 数词侧要带 `\d+`：只认汉字数词时 `最后2段` 从定语守卫底下漏过去，
+    # 又回到整卡补全 autosave（Codex P1 第五十五轮，base 是 False）。
+    # 旁边的动量补语常量早就是 `[汉字数词]+|\d+` 两支，这里当时只抄了一半。
+    r"(?:[一二两兩三四五六七八九十几幾数數]+|\d+)\s*[一-鿿])"
 )
 _WHOLE_CARD_CLAUSE_CONTINUATION = (
     r"(?:" + "|".join(_WHOLE_CARD_CLAUSE_CONTINUATIONS) + r")"
@@ -992,7 +999,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|" + _WHOLE_CARD_RESULT_PHRASE
-    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗|啦|喽|嘍|咯|嘞|咧))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     r"(?=\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|"
@@ -1016,7 +1023,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|" + _WHOLE_CARD_RESULT_PHRASE
-    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗|啦|喽|嘍|咯|嘞|咧))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     r"\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
@@ -1028,7 +1035,7 @@ _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
     + r"|" + _WHOLE_CARD_RESULT_PHRASE
-    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
+    + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗|啦|喽|嘍|咯|嘞|咧)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。
 # ⚠️ 只在紧贴「的」时算数：`把整个卡的名字整体重写` 里「整体」修饰的是单字段。

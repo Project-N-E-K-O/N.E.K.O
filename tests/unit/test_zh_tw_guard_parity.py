@@ -2190,3 +2190,52 @@ def test_numeral_shaped_adverbs_after_a_continuation_still_work(adverb):
     text = f'重写所有字段最后{adverb}保存'
     assert router._chat_text_requests_full_rewrite(text) is True, text
     assert router._chat_text_requests_full_rewrite('重写所有字段最后一项') is False
+
+
+@pytest.mark.parametrize("numeral", ["2", "10", "3", "两", "三"])
+@pytest.mark.parametrize("measure", ["段", "章", "节", "页", "项", "条"])
+def test_arabic_numerals_are_attributive_too(numeral, measure):
+    """⚠️ 定语守卫的数词侧要带 `\\d+`（Codex P1 第五十五轮，base 是 False）。
+
+    只认汉字数词时 `最后2段` 从守卫底下漏过去，又回到整卡补全 autosave。
+    旁边的动量补语常量早就是「汉字数词 | \\d+」两支，这里当时只抄了一半。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的每一项最后{numeral}{measure}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    [("《", "》"), ("【", "】"), ("「", "」"), ("『", "』"), ("（", "）"), ("(", ")"),
+     ("[", "]"), ('"', '"'), ("〈", "〉")],
+)
+def test_an_opening_delimiter_does_not_complete_a_target(opener, closer):
+    """⚠️⚠️ **开引号/开括号不是收尾**（Codex P1 第五十五轮，base 是 False——数据覆盖）。
+
+    算进收尾时目标匹配会停在开引号上，于是 `把整个卡的每一项《正文》重写` 里那个
+    把范围收窄到子字段的引用被无视，整卡补全照跑并 autosave。
+
+    ⚠️ 闭合的那一半仍然是收尾：闭引号出现时前面必然已经有过开引号，目标确实说完了；
+    下面第二条正向断言钉的就是这个，两边必须同时成立。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    narrowed = f'把整个卡的每一项{opener}正文{closer}重写'
+    assert router._chat_text_requests_full_rewrite(narrowed) is False, narrowed
+    complete = f'{opener}把整个卡的全部设定重写一遍{closer}'
+    assert router._chat_text_requests_full_rewrite(complete) is True, complete
+
+
+@pytest.mark.parametrize("particle", ["啦", "喽", "嘍", "咯", "嘞", "咧", "吧", "了", "呢"])
+def test_terminal_particles_after_a_target(particle):
+    """句末语气词是**闭集**，一次补齐（base 都是 True，Codex P2 第五十五轮）。
+
+    ⚠️ 这一族值得补是因为它列得干净；`再补一种罕见说法` 那种开集不在此列。
+    ⚠️ 配对反向断言：语气词不是万能收尾，单字段那条保险照旧挡着。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'重写所有字段{particle}') is True
+    assert router._chat_text_requests_full_rewrite(f'重写所有字段名{particle}') is False

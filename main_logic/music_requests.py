@@ -419,7 +419,9 @@ _ZH_BEFORE_QUESTION_MARKER = (
     # （`好听` 的后半）会被当成另一个播放动词，循环一路吃到那里，
     # 把疑问词 `哪个` 一并吞进前缀——一句提问又成了命令。
     rf"(?>(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)})"
-    rf"(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER}))*"
+    # ⚠️ 动词和标题之间可以有一个空格：入口的 normalize 把连续空白压成**一个**
+    # ASCII 空格而不是删掉它（Codex P2 第五十五轮，base 是 True）。
+    rf"\s*(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER}))*"
     rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)}))?)"
     r"[^。！？!?]*"
 )
@@ -541,14 +543,14 @@ _ZH_WH_QUESTION_MARKER = (
     # 形状，复用同一个程度否定左界（Codex P2 第五十轮）。
     rf"|{_ZH_DEGREE_NEGATION_LEFT}多久|几时|幾時"
     rf"|{_ZH_FREE_CHOICE_LEFT}{_ZH_DECLARATIVE_LEFT}"
-rf"(?:哪里|哪裡|哪儿|哪兒|{_ZH_WHAT}(?:地方)|哪一首|哪首)"
+rf"(?:哪里|哪裡|哪儿|哪兒|{_ZH_WHAT}(?:地方)|哪一首|哪首){_ZH_CORRELATIVE_RIGHT}"
     # ⚠️ 谁/哪个/多少 有非疑问用法（谁都行 / 哪个都可以 / 多少有点），严格按
     # 「只能用于提问」那条边界本该不收。但代价不对称：不收 =
     # `我想停止播放谁唱的《你好吗？》` 执行取消（危险方向）；收 =
     # `帮我停止播放谁的歌都行` 判成提问、少停一次歌（轻）。取轻的那一侧，
     # 跟这个文件里其它十几处取舍一致（Codex P2 第二十六轮）。
     rf"|{_ZH_FREE_CHOICE_LEFT}{_ZH_DECLARATIVE_LEFT}"
-rf"(?:谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少)"
+rf"(?:谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少){_ZH_CORRELATIVE_RIGHT}"
     # 口语/其它疑问复合式（Codex P2 第三十二轮）。
     rf"|咋|咋办|咋辦|何处|何處|几点|幾點|凭{_ZH_WHAT}|憑{_ZH_WHAT}|多会儿"
     # ⚠️ 「有/是 + 什么/啥」：`有什么影响` / `是什么原因` / `有啥影响`
@@ -827,8 +829,15 @@ _ZH_FREE_CHOICE_WH_WORDS = (
 # ⚠️ 框架里要中和的不只是疑问代词，还有**极性标记**（是不是/能不能/是否/有无）：
 # `无论是不是好歌都不想听` 里用户在说理由，不是在问我们
 # （base 全是 True，Codex P2 第五十三轮）。A-not-A 那一族直接复用生成器的结果。
+# ⚠️⚠️ 中和用的词表**直接复用疑问标记正则本身**，不再另维护一份。
+# 「中和表比标记表少几个词」这件事已经以三种面孔出现过（第四十六/五十二/五十五轮：
+# 先是 如何/怎么样/多久，再是 何人/哪里，这次是 干嘛/咋办/几点/多会儿）——
+# 只要还是两张手写的表，就一定会再漂开一次。同源之后这一族到此为止。
+# ⚠️ 标记正则里的定长后视在子串开头会看不到上文，那是可接受的：辖域内本来就
+# 只要求「这个词别再被当成提问」，少挡一次只会多中和一个词，方向是轻的那一侧。
 _ZH_FREE_CHOICE_TOKEN_RE = re.compile(
-    r"(?:" + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r"|"
+    r"(?:" + _ZH_WH_QUESTION_MARKER + r"|"
+    + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r"|"
     + "|".join(_zh_a_not_a_forms())
     + r"|是否|能否|可否|有无|有無)"
 )

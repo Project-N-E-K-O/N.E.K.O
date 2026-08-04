@@ -4326,3 +4326,53 @@ def test_evaluative_a_not_a_tails(predicate):
         text = f'我想停止播放《你好吗？》{tail}'
         assert is_explicit_music_cancellation(text) is False, text
     assert is_explicit_music_cancellation('我想停止播放《你好吗？》') is True
+
+
+@pytest.mark.parametrize("correlative", ["都", "就"])
+@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪些", "哪首歌", "哪里", "多少"])
+def test_general_pronouns_in_correlative_clauses(wh, correlative):
+    """一般疑问代词在关联构式里也是陈述（base 是 True，Codex P2 第五十五轮）。
+
+    ⚠️ 上一轮只给 `有什么…都/就` 挂了关联前视，代词支和 `哪首/哪里` 支漏了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{wh}听了{correlative}难受'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}唱的《你好吗？》') is False
+
+
+@pytest.mark.parametrize("verb", ["播放", "放", "听", "聽", "播"])
+@pytest.mark.parametrize("gap", ["", " "])
+def test_whitespace_between_the_verb_and_its_quoted_title(verb, gap):
+    """⚠️ 动词和标题之间可以有一个空格：入口的 normalize 把连续空白压成**一个**
+    ASCII 空格而不是删掉它（base 是 True，Codex P2 第五十五轮）。
+
+    这是「空白在这个文件里咬人」的第 N 次，前面几次分别在「的」前后和体标记后。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止{verb}{gap}《好不好》'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放晴天“是否合适”') is False
+
+
+@pytest.mark.parametrize(
+    "wh", ["干嘛", "幹嘛", "咋办", "咋辦", "几点", "幾點", "多会儿", "咋", "如何",
+           "怎么样", "多久", "多少", "何人", "哪里", "什么歌"]
+)
+def test_the_neutralizer_covers_every_marker_form(wh):
+    """⚠️⚠️ 中和用的词表**直接复用疑问标记正则本身**，不再另维护一份。
+
+    「中和表比标记表少几个词」已经以三种面孔出现过（第四十六/五十二/五十五轮：
+    先是 如何/怎么样/多久，再是 何人/哪里，这次是 干嘛/咋办/几点/多会儿）——
+    只要还是两张手写的表，就一定会再漂开一次。同源之后这一族到此为止。
+
+    ⚠️ 这条用例是**两侧同时断言**：同一个词，单用时必须触发疑问守卫（说明它确实
+    是标记），进框架后必须被中和（说明中和表没落下它）。任一侧漏了都见红。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False, wh
+    framed = f'我想停止播放因为无论{wh}都不好听'
+    assert is_explicit_music_cancellation(framed) is True, framed
