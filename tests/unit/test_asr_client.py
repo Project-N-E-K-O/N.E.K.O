@@ -2353,6 +2353,10 @@ def _install_candidate_rejection_state(
         ),
         ({}, "profile-8", "beta-v1"),
         ({}, "profile-7", "beta-v2"),
+        ({}, "   ", "beta-v1"),
+        ({}, None, "beta-v1"),
+        ({}, "profile-7", ""),
+        ({}, "profile-7", 1),
     ],
 )
 async def test_candidate_rejection_fails_open_for_every_stale_fence(
@@ -2542,6 +2546,7 @@ async def test_candidate_rejection_suppresses_tail_until_exact_pause() -> None:
     )
     assert submitted.status is asr_runtime_module.AsrSubmitStatus.ACCEPTED
     detector.feed.assert_awaited_once()
+    detector.current_candidate.assert_not_awaited()
     runtime._ensure_transport_restart_task.assert_not_called()
 
     await runtime._handle_independent_asr_activity(

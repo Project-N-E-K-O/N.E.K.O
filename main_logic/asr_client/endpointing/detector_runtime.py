@@ -755,8 +755,15 @@ class _VoiceTurnAdapter:
         self._enter_semantic_degraded()
         self._schedule_fallback(item.identity, "semantic_degraded")
 
-    def _observe_accepted_audio(self, item: _AudioItem) -> None:
-        callback = self._on_accepted_audio
+    def _dispatch_audio_observer(
+        self,
+        callback: Callable[
+            [bytes, int, DetectorIngressIdentity | None],
+            None,
+        ]
+        | None,
+        item: _AudioItem,
+    ) -> None:
         if callback is None:
             return
         try:
@@ -764,14 +771,11 @@ class _VoiceTurnAdapter:
         except Exception:
             return
 
+    def _observe_accepted_audio(self, item: _AudioItem) -> None:
+        self._dispatch_audio_observer(self._on_accepted_audio, item)
+
     def _start_observed_candidate(self, item: _AudioItem) -> None:
-        callback = self._on_candidate_start
-        if callback is None:
-            return
-        try:
-            callback(item.pcm16, 16_000, item.detector_identity)
-        except Exception:
-            return
+        self._dispatch_audio_observer(self._on_candidate_start, item)
 
     def _observe_evaluation_tail(self, items: tuple[_AudioItem, ...]) -> None:
         for item in items:

@@ -2006,16 +2006,15 @@ class IndependentAsrRuntime:
                     if not detector_result.throttle_available:
                         lifecycle.enable_independent_asr_fail_open()
                     else:
-                        current_candidate = getattr(
-                            detector,
-                            "current_candidate",
-                            None,
-                        )
-                        activity_candidate = (
-                            await current_candidate()
-                            if callable(current_candidate)
-                            else None
-                        )
+                        activity_candidate = None
+                        if detector_result.events:
+                            current_candidate = getattr(
+                                detector,
+                                "current_candidate",
+                                None,
+                            )
+                            if callable(current_candidate):
+                                activity_candidate = await current_candidate()
                         for event in detector_result.events:
                             await self._handle_independent_asr_activity(
                                 event,
