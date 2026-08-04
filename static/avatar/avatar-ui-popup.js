@@ -2727,6 +2727,8 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
+            menuItem.setAttribute('role', 'button');
+            menuItem.tabIndex = 0;
             markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
             setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
             var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
@@ -2783,6 +2785,12 @@ const AvatarPopupMixin = {
             menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
             let isOpening = false;
+
+            menuItem.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                menuItem.click();
+            });
 
             menuItem.addEventListener('click', (e) => {
                 e.stopPropagation();

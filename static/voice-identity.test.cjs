@@ -900,6 +900,48 @@ test('async delete confirmation locks mutations and restores them when declined'
     );
 });
 
+test('ambiguous profile deletion reconciles the authoritative absent state', async () => {
+    let statusRequests = 0;
+    let deleteRequests = 0;
+    const harness = createHarness({
+        showConfirm() {
+            return true;
+        },
+        route(url, options) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse(statusRequests === 1
+                    ? {
+                        enrollment: { stage: 'idle' },
+                        profile: { available: true, state: 'active' },
+                        filter: { enabled: true },
+                    }
+                    : {
+                        enrollment: { stage: 'idle' },
+                        profile: { available: false, state: 'empty' },
+                        filter: { enabled: false },
+                    });
+            }
+            if (url === '/api/voice-identity/profile' && options.method === 'DELETE') {
+                deleteRequests += 1;
+                throw new Error('connection_lost');
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-delete').emit('click');
+
+    assert.equal(deleteRequests, 1);
+    assert.equal(statusRequests, 2);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+});
+
 test('failed explicit cancellation preserves the session and can be retried', async () => {
     const firstCancellation = deferred();
     let cancellationAttempts = 0;
@@ -979,6 +1021,51 @@ test('window close starts keepalive cancellation without waiting for the respons
     assert.equal(cancellationCalls[0].options.keepalive, true);
     keepaliveCancellation.resolve(jsonResponse({}));
     await Promise.resolve();
+});
+
+test('pagehide cancels a session discovered after the close hook starts', async () => {
+    const startResponse = deferred();
+    let cancellationRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                return startResponse.promise;
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                cancellationRequests += 1;
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const starting = harness.elements.get('voice-identity-start').emit('click');
+    assert.equal(harness.beforeClose(), true);
+
+    startResponse.resolve(jsonResponse({
+        enrollment: { session_id: 'session-after-close', stage: 'fixed_1' },
+    }));
+    await starting;
+    harness.pagehide();
+    await Promise.resolve();
+
+    assert.equal(cancellationRequests, 1);
+    const cancellationCall = harness.fetchCalls.find(
+        call => call.url === '/api/voice-identity/enrollment/cancel'
+    );
+    assert.equal(cancellationCall.options.keepalive, true);
+    assert.equal(
+        cancellationCall.options.headers.get('X-Voice-Identity-Enrollment'),
+        'session-after-close',
+    );
 });
 
 test('dark theme overrides panel, text, accent, border, and action colors', () => {

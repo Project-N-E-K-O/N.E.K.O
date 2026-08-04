@@ -45,6 +45,12 @@ def test_voice_identity_page_is_routed_and_available_in_settings_window() -> Non
     assert "windowName = 'neko_voice_identity'" in popup
     assert "icon: '/static/icons/mic_icon_off.png'" in popup
     assert (ROOT / "static/icons/mic_icon_off.png").is_file()
+    assert "menuItem.setAttribute('role', 'button')" in popup
+    assert "menuItem.tabIndex = 0" in popup
+    assert "menuItem.addEventListener('keydown'" in popup
+    assert "e.key !== 'Enter' && e.key !== ' '" in popup
+    assert 'static/js/voice_identity.js' in pages
+    assert 'static/css/voice_identity.css' in pages
 
     api_index = popup.index("id: 'api-keys'")
     identity_index = popup.index("id: 'voice-identity'")
@@ -71,6 +77,11 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert ".switch input:focus-visible + .switch-track" in stylesheet
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
+    header_block = stylesheet[
+        stylesheet.index(".voice-identity-header {"):
+        stylesheet.index("}", stylesheet.index(".voice-identity-header {"))
+    ]
+    assert "color: #082f45" in header_block
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
     assert "embedding" not in template.lower()

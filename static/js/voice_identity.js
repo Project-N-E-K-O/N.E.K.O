@@ -682,10 +682,15 @@
             applyStatus(payload);
             setMessage('');
         } catch (_) {
-            setMessage(
-                translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
-                true
-            );
+            const reconciled = await reconcileStatus();
+            if (reconciled && !state.profileAvailable) {
+                setMessage('');
+            } else {
+                setMessage(
+                    translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
+                    true
+                );
+            }
         } finally {
             state.busy = false;
             render();
@@ -736,7 +741,7 @@
             return true;
         };
         window.addEventListener('pagehide', function () {
-            if (!state.closeStarted && state.sessionId) {
+            if (state.sessionId) {
                 cancelEnrollment({ keepalive: true, silent: true });
             } else {
                 stopMicrophone();

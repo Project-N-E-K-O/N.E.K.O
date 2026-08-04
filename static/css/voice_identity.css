@@ -73,7 +73,7 @@ input:focus-visible {
     justify-content: space-between;
     gap: 24px;
     padding: 17px 24px;
-    color: white;
+    color: #082f45;
     background: linear-gradient(100deg, #49d5fd, #159ff5);
     box-shadow: 0 8px 28px rgba(20, 137, 197, 0.2);
     -webkit-app-region: drag;
