@@ -3851,3 +3851,40 @@ def test_two_character_negators_before_a_degree_marker(negator):
         text = f'我想停止播放这首{negator}{marker}听过的歌'
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我想停止播放怎么会卡') is False
+
+
+@pytest.mark.parametrize("stem", ["干", "幹"])
+@pytest.mark.parametrize("what", ["嘛", "什么", "什麼", "啥"])
+def test_what_are_you_doing_markers(stem, what):
+    """`干嘛` 和 `干什么/干啥` 是同一个词的不同写法（Codex P2 第四十五轮）。
+
+    上一版只列了 `干嘛`，`我想停止播放《你好吗？》干什么` 里歌名自带的问号
+    又被配平跨度挡住，整句就没有疑问标记了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (f'我想停止播放《你好吗？》{stem}{what}',
+                 f'我想停止播放{stem}{what}'):
+        assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+@pytest.mark.parametrize(
+    "governor", ["不是", "并非", "並非", "无论是", "無論是",
+                 "不论是", "不論是", "不管是"]
+)
+@pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
+def test_negated_or_free_choice_copulas_are_declarative(governor, what):
+    """⚠️ 否定系词 / 任指系词 下的 `什么X` 是陈述（base 全是 True）。
+
+    单字后视在 `什么` 的位置看到的是 `是`、在 `是` 的位置看到的是 `论`，
+    两层都挡不住前面那个否定，所以**两条分支都要挂左界**
+    （音乐复合式那一支和 `有/是 + 什么` 那一支，Codex P2 第四十五轮）。
+    ⚠️ 第一版只改了前一支，`无论是什么歌` 还是掉着。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for noun in ('歌', '音乐'):
+        text = f'我想停止播放因为{governor}{what}{noun}都不好听'
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放有{what}影响') is False

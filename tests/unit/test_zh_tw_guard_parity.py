@@ -1929,3 +1929,29 @@ def test_quoted_material_is_discounted_for_every_signal(quoted):
     assert router._chat_text_requests_full_rewrite(
         'Use “do not touch all fields” as an example and rewrite the title'
     ) is False
+
+
+@pytest.mark.parametrize(
+    "locative", ["里", "裡", "中", "内", "內", "里面", "裡面", "当中", "當中", ""]
+)
+@pytest.mark.parametrize("de", ["的", ""])
+def test_locative_linker_between_target_and_scope_noun(locative, de):
+    """目标和范围名词之间可以隔一个方位短语（base 全是 True）。
+
+    ⚠️ 方位词后面**仍然要求是范围名词**，所以单字段保险不受影响：
+    `重写所有字段里的名字` 仍然是 False（base 是 True，本 PR 故意改掉）。
+    下面的反向断言钉的就是这一条。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    if not locative and de:
+        pytest.skip('裸的「的」不属于方位续接，走的是另一支')
+    text = f'重写所有字段{locative}{de}内容'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    # ⚠️ 方位词能吃的只有方位词本身：允许它再多吞几个字的话，
+    # `里的名字` 会被一起吞掉、后面的范围名词接上，单字段保险就破了。
+    # 第一版只钉了 `{locative}{de}名字`，那个变异 SURVIVED。
+    for kept in (f'重写所有字段{locative}{de}名字',
+                 f'重写所有字段{locative}{de}名字内容',
+                 f'重写所有字段{locative}{de}标题设定'):
+        assert router._chat_text_requests_full_rewrite(kept) is False, kept

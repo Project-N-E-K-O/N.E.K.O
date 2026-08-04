@@ -892,8 +892,15 @@ _WHOLE_CARD_MEASURE_COMPLEMENT = (
 # ⚠️ 四处续接统一走这两条常量。这是三张收尾表之后的**第二个**「同一件事写四份」
 # 的位置，别再各写一份——第二十九/三十五/三十六轮都在这种漂移上栽过。
 # ⚠️ 原子化不能去掉：重叠解析会指数回溯（`项目` × 40 那条最坏用例）。
+# ⚠️ 目标和范围名词之间可以隔一个**方位短语**：`重写所有字段里的内容` /
+# `把全部欄位中的內容重寫`（base 都是 True，Codex P2 第四十五轮）。
+# ⚠️ 方位词后面**仍然要求是范围名词**，所以单字段保险不受影响：
+# `重写所有字段里的名字` 仍然是 False（base 是 True，本 PR 故意改掉）。
+_WHOLE_CARD_SCOPE_LOCATIVE = (
+    r"(?:(?:里面|裡面|里边|裡邊|当中|當中|里|裡|中|内|內)的?\s*)?"
+)
 _WHOLE_CARD_SCOPE_RUN_BODY = (
-    r"(?:\s*" + _WHOLE_CARD_SCOPE_MODIFIER
+    r"(?:\s*" + _WHOLE_CARD_SCOPE_LOCATIVE + _WHOLE_CARD_SCOPE_MODIFIER
     + r"(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))"
 )
