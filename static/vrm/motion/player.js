@@ -51,6 +51,7 @@
                 phase: 'boot',
                 restAsset: null,
                 poseAsset: null,
+                poseStyle: null,
                 currentAsset: null
             };
             this.queueGeneration = 0;
@@ -208,7 +209,13 @@
                 if (exact.length) candidates = exact;
             }
 
-            if (posture && !LOW_POSES.has(decision.intent) && decision.intent !== 'recover') {
+            if (posture && decision.intent === 'recover') {
+                const compatibleRecovery = candidates.filter(function (asset) {
+                    const inputPose = String(asset.in || 'stand');
+                    return inputPose === posture || inputPose === 'low' || inputPose === 'any';
+                });
+                if (compatibleRecovery.length) candidates = compatibleRecovery;
+            } else if (posture && !LOW_POSES.has(decision.intent)) {
                 const compatible = candidates.filter(function (asset) {
                     return String(asset.in || 'stand') === posture;
                 });
@@ -463,6 +470,7 @@
             });
             if (played) {
                 this.state.poseAsset = null;
+                this.state.poseStyle = null;
                 this.recentRestIds.push(this.state.restAsset.id);
                 if (this.recentRestIds.length > 2) this.recentRestIds.shift();
                 this.metrics.restEntries += 1;
@@ -537,7 +545,15 @@
                 if (resume) await this._resumeBase(generation, seed);
                 return true;
             }
-            const asset = this.select({ intent: 'recover', intensity: 2 }, seed + ':recover');
+            const recoveryStyle = this.state.poseStyle || this.state.posture;
+            const recoveryDecision = {
+                intent: 'recover',
+                intensity: 2,
+                style: recoveryStyle,
+                preferredStyles: [recoveryStyle, this.state.posture],
+                evidence: { canonicalZh: '从' + this.state.posture + '姿态起身' }
+            };
+            const asset = this.select(recoveryDecision, seed + ':recover', this.state.posture);
             if (!asset) return false;
             this.metrics.transitions += 1;
             emit('neko-motion-transition', {
@@ -545,10 +561,11 @@
                 to: 'stand',
                 assetId: asset.id
             });
-            const finished = await this._playTransient(asset, { intent: 'recover', intensity: 2 }, generation, {});
+            const finished = await this._playTransient(asset, recoveryDecision, generation, {});
             if (!finished) return false;
             this.state.posture = 'stand';
             this.state.poseAsset = null;
+            this.state.poseStyle = null;
             if (resume) await this._resumeBase(generation, seed + ':rest');
             return true;
         }
@@ -558,7 +575,9 @@
             const target = decision.intent;
             const currentDepth = POSE_DEPTH[this.state.posture] || 0;
             const targetDepth = POSE_DEPTH[target] || 1;
-            if (this.state.posture === target && this.state.poseAsset) {
+            const requestedStyle = decision.style || null;
+            if (this.state.posture === target && this.state.poseAsset
+                && (!requestedStyle || requestedStyle === this.state.poseStyle)) {
                 // Repeated language evidence confirms the current posture; it
                 // must not restart the same clip on every assistant turn.
                 this.state.phase = 'pose';
@@ -587,6 +606,7 @@
             if (!played) return false;
             this.state.posture = target;
             this.state.poseAsset = asset;
+            this.state.poseStyle = requestedStyle;
             this.state.phase = 'pose';
             emit('neko-motion-playback', {
                 status: 'settled',
@@ -768,6 +788,7 @@
                 currentAsset: this.state.currentAsset && this.state.currentAsset.id || null,
                 restAsset: this.state.restAsset && this.state.restAsset.id || null,
                 poseAsset: this.state.poseAsset && this.state.poseAsset.id || null,
+                poseStyle: this.state.poseStyle,
                 busy: this.busy,
                 assets: this.assets.length,
                 cachedAssets: 0,

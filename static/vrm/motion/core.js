@@ -10,6 +10,7 @@
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
     ]);
     const POSTURE_SPEECH_INTENTS = new Set(['sit', 'lie', 'sleep', 'recover']);
+    const ACKNOWLEDGEMENT_INTENTS = new Set(['nod', 'agree']);
     const COUNT_PATTERNS = Object.freeze([
         [/(?:一下接一下|一下一下|连续|连连|接连|反复|不停|repeatedly|again and again)/iu, 3],
         [/(?:两下|二下|twice|2 times)/iu, 2],
@@ -899,6 +900,18 @@
             return localized(container, locale);
         }
 
+        _intentSpeechTerms(entry, locale) {
+            const ownTerms = entry && entry.terms && Array.isArray(entry.terms[locale])
+                ? entry.terms[locale] : [];
+            const rule = entry && this.pack.rules.find(function (candidate) {
+                return candidate.id === entry.id;
+            });
+            if (!rule) return unique(ownTerms);
+            return unique(ownTerms
+                .concat(localized(rule.phrases, locale))
+                .concat(localized(rule.aliases, locale)));
+        }
+
         _speechDecision(intent, evidenceText, locale, source) {
             const rule = this.pack.rules.find(function (candidate) { return candidate.id === intent; });
             if (!rule) return null;
@@ -937,6 +950,7 @@
             const speech = this.pack.speech || {};
             const metaTerms = this._speechTerms(speech.meta, locale);
             let decision = null;
+            let directResult = null;
 
             // A complete action-card name is an explicit local command. Resolve it
             // before assistant prose so a short acknowledgement cannot replace the
@@ -957,41 +971,55 @@
                 }
             }
 
-            const replies = speech.replies || [];
-            !decision && replies.filter(function (reply) {
-                return POSTURE_SPEECH_INTENTS.has(reply.id);
-            }).some((reply) => {
-                const match = matchingTerms(assistantText, this._speechTerms(reply.terms, locale))[0];
-                if (!match) return false;
-                decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);
-                return true;
-            });
-
             if (!decision && assistantText && !includesAny(assistantText, metaTerms)) {
-                const direct = this.analyze(assistantText, {
+                directResult = this.analyze(assistantText, {
                     locale: locale,
                     officialEmotion: settings.officialEmotion,
                     profilePreset: settings.profilePreset,
                     speechMode: true
                 });
-                if (direct.plan.length) {
-                    decision = direct.plan[0];
-                    decision.evidence.source = 'assistant:semantic';
-                }
+                directResult.plan.forEach(function (item) {
+                    item.evidence.source = 'assistant:semantic';
+                });
             }
 
-            if (!decision && userText && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))) {
+            const replies = speech.replies || [];
+            !decision && (!directResult || !directResult.plan.length)
+                && replies.filter(function (reply) {
+                    return POSTURE_SPEECH_INTENTS.has(reply.id);
+                }).some((reply) => {
+                    const match = matchingTerms(
+                        assistantText,
+                        this._intentSpeechTerms(reply, locale)
+                    ).find(function (term) {
+                        return speechActorAllowed(assistantText, term);
+                    });
+                    if (!match) return false;
+                    decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);
+                    return true;
+                });
+
+            const directHasExplicitMotion = !!(directResult && directResult.plan.some(function (item) {
+                return !ACKNOWLEDGEMENT_INTENTS.has(item.intent);
+            }));
+            if (!decision && !directHasExplicitMotion && userText
+                && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))) {
                 const common = this._common(locale);
                 const commandCandidates = (speech.commands || []).map((command) => {
-                    const match = matchingTerms(userText, this._speechTerms(command.terms, locale))
+                    const match = matchingTerms(userText, this._intentSpeechTerms(command, locale))
                         .filter(function (term) {
                             return !scopedBefore(userText, term, common.negation, 9)
                                 && userCommandActorAllowed(userText, term);
                         })
                         .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];
-                    return match ? { command: command, match: match } : null;
+                    const weak = match && includesAny(
+                        match,
+                        this._speechTerms(command.weakTerms, locale)
+                    );
+                    return match ? { command: command, match: match, weak: weak } : null;
                 }).filter(Boolean).sort(function (a, b) {
-                    return normalize(b.match).length - normalize(a.match).length
+                    return Number(a.weak) - Number(b.weak)
+                        || normalize(b.match).length - normalize(a.match).length
                         || Number(b.command.priority || 0) - Number(a.command.priority || 0);
                 });
                 if (commandCandidates.length) {
@@ -1005,26 +1033,36 @@
                 }
             }
 
-            !decision && replies.filter(function (reply) {
+            !decision && (!directResult || !directResult.plan.length) && replies.filter(function (reply) {
                 return !POSTURE_SPEECH_INTENTS.has(reply.id);
             }).some((reply) => {
-                const match = matchingTerms(assistantText, this._speechTerms(reply.terms, locale))[0];
+                const match = matchingTerms(
+                    assistantText,
+                    this._intentSpeechTerms(reply, locale)
+                ).find(function (term) {
+                    return speechActorAllowed(assistantText, term);
+                });
                 if (!match) return false;
                 decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);
                 return true;
             });
 
+            const plan = decision ? [decision] : directResult && directResult.plan || [];
+
             return {
                 raw: assistantText,
                 locale: locale,
                 canonicalZh: decision && decision.evidence.canonicalZh
+                    || directResult && directResult.canonicalZh
                     || this.toChineseFrame(assistantText, locale),
                 clauses: assistantText ? splitClauses(assistantText) : [],
-                plan: decision ? [decision] : [],
-                trace: [],
+                plan: plan,
+                trace: directResult && directResult.trace || [],
                 tokenUsage: { input: 0, output: 0, cached: 0, total: 0 },
                 modelUsed: false,
-                source: decision && decision.evidence.source || 'none',
+                source: decision && decision.evidence.source
+                    || plan.length && 'assistant:semantic'
+                    || 'none',
                 authority: this.pack.contract.authoritative
             };
         }

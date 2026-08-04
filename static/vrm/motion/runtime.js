@@ -421,7 +421,8 @@
             locale: currentLocale(),
             officialEmotion: turn.officialEmotion || '',
             profilePreset: characterProfile().preset || '',
-            userText: turn.userText || ''
+            userText: turn.userText || '',
+            posture: player.stats().posture
         });
         let plan = decoratePlan(result.plan);
         const explicitIntents = new Set(turn.explicitIntents || []);

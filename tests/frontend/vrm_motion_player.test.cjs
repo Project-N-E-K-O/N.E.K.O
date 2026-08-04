@@ -85,7 +85,43 @@ function response(body, status) {
     assert.match(await player._assetUrl(gzipAsset), /^blob:test-/);
     assert.equal(requested, '/static/vrm/motion-pack/example.vrma.gz');
 
-    console.log('VRM motion player: OK (policy, raw and gzip integrity)');
+    const lowPosePlayer = new global.NekoMotionPlayer();
+    lowPosePlayer.assets = [
+        { id: 'sit', m: 'sit', in: 'stand', out: 'sit', i: 2, s: ['upright'], card: { styles: ['upright'] } },
+        { id: 'lie-side', m: 'lie', in: 'stand', out: 'lie', i: 2, s: ['side'], card: { styles: ['side'] } },
+        { id: 'lie-prone', m: 'lie', in: 'stand', out: 'lie', i: 2, s: ['prone'], card: { styles: ['prone'] } },
+        { id: 'recover-side', m: 'recover', in: 'lie', out: 'stand', i: 2, s: ['side'], card: { styles: ['side'] } },
+        { id: 'recover-prone', m: 'recover', in: 'lie', out: 'stand', i: 2, s: ['prone'], card: { styles: ['prone'] } }
+    ];
+    const playedLowPoseIds = [];
+    lowPosePlayer._playAsset = async function (asset) {
+        playedLowPoseIds.push(asset.id);
+        return true;
+    };
+    lowPosePlayer._playTransient = async function (asset) {
+        playedLowPoseIds.push(asset.id);
+        return true;
+    };
+    await lowPosePlayer._enterLowPose({
+        intent: 'lie', style: 'side', intensity: 2, evidence: { canonicalZh: '侧身躺下' }
+    }, lowPosePlayer.queueGeneration, 'side');
+    await lowPosePlayer._enterLowPose({
+        intent: 'lie', style: 'prone', intensity: 2, evidence: { canonicalZh: '俯身趴下' }
+    }, lowPosePlayer.queueGeneration, 'prone');
+    assert.equal(lowPosePlayer.state.poseStyle, 'prone');
+    assert.equal(lowPosePlayer.state.poseAsset.id, 'lie-prone');
+    assert.deepEqual(playedLowPoseIds.slice(0, 2), ['lie-side', 'lie-prone']);
+
+    lowPosePlayer.state.posture = 'lie';
+    lowPosePlayer.state.poseAsset = lowPosePlayer.assets[2];
+    lowPosePlayer.state.poseStyle = 'prone';
+    await lowPosePlayer._enterLowPose({
+        intent: 'sit', style: 'upright', intensity: 2, evidence: { canonicalZh: '坐起来' }
+    }, lowPosePlayer.queueGeneration, 'sit-after-prone');
+    assert.deepEqual(playedLowPoseIds.slice(-2), ['recover-prone', 'sit']);
+    assert.equal(lowPosePlayer.state.posture, 'sit');
+
+    console.log('VRM motion player: OK (integrity and low-pose transitions)');
 })().catch(function (error) {
     console.error(error.stack || error);
     process.exitCode = 1;

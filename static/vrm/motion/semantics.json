@@ -1365,12 +1365,60 @@
           "en": [
             "stand up",
             "get up"
+          ],
+          "ja": [
+            "立って",
+            "立ち上がって",
+            "起き上がって"
+          ],
+          "ko": [
+            "일어나",
+            "일어서"
+          ],
+          "ru": [
+            "встань",
+            "поднимись"
+          ],
+          "es": [
+            "levántate",
+            "ponte de pie"
+          ],
+          "pt": [
+            "levante-se",
+            "fique de pé"
           ]
         }
       },
       {
         "id": "sleep",
         "priority": 105,
+        "weakTerms": {
+          "zh-CN": [
+            "休息",
+            "歇"
+          ],
+          "zh-TW": [
+            "休息"
+          ],
+          "en": [
+            "rest"
+          ],
+          "ja": [
+            "休んで"
+          ],
+          "ko": [
+            "쉬어"
+          ],
+          "ru": [
+            "отдохни"
+          ],
+          "es": [
+            "descansa"
+          ],
+          "pt": [
+            "descanse"
+          ]
+        },
         "terms": {
           "zh-CN": [
             "睡下",
@@ -1395,6 +1443,31 @@
           "en": [
             "go to sleep",
             "fall asleep"
+          ],
+          "ja": [
+            "寝て",
+            "眠って",
+            "休んで"
+          ],
+          "ko": [
+            "자러 가",
+            "잠들어",
+            "쉬어"
+          ],
+          "ru": [
+            "ложись спать",
+            "поспи",
+            "отдохни"
+          ],
+          "es": [
+            "duérmete",
+            "ve a dormir",
+            "descansa"
+          ],
+          "pt": [
+            "vá dormir",
+            "durma",
+            "descanse"
           ]
         }
       },
@@ -1408,7 +1481,10 @@
             "侧躺",
             "趴下",
             "趴着",
-            "趴好"
+            "趴好",
+            "趴到",
+            "伏下",
+            "俯卧"
           ],
           "zh-TW": [
             "躺下",
@@ -1420,6 +1496,30 @@
           "en": [
             "lie down",
             "stay lying down"
+          ],
+          "ja": [
+            "横になって",
+            "寝転んで",
+            "うつ伏せになって"
+          ],
+          "ko": [
+            "누워",
+            "엎드려"
+          ],
+          "ru": [
+            "ляг",
+            "ложись",
+            "ляг на бок"
+          ],
+          "es": [
+            "túmbate",
+            "acuéstate",
+            "ponte boca abajo"
+          ],
+          "pt": [
+            "deite-se",
+            "fique deitada",
+            "deite de bruços"
           ]
         }
       },
@@ -1436,6 +1536,9 @@
             "坐起来",
             "坐起身",
             "坐稳",
+            "坐到",
+            "过来坐",
+            "坐我旁边",
             "盘腿坐",
             "跪坐"
           ],
@@ -1449,6 +1552,26 @@
           "en": [
             "sit down",
             "stay seated"
+          ],
+          "ja": [
+            "座って",
+            "腰を下ろして"
+          ],
+          "ko": [
+            "앉아",
+            "앉으세요"
+          ],
+          "ru": [
+            "сядь",
+            "садись"
+          ],
+          "es": [
+            "siéntate",
+            "toma asiento"
+          ],
+          "pt": [
+            "sente-se",
+            "tome assento"
           ]
         }
       },
@@ -1467,6 +1590,21 @@
           "en": [
             "clap",
             "applaud"
+          ],
+          "ja": [
+            "拍手して"
+          ],
+          "ko": [
+            "박수 쳐"
+          ],
+          "ru": [
+            "похлопай"
+          ],
+          "es": [
+            "aplaude"
+          ],
+          "pt": [
+            "aplauda"
           ]
         }
       },
@@ -1482,6 +1620,21 @@
           ],
           "en": [
             "nod"
+          ],
+          "ja": [
+            "うなずいて"
+          ],
+          "ko": [
+            "고개를 끄덕여"
+          ],
+          "ru": [
+            "кивни"
+          ],
+          "es": [
+            "asiente"
+          ],
+          "pt": [
+            "acene com a cabeça"
           ]
         }
       },
@@ -1497,6 +1650,21 @@
           ],
           "en": [
             "shake your head"
+          ],
+          "ja": [
+            "首を横に振って"
+          ],
+          "ko": [
+            "고개를 저어"
+          ],
+          "ru": [
+            "покачай головой"
+          ],
+          "es": [
+            "niega con la cabeza"
+          ],
+          "pt": [
+            "balance a cabeça"
           ]
         }
       }
@@ -3922,6 +4090,8 @@
         ],
         "en": [
           "sits down",
+          "i sit down",
+          "i'm sitting down",
           "takes a seat",
           "sits upright",
           "sits cross-legged",
@@ -3929,27 +4099,37 @@
         ],
         "ja": [
           "座る",
+          "座ります",
+          "座って",
           "腰を下ろ",
           "正座し",
           "あぐらをか"
         ],
         "ko": [
           "앉아",
+          "앉을게",
+          "앉겠습니다",
           "자리에 앉",
           "다리를 꼬고 앉"
         ],
         "ru": [
           "садится",
+          "я сяду",
+          "я сажусь",
           "усаживается",
           "сидит скрестив ноги"
         ],
         "es": [
           "se sienta",
+          "me siento",
+          "voy a sentarme",
           "toma asiento",
           "se sienta con las piernas cruzadas"
         ],
         "pt": [
           "se senta",
+          "me sento",
+          "vou me sentar",
           "toma assento",
           "senta de pernas cruzadas"
         ]
@@ -4086,6 +4266,8 @@
         ],
         "en": [
           "lies down",
+          "i lie down",
+          "i'm lying down",
           "lies flat",
           "lies on the side",
           "rolls onto side",
@@ -4094,27 +4276,37 @@
         ],
         "ja": [
           "横になる",
+          "横になります",
+          "うつ伏せになる",
           "仰向けに寝",
           "横向きに寝",
           "うつ伏せにな"
         ],
         "ko": [
           "눕",
+          "누울게",
+          "엎드릴게",
           "옆으로 눕",
           "엎드리"
         ],
         "ru": [
           "ложится",
+          "я лягу",
+          "я ложусь",
           "лежит на боку",
           "ложится ничком"
         ],
         "es": [
           "se tumba",
+          "me tumbo",
+          "me acuesto",
           "se acuesta de lado",
           "se tumba boca abajo"
         ],
         "pt": [
           "se deita",
+          "me deito",
+          "vou me deitar",
           "deita de lado",
           "deita de bruços"
         ]
@@ -4271,30 +4463,42 @@
         ],
         "en": [
           "falls asleep",
+          "i'm going to sleep",
+          "i will sleep",
           "drifts to sleep",
           "closes eyes to sleep",
           "dozes off"
         ],
         "ja": [
           "眠りにつ",
+          "寝ます",
+          "眠ります",
           "寝落ちし",
           "目を閉じて休"
         ],
         "ko": [
           "잠들",
+          "잘게",
+          "자러 갈게",
           "눈을 감고 쉬",
           "졸기 시작"
         ],
         "ru": [
           "засыпает",
+          "я усну",
+          "пойду спать",
           "закрывает глаза и спит"
         ],
         "es": [
           "se queda dormido",
+          "voy a dormir",
+          "me duermo",
           "cierra los ojos para dormir"
         ],
         "pt": [
           "adormece",
+          "vou dormir",
+          "vou descansar",
           "fecha os olhos para dormir"
         ]
       },
@@ -4397,6 +4601,9 @@
       "phrases": {
         "zh-CN": [
           "慢慢站起来",
+          "这就起来",
+          "马上起来",
+          "站好",
           "撑起身体站好",
           "从地面爬起来",
           "恢复端正站姿",
@@ -4409,6 +4616,9 @@
         ],
         "zh-TW": [
           "站起來",
+          "這就起來",
+          "馬上起來",
+          "站好",
           "站起身",
           "撐起身體",
           "爬起來",
@@ -4416,28 +4626,46 @@
         ],
         "en": [
           "stands up",
+          "i stand up",
+          "i'm standing up",
+          "i get up",
+          "i'm getting up",
           "gets to her feet",
           "pushes herself upright",
           "gets up from the floor"
         ],
         "ja": [
           "立ち上が",
+          "起き上が",
+          "立ちます",
           "体を起こ"
         ],
         "ko": [
-          "일어나 서",
+          "일어나",
+          "일어날",
+          "일어설게",
           "몸을 일으켜"
         ],
         "ru": [
           "встает",
+          "я встаю",
+          "я встану",
+          "встану",
+          "я поднимусь",
           "поднимается на ноги"
         ],
         "es": [
           "se pone de pie",
+          "me pongo de pie",
+          "me levanto",
+          "voy a levantarme",
           "se levanta"
         ],
         "pt": [
           "fica de pé",
+          "fico de pé",
+          "me levanto",
+          "vou me levantar",
           "se levanta"
         ]
       },
