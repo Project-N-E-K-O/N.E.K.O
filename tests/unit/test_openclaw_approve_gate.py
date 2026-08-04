@@ -72,11 +72,17 @@ class _FakeOpenClaw:
         self.stop_calls.append(kwargs)
         return {"success": True}
 
+    current_session = "sess-1"
+
     def get_or_create_persistent_session_id(self, *, role_name, sender_id):
-        return "sess-1"
+        return self.current_session
+
+    def peek_persistent_session_id(self, *, role_name, sender_id):
+        return self.current_session
 
     def reset_persistent_session_id(self, *, role_name, sender_id):
-        return "sess-2"
+        self.current_session = "sess-2"
+        return self.current_session
 
 
 @pytest.fixture
@@ -132,6 +138,7 @@ def _register(
     lanlan="lan",
     kind="openclaw",
     ended_seconds_ago=1.0,
+    session_id="sess-1",
 ):
     info = {
         "id": task_id,
@@ -139,6 +146,7 @@ def _register(
         "status": status,
         "sender_id": sender,
         "lanlan_name": lanlan,
+        "session_id": session_id,
         "start_time": _iso((ended_seconds_ago or 0) + 5),
         "params": {},
     }
@@ -377,6 +385,51 @@ def test_the_proactive_block_is_scoped_to_approve(wired, command):
     _dispatch(command, proactive=True)
 
     assert [c[0] for c in fake.magic_calls] == [command]
+
+
+def test_a_completion_from_a_rotated_session_does_not_open_the_gate(wired):
+    """⚠️ ``/new`` rotates the persistent session, and the old prompt belonged to
+    the old one.
+
+    ``run_magic_command("/new")`` calls ``reset_persistent_session_id``. A later
+    inferred 同意 would be dispatched under the *new* session, so it cannot be
+    answering the approval prompt that came out of the old one — and it could
+    authorize an unrelated pending action in the replacement session.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-old-session",
+        status="completed",
+        session_id="sess-1",
+    )
+    fake.reset_persistent_session_id(role_name="lan", sender_id="USER_A")
+    assert fake.current_session == "sess-2"
+
+    _dispatch("/daemon approve")
+
+    assert fake.magic_calls == [], "旧会话的完成记录不该给新会话开闸"
+
+
+def test_a_future_end_time_does_not_open_the_gate(wired):
+    """⚠️ 上界之外还要下界。
+
+    A backward clock step (or any entry carrying a future ``end_time``) makes
+    ``now - ended`` negative, which satisfies an upper-bound-only check forever —
+    the "five minute" window then stays open until the clock catches up and
+    another five minutes elapse.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-future",
+        status="completed",
+        ended_seconds_ago=-3600,
+    )
+
+    _dispatch("/daemon approve")
+
+    assert fake.magic_calls == [], "未来时间戳不该让窗口恒开"
 
 
 def test_an_empty_registry_still_closes_the_gate(wired):

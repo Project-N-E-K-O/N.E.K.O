@@ -137,6 +137,18 @@ def _has_recent_openclaw_task(
     # 会话里终态条目可以无限期留着，闸就被一个几小时前的任务永久顶开（Codex P1）。
     # 所以这里显式按 end_time 判龄，不依赖清理被调用。
     now = datetime.now(timezone.utc)
+    # ⚠️ 还要求条目属于**当前**会话。`/new` 会 reset_persistent_session_id 轮换
+    # session，而旧任务那次审批提示是发在**旧**会话里的；只按 sender/角色过滤的话，
+    # 用户 `/new` 之后随口一句「同意」会带着**新**会话 id 发出去，批到一个跟那句提示
+    # 毫无关系的挂起动作上（Codex P1）。读当前 session 用只读的 peek_*，别用
+    # get_or_create_*——问一句「有没有东西待批准」不该顺手建出一个会话。
+    peek = getattr(_shared.Modules.openclaw, "peek_persistent_session_id", None)
+    current_session = ""
+    if callable(peek) and sender_id:
+        try:
+            current_session = str(peek(role_name=lanlan_name, sender_id=sender_id) or "")
+        except Exception:
+            logger.debug("[OpenClaw] peek_persistent_session_id failed", exc_info=True)
     for task_id, info in _shared.Modules.task_registry.items():
         if task_id == exclude_task_id or not isinstance(info, dict):
             continue
@@ -153,6 +165,8 @@ def _has_recent_openclaw_task(
         # 而那恰恰是这道闸最初要挡的场景（Codex P1）。
         if info.get("status") not in _APPROVAL_WINDOW_STATUSES:
             continue
+        if current_session and str(info.get("session_id") or "").strip() != current_session:
+            continue
         end_time = str(info.get("end_time") or "").strip()
         if not end_time:
             # 终态却没有 end_time：判不了龄，fail-closed 不放行。
@@ -161,7 +175,10 @@ def _has_recent_openclaw_task(
             ended = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if (now - ended).total_seconds() <= TASK_REGISTRY_CLEANUP_TTL:
+        # ⚠️ 上界之外还要下界。时钟被回拨（或条目带了未来 end_time）时
+        # (now - ended) 为负，只判上界就恒成立，窗口会一直开到时钟追上来再过 5 分钟。
+        age = (now - ended).total_seconds()
+        if 0 <= age <= TASK_REGISTRY_CLEANUP_TTL:
             return True
     return False
 

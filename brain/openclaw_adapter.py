@@ -154,7 +154,9 @@ _HIGH_PRECISION_NON_MAGIC = (
 # 现在的判据：按标点/空白切子句 → 每个子句剥掉首部虚词和尾部语气词 → 查白名单。
 # 词汇量**一个没加**，还是原来那些词，只是要求它们**独立成句**而不是嵌在任意
 # 长句里。`/clear` 不在本批（不在本次拍板的三条里），仍走子串包含。
-_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:\s]+")
+# ⚠️ 中文省略号 …／⋯ 是**句中分隔符**，不只是句尾装饰：`同意……去执行` /
+# `好吧……换个话题` 在旧实现里靠子串命中，不切它整条就落空。
+_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:…⋯‥\s]+")
 
 # ── 首部虚词：**两套白名单**，approve 用窄的那套 ──────────────────────
 #
@@ -201,7 +203,10 @@ _NEUTRAL_LEAD = (
 # 都不是授权。
 # ⚠️ 多字必须排在单字前面：`我想` / `我要` / `我们` 要在 `我` 之前。
 _SOFT_LEAD = (
-    r"能不能|可不可以|要不然|要不|不如|还是|還是|干脆|乾脆|"
+    # ⚠️ `要不要` 必须排在 `要不然|要不` 前面，否则 `要不要停下来` 被 `要不` 咬成
+    # `要停下来`。这已经是这套表第五次栽在「多字词排在它的首字/前缀后面」上了
+    # （那么·快点·我想·你们·要不要），加词时照抄这个顺序。
+    r"要不要|能不能|可不可以|要不然|要不|不如|还是|還是|干脆|乾脆|"
     r"我想|我要|我们|我們|咱们|咱們|想|我|咱"
 )
 _CLAUSE_LEAD_NEUTRAL = re.compile(rf"^(?:{_NEUTRAL_LEAD})+")
@@ -249,6 +254,11 @@ _TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
 # 回归。用「非词字符」这个**补集**来剥，而不是去枚举符号：符号是开集，枚举必漏。
 # `\w` 在 Python3 下含 CJK，所以这条只吃标点、符号与 emoji。
 _DECORATION = re.compile(r"^\W+|\W+$")
+# ⚠️⚠️ approve **只剥句尾装饰，不剥句首**。句首那一格是**语义**位：`❌去執行` /
+# `🚫去執行` 是「别执行」，`「去執行」` 是在**提及**这个词而不是在下令。一律当装饰剥掉
+# 就把它们全变成了授权——本 PR 一度如此（繁体侧 main 是 None，等于我新开的口子）。
+# 句尾的 … 👌 ~ 才是纯装饰。/stop 与 /new 后果小，两端照剥（`「停下來」` → /stop）。
+_DECORATION_TAIL = re.compile(r"\W+$")
 
 # ⚠️ 剥词尾的候选是原串的各级前缀，句尾语气词能连着写（`去执行吧吧吧吧…`），所以
 # 候选数随词尾连串长度增长、每个候选还要做一次切片——对超长输入是二次的，实测 20k
@@ -271,6 +281,7 @@ def _clause_hits(
     strip_tail: bool = True,
     lead_re: Any = None,
     tail_tokens: Any = None,
+    decoration_re: Any = None,
 ) -> bool:
     """Match a clause against a table: raw, lead-stripped, then peeled tails.
 
@@ -291,10 +302,11 @@ def _clause_hits(
         return False
     lead = lead_re if lead_re is not None else _CLAUSE_LEAD_SOFT
     tokens = tail_tokens if tail_tokens is not None else _TAIL_TOKENS
+    decoration = decoration_re if decoration_re is not None else _DECORATION
     seen: set = set()
     pending = []
     # 三档起点：原样 / 剥掉两端装饰字符 / 再剥掉首部虚词。
-    bare = _DECORATION.sub("", text).strip()
+    bare = decoration.sub("", text).strip()
     for candidate in (text, bare, lead.sub("", bare).strip()):
         if candidate and candidate not in seen:
             if candidate in table:
@@ -310,7 +322,7 @@ def _clause_hits(
                 continue
             # 剥掉一个语气词之后可能又露出装饰字符（`去执行吧…` → `去执行吧` → …），
             # 所以每一步都再剥一次两端装饰。
-            peeled = _DECORATION.sub("", current[: -len(token)]).strip()
+            peeled = decoration.sub("", current[: -len(token)]).strip()
             if not peeled or peeled == current:
                 continue
             if peeled in table:
@@ -418,6 +430,7 @@ def _approve_clause_kind(clause: str) -> Optional[str]:
         strip_tail=True,
         lead_re=_CLAUSE_LEAD_NEUTRAL,
         tail_tokens=_NEUTRAL_TAIL_TOKENS,
+        decoration_re=_DECORATION_TAIL,
     ):
         return "companion"
     return "action" if _approve_clause_hits(text) else None
@@ -440,7 +453,42 @@ def _approve_clause_hits(clause: str) -> bool:
         strip_tail=True,
         lead_re=_CLAUSE_LEAD_NEUTRAL,
         tail_tokens=_NEUTRAL_TAIL_TOKENS,
+        decoration_re=_DECORATION_TAIL,
     )
+
+
+def _command_clause(clauses: list) -> str:
+    """The trailing clause that actually carries the command, for /stop and /new.
+
+    Walks back over segments that are nothing but particles or decoration.
+    """
+    # ⚠️ 空白也是子句分隔符，所以 `停下来 吧` / `停下來 👍` / `换个话题 喵` 会把语气词
+    # 切成独立的末子句，末子句判据于是只看到 `吧`／`👍`／`喵`，整条落空——旧实现靠
+    # 子串是命中的。往回跳过这些「只有语气词/装饰」的尾巴。
+    # ⚠️ **不给 approve 用**：approve 是全子句 fail-closed，把 `同意 吧` 的 `吧` 丢掉
+    # 会让它变成裸应答 `同意` 从而被批准，而旧实现里它是 None——那是扩大批准面。
+    # 代价记账：`去执行 吧`（命令中间打了空格）在旧实现里是 approve，现在是 None。
+    # 两者只能二选一，选了 fail-closed 那一边。
+    for clause in reversed(clauses):
+        stripped = _DECORATION.sub("", clause).strip()
+        if not stripped:
+            continue
+        peeled = stripped
+        while True:
+            for token in _TAIL_TOKENS:
+                if peeled.endswith(token) and len(peeled) > len(token):
+                    peeled = peeled[: -len(token)]
+                    break
+                if peeled == token:
+                    peeled = ""
+                    break
+            else:
+                break
+            if not peeled:
+                break
+        if peeled:
+            return clause
+    return clauses[-1] if clauses else ""
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -631,6 +679,20 @@ class OpenClawAdapter:
             f"__default_role__::{sender}",
         ]
 
+    def peek_persistent_session_id(self, *, role_name: Optional[str], sender_id: str) -> str:
+        """Current persistent session id for this sender, or "" — never creates one.
+
+        Read-only counterpart of get_or_create_persistent_session_id, for callers
+        that need to correlate an existing record with the live session instead of
+        starting one as a side effect of asking.
+        """
+        with self._session_lock:
+            session_id, _ = self._get_cached_session_id(
+                role_name=role_name,
+                sender_id=sender_id,
+            )
+            return session_id or ""
+
     def _get_cached_session_id(self, *, role_name: Optional[str], sender_id: str) -> tuple[Optional[str], str]:
         cache = self._load_session_cache()
         session_key = self._build_session_key(role_name, sender_id)
@@ -813,10 +875,12 @@ class OpenClawAdapter:
             and any(kind in ("action", "affirmation") for kind in approve_kinds)
         ):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
-        if _clause_hits(clauses[-1], _NEW_CLAUSES):
+        # ⚠️ 末子句要跳过「只有语气词/装饰」的尾巴，见 _command_clause。
+        command_clause = _command_clause(clauses)
+        if _clause_hits(command_clause, _NEW_CLAUSES):
             return {"is_magic_intent": True, "command": "/new", "source": "rule"}
         # 台湾用「搜尋」不用「搜索」，所以繁体那条不是「搜索」的字形转换。
-        if _clause_hits(clauses[-1], _STOP_CLAUSES):
+        if _clause_hits(command_clause, _STOP_CLAUSES):
             return {"is_magic_intent": True, "command": "/stop", "source": "rule"}
 
         return {"is_magic_intent": False, "command": None, "source": "rule"}
