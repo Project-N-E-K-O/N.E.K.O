@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import hashlib
+import importlib.util
 import inspect
 import json
 import logging
@@ -5394,6 +5395,35 @@ async def test_core_passes_only_configured_speaker_shadow_factory(
 
     assert start_mock.await_args.kwargs["speaker_shadow_factory"] is factory
     factory.assert_not_called()
+
+
+async def test_core_composition_seam_has_no_voice_identity_or_shadow_imports() -> None:
+    tree = ast.parse(inspect.getsource(core_asr_runtime_module))
+    imported = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        if node.level:
+            module = importlib.util.resolve_name(
+                f"{'.' * node.level}{module}",
+                core_asr_runtime_module.__package__,
+            )
+        imported.add(module)
+    imported.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+
+    violations = sorted(
+        module
+        for module in imported
+        if module.startswith("main_logic.voice_identity")
+        or module.startswith("main_logic.asr_client.speaker_shadow")
+    )
+    assert violations == [], f"composition seam leaked imports: {violations}"
 
 
 async def test_provider_restart_reuses_accepted_session_optimization(

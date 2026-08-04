@@ -125,6 +125,10 @@ class _VoiceTurnAdapter:
             [bytes, int, DetectorIngressIdentity | None], None
         ]
         | None = None,
+        on_candidate_start: Callable[
+            [bytes, int, DetectorIngressIdentity | None], None
+        ]
+        | None = None,
         on_candidate_complete: Callable[[DetectorIngressIdentity | None], None]
         | None = None,
         queue_maxsize: int = 128,
@@ -160,6 +164,7 @@ class _VoiceTurnAdapter:
         self._on_scoped_commit = on_scoped_commit
         self._on_scoped_activity = on_scoped_activity
         self._on_accepted_audio = on_accepted_audio
+        self._on_candidate_start = on_candidate_start
         self._on_candidate_complete = on_candidate_complete
         self._queue: DetectorDurationQueue[_AudioItem, _ControlItem] = (
             DetectorDurationQueue(
@@ -170,6 +175,7 @@ class _VoiceTurnAdapter:
         self._evaluation_tail_capacity_us = queue_capacity_ms * 1_000
         self._evaluation_tail: list[_AudioItem] = []
         self._evaluation_tail_duration_us = 0
+        self._evaluation_tail_candidate_start: _AudioItem | None = None
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._smart_turn_required = smart_turn_required
@@ -483,7 +489,8 @@ class _VoiceTurnAdapter:
                 duration_us=item.duration_us,
                 detector_identity=item.detector_identity,
             )
-        if self._evaluation_task is not None:
+        evaluation_in_flight = self._evaluation_task is not None
+        if evaluation_in_flight:
             self._evaluation_tail.append(item)
             self._evaluation_tail_duration_us += item.duration_us
         else:
@@ -528,11 +535,18 @@ class _VoiceTurnAdapter:
                 await self._on_scoped_activity(event, item.detector_identity)
             await self._coordinator.on_activity_event(event)
 
-        if any(
+        candidate_started = any(
             event
             in (SpeechActivityEvent.SPEECH_STARTED, SpeechActivityEvent.SPEECH_RESUMED)
             for event in events
-        ):
+        )
+        if candidate_started:
+            if (
+                evaluation_in_flight
+                and self._evaluation_tail_candidate_start is None
+            ):
+                self._evaluation_tail_candidate_start = item
+            self._start_observed_candidate(item)
             self._cancel_smart_turn_unload()
             self._cancel_fallback()
             self._strict_endpoint_deadline = None
@@ -569,6 +583,7 @@ class _VoiceTurnAdapter:
             if self._on_scoped_activity is not None and item.detector_identity is not None:
                 await self._on_scoped_activity(event, item.detector_identity)
             await self._coordinator.on_activity_event(event)
+            self._start_observed_candidate(item)
         self._fallback_audio_bytes += len(item.pcm16)
         if started_now:
             return
@@ -632,6 +647,8 @@ class _VoiceTurnAdapter:
         evaluation_tail = tuple(self._evaluation_tail)
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
+        evaluation_tail_candidate_start = self._evaluation_tail_candidate_start
+        self._evaluation_tail_candidate_start = None
         reevaluate = self._reevaluation_requested
         reevaluation_reason = self._reevaluation_reason or item.reason
         self._reevaluation_requested = False
@@ -711,14 +728,18 @@ class _VoiceTurnAdapter:
             if completion_published is not None:
                 await completion_published
             for tail_item in evaluation_tail:
-                await self._process_audio(
-                    _AudioItem(
-                        identity=active_identity,
-                        pcm16=tail_item.pcm16,
-                        duration_us=tail_item.duration_us,
-                        detector_identity=tail_item.detector_identity,
-                    )
+                replay_item = _AudioItem(
+                    identity=active_identity,
+                    pcm16=tail_item.pcm16,
+                    duration_us=tail_item.duration_us,
+                    detector_identity=tail_item.detector_identity,
                 )
+                await self._process_audio(replay_item)
+                if (
+                    active_identity != item.identity
+                    and tail_item is evaluation_tail_candidate_start
+                ):
+                    self._start_observed_candidate(replay_item)
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
             self._observe_evaluation_tail(evaluation_tail)
@@ -748,14 +769,27 @@ class _VoiceTurnAdapter:
         self._enter_semantic_degraded()
         self._schedule_fallback(item.identity, "semantic_degraded")
 
-    def _observe_accepted_audio(self, item: _AudioItem) -> None:
-        callback = self._on_accepted_audio
+    def _dispatch_audio_observer(
+        self,
+        callback: Callable[
+            [bytes, int, DetectorIngressIdentity | None],
+            None,
+        ]
+        | None,
+        item: _AudioItem,
+    ) -> None:
         if callback is None:
             return
         try:
             callback(item.pcm16, 16_000, item.detector_identity)
         except Exception:
             return
+
+    def _observe_accepted_audio(self, item: _AudioItem) -> None:
+        self._dispatch_audio_observer(self._on_accepted_audio, item)
+
+    def _start_observed_candidate(self, item: _AudioItem) -> None:
+        self._dispatch_audio_observer(self._on_candidate_start, item)
 
     def _observe_evaluation_tail(self, items: tuple[_AudioItem, ...]) -> None:
         for item in items:
@@ -805,6 +839,7 @@ class _VoiceTurnAdapter:
         self._latest_detector_identity = None
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
+        self._evaluation_tail_candidate_start = None
         self._successor_audio_fence = None
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)
@@ -1277,6 +1312,11 @@ class DetectorRuntime:
                     if self._speaker_shadow is not None
                     else None
                 ),
+                on_candidate_start=(
+                    self._start_smart_turn_speaker_shadow
+                    if self._speaker_shadow is not None
+                    else None
+                ),
                 on_candidate_complete=(
                     self._finish_smart_turn_speaker_shadow
                     if self._speaker_shadow is not None
@@ -1324,6 +1364,74 @@ class DetectorRuntime:
             if adapter is not None
             else 0
         )
+
+    async def current_candidate(self) -> DetectorCandidateKey | None:
+        """Return the current detector-owned candidate, if one is open."""
+
+        async with self._lock:
+            if self._closed or not self._candidate_open:
+                return None
+            return DetectorCandidateKey(
+                self._detector_epoch,
+                self._candidate_generation,
+            )
+
+    async def candidate_is_current(self, candidate: DetectorCandidateKey) -> bool:
+        """Fence execution against the detector's authoritative identity."""
+
+        if type(candidate) is not DetectorCandidateKey:
+            return False
+        async with self._lock:
+            return bool(
+                not self._closed
+                and self._candidate_open
+                and candidate.detector_epoch == self._detector_epoch
+                and candidate.candidate_generation == self._candidate_generation
+            )
+
+    async def candidate_is_bound_to(
+        self,
+        candidate: DetectorCandidateKey,
+        turn_token: VoiceTurnToken,
+    ) -> bool:
+        """Require current candidate authority to belong to one exact turn."""
+
+        if (
+            type(candidate) is not DetectorCandidateKey
+            or not isinstance(turn_token, VoiceTurnToken)
+        ):
+            return False
+        async with self._lock:
+            bound = self._bound_turns.get(candidate)
+            return bool(
+                not self._closed
+                and self._candidate_open
+                and candidate.detector_epoch == self._detector_epoch
+                and candidate.candidate_generation == self._candidate_generation
+                and bound is not None
+                and bound.turn_token == turn_token
+            )
+
+    async def correlate_speaker_shadow_candidate(
+        self,
+        shadow_candidate: SpeakerShadowCandidateKey,
+    ) -> DetectorCandidateKey | None:
+        """Resolve a private Shadow key to current detector authority."""
+
+        if type(shadow_candidate) is not SpeakerShadowCandidateKey:
+            return None
+        async with self._lock:
+            if (
+                self._closed
+                or not self._candidate_open
+                or shadow_candidate != self._speaker_shadow_candidate
+                or shadow_candidate.detector_epoch != self._detector_epoch
+            ):
+                return None
+            return DetectorCandidateKey(
+                self._detector_epoch,
+                self._candidate_generation,
+            )
 
     async def bind_candidate(
         self,
@@ -2040,7 +2148,11 @@ class DetectorRuntime:
                     if failed and not self._closed:
                         self._smart_turn_readiness = SmartTurnReadiness.FAILED
 
-    async def reset(self) -> None:
+    async def reset(
+        self,
+        *,
+        expected_candidate: DetectorCandidateKey | None = None,
+    ) -> bool:
         overflow_reset_task = self._overflow_reset_task
         if (
             overflow_reset_task is not None
@@ -2050,10 +2162,20 @@ class DetectorRuntime:
         adapter: _VoiceTurnAdapter | None = None
         semantic_identity: tuple[int, int, int] | None = None
         speaker_shadow: SpeakerShadowObserver | None = None
+        reset_applied = False
         try:
             async with self._lock:
                 if self._closed:
-                    return
+                    return False
+                if expected_candidate is not None and (
+                    type(expected_candidate) is not DetectorCandidateKey
+                    or not self._candidate_open
+                    or expected_candidate.detector_epoch != self._detector_epoch
+                    or expected_candidate.candidate_generation
+                    != self._candidate_generation
+                ):
+                    return False
+                reset_applied = True
                 self._detector_epoch += 1
                 self._reset_speaker_shadow_identity()
                 speaker_shadow = self._speaker_shadow
@@ -2099,7 +2221,9 @@ class DetectorRuntime:
                     utterance_id=semantic_identity[2],
                 )
         finally:
-            await self._reset_speaker_shadow(speaker_shadow)
+            if reset_applied:
+                await self._reset_speaker_shadow(speaker_shadow)
+        return reset_applied
 
     async def release_deferred_turn(self) -> None:
         """Release a deferred SmartTurn completion after the prior final."""
@@ -2192,9 +2316,30 @@ class DetectorRuntime:
         ):
             return
         candidate = self._speaker_shadow_candidate
-        if candidate is None:
-            candidate = self._open_speaker_shadow_candidate("smart_turn_turn")
         if candidate is None or candidate.scope != "smart_turn_turn":
+            return
+        self._submit_speaker_shadow(
+            pcm16,
+            sample_rate_hz=sample_rate_hz,
+            candidate=candidate,
+        )
+
+    def _start_smart_turn_speaker_shadow(
+        self,
+        pcm16: bytes,
+        sample_rate_hz: int,
+        detector_identity: DetectorIngressIdentity | None,
+    ) -> None:
+        if (
+            detector_identity is None
+            or detector_identity.detector_epoch != self._detector_epoch
+            or detector_identity.ingress_token != self._ingress_token
+            or detector_identity.sequence_no > self._sequence_no
+            or self._speaker_shadow_candidate is not None
+        ):
+            return
+        candidate = self._open_speaker_shadow_candidate("smart_turn_turn")
+        if candidate is None:
             return
         self._submit_speaker_shadow(
             pcm16,

@@ -30,11 +30,13 @@ from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 
 from ._infra import logger, _READY_TIMEOUT_SECONDS
 from .audio import AsrAudioDispatcher
+from .candidate_control import CandidateRejectionOutcome, CandidateRejectionRequest
 from ._registry_meta import AsrProviderAvailability
 from .endpointing.detector import (
     AsrDetectorDispatcher,
     CoreDetectorEventEnvelope,
     DetectorActivityEvent,
+    DetectorCandidateKey,
     DetectorPrewarmEvent,
     DetectorRuntimeEvent,
     DetectorTransportPrewarmEvent,
@@ -127,6 +129,16 @@ class _AsrRuntimeIdentity:
     transport_task: asyncio.Task[None] | None
     ingress_token: VoiceIngressToken | None = None
     turn_token: VoiceTurnToken | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateRejectionSuppression:
+    request: CandidateRejectionRequest
+    turn_token: VoiceTurnToken
+    final_key: FinalKey
+    lifecycle: VoiceInputLifecycleController
+    detector: DetectorRuntime
+    cleanup_outcome: asyncio.Future[bool]
 
 
 class IndependentAsrRuntime:
@@ -352,6 +364,10 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token: VoiceTurnToken | None = None
         self._asr_accepted_final_keys: OrderedDict[FinalKey, None] = OrderedDict()
         self._asr_reserved_final_key: FinalKey | None = None
+        self._asr_candidate_rejection: _CandidateRejectionSuppression | None = None
+        self._asr_candidate_pause_fence: (
+            tuple[int, int, DetectorCandidateKey] | None
+        ) = None
         self._asr_transcript_dispatcher = TranscriptDispatcher(
             self._dispatch_asr_transcript_envelope,
         )
@@ -636,6 +652,7 @@ class IndependentAsrRuntime:
             await self._handle_independent_asr_activity(
                 event.activity,
                 envelope.session_epoch,
+                candidate=event.candidate,
             )
             if not self._detector_envelope_is_current(envelope):
                 return
@@ -1726,9 +1743,11 @@ class IndependentAsrRuntime:
         except Exception:
             return
 
-    def _reset_asr_turn_state(self) -> None:
+    def _reset_asr_turn_state(self) -> VoiceTurnToken | None:
         """Reset per-turn bookkeeping shared by close/abort/error teardown."""
 
+        suppression = self._asr_candidate_rejection
+        abandoned_turn = suppression.turn_token if suppression is not None else None
         self._asr_turn_prepared = False
         self._asr_received_audio = False
         self._asr_pending_speech_confirmed = False
@@ -1741,11 +1760,13 @@ class IndependentAsrRuntime:
         self._asr_partial_turn_token = None
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        self._asr_candidate_rejection = None
         self._asr_sealed_turn_token = None
         self._asr_provider_candidate_fence = None
         self._asr_turn_endpointed_at = None
         self._asr_turn_audio_started_at = None
         self._asr_first_partial_recorded = False
+        return abandoned_turn
 
     async def _notify_asr_turn_abandoned(
         self,
@@ -1813,9 +1834,11 @@ class IndependentAsrRuntime:
         self._asr_provider = None
         if lifecycle is not None:
             lifecycle.stop()
-        self._reset_asr_turn_state()
+        abandoned_turn = self._reset_asr_turn_state()
         self._asr_session_factory = None
         self._asr_transport_selection = None
+        if abandoned_turn is not None:
+            await self._notify_asr_turn_abandoned(abandoned_turn)
         if detector is not None:
             await detector.close()
         if lease is not None:
@@ -1984,10 +2007,20 @@ class IndependentAsrRuntime:
                     if not detector_result.throttle_available:
                         lifecycle.enable_independent_asr_fail_open()
                     else:
+                        activity_candidate = None
+                        if detector_result.events:
+                            current_candidate = getattr(
+                                detector,
+                                "current_candidate",
+                                None,
+                            )
+                            if callable(current_candidate):
+                                activity_candidate = await current_candidate()
                         for event in detector_result.events:
                             await self._handle_independent_asr_activity(
                                 event,
                                 identity.session_epoch,
+                                candidate=activity_candidate,
                             )
                             if not ingress_is_current():
                                 return AsrSubmitResult(AsrSubmitStatus.STALE)
@@ -2001,6 +2034,16 @@ class IndependentAsrRuntime:
                         if not ingress_is_current():
                             return AsrSubmitResult(AsrSubmitStatus.STALE)
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+            suppression = self._asr_candidate_rejection
+            if (
+                suppression is not None
+                and identity.session_epoch == suppression.request.session_epoch
+                and identity.audio_generation
+                == suppression.request.audio_generation
+                and identity.lifecycle is suppression.lifecycle
+                and identity.detector is suppression.detector
+            ):
+                return AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
             if lifecycle is not None and not ingress_is_current():
                 return AsrSubmitResult(AsrSubmitStatus.STALE)
             decision = (
@@ -2335,7 +2378,7 @@ class IndependentAsrRuntime:
         self._asr_transcript_dispatcher.invalidate_all()
         self._asr_detector_dispatcher.invalidate_all()
         self._asr_audio_dispatcher.abort()
-        self._reset_asr_turn_state()
+        abandoned_turn = self._reset_asr_turn_state()
         lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
         for task_name in (
             "_asr_transport_task",
@@ -2354,6 +2397,8 @@ class IndependentAsrRuntime:
             )
             lifecycle.invalidate_transport()
         post_detach = self._capture_runtime_identity()
+        if abandoned_turn is not None:
+            await self._notify_asr_turn_abandoned(abandoned_turn)
         if lease is not None:
             await lease.release()
         if asr_session is not None:
@@ -2557,13 +2602,312 @@ class IndependentAsrRuntime:
                 fallback_audio_bytes * 1_000 // (16_000 * 2)
             )
 
+    async def _reject_candidate(
+        self,
+        request: CandidateRejectionRequest,
+        *,
+        active_profile_generation: str,
+        active_filter_generation: str,
+    ) -> CandidateRejectionOutcome:
+        """Reject one exact detector candidate without hard-blocking ASR."""
+
+        if type(request) is not CandidateRejectionRequest:
+            return CandidateRejectionOutcome.STALE
+        if (
+            type(active_profile_generation) is not str
+            or not active_profile_generation.strip()
+            or type(active_filter_generation) is not str
+            or not active_filter_generation.strip()
+        ):
+            return CandidateRejectionOutcome.STALE
+
+        asr_session: Any = None
+        lease: SmartTurnLease | None = None
+        suppression: _CandidateRejectionSuppression | None = None
+        async with self._asr_final_lock:
+            lifecycle = self._asr_lifecycle
+            detector = self._asr_detector
+            if (
+                request.session_epoch != self._asr_session_epoch
+                or request.audio_generation != self._asr_audio_generation
+                or request.profile_generation != active_profile_generation
+                or request.filter_generation != active_filter_generation
+                or lifecycle is None
+                or detector is None
+                or self._asr_session is None
+                or self._asr_candidate_rejection is not None
+                or self._asr_candidate_pause_fence
+                == (
+                    request.session_epoch,
+                    request.audio_generation,
+                    request.candidate,
+                )
+            ):
+                return CandidateRejectionOutcome.STALE
+            snapshot = lifecycle.snapshot
+            if (
+                request.transport_generation != snapshot.transport_generation
+                or request.turn_id != snapshot.turn_id
+                or snapshot.state
+                not in {
+                    VoiceLifecycleState.ACTIVE,
+                    VoiceLifecycleState.DRAINING,
+                }
+                or not await detector.candidate_is_current(request.candidate)
+            ):
+                return CandidateRejectionOutcome.STALE
+
+            sealed_token = self._asr_sealed_turn_token
+            turn_token = (
+                sealed_token.turn
+                if sealed_token is not None
+                else self._asr_partial_turn_token
+            )
+            if (
+                turn_token is None
+                or turn_token.turn_id != request.turn_id
+                or turn_token.ingress.session_epoch != request.session_epoch
+                or turn_token.ingress.audio_generation != request.audio_generation
+                or not self._ingress_token_matches(turn_token.ingress)
+                or not self._asr_turn_prepared
+                or self._asr_audio_dispatcher.active_turn != turn_token
+                or not await detector.candidate_is_bound_to(
+                    request.candidate,
+                    turn_token,
+                )
+            ):
+                return CandidateRejectionOutcome.STALE
+            final_key = FinalKey.from_turn(turn_token)
+            if (
+                self._asr_reserved_final_key != final_key
+                or final_key in self._asr_accepted_final_keys
+            ):
+                return CandidateRejectionOutcome.STALE
+            if sealed_token is not None and sealed_token.turn != turn_token:
+                return CandidateRejectionOutcome.STALE
+            lease = self._asr_smart_turn_lease
+            if lease is not None and lease.token != turn_token:
+                return CandidateRejectionOutcome.STALE
+
+            self._asr_transcript_dispatcher.release(final_key)
+            if self._asr_reserved_final_key == final_key:
+                self._asr_reserved_final_key = None
+            lifecycle.invalidate_transport()
+            self._asr_audio_dispatcher.abort(turn_token)
+            asr_session, self._asr_session = self._asr_session, None
+            if lease is not None:
+                self._asr_smart_turn_lease = None
+            self._asr_turn_prepared = False
+            self._asr_received_audio = False
+            self._asr_audio_sequence = 0
+            if self._asr_partial_turn_token == turn_token:
+                self._asr_partial_turn_token = None
+            self._asr_sealed_turn_token = None
+            self._asr_provider_candidate_fence = None
+            self._asr_turn_endpointed_at = None
+            watchdog = self._asr_final_watchdog_task
+            self._asr_final_watchdog_task = None
+            if watchdog is not None and watchdog is not asyncio.current_task():
+                watchdog.cancel()
+            suppression = _CandidateRejectionSuppression(
+                request=request,
+                turn_token=turn_token,
+                final_key=final_key,
+                lifecycle=lifecycle,
+                detector=detector,
+                cleanup_outcome=asyncio.get_running_loop().create_future(),
+            )
+            self._asr_candidate_rejection = suppression
+
+        cleanup_failed = False
+        if lease is not None:
+            try:
+                await lease.release()
+            except Exception:
+                cleanup_failed = True
+                logger.warning(
+                    "[%s] candidate rejection lease release failed open",
+                    self.display_name,
+                )
+        try:
+            await asr_session.close()
+        except Exception:
+            cleanup_failed = True
+            logger.warning(
+                "[%s] candidate rejection session close failed open",
+                self.display_name,
+            )
+        assert suppression is not None
+        if not suppression.cleanup_outcome.done():
+            suppression.cleanup_outcome.set_result(not cleanup_failed)
+        if cleanup_failed:
+            await self._recover_candidate_rejection(suppression)
+            return CandidateRejectionOutcome.FAILED
+        return CandidateRejectionOutcome.APPLIED
+
+    def _candidate_rejection_matches_runtime(
+        self,
+        suppression: _CandidateRejectionSuppression,
+    ) -> bool:
+        return bool(
+            suppression.request.session_epoch == self._asr_session_epoch
+            and suppression.request.audio_generation == self._asr_audio_generation
+            and self._asr_lifecycle is suppression.lifecycle
+            and self._asr_detector is suppression.detector
+        )
+
+    async def _recover_candidate_rejection(
+        self,
+        suppression: _CandidateRejectionSuppression,
+    ) -> None:
+        """Clear suppression after cleanup failure and resume fail-open input."""
+
+        reset_required = False
+        async with self._asr_final_lock:
+            if self._asr_candidate_rejection is not suppression:
+                return
+            reset_required = self._candidate_rejection_matches_runtime(suppression)
+        if reset_required:
+            try:
+                reset_applied = await suppression.detector.reset()
+            except asyncio.CancelledError:
+                await self._notify_asr_turn_abandoned(suppression.turn_token)
+                async with self._asr_final_lock:
+                    if self._asr_candidate_rejection is suppression:
+                        lifecycle = suppression.lifecycle
+                        if self._candidate_rejection_matches_runtime(suppression):
+                            lifecycle.invalidate_audio()
+                        self._asr_candidate_rejection = None
+                raise
+            except Exception:
+                logger.warning(
+                    "[%s] detector reset failed during rejection recovery",
+                    self.display_name,
+                )
+                reset_applied = False
+            if not reset_applied:
+                await self._handle_independent_asr_error(
+                    suppression.request.session_epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_ENDPOINTING_FAILED",
+                )
+                notify_abandoned = False
+                async with self._asr_final_lock:
+                    if self._asr_candidate_rejection is suppression:
+                        self._asr_candidate_rejection = None
+                        notify_abandoned = True
+                if notify_abandoned:
+                    await self._notify_asr_turn_abandoned(suppression.turn_token)
+                return
+        should_restart = False
+        async with self._asr_final_lock:
+            if self._asr_candidate_rejection is not suppression:
+                return
+            self._asr_candidate_rejection = None
+            lifecycle = suppression.lifecycle
+            if (
+                reset_required
+                and self._candidate_rejection_matches_runtime(suppression)
+            ):
+                lifecycle.invalidate_audio()
+                should_restart = True
+        await self._notify_asr_turn_abandoned(suppression.turn_token)
+        if should_restart:
+            self._ensure_transport_restart_task()
+
+    async def _finish_candidate_rejection(
+        self,
+        candidate: DetectorCandidateKey,
+    ) -> bool:
+        """End tail suppression only at the rejected candidate's own pause."""
+
+        suppression = self._asr_candidate_rejection
+        if suppression is None or suppression.request.candidate != candidate:
+            return False
+        cleanup_succeeded = await asyncio.shield(suppression.cleanup_outcome)
+        if (
+            not cleanup_succeeded
+            or self._asr_candidate_rejection is not suppression
+        ):
+            return False
+        reset_applied = False
+        try:
+            reset_applied = await suppression.detector.reset(
+                expected_candidate=candidate
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "[%s] rejected candidate reset failed open",
+                self.display_name,
+            )
+            try:
+                reset_applied = await suppression.detector.reset()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "[%s] unconditional rejected candidate reset failed",
+                    self.display_name,
+                )
+                reset_applied = False
+        if not reset_applied:
+            await self._handle_independent_asr_error(
+                suppression.request.session_epoch,
+                self._asr_provider or "unknown",
+                status_code="ASR_ENDPOINTING_FAILED",
+            )
+            return False
+        should_restart = False
+        async with self._asr_final_lock:
+            if self._asr_candidate_rejection is not suppression:
+                return False
+            self._asr_candidate_rejection = None
+            lifecycle = suppression.lifecycle
+            if (
+                suppression.request.session_epoch == self._asr_session_epoch
+                and suppression.request.audio_generation == self._asr_audio_generation
+                and self._asr_lifecycle is lifecycle
+                and self._asr_detector is suppression.detector
+            ):
+                lifecycle.invalidate_audio()
+                should_restart = True
+        await self._notify_asr_turn_abandoned(suppression.turn_token)
+        if should_restart:
+            self._ensure_transport_restart_task()
+        return reset_applied
+
     async def _handle_independent_asr_activity(
         self,
         event: SpeechActivityEvent,
         epoch: int,
+        *,
+        candidate: DetectorCandidateKey | None = None,
     ) -> None:
         if epoch != self._asr_session_epoch:
             return
+        if event is SpeechActivityEvent.CANDIDATE_PAUSE and candidate is not None:
+            async with self._asr_final_lock:
+                if epoch != self._asr_session_epoch:
+                    return
+                self._asr_candidate_pause_fence = (
+                    epoch,
+                    self._asr_audio_generation,
+                    candidate,
+                )
+            await self._finish_candidate_rejection(candidate)
+            if epoch != self._asr_session_epoch:
+                return
+        elif event is SpeechActivityEvent.SPEECH_RESUMED and candidate is not None:
+            async with self._asr_final_lock:
+                resumed_identity = (
+                    epoch,
+                    self._asr_audio_generation,
+                    candidate,
+                )
+                if self._asr_candidate_pause_fence == resumed_identity:
+                    self._asr_candidate_pause_fence = None
         provider = self._asr_provider or "unknown"
         lifecycle = self._asr_lifecycle
         if (
@@ -2982,30 +3326,37 @@ class IndependentAsrRuntime:
         clean = str(text or "").strip()
         if not clean or epoch != self._asr_session_epoch:
             return
-        lifecycle = self._asr_lifecycle
-        turn_token = self._asr_partial_turn_token
-        if (
-            lifecycle is None
-            or turn_token is None
-            or not self._asr_turn_prepared
-            or lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
-            or not self._ingress_token_matches(turn_token.ingress)
-            or lifecycle.snapshot.turn_id != turn_token.turn_id
-            or self._asr_audio_dispatcher.active_turn != turn_token
-        ):
+        async with self._asr_final_lock:
+            lifecycle = self._asr_lifecycle
+            turn_token = self._asr_partial_turn_token
+            if (
+                lifecycle is None
+                or turn_token is None
+                or not self._asr_turn_prepared
+                or self._asr_candidate_rejection is not None
+                or lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
+                or not self._ingress_token_matches(turn_token.ingress)
+                or lifecycle.snapshot.turn_id != turn_token.turn_id
+                or self._asr_audio_dispatcher.active_turn != turn_token
+            ):
+                return
+            if (
+                not self._asr_first_partial_recorded
+                and self._asr_turn_audio_started_at is not None
+            ):
+                lifecycle.metrics.first_partial_latency_ms = int(
+                    (time.monotonic() - self._asr_turn_audio_started_at) * 1_000
+                )
+                self._asr_first_partial_recorded = True
+            partial_event = VoicePartialEvent(turn_token=turn_token, text=clean)
+            partial_identity = self._capture_runtime_identity(
+                ingress_token=turn_token.ingress,
+                turn_token=turn_token,
+            )
+        if not self._runtime_identity_matches(partial_identity):
             return
-        if (
-            not self._asr_first_partial_recorded
-            and self._asr_turn_audio_started_at is not None
-        ):
-            lifecycle.metrics.first_partial_latency_ms = int(
-                (time.monotonic() - self._asr_turn_audio_started_at) * 1_000
-            )
-            self._asr_first_partial_recorded = True
         try:
-            await self._callbacks.on_partial(
-                VoicePartialEvent(turn_token=turn_token, text=clean)
-            )
+            await self._callbacks.on_partial(partial_event)
         except Exception:
             logger.debug(
                 "[%s] independent ASR preview delivery failed",
@@ -3333,7 +3684,7 @@ class IndependentAsrRuntime:
         self._asr_provider = None
         self._asr_session_factory = None
         self._asr_transport_selection = None
-        self._reset_asr_turn_state()
+        abandoned_turn = self._reset_asr_turn_state()
         for task_name in (
             "_asr_transport_task",
             "_asr_warm_expiry_task",
@@ -3357,6 +3708,8 @@ class IndependentAsrRuntime:
             task = asyncio.create_task(self._close_asr_session(asr_session))
             self._asr_close_tasks.add(task)
             task.add_done_callback(self._asr_close_tasks.discard)
+        if abandoned_turn is not None:
+            await self._notify_asr_turn_abandoned(abandoned_turn)
         failure_identity = self._capture_runtime_identity()
         try:
             delivered = await self._send_asr_lifecycle_state(

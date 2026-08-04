@@ -1474,6 +1474,19 @@ def check_voice_identity_contracts(root: Path) -> list[Violation]:
             "main_logic.voice_identity.contracts",
             "main_logic.voice_identity.reference",
         ),
+        package_dir / "policy.py": (),
+        package_dir / "asr_composition.py": (
+            "__future__",
+            "asyncio",
+            "copy",
+            "threading",
+            "collections",
+            "main_logic.asr_client",
+            "main_logic.voice_identity.contracts",
+            "main_logic.voice_identity.policy",
+            "main_logic.voice_identity.profile",
+            "main_logic.voice_identity.reference",
+        ),
     }
     direct_dynamic_calls = {
         "eval",
