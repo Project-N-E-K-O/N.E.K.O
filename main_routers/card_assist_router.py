@@ -816,7 +816,12 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
 # 把收尾收成「只认标点」时把它一起挡掉了（Codex P2 第二十二轮）。
 # 这一侧安全——它是 _CHAT_REWRITE_VERB_RE 里的**闭集**，不像 `nickname` 那样是
 # 任意字段名；`\b` 保证不会命中 `rewriteX` 这种更长的标识符。
-_WHOLE_CARD_EN_REWRITE_VERB = r"(?:rewrite|revise|regenerate|redo|refresh)\b"
+# ⚠️ 右边界用 `(?![A-Za-z0-9_])` 而不是 ``：汉字也是 Unicode 词字符，`` 在
+# `rewrite一下` 的 e/一 之间**不成立**，于是这类中英混写被挡掉了
+# （Codex P2 第三十轮，base 是 True）。这里要拒的只是拉丁标识符的续接。
+_WHOLE_CARD_EN_REWRITE_VERB = (
+    r"(?:rewrite|revise|regenerate|redo|refresh)(?![A-Za-z0-9_])"
+)
 _WHOLE_CARD_BARE_ADVERB = (
     r"(?:一并|一併|一起|统统|統統|通通|全都|彻底|徹底|好好|认真|認真|重新"
     r"|全面|一律|统一|統一|逐一|逐个|逐個|挨个|挨個|再"

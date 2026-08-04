@@ -2016,9 +2016,11 @@ def _quote_pairs() -> list[tuple[str, str]]:
 
     pairs = [
         (o, c) for o, c in mr._QUOTE_PAIRS.items()
-        if o != mr._ZH_AMBIGUOUS_APOSTROPHE
+        if o not in mr._ZH_AMBIGUOUS_QUOTE_OPENERS
     ]
-    assert len(pairs) == len(mr._QUOTE_PAIRS) - 1, "撇号那一格没被排除掉"
+    assert len(pairs) == len(mr._QUOTE_PAIRS) - len(
+        mr._ZH_AMBIGUOUS_QUOTE_OPENERS
+    ), "撇号那两格没被排除掉"
     assert pairs, "_QUOTE_PAIRS 是空的"
     return pairs
 
@@ -2336,7 +2338,8 @@ def test_a_trailing_question_without_coordination_is_still_a_question(marker):
 
 
 @pytest.mark.parametrize("marker", ["好不好", "是不是", "好吗"])
-def test_a_straight_single_quote_no_longer_shields_a_title(marker):
+@pytest.mark.parametrize("quote", ["'", "‘"])
+def test_an_apostrophe_style_quote_no_longer_shields_a_title(marker, quote):
     """⚠️ 刻意接受的代价：直单引号括起来的歌名不再被当成歌名。
 
     `帮我停止播放'好不好'` 于是被判成提问而不是命令。换来的是西文名字里的撇号
@@ -2345,9 +2348,13 @@ def test_a_straight_single_quote_no_longer_shields_a_title(marker):
 
     ⚠️ 中文书名号/引号那几对**不受影响**，上面那条笛卡尔积仍然覆盖它们。
     """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
     from main_logic.music_requests import is_explicit_music_cancellation
 
-    assert is_explicit_music_cancellation(f"帮我停止播放'{marker}'") is False
+    closing = mr._QUOTE_PAIRS[quote]
+    assert is_explicit_music_cancellation(
+        f'帮我停止播放{quote}{marker}{closing}'
+    ) is False
     assert is_explicit_music_cancellation(f'帮我停止播放《{marker}》') is True
 
 
@@ -2376,13 +2383,17 @@ def test_quoted_span_matching_cannot_backtrack_exponentially():
     # 结构守卫钉到写法上就会这样。
     span = re.compile(f"^(?:{mr._ZH_PAIRED_QUOTED_SPAN})$")
     for opening, closing in mr._QUOTE_PAIRS.items():
-        if opening == mr._ZH_AMBIGUOUS_APOSTROPHE:
+        # 直/弯单引号按撇号处理，不进引用体系（见
+        # test_an_apostrophe_style_quote_no_longer_shields_a_title）。
+        if opening in mr._ZH_AMBIGUOUS_QUOTE_OPENERS:
             continue
         assert span.match(f"{opening}你好吗？{closing}"), (
             f"{opening}{closing} 跨度不认带标点的歌名"
         )
-        assert not span.match(f"{opening}a{opening}b{closing}{closing}"), (
-            f"{opening}{closing} 跨度体内没排除自己的定界符——相邻跨度会指数分段"
+        # ⚠️ 第三十轮之后：**嵌套**（一层）是合法的，而**杂闭合符**必须让跨度失效
+        # ——`《晴天」是否合适》` 曾被当成合法标题、把真疑问标记藏了进去。
+        assert not span.match(f"{opening}晴天」好不好{closing}"), (
+            f"{opening}{closing} 跨度体内没排除其它定界符——杂闭合符会藏住疑问标记"
         )
 
     # 耗时：入口卡 160 字，这里直接顶到上限。线性实现是微秒级。
@@ -3289,3 +3300,39 @@ def test_the_control_noun_lookahead_stays_linear():
     # 语义没变：句尾有音乐宾语的仍然是命令，没有的仍然当控件。
     assert mr.is_explicit_music_cancellation('停止播放键盘音乐') is True
     assert mr.is_explicit_music_cancellation('帮我停止播放按钮换个颜色') is False
+
+
+@pytest.mark.parametrize(
+    "malformed", ["《晴天」是否合适》", "「晴天』能否更换」", "【晴天》怎么换成】"]
+)
+def test_a_mismatched_closer_inside_a_span_makes_it_malformed(malformed):
+    """⚠️ 跨度体内要排除**所有**定界符，不能只排自己那一对。
+
+    只排自己那对时，`《晴天」是否合适》` 会被当成一个合法跨度（`」` 不在排除集
+    里），真正的疑问标记就被藏进了「标题」里，一句提问执行了取消
+    （Codex P2 第三十轮，base 是 False——危险方向）。
+
+    ⚠️ 「不是完整跨度的开头」那个条件必须**与跨度定义逐字一致**：改了体定义却
+    没同步它，会出现两边都不认、前缀整个过不去的情况（本轮第一版就是这样）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'我想停止播放{malformed}') is False
+    # 配对：合法跨度（含一层嵌套）仍然保护标题。
+    assert is_explicit_music_cancellation('帮我停止播放《好不好》') is True
+    assert is_explicit_music_cancellation('帮我停止播放《“晴天”好不好》') is True
+
+
+@pytest.mark.parametrize("space", ["", " ", "\u3000"])
+@pytest.mark.parametrize("aspect", ["正在", "当前", "还在"])
+def test_whitespace_inside_the_aspect_phrase(aspect, space):
+    """⚠️ 体标记和播放动词之间也可能有空格。
+
+    Python 后视必须定长，`\s*` 塞不进去，所以把「有无空格」做进笛卡尔积——
+    入口 normalize 把连续空白压成**一个** ASCII 空格，所以只需要两种
+    （Codex P2 第三十轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(f'停止{aspect}{space}播放的晴天') is True
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False

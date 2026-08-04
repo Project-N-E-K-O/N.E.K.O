@@ -283,10 +283,17 @@ _ZH_A_NOT_A_QUESTION_TAIL = "(?:" + "|".join(_zh_a_not_a_forms()) + ")"
 # 单引号括歌名」常见得多，这一格按前者取舍。
 # ⚠️ 弯撇号 `’` 不用管：它在 _QUOTE_PAIRS 里是闭合符，`Don’t` 里出现的正是它，
 # 开引号那一侧只有 `‘`。
+# ⚠️ 直单引号和**弯单引号**都按撇号处理，不进引用体系。
+# 第三轮只排除了直单引号，理由是「弯撇号 `’` 是闭合符，开引号那侧只有 `‘`」——
+# 那在「跨度体不排除闭合符」的时候成立。第三十轮把体内改成排除**所有**定界符
+# 之后就不成立了：`《Don’t好不好》` 里的 `’` 会把跨度截断，标题保护当场失效。
+# 两种撇号在真实歌名/歌手名里都是撇号（Don’t / Guns N' Roses），一起排除。
+# 代价：`‘…’` 括起来的标题不再被识别——跟直单引号那格同一个取舍。
 _ZH_AMBIGUOUS_APOSTROPHE = "'"
+_ZH_AMBIGUOUS_QUOTE_OPENERS = ("'", "‘")
 _ZH_QUOTE_OPENERS = "".join(
     ch for ch in dict.fromkeys(_QUOTE_PAIRS.keys())
-    if ch != _ZH_AMBIGUOUS_APOSTROPHE
+    if ch not in _ZH_AMBIGUOUS_QUOTE_OPENERS
 )
 # ⚠️ 跨度体内**只**排除自己那对定界符，**不排除句末标点**：`《你好吗？》` 是个
 # 合法歌名，把 `？` 挡在外面会让整个跨度匹配不上。后果有两面，第二面更严重：
@@ -297,20 +304,43 @@ _ZH_QUOTE_OPENERS = "".join(
 # 歌名根本不会被切开，所以这里也必须让它整段通过（Codex P2 第七轮）。
 # ⚠️ 排除自己那对定界符这一条不能动——那是第四轮修回溯爆炸的关键，去掉就退回
 # 指数分段。
-_ZH_PAIRED_QUOTED_SPAN = "|".join(
-    f"{opening}[^{opening}{closing}]*{closing}"
+# ⚠️⚠️ 跨度体内要排除**所有**定界符，不能只排除自己那一对。
+# 只排自己那对时，`《晴天」是否合适》` 会被当成一个合法跨度（`」` 不在排除集里），
+# 真正的疑问标记就被藏进了「标题」里，一句提问执行了取消（Codex P2 第三十轮，
+# base 是 False——危险方向）。
+# ⚠️ 但排除所有定界符会打死**嵌套**引用（`《“晴天”好不好》`，第四轮修过），
+# 所以再给体内开一层「完整内嵌跨度」的口子：内层同样排除所有定界符，两层都
+# 按首字符互斥（非定界符 / 某个开引号），仍然是确定性的、线性的。
+_ZH_QUOTE_DELIMS = "".join(
+    dict.fromkeys(
+        [o for o in _QUOTE_PAIRS if o not in _ZH_AMBIGUOUS_QUOTE_OPENERS]
+        + [c for o, c in _QUOTE_PAIRS.items() if o not in _ZH_AMBIGUOUS_QUOTE_OPENERS]
+    )
+)
+_ZH_QUOTED_SPAN_INNER = "|".join(
+    f"{opening}[^{_ZH_QUOTE_DELIMS}]*{closing}"
     for opening, closing in _QUOTE_PAIRS.items()
-    if opening != _ZH_AMBIGUOUS_APOSTROPHE
+    if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS
+)
+_ZH_PAIRED_QUOTED_SPAN = "|".join(
+    f"{opening}(?:[^{_ZH_QUOTE_DELIMS}]|{_ZH_QUOTED_SPAN_INNER})*{closing}"
+    for opening, closing in _QUOTE_PAIRS.items()
+    if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS
 )
 # ⚠️ 写坏的引号要**fail closed**。`我想停止播放《晴天」是否合适` 里 `《` 没有
 # 配对的 `》`，跨度过不去、守卫也就到不了后面的「是否」，一句提问被判成停止命令
 # （Codex P2 第十轮，base 是 False——又是危险方向）。
 # 判据：一个开引号如果**不是某个完整跨度的开头**，就把它当普通字符吃掉。这跟
 # 跨度那一支天然互斥（一个要求能闭合、一个要求不能），不引入歧义。
+# ⚠️ 「不是完整跨度的开头」这个条件必须**与跨度定义逐字一致**。
+# 上一版这里写的是 `(?![^自己那对]*闭)`，而跨度体已经改成排除**所有**定界符——
+# 于是 `《晴天」是否合适》` 两边都不认：跨度那支因为 `」` 断掉，这支又因为末尾
+# 真有个 `》` 而认为它「能闭合」，结果整个前缀过不去、守卫开不了火
+# （Codex P2 第三十轮，危险方向）。两处用同一个体定义就自洽了。
 _ZH_UNPAIRED_QUOTE_OPENER = "|".join(
-    f"{opening}(?![^{opening}{closing}]*{closing})"
+    f"{opening}(?!(?:[^{_ZH_QUOTE_DELIMS}]|{_ZH_QUOTED_SPAN_INNER})*{closing})"
     for opening, closing in _QUOTE_PAIRS.items()
-    if opening != _ZH_AMBIGUOUS_APOSTROPHE
+    if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS
 )
 # ⚠️⚠️⚠️ 这里**不做「并列连接词是边界」那件事**，三轮的账记在这里，别再来第四次。
 #
@@ -624,10 +654,14 @@ _ZH_PROGRESSIVE_ADVERBS = (
     "还在", "還在", "仍在", "仍", "还", "還",
 )
 _ZH_PROGRESSIVE_VERBS = _ZH_PLAYBACK_VERBS
+# ⚠️ 体标记和播放动词之间也可能有空格。Python 后视必须定长，`\s*` 塞不进去，
+# 所以把「有无空格」也做进笛卡尔积——入口的 normalize 把连续空白压成**一个**
+# ASCII 空格，所以只需要 "" 和 " " 两种（Codex P2 第三十轮）。
 _ZH_PROGRESSIVE_LOOKBEHIND = "".join(
-    f"(?<!{adverb}{verb})"
+    f"(?<!{adverb}{sep}{verb})"
     for adverb in _ZH_PROGRESSIVE_ADVERBS
     for verb in _ZH_PROGRESSIVE_VERBS
+    for sep in ("", " ")
 )
 _ZH_PLAYBACK_NOT_NOMINALIZED = (
     # ⚠️ `\s*` 写在**内层前视里面**，不能写成 `的\s*(?!…)`：后者里 `\s*` 会回溯

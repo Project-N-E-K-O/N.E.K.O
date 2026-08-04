@@ -1496,3 +1496,21 @@ def test_an_adverb_may_precede_an_english_rewrite_verb(adverb, verb):
     assert router._chat_text_requests_full_rewrite(
         '把整个卡的全部 nickname重写'
     ) is False
+
+
+@pytest.mark.parametrize("suffix", ["一下", "一遍", "吧", "了", "一次"])
+@pytest.mark.parametrize("verb", ["rewrite", "regenerate"])
+def test_a_chinese_suffix_may_follow_an_english_rewrite_verb(verb, suffix):
+    """⚠️ 右边界不能用 `\b`：汉字也是 Unicode 词字符，`\b` 在 `rewrite一下` 的
+    e/一 之间**不成立**，于是中英混写被挡掉（Codex P2 第三十轮，base 是 True）。
+    这里要拒的只是拉丁标识符的续接，所以用 `(?![A-Za-z0-9_])`。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'把所有字段 {verb}{suffix}'
+    ) is True
+    # 反向：拉丁续接照旧被挡（否则 P1 从这条路回来）。
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的全部 {verb}X重写'
+    ) is False
