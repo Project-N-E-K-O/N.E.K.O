@@ -153,7 +153,11 @@ async def _make_hub(ctx: _FakeCtx) -> LiveEventsModule:
     async def _nosleep(_delay: float) -> None:  # 单测不真的等冷却窗口
         return None
 
+    async def _yield_once(_delay: float) -> None:
+        await asyncio.sleep(0)
+
     hub._sleep = _nosleep
+    hub._ambient_sleep = _yield_once
     return hub
 
 
@@ -685,6 +689,66 @@ async def test_co_stream_new_snapshot_waits_for_previous_session_clear():
     await refresh
 
     assert [item["expired"] for item in dispatcher.messages] == [False, True, False]
+    assert dispatcher.messages[-1]["session_key"].startswith("8:")
+    await hub.teardown()
+
+
+async def test_co_stream_new_snapshot_waits_for_cancel_resistant_old_publish():
+    class CancellationResistantDispatcher(_FakeAmbientDispatcher):
+        def __init__(self) -> None:
+            super().__init__()
+            self.old_publish_started = asyncio.Event()
+            self.release_old_publish = asyncio.Event()
+            self._hold_first_publish = True
+
+        async def push_ambient_room_context(
+            self,
+            text: str,
+            *,
+            session_key: str,
+            expired: bool = False,
+        ) -> str:
+            if not expired and self._hold_first_publish:
+                self._hold_first_publish = False
+                self.old_publish_started.set()
+                try:
+                    await self.release_old_publish.wait()
+                except asyncio.CancelledError:
+                    await self.release_old_publish.wait()
+            return await super().push_ambient_room_context(
+                text,
+                session_key=session_key,
+                expired=expired,
+            )
+
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx.config.co_stream_output_policy = "off"
+    ctx._live_session_generation = 7
+    dispatcher = CancellationResistantDispatcher()
+    ctx.dispatcher = dispatcher
+    hub = await _make_hub(ctx)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    hub._ambient_sleep = no_sleep
+    hub.submit(_danmaku("42", text="old-session"))
+    await dispatcher.old_publish_started.wait()
+
+    ctx._live_session_generation = 8
+    hub.reset()
+    hub.schedule_session_context_refresh()
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await asyncio.sleep(0)
+    assert dispatcher.messages == []
+
+    dispatcher.release_old_publish.set()
+    await refresh
+
+    assert [item["expired"] for item in dispatcher.messages] == [False, True, False]
+    assert dispatcher.messages[0]["session_key"].startswith("7:")
     assert dispatcher.messages[-1]["session_key"].startswith("8:")
     await hub.teardown()
 

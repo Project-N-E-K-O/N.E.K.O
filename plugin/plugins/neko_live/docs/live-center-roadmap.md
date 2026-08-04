@@ -65,7 +65,7 @@ Independent Mode 的产品命题、Slice 顺序、MVP、非目标和内测节奏
 30. 2026-07-07 已完成回复链路收缩：直播专用最终输出治理不再推进到主程序核心，插件只通过 `NekoDispatcher`、prompt contract、request metadata、recent-output 负例和 Dashboard / Monitor 只读投影约束直播效果；`live_events` 内置选择性回复，`activity_level=quiet` 会派生更严格的 `reply_selection_policy=quiet`，`standard/active` 仍只跳过低价值弹幕，不新增与直播风格重复的 `reply_selection_mode`。下一步先真实直播复盘低价值弹幕过滤、头像/UID 过度锐评、prompt token 和延迟，再决定 UI 是否展示更多只读解释字段。
 31. 2026-07-07 已完成 B 站 ingest 写能力收口：`modules/bili_live_ingest/danmaku_core.py` 删除旧 `DanmakuListener.send_danmaku()`，并用 `test_bili_live_ingest_stays_readonly` 锁住只读边界，防止 `msg/send`、csrf 写 payload 或 `danmaku_max_length` 这类发送配置回流到监听器。`bili_live_ingest` 只负责连接、查询、事件归一和 EventBus 发布；未来写弹幕、评论、动态、私信等能力必须单独进入 `bili_write_tools`，并和 P5 登录态 / 权限 / 安全评审一起拆 PR。
 32. 2026-07-14 已完成主播面板重构：普通导航收敛为“控制台 / 直播间互动 / 观众 / 设置”，开发者工具按模式条件显示；控制台承载账号、直播间二次确认、节奏与唯一开始 / 结束直播主动作；互动模块使用稳定卡片和详情弹窗；观众页分离本场数据与安全画像；设置页分离安全、隐私和帮助。
-33. 2026-07-15 已补齐账号兜底运行时契约：`connect_live_room` 的 UI、action schema、runtime API 和压力工具统一传递严格布尔值 `allow_accountless`；B 站登录缺失、失效或无法校验时默认 fail closed，只有本次调用显式确认才进入 `limited_accountless`，连接快照公开 `auth_mode`，停止连接即清空且不落盘；抖音明确拒绝匿名兜底。聚焦回归覆盖默认拒绝、显式允许、有效登录优先、校验异常、参数类型和平台边界。
+33. 2026-08-04 已移除早期的 B 站单次无账号兜底：`connect_live_room` 的 UI、action schema、runtime API 和压力工具不再暴露绕过登录的参数；B 站登录缺失、失效或无法校验时一律 fail closed，provider 入口也要求 runtime 已装载凭据。连接快照只保留 `authenticated` / `provider_managed` / `unknown`，聚焦回归覆盖默认拒绝、有效登录、校验异常和 provider 防绕过。
 34. 2026-07-17 已完成当前礼物调度器离线收尾：`live_support_events` 现在以有界优先队列串行调度支持事件，隔离 provider 事件去重、连击单调更新、迟到结束包、队列淘汰后的可重试性、同观众同礼物的安全轻量聚合、审计写入故障和切场 / close 后迟到任务；主播主题与直播节奏弹窗也会从成功保存后的本地配置重新打开，不再回退到旧值。持久礼物账本、诊断事件日志、完整拥塞 / 公平 / 熔断状态机仍是后续独立评审的长期目标，不属于本阶段收尾。
 35. 2026-07-21 已完成下一阶段直播间上下文的本地盘点、`RoomPulse v0`、紧凑提示、独播 `SceneState v0` 和纯插件联播被动上下文验证：现有 `RecentChatBuffer` 继续负责精确近期事实，`RoomTopicContext` 的 45 秒 / 80 候选主题窗口直接提供隐私安全的直播间态势状态，不新增第三个原始弹幕队列。联播普通弹幕使用同 key 可替换的隐藏 `read` 快照；当前所有 provider 已验证支持事件仍进入同一个有界主动致谢 scheduler，并额外保留被动事实影子。可靠 host-turn 到位后的联播发言权 Slice 仍未实施，`co_stream` 保持 `enforced=false`；详见 [`modules/live_room_context.md`](modules/live_room_context.md)。
 36. 2026-08-03 已完成插件侧可靠性收口：`SupportEventScheduler` 复用现有单 worker，以稳定 task ID、原子 current owner、身份校验和最多 32 条脱敏历史区分 `current` / `retroactive` / `stray`，异常或取消按身份释放且不自动重试；提示词覆盖层共用一个 runtime lock，意外断线的旧 restore 不能覆盖新会话；pipeline 明确写入真实 `response_module_hint`，公开字段、入口 payload、异常和 audit 均按有界脱敏投影处理。该能力只证明插件完成派发提交，不能证明模型、TTS 或浏览器播放完成。
@@ -104,7 +104,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 本节只保留路线图相关的决策摘要。宿主 / SDK 侧历史问题、配置写竞争、storage layout、message plane 等事故记录以 `devlog.md` 和 `development.md` 对应章节为准。
 
-- **吞并策略**：取 `bilibili_danmaku` 的**连接+解析层**（`danmaku_core`/`livedanmaku`，含匿名 WS、WBI 签名、临时 buvid3 反 -352 风控、zlib/brotli 解压、心跳、多服务器故障转移、断线重连）；**弃**其自带 LLM/orchestrator/memory（neko_live 走 `dispatcher → main_server` 统一人设）。参照系：弹幕姬 `copyliu/bililive_dm` 的小插件契约（4 事件 + 统一模型 + 故障隔离）作为未来扩展点设计蓝本。
+- **吞并策略**：取 `bilibili_danmaku` 的**连接+解析层**（`danmaku_core`/`livedanmaku`，含登录 WS、WBI 签名、buvid3 补齐、zlib/brotli 解压、心跳、多服务器故障转移、断线重连）；**弃**其自带 LLM/orchestrator/memory（neko_live 走 `dispatcher → main_server` 统一人设）。当前 runtime、provider 与 listener start 三层都要求登录凭据。参照系：弹幕姬 `copyliu/bililive_dm` 的小插件契约（4 事件 + 统一模型 + 故障隔离）作为未来扩展点设计蓝本。
 - **弹幕不含头像**：B站 DANMU_MSG 无头像 URL；头像由下游 `bili_identity` **按 UID 抓取**。
 - **配置写竞争（反复咬人）**：host 的 `update_own_config` 持久化曾偶发卡 10s 超时（咬过 dev 模式切换、disconnect）。`connect/disconnect_live_room` 已改为**内存直设 `live_enabled`**（gate/safety 共享同一 config 对象，即时生效）绕开；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支。
   - **2026-06-16 P2.5 真机验证时复现并确认更严重**：在「只重后端不重前端」的环境下（正是 §6 警告的触发条件），`update_config{dry_run}` 和 `connect_live_room`（其内部 `set_live_room` 仍走 `update_config` 持久化 `live_room_id`）**稳定** 500 / `Entry timed out after 10.0s`，且 `runtime.update_config` 的 except 内存兜底**没机会跑**（host 在兜底前就杀了 entry，audit 无 `config_persist_failed`）。即 connect 当前也会被这个 race 卡住，不止「偶发」。
@@ -138,7 +138,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 1. ~~**值优选策略**：爆量时全评 / `get_score` 优选 / 采样？~~ ✅ **已定**：`get_score` 开窗优选 + 首评即时（P2.5 已落地，见 development.md「直播事件中枢」）。
 2. **`automation_ops` 归属**：仅在未来重新立项主播自动化时再拍板；当前不做浏览器或键鼠自动化。
-3. ~~**登录态 cookie 怎么拿/存**~~ ✅ **已定**：B 站扫码登录凭据只经 `CredentialStore` 加密落盘，公开状态只回显安全账号信息；无账号兜底必须由本次连接显式确认。平台写能力若未来立项仍需独立权限评审。
+3. ~~**登录态 cookie 怎么拿/存**~~ ✅ **已定**：B 站扫码登录凭据只经 `CredentialStore` 加密落盘，公开状态只回显安全账号信息；直播监听必须登录，不提供无账号兜底。平台写能力若未来立项仍需独立权限评审。
 4. **退役旧 `bilibili_danmaku`**（与 NEKO Live 同房间会双连冲突）：2026-06-16 只完成了旧 `from_danmaku` 字段错位修复；当前代码中的 README/manifest 并没有真实弃用横幅，插件仍可加载和手动启动。直播连接、解析和扫码登录已迁入；47 个公开入口与内部能力的迁移矩阵已于 2026-07-17 完成。当前先处理矩阵中的获批吸收项和独立插件取舍，完成前不得删除 41 个 tracked 文件。
 5. ~~**配置写竞争根治**（host 级，可能与在途 WIP 相关）~~ ✅ **插件侧已根治症状**（`update_config` 内存先行 + 带预算尽力持久化，见 §5 与 development.md「配置持久化与写竞争」）；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支。
 
@@ -203,7 +203,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 4. ~~**P2.5 完整版（事件中枢地基）**：`LiveEvent` 统一信封、`EventBus` 真订阅分发（隔离 + 归属 + audit）、`InteractionModule` 补 `on_enable/on_disable`、窗口择优扩到 gift/SC/guard~~ ✅（见 §4「事件中枢地基」+ development.md「直播事件中枢（EventBus）」）。
 5. **P4 档案 / 记忆**：安全画像 v1 已落地弹幕计数、偏好标签计数、常聊话题、接梗提示、互动风格 / 回复偏好、短摘要、避坑提示和运行时派生投影；普通观众页提供精简摘要、详情、重置印象与删除档案，设置页提供默认开启的个性化开关、90 天说明和清空全部档案。`contribution_rank`、`watch_time` 暂不进入当前版本；未来若新增仍须单独确认产品价值、采集可信度和隐私成本，并继续遵守“不存原始弹幕 / raw payload / token / cookie / 可反推私密内容长文本”的边界。
-6. **P5 登录与显式无账号兜底校验已落地；私信 / 写能力不在当前范围**：B 站扫码登录已能加密保存凭据并服务 lookup、头像和监听；未登录时 runtime 只接受本次调用显式确认的受限兜底。未来 `bili_dm_ingest`（收）与 `bili_write_tools`（发）若重新立项，仍须独立做权限、登录态和安全评审，不得因为已有登录就默认开放写能力。
+6. **P5 登录与强制认证边界已落地；私信 / 写能力不在当前范围**：B 站扫码登录已能加密保存凭据并服务 lookup、头像和监听；未登录时 runtime 与 provider 都拒绝建立监听。未来 `bili_dm_ingest`（收）与 `bili_write_tools`（发）若重新立项，仍须独立做权限、登录态和安全评审，不得因为已有登录就默认开放写能力。
 7. **P6 主播自动化不在当前范围**：未来若重新立项 `automation_ops`，先做授权、撤销、成本和安全边界评审；当前不执行浏览器或键鼠自动化。
 8. **收官：删除 bilibili_danmaku**：47 个入口与内部分析/存储能力的迁移矩阵已完成，但获批迁移和独立插件取舍尚未关闭。确认剩余能力均已替代、迁移或明确废弃后，再从最新 `main` 建独立分支删除 41 个 tracked 文件，并迁移构建注释和通用测试夹具引用。不得把删除混入功能迁移 PR。
 

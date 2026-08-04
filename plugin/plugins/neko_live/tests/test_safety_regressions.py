@@ -17,6 +17,7 @@ from plugin.plugins.neko_live.core.permission_gate import PermissionGate
 from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.pipeline_failure_results import fail_dispatcher
 from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
+from plugin.plugins.neko_live.modules import bili_identity as bili_identity_module
 from plugin.plugins.neko_live.modules.bili_identity import BiliIdentityModule
 
 
@@ -491,6 +492,31 @@ async def test_bili_identity_skips_avatar_download_when_analysis_is_disabled():
 
 
 @pytest.mark.asyncio
+async def test_bili_identity_skips_profile_lookup_for_avatar_when_analysis_is_disabled():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            avatar_analysis_enabled=False,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+
+    async def fail_profile(_uid: str) -> dict:
+        raise AssertionError("disabled avatar analysis must not fetch an avatar URL")
+
+    module._fetch_profile_by_uid = fail_profile  # type: ignore[method-assign]
+
+    identity = await module.resolve(
+        ViewerEvent(uid="7", nickname="viewer", source="live_danmaku")
+    )
+
+    assert identity.nickname == "viewer"
+    assert identity.avatar_url == ""
+
+
+@pytest.mark.asyncio
 async def test_bili_identity_support_resolution_skips_unneeded_profile_and_image_fetch():
     module = BiliIdentityModule()
     module.ctx = SimpleNamespace(
@@ -564,6 +590,76 @@ async def test_bili_identity_support_resolution_may_fetch_name_without_image_byt
     assert identity.nickname == "supporter"
     assert identity.avatar_url == "https://i0.hdslb.com/avatar.png"
     assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_profile_hint_cache_is_bounded_public_and_expires(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_module_clock,
+):
+    clock = [100.0]
+    patch_module_clock(
+        monkeypatch,
+        bili_identity_module,
+        monotonic=lambda: clock[0],
+    )
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            avatar_analysis_enabled=True,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+    profile_calls = 0
+
+    async def fetch_profile(uid: str) -> dict:
+        nonlocal profile_calls
+        profile_calls += 1
+        return {
+            "name": f"viewer-{uid}",
+            "face": f"https://i0.hdslb.com/{uid}.png",
+            "pendant": "public-pendant",
+            "email": "must-not-be-cached@example.invalid",
+        }
+
+    module._fetch_profile_by_uid = fetch_profile  # type: ignore[method-assign]
+
+    first = await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+    second = await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+
+    assert first.nickname == second.nickname == "viewer-7"
+    assert profile_calls == 1
+    assert module.status()["profile_hint_cache"] == {
+        "items": 1,
+        "max_items": 128,
+        "ttl_seconds": 900.0,
+        "hits": 1,
+        "misses": 1,
+    }
+    assert "email" not in next(iter(module._profile_hints.values()))[1]
+
+    clock[0] += 901.0
+    await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+    assert profile_calls == 2
+
+    for index in range(128):
+        await module.resolve(
+            ViewerEvent(uid=str(1000 + index), nickname="", source="live_danmaku"),
+            fetch_avatar_image=False,
+        )
+    assert len(module._profile_hints) == 128
+    assert "7" not in module._profile_hints
 
 
 @pytest.mark.asyncio

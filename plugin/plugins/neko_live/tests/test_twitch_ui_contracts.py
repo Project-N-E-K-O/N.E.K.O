@@ -96,6 +96,20 @@ def test_twitch_validation_copy_requires_a_configured_client_id() -> None:
         assert 'twitchAuthorizationUnverified ? t("panel.twitchAuth.validating")' not in source
 
 
+def test_twitch_validation_discards_late_results_after_scope_changes() -> None:
+    for filename in ("panel.tsx", "panel_compat.tsx"):
+        source = (ROOT / "ui" / filename).read_text(encoding="utf-8")
+        validation_effect = source.split('props.api.call("twitch_credential_validate")', 1)[1].split(
+            "async function callSimple", 1
+        )[0]
+
+        assert "return () => {" in validation_effect
+        assert "if (twitchValidationGenerationRef.current === generation)" in validation_effect
+        assert "twitchValidationGenerationRef.current += 1" in validation_effect
+        assert "if (twitchValidationClientRef.current === clientId)" in validation_effect
+        assert 'twitchValidationClientRef.current = ""' in validation_effect
+
+
 def test_all_locales_define_twitch_panel_action_and_entry_copy() -> None:
     required = {
         "panel.platform.twitch",

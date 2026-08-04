@@ -2,7 +2,7 @@
 
 ## Status
 
-`RoomPulse v0`, its compact prompt projection, solo-only `SceneState v0`, the co-stream passive-context slice, session-scoped `RitualMemory v0`, and `RoomVerdict v0` are implemented in the current plugin baseline. They are tracked through the consolidated live-plugin acceptance work rather than a module-specific PR status. The host has a three-state floor gate, but the managed `pause` short-form path is not yet reachable; RoomVerdict also lacks playback-completion backflow.
+`RoomPulse v0`, its compact prompt projection, solo-only `SceneState v0`, the co-stream passive-context slice, session-scoped `RitualMemory v0`, and `RoomVerdict v0` are implemented in the current plugin baseline. They are tracked through the consolidated live-plugin acceptance work rather than a module-specific PR status. The plugin does not consume host floor state or declare a pause short form; RoomVerdict also lacks playback-completion backflow.
 
 The prompt slices change only the context of an output that the existing selection and scheduling paths already chose. The co-stream passive slice adds one bounded debounce task and same-key queue replacement, but no automatic turn, model call, network request, timer-based expiry, or speaking authority.
 
@@ -99,6 +99,8 @@ The scene renderer assists only already selected solo-stream viewer responses. I
 
 Ordinary co-stream danmaku always refreshes passive room context; when `co_stream_output_policy=auto_low_interrupt`, an independently selected item may also request one bounded active reply through the normal safety/cooldown path. The fixed three-entry session tail and latest two provider-verified support facts are formatted as one hidden `ai_behavior="read"` snapshot. The snapshot uses stable positional labels rather than moving ages, has no freshness timer, and is replaced only by a newer same-key snapshot or session reset. The host-side passive bridge queues it without requesting a response or advancing a hot swap; delivery waits for the next natural user turn or already-occurring safe session swap.
 
+Manual pause suppresses passive publication but does not discard the bounded session facts. When the operator resumes an active co-stream session, the control path asks the existing one-second debounce to refresh the authoritative snapshot. If nothing changed, the normal unchanged-text gate emits no host submission; otherwise exactly one coalesced `read` replacement is submitted. This adds no worker, speaking turn, retry, or provider request.
+
 Support behavior is mode- and tier-aware:
 
 - `solo_stream`: existing proactive selected danmaku and support behavior is unchanged;
@@ -128,6 +130,9 @@ A snapshot is now retired only at a session boundary; same-key coalescing keeps
 just the newest one pending. A newly connected co-stream session also queues one
 same-path empty snapshot, so a session with no observed danmaku has an explicit
 fact state instead of inheriting the apparent facts of an older conversation.
+Reset serializes any cancellation-resistant old submission before its tombstone,
+and serializes that tombstone before the new snapshot. A late old completion may
+finish transport submission but cannot reclaim current-session local state.
 
 The snapshot marks viewer text as untrusted data. Every usable danmaku row is
 also explicitly marked `权威`; the live-scene instruction permits current,
@@ -205,7 +210,7 @@ proactive speech.
   the passive context degrades to the live-scene refusal rule, not a tool call or
   forced response.
 - **Required verification:** formatter bounds and source exclusions, empty-state
-  publication, selected-row positional stability and reply-state marking,
+  publication, selected-row positional stability and selection-state marking,
   session-start scheduling, live-scene instruction contract, burst coalescing,
   the full plugin test suite, and plugin package check.
 

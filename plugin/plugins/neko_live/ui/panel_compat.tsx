@@ -1321,7 +1321,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
   const [sessionStartAccepted, setSessionStartAccepted] = useState(false)
   const [startConfirmOpen, setStartConfirmOpen] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
-  const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [safetyDisableConfirmOpen, setSafetyDisableConfirmOpen] = useState(false)
@@ -1637,7 +1636,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
       live_room_id: configForm.values.live_room_id,
       live_enabled: configForm.values.live_enabled,
     }
-    setAllowLimitedConnection(false)
     configForm.setField("live_platform", next)
     configForm.setField("live_room_ref", "")
     configForm.setField("live_room_id", "")
@@ -1727,7 +1725,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
     try {
       const result = unwrapActionResult(await props.api.call("connect_live_room", {
         room_id: roomRef,
-        allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection,
       }))
       const nextConnection = result.connection || result
       const nextState = String(nextConnection.state || "")
@@ -1758,7 +1755,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
       setLoginState(result)
       if (result.status === "qrcode_ready") toast.info(t("panel.auth.scanHint"))
       else if (result.logged_in || result.status === "already_logged_in" || result.status === "done") {
-        setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loggedIn"))
         await refreshDashboard(true)
       }
@@ -1776,7 +1772,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
       const result = unwrapActionResult(await props.api.call("bili_login_check"))
       setLoginState(result)
       if (result.status === "done" || result.logged_in) {
-        setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loginDone"))
         await refreshDashboard(true)
       } else if (result.message) {
@@ -1795,7 +1790,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
     try {
       const result = unwrapActionResult(await props.api.call("bili_logout"))
       setLoginState(result)
-      setAllowLimitedConnection(false)
       toast.success(t("panel.auth.logoutDone"))
       await refreshDashboard(true)
     } catch (err) {
@@ -2084,6 +2078,14 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
         }
       }
     })()
+    return () => {
+      if (twitchValidationGenerationRef.current === generation) {
+        twitchValidationGenerationRef.current += 1
+      }
+      if (twitchValidationClientRef.current === clientId) {
+        twitchValidationClientRef.current = ""
+      }
+    }
   }, [consoleDialog, configForm.values.live_platform, configForm.values.twitch_client_id, twitchAuthState?.authorization_state])
 
   async function callSimple(action: string) {
@@ -2215,13 +2217,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
     }
   }
 
-  function enableLimitedConnection() {
-    if (authPending || sessionInProgress) return
-    setAllowLimitedConnection(true)
-    setConsoleDialog("")
-    toast.warning(t("panel.console.limitedEnabled"))
-  }
-
   function completeOnboarding() {
     try {
       window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "done")
@@ -2351,12 +2346,8 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
   )
   const consoleState = connectPending || connectionTransitioning ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
   const accountReady = livePlatform === "douyin" ? douyinLoggedIn : livePlatform === "twitch" ? twitchLoggedIn : loginLoggedIn
-  const connectionAuthMode = String(connection.auth_mode || "unknown")
-  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && (
-    allowLimitedConnection || connectionAuthMode === "limited_accountless"
-  )
-  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection
-  const accountStartReady = livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : livePlatform === "twitch" ? twitchLoggedIn : douyinLoggedIn
+  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn
+  const accountStartReady = livePlatform === "bilibili" ? loginLoggedIn : livePlatform === "twitch" ? twitchLoggedIn : douyinLoggedIn
   const savedCooldownSeconds = Number(config.rate_limit_seconds ?? configForm.values.rate_limit_seconds ?? 20)
   const liveSettingsReady = Boolean(String(config.live_mode || configForm.values.live_mode || "").trim()) && Number.isFinite(savedCooldownSeconds) && savedCooldownSeconds >= 0
   const unsafeSafetyStates = new Set(["paused", "tripped", "degraded"])
@@ -2379,7 +2370,7 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
         ? t("panel.console.state.error")
         : !roomConfigured
           ? t("panel.console.roomMissing")
-          : (!accountReady && !limitedConnection)
+          : !accountReady
             ? t("panel.console.loginRequired")
             : canStart
               ? t("panel.liveStatusSummary.ready_to_stream")
@@ -2395,7 +2386,7 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
   const showSafetyStatus = started || (!!safetyStatus && safetyStatus !== "disconnected" && safetyStatus !== "unknown")
   const accountLabel = accountReady
     ? (livePlatform === "douyin" ? (douyinNickname || douyinUid || t("panel.douyinAuth.cookieReady")) : livePlatform === "twitch" ? (twitchLogin || twitchUserId || t("panel.twitchAuth.authorized")) : (loginName || loginUid || t("panel.auth.loggedIn")))
-    : (limitedConnection ? t("panel.console.limitedConnection") : t("panel.auth.loggedOut"))
+    : t("panel.auth.loggedOut")
   const modules = Array.isArray(safeState.modules) ? safeState.modules : []
 
   const streamThemeForm = (
@@ -2527,7 +2518,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
                       : t("panel.console.readyHint")}
           </Text>
           {loginRequired && !started ? <Alert tone="info">{t("panel.console.loginRequiredHint")}</Alert> : null}
-          {limitedConnection && !started ? <Alert tone="warning">{t("panel.console.limitedHint")}</Alert> : null}
           <Grid cols={2}>
             <Button tone="default" onClick={() => { openConsoleDialog("theme") }}>{t("panel.streamTheme.title")}</Button>
             <Button tone="default" onClick={() => { openConsoleDialog("pacing") }}>{t("panel.pacing.title")}</Button>
@@ -2654,10 +2644,7 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
             <Stack>
               <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} disabled={sessionInProgress || !!authPending} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
               {!loginLoggedIn ? (
-                <Stack gap={8}>
-                  <Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert>
-                  <Button tone="warning" disabled={!!authPending || sessionInProgress} onClick={enableLimitedConnection}>{t("panel.console.useLimitedConnection")}</Button>
-                </Stack>
+                <Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert>
               ) : null}
             </Stack>
           )}

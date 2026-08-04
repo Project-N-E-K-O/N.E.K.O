@@ -152,7 +152,7 @@ class DanmakuListener:
     def __init__(
         self,
         room_id: int,
-        credential=None,
+        credential: Any = None,
         logger=None,
         callbacks: Dict[str, Callable] = None,
     ):
@@ -167,7 +167,7 @@ class DanmakuListener:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._ready_event = asyncio.Event()
         self._authenticated_in_attempt = False
-        self._buvid3_temp: str = ""  # 临时 buvid3，无凭据时从 B站首页获取
+        self._buvid3_temp: str = ""  # 已登录凭据缺少 buvid3 时，从 B站首页临时补齐。
 
         # 连接状态
         self._connection_state = ConnectionState.DISCONNECTED
@@ -370,7 +370,7 @@ class DanmakuListener:
                         self.credential.buvid3 = buvid3
                     except Exception as e:
                         self._log(f"credential buvid3 writeback failed: {e}", "debug")
-                # 即使没有 credential 也记下来
+                # 记住临时补齐的 buvid3，供本次已登录连接的认证包使用。
                 self._buvid3_temp = buvid3
 
             headers = {
@@ -1022,6 +1022,8 @@ class DanmakuListener:
 
     async def start(self):
         """启动监听（带自动重连，直到 stop() 被调用）"""
+        if self.credential is None:
+            raise ValueError("Bilibili credential is required")
         # 重置停止事件和直播结束标记
         self._stop_event.clear()
         self._ready_event.clear()

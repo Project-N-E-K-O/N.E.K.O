@@ -46,7 +46,7 @@
 | 11 | `set_target_lanlan` | 已由 NEKO Live 替代 | 正常输出从宿主上下文解析目标；只有开发者沙盒允许显式 `target_lanlan`，不保留普通用户全局 setter。 |
 | 12 | `set_master_bili_account` | 应吸收 | 吸收为“主播账号身份保护”，但维护者已决定延期。未来只从已验证登录凭据派生 UID，并要求显式确认；不得让 owner/master 关系进入 prompt，也不新增自由文本姓名匹配。详细契约见 `development.md`「延期能力：主播账号身份保护」。 |
 | 13 | `set_danmaku_max_length` | 应拆独立插件 | 该字段只服务 B站发弹幕；跟随未来 `bili_write_tools`，不回流只读 ingest 或直播回复字数契约。 |
-| 14 | `connect` | 已由 NEKO Live 替代 | `connect_live_room` 具备登录/匿名兜底校验、房间 ownership 与监听生命周期保护。 |
+| 14 | `connect` | 已由 NEKO Live 替代 | `connect_live_room` 强制校验登录凭据，并具备房间 ownership 与监听生命周期保护。 |
 | 15 | `disconnect` | 已由 NEKO Live 替代 | `disconnect_live_room` 与会话任务回收已覆盖。 |
 | 16 | `open_ui` | 已由 NEKO Live 替代 | 插件中心 Hosted UI 已提供控制台、互动、观众、设置和开发者工具。 |
 

@@ -267,14 +267,10 @@ Initial dispatcher outcomes:
 - `failed`: Dispatcher attempted the output boundary and hit an unexpected error.
 
 In co-stream, the request may additionally declare forward-compatible delivery metadata
-(`delivery_ttl_seconds`, `interrupt_policy`, `delivery_key`, `compensation_text`,
-`compensation_ttl_seconds`, `brief_text`). These are declarations, not outcomes. The
-current `neko-live` host safely ignores these unknown fields and does not expose lifecycle,
-floor-selection, or compensation results. The narrowed
-[RFC #2491](https://github.com/Project-N-E-K-O/N.E.K.O/issues/2491) adds only generic
-per-cue TTL plus host-internal voice/ownership safety; it does not define a plugin-visible
-lifecycle or consume the other five fields. Until that host change lands, TTL is still a
-declaration rather than an observed outcome. See `modules/live_support_events.md`
+(`delivery_ttl_seconds`, `interrupt_policy=drop`). These are declarations, not outcomes.
+The plugin does not emit compensation, replay/idempotency, or floor-dependent short-form
+metadata, and the host exposes no plugin-visible playback lifecycle. TTL and drop policy
+must never be projected as audible completion. See `modules/live_support_events.md`
 「Delivery Policy」.
 
 High-value events must still end in one of these outcomes. They must not directly produce output outside Dispatcher.
@@ -431,7 +427,7 @@ The co-stream passive-context validation path exposes only bounded lifecycle cou
 - `ambient_publish_suppressed_count`: snapshot attempts omitted by live, session, Safety Guard, output-channel, unchanged-content, or failure gates.
 - `ambient_publish_last_reason`: latest stable gate/result reason such as `queued`, `unchanged`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, or a bounded failure type.
 - `ambient_hook_candidate_reads` / `ambient_hook_candidate_hits`: bounded local callback-selection evaluations and successful winners.
-- `ambient_hook_last_reason`: one allowlisted selector outcome: `selected.chorus`, `selected.continuity`, `selected.question`, `selected.mood`, `selected.complete`, `no_candidates`, `already_replied`, `duplicate_or_flood`, `low_value`, `fragment`, or `no_suitable`.
+- `ambient_hook_last_reason`: one allowlisted selector outcome: `selected.chorus`, `selected.continuity`, `selected.question`, `selected.mood`, `selected.complete`, `no_candidates`, `already_selected`, `duplicate_or_flood`, `low_value`, `fragment`, or `no_suitable`. `already_selected` records active-path selection only; it is not submission or playback evidence.
 - `ambient_hook_last_score` / `ambient_hook_last_candidate_count`: non-negative integer winner score and eligible-candidate count. They expose neither rank input nor viewer content.
 
 These fields are diagnostics, not proof that the model consumed the context or that an active support acknowledgement was audible. No callback text, nickname, UID, assistant output, summary, viewer profile, or historical memory is copied into status or audit. Dispatcher `pushed` records only the handoff of a request that passed `core/safety_guard.py` and `adapters/neko_dispatcher.py`; it is not playback confirmation and does not authorize direct `plugin.push_message` calls. Session-reset clearing uses the previous session's coalescing key and does not copy viewer text into audit.

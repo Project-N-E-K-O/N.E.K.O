@@ -267,7 +267,10 @@ class LiveEventsModule(BaseModule):
 
     def reset(self) -> None:
         """清空缓冲并取消待触发的窗口。断开直播间时调用，避免迟到的择优在断开后误投。"""
-        self._schedule_ambient_context_clear()
+        ambient_refresh_task = self._ambient_refresh_task
+        if ambient_refresh_task is not None and not ambient_refresh_task.done():
+            ambient_refresh_task.cancel()
+        self._schedule_ambient_context_clear(predecessor=ambient_refresh_task)
         flush_task = self._flush_task
         if flush_task is not None and not flush_task.done():
             flush_task.cancel()
@@ -597,12 +600,23 @@ class LiveEventsModule(BaseModule):
         ):
             self._record_ambient_publish_suppression("unchanged")
             return False
-        await push(
-            text,
-            session_key=session_key,
-            expired=False,
-        )
+        # Register in-flight ownership before awaiting the SDK boundary so a
+        # session reset can serialize a tombstone behind even a cancellation-
+        # resistant submission. A late completion must not reclaim state.
         self._ambient_active_session_key = session_key
+        try:
+            await push(
+                text,
+                session_key=session_key,
+                expired=False,
+            )
+        except BaseException:
+            if self._ambient_active_session_key == session_key:
+                self._ambient_active_session_key = ""
+            raise
+        if self._ambient_active_session_key != session_key:
+            self._record_ambient_publish_suppression("superseded")
+            return False
         self._ambient_last_published_text = text
         self._ambient_publish_count += 1
         # The SDK boundary is fire-and-forget: this means submitted to the
@@ -660,7 +674,11 @@ class LiveEventsModule(BaseModule):
         )[:48]
         return f"{generation}:{room}"
 
-    def _schedule_ambient_context_clear(self) -> None:
+    def _schedule_ambient_context_clear(
+        self,
+        *,
+        predecessor: asyncio.Task[Any] | None = None,
+    ) -> None:
         session_key = self._ambient_active_session_key
         if not session_key or self.ctx is None:
             return
@@ -674,7 +692,11 @@ class LiveEventsModule(BaseModule):
             return
         self._ambient_active_session_key = ""
         task = loop.create_task(
-            self._clear_ambient_context(push, session_key=session_key)
+            self._clear_ambient_context(
+                push,
+                session_key=session_key,
+                predecessor=predecessor,
+            )
         )
         self._ambient_clear_tasks.add(task)
         task.add_done_callback(self._ambient_clear_tasks.discard)
@@ -684,8 +706,11 @@ class LiveEventsModule(BaseModule):
         push: Any,
         *,
         session_key: str,
+        predecessor: asyncio.Task[Any] | None = None,
     ) -> None:
         try:
+            if predecessor is not None and predecessor is not asyncio.current_task():
+                await asyncio.gather(predecessor, return_exceptions=True)
             await push(
                 self._ambient_context.expiry_marker(),
                 session_key=session_key,

@@ -200,14 +200,11 @@ Runtime active engagement API split note: `runtime_active_engagement_api.py` now
 - `pushed`：请求已交给宿主，**不代表已播出、更不代表观众听完**；
 - 当前 `neko-live` 宿主没有端到端播放完成回流。
 
-UI、监控和日志都不得把 `queued` / `pushed` 解释成「猫猫已经回应」。插件会声明
-`delivery_ttl_seconds`、`interrupt_policy`、`delivery_key`、
-`compensation_text`、`compensation_ttl_seconds`、`brief_text`，但当前宿主
-**尚未执行这些字段**，未知 metadata 会被安全忽略。收束后的
-[RFC #2491](https://github.com/Project-N-E-K-O/N.E.K.O/issues/2491)
-只把 `delivery_ttl_seconds` 纳入通用宿主契约；它不建立插件可见 lifecycle，
-也不执行其余五项。具体声明见 `modules/live_support_events.md`
-「Delivery Policy」。在对应宿主改动合入前，文档和 UI 仍不得把 TTL 写成已生效。
+UI、监控和日志都不得把 `queued` / `pushed` 解释成「猫猫已经回应」。同播请求只
+声明 `delivery_ttl_seconds` 和 `interrupt_policy=drop`；插件不再生成或透传
+`delivery_key`、`compensation_text`、`compensation_ttl_seconds`、`brief_text`。
+这些字段仍只是宿主策略声明，不是播放结果。具体边界见
+`modules/live_support_events.md`「Delivery Policy」。
 
 ### 话权决策的未来边界
 
@@ -217,8 +214,8 @@ UI、监控和日志都不得把 `queued` / `pushed` 解释成「猫猫已经回
 opt-in coalesce；它不提供 `held / pause / open` 公共状态，也不选择
 `brief_text`。
 
-插件继续提供完整 cue。`brief_text` 若保留，只是独立未来产品实验的惰性声明，
-不得写成 #2491 或当前宿主能力，更不得在插件内复制话权状态机。
+插件只提供完整 cue，不再声明 `brief_text`。若未来要做换气口短形式，应作为
+独立产品实验重新评审，不得在插件内复制话权状态机。
 
 ### 已退役：`deferred_candidate`
 
@@ -239,7 +236,7 @@ opt-in coalesce；它不提供 `held / pause / open` 公共状态，也不选择
 
 沙盒 UID 查询只返回 UID、昵称 / 名字、邮箱字段、头像 URL、头像 MIME、`has_avatar`，以及头像形态 META（`is_default_avatar`、`is_animated_avatar`、`pendant`）。不返回头像 bytes，不返回 base64 data URL，不写本地长期 preview 文件。
 
-Twitch 首阶段使用用户自备 Client ID 的 Device Code Flow，授权账号与目标频道分离；只接收聊天和聊天中可见的支持事件，不提供平台写能力。凭据、去重、安全投影与降级边界见 [twitch_live_ingest](modules/twitch_live_ingest.md)。
+Twitch 首阶段使用用户自备 Client ID 的 Device Code Flow，授权账号与目标频道分离；只接收聊天和聊天中可见的支持事件，不提供平台写能力。TwitchIO 与具体网络 client 保持懒加载：未连接 Twitch 时，插件启动、B 站直播和 dashboard 不承担这套可选网络栈的常驻内存。凭据、去重、安全投影与降级边界见 [twitch_live_ingest](modules/twitch_live_ingest.md)。
 
 ### 2.4 Provider-neutral update
 
@@ -528,7 +525,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 已启用模块：
 
 - `bili_live_ingest`：归一化直播弹幕事件、提供直播间状态查询（带反 -352 + 友好降级，见「直播间查询与 -352 风控」），并**持有真实弹幕监听器**——吞并自 `bilibili_danmaku` 的 `DanmakuListener`（同目录 `danmaku_core.py` + `livedanmaku.py`：WS 连接 + WBI 签名 + 临时 buvid3 反 -352 + zlib/brotli 解压 + 心跳 + 多服务器故障转移 + 断线重连）。`start_listening` 只有收到 AUTH_REPLY `code=0` 后才返回成功；lifecycle lock + generation 防止快速 start/stop 后旧任务复活，成功认证会重置重试预算，terminal task 会清理引用，迟到 callback 必须按 generation 和当前 platform/provider/room ownership 丢弃。`runtime.connect/disconnect_live_room` 启停监听；`stop_listening` 用 `wait_for` 给 ws close 加超时，避免关闭握手拖慢断开。**富模型 `on_event` 回调把 `LiveDanmaku` 包成 `LiveEvent` 发布到 `event_bus`**（按命令名映射 `type`），由订阅者按类型消费（轻量 `on_danmaku`→pipeline 直连已退役，防同一条弹幕双锐评）。见「直播事件中枢（EventBus）」。登录态（若有）传入 `DanmakuListener` 与 lookup（见「B站登录态」）。弹幕本身不含头像，头像由下游 `bili_identity` 按 UID 抓取。该模块当前是只读 ingest：不保留 `send_danmaku`、`msg/send`、csrf 写入 payload 或弹幕长度裁剪配置；未来发弹幕、评论、动态、私信等写能力只能进入 `bili_write_tools`，并单独做权限、登录态和安全评审。
-- `bili_identity`：解析 UID、昵称、头像 URL；缺少昵称或头像时按 UID 查询 B 站基础资料，并尝试抓取头像供本次 NEKO 视觉输入使用。同时解析头像形态 META：是否默认头像（noface）、是否动图（大会员动态头像，只取代表帧）、挂件/装扮名（出框头像来源）；抓取或识别失败时安全降级（`avatar_vision_ok=False`），不阻断锐评。B站 `*.hdslb.com` 头像通过宿主共享外部 HTTP 客户端读取系统代理，兼容 Windows/Steam 环境的 Clash Fake-IP；请求与最多两次重定向都必须留在该 CDN 后缀、端口限于 80/443，并继续受 1 MiB 下载上限和图片解码检查约束。其它公网头像仍走 DNS 固定后的直连校验，内网、保留地址与不受信重定向保持拒绝。头像缓存同时受 32 项和 4 MiB 总字节预算约束；dispatcher 的视觉输入最长边为 384 px、内联数据不超过 64 KiB。该预算不增加请求、后台任务或模型调用；超限、下载或解码失败时继续回退昵称与弹幕，回滚只需恢复这些本地预算常量。
+- `bili_identity`：解析 UID、昵称、头像 URL；缺少昵称或确实需要头像时按 UID 查询 B 站基础资料，并尝试抓取头像供本次 NEKO 视觉输入使用。公开的昵称 / 头像 URL / 挂件提示使用最多 128 条、15 分钟懒过期的内存提示缓存，约几十 KiB；不缓存邮箱、凭据或原始 provider payload，不增加任务和请求。关闭头像分析后，已有昵称的弹幕不会仅为补头像 URL 查询资料。同时解析头像形态 META：是否默认头像（noface）、是否动图（大会员动态头像，只取代表帧）、挂件/装扮名（出框头像来源）；抓取或识别失败时安全降级（`avatar_vision_ok=False`），不阻断锐评。B站 `*.hdslb.com` 头像通过宿主共享外部 HTTP 客户端读取系统代理，兼容 Windows/Steam 环境的 Clash Fake-IP；请求与最多两次重定向都必须留在该 CDN 后缀、端口限于 80/443，并继续受 1 MiB 下载上限和图片解码检查约束。其它公网头像仍走 DNS 固定后的直连校验，内网、保留地址与不受信重定向保持拒绝。头像字节缓存同时受 32 项和 4 MiB 总字节预算约束；dispatcher 的视觉输入最长边为 384 px、内联数据不超过 64 KiB。该预算不增加请求、后台任务或模型调用；超限、下载或解码失败时继续回退昵称与弹幕，回滚只需恢复这些本地预算常量。
 - `douyin_live_ingest`：抖音只读 live provider。当前负责房间 URL/token 解析、cookie-gated 页面元数据读取、内置 `douyinLive` 本地 bridge 启停、bridge 事件清洗与 `LiveEvent` 发布；页面元数据 fetch timeout 必须有默认值和上限，非法或过大的 timeout 不得原样传给 `urlopen`；页面元数据公开投影只接受标量字段，不把嵌套 HTML/JSON 结构字符串化，且候选必须带数字 webcast room id，否则不投影 title / anchor；metadata / lookup status 的 title、anchor、message 必须脱敏并截断，live_status 只能是归一化枚举；页面元数据、lookup status 和 bridge connection plan 的公开 `room_ref` 也必须先走 room parser，不能回显原始输入；公开 `webcast_room_id` 只接受数字，无法安全归一时按缺失降级；v1 不保留插件侧 `webcast/im/fetch`、protobuf、ack、heartbeat、直连 WebSocket 或 JS 签名执行，避免把不稳定直连链路带进运行时；bridge connection plan 只暴露 `ready`、安全 `room_ref`、空 `endpoint`、空 `params`、安全 `missing` 标识（仅 `bridge_executable` / `bridge_runtime`）和脱敏 `message`，不得展示 localhost 端口、bridge URL、signature / token / cookie；bridge 解出的事件必须先包装为 `DouyinTransportEvent` 并调用 `publish_transport_event()`，继续经 `event_model.safe_payload()` 清洗后才能发布到 EventBus；事件类型归一、UID 安全形态过滤与平台前缀、礼物摘要字段、安全 payload 白名单和值级标量化放在同目录 `event_model.py`，避免 bridge 污染监听生命周期或把嵌套 raw/protobuf 结构塞进 `ViewerEvent.raw`；payload 自带 `uid` / `room_ref` / `room_id` / `webcast_room_id` / `avatar_url` 进入 `LiveEvent` / `ViewerEvent.raw` 前也必须重新清洗，UID 仅允许短安全标识形态，无法安全归一时清空；允许的昵称、文本、礼物名、事件标签、bridge 状态消息和重连原因等标量文本字段也必须脱敏并截断，不能因为字段名在白名单中就回显 cookie / token / signature 形态值；发布到 EventBus 前必须能归属到安全 `room_ref`，否则丢弃并暴露脱敏错误；事件级 `room_id` / `webcast_room_id` 只接受纯数字，无法安全归一时不投影；未知事件类型统一归一为 `unknown`，不发布到 EventBus，也不得在 status 中回显原始事件类型文本；`room_ref` 无法安全归一时回退到模块当前房间目标或清空；`avatar_url` 只做无网络成本的字符串级安全校验，拒绝 data/base64、非 HTTP(S)、localhost、本地 IP 字面量和 URL userinfo，并且公开投影只保留 scheme/host/path，不保留 params/query/fragment；`status()` / `listener_state()` 作为公开出口必须再次清洗内部 `state`、`room_ref`、`last_error`、bridge connection plan、reconnect、retry policy、计数、时间戳和事件类型字段，`state` 只能投影为已知生命周期标签或 `unknown`，`listening` 等派生生命周期布尔值也必须基于已清洗 state 计算，公开数值字段必须是非负有限值，不能信任 bridge 内部状态天然安全；gift 只由 provider 投影脱敏摘要并发布安全事件，不在 ingest 内直接输出；被共享 Selection 选中后可由 `live_support_events` 生成短句致谢；status-only 事件只刷新 `last_status_only_event_type` / `status_only_count`，不发布到 EventBus；连接失败或协议漂移会显式进入脱敏错误状态，并由 `listener_state()` / connection snapshot 只暴露脱敏后的 `last_error`、`connection_plan` 和重连状态。
 - `runtime_config.update_config()` 持久化 Douyin `live_room_ref` 前必须通过 `live_provider_router.normalize_room_ref_for_platform()` 归一化，避免 Hosted UI 直接保存原始 URL query 或旧配置残留；从其他平台切到 Douyin 且没有显式传入新 `live_room_ref` 时必须清空目标，不能把 B 站旧房号继承成抖音 token。
 - `live_connection_snapshot()` 必须把 provider `listener_state()` 当成不可信公开输入二次过滤：`state` 只能是已知连接状态，`viewer_count` 只能是非负整数，`last_error` 只能是字符串，`connection_plan` / `reconnect` 只能是 dict；object / bytes / container 不得被字符串化。`live_status_summary()` 的公开 `room_ref` / `room_id` 必须优先使用 `live_connection_snapshot()` 已清洗的连接目标；只有快照缺失时才回退 config，且 fallback 只接受字符串或正整数，避免 Douyin URL query、旧配置残留或伪对象绕过 provider router。
@@ -569,7 +566,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 
 Catalog split note: `data/idle_hosting_beats.json` is the maintained idle-hosting material catalog; `live_content_host_catalog_*` are fallback material group modules. `live_content_active_catalog_*` are active material group modules; the unsuffixed catalog modules are compatibility aggregates only.
 - `adapters/`：`neko_dispatcher`（**唯一 NEKO 输出边界** + 头像压缩 + dry_run 短路）、`bili_auth_service`（扫码登录，移植自旧插件）。
-- `stores/`：`viewer_store`（**唯一档案写**，本机 JSON `viewer_profiles.json`、目录可配置、加锁防丢更新；读旧档案、upsert、mark_roasted 都必须清洗成 JSON-safe 脱敏公开字段）、`audit_store`（**唯一审计**，写入时统一做 JSON-safe / 脱敏公开投影，非字符串对象和 bytes 不得字符串化成 UI 字段）、`avatar_cache`、`credential_store`（Fernet 加密登录凭据）。
+- `stores/`：`viewer_store`（**唯一档案写**，本机 JSON `viewer_profiles.json`、目录可配置、加锁防丢更新；读旧档案、upsert、mark_roasted 都必须清洗成 JSON-safe 脱敏公开字段；dashboard 热读只缓存最多 200 条公开投影，不缓存整库）、`audit_store`（**唯一审计**，写入时统一做 JSON-safe / 脱敏公开投影，非字符串对象和 bytes 不得字符串化成 UI 字段）、`avatar_cache`、`credential_store`（Fernet 加密登录凭据）。
 
 ## Pipeline
 
@@ -675,7 +672,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 「查询直播间」和「弹幕监听」走**两条不同网络路径**，反爬健壮性不同：
 
-- **弹幕 WS 路径**（`connect_live_room` → `danmaku_core.DanmakuListener`）：有临时 buvid3 + WBI 签名 + 浏览器 headers + 多服务器故障转移，扛得住 B站 `-352` 反爬风控，匿名只读也能连。
+- **弹幕 WS 路径**（`connect_live_room` → `bili_live_ingest.start_listening` → `danmaku_core.DanmakuListener`）：runtime 和 provider 入口都要求已验证并已装载的 B 站登录凭据；随后复用 WBI 签名、浏览器 headers、多服务器故障转移和断线重连。缺少凭据时不会构造 listener。
 - **查询 HTTP 路径**（`lookup_live_room` → `bili_live_ingest._lookup_room_status_sync`，urllib + `to_thread`）：A1 已补临时 buvid3 cookie + 浏览器 headers（`getInfoByRoom` **不需** WBI 签名——WS 的 `_get_real_room_id` 调它也没签）。但匿名 buvid3 在 IP 被重度风控时仍可能 `code=-352`，彻底消除需登录态。
 
 **已落地处理（友好降级，非根治）**：
@@ -707,11 +704,11 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 - `adapters/bili_auth_service.py` `BiliAuthService`（移植自旧插件 `bilibili_danmaku`）：编排 `bilibili_api.login_v2` 扫码状态机，凭据存取由注入的 store 三回调负责。
 - `core/runtime.py`：持 `credential_store` + `bili_auth` + 缓存 `bili_credential`（`start()` 时 `reload_credential()` 载入已存凭据），对外保留 `bili_login`/`bili_login_check`/`bili_login_status`/`bili_logout` action API。
 - `core/runtime_bili_auth.py`：装配 `CredentialStore` + `BiliAuthService`，实现 runtime 侧登录 action 委托、凭据重载和本地 logout 清理。
-- **凭据接入三处**：`bili_identity._fetch_profile_by_uid` 的 `get_user_info(credential=)`、`bili_live_ingest` 的 `DanmakuListener(credential=)`、lookup 的 `_credential_cookie()`（登录时带完整 cookie 过 -352）。当前底层 provider 仍能匿名只读连接，但产品只允许它作为用户为本次会话显式确认的受限兜底。
+- **凭据接入三处**：`bili_identity._fetch_profile_by_uid` 的 `get_user_info(credential=)`、`bili_live_ingest` 的 `DanmakuListener(credential=)`、lookup 的 `_credential_cookie()`（登录时带完整 cookie 过 -352）。直播监听必须把 runtime 已验证凭据传给 provider；凭据缺失时 provider 自身也会 fail closed。
 
-**UI / action**：控制台的“管理账号与平台”弹窗承载 B 站扫码登录、检查状态、退出登录和显式无账号兜底；4 个 `@ui.action`（group `auth`）：`bili_login` / `bili_login_check` / `bili_login_status` / `bili_logout`。
+**UI / action**：控制台的“管理账号与平台”弹窗承载 B 站扫码登录、检查状态和退出登录；4 个 `@ui.action`（group `auth`）：`bili_login` / `bili_login_check` / `bili_login_status` / `bili_logout`。`connect_live_room` 只接受直播间目标，不接受绕过登录的参数。
 
-**经过 safety_guard 吗 / 失败降级**：登录流程**不经 pipeline**（账号管理、不产出锐评）。凭据缺失、失效或无法校验时，正常产品路径 fail closed；只有 provider 明确支持且调用方为本次 `connect_live_room` 传入严格布尔值 `allow_accountless=true`，才进入受限匿名连接。该意图已贯穿 React 面板、兼容面板、action schema、runtime API 和压力工具；连接快照以 `auth_mode=authenticated|limited_accountless|provider_managed|unknown` 投影当前状态，停止监听即清空，且不写入 `LiveConfig`。抖音拒绝 `allow_accountless=true`。保存失败必须报错，不得静默。
+**经过 safety_guard 吗 / 失败降级**：登录流程**不经 pipeline**（账号管理、不产出锐评）。凭据缺失、失效或无法校验时一律 fail closed，runtime 进入 `auth_required`，provider 也拒绝创建 listener。React 面板、兼容面板、action schema、runtime API 和压力工具都不提供无账号入口；连接快照只投影 `auth_mode=authenticated|provider_managed|unknown`。保存失败必须报错，不得静默。
 
 **读写了哪些用户数据**：只读写本机加密凭据文件；**不进** viewer_store / audit（明文）。
 
@@ -719,7 +716,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 **真机验证（2026-06-17，用户扫码本人账号 UID <redacted>）**：同一测试房间 — 登录前匿名 lookup 撞 `-352`；扫码登录后同 lookup `ok:true`，`-352` 彻底消失。头像抓取恢复（`submit_viewer_event{lookup_only}` → `fetched:true / has_avatar:true`）。持久化端到端：登录后 `bili_login_status` 读回 `logged_in:true`（load→解密→build_credential 回环，证明 `.enc` 落盘可解密）。
 
-**已知限制**：① 依赖 `bilibili_api` + `cryptography`（NEKO 内置）；② 本地注销不吊销服务端 token；③ 凭据过期需重新登录（`bili_login_status` 会报失效）；④ 受限无账号连接仍受 B 站匿名链路风控和能力缺失影响，不作为等价登录路径。
+**已知限制**：① 依赖 `bilibili_api` + `cryptography`（NEKO 内置）；② 本地注销不吊销服务端 token；③ 凭据过期需重新登录（`bili_login_status` 会报失效）；④ 公开房间查询仍可能在登录前被 B 站 `-352` 拦截，但这不会降级成无账号监听。
 
 ### 延期能力：主播账号身份保护
 
@@ -824,7 +821,7 @@ danmaku_core._dispatch_message(DANMU_MSG)
 
 **与 safety_guard 协同**：`rate_limit_seconds` 现在一物两用——既是 `safety_guard.before_output` 的硬限流闸门，也是中枢的开窗时长。中枢通过新增的只读助手 `safety_guard.output_cooldown_remaining()` 把窗口对齐到冷却结束，因此 flush 出来的胜者到达 `before_output` 时冷却已过、不会被判「rate limited」。中枢另持有一个**本地** `_last_dispatch_at` 同步时间戳：投递后紧接着到的事件按本地冷却挡回缓冲分支，避免在 `before_output` 写入 `_last_output_at` 之前并发触发第二次即时锐评（防双锐评）。`rate_limit_seconds = 0` 时两段冷却都为 0，退化为每条即时（与限流关闭语义一致）。
 
-**经过 safety_guard 吗 / 失败如何降级**：中枢只站在 pipeline **前面**做「选谁」，胜者照走完整 pipeline——`before_event`（连接/暂停/队列）、`before_output`（限流）、安全门必经，四条不变量（唯一出口 / 唯一档案写 / 唯一审计 / 安全门）原样保持。`get_score()` 抛错 → 该候选记 0 分（`_safe_score`）；窗口 flush 抛错 → 记 `live_event_flush_failed` 并复位窗口；`handle_live_payload` 抛错 → 记 `live_event_roast_failed`，不影响后续窗口。断开直播间时 `runtime.disconnect_live_room` 调 `live_events.reset()` 取消待触发窗口，避免迟到的择优在断开后误投（即便误投，pipeline 也会因 `live_enabled=False` 被 `permission_gate` 拦下）。
+**经过 safety_guard 吗 / 失败如何降级**：中枢只站在 pipeline **前面**做「选谁」，胜者照走完整 pipeline——`before_event`（连接/暂停/队列）、`before_output`（限流）、安全门必经，四条不变量（唯一出口 / 唯一档案写 / 唯一审计 / 安全门）原样保持。`get_score()` 抛错 → 该候选记 0 分（`_safe_score`）；窗口 flush 抛错 → 记 `live_event_flush_failed` 并复位窗口；`handle_live_payload` 抛错 → 记 `live_event_roast_failed`，不影响后续窗口。断开直播间时 `runtime.disconnect_live_room` 调 `live_events.reset()` 取消待触发窗口，避免迟到的择优在断开后误投；pipeline 在进入 dispatcher 前和 dispatcher 返回后都重新校验 live-session generation。宿主边界已经接受的请求无法撤回，插件也无法证明浏览器是否播放，但旧场次的迟到返回不得写首评标记、观众档案、recent result 或当前场次状态。
 
 **触碰的契约 / store / UI / action**：弹幕胜者仍复用 provider normalize 的既有 pipeline 输入形状，不直接写 store、不直接 `push_message`。`ViewerEvent.to_dict()` 只公开轻量事件字段供 dashboard / monitor 使用，不暴露完整 raw payload。audit op 包括 `live_event_selected`（候选数、分数、脱敏摘要与 skip reason）、`live_event_flush_failed`、`live_event_roast_failed`。Gift / SC / Guard 的轻量 support summary、优先级、聚合、去重和队列状态属于 `live_support_events.scheduler`。无新增 UI action。直播连接期间不注册 `get_recent_live_chat` LLM tool，避免工具调用占住语音 turn；固定 3 条尾队列仅供插件本地选择和 co-stream 被动快照使用，其中被主动 `respond` 选中的弹幕必须从被动快照排除；若选择动作使快照变空，插件使用同一 session key 的过期标记撤销旧快照，避免同一公开事件在后续自然轮次再次被消费。普通直播聊天的相关性匹配也在本地完成，最多选择 1 条未选中且未用过的弹幕，不触发模型工具轮次。未选中弹幕还可在独播、低压时进入既有 `active_engagement` 选题，不自行触发新调用。
 
@@ -838,7 +835,7 @@ danmaku_core._dispatch_message(DANMU_MSG)
 
 Gift / SC / Guard 由 `live_support_events` 独立订阅并经现有 Pipeline、Safety Guard 和 Dispatcher 生成一条短句致谢；普通弹幕文字不能伪造可信支持事件。该模块不做贡献榜、奖励承诺、仪式化播报、权益流程或主播运营动作。
 
-真实性证据、优先级、连击合并、provider ID 去重、同播主动/被动行为、派发所有权、成本预算、回滚和测试的唯一详细说明见 [`docs/modules/live_support_events.md`](modules/live_support_events.md)。本文只锁住三条长期边界：不得另建第二套输出队列；失败不得自动重试；`submitted` / Dispatcher `pushed` 只表示交给宿主，不证明模型、TTS 或浏览器播放完成。
+真实性证据、优先级、连击合并、provider ID 去重、同播主动/被动行为、派发所有权、成本预算、回滚和测试的唯一详细说明见 [`docs/modules/live_support_events.md`](modules/live_support_events.md)。provider ID 历史默认按 10 分钟懒过期并硬限 4096 条，既不加 timer，也不会随整场直播无限增长。本文只锁住三条长期边界：不得另建第二套输出队列；失败不得自动重试；`submitted` / Dispatcher `pushed` 只表示交给宿主，不证明模型、TTS 或浏览器播放完成。
 
 ## 直播事件中枢（EventBus）与新增事件 handler
 
@@ -1003,7 +1000,7 @@ danmaku_core on_event(cmd, 富模型)
 
 显式的本人头像请求是受控例外：当观众明确说“锐评我的头像 / rate my avatar”等同义请求时，pipeline 可以在 `avatar_roast_enabled`、现有压力门禁、冷却和 safety guard 允许的前提下重新进入 `avatar_roast`，让该次原本就会发生的回复重新获得头像视觉输入；它不会新增第二条回复，也不会把普通后续弹幕改成头像锐评。若该 UID 已经完成过自动出场锐评，本次显式请求不重复写入首评标记；跨场自动首评仍保持每 UID 一次。目标是其他观众、没有明确评价动作或只提到“喜欢我的头像”的弹幕不得绕过后续弹幕路线。
 
-人猫同播的 Hosted UI 会从当前 session 的 `recent_results` 和 `live_events.status().ambient_publish_count` 展示响应投送与被动房间上下文投送：头像锐评、普通弹幕与支持事件属于 `respond`，被动房间上下文属于 `read`。这些计数只证明插件已把内容提交给宿主，不证明浏览器音频播放完成；暖场、冷场陪播和主动营业仍保持猫猫独播专属，直到宿主提供可靠话权 / 播放状态前不得仅靠面板开关放到同播。
+人猫同播的 Hosted UI 会从当前 session 有界的 `recent_results` 和 `live_events.status().ambient_publish_count` 展示近期响应投送与被动房间上下文投送：头像锐评、普通弹幕与支持事件属于 `respond`，被动房间上下文属于 `read`。其中响应次数是滚动近期窗口，不是本场累计总数；这些计数只证明插件已把内容提交给宿主，不证明浏览器音频播放完成。暖场、冷场陪播和主动营业仍保持猫猫独播专属，直到宿主提供可靠话权 / 播放状态前不得仅靠面板开关放到同播。
 
 独播首评有独立节流：`solo_stream` 中真正的 `avatar_roast` 之间按活跃度间隔，`quiet=75s`、`standard=45s`、`active=30s`。若短时间内又有新 UID 发送弹幕，pipeline 不再连续做头像 / ID 出场锐评，而是把这条弹幕交给 `danmaku_response` 正常接话；但这只是临时降级，不能把该 UID 标记为已完成头像锐评。只有真实进入 `avatar_roast` 路由且成功 pushed / dry-run 到 dispatcher 的出场首评才允许写首评标记，避免新人被节流吞掉后再也补不上头像锐评。
 
@@ -1132,6 +1129,8 @@ Hosted UI action 会补 `_ctx.lanlan_name`，插件进程复用 `ctx._current_la
 
 **持久化（本地 JSON，当前固定默认目录）**：观众档案落本机 JSON 文件 `viewer_profiles.json`，当前仍**不走宿主 PluginStore**，以保持档案写入路径简单、可控、便于审计。历史上的 `store.enabled` 构造期冻结与插件数据不跟随 selected_root 已由 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 修复（见 `docs/devlog.md`）。存储目录当前固定使用 `plugin.data_path()`；`viewer_store_dir` 自定义位置能力仍保留，但 UI 按当前产品范围继续隐藏。插件侧已经回归默认目录、自定义目录写失败回退、嵌套可创建目录、路径冲突和失败 tmp 清理；dashboard 暴露实际在用的 `viewer_store` 路径、可写状态、是否自定义及是否处于 fallback，面板据此显示与告警。
 
+Dashboard 重复读取 recent profiles 时复用最多 200 条、深拷贝返回的公开投影缓存，并用当前实际存储文件签名识别插件外修改；不会缓存整份档案库，也不改变 JSON 的真相源与原子写入。现阶段每次档案变更仍需读取并原子重写整份 JSON，超大档案库的写放大要靠后续独立存储迁移解决，不能把本轮热读缓存宣称为已解决。
+
 **观众记忆 v1 产品契约**：`viewer_memory_enabled` 默认 `true`，只控制安全派生偏好是否继续学习、以及是否把持久化印象送入 prompt；关闭后不得新增 / 更新偏好标签、常聊话题、接梗提示、互动风格、回复偏好、短摘要或避坑提示，也不得使用已有印象做个性化。基础身份、弹幕 / 锐评计数、首次出场记录和本场 session 防复读仍继续工作，不能因为关闭个性化记忆而破坏“同场只做一次首次出场锐评”。档案固定保留 90 天，以 `last_interaction_at` / `last_seen_at` 为准在启动和后续读写中惰性清理；不增加后台 timer、网络请求或新依赖。当前不保存 `watch_time`、`contribution_rank` 或原始互动历史。
 
 Dashboard 的 `live_explain` 只读投影只允许展示链路阶段、最近结果状态、主题 key、偏好标签计数、常聊话题 / 接梗提示计数、短摘要、避坑提示、`trace_id` 和 Runtime Timeline 的 stage/status/route/reason，不得新增原始弹幕全文、raw payload、完整 prompt、cookie/token/signature 形态文本或头像 bytes。CI gate 由 `test_dashboard_state_exposes_privacy_safe_live_explanation` 锁住后端投影隐私边界，由 `test_panel_renders_live_explanation_and_viewer_preference_columns` 锁住 UI 字段和 8 locale 同步。
@@ -1228,6 +1227,8 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ## 直播语境提示词
 
 `core/instructions.py` 只保留历史恢复与兼容文本；当前轻全局直播情景由 `core/runtime_instructions.py` 组装，经 dispatcher 以可替换的 `ai_behavior="read"` 覆盖层注入。它只承载直播身份、主题与独播/同播角色这类会话级稳定事实；当前弹幕、头像、UID、事件类型和回复合约仍必须留在单次事件 prompt。礼物、SC、上舰的单次 prompt 也要携带同一主题锚点；co-stream 中所有 provider 已验证支持事件进入既有有界 active acknowledgement 调度，同时保留不声称“已经说出”的被动事实。scheduler 去重、连击聚合、队列上限和 pipeline support cooldown 继续负责限制突发量，普通弹幕里的未验证礼物说法不得进入该路径。
+
+人工恢复正在接收事件的直播会话时，会请求现有 `live_events` 一秒 debounce 刷新本场权威快照；内容未变时由既有文本闸门抑制，变化时最多提交一个可合并的 `read` 替换项。它不新增 worker、队列、provider 请求或说话轮次；没有活动会话或总开关关闭时不触发。
 
 关闭插件时不能假设模型会自动忘掉历史版本注入过的常驻场景；必须发送 `NEKO_ROAST_RESTORE_INSTRUCTIONS`，用新的 `read` 上下文覆盖直播状态。恢复消息同样只走 `NekoDispatcher`，不要在 runtime、module 或 UI action 中直接调用 `plugin.push_message()`。
 开发者模式是独立的调试上下文；退出开发者模式只发送 `NEKO_ROAST_DEVELOPER_RESTORE_INSTRUCTIONS`，不要误发完整插件关闭恢复语境。

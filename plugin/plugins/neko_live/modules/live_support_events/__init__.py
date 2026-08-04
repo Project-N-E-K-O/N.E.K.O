@@ -25,7 +25,6 @@ from ..live_events.provider_event import (
     event_avatar_url,
     event_is_current_session,
     event_nickname,
-    event_provider_event_id,
     event_room_id,
     event_room_ref,
     event_session_generation,
@@ -299,88 +298,18 @@ class LiveSupportEventsModule(BaseModule):
     @staticmethod
     def _delivery_policy(
         event: ViewerEvent,
-        support: dict[str, str],
+        _support: dict[str, str],
     ) -> dict[str, Any]:
-        """Host proactive-delivery policy for this support event.
-
-        Co-stream only: the human host owns the floor there, so a milestone
-        or high-value acknowledgement is the one output worth re-delivering
-        once if the host talks over it. Solo stream keeps the host defaults
-        (drop on interrupt) because NEKO can simply speak again herself.
-
-        Compensation requires an authoritative `provider_event_id`: without
-        an idempotency key the host cannot bound "at most once", and a
-        duplicate thank-you is worse than a missed one. See the host's
-        docs/design/proactive-delivery-lifecycle.md.
-        """
+        """Bound co-stream lifetime without claiming playback ownership."""
         if str(getattr(event, "live_mode", "") or "") != "co_stream":
             return {}
-        # A stale reply is worse than none while the host is mid-sentence;
-        # this bounds how long a queued acknowledgement stays speakable.
-        policy: dict[str, Any] = {
-            "delivery_ttl_seconds": 45,
-            # Short form for the breath right after the host stops. Thanks is
-            # the one co-stream cue worth taking a gap for — it is owed to a
-            # specific viewer and goes stale fast — so it always offers one.
-            "brief_text": LiveSupportEventsModule._brief_text(support),
-        }
-        if support["tier"] not in {"high", "milestone"}:
-            return policy
-        provider_event_id = event_provider_event_id(event)
-        if not provider_event_id:
-            return policy
-        policy.update(
-            {
-                "interrupt_policy": "compensate_once",
-                "delivery_key": f"support:{provider_event_id}",
-                "compensation_ttl_seconds": 10,
-                "compensation_text": LiveSupportEventsModule._compensation_text(support),
-            }
-        )
-        return policy
-
-    @staticmethod
-    def _brief_text(support: dict[str, str]) -> str:
-        """One breath-sized thanks, used when the host only left a short gap.
-
-        Deliberately tighter than the compensation line: this one is competing
-        with the host's next sentence, so it has to land and hand the floor
-        straight back."""
-        category = LiveSupportEventsModule._safe_ack_category(
-            support.get("event_type", "")
-        )
-        return (
-            "Say one very short thank-you as NEKO for "
-            f"this {category}. "
-            "Under 12 characters of speech, one breath, then stop. "
-            "Do not start a topic, ask a question, or invite more support."
-        )
-
-    @staticmethod
-    def _compensation_text(support: dict[str, str]) -> str:
-        """One short replacement prompt used when the original thanks was cut
-        off. It never references the interruption and never asks for more
-        support. It uses only an allowlisted event category, never viewer text
-        or provider labels."""
-        category = LiveSupportEventsModule._safe_ack_category(
-            support.get("event_type", "")
-        )
-        return (
-            "Say one very short thank-you line as NEKO for "
-            f"this {category}. "
-            "Keep it under 15 characters of speech, do not mention any "
-            "interruption or technical issue, do not repeat an earlier line "
-            "verbatim, and do not ask for more support."
-        )
-
-    @staticmethod
-    def _safe_ack_category(event_type: str) -> str:
-        """Map provider data to fixed control-prompt vocabulary."""
         return {
-            "gift": "gift",
-            "super_chat": "Super Chat",
-            "guard": "membership milestone",
-        }.get(str(event_type or "").strip().lower(), "support event")
+            "delivery_ttl_seconds": 45,
+            # A failed/interrupt return cannot prove whether the host already
+            # accepted or spoke the line, so the plugin must never request a
+            # retry or replacement acknowledgement.
+            "interrupt_policy": "drop",
+        }
 
     @staticmethod
     def _support_context(event: ViewerEvent) -> dict[str, str]:

@@ -136,12 +136,6 @@ async def run_event_flow(
                 reason=request.reason,
                 route=response_module_id,
             )
-            if should_mark_roasted and uid_lock is not None:
-                session.claim_roasted(identity.uid)
-                steps.append(
-                    PipelineStep("viewer_gate.session_claim", "ok", response_module_id)
-                )
-
             return await dispatch_routed_request(
                 ctx,
                 session,

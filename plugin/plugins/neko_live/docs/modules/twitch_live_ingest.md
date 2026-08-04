@@ -4,6 +4,11 @@
 `twitchio==3.2.2` for Helix and EventSub WebSocket delivery, while NEKO owns the
 client-secret-free Device Code Flow and encrypted token persistence.
 
+The provider module keeps TwitchIO and its concrete client implementation lazy.
+Bilibili-only and disconnected runtimes can expose Twitch status/configuration
+without importing the optional Twitch networking stack; TwitchIO is loaded only
+when a Twitch client or EventSub subscription is actually created.
+
 ## Supported flow
 
 1. Create a Twitch Developer application and copy its Client ID. A Client Secret
@@ -24,6 +29,13 @@ codes remain in memory. TwitchIO is always started with
 creates `.tio.tokens.json` or starts its OAuth web adapter. A TwitchIO token
 refresh callback must replace both rotated tokens through the encrypted store;
 if that save fails, the listener stops in `auth_required` state.
+
+Credential validation and Device Flow completion use an in-memory credential
+generation. Logout advances that generation and deletes the encrypted files as
+one owned mutation. A validation or authorization request that started before
+logout therefore cannot restore a rotated token afterward. External Twitch
+requests remain outside the mutation lock; this adds one lock and one integer,
+with no worker, timer, request, token scope, or persistent state.
 
 ## Public event boundary
 

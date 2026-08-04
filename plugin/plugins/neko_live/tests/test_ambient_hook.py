@@ -138,4 +138,4 @@ def test_ambient_hook_returns_no_candidate_when_every_complete_row_was_replied()
     )
 
     assert selection.row is None
-    assert selection.reason == "already_replied"
+    assert selection.reason == "already_selected"

@@ -48,6 +48,7 @@ class _FakeListener:
 
     def __init__(self, room_id: int, **kwargs: Any) -> None:
         self.room_id = room_id
+        self.credential = kwargs.get("credential")
         self.callbacks = dict(kwargs.get("callbacks") or {})
         self.ready = asyncio.Event()
         self.stopped = asyncio.Event()
@@ -70,9 +71,19 @@ class _FakeListener:
 
 def _module() -> BiliLiveIngestModule:
     module = BiliLiveIngestModule()
-    module.ctx = SimpleNamespace(audit=_Audit(), bili_credential=None)
+    module.ctx = SimpleNamespace(audit=_Audit(), bili_credential=object())
     module._listener_ready_timeout = 1.0
     return module
+
+
+@pytest.mark.asyncio
+async def test_start_requires_runtime_bilibili_credential() -> None:
+    module = _module()
+    module.ctx.bili_credential = None
+
+    assert await module.start_listening(123) is False
+    assert _FakeListener.instances == []
+    assert module.ctx.audit.records[-1][0] == "live_listener_auth_required"
 
 
 async def _wait_until(predicate: Any) -> None:
@@ -97,11 +108,31 @@ async def test_start_returns_only_after_auth_ready() -> None:
 
     assert not starting.done()
     listener = _FakeListener.instances[0]
+    assert listener.credential is module.ctx.bili_credential
     listener.ready.set()
 
     assert await starting is True
     assert module.is_listening() is True
     await module.stop_listening()
+
+
+@pytest.mark.asyncio
+async def test_readiness_failure_cleans_up_listener_before_returning_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_readiness(_listener: _FakeListener) -> None:
+        raise RuntimeError("simulated readiness failure")
+
+    monkeypatch.setattr(_FakeListener, "wait_until_ready", fail_readiness)
+    module = _module()
+
+    assert await module.start_listening(123) is False
+
+    listener = _FakeListener.instances[0]
+    assert listener.stopped.is_set()
+    assert module.is_listening() is False
+    assert module._listener is None
+    assert module._listener_task is None
 
 
 @pytest.mark.asyncio
@@ -185,6 +216,7 @@ async def test_terminal_listener_task_revokes_runtime_session_ownership(
     module.ctx = runtime
     module._listener_ready_timeout = 1.0
     runtime.bili_live_ingest = module
+    runtime.bili_credential = object()
     runtime.config.live_room_id = 123
     runtime.config.live_room_ref = "123"
     restored = asyncio.Event()
@@ -288,8 +320,18 @@ async def test_auth_reply_unblocks_listener_ready_wait() -> None:
 
 
 @pytest.mark.asyncio
-async def test_successful_authentication_resets_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_low_level_listener_start_requires_credential() -> None:
     listener = DanmakuListener(room_id=123)
+
+    with pytest.raises(ValueError, match="Bilibili credential is required"):
+        await listener.start()
+
+    assert listener.get_connection_state()["state"] == "disconnected"
+
+
+@pytest.mark.asyncio
+async def test_successful_authentication_resets_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    listener = DanmakuListener(room_id=123, credential=object())
     attempts = 0
 
     async def connect_once() -> None:
@@ -311,7 +353,7 @@ async def test_successful_authentication_resets_retry_budget(monkeypatch: pytest
 
 @pytest.mark.asyncio
 async def test_listener_start_propagates_cancellation_and_cleans_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    listener = DanmakuListener(room_id=123)
+    listener = DanmakuListener(room_id=123, credential=object())
 
     async def cancelled() -> None:
         raise asyncio.CancelledError
@@ -350,6 +392,40 @@ def test_stale_or_paused_provider_event_is_dropped_before_event_bus() -> None:
     module._on_live_event("DANMU_MSG", {"uid": 1, "text": "paused"})
 
     assert published == []
+
+
+def test_read_only_provider_event_uses_current_room_without_audit_warning() -> None:
+    class _ReadOnlyRoomEvent:
+        uid = 9
+        nickname = "viewer"
+        text = "hello"
+
+        @property
+        def room_id(self) -> int:
+            return 0
+
+    published: list[Any] = []
+    audit = _Audit()
+    module = BiliLiveIngestModule()
+    router = SimpleNamespace(
+        platform="bilibili",
+        provider_for=lambda _platform: module,
+        configured_room_ref=lambda: "123",
+    )
+    module.ctx = SimpleNamespace(
+        _accepting_live_events=True,
+        _stopping=False,
+        live_provider=router,
+        event_bus=SimpleNamespace(publish=lambda *args: published.append(args)),
+        audit=audit,
+    )
+    module._room_id = 123
+
+    module._on_live_event("DANMU_MSG", _ReadOnlyRoomEvent())
+
+    assert len(published) == 1
+    assert published[0][1].payload["room_id"] == 123
+    assert not [item for item in audit.records if item[0] == "live_event_room_id_fill_failed"]
 
 
 def test_support_event_records_privacy_safe_ingest_stages() -> None:

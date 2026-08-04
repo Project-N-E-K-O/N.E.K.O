@@ -29,16 +29,15 @@ def test_pressure_defaults_do_not_connect_or_emit_real_output(parse_args) -> Non
     args = parse_args([])
 
     assert args.connect is False
-    assert args.allow_accountless is False
+    assert not hasattr(args, "allow_accountless")
     assert args.real_output is False
     assert args.confirm_real_output is False
 
 
 @pytest.mark.parametrize("parse_args", [parse_random_args, parse_silence_args])
-def test_pressure_accountless_fallback_requires_explicit_flag(parse_args) -> None:
-    args = parse_args(["--allow-accountless"])
-
-    assert args.allow_accountless is True
+def test_pressure_tools_reject_removed_accountless_flag(parse_args) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--allow-accountless"])
 
 
 def test_real_output_requires_two_explicit_flags() -> None:

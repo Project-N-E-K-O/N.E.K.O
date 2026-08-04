@@ -60,6 +60,8 @@ class SupportEventScheduler:
         combo_idle_seconds: float = 1.0,
         finalized_combo_seconds: float = 600.0,
         finalized_combo_limit: int = 4096,
+        processed_id_seconds: float = 600.0,
+        processed_id_limit: int = 4096,
     ) -> None:
         self._dispatch = dispatch
         self._audit = audit
@@ -93,8 +95,12 @@ class SupportEventScheduler:
             "retroactive": 0,
             "stray": 0,
         }
-        self._processed_ids: OrderedDict[str, None] = OrderedDict()
-        self._processed_id_limit = 65_536
+        self._processed_ids: OrderedDict[str, float] = OrderedDict()
+        self._processed_id_seconds = max(1.0, min(3_600.0, float(processed_id_seconds)))
+        self._processed_id_limit = max(
+            self._queue_limit,
+            min(65_536, int(processed_id_limit)),
+        )
         self._overflow_count = 0
         self._dropped_count = 0
         self._aggregated_count = 0
@@ -110,6 +116,7 @@ class SupportEventScheduler:
         self._combo_limit = bounded
         self._retired_task_limit = bounded + 1
         self._finalized_combo_limit = max(self._finalized_combo_limit, bounded)
+        self._processed_id_limit = max(self._processed_id_limit, bounded)
         return bounded
 
     def submit(self, payload: dict[str, Any]) -> bool:
@@ -123,6 +130,7 @@ class SupportEventScheduler:
             return self._submit_combo(item)
         event_id = str(item.get("provider_event_id") or "").strip()
         if event_id:
+            self._prune_processed_ids(time.monotonic())
             if event_id in self._processed_ids:
                 return False
         accepted = self._enqueue(item)
@@ -216,10 +224,18 @@ class SupportEventScheduler:
             str(payload.get("provider_event_type") or "").strip().upper(),
         )
 
-    def _remember_event_id(self, event_id: str) -> None:
-        self._processed_ids[event_id] = None
+    def _remember_event_id(self, event_id: str, now: float | None = None) -> None:
+        observed_at = time.monotonic() if now is None else float(now)
+        self._processed_ids[event_id] = observed_at + self._processed_id_seconds
         self._processed_ids.move_to_end(event_id)
         while len(self._processed_ids) > self._processed_id_limit:
+            self._processed_ids.popitem(last=False)
+
+    def _prune_processed_ids(self, now: float) -> None:
+        while self._processed_ids:
+            first_event_id = next(iter(self._processed_ids))
+            if self._processed_ids[first_event_id] > now:
+                break
             self._processed_ids.popitem(last=False)
 
     def _release_evicted_dedupe(self, payload: dict[str, Any]) -> None:
@@ -602,6 +618,7 @@ class SupportEventScheduler:
         self._refresh_idle()
 
     def status(self) -> dict[str, int | float]:
+        self._prune_processed_ids(time.monotonic())
         return {
             "queue_limit": self._queue_limit,
             "pending_count": len(self._queue),
@@ -619,6 +636,7 @@ class SupportEventScheduler:
             "stray_finalization_count": self._finalization_counts["stray"],
             "processed_id_count": len(self._processed_ids),
             "processed_id_limit": self._processed_id_limit,
+            "processed_id_seconds": self._processed_id_seconds,
             "finalized_combo_count": len(self._finalized_combos),
             "finalized_combo_limit": self._finalized_combo_limit,
             "finalized_combo_seconds": self._finalized_combo_seconds,

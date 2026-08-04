@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from plugin.plugins.neko_live.modules.live_support_events import scheduler as scheduler_module
 from plugin.plugins.neko_live.modules.live_support_events.scheduler import (
     SupportEventScheduler,
     SupportPriority,
@@ -106,6 +107,8 @@ async def test_finalized_combo_tombstones_use_bounded_ten_minute_default():
 
     assert scheduler.status()["finalized_combo_seconds"] == 600.0
     assert scheduler.status()["finalized_combo_limit"] == 4096
+    assert scheduler.status()["processed_id_seconds"] == 600.0
+    assert scheduler.status()["processed_id_limit"] == 4096
     await scheduler.close()
 
 
@@ -761,6 +764,59 @@ async def test_provider_event_id_deduplicates_only_the_same_delivery():
     await scheduler.wait_idle()
 
     assert dispatched == ["evt-1", "evt-2"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_event_id_can_be_accepted_after_bounded_dedupe_window(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_module_clock,
+):
+    clock = [100.0]
+    patch_module_clock(
+        monkeypatch,
+        scheduler_module,
+        monotonic=lambda: clock[0],
+    )
+    dispatched: list[str] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_Audit(),
+        queue_limit=5,
+        processed_id_seconds=10.0,
+    )
+    assert scheduler.submit(_payload("evt-1")) is True
+    await scheduler.wait_idle()
+    assert scheduler.submit(_payload("evt-1")) is False
+
+    clock[0] += 11.0
+    assert scheduler.submit(_payload("evt-1")) is True
+    await scheduler.wait_idle()
+
+    assert dispatched == ["evt-1", "evt-1"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_event_id_history_evicts_oldest_at_configured_limit():
+    async def dispatch(_payload: dict) -> None:
+        return None
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_Audit(),
+        queue_limit=1,
+        processed_id_limit=3,
+    )
+    for index in range(4):
+        scheduler._remember_event_id(f"evt-{index}")
+
+    assert list(scheduler._processed_ids) == ["evt-1", "evt-2", "evt-3"]
+    assert scheduler.status()["processed_id_count"] == 3
     await scheduler.close()
 
 

@@ -20,6 +20,14 @@ from plugin.plugins.neko_live.core.runtime_live_listener import (
 )
 from plugin.plugins.neko_live.core.runtime_live_session import invalidate_live_session
 from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.modules.live_events import module as live_events_module
+
+
+@pytest.fixture(autouse=True)
+def _remove_passive_context_debounce(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session-isolation tests exercise ordering, not wall-clock debounce."""
+
+    monkeypatch.setattr(live_events_module, "AMBIENT_READ_DEBOUNCE_SECONDS", 0.0)
 
 
 @pytest.mark.asyncio
@@ -780,6 +788,50 @@ async def test_session_is_revalidated_after_waiting_for_uid_lock(
 
     assert result.reason == "live_session.stale"
     assert has_roasted_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_completion_from_old_session_cannot_claim_first_roast(
+    runtime: LiveRuntime,
+) -> None:
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    class _Dispatcher:
+        async def push_roast(self, _request) -> str:
+            dispatch_started.set()
+            await release_dispatch.wait()
+            return "queued_to_neko(old session)"
+
+    runtime.config.live_room_id = 123
+    runtime.live_room_context = {"live_status": "live"}
+    assert await start_live_listener(runtime, 123) is True
+    runtime.bili_identity.resolve = lambda event: asyncio.sleep(
+        0,
+        result=ViewerIdentity(uid=event.uid, nickname=event.nickname),
+    )
+    runtime.dispatcher = _Dispatcher()
+    event = ViewerEvent(
+        uid="late-viewer",
+        nickname="late viewer",
+        danmaku_text="please roast me",
+        source="live_danmaku",
+        raw={"_live_session_generation": runtime._live_session_generation},
+    )
+
+    pending = asyncio.create_task(runtime.pipeline.handle_event(event))
+    await asyncio.wait_for(dispatch_started.wait(), timeout=1.0)
+    invalidate_live_session(runtime)
+    release_dispatch.set()
+    result = await pending
+
+    assert result.status == "skipped"
+    assert result.reason == "live_session.stale"
+    assert await runtime.viewer_profile.has_roasted("late-viewer") is False
+    assert list(runtime.recent_results) == []
+    assert not any(
+        step.id == "viewer_profile.mark_roasted" for step in result.steps
+    )
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,19 @@ def pause(runtime: Any) -> None:
 
 def resume(runtime: Any) -> None:
     runtime.safety_guard.resume()
+    if not bool(getattr(runtime.config, "live_enabled", False)):
+        return
+    if not bool(getattr(runtime, "_accepting_live_events", False)):
+        return
+    schedule_refresh = getattr(
+        getattr(runtime, "live_events", None),
+        "schedule_session_context_refresh",
+        None,
+    )
+    if callable(schedule_refresh):
+        # Reuse the existing one-second debounce and stable read coalesce key.
+        # An unchanged snapshot is suppressed by LiveEventsModule itself.
+        schedule_refresh()
 
 
 def clear_queue(runtime: Any) -> None:
@@ -155,7 +168,7 @@ def _public_viewer_count(value: Any) -> int:
 def _public_auth_mode(value: Any) -> str:
     if isinstance(value, str):
         text = value.strip().lower()
-        if text in {"authenticated", "limited_accountless", "provider_managed"}:
+        if text in {"authenticated", "provider_managed"}:
             return text
     return "unknown"
 
@@ -194,11 +207,7 @@ async def set_live_room(runtime: Any, room_id: Any) -> LiveConfig:
 async def connect_live_room(
     runtime: Any,
     room_id: Any = 0,
-    *,
-    allow_accountless: bool = False,
 ) -> dict[str, Any]:
-    if type(allow_accountless) is not bool:
-        raise TypeError("allow_accountless must be a boolean")
     normalized = runtime.live_provider.normalize_room_ref(room_id)
     if not normalized.get("ok"):
         configured = runtime.live_provider.configured_room_ref()
@@ -210,7 +219,6 @@ async def connect_live_room(
     auth_mode = await _resolve_connection_auth_mode(
         runtime,
         platform=str(normalized.get("platform") or runtime.live_provider.platform),
-        allow_accountless=allow_accountless,
     )
     previous_auth_mode = getattr(runtime, "live_connection_auth_mode", "unknown")
     runtime.live_connection_auth_mode = auth_mode
@@ -251,11 +259,8 @@ async def _resolve_connection_auth_mode(
     runtime: Any,
     *,
     platform: str,
-    allow_accountless: bool,
 ) -> str:
     if platform == "twitch":
-        if allow_accountless:
-            raise ValueError("accountless fallback is only supported for Bilibili")
         try:
             candidate = await runtime.twitch_credential_validate()
             status = candidate if isinstance(candidate, dict) else {}
@@ -285,8 +290,6 @@ async def _resolve_connection_auth_mode(
         )
         raise ValueError("Twitch authorization is required; authorize the account and try again")
     if platform != "bilibili":
-        if allow_accountless:
-            raise ValueError("accountless fallback is only supported for Bilibili")
         return "provider_managed"
 
     try:
@@ -297,16 +300,11 @@ async def _resolve_connection_auth_mode(
             "logged_in": False,
             "message": f"account status could not be verified: {type(exc).__name__}",
         }
-    if status.get("logged_in") is True:
+    if (
+        status.get("logged_in") is True
+        and getattr(runtime, "bili_credential", None) is not None
+    ):
         return "authenticated"
-    if allow_accountless:
-        runtime.audit.record(
-            "live_accountless_fallback_enabled",
-            "limited accountless Bilibili connection enabled for this session",
-            level="warning",
-            detail={"platform": "bilibili", "scope": "current_connection"},
-        )
-        return "limited_accountless"
 
     stop_error = ""
     if runtime.live_provider.is_listening():
@@ -325,14 +323,10 @@ async def _resolve_connection_auth_mode(
         level="warning",
         detail={
             "platform": "bilibili",
-            "accountless_fallback": "not_confirmed",
             "listener_stop_error": stop_error,
         },
     )
-    raise ValueError(
-        "Bilibili login is required; sign in or explicitly confirm the limited "
-        "accountless fallback for this connection"
-    )
+    raise ValueError("Bilibili login is required; sign in and try again")
 
 
 async def disconnect_live_room(runtime: Any) -> dict[str, Any]:

@@ -139,19 +139,36 @@ def test_developer_tools_default_off_until_explicitly_enabled():
     assert "developer_tools_enabled: false" in (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
 
 
-def test_console_accepts_bilibili_links_and_requires_explicit_login_fallback() -> None:
+def test_console_accepts_bilibili_links_and_requires_login() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / name).read_text(encoding="utf-8")
         assert '!/^\\d+$/.test(roomRef)' not in source
         assert 't("panel.console.roomNumeric")' in source
-        assert 'const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)' in source
-        assert 'connectionAuthMode === "limited_accountless"' in source
-        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection' in source
-        assert 'loginLoggedIn || limitedConnection' in source
-        assert 'allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection' in source
-        assert 'onClick={enableLimitedConnection}' in source
+        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn' in source
+        assert 'const accountStartReady = livePlatform === "bilibili" ? loginLoggedIn' in source
+        assert "allow_accountless" not in source
+        assert "limited_accountless" not in source
+        assert "enableLimitedConnection" not in source
+
+
+def test_accountless_bilibili_connection_is_absent_from_production_surfaces() -> None:
+    root = Path(__file__).resolve().parents[1]
+    paths = (
+        root / "__init__.py",
+        root / "core" / "runtime_control_api.py",
+        root / "core" / "runtime_live_controls.py",
+        root / "tools" / "live_random_danmaku_pressure.py",
+        root / "tools" / "live_silence_pressure.py",
+        root / "ui" / "panel.tsx",
+        root / "ui" / "panel_compat.tsx",
+    )
+
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        assert "allow_accountless" not in source
+        assert "limited_accountless" not in source
 
 
 def test_first_use_guide_is_local_resettable_and_mirrored() -> None:

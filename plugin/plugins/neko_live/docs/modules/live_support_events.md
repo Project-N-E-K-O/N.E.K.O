@@ -46,7 +46,7 @@ Ordinary danmaku is never promoted to this module from text alone. Text that mer
 - Solo stream and co-stream schedule every verified tier through the existing active path. Co-stream additionally keeps a passive support shadow; `read` context does not replace the active `respond` acknowledgement.
 - Priority changes the next pending support event only. Active Pipeline or TTS work is not cancelled for priority.
 - Equal priorities remain FIFO by local submission sequence.
-- `provider_event_id` is the authoritative dedupe key when present. An event removed from the pending queue by a higher priority releases its provider ID (and combo tombstone, when applicable), because it was never dispatched and must remain retryable. `COMBO_SEND` is stateful: an identical delivery is ignored, while a monotonic count/value update with the same provider ID is allowed to advance the active combo. The short content fingerprint remains only an ingest fallback for callbacks without an event ID.
+- `provider_event_id` is the authoritative dedupe key when present. Processed IDs remain in a lazy-expiring 10-minute/4,096-entry session cache; this covers normal transport redelivery without retaining an entire long-running stream's event IDs. An event removed from the pending queue by a higher priority releases its provider ID (and combo tombstone, when applicable), because it was never dispatched and must remain retryable. `COMBO_SEND` is stateful: an identical delivery is ignored, while a monotonic count/value update with the same provider ID is allowed to advance the active combo. The short content fingerprint remains only an ingest fallback for callbacks without an event ID.
 - `COMBO_SEND` updates share `(room, viewer, combo_id)` state, keep the maximum observed count/value, and finalize once on explicit end or after one second without growth. Identity fields from the first packet are immutable; conflicting updates fail closed. Active combos and timer tasks are bounded, while finalized combo keys stay in a bounded 10-minute/4,096-entry tombstone cache.
 - Queue pressure admits a higher-priority event by removing the oldest pending event from the lowest available lower tier; this includes allowing a milestone to replace a pending high-value gift. Light events aggregate only when they have no authoritative provider event ID and their room, viewer, gift, coin type, and provider event type all match. Identified events remain individually retryable instead of entering an aggregate whose dedupe ownership cannot be recovered after eviction. No priority may exceed the hard pending limit (maximum 100); when no compatible aggregate or lower-priority victim exists, the newest event is rejected and reflected in aggregate overflow/drop counters.
 - The pending limit follows the active `queue_limit` configuration without a hidden minimum. Runtime decreases affect new admissions only: already accepted items and active combos drain normally instead of being silently evicted, while `status().queue_limit` exposes the effective scheduler value.
@@ -72,6 +72,7 @@ Each finalization records `support.dispatch_submission_finalized` with sanitized
 Approved implementation decisions for this cost-bearing state-machine change:
 
 - **State and memory:** reuse the existing worker and bounded priority heap; add one `asyncio.Lock`, one current-task reference, and at most 32 sanitized history records (a few kilobytes).
+- **Provider dedupe budget:** retain at most 4,096 processed provider IDs for ten minutes with lazy expiry and no cleanup task. This replaces the former 65,536-ID whole-session ceiling and requires no migration.
 - **CPU / background work:** add no worker, timer, polling loop, retry loop, or network request. Ownership bookkeeping runs only when a support dispatch is claimed or finalized.
 - **Interfaces:** keep ownership inside `SupportEventScheduler`; do not add a host completion API or inject task IDs into live payloads. Active acknowledgements remain `respond`; passive co-stream context remains `read`.
 - **Failure policy:** release by exact task identity on success, exception, and cancellation; never retry automatically because a failed return cannot prove that the host did not already accept the message.
@@ -82,38 +83,28 @@ Approved implementation decisions for this cost-bearing state-machine change:
 ## Delivery Policy
 
 In co-stream the human host owns the floor, so a queued acknowledgement can be cut off or
-go stale before it is spoken. The module emits sanitized, forward-compatible declarations
-in request metadata and never retries or replays anything itself. Metadata is an open
-dictionary across the SDK/bridge/host boundary, so a host that does not understand a key
-safely ignores it.
+go stale before it is spoken. The module declares only a bounded lifetime and
+`interrupt_policy=drop`. It never asks the host to retry, compensate, replay, or select a
+short form from an inferred floor state.
 
-The current `neko-live` host does **not** execute these declarations. The narrowed
-[RFC #2491](https://github.com/Project-N-E-K-O/N.E.K.O/issues/2491) will consume only
-`delivery_ttl_seconds`; it does not execute `interrupt_policy`, `delivery_key`,
-`compensation_text`, `compensation_ttl_seconds`, or `brief_text`, and it exposes no
-plugin-visible terminal states. Until that host change lands, TTL is also only a
-declaration.
+The current `neko-live` host exposes no plugin-visible terminal playback state. The
+plugin therefore treats request submission as its final ownership boundary; TTL and drop
+policy are host-facing declarations, not observed delivery outcomes.
 
 | Key | Co-stream declaration | Contract status |
 |---|---|---|
-| `delivery_ttl_seconds` | 45 | The only field in the narrowed #2491 host contract; stale acknowledgements expire before generation once the host change lands. |
-| `interrupt_policy` | `compensate_once` for high/milestone with a `provider_event_id`; otherwise unset | Inert declaration for a separate future product experiment; #2491 ignores it. |
-| `delivery_key` | `support:<provider_event_id>` | Inert future idempotency material; #2491 correctness does not depend on plugin IDs. Unsafe IDs still fail closed. |
-| `compensation_text` | one short thank-you instruction | Inert sanitized future material; #2491 never generates compensation. |
-| `compensation_ttl_seconds` | 10 | Inert future bound; #2491 ignores it. |
-| `brief_text` | one breath-sized thank-you instruction | Inert future material; #2491 has no pause/brief selector. |
+| `delivery_ttl_seconds` | 45 | Bounds how long a queued acknowledgement remains relevant. |
+| `interrupt_policy` | `drop` | A failed or interrupted return cannot prove that the host did not already accept or speak the line. |
 
 Rules:
 
-- Solo stream declares none of these; it follows ordinary host behavior.
-- Light/medium co-stream tiers get `delivery_ttl_seconds` only; they are passive context and never compensated.
-- Without an authoritative `provider_event_id` no compensation declaration is emitted: a future host could not bound "at most once" without an idempotency key.
+- Solo stream declares neither field; it follows ordinary host behavior.
+- Every co-stream support tier uses the same no-retry policy. Priority changes ordering, not delivery semantics.
+- `delivery_key`, `compensation_text`, `compensation_ttl_seconds`, and `brief_text` are not emitted or passed through the plugin bridge.
 - The passive support snapshot stores the verified fact and tier only. Whether an active acknowledgement was requested remains an audit outcome; it is not persisted into passive prompt state and is never presented as delivery evidence.
-- Ordinary co-stream danmaku (`danmaku_response`) declares `delivery_ttl_seconds=20` and an explicit `interrupt_policy=drop`; these are declarations only on the current host.
+- Ordinary co-stream danmaku (`danmaku_response`) similarly declares `delivery_ttl_seconds=20` and `interrupt_policy=drop`.
 
-Host-side terminal states, compensation bookkeeping, pause/brief selection, and
-plugin-visible floor state are not part of #2491. Its voice gate stays internal to the
-host and must not become a Live dependency.
+Host-side terminal states and floor state remain outside the plugin boundary.
 
 ## Limitations
 
@@ -137,30 +128,9 @@ The broader solo-stream simulation covers Gift and SC flowing through `live_supp
 
 `test_live_support_scheduler.py` also locks the dispatch-submission ownership contract: concurrent single claim, exact-identity release, old-vs-new completion isolation, all three completion classifications, bounded payload-free history, cancellation/teardown cleanup, exception continuation, priority/FIFO, and no automatic retry.
 
-### Short form for the host's breath (co-stream)
+### No floor-dependent short form
 
-The host classifies the conversational floor as `held` (human speaking or a
-session switch imminent), `pause` (human stopped within the grace window), or
-`open`, and picks what to deliver at delivery time — the only moment the floor
-state is current. A producer deciding seconds earlier would be acting on a
-stale read.
-
-In co-stream every support tier additionally declares `brief_text`: one
-breath-sized thanks intended for a short host gap. It is tighter than
-`compensation_text` and contains only an allowlisted event category — never
-Super Chat text, viewer text, nickname, or provider label.
-
-Current limitation: the host's normal managed path still blocks both `held`
-and `pause` before reaching the short-form selector. The metadata and selector
-exist, but a managed cue currently waits for `open`. This is safe (no truncated
-or injected breath reply) but does not yet deliver the intended pause effect.
-
-Rules:
-
-- a cue with no `brief_text` is never truncated to fit a gap; it waits for an
-  open floor, because the producer is the only party that knows what a compact
-  version should say;
-- after the host manager gains selective pause release, the short form must
-  replace the line and drop the long detail and any image — a breath must not
-  pull the turn back into a full beat;
-- solo stream declares no `brief_text`: NEKO owns the floor there.
+The plugin does not read human voice state and does not infer `held`, `pause`, or
+`open`. It always submits the normal bounded acknowledgement. Any host-internal voice
+gate may delay or drop that cue, but the plugin neither supplies `brief_text` nor retries
+after an interruption.

@@ -30,6 +30,11 @@ class _Store:
             self.credential = dict(payload)
         return self.save_ok
 
+    async def delete(self) -> list[str]:
+        had_credential = self.credential is not None
+        self.credential = None
+        return ["twitch_credential.enc"] if had_credential else []
+
 
 class _Http:
     def __init__(self, responses: list[tuple[int, dict[str, Any]]]) -> None:
@@ -66,13 +71,14 @@ def test_verification_uri_rejects_malformed_twitch_port() -> None:
     assert _verification_uri("https://www.twitch.tv:not-a-port/activate") == ""
 
 
-def _service(store: _Store, http: _Http) -> TwitchAuthService:
+def _service(store: _Store, http: Any) -> TwitchAuthService:
     async def reload() -> None:
         return None
 
     return TwitchAuthService(
         credential_provider=store.load,
         credential_saver=store.save,
+        credential_deleter=store.delete,
         credential_reloader=reload,
         request_json=http,
         clock=lambda: 1_700_000_000.0,
@@ -151,6 +157,7 @@ async def test_device_authorization_logs_only_device_authorization_metadata(
         logger=logger,
         credential_provider=store.load,
         credential_saver=store.save,
+        credential_deleter=store.delete,
         credential_reloader=reload,
         request_json=http,
         clock=lambda: 1_700_000_000.0,
@@ -215,6 +222,7 @@ async def test_device_authorization_start_serializes_with_cancel() -> None:
     service = TwitchAuthService(
         credential_provider=store.load,
         credential_saver=store.save,
+        credential_deleter=store.delete,
         credential_reloader=reload,
         request_json=request_json,
         clock=lambda: 1_700_000_000.0,
@@ -268,6 +276,7 @@ async def test_device_authorization_retries_one_transient_proxy_connection_failu
         logger=logger,
         credential_provider=store.load,
         credential_saver=store.save,
+        credential_deleter=store.delete,
         credential_reloader=reload,
         request_json=http,
         clock=lambda: 1_700_000_000.0,
@@ -556,6 +565,118 @@ async def test_invalid_access_token_refreshes_and_replaces_one_time_refresh_toke
     assert store.credential["access_token"] == "fresh-access"
     assert store.credential["refresh_token"] == "fresh-refresh"
     assert "old-refresh" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_logout_supersedes_in_flight_refresh_without_restoring_credential() -> None:
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+    old = {
+        "access_token": "old-access",
+        "refresh_token": "old-refresh",
+        "client_id": "clientid123",
+        "user_id": "42",
+        "login": "account_login",
+        "display_name": "Account Login",
+        "scopes": "user:read:chat",
+        "expires_at": "1",
+    }
+
+    class _BlockingRefreshHttp:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def __call__(self, *_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any]]:
+            self.calls += 1
+            if self.calls == 1:
+                return 401, {"message": "invalid access token"}
+            if self.calls == 2:
+                refresh_started.set()
+                await release_refresh.wait()
+                return 200, {"access_token": "fresh-access", "refresh_token": "fresh-refresh"}
+            return 200, {
+                "client_id": "clientid123",
+                "login": "account_login",
+                "user_id": "42",
+                "scopes": ["user:read:chat"],
+                "expires_in": 3600,
+            }
+
+    store = _Store(old)
+    service = _service(store, _BlockingRefreshHttp())
+    runtime = SimpleNamespace(
+        twitch_auth=service,
+        twitch_credential_store=store,
+        twitch_credential=dict(old),
+        config=SimpleNamespace(twitch_client_id="clientid123"),
+        audit=SimpleNamespace(record=lambda *_args, **_kwargs: None),
+    )
+
+    check_task = asyncio.create_task(service.check_credential("clientid123"))
+    await asyncio.wait_for(refresh_started.wait(), timeout=1)
+    logged_out = await runtime_twitch_auth.logout(runtime)
+    release_refresh.set()
+    checked = await check_task
+
+    assert logged_out["logged_out"] is True
+    assert runtime.twitch_credential is None
+    assert store.credential is None
+    assert store.saved == []
+    assert checked["logged_in"] is False
+    assert checked["message"] == "twitch credential validation was superseded"
+    assert "fresh-access" not in str(checked)
+    assert "fresh-refresh" not in str(checked)
+
+
+@pytest.mark.asyncio
+async def test_credential_delete_supersedes_in_flight_device_authorization() -> None:
+    token_started = asyncio.Event()
+    release_token = asyncio.Event()
+
+    class _BlockingDeviceHttp:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def __call__(self, *_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any]]:
+            self.calls += 1
+            if self.calls == 1:
+                return 200, {
+                    "device_code": "secret-device-code",
+                    "user_code": "ABCD-EFGH",
+                    "verification_uri": "https://www.twitch.tv/activate",
+                    "expires_in": 900,
+                    "interval": 5,
+                }
+            if self.calls == 2:
+                token_started.set()
+                await release_token.wait()
+                return 200, {"access_token": "new-access", "refresh_token": "new-refresh"}
+            return 200, {
+                "client_id": "clientid123",
+                "login": "account_login",
+                "user_id": "42",
+                "scopes": ["user:read:chat"],
+                "expires_in": 3600,
+            }
+
+    store = _Store()
+    service = _service(store, _BlockingDeviceHttp())
+
+    await service.start_device_authorization("clientid123")
+    check_task = asyncio.create_task(service.check_device_authorization("clientid123"))
+    await asyncio.wait_for(token_started.wait(), timeout=1)
+    removed = await service.delete_credential()
+    release_token.set()
+    checked = await check_task
+
+    assert removed == []
+    assert store.credential is None
+    assert store.saved == []
+    assert checked["logged_in"] is False
+    assert checked["message"] == "twitch authorization was superseded"
+    assert service.device_authorization_status("clientid123") is None
+    assert "new-access" not in str(checked)
+    assert "new-refresh" not in str(checked)
 
 
 @pytest.mark.asyncio

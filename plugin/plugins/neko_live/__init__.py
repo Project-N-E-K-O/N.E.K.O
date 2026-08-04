@@ -288,20 +288,12 @@ class NekoLivePlugin(NekoPluginBase):
             "type": "object",
             "properties": {
                 "room_id": {"type": "string", "description": "直播间目标或链接（留空用已配置房间）"},
-                "allow_accountless": {
-                    "type": "boolean",
-                    "description": "仅 B 站：为本次连接显式启用受限无账号兜底",
-                    "default": False,
-                },
             },
         },
     )
-    async def connect_live_room(self, room_id="", allow_accountless=False, **_):
+    async def connect_live_room(self, room_id="", **_):
         try:
-            connection = await self._runtime().connect_live_room(
-                room_id,
-                allow_accountless=allow_accountless,
-            )
+            connection = await self._runtime().connect_live_room(room_id)
             return Ok({"connection": connection})
         except (TypeError, ValueError) as exc:
             return Err(SdkError(str(exc)))

@@ -104,13 +104,23 @@ class BiliLiveIngestModule(BaseModule):
             return {"state": "unknown", "room_id": self._room_id, "viewer_count": 0}
 
     async def start_listening(self, room_id: int) -> bool:
-        """启动真实弹幕监听（匿名只读）。返回是否成功创建监听任务。"""
+        """启动已登录 B 站账号的真实弹幕监听。"""
         room_id = int(room_id or 0)
         if room_id <= 0:
             return False
         async with self._lifecycle_lock:
             await self._stop_listening_locked()
             audit = self.ctx.audit if self.ctx else None
+            credential = getattr(self.ctx, "bili_credential", None) if self.ctx else None
+            if credential is None:
+                if audit is not None:
+                    audit.record(
+                        "live_listener_auth_required",
+                        "Bilibili credential required before starting listener",
+                        level="warning",
+                        detail={"room_id": room_id},
+                    )
+                return False
             try:
                 from .danmaku_core import DanmakuListener
             except Exception as exc:
@@ -140,8 +150,7 @@ class BiliLiveIngestModule(BaseModule):
             }
             listener = DanmakuListener(
                 room_id=room_id,
-                # 登录态（若有）让弹幕连接走登录会话，更稳、低风控；未登录=匿名只读（临时 buvid3 绕风控）。
-                credential=getattr(self.ctx, "bili_credential", None) if self.ctx else None,
+                credential=credential,
                 logger=_ListenerLog(audit),
                 callbacks=callbacks,
             )
@@ -168,6 +177,10 @@ class BiliLiveIngestModule(BaseModule):
             try:
                 await ready_task
             except asyncio.CancelledError:
+                pass
+            except Exception:
+                # A failed readiness waiter is a failed start, not permission
+                # to bypass the generation-owned listener cleanup below.
                 pass
 
         async with self._lifecycle_lock:
@@ -294,15 +307,6 @@ class BiliLiveIngestModule(BaseModule):
             return
         if isinstance(event, dict) and event.get("room_id") in (0, None):
             event["room_id"] = self._room_id
-        elif event is not None and getattr(event, "room_id", 0) in (0, None):
-            try:
-                event.room_id = self._room_id
-            except Exception as exc:
-                self.ctx.audit.record(
-                    "live_event_room_id_fill_failed",
-                    f"room id fill failed: {type(exc).__name__}",
-                    level="warning",
-                )
         bus = getattr(self.ctx, "event_bus", None)
         if bus is None:
             return

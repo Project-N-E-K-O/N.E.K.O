@@ -1076,7 +1076,7 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
     )
 
 @pytest.mark.asyncio
-async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_dispatcher_fails():
+async def test_pipeline_failed_avatar_roast_keeps_next_avatar_roast_eligible():
     class Audit:
         def record(self, *_args, **_kwargs):
             return None
@@ -1164,12 +1164,13 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_d
     assert first.request is not None
     assert second.request is not None
     assert first.request.prompt_text == "avatar_roast:first"
-    assert second.request.prompt_text == "danmaku_response:second"
-    assert viewer_profile.mark_calls == 0
-    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert second.request.prompt_text == "avatar_roast:second"
+    assert viewer_profile.mark_calls == 1
+    assert any(step.id == "avatar_roast" and step.status == "ok" for step in second.steps)
+    assert not any(step.id == "viewer_gate.session_claim" for step in first.steps + second.steps)
 
 @pytest.mark.asyncio
-async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_output_gate_blocks():
+async def test_pipeline_blocked_avatar_roast_keeps_next_avatar_roast_eligible():
     class Audit:
         def record(self, *_args, **_kwargs):
             return None
@@ -1252,9 +1253,9 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_o
     assert first.request is not None
     assert second.request is not None
     assert first.request.prompt_text == "avatar_roast:first"
-    assert second.request.prompt_text == "danmaku_response:second"
-    assert any(step.id == "viewer_gate.session_claim" and step.status == "ok" for step in first.steps)
-    assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert second.request.prompt_text == "avatar_roast:second"
+    assert any(step.id == "avatar_roast" and step.status == "ok" for step in second.steps)
+    assert not any(step.id == "viewer_gate.session_claim" for step in first.steps + second.steps)
 
 @pytest.mark.asyncio
 async def test_pipeline_records_idle_hosting_as_own_route():

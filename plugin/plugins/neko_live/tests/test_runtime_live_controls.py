@@ -191,6 +191,7 @@ def runtime(tmp_path: Path) -> LiveRuntime:
     rt = LiveRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
     rt.bili_auth = FakeBiliAuth()
+    rt.bili_credential = object()
     rt.avatar_roast.ctx = rt
     rt.danmaku_response.ctx = rt
     rt.active_engagement.ctx = rt
@@ -257,7 +258,7 @@ async def test_connect_live_room_refreshes_room_title_context(runtime: LiveRunti
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_requires_login_without_explicit_fallback(
+async def test_connect_live_room_requires_login(
     runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
@@ -275,41 +276,12 @@ async def test_connect_live_room_requires_login_without_explicit_fallback(
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_accepts_explicit_session_only_accountless_fallback(
-    runtime: LiveRuntime,
-) -> None:
-    runtime.config.live_room_id = 123
-    runtime.bili_auth = FakeBiliAuth(logged_in=False)
-
-    connected = await runtime.connect_live_room(allow_accountless=True)
-
-    assert connected["connected"] is True
-    assert connected["auth_mode"] == "limited_accountless"
-    assert "allow_accountless" not in runtime.config.to_public_dict()
-
-    disconnected = await runtime.disconnect_live_room()
-    assert disconnected["auth_mode"] == "unknown"
-
-
-@pytest.mark.asyncio
-async def test_direct_connect_preserves_accountless_mode_after_configuring_room(
-    runtime: LiveRuntime,
-) -> None:
-    runtime.bili_auth = FakeBiliAuth(logged_in=False)
-
-    snapshot = await runtime.connect_live_room("123", allow_accountless=True)
-
-    assert snapshot["room_id"] == 123
-    assert snapshot["auth_mode"] == "limited_accountless"
-
-
-@pytest.mark.asyncio
-async def test_connect_live_room_prefers_valid_login_over_requested_fallback(
+async def test_connect_live_room_uses_authenticated_mode(
     runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
 
-    snapshot = await runtime.connect_live_room(allow_accountless=True)
+    snapshot = await runtime.connect_live_room()
 
     assert snapshot["auth_mode"] == "authenticated"
 
@@ -341,6 +313,20 @@ async def test_connect_live_room_does_not_trust_truthy_login_status_values(
 
 
 @pytest.mark.asyncio
+async def test_connect_live_room_requires_loaded_credential_even_when_status_says_logged_in(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.bili_credential = None
+
+    with pytest.raises(ValueError, match="Bilibili login is required"):
+        await runtime.connect_live_room()
+
+    assert runtime.live_connection_snapshot()["state"] == "auth_required"
+    assert runtime.bili_live_ingest.started == []
+
+
+@pytest.mark.asyncio
 async def test_room_switch_checks_login_before_restarting_listener(
     runtime: LiveRuntime,
 ) -> None:
@@ -356,28 +342,6 @@ async def test_room_switch_checks_login_before_restarting_listener(
     assert runtime.bili_live_ingest.started == [100]
     assert runtime.bili_live_ingest.stopped == 1
     assert runtime.live_connection_snapshot()["state"] == "auth_required"
-
-
-@pytest.mark.asyncio
-async def test_connect_live_room_rejects_non_boolean_fallback_intent(
-    runtime: LiveRuntime,
-) -> None:
-    runtime.config.live_room_id = 123
-
-    with pytest.raises(TypeError, match="allow_accountless must be a boolean"):
-        await runtime.connect_live_room(allow_accountless="true")  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_connect_live_room_rejects_accountless_flag_for_douyin(
-    runtime: LiveRuntime,
-) -> None:
-    runtime.config.live_platform = "douyin"
-    runtime.config.live_room_ref = "room-42"
-    runtime.live_provider = FakeLiveProvider("room-42")
-
-    with pytest.raises(ValueError, match="only supported for Bilibili"):
-        await runtime.connect_live_room(allow_accountless=True)
 
 
 @pytest.mark.asyncio
@@ -2542,6 +2506,32 @@ async def test_live_state_paused_and_blocked_take_priority(runtime: LiveRuntime)
     blocked_state = await runtime.dashboard_state()
     assert blocked_state["live_state"]["state"] == "blocked"
     assert blocked_state["live_state"]["idle_hosting_candidate"] is False
+
+
+def test_resume_refreshes_current_live_session_context_only_when_accepting(
+    runtime: LiveRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        runtime.live_events,
+        "schedule_session_context_refresh",
+        lambda: scheduled.append("refresh"),
+    )
+    runtime.config.live_enabled = True
+    runtime.config.live_mode = "co_stream"
+    runtime._accepting_live_events = True
+    runtime.pause()
+
+    runtime.resume()
+
+    assert runtime.safety_guard.status() == "running"
+    assert scheduled == ["refresh"]
+
+    runtime._accepting_live_events = False
+    runtime.pause()
+    runtime.resume()
+    assert scheduled == ["refresh"]
 
 
 @pytest.mark.asyncio
