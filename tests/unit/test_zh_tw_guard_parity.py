@@ -1442,3 +1442,40 @@ def test_textual_content_nouns_are_whole_card_scopes(quantifier, noun):
     assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
     blocked = f'把整个卡的{quantifier}{noun}名重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+
+
+@pytest.mark.parametrize(
+    ("phrasing", "expected"),
+    [
+        # 全称限定词当副词用 / 逐项类副词（base 是 True）
+        ("把所有字段全部重写", True),
+        ("把所有字段逐项重写", True),
+        ("把全部欄位逐條重寫", True),
+        # 嵌套限定词后面也能带「的」（base 是 True）
+        ("把所有字段的所有的内容重写", True),
+        ("把全部字段的全部的内容重写", True),
+        # ⚠️⚠️ 反向：这四条是 P1 保险，放宽副词/嵌套时**最容易被顺手带开**
+        ("把所有字段的所有名字重写", False),
+        ("把所有字段的所有的名字重写", False),
+        ("把所有字段的内容概要重写", False),
+        ("把整个卡的全部设定标题重写", False),
+    ],
+)
+def test_adverb_and_nested_quantifier_widening_keeps_the_p1_guard(phrasing, expected):
+    """⚠️⚠️ 这条用例记录一次**我自己写坏又改回来**的经过，根因值得记。
+
+    第二十八轮放宽副词槽时，`把整个卡的全部设定标题重写` / `把所有字段的所有名字
+    重写` 这类单字段请求从边界溜了进来，P1 保险当场破——是这个文件里的参数化用例
+    逮住的。
+
+    ⚠️ 根因**不是**词表内容（事后用变异体单独验证过：往副词表里塞
+    每个/每項/各项/一切 并不会破保险）。真正的原因是我拼接正则时在一个已经以
+    `|` 结尾的片段后面又写了 `|`，造出一条**空的交替分支**——空分支匹配空串，
+    于是那条收尾前视对任何文本都成立，整道边界形同虚设。
+
+    ⚠️ 教训：这个文件的正则是**字符串拼起来**的，加分支时要看清相邻片段末尾有没有
+    已经带 `|`。空分支不会报错，只会让守卫静默失效。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
