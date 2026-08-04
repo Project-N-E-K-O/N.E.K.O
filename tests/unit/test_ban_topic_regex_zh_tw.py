@@ -122,8 +122,8 @@ def test_the_alternation_group_reader_finds_the_verb_groups():
         assert expected in flat, expected
 
 
-@pytest.mark.parametrize("index", range(4))
-def test_every_branch_has_its_script_twin_in_the_same_group(index):
+@pytest.mark.parametrize("template_no", range(1, 5))
+def test_every_branch_has_its_script_twin_in_the_same_group(template_no):
     """⚠️ 逐**分支**对偶，不是「整条 pattern 里有没有这个码位」。
 
     同一条模板里只要还有别的分支带着那个繁体字，删掉某一个繁体分支照样绿：模板 3 的
@@ -133,7 +133,7 @@ def test_every_branch_has_its_script_twin_in_the_same_group(index):
     ⚠️ 双向：留繁体删简体同样要红——受害的是简体用户，方向和本 PR 的主张相反，
     但一样是回归（删掉模板 2 的 ``|讲`` 保留 ``|講`` 曾经无人看守）。
     """  # noqa: DOCSTRING_CJK
-    raw = _zh_pattern_sources()[index]
+    raw = _zh_pattern_sources()[template_no - 1]
     trad_to_simp = {v: k for k, v in SIMPLIFIED_TO_TRADITIONAL.items()}
     missing = []
     for group in _alternation_groups(raw):
@@ -145,7 +145,7 @@ def test_every_branch_has_its_script_twin_in_the_same_group(index):
             back = "".join(trad_to_simp.get(ch, ch) for ch in branch)
             if back != branch and back not in branches:
                 missing.append((branch, back))
-    assert not missing, f"模板 {index} 的这些分支缺孪生字形：{missing}"
+    assert not missing, f"模板 {template_no} 的这些分支缺孪生字形：{missing}"
 
 
 # ── 2. 召回：繁体祈使句能抽到 term ──────────────────────────────
@@ -1730,6 +1730,15 @@ def test_the_unavoidable_taolun_overlap_is_symmetric(text, expected):
         ("example.com別提了。", "example.com"),
         ("价格1,000元别提了。", "价格1,000元"),
         ("價格1,000元別提了。", "價格1,000元"),
+        # ⚠️ 两侧判据必须是 Unicode 感知的：写成 [0-9A-Za-z] 只修了 ASCII 一半，
+        # 下面这批全部还是断的（codex P2 第二轮）
+        ("café.com别提了。", "café.com"),
+        ("naïve.org别提了。", "naïve.org"),
+        ("Дом.ру别提了。", "Дом.ру"),
+        ("例子.测试别提了。", "例子.测试"),
+        ("例子.測試別提了。", "例子.測試"),
+        ("价格１,０００元别提了。", "价格１,０００元"),
+        ("價格１,０００元別提了。", "價格１,０００元"),
     ],
 )
 def test_identifier_internal_punctuation_is_not_a_topic_boundary(text, expected):
@@ -1747,10 +1756,21 @@ def test_sentence_final_punctuation_is_still_a_boundary(text):
 
 
 def test_the_identifier_punct_rule_needs_both_sides():
-    assert D._ZH_IDENT_PUNCT.startswith("(?<=[0-9A-Za-z])")
-    assert D._ZH_IDENT_PUNCT.endswith("(?=[0-9A-Za-z])")
+    """⚠️ 两侧都要，而且判据必须 Unicode 感知——写死 ASCII 只修一半（codex P2 两轮）。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_IDENT_PUNCT.startswith(r"(?<=\w)")
+    assert D._ZH_IDENT_PUNCT.endswith(r"(?=\w)")
+    assert "0-9A-Za-z" not in D._ZH_IDENT_PUNCT
     for unit in (D._ZH_TOPIC_CHAR, D._ZH_TOPIC_CHAR_NO_GUANYU):
         assert D._ZH_IDENT_PUNCT in unit
+    # 前提守卫：这条判据在非 ASCII 上真的命中
+    import re as _re
+
+    probe = _re.compile(D._ZH_IDENT_PUNCT)
+    for ident in ("café.com", "Дом.ру", "例子.测试", "１,０００"):
+        assert probe.search(ident), ident
+    # 而句尾的点号（后面是空白或串尾）不命中
+    for tail in ("工作. ", "工作."):
+        assert not probe.search(tail), tail
 
 
 # ── 14. 剥填充词之后要归一化括号再跟对手比 ───────────────────
@@ -2010,34 +2030,36 @@ def _group_containing(raw: str, needle: str) -> list[str]:
 # 同时也删掉了驱动它的那条用例，测试跟着缩水、照样全绿——本仓库栽过的 derived-test
 # 盲区。钉死之后删分支必然红，加分支必须同时改这里（顺便被迫补一条繁简对照）。
 #
-# (模板下标, 分支组的定位分支, 钉死的分支表, 句型, 期望话题)
+# ⚠️ 第一列是**模板序号（1-based，跟注释里说的「模板 2/3/4」对得上）**，不是列表
+# 下标——本文件别处一律用 1-based 指代模板，混用会让人误读覆盖范围（CodeRabbit）。
+# (模板序号, 分支组的定位分支, 钉死的分支表, 句型, 期望话题)
 BRANCH_DRIVE_CASES = [
-    (1, "提了", ("提了", "提起", "提及", "说", "說", "提", "聊", "讲", "講"),
+    (2, "提了", ("提了", "提起", "提及", "说", "說", "提", "聊", "讲", "講"),
      "工作别{branch}。", "工作"),
-    (1, "提了", ("提了", "提起", "提及", "说", "說", "提", "聊", "讲", "講"),
+    (2, "提了", ("提了", "提起", "提及", "说", "說", "提", "聊", "讲", "講"),
      "工作別{branch}。", "工作"),
-    (2, "聊", ("讨论", "討論", "说", "說", "提", "聊", "讲", "講", "谈", "談", "扯"),
+    (3, "聊", ("讨论", "討論", "说", "說", "提", "聊", "讲", "講", "谈", "談", "扯"),
      "我不想{branch}工作。", "工作"),
-    (2, "不想", ("不想", "不愿意", "不願意", "不愿", "不願", "懒得", "懶得",
+    (3, "不想", ("不想", "不愿意", "不願意", "不愿", "不願", "懒得", "懶得",
                  "没心情", "沒心情"),
      "我{branch}聊工作。", "工作"),
-    (3, "提", ("说", "說", "提", "聊", "讲", "講"),
+    (4, "提", ("说", "說", "提", "聊", "讲", "講"),
      "关于工作就别{branch}了。", "工作"),
-    (3, "提", ("说", "說", "提", "聊", "讲", "講"),
+    (4, "提", ("说", "說", "提", "聊", "讲", "講"),
      "關於工作就別{branch}了。", "工作"),
 ]
 
 
 @pytest.mark.parametrize(
-    ("index", "anchor", "pinned", "skeleton", "expected"), BRANCH_DRIVE_CASES,
+    ("template_no", "anchor", "pinned", "skeleton", "expected"), BRANCH_DRIVE_CASES,
 )
 def test_every_branch_in_the_group_actually_drives_extraction(
-    index, anchor, pinned, skeleton, expected,
+    template_no, anchor, pinned, skeleton, expected,
 ):
-    raw = _zh_pattern_sources()[index]
+    raw = _zh_pattern_sources()[template_no - 1]
     # 前提守卫：钉死的表必须和实现里那组分支**相等**，否则驱动的是一张过时的表
     assert tuple(_group_containing(raw, anchor)) == pinned, (
-        f"模板 {index} 的分支组变了，请同步这里并给新分支补繁简对照"
+        f"模板 {template_no} 的分支组变了，请同步这里并给新分支补繁简对照"
     )
     for branch in pinned:
         text = skeleton.format(branch=branch)
@@ -2066,7 +2088,7 @@ def test_negation_constants_are_pinned():
 def test_the_branch_drive_cases_cover_every_template_but_the_first():
     """模板 1 的动词/否定词维已有第 2 节的笛卡尔积；2/3/4 靠上面这条。"""  # noqa: DOCSTRING_CJK
     covered = {case[0] for case in BRANCH_DRIVE_CASES}
-    assert covered == {1, 2, 3}
+    assert covered == {2, 3, 4}
     assert len(_zh_pattern_sources()) == 4
 
 
@@ -2224,3 +2246,20 @@ def test_a_standalone_symmetric_quote_is_not_an_unclosed_opener(text, expected):
     自相矛盾——同一个字符在同一个模块里两种待遇（codex P2）。
     """  # noqa: DOCSTRING_CJK
     assert expected in _zh_terms(text), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别提工作.别提加班.", {"工作", "加班"}),
+        ("別提工作.別提加班.", {"工作", "加班"}),
+        ("别提工作,别提加班.", {"工作", "加班"}),
+        ("別提工作,別提加班.", {"工作", "加班"}),
+    ],
+)
+def test_relaxing_to_word_chars_does_not_merge_two_directives(text, expected):
+    """⚠️ 放宽到 ``\w`` 之后 ASCII 句读两侧都可能是汉字，但两条指令仍然分得开：
+    宾语是 lazy 的，而终结符分支里本来就有 ASCII ``.``——引擎先试短的那条。只有短的
+    凑不出合法匹配时才会把 ``.`` 吃进话题。这条钉住那个前提。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected, _zh_terms(text)
