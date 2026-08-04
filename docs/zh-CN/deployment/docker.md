@@ -38,15 +38,19 @@ mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # 目录里可能有你自己放的文件，而真数据仍然只在容器可写层里。
 MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
 
-if printf '%s
-' "$MOUNTS" | grep -qx /home/neko; then
+# 第 4 步要用：真数据是从容器里捞出来的，就不能再被宿主机上那个旧目录覆盖
+EXPORTED_APP_DATA=""
+
+if [ -z "$MOUNTS" ]; then
+  echo "容器 neko 不在（可能已经删过），跳过导出"
+elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "容器已按新布局挂载，没有待导出的内容"
 else
   # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
   # 容器可写层。
-  if ! printf '%s
-' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
+  if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+    EXPORTED_APP_DATA=1
   fi
   # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
   # 对不存在的 SRC_PATH 是报错退出的 —— 不能让它挡住上面已经完成的关键导出。
@@ -65,8 +69,14 @@ docker compose down
 # 容器内的 neko 固定为 uid/gid 1000，和绝大多数发行版第一个普通用户一致，属主
 # 通常已经对上。只有宿主账号不是 1000 时才需要这一步。
 [ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
-cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
-cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+# 宿主机上那份只有在「第 1 步没从容器里救数据」时才是权威：旧版 README 把该目录
+# 挂到了服务从不写入的路径，里面的东西会覆盖掉唯一正确的那份。
+if [ -n "$EXPORTED_APP_DATA" ]; then
+  echo "应用数据已在第 1 步从容器导出，不合并宿主机上的 N.E.K.O/"
+elif [ -d N.E.K.O ]; then
+  cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+fi
+[ -d ssl ] && cp -a ssl/. neko-home/ssl/ && rm -rf ssl
 
 # 3. 重新启动
 docker compose up -d

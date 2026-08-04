@@ -46,15 +46,19 @@ mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # the real data still lives only in the container's writable layer.
 MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
 
-if printf '%s
-' "$MOUNTS" | grep -qx /home/neko; then
+# Needed in step 4: data recovered from the container must not be overwritten by the host copy.
+EXPORTED_APP_DATA=""
+
+if [ -z "$MOUNTS" ]; then
+  echo "Container neko is gone (already removed?) - skipping export."
+elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "Container already uses the new layout — nothing to export."
 else
   # Application data first; this is the part that cannot be recovered later. If the
   # container does not mount the data directory, that data exists nowhere else.
-  if ! printf '%s
-' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
+  if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+    EXPORTED_APP_DATA=1
   fi
   # OpenFang state second, and non-fatal: a container that never initialised it has
   # no such directory, and `docker cp` fails on a missing SRC_PATH — that must not
@@ -76,8 +80,15 @@ docker compose down
 # user on most distributions, so ownership usually already lines up. Only needed
 # when your host account is not 1000.
 [ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
-cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
-cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+# Only merge the host copy when step 1 did NOT recover the data from the container:
+# under the old README layout that directory was mounted at a path the services never
+# wrote to, so anything in it would overwrite the only correct copy.
+if [ -n "$EXPORTED_APP_DATA" ]; then
+  echo "Application data came from the container in step 1 - not merging the host N.E.K.O/"
+elif [ -d N.E.K.O ]; then
+  cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+fi
+[ -d ssl ] && cp -a ssl/. neko-home/ssl/ && rm -rf ssl
 
 # 3. Start again
 docker compose up -d

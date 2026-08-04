@@ -201,15 +201,19 @@ mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/nek
 # 部署的人是错的：那个目录里可能有你自己放进去的文件，而真数据仍然只在容器里。
 MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
 
-if printf '%s
-' "$MOUNTS" | grep -qx /home/neko; then
+# 第 4 步要用：真数据是从容器里捞出来的话，就不能再被宿主机上那个旧目录覆盖
+EXPORTED_APP_DATA=""
+
+if [ -z "$MOUNTS" ]; then
+  echo "容器 neko 不在（可能已经删过），跳过导出；旧数据若还在宿主机上，直接做下面几步"
+elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "容器已按新布局挂载，没有待导出的内容"
 else
   # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
   # 容器可写层。源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层。
-  if ! printf '%s
-' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
+  if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
+    EXPORTED_APP_DATA=1
   fi
   # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
   # 对不存在的源路径是报错退出的 —— 不能让它挡住上面已经完成的关键导出。
@@ -231,8 +235,18 @@ docker-compose down
 # 第 4 步：把宿主机上的旧目录并进来——有就并，没有就跳过。容器可能已经在 neko-home
 #         下建好了同名目录和一张新的自签证书，所以按内容合并、不要用 mv：mv 到已存在
 #         的目录会套进去多一层。同名文件以旧数据为准。
-[ -d "$BASE/N.E.K.O" ] && cp -a "$BASE/N.E.K.O/." "$BASE/neko-home/.local/share/N.E.K.O/" && rm -rf "$BASE/N.E.K.O"
-[ -d "$BASE/ssl" ]     && cp -a "$BASE/ssl/."     "$BASE/neko-home/ssl/"                 && rm -rf "$BASE/ssl"
+#
+#         但如果第 1 步是从容器里把真数据捞出来的（旧版 README 布局），那
+#         $BASE/N.E.K.O 只是个服务从不写入的空壳，里面顶多是你自己放过的过时
+#         文件 —— 拿它覆盖刚导出的数据就白救了。
+if [ -n "$EXPORTED_APP_DATA" ]; then
+  echo "应用数据已在第 1 步从容器导出，跳过合并 $BASE/N.E.K.O"
+  echo "（旧版 README 把它挂到了服务不写入的路径；确认里面没有你还需要的东西后自行删除）"
+elif [ -d "$BASE/N.E.K.O" ]; then
+  cp -a "$BASE/N.E.K.O/." "$BASE/neko-home/.local/share/N.E.K.O/" && rm -rf "$BASE/N.E.K.O"
+fi
+# 证书在两种旧布局下挂的都是 /home/neko/ssl，宿主机上这份始终是权威
+[ -d "$BASE/ssl" ] && cp -a "$BASE/ssl/." "$BASE/neko-home/ssl/" && rm -rf "$BASE/ssl"
 
 # 第 5 步：Compose 部署把 volumes 换成本文档上方的新版写法后 docker-compose up -d；
 #         Docker Run 部署按上方的新命令重新 docker run

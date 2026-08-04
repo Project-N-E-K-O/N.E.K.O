@@ -35,15 +35,19 @@ mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # 実データは container の writable layer にしか存在しません。
 MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
 
-if printf '%s
-' "$MOUNTS" | grep -qx /home/neko; then
+# 手順 4 で使用：container から救出した実データを host 側の旧 directory で上書きさせないため
+EXPORTED_APP_DATA=""
+
+if [ -z "$MOUNTS" ]; then
+  echo "container neko が存在しません（削除済み？）。export を skip します。"
+elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "container は既に新レイアウトです。export するものはありません。"
 else
   # application data を先に。失われると復旧できないのはこちらです。container が data
   # directory を mount していない場合、その data は他のどこにも存在しません。
-  if ! printf '%s
-' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
+  if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+    EXPORTED_APP_DATA=1
   fi
   # OpenFang state はその次で、致命的ではありません：一度も初期化していない container
   # には該当 directory がなく、docker cp は存在しない SRC_PATH で失敗します。上の
@@ -64,8 +68,15 @@ docker compose down
 # 一般ユーザーと一致するため通常は所有者が既に揃っています。host 側の account が
 # 1000 でない場合だけ必要です。
 [ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
-cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
-cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+# host 側の copy が権威なのは「手順 1 で container から救出しなかった」場合だけです：
+# 旧 README はその directory をサービスが書き込まない path に mount していたため、
+# 中身をそのまま被せると唯一正しい copy を上書きしてしまいます。
+if [ -n "$EXPORTED_APP_DATA" ]; then
+  echo "application data は手順 1 で container から export 済み。host 側の N.E.K.O/ は merge しません"
+elif [ -d N.E.K.O ]; then
+  cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+fi
+[ -d ssl ] && cp -a ssl/. neko-home/ssl/ && rm -rf ssl
 
 # 3. 再起動
 docker compose up -d
