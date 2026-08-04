@@ -1180,7 +1180,7 @@ _FUNCTION_T2S = {
 }
 _FUNCTION_NEUTRAL_CHARS = set(
     "一上下不了以你允先准刻即可同吧呀呢呦咧咯咱哈哦唷啊啦喔喵嘛嘞噢在好如妳定就得"
-    "心必忙快怎您想意我批拜捏接放是替有然的直立耶能脆行要那麻齁多感"
+    "心必忙快怎您想意我批拜捏接放是替有然的直立耶能脆行要那麻齁多感否"
 )
 
 
@@ -1221,6 +1221,7 @@ def test_function_word_tables_are_pinned():
     }
     assert set(_SOFT_LEAD.split("|")) == {
         "要不要", "能不能", "可不可以", "要不然", "要不", "不如", "还是", "還是",
+        "是否可以", "是否能", "是否", "能否", "可否",
         "干脆", "乾脆", "我想", "我要", "我们", "我們", "咱们", "咱們",
         "想", "我", "咱",
     }
@@ -2791,9 +2792,9 @@ def test_ordinary_chat_punctuation_does_not_hide_a_command(text, expected):
     merely a slower path: the cheap pre-gate returns None before ever reaching
     the LLM classifier, so nothing recovers them.
 
-    The underscore one is a plain bug rather than an omission — Python's ``\w``
-    includes ``_``, so ``\W`` never strips it, and a separated ``停下来 _``
-    even makes the underscore itself the selected command clause.
+    The underscore one is a plain bug rather than an omission — Python's word
+    class includes ``_``, so its complement never strips it, and a separated
+    ``停下来 _`` even makes the underscore itself the selected command clause.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
@@ -2862,3 +2863,62 @@ def test_the_affirmation_narrowing_keeps_every_real_authorization(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve", text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 斜杠当分隔符用（聊天里很常见）
+        ("好吧/换个话题", "/new"),
+        ("同意/去执行", "/daemon approve"),
+        ("停下来/谢谢", "/stop"),
+        # 前缀在外、包裹在内：剥完首部虚词还得再剥一次装饰
+        ("请「停下来」", "/stop"),
+        ("麻烦（换个话题）", "/new"),
+        ("你_停下来_", "/stop"),
+        ("請「停下來」", "/stop"),
+        # 书面疑问式请求（只进宽表，approve 永远看不到）
+        ("能否停下来？", "/stop"),
+        ("可否换个话题", "/new"),
+        ("是否可以停下来", "/stop"),
+        ("是否能换个话题", "/new"),
+        ("能否停下來", "/stop"),
+    ],
+)
+def test_more_ordinary_phrasings_still_reach_their_command(text, expected):
+    """三类召回损失，全部相对 main：`/` 没当分隔符、前缀+包裹的嵌套只剥了一层、
+    书面疑问式请求（能否/可否/是否可以）不在任何首部表里。
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 疑问式请求绝不能授权 —— 它们只在宽表里
+        "能否去执行", "可否去執行", "是否可以同意", "是否能删吧", "能否准了",
+        # 斜杠成为边界后普通文本不能冒出命令
+        "和/或", "a/b", "读/写", "24/7",
+        # 包裹里是否定就不算
+        "请「不要停下来」", "你_不同意_",
+        # 字面 magic word 仍然照走归一化，不受 `/` 分隔符影响
+    ],
+)
+def test_the_new_leads_and_separators_do_not_manufacture_approvals(text):
+    """⚠️ `能否/可否/是否可以` 只能进**宽**表：它们是征询，不是授权。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("/stop", "/stop"), ("/daemon approve", "/daemon approve"), ("/new", "/new")],
+)
+def test_literal_magic_words_survive_the_slash_separator(text, expected):
+    """⚠️ `/` 成了子句分隔符，但字面命令由 normalize_magic_command 在更早一层拦下。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text

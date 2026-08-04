@@ -156,7 +156,10 @@ _HIGH_PRECISION_NON_MAGIC = (
 # 长句里。`/clear` 不在本批（不在本次拍板的三条里），仍走子串包含。
 # ⚠️ 中文省略号 …／⋯ 和破折号 ——／— 都是**句中分隔符**，不只是句尾装饰：
 # `同意……去执行` / `好吧——换个话题` 在旧实现里靠子串命中，不切它整条就落空。
-_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:…⋯‥—–―─\-\s]+")
+# ⚠️ `/` 也是子句边界。看着危险其实不是：字面 magic word 由 `normalize_magic_command`
+# 在这条路径**之前**就拦掉并提前返回了（`_classify_magic_intent_with_rules` 第一件事），
+# 切分器只会看到自由文本里当分隔符用的斜杠（`好吧/换个话题`）。
+_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:…⋯‥—–―─\-/\s]+")
 
 # ── 首部虚词：**两套白名单**，approve 用窄的那套 ──────────────────────
 #
@@ -209,6 +212,10 @@ _SOFT_LEAD = (
     # `要停下来`。这已经是这套表第五次栽在「多字词排在它的首字/前缀后面」上了
     # （那么·快点·我想·你们·要不要），加词时照抄这个顺序。
     r"要不要|能不能|可不可以|要不然|要不|不如|还是|還是|干脆|乾脆|"
+    # 书面/礼貌的疑问式请求。⚠️ 只能进**宽**表：`能否去執行` 是在征询，不是授权，
+    # 放进中性表就等于让 approve 认一整类问句。
+    # ⚠️ 长的排前面：`是否可以` / `是否能` 必须在 `是否` 之前，否则被咬成 `可以停下来`。
+    r"是否可以|是否能|是否|能否|可否|"
     r"我想|我要|我们|我們|咱们|咱們|想|我|咱"
 )
 _CLAUSE_LEAD_NEUTRAL = re.compile(rf"^(?:{_NEUTRAL_LEAD})+")
@@ -334,9 +341,16 @@ def _clause_hits(
     # ⚠️ 拉丁字母的前缀（OK / okay）大小写写法是开集（oK / oKaY / OKay…），枚举必漏。
     # 多试一个整体小写的候选，中文不受影响。
     lowered = bare.lower()
-    starts = [text, bare, lead.sub("", bare).strip()]
+    # ⚠️ 剥完首部虚词还要**再剥一次装饰**。前缀和包裹会同时出现：`请「停下来」` 剥掉
+    # `请` 之后剩的是 `「停下来」`，两端引号还在，查表照样落空。一次性剥装饰只能处理
+    # 「装饰在最外层」，处理不了「前缀在外、装饰在内」这一层嵌套。
+    def _peel(source: str) -> list[str]:
+        without_lead = lead.sub("", source).strip()
+        return [without_lead, decoration.sub("", without_lead).strip()]
+
+    starts = [text, bare, *_peel(bare)]
     if lowered != bare:
-        starts += [lowered, lead.sub("", lowered).strip()]
+        starts += [lowered, *_peel(lowered)]
     for candidate in starts:
         if candidate and candidate not in seen:
             if candidate in table:

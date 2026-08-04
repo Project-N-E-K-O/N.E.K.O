@@ -283,7 +283,7 @@ def test_a_recently_completed_task_opens_the_gate(wired):
     inverted.
 
     ⚠️ The window is bounded by the explicit ``end_time`` age check in
-    ``_has_recent_openclaw_task`` — NOT by the registry cleanup, which the
+    ``_iter_approval_window_tasks`` — NOT by the registry cleanup, which the
     dispatch path never invokes. Do not "simplify" that check away; see
     test_a_stale_terminal_entry_does_not_open_the_gate.
 
@@ -874,3 +874,67 @@ def test_an_explicit_approval_is_never_gated(wired):
 
     _dispatch("/daemon approve", task_id="magic-1", user_text="/daemon approve")
     assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+def test_an_unknown_current_session_closes_the_gate(wired):
+    """⚠️ 问不出当前会话时开闸侧必须 fail-closed。
+
+    The filter used to read ``if current_session and ...`` — a raised or empty
+    peek left it empty and skipped the session check *entirely*, so entries from
+    any session opened the gate. That is the narrow/wide principle inverted:
+    skipping is wider, and wider is only safe on the retirement side.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    def _boom(*, role_name, sender_id):
+        raise RuntimeError("session cache unreadable")
+
+    fake.peek_persistent_session_id = _boom
+    _dispatch("/daemon approve")
+    assert fake.magic_calls == [], "问不出会话时不该放行推断批准"
+
+    fake.peek_persistent_session_id = lambda *, role_name, sender_id: ""
+    _dispatch("/daemon approve")
+    assert fake.magic_calls == [], "会话为空时同样不该放行"
+
+
+def test_stop_still_retires_when_the_session_is_unknown(wired):
+    """作废侧相反：问不出会话就把这个 sender 名下的窗口全兑现掉，宁可多不可漏。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-done", status="completed")
+
+    def _boom(*, role_name, sender_id):
+        raise RuntimeError("session cache unreadable")
+
+    fake.peek_persistent_session_id = _boom
+    _dispatch("/stop", task_id="magic-stop")
+    assert registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
+
+
+def test_stop_retires_before_the_cancel_helper_can_raise(wired, monkeypatch):
+    """⚠️ 作废排在取消 helper 之前，那个 helper 抛出不能把作废跳过。
+
+    ``_cancel_openclaw_tasks_for_stop`` awaits and calls ``record_completed``
+    without a try, so ordering it first is free insurance — retirement depends
+    on nothing the cancellation produces.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-done", status="completed")
+    _register(registry, "t-live", status="running", ended_seconds_ago=None)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("tracker exploded")
+
+    # ⚠️ 用 monkeypatch，别直接赋值再 del：`_task_tracker` 是模块级单例，手工 del 会把
+    # 上面 fixture 用 monkeypatch 装上去的桩一起抹掉，之后所有用例共用一个被弄坏的
+    # tracker——这个仓库的 pytest 有后台线程/单例泄漏污染后续用例的前科。
+    monkeypatch.setattr(oc._task_tracker, "record_completed", _boom)
+    with pytest.raises(RuntimeError):
+        _dispatch("/stop", task_id="magic-stop")
+
+    assert registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True, (
+        "取消 helper 抛出之前，窗口就该已经作废掉了"
+    )

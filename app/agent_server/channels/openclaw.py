@@ -123,6 +123,7 @@ def _iter_approval_window_tasks(
     exclude_task_id: Optional[str] = None,
     age_bounded: bool = True,
     match_lanlan: bool = True,
+    require_session: bool = True,
 ) -> list[str]:
     """Task ids whose recent completion may carry an unanswered approval prompt.
 
@@ -165,6 +166,19 @@ def _iter_approval_window_tasks(
             current_session = str(peek(role_name=lanlan_name, sender_id=sender_id) or "")
         except Exception:
             logger.debug("[OpenClaw] peek_persistent_session_id failed", exc_info=True)
+    # ⚠️ 问不出当前会话时，**开闸侧必须 fail-closed**。这里原来写的是
+    # `if current_session and ...`——peek 抛异常（缓存文件读坏）或返回空，
+    # `current_session` 就是 ""，于是整条 session 过滤被**跳过**，任意会话的条目都能开闸。
+    # 这是把「开闸窄、作废宽」在 session 这一维上做反了：作废侧跳过过滤是更宽=安全，
+    # 开闸侧跳过就是 fail-open。所以 require_session 的两边分开处理。
+    if require_session and not current_session:
+        logger.info(
+            "[OpenClaw] approval window closed: current session unknown "
+            "for sender=%s lanlan=%s",
+            sender_id,
+            lanlan_name,
+        )
+        return []
     matches: list[str] = []
     for task_id, info in _shared.Modules.task_registry.items():
         if task_id == exclude_task_id or not isinstance(info, dict):
@@ -262,6 +276,7 @@ def _retire_approval_windows(
         exclude_task_id=exclude_task_id,
         age_bounded=False,
         match_lanlan=False,
+        require_session=False,
     ):
         info = _shared.Modules.task_registry.get(task_id)
         if isinstance(info, dict):
@@ -618,13 +633,10 @@ async def dispatch(
                     ", ".join(consumed),
                 )
             if magic_command == "/stop":
-                cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
-                    sender_id=nk_sender_id,
-                    lanlan_name=lanlan_name,
-                    exclude_task_id=result.task_id,
-                )
-                if cancelled_task_ids:
-                    task_params["cancelled_task_ids"] = cancelled_task_ids
+                # ⚠️ 作废排在取消 helper **之前**。那个 helper 里有 `await` 和一处没包
+                # try 的 `_task_tracker.record_completed`，一旦抛出就把后面的作废整个
+                # 跳过，被取消任务的窗口反而留了下来。作废不依赖取消的任何结果，所以
+                # 排在前面纯赚——和它排在 `run_magic_command` 之前是同一个理由。
                 # ⚠️ 掐任务掐不掉**已经问出口的那句审批提示**：_cancel_… 只挑
                 # queued/running，而窗口是 completed 开的，两个状态集合互不相交。不
                 # 兑现的话，用户「停下来」之后随口一句「同意」还能在整个 TTL 里把他刚
@@ -658,6 +670,13 @@ async def dispatch(
                         len(retired),
                         ", ".join(retired),
                     )
+                cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
+                    sender_id=nk_sender_id,
+                    lanlan_name=lanlan_name,
+                    exclude_task_id=result.task_id,
+                )
+                if cancelled_task_ids:
+                    task_params["cancelled_task_ids"] = cancelled_task_ids
             try:
                 nk_result = await _shared.Modules.openclaw.run_magic_command(
                     magic_command,
