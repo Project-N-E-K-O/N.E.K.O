@@ -919,8 +919,16 @@ _WHOLE_CARD_SCOPE_RUN_BODY = (
 # 收了它 `重写所有字段后缀` 会一起放行，而那正是这个 PR 要修的单字段破坏本体
 # （base 是 True，本 PR 故意改成 False）。`后` 后面是动词还是名词是开集，分不干净，
 # 所以取安全那一侧——用 之后/然后 的说法仍然走得通，少认一种说法只是少补几个字段。
+# ⚠️ 写成元组：这张表已经被扩了两轮，测试要按它自动派生用例。
+_WHOLE_CARD_CLAUSE_CONTINUATIONS = (
+    "并且", "並且", "然后", "然後", "之后", "之後", "接着", "接著", "以及",
+    # 省略连词的承接词（Codex P2 第四十七轮，base 全是 True）。
+    # ⚠️ 它们都是**两字词**，跟裸的「后」不同：`后缀` 那个坏例子撞不上。
+    "随后", "隨後", "最后", "最後", "接下来", "接下來",
+    "同时", "同時", "而且", "并", "並", "且",
+)
 _WHOLE_CARD_CLAUSE_CONTINUATION = (
-    r"(?:并且|並且|然后|然後|之后|之後|接着|接著|以及|同时|同時|而且|并|並|且)"
+    r"(?:" + "|".join(_WHOLE_CARD_CLAUSE_CONTINUATIONS) + r")"
 )
 _WHOLE_CARD_SCOPE_RUN_OPT = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"*)"
 _WHOLE_CARD_SCOPE_RUN_ONE = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"+)"
@@ -1218,9 +1226,36 @@ def _chat_clauses(text: str) -> list[str]:
 # ⚠️ **不收 ASCII 单引号和左单引号**：`Don't Stop Believin'` 里它们是撇号不是引号，
 # 收了会把 `'t Stop Believin'` 当成一段引用、把真正的否定词抹掉——那是危险方向。
 # music_requests 的 _ZH_AMBIGUOUS_QUOTE_OPENERS 是同一条取舍。
+# 引号、标点、空白——判「去掉否定词之后还剩不剩东西」时要先把它们抹平。
+_CHAT_QUOTE_RESIDUE_RE = re.compile(r"[\W_]+", re.UNICODE)
 _CHAT_QUOTED_SPAN_RE = re.compile(
     r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
 )
+
+
+def _chat_span_is_quoted_material(span: str) -> bool:
+    """这一段引号里装的是**被引用的素材**（而不是指令本身）吗？
+
+    引号在这里有三种用法，只有第一种该抹掉：
+
+    * 引用素材——`Use “Don’t Panic” as the theme…`，`Don’t` 是歌名的一部分；
+    * 强调整条指令——`请“不要重写”所有字段`，引号里带着重写动词；
+    * **只强调否定词**——`Please “do not” rewrite all fields` / `请“不要”重写所有字段`
+      / `Please “never” regenerate the whole card`。这一种上一版没认出来：引号里
+      有否定、没有动词，正好落进「引用素材」那一格，于是用户明确的禁止被抹掉、
+      整卡补全照跑并 autosave（Codex P1 第四十七轮，base 是 False——危险方向，
+      连着两轮都是我自己引进的）。
+
+    判据：**把否定词去掉之后还剩别的字**，才算素材。
+    `“do not”` / `“不要”` / `“never”` 去掉否定词就空了，那是被强调的指令；
+    `“Don’t Panic”` 去掉 `Don’t` 还剩 `Panic`，那是个名字。
+    """  # noqa: DOCSTRING_CJK
+    if _CHAT_REWRITE_VERB_RE.search(span):
+        return False
+    if not _CHAT_NEGATED_REWRITE_LEXEME_RE.search(span):
+        return False
+    residue = _CHAT_NEGATED_REWRITE_LEXEME_RE.sub(" ", span)
+    return bool(_CHAT_QUOTE_RESIDUE_RE.sub("", residue))
 
 
 def _chat_clause_without_quotes(clause: str) -> str:
@@ -1252,14 +1287,7 @@ def _chat_clause_without_quotes(clause: str) -> str:
     可抹的东西，留着让正向信号照读，base 上那些说法就不会被误伤。
     """  # noqa: DOCSTRING_CJK
     return _CHAT_QUOTED_SPAN_RE.sub(
-        lambda m: (
-            " "
-            if (
-                _CHAT_NEGATED_REWRITE_LEXEME_RE.search(m.group(0))
-                and not _CHAT_REWRITE_VERB_RE.search(m.group(0))
-            )
-            else m.group(0)
-        ),
+        lambda m: " " if _chat_span_is_quoted_material(m.group(0)) else m.group(0),
         clause,
     )
 

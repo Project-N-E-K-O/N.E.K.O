@@ -1855,11 +1855,24 @@ def test_quoted_material_is_not_an_instruction(text):
         assert router._chat_text_requests_full_rewrite(negated) is False, negated
 
 
-@pytest.mark.parametrize(
-    "conjunction",
-    ["并", "並", "并且", "並且", "然后", "然後", "之后", "之後",
-     "接着", "接著", "以及", "同时", "同時", "而且", "且"],
-)
+WHOLE_CARD_CONTINUATIONS = _router_table("_WHOLE_CARD_CLAUSE_CONTINUATIONS")
+
+
+def test_the_continuation_table_is_derived_not_transcribed():
+    """⚠️ 这张表已经扩了两轮，下面的用例按它派生，所以要钉住相等。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert set(WHOLE_CARD_CONTINUATIONS) == {
+        "并且", "並且", "然后", "然後", "之后", "之後",
+        "接着", "接著", "以及", "随后", "隨後", "最后", "最後",
+        "接下来", "接下來", "同时", "同時", "而且", "并", "並", "且",
+    }
+    assert router._WHOLE_CARD_CLAUSE_CONTINUATION == (
+        r"(?:" + "|".join(WHOLE_CARD_CONTINUATIONS) + r")"
+    )
+
+
+@pytest.mark.parametrize("conjunction", WHOLE_CARD_CONTINUATIONS)
 def test_clause_continuation_after_a_completed_target(conjunction):
     """目标说完之后接一个并列/承接连词再讲下一件事（base 是 True）。
 
@@ -1977,3 +1990,35 @@ def test_quantifier_after_a_locative_continuation(locative, quantifier):
                  f'重写所有字段{locative}{quantifier}名字内容',
                  f'重写所有字段{locative}{quantifier}标题设定'):
         assert router._chat_text_requests_full_rewrite(kept) is False, kept
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Please “do not” rewrite all fields",
+     "请“不要”重写所有字段",
+     "请「不要」重写整个卡",
+     "Please “never” regenerate the whole card",
+     "请“禁止”重写所有字段"],
+)
+def test_a_separately_quoted_negation_still_governs(text):
+    """⚠⚠ 引号里**只有否定词**时，那是被强调的指令，不是被引用的素材。
+
+    上一版的判据是「含否定、不含动词 → 素材」，`“do not”` 正好落进这一格，
+    于是用户明确的禁止被抹掉、整卡补全照跑并 autosave（Codex P1 第四十七轮，
+    base 是 False——危险方向，连着两轮都是我自己引进的）。
+
+    判据改成：**把否定词去掉之后还剩别的字**，才算素材。
+    `“do not”` 去掉就空了；`“Don’t Panic”` 去掉还剩 `Panic`，那是个名字。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    for material in (
+        "Use “Don’t Panic” as the theme and rewrite all fields",
+        "Following “Don’t Stop Believin’” rewrite the whole card",
+        "把《整个卡》重写",
+    ):
+        assert router._chat_text_requests_full_rewrite(material) is True, material
+    assert router._chat_text_requests_full_rewrite(
+        "Use “do not touch all fields” as an example and rewrite the title"
+    ) is False

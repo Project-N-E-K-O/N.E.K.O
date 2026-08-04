@@ -3913,3 +3913,32 @@ def test_free_choice_frame_with_an_intervening_predicate(frame, predicate, wh):
     assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我想停止播放任何时候都行') is True
     assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False
+
+
+@pytest.mark.parametrize("frame", ["无论", "不管", "不论", "随便", "任凭"])
+@pytest.mark.parametrize(
+    "body",
+    ["谁唱什么歌", "哪个歌手唱什么", "什么人点啥歌",
+     "哪首歌是谁唱的", "何时听什么"],
+)
+def test_free_choice_frame_neutralizes_every_wh_in_scope(frame, body):
+    """⚠️ 框架的辖域里的疑问词可能**不止一个**（base 全是 True）。
+
+    上一版写成「框架词 + 窗口 + 一个疑问词」的单条正则，只换得掉第一个
+    （Codex P2 第四十七轮）。辖域本来就是**段落式**的，不该用一条固定形状的
+    正则去套，所以拆成「找框架词」+「换辖域内所有疑问词」两步。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{frame}{body}都一样'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放什么歌') is False
+    assert is_explicit_music_cancellation('我想停止播放何时合适') is False
+    # ⚠️ 框架的辖域到**句读为止**：下一个子句里的疑问词不归它管。
+    # 不钉这一条的话，「辖域吃整段」那个变异会照样绿。
+    for later_question in (
+        '不管怎么样，我想停止播放什么歌',
+        '随便吧，我想停止播放谁唱的《你好吗？》',
+        '无论如何，我想停止播放何时合适',
+    ):
+        assert is_explicit_music_cancellation(later_question) is False, later_question

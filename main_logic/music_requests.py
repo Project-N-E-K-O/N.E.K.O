@@ -738,15 +738,40 @@ _ZH_COORDINATION_AFTER_DE = (
 # 一个思路：正则表达不了的上下文，在喂给正则之前先消化掉。
 # ⚠️ 相邻那一族仍然靠 _ZH_FREE_CHOICE_LEFT 的定长后视：`任何时候` 里的 `任何` 是个
 # **词**、不是任指框架词，进不了这条替换。两条机制分工不同，都要留着。
-# ⚠️ 窗口有界且不跨子句标点，框架词的辖域到句读为止。
+# ⚠️ 框架的辖域是**到句读为止的一整段**，里面的疑问词可能不止一个：
+# `无论谁唱什么歌都不好听` 有两个（Codex P2 第四十七轮，base 是 True）。
+# 上一版写成「框架词 + 窗口 + 一个疑问词」的单条正则，只换得掉第一个。
+# 所以拆成「找框架词」和「换辖域内所有疑问词」两步——辖域是段落式的，
+# 本来就不该用一条固定形状的正则去套。
 # 长的写法按惯例排在前面，但这里**不是承重的**：就算 `哪` 先匹配上，
-# 把它换成「某」之后副下的 `首`/`个` 也不再是疑问头了。变异验证过：
+# 把它换成「某」之后剩下的 `首`/`个` 也不再是疑问头了。变异验证过：
 # 把 `哪` 提到最前面，行为不变。
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
     r"(?:无论|無論|不论|不論|不管|任凭|任憑|随便|隨便)"
-    r"[^，,。！!？?]{0,8}?"
-    rf"({_ZH_WHAT}|谁|誰|哪一首|哪首|哪个|哪個|哪些|哪位|何时|何時|几时|幾時|哪)"
 )
+_ZH_FREE_CHOICE_WH_TOKEN_RE = re.compile(
+    rf"(?:{_ZH_WHAT}|谁|誰|哪一首|哪首|哪个|哪個|哪些|哪位|何时|何時|几时|幾時|哪)"
+)
+
+
+def _zh_neutralize_free_choice(text: str) -> str:
+    """把任指框架辖域内的疑问词换成中性的「某」。"""  # noqa: DOCSTRING_CJK
+    pieces: list[str] = []
+    cursor = 0
+    for marker in _ZH_FREE_CHOICE_FRAME_RE.finditer(text):
+        if marker.start() < cursor:
+            continue
+        pieces.append(text[cursor:marker.end()])
+        rest = text[marker.end():]
+        boundary = _ZH_CLAUSE_BOUNDARY_RE.search(rest)
+        stop = marker.end() + (boundary.start() if boundary else len(rest))
+        pieces.append(_ZH_FREE_CHOICE_WH_TOKEN_RE.sub("某", text[marker.end():stop]))
+        cursor = stop
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+_ZH_CLAUSE_BOUNDARY_RE = re.compile(r"[，,。！!？?]")
 _ZH_TEMPORAL_CLAUSE_JOIN_RE = re.compile(
     rf"(的(?:时候|時候))\s*[，,；;、]\s*(?=[^，,。！!？?]{{0,4}}?{_ZH_COORDINATION_ADVERB})"
 )
@@ -1685,9 +1710,8 @@ def is_explicit_music_cancellation(text: str) -> bool:
         and not _is_source_exclusion_preference(clause.strip())
         and not _has_explicit_non_music_target(clause.strip())
         for clause in _split_music_request_clauses(
-            _ZH_FREE_CHOICE_FRAME_RE.sub(
-                lambda m: m.group(0)[: m.start(1) - m.start(0)] + "某",
-                _ZH_TEMPORAL_CLAUSE_JOIN_RE.sub(r"\1", normalized),
+            _zh_neutralize_free_choice(
+                _ZH_TEMPORAL_CLAUSE_JOIN_RE.sub(r"\1", normalized)
             )
         )
         if clause.strip()
