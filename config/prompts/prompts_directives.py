@@ -252,12 +252,17 @@ def _trim_term(term: str, locale: str = "") -> str:
     # 助词那批要 fallback（中英混说的 term 常整段是中文），反问短语不要。
     interrogatives = _TAIL_INTERROGATIVES_BY_LOCALE.get(family, ())
     # 引号里的语气词判据对**所有** CJK 尾词生效，不只多字反问短语：单字的也一样是
-    # 名字的一部分（``《想見你喔》`` / ``《就是愛唷》``，codex P2）。ASCII 的
-    # please / porfa 不受这条约束——它们不会出现在 CJK 作品名里。
-    gated = cjk + interrogatives
+    # 名字的一部分（``《想見你喔》`` / ``《就是愛唷》``，codex P2）。
+    # ⚠️ ASCII 的 please / porfa 也要一起门控。原先以为「它们不会出现在 CJK 作品名里」
+    # 所以不用管——但英文作品名里会（``《Never Please》`` 被削成 ``Never``，parent 是
+    # 完整的；忽略大小写之后连 ``Please`` / ``PLEASE`` 一起中招，codex P2）。
+    # 门控只管**引号之内**：``别再提工作 please。`` 里的 please 在引号外，照旧剥掉。
+    gated = cjk + interrogatives + _TRIM_TRAIL_TOKENS_ANY
     # ⚠️ **长的先试**：短 token 往往是长 token 的后缀（``吗`` ⊂ ``好吗``），先剥短的
     # 会把长的那次判断绕过去。
-    tokens = sorted(_TRIM_TRAIL_TOKENS_ANY + gated, key=len, reverse=True)
+    # ⚠️ ASCII 那批现在也在 gated 里，别再单独加一遍——重复之后「把 ASCII 尾巴从剥词
+    # 表里拿掉」就成了空操作，变异永远见不了红（变异跑出来的）。
+    tokens = sorted(gated, key=len, reverse=True)
     # ⚠️ 长度下限只保护**有歧义**的那批：``耶 / 捏 / 咧`` 同时也是常见词尾字（坎耶 /
     # 拿捏 / 好咧），剥到存不下等于整条指令被丢，那还不如留着。而 ASCII 的 please /
     # porfa、假名、谚文都不可能是中文词的一部分——对它们套下限的话
@@ -344,24 +349,46 @@ def _strip_trail(s: str) -> Tuple[str, int]:
     """  # noqa: DOCSTRING_CJK
     right = 0
     while True:
-        prev = s
         # ⚠️ 只处理**非对称**的一对。对称引号（``"``）不进 _ZH_COUNTERPART，所以下面
         # 那轮通用 strip 本来就会把两端一起剥掉——在这里再写一支是死代码（穷举
         # 40320 条输入，加不加没有任何可观察差异）。
         if len(s) >= 2 and _ZH_COUNTERPART.get(s[0]) == s[-1]:
             s = s[1:-1]
             right += 1
-        trail = "".join(
-            ch
-            for ch in _TRIM_TRAIL
-            if ch not in _ZH_COUNTERPART or _ZH_COUNTERPART[ch] not in s
-        )
-        stripped = s.strip(trail)
-        if stripped != s:
-            right += len(s) - len(s.rstrip(trail))
-            s = stripped
-        if s == prev:
-            return s, right
+            continue
+        # ⚠️ 一次只剥**一个**字符再重算：剥掉一个之后谁配上谁会变。
+        # ⚠️ 括号的判据是「**这个位置**配上了没有」，不是「另一半在不在串里」。后者
+        # 太粗：``电影《你好》续集》`` 里 ``《`` 确实在，但它早就被前面那个 ``》``
+        # 配掉了，末尾这个是多余的，parent 会剥掉（codex P2）。
+        unmatched = _zh_unmatched_delims(s)
+        if s and s[-1] in _TRIM_TRAIL and (
+            s[-1] not in _ZH_COUNTERPART or len(s) - 1 in unmatched
+        ):
+            s = s[:-1]
+            right += 1
+            continue
+        if s and s[0] in _TRIM_TRAIL and (
+            s[0] not in _ZH_COUNTERPART or 0 in unmatched
+        ):
+            s = s[1:]
+            continue
+        return s, right
+
+
+def _zh_unmatched_delims(s: str) -> set:
+    """Indices of bracket characters that never paired up, scanned in order."""
+    stack: List[int] = []
+    unmatched: set = set()
+    for index, char in enumerate(s):
+        if char in _ZH_CLOSE_FOR_OPEN:
+            stack.append(index)
+        elif char in _ZH_COUNTERPART:
+            if stack and _ZH_CLOSE_FOR_OPEN[s[stack[-1]]] == char:
+                stack.pop()
+            else:
+                unmatched.add(index)
+    unmatched.update(stack)
+    return unmatched
 
 
 # ---------------------------------------------------------------------------
@@ -530,9 +557,24 @@ _ZH_BRACKET_PAIRS = (
     # 表，于是 ``[Hello, World]别提了。`` 在逗号处被截成 ``World``（codex P2）。
     ('"', '"'), ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"),
 )
+def _is_ascii_delim(char: str) -> bool:
+    """Whether a delimiter is ASCII, i.e. doubles as an operator in running text."""
+    return char.isascii()
+
+
 def _zh_bracket_body(lo: str, hi: str) -> str:
     """One bracketed run: bounded body, and symmetric pairs temper the negation."""
     banned = re.escape(hi) + "\\r\\n"
+    # ⚠️ **非对称的 ASCII** 那几对（``() [] {} <>``）不许跨句读配对。它们在中文行文里
+    # 常常是比较号 / 代码片段，两条互不相干的指令各带一个就会被当成一整段引文：
+    # ``别再提价格<预算。别再提收入>目标。`` 被并成一条 ``价格<预算。别再提收入>目标``，
+    # parent 是分开的两条（codex P2）。
+    # ⚠️ 全角括号不设这条：它们本来就只用来引起引文，不会被当运算符，而真作品名里
+    # 带句号的确实有。⚠️ 对称的 ``"`` 也不设——那是上一轮量过之后专门定的（排掉句读会
+    # 腰斩 ``"Everything. Everywhere"``，并在模板 2/4 上产出非词），见下面 lo == hi 那段。
+    ascii_pair = lo != hi and _is_ascii_delim(lo)
+    if ascii_pair:
+        banned += "。！？；.!?;"
     unit = f"[^{banned}]"
     if lo != hi:
         # ⚠️ 认**一层**同种嵌套：正则本身只会在第一个同种收尾处闭合，所以
@@ -543,7 +585,11 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
         #
         # 正则做不了任意深度，但作品名里的嵌套实际上只有一层（``《X《Y》Z》``）。
         # 两个分支互斥（单字那支把 lo / hi 都排掉了），不会引进歧义回溯。
+        # ⚠️ 嵌套那一支也要一起排掉句读，否则上面那条形同虚设——引擎会走这一支把
+        # ``<预算。别再提收入>`` 整段当成一层嵌套吃下去（自测抓到的）。
         inner_banned = re.escape(lo) + re.escape(hi) + "\\r\\n"
+        if ascii_pair:
+            inner_banned += "。！？；.!?;"
         nested = (
             f"{re.escape(lo)}[^{inner_banned}]{{0,{_TERM_MAX_LEN}}}{re.escape(hi)}"
         )
@@ -593,11 +639,6 @@ _ZH_COUNTERPART = {
     for lo, hi in _ZH_CLOSE_FOR_OPEN.items()
     for ch, other in ((lo, hi), (hi, lo))
 }
-
-
-def _is_ascii_delim(char: str) -> bool:
-    """Whether a delimiter is ASCII, i.e. doubles as an operator in running text."""
-    return char.isascii()
 
 
 def _zh_quoted_span_end(text: str) -> int:
@@ -786,13 +827,19 @@ _ZH_FINAL_PARTICLES = (
 # 等于让指令跨句绑定）。
 # ⚠️ 两个常量从同一个字符串派生，别再各抄一份——同类两张表迟早漂。
 _ZH_PAUSE_CHARS = "，、：；,:;"
-_ZH_TOPIC_SEPARATOR = f"(?:[{_ZH_PAUSE_CHARS}]" + r"(?>\s*))?"
+# ⚠️ 停顿之后只收**横向**空白。``\s`` 连换行一起吃，于是
+# ``别再提，\n工作正常。`` 会把**下一行**当成宾语存进去（parent 整条不命中，
+# codex P2）。和主语间隔那条同一个理由：一条指令不跨行。
+_ZH_HSPACE = r"[ \t　]*"
+_ZH_TOPIC_SEPARATOR = f"(?:[{_ZH_PAUSE_CHARS}]" + f"(?>{_ZH_HSPACE}))?"
 # 模板 2 专用：只有在**显式停顿之后**才允许吃掉 ``就``。
 # ⚠️ 模板 2 覆盖全部 "X别提了" 句子，``成就 / 迁就 / 功成名就`` 都住在这里，所以它
 # 不能像模板 4 那样无条件带 ``(?:就)?``。但停顿标点是**硬词边界**——``工作，就别提
 # 了。`` 里的 ``就`` 不可能是前一个词的末字。把 ``就`` 关进分隔符分支里，两头都保住：
 # 没有停顿时一个字都不吃，有停顿时不再整条 0 命中（撤掉 ``(?:就)?`` 时带出来的）。
-_ZH_PAUSE_THEN_JIU = f"(?:[{_ZH_PAUSE_CHARS}]" + r"(?>\s*)(?:就)?(?>\s*))?"
+_ZH_PAUSE_THEN_JIU = (
+    f"(?:[{_ZH_PAUSE_CHARS}]" + f"(?>{_ZH_HSPACE})" + r"(?:就)?" + f"(?>{_ZH_HSPACE}))?"
+)
 
 # 无宾语指令的前视：动词之后到句读之间，如果只剩**一个字 + 句末助词**，那个字是
 # 结果补语（说完 / 提上 / 聊死）而不是宾语，整条不该抽——本模块的 docstring 明确说
@@ -1009,6 +1056,13 @@ _ZH_EVIDENCE_RE = re.compile(
 # ``のにをはがでと`` 时 "個別提案ください。"、"地域別講座へ申込。" 还是会漏）。
 # ⚠️ 唯独不收 ``も``：它出现在 ``ドラえもん`` 里，收了就把上面刚救回来的用例
 # 又打回去。``から`` 同类风险（からくりサーカス），但它作为句中助词太常见，留下。
+# 日文句末的右界。⚠️ 不只是句读——引号 / 括号里的整句日文同样是句子，收尾括号
+# 也算句末：``「別提案あり」`` / ``（別提案なし）`` / ``「別提案だ」`` 里 ``あり``
+# 后面直接就是收尾括号，只认句读的话这三条全漏（codex P2）。收括号从
+# _ZH_CLOSE_FOR_OPEN 派生，对称引号一并收——它们在这个位置只可能是收尾。
+_JA_SENTENCE_END = "[" + re.escape(
+    "。、！？" + "".join(sorted(set(_ZH_CLOSE_FOR_OPEN.values()) | _ZH_SYMMETRIC_DELIMS))
+) + r"\s]|$"
 _JA_GRAMMAR_RE = re.compile(
     "|".join((
         # 助动词 / 敬体词尾
@@ -1034,11 +1088,11 @@ _JA_GRAMMAR_RE = re.compile(
         #   · **左边要求汉字**——做谓语时前面是汉语词干（``案なし`` / ``案あり``）；
         #     假名接着它就是词的一部分（``おもてなし``），只锚右边的话繁中的
         #     ``別提おもてなし。`` 整条 0 命中，而同一句简体是好的（codex P2）。
-        r"(?<=[一-鿿])(?:あり|なし)(?=[。、！？\s]|$)",
+        f"(?<=[一-鿿])(?:あり|なし)(?={_JA_SENTENCE_END})",
         # 裸系动词 ``だ``。上面那批口语 copula 只收多字形式，理由是 ``だんご三兄弟``
         # 这类专有名词；但**锚在句末**之后那条顾虑就不成立了（``だんご`` 的 ``だ``
         # 后面是 ``ん``）。不收的话 ``別提案だ。`` 存下 ``案だ``（codex P2）。
-        r"だ(?=[。！？]|$)",
+        f"だ(?={_JA_SENTENCE_END})",
     ))
 )
 

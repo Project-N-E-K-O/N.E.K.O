@@ -2457,11 +2457,23 @@ def test_the_preposed_template_spacing_is_atomic():
     """  # noqa: DOCSTRING_CJK
     raw = _zh_pattern_sources()[1]
     head = raw.split("(?:提了|")[0]
-    assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
-    assert r"(?>\s*)(?>\s*)" not in head, head
-    # 模板自己的 4 个 + 两处 _ZH_PAUSE_THEN_JIU 各带 2 个（停顿后一个、``就`` 后一个）
-    assert head.count(r"(?>\s*)") == 4 + 2 * D._ZH_PAUSE_THEN_JIU.count(r"(?>\s*)")
-    assert head.count(r"(?>\s*)") == 8, head.count(r"(?>\s*)")
+    # ⚠️ 判据是「**任何**会匹配空白的量词都得包在原子组里」，不是「数出几个 (?>\s*)」。
+    # 停顿分隔符里的空白已经收窄成横向空白类（不跨行），数量断言会跟着漂——把两种
+    # 单位都摘掉之后再看有没有漏网的，才是真正的不变量。
+    units = (r"(?>\s*)", f"(?>{D._ZH_HSPACE})")
+    rest = head
+    for unit in units:
+        rest = rest.replace(unit, "")
+    assert r"\s*" not in rest, rest
+    assert D._ZH_HSPACE not in rest, rest
+    for unit in units:
+        assert unit + unit not in head, unit
+    # 数量仍然钉一下，防止某个单位被整段删掉：模板自己 4 个 \s*，
+    # 两处 _ZH_PAUSE_THEN_JIU 各带 2 个横向空白。
+    assert head.count(r"(?>\s*)") == 4, head.count(r"(?>\s*)")
+    assert head.count(f"(?>{D._ZH_HSPACE})") == 2 * D._ZH_PAUSE_THEN_JIU.count(
+        f"(?>{D._ZH_HSPACE})"
+    ) == 4
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -3765,3 +3777,120 @@ def test_the_bare_copula_is_anchored_so_titles_survive(text):
     ``だ`` 可以收——但锚必须在，去掉就把这几条打回去。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {"だんご三兄弟"}
+
+
+# ── 45. 引号里的 ASCII 尾词 / 谓语后收括号 / 停顿不跨行 /
+#        ASCII 运算符不跨句 / 多余收括号 ─────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("別再提《Never Please》。", "Never Please"),
+        ("别再提《Never Please》。", "Never Please"),
+        ("别再提《Never please》。", "Never please"),
+        ("别再提《Never Porfa》。", "Never Porfa"),
+        ("别再提《Please》。", "Please"),
+    ],
+)
+def test_ascii_cleanup_words_inside_quotes_are_protected(text, expected):
+    """英文作品名会以 ``please`` 结尾，引号门控原先只管 CJK 尾词。
+
+    ``《Never Please》`` 被削成 ``Never``（parent 是完整的）；忽略大小写之后
+    ``Please`` / ``PLEASE`` 一起中招（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["别再提工作 please。", "別再提工作 PLEASE。", "别再提工作 Please。"]
+)
+def test_ascii_cleanup_words_outside_quotes_are_still_stripped(text):
+    """反向：门控只管**引号之内**，引号外的照旧剥掉。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {"工作"}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+@pytest.mark.parametrize("predicate", ["あり", "なし", "だ"])
+def test_a_closing_delimiter_ends_a_japanese_sentence(opener, closer, predicate):
+    """引号 / 括号里的整句日文同样是句子，收尾括号也算句末。
+
+    只认句读的话 ``「別提案あり」`` / ``（別提案なし）`` / ``「別提案だ」`` 全漏
+    （codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{opener}別提案{predicate}{closer}") == set()
+
+
+@pytest.mark.parametrize("pause", ["，", "；", "、", ",", ";"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_a_pause_does_not_reach_across_a_line(pause, newline):
+    """停顿之后只收横向空白：``别再提，\n工作正常。`` 会把**下一行**存成宾语。
+
+    parent 整条不命中（codex P2）。和主语间隔那条同一个理由：一条指令不跨行。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提{pause}{newline}工作正常。") == set()
+
+
+@pytest.mark.parametrize("gap", ["", " ", "\t", "　"])
+def test_a_pause_still_reaches_across_horizontal_space(gap):
+    """反向：同一行里的横向空白照旧收。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提，{gap}工作正常。") == {"工作正常"}
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+def test_ascii_operators_do_not_pair_across_a_sentence(opener, closer):
+    """两条互不相干的指令各带一个 ASCII 运算符，不该被当成一整段引文。
+
+    ``别再提价格<预算。别再提收入>目标。`` 被并成一条（parent 是分开的两条，
+    codex P2）。全角括号和对称 ``"`` 不设这条，理由见 _zh_bracket_body。
+    """  # noqa: DOCSTRING_CJK
+    text = f"别再提价格{opener}预算。别再提收入{closer}目标。"
+    assert _zh_terms(text) == {f"价格{opener}预算", f"收入{closer}目标"}, _zh_terms(text)
+
+
+def test_full_width_brackets_may_still_span_a_sentence():
+    """反向：全角括号只用来引起引文，跨句读照旧允许（真作品名里有句号）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("别再提电影《你好。世界》。") == {"电影《你好。世界》"}
+    assert _zh_terms('别再提"Everything. Everywhere"。') == {"Everything. Everywhere"}
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+def test_a_surplus_closer_is_stripped_by_pairing_order(opener, closer):
+    """「另一半在不在串里」太粗：那个开括号可能早就被前面的收括号配掉了。
+
+    ``别再提电影《你好》续集》。`` 里末尾那个 ``》`` 是多余的，parent 会剥掉
+    （codex P2）。判据要按**配对顺序**扫。
+    """  # noqa: DOCSTRING_CJK
+    text = f"别再提电影{opener}你好{closer}续集{closer}。"
+    assert _zh_terms(text) == {f"电影{opener}你好{closer}续集"}, _zh_terms(text)
+
+
+def test_the_unmatched_scan_reports_positions_not_characters():
+    """结构面：判据是**位置**，同一个字符可以一边配上一边落单。"""  # noqa: DOCSTRING_CJK
+    assert D._zh_unmatched_delims("电影《你好》续集》") == {8}
+    assert D._zh_unmatched_delims("电影《你好》续集") == set()
+    assert D._zh_unmatched_delims("电影《你好") == {2}
+    assert D._zh_unmatched_delims("你好》") == {2}
+    # ⚠️ 配对要看**类型**：``《`` 和 ``）`` 不是一对，两个都算落单。
+    assert D._zh_unmatched_delims("电影《你好）") == {2, 5}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提电影《你好）。", "电影《你好"),
+        ("别再提《你好）。", "你好"),
+    ],
+)
+def test_mismatched_bracket_types_do_not_pair(text, expected):
+    """⚠️ 只看「栈非空」就弹的话，``《你好）`` 里那个 ``）`` 会被当成配上了、留在
+    term 里。判别用例必须是**类型不匹配**的一对（变异跑出来的）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
