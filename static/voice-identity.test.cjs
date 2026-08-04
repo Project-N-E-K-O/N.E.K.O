@@ -95,7 +95,7 @@ function createElement({ withRecordLabel = false } = {}) {
     return element;
 }
 
-function createHarness({ route, audio = false } = {}) {
+function createHarness({ route, audio = false, audioSample, nativeConfirm } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
         'voice-identity-profile-status',
@@ -122,6 +122,9 @@ function createHarness({ route, audio = false } = {}) {
     const fetchCalls = [];
     let locale = 'en';
     let processor = null;
+    let audioContext = null;
+    let mediaRequests = 0;
+    let sourceSampleIndex = 0;
 
     const translations = {
         en: {
@@ -158,7 +161,9 @@ function createHarness({ route, audio = false } = {}) {
         constructor() {
             this.sampleRate = 48000;
             this.state = 'running';
+            this.resumeCalls = 0;
             this.destination = {};
+            audioContext = this;
         }
 
         createMediaStreamSource() {
@@ -174,7 +179,14 @@ function createHarness({ route, audio = false } = {}) {
             return { gain: { value: 1 }, connect() {}, disconnect() {} };
         }
 
+        resume() {
+            this.resumeCalls += 1;
+            this.state = 'running';
+            return Promise.resolve();
+        }
+
         close() {
+            this.state = 'closed';
             return Promise.resolve();
         }
     }
@@ -209,8 +221,14 @@ function createHarness({ route, audio = false } = {}) {
         clearInterval() {},
         setTimeout(callback) {
             if (audio && processor?.onaudioprocess) {
-                const input = new Float32Array(2048).fill(0.25);
                 for (let index = 0; index < 120; index += 1) {
+                    const input = new Float32Array(2048);
+                    for (let sampleIndex = 0; sampleIndex < input.length; sampleIndex += 1) {
+                        input[sampleIndex] = typeof audioSample === 'function'
+                            ? audioSample(sourceSampleIndex)
+                            : 0.25;
+                        sourceSampleIndex += 1;
+                    }
                     processor.onaudioprocess({
                         inputBuffer: { getChannelData: () => input },
                     });
@@ -220,13 +238,17 @@ function createHarness({ route, audio = false } = {}) {
             return 1;
         },
         AudioContext: audio ? MockAudioContext : undefined,
+        confirm: nativeConfirm,
     };
     const context = vm.createContext({
         window,
         document,
         navigator: {
             mediaDevices: {
-                getUserMedia: async () => mediaStream,
+                getUserMedia: async () => {
+                    mediaRequests += 1;
+                    return mediaStream;
+                },
             },
         },
         Headers: MockHeaders,
@@ -255,6 +277,18 @@ function createHarness({ route, audio = false } = {}) {
         setLocale(nextLocale) {
             locale = nextLocale;
             window.dispatchEvent({ type: 'localechange' });
+        },
+        getAudioContext() {
+            return audioContext;
+        },
+        getMediaRequests() {
+            return mediaRequests;
+        },
+        beforeClose() {
+            return window.nekoBeforeWindowClose();
+        },
+        pagehide() {
+            return window.dispatchEvent({ type: 'pagehide' });
         },
     };
 }
@@ -406,6 +440,185 @@ test('recording upload is capped at four seconds of source samples', async () =>
 
     assert.equal(Object.prototype.toString.call(segmentBody), '[object ArrayBuffer]');
     assert.equal(segmentBody.byteLength, 16000 * 4 * Int16Array.BYTES_PER_ELEMENT);
+});
+
+test('an existing suspended audio context is resumed before the next recording', async () => {
+    let segments = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/segment') {
+                segments += 1;
+                return jsonResponse({
+                    enrollment: {
+                        session_id: 'session-1',
+                        stage: segments === 1 ? 'fixed_2' : 'fixed_3',
+                    },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const record = harness.elements.get('voice-identity-record');
+    await record.emit('click');
+    const context = harness.getAudioContext();
+    context.state = 'suspended';
+
+    await record.emit('click');
+
+    assert.equal(segments, 2);
+    assert.equal(context.resumeCalls, 1);
+    assert.equal(harness.getMediaRequests(), 1);
+});
+
+test('downsampling attenuates microphone energy above the target Nyquist limit', async () => {
+    let segmentBody = null;
+    const harness = createHarness({
+        audio: true,
+        audioSample(index) {
+            return Math.sin(2 * Math.PI * 12000 * index / 48000);
+        },
+        route(url, options) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/segment') {
+                segmentBody = options.body;
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_2' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    const samples = new Int16Array(segmentBody);
+    const stable = samples.subarray(128, samples.length - 128);
+    const rms = Math.sqrt(
+        stable.reduce((sum, sample) => sum + sample * sample, 0) / stable.length
+    ) / 0x8000;
+    assert.ok(rms < 0.1, `expected anti-aliased RMS below 0.1, got ${rms}`);
+});
+
+test('delete falls back to native confirmation when the shared dialog is unavailable', async () => {
+    let confirmations = 0;
+    const harness = createHarness({
+        nativeConfirm() {
+            confirmations += 1;
+            return false;
+        },
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-delete').emit('click');
+
+    assert.equal(confirmations, 1);
+    assert.equal(
+        harness.fetchCalls.some(call => call.url === '/api/voice-identity/profile'),
+        false,
+    );
+});
+
+test('failed explicit cancellation preserves the session and can be retried', async () => {
+    const firstCancellation = deferred();
+    let cancellationAttempts = 0;
+    const harness = createHarness({
+        route(url, options) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                cancellationAttempts += 1;
+                if (cancellationAttempts === 1) return firstCancellation.promise;
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const cancel = harness.elements.get('voice-identity-cancel');
+    const cancellation = cancel.emit('click');
+    assert.equal(cancel.disabled, true);
+    firstCancellation.resolve(
+        jsonResponse({ error: 'temporary_failure' }, { ok: false, status: 503 })
+    );
+    await cancellation;
+
+    const firstCall = harness.fetchCalls.find(
+        call => call.url === '/api/voice-identity/enrollment/cancel'
+    );
+    assert.equal(firstCall.options.headers.get('X-Voice-Identity-Enrollment'), 'session-1');
+    assert.equal(cancel.hidden, false);
+    assert.equal(cancel.disabled, false);
+
+    await cancel.emit('click');
+    assert.equal(cancellationAttempts, 2);
+    assert.equal(cancel.hidden, true);
+});
+
+test('window close uses the eager keepalive cancellation path once', async () => {
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                return jsonResponse({});
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.beforeClose();
+    harness.pagehide();
+
+    const cancellationCalls = harness.fetchCalls.filter(
+        call => call.url === '/api/voice-identity/enrollment/cancel'
+    );
+    assert.equal(cancellationCalls.length, 1);
+    assert.equal(cancellationCalls[0].options.keepalive, true);
 });
 
 test('dark theme overrides panel, text, accent, border, and action colors', () => {

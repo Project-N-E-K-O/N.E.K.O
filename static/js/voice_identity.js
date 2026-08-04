@@ -16,6 +16,7 @@
         mediaStream: null,
         audioContext: null,
         recording: false,
+        cancelPending: false,
         busy: false,
         initialized: false,
         closeStarted: false
@@ -193,7 +194,7 @@
         elements.cancel.hidden = isIdle;
         elements.start.disabled = !state.initialized || state.busy;
         elements.record.disabled = state.busy || state.recording;
-        elements.cancel.disabled = state.busy || state.recording;
+        elements.cancel.disabled = state.busy || state.recording || state.cancelPending;
         elements.record.classList.toggle('recording', state.recording);
         const recordLabel = elements.record.querySelector('span:last-child');
         if (recordLabel) {
@@ -265,23 +266,24 @@
     }
 
     async function ensureMicrophone() {
-        if (state.mediaStream && state.mediaStream.active) {
-            return;
+        if (!state.mediaStream || !state.mediaStream.active) {
+            state.mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false
+                },
+                video: false
+            });
         }
-        state.mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                channelCount: 1,
-                echoCancellation: false,
-                noiseSuppression: false,
-                autoGainControl: false
-            },
-            video: false
-        });
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!AudioContext) {
             throw new Error('audio_context_unavailable');
         }
-        state.audioContext = new AudioContext();
+        if (!state.audioContext || state.audioContext.state === 'closed') {
+            state.audioContext = new AudioContext();
+        }
         if (state.audioContext.state === 'suspended') {
             await state.audioContext.resume();
         }
@@ -297,6 +299,43 @@
         );
         const output = new Float32Array(outputLength);
         const scale = sourceRate / TARGET_SAMPLE_RATE;
+        if (scale > 1) {
+            const cutoff = 0.5 / scale;
+            const halfTaps = Math.max(8, Math.ceil(scale * 4));
+            const kernels = new Map();
+            for (let index = 0; index < outputLength; index += 1) {
+                const center = (index + 0.5) * scale - 0.5;
+                const anchor = Math.floor(center);
+                const fraction = center - anchor;
+                const phase = Math.round(fraction * 1000000);
+                let kernel = kernels.get(phase);
+                if (!kernel) {
+                    kernel = [];
+                    for (let offset = -halfTaps; offset <= halfTaps; offset += 1) {
+                        const distance = offset - fraction;
+                        if (Math.abs(distance) > halfTaps) continue;
+                        const sinc = distance === 0
+                            ? 2 * cutoff
+                            : Math.sin(2 * Math.PI * cutoff * distance)
+                                / (Math.PI * distance);
+                        const window = 0.5
+                            + 0.5 * Math.cos(Math.PI * distance / halfTaps);
+                        kernel.push({ offset, weight: sinc * window });
+                    }
+                    kernels.set(phase, kernel);
+                }
+                let weighted = 0;
+                let weightTotal = 0;
+                for (const tap of kernel) {
+                    const sourceIndex = anchor + tap.offset;
+                    if (sourceIndex < 0 || sourceIndex >= input.length) continue;
+                    weighted += input[sourceIndex] * tap.weight;
+                    weightTotal += tap.weight;
+                }
+                output[index] = weightTotal === 0 ? 0 : weighted / weightTotal;
+            }
+            return output;
+        }
         for (let index = 0; index < outputLength; index += 1) {
             const position = index * scale;
             const left = Math.floor(position);
@@ -518,8 +557,13 @@
             return;
         }
         const sessionId = state.sessionId;
-        state.sessionId = null;
-        state.stage = 'idle';
+        if (config.keepalive) {
+            state.sessionId = null;
+            state.stage = 'idle';
+        } else {
+            state.cancelPending = true;
+            render();
+        }
         stopMicrophone();
         const headers = new Headers({
             'X-CSRF-Token': state.csrfToken,
@@ -551,21 +595,25 @@
                 );
             }
         } finally {
+            state.cancelPending = false;
             render();
         }
     }
 
     async function deleteProfile() {
-        let confirmed = true;
+        const message = translate(
+            'voiceIdentity.deleteConfirm',
+            '删除后需要重新录入才能使用声纹过滤。'
+        );
+        let confirmed = false;
         if (typeof window.showConfirm === 'function') {
             confirmed = await window.showConfirm(
-                translate(
-                    'voiceIdentity.deleteConfirm',
-                    '删除后需要重新录入才能使用声纹过滤。'
-                ),
+                message,
                 translate('voiceIdentity.delete', '删除 Profile'),
                 { danger: true }
             );
+        } else if (typeof window.confirm === 'function') {
+            confirmed = window.confirm(message);
         }
         if (!confirmed) return;
         state.busy = true;
@@ -611,14 +659,14 @@
         elements.reenroll.addEventListener('click', startEnrollment);
         elements.record.addEventListener('click', recordCurrentStep);
         elements.cancel.addEventListener('click', function () {
-            cancelEnrollment();
+            return cancelEnrollment();
         });
         elements.delete.addEventListener('click', deleteProfile);
         elements.filter.addEventListener('change', updateFilter);
         window.addEventListener('localechange', render);
         window.nekoBeforeWindowClose = async function () {
             state.closeStarted = true;
-            await cancelEnrollment({ silent: true });
+            await cancelEnrollment({ keepalive: true, silent: true });
             return true;
         };
         window.addEventListener('pagehide', function () {
