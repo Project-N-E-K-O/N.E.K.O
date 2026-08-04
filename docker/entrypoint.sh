@@ -1257,28 +1257,36 @@ main() {
     setup_dependencies
     setup_nginx_proxy
 
-    # 确保 home 目录对 neko 用户可写（Docker volume 可能以 root 创建）。
-    # 只改属主不对的条目：稳态下这一遍是纯遍历、不产生写入，数据量大的部署不必
-    # 每次启动都把整棵树重写一遍。
-    # chown 必须带 -h：不带的话它会解引用命令行上的符号链接，把宿主机备份里
-    # 可能存在的链接的**目标**改掉（`chown -R` 默认 -P 会跳过符号链接，这里换成
-    # find 驱动就没有那层保护了）。
+    # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）。
+    #
+    # 只认应用真正要写的两棵子树，不扫整个 home。合并挂载之后 /home/neko 是宿主
+    # 目录，用户完全可以往它下面再挂别的东西；递归整棵树意味着那些嵌套挂载的宿主
+    # 侧对象会被改成 neko —— 挂进来的要是个 docker socket，等于把 docker 控制权
+    # 交给以 neko 运行的业务进程和插件代码。（-xdev 挡不住：同一宿主文件系统的
+    # bind mount 设备号相同。）
+    #
+    # /home/neko 本身只非递归地给一次：neko 要能在自己家里创建 .cache 之类的
+    # 目录，否则运行期任何往 $HOME 写东西的库都会踩坑；但它下面挂了什么不归我们管。
+    #
+    # ssl/ 因此天然不在范围内。私钥由 root 生成并 chmod 600，nginx 主进程也以
+    # root 读取，业务进程没有任何理由读得到它。
+    #
+    # 只改属主不对的条目：稳态下这一遍是纯遍历、不产生写入。chown 必须带 -h，
+    # 否则它会解引用符号链接去改**目标**（`chown -R` 默认 -P 有这层保护，换成
+    # find 驱动就没有了）。
+    #
     # 失败必须停：三个业务进程都以 neko 跑，数据目录不可写的话它们会在运行期
-    # 各种写入上零散报错，比在这里干脆退出难诊断得多。（原先这里挂了 `|| true`，
-    # 把 set -e 本来的 fail-fast 吞掉了。）
-    if ! find /home/neko -path /home/neko/ssl -prune -o \
-            \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + ; then
-        echo "❌ 无法把 /home/neko 的属主改为 neko"
+    # 各处零散报错，比在这里干脆退出难诊断得多。
+    mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
+    if ! chown neko:neko /home/neko /home/neko/.local /home/neko/.local/share \
+        || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \
+               \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + ; then
+        echo "❌ 无法把数据目录的属主改为 neko"
         echo "   宿主机的挂载可能不允许改属主 —— NFS 带 root_squash、CIFS 没带"
         echo "   cifsacl、或只读挂载都会这样。容器内的服务以 neko 身份运行，"
         echo "   数据目录写不进去会在启动之后才零散暴露，所以这里直接停。"
         exit 1
     fi
-
-    # ssl/ 被上面刻意跳过。私钥由 root 生成并 chmod 600，nginx 主进程也以 root
-    # 读取它，而三个业务进程（含内嵌的用户插件服务）以 neko 身份运行。合并挂载后
-    # ssl/ 落进了 /home/neko 里，若跟着一起 chown，等于把 TLS 私钥交给应用用户，
-    # 功能上却一分钱都不值。用户自带证书的属主同样不该被容器改写。
 
     # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
     start_openfang_daemon

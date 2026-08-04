@@ -31,12 +31,17 @@ Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # ここで "No such container:path" が出るのは OpenFang を一度も初期化していないだけなので無視して構いません。
 # それ以外（daemon 停止・権限・disk full）は無視してはいけないため `|| true` は付けません
-docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
-# data が container 内にあるのは host 側 directory が空の場合だけです。条件を command に落とします：
-# 新レイアウトで既に再起動済みの環境では container が neko-home 自体を mount しているため、
-# 無条件に実行すると directory を自分自身へコピーすることになります
-if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
-  docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+# container が既に neko-home を /home/neko に mount している場合、source と destination が
+# 同一の bind mount になり、directory を自分自身へコピーすることになります。その状況では
+# 唯一の複製を保持していた旧 container は既に再作成されて存在しません。
+if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+  echo "container は既に新レイアウトです。export するものはありません。"
+else
+  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
+  # data が container 内にあるのは host 側 directory が空の場合だけです
+  if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+    docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+  fi
 fi
 ```
 

@@ -201,10 +201,17 @@ ls "$BASE/N.E.K.O/"
 ```bash
 # 1) 先导出只存在于容器里的东西。旧版没有挂载 OpenFang 的工作目录，它的配置和
 #    agent 一直在容器可写层，容器一删就没了。这一步要赶在停容器之前做。
-mkdir -p "$BASE/neko-home/.openfang"
-# 报 "No such container:path" 只说明从没初始化过 OpenFang，可以忽略；其他错误
-# （daemon 没起、权限、磁盘满）不能忽略，所以这里不用 `|| true` 吞掉
-docker cp neko:/home/neko/.openfang/. "$BASE/neko-home/.openfang/"
+#    先确认容器还是旧布局：它若已经按新版挂载，容器里的 /home/neko 就是宿主的
+#    neko-home，导出等于把目录复制到它自己（而且那种情况下旧容器早被重建掉了，
+#    本来就没什么可救的）。
+if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+  echo "容器已按新布局挂载，跳过导出"
+else
+  mkdir -p "$BASE/neko-home/.openfang"
+  # 报 "No such container:path" 只说明从没初始化过 OpenFang，可以忽略；其他错误
+  # （daemon 没起、权限、磁盘满）不能忽略，所以这里不用 `|| true` 吞掉
+  docker cp neko:/home/neko/.openfang/. "$BASE/neko-home/.openfang/"
+fi
 ```
 
 **确认上一步成功后**再往下——下面第一条就会销毁容器：
@@ -240,9 +247,15 @@ cp -a "$BASE/ssl/."     "$BASE/neko-home/ssl/"                 && rm -rf "$BASE/
 
 mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
 
-# 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层
-docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
-docker cp neko:/home/neko/.openfang/.            "$BASE/neko-home/.openfang/"   # 报 "No such container:path" 可忽略
+# 容器若已按新布局挂载，/home/neko 就是宿主的 neko-home，下面两条会把目录复制到
+# 它自己；而那种情况下旧容器早被重建，容器里也没有待救的数据了
+if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+  echo "容器已按新布局挂载，容器内没有待救的旧数据（若数据确实还没迁移，请检查 $BASE/N.E.K.O）"
+else
+  # 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层
+  docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
+  docker cp neko:/home/neko/.openfang/.            "$BASE/neko-home/.openfang/"   # 报 "No such container:path" 可忽略
+fi
 
 cp -a "$BASE/ssl/." "$BASE/neko-home/ssl/" && rm -rf "$BASE/ssl"
 ```

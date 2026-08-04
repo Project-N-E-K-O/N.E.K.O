@@ -42,12 +42,17 @@ Order matters: `docker compose down` **removes** the container, and some state e
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # "No such container:path" here just means OpenFang was never initialised — ignore it.
 # Everything else (daemon down, permissions, disk full) must NOT be ignored, so no `|| true`.
-docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
-# Only when the host directory is empty is the data inside the container. Guard it:
-# on a deployment already restarted under the new layout the container mounts
-# neko-home itself, and this would copy the directory onto itself.
-if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
-  docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+# Nothing to export once the container already mounts neko-home at /home/neko:
+# source and destination would be the same bind mount, and the old container that
+# held the only copy is long gone anyway.
+if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+  echo "Container already uses the new layout — nothing to export."
+else
+  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
+  # The application data is inside the container only when the host directory is empty.
+  if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+    docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+  fi
 fi
 ```
 
