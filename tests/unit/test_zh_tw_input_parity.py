@@ -454,9 +454,8 @@ def test_mood_words_are_not_mistaken_for_artist_names():
 # ---------------------------------------------------------------------------
 
 MAGIC_PAIRS = [
-    # ⚠️ /clear 的触发词不在这里：它不可逆地清掉对话历史，判据又是自由文本子串，
-    # 所以和 approve 一样刻意保持简体。见
-    # test_destructive_command_triggers_stay_simplified_only。
+    # ⚠️ /clear 的触发词不在这里：它不可逆地清掉上游会话上下文，判据又还是自由文本
+    # 子串，所以刻意保持简体。见 test_clear_triggers_stay_simplified_only。
     ("换个话题", "換個話題"),
     ("说点别的", "說點別的"),
     ("重新开始", "重新開始"),
@@ -464,9 +463,13 @@ MAGIC_PAIRS = [
     ("停止搜索", "停止搜尋"),
     ("取消这个任务", "取消這個任務"),
     ("停下来", "停下來"),
-    # `没问题 / 沒問題` 走的是**整句精确匹配**，不是子串触发词——见下面
-    # test_approve_substring_triggers_stay_simplified_only。
     ("没问题", "沒問題"),
+    # approve 的子串支已改成整子句白名单，繁体随之补齐——整子句判据下补繁体不再
+    # 放大暴露面。见 test_whole_clause_whitelist_kills_free_text_misfires。
+    ("去执行", "去執行"),
+    ("去执行吧", "去執行吧"),
+    ("删吧", "刪吧"),
+    ("准了", "準了"),
 ]
 
 
@@ -500,39 +503,29 @@ def test_high_precision_negatives_still_suppress_in_both_scripts(simplified, tra
 @pytest.mark.parametrize(
     "text",
     [
-        # /daemon approve — executes a high-risk action
-        "去執行吧", "刪吧", "準了", "沒問題，去執行",
-        "拒絕去執行", "禁止去執行", "要去執行嗎？", "他說去執行", "別去執行",
-        # /clear — irreversibly wipes the conversation history
+        # /clear — irreversibly wipes the upstream QwenPaw session context
         "忘了剛才的事", "清空聊天記錄", "清除聊天記錄", "刪掉剛才的記錄",
         "我想知道如何清除聊天記錄",
     ],
 )
-def test_destructive_command_triggers_stay_simplified_only(text):
-    """⚠️ Deliberate gap: ``/daemon approve``'s substring triggers are NOT
-    backfilled to Traditional in this batch.
+def test_clear_triggers_stay_simplified_only(text):
+    """⚠️ Deliberate gap: ``/clear``'s triggers are NOT backfilled to Traditional.
 
-    That command makes the caller actually run a high-risk action, and it is
-    triggered by *substring containment over free text*. On main that already
-    approves 我准了假 (「准了」), 删吧台的记录 (「删吧」), 他说去执行,
-    可以去执行吗, 拒绝去执行. Adding Traditional triggers doubles the exposure
-    of that pre-existing hole.
+    ``/clear`` is the one command still judged by *substring containment over
+    free text*, and it irreversibly wipes the upstream session context. A plain
+    question — 「我想知道如何清除聊天记录」 — already returns ``/clear`` on the
+    Simplified side; adding Traditional triggers would double the exposure of
+    that pre-existing hole.
 
-    The same reasoning covers ``/clear``: it wipes the conversation history, and
-    on main a plain question — 「我想知道如何清除聊天记录」 — already returns
-    ``/clear`` (Codex P2). ``/new`` and ``/stop`` are *not* in this list: the
-    worst a false positive does there is change the subject or halt a task, so
-    those keep full Traditional parity.
+    ``/daemon approve``, ``/stop`` and ``/new`` are no longer in this list: they
+    moved to the whole-clause whitelist, where a Traditional entry cannot fire
+    from inside an unrelated sentence, so backfilling them is safe. ``/clear``
+    can follow the same route, but that was scoped out of this change
+    deliberately rather than smuggled in.
 
-    A "reject when a negator precedes the trigger" guard was tried and an
-    adversarial pass broke it on 196 inputs: negation to the *right* of the
-    trigger (「去執行？我不要」), the anchor landing on an unrelated substring
-    (「这标准了不起，但不要去执行」 anchors on 「准了」), and questions
-    (「要去執行嗎？」) all sailed through — while it *also* rejected
-    「没错，去执行」/「没意见，去执行」, i.e. the affirmations that an approval
-    context is literally built out of negation words. A blacklist cannot work
-    here; the fix is a normalized whole-sentence whitelist, which changes
-    Simplified behaviour and so does not belong in a zh-TW batch.
+    Traditional users can still reach it by typing the literal magic word
+    ``/clear`` (whole-string match in ``normalize_magic_command``), and this is
+    only the zero-LLM pre-gate — the LLM classifier still runs after a None.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
@@ -540,49 +533,266 @@ def test_destructive_command_triggers_stay_simplified_only(text):
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    "text",
     [
-        # Non-destructive commands keep full parity — a false positive here only
-        # changes the subject or stops a task.
-        ("這個遊戲要怎麼重新開始？", "/new"),
-        ("这个游戏要怎么重新开始？", "/new"),
+        # A question *about* restarting is not a request to restart. Both scripts.
+        "這個遊戲要怎麼重新開始？", "这个游戏要怎么重新开始？",
     ],
 )
-def test_non_destructive_commands_keep_traditional_parity(text, expected):
-    """Recorded rather than fixed: both scripts behave the same, and that same
-    behaviour (a question about the command triggering it) is what main already
-    does for Simplified. Narrowing it is a separate, script-neutral change.
-    """
+def test_question_about_a_command_no_longer_triggers_it(text):
+    """Was recorded-not-fixed while the judgement was substring containment;
+    the whole-clause whitelist fixes it in both scripts at once.
+
+    The clause is 這個遊戲要怎麼重新開始 — not a whitelist entry — so it no
+    longer dispatches. This IS a Simplified behaviour change, and a deliberate
+    one: the prior test docstring called it out as "narrowing it is a separate,
+    script-neutral change", which is exactly what this is.
+    """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
-    assert OpenClawAdapter.rule_magic_command(text) == expected
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
 
 
 def test_traditional_can_still_approve_by_whole_sentence():
-    """The exact-match branch is the safe shape — whole sentence, no substring,
-    no free text — so Traditional is backfilled there."""
+    """Bare affirmations stay a valid approval in both scripts.
+
+    ⚠️ These four are still an unconditional approve at the classifier layer and
+    a whole-clause whitelist cannot narrow them — they ARE whole clauses. What
+    stops a stray 「没问题」 from approving something is the dispatch-side live
+    task gate; see test_approve_is_dropped_without_a_live_openclaw_task.
+    """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     for text in ("沒問題", "同意", "我同意", "没问题"):
         assert OpenClawAdapter.rule_magic_command(text) == "/daemon approve", text
 
 
-def test_simplified_approve_behaviour_is_untouched_by_this_batch():
-    """Pins the claim that this batch does not move the Simplified side at all.
-
-    Includes the known-bad pre-existing cases on purpose: they must keep
-    behaving exactly as on main, so that fixing them later is a visible,
-    deliberate change rather than something this batch smuggled in.
-    """
+def test_legitimate_approvals_survive_the_whole_clause_switch():
+    """Every approval spelling that worked under substring containment, plus the
+    Traditional counterparts the substring table never had."""
     from brain.openclaw_adapter import OpenClawAdapter
 
     approve = "/daemon approve"
-    for text in ("去执行吧", "删吧", "准了", "没问题，去执行"):
+    for text in (
+        # were already approving on the Simplified side
+        "去执行吧", "删吧", "准了", "没问题，去执行", "没问题去执行",
+        # Traditional, newly reachable
+        "去執行吧", "刪吧", "準了", "沒問題，去執行", "沒問題去執行",
+        # leading function words are stripped, so these still land
+        "那你去执行吧", "先去執行吧", "我同意，去执行",
+    ):
         assert OpenClawAdapter.rule_magic_command(text) == approve, text
-    # ⚠️ Known pre-existing false approvals (substring containment). Asserted as
-    # the *current* behaviour, not as desirable behaviour.
-    for text in ("我准了假", "删吧台的记录", "他说去执行", "可以去执行吗"):
-        assert OpenClawAdapter.rule_magic_command(text) == approve, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 「准了」inside an unrelated word or sentence
+        "我准了假下周去旅游", "领导批准了我的申请", "这标准了不起", "他的水准了得",
+        # 「删吧」inside an unrelated word
+        "删吧台的记录", "那个删吧的老哥",
+        # 「去执行」reported, questioned, or explicitly refused
+        "他说去执行了", "可以去执行吗", "拒绝去执行这种命令", "禁止去执行危险操作",
+        "军人必须去执行命令", "这个方案没人去执行", "这标准了不起，但不要去执行",
+        # the shapes that broke the negator-blacklist attempt
+        "去執行？我不要", "要去執行嗎？", "他說去執行", "別去執行", "拒絕去執行",
+        # /stop — a world event stopping, not a command
+        "雨停下来了", "雨停下來了", "電梯停下來了", "公交车停下来了我要上车了",
+        "他跑着跑着突然停下来", "我想让时间停下来", "音乐停下来之后房间好安静",
+        "心跳停下來那一刻", "钥匙别找了我已经拿到了", "新闻说救援队停止搜索了",
+        "他喊快停下来的时候已经晚了",
+        # /new — a game/match/life restarting, or a comment about the phrase
+        "比賽即將重新開始", "比赛即将重新开始", "遊戲重新開始倒數",
+        "我想重新开始新的人生", "这局输了要重新开始吗", "下半場重新開始了",
+        "他老是换个话题就想蒙混过去", "我不喜歡別人換個話題的樣子",
+        "他除了工作说点别的都不会",
+    ],
+)
+def test_whole_clause_whitelist_kills_free_text_misfires(text):
+    """⚠️ The core regression set for this change.
+
+    Every one of these dispatched a magic command before the switch — 22/22 for
+    /stop, 16/16 for /new and 17/28 for /daemon approve on the adversarial set.
+    They are ordinary sentences a user really types; the trigger word just
+    happens to appear inside one.
+
+    A "reject when a negator precedes the trigger" guard was tried first and an
+    adversarial pass broke it on 196 inputs: negation to the *right* of the
+    trigger (「去執行？我不要」), the anchor landing on an unrelated substring
+    (「这标准了不起，但不要去执行」 anchors on 「准了」), and questions
+    (「要去執行嗎？」) all sailed through — while it *also* rejected
+    「没错，去执行」, i.e. the affirmations an approval context is literally
+    built out of negation words. A blacklist cannot work here.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+def test_approve_whitelist_content_is_pinned():
+    """⚠️ Equality, not containment.
+
+    The whole-clause whitelist is the entire judgement for ``/daemon approve``:
+    every entry is a phrase that, said alone, dispatches a real high-risk action
+    upstream. Widening it is a security decision, so it must not be possible to
+    add a word without a test turning red. Broad affirmations (可以 / 好 / 好的 /
+    行) are deliberately absent — see the note above the table.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import _APPROVE_CLAUSES
+
+    assert _APPROVE_CLAUSES == frozenset({
+        "同意", "我同意", "没问题", "沒問題",
+        "删吧", "删", "刪吧", "刪",
+        "准了", "准", "準了", "準",
+        "去执行", "去执行吧", "去執行", "去執行吧",
+        "没问题去执行", "沒問題去執行",
+    })
+
+
+# 这三张白名单里出现过的**全部**简繁异体字，闭集。opencc 不是本仓库依赖（只在
+# scripts/gen_activity_fold_map.py 里用 `uv run --with` 临时装），所以 importorskip
+# 会让这条守卫在 CI 上永远跳过——等于没写。改成闭集自带：新加的字形没进这张表时，
+# 下面的双向折叠会折不出对侧形态，断言直接报出缺哪条。
+_T2S = {
+    "沒": "没", "問": "问", "題": "题", "刪": "删", "準": "准", "執": "执",
+    "別": "别", "來": "来", "這": "这", "個": "个", "務": "务", "尋": "寻",
+    "說": "说", "開": "开", "話": "话", "點": "点", "換": "换",
+}
+_S2T = {simplified: traditional for traditional, simplified in _T2S.items()}
+# ⚠️ 台湾用「搜尋」不用「搜索」——这是**词汇**差异，不是字形转换，折叠折不出来。
+# 只有这两组，单独豁免；别把豁免集当垃圾桶，每加一条都要说明为什么不是字形对。
+_LEXICAL_NOT_A_FOLD = frozenset({
+    "停止搜索", "停止搜尋", "取消这个搜索", "取消這個搜尋",
+})
+
+
+def test_clause_whitelists_are_script_symmetric():
+    """Auto-discovered, not a checklist: fold every entry BOTH ways and require
+    the counterpart to be in the same table.
+
+    A missing counterpart means the command silently does not exist for users of
+    one script — the exact failure #2500 is about. Folding both directions
+    catches it whichever side was forgotten; a pairwise list only catches the
+    pairs somebody remembered to write down.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import (
+        _APPROVE_CLAUSES,
+        _NEW_CLAUSES,
+        _STOP_CLAUSES,
+    )
+
+    def _fold(text, table):
+        return "".join(table.get(char, char) for char in text)
+
+    for name, entries in (
+        ("approve", _APPROVE_CLAUSES),
+        ("stop", _STOP_CLAUSES),
+        ("new", _NEW_CLAUSES),
+    ):
+        missing = []
+        for entry in sorted(entries):
+            if entry in _LEXICAL_NOT_A_FOLD:
+                continue
+            for direction, table in (("t2s", _T2S), ("s2t", _S2T)):
+                counterpart = _fold(entry, table)
+                if counterpart not in entries:
+                    missing.append(f"{entry} --{direction}--> {counterpart}")
+        assert not missing, f"{name}: 对侧字形缺失 → {missing}"
+
+
+def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
+    """⚠️ The asymmetry is load-bearing, not an oversight.
+
+    ``/daemon approve`` runs a high-risk action upstream, so it is fail-closed:
+    ANY clause outside the whitelist kills it, which is what stops
+    「我不同意，去执行」 from approving. ``/stop`` and ``/new`` only halt a task
+    or change the subject, so they read the trailing imperative — otherwise
+    「我还没同意，停止搜索」 would stop dispatching at all.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    # approve: fail-closed on a non-whitelisted clause anywhere
+    assert OpenClawAdapter.rule_magic_command("我不同意，去执行") is None
+    assert OpenClawAdapter.rule_magic_command("我不同意，去執行") is None
+    assert OpenClawAdapter.rule_magic_command("同意，去执行") == "/daemon approve"
+    # stop / new: the TRAILING clause decides — a whitelist phrase sitting in a
+    # non-final clause is narration, not an imperative, and must not dispatch.
+    # ⚠️ 这四条是「末子句」和「任意子句」判据的唯一区分点：换成 any(...) 时只有它们会红。
+    assert OpenClawAdapter.rule_magic_command("我还没同意，停止搜索") == "/stop"
+    assert OpenClawAdapter.rule_magic_command("我不同意这个方案，换个话题") == "/new"
+    assert OpenClawAdapter.rule_magic_command("停下来，这是我当时唯一的念头") is None
+    assert OpenClawAdapter.rule_magic_command("停下來，這是我當時唯一的念頭") is None
+    assert OpenClawAdapter.rule_magic_command("换个话题，他总是这么逃避") is None
+    assert OpenClawAdapter.rule_magic_command("換個話題，他總是這麼逃避") is None
+    assert OpenClawAdapter.rule_magic_command("别找了，他说，然后转身走了") is None
+    assert OpenClawAdapter.rule_magic_command("重新开始，说起来简单做起来难") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # leading function words stripped
+        ("我们换个话题吧", "/new"), ("我們換個話題吧", "/new"),
+        ("请停下来", "/stop"), ("請停下來", "/stop"),
+        ("帮我停下来", "/stop"), ("幫我停下來", "/stop"),
+        ("那你去执行吧", "/daemon approve"),
+        # trailing particles stripped
+        ("重新开始吧", "/new"), ("重新開始吧", "/new"),
+        ("停下来吧", "/stop"), ("停下來吧", "/stop"),
+        # ...but stripping must not resurrect a misfire
+        ("雨停下来了", None), ("我准了假", None), ("比賽即將重新開始", None),
+    ],
+)
+def test_clause_normalization_strips_only_function_words(text, expected):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+def test_no_magic_command_fires_on_the_projects_own_ui_copy():
+    """⚠️ Auto-discovered corpus, not a hand-written list.
+
+    static/locales/{zh-CN,zh-TW}.json is ~4257 strings of product copy with zero
+    command intent. Before the whole-clause switch, 6 strings in EACH script
+    dispatched a magic command — including the day6 tutorial line 「随时都可以戳
+    一下让我停下来」, i.e. N.E.K.O.'s own script would have halted a task.
+
+    This corpus grows with the product, so it keeps finding regressions a fixed
+    adversarial list cannot. It is a floor, not a ceiling: UI copy is written
+    prose, and real speech carries these phrases far more densely.
+    """  # noqa: DOCSTRING_CJK
+    import json
+    from pathlib import Path
+
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    def _walk(node):
+        if isinstance(node, str):
+            yield node
+        elif isinstance(node, dict):
+            for value in node.values():
+                yield from _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from _walk(value)
+
+    repo_root = Path(__file__).resolve().parents[2]
+    checked = 0
+    hits = []
+    for locale in ("zh-CN", "zh-TW"):
+        path = repo_root / "static" / "locales" / f"{locale}.json"
+        if not path.exists():
+            pytest.skip(f"{path} missing")
+        for text in _walk(json.loads(path.read_text(encoding="utf-8"))):
+            if not text.strip():
+                continue
+            checked += 1
+            command = OpenClawAdapter.rule_magic_command(text)
+            if command:
+                hits.append((locale, command, text[:80]))
+
+    assert checked > 1000, f"语料没读到，只有 {checked} 条"
+    assert not hits, f"UI 文案触发了 magic command：{hits}"
 
 
 @pytest.mark.parametrize("text", ["别找了", "別找了", "算了别查了", "算了別查了"])

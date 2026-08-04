@@ -348,6 +348,38 @@ async def dispatch(
         else:
             nk_sender_id = _resolve_openclaw_sender_id(messages) or _shared.Modules.openclaw.default_sender_id
         if magic_command:
+            # ⚠️ `/daemon approve` 让上游 daemon 真的批准一个挂起的高风险动作，而它
+            # 一路上从来没有校验过「这条回复是不是针对某个待审批动作」——全仓库没有
+            # 任何待审批状态（grep pending_approval / awaiting_approval / approval_state
+            # 零命中），所以「同意」「没问题」这种日常应答会无条件批准。
+            #
+            # 完整的修法是 gate 在「确实存在一个待审批动作」上，但那个状态**只活在
+            # 上游 QwenPaw daemon 里**：run_instruction 是一次性 POST，请求-响应，没有
+            # side channel，N.E.K.O. 侧拿不到。真要拿到得让 QwenPaw 在响应里加字段或
+            # 开状态端点——跨仓库契约变更。
+            #
+            # 这里做的是它在本地可得的近似：没有任何活着的 openclaw 任务时，一条批准
+            # 在定义上就是没有意义的，直接丢弃。日常闲聊场景（占误批准的绝大多数）
+            # 由此彻底关掉；任务真在跑时行为一点不变，那个窗口靠分类器侧的整子句
+            # 白名单收窄。
+            #
+            # 静默丢弃：不 _emit_task_result，所以不会念出「收到许可！」那句固定台词。
+            # magic command 自己不进 task_registry（注册在下面的非 magic 分支里），
+            # exclude_task_id 是防御性的。
+            if magic_command == "/daemon approve":
+                live_task_ids = _collect_active_openclaw_task_ids(
+                    sender_id=nk_sender_id,
+                    lanlan_name=lanlan_name,
+                    exclude_task_id=result.task_id,
+                )
+                if not live_task_ids:
+                    logger.info(
+                        "[OpenClaw] /daemon approve dropped: no live openclaw task "
+                        "for sender=%s lanlan=%s",
+                        nk_sender_id,
+                        lanlan_name,
+                    )
+                    return
             if magic_command == "/stop":
                 cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
                     sender_id=nk_sender_id,
