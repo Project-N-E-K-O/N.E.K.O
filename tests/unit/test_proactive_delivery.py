@@ -16,6 +16,7 @@ from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     effective_priority,
 )
@@ -453,6 +454,35 @@ def test_flood_guard_rejects_incoming_when_older_send_started(monkeypatch):
     assert not committed_ack.done()
     assert incoming_ack.done() and incoming_ack.result is False
     assert incoming.get(DELIVERY_RETRACTED_KEY) is True
+
+
+@pytest.mark.parametrize(
+    "ownership_key",
+    [VOICE_DELIVERY_COMMITTED_KEY, SWAP_PRIME_DELIVERY_CLAIM_KEY],
+)
+def test_flood_rejected_newer_does_not_stale_provider_owned_old(
+    monkeypatch,
+    ownership_key,
+):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("provider-owned old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[ownership_key] = True
+    old_seq = old["_coalesce_submit_seq"]
+
+    rejected_ack = _FakeAckFuture()
+    newer = _passive_cb("flood rejected newer", coalesce_key="state")
+    newer[DELIVERY_ACK_FUTURE_KEY] = rejected_ack
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected_ack.done() and rejected_ack.result is False
+    assert mgr._coalesce_latest["state"] == old_seq
+    old.pop(ownership_key)
+    assert mgr._retract_stale_coalesced([old]) is False
 
 
 def test_newer_same_key_keeps_committed_callback_voice_mirror():

@@ -581,7 +581,8 @@ class ProactiveMixin:
         if retracted_ids:
             self.pending_extra_replies = [
                 extra for extra in self.pending_extra_replies
-                if extra.get("_callback_delivery_id") not in retracted_ids
+                if not isinstance(extra, dict)
+                or extra.get("_callback_delivery_id") not in retracted_ids
             ]
 
     def _purge_retracted_agent_callback_extras(self, callbacks: list) -> None:
@@ -598,7 +599,8 @@ class ProactiveMixin:
         if retracted_ids:
             self.pending_extra_replies = [
                 extra for extra in self.pending_extra_replies
-                if extra.get("_callback_delivery_id") not in retracted_ids
+                if not isinstance(extra, dict)
+                or extra.get("_callback_delivery_id") not in retracted_ids
             ]
 
     async def trigger_agent_callbacks(self) -> bool:
@@ -2142,7 +2144,7 @@ class ProactiveMixin:
                 n += 1
         return n
 
-    def _enforce_agent_callback_queue_limit(self, max_items: int) -> None:
+    def _enforce_agent_callback_queue_limit(self, max_items: int) -> list:
         """Drop the oldest safely retractable callbacks above ``max_items``.
 
         Provider-owned entries are never flood victims: voice delivery marks
@@ -2152,7 +2154,7 @@ class ProactiveMixin:
         """
         overflow = len(self.pending_agent_callbacks) - max_items
         if overflow <= 0:
-            return
+            return []
 
         dropped: list = []
         surviving: list = []
@@ -2195,6 +2197,7 @@ class ProactiveMixin:
                 self.lanlan_name,
                 overflow,
             )
+        return dropped
 
     def _enforce_pending_extra_reply_queue_limit(self, max_items: int) -> None:
         """Trim extras without orphaning a provider-owned callback mirror."""
@@ -2323,6 +2326,7 @@ class ProactiveMixin:
             # snapshots, bounded only by the drop-oldest flood guard below. An
             # empty key never coalesces, so no existing producer regresses.
             new_key = str(callback.get("coalesce_key") or "").strip()
+            previous_latest_seq = None
             if new_key:
                 # Submission-order stamp: cues carry a monotonic seq assigned at
                 # submit_proactive_callback (manager-held respond cues) or here
@@ -2336,6 +2340,7 @@ class ProactiveMixin:
                 # Feed the pull-model staleness map: delivery-point guards
                 # (_retract_stale_coalesced / _coalesce_entry_is_stale) compare
                 # in-flight snapshot entries against this latest seq.
+                previous_latest_seq = getattr(self, "_coalesce_latest", {}).get(new_key)
                 self._note_coalesce_submission(new_key, new_seq)
                 incoming_superseded = False
                 dropped = 0
@@ -2453,9 +2458,23 @@ class ProactiveMixin:
             # Flood guard: evict only callbacks that have not crossed a
             # provider-delivery ownership boundary. If every older entry is
             # claimed/committed, the just-appended callback is the safe victim.
-            self._enforce_agent_callback_queue_limit(
+            flood_dropped = self._enforce_agent_callback_queue_limit(
                 AGENT_CALLBACK_QUEUE_MAX_ITEMS
             )
+            if (
+                new_key
+                and any(dropped is callback for dropped in flood_dropped)
+                and getattr(self, "_coalesce_latest", {}).get(new_key) == new_seq
+            ):
+                # Flood rejection means this cue never became pending. Undo only
+                # this enqueue's latest-seq advance so the provider-owned older
+                # cue does not become stale merely because its successor was
+                # rejected. There is no await in this method, so the equality
+                # guard also prevents clobbering a genuinely newer submission.
+                if isinstance(previous_latest_seq, int):
+                    self._coalesce_latest[new_key] = previous_latest_seq
+                else:
+                    self._coalesce_latest.pop(new_key, None)
             self._enforce_pending_extra_reply_queue_limit(
                 AGENT_CALLBACK_QUEUE_MAX_ITEMS
             )

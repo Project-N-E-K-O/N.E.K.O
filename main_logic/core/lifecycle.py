@@ -2442,6 +2442,7 @@ class LifecycleMixin:
                 # 镜像启动侧的强 CAS：任何偏离都意味着并发 start/end_session
                 # 已接管会话，此时覆盖 self.session 会孤儿化赢家。
                 async with self.lock:
+                    _abort_if_passive_claim_retracted("while waiting for promote lock")
                     _promote_allowed = self.session is old_main_session
                     if _promote_allowed:
                         self.session = new_session
