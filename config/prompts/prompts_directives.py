@@ -120,6 +120,15 @@ _TRIM_TRAIL_TOKENS_BY_LOCALE: dict[str, Tuple[str, ...]] = {
     "ko": ("요", "은", "는", "이", "가", "을", "를", "에", "에서"),
 }
 
+_HAN_RE = re.compile(r"[一-鿿㐀-䶿]")
+# 不含汉字 = 与汉字不共码位 = 任何 locale 带上它都不会撞。自动发现而不是手点名单：
+# 以后加一张新的假名 / 谚文 / 西里尔助词表，它会自动进这个集合。
+_SCRIPT_DISJOINT_FAMILIES = tuple(
+    fam
+    for fam, toks in _TRIM_TRAIL_TOKENS_BY_LOCALE.items()
+    if not any(_HAN_RE.search(tok) for tok in toks)
+)
+
 # 反问尾巴：跟在句末助词后面（"工作了好嗎"），正则的可选助词组只放行一个，
 # 剩下的会并进 term，靠 trim 的循环逐层剥掉。
 #
@@ -139,9 +148,9 @@ _TAIL_INTERROGATIVES_BY_LOCALE: dict[str, Tuple[str, ...]] = {
 # 混合语言是这个模块明确支持的路径（"stop talking about 前女友了" / "stop saying
 # 仕事ね"），term 整段可能是中文也可能是日文，不剥就把助词原样存进去（codex P2）。
 # 分表要隔离的是 zh/ja/ko **互相**污染——它们命中时用自己那张表，不受这里影响。
-# ⚠️ 这里只列 zh + ja：谚文那张表由 _trim_term 无条件追加（谚文与汉字/假名不共
-# 码位，任何 locale 带上它都不会撞），列在这儿反而是一份会漂移的冗余。
-_TRIM_TRAIL_FALLBACK_LOCALES = ("zh", "ja")
+# ⚠️ 这里只列 zh：假名 / 谚文那两张表由 _trim_term 无条件追加（见
+# _SCRIPT_DISJOINT_FAMILIES），列在这儿反而是一份会漂移的冗余。
+_TRIM_TRAIL_FALLBACK_LOCALES = ("zh",)
 
 # 与 locale 无关的尾巴：ASCII 词，字形上不可能和别的语言撞。中英混说很常见
 # （"别提 my ex please"），所以这些对每个 locale 都剥。
@@ -217,11 +226,15 @@ def _trim_term(term: str, locale: str = "") -> str:
         if family in _TRIM_TRAIL_TOKENS_BY_LOCALE
         else _TRIM_TRAIL_FALLBACK_LOCALES
     )
-    # ⚠️ 谚文那张表**每个 locale 都带上**：分表是为了拆开 CJK 之间的同码位歧义
-    # （``唄`` 中文语气词 / 日文"歌"），而谚文与汉字、假名都不共码位，不可能撞。
-    # 只带命中 locale 自己那张的话，``别再提전남친은。`` 存成 ``전남친은``——base 是
-    # ``전남친``（codex P2）。
-    families = tuple(dict.fromkeys(families + ("ko",)))
+    # ⚠️ **不含汉字**的那些助词表，每个 locale 都带上——自动发现，不点名。
+    #
+    # 分表是为了拆开 CJK 之间的同码位歧义（``唄`` 中文语气词 / 日文"歌"，``了`` 是
+    # 日文 完了/終了 的构词成分），而那种歧义只可能发生在**汉字**上。谚文、假名与
+    # 汉字都不共码位，任何 locale 带上它们都不会撞。只带命中 locale 自己那张的话：
+    #   ``别再提전남친은。``  存成 ``전남친은``（base 是 ``전남친``）
+    #   ``别再提仕事ね。``    存成 ``仕事ね``（base 是 ``仕事``）
+    # 都是 codex P2。locale 说的是**哪条模板命中**，不是话题本身是什么语言。
+    families = tuple(dict.fromkeys(families + _SCRIPT_DISJOINT_FAMILIES))
     cjk = tuple(
         tok for fam in families for tok in _TRIM_TRAIL_TOKENS_BY_LOCALE[fam]
     )
@@ -625,7 +638,11 @@ _ZH_MULTI_NEG_EVIDENCE = (
 # 单字否定词前面允许出现的主语 / 敬语。⚠️ 这张字类是闭集，有相等断言钉着：往里加
 # 任何一个日文汉字就是在守卫的左界上开洞（``俺`` 是北方口语主语、同时是日文常用汉字，
 # 加进来 ``俺別提案をお願いします。`` 就会被当成中文指令存下来）。
-_ZH_SUBJECT_CHARS = "你妳您咱请"
+# ⚠️ ``們`` 是繁体复数后缀（我們 / 你們 / 咱們），日文既不用 ``們`` 也不用 ``们``，
+# 所以它后面的 ``別`` 同样不可能是日文的 ``〜別`` 后缀。不收的话繁中用户说
+# ``我們別再提君の名は。`` 会被整条丢掉，而简体 ``我们别…`` 因为 ``们`` 在别处有
+# 证据而正常（codex P2）。
+_ZH_SUBJECT_CHARS = "你妳您咱请們"
 # ⚠️ 只收**日文里根本没有的**汉字：``你 妳 您
 # 咱 请`` 都不是日文汉字，所以它们后面的 ``別`` 不可能是日文的 ``〜別`` 后缀。
 # ``我 / 他 / 請`` 刻意不收——它们是日文汉字，``他別提案をお願いします。`` 这类句子
@@ -934,8 +951,11 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             # ⚠️ 只切**一个**字符：守卫读的就是 before[-1:]，切整段前缀等于每条命中
             # 复制一次全文——一条消息里几万条指令时是二次方（60000 条 2.5 秒，base
             # 1.2 秒；codex P2）。
+            # ⚠️ 判据要看**未 trim** 的捕获：假名助词表现在对所有 locale 生效，
+            # ``地域別講座だね。`` 的 ``だね`` 会在 trim 里被剥掉，等守卫拿到 term 时
+            # 日文语法标记已经没了，整句反被判成中文（补假名回落时踩到的）。
             if zh_family and _is_japanese_sentence_match(
-                m.group(0), term, text[max(0, m.start() - 1): m.start()]
+                m.group(0), m.group(1), text[max(0, m.start() - 1): m.start()]
             ):
                 continue
             out.append((locale, kind, term))
@@ -1009,7 +1029,7 @@ def _drop_filler_suffixed_terms(
         return a[0] < b[1] and b[0] < a[1]
 
     def _is_redundant(index: int) -> bool:
-        _locale, kind, term = hits[index]
+        locale, kind, term = hits[index]
         start, end = spans[index]
         neighbours = {
             other_index
@@ -1040,7 +1060,12 @@ def _drop_filler_suffixed_terms(
                 # ``你好，李焕英》就``，剥掉 ``就`` 得到 ``你好，李焕英》``——多一个
                 # ``》`` 就跟专用切法的 ``你好，李焕英`` 对不上，畸形的那条照样存三天
                 # （codex P2）。归一化用的就是 term 落库前走的同一套 _TRIM_TRAIL。
-                for form in {shorter, shorter.strip(_TRIM_TRAIL)}:
+                # ⚠️ 剥完要走**同一套 _trim_term** 再比，不能只剥标点：对手那条
+                # 是落库前 trim 过的，而中间形态还带着助词。``關於전남친은就別提了。``
+                # 里剥掉 ``就`` 得到 ``전남친은``，跟已经 trim 成 ``전남친`` 的对手
+                # 对不上，畸形的那条照样存三天（codex P2）。
+                forms = {shorter, _trim_term(shorter, locale)}
+                for form in forms:
                     if form in rivals:
                         return True
                     if form and form not in seen_forms:

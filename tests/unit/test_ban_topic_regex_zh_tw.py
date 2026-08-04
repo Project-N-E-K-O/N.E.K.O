@@ -1776,7 +1776,7 @@ def test_normalizing_does_not_merge_two_separate_directives():
 # ── 15. 主语打头的指令仍算中文证据 ───────────────────────────
 # ⚠️ 日文的 ``〜別`` 后缀问题只存在于**单字**否定词；多字的 不要/不许/不許/不准
 # 不可能是日文名词后缀，给它们套左界纯属误伤。
-ZH_ONLY_SUBJECTS = ("你", "妳", "您", "咱", "请")
+ZH_ONLY_SUBJECTS = ("你", "妳", "您", "咱", "请", "們")
 
 
 @pytest.mark.parametrize("subject", ZH_ONLY_SUBJECTS)
@@ -1801,7 +1801,7 @@ def test_the_subject_allowlist_holds_no_japanese_kanji():
     手抄一份黑名单挡不住没写进去的那些（``俺`` 是北方口语主语、同时是日文常用汉字，
     加进来 ``俺別提案をお願いします。`` 就会被当成中文指令存下来——变异跑出来的）。
     """  # noqa: DOCSTRING_CJK
-    assert D._ZH_SUBJECT_CHARS == "你妳您咱请"
+    assert D._ZH_SUBJECT_CHARS == "你妳您咱请們"
     assert tuple(D._ZH_SUBJECT_CHARS) == ZH_ONLY_SUBJECTS
     for subject in ZH_ONLY_SUBJECTS:
         assert subject in D._ZH_SUBJECT_BEFORE_NEG, subject
@@ -2130,3 +2130,73 @@ def test_the_preposed_topic_unit_excludes_newlines_too():
     for text in ("工作\n股票别提了。", "工作\r\n股票別提了。"):
         for term in _zh_terms(text):
             assert "\n" not in term and "\r" not in term, (text, term)
+
+
+# ── 23. 不含汉字的助词表对所有 locale 生效 ───────────────────
+def test_script_disjoint_families_are_discovered_not_listed():
+    """⚠️ 自动发现，不是手点名单：分表要拆的是**汉字**上的同码位歧义（``唄`` 中文
+    语气词 / 日文「歌」，``了`` 是 完了/終了 的构词成分），假名和谚文与汉字不共码位，
+    任何 locale 带上它们都不会撞。以后加一张新的纯假名 / 谚文表会自动进这个集合。
+    """  # noqa: DOCSTRING_CJK
+    assert set(D._SCRIPT_DISJOINT_FAMILIES) == {"ja", "ko"}
+    for fam in D._SCRIPT_DISJOINT_FAMILIES:
+        for tok in D._TRIM_TRAIL_TOKENS_BY_LOCALE[fam]:
+            assert not D._HAN_RE.search(tok), (fam, tok)
+    # 反向：zh 那张表含汉字，所以必须留在 locale 门里
+    assert "zh" not in D._SCRIPT_DISJOINT_FAMILIES
+    assert any(D._HAN_RE.search(t) for t in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # locale 说的是哪条模板命中，不是话题本身什么语言
+        ("别再提仕事ね。", "仕事"),
+        ("別再提仕事ね。", "仕事"),
+        ("不要说元彼って。", "元彼"),
+        ("不要說元彼って。", "元彼"),
+        ("别再提전남친은。", "전남친"),
+        ("別再提전남친은。", "전남친"),
+    ],
+)
+def test_a_chinese_match_still_trims_kana_and_hangul_tails(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["地域別講座だね。", "世代別講座だよ。", "世代別提案だって。", "職種別講座でしょ。"],
+)
+def test_trimming_the_kana_tail_does_not_blind_the_japanese_guard(text):
+    """⚠️ 守卫必须看**未 trim** 的捕获：假名助词表对所有 locale 生效之后，
+    ``だね`` 会在 trim 里被剥掉，等守卫拿到 term 时日文语法标记已经没了，整句反被
+    判成中文（补假名回落时踩到的）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set()
+
+
+# ── 24. 繁体复数主语 ─────────────────────────────────────────
+@pytest.mark.parametrize("subject", ["我們", "你們", "咱們", "您們"])
+def test_a_plural_traditional_subject_keeps_the_evidence(subject):
+    """``們`` 是繁体复数后缀，日文既不用 ``們`` 也不用 ``们``，所以它后面的 ``別``
+    不可能是日文的 ``〜別`` 后缀。不收的话繁中用户这句会被整条丢掉，而简体
+    ``我们别…`` 因为 ``们`` 在别处有证据而正常（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{subject}別再提君の名は。") == {"君の名は"}
+
+
+# ── 25. 剥填充词后要走同一套 trim 再比 ───────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("關於전남친은就別提了。", "전남친"),
+        ("关于전남친은就别提了。", "전남친"),
+        ("關於仕事ね就別提了。", "仕事"),
+        ("关于股票就别提了。", "股票"),
+    ],
+)
+def test_the_shortened_form_is_trimmed_before_comparing(text, expected):
+    """⚠️ 对手那条是落库前 trim 过的，中间形态还带着助词——只剥标点的话
+    ``전남친은`` 跟 ``전남친`` 对不上，畸形的那条照样存三天（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
