@@ -13,7 +13,6 @@ from main_logic.tool_calling import ToolResult
 _DEFAULT_RESPONSE_DONE_TIMEOUT = arbiter_module._DEFAULT_RESPONSE_DONE_TIMEOUT
 _SERVER_RESPONSE_ID_LIMIT = arbiter_module._SERVER_RESPONSE_ID_LIMIT
 RealtimeResponseArbiter = arbiter_module.RealtimeResponseArbiter
-ResponseCreatedKind = arbiter_module.ResponseCreatedKind
 
 
 async def _wait_for_arbiter_source(
@@ -522,12 +521,7 @@ async def test_server_response_older_than_30s_within_allowance_holds_lane():
     # live server response must keep the lane closed instead of being
     # presumed dead (which let the follow-up collide with it).
     loop = asyncio.get_running_loop()
-    server_lifetime = next(
-        lifetime
-        for lifetime in arbiter._response_lifetimes
-        if lifetime.owner is None and lifetime.response_id == "resp-server"
-    )
-    server_lifetime.announced_at = loop.time() - 31.0
+    arbiter._server_response_ids["resp-server"] = loop.time() - 31.0
     arbiter.notify_response_terminal(
         {"type": "response.done", "response": {"id": "resp-owner"}}
     )
@@ -742,10 +736,7 @@ async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
 
 
 async def _adoption_harness(
-    during_create_send=None,
-    during_item_window=None,
-    ack_expected=True,
-    announced_response_id="resp-auto",
+    during_create_send=None, during_item_window=None, ack_expected=True
 ):
     """Drive the route-1 shape, letting a test disturb one of its two moments.
 
@@ -763,10 +754,7 @@ async def _adoption_harness(
         sent.append(dict(event))
         if event["type"] == "conversation.item.create":
             arbiter.notify_response_created(
-                {
-                    "type": "response.created",
-                    "response": {"id": announced_response_id},
-                }
+                {"type": "response.created", "response": {"id": "resp-auto"}}
             )
             if during_item_window is not None:
                 during_item_window(arbiter)
@@ -872,7 +860,7 @@ async def test_a_terminal_for_a_never_announced_id_belongs_to_the_owner():
     async def send(event):
         sent.append(dict(event))
 
-    arbiter = RealtimeResponseArbiter(send, response_created_expected=False)
+    arbiter = RealtimeResponseArbiter(send)
     ticket = await arbiter.enqueue(source="owner")
     await asyncio.wait_for(ticket.sent, 0.2)
     assert ticket.started.done() is False
@@ -1316,22 +1304,6 @@ async def test_vad_pending_quarantines_response_create_send_in_progress():
             "response": {"id": "resp-vad", "status": "completed"},
         }
     )
-    # The explicit create completed its transport write after VAD won. It is a
-    # second possible server response, so the successor stays blocked until its
-    # own late lifecycle converges too.
-    await asyncio.sleep(0)
-    assert follow_up.sent.done() is False
-    arbiter.notify_response_created(
-        {"type": "response.created", "response": {"id": "resp-explicit-late"}}
-    )
-    await asyncio.sleep(0)
-    assert follow_up.sent.done() is False
-    arbiter.notify_response_terminal(
-        {
-            "type": "response.done",
-            "response": {"id": "resp-explicit-late", "status": "completed"},
-        }
-    )
     await asyncio.wait_for(follow_up.sent, 0.2)
     arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-follow-up"}}
@@ -1510,47 +1482,6 @@ async def test_vad_created_during_create_send_is_not_credited_to_owner():
     assert proactive.started.exception() is not None
     assert arbiter._response_owner is None
     assert arbiter._server_response_ids == {}
-    await arbiter.shutdown()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_detached_explicit_create_keeps_suppression_on_late_announcement():
-    arbiter = None
-
-    async def send(event):
-        if event["type"] != "response.create":
-            return
-        arbiter.notify_server_vad_response_pending(arm_timeout=False)
-        arbiter.notify_response_created(
-            {"type": "response.created", "response": {"id": "resp-vad"}}
-        )
-        arbiter.notify_response_terminal(
-            {
-                "type": "response.done",
-                "response": {"id": "resp-vad", "status": "completed"},
-            }
-        )
-
-    arbiter = RealtimeResponseArbiter(send)
-    ticket = await arbiter.enqueue(source="silent", suppress_output=True)
-    with pytest.raises(RuntimeError, match="pending server VAD response"):
-        await asyncio.wait_for(ticket.done, 0.2)
-
-    assert len(arbiter._retired_created_windows) == 1
-    obligation = arbiter._retired_created_windows[0]
-    assert obligation.source == "detached_explicit_create"
-    assert obligation.suppress_output is True
-
-    late = arbiter.notify_response_created(
-        {"type": "response.created", "response": {"id": "resp-explicit"}}
-    )
-    assert late.kind is ResponseCreatedKind.UNOWNED_SERVER
-    assert late.suppress_output is True
-    assert arbiter.suppress_output_for_generation(late.generation) is True
-    arbiter.notify_response_terminal(
-        {"type": "response.done", "response": {"id": "resp-explicit"}}
-    )
     await arbiter.shutdown()
 
 
@@ -2549,7 +2480,7 @@ async def test_external_text_turn_response_create_has_no_per_response_instructio
 
 
 @pytest.mark.asyncio
-async def test_idless_response_created_accepts_its_later_id_bearing_done_event():
+async def test_idless_response_created_drops_id_bearing_done_event():
     response_done = AsyncMock()
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",
@@ -2566,9 +2497,7 @@ async def test_idless_response_created_accepts_its_later_id_bearing_done_event()
 
     await client.handle_messages()
 
-    response_done.assert_awaited_once()
-    assert client._is_responding is False
-    assert client._current_response_generation is None
+    response_done.assert_not_awaited()
     await client._response_arbiter.wait_until_idle(timeout=0.2)
 
 
@@ -3066,78 +2995,6 @@ async def test_a_reply_that_finishes_inside_the_item_window_is_still_adoptable()
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_idless_announcement_adopts_identity_from_early_terminal():
-    def finish_with_identity(arbiter):
-        arbiter.notify_response_terminal(
-            {
-                "type": "response.done",
-                "response": {"id": "resp-terminal", "status": "completed"},
-            }
-        )
-
-    arbiter, ticket, sent, aborted = await _adoption_harness(
-        during_item_window=finish_with_identity,
-        announced_response_id=None,
-    )
-    result = await asyncio.wait_for(ticket.done, 1.0)
-
-    assert result is not None
-    assert aborted == []
-    assert "response.cancel" not in [event["type"] for event in sent]
-    await arbiter.shutdown()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_fully_idless_early_terminal_is_still_adoptable():
-    def finish_without_identity(arbiter):
-        arbiter.notify_response_terminal(
-            {
-                "type": "response.done",
-                "response": {"status": "completed"},
-            }
-        )
-
-    arbiter, ticket, sent, aborted = await _adoption_harness(
-        during_item_window=finish_without_identity,
-        announced_response_id=None,
-    )
-    result = await asyncio.wait_for(ticket.done, 1.0)
-
-    assert result is not None
-    assert aborted == []
-    assert "response.cancel" not in [event["type"] for event in sent]
-    await arbiter.shutdown()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_activity_identity_upgrade_preserves_idless_adoption_candidate():
-    def identify_from_activity(arbiter):
-        generation = arbiter.notify_response_activity("resp-activity")
-        assert generation is not None
-
-    arbiter, ticket, _sent, aborted = await _adoption_harness(
-        during_item_window=identify_from_activity,
-        announced_response_id=None,
-    )
-    await asyncio.wait_for(ticket.started, 1.0)
-
-    assert arbiter._response_owner is not None
-    assert arbiter._response_owner.response_id == "resp-activity"
-    arbiter.notify_response_terminal(
-        {
-            "type": "response.done",
-            "response": {"id": "resp-activity", "status": "completed"},
-        }
-    )
-    await asyncio.wait_for(ticket.done, 1.0)
-    assert aborted == []
-    await arbiter.shutdown()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
 async def test_an_auxiliary_item_ahead_of_the_instruction_blocks_adoption():
     # A proactive vision turn queues an auxiliary conversation.item.create
     # before the instruction item. `conversation.item.created` then proves the
@@ -3317,14 +3174,6 @@ async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
     # epoch bump that does not interrupt the current request, which is why it
     # is the only one the wider window changes.
     arbiter._server_vad_pending_expired()
-    # The identity model retains one bounded late-created window after the
-    # pending timeout. Expire that second bound explicitly: this test is about
-    # the VAD epoch disqualifier after correlation has honestly ended, not the
-    # new window itself (covered by the ownership regressions).
-    arbiter._retired_created_windows[0].expires_at = (
-        asyncio.get_running_loop().time()
-    )
-    arbiter._release_lane_if_clear()
 
     with pytest.raises(Exception):
         await asyncio.wait_for(ticket.done, 1.0)
@@ -3456,7 +3305,7 @@ async def test_a_zero_id_is_still_an_identity_to_the_stale_filter():
     assert fired == [], (
         "response 0's terminal must not finalize the turn response 1 owns"
     )
-    assert client._current_response_id == "1"
+    assert client._current_response_id == 1
 
 
 @pytest.mark.unit
@@ -3481,21 +3330,15 @@ async def test_a_barge_in_cancels_a_response_whose_id_is_zero():
     async def _capture(event, **_kwargs):
         sent.append(event.get("type"))
 
-    client._response_arbiter._send_event = _capture
-    created = client._response_arbiter.notify_response_created(
-        {"type": "response.created", "response": {"id": 0}}
+    client.send_event = _capture
+    client._current_response_id = 0
+    client._is_responding = True
+
+    await client.handle_interruption()
+
+    assert "response.cancel" in sent, (
+        "id 0 names a live response; the barge-in must actually cancel it"
     )
-    assert created.generation is not None
-    client._activate_response_state("0", created.generation)
-
-    try:
-        await client.handle_interruption()
-
-        assert "response.cancel" in sent, (
-            "id 0 names a live response; the barge-in must actually cancel it"
-        )
-    finally:
-        await client.close()
 
 
 @pytest.mark.unit
@@ -3559,7 +3402,7 @@ def test_every_bounded_wait_is_measured_or_says_why_not():
 
     source = Path(
         "main_logic/omni_realtime_client/_response_arbiter.py"
-    ).read_text(encoding="utf-8")
+    ).read_text()
     lines = source.splitlines()
     unmeasured = []
     for index, line in enumerate(lines, 1):

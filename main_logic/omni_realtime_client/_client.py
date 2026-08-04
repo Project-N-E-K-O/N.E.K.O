@@ -27,13 +27,10 @@ from ._shared import (
     TurnDetectionMode,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
-    logger,
     response_arbiter_fail_open_enabled,
     soxr,
 )
 
-
-_CONNECTION_TASK_RETIRE_TIMEOUT = 2.0
 
 
 from ._tools import _ToolingMixin
@@ -136,12 +133,9 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_repetition_detected = on_repetition_detected
         self.extra_event_handlers = extra_event_handlers or {}
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
-        self._connection_tasks: set[asyncio.Task[Any]] = set()
-        self._client_connection_generation = 0
 
         # Track current response state
         self._current_response_id = None
-        self._current_response_generation: int | None = None
         self._current_item_id = None
         self._is_responding = False
         # Advanced once per turn START, by every writer that begins one. A
@@ -160,17 +154,11 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # successor's epoch as its own baseline and find itself trivially
         # current.
         self._current_turn_epoch = 0
-        self._sid_rotation_required_before_dispatch = False
-        self._host_turn_release_ready = asyncio.Event()
-        self._host_turn_release_ready.set()
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
             fail_open=response_arbiter_fail_open_enabled(),
             on_stuck_release=self._on_arbiter_stuck_release,
-            before_owner_dispatch=self._before_response_dispatch,
-            on_lifetime_expired=self._on_response_lifetime_expired,
-            on_lifetime_adopted=self._on_response_lifetime_adopted,
         )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
@@ -374,9 +362,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
             'lanlan.app' in _base_url_lower
             or bool(livestream_mode)
         )
-        self._response_arbiter.set_response_created_expected(
-            not self._is_free_proxy
-        )
 
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
         # Gemini (direct), lanlan.app+free (Gemini proxy), 以及 livestream 模式
@@ -466,81 +451,3 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
-
-    def _fire_connection_task(self, coro):
-        """Create work that must not outlive the current provider socket."""
-
-        task = self._fire_task(coro)
-        self._connection_tasks.add(task)
-        task.add_done_callback(self._connection_task_finished)
-        return task
-
-    def _connection_task_finished(self, task: asyncio.Task[Any]) -> None:
-        """Retrieve failures from ordinary connection-scoped background work."""
-
-        was_active = task in self._connection_tasks
-        self._connection_tasks.discard(task)
-        # Retirement removes tasks before cancellation and installs its own
-        # completion observer, so only the ordinary completion path reports
-        # here. This avoids duplicate warnings for a detached stubborn task.
-        if not was_active or task.cancelled():
-            return
-        try:
-            error = task.exception()
-        except asyncio.CancelledError:
-            return
-        if error is not None:
-            logger.warning(
-                "connection-scoped task failed: %s",
-                type(error).__name__,
-            )
-
-    async def _retire_connection_tasks(self) -> None:
-        """Cancel background work whose result targets the retired socket."""
-
-        current = asyncio.current_task()
-        tasks = [task for task in self._connection_tasks if task is not current]
-        self._connection_tasks.difference_update(tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            done, pending = await asyncio.wait(
-                tasks,
-                timeout=_CONNECTION_TASK_RETIRE_TIMEOUT,
-            )
-            for task in done:
-                if not task.cancelled():
-                    task.exception()
-            if pending:
-                # User tool handlers are outside our control and may suppress
-                # CancelledError.  They stay GC-protected by ``_bg_tasks`` and
-                # every socket write re-checks the captured generation, but a
-                # misbehaving handler must not wedge close/reconnect forever.
-                logger.warning(
-                    "%d connection-scoped task(s) ignored cancellation for "
-                    "%.1fs; detached from retired socket generation",
-                    len(pending),
-                    _CONNECTION_TASK_RETIRE_TIMEOUT,
-                )
-                for task in pending:
-                    task.add_done_callback(
-                        self._retired_connection_task_finished
-                    )
-
-    @staticmethod
-    def _retired_connection_task_finished(task: asyncio.Task[Any]) -> None:
-        if task.cancelled():
-            return
-        try:
-            error = task.exception()
-        except asyncio.CancelledError:
-            return
-        if error is not None:
-            logger.warning(
-                "detached connection task eventually failed: %s",
-                type(error).__name__,
-            )
-
-    async def _begin_connection_generation(self) -> None:
-        self._client_connection_generation += 1
-        await self._retire_connection_tasks()

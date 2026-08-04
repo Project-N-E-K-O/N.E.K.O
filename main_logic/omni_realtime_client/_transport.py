@@ -39,10 +39,6 @@ from ._shared import (
     uuid,
     websockets,
 )
-from ._response_arbiter import (
-    ResponseCreatedKind,
-    ResponseTerminalKind,
-)
 
 
 def _response_id_text(value: Any) -> str | None:
@@ -79,17 +75,11 @@ _ATTACHED_TRANSPORT = object()
 # guarantee: asyncio.wait_for bounds when the cancellation is DELIVERED, not
 # when the coroutine returns, and the outer budget still reaches the rotation.
 _STUCK_RELEASE_STEP_TIMEOUT = 0.5
-# Successor dispatch must serialize behind terminal host hooks, but an
-# application callback that never returns cannot be allowed to wedge the sole
-# response scheduler forever. Past this boundary attribution stays safe by
-# retiring the connection rather than overlapping host turns.
-_HOST_TURN_RELEASE_BARRIER_TIMEOUT = 5.0
 
 # How many finished response ids to remember for usage deduplication. A repeat
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
-_INFLIGHT_TOOL_ARGUMENT_LIMIT = 128
 
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
@@ -132,11 +122,6 @@ class _TransportMixin:
         # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
-
-        await self._begin_connection_generation()
-        self._reset_connection_response_state()
-        self.notify_host_turn_started()
-        self._current_turn_epoch = self._turn_epoch
 
         # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
         # same OmniRealtimeClient instance is reused across sessions, so stale
@@ -483,12 +468,6 @@ class _TransportMixin:
             return None
 
     async def send_event(self, event, *, raise_on_oversize: bool = False) -> None:
-        cancel_connection_generation = event.pop(
-            "_neko_connection_generation", None
-        )
-        cancel_lifecycle_generation = event.pop(
-            "_neko_lifecycle_generation", None
-        )
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
             return
@@ -525,14 +504,6 @@ class _TransportMixin:
             try:
                 if not self.ws:
                     return
-                if (
-                    cancel_connection_generation is not None
-                    and not self._response_arbiter.cancel_send_is_current(
-                        cancel_connection_generation,
-                        cancel_lifecycle_generation,
-                    )
-                ):
-                    return
                 payload = json.dumps(event)
                 # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
                 # oversized image payloads, try to re-compress the JPEG at
@@ -568,10 +539,7 @@ class _TransportMixin:
                         logger.error("💥 WebSocket 致命错误 (%s)，停止发送: %s", code, error_msg)
                         if self.on_connection_error:
                             self._fire_task(self.on_connection_error(json.dumps({"code": code})))
-                        generation = self._client_connection_generation
-                        self._fire_connection_task(
-                            self._close_if_current_connection(generation)
-                        )
+                        self._fire_task(self.close())
                     raise
                 if '1000' not in error_msg:
                     logger.warning(f"⚠️ 发送 {event.get('type', '未知')} 事件失败: {error_msg}")
@@ -1233,202 +1201,17 @@ class _TransportMixin:
 
         self._is_responding = False
         self._current_response_id = None
-        self._current_response_generation = None
         self._current_item_id = None
         self._skip_until_next_response = False
         # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
         self._interrupted = False
-
-    def _activate_response_state(
-        self,
-        response_id: str | None,
-        generation: int,
-        suppress_output: bool = False,
-    ) -> None:
-        """Install one arbiter-approved live response in transport state."""
-
-        self._current_response_id = response_id
-        self._current_response_generation = generation
-        self._is_responding = True
-        self._skip_until_next_response = suppress_output
-        self._turn_epoch += 1
-        self._current_turn_epoch = self._turn_epoch
-        self._interrupted = False
-        self._idless_quarantine = False
-        self._is_first_text_chunk = self._is_first_transcript_chunk = True
-        self._output_transcript_buffer = ""
-        self._current_response_transcript = ""
-
-    def _on_response_lifetime_adopted(
-        self,
-        generation: int,
-        suppress_output: bool,
-    ) -> None:
-        if self._current_response_generation == generation:
-            self._skip_until_next_response = suppress_output
-
-    def _on_response_lifetime_expired(self, generation: int) -> None:
-        if self._current_response_generation != generation:
-            return
-        self._is_responding = False
-        self._current_response_id = None
-        self._current_response_generation = None
-        self._current_item_id = None
-        self._skip_until_next_response = False
-        self._interrupted = True
-        self._idless_quarantine = True
-        self._reset_per_turn_output_state()
-
-    def _activate_unannounced_response_state(self) -> None:
-        """Track output on a protocol that never emits response.created."""
-
-        # A stale deadline deliberately quarantines unidentified tail frames.
-        # Such a frame cannot prove a new response started, so it must not
-        # create a fresh lifetime that immediately clears its own quarantine.
-        # A real host turn boundary lowers the gate in
-        # ``notify_host_turn_started``; an identified response lowers it through
-        # ``_activate_response_state``.
-        if self._idless_quarantine:
-            return
-        generation = self._response_arbiter.notify_unannounced_response_started()
-        if generation is not None:
-            self._activate_response_state(
-                None,
-                generation,
-                self._response_arbiter.suppress_output_for_generation(generation),
-            )
-            return
-        self._is_responding = True
-        self._turn_epoch += 1
-        self._current_turn_epoch = self._turn_epoch
-        self._skip_until_next_response = (
-            self._response_arbiter.suppress_output_for_generation(None)
-        )
-        self._interrupted = False
-        self._idless_quarantine = False
-        self._is_first_text_chunk = self._is_first_transcript_chunk = True
-        self._output_transcript_buffer = ""
-        self._current_response_transcript = ""
-
-    def notify_host_turn_started(self) -> None:
-        """Invalidate end-of-turn work captured by an older host turn."""
-
-        self._turn_epoch += 1
-        self._idless_quarantine = False
-        # The host start path performs the full sid hand-off itself.
-        self._sid_rotation_required_before_dispatch = False
-
-    async def _close_if_current_connection(self, generation: int) -> None:
-        if generation != self._client_connection_generation:
-            return
-        await self.close()
-
-    async def _before_response_dispatch(self) -> None:
-        """Finish a deferred no-VAD sid rotation before response bytes leave."""
-
-        try:
-            await asyncio.wait_for(
-                self._host_turn_release_ready.wait(),
-                _HOST_TURN_RELEASE_BARRIER_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            reason = (
-                "host turn finalization blocked successor dispatch for "
-                f"{_HOST_TURN_RELEASE_BARRIER_TIMEOUT:.1f}s"
-            )
-            logger.error(reason)
-            await self._close_failed_transport(reason)
-            raise RuntimeError(reason)
-        if not self._sid_rotation_required_before_dispatch:
-            return
-        if self._has_server_vad or self.on_sid_rotate is None:
-            self._sid_rotation_required_before_dispatch = False
-            return
-        try:
-            await asyncio.wait_for(
-                self.on_sid_rotate(),
-                _STUCK_RELEASE_STEP_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            # Dispatch cannot continue on the old speech id: the successor's
-            # audio would be attached to a turn the host has already closed.
-            # Keep the flag raised so a later request may retry after this
-            # ticket fails, but make the fail-closed cause observable.
-            logger.error(
-                "deferred sid rotation exceeded %.1fs before successor dispatch",
-                _STUCK_RELEASE_STEP_TIMEOUT,
-            )
-            raise
-        self._sid_rotation_required_before_dispatch = False
-
-    def _reset_connection_response_state(self) -> None:
-        """Clear every response/tool field whose identity is socket-scoped."""
-
-        if self._gemini_proactive_outcome is not None:
-            self._settle_gemini_proactive_inject(
-                error_msg="realtime connection reset before proactive outcome"
-            )
-        self._clear_turn_response_state()
-        self._current_turn_epoch = self._turn_epoch
-        self._announces_responses = False
-        self._idless_quarantine = False
-        self._suppressed_delta_logged_resp_id = None
-        self._inflight_tool_args.clear()
-        self._glm_tool_index_to_id.clear()
-        self._inject_rejection_handlers.clear()
-        self._proactive_inject_awaiting_outcome = False
-        self._proactive_inject_outcome_token = None
-        self._gemini_proactive_outcome = None
-        self._sid_rotation_required_before_dispatch = False
-        self._host_turn_release_ready.set()
-        self._reset_per_turn_output_state()
-
-    async def _finalize_current_response(
-        self,
-        event: dict[str, Any],
-        terminal_epoch: int,
-    ) -> None:
-        """Run host terminal hooks while holding successor dispatch at the boundary."""
-
-        try:
-            self._response_done_total += 1
-            self._last_response_done_time = time.time()
-            self._record_response_usage(event.get("response"))
-            self._clear_turn_response_state()
-            try:
-                await self._record_response_repetition(
-                    self._take_response_transcript()
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("response repetition bookkeeping failed: %s", exc)
-            try:
-                await self._flush_pending_output_transcript()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "pending output transcript callback failed at "
-                    "response terminal: %s",
-                    exc,
-                )
-            finally:
-                self._reset_per_turn_output_state()
-            rotation_completed = await self._notify_turn_finished(
-                still_ours=lambda: self._turn_epoch == terminal_epoch
-            )
-            if rotation_completed:
-                self._sid_rotation_required_before_dispatch = False
-        finally:
-            self._host_turn_release_ready.set()
 
     async def _notify_turn_finished(
         self,
         *,
         step_timeout: float | None = None,
         still_ours: Callable[[], bool] | None = None,
-    ) -> bool:
+    ) -> None:
         """Tell the host this turn is over.
 
         The two hooks the terminal path fires, in the order it fires them.
@@ -1448,10 +1231,24 @@ class _TransportMixin:
         owns the turn and finishes ending it, or it never started.
 
         ``on_sid_rotate`` gets no step bound of its own, because it is the
-        last step — there is nothing behind it for a slow hook to starve. It
-        remains cancellable while waiting for the session lock; the host-side
-        rotation keeps every state mutation inside that lock, so cancellation
-        now leaves the old turn wholly intact instead of half-rotated.
+        last step — there is nothing behind it for a slow hook to starve. That
+        is NOT the same as being uncancellable, and an earlier version of this
+        comment claimed it was: the arbiter bounds the whole notification, so
+        the rotation can still be cancelled at its only await, taking the
+        session lock. Today that leaves the host half-rotated — the TTS flags
+        say a fresh turn while the speech id still says the old one — because
+        ``rotate_speech_id_for_response_done`` writes those flags before it
+        takes the lock.
+
+        Measured, that state is repaired by the next turn's terminal, which
+        rotates unconditionally; it is not the permanent silence the earlier
+        comment described. It also is not this path's to fix: the rotation has
+        two other callers that are cancelled just as ordinarily and with no
+        escape hatch involved
+        ([_responses.py](main_logic/omni_realtime_client/_responses.py) and
+        [proactive.py](main_logic/core/proactive.py), both inside
+        fire-and-forget tasks), so making the rotation all-or-nothing belongs
+        in the rotation itself. Tracked separately.
 
         ``on_sid_rotate`` is conditional because providers WITH server VAD
         rotate the speech id from ``speech_stopped`` instead; firing here too
@@ -1473,8 +1270,7 @@ class _TransportMixin:
                 "a new turn started before this one could be ended; leaving "
                 "both end-of-turn hooks to it"
             )
-            return False
-        rotation_completed = self._has_server_vad or self.on_sid_rotate is None
+            return
         if self.on_response_done:
             try:
                 if step_timeout is None:
@@ -1503,12 +1299,10 @@ class _TransportMixin:
         if not self._has_server_vad and self.on_sid_rotate:
             try:
                 await self.on_sid_rotate()
-                rotation_completed = True
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("turn-finished speech-id rotation failed: %s", exc)
-        return rotation_completed
 
     async def _on_arbiter_stuck_release(
         self, reason: str, response_id: str | None = None
@@ -1634,7 +1428,6 @@ class _TransportMixin:
                 self._current_response_id,
             )
             self._current_response_id = None
-            self._current_response_generation = None
             self._current_item_id = None
             # The per-response output accounting belongs to the dead turn as
             # well, and nothing else will clear it: `response.created` resets
@@ -1646,10 +1439,27 @@ class _TransportMixin:
             # successor has not announced itself yet, so it has produced no
             # output of its own to erase.
             self._reset_per_turn_output_state()
-            # Per-lifecycle suppression now preserves any queued successor's
-            # explicit skipped state; this gate covers only unidentified output
-            # that can still arrive from the abandoned response.
-            self._interrupted = True
+            # `_skip_until_next_response` is deliberately NOT touched here,
+            # and neither leaving it nor clearing it is right — which is the
+            # actual finding.
+            #
+            # Leaving it mutes the successor: `_interrupted` may be left for
+            # the next turn because `response.created` resets it, and this flag
+            # has no such reset, so the successor's every delta stays
+            # suppressed until its own terminal. But clearing it is not the
+            # answer either, because the flag may already belong to the
+            # successor: `create_response(skipped=True)` raises it BEFORE it
+            # enqueues (`_responses.py`), so a request queued behind the
+            # abandoned one owns it while it waits for the lane. Clearing would
+            # then un-skip a turn the caller explicitly asked to suppress.
+            #
+            # A flag with no owner cannot be correctly cleared or correctly
+            # left; picking a side is arbitrary. The fix is to give output
+            # suppression a per-turn identity, which is issue #2594. Until
+            # then this stays as it shipped rather than trading one wrong
+            # behaviour for another — the whole state is unreachable today
+            # (nothing on the WebSocket path passes `skipped=True`), so there
+            # is nothing to buy by guessing.
             # Both release paths raise it: the abandoned response may still be
             # streaming, and from here until the next response.created nothing
             # id-less can be attributed. Clearing _current_response_id above
@@ -1669,16 +1479,7 @@ class _TransportMixin:
         pending_transcript = self._take_pending_output_transcript()
         pending_response = self._take_response_transcript()
         self._clear_turn_response_state()
-        # ``_clear_turn_response_state`` restores ordinary output flags.  A
-        # fail-open release is not ordinary: until the next identified response
-        # starts, id-less frames can still belong to the abandoned lifecycle.
-        # Re-arm both gates after the reset so text/audio/transcript paths and
-        # tool execution share the same quarantine boundary.
-        self._interrupted = True
-        self._idless_quarantine = True
         self._reset_per_turn_output_state()
-        if not self._has_server_vad and self.on_sid_rotate is not None:
-            self._sid_rotation_required_before_dispatch = True
         # Same order the terminal path uses: repetition history first, then
         # the fallback transcript flush.
         try:
@@ -1734,12 +1535,10 @@ class _TransportMixin:
                 "transcript could be sent; dropping it rather than speaking "
                 "it as the new turn's"
             )
-        rotation_completed = await self._notify_turn_finished(
+        await self._notify_turn_finished(
             step_timeout=_STUCK_RELEASE_STEP_TIMEOUT,
             still_ours=_still_ours,
         )
-        if rotation_completed:
-            self._sid_rotation_required_before_dispatch = False
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
@@ -1751,10 +1550,14 @@ class _TransportMixin:
         # Mark as interrupted to suppress any remaining output until next response
         self._interrupted = True
 
-        # 1. Cancel the arbiter's exact live lifecycle. This deliberately has
-        # no response-id truthiness guard: numeric id 0 and an unannounced
-        # id-less response are both cancellable identities in the arbiter.
-        await self.cancel_response()
+        # 1. Cancel the current response
+        # Presence, not truthiness — the third site in this file where a
+        # numeric id of 0 would have read as "no response". Here the cost is
+        # the worst of the three: the barge-in would mark the turn interrupted
+        # and never send response.cancel, so generation keeps running and the
+        # arbiter lane stays held until the provider finishes on its own.
+        if self._current_response_id is not None:
+            await self.cancel_response()
 
         self._is_responding = False
         # Keep the cancelled response identity until its terminal event arrives.
@@ -1775,20 +1578,12 @@ class _TransportMixin:
             await self._handle_messages_gemini()
             return
 
-        ws = self.ws
-        connection_generation = self._client_connection_generation
         try:
-            if not ws:
+            if not self.ws:
                 logger.error("WebSocket connection is not established")
                 return
 
-            async for message in ws:
-                if (
-                    self.ws is not ws
-                    or connection_generation != self._client_connection_generation
-                ):
-                    logger.info("discarding event stream from retired connection")
-                    return
+            async for message in self.ws:
                 event = json.loads(message)
                 event_type = event.get("type")
 
@@ -1846,93 +1641,79 @@ class _TransportMixin:
                         await self.close()
                     continue
 
-                terminal_result = None
-                if (
-                    isinstance(event_type, str)
-                    and event_type.startswith("response.")
-                    and event_type not in {"response.created", "response.done"}
-                    and not self._response_arbiter.response_created_expected
-                    and not self._is_responding
-                ):
-                    self._activate_unannounced_response_state()
-                if event_type == "response.done":
-                    self._host_turn_release_ready.clear()
-                    terminal_result = self._response_arbiter.notify_response_terminal(
-                        event
-                    )
-                    # Partial argument streams cannot cross their own response
-                    # lifecycle boundary. Remove only the matching response's
-                    # fragments: an unrelated orphan terminal must not erase a
-                    # live owner's tool call that is still streaming.
-                    for call_id, slot in list(self._inflight_tool_args.items()):
-                        slot_response_id = slot.get("response_id")
-                        if slot_response_id is not None:
-                            slot_response_id = str(slot_response_id) or None
-                        if slot_response_id == terminal_result.response_id:
-                            self._inflight_tool_args.pop(call_id, None)
-                    terminal_is_current = (
-                        terminal_result.generation == self._current_response_generation
-                        if self._current_response_generation is not None
-                        else (
-                            terminal_result.kind is ResponseTerminalKind.OWNER
-                            or (
-                                terminal_result.kind
-                                is ResponseTerminalKind.UNOWNED_SERVER
-                                and not self._response_arbiter.response_created_expected
-                                and self._is_responding
-                            )
-                        )
-                    )
-                    if not terminal_is_current:
-                        self._response_done_total += 1
-                        self._last_response_done_time = time.time()
-                        self._record_response_usage(event.get("response"))
-                        logger.info(
-                            "Dropping non-current response.done id=%s kind=%s "
-                            "generation=%s current_generation=%s",
-                            terminal_result.response_id,
-                            terminal_result.kind.name,
-                            terminal_result.generation,
-                            self._current_response_generation,
-                        )
-                        self._host_turn_release_ready.set()
-                        continue
-
                 # A cancelled response can still emit buffered events after a
                 # replacement response has become current.  Providers that
                 # include response identity let us reject those late events
                 # without changing the legacy behaviour of id-less proxies.
-                if event_type not in {"response.created", "response.done"}:
+                if event_type != "response.created":
+                    # Presence, not truthiness, on both reads — the same
+                    # correction the arbiter's `_event_response_id` gets in this
+                    # PR, and useless without it. A provider numbering from zero
+                    # would have response `0`'s late deltas, tool events and
+                    # terminal slip past this filter once a successor is
+                    # current, and a late terminal would then run the ordinary
+                    # host finalization against that successor.
                     event_response_id = _response_id_text(event.get("response_id"))
-                    tracked_response_id = _response_id_text(
-                        self._current_response_id
-                    )
+                    if event_response_id is None and event_type == "response.done":
+                        response = event.get("response")
+                        if isinstance(response, dict):
+                            event_response_id = _response_id_text(response.get("id"))
+                    tracked = self._current_response_id
+                    tracked_text = None if tracked is None else str(tracked)
                     if (
                         event_response_id is not None
-                        and event_response_id != tracked_response_id
+                        and event_response_id != tracked_text
+                        # ...unless this connection has never announced a
+                        # response at all. A provider that omits
+                        # response.created never writes _current_response_id,
+                        # so its id-bearing terminal looks stale against a
+                        # permanently-None tracked id and the whole turn
+                        # finalization below is skipped: no transcript flush,
+                        # no on_response_done, and — on exactly those routes,
+                        # which have no server VAD — no speech-id rotation,
+                        # which is what silences every turn after the first.
+                        #
+                        # Same reasoning as the arbiter's: a terminal for an id
+                        # this connection has never seen announced cannot be
+                        # another response's, because there is no other
+                        # response to have announced it. The latch is per
+                        # connection and set only by response.created, so on
+                        # any announcing provider this condition is false from
+                        # its first turn onward and the stale filter behaves
+                        # exactly as before.
+                        and self._announces_responses
                     ):
-                        implicit_generation = (
-                            self._response_arbiter.notify_response_activity(
-                                event_response_id
-                            )
+                        if event_type == "response.done":
+                            # A terminal event must reach the arbiter even when
+                            # a newer response has become current (crossed
+                            # response.created events): the arbiter tracks every
+                            # live server response id, and an undelivered
+                            # terminal would hold the lane closed until its
+                            # staleness timer. The arbiter attributes terminals
+                            # by response id, so a mismatched id releases only
+                            # that response and never completes the current
+                            # owner. Content of the stale response stays
+                            # filtered below.
+                            self._response_arbiter.notify_response_terminal(event)
+                            # The tokens were spent whoever the turn belonged
+                            # to, and this is the ONLY path a fail-open
+                            # released turn's terminal can take: the release
+                            # clears _current_response_id on purpose, so its
+                            # real terminal always lands here. Quarantining
+                            # the host finalization must not also quarantine
+                            # the accounting, or every recovered turn vanishes
+                            # from usage stats even though the provider sent
+                            # exact counts. Counted here and only here — the
+                            # branch continues, so nothing double-counts.
+                            self._response_done_total += 1
+                            self._record_response_usage(event.get("response"))
+                        logger.info(
+                            "Dropping stale response event type=%s response_id=%s current_response_id=%s",
+                            event_type,
+                            event_response_id,
+                            self._current_response_id,
                         )
-                        if implicit_generation is not None:
-                            self._activate_response_state(
-                                str(event_response_id),
-                                implicit_generation,
-                                self._response_arbiter.suppress_output_for_generation(
-                                    implicit_generation
-                                ),
-                            )
-                        else:
-                            logger.info(
-                                "Dropping stale response event type=%s "
-                                "response_id=%s current_response_id=%s",
-                                event_type,
-                                event_response_id,
-                                self._current_response_id,
-                            )
-                            continue
+                        continue
                 # ── Tool calling events ────────────────────────────
                 # Three providers, three flavours of the same idea:
                 #   - OpenAI Realtime (gpt): the canonical event is the
@@ -1949,44 +1730,20 @@ class _TransportMixin:
                 # All three return results via conversation.item.create
                 # of type function_call_output + response.create, handled
                 # by ``_send_tool_result_openai_realtime``.
-                event_is_idless_quarantined = bool(
-                    self._idless_quarantine
-                    and isinstance(event_type, str)
-                    and event_type.startswith("response.")
-                    and event_type not in {"response.created", "response.done"}
-                    and not event.get("response_id")
-                )
                 if event_type == "response.function_call_arguments.delta":
-                    if event_is_idless_quarantined:
-                        continue
                     call_id = event.get("call_id") or ""
                     if call_id:
-                        if (
-                            call_id not in self._inflight_tool_args
-                            and len(self._inflight_tool_args)
-                            >= _INFLIGHT_TOOL_ARGUMENT_LIMIT
-                        ):
-                            oldest_call_id = next(iter(self._inflight_tool_args))
-                            self._inflight_tool_args.pop(oldest_call_id, None)
-                            logger.warning(
-                                "evicted incomplete tool arguments for call_id=%s "
-                                "after reaching the per-connection bound",
-                                oldest_call_id,
-                            )
                         slot = self._inflight_tool_args.setdefault(call_id, {
                             "name": event.get("name") or "",
                             "arguments": "",
-                            "response_id": event.get("response_id"),
                         })
                         if event.get("name"):
                             slot["name"] = event["name"]
-                        if event.get("response_id") is not None:
-                            slot["response_id"] = event.get("response_id")
                         delta = event.get("delta") or ""
                         if delta:
                             slot["arguments"] += delta
                 elif event_type == "response.function_call_arguments.done":
-                    if event_is_idless_quarantined:
+                    if self._idless_quarantine and not event.get("response_id"):
                         # A fail-open release abandoned a turn, and this event
                         # names no response — so it cannot be told apart from
                         # the successor's. Content that leaks is a wrong
@@ -2040,25 +1797,12 @@ class _TransportMixin:
                             output={"error": "no on_tool_call handler"},
                             is_error=True, error_message="no on_tool_call handler",
                         )
-                        generation = self._client_connection_generation
-                        self._fire_connection_task(
-                            self._send_tool_result_openai_realtime(
-                                result,
-                                connection_generation=generation,
-                            )
-                        )
+                        self._fire_task(self._send_tool_result_openai_realtime(result))
                     else:
                         # Execute and reply asynchronously — don't block the
                         # message loop. handle_messages stays responsive to
                         # other events while the tool runs.
-                        generation = self._client_connection_generation
-
-                        async def _run_tool(
-                            _name=name,
-                            _args=raw_args,
-                            _cid=call_id,
-                            _generation=generation,
-                        ):
+                        async def _run_tool(_name=name, _args=raw_args, _cid=call_id):
                             call = ToolCall(
                                 name=_name,
                                 arguments=parse_arguments_json(_args),
@@ -2066,43 +1810,56 @@ class _TransportMixin:
                                 raw_arguments=_args,
                             )
                             result = await self._execute_tool_call(call)
-                            await self._send_tool_result_openai_realtime(
-                                result,
-                                connection_generation=_generation,
-                            )
-                        self._fire_connection_task(_run_tool())
+                            await self._send_tool_result_openai_realtime(result)
+                        self._fire_task(_run_tool())
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
-                    assert terminal_result is not None
-                    terminal_epoch = self._current_turn_epoch
-                    if not self._has_server_vad and self.on_sid_rotate is not None:
-                        self._sid_rotation_required_before_dispatch = True
-                    await self._finalize_current_response(event, terminal_epoch)
+                    self._response_arbiter.notify_response_terminal(event)
+                    self._response_done_total += 1
+                    self._last_response_done_time = time.time()
+                    # 解析实时 API 返回的 token 用量
+                    self._record_response_usage(event.get("response"))
+                    self._clear_turn_response_state()
+                    # 响应完成，检测重复度
+                    await self._record_response_repetition(
+                        self._take_response_transcript()
+                    )
+                    # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
+                    # response.audio_transcript.delta、从不发 response.audio_transcript.done，
+                    # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
+                    # 但带工具调用的一轮里，工具调用那一轮的 response.done 会把
+                    # _print_input_transcript 置 False（见下方），紧随其后的真回复转录便走
+                    # buffer 分支累积进 _output_transcript_buffer，没有 transcript.done 来 flush，
+                    # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
+                    # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
+                    # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
+                    await self._flush_pending_output_transcript()
+                    self._reset_per_turn_output_state()
+                    await self._notify_turn_finished()
                 elif event_type == "response.created":
-                    created = self._response_arbiter.notify_response_created(event)
+                    expose_response = self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     self._announces_responses = True
-                    if created.kind is ResponseCreatedKind.RETIRED:
-                        logger.info(
-                            "Ignoring retired response.created id=%s generation=%s",
-                            created.response_id,
-                            created.generation,
-                        )
+                    if not expose_response:
                         continue
-                    assert created.generation is not None
-                    self._activate_response_state(
-                        created.response_id,
-                        created.generation,
-                        created.suppress_output,
-                    )
+                    self._current_response_id = event.get("response", {}).get("id")
+                    self._is_responding = True
+                    self._turn_epoch += 1
+                    self._current_turn_epoch = self._turn_epoch
+                    self._interrupted = False  # Clear interruption flag on new response
                     # Closes the id-less quarantine a fail-open release opened.
                     # Safe as the sole exit: a release only happens when the
                     # abandoned response HAD an id, ids are written only here,
                     # and this socket is consumed by one ordered ``async for`` —
                     # so a successor's announcement always precedes its own
                     # id-less events and none of them are ever suppressed.
+                    self._idless_quarantine = False
+                    self._is_first_text_chunk = self._is_first_transcript_chunk = True
+                    # 清空转录 buffer，防止累积旧内容
+                    self._output_transcript_buffer = ""
+                    self._current_response_transcript = ""  # 重置当前回复转录
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
                 elif event_type == "input_audio_buffer.committed":
@@ -2186,11 +1943,7 @@ class _TransportMixin:
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
 
-                if (
-                    not self._skip_until_next_response
-                    and not self._interrupted
-                    and not event_is_idless_quarantined
-                ):
+                if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
                             if "glm" not in self._model_lower:
@@ -2258,46 +2011,21 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
-            if (
-                self.ws is not ws
-                or connection_generation != self._client_connection_generation
-            ):
-                return
             await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
-            if (
-                self.ws is not ws
-                or connection_generation != self._client_connection_generation
-            ):
-                return
             await self._close_failed_transport("realtime connection closed")
             logger.info("Connection closed as expected")
         except websockets.exceptions.ConnectionClosedError as e:
-            if (
-                self.ws is not ws
-                or connection_generation != self._client_connection_generation
-            ):
-                return
             error_msg = str(e)
             await self._close_failed_transport(error_msg)
             logger.error(f"Connection closed with error: {error_msg}")
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
-            if (
-                self.ws is not ws
-                or connection_generation != self._client_connection_generation
-            ):
-                return
             await self._close_failed_transport("realtime connection timeout")
             if self.on_connection_error:
                 await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
         except Exception as e:
-            if (
-                self.ws is not ws
-                or connection_generation != self._client_connection_generation
-            ):
-                return
             await self._close_failed_transport(
                 f"realtime message handling failed: {type(e).__name__}"
             )
@@ -2322,9 +2050,6 @@ class _TransportMixin:
         """Detach, when needed, and physically close a failed raw WebSocket."""
 
         self._fatal_error_occurred = True
-        if hasattr(self, "_response_arbiter"):
-            await self._begin_connection_generation()
-            self._reset_connection_response_state()
         if ws is _ATTACHED_TRANSPORT:
             ws, self.ws = self.ws, None
         if ws is not None:
@@ -2340,8 +2065,6 @@ class _TransportMixin:
     async def close(self) -> None:
         """Close the WebSocket connection."""
         ws, self.ws = self.ws, None
-        await self._begin_connection_generation()
-        self._reset_connection_response_state()
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
             await response_arbiter.shutdown("realtime client closed")

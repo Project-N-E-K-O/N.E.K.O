@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import asyncio
-import itertools
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,7 +18,6 @@ from main_logic.omni_realtime_client import _transport as transport_module
 
 
 DUMMY_IMAGE_B64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP/Z"
-_RESPONSE_IDS = itertools.count(1)
 
 
 def _make_client(*, api_type: str = "free", model: str = "free-model"):
@@ -79,14 +77,13 @@ async def _prompt_and_complete(client, *args, **kwargs):
         await asyncio.sleep(0)
     else:
         raise AssertionError("prompt_ephemeral did not send response.create")
-    response_id = f"resp-proactive-{next(_RESPONSE_IDS)}"
     client._response_arbiter.notify_response_created(
-        {"type": "response.created", "response": {"id": response_id}}
+        {"type": "response.created", "response": {"id": "resp-proactive"}}
     )
     client._response_arbiter.notify_response_terminal(
         {
             "type": "response.done",
-            "response": {"id": response_id, "status": "completed"},
+            "response": {"id": "resp-proactive", "status": "completed"},
         }
     )
     return await task
@@ -535,7 +532,6 @@ async def test_prompt_rechecks_arbiter_after_visual_await():
     )
     assert client._proactive_image_consumed is False
     client.on_sid_rotate.assert_awaited_once_with()
-    await asyncio.wait_for(earlier.sent, 0.2)
     client._response_arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-user"}}
     )

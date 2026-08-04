@@ -15,16 +15,12 @@ import itertools
 import logging
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum, auto
 from typing import Any, Awaitable, Callable, Iterator
 
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
 OnStuckRelease = Callable[[str, "str | None"], Awaitable[None]]
-BeforeOwnerDispatch = Callable[[], Awaitable[None]]
-OnLifetimeExpired = Callable[[int], None]
-OnLifetimeAdopted = Callable[[int, bool], None]
 logger = logging.getLogger(__name__)
 
 # Server-initiated response ids are remembered so their terminal events are
@@ -34,7 +30,6 @@ logger = logging.getLogger(__name__)
 # id matters solely while its response is still live, so a small bound
 # prevents unbounded growth on long sessions.
 _SERVER_RESPONSE_ID_LIMIT = 32
-_IDLESS_SERVER_RESPONSE_LIMIT = 32
 # Bound on the "have I ever seen this id" set. Larger than the live-set bound
 # because its entries outlive the responses they name — it exists precisely to
 # still recognise an id after the live set has given up on it.
@@ -78,60 +73,12 @@ _WAIT_MARGIN_REPORT_FRACTION = 0.5
 # so an unbounded host callback would stall every later dispatch; short
 # because the work it fronts is local bookkeeping plus one frontend send.
 _STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
-# A terminal can overtake response.created on a broken/reordering proxy. Keep
-# the retired owner's announcement window in front of the next generation for
-# a bounded interval, so a late created frame cannot be credited to the next
-# owner. The ticket's own started allowance is the honest correlation window;
-# this ceiling keeps a caller-supplied extreme timeout from stalling dispatch
-# indefinitely after the response has already terminated.
-_RETIRED_CREATED_WINDOW_MAX = 5.0
-# Every entry represents one causal reason to expect a future
-# ``response.created``.  Keeping the set bounded prevents a broken provider
-# from growing correlation state forever; expiry is the normal convergence
-# path, while reaching the hard ceiling means attribution is no longer safe.
-_CREATED_OBLIGATION_LIMIT = 32
 
 
 @dataclass(frozen=True, slots=True)
 class ResponseDispatchResult:
     item_acknowledged: bool
     context_persistence_uncertain: bool
-
-
-class ResponseCreatedKind(Enum):
-    """How the arbiter attributed one ``response.created`` frame."""
-
-    OWNER = auto()
-    SERVER_VAD = auto()
-    UNOWNED_SERVER = auto()
-    RETIRED = auto()
-
-
-@dataclass(frozen=True, slots=True)
-class ResponseCreatedResult:
-    kind: ResponseCreatedKind
-    response_id: str | None
-    generation: int | None
-    suppress_output: bool = False
-
-    @property
-    def is_live(self) -> bool:
-        return self.kind is not ResponseCreatedKind.RETIRED
-
-
-class ResponseTerminalKind(Enum):
-    """How the arbiter attributed one terminal response frame."""
-
-    OWNER = auto()
-    UNOWNED_SERVER = auto()
-    STALE = auto()
-
-
-@dataclass(frozen=True, slots=True)
-class ResponseTerminalResult:
-    kind: ResponseTerminalKind
-    response_id: str | None
-    generation: int | None
 
 
 @dataclass(slots=True)
@@ -191,55 +138,6 @@ class _AdoptionEvidence:
         self.item_created_serial = item_created_serial
 
 
-@dataclass(slots=True)
-class _ResponseLifetime:
-    """One server response from create/announcement through terminal.
-
-    ``response_id`` is optional identity, not optional existence. An id-less
-    response therefore occupies the same collection, gets the same deadline,
-    and participates in the same terminal matching as an id-bearing response.
-    ``owner`` is the client request whose create opened the lifecycle, or
-    ``None`` for a server-initiated response.
-    """
-
-    generation: int
-    owner: "_QueuedResponse | None"
-    response_id: str | None = None
-    announced_at: float | None = None
-    # Output can need suppression before an announcement has enough evidence
-    # to adopt an owner. Keep that provisional policy on the lifetime itself
-    # so identity upgrades cannot briefly expose a skipped response.
-    suppress_output: bool = False
-
-
-@dataclass(slots=True)
-class _CreatedObligation:
-    """One generation's still-unpaid ``response.created`` correlation debt.
-
-    A terminal may overtake the created frame.  In that case its identity is
-    retained on the same obligation, so a later created can be paired with the
-    already-ended generation without consuming an unrelated VAD/owner debt.
-    """
-
-    generation: int
-    expires_at: float
-    source: str
-    created_is_live: bool = False
-    terminal_response_id: str | None = None
-    terminal_seen: bool = False
-    terminal_status: str | None = None
-    pending: bool = False
-    suppress_output: bool = False
-
-
-@dataclass(slots=True)
-class _IdlessRetirement:
-    """Bounded quarantine for ambiguous duplicate ID-less frames."""
-
-    generation: int
-    expires_at: float
-
-
 @dataclass(order=True, slots=True)
 class _QueuedResponse:
     priority: int
@@ -259,12 +157,11 @@ class _QueuedResponse:
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal_error: BaseException | None = field(default=None, compare=False)
     response_id: str | None = field(default=None, compare=False)
-    lifecycle: _ResponseLifetime | None = field(default=None, compare=False)
+    cancel_send_task: asyncio.Task[None] | None = field(default=None, compare=False)
     event_ids: frozenset[str] = field(default_factory=frozenset, compare=False)
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
-    pre_response_send_started: bool = field(default=False, compare=False)
     # Evidence this request collected for itself, so both the terminal path
     # and the started-timeout path judge an adoption from the same facts.
     adoption: _AdoptionEvidence = field(
@@ -284,7 +181,6 @@ class _QueuedResponse:
     # callers can be waiting on the same stuck request, and each of their
     # timeouts fires independently; only the first escalation is meaningful.
     escalated: bool = field(default=False, compare=False)
-    suppress_output: bool = field(default=False, compare=False)
 
 
 class RealtimeResponseArbiter:
@@ -303,10 +199,6 @@ class RealtimeResponseArbiter:
         abort_transport: AbortTransport | None = None,
         fail_open: bool = False,
         on_stuck_release: OnStuckRelease | None = None,
-        response_created_expected: bool = True,
-        before_owner_dispatch: BeforeOwnerDispatch | None = None,
-        on_lifetime_expired: OnLifetimeExpired | None = None,
-        on_lifetime_adopted: OnLifetimeAdopted | None = None,
     ) -> None:
         self._send_event = send_event
         self._abort_transport = abort_transport
@@ -317,14 +209,6 @@ class RealtimeResponseArbiter:
         # Notified that a turn ended, so the host can run the same end-of-turn
         # work its terminal event drives. Dual to ``abort_transport``.
         self._on_stuck_release = on_stuck_release
-        # This is a protocol capability, not a connection-wide observation.
-        # Known Gemini-proxy routes deliberately omit response.created on every
-        # turn; announcing protocols may still omit a single frame, in which
-        # case terminal-before-created must leave a bounded retired window.
-        self._response_created_expected = response_created_expected
-        self._before_owner_dispatch = before_owner_dispatch
-        self._on_lifetime_expired = on_lifetime_expired
-        self._on_lifetime_adopted = on_lifetime_adopted
         # True while the queue consumer is suspended inside a transport
         # write; only the worker's own sends set it.
         self._worker_send_in_flight = False
@@ -344,7 +228,6 @@ class RealtimeResponseArbiter:
         # serial to have advanced exactly once, so two announcements in the
         # window are ambiguous and neither is adoptable.
         self._adoptable_announcement: str | None = None
-        self._adoptable_generation: int | None = None
         self._adoptable_serial = 0
         # Set when the adoptable announcement's own terminal arrives
         # before anyone claimed it. Adoption stays deferred to the started
@@ -367,51 +250,35 @@ class RealtimeResponseArbiter:
         self._worker: asyncio.Task[None] | None = None
         self._current: _QueuedResponse | None = None
         self._response_owner: _QueuedResponse | None = None
-        # All response identities share one lifecycle collection. Owned
-        # entries are installed immediately before response.create is sent;
-        # unowned entries are installed by response.created. An id-less entry
-        # is still a concrete lifetime and therefore cannot disappear merely
-        # because an unrelated id-bearing owner terminates.
-        self._response_lifetimes: list[_ResponseLifetime] = []
-        self._lifecycle_generation = itertools.count(1)
-        # A terminal that arrives before its owner's created frame retires the
-        # owner but leaves a bounded announcement window. The worker keeps the
-        # lane closed behind this queue, so a late frame is consumed by the
-        # generation that opened it instead of whichever owner happens to be
-        # current later.
-        self._retired_created_windows: list[_CreatedObligation] = []
-        self._idless_retirements: list[_IdlessRetirement] = []
+        self._server_response_active = False
         # An ended server-VAD utterance identifies an automatic response that
         # may race an explicit owner's response.create.  speech_started alone
         # is not sufficient: an already-sent explicit create can still emit
         # the next response.created while the user is only beginning to speak.
         self._server_vad_response_pending = False
-        self._server_vad_pending_generation: int | None = None
         self._server_vad_pending_handle: asyncio.TimerHandle | None = None
-        # Staleness bound for unowned lifetimes. Mirrors response_done_timeout
+        # Bounded insertion-ordered map of live server-initiated response ids
+        # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
+        # _server_response_max_age. Created adds, terminal removes.
+        self._server_response_ids: dict[str, float] = {}
+        self._idless_server_response_at: float | None = None
+        # An id-less terminal may retire an owner before that response's
+        # delayed response.created reaches us. Hold the lane for one bounded
+        # announcement so the frame cannot be credited to a successor.
+        self._retired_created_deadline: float | None = None
+        # Staleness bound for the map above. Mirrors the response_done_timeout
         # semantics applied to owned responses: starts at the enqueue default
         # and only ever ratchets up, so a server response is never presumed
         # dead on a shorter clock than any owned response is allowed to run.
         self._server_response_max_age = _DEFAULT_RESPONSE_DONE_TIMEOUT
         self._stale_release_handle: asyncio.TimerHandle | None = None
-        # Every in-flight ``response.cancel`` send, including caller-initiated
-        # and timeout paths. Referenced here so it cannot be garbage-collected
+        # Best-effort ``response.cancel`` sends spawned from the synchronous
+        # notify_error path; referenced here so they are not garbage-collected
         # mid-flight, and cancelled on connection loss so a task suspended
         # inside ``send_event`` (e.g. on the transport send semaphore) cannot
         # resume after a reconnect and cancel an unrelated response on the
         # replacement connection.
         self._cancel_send_tasks: set[asyncio.Task[None]] = set()
-        # Cancelled tasks remain strongly referenced here until their
-        # cancellation has actually unwound. They are no longer active sends,
-        # but shutdown still drains them instead of losing ownership early.
-        self._retiring_cancel_send_tasks: set[asyncio.Task[None]] = set()
-        self._protocol_abort_tasks: set[asyncio.Task[None]] = set()
-        # Lifecycle-scoped index for the tasks above. Connection loss retires
-        # every task, while an ordinary terminal retires only cancels aimed at
-        # that exact lifecycle generation.
-        self._cancel_send_tasks_by_lifecycle: dict[
-            int, set[asyncio.Task[None]]
-        ] = {}
         # Monotonic counter bumped on every connection loss. A cancel-send
         # task captures it at creation and re-checks it before sending, so a
         # task that somehow outlives its cancellation never fires into a
@@ -427,45 +294,12 @@ class RealtimeResponseArbiter:
     def current_source(self) -> str | None:
         return self._current.source if self._current is not None else None
 
-    def set_response_created_expected(self, expected: bool) -> None:
-        """Configure the provider's response announcement capability."""
-
-        self._response_created_expected = bool(expected)
-
-    @property
-    def response_created_expected(self) -> bool:
-        return self._response_created_expected
-
-    def suppress_output_for_generation(self, generation: int | None) -> bool:
-        if generation is None:
-            owner = self._response_owner
-            if owner is not None:
-                return owner.suppress_output
-            current = self._current
-            return bool(
-                current is not None
-                and current.pre_response_send_started
-                and current.suppress_output
-            )
-        return any(
-            lifetime.generation == generation
-            and (
-                lifetime.suppress_output
-                or (
-                    lifetime.owner is not None
-                    and lifetime.owner.suppress_output
-                )
-            )
-            for lifetime in self._response_lifetimes
-        )
-
     @property
     def is_busy(self) -> bool:
         return (
             self._current is not None
             or self._response_owner is not None
-            or bool(self._response_lifetimes)
-            or bool(self._retired_created_windows)
+            or self._server_response_active
             or self._server_vad_response_pending
             or not self._queue.empty()
         )
@@ -484,7 +318,6 @@ class RealtimeResponseArbiter:
         response_started_timeout: float = 5.0,
         response_done_timeout: float = _DEFAULT_RESPONSE_DONE_TIMEOUT,
         cancel_timeout: float = 3.0,
-        suppress_output: bool = False,
     ) -> ResponseTicket:
         loop = asyncio.get_running_loop()
         ticket = ResponseTicket(
@@ -538,7 +371,6 @@ class RealtimeResponseArbiter:
             ticket=ticket,
             event_ids=frozenset(ids),
             completed=loop.create_future(),
-            suppress_output=suppress_output,
         )
         self._queued_by_ticket[id(ticket)] = queued
         await self._queue.put(queued)
@@ -556,44 +388,14 @@ class RealtimeResponseArbiter:
         self._dispatch_allowed.set()
         self._ensure_worker()
 
-    async def cancel_current(
-        self,
-        timeout: float = 3.0,
-        *,
-        wait: bool = True,
-    ) -> None:
+    async def cancel_current(self, timeout: float = 3.0) -> None:
         """Cancel only the active/pre-created request, never drain the queue."""
 
         current = self._current
         if current is None:
-            candidates = {
-                lifetime.generation
-                for lifetime in self._response_lifetimes
-                if lifetime.announced_at is not None
-            }
-            candidates.update(
-                obligation.generation
-                for obligation in self._retired_created_windows
-                if obligation.created_is_live
-            )
-            if not candidates:
+            if not self._server_response_active:
                 return
-            if len(candidates) != 1:
-                # response.cancel carries no response id.  Guessing among two
-                # live generations can cancel a different user's turn. Refuse
-                # the wire send; a waiting caller's ordinary timeout then runs
-                # the configured fail-open/fail-close policy without changing
-                # those invariants.
-                logger.warning(
-                    "refusing ambiguous response.cancel across %d live "
-                    "server responses",
-                    len(candidates),
-                )
-                return
-            generation = next(iter(candidates))
-            await self._send_cancel_for_lifetime(generation)
-            if not wait:
-                return
+            await self._send_event({"type": "response.cancel"})
             try:
                 with self._report_wait_margin("unowned cancel", timeout):
                     await self.wait_until_idle(timeout)
@@ -612,11 +414,7 @@ class RealtimeResponseArbiter:
                 RuntimeError("response dispatch interrupted before response.create"),
             )
         else:
-            lifetime = current.lifecycle
-            if lifetime is not None:
-                await self._send_cancel_for_lifetime(lifetime.generation)
-        if not wait:
-            return
+            await self._send_event({"type": "response.cancel"})
         assert current.completed is not None
         try:
             # The barge-in bound. Every user interruption of a speaking turn
@@ -662,9 +460,7 @@ class RealtimeResponseArbiter:
             and not ticket.sent.cancelled()
             and ticket.sent.exception() is None
         ):
-            lifetime = queued.lifecycle
-            if lifetime is not None:
-                await self._send_cancel_for_lifetime(lifetime.generation)
+            await self._send_event({"type": "response.cancel"})
         if not wait:
             return True
         assert queued.completed is not None
@@ -692,11 +488,7 @@ class RealtimeResponseArbiter:
     async def shutdown(self, reason: str = "response arbiter shut down") -> None:
         """Fail pending work and stop the queue consumer."""
 
-        stale = list(
-            self._cancel_send_tasks
-            | self._retiring_cancel_send_tasks
-            | self._protocol_abort_tasks
-        )
+        stale = list(self._cancel_send_tasks)
         self._mark_connection_lost(reason, fail_current_tickets=True)
         worker, self._worker = self._worker, None
         if worker is not None and worker is not asyncio.current_task():
@@ -755,182 +547,35 @@ class RealtimeResponseArbiter:
         text = str(response_id)
         return text or None
 
-    @property
-    def _server_response_ids(self) -> dict[str, float]:
-        """Compatibility view of live, unowned id-bearing lifetimes."""
-
-        return {
-            lifetime.response_id: lifetime.announced_at
-            for lifetime in self._response_lifetimes
-            if lifetime.owner is None
-            and lifetime.response_id is not None
-            and lifetime.announced_at is not None
-        }
-
-    @property
-    def _server_response_active(self) -> bool:
-        """Whether the server has an announced response still alive."""
-
-        return self._server_vad_response_pending or any(
-            lifetime.announced_at is not None for lifetime in self._response_lifetimes
-        )
-
-    def _new_lifetime(
-        self,
-        *,
-        owner: _QueuedResponse | None,
-        response_id: str | None = None,
-        announced: bool,
-        generation: int | None = None,
-        suppress_output: bool = False,
-    ) -> _ResponseLifetime:
-        lifetime = _ResponseLifetime(
-            generation=(
-                next(self._lifecycle_generation)
-                if generation is None
-                else generation
-            ),
-            owner=owner,
-            response_id=response_id,
-            announced_at=(asyncio.get_running_loop().time() if announced else None),
-            suppress_output=(
-                owner.suppress_output if owner is not None else suppress_output
-            ),
-        )
-        self._response_lifetimes.append(lifetime)
-        if owner is not None:
-            owner.lifecycle = lifetime
-        return lifetime
-
-    def _remove_lifetime(self, lifetime: _ResponseLifetime | None) -> None:
-        if lifetime is None:
-            return
-        with contextlib.suppress(ValueError):
-            self._response_lifetimes.remove(lifetime)
-        self._retire_cancel_sends_for_generation(lifetime.generation)
-
-    def _remember_server_response(
-        self,
-        response_id: str | None,
-        *,
-        generation: int | None = None,
-        suppress_output: bool = False,
-    ) -> _ResponseLifetime:
-        if response_id is not None:
-            # A duplicate announcement refreshes the same unowned identity,
-            # matching the previous insertion-ordered map semantics.
-            for lifetime in list(self._response_lifetimes):
-                if lifetime.owner is None and lifetime.response_id == response_id:
-                    self._remove_lifetime(lifetime)
-        idless_unowned_count = sum(
-            lifetime.owner is None and lifetime.response_id is None
-            for lifetime in self._response_lifetimes
-        )
-        if (
-            response_id is None
-            and idless_unowned_count >= _IDLESS_SERVER_RESPONSE_LIMIT
-        ):
-            # Evicting a live id-less entry would silently open the lane under
-            # a response we can no longer name. Refuse further attribution so
-            # the receive loop fails the connection closed instead.
-            reason = "too many live unowned server responses"
-            self._schedule_protocol_abort(reason)
-            raise ConnectionError(reason)
-        lifetime = self._new_lifetime(
-            owner=None,
-            response_id=response_id,
-            announced=True,
-            generation=generation,
-            suppress_output=suppress_output,
-        )
-        id_bearing = [
-            candidate
-            for candidate in self._response_lifetimes
-            if candidate.owner is None and candidate.response_id is not None
-        ]
-        while len(id_bearing) > _SERVER_RESPONSE_ID_LIMIT:
-            self._remove_lifetime(id_bearing.pop(0))
+    def _remember_server_response_id(self, response_id: str) -> None:
+        self._server_response_ids.pop(response_id, None)
+        self._server_response_ids[response_id] = asyncio.get_running_loop().time()
+        while len(self._server_response_ids) > _SERVER_RESPONSE_ID_LIMIT:
+            del self._server_response_ids[next(iter(self._server_response_ids))]
         self._arm_stale_release_timer()
-        return lifetime
 
-    def _match_live_response(self, response_id: str | None) -> _ResponseLifetime | None:
-        for lifetime in self._response_lifetimes:
-            if lifetime.announced_at is None:
-                continue
-            if lifetime.response_id == response_id:
-                return lifetime
-        return None
-
-    def _match_terminal_lifetime(
-        self,
-        response_id: str | None,
-        *,
-        allow_identity_upgrade: bool = True,
-    ) -> _ResponseLifetime | None:
-        """Match a terminal while allowing one unambiguous identity upgrade."""
-
-        announced = [
-            lifetime
-            for lifetime in self._response_lifetimes
-            if lifetime.announced_at is not None
-        ]
-        if response_id is None:
-            return (
-                announced[0]
-                if allow_identity_upgrade and len(announced) == 1
-                else None
-            )
-
-        exact = [
-            lifetime
-            for lifetime in announced
-            if lifetime.response_id == response_id
-        ]
-        if exact:
-            return exact[0]
-        if not allow_identity_upgrade:
-            return None
-        if response_id in self._seen_response_ids:
-            return None
-        idless = [
-            lifetime for lifetime in announced if lifetime.response_id is None
-        ]
-        if len(idless) != 1:
-            return None
-        lifetime = idless[0]
-        lifetime.response_id = response_id
-        if lifetime.owner is not None:
-            lifetime.owner.response_id = response_id
-        self._remember_seen_response_id(response_id)
-        return lifetime
-
-    def _has_unowned_response(self) -> bool:
-        return any(
-            lifetime.owner is None and lifetime.announced_at is not None
-            for lifetime in self._response_lifetimes
-        )
-
-    def _generation_is_live(self, generation: int) -> bool:
-        return (
-            any(
-                lifetime.generation == generation
-                for lifetime in self._response_lifetimes
-            )
-            or self._server_vad_pending_generation == generation
-            or any(
-                window.generation == generation and window.created_is_live
-                for window in self._retired_created_windows
-            )
-        )
+    def _remember_idless_server_response(self) -> None:
+        self._idless_server_response_at = asyncio.get_running_loop().time()
+        self._arm_stale_release_timer()
 
     def _idless_server_response_live(self) -> bool:
-        self._prune_stale_lifetimes()
-        return any(
-            lifetime.owner is None
-            and lifetime.response_id is None
-            and lifetime.announced_at is not None
-            for lifetime in self._response_lifetimes
-        )
+        announced_at = self._idless_server_response_at
+        if announced_at is None:
+            return False
+        if (asyncio.get_running_loop().time() - announced_at
+                >= self._server_response_max_age):
+            self._idless_server_response_at = None
+            return False
+        return True
+
+    def _retired_created_window_live(self) -> bool:
+        deadline = self._retired_created_deadline
+        if deadline is None:
+            return False
+        if asyncio.get_running_loop().time() >= deadline:
+            self._retired_created_deadline = None
+            return False
+        return True
 
     def _remember_seen_response_id(self, response_id: str | None) -> None:
         """Record that this id has been attributed to someone, ever.
@@ -947,11 +592,7 @@ class RealtimeResponseArbiter:
         while len(self._seen_response_ids) > _SEEN_RESPONSE_ID_LIMIT:
             del self._seen_response_ids[next(iter(self._seen_response_ids))]
 
-    def _note_unowned_announcement(
-        self,
-        response_id: str | None,
-        generation: int,
-    ) -> None:
+    def _note_unowned_announcement(self, response_id: str | None) -> None:
         """Offer an announcement nobody claimed as adoptable, exactly once.
 
         The serial advances for every unowned announcement including the
@@ -961,14 +602,13 @@ class RealtimeResponseArbiter:
 
         self._adoptable_serial += 1
         self._adoptable_announcement = response_id
-        self._adoptable_generation = generation
         self._adoptable_terminal_status = None
 
     def _bump_vad_epoch(self) -> None:
         self._vad_epoch += 1
 
-    def _adoptable_generation_for(self, queued: _QueuedResponse) -> int | None:
-        """The announcement generation this request may claim, or None.
+    def _adoptable_id_for(self, queued: _QueuedResponse) -> str | None:
+        """The announcement this request may claim as its own, or None.
 
         Some providers begin answering when they receive the conversation
         item and never wait for ``response.create``. Their announcement then
@@ -1002,16 +642,15 @@ class RealtimeResponseArbiter:
           it, and the free routes are exactly those — requiring the ack would
           disqualify every request on the only providers that need this.
         - **Exactly one unowned announcement arrived in the window.** Two is
-          ambiguous. The serial counts both, while the lifecycle generation
-          keeps an id-less candidate distinct from there being no candidate.
+          ambiguous, and an id-less one cannot be named at all; the serial
+          counts both, so either refuses adoption.
         - **The server-VAD correlation state did not move.** An automatic
           response announced across this window is the user's, not ours — and
           the pending marker being armed or its backstop expiring both mean
           exactly that.
-        - **The generation is still live or known-finished.** A terminal may
-          arrive before adoption; retaining its status lets the claim complete
-          the request immediately instead of waiting for a terminal that has
-          already gone by.
+        - **The id is still believed live.** An announcement whose terminal
+          already arrived is finished business; adopting it would resolve this
+          request against a response that has already ended.
         """
 
         if not queued.response_send_started or queued.response_id is not None:
@@ -1037,27 +676,19 @@ class RealtimeResponseArbiter:
             return None
         if self._adoptable_serial != queued.adoption.serial + 1:
             return None
-        generation = self._adoptable_generation
-        if generation is None:
+        adopted = self._adoptable_announcement
+        if adopted is None:
             return None
-        adopted_lifetime = next(
-            (
-                lifetime
-                for lifetime in self._response_lifetimes
-                if lifetime.generation == generation
-            ),
-            None,
-        )
         if (
-            (adopted_lifetime is None or adopted_lifetime.owner is not None)
+            adopted not in self._server_response_ids
             and self._adoptable_terminal_status is None
         ):
             # Neither live nor known-finished: its terminal was handled as
             # somebody else's, so it is not this request's to take.
             return None
-        return generation
+        return adopted
 
-    def _adopt_announcement(self, queued: _QueuedResponse, generation: int) -> None:
+    def _adopt_announcement(self, queued: _QueuedResponse, response_id: str) -> None:
         """Transfer an unowned announcement to this request.
 
         A MOVE, not a copy. Leaving the id in ``_server_response_ids`` would
@@ -1069,45 +700,13 @@ class RealtimeResponseArbiter:
         had the announcement arrived a moment later.
         """
 
-        orphan = next(
-            (
-                lifetime
-                for lifetime in self._response_lifetimes
-                if lifetime.owner is None and lifetime.generation == generation
-            ),
-            None,
-        )
-        response_id = (
-            orphan.response_id
-            if orphan is not None
-            else self._adoptable_announcement
-        )
+        self._server_response_ids.pop(response_id, None)
+        if not self._server_response_ids:
+            self._cancel_stale_release_timer()
         queued.response_id = response_id
-        previous = queued.lifecycle
-        if orphan is not None:
-            if previous is not None and previous is not orphan:
-                self._remove_lifetime(previous)
-            orphan.owner = queued
-            orphan.suppress_output = queued.suppress_output
-            queued.lifecycle = orphan
-            if self._on_lifetime_adopted is not None:
-                self._on_lifetime_adopted(
-                    orphan.generation,
-                    queued.suppress_output,
-                )
-        else:
-            if previous is not None:
-                self._remove_lifetime(previous)
-            self._new_lifetime(
-                owner=queued,
-                response_id=response_id,
-                announced=True,
-                generation=generation,
-            )
         self._remember_seen_response_id(response_id)
         terminal_status = self._adoptable_terminal_status
         self._adoptable_announcement = None
-        self._adoptable_generation = None
         self._adoptable_terminal_status = None
         if not queued.ticket.started.done():
             queued.ticket.started.set_result(None)
@@ -1116,20 +715,16 @@ class RealtimeResponseArbiter:
             # started. Adopting only the announcement would leave the owner
             # waiting out its full response_done allowance for a terminal that
             # already came and went.
-            terminal_error = None
             if terminal_status not in {"completed", "success", "succeeded"}:
-                terminal_error = RuntimeError(f"response.done status={terminal_status}")
-            self._resolve_owner_terminal(
-                queued,
-                terminal_error=terminal_error,
-                created_was_missing=False,
-            )
-        else:
-            self._arm_stale_release_timer()
+                queued.terminal_error = RuntimeError(
+                    f"response.done status={terminal_status}"
+                )
+            if queued.terminal is not None and not queued.terminal.done():
+                queued.terminal.set_result(None)
         logger.info(
             "adopted unowned response.created %s for %s (%s): this provider "
             "answers the conversation item without waiting for response.create",
-            response_id or "<idless>",
+            response_id,
             queued.source,
             "already terminated" if terminal_status is not None else "still live",
         )
@@ -1149,17 +744,8 @@ class RealtimeResponseArbiter:
 
     def _arm_server_vad_pending_timer(self) -> None:
         self._cancel_server_vad_pending_timer()
-        delay = _SERVER_VAD_RESPONSE_STARTED_TIMEOUT
-        generation = self._server_vad_pending_generation
-        if generation is not None:
-            obligation = self._created_obligation_for_generation(generation)
-            if obligation is not None:
-                delay = max(
-                    obligation.expires_at - asyncio.get_running_loop().time(),
-                    0.0,
-                )
         self._server_vad_pending_handle = asyncio.get_running_loop().call_later(
-            delay,
+            _SERVER_VAD_RESPONSE_STARTED_TIMEOUT,
             self._server_vad_pending_expired,
         )
 
@@ -1168,17 +754,6 @@ class RealtimeResponseArbiter:
         if not self._server_vad_response_pending:
             return
         self._server_vad_response_pending = False
-        generation = self._server_vad_pending_generation
-        self._server_vad_pending_generation = None
-        if generation is not None:
-            obligation = self._created_obligation_for_generation(generation)
-            if obligation is not None:
-                obligation.pending = False
-                obligation.expires_at = (
-                    asyncio.get_running_loop().time()
-                    + _SERVER_VAD_RESPONSE_STARTED_TIMEOUT
-                )
-        self._refresh_pending_vad_generation()
         # The backstop is a guess, not evidence the automatic response was
         # abandoned: past this point a genuine VAD response.created can still
         # arrive and will land in the unowned bucket. Advancing the epoch is
@@ -1193,201 +768,23 @@ class RealtimeResponseArbiter:
         if self._response_owner is None:
             self._release_lane_if_clear()
 
-    def _created_obligation_for_generation(
-        self, generation: int
-    ) -> _CreatedObligation | None:
-        return next(
-            (
-                obligation
-                for obligation in self._retired_created_windows
-                if obligation.generation == generation
-            ),
-            None,
-        )
-
-    def _append_created_obligation(self, obligation: _CreatedObligation) -> None:
-        if self._created_obligation_for_generation(obligation.generation) is not None:
-            return
-        if len(self._retired_created_windows) >= _CREATED_OBLIGATION_LIMIT:
-            reason = "too many unresolved response.created correlation obligations"
-            self._schedule_protocol_abort(reason)
-            raise ConnectionError(reason)
-        self._retired_created_windows.append(obligation)
-
-    def _schedule_protocol_abort(self, reason: str) -> None:
-        """Synchronously fail state, then asynchronously close its transport."""
-
-        if not self._connection_available:
-            return
-        self._mark_connection_lost(reason, fail_current_tickets=True)
-        if self._abort_transport is None:
-            return
-        task = asyncio.create_task(self._abort_transport(reason))
-        self._protocol_abort_tasks.add(task)
-        task.add_done_callback(self._protocol_abort_finished)
-
-    def _protocol_abort_finished(self, task: asyncio.Task[None]) -> None:
-        self._protocol_abort_tasks.discard(task)
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None:
-            logger.debug(
-                "protocol-limit transport abort also failed: %s",
-                type(error).__name__,
-            )
-
-    def _clear_pending_vad_generation(self, generation: int) -> None:
-        if self._server_vad_pending_generation != generation:
-            return
-        self._cancel_server_vad_pending_timer()
-        self._server_vad_response_pending = False
-        self._server_vad_pending_generation = None
-        self._refresh_pending_vad_generation()
-
-    def _refresh_pending_vad_generation(self) -> None:
-        if self._server_vad_pending_generation is not None:
-            return
-        next_pending = next(
-            (
-                obligation
-                for obligation in self._retired_created_windows
-                if obligation.source == "server_vad"
-                and obligation.pending
-                and not obligation.terminal_seen
-            ),
-            None,
-        )
-        if next_pending is None:
-            self._server_vad_response_pending = False
-            return
-        self._server_vad_pending_generation = next_pending.generation
-        self._server_vad_response_pending = True
-        self._arm_server_vad_pending_timer()
-
-    def _created_obligation_for_response(
-        self, response_id: str | None
-    ) -> _CreatedObligation | None:
-        exact = self._created_obligation_matching_terminal_id(response_id)
-        if exact is not None:
-            return exact
-        if response_id is None:
-            return (
-                self._retired_created_windows[0]
-                if self._retired_created_windows
-                else None
-            )
-        unknown_identity = [
-            obligation
-            for obligation in self._retired_created_windows
-            if not obligation.terminal_seen
-            or obligation.terminal_response_id is None
-        ]
-        return unknown_identity[0] if unknown_identity else None
-
-    def _created_obligation_matching_terminal_id(
-        self, response_id: str | None
-    ) -> _CreatedObligation | None:
-        exact = [
-            obligation
-            for obligation in self._retired_created_windows
-            if obligation.terminal_seen
-            and obligation.terminal_response_id == response_id
-        ]
-        if len(exact) == 1:
-            return exact[0]
-        if len(exact) > 1:
-            return None
-        return None
-
-    def _prune_idless_retirements(self) -> None:
-        now = asyncio.get_running_loop().time()
-        self._idless_retirements = [
-            retirement
-            for retirement in self._idless_retirements
-            if retirement.expires_at > now
-        ]
-
-    def _remember_idless_retirement(self, generation: int) -> None:
-        self._prune_idless_retirements()
-        self._idless_retirements = [
-            retirement
-            for retirement in self._idless_retirements
-            if retirement.generation != generation
-        ]
-        self._idless_retirements.append(
-            _IdlessRetirement(
-                generation=generation,
-                expires_at=(
-                    asyncio.get_running_loop().time()
-                    + min(self._server_response_max_age, _RETIRED_CREATED_WINDOW_MAX)
-                ),
-            )
-        )
-        while len(self._idless_retirements) > _CREATED_OBLIGATION_LIMIT:
-            self._idless_retirements.pop(0)
-
-    def _latest_idless_retirement(self) -> _IdlessRetirement | None:
-        self._prune_idless_retirements()
-        return self._idless_retirements[-1] if self._idless_retirements else None
-
-    def _consume_created_obligation(
-        self,
-        obligation: _CreatedObligation,
-        response_id: str | None,
-    ) -> ResponseCreatedResult:
-        self._retired_created_windows.remove(obligation)
-        was_active_vad = (
-            self._server_vad_pending_generation == obligation.generation
-        )
-        self._clear_pending_vad_generation(obligation.generation)
-        self._remember_seen_response_id(response_id)
-        if obligation.terminal_seen or not obligation.created_is_live:
-            if response_id is None:
-                self._remember_idless_retirement(obligation.generation)
-            logger.info(
-                "late response.created %s consumed by retired %s generation %d",
-                response_id or "<idless>",
-                obligation.source,
-                obligation.generation,
-            )
-            self._release_lane_if_clear()
-            return ResponseCreatedResult(
-                ResponseCreatedKind.RETIRED,
-                response_id,
-                obligation.generation,
-                obligation.suppress_output,
-            )
-        lifetime = self._remember_server_response(
-            response_id,
-            generation=obligation.generation,
-            suppress_output=obligation.suppress_output,
-        )
-        kind = (
-            ResponseCreatedKind.SERVER_VAD
-            if obligation.source == "server_vad" and was_active_vad
-            else ResponseCreatedKind.UNOWNED_SERVER
-        )
-        return ResponseCreatedResult(
-            kind,
-            response_id,
-            lifetime.generation,
-            obligation.suppress_output,
-        )
-
     def _arm_stale_release_timer(self) -> None:
-        """Re-check the earliest unowned or retired lifecycle deadline."""
+        """(Re)start the timer that re-checks the lane at the next staleness deadline."""
 
+        loop = asyncio.get_running_loop()
         deadlines = [
-            lifetime.announced_at + self._server_response_max_age
-            for lifetime in self._response_lifetimes
-            if lifetime.owner is None and lifetime.announced_at is not None
+            created_at + self._server_response_max_age
+            for created_at in self._server_response_ids.values()
         ]
-        deadlines.extend(window.expires_at for window in self._retired_created_windows)
+        if self._idless_server_response_at is not None:
+            deadlines.append(
+                self._idless_server_response_at + self._server_response_max_age
+            )
+        if self._retired_created_deadline is not None:
+            deadlines.append(self._retired_created_deadline)
         self._cancel_stale_release_timer()
         if not deadlines:
             return
-        loop = asyncio.get_running_loop()
         deadline = min(deadlines)
         self._stale_release_handle = loop.call_later(
             max(deadline - loop.time(), 0.0), self._stale_release_expired
@@ -1395,72 +792,18 @@ class RealtimeResponseArbiter:
 
     def _stale_release_expired(self) -> None:
         self._stale_release_handle = None
+        if self._response_owner is not None:
+            # The lane is held by an owner anyway; its own terminal path
+            # re-runs the release check (and re-arms the timer if needed).
+            return
         self._release_lane_if_clear()
-
-    def _prune_stale_lifetimes(self) -> None:
-        now = asyncio.get_running_loop().time()
-        stale = [
-            lifetime
-            for lifetime in self._response_lifetimes
-            if lifetime.owner is None
-            and lifetime.announced_at is not None
-            and now - lifetime.announced_at >= self._server_response_max_age
-        ]
-        for lifetime in stale:
-            self._remove_lifetime(lifetime)
-            if self._on_lifetime_expired is not None:
-                try:
-                    self._on_lifetime_expired(lifetime.generation)
-                except Exception:
-                    logger.exception("response lifetime expiry callback failed")
-        if stale:
-            labels = [
-                lifetime.response_id or f"idless:{lifetime.generation}"
-                for lifetime in stale
-            ]
-            logger.warning(
-                "released %d unowned server response(s) with no terminal "
-                "event after %.0fs: %s",
-                len(stale),
-                self._server_response_max_age,
-                ", ".join(labels),
-            )
-
-        expired_windows = [
-            window
-            for window in self._retired_created_windows
-            if now >= window.expires_at
-        ]
-        if expired_windows:
-            expired_generations = {window.generation for window in expired_windows}
-            self._retired_created_windows = [
-                window
-                for window in self._retired_created_windows
-                if window.generation not in expired_generations
-            ]
-            for window in expired_windows:
-                if window.created_is_live:
-                    self._retire_cancel_sends_for_generation(window.generation)
-                    if self._on_lifetime_expired is not None:
-                        try:
-                            self._on_lifetime_expired(window.generation)
-                        except Exception:
-                            logger.exception(
-                                "response lifetime expiry callback failed"
-                            )
-            logger.warning(
-                "released %d retired response.created window(s) without a "
-                "late announcement: %s",
-                len(expired_windows),
-                ", ".join(str(window.generation) for window in expired_windows),
-            )
 
     def _release_lane_if_clear(self) -> None:
         """Open the lane unless a live server-initiated response still holds it.
 
-        Unowned lifetimes older than ``_server_response_max_age`` are dropped
-        first. This is identity-agnostic: an id-less response gets exactly the
-        same terminal-or-deadline convergence as one carrying an id.
+        Ids older than ``_server_response_max_age`` are dropped first: a server
+        response whose terminal event was lost must not wedge the lane on a
+        healthy connection, so past that bound its id stops holding the lane.
         """
 
         if self._server_vad_response_pending:
@@ -1468,62 +811,79 @@ class RealtimeResponseArbiter:
             # response.created event supplies an id. Keep dispatch closed in
             # that correlation gap; otherwise an explicit response.create can
             # steal the next created event and leave its own ticket unresolved.
+            self._server_response_active = True
             self._idle.clear()
             return
-        self._prune_stale_lifetimes()
+        now = asyncio.get_running_loop().time()
+        stale = [
+            response_id
+            for response_id, created_at in self._server_response_ids.items()
+            if now - created_at >= self._server_response_max_age
+        ]
+        for response_id in stale:
+            del self._server_response_ids[response_id]
+        if stale:
+            # A response outliving the owned-response allowance without a
+            # terminal event is a protocol anomaly: either its terminal was
+            # lost, or a live response ran far longer than anything this
+            # arbiter is configured to wait for.
+            logger.warning(
+                "released %d server response id(s) with no terminal event "
+                "after %.0fs: %s",
+                len(stale),
+                self._server_response_max_age,
+                ", ".join(stale),
+            )
         if (
-            self._response_owner is not None
-            or self._has_unowned_response()
-            or self._retired_created_windows
+            self._server_response_ids
+            or self._idless_server_response_live()
+            or self._retired_created_window_live()
         ):
-            # A concrete response or a retired correlation window still owns
-            # the lane. Opening now would overlap a live response or let a late
-            # announcement cross generations.
+            # A known server-initiated response is still live. Opening the
+            # lane now would let the next queued response.create collide with
+            # it, or let a delayed announcement cross into the next owner.
+            self._server_response_active = True
             self._idle.clear()
             self._arm_stale_release_timer()
             return
         self._cancel_stale_release_timer()
+        self._server_response_active = False
         self._idle.set()
 
-    def notify_response_created(self, event: dict[str, Any]) -> ResponseCreatedResult:
-        self._idle.clear()
-        self._prune_stale_lifetimes()
-        response_id = self._event_response_id(event)
-        if response_id is None:
-            retirement = self._latest_idless_retirement()
-            if retirement is not None:
-                self._release_lane_if_clear()
-                return ResponseCreatedResult(
-                    ResponseCreatedKind.RETIRED,
-                    None,
-                    retirement.generation,
-                )
-        # An exact terminal identity is strongest. If no exact match exists,
-        # only a debt whose identity is still unknown may consume this frame;
-        # a known, different terminal ID must retain its own window.
-        obligation = self._created_obligation_matching_terminal_id(response_id)
-        if obligation is not None:
-            return self._consume_created_obligation(obligation, response_id)
+    def notify_response_created(self, event: dict[str, Any]) -> bool:
+        """Attribute an announcement and report whether transport may expose it."""
 
-        # A previously completed identity cannot pay an unrelated outstanding
-        # debt.  This check must precede generic obligation selection: otherwise
-        # a duplicate old frame erases the only barrier protecting a successor.
-        if response_id is not None and response_id in self._seen_response_ids:
+        self._server_response_active = True
+        self._idle.clear()
+        if self._server_vad_response_pending:
+            self._cancel_server_vad_pending_timer()
+            self._server_vad_response_pending = False
+            response_id = self._event_response_id(event)
+            self._remember_seen_response_id(response_id)
+            if response_id is not None:
+                self._remember_server_response_id(response_id)
+            else:
+                self._remember_idless_server_response()
+            # Deliberately NOT offered for adoption. This branch is the one
+            # announcement the arbiter positively knows is the provider's own
+            # automatic response, so it is the last thing a queued request
+            # should be allowed to claim.
+            return True
+        if self._retired_created_window_live():
+            # The preceding owner ended before its announcement arrived. This
+            # is a one-shot quarantine: consume exactly this delayed frame,
+            # then clear the gate before a successor can dispatch. Keeping a
+            # second retirement window here would swallow a legitimate id-less
+            # successor, recreating the ownership failure in the other direction.
+            self._retired_created_deadline = None
+            response_id = self._event_response_id(event)
+            self._remember_seen_response_id(response_id)
             logger.info(
-                "duplicate response.created %s ignored after its lifecycle retired",
-                response_id,
+                "ignored late response.created %s from a retired owner",
+                response_id or "<idless>",
             )
             self._release_lane_if_clear()
-            return ResponseCreatedResult(
-                ResponseCreatedKind.RETIRED,
-                response_id,
-                None,
-            )
-
-        obligation = self._created_obligation_for_response(response_id)
-        if obligation is not None:
-            return self._consume_created_obligation(obligation, response_id)
-
+            return False
         owner = self._response_owner
         if owner is not None and not owner.ticket.started.done():
             # The first response.created after the owner's response.create is
@@ -1531,51 +891,28 @@ class RealtimeResponseArbiter:
             # provider supplies one) so only that response's terminal event
             # can release the lane.
             owner.response_id = self._event_response_id(event)
-            if owner.lifecycle is None:
-                owner.lifecycle = self._new_lifetime(
-                    owner=owner,
-                    announced=False,
-                )
-            owner.lifecycle.response_id = owner.response_id
-            owner.lifecycle.announced_at = asyncio.get_running_loop().time()
             self._remember_seen_response_id(owner.response_id)
             owner.ticket.started.set_result(None)
-            return ResponseCreatedResult(
-                ResponseCreatedKind.OWNER,
-                response_id,
-                owner.lifecycle.generation,
-                owner.suppress_output,
-            )
+            return True
         # This created event cannot be credited to a waiting owner (the owner
         # already started, or no owner is pending), so it announces a
         # server-initiated response. Remember its id so its terminal event is
         # recognized as an orphan even when the owner's own response.created
         # carried no id.
+        response_id = self._event_response_id(event)
         self._remember_seen_response_id(response_id)
-        # A skipped request can provoke the provider to answer its conversation
-        # item before the explicit response.create owns the announcement. At
-        # this instant adoption is not yet provable, but exposing output and
-        # trying to hide it later is irreversible. Attach the current request's
-        # provisional policy to this one lifetime; adoption will either confirm
-        # it or the lifetime will converge independently without leaking the
-        # policy into a successor.
-        lifetime = self._remember_server_response(
-            response_id,
-            suppress_output=self.suppress_output_for_generation(None),
-        )
+        if response_id is not None:
+            self._remember_server_response_id(response_id)
+        else:
+            self._remember_idless_server_response()
         # Offer it for adoption. On a provider that starts answering as soon
         # as it receives the conversation item — rather than waiting for
         # response.create — this IS the request's own announcement, arriving
         # while the item-ack barrier still holds the owner slot empty. Nothing
-        # here decides that; ``_adoptable_generation_for`` does, against evidence the
+        # here decides that; ``_adoptable_id_for`` does, against evidence the
         # dispatching request captured for itself.
-        self._note_unowned_announcement(response_id, lifetime.generation)
-        return ResponseCreatedResult(
-            ResponseCreatedKind.UNOWNED_SERVER,
-            response_id,
-            lifetime.generation,
-            lifetime.suppress_output,
-        )
+        self._note_unowned_announcement(response_id)
+        return True
 
     def notify_server_vad_started(self) -> None:
         """Deliberately leave ownership unchanged until speech_stopped.
@@ -1584,110 +921,6 @@ class RealtimeResponseArbiter:
         accidentally treat speech_started as evidence of an automatic
         response; only the ended utterance below may arm that correlation.
         """
-
-    def notify_response_activity(self, response_id: object) -> int | None:
-        """Use identified response content as an implicit announcement.
-
-        Some proxies announce only intermittently but still put ``response_id``
-        on deltas/tool frames. Once the create is on the wire, the first unseen
-        identified activity is enough to bind that lifecycle; a seen id is
-        necessarily stale and can never cross into the current owner.
-        """
-
-        if response_id is None:
-            return None
-        text = str(response_id)
-        if not text:
-            return None
-        obligation = self._created_obligation_matching_terminal_id(text)
-        if obligation is not None:
-            # Identified content is an implicit announcement. It must settle
-            # the same generation-scoped debt as response.created; otherwise a
-            # late id-less-owner delta can be installed as a fresh orphan and
-            # leak output after that owner already terminated.
-            created = self._consume_created_obligation(obligation, text)
-            return created.generation if created.is_live else None
-        if text in self._seen_response_ids:
-            return None
-        obligation = self._created_obligation_for_response(text)
-        if obligation is not None:
-            created = self._consume_created_obligation(obligation, text)
-            return created.generation if created.is_live else None
-        idless = [
-            lifetime
-            for lifetime in self._response_lifetimes
-            if lifetime.announced_at is not None and lifetime.response_id is None
-        ]
-        if len(idless) == 1:
-            lifetime = idless[0]
-            lifetime.response_id = text
-            if lifetime.generation == self._adoptable_generation:
-                self._adoptable_announcement = text
-            if lifetime.owner is not None:
-                lifetime.owner.response_id = text
-                if self._on_lifetime_adopted is not None:
-                    self._on_lifetime_adopted(
-                        lifetime.generation,
-                        lifetime.owner.suppress_output,
-                    )
-            self._remember_seen_response_id(text)
-            return lifetime.generation
-        owner = self._response_owner
-        if (
-            owner is None
-            or owner.lifecycle is None
-            or owner.lifecycle.announced_at is not None
-            or owner.ticket.started.done()
-        ):
-            if owner is None:
-                lifetime = self._remember_server_response(
-                    text,
-                    suppress_output=self.suppress_output_for_generation(None),
-                )
-                self._remember_seen_response_id(text)
-                self._note_unowned_announcement(text, lifetime.generation)
-                return lifetime.generation
-            return None
-        owner.response_id = text
-        owner.lifecycle.response_id = text
-        owner.lifecycle.announced_at = asyncio.get_running_loop().time()
-        self._remember_seen_response_id(text)
-        owner.ticket.started.set_result(None)
-        if self._on_lifetime_adopted is not None:
-            self._on_lifetime_adopted(
-                owner.lifecycle.generation,
-                owner.suppress_output,
-            )
-        return owner.lifecycle.generation
-
-    def notify_unannounced_response_started(self) -> int | None:
-        """Track one ownerless response on a never-announcing protocol.
-
-        Never-announcing routes can surface an automatic response through an
-        id-less delta without any queued request or response.created frame. In
-        that exact unambiguous state the response still needs a generation so
-        it holds the lane, accepts a lifecycle-bound cancel, and converges on
-        terminal/deadline. A response that overlaps queued/owned work remains
-        deliberately unclaimed because an unscoped response.cancel could stop
-        the wrong turn.
-        """
-
-        if self._response_created_expected or self._current is not None:
-            return None
-        self._idle.clear()
-        self._prune_stale_lifetimes()
-        if self._retired_created_windows or self._server_vad_response_pending:
-            return None
-        announced = [
-            lifetime
-            for lifetime in self._response_lifetimes
-            if lifetime.announced_at is not None
-        ]
-        if announced:
-            if len(announced) == 1 and announced[0].response_id is None:
-                return announced[0].generation
-            return None
-        return self._remember_server_response(None).generation
 
     def notify_server_vad_response_pending(
         self,
@@ -1730,22 +963,8 @@ class RealtimeResponseArbiter:
                     )
                 )
         self._server_vad_response_pending = True
-        generation = next(self._lifecycle_generation)
-        self._append_created_obligation(
-            _CreatedObligation(
-                generation=generation,
-                expires_at=(
-                    asyncio.get_running_loop().time()
-                    + _SERVER_VAD_RESPONSE_STARTED_TIMEOUT
-                ),
-                source="server_vad",
-                created_is_live=True,
-                pending=True,
-            )
-        )
-        if self._server_vad_pending_generation is None:
-            self._server_vad_pending_generation = generation
         self._bump_vad_epoch()
+        self._server_response_active = True
         self._idle.clear()
         if arm_timeout:
             self._arm_server_vad_pending_timer()
@@ -1759,144 +978,27 @@ class RealtimeResponseArbiter:
         ):
             self._arm_server_vad_pending_timer()
 
-    def _retire_cancel_sends_for_generation(self, generation: int) -> None:
-        tasks = self._cancel_send_tasks_by_lifecycle.pop(generation, set())
-        for task in tasks:
-            self._cancel_send_tasks.discard(task)
-            self._retiring_cancel_send_tasks.add(task)
+    @staticmethod
+    def _retire_owner_cancel_send(owner: _QueuedResponse) -> None:
+        task, owner.cancel_send_task = owner.cancel_send_task, None
+        if task is not None and not task.done():
             task.cancel()
 
-    def _retire_cancel_sends_for_owner(self, owner: _QueuedResponse) -> None:
-        lifetime = owner.lifecycle
-        if lifetime is not None:
-            self._retire_cancel_sends_for_generation(lifetime.generation)
-
-    def _cancel_event(self, generation: int) -> dict[str, Any]:
-        return {
-            "type": "response.cancel",
-            "_neko_connection_generation": self._connection_generation,
-            "_neko_lifecycle_generation": generation,
-        }
-
-    def _start_cancel_send(
-        self,
-        generation: int,
-        *,
-        from_worker: bool = False,
-    ) -> asyncio.Task[None]:
-        existing = next(
-            (
-                task
-                for task in self._cancel_send_tasks_by_lifecycle.get(
-                    generation, set()
-                )
-                if not task.done()
-            ),
-            None,
-        )
-        if existing is not None:
-            return existing
-        event = self._cancel_event(generation)
-        task = asyncio.create_task(
-            self._worker_send(event) if from_worker else self._send_event(event)
-        )
-        self._cancel_send_tasks.add(task)
-        self._cancel_send_tasks_by_lifecycle.setdefault(generation, set()).add(task)
-        task.add_done_callback(
-            lambda completed: self._cancel_send_finished(completed, generation)
-        )
-        return task
-
-    async def _send_cancel_for_lifetime(
-        self,
-        generation: int,
-        *,
-        from_worker: bool = False,
-    ) -> bool:
-        if not self._generation_is_live(generation):
+    def _detach_response_owner(self, owner: _QueuedResponse) -> bool:
+        if self._response_owner is not owner:
             return False
-        live_generations = {
-            lifetime.generation for lifetime in self._response_lifetimes
-        }
-        live_generations.update(
-            obligation.generation
-            for obligation in self._retired_created_windows
-            if obligation.created_is_live
-        )
-        if live_generations != {generation}:
-            # The wire protocol's response.cancel has no identity field. Local
-            # task ownership cannot make that frame target one lifecycle when
-            # multiple server responses may be live, so retire the connection
-            # instead of cancelling an arbitrary turn.
-            logger.warning(
-                "refusing response.cancel for generation %d across live "
-                "generations %s",
-                generation,
-                sorted(live_generations),
-            )
-            return False
-        task = self._start_cancel_send(generation, from_worker=from_worker)
-        try:
-            await task
-        except asyncio.CancelledError:
-            caller = asyncio.current_task()
-            if caller is not None and caller.cancelling():
-                raise
-            return False
+        self._retire_owner_cancel_send(owner)
+        self._response_owner = None
         return True
 
-    def _resolve_owner_terminal(
-        self,
-        owner: _QueuedResponse,
-        *,
-        terminal_error: RuntimeError | None,
-        created_was_missing: bool,
-    ) -> None:
-        lifetime = owner.lifecycle
-        if created_was_missing and not owner.ticket.started.done():
-            owner.ticket.started.set_exception(
-                RuntimeError("response terminated before response.created")
-            )
-        if owner.terminal is not None and not owner.terminal.done():
-            owner.terminal_error = terminal_error
-            owner.terminal.set_result(None)
-        self._retire_cancel_sends_for_owner(owner)
-        self._remove_lifetime(lifetime)
-        if self._response_owner is owner:
-            self._response_owner = None
-        self._release_lane_if_clear()
-
-    def _open_retired_created_window(
-        self,
-        owner: _QueuedResponse,
-        *,
-        terminal_response_id: str | None,
-        terminal_status: str | None,
-    ) -> None:
-        lifetime = owner.lifecycle
-        if lifetime is None:
-            return
-        allowance = min(
-            max(owner.response_started_timeout, 0.01),
-            _RETIRED_CREATED_WINDOW_MAX,
-        )
-        self._append_created_obligation(
-            _CreatedObligation(
-                generation=lifetime.generation,
-                expires_at=asyncio.get_running_loop().time() + allowance,
-                source="retired_owner",
-                terminal_response_id=terminal_response_id,
-                terminal_seen=True,
-                terminal_status=terminal_status,
-                suppress_output=owner.suppress_output,
-            )
-        )
-
-    def notify_response_terminal(
-        self, event: dict[str, Any] | None = None
-    ) -> ResponseTerminalResult:
+    def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
+        owner_was_unannounced = bool(
+            owner is not None and not owner.ticket.started.done()
+        )
         response_id = self._event_response_id(event)
+        if response_id is None:
+            self._idless_server_response_at = None
         response = (event or {}).get("response")
         response_status = (
             str(response.get("status") or "").strip().lower()
@@ -1909,195 +1011,128 @@ class RealtimeResponseArbiter:
             and response_status not in {"completed", "success", "succeeded"}
             else None
         )
-
-        if response_id is None:
-            retirement = self._latest_idless_retirement()
-            live_idless = any(
-                lifetime.announced_at is not None
-                and lifetime.response_id is None
-                for lifetime in self._response_lifetimes
-            )
-            if retirement is not None and not live_idless:
-                return ResponseTerminalResult(
-                    ResponseTerminalKind.STALE,
-                    None,
-                    retirement.generation,
+        if owner is not None and response_id is not None:
+            if not owner.ticket.started.done():
+                # The owner has not seen its response.created yet. On a
+                # provider that announces responses, a terminal never precedes
+                # its own created event, so this belongs to another
+                # (server-initiated) response and the owner keeps waiting.
+                #
+                # That premise is a property of the PROVIDER, not a law: some
+                # never send response.created at all, and there the very same
+                # shape is the owner's own terminal — indefinitely withheld
+                # from it, until the started timeout tears the transport down.
+                # The two readings are told apart by whether this id was ever
+                # announced. Deciding it from observed behaviour rather than a
+                # configured flag matters: these proxies have changed which
+                # events they emit, and a flag that says "never announces"
+                # about a route that started announcing guarantees the
+                # teardown it was meant to prevent.
+                never_announced = (
+                    owner.response_send_started
+                    and owner.response_id is None
+                    and response_id not in self._server_response_ids
+                    and response_id not in self._seen_response_ids
                 )
-
-        has_unpaid_vad_terminal = any(
-            obligation.source == "server_vad"
-            and not obligation.terminal_seen
-            for obligation in self._retired_created_windows
-        )
-        lifetime = self._match_terminal_lifetime(
-            response_id,
-            allow_identity_upgrade=not has_unpaid_vad_terminal,
-        )
-        if lifetime is not None:
-            generation = lifetime.generation
-            if lifetime.owner is None:
-                # A terminal retires exactly the unowned lifetime it names.
-                # For id-less responses, list order pairs it with the oldest
-                # still-live id-less announcement.
-                if generation == self._adoptable_generation:
-                    # Some providers announce an id-less response and reveal
-                    # its identity only on the terminal frame. The lifetime
-                    # matcher upgrades that identity in place; carry the same
-                    # upgrade into the adoption evidence before retiring it.
-                    self._adoptable_announcement = lifetime.response_id
+                # The other shape, and the reason this is checked here at all:
+                # a provider that answers the conversation item directly can
+                # finish the whole response before the owner's started
+                # allowance expires, so its terminal — not the timeout — is
+                # where the adoption has to happen. Same evidence either way.
+                if response_id == self._adoptable_announcement:
+                    # Deliberately NOT adopted here. A provider that answers
+                    # the item directly finishes before the owner's started
+                    # allowance expires, so it is tempting to claim it now —
+                    # but at this instant this is still indistinguishable from
+                    # an automatic response the user triggered, whose terminal
+                    # can equally land while the owner's create is in flight.
+                    # What tells them apart is what that create does, and it
+                    # has not done it yet. Remember the outcome so the started
+                    # timeout can still claim it once nothing has answered.
                     self._adoptable_terminal_status = response_status or "completed"
-                self._remove_lifetime(lifetime)
-                if self._response_owner is None:
-                    self._release_lane_if_clear()
+                if never_announced:
+                    # Attribution is one act, not two: the id and the
+                    # announcement both belong to the owner now. Resolving
+                    # only the terminal would leave the fall-through below to
+                    # stamp started with "response terminated before
+                    # response.created" — no teardown, but every turn on such
+                    # a provider still reported as a failure.
+                    owner.response_id = response_id
+                    self._remember_seen_response_id(response_id)
+                    owner.ticket.started.set_result(None)
+                    logger.info(
+                        "terminal %s claimed by %s: this connection has never "
+                        "announced a response",
+                        response_id,
+                        owner.source,
+                    )
+                    # Deliberately no ``return``: this IS the owner's terminal,
+                    # so it must reach the resolution below. Returning here
+                    # would leave the lifecycle waiter unresolved and the
+                    # started timeout would tear the transport down anyway.
                 else:
-                    self._arm_stale_release_timer()
-                return ResponseTerminalResult(
-                    ResponseTerminalKind.UNOWNED_SERVER,
-                    response_id,
-                    generation,
-                )
-
-            self._resolve_owner_terminal(
-                lifetime.owner,
-                terminal_error=terminal_error,
-                created_was_missing=False,
-            )
-            return ResponseTerminalResult(
-                ResponseTerminalKind.OWNER,
-                response_id,
-                generation,
-            )
-
-        if response_id is not None and response_id in self._seen_response_ids:
-            # A duplicate terminal is evidence about an already-known identity,
-            # never about whichever VAD/owner correlation debt happens to be at
-            # the front of the lane now.
-            return ResponseTerminalResult(
-                ResponseTerminalKind.STALE,
-                response_id,
-                None,
-            )
-
-        vad_obligation = next(
-            (
-                obligation
-                for obligation in self._retired_created_windows
-                if obligation.source == "server_vad"
-                and not obligation.terminal_seen
-            ),
-            None,
-        )
-        if vad_obligation is not None:
-            # Terminal-before-created does not erase the created debt.  Record
-            # both halves on the same generation and keep its bounded barrier;
-            # the later created will retire rather than become a live orphan.
-            vad_obligation.terminal_seen = True
-            vad_obligation.terminal_response_id = response_id
-            vad_obligation.terminal_status = response_status or "completed"
-            vad_obligation.created_is_live = False
-            self._clear_pending_vad_generation(vad_obligation.generation)
-            self._remember_seen_response_id(response_id)
-            self._retire_cancel_sends_for_generation(vad_obligation.generation)
-            self._release_lane_if_clear()
-            return ResponseTerminalResult(
-                ResponseTerminalKind.UNOWNED_SERVER,
-                response_id,
-                vad_obligation.generation,
-            )
-
-        if owner is None:
-            if not self._response_created_expected:
-                self._remember_seen_response_id(response_id)
-                # On a declared never-announcing protocol, the terminal frame
-                # is the only lifecycle boundary even for automatic/provider-
-                # initiated responses. Preserve the legacy host finalization
-                # path while keeping announcing protocols strict.
-                return ResponseTerminalResult(
-                    ResponseTerminalKind.UNOWNED_SERVER,
-                    response_id,
-                    None,
-                )
-            # Unknown or duplicate terminal: it owns no live lifecycle and
-            # cannot release a different response merely because the lane is
-            # busy.
-            self._release_lane_if_clear()
-            return ResponseTerminalResult(
-                ResponseTerminalKind.STALE,
-                response_id,
-                None,
-            )
-
-        owner_lifetime = owner.lifecycle
-        owner_unannounced = (
-            owner_lifetime is not None
-            and owner_lifetime.announced_at is None
-            and not owner.ticket.started.done()
-        )
-        if not owner_unannounced:
-            # The owner already has a different concrete identity. This frame
-            # is stale or belongs to an already-retired response.
-            return ResponseTerminalResult(
-                ResponseTerminalKind.STALE,
-                response_id,
-                None,
-            )
-
-        if response_id is not None:
+                    self._server_response_ids.pop(response_id, None)
+                    if not self._server_response_ids:
+                        # The separately tracked server turn has ended. The
+                        # pending owner still holds dispatch serialization,
+                        # but a later response.create rejection must be able
+                        # to detach it instead of mistaking this
+                        # already-terminal turn for a live id-less response.
+                        self._cancel_stale_release_timer()
+                        self._server_response_active = False
+                    return
+            if owner.response_id is not None:
+                if response_id != owner.response_id:
+                    # A server-initiated response finished while the owner's
+                    # own response is still running. Releasing the lane here
+                    # would let a queued response.create collide with it, so
+                    # treat the mismatched terminal as an orphan.
+                    self._server_response_ids.pop(response_id, None)
+                    return
+            elif response_id in self._server_response_ids:
+                # The owner's response.created carried no id, but this
+                # terminal matches a known server-initiated response, so it
+                # cannot be the owner's own terminal.
+                del self._server_response_ids[response_id]
+                return
+        elif response_id is not None:
+            # No owner: a server-initiated response reached its terminal
+            # state, so its id no longer holds the lane.
             if response_id == self._adoptable_announcement:
-                # Preserve adoption evidence; the started timeout still waits
-                # to see whether this owner's own create answers.
+                # Same evidence as the owner branch above, one instant
+                # earlier. A provider that answers the conversation item
+                # directly can finish a short reply before the item-ack
+                # barrier releases and the owner slot is filled, and the
+                # terminal's arrival time carries no information the
+                # announcement's did not — the serial check already proved the
+                # announcement belongs to this request's window. Without this,
+                # the id ends up neither live nor known-finished, adoption
+                # refuses it, and the started timeout tears the socket down.
                 self._adoptable_terminal_status = response_status or "completed"
-            # Preserve #2642: a route that never announces response.created
-            # identifies its owner with the first unseen id-bearing terminal.
-            owner.response_id = response_id
-            assert owner_lifetime is not None
-            owner_lifetime.response_id = response_id
-            owner_lifetime.announced_at = asyncio.get_running_loop().time()
-            self._remember_seen_response_id(response_id)
-            owner.ticket.started.set_result(None)
-            logger.info(
-                "terminal %s claimed by %s: this connection has never "
-                "announced a response",
-                response_id,
-                owner.source,
-            )
-            generation = owner_lifetime.generation
-            if self._response_created_expected:
-                self._open_retired_created_window(
-                    owner,
-                    terminal_response_id=response_id,
-                    terminal_status=response_status or "completed",
+            self._server_response_ids.pop(response_id, None)
+        if owner is not None:
+            if not owner.ticket.started.done():
+                owner.ticket.started.set_exception(
+                    RuntimeError("response terminated before response.created")
                 )
-            self._resolve_owner_terminal(
-                owner,
-                terminal_error=terminal_error,
-                created_was_missing=False,
-            )
-            return ResponseTerminalResult(
-                ResponseTerminalKind.OWNER,
-                response_id,
-                generation,
-            )
-
-        # The id-less terminal overtook its created frame. Retire the completed
-        # owner, but hold its generation's bounded announcement window in
-        # front of dispatch so a delayed created cannot claim a successor.
-        self._open_retired_created_window(
-            owner,
-            terminal_response_id=response_id,
-            terminal_status=response_status or "completed",
-        )
-        generation = owner_lifetime.generation
-        self._resolve_owner_terminal(
-            owner,
-            terminal_error=terminal_error,
-            created_was_missing=True,
-        )
-        return ResponseTerminalResult(
-            ResponseTerminalKind.OWNER,
-            response_id,
-            generation,
-        )
+            if owner.terminal is not None and not owner.terminal.done():
+                # A terminal event always resolves the lifecycle waiter,
+                # including an acknowledged response.cancel. Keep the
+                # response outcome separate so cancellation/timeout cleanup
+                # does not mistake a non-success terminal for a missing
+                # terminal and fail-close a healthy connection.
+                owner.terminal_error = terminal_error
+                owner.terminal.set_result(None)
+            if owner_was_unannounced and response_id is None:
+                self._retired_created_deadline = (
+                    asyncio.get_running_loop().time()
+                    + _SERVER_VAD_RESPONSE_STARTED_TIMEOUT
+                )
+            self._detach_response_owner(owner)
+        # The owner (if any) has terminated; the lane opens only once no
+        # server-initiated response is still live, so a queued
+        # response.create cannot overlap with one whose terminal is pending.
+        self._release_lane_if_clear()
 
     def notify_error(self, event_id: str | None, message: str) -> None:
         current = self._current
@@ -2169,96 +1204,32 @@ class RealtimeResponseArbiter:
             return
         target.interrupted = True
         target.interrupt_event.set()
-        lifetime = target.lifecycle
-        if lifetime is None:
-            return
-        lifecycle_generation = lifetime.generation
-        existing = next(
-            (
-                task
-                for task in self._cancel_send_tasks_by_lifecycle.get(
-                    lifecycle_generation, set()
-                )
-                if not task.done()
-            ),
-            None,
-        )
-        if existing is not None:
-            return
         task = asyncio.create_task(
-            self._send_cancel_best_effort(
-                self._connection_generation,
-                lifecycle_generation,
-            )
+            self._send_cancel_best_effort(self._connection_generation)
         )
+        target.cancel_send_task = task
         self._cancel_send_tasks.add(task)
-        self._cancel_send_tasks_by_lifecycle.setdefault(
-            lifecycle_generation, set()
-        ).add(task)
-        task.add_done_callback(
-            lambda completed: self._cancel_send_finished(
-                completed, lifecycle_generation
-            )
-        )
 
-    def _cancel_send_finished(
-        self,
-        task: asyncio.Task[None],
-        lifecycle_generation: int,
-    ) -> None:
-        self._cancel_send_tasks.discard(task)
-        self._retiring_cancel_send_tasks.discard(task)
-        lifecycle_tasks = self._cancel_send_tasks_by_lifecycle.get(
-            lifecycle_generation
-        )
-        if lifecycle_tasks is None:
-            return
-        lifecycle_tasks.discard(task)
-        if not lifecycle_tasks:
-            self._cancel_send_tasks_by_lifecycle.pop(
-                lifecycle_generation, None
-            )
+        def _finished(completed: asyncio.Task[None]) -> None:
+            self._cancel_send_tasks.discard(completed)
+            if target.cancel_send_task is completed:
+                target.cancel_send_task = None
 
-    async def _send_cancel_best_effort(
-        self,
-        generation: int,
-        lifecycle_generation: int | None = None,
-    ) -> None:
+        task.add_done_callback(_finished)
+
+    async def _send_cancel_best_effort(self, generation: int) -> None:
         if generation != self._connection_generation:
             # The connection this cancel was aimed at is gone; sending now
             # would cancel an unrelated response on its replacement.
             return
-        if lifecycle_generation is not None:
-            if not self._generation_is_live(lifecycle_generation):
-                # The connection survived, but the lifecycle this cancel was
-                # created for did not. Never let an owner-scoped cancel drift
-                # into a successor generation.
-                return
         try:
-            event: dict[str, Any] = {
-                "type": "response.cancel",
-                "_neko_connection_generation": generation,
-            }
-            if lifecycle_generation is not None:
-                event["_neko_lifecycle_generation"] = lifecycle_generation
-            await self._send_event(event)
+            await self._send_event({"type": "response.cancel"})
         except Exception as exc:
             # Delivery is best-effort: if the cancel cannot reach the server,
             # the owner's started/terminal timeout still fail-closes the lane.
             logger.debug(
                 "late-error response.cancel send failed: %s", type(exc).__name__
             )
-
-    def cancel_send_is_current(
-        self,
-        connection_generation: int,
-        lifecycle_generation: int | None,
-    ) -> bool:
-        if connection_generation != self._connection_generation:
-            return False
-        if lifecycle_generation is None:
-            return True
-        return self._generation_is_live(lifecycle_generation)
 
     def notify_connection_lost(self, reason: str = "realtime connection lost") -> None:
         self._mark_connection_lost(reason, fail_current_tickets=True)
@@ -2273,8 +1244,6 @@ class RealtimeResponseArbiter:
 
         tasks = list(self._cancel_send_tasks)
         self._cancel_send_tasks.clear()
-        self._retiring_cancel_send_tasks.update(tasks)
-        self._cancel_send_tasks_by_lifecycle.clear()
         for task in tasks:
             task.cancel()
 
@@ -2290,11 +1259,11 @@ class RealtimeResponseArbiter:
         # Wake a worker parked behind the dispatch barrier so it can observe
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
+        self._server_response_active = False
         self._server_vad_response_pending = False
-        self._server_vad_pending_generation = None
-        self._response_lifetimes.clear()
-        self._retired_created_windows.clear()
-        self._idless_retirements.clear()
+        self._server_response_ids.clear()
+        self._idless_server_response_at = None
+        self._retired_created_deadline = None
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
@@ -2310,7 +1279,10 @@ class RealtimeResponseArbiter:
             self._wake_current_with_error(target, exc)
             if fail_current_tickets:
                 self._fail_ticket(target.ticket, exc)
-        self._response_owner = None
+        if owner is not None:
+            self._detach_response_owner(owner)
+        else:
+            self._response_owner = None
         self._idle.set()
         self._fail_queued(exc)
 
@@ -2320,22 +1292,21 @@ class RealtimeResponseArbiter:
         self._cancel_pending_cancel_sends()
         self._connection_available = True
         self._dispatch_allowed.set()
-        self._response_lifetimes.clear()
-        self._retired_created_windows.clear()
-        self._idless_retirements.clear()
+        self._server_response_ids.clear()
+        self._idless_server_response_at = None
+        self._retired_created_deadline = None
         # Response ids are scoped to a connection: a provider that restarts
         # its numbering would otherwise have the new session's first terminal
         # recognised as one this arbiter has "already seen" and withheld from
         # its owner.
         self._seen_response_ids.clear()
         self._adoptable_announcement = None
-        self._adoptable_generation = None
         self._adoptable_terminal_status = None
         self._server_vad_response_pending = False
-        self._server_vad_pending_generation = None
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         if self._current is None and self._response_owner is None:
+            self._server_response_active = False
             self._idle.set()
         self._ensure_worker()
 
@@ -2515,7 +1486,11 @@ class RealtimeResponseArbiter:
             # Same shape without an owner: announced by speech_stopped, no id
             # until its response.created arrives.
             return "an announced server-VAD response has no id yet"
-        if self._idless_server_response_live():
+        if self._idless_server_response_live() or (
+            self._server_response_active
+            and self._response_owner is None
+            and not self._server_response_ids
+        ):
             # A response is live, nobody owns it, and it supplied no id — an
             # id-less proxy's orphan. Nothing identifies it, so neither its
             # deltas nor its terminal can be told from the next turn's, and a
@@ -2662,11 +1637,8 @@ class RealtimeResponseArbiter:
             # discard a live response's identity, and the next queued create
             # would then overlap it. Nothing about the abandoned owner makes
             # those untrustworthy.
-            if self._response_owner is released_owner:
-                if released_owner is not None:
-                    self._retire_cancel_sends_for_owner(released_owner)
-                    self._remove_lifetime(released_owner.lifecycle)
-                self._response_owner = None
+            if released_owner is not None:
+                self._detach_response_owner(released_owner)
             # Which is why the lane reopens through the ordinary release check
             # rather than by force — it already knows to keep the lane closed
             # while a live server response is being tracked, and to arm the
@@ -2868,8 +1840,6 @@ class RealtimeResponseArbiter:
             if not self._connection_available:
                 raise ConnectionError("realtime connection is unavailable")
             self._idle.clear()
-            if self._before_owner_dispatch is not None:
-                await self._before_owner_dispatch()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
             # The causation claims arm HERE, immediately before the first
@@ -2879,7 +1849,6 @@ class RealtimeResponseArbiter:
             queued.adoption.arm_on_send(
                 self._adoptable_serial, self._item_created_serial
             )
-            queued.pre_response_send_started = bool(queued.events_before_response)
             for event in queued.events_before_response:
                 if queued.interrupted:
                     raise RuntimeError("response dispatch interrupted")
@@ -2920,19 +1889,14 @@ class RealtimeResponseArbiter:
             if self._response_owner is not None:
                 raise RuntimeError("response owner is already assigned")
             queued.terminal = loop.create_future()
-            self._new_lifetime(owner=queued, announced=False)
             self._response_owner = queued
             queued.response_send_started = True
             try:
                 await self._worker_send(queued.response_event)
             except Exception:
-                if self._response_owner is queued:
-                    self._response_owner = None
-                self._retire_cancel_sends_for_owner(queued)
-                self._remove_lifetime(queued.lifecycle)
+                self._detach_response_owner(queued)
                 if not queued.terminal.done():
                     queued.terminal.cancel()
-                self._release_lane_if_clear()
                 raise
             if queued.server_vad_won_during_response_send:
                 # The possibly-live explicit create is now indistinguishable
@@ -2946,34 +1910,9 @@ class RealtimeResponseArbiter:
                     and not queued.ticket.started.cancelled()
                     else None
                 )
-                lifetime = queued.lifecycle
-                if provider_error is None and lifetime is not None:
-                    # The transport write completed, so the explicit create may
-                    # still produce its own announcement even though VAD won the
-                    # owner slot. Preserve that second causal debt separately;
-                    # the next created frame may pay one obligation, never both.
-                    self._append_created_obligation(
-                        _CreatedObligation(
-                            generation=lifetime.generation,
-                            expires_at=(
-                                asyncio.get_running_loop().time()
-                                + min(
-                                    max(queued.response_started_timeout, 0.01),
-                                    _RETIRED_CREATED_WINDOW_MAX,
-                                )
-                            ),
-                            source="detached_explicit_create",
-                            created_is_live=True,
-                            suppress_output=queued.suppress_output,
-                        )
-                    )
-                if self._response_owner is queued:
-                    self._response_owner = None
-                self._retire_cancel_sends_for_owner(queued)
-                self._remove_lifetime(queued.lifecycle)
+                self._detach_response_owner(queued)
                 if not queued.terminal.done():
                     queued.terminal.cancel()
-                self._release_lane_if_clear()
                 if provider_error is not None:
                     raise provider_error
                 raise RuntimeError(
@@ -2990,12 +1929,7 @@ class RealtimeResponseArbiter:
                 cancel_write_failed = False
                 try:
                     try:
-                        lifetime = queued.lifecycle
-                        if lifetime is not None:
-                            await self._send_cancel_for_lifetime(
-                                lifetime.generation,
-                                from_worker=True,
-                            )
+                        await self._worker_send({"type": "response.cancel"})
                     except Exception:
                         cancel_write_failed = True
                         raise
@@ -3037,9 +1971,9 @@ class RealtimeResponseArbiter:
                 # else would have left this request's own create to be
                 # rejected or announced, and either resolves ``started``
                 # instead of timing out.
-                adopted_generation = self._adoptable_generation_for(queued)
-                if adopted_generation is not None:
-                    self._adopt_announcement(queued, adopted_generation)
+                adopted_id = self._adoptable_id_for(queued)
+                if adopted_id is not None:
+                    self._adopt_announcement(queued, adopted_id)
                 else:
                     await self._cancel_after_timeout(queued, started_timeout)
             try:
@@ -3074,10 +2008,9 @@ class RealtimeResponseArbiter:
                     and not queued.ticket.started.cancelled()
                     and queued.ticket.started.exception() is not None
                 )
-                owner_unannounced = (
-                    queued.lifecycle is None or queued.lifecycle.announced_at is None
-                )
-                if started_failed and owner_unannounced:
+                if not self._server_response_active or (
+                    started_failed and self._server_response_ids
+                ):
                     # A response.create rejected before response.created owns
                     # no live response. Detach it even when a server-VAD
                     # response started during the preceding item-ack wait.
@@ -3085,9 +2018,7 @@ class RealtimeResponseArbiter:
                     # holding the lane until its own terminal event. For an
                     # id-less server response, retain the owner as the only
                     # safe terminal correlation instead of reopening early.
-                    self._response_owner = None
-                    self._retire_cancel_sends_for_owner(queued)
-                    self._remove_lifetime(queued.lifecycle)
+                    self._detach_response_owner(queued)
                     if queued.terminal is not None and not queued.terminal.done():
                         queued.terminal.cancel()
                     self._release_lane_if_clear()
@@ -3099,7 +2030,8 @@ class RealtimeResponseArbiter:
                 queued.completed.set_result(None)
             if not requeued:
                 self._queued_by_ticket.pop(id(queued.ticket), None)
-            self._release_lane_if_clear()
+            if not self._server_response_active:
+                self._idle.set()
 
     def _yield_to_higher_priority(self, queued: _QueuedResponse) -> bool:
         """Put a pre-created request back if a user turn arrived while paused."""
@@ -3121,12 +2053,7 @@ class RealtimeResponseArbiter:
         cancel_write_failed = False
         try:
             try:
-                lifetime = queued.lifecycle
-                if lifetime is not None:
-                    await self._send_cancel_for_lifetime(
-                        lifetime.generation,
-                        from_worker=True,
-                    )
+                await self._worker_send({"type": "response.cancel"})
             except Exception:
                 # ``_worker_send``'s finally has already lowered the in-flight
                 # flag, so without remembering this the escalation below would

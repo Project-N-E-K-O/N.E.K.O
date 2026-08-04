@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-
 from ._shared import (
     Any,
     Dict,
@@ -163,12 +161,7 @@ class _ToolingMixin:
                 is_error=True, error_message=str(e),
             )
 
-    async def _send_tool_result_openai_realtime(
-        self,
-        result: ToolResult,
-        *,
-        connection_generation: int | None = None,
-    ) -> None:
+    async def _send_tool_result_openai_realtime(self, result: ToolResult) -> None:
         """OpenAI Realtime / GLM Realtime / StepFun / Qwen / Free —
         send tool result via ``conversation.item.create`` of type
         ``function_call_output``, then ``response.create``.
@@ -184,11 +177,6 @@ class _ToolingMixin:
           internal registry tracking and must never be sent back to the
           server, or the request is likely to be rejected.
         """
-        if (
-            connection_generation is not None
-            and connection_generation != self._client_connection_generation
-        ):
-            return
         item: Dict[str, Any] = {
             "type": "function_call_output",
             "output": result.output_as_json_string(),
@@ -203,23 +191,10 @@ class _ToolingMixin:
             "type": "conversation.item.create",
             "item": item,
         }
-        arbiter = self._ensure_response_arbiter()
-        ticket = None
-        try:
-            ticket = await arbiter.enqueue(
-                source="tool_result",
-                events_before_response=(item_event,),
-                response_event={"type": "response.create"},
-                priority=5,
-            )
-            if (
-                connection_generation is not None
-                and connection_generation != self._client_connection_generation
-            ):
-                await arbiter.cancel_ticket(ticket, wait=False)
-                return
-            await ticket.sent
-        except asyncio.CancelledError:
-            if ticket is not None:
-                await asyncio.shield(arbiter.cancel_ticket(ticket, wait=False))
-            raise
+        ticket = await self._ensure_response_arbiter().enqueue(
+            source="tool_result",
+            events_before_response=(item_event,),
+            response_event={"type": "response.create"},
+            priority=5,
+        )
+        await ticket.sent
