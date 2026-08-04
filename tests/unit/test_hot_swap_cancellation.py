@@ -569,6 +569,67 @@ async def test_final_swap_retracted_claim_aborts_pending_session():
 
 
 @pytest.mark.asyncio
+async def test_final_swap_rechecks_retraction_after_core_voice_lock_wait():
+    """Retraction while the shared voice lock is held must not close old."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _make_fake_realtime_session("old")
+    new_session = _make_fake_realtime_session("pending")
+    prime_entered, allow_prime = _install_passive_prime_barrier(
+        new_session,
+        expected_text="retracted during voice lock wait",
+    )
+
+    class _CoreVoiceLockBarrier:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def __aenter__(self):
+            self.entered.set()
+            await self.release.wait()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    voice_lock = _CoreVoiceLockBarrier()
+    mgr._core_voice_session_swap_lock = voice_lock
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("retracted during voice lock wait")
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    swap_task = mgr.final_swap_task
+    await asyncio.wait_for(prime_entered.wait(), timeout=5)
+    allow_prime.set()
+    await asyncio.wait_for(voice_lock.entered.wait(), timeout=5)
+    callback[DELIVERY_RETRACTED_KEY] = True
+    mgr._purge_retracted_agent_callbacks()
+    assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+    voice_lock.release.set()
+
+    try:
+        await asyncio.wait_for(swap_task, timeout=10)
+
+        assert mgr.session is old_session
+        assert not old_session.closed and old_session.ws is not None
+        assert new_session.closed
+        assert mgr.pending_agent_callbacks == []
+        assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+        assert delivery_ack.done() and delivery_ack.result() is False
+        assert mgr.is_hot_swap_imminent is False
+    finally:
+        await _drain_task(mgr.message_handler_task)
+
+
+@pytest.mark.asyncio
 async def test_final_swap_rechecks_retraction_after_waiting_for_promote_lock():
     """A claim retracted while promote waits for the CAS lock must abort."""
     mgr = _make_swap_manager()

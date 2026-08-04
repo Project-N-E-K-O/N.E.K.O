@@ -460,9 +460,11 @@ def test_flood_guard_rejects_incoming_when_older_send_started(monkeypatch):
     "ownership_key",
     [VOICE_DELIVERY_COMMITTED_KEY, SWAP_PRIME_DELIVERY_CLAIM_KEY],
 )
+@pytest.mark.parametrize("pre_submitted", [False, True])
 def test_flood_rejected_newer_does_not_stale_provider_owned_old(
     monkeypatch,
     ownership_key,
+    pre_submitted,
 ):
     import config
 
@@ -474,8 +476,19 @@ def test_flood_rejected_newer_does_not_stale_provider_owned_old(
     old_seq = old["_coalesce_submit_seq"]
 
     rejected_ack = _FakeAckFuture()
-    newer = _passive_cb("flood rejected newer", coalesce_key="state")
+    newer = _proactive_cb("flood rejected newer", coalesce_key="state")
     newer[DELIVERY_ACK_FUTURE_KEY] = rejected_ack
+    if pre_submitted:
+        class _ManagerStub:
+            def submit(self, callback, **_kwargs):
+                self.submitted = callback
+
+        manager = _ManagerStub()
+        mgr.proactive_manager = manager
+        mgr.is_goodbye_silent = lambda: False
+        mgr.submit_proactive_callback(newer, coalesce_key="state")
+        assert manager.submitted is newer
+        assert mgr._coalesce_latest["state"] == newer["_coalesce_submit_seq"]
     mgr.enqueue_agent_callback(newer)
 
     assert mgr.pending_agent_callbacks == [old]

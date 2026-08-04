@@ -2420,6 +2420,9 @@ class LifecycleMixin:
                 core_voice_session_lock = asyncio.Lock()
                 self._core_voice_session_swap_lock = core_voice_session_lock
             async with core_voice_session_lock:
+                _abort_if_passive_claim_retracted(
+                    "while waiting for core voice swap lock"
+                )
                 # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
                 if old_main_session:
                     try:

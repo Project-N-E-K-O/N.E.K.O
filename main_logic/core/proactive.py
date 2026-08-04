@@ -2326,7 +2326,6 @@ class ProactiveMixin:
             # snapshots, bounded only by the drop-oldest flood guard below. An
             # empty key never coalesces, so no existing producer regresses.
             new_key = str(callback.get("coalesce_key") or "").strip()
-            previous_latest_seq = None
             if new_key:
                 # Submission-order stamp: cues carry a monotonic seq assigned at
                 # submit_proactive_callback (manager-held respond cues) or here
@@ -2340,7 +2339,6 @@ class ProactiveMixin:
                 # Feed the pull-model staleness map: delivery-point guards
                 # (_retract_stale_coalesced / _coalesce_entry_is_stale) compare
                 # in-flight snapshot entries against this latest seq.
-                previous_latest_seq = getattr(self, "_coalesce_latest", {}).get(new_key)
                 self._note_coalesce_submission(new_key, new_seq)
                 incoming_superseded = False
                 dropped = 0
@@ -2466,13 +2464,23 @@ class ProactiveMixin:
                 and any(dropped is callback for dropped in flood_dropped)
                 and getattr(self, "_coalesce_latest", {}).get(new_key) == new_seq
             ):
-                # Flood rejection means this cue never became pending. Undo only
-                # this enqueue's latest-seq advance so the provider-owned older
-                # cue does not become stale merely because its successor was
-                # rejected. There is no await in this method, so the equality
-                # guard also prevents clobbering a genuinely newer submission.
-                if isinstance(previous_latest_seq, int):
-                    self._coalesce_latest[new_key] = previous_latest_seq
+                # Flood rejection means this cue never became pending. Rebuild
+                # latest from entries that actually survived in either live
+                # queue. This also covers manager-held respond cues, whose seq
+                # was already recorded at submit time before this enqueue.
+                surviving_seqs = [
+                    entry.get("_coalesce_submit_seq")
+                    for entry in (
+                        list(self.pending_agent_callbacks)
+                        + list(self.pending_extra_replies)
+                    )
+                    if isinstance(entry, dict)
+                    and not entry.get(DELIVERY_RETRACTED_KEY)
+                    and str(entry.get("coalesce_key") or "").strip() == new_key
+                    and isinstance(entry.get("_coalesce_submit_seq"), int)
+                ]
+                if surviving_seqs:
+                    self._coalesce_latest[new_key] = max(surviving_seqs)
                 else:
                     self._coalesce_latest.pop(new_key, None)
             self._enforce_pending_extra_reply_queue_limit(
