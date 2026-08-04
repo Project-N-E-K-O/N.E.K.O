@@ -2473,7 +2473,7 @@ def test_the_preposed_template_spacing_is_atomic():
     assert head.count(r"(?>\s*)") == 4, head.count(r"(?>\s*)")
     assert head.count(f"(?>{D._ZH_HSPACE})") == 2 * D._ZH_PAUSE_THEN_JIU.count(
         f"(?>{D._ZH_HSPACE})"
-    ) == 4
+    ) == 6
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -2873,14 +2873,18 @@ def test_a_pause_before_the_trigger_is_consumed(text, expected):
 def test_the_separator_is_shared_by_both_sides():
     """两侧共用同一个常量，别各写各的——同一件事维护两份必然漂移（#2655）。"""  # noqa: DOCSTRING_CJK
     sources = _zh_pattern_sources()
-    # 模板 2 的两处换成了 _ZH_PAUSE_THEN_JIU（同一张标点表 + 停顿后的 ``就``），
-    # 所以裸分隔符只剩模板 3 和模板 4 的三处。两个常量的标点字符类必须一致。
-    assert sum(D._ZH_TOPIC_SEPARATOR in raw for raw in sources) == 3
+    # 模板 2 的两处换成了 _ZH_PAUSE_THEN_JIU（同一张标点表 + 停顿后的 ``就``）。
+    # ⚠️ 计数是 4 不是 3：``就`` 之后那个可选停顿的写法正好**就是** _ZH_TOPIC_SEPARATOR，
+    # 所以模板 2 的串里也含着它。这两个常量本来就该是同源的，计数重合是正常的。
+    assert sum(D._ZH_TOPIC_SEPARATOR in raw for raw in sources) == 4
     assert sum(D._ZH_PAUSE_THEN_JIU in raw for raw in sources) == 1
+    assert D._ZH_TOPIC_SEPARATOR in D._ZH_PAUSE_THEN_JIU
     # ⚠️ 两个常量必须从**同一个**字符串派生，不是各抄一份——加分号那轮就是因为
     # 只改一处才发现的。
     klass = f"[{D._ZH_PAUSE_CHARS}]"
-    assert D._ZH_PAUSE_THEN_JIU.count(klass) == 1
+    # ⚠️ _ZH_PAUSE_THEN_JIU 里有**两处**标点类：``就`` 前面一处、后面一处
+    # （``工作，这件事，就，别提了。``）。
+    assert D._ZH_PAUSE_THEN_JIU.count(klass) == 2
     assert D._ZH_TOPIC_SEPARATOR.count(klass) == 1
     # 分句标点收，句子终结符（。！？）刻意不收：收了指令就能跨句绑定。
     assert set(D._ZH_PAUSE_CHARS) == set("，、：；,:;")
@@ -2927,11 +2931,11 @@ def test_no_zh_template_consumes_deshi_after_the_topic():
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("別再提工作Please。", "工作"),
         ("别再提工作PLEASE。", "工作"),
-        ("別再提工作 Please。", "工作"),
-        ("我不願意說工作 Please。", "工作"),
+        ("別再提工作 PLEASE。", "工作"),
+        ("我不願意說工作 PLEASE。", "工作"),
         ("别再提工作please。", "工作"),
+        ("別再提工作 please。", "工作"),
     ],
 )
 def test_ascii_tails_are_matched_case_insensitively(text, expected):
@@ -3016,7 +3020,13 @@ def test_the_left_boundary_is_a_clause_start_class_not_an_enumeration():
     """  # noqa: DOCSTRING_CJK
     assert not hasattr(D, "_ZH_JA_LABEL_TAIL")
     assert "一-鿿" not in D._ZH_CLAUSE_START_LEFT
-    assert f"(?<![^{D._ZH_CLAUSE_START_LEFT}])" in D._ZH_NEG_VERB_EVIDENCE
+    assert (
+        f"(?<![^{D._ZH_CLAUSE_START_LEFT}{D._ZH_POLITE_BEFORE_NEG}])"
+        in D._ZH_NEG_VERB_EVIDENCE
+    )
+    # ⚠️ 敬语 / 主语只在**这一支**放行（``再`` 已经消歧），别渗到别处。
+    assert D._ZH_POLITE_BEFORE_NEG == D._ZH_SUBJECT_CHARS + "請"
+    assert "請" not in D._ZH_SUBJECT_CHARS
     # 反向：能起小句的那些左邻照常放行。
     # ⚠️ 判别得出这张表大小的用例有两个前提，缺一个就测不出来：
     # 1. 话题要**带日文语法**（``君の名は``）。话题是纯中文时守卫的第三条判据本来就
@@ -3262,7 +3272,7 @@ def test_the_ambiguous_verb_branch_needs_both_the_boundary_and_zai():
     head = flat.split(shared)[0]
     assert head.endswith("(?:%s)再(?:" % "|".join(D._ZH_NEG_JA_AMBIGUOUS)), head
     assert head[head.rindex("(?<!"):].startswith(
-        f"(?<![^{D._ZH_CLAUSE_START_LEFT}])"
+        f"(?<![^{D._ZH_CLAUSE_START_LEFT}{D._ZH_POLITE_BEFORE_NEG}])"
     ), head
 
 
@@ -3803,11 +3813,35 @@ def test_ascii_cleanup_words_inside_quotes_are_protected(text, expected):
 
 
 @pytest.mark.parametrize(
-    "text", ["别再提工作 please。", "別再提工作 PLEASE。", "别再提工作 Please。"]
+    "text", ["别再提工作 please。", "別再提工作 PLEASE。", "别再提工作PLEASE。"]
 )
 def test_ascii_cleanup_words_outside_quotes_are_still_stripped(text):
     """反向：门控只管**引号之内**，引号外的照旧剥掉。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {"工作"}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Never Please is off limits.", "Never Please"),
+        ("Never Please别提了。", "Never Please"),
+        ("no menciones Never Please", "Never Please"),
+        ("别再提Never Please。", "Never Please"),
+        ("别再提工作 Please。", "工作 Please"),
+    ],
+)
+def test_a_title_cased_ascii_word_is_part_of_the_name(text, expected):
+    """⚠️ 无条件忽略大小写会把**首字母大写**的题名词削掉。
+
+    ``Never Please is off limits.`` 存成 ``Never``，parent 是完整的（codex P2
+    反向——忽略大小写本身也是 codex 要求的，这里是把判据收窄到全大写）。
+    首字母大写在英文里正是「这是名字的一部分」的信号；全大写是对同一个客套词的强调。
+    代价方向和 CJK 那批一致：宁可多一个词，不可吃掉名字的一半。
+    """  # noqa: DOCSTRING_CJK
+    # ⚠️ 用**全 locale** 提取：这一族里有 en / es 模板的句子，_zh_terms 会把它们滤掉，
+    # 断言就成了 set() == set() 的空断言（写这条时踩到的）。
+    got = {term for _locale, _kind, term in extract_directives(text)}
+    assert got == {expected}, got
 
 
 @pytest.mark.parametrize(
@@ -3894,3 +3928,101 @@ def test_mismatched_bracket_types_do_not_pair(text, expected):
     term 里。判别用例必须是**类型不匹配**的一对（变异跑出来的）。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+# ── 46. 就 后的停顿 / 敬语在 再 支放行 / 裸 だ 也要汉字词干 ──
+
+
+@pytest.mark.parametrize("pause", ["，", "、", "；", ",", ";"])
+def test_a_pause_after_jiu_is_consumed_too(pause):
+    """``就`` **之后**也会再停顿一次（``工作，这件事，就，别提了。``）。
+
+    只收前面那个的话，正则从第一个逗号之后重新起匹配、存下填充词 ``这件事``——
+    parent 存的是 ``工作，这件事，就``，里面至少含着真话题（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"工作{pause}这件事{pause}就{pause}别提了。") == {"工作"}
+    assert _zh_terms(f"工作{pause}就{pause}别提了。") == {"工作"}
+
+
+def test_a_pause_after_jiu_does_not_eat_lexical_jiu():
+    """反向：没有停顿时 ``就`` 一个字都不吃（``成就`` 那一族）。"""  # noqa: DOCSTRING_CJK
+    for term in ("成就", "迁就", "功成名就"):
+        assert _zh_terms(f"{term}别提了。") == {term}
+
+
+@pytest.mark.parametrize("polite", list("你妳您咱请們請"))
+def test_a_polite_marker_is_accepted_before_the_zai_branch(polite):
+    """``再`` 已经把歧义解掉了，左界只是为了挡 ``地域別再提案`` 那种后缀。
+
+    主语 / 敬语后面不可能是那个后缀。不放行的话 ``請別再提君の名は。`` 整条
+    0 命中，而同句简体是好的（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{polite}別再提君の名は。") == {"君の名は"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ⚠️ 敬语只在**带 再** 那一支放行：没有 再 就还是交给日文守卫
+        "請別提案をお願いします。",
+        "請別提君の名は。",
+        # 名词 + 別 那一族（〜別 后缀）照旧全挡
+        "地域別再提案をお願いします。",
+        "個別再提案をお願いします。",
+        "世代別再講座で話します。",
+        # 日文汉字主语不许放行
+        "我別再提君の名は。",
+        "他別再提案をお願いします。",
+    ],
+)
+def test_the_polite_allowance_does_not_open_the_guard(text):
+    """⚠️ ``請`` 只在 ``再`` 那一支放行，**不能**进 _ZH_SUBJECT_CHARS。
+
+    进了那张表就等于给无 ``再`` 的 ``請別提案をお願いします。`` 开洞。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 词汇用法：假名接着 だ
+        ("別提ただ。", "ただ"),
+        ("別提まだ。", "まだ"),
+        ("别提ただ。", "ただ"),
+        ("別再提ただ。", "ただ"),
+        ("你別提ただ。", "ただ"),
+    ],
+)
+def test_a_bare_copula_needs_a_kanji_stem(text, expected):
+    """裸 ``だ`` 也要**汉字词干**，和 ``あり|なし`` 同一条判据。
+
+    日文复合句里 ``だ`` 前面是汉语词干（案だ / 座だ / 話だ）；假名接着它就是词的
+    一部分——只锚右边的话繁中 ``別提ただ。`` 整条 0 命中，而同句简体是好的（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "别再提工作 PLEASE好吗？",
+        "别再提工作PLEASE好吗？",
+        "别再提工作 PLEASE了好吗。",
+        "我不想聊工作 PLEASE可以吗？",
+    ],
+)
+def test_the_tail_slice_comes_from_the_current_string(text):
+    """尾巴切片必须从**当前**的 ``s`` 上取，不是原始 term。
+
+    ⚠️ 判别用例要让 ASCII 尾词**剥完别的之后才露出来**：先剥反问短语 ``好吗``，
+    ``PLEASE`` 才走到词尾。直接写 ``工作 PLEASE。`` 的话正则早就把尾巴分好了，
+    拿原始串切也一样对，测了个寂寞（变异跑出来的）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {"工作"}, _zh_terms(text)
+
+
+@pytest.mark.parametrize("text", ["別提案だ。", "「別講座だ。」", "別談話だ。"])
+def test_a_kanji_stem_copula_is_still_japanese(text):
+    """反向：汉字词干那一族照旧全挡。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
