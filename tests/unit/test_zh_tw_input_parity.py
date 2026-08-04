@@ -6398,11 +6398,14 @@ def test_a_concessive_frame_still_opens_on_a_real_clause(frame, head):
      "Could you please play Yellow by Coldplay?"],
 )
 def test_english_question_form_requests_still_parse(sentence):
-    """⚠️⚠️ 切分只保留**全角** `？`，不保留 ASCII `?`。
+    """⚠️⚠️ 切分**两种问号都保留**，剥离由解析入口 `rstrip("？?")` 完成；
+    这条验的是**剥掉之后英文点歌仍能匹配**。
 
-    第七十轮「保留问号」的第一版两个都留，英文疑问式点歌当场全线失效——
+    第七十轮「保留问号」的第一版两个都留、不剥，英文疑问式点歌当场全线失效——
     `Can you play Yellow?` 后面挂着 `?` 就匹配不上英文解析器
-    （tests/unit/test_proactive_service_boundary.py 6 条红）。
+    （tests/unit/test_proactive_service_boundary.py 6 条红）。第七十二轮
+    改成「只留全角」是个**只对一半输入成立**的修法（中文用户也打半角），
+    第七十四轮才改成两种都留、剥离下沉到两个入口。
 
     ⚠️ 那个文件不在我常跑的几个文件里，是**跑全量**才抓到的。这条用例把它挪到
     这里，让改动这条判据的人在常跑的文件里就能见红。
@@ -6578,17 +6581,22 @@ def test_jiushi_shares_the_same_seam_as_jiusuan(verb):
 # ⚠️⚠️⚠️ 这一组是**统一左界**的守卫。它替代了「逐个往黑名单补字」那条路。
 _FRAME_SEAM_WORDS = [
     # X要（名词/副词）+ 是
-    "摘要是", "纪要是", "概要是", "提要是", "纲要是", "简要是",
+    # ⚠️ 繁体那一半必须显式列：实现侧 `_ZH_FRAME_LEFT_BLACKLIST` 明确收了
+    # 紀/綱/簡/遷/將，也就是说繁体接缝是**实现支持的分支**，只列简体等于那半边
+    # 零覆盖。这个 PR 已经在同一个坑里栽过好几次（挨個 / 遭 / 忘记 / 鈴聲）。
+    "摘要是", "纪要是", "紀要是", "概要是", "提要是",
+    "纲要是", "綱要是", "简要是", "簡要是",
     "主要是", "次要是", "首要是", "重要是", "需要是", "只要是", "想要是",
     "硬要是", "非要是",
     # X就（动词）+ 是/算
-    "成就是", "迁就是", "造就是", "将就是", "俯就是", "屈就是", "高就是",
+    "成就是", "迁就是", "遷就是", "造就是", "将就是", "將就是",
+    "俯就是", "屈就是", "高就是",
     "另就是", "早就是", "也就是", "这就是",
-    "迁就算", "成就算", "造就算", "将就算",
+    "迁就算", "遷就算", "成就算", "造就算", "将就算", "將就算",
     # X即 + 使 / X不 + 管 / X忘 + 了
-    "立即使", "随即使", "当即使", "旋即使",
+    "立即使", "随即使", "隨即使", "当即使", "當即使", "旋即使",
     "才不管", "就不管", "都不管", "全不管",
-    "别忘了", "差忘了", "难忘了", "遗忘了",
+    "别忘了", "別忘了", "差忘了", "难忘了", "難忘了", "遗忘了", "遺忘了",
 ]
 
 
@@ -6632,8 +6640,11 @@ def test_a_frame_word_on_a_compound_seam_never_opens_a_frame(seam):
 def test_real_frames_survive_the_unified_left_bound(text):
     """⚠️ 统一左界的反向断言：真框架的左邻确实都落在那个闭集里。
 
-    这八句覆盖了闭集的每一类来源——播放动词（放）、连词（为/且）、标点（，）、
-    句首。少一类就说明闭集列漏了。
+    这八句覆盖三类左邻来源——播放动词（放）、连词（为）、标点（，）。
+    ⚠️ **不含句首**：句首带条件从句的句子本来就不是直接命令（实测 base 全是
+    False），端到端断言不出东西。`^` 那一支改由下面
+    `test_the_left_bound_start_anchor_is_live` **直接打正则**。
+    原来的 docstring 声称覆盖了句首，会让人以为 `^` 分支有回归保护（CodeRabbit）。
     """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
@@ -6706,7 +6717,7 @@ def test_bare_jiu_ends_a_conditional_scope_but_not_a_free_choice_one(frame):
 
 
 @pytest.mark.parametrize("verb", ["问", "問", "说", "說"])
-@pytest.mark.parametrize("frame", ["不管", "无论", "如果", "即使"])
+@pytest.mark.parametrize("frame", ["不管", "无论", "無論", "如果", "即使"])
 def test_a_frame_word_after_an_inquiry_verb_is_a_mention(verb, frame):
     """⚠️ 言说/探询动词后面的框架词是**被讨论的词**，不是框架：
     `问不管这个词是否合适`（base 是 False，第七十八轮）。
@@ -6720,3 +6731,46 @@ def test_a_frame_word_after_an_inquiry_verb_is_a_mention(verb, frame):
         assert banned not in mr._ZH_FRAME_LEFT_CONTEXT, banned
     text = f'我想停止播放前{verb}{frame}这个词是否合适'
     assert mr.is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("frame", ["如果", "要是", "无论", "無論", "不管", "即使"])
+def test_the_left_bound_start_anchor_is_live(frame):
+    """⚠️ `_ZH_FRAME_LEFT_BOUND` 的 `^` 分支**直接打正则**。
+
+    端到端断言不出来：句首带条件/任指从句的句子本来就不是直接取消命令
+    （`如果不好听就停止播放` 实测 base 就是 False），所以
+    `test_real_frames_survive_the_unified_left_bound` 那八句里一句句首的都没有。
+    上一版 docstring 却声称覆盖了句首——会让人以为这一支有回归保护（CodeRabbit）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    hit = mr._ZH_FREE_CHOICE_FRAME_RE.search(f'{frame}不好听就停止播放')
+    assert hit is not None and hit.start() == 0, frame
+
+
+def test_the_left_blacklist_and_the_left_bound_do_not_overlap():
+    """⚠️⚠️ **这条监控的是「统一左界包住逐词黑名单」这个关系本身。**
+
+    第七十六轮加统一左界之后，实测逐词黑名单的 59 个字**行为上已经全部冗余**：
+    清空整张表，53 个接缝词加 5 个已知句子照样全部正确处理。
+
+    ⚠️ 那为什么不删？因为它跟这个文件里删过四次的那些「死代码」**性质不同**：
+    右界表、单字 `因`/`既`、让步族右侧必需、白名单里的 `问`/`说` —— 那四个是
+    **从来没有失败用例支撑**的防御（或放宽）。这 59 个字每一个当初都对应一个真缺陷，
+    现在是被更宽的判据**包住**了，不是没根据；而且它零成本、方向安全。
+
+    ⚠️ 真正的风险是**有人往允许左邻集里加字**，悄悄把某个接缝重新打开。所以这里
+    钉住那个不变量：黑名单里的字**一个都不能出现在允许左邻集里**。谁往
+    `_ZH_FRAME_LEFT_CONTEXT` 里加了个跟黑名单撞车的字，这条当场见红。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    allowed = set(mr._ZH_FRAME_LEFT_CONTEXT)
+    overlap = {
+        frame: sorted(set(chars) & allowed)
+        for frame, chars in mr._ZH_FRAME_LEFT_BLACKLIST.items()
+        if set(chars) & allowed
+    }
+    assert overlap == {}, f'黑名单与允许左邻集撞车，接缝会被重新打开: {overlap}'
+    # ⚠️ 顺带钉住黑名单非空——它整张被清掉的话上面那条会**空转**。
+    assert sum(len(c) for c in mr._ZH_FRAME_LEFT_BLACKLIST.values()) >= 50

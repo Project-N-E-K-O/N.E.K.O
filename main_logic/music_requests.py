@@ -1808,13 +1808,13 @@ def _split_music_request_clauses(text: str) -> list[str]:
         # 判据的窗口跨过去，那是另一个方向的风险。
         clause = text[start:index].strip()
         if clause:
-            # ⚠️⚠️ **只留全角 `？`，不留 ASCII `?`。**
-            # 第一版两个都留，英文疑问式点歌当场全线失效——`Can you play Yellow?` /
-            # `Could you please play Yellow by Coldplay?` 后面挂着 `?` 就匹配不上
-            # 英文解析器了（tests/unit/test_proactive_service_boundary.py 6 条红）。
-            # ⚠️ 那个文件不在我常跑的几个文件里，是**全量**抓到的。
-            # 需要保留问号的那条用例（`我想停止播放《你好吗？》？我还没决定`）
-            # 用的是全角 `？`，中文侧的问号本来就是全角。
+            # ⚠️⚠️ **两种问号都保留**，剥离交给两个解析入口各自 `rstrip("？?")`。
+            # 这段的来历值得留着：第七十轮为让取消守卫看见裸问号才开始保留分隔符；
+            # 第七十二轮发现连 ASCII `?` 一起留会打断英文点歌，当时的修法是
+            # 「只留全角」——那是个**只对一半输入成立**的写法，中文用户也打半角；
+            # 第七十四轮改成两种都留、剥离下沉到 `_parse_explicit_zh_clause` 和
+            # `_parse_explicit_en_clause`，两侧才对称。
+            # ⚠️ 别的分隔符照旧丢：留逗号会让「否定只在自己子句内」的窗口跨过去。
             clauses.append(clause + char if char in "？?" else clause)
         start = index + 1
     clause = text[start:].strip()
