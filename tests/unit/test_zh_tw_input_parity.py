@@ -1228,6 +1228,7 @@ def test_function_word_tables_are_pinned():
         "好了", "吧", "啊", "呀", "喔", "哦", "嘛", "囉", "啰", "咯", "喽",
         "嘍", "呗", "唄", "嘞", "啦", "一下", "喵",
         "谢谢", "謝謝", "多谢", "多謝", "感谢", "感謝",
+        "拜托", "拜託", "麻烦", "麻煩",
         "耶", "唷", "哟", "喲", "欸", "诶", "咧", "哈", "噢", "呐", "吶",
         "呦", "哒", "噠", "齁", "捏", "~", "～",
     }
@@ -2754,6 +2755,64 @@ def test_the_companion_clause_works_in_both_scripts(simplified, traditional):
 @pytest.mark.parametrize("text", ["對", "对", "對嗎", "對吧", "對，好的", "對啊"])
 def test_a_traditional_companion_still_cannot_authorize_alone(text):
     """补 `對` 不扩大批准面：应答子句单独出现永远不是授权。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ASCII `-`：Unicode 破折号收了一整排，最常打的那个反而漏了
+        ("同意--去执行", "/daemon approve"),
+        ("好吧--换个话题", "/new"),
+        ("同意——去执行", "/daemon approve"),
+        ("停下来-好吗", "/stop"),
+        # 句尾礼貌语：_command_clause 只剥得掉 `了`，剩下的 `拜托` 成了命令子句
+        ("停下来，拜托了", "/stop"),
+        ("停下來，拜託了", "/stop"),
+        ("换个话题，麻烦了", "/new"),
+        ("換個話題，麻煩了", "/new"),
+        ("别找了，拜托了", "/stop"),
+        # `_` 在 Python 的 \w 里，所以 \W 剥不掉它
+        ("_停下来_", "/stop"),
+        ("__停下來__", "/stop"),
+        ("_换个话题_", "/new"),
+        ("停下来 _", "/stop"),
+        ("**停下来**", "/stop"),
+    ],
+)
+def test_ordinary_chat_punctuation_does_not_hide_a_command(text, expected):
+    """⚠️ 三处都是「装饰/边界」判据没盖全，命令被包在里面整条落空。
+
+    All were live on main through substring matching, and a rule miss is not
+    merely a slower path: the cheap pre-gate returns None before ever reaching
+    the LLM classifier, so nothing recovers them.
+
+    The underscore one is a plain bug rather than an omission — Python's ``\w``
+    includes ``_``, so ``\W`` never strips it, and a separated ``停下来 _``
+    even makes the underscore itself the selected command clause.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 礼貌语本身不是命令，加进词尾表不能把它们变成命令
+        "拜托了", "麻烦了", "拜託了", "麻煩了", "太麻烦了", "别麻烦了",
+        # `-` 成为边界后，这些普通文本不能冒出命令
+        "2024-01-01", "e-mail", "rock-paper-scissors", "--", "-",
+        # 纯装饰不能变成命令子句
+        "_", "__", "**", "___",
+        # 叙述句仍然不是命令（`-` 不该把它们切出一个命令尾巴）
+        "我不想停下来，太麻烦了", "他说的是-停下来-那句台词的意思",
+    ],
+)
+def test_the_new_boundaries_do_not_manufacture_commands(text):
+    """把 `-` 和 `_` 纳入边界/装饰，不能让普通文本冒出命令。"""  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
