@@ -183,67 +183,52 @@ docker run -d \
 <details>
 <summary>点击展开查看迁移步骤（旧版部署过的用户必看）</summary>
 
-先看一眼宿主机上的 `N.E.K.O/` 目录里有没有 `config/`、`memory/` 之类的内容，据此选择对应情况：
+下面几段命令请在**同一个终端里依次执行**——`BASE` 是它们共用的基准目录，换终端就丢了。Docker Compose 部署的旧目录在 compose 文件旁边，Docker Run 部署的在你当初传给 `-v` 的那个路径下：
 
 ```bash
-ls N.E.K.O/
+# Docker Compose 部署
+BASE="."
+# Docker Run 部署改用这行，路径要和你当初 docker run 时用的一致
+# BASE="/home/neko/neko-data"
+
+ls "$BASE/N.E.K.O/"
 ```
 
-**情况一：有内容，且用 Docker Compose 部署**
+里面有 `config/`、`memory/` 之类的内容就走情况一；空的或者目录不存在，走情况二。
+
+**情况一：`$BASE/N.E.K.O/` 有内容**
 
 ```bash
 # 1) 先导出只存在于容器里的东西。旧版没有挂载 OpenFang 的工作目录，它的配置和
 #    agent 一直在容器可写层，容器一删就没了。这一步要赶在停容器之前做。
-mkdir -p neko-home/.openfang
+mkdir -p "$BASE/neko-home/.openfang"
 # 报 "No such container:path" 只说明从没初始化过 OpenFang，可以忽略；其他错误
 # （daemon 没起、权限、磁盘满）不能忽略，所以这里不用 `|| true` 吞掉
-docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
+docker cp neko:/home/neko/.openfang/. "$BASE/neko-home/.openfang/"
+```
 
-# 2) 停容器，合并宿主机上的旧目录。若已经用新版启动过一次，容器会在 neko-home 下
-#    建好同名的空目录和一张新的自签证书，此时直接 mv 会把旧目录套进去多一层，
-#    所以按内容合并（同名文件以旧数据为准）
+**确认上一步成功后**再往下——下面第一条就会销毁容器：
+
+```bash
+# 2) 停容器。Compose 部署用 down；Docker Run 部署改用 docker rm -f neko
 docker-compose down
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
-cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
-cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 
-# 3) 把 docker-compose.yml 的 volumes 换成本文档上方的新版写法，再启动
-docker-compose up -d
+# 3) 合并宿主机上的旧目录。若已经用新版启动过一次，容器会在 neko-home 下建好
+#    同名的空目录和一张新的自签证书，此时直接 mv 会把旧目录套进去多一层，
+#    所以按内容合并（同名文件以旧数据为准）
+mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl"
+cp -a "$BASE/N.E.K.O/." "$BASE/neko-home/.local/share/N.E.K.O/" && rm -rf "$BASE/N.E.K.O"
+cp -a "$BASE/ssl/."     "$BASE/neko-home/ssl/"                 && rm -rf "$BASE/ssl"
+
+# 4) Compose 部署把 volumes 换成本文档上方的新版写法后 docker-compose up -d；
+#    Docker Run 部署按上方的新命令重新 docker run
 ```
 
-**情况二：有内容，且用 Docker Run 部署**
+**情况二：`$BASE/N.E.K.O/` 是空的或不存在**
+
+旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `$BASE/ssl`）：
 
 ```bash
-# 0) 这一段是独立的 shell，NEKO_BASE_PATH 不会从上面的部署命令继承过来；
-#    改成你当初 docker run 时实际用的路径
-NEKO_BASE_PATH="/home/neko/neko-data"
-
-# 1) 先导出只存在于容器里的 OpenFang 状态（同上，必须赶在删容器之前）
-mkdir -p "${NEKO_BASE_PATH}/neko-home/.openfang"
-# 同上，不吞错误：报 "No such container:path" 可忽略，其他错误必须停下来看
-docker cp neko:/home/neko/.openfang/. "${NEKO_BASE_PATH}/neko-home/.openfang/"
-
-# 2) 删容器，合并宿主机上的旧目录
-docker rm -f neko
-mkdir -p "${NEKO_BASE_PATH}/neko-home/.local/share/N.E.K.O" "${NEKO_BASE_PATH}/neko-home/ssl"
-cp -a "${NEKO_BASE_PATH}/N.E.K.O/." "${NEKO_BASE_PATH}/neko-home/.local/share/N.E.K.O/" \
-  && rm -rf "${NEKO_BASE_PATH}/N.E.K.O"
-cp -a "${NEKO_BASE_PATH}/ssl/."     "${NEKO_BASE_PATH}/neko-home/ssl/" \
-  && rm -rf "${NEKO_BASE_PATH}/ssl"
-
-# 3) 再按本文档上方的新命令重新 docker run
-```
-
-**情况三：`N.E.K.O/` 是空的**
-
-旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `./ssl`）：
-
-```bash
-# Docker Compose 部署的用这个（目录在 compose 文件旁边）
-BASE="."
-# Docker Run 部署的改用这个，路径要和你当初 docker run 时用的一致
-# BASE="/home/neko/neko-data"
-
 mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
 
 # 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层
