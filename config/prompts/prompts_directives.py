@@ -273,7 +273,15 @@ def _trim_term(term: str, locale: str = "") -> str:
     while changed:
         changed = False
         for tok in tokens:
-            if not s.endswith(tok):
+            # ⚠️ ASCII 尾词要**忽略大小写**：模板本身是 IGNORECASE 编译的，
+            # ``別再提工作 PLEASE。`` 能命中却剥不掉尾巴，存成 ``工作 PLEASE``
+            # （codex P2）。CJK 没有大小写，比不比都一样；比 lower 不改 term 本身的
+            # 大小写——``stop saying Please`` 存的仍然是 ``Please``。
+            #
+            # ⚠️ ``s.lower()`` 必须在**循环内**算：``s`` 在这个 for 里就会被改短，
+            # 提到外面去算一次的话第二个 token 会拿陈旧的串去比，多削一个字
+            # （``電影《你好》續集好嗎`` 变成 ``電影《你好》續``——自测抓到的）。
+            if not (s.endswith(tok) or s.lower().endswith(tok)):
                 continue
             if any(tok != blocked and blocked.endswith(tok) for blocked in floor_blocked):
                 continue
@@ -934,8 +942,11 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      + _ZH_VERBS_PLAIN
      + r"\s*"
      + _ZH_TOPIC_SEPARATOR
+     # ⚠️ 本模板也**不吃** ``的事``（模板 1/2/4 已经各撤过一次，同一个理由）：它是
+     # 领属加名物化，可以是名字本身的一部分——``我沒心情聊我們的事。`` 会存成
+     # ``我們``，让模型回避用户本人而不是那件事（codex P2）。``了`` 保留，它是纯语气。
      + _ZH_OBJECTLESS_AHEAD
-     + r"(" + _zh_topic(2, 40) + r")(?:\s*(?:了|的事))?(?:[，。！？；,.!?;]|\s*$)"),
+     + r"(" + _zh_topic(2, 40) + r")(?:\s*了)?(?:[，。！？；,.!?;]|\s*$)"),
     # 关于 X + 别(再)+ 说
     ("zh", "ban_topic",
      # ⚠️ 只有本模板保留 ``(?:就)?``：它由句首的 ``关于`` 锚定，"关于 X 就别…" 的

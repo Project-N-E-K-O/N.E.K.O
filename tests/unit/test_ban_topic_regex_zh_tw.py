@@ -254,7 +254,9 @@ TEMPLATE_PAIRS = [
     ("工作這事別提了", "工作这事别提了", ("工作", "工作")),
     ("工作這話題別提了", "工作这话题别提了", ("工作", "工作")),
     ("工作這件事別提了", "工作这件事别提了", ("工作", "工作")),
-    ("我不想聊昨天發生的事", "我不想聊昨天发生的事", ("昨天發生", "昨天发生")),
+    # ⚠️ ``的事`` 归话题所有——四条模板统一口径（见
+    # test_no_zh_template_consumes_deshi_after_the_topic）
+    ("我不想聊昨天發生的事", "我不想聊昨天发生的事", ("昨天發生的事", "昨天发生的事")),
     ("我不願再討論這件事", "我不愿再讨论这件事", ("這件事", "这件事")),
     ("懶得聊減肥", "懒得聊减肥", ("減肥", "减肥")),
     ("沒心情聊工作", "没心情聊工作", ("工作", "工作")),
@@ -1624,8 +1626,8 @@ def test_only_symmetric_pairs_forbid_sentence_punctuation():
     [
         ("别再提关于公司的传闻。", "关于公司的传闻"),
         ("別再提關於公司的傳聞。", "關於公司的傳聞"),
-        ("我不想聊关于钱的事", "关于钱"),
-        ("我不想聊關於錢的事", "關於錢"),
+        ("我不想聊关于钱的事", "关于钱的事"),
+        ("我不想聊關於錢的事", "關於錢的事"),
     ],
 )
 def test_an_object_may_begin_with_guanyu(text, expected):
@@ -2875,3 +2877,53 @@ def test_the_separator_is_shared_by_both_sides():
 )
 def test_the_pause_does_not_merge_two_directives(text, expected):
     assert _zh_terms(text) == expected, _zh_terms(text)
+
+
+# ── 36. 模板 3 也不吃 的事 / ASCII 尾词忽略大小写 ────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("我沒心情聊我們的事。", "我們的事"),
+        ("我不願意聊我們的事。", "我們的事"),
+        ("我懶得聊我們的事。", "我們的事"),
+        ("我不想聊我们的事", "我们的事"),
+        ("我不想再提工作的事了。", "工作的事"),
+    ],
+)
+def test_the_reluctance_template_keeps_deshi_too(text, expected):
+    """⚠️ 四条模板现在口径一致：`的事` 是领属加名物化，可以是名字本身的一部分。
+    模板 1/2/4 各撤过一次，模板 3 这份最后才被发现（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_no_zh_template_consumes_deshi_after_the_topic():
+    """自动发现：以后哪条模板又把 `的事` 加回可选后缀，这里会红。"""  # noqa: DOCSTRING_CJK
+    for index, raw in enumerate(_zh_pattern_sources()):
+        assert "(?:的事)?" not in raw, index
+        assert "了|的事" not in raw, index
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("別再提工作Please。", "工作"),
+        ("别再提工作PLEASE。", "工作"),
+        ("別再提工作 Please。", "工作"),
+        ("我不願意說工作 Please。", "工作"),
+        ("别再提工作please。", "工作"),
+    ],
+)
+def test_ascii_tails_are_matched_case_insensitively(text, expected):
+    """⚠️ 模板本身是 IGNORECASE 编译的，能命中却剥不掉尾巴（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("stop saying Please", "Please"), ("stop saying PORFA", "PORFA")],
+)
+def test_case_insensitive_matching_does_not_change_the_stored_casing(text, expected):
+    """比 lower 只用来判断要不要剥，term 本身的大小写原样保留。"""  # noqa: DOCSTRING_CJK
+    terms = {t for _loc, _kind, t in extract_directives(text)}
+    assert expected in terms, terms
