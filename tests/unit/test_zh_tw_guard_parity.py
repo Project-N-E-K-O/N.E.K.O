@@ -3165,3 +3165,62 @@ def test_quoted_field_values_and_quoted_targets_still_work():
         '重写所有字段并把口头禅设为“好不好”'
     ) is True
     assert router._chat_text_requests_full_rewrite('把《整个卡》重写') is True
+
+
+def test_the_modal_a_not_a_family_comes_from_the_music_generator():
+    """⚠️⚠️ 情态 A-not-A **跟音乐侧用同一张表的生成器**，不在卡片侧抄一份。
+
+    手抄那一版只有 9 个，`愿不愿意 / 值不值得 / 允不允许 / 舍不舍得` 全漏，用户在问
+    却被判成整卡命令并 autosave（base 都是 False，第六十九轮 P1）。
+
+    ⚠️ 这个 PR 已经**三次**栽在「同一个概念两处各写一份」上（子句切分 vs 否定守卫
+    窗口、标题遮蔽扫描 vs 疑问守卫标记表、理由辖域 vs 框架辖域），所以这次直接同源。
+    这条断言钉住「同源」本身——有人把它抄回卡片侧就会红。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+    from main_logic.music_requests import _zh_a_not_a_forms
+
+    pattern = router._CHAT_QUESTION_CLAUSE_RE.pattern
+    forms = _zh_a_not_a_forms()
+    assert len(forms) >= 40, len(forms)
+    for form in forms:
+        assert form in pattern, form
+
+
+@pytest.mark.parametrize(
+    "question", ["愿不愿意", "願不願意", "值不值得", "允不允许", "允不允許", "舍不舍得"]
+)
+def test_more_modal_a_not_a_questions_are_not_edit_commands(question):
+    """base 全是 False——用户在问，却走进整卡补全并 autosave。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{question}重写整个卡的每一项内容'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_the_generated_forms_keep_the_suo_left_guard():
+    """⚠️ 生成出来的分支也要挡 `所`：`所有没有填的内容` 里的 `有没有` 只是子串。
+
+    手写分支上那道 `(?<!所)` 必须跟着生成的一起走——第六十九轮把生成器接进来时
+    忘了带，`test_a_scope_modifier_slot_is_still_an_open_set` 当场见红。
+    同一个坑换个入口又来了一次。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._CHAT_QUESTION_CLAUSE_RE.search('所有没有填的内容') is None
+    assert router._CHAT_QUESTION_CLAUSE_RE.search('有没有填') is not None
+
+
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》"), ("【", "】")])
+@pytest.mark.parametrize("preposition", ["参考", "根据", "按照", "依据", "对照"])
+def test_a_quoted_reference_target_is_not_the_rewrite_target(preposition, opener, closer):
+    """⚠️ 介词和目标之间可以隔着一个**开引号**：`参考“整个卡的每一项内容”重写标题`
+    里引号中的是参照材料（base 是 False——数据覆盖方向，第六十九轮 P1）。
+
+    定长后视写不出「可选的一个字符」，所以按 介词 × (无引号 + 每种开引号) 展开——
+    两张表都是闭集，展开是机械的，不是逐个补说法。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{preposition}{opener}整个卡的每一项内容{closer}重写标题'
+    assert router._chat_text_requests_full_rewrite(text) is False, text

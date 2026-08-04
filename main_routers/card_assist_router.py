@@ -1127,8 +1127,15 @@ _CHAT_REFERENCE_PREPOSITIONS = (
     "根据", "根據", "按照", "依据", "依據", "参考", "參考", "照着", "照著",
     "对照", "對照", "比照", "仿照", "按", "依", "凭", "憑", "就着", "就著",
 )
-_CHAT_REFERENCE_PREPOSITION_LEFT = (
-    r"(?<!" + r")(?<!".join(_CHAT_REFERENCE_PREPOSITIONS) + r")"
+# ⚠️ 介词和目标之间可以隔着一个**开引号**：`参考“整个卡的每一项内容”重写标题`
+# 里引号中的是参照材料（base 是 False——数据覆盖方向，第六十九轮 P1）。
+# 定长后视写不出「可选的一个字符」，所以按 介词 × (无引号 + 每种开引号) 展开——
+# 两张表都是闭集，展开是机械的，不是逐个补说法。
+_CHAT_QUOTE_OPENERS_FOR_LOOKBEHIND = ("", "\u201c", "\u300c", "\u300e", "\u300a", "\u3010", '"')
+_CHAT_REFERENCE_PREPOSITION_LEFT = "".join(
+    rf"(?<!{preposition}{opener})"
+    for preposition in _CHAT_REFERENCE_PREPOSITIONS
+    for opener in _CHAT_QUOTE_OPENERS_FOR_LOOKBEHIND
 )
 _CHAT_FULL_REWRITE_RE = re.compile(
     _CHAT_REFERENCE_PREPOSITION_LEFT +
@@ -1539,14 +1546,26 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
 # 漏触发 = 把用户只是问问的东西真改了并存盘。所以宁可判得宽一点。
 # ⚠️ 只认**封闭**的疑问标记：句末语气词、极性词、以及情态动词的 A-not-A 重叠式。
 # 不认裸问号——`重写整个卡?` 在基线上就是命令，一刀切会改既有行为。
+# ⚠️ 跨模块取**同一张表**而不是抄一份：见下面 A-not-A 那段注释。
+from main_logic.music_requests import _zh_a_not_a_forms  # noqa: E402
+
 _CHAT_QUESTION_CLAUSE_RE = re.compile(
     r"(?:[吗嗎呢]\s*[？?]?\s*$"
     # ⚠️ `有没有` 要挡左界：`把整个卡的所有没有填的内容重写一遍` 里它是
     # `所有` + `没有`，不是极性标记（base 是 True，第六十三轮）。
     # 这是这个 PR 里第九个「白名单词是更长词子串」入口。
     r"|是否|能否|可否|(?<!所)有没有|(?<!所)有沒有"
-    r"|需不需要|要不要|该不该|該不該|应不应该|應不應該|用不用|可不可以|能不能"
-    r"|是不是|好不好|行不行|对不对|對不對"
+    # ⚠️ 下面接的是**计算出来**的分支，所以这里要用 `+` 而不是相邻字面量拼接。
+    # ⚠️⚠️ 情态 A-not-A **直接用音乐侧那张表的生成器**，不在这里抄一份。
+    # 手抄那一版只有 9 个，`愿不愿意 / 值不值得 / 允不允许 / 舍不舍得…` 全漏，
+    # 用户在问却被判成整卡命令并 autosave（base 都是 False，第六十九轮 P1）。
+    # 这个 PR 已经**三次**栽在「同一个概念两处各写一份」上（子句切分 vs 否定
+    # 守卫窗口、标题遮蔽扫描 vs 疑问守卫标记表、理由辖域 vs 框架辖域），
+    # 所以这次直接同源。main_routers → main_logic 是既有依赖方向。
+    # ⚠️ 生成出来的分支也要挡 `所`：`所有没有填的内容` 里的 `有没有` 只是子串，
+    # 手写分支上那道 `(?<!所)` 必须跟着生成的一起走，否则同一个坑换个入口再来一次。
+    + r"|(?<!所)(?:" + "|".join(_zh_a_not_a_forms()) + r")"
+    + r"|是不是|好不好|行不行|对不对|對不對"
     # ⚠️ wh 疑问头。第五十七轮加这道守卫时只收了极性/情态那一族，
     # 于是 `为什么要重写整个卡的所有内容` 照样走进整卡补全并 autosave。
     # ⚠️ 这一条**不是**本 PR 的回归（base 也是 True）——是我上一轮把守卫建了一半。

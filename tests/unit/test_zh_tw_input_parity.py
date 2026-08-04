@@ -6258,3 +6258,35 @@ def test_a_cancellation_after_a_temporal_clause_survives(sentence):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(sentence) is True, sentence
+
+
+@pytest.mark.parametrize("frame", ["如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若"])
+@pytest.mark.parametrize("mention", ["这个说法", "的用法", "这个词", "这种写法"])
+def test_a_metalinguistic_mention_does_not_open_a_conditional_frame(frame, mention):
+    """⚠️ 用户在问**措辞**本身合不合适（元语言提及）时，框架不该开：
+    `先确认万一这个说法是否合适` base 是 False，`是否` 被中和后执行了取消（第六十九轮）。
+
+    ⚠️ 没有按 reviewer 说的去枚举「万一这个说法 / 万一的用法」——那一侧是开集
+    （这个说法 / 的用法 / 这个词 / 这种写法 / 这个表达…）。第六十七轮给 `要是` 挂的
+    「右边必须跟小句」本来就把它们排除了，只是当初只挂在一个词上；这一轮推广到整个
+    条件族，一条判据覆盖整族。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前先确认{frame}{mention}是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("frame", ["如果", "假如", "要是", "万一"])
+@pytest.mark.parametrize("head", ["有新歌", "不好听", "是新歌", "听《晴天》", "放不出来"])
+def test_a_conditional_frame_still_opens_on_a_real_clause(frame, head):
+    """⚠️ 反向：真小句照旧开框架。小句开头认三族——谓词、疑问词、**播放动词**。
+
+    播放动词那一支是这一轮补的：推广右侧必需之后
+    `因为如果听《晴天,雨天》有什么问题再告诉我` 当场见红——`听` 是动词但不在
+    `_ZH_FRAME_PREDICATE_RE` 那个小表里，那张表当初是为别的判据挑的。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    text = f'我想停止播放因为{frame}{head}都不想听'
+    assert mr._ZH_FREE_CHOICE_FRAME_RE.search(text) is not None, text
