@@ -4910,3 +4910,67 @@ def test_a_reason_marker_in_an_earlier_clause_does_not_count(separator, reason):
     assert is_explicit_music_cancellation(
         f'我想停止播放{reason}不知道是不是好歌都不想听'
     ) is True
+
+
+@pytest.mark.parametrize("marker", ["是否", "能否", "可否", "为什么", "怎么办", "好不好"])
+@pytest.mark.parametrize("verb", ["播放", "听", "放"])
+def test_title_shielding_does_not_scan_past_a_question_marker(verb, marker):
+    """⚠️⚠️ 标题遮蔽的懒扫描**不能跨过疑问标记**（base 是 False——危险方向，第六十六轮）。
+
+    `我想停止播放是否会影响稍后播放《晴天》` 里，扫描为了够到第二个 `播放《晴天》`
+    一路吃掉了用户真正的 `是否`；那一段又是**原子组**，吃掉就不回退，
+    标记位上什么都不剩、守卫开不了火，一句提问执行了取消。
+
+    ⚠️ 判据是 tempered dot：扫描的每个字符前先确认「这里不是疑问标记的开头」。
+    标记表跟守卫用的是**同一份**，不另抄——抄一份就会漂开。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{marker}会影响稍后{verb}《晴天》'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_quoted_titles_are_still_shielded_after_the_tempering():
+    """⚠️ 反向：引号**里面**的标记照旧被遮蔽，别让 tempering 把这一支打掉。
+
+    扫描类本来就不含开引号，遇到 `《` 就停，所以标题自带的 `吗/是不是` 不受影响。
+    第五十四轮那条「一句话里多个播放动词各带各的标题」也钉在这里。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ('我想停止播放《你好吗？》',
+                 '停止听《晴天》然后停止播放《好不好》',
+                 '我想停止播放《是不是》',
+                 '帮我停止播放红心歌单'):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+def test_the_frame_right_blacklist_is_pinned():
+    """⚠️ 这张表到第六十六轮是**第三次登场**，钉住它免得看着像反复横跳：
+
+    * 第六十三轮为 `不管用` 加过 → 变异验证显示删掉行为完全不变（那句被别的判据
+      拦住了）→ 按「没有失败用例的防御就是死代码」删掉；
+    * 第六十四轮 `就是想问` 给出真用例 → 加回来，只收 `就是`；
+    * 第六十六轮 `按钮不管用` 给出真用例 → 才把 `不管` 收进来。
+
+    三次用的是同一条规则，变的是证据。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert mr._ZH_FRAME_RIGHT_BLACKLIST == {"就是": "想要问問说說", "不管": "用"}
+
+
+@pytest.mark.parametrize("tail", ["是否需要修复", "是否要修", "能否修好", "怎么办"])
+def test_bu_guan_yong_is_an_adjective_not_a_frame(tail):
+    """`不管用` 是「不 + 管用（有效）」，不是任指框架：`停止播放时发现按钮不管用
+    是否需要修复` 里用户在报按钮坏了并提问，`是否` 被中和后执行了取消
+    （base 是 False——危险方向，第六十六轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放时发现按钮不管用{tail}'
+    assert is_explicit_music_cancellation(text) is False, text
+    # ⚠️ 反向：`不管` 作真框架时不受影响。
+    assert is_explicit_music_cancellation(
+        '我想停止播放因为不管什么歌都不好听'
+    ) is True
