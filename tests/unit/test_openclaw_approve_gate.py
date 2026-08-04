@@ -161,8 +161,29 @@ def test_approve_goes_through_when_a_task_is_live(wired):
     assert emitted and emitted[0].get("success") is True
 
 
+def test_a_recently_cancelled_task_does_not_open_the_gate(wired):
+    """⚠️ Cancelled is the one terminal status that must NOT open the window.
+
+    The user just killed that task, so the upstream action is precisely what they
+    did not want; treating it as "something is pending" lets a later offhand 同意
+    reverse their own cancellation. Worse, ``_cancel_openclaw_tasks_for_stop``
+    writes ``end_time`` even when its upstream ``stop_running`` call failed — so a
+    cancelled entry is exactly the case where the daemon action may still be
+    hanging.
+    """  # noqa: DOCSTRING_CJK
+    fake, emitted = wired
+    _register(
+        oc._shared.Modules.task_registry, "t-cancelled", status="cancelled",
+    )
+
+    _dispatch("/daemon approve")
+
+    assert fake.magic_calls == []
+    assert emitted == []
+
+
 @pytest.mark.parametrize(
-    "status", ["queued", "running", "completed", "failed", "cancelled", "partial"]
+    "status", ["queued", "running", "completed", "failed", "partial"]
 )
 def test_a_registry_entry_in_any_status_opens_the_gate(wired, status):
     """⚠️ Terminal statuses count on purpose — requiring "running" is backwards.

@@ -931,6 +931,10 @@ def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
         "要不去執行", "要不去执行", "要不去执行吧", "要不然去執行",
         "不如去執行", "不如去执行", "不如刪吧", "不如删吧", "不如準了",
         "還是去執行", "还是去执行", "还是去执行吧", "乾脆去執行", "干脆去执行",
+        # ⚠️ 第一人称意图前缀：它们改变的是**谁打算做**，不是加强祈使语气。
+        # 「我想去執行」是在陈述自己的打算，不是授权别人去做。
+        "我想去執行", "我想去执行", "我要去執行", "我要去执行", "想去执行",
+        "我想删吧", "我要準了",
     ],
 )
 def test_a_question_never_approves(text):
@@ -948,6 +952,50 @@ def test_a_question_never_approves(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
+    """⚠️ 结构性守卫：approve 的窄表**不得**包含试探/意图前缀。
+
+    Three rounds of Codex P1 landed on the same shape — a wide strip set plus a
+    veto list that kept missing a category (punctuation, then bare interrogative
+    particles, then tentative proposals, then first-person intent). "Which prefix
+    turns an imperative into a non-authorization" is an open set; a blacklist
+    cannot close it. The fix was two whitelists, and this test pins that they
+    stay separated: widening approve now means editing the narrow table, which is
+    a visible, reviewable act.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import _NEUTRAL_LEAD, _NEUTRAL_TAIL, _SOFT_LEAD
+
+    narrow_lead = set(_NEUTRAL_LEAD.split("|"))
+    soft_lead = set(_SOFT_LEAD.split("|"))
+    narrow_tail = set(_NEUTRAL_TAIL.split("|"))
+
+    assert not (narrow_lead & soft_lead), "试探/意图前缀漏进了 approve 的窄首部表"
+    # 试探提议 + 第一人称意图必须都在 soft 侧
+    for token in ("要不", "不如", "还是", "還是", "干脆", "乾脆",
+                  "我想", "我要", "想", "能不能", "可不可以"):
+        assert token in soft_lead, f"{token} 不在 soft 首部表里"
+        assert token not in narrow_lead, f"{token} 混进了 approve 的窄首部表"
+    # 疑问语气尾同理：approve 的窄词尾表里一个都不能有
+    for token in ("吗", "嗎", "呢", "好不好", "行不行", "可以吗", "怎么样"):
+        assert token not in narrow_tail, f"{token} 混进了 approve 的窄词尾表"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 冒号也是子句边界。`同意：去执行` 在改造前靠子串命中，不切冒号的话整条
+        # 落不到任何白名单条目上（Codex P2）。
+        ("同意：去执行", "/daemon approve"), ("沒問題:去執行", "/daemon approve"),
+        ("没问题：去执行", "/daemon approve"), ("同意:删吧", "/daemon approve"),
+        ("先说明一下：停下来", "/stop"), ("这样吧：换个话题", "/new"),
+    ],
+)
+def test_colons_are_clause_boundaries(text, expected):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
 
 
 @pytest.mark.parametrize(

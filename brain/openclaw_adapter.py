@@ -154,32 +154,54 @@ _HIGH_PRECISION_NON_MAGIC = (
 # 现在的判据：按标点/空白切子句 → 每个子句剥掉首部虚词和尾部语气词 → 查白名单。
 # 词汇量**一个没加**，还是原来那些词，只是要求它们**独立成句**而不是嵌在任意
 # 长句里。`/clear` 不在本批（不在本次拍板的三条里），仍走子串包含。
-_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、\s]+")
+_CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:\s]+")
 
-# 首部虚词是**闭集**：代词 + 祈使副词 + 收件人短语。不是黑名单——它只负责剥掉
-# 「我们/那你/赶紧」这类不改变祈使内容的前缀，剥完还得整条命中白名单才算数。
+# ── 首部虚词：**两套白名单**，approve 用窄的那套 ──────────────────────
 #
-# ⚠️⚠️ **多字词必须排在它的首字前面**。正则多选支按书写顺序匹配，`那` 排在 `那么`
-# 前面时，「那么停下来吧」会被 `那` 吃掉首字、剩下一个 `么` 粘在后面
-# （子句变成「么停下来」），整条判据失效。`快` / `快点` 同理。加词时照抄这个顺序。
-_CLAUSE_LEAD = re.compile(
-    r"^(?:"
-    r"那么|那麼|快点|快點|我们|我們|咱们|咱們|我想|我要|"
-    r"能不能|可不可以|帮我|幫我|给我|給我|麻烦|麻煩|拜托|拜託|"
-    r"赶紧|趕緊|马上|馬上|立刻|立即|现在|現在|尽快|盡快|"
-    r"直接|还是|還是|不如|干脆|乾脆|要不|想|"
+# ⚠️⚠️ 这里刻意是白名单而不是「宽剥离 + 否决表」。之前那版对所有命令共用一张宽表，
+# 再拿一张否决表去挡不该批准的语气，连着三轮 Codex P1 才把洞补到看起来齐：先是漏
+# 问号、再是漏无标点疑问（`去執行嗎`）、再是漏试探提议（`要不去執行`），最后又漏第一
+# 人称意图（`我想去執行`）。根因不是词收得不够，是**方向反了**——「一个前缀会不会
+# 把祈使句变成非授权」是开集，黑名单堵不完；本文件里 approve 那段注释自己写过这句话。
+#
+# 现在改成：approve 只剥**中性**前缀，剥完还得整条命中动作短语表；想让 approve 多认
+# 一种说法，必须往中性表里加词——一次可见、可评审的动作，而不是忘记往否决表加词。
+#
+# ⚠️ **多字词必须排在它的首字前面**。正则多选支按书写顺序匹配，`那` 排在 `那么` 前面
+# 时，「那么停下来吧」会被 `那` 吃掉首字、剩下一个 `么` 粘在后面（子句变成「么停下来」），
+# 整条判据失效。`快`/`快点`、`我`/`我想` 同理。加词时照抄这个顺序。
+#
+# 中性：代词 + 收件人短语 + **决断型**副词。后者是祈使句的强调而不是提议
+# （「马上去执行」是命令，「不如去执行」是建议），在 main 上就是 approve。
+_NEUTRAL_LEAD = (
+    r"那么|那麼|快点|快點|我们|我們|咱们|咱們|"
+    r"帮我|幫我|给我|給我|麻烦|麻煩|拜托|拜託|"
+    r"赶紧|趕緊|马上|馬上|立刻|立即|现在|現在|尽快|盡快|直接|"
     r"那|就|先|快|请|請|你|妳|我|咱"
-    r")+"
 )
+# 仅 /stop 与 /new：试探提议（要不/不如/还是/干脆）与第一人称意图（我想/我要/想）。
+# ⚠️ 这些**改变的是「谁打算做」和「是不是在提议」**，不是加强祈使语气。对停任务、换话题
+# 而言「不如换个话题」「我想取消这个任务」是再正常不过的说法；对批准而言
+# 「我想去執行」是在陈述自己的打算，「要不去執行」是在floating一个提议，都不是授权。
+_SOFT_LEAD = (
+    r"能不能|可不可以|要不然|要不|不如|还是|還是|干脆|乾脆|我想|我要|想"
+)
+_CLAUSE_LEAD_NEUTRAL = re.compile(rf"^(?:{_NEUTRAL_LEAD})+")
+_CLAUSE_LEAD_SOFT = re.compile(rf"^(?:{_SOFT_LEAD}|{_NEUTRAL_LEAD})+")
 
-# ⚠️ 尾部语气词只用于 `/stop` 和 `/new`，**不用于 `/daemon approve`**——见
-# `_APPROVE_CLAUSES` 上方那段。多字的征询尾（好吗/行不行）同样要排在单字前面。
+# ── 尾部语气词：同样**两套白名单** ────────────────────────────────────
+# ⚠️ 多字的征询尾（好吗/行不行）要排在单字前面，同 _NEUTRAL_LEAD 那条。
 # ⚠️ 语气词也是简繁两侧的东西：囉/啰/咯/喽/嘍、呗/唄 必须同批收，否则同一句话
 # 繁体命中简体不命中——那正是这一系列改动要修的毛病。
-_TAIL_ALTERNATION = (
-    r"好不好|好吗|好嗎|行不行|行吗|行嗎|可以吗|可以嗎|怎么样|怎麼樣|好了|"
-    r"吧|啊|呀|喔|哦|呢|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|了|一下|喵|吗|嗎|~|～"
+# 中性语气词两边都剥；疑问尾只给 /stop 和 /new 剥。`停下来行吗` 对停任务是最常见的
+# 礼貌祈使，而 `去執行嗎` 对批准是个**问句**——归一化把 `嗎` 剥掉之后两者就没法区分了。
+_NEUTRAL_TAIL = (
+    r"好了|吧|啊|呀|喔|哦|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|了|一下|喵|~|～"
 )
+_QUESTION_TAIL = (
+    r"好不好|好吗|好嗎|行不行|行吗|行嗎|可以吗|可以嗎|怎么样|怎麼樣|吗|嗎|呢"
+)
+_TAIL_ALTERNATION = f"{_QUESTION_TAIL}|{_NEUTRAL_TAIL}"
 _CLAUSE_TAIL = re.compile(rf"(?:{_TAIL_ALTERNATION})+$")
 # ⚠️⚠️ 剥词尾**不能用正则一次性吃掉整串**，也不能只试正则挑中的那一个词尾。两个坑：
 #
@@ -190,46 +212,38 @@ _CLAUSE_TAIL = re.compile(rf"(?:{_TAIL_ALTERNATION})+$")
 #    只是方向相反，而且换词表顺序解决不了（`行吗` 本身必须收）。
 #
 # 所以改成：每一步对**所有**能匹配的词尾各试一次，每剥一个查一次表。
+_NEUTRAL_TAIL_TOKENS = tuple(_NEUTRAL_TAIL.split("|"))
 _TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
 
-# ⚠️⚠️ approve 的**非授权语气**否决。判据是「这句话是不是一个明确的授权」，
-# 不是「有没有问号」——两轮 Codex P1 都栽在把它想窄了。
-#
-# 归一化会把语气整个抹掉，剥完全都落在表内的动作短语上：
-#   `去執行嗎`    剥词尾 `嗎`     → `去執行`   一个**问句**授权了高风险动作
-#   `能不能去執行` 剥首部 `能不能`  → `去執行`   同上，标点一个都没有
-#   `要不去執行`   剥首部 `要不`   → `去執行`   一句「要不就去执行？」的**提议**
-# 这批繁体形式在 main 上全是 None（旧 approve 表没有繁体条目），是本次改动新开的
-# 暴露面——收口改动开出新暴露面是本末倒置。
-#
-# 两类都要收：
-#   疑问 —— 标点 / 句末语气词 / 正反问 / 选择问
-#   试探 —— 「要不 / 不如 / 还是 / 干脆」这类**提议**标记
-# ⚠️ 决断型副词**不在此列**，它们是祈使句的强调而不是提议：马上 / 赶紧 / 立刻 /
-# 立即 / 现在 / 尽快 / 直接 / 那就 / 先。这些在 main 上就是 approve，收掉是无谓的损失。
-#
-# ⚠️ 整套只作用于 approve。`不如换个话题` / `停下来行吗` / `能不能停下来` 对 /new 和
-# /stop 是完全正常的祈使，一并毙掉是新的召回损失。这个不对称和 fail-closed 同源：
-# 批准要的是明确授权，而停任务、换话题用商量口吻再自然不过。
-_APPROVE_HEDGED = re.compile(
-    # 疑问
-    r"[?？]|吗|嗎|呢|能不能|可不可以|行不行|好不好|是不是|要不要|"
-    r"可否|是否|能否|怎么样|怎麼樣|如何"
-    # 试探 / 提议
-    r"|要不|不如|还是|還是|干脆|乾脆"
-)
+# ⚠️ 问号必须**单独**否决 approve：它是分隔符，切子句时就没了，剥不剥词尾都留不下痕迹
+# （`去執行？` 切完就是 `去執行`）。其余非授权语气——疑问尾、正反问、试探提议、第一
+# 人称意图——由上面那两套窄白名单**结构性**挡住，不再靠否决表逐条枚举。
+# 这个区别是有意的：黑名单在这里堵不完（本文件 approve 那段注释自己写过），
+# 白名单要放宽必须显式加词。
+_APPROVE_QUESTION_MARK = re.compile(r"[?？]")
 
 
 def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
-    """Strip leading function words and (optionally) trailing particles."""
+    """Strip leading function words and (optionally) trailing particles.
+
+    Uses the wide (soft) sets — approve goes through _approve_clause_hits, which
+    passes the narrow ones explicitly.
+    """
     text = str(clause or "").strip()
-    text = _CLAUSE_LEAD.sub("", text)
+    text = _CLAUSE_LEAD_SOFT.sub("", text)
     if strip_tail:
         text = _CLAUSE_TAIL.sub("", text)
     return text.strip()
 
 
-def _clause_hits(clause: str, table: frozenset, *, strip_tail: bool = True) -> bool:
+def _clause_hits(
+    clause: str,
+    table: frozenset,
+    *,
+    strip_tail: bool = True,
+    lead_re: Any = None,
+    tail_tokens: Any = None,
+) -> bool:
     """Match a clause against a table: raw, lead-stripped, then peeled tails.
 
     The widening happens here rather than by deriving stripped spellings INTO the
@@ -247,9 +261,11 @@ def _clause_hits(clause: str, table: frozenset, *, strip_tail: bool = True) -> b
     text = str(clause or "").strip()
     if not text:
         return False
+    lead = lead_re if lead_re is not None else _CLAUSE_LEAD_SOFT
+    tokens = tail_tokens if tail_tokens is not None else _TAIL_TOKENS
     seen: set = set()
     pending = []
-    for candidate in (text, _normalize_clause(text, strip_tail=False)):
+    for candidate in (text, lead.sub("", text).strip()):
         if candidate and candidate not in seen:
             if candidate in table:
                 return True
@@ -259,7 +275,7 @@ def _clause_hits(clause: str, table: frozenset, *, strip_tail: bool = True) -> b
         return False
     while pending:
         current = pending.pop()
-        for token in _TAIL_TOKENS:
+        for token in tokens:
             if len(current) <= len(token) or not current.endswith(token):
                 continue
             peeled = current[: -len(token)]
@@ -339,7 +355,15 @@ def _approve_clause_hits(clause: str) -> bool:
         return True
     # 动作短语可以剥首尾：它们在改造前是**子串**触发，句子里含就命中，所以归一化
     # 不可能超出旧召回。裸应答不行——那一支改造前是整句精确匹配。
-    return _clause_hits(text, _APPROVE_ACTIONS, strip_tail=True)
+    # ⚠️ 但只剥**中性**的那一套：试探提议、第一人称意图、疑问尾都不剥，剥了就分不出
+    # 「去執行」（授权）和「我想去執行」（陈述打算）/「要不去執行」（提议）/「去執行嗎」（问句）。
+    return _clause_hits(
+        text,
+        _APPROVE_ACTIONS,
+        strip_tail=True,
+        lead_re=_CLAUSE_LEAD_NEUTRAL,
+        tail_tokens=_NEUTRAL_TAIL_TOKENS,
+    )
 
 
 def _split_clauses(text: str) -> list[str]:
@@ -700,11 +724,10 @@ class OpenClawAdapter:
         # 命中 /stop，现在是 None。它和 `停下来，这是我当时唯一的念头`（叙述）在**任何
         # 子句位置判据下都不可区分**——两句的祈使短语都在首子句。子串包含把前者接住
         # 是顺带的，代价是把后者也接住。要真的分开得看语义，不是这一层能做的事。
-        # ⚠️ 疑问或试探语气一票否决 approve：归一化会把语气抹掉，`去執行嗎` /
-        # `能不能去執行` / `要不去執行` 剥完都落在表内的 `去執行` 上，一个**问句**或
-        # 一句**提议**于是授权了高风险动作（Codex P1 ×2）。/stop 和 /new 不受影响——
-        # `不如换个话题` / `停下来行吗` 是完全正常的祈使。
-        if not _APPROVE_HEDGED.search(text) and all(
+        # ⚠️ 问号一票否决 approve。它是子句分隔符，切完就没了（`去執行？` → `去執行`），
+        # 窄白名单看不见它。其余非授权语气（疑问尾 / 正反问 / 试探提议 / 第一人称意图）
+        # 由 _approve_clause_hits 的窄首尾表结构性挡住，不在这里枚举。
+        if not _APPROVE_QUESTION_MARK.search(text) and all(
             _approve_clause_hits(c) for c in clauses
         ):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}

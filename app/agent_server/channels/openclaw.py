@@ -100,6 +100,10 @@ def _collect_active_openclaw_task_ids(
     return task_ids
 
 
+# 能承载「上游回了一句需要许可」的终态。cancelled 不在其中——见下面函数里的说明。
+_APPROVAL_WINDOW_TERMINAL_STATUSES = frozenset({"completed", "failed", "partial"})
+
+
 def _has_recent_openclaw_task(
     *,
     sender_id: Optional[str],
@@ -134,6 +138,13 @@ def _has_recent_openclaw_task(
             continue
         if info.get("status") in {"queued", "running"}:
             return True
+        # ⚠️ cancelled **不算**。用户刚把任务掐掉，上游那个动作正是他不想要的；把它
+        # 当成「有东西待批准」，随后一句随口的「同意」就会**推翻用户自己的取消**。
+        # 而且 _cancel_openclaw_tasks_for_stop 即便上游 stop_running 失败也照样写
+        # end_time，所以这种条目恰恰对应「动作可能还挂着」的最坏情况（Codex P1）。
+        # 窗口只收「可能承载一次审批请求响应」的终态。
+        if info.get("status") not in _APPROVAL_WINDOW_TERMINAL_STATUSES:
+            continue
         end_time = str(info.get("end_time") or "").strip()
         if not end_time:
             # 终态却没有 end_time：判不了龄，fail-closed 不放行。
