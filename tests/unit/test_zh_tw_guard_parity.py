@@ -1351,7 +1351,7 @@ def test_the_scope_boundary_is_neither_too_tight_nor_too_loose(phrasing, expecte
 @pytest.mark.parametrize("verb", ["rewrite", "revise", "regenerate", "redo", "refresh"])
 @pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有字段"])
 def test_an_english_rewrite_verb_terminates_a_chinese_scope(scope, verb):
-    """⚠️ 英文重写动词也是合法收尾（base 是 True）。
+    r"""⚠️ 英文重写动词也是合法收尾（base 是 True）。
 
     第十四轮把收尾收成「只认标点」堵拉丁字段名时，把这一族一起挡掉了
     （Codex P2 第二十二轮）。这一侧安全——它是 `_CHAT_REWRITE_VERB_RE` 里的
@@ -1400,7 +1400,7 @@ def test_the_de_branch_recurses_to_a_closed_tail(phrasing, expected):
 
 @pytest.mark.parametrize(
     "adverb",
-    ["全面", "一律", "统一", "統一", "逐一", "逐个", "逐個", "挨个", "再"],
+    ["全面", "一律", "统一", "統一", "逐一", "逐个", "逐個", "挨个", "挨個", "再"],
 )
 @pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有字段"])
 def test_more_whole_card_rewrite_adverbs(scope, adverb):
@@ -1501,7 +1501,7 @@ def test_an_adverb_may_precede_an_english_rewrite_verb(adverb, verb):
 @pytest.mark.parametrize("suffix", ["一下", "一遍", "吧", "了", "一次"])
 @pytest.mark.parametrize("verb", ["rewrite", "regenerate"])
 def test_a_chinese_suffix_may_follow_an_english_rewrite_verb(verb, suffix):
-    """⚠️ 右边界不能用 `\b`：汉字也是 Unicode 词字符，`\b` 在 `rewrite一下` 的
+    r"""⚠️ 右边界不能用 `\b`：汉字也是 Unicode 词字符，`\b` 在 `rewrite一下` 的
     e/一 之间**不成立**，于是中英混写被挡掉（Codex P2 第三十轮，base 是 True）。
     这里要拒的只是拉丁标识符的续接，所以用 `(?![A-Za-z0-9_])`。
     """  # noqa: DOCSTRING_CJK
@@ -1538,3 +1538,26 @@ def test_nested_visibility_and_measure_complements(phrasing, expected):
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite(phrasing) is expected, phrasing
+
+
+@pytest.mark.parametrize("verb", ["rewrite", "regenerate", "重写"])
+@pytest.mark.parametrize("adverb", ["全部", "全面", "一并"])
+def test_all_three_tails_accept_an_adverb_plus_english_verb(adverb, verb):
+    """⚠️ 收尾判据在这个文件里有**三张表**（名词收尾 / 限定词收尾 / 名词闭集收尾）。
+
+    第二十九轮加「副词 + 英文重写动词」时我只改了前两张，第三张漏了，
+    `把所有字段的所有内容全部 rewrite` 于是静默失效（CodeRabbit）。
+
+    ⚠️ 这条用例**同时打三条路径**，就是为了让「只改其中一张」立刻见红。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for phrasing in (
+        f'把所有字段{adverb} {verb}',              # 限定词收尾
+        f'把整个卡的所有设定{adverb} {verb}',       # 名词收尾
+        f'把所有字段的所有内容{adverb} {verb}',      # 名词闭集收尾（「的」分支之后）
+    ):
+        assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
+    assert router._chat_text_requests_full_rewrite(
+        '把整个卡的全部 nickname重写'
+    ) is False

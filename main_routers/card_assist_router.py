@@ -816,7 +816,7 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
 # 把收尾收成「只认标点」时把它一起挡掉了（Codex P2 第二十二轮）。
 # 这一侧安全——它是 _CHAT_REWRITE_VERB_RE 里的**闭集**，不像 `nickname` 那样是
 # 任意字段名；`\b` 保证不会命中 `rewriteX` 这种更长的标识符。
-# ⚠️ 右边界用 `(?![A-Za-z0-9_])` 而不是 ``：汉字也是 Unicode 词字符，`` 在
+# ⚠️ 右边界用 `(?![A-Za-z0-9_])` 而不是 `\b`：汉字也是 Unicode 词字符，`\b` 在
 # `rewrite一下` 的 e/一 之间**不成立**，于是这类中英混写被挡掉了
 # （Codex P2 第三十轮，base 是 True）。这里要拒的只是拉丁标识符的续接。
 _WHOLE_CARD_EN_REWRITE_VERB = (
@@ -844,7 +844,9 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB
     + "|" + _WHOLE_CARD_BARE_ADVERB
-    + r"\s*(?:重|改|梳|完)"
+    # ⚠️ 副词后面也可能是英文重写动词。第二十九轮改了另外**两张**收尾表，唯独
+    # 漏了这一张——同一件事三处各写一份，漏一处就静默失效（CodeRabbit）。
+    + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
