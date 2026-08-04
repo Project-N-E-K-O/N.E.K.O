@@ -846,3 +846,31 @@ def test_stop_retires_the_window_even_when_the_upstream_call_raises(wired):
     fake.magic_calls.clear()
     _dispatch("/daemon approve", task_id="magic-approve")
     assert fake.magic_calls == [], "上游抛异常也不该让旧窗口活下来"
+
+
+def test_an_explicit_approval_still_retires_the_window(wired):
+    """⚠️ 显式命令豁免的是**准入判定**，不是兑现。
+
+    Typing the literal command is the user answering the prompt. Skipping the
+    whole block let the window stand, so a casual 同意 later in the TTL sent a
+    second approval with no prompt behind it.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    _dispatch("/daemon approve", task_id="magic-1", user_text="/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+    assert oc._shared.Modules.task_registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-2")
+    assert fake.magic_calls == [], "显式批准之后那条窗口不该还能授权一次推断批准"
+
+
+def test_an_explicit_approval_is_never_gated(wired):
+    """兑现归兑现，准入豁免不能跟着一起没了：registry 空着也必须照发。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    assert oc._shared.Modules.task_registry == {}
+
+    _dispatch("/daemon approve", task_id="magic-1", user_text="/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]

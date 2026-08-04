@@ -563,8 +563,13 @@ async def dispatch(
                     lanlan_name,
                 )
                 return
-            if magic_command == "/daemon approve" and not explicitly_typed:
-                if _find_approval_window_task(
+            if magic_command == "/daemon approve":
+                # ⚠️ 显式命令**豁免的是准入判定，不是兑现**。这两件事之前被同一个
+                # `not explicitly_typed` 一起跳过了：用户亲手敲 `/openclaw approve` 回答了
+                # 那句提示，窗口却原样留着，TTL 内一句随口的「同意」还能再批一次——而那次
+                # 已经没有对应的提示了（Codex P1）。豁免的理由是「显式命令意图毫无歧义、
+                # 不该被闸掉」，跟「这句提示已经被回答过了」没有关系。
+                if not explicitly_typed and _find_approval_window_task(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
                     exclude_task_id=result.task_id,
@@ -590,6 +595,18 @@ async def dispatch(
                 # 第二次机会去批另一个动作。两者分不开，取 fail-closed 的那边。
                 #
                 # 放在 await **之前**，理由和 /stop 那边一样：异常穿出时不能把它跳过。
+                #
+                # ⚠️ 这道闸**不是多用户隔离边界**，别当它是。`_resolve_openclaw_sender_id`
+                # 读的是 analyze messages 上的 sender_id，而 main_logic 从不往上面挂身份
+                # （cross_server.py 里 sender_id / user_id 零命中），所以它恒返回空、一路
+                # 回落到 `default_sender_id`——**所有用户共用一个桶**。这个回落在
+                # origin/main 上就有（本 PR 之前 sender 过滤本来也是这么算的），而且更根本
+                # 的是上游会话键 `_build_session_key` 就是 `user::<sender>`，所以多用户部署
+                # 里大家本来就共用同一个 QwenPaw 会话，不只是共用这道闸。
+                # 而且**就算把身份传下来也堵不上**：显式敲 `/daemon approve` 按设计豁免准入
+                # 判定（否则就是静默吞掉用户的命令），B 照样能批 A 的挂起动作。多用户隔离
+                # 得靠上游给出「这条提示属于谁」，是跨仓库契约，见 PR 描述里的待办。
+                # 这道闸管的是**别把自由文本误读成授权**，那个属性跟 sender 桶宽窄无关。
                 consumed = _retire_approval_windows(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
