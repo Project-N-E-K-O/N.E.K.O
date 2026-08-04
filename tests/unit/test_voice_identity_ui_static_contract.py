@@ -68,6 +68,8 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert 'aria-labelledby="voice-filter-title"' in template
     assert 'aria-describedby="voice-filter-help"' in template
     assert ".switch input:focus-visible + .switch-track" in stylesheet
+    assert '[data-theme="dark"]' in stylesheet
+    assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
     assert "embedding" not in template.lower()
@@ -98,11 +100,19 @@ def test_browser_capture_is_fixed_pcm16_and_cancels_on_close() -> None:
     ):
         assert contract in script
     assert "window.setTimeout(resolve, RECORDING_MS)" in script
+    assert "maxSourceSamples - capturedSamples" in script
+    assert "input.subarray(0, length)" in script
     assert "MAX_RECORDING_MS" not in script
     assert "if (sampleCount === 0)" in script
     assert "throw new Error('empty_capture')" in script
     assert script.count("error.name === 'NotAllowedError'") == 2
     assert script.count("error.name === 'NotFoundError'") == 2
+    assert "state.stage === 'ready_to_commit'" in script
+    assert "await commitEnrollment()" in script
+    assert "window.addEventListener('localechange', render)" in script
+    assert "elements.reenroll.disabled = !state.initialized || !isIdle" in script
+    assert "elements.start.disabled = !state.initialized || state.busy" in script
+    assert "state.initialized = true;\n            applyStatus(status)" in script
     assert "MediaRecorder" not in script
     assert "embedding" not in script.lower()
     assert "similarity" not in script.lower()
@@ -143,3 +153,9 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         assert required <= set(copy)
         assert len(copy["fixedPrompts"]) == 3
         assert payload["settings"]["menu"]["voiceIdentity"]
+
+
+def test_voice_identity_locale_addition_bumps_locale_cache_key() -> None:
+    bootstrap = (ROOT / "static/i18n-i18next.js").read_text(encoding="utf-8")
+
+    assert "LOCALE_VERSION = '2026-08-04-voice-identity'" in bootstrap

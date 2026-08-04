@@ -10,6 +10,15 @@
     --voice-danger: #d94b5e;
 }
 
+[data-theme="dark"] {
+    --voice-ink: #e8f5fb;
+    --voice-muted: #afc5d1;
+    --voice-blue-dark: #8edcff;
+    --voice-border: rgba(91, 215, 255, 0.28);
+    --voice-panel: rgba(27, 39, 48, 0.96);
+    --voice-danger: #ff8d9b;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -23,6 +32,13 @@ body {
     width: 100%;
     min-height: 100%;
     margin: 0;
+}
+
+html[data-theme="dark"] body.voice-identity-page:not(.subtitle-web-host):not(.subtitle-window-host) {
+    color: var(--voice-ink);
+    background:
+        radial-gradient(circle at 10% 0%, rgba(21, 159, 245, 0.18), transparent 36%),
+        linear-gradient(145deg, #101820 0%, #17232c 52%, #0f1c25 100%);
 }
 
 body {
@@ -235,6 +251,10 @@ blockquote {
     text-align: left;
 }
 
+[data-theme="dark"] blockquote {
+    background: #172b36;
+}
+
 .primary-button,
 .secondary-button,
 .danger-button,
@@ -263,6 +283,16 @@ blockquote {
 .danger-button {
     color: var(--voice-danger);
     background: #fff0f2;
+}
+
+[data-theme="dark"] .secondary-button {
+    color: #8edcff;
+    background: #193442;
+}
+
+[data-theme="dark"] .danger-button {
+    color: var(--voice-danger);
+    background: #41242b;
 }
 
 button:hover:not(:disabled) {
@@ -335,6 +365,10 @@ button:disabled {
     background: #b9cbd5;
     cursor: pointer;
     transition: background 0.2s ease;
+}
+
+[data-theme="dark"] .switch-track {
+    background: #526a77;
 }
 
 .switch-track::after {

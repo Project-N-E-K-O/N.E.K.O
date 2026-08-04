@@ -17,6 +17,7 @@
         audioContext: null,
         recording: false,
         busy: false,
+        initialized: false,
         closeStarted: false
     };
 
@@ -149,6 +150,7 @@
     }
 
     function renderProfile() {
+        const isIdle = state.stage === 'idle';
         elements.statusDot.className = 'status-dot';
         if (state.profileAvailable) {
             elements.statusDot.classList.add(
@@ -168,10 +170,13 @@
                 '尚未录入 Owner 声纹'
             );
         }
-        elements.reenroll.disabled = state.busy || state.recording;
-        elements.delete.disabled = !state.profileAvailable || state.busy || state.recording;
+        elements.reenroll.disabled = !state.initialized || !isIdle
+            || state.busy || state.recording;
+        elements.delete.disabled = !state.profileAvailable || !isIdle
+            || !state.initialized || state.busy || state.recording;
         elements.filter.checked = state.filterEnabled;
-        elements.filter.disabled = !state.profileAvailable || state.busy || state.recording;
+        elements.filter.disabled = !state.profileAvailable || !isIdle
+            || !state.initialized || state.busy || state.recording;
     }
 
     function renderWizard() {
@@ -182,10 +187,11 @@
         const isIdle = state.stage === 'idle';
         const isFixed = state.stage.startsWith('fixed_');
         const isFree = state.stage.startsWith('free_verify_');
+        const isReadyToCommit = state.stage === 'ready_to_commit';
         elements.start.hidden = !isIdle;
-        elements.record.hidden = !(isFixed || isFree);
+        elements.record.hidden = !(isFixed || isFree || isReadyToCommit);
         elements.cancel.hidden = isIdle;
-        elements.start.disabled = state.busy;
+        elements.start.disabled = !state.initialized || state.busy;
         elements.record.disabled = state.busy || state.recording;
         elements.cancel.disabled = state.busy || state.recording;
         elements.record.classList.toggle('recording', state.recording);
@@ -193,7 +199,10 @@
         if (recordLabel) {
             recordLabel.textContent = state.recording
                 ? translate('voiceIdentity.recording', '正在录音…')
-                : translate('voiceIdentity.record', '开始录音');
+                : translate(
+                    isReadyToCommit ? 'voiceIdentity.retry' : 'voiceIdentity.record',
+                    isReadyToCommit ? '重试' : '开始录音'
+                );
         }
 
         elements.prompt.hidden = true;
@@ -314,9 +323,18 @@
         const processor = context.createScriptProcessor(2048, 1, 1);
         const mute = context.createGain();
         const chunks = [];
+        const maxSourceSamples = Math.ceil(
+            context.sampleRate * RECORDING_MS / 1000
+        );
+        let capturedSamples = 0;
         mute.gain.value = 0;
         processor.onaudioprocess = function (event) {
-            chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+            const input = event.inputBuffer.getChannelData(0);
+            const remaining = maxSourceSamples - capturedSamples;
+            if (remaining <= 0) return;
+            const length = Math.min(input.length, remaining);
+            chunks.push(new Float32Array(input.subarray(0, length)));
+            capturedSamples += length;
         };
         source.connect(processor);
         processor.connect(mute);
@@ -407,6 +425,26 @@
         }
     }
 
+    async function commitEnrollment() {
+        const committed = await apiRequest('/enrollment/commit', {
+            method: 'POST'
+        });
+        applyStatus(committed);
+        stopMicrophone();
+        setMessage(
+            state.persistenceState === 'secure_storage_unavailable'
+                ? translate(
+                    'voiceIdentity.persistenceUnavailable',
+                    'Profile 已在本次运行中激活，但本地持久化不可用'
+                )
+                : translate(
+                    'voiceIdentity.enrollmentComplete',
+                    'Owner Profile 已保存并激活。'
+                ),
+            state.persistenceState === 'secure_storage_unavailable'
+        );
+    }
+
     async function recordCurrentStep() {
         if (state.busy || state.recording || !state.sessionId) return;
         state.busy = true;
@@ -414,6 +452,10 @@
         setMessage('');
         render();
         try {
+            if (state.stage === 'ready_to_commit') {
+                await commitEnrollment();
+                return;
+            }
             const pcm16 = await capturePcm16();
             const verification = state.stage.startsWith('free_verify_');
             const payload = await apiRequest(
@@ -443,23 +485,7 @@
                 );
             }
             if (state.stage === 'ready_to_commit') {
-                const committed = await apiRequest('/enrollment/commit', {
-                    method: 'POST'
-                });
-                applyStatus(committed);
-                stopMicrophone();
-                setMessage(
-                    state.persistenceState === 'secure_storage_unavailable'
-                        ? translate(
-                            'voiceIdentity.persistenceUnavailable',
-                            'Profile 已在本次运行中激活，但本地持久化不可用'
-                        )
-                        : translate(
-                            'voiceIdentity.enrollmentComplete',
-                            'Owner Profile 已保存并激活。'
-                        ),
-                    state.persistenceState === 'secure_storage_unavailable'
-                );
+                await commitEnrollment();
             }
         } catch (error) {
             const microphoneError = error && (
@@ -589,6 +615,7 @@
         });
         elements.delete.addEventListener('click', deleteProfile);
         elements.filter.addEventListener('change', updateFilter);
+        window.addEventListener('localechange', render);
         window.nekoBeforeWindowClose = async function () {
             state.closeStarted = true;
             await cancelEnrollment({ silent: true });
@@ -606,15 +633,21 @@
     async function initialize() {
         cacheElements();
         bindEvents();
+        state.busy = true;
         render();
         try {
             await loadCsrfToken();
-            applyStatus(await apiRequest('/status', { method: 'GET' }));
+            const status = await apiRequest('/status', { method: 'GET' });
+            state.initialized = true;
+            applyStatus(status);
         } catch (_) {
             setMessage(
                 translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
                 true
             );
+        } finally {
+            state.busy = false;
+            render();
         }
     }
 
