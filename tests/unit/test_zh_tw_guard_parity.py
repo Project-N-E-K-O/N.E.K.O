@@ -2073,3 +2073,36 @@ def test_existing_and_visible_field_modifiers(modifier, de):
     assert router._chat_text_requests_full_rewrite(
         f'把整个卡的所有{modifier}{de}名字重写'
     ) is False
+
+
+WHOLE_CARD_RESULT_PHRASES = _router_table("_WHOLE_CARD_RESULT_PHRASES")
+
+
+def test_the_result_phrase_table_is_derived_not_transcribed():
+    """下面的用例按这张表派生，所以要钉住相等。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert set(WHOLE_CARD_RESULT_PHRASES) == {
+        "即可", "就可以", "就行了", "就行", "就好了", "就好",
+        "就成了", "就成", "便可", "可以了", "行了", "好了",
+    }
+    assert router._WHOLE_CARD_RESULT_PHRASE == (
+        r"(?:" + "|".join(WHOLE_CARD_RESULT_PHRASES) + r")"
+    )
+
+
+@pytest.mark.parametrize("phrase", WHOLE_CARD_RESULT_PHRASES)
+@pytest.mark.parametrize("target", ["所有字段", "全部字段", "每个字段"])
+def test_terminal_result_phrase_after_a_completed_target(target, phrase):
+    """动词在目标前面时，目标后面跟的可以是「就行了」式的结果短语
+    （base 全是 True，Codex P2 第五十轮）。
+
+    ⚠️ 反向断言：结果短语不是万能收尾，单字段那条保险照旧挡着。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写{target}{phrase}'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'重写{target}名{phrase}'
+    ) is False

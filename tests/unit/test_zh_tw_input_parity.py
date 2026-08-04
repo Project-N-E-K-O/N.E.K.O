@@ -4020,3 +4020,38 @@ def test_potential_complements_after_a_mistyped_de(verb, complement):
     for kept in ('我要停止播放的代码', '我想停止播放的教程',
                  '我要停止播放的听歌功能', '我想停止播放的播放器'):
         assert is_explicit_music_cancellation(kept) is False, kept
+
+
+@pytest.mark.parametrize("verb", ["播放", "放", "听", "聽"])
+@pytest.mark.parametrize(
+    "defect", ["卡顿", "卡頓", "延迟", "延遲", "断流", "斷流",
+               "失真", "破音", "跳针", "卡帧", "回声"]
+)
+def test_playback_defect_words_after_a_mistyped_de(verb, defect):
+    """⚠️ 播放缺陷词是**白名单**，不是结构规则（base 全是 True）。
+
+    这正是它能收、而「两个汉字的状态词」那条**结构规则**不能收的原因：
+    后者会把 `的代码` / `的教程` / `的播放器` 一起放回去，而那正是本 PR
+    缺陷三的本体（第四十九轮拒收 `震耳朵` 就是这个理由）。白名单撞不上它们。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'不要{verb}的{defect}'
+    assert is_explicit_music_cancellation(text) is True, text
+    for kept in ('我要停止播放的代码', '我想停止播放的教程',
+                 '我想停止播放的播放器', '我要停止播放的听歌功能'):
+        assert is_explicit_music_cancellation(kept) is False, kept
+
+
+@pytest.mark.parametrize("negator", ["没", "沒", "没有", "沒有"])
+def test_negated_duration_is_declarative(negator):
+    """`没多久` 是陈述（not long after），不是提问（base 全是 True）。
+
+    跟 `不怎么` / `没什么` / `没干什么` 同一个形状，复用同一个程度否定左界
+    （Codex P2 第五十轮）。四个否定词包含两字的，两种宽度都盖到。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{negator}多久它又自己响了'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放多久合适') is False

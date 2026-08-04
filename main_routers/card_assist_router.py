@@ -934,6 +934,16 @@ _WHOLE_CARD_CLAUSE_CONTINUATIONS = (
     "随后", "隨後", "最后", "最後", "接下来", "接下來",
     "同时", "同時", "而且", "并", "並", "且",
 )
+# 结果短语收尾：`重写所有字段即可` / `重写全部字段就行`
+# （base 全是 True，Codex P2 第五十轮）。动词在目标前面时，目标后面跟的就是这一类
+# 「就行了」式的收尾。这一族是闭集。
+_WHOLE_CARD_RESULT_PHRASES = (
+    "即可", "就可以", "就行了", "就行", "就好了", "就好",
+    "就成了", "就成", "便可", "可以了", "行了", "好了",
+)
+_WHOLE_CARD_RESULT_PHRASE = (
+    r"(?:" + "|".join(_WHOLE_CARD_RESULT_PHRASES) + r")"
+)
 _WHOLE_CARD_CLAUSE_CONTINUATION = (
     r"(?:" + "|".join(_WHOLE_CARD_CLAUSE_CONTINUATIONS) + r")"
 )
@@ -960,6 +970,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
+    + r"|" + _WHOLE_CARD_RESULT_PHRASE
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
@@ -983,6 +994,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     # 动量补语也是合法收尾（定义与三表共用见 _WHOLE_CARD_MEASURE_COMPLEMENT）。
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
+    + r"|" + _WHOLE_CARD_RESULT_PHRASE
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
@@ -994,6 +1006,7 @@ _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|" + _WHOLE_CARD_CLAUSE_CONTINUATION
+    + r"|" + _WHOLE_CARD_RESULT_PHRASE
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。
