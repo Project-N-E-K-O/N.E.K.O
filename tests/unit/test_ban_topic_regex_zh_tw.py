@@ -1520,9 +1520,12 @@ def test_interrogative_tails_are_stripped_only_outside_quoted_names(text, expect
 def test_the_bracket_char_set_is_derived_from_the_pairs():
     """两张表漂移过四次（#2655），这里钉死派生关系。"""  # noqa: DOCSTRING_CJK
     assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
-        lo for lo, _hi in D._ZH_BRACKET_PAIRS
+        lo for lo, hi in D._ZH_BRACKET_PAIRS if lo != hi
     )
     assert D._ZH_BRACKET_RUN_RE.pattern == D._ZH_BRACKET_RUN
+    # 对称的那一对不算「未闭合的开括号」——落单的双引号是英寸号，不是没写完的引文
+    assert '"' not in D._ZH_BRACKET_OPEN_CHARS
+    assert "《" in D._ZH_BRACKET_OPEN_CHARS
 
 
 def test_interrogative_tails_are_a_separate_table_from_the_particles():
@@ -1987,7 +1990,7 @@ def test_the_quoted_span_end_is_derived_from_the_bracket_run():
     """别另开一张括号表——同一件事维护两份必然漂移（#2655）。"""  # noqa: DOCSTRING_CJK
     assert D._ZH_BRACKET_RUN_RE.pattern == D._ZH_BRACKET_RUN
     assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
-        lo for lo, _hi in D._ZH_BRACKET_PAIRS
+        lo for lo, hi in D._ZH_BRACKET_PAIRS if lo != hi
     )
 
 
@@ -2200,3 +2203,24 @@ def test_the_shortened_form_is_trimmed_before_comparing(text, expected):
     ``전남친은`` 跟 ``전남친`` 对不上，畸形的那条照样存三天（codex P2）。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+# ── 26. 落单的对称引号不是「没写完的引文」 ───────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 英寸号：落单的 " 是普通字，后面的 好吗 仍然是句子级语气
+        ('别再提5"屏幕好吗。', '5"屏幕'),
+        ('別再提5"螢幕好嗎。', '5"螢幕'),
+        ('别再提27"顯示器好不好。', '27"顯示器'),
+        # 非对称的开括号落单时确实是没写完的引文，尾巴仍在里面
+        ("别再提电影《我们好不好》。", "电影《我们好不好"),
+        ("别再提电影《好不好》。", "电影《好不好"),
+    ],
+)
+def test_a_standalone_symmetric_quote_is_not_an_unclosed_opener(text, expected):
+    """⚠️ _zh_bracket_body 已经决定过一次：落单的 ASCII 双引号是英寸号 / 颜文字
+    ``:(`` 这类普通字符，不该当硬边界。未闭合开括号那条判据再把它当引文起点就是
+    自相矛盾——同一个字符在同一个模块里两种待遇（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)

@@ -469,7 +469,14 @@ _ZH_BRACKET_RUN = "(?:" + "|".join(
 ) + ")"
 
 _ZH_BRACKET_RUN_RE = re.compile(_ZH_BRACKET_RUN)
-_ZH_BRACKET_OPEN_CHARS = frozenset(lo for lo, _hi in _ZH_BRACKET_PAIRS)
+# ⚠️ **对称**的那一对（只有 ASCII ``"``）不算「未闭合的开括号」：落单的双引号是
+# 英寸号、颜文字 ``:(`` 这类普通字符，_zh_bracket_body 已经这么决定过一次
+# （"比把开括号排除出单字分支更好的地方"那段）。这里再把它当硬边界就是自相矛盾——
+# ``别再提5"屏幕好吗。`` 会因为那个英寸号被判成「整段都在引号内」而留着 ``好吗``
+# （codex P2）。非对称的 ``《`` 落单时确实是没写完的引文，仍然算。
+_ZH_BRACKET_OPEN_CHARS = frozenset(
+    lo for lo, hi in _ZH_BRACKET_PAIRS if lo != hi
+)
 
 
 def _zh_quoted_span_end(text: str) -> int:
