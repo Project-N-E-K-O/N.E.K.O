@@ -231,6 +231,7 @@ def _router_table(name: str) -> list[str]:
 
 
 WHOLE_CARD_QUANTIFIERS = _router_table("_WHOLE_CARD_QUANTIFIERS")
+WHOLE_CARD_BARE_QUANTIFIERS = _router_table("_WHOLE_CARD_BARE_QUANTIFIERS")
 WHOLE_CARD_NOUNS = _router_table("_WHOLE_CARD_SCOPE_NOUNS")
 
 
@@ -1002,8 +1003,12 @@ def test_a_separator_does_not_turn_a_field_edit_into_a_full_rewrite(
 
     blocked = f'把整个卡的{quantifier}{separator}{field}重写'
     assert router._chat_text_requests_full_rewrite(blocked) is False, blocked
+    # ⚠️ 限定词**自己当中心语**只对窄表成立：逐项类（每个/每项/每一项/各项）
+    # 是在**点名**而不是在说整卡，`把整个卡的每一项重写` base 就是 False
+    # （第五十八轮：把 `每一项` 当整卡目标一口气长出三条 P1）。
     allowed = f'把整个卡的{quantifier}{separator}重写一遍'
-    assert router._chat_text_requests_full_rewrite(allowed) is True, allowed
+    expected = quantifier in WHOLE_CARD_BARE_QUANTIFIERS
+    assert router._chat_text_requests_full_rewrite(allowed) is expected, allowed
 
 
 @pytest.mark.parametrize("noun", ["字段", "欄位", "设定", "內容"])
@@ -1109,7 +1114,9 @@ def test_the_scope_noun_boundary_does_not_block_real_requests(phrasing):
     ["一并", "一併", "一起", "统统", "統統", "通通", "全都", "彻底", "徹底",
      "好好", "认真", "認真", "重新"],
 )
-@pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
+# ⚠️ 参数只取**能自己当中心语**的限定词：逐项类（每一个/每项…）不在此列，
+# 它们是在点名而不是在说整卡（第五十八轮，三条 P1 的根因）。
+@pytest.mark.parametrize("quantifier", ["全部", "所有", "一切"])
 def test_an_adverb_between_a_bare_quantifier_and_the_verb(quantifier, adverb):
     """⚠️ 限定词自己当中心语时，动词前面还可以夹并列/强调副词（base 是 True）。
 
@@ -1141,7 +1148,9 @@ def test_de_after_the_visibility_modifier_is_allowed(simplified, traditional):
 @pytest.mark.parametrize(
     "latin_field", ["nickname", "field_name", "age2", "Signature Line", "_meta"]
 )
-@pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
+# ⚠️ 参数只取**能自己当中心语**的限定词：逐项类（每一个/每项…）不在此列，
+# 它们是在点名而不是在说整卡（第五十八轮，三条 P1 的根因）。
+@pytest.mark.parametrize("quantifier", ["全部", "所有", "一切"])
 def test_a_latin_field_name_after_a_bare_quantifier_is_not_a_full_rewrite(
     quantifier, latin_field
 ):
@@ -1185,7 +1194,9 @@ def test_a_direct_field_list_consumes_scope_suffixes(phrasing):
     # 以及程序味的 `_meta` / `@type`。
     ["nickname", "field_name", "ニックネーム", "имя", "이름", "Δname", "_meta", "@type"],
 )
-@pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
+# ⚠️ 参数只取**能自己当中心语**的限定词：逐项类（每一个/每项…）不在此列，
+# 它们是在点名而不是在说整卡（第五十八轮，三条 P1 的根因）。
+@pytest.mark.parametrize("quantifier", ["全部", "所有", "一切"])
 def test_only_punctuation_can_terminate_a_bare_quantifier(quantifier, field):
     r"""⚠️⚠️ P1：收尾必须**正向白名单标点**，不能写「非汉字」的否定类。
 
@@ -2322,7 +2333,7 @@ def test_interrogative_clauses_are_not_edit_commands(question):
 
     assert router._chat_text_requests_full_rewrite(question) is False, question
     for command in ('把整个角色卡的全部设定重写一遍', '重写所有字段吧',
-                    '把整个卡的每一项重写'):
+                    '把整个卡的所有内容重写'):
         assert router._chat_text_requests_full_rewrite(command) is True, command
 
 
@@ -2342,3 +2353,44 @@ def test_recipient_phrases_between_target_and_verb(target, recipient):
     assert router._chat_text_requests_full_rewrite(
         f'把{target}的名字{recipient}重写'
     ) is False
+
+
+def test_per_item_quantifiers_cannot_head_a_whole_card_target():
+    """⚠⚠ 逐项类限定词不能**自己当整卡目标**（Codex P1 ×3，第五十七/五十八轮）。
+
+    第四十八轮把 `每一项` 收进限定词表时只想着「限定词 + 范围名词」
+    （`把所有字段里的每一项内容重写`，base 是 True），却同时让
+    `整个卡的每一项` 自己成了整卡目标——而那个形式 base 是 False。
+    由此一口气长出三条 P1（定语绕过 / 只改名字却整卡补全 / 明确否定却照改），
+    都是数据覆盖方向。
+
+    与其在下游再加三道守卫，不如收回源头：分成两张表。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    per_item = [q for q in WHOLE_CARD_QUANTIFIERS
+                if q not in WHOLE_CARD_BARE_QUANTIFIERS]
+    assert per_item, WHOLE_CARD_QUANTIFIERS
+    assert all(q.startswith(("每", "各", "逐")) for q in per_item), per_item
+    for quantifier in per_item:
+        bare = f'把整个卡的{quantifier}重写'
+        assert router._chat_text_requests_full_rewrite(bare) is False, bare
+        with_noun = f'把所有字段里的{quantifier}内容重写'
+        assert router._chat_text_requests_full_rewrite(with_noun) is True, with_noun
+    for quantifier in WHOLE_CARD_BARE_QUANTIFIERS:
+        bare = f'把整个卡的{quantifier}重写'
+        assert router._chat_text_requests_full_rewrite(bare) is True, bare
+
+
+@pytest.mark.parametrize("prefix", ["第", "前", "后", "後", "头", "頭", "末", ""])
+@pytest.mark.parametrize("numeral", ["2", "二", "两"])
+def test_ordinal_prefixes_before_the_attributive_numeral(prefix, numeral):
+    """数量成分前面还可以有**序数/范围修饰**：`最后第2段` / `最后前两段`
+    （Codex P1 第五十八轮，base 是 False）。
+
+    只认「数词打头」时它们从定语守卫底下绕过去了。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的所有内容最后{prefix}{numeral}段重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text

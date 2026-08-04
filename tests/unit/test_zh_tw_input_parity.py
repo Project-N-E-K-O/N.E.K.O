@@ -418,6 +418,8 @@ def test_the_frame_table_is_derived_not_transcribed():
         "即使", "即便", "就算", "哪怕", "纵使", "縱使", "就是",
         "不知道", "不记得", "不記得", "忘了", "忘记", "忘記",
         "不清楚", "不确定", "不確定", "没注意", "沒注意",
+        # ⚠️ **肯定**的认知谓词一样管着宾语从句（Codex P2 第五十八轮）。
+        "知道", "曉得", "晓得", "记得", "記得", "清楚", "确定", "確定",
     }
     for simplified, traditional in (
         ("无论", "無論"), ("不论", "不論"), ("任凭", "任憑"), ("随便", "隨便"),
@@ -4409,3 +4411,54 @@ def test_frame_words_in_unquoted_titles_do_not_govern(verb):
     assert is_explicit_music_cancellation(titled) is False, titled
     framed = f'我想停止{verb}如果有什么新歌再告诉我'
     assert is_explicit_music_cancellation(framed) is True, framed
+
+
+@pytest.mark.parametrize("predicate", ["知道", "晓得", "曉得", "记得", "記得", "清楚", "确定", "確定"])
+@pytest.mark.parametrize("wh", ["怎么办", "谁唱的", "哪首歌", "什么歌"])
+def test_positive_cognition_predicates_also_govern(predicate, wh):
+    """**肯定**的认知谓语一样管着宾语从句（base 都是 True，Codex P2 第五十八轮）。
+
+    上一轮只收了否定形（不知道/不记得），肯定形漏了——「新收一个词就要同时想它的
+    否定形」这条规律，反过来也成立。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为我{predicate}{wh}'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False
+
+
+@pytest.mark.parametrize("correlative", ["都", "就", "也"])
+@pytest.mark.parametrize("polarity", ["好不好听", "能不能联网", "是不是会员", "要不要收费"])
+def test_a_not_a_in_correlative_clauses(polarity, correlative):
+    """A-not-A 在关联构式里是「无论是否…」的意思，不是提问（base 都是 True）。
+
+    ⚠️ 反向断言：没有那个 都/就/也 时它仍然是疑问尾——`我想停止播放可不可以`
+    是这个 PR 的缺陷二本体，不能被顺手放开。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{polarity}它{correlative}自动响'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放可不可以') is False
+
+
+@pytest.mark.parametrize("modifier", ["歌曲", "歌", "音乐", "专辑", "单曲", "唱片", "这首", "那张", ""])
+@pytest.mark.parametrize("title", ["《好不好》", "《是不是》", "「能不能」"])
+def test_target_modifiers_before_a_quoted_title(modifier, title):
+    """标题前面可以有**目标修饰语**：`播放歌曲《好不好》` / `播放这首《好不好》`
+    （base 都是 True，Codex P2 第五十八轮）。
+
+    ⚠️ 修饰语只认**闭集**（音乐名词 + 指示词），**没有**放开成「任意…的」。
+    放开的话 `播放谁唱的《你好吗？》` / `播放哪位歌手唱的…` / `播放莫非唱的…`
+    里的疑问词会被当成修饰语吞掉、标题又被遮住，一句提问执行取消——危险方向。
+    代价是 `播放周杰伦的《好不好》` 这类领属修饰仍然少触发一次，那是轻的一侧。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{modifier}{title}'
+    assert is_explicit_music_cancellation(text) is True, text
+    for questioned in ('我想停止播放谁唱的《你好吗？》',
+                       '我想停止播放哪位歌手唱的《你好吗？》',
+                       '我想停止播放晴天“是否合适”'):
+        assert is_explicit_music_cancellation(questioned) is False, questioned

@@ -397,6 +397,11 @@ _ZH_UNPAIRED_QUOTE_OPENER = "|".join(
 # ⚠️ 这个形状也把回溯问题一并收了：跨度不再在 `*` 循环里，就不存在
 # 「同一段既可以当跨度又可以逐字吃」的指数分段（第四/三十/三十二轮的 ReDoS 就在那里）。
 _ZH_PLAYBACK_VERBS = ("播放", "放", "播", "听", "聽")
+# 播放目标位上、标题前面的修饰语：音乐名词 / 指示词 / 领属短语。
+_ZH_TARGET_MODIFIER = (
+    r"\s*(?:(?:这|這|那)\s*[一]?\s*[首张張个個部盘盤支]?\s*)?"
+    r"(?:歌曲|歌|音乐|音樂|专辑|專輯|单曲|單曲|唱片|曲子|歌单|歌單|铃声|鈘聲)?\s*"
+)
 _ZH_BEFORE_QUESTION_MARKER = (
     # ⚠️⚠️ 引用跨度只在**紧跟播放动词**那一个位置算标题。
     # 上一版把句子里**每一对**配平引号都当标题整段跳过，于是
@@ -421,6 +426,12 @@ _ZH_BEFORE_QUESTION_MARKER = (
     rf"(?>(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)})"
     # ⚠️ 动词和标题之间可以有一个空格：入口的 normalize 把连续空白压成**一个**
     # ASCII 空格而不是删掉它（Codex P2 第五十五轮，base 是 True）。
+    # ⚠️ 标题前面还可以有**目标修饰语**：`播放歌曲《好不好》` / `播放这首《好不好》`
+    # / `播放周杰伦的《好不好》`（base 都是 True，Codex P2 第五十八轮）。
+    # ⚠️ 但不能放成「任意字符」——那就退回第五十三轮修掉的
+    # `播放晴天“是否合适”`（裸标题后面跟着用户的真问题）。所以只认三种：
+    # 音乐名词、指示词、以及以「的」收尾的领属短语。
+    rf"(?:{_ZH_TARGET_MODIFIER})?"
     rf"\s*(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER}))*"
     rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)}))?)"
     r"[^。！？!?]*"
@@ -628,7 +639,7 @@ _ZH_PREFIXED_QUESTION_GUARD = (
     # ⚠️ 标记**之后**的尾巴同样要能穿过配平跨度：`我想停止播放是否适合《你好吗？》`
     # 里标题自带问号，尾巴在它上面断掉、守卫开不了火（base 是 False，危险方向；
     # Codex P2 第十三轮）。用跟标记之前同一套跨度常量。
-    rf"|{_ZH_A_NOT_A_QUESTION_TAIL})"
+    rf"|{_ZH_A_NOT_A_QUESTION_TAIL}{_ZH_CORRELATIVE_RIGHT})"
     rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN}"
     rf"|{_ZH_UNPAIRED_QUOTE_OPENER})*\s*$)"
 )
@@ -816,6 +827,9 @@ _ZH_NON_INTERROGATIVE_FRAMES = (
     # 认知谓语（内嵌疑问是宾语从句，不是在问我们）
     "不知道", "不记得", "不記得", "忘了", "忘记", "忘記",
     "不清楚", "不确定", "不確定", "没注意", "沒注意",
+    # ⚠️ **肯定**的认知谓语一样管着宾语从句：`因为我知道谁唱的` 是在说理由，
+    # 不是在问我们（base 都是 True，Codex P2 第五十八轮）。
+    "知道", "曉得", "晓得", "记得", "記得", "清楚", "确定", "確定",
 )
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
     r"(?:" + "|".join(_ZH_NON_INTERROGATIVE_FRAMES) + r")"
