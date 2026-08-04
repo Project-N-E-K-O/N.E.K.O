@@ -2845,7 +2845,7 @@ async def test_abort_routes_current_ingress_backpressure_to_local_recovery() -> 
 async def test_provider_final_wins_rejection_waiting_on_detector_completion() -> None:
     runtime = IndependentAsrRuntime(_runtime_callbacks())
     detector = _RuntimeDetectorStub()
-    request, _, _, candidate = _install_candidate_rejection_state(
+    request, _, _, _ = _install_candidate_rejection_state(
         runtime,
         detector,
         draining=True,
@@ -2888,7 +2888,9 @@ async def test_provider_final_wins_rejection_waiting_on_detector_completion() ->
     await runtime.wait_transcript_idle()
     runtime._callbacks.on_final.assert_awaited_once()
     detector.candidate_is_current.assert_not_awaited()
-    assert candidate == request.candidate
+    assert runtime._asr_candidate_rejection is None
+    assert runtime._asr_sealed_turn_token is None
+    detector.reset.assert_not_awaited()
 
 
 async def test_rejection_wins_and_old_final_permanently_loses_eligibility() -> None:

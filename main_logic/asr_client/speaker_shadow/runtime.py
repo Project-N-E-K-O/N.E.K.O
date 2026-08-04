@@ -522,7 +522,12 @@ class SpeakerShadowRuntime:
         sample_rate_hz: int,
         candidate: SpeakerShadowCandidateKey,
     ) -> bool:
-        """Queue immutable PCM accepted by the current candidate fence."""
+        """Queue PCM accepted by the current candidate fence.
+
+        The queued tail remains mutable while an intermediate evaluation is
+        active so later PCM can coalesce into it. The worker clears the tail
+        reference immediately after dequeue, before it reads that frame.
+        """
 
         if not self.enabled:
             return False
