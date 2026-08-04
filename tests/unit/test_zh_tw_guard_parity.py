@@ -707,14 +707,27 @@ def test_the_english_negation_branch_exists():
     """英文否定分支不进上面那个笛卡尔积，但它的**存在**必须被断言。
 
     ⚠️ 同时钉住拉丁词边界：没它的话 `never` 会匹配 `whenever` 的子串。
+
+    ⚠️⚠️ 反向断言原本用的是 `whenever you rewrite all fields`，**那是错的**：
+    它 base 就是 False（base 的 `never` 确实匹配进了 `whenever`，结论碰巧对了），
+    我加词边界时把它翻成 True，等于往数据覆盖那一侧放，还把它钉成了期望值。
+    第六十三轮补上英文疑问/条件守卫之后它回到 False ＝ base 行为。
+    改用 `nevertheless`：它同样含 `never` 子串，但整句**确实是命令**，
+    用它验词边界才不会顺带钉住一个缺陷。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     for branch in ("never", "dont", r"no\s+need\s+to", "(?<![A-Za-z])", "(?![A-Za-z])"):
         assert branch in router._CHAT_NEGATION_LEXEME, branch
     assert router._chat_text_requests_full_rewrite(
-        "whenever you rewrite all fields"
+        "nevertheless rewrite all fields"
     ) is True
+    assert router._chat_text_requests_full_rewrite(
+        "never rewrite all fields"
+    ) is False
+    assert router._chat_text_requests_full_rewrite(
+        "whenever you rewrite all fields, keep the tone consistent"
+    ) is False
     assert router._chat_text_requests_full_rewrite(
         "never rewrite all fields"
     ) is False
@@ -1735,10 +1748,18 @@ def test_the_adverb_table_is_a_prefix_code():
         "给我", "給我", "帮我", "幫我", "替我", "为我", "為我",
     }
     # ⚠️ 必要性情态动词是第三张表，占同一个槽（Codex P2 第六十一轮）。
+    # ⚠️ 单音节本体 须/應/當 进表，复合形 应该/应当 **移出**——`应` 是 `应该`
+    # 的前缀，两者并存会破掉这张表的前缀码性质。复合形由 run 的 `+` 自己拼，
+    # 覆盖不减（下面那条断言钉住这一点）。
     assert set(router._WHOLE_CARD_MODAL_VERBS) == {
         "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
-        "应该", "應該", "应当", "應當", "该", "該", "一定", "最好",
+        "须", "須", "应", "應", "当", "當", "该", "該", "一定", "最好",
     }
+    for compound in ('应该', '應該', '应当', '應當'):
+        assert compound not in router._WHOLE_CARD_MODAL_VERBS, compound
+        assert router._chat_text_requests_full_rewrite(
+            f'所有字段{compound}重写'
+        ) is True, compound
     assert list(WHOLE_CARD_PREVERBS) == [
         *WHOLE_CARD_ADVERBS, *WHOLE_CARD_LIGHT_VERBS,
         *router._WHOLE_CARD_MODAL_VERBS,
@@ -2642,7 +2663,7 @@ def test_the_modal_verb_table_is_pinned():
 
     assert router._WHOLE_CARD_MODAL_VERBS == (
         "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
-        "应该", "應該", "应当", "應當", "该", "該", "一定", "最好",
+        "须", "須", "应", "應", "当", "當", "该", "該", "一定", "最好",
     )
 
 
@@ -2717,8 +2738,13 @@ def test_the_free_choice_frame_table_is_pinned():
     """⚠️ 下面两条笛卡尔积从这张表派生，先钉住表本身（相等，不是包含）。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
+    # ⚠️ 第六十三轮补齐条件/让步/认知三族——当初只搬了任指，于是
+    # `即使是否满意都把所有字段重写一遍` 照旧被当成提问丢掉（base 是 True）。
     assert router._CHAT_FREE_CHOICE_FRAMES == (
         "无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便",
+        "如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若",
+        "即使", "即便", "就算", "哪怕", "纵使", "縱使",
+        "不知道", "不記得", "不记得", "不清楚", "不确定", "不確定",
     )
 
 
@@ -2827,3 +2853,145 @@ def test_a_prohibition_still_stays_inside_its_own_clause(separator):
     assert router._chat_text_requests_full_rewrite(
         f'别重写所有字段{separator}只改名字'
     ) is False
+
+
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
+@pytest.mark.parametrize("separator", ["，", ",", "；", ";", "、"])
+def test_a_quoted_span_between_target_and_verb_breaks_the_pairing(
+    separator, opener, closer
+):
+    """⚠️⚠️ **这条修的是我自己上一轮改出来的回归。**
+
+    第六十二轮把切分改成跳过引用跨度之后，原先被引号内逗号劈开的两段并回了同一
+    子句，于是隔着一段引用的目标和动词重新相遇——而目标和动词本来就是各自独立
+    search 的，窗口等于整个子句（base 都是 False，数据覆盖方向，第六十三轮）。
+
+    夹着一段引用意味着目标是被拿来当例子/素材，不是这个动词的宾语。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    quoted = f'{opener}姓名{separator}年龄{closer}'
+    for text in (f'不要把整个卡都用{quoted}做例子然后重写',
+                 f'先展示整个卡{quoted}然后重写名字'):
+        assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_a_span_overlapping_the_target_still_pairs():
+    """⚠️ 判据是「**完全落在**目标和动词之间」，不是「有重叠」。
+
+    `把《整个卡》重写` 里目标本身就写在引号里，跨度跟目标重叠，那条仍然是命令
+    （base 是 True）。写成「只要句子里有引号就不配对」会把它一起打掉。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite('把《整个卡》重写') is True
+    # 动词在目标**前面**时同样要能配上（第五十九/六十二轮那两条）。
+    assert router._chat_text_requests_full_rewrite(
+        '重写所有字段并把口头禅设为“好不好，随便”'
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "head",
+    ["whenever", "wherever", "if", "when", "whether", "unless",
+     "should", "could", "can", "do", "does", "why", "how", "what"],
+)
+def test_english_question_and_conditional_heads_are_not_commands(head):
+    """⚠️⚠️ 英文侧一条守卫都没有：整卡目标和重写动词那两张表本来就有英文分支，
+    疑问/条件守卫却只有中文，于是 `Whenever you rewrite all fields, …` 这种条件
+    小句被判成整卡重写并 autosave（base 是 False——数据覆盖方向，第六十三轮）。
+
+    ⚠️ 这跟第三十轮那条「否定守卫漏英文导致单边不对称」是同一个病：
+    一侧收了英文、另一侧没收，就会有句子满足全部正向谓词却躲过全部守卫。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{head} you rewrite all fields, keep the tone consistent'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    assert router._chat_text_requests_full_rewrite(text.capitalize()) is False
+
+
+def test_english_commands_still_go_through():
+    """⚠️ 反向：英文命令本身不能被这道守卫误伤。
+
+    ⚠️ 拉丁词边界也钉在这里——`nevertheless` 含 `never` 子串但整句是命令。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in ('rewrite all fields', 'please rewrite the whole card',
+                 'nevertheless rewrite all fields'):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite('never rewrite all fields') is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'document all fields and rewrite the whole card',
+        'this is different, rewrite all fields',
+        'the island rewrite all fields',
+        'ifs and buts aside, rewrite all fields',
+    ],
+)
+def test_the_english_question_heads_need_a_right_word_boundary(text):
+    """⚠️ 英文疑问头两侧都要拉丁词边界。没有右边界的话 `do` 会命中
+    `document`、`if` 命中 `different`、`is` 命中 `island`，整条命令被当成提问丢掉。
+
+    ⚠️ 左边界那一半上面那条已经钉了（never ⊄ nevertheless），这条补右边界——
+    第六十三轮变异验证发现只钉了一半。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize("frame", ["即使", "即便", "就算", "哪怕", "如果", "要是", "不知道"])
+@pytest.mark.parametrize("correlative", ["都", "就", "也"])
+def test_the_card_frame_table_covers_all_four_groups(correlative, frame):
+    """卡片侧框架表当初只搬了**任指**九个词，条件/让步/认知三族全缺
+    （base 都是 True，第六十三轮）。音乐侧同族表有 45 个词——同一个语言现象
+    两边表不一样，是「两模块守卫不对称」的又一例。
+
+    ⚠️ 往这张表加词是**放宽**方向，本来危险；第六十二轮那条「框架词 + 关联词
+    同时出现」的安全边界断言钉着，加词不会让真提问漏过去。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{frame}是否满意{correlative}把所有字段重写一遍'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+def test_a_scope_modifier_slot_is_still_an_open_set():
+    """⚠️ **这条是明确不修的**，写成用例免得下一轮又被当成缺陷捡起来。
+
+    `把整个卡的所有没有填的内容重写一遍` base 是 True、现在是 False。根因不在
+    疑问守卫（`所有没有` 那个子串已经在第六十三轮挡掉了），而在**修饰语槽**
+    不认「没有填的」。那一侧是开集形容词——没填的/空着的/缺失的/漏掉的/为空的…
+    补不干净，而方向是轻的那一侧（少补几个字段，用户再说一遍）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        '把整个卡的所有没有填的内容重写一遍'
+    ) is False
+    # ⚠️ 但 `所有没有` 不再被当成极性标记——这半边是修好的，别一起退回去。
+    assert router._CHAT_QUESTION_CLAUSE_RE.search('所有没有填的内容') is None
+    assert router._CHAT_QUESTION_CLAUSE_RE.search('有没有填') is not None
+
+
+def test_clause_splitting_stays_roughly_linear_in_input_length():
+    """⚠️ 第六十二/六十三轮那两处「跳过引用跨度」的判据，第一版都是对每个位置
+    线性扫全表 ＝ O(位置 × 跨度)。42K 字符要 300 ms、169K 就到秒级，而这是条
+    **聊天输入路径**——用户粘一段长文本进来就能把它拖住。
+
+    ⚠️ 界限放得很松（30 万字符 3 秒）：这里要拦的是「退回二次方」，不是测性能。
+    二次方在这个规模是十几秒起，线性是 0.1 秒量级，中间空得下机器差异。
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    import main_routers.card_assist_router as router
+
+    text = '重写所有字段' + '并设为“好不好，随便”' * 30000
+    started = time.perf_counter()
+    router._chat_text_requests_full_rewrite(text)
+    assert time.perf_counter() - started < 3.0

@@ -397,6 +397,22 @@ _ZH_UNPAIRED_QUOTE_OPENER = "|".join(
 # ⚠️ 这个形状也把回溯问题一并收了：跨度不再在 `*` 循环里，就不存在
 # 「同一段既可以当跨度又可以逐字吃」的指数分段（第四/三十/三十二轮的 ReDoS 就在那里）。
 _ZH_PLAYBACK_VERBS = ("播放", "放", "播", "听", "聽")
+# ⚠️⚠️ **标题遮蔽循环里不能直接用上面这张表**：单字的 放/播/听/聽 同时是
+# 直播/转播/重播/广播/主播/投放/开放/好听/难听/收听 的**尾字**。
+# `我想停止播放是否会影响直播《原神》` 里 `直播` 的 `播` 被当成播放动词、
+# 《原神》被当成它的标题，而那个循环整体是原子组，一旦匹配就不回退，
+# 于是标题**之前**的整段（含真正的 `是否`）被一并吞进前缀，守卫不开火，
+# 一句提问执行了取消（base 是 False——危险方向，第六十三轮）。
+#
+# ⚠️ 左界写成**白名单**而不是黑名单。黑名单那一侧（能构成名词的字头）是开集，
+# 补不干净；允许的左邻是命令语境，闭集。漏收一个允许字的代价是**少遮一次标题**
+# ＝疑问守卫更容易开火 ＝ 少停一次歌，轻的那一侧。
+# ⚠️ 双字的 `播放` 不受此限：它自己就是完整的动词。
+_ZH_SINGLE_VERB_LEFT_ALLOWED = "止停始续續要想别別让讓帮幫给給请請把将將再又都也就先还還在"
+_ZH_PLAYBACK_VERB_IN_TARGET = (
+    r"(?:播放|(?:(?<![一-鿿])|(?<=[" + _ZH_SINGLE_VERB_LEFT_ALLOWED + r"]))"
+    r"(?:放|播|听|聽))"
+)
 # 播放目标位上、标题前面的修饰语：音乐名词 / 指示词 / 领属短语。
 # ⚠️ 写成元组：手写在正则里时我把 `鈴聲` 打成了不存在的 `鈘聲`，
 # 静默失效到 reviewer 拿真词去试才暴露（Codex P2 第六十轮）。
@@ -430,7 +446,7 @@ _ZH_BEFORE_QUESTION_MARKER = (
     # 写成「标题可选 + 循环」时，`我想停止播放哪个好听` 里的 `听`
     # （`好听` 的后半）会被当成另一个播放动词，循环一路吃到那里，
     # 把疑问词 `哪个` 一并吞进前缀——一句提问又成了命令。
-    rf"(?>(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)})"
+    rf"(?>(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?{_ZH_PLAYBACK_VERB_IN_TARGET}"
     # ⚠️ 动词和标题之间可以有一个空格：入口的 normalize 把连续空白压成**一个**
     # ASCII 空格而不是删掉它（Codex P2 第五十五轮，base 是 True）。
     # ⚠️ 标题前面还可以有**目标修饰语**：`播放歌曲《好不好》` / `播放这首《好不好》`
@@ -440,7 +456,7 @@ _ZH_BEFORE_QUESTION_MARKER = (
     # 音乐名词、指示词、以及以「的」收尾的领属短语。
     rf"(?:{_ZH_TARGET_MODIFIER})?"
     rf"\s*(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER}))*"
-    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)}))?)"
+    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?{_ZH_PLAYBACK_VERB_IN_TARGET})?)"
     r"[^。！？!?]*"
 )
 
@@ -860,8 +876,42 @@ _ZH_ASSERTED_FRAMES = tuple(
     frame for frame in _ZH_NON_INTERROGATIVE_FRAMES
     if frame not in _ZH_POSITIVE_COGNITION_FRAMES
 )
+# ⚠️⚠️ 短框架词会被更长的词从中间命中：要是 ⊂ 主要是/只要是/需要是/重要是，
+# 就是 ⊂ 也就是/不就是/这就是/那就是，即使 ⊂ 立即使用/随即使用，
+# 忘了 ⊂ 别忘了/差点忘了。这些更长表达都**不是**框架，意思正相反，却照样让
+# 辖域内的 是否/能否 被中和掉，一句提问执行成停止播放
+# （base 全是 False——危险方向，第六十三轮）。
+#
+# ⚠️⚠️ 这里用**黑名单**，跟这个文件里其它左界的取舍相反，理由是**方向**：
+# 每加一条只会让框架**少**认一次 ＝ 疑问守卫更容易开火 ＝ 少停一次歌（轻）。
+# 漏掉一条等于维持现状，不引进新风险。而白名单在这里不可行——实测左邻是开集，
+# `停止播放如果…` / `因为无论…` / `我忘了…` 的左邻分别是动词、连词、代词。
+# ⚠️ 也因此这条修**是部分的**：没列进来的组合仍然会误开框架。
+# ⚠️ 后视必须**贴着被挡的那个词的首字**、而且只回看一个字。写成
+# `(?<![主只需重]要)要是` 时引擎在 `要` 之前回看两个字，句首越界即通过，
+# 等于没挡——第一版就是这么写的，`主要是` 照旧命中。所以逐词各挂各的。
+_ZH_FRAME_LEFT_BLACKLIST = {
+    "要是": "主只需重首次",
+    "就是": "也不这這那还還可",
+    "即使": "立随隨当當",
+    "忘了": "别別点點差",
+    "忘记": "别別点點差",
+    "忘記": "别別点點差",
+    "不管": "才就",
+    # ⚠️ `不管用`（不管 + 用「有效」）不需要单独挡：实测有没有右界它都是 False,
+    # 早被别的判据拦下了。我一度为它加过一张右界表，变异验证发现**删掉它行为
+    # 完全不变**——没有失败用例支撑的防御就是死代码，删了。
+}
+
+
+def _zh_guarded_frame(frame: str) -> str:
+    """给会被更长词从中间命中的框架词挂上左界。"""  # noqa: DOCSTRING_CJK
+    left = _ZH_FRAME_LEFT_BLACKLIST.get(frame)
+    return rf"(?<![{left}]){frame}" if left else frame
+
+
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
-    r"(?:" + "|".join(_ZH_ASSERTED_FRAMES) + r")"
+    r"(?:" + "|".join(_zh_guarded_frame(f) for f in _ZH_ASSERTED_FRAMES) + r")"
     r"|" + _ZH_INQUIRY_LEFT
     + r"(?:" + "|".join(_ZH_POSITIVE_COGNITION_FRAMES) + r")"
 )
@@ -891,6 +941,40 @@ _ZH_FREE_CHOICE_TOKEN_RE = re.compile(
     + "|".join(_zh_a_not_a_forms())
     + r"|是否|能否|可否|有无|有無)"
 )
+# ⚠️⚠️ **认知谓语只管 wh 宾语从句，不管极性标记。**
+#
+# 第五十八轮把认知谓语收进框架表，理由是 `因为我知道谁唱的` 在说理由不是在
+# 问我们——那是个 **wh** 宾语从句。但同一条规则套到极性标记上就反了：
+# `停止播放不知道是否合适` / `停止播放不知道能否恢复` 是用户在**犹豫**，
+# 犹豫的对象正是「要不要停」本身；把 `是否` 中和掉之后一句自言自语被执行成
+# 停止播放（base 都是 False——危险方向，第六十三轮）。
+#
+# ⚠️ 这条同时收掉了「肯定认知谓语左界」那一整族：`先确定是否会丢进度` /
+# `弄清楚是否…` / `问清楚是否…` / `早知道是否…`。第六十二轮用
+# `_ZH_INQUIRY_LEFT` 挡了 7 个助动词，但左邻是**开集**（任何动词/副词都能接），
+# 补不干净。改成从**补语类型**上判就闭合了：认知谓语后面接极性标记时，
+# 无论左邻是什么，那都是在求知而不是在断言。
+# 左界那条仍然留着——它挡的是 `想知道谁唱的` 这种 wh 的情形，两条不重叠。
+#
+# ⚠️ 任指/条件/让步三族**不受此限**：`无论是不是好歌都不想听` 里的极性标记
+# 确实要中和（第五十三轮，base 是 True）。所以按框架词分流，不是一刀切。
+_ZH_COGNITION_FRAMES = _ZH_POSITIVE_COGNITION_FRAMES + (
+    "不知道", "不记得", "不記得", "忘了", "忘记", "忘記",
+    "不清楚", "不确定", "不確定", "没注意", "沒注意",
+)
+_ZH_COGNITION_FRAME_RE = re.compile(r"(?:" + "|".join(_ZH_COGNITION_FRAMES) + r")")
+_ZH_FREE_CHOICE_WH_ONLY_RE = re.compile(
+    r"(?:" + _ZH_WH_QUESTION_MARKER + r"|"
+    + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r")"
+)
+# ⚠️ 但认知谓语 + 极性标记**被理由标记管着时**仍然是断言：
+# `因为不知道是否好歌都不想听` 是在说停歌的理由（第五十三轮，base 是 True）。
+# 有 `因为` 时整段是理由小句；没有时 `不知道是否合适` 就是在犹豫要不要停。
+# ⚠️ 理由标记是**封闭词类**，一次列全；只在**同一子句内、框架词之前**找。
+_ZH_REASON_MARKERS = (
+    "因为", "因為", "由于", "由於", "既然", "鉴于", "鑑於", "因", "既",
+)
+_ZH_REASON_MARKER_RE = re.compile(r"(?:" + "|".join(_ZH_REASON_MARKERS) + r")")
 
 
 # 框架词后面紧跟这些谓词时，它引的是真小句而不是标题的一部分。
@@ -973,7 +1057,19 @@ def _zh_neutralize_free_choice(text: str) -> str:
                 continue
             stop = hit.start()
             break
-        pieces.append(_ZH_FREE_CHOICE_TOKEN_RE.sub("某", text[marker.end():stop]))
+        # ⚠️ 认知谓语走**只中和 wh**的那一条；见 _ZH_FREE_CHOICE_WH_ONLY_RE 上面
+        # 的长注释：`不知道是否合适` 是犹豫，`知道谁唱的` 才是断言。
+        # 除非它被理由标记管着——那时整段是理由小句，极性标记照旧中和。
+        token_re = _ZH_FREE_CHOICE_TOKEN_RE
+        if _ZH_COGNITION_FRAME_RE.fullmatch(marker.group(0)):
+            head = text[:marker.start()]
+            boundary = max(
+                (hit.end() for hit in _ZH_CLAUSE_BOUNDARY_RE.finditer(head)),
+                default=0,
+            )
+            if not _ZH_REASON_MARKER_RE.search(head, boundary):
+                token_re = _ZH_FREE_CHOICE_WH_ONLY_RE
+        pieces.append(token_re.sub("某", text[marker.end():stop]))
         cursor = stop
     pieces.append(text[cursor:])
     return "".join(pieces)
@@ -999,8 +1095,14 @@ _ZH_FRAME_SCOPE_COORDINATORS = (
 _ZH_FRAME_SCOPE_END_RE = re.compile(
     _ZH_CLAUSE_BOUNDARY_RE.pattern + "|" + "|".join(_ZH_FRAME_SCOPE_COORDINATORS)
 )
+# ⚠️ 后一子句是**否定**时不能合并：`播放的时候，不要再放音乐了` 里的 `再`
+# 恰好是关联副词，合并之后 `不要再放` 跟前半句连成一体，整条取消请求丢掉
+# （base 是 True，第六十三轮）。否定词是闭集，直接前视排除。
+_ZH_TEMPORAL_JOIN_NEGATION = r"(?![^，,。！!？?]{0,4}?(?:不|别|別|甭|莫|勿|停|停止))"
 _ZH_TEMPORAL_CLAUSE_JOIN_RE = re.compile(
-    rf"(的(?:时候|時候))\s*[，,；;、]\s*(?=[^，,。！!？?]{{0,4}}?{_ZH_COORDINATION_ADVERB})"
+    rf"(的(?:时候|時候))\s*[，,；;、]\s*"
+    rf"{_ZH_TEMPORAL_JOIN_NEGATION}"
+    rf"(?=[^，,。！!？?]{{0,4}}?{_ZH_COORDINATION_ADVERB})"
 )
 # ⚠️ 「的」直接收尾时宾语是**省略**掉的，不是名物化：`停止正在播放的` /
 # `帮我停止正在播放的` / `停止正在播放的吧` base 全是 True（Codex P2）。

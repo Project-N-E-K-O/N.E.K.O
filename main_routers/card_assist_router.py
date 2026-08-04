@@ -32,6 +32,7 @@ All four reuse the existing "agent API" provider so the bundled free path uses
 from __future__ import annotations
 
 import json
+import bisect
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -897,7 +898,13 @@ _WHOLE_CARD_LIGHT_VERBS = (
 # `所有字段该不该重写` 走的是 _CHAT_QUESTION_CLAUSE_RE，两道守卫都在这之前。
 _WHOLE_CARD_MODAL_VERBS = (
     "必须", "必須", "必需", "务必", "務必", "需", "要", "得",
-    "应该", "應該", "应当", "應當", "该", "該", "一定", "最好",
+    # ⚠️ 单音节本体 须/應/當 才是这一族的词根：`所有字段须重写` /
+    # `所有欄位應重寫` base 都是 True（第六十三轮）。
+    # ⚠️⚠️ 加了单字 `应/應/当/當` 就**必须**同时删掉复合形 `应该/應該/应当/應當`——
+    # 它们会破坏这张表的**前缀码**性质（`应` 是 `应该` 的前缀），而前缀码正是
+    # `_WHOLE_CARD_ADVERB_RUN` 那个 `+` 不会指数回溯的依据。复合形由 run 从
+    # 应+该 / 应+当 自己拼出来，覆盖不减。测试里那条前缀码断言会当场兜住。
+    "须", "須", "应", "應", "当", "當", "该", "該", "一定", "最好",
 )
 _WHOLE_CARD_PREVERB_WORDS = (
     _WHOLE_CARD_BARE_ADVERBS + _WHOLE_CARD_LIGHT_VERBS + _WHOLE_CARD_MODAL_VERBS
@@ -1347,6 +1354,47 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
 _CHAT_CLAUSE_SPLIT_RE = re.compile(r"[。，、！？,.!?;；]+")
 
 
+def _chat_clause_pairs_target_with_verb(readable: str) -> bool:
+    """这一子句里，整卡目标和重写动词**配得上**吗？
+
+    ⚠️⚠️ 两边本来是各自独立 search 的，窗口等于整个子句。第六十二轮把切分改成
+    跳过引用跨度之后，原先被引号内逗号劈开的两段并回了同一子句，于是隔着一段
+    引用的目标和动词重新相遇——`先展示整个卡“姓名，年龄”然后重写名字` 和
+    `不要把整个卡都用“姓名，年龄”做例子然后重写` 都因此走进整卡补全并 autosave
+    （base 都是 False——数据覆盖方向，第六十三轮）。**这是我自己上一轮改出来的。**
+
+    判据：目标和动词之间如果**整段夹着**一个引用跨度，就不算配上。夹着一段引用
+    意味着目标是被拿来当例子/素材，不是这个动词的宾语。
+
+    ⚠️ 必须是「完全落在两者之间」而不是「有重叠」：`把《整个卡》重写` 里目标
+    本身就写在引号里，跨度跟目标重叠，那条仍然要算命令（base 是 True）。
+
+    ⚠️ 动词遍历**所有**出现位置而不是只看第一个，这一段是**防御性的**：
+    我构造不出能区分两种写法的句子（目标在两个动词中间时，目标本身就不被
+    `_CHAT_FULL_REWRITE_RE` 接受）。所以这里**没有**对应的用例——写一条
+    只能是空断言，而空断言这一轮已经骗过我两次。留着循环是因为它不花钱，
+    但别把它当成有测试覆盖的行为。
+    """  # noqa: DOCSTRING_CJK
+    target = _CHAT_FULL_REWRITE_RE.search(readable)
+    if not target:
+        return False
+    spans = [hit.span() for hit in _CHAT_QUOTED_SPAN_RE.finditer(readable)]
+    # ⚠️ 跨度**有序且互不重叠**，所以「(lo, hi) 里有没有整段跨度」只要看
+    # 起点 ≥ lo 的**第一段**——它的终点在所有候选里最小。第一版对每个动词
+    # 线性扫全表，是 O(动词 × 跨度)：10K 字符要 21 ms、100K 就到秒级，
+    # 而这是条聊天输入路径。原来那两次 search 是线性的，二次方是我引进的。
+    starts = [start for start, _ in spans]
+    for verb in _CHAT_REWRITE_VERB_RE.finditer(readable):
+        if verb.start() >= target.end():
+            lo, hi = target.end(), verb.start()
+        else:
+            lo, hi = verb.end(), target.start()
+        index = bisect.bisect_left(starts, lo)
+        if index >= len(spans) or spans[index][1] > hi:
+            return True
+    return False
+
+
 def _chat_clauses(text: str) -> list[str]:
     """按句读把整段文本切成子句，**引用跨度里的句读不算数**。
 
@@ -1364,10 +1412,15 @@ def _chat_clauses(text: str) -> list[str]:
     """  # noqa: DOCSTRING_CJK
     text = text or ""
     spans = [hit.span() for hit in _CHAT_QUOTED_SPAN_RE.finditer(text)]
+    # ⚠️ 跨度有序且互不重叠，用二分找「起点 ≤ 这个句读的最后一段」就够。
+    # 第一版对每个句读线性扫全表，是 O(句读 × 跨度)——42K 字符要 300 ms，
+    # 而这是条聊天输入路径。切分本来是一次 re.split，二次方是我上一轮引进的。
+    span_starts = [lo for lo, _ in spans]
     clauses: list[str] = []
     start = 0
     for hit in _CHAT_CLAUSE_SPLIT_RE.finditer(text):
-        if any(lo <= hit.start() < hi for lo, hi in spans):
+        index = bisect.bisect_right(span_starts, hit.start()) - 1
+        if index >= 0 and hit.start() < spans[index][1]:
             continue
         piece = text[start:hit.start()]
         if piece.strip():
@@ -1429,7 +1482,22 @@ _CHAT_ANY_QUOTED_SPAN_SUB = _CHAT_QUOTED_SPAN_RE.sub
 # `所有字段是不是都要重写` 这种**真提问**会被当成命令，直接走进整卡补全。
 # 所以这里要求「框架词 + 窗口 + 关联词」整段同时出现，两个条件缺一不可。
 _CHAT_FREE_CHOICE_FRAMES = (
+    # 任指
     "无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便",
+    # ⚠️ 条件/让步/认知三族当初漏了，只搬了任指：`即使是否满意都把所有字段重写
+    # 一遍` / `不知道为什么就是要重写整个卡的全部设定` 照旧被当成提问丢掉
+    # （base 都是 True，第六十三轮）。音乐侧同族表有 45 个词，这边只有 9 个——
+    # 同一个语言现象两边表不一样，就是第六十二轮那条「两模块守卫不对称」的
+    # 又一例。
+    # ⚠️ 往这张表加词是**放宽**方向，本来危险；但第六十二轮定的判据要求
+    # 「框架词 + 窗口 + 关联词」同时出现，加词并不会让 `是不是都要重写所有字段`
+    # 这种真提问漏过去——那条安全边界断言钉着。
+    # 条件
+    "如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若",
+    # 让步
+    "即使", "即便", "就算", "哪怕", "纵使", "縱使",
+    # 认知
+    "不知道", "不記得", "不记得", "不清楚", "不确定", "不確定",
 )
 _CHAT_FREE_CHOICE_SPAN_RE = re.compile(
     r"(?:" + "|".join(_CHAT_FREE_CHOICE_FRAMES) + r")"
@@ -1476,7 +1544,10 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
 # 不认裸问号——`重写整个卡?` 在基线上就是命令，一刀切会改既有行为。
 _CHAT_QUESTION_CLAUSE_RE = re.compile(
     r"(?:[吗嗎呢]\s*[？?]?\s*$"
-    r"|是否|能否|可否|有没有|有沒有"
+    # ⚠️ `有没有` 要挡左界：`把整个卡的所有没有填的内容重写一遍` 里它是
+    # `所有` + `没有`，不是极性标记（base 是 True，第六十三轮）。
+    # 这是这个 PR 里第九个「白名单词是更长词子串」入口。
+    r"|是否|能否|可否|(?<!所)有没有|(?<!所)有沒有"
     r"|需不需要|要不要|该不该|該不該|应不应该|應不應該|用不用|可不可以|能不能"
     r"|是不是|好不好|行不行|对不对|對不對"
     # ⚠️ wh 疑问头。第五十七轮加这道守卫时只收了极性/情态那一族，
@@ -1486,7 +1557,19 @@ _CHAT_QUESTION_CLAUSE_RE = re.compile(
     # ⚠️ 左界必须挡 `因`：`因为什么都没写所以重写…` 里 `为什么` 只是子串
     # （base 是 True）。这是这个 PR 里第七个「白名单词是更长词子串」入口。
     r"|(?<!因)为什么|(?<!因)為什麼|(?<!因)为何|(?<!因)為何|(?<!因)为啥|(?<!因)為啥"
-    r"|干嘛|幹嘛|凭什么|憑什麼)"
+    r"|干嘛|幹嘛|凭什么|憑什麼"
+    # ⚠️⚠️ 英文侧一条守卫都没有：整卡目标和重写动词那两张表本来就有英文分支，
+    # 疑问/条件守卫却只有中文，于是 `Whenever you rewrite all fields, keep the
+    # tone consistent` 这种**条件小句**被判成整卡重写命令并 autosave
+    # （base 是 False——数据覆盖方向，第六十三轮）。
+    # 这跟第三十轮那条「否定守卫漏英文导致单边不对称」是同一个病。
+    # ⚠️ 用 `(?i:…)` 内联而不是给整条正则加 IGNORECASE——中文分支里的
+    # 定长后视不受影响，改动面最小。
+    # ⚠️ 两侧都要拉丁词边界，否则 `iffy` / `whenever` 里的子串会误命中。
+    r"|(?i:(?<![A-Za-z])(?:whenever|wherever|whichever|if|when|whether"
+    r"|unless|should|could|would|can|do|does|did|why|how|what|which"
+    r"|are|is)(?![A-Za-z]))"
+    r")"
 )
 
 
@@ -1536,10 +1619,7 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
             continue
         readable = _chat_clause_without_quoted_prohibitions(clause)
-        if (
-            _CHAT_FULL_REWRITE_RE.search(readable)
-            and _CHAT_REWRITE_VERB_RE.search(readable)
-        ):
+        if _chat_clause_pairs_target_with_verb(readable):
             return True
     return False
 

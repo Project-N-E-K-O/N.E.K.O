@@ -4682,3 +4682,145 @@ def test_negated_cognition_predicates_keep_no_left_guard(negated):
     assert negated not in mr._ZH_POSITIVE_COGNITION_FRAMES
     text = f'我想停止播放因为我{negated}谁唱的'
     assert mr.is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "compound", ["直播", "转播", "轉播", "重播", "广播", "廣播", "主播",
+                 "投放", "开放", "開放", "好听", "好聽", "难听", "收听", "收聽"]
+)
+def test_a_single_char_playback_verb_needs_a_left_boundary(compound):
+    """⚠️⚠️ 单字的 放/播/听/聽 同时是 直播/转播/好听 的**尾字**。
+
+    `我想停止播放是否会影响直播《原神》` 里 `直播` 的 `播` 被当成播放动词、
+    《原神》被当成它的标题；而标题遮蔽那一段整体是**原子组**，一旦匹配就不回退，
+    于是标题之前的整段（含真正的 `是否`）被一并吞进前缀，守卫不开火，
+    一句提问执行了取消（base 是 False——危险方向，第六十三轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放是否会影响{compound}《原神》'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_real_single_char_playback_verbs_still_shield_their_title():
+    """⚠️ 反向：左界是**白名单**，命令语境里的单字动词照旧遮蔽标题。
+
+    第五十四轮那条「一句话里多个播放动词各带各的标题」必须还活着。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in ('停止听《晴天》然后停止播放《好不好》',
+                 '我想停止播放《你好吗？》',
+                 '别放《是不是》了'):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize("polarity", ["是否", "能否", "可否", "是不是", "能不能"])
+@pytest.mark.parametrize(
+    "cognition", ["不知道", "不清楚", "不确定", "知道", "清楚", "确定"]
+)
+def test_a_cognition_frame_does_not_neutralize_polarity_by_itself(
+    cognition, polarity
+):
+    """⚠️⚠️ **认知谓语只管 wh 宾语从句，不管极性标记。**
+
+    第五十八轮收认知谓语的理由是 `因为我知道谁唱的` 在说理由——那是个 **wh**
+    宾语从句。同一条规则套到极性标记上就反了：`停止播放不知道是否合适` 是用户
+    在**犹豫**，犹豫的对象正是「要不要停」本身（base 全是 False——危险方向）。
+
+    ⚠️ 这条同时收掉了「肯定认知谓语左界」那一整族（先确定/弄清楚/问清楚/早知道）。
+    第六十二轮用助动词表挡左邻，但左邻是**开集**，补不干净；改成从**补语类型**
+    上判就闭合了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{cognition}{polarity}合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("prefix", ["先", "弄", "说", "問", "问", "早", "还", "得"])
+@pytest.mark.parametrize("cognition", ["确定", "清楚", "知道", "记得"])
+def test_any_left_neighbour_of_a_cognition_predicate_is_covered(prefix, cognition):
+    """⚠️ 左邻是开集：先确定 / 弄清楚 / 说清楚 / 问清楚 / 早知道 / 还记得 / 得确定。
+    按补语类型判之后，左邻是什么都不影响结论（base 全是 False）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{prefix}{cognition}是否会丢进度'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("polarity", ["是不是", "能不能", "是否", "能否", "有无", "有無"])
+@pytest.mark.parametrize("reason", ["因为", "因為", "由于", "由於", "既然"])
+def test_a_reason_marker_restores_polarity_neutralization(reason, polarity):
+    """⚠️ 但认知谓语 + 极性标记**被理由标记管着时**仍然是断言：
+    `因为不知道是否好歌都不想听` 是在说停歌的理由（第五十三轮，base 是 True）。
+
+    有 `因为` 时整段是理由小句；没有时 `不知道是否合适` 就是在犹豫要不要停。
+    这两条正反用例一起把判据夹住。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{reason}不知道{polarity}好歌都不想听'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize("wh", ["谁唱的", "誰唱的", "哪首更好", "什么歌"])
+@pytest.mark.parametrize("cognition", ["知道", "记得", "不知道", "不记得", "清楚"])
+def test_a_cognition_frame_still_neutralizes_wh(cognition, wh):
+    """⚠️ 反向：wh 那一半照旧中和（第五十八轮，base 全是 True）。
+    「只管 wh 不管极性」这条判据的另一半，缺了它上面那条就成了单边收窄。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为我{cognition}{wh}'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "compound",
+    ["主要是", "只要是", "需要是", "重要是", "也就是", "不就是", "这就是",
+     "那就是", "立即使用", "随即使用", "别忘了", "差点忘了"],
+)
+def test_frame_words_matched_inside_a_longer_word_do_not_open_a_frame(compound):
+    """⚠️⚠️ 短框架词会被更长的词从中间命中：要是 ⊂ 主要是，就是 ⊂ 也就是，
+    即使 ⊂ 立即使用，忘了 ⊂ 别忘了。这些更长表达意思正相反，却照样中和掉辖域内的
+    极性标记，一句提问执行成停止播放（base 全是 False——危险方向，第六十三轮）。
+
+    ⚠️⚠️ 这里用**黑名单**，跟这个文件里其它左界的取舍相反，理由是**方向**：
+    每加一条只会让框架少认一次 ＝ 少停一次歌（轻）。漏掉一条等于维持现状，
+    不引进新风险。而白名单在这里不可行——实测左邻是开集。
+    ⚠️ 也因此这条修**是部分的**：没列进来的组合仍然会误开框架。
+
+    ⚠️ 后视必须贴着被挡词的首字、只回看一个字。写成 `(?<![主只需重]要)要是` 时
+    引擎在 `要` 之前回看两个字，句首越界即通过——第一版就是这么写的，等于没挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{compound}想问能否换一首'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("frame", ["要是", "就是", "即使", "忘了", "不管"])
+def test_the_guarded_frames_still_work_on_their_own(frame):
+    """⚠️ 反向：挂了左界的那几个框架词，**自己单独出现时**照旧是框架。
+    黑名单只挡特定前缀，不能把整个词废掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert mr._ZH_FREE_CHOICE_FRAME_RE.search(f'我想停止播放{frame}') is not None
+    text = f'我想停止播放因为{frame}什么歌都不好听'
+    assert mr.is_explicit_music_cancellation(text) is True, text
+
+
+def test_a_temporal_clause_is_not_joined_across_a_negation():
+    """⚠️ 后一子句是**否定**时不能合并：`播放的时候，不要再放音乐了` 里的 `再`
+    恰好是关联副词，合并之后 `不要再放` 跟前半句连成一体，整条取消请求丢掉
+    （base 是 True，第六十三轮）。
+
+    ⚠️ 反向断言钉住第四十六轮那条合并本身没被废掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation('播放的时候，不要再放音乐了') is True
+    assert is_explicit_music_cancellation('停止播放的时候，顺便关灯') is True
