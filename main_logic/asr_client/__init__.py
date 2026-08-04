@@ -38,6 +38,9 @@ from ._registry_meta import (
 from .endpointing.detector_runtime import _create_voice_turn_adapter
 from .provider_policy import resolve_provider_policy
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
+from .workers.faster_whisper import (
+    faster_whisper_asr_worker as _faster_whisper_asr_worker,
+)
 from .workers.gemini import gemini_asr_worker as _gemini_asr_worker
 from .workers.glm import glm_asr_worker as _glm_asr_worker
 from .workers.grok import (
@@ -109,6 +112,7 @@ def _resolve_session_language(
 
 _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
     "dummy": _dummy_asr_worker,
+    "faster_whisper": _faster_whisper_asr_worker,
     "qwen": _qwen_asr_worker,
     "openai": _openai_asr_worker,
     "step": _step_asr_worker,
@@ -117,6 +121,9 @@ _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
     "gemini": _gemini_asr_worker,
     "soniox": _soniox_asr_worker,
 }
+
+# Env / config overrides that bypass CORE_ASR_ROUTES (credential-free locals).
+_PROVIDER_OVERRIDES = frozenset({"dummy", "faster_whisper"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +177,43 @@ def _mapped_soniox_region(user_region: str) -> Literal["us", "eu", "jp"]:
     return "us"
 
 
+def _selection_for_provider_override(
+    core_key: str,
+    provider_key: str,
+    *,
+    core_config: dict | None = None,
+) -> _AsrSelection:
+    worker_fn, api_key, _provider_key = _get_asr_worker(
+        core_key,
+        "manual",
+        provider_key_override=provider_key,
+        core_config=core_config or {},
+        require_credential=False,
+    )
+    return _AsrSelection(
+        provider_key=provider_key,
+        endpointing_mode="manual",
+        _worker_fn=worker_fn,
+        _api_key=api_key or "",
+    )
+
+
+def _configured_local_asr_provider(core_config: dict) -> str:
+    """Return a local ASR override from core_config, or empty string."""
+
+    explicit = str(core_config.get("asrProvider") or "").strip().lower()
+    if explicit in _PROVIDER_OVERRIDES:
+        return explicit
+    if explicit in {"", "auto", "default", "follow_core"}:
+        local_ai = core_config.get("_neko_local_ai")
+        if isinstance(local_ai, dict) and local_ai.get("mode"):
+            # Local-AI seed enables faster-whisper unless asrProvider disables it.
+            disabled = str(local_ai.get("asr") or "").strip().lower()
+            if disabled not in {"off", "disabled", "cloud", "none"}:
+                return "faster_whisper"
+    return ""
+
+
 def _resolve_asr_selection(
     core_type: str,
     *,
@@ -189,26 +233,22 @@ def _resolve_asr_selection(
         else ""
     )
     if provider_override:
-        if provider_override != "dummy":
+        if provider_override not in _PROVIDER_OVERRIDES:
             raise RuntimeError(
-                "ASR_INVALID_CONFIG: ASR_PROVIDER only supports the development "
-                "value 'dummy'"
+                "ASR_INVALID_CONFIG: ASR_PROVIDER only supports "
+                "'dummy' or 'faster_whisper'"
             )
-        worker_fn, api_key, _provider_key = _get_asr_worker(
-            core_key,
-            "manual",
-            provider_key_override="dummy",
-            core_config={},
-            require_credential=False,
-        )
-        return _AsrSelection(
-            provider_key="dummy",
-            endpointing_mode="manual",
-            _worker_fn=worker_fn,
-            _api_key=api_key or "",
-        )
+        return _selection_for_provider_override(core_key, provider_override)
 
     core_config = _load_core_config()
+    local_provider = _configured_local_asr_provider(core_config)
+    if local_provider:
+        return _selection_for_provider_override(
+            core_key,
+            local_provider,
+            core_config=core_config,
+        )
+
     resolved_region = str(
         user_region
         or os.getenv("ASR_USER_REGION", "")
@@ -266,7 +306,7 @@ def _resolve_asr_selection(
     )
     availability = (
         _AsrProviderAvailability.IMPLEMENTED
-        if provider_key == "dummy" or bool(api_key)
+        if provider_key in _PROVIDER_OVERRIDES or bool(api_key)
         else _AsrProviderAvailability.MISSING_CREDENTIALS
     )
     return _AsrSelection(
@@ -319,7 +359,7 @@ def _get_asr_worker(
     if worker_fn is None:
         raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {core_key}")
 
-    if provider_key == "dummy":
+    if provider_key in _PROVIDER_OVERRIDES:
         return worker_fn, "", provider_key
 
     # ConfigManager owns the only permitted provider-specific credential
@@ -422,7 +462,7 @@ def _create_asr_session_from_selection(
     worker_fn = selection._worker_fn
     if worker_fn is None:
         raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {provider_key}")
-    if provider_key != "dummy" and not selection._api_key:
+    if provider_key not in _PROVIDER_OVERRIDES and not selection._api_key:
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
     provider_policy = resolve_provider_policy(
         provider_key,
@@ -450,15 +490,36 @@ def _create_asr_session_from_selection(
     )
 
 
+def builtin_independent_asr_forced() -> bool:
+    """Whether config forces built-in independent ASR (e.g. faster_whisper).
+
+    Used by Core to skip Omni-native mic routing and CORE_ASR_ROUTES entries
+    such as ``free`` (blocked_backend).
+    """
+
+    return bool(_configured_local_asr_provider(_load_core_config()))
+
+
 def _resolve_core_follow_selection(core_type: str) -> _AsrSelection:
-    """Resolve the configured Core's ASR without regional provider preference."""
+    """Resolve the configured Core's ASR without regional provider preference.
+
+    Still honors built-in local overrides (faster_whisper / dummy) so a
+    local-AI install never falls back onto the blocked ``free`` CORE route.
+    """
 
     core_key = str(core_type or "").strip().lower()
     route = _CORE_ASR_ROUTES.get(core_key)
     if route is None:
         raise RuntimeError(f"ASR_UNKNOWN_CORE: {core_key or '<empty>'}")
-    endpointing_mode = route.default_endpointing_mode
     core_config = _load_core_config()
+    local_provider = _configured_local_asr_provider(core_config)
+    if local_provider:
+        return _selection_for_provider_override(
+            core_key,
+            local_provider,
+            core_config=core_config,
+        )
+    endpointing_mode = route.default_endpointing_mode
     worker_fn, api_key_override, provider_key = _get_asr_worker(
         core_key,
         endpointing_mode,

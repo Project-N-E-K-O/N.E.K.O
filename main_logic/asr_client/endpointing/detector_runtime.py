@@ -1013,7 +1013,9 @@ def _create_voice_turn_adapter(
     on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
     smart_turn_required: bool = False,
 ) -> _VoiceTurnAdapter:
-    config = SmartTurnConfig(enabled=True)
+    from .config import speech_gate_smart_turn_config
+
+    config = speech_gate_smart_turn_config(enabled=True)
     vad = SileroVad(
         enabled=True,
         inference_error_limit=config.inference_error_limit,
@@ -1071,7 +1073,7 @@ class DetectorRuntime:
         *,
         vad: SileroVad | None = None,
         gate: SileroActivityGate | None = None,
-        rnnoise_onset_probability: float = 0.35,
+        rnnoise_onset_probability: float = 0.45,
         resource_optimization_enabled: bool = True,
         provider_policy: AsrProviderPolicy | None = None,
         coordinator: TurnCoordinator | None = None,
@@ -1084,7 +1086,9 @@ class DetectorRuntime:
         if not 0.0 <= rnnoise_onset_probability <= 1.0:
             raise ValueError("RNNoise onset probability must be within [0, 1]")
         if vad is None:
-            config = SmartTurnConfig(enabled=True)
+            from .config import speech_gate_smart_turn_config
+
+            config = speech_gate_smart_turn_config(enabled=True)
             vad = SileroVad(
                 enabled=True,
                 inference_error_limit=config.inference_error_limit,
@@ -1150,7 +1154,9 @@ class DetectorRuntime:
                 raise ValueError(
                     "SmartTurn DetectorRuntime requires a completion consumer"
                 )
-            config = SmartTurnConfig(enabled=True)
+            from .config import speech_gate_smart_turn_config
+
+            config = speech_gate_smart_turn_config(enabled=True)
             semantic_coordinator = coordinator or TurnCoordinator(
                 SmartTurnV3(
                     enabled=True,

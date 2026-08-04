@@ -113,6 +113,13 @@ def test_rps_memory_window_dedupes_different_round_results_under_one_key():
 @pytest.mark.unit
 @pytest.mark.parametrize("tool_id", ["fist", "hammer"])
 def test_avatar_prompt_and_memory_preserve_touch_zone_facts_in_all_locales(tool_id):
+    from config.prompts.prompts_avatar_interaction import (
+        _AVATAR_INTERACTION_TOUCH_ZONE_PREFERRED_EMOTION,
+        _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS,
+        _AVATAR_INTERACTION_ZONE_LOCATION_NOUN,
+        _AVATAR_INTERACTION_RESPONSE_LOCK,
+    )
+
     locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
     action_id = "poke" if tool_id == "fist" else "bonk"
 
@@ -135,13 +142,85 @@ def test_avatar_prompt_and_memory_preserve_touch_zone_facts_in_all_locales(tool_
                 locale, payload, MASTER
             )["memory_note"]
 
-            assert expected_fact in instruction
-            assert expected_fact.rstrip(".。") in memory_note
+            zone_noun = _AVATAR_INTERACTION_ZONE_LOCATION_NOUN[locale][touch_zone]
+            # zh/en bake the zone into the main sentence; others keep the fact clause.
+            assert expected_fact in instruction or zone_noun in instruction
+            assert expected_fact.rstrip(".。") in memory_note or zone_noun in memory_note
+            zone_hint = _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS[locale][touch_zone]
+            assert zone_hint in instruction
+            assert "\n" not in instruction
+            # Memory keeps location fact only — not the spoken reaction hint.
+            assert zone_hint not in memory_note
+            preferred = _AVATAR_INTERACTION_TOUCH_ZONE_PREFERRED_EMOTION[touch_zone]
+            assert preferred in zone_hint
+            lock = _AVATAR_INTERACTION_RESPONSE_LOCK[locale][tool_id]
+            assert lock in instruction
             instructions.append(instruction)
             memory_notes.append(memory_note)
 
         assert len(set(instructions)) == 4
         assert len(set(memory_notes)) == 4
+
+
+@pytest.mark.unit
+def test_live2d_model_poke_prompt_names_finger_and_zone_not_cat_paw():
+    from config.prompts.prompts_avatar_interaction import (
+        _AVATAR_INTERACTION_MODEL_POKE_ZONE_FACTS,
+        _AVATAR_INTERACTION_RESPONSE_LOCK,
+        _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS,
+        _sanitize_avatar_interaction_text_context,
+    )
+
+    for touch_zone in ("ear", "head", "face", "body"):
+        payload = {
+            "tool_id": "fist",
+            "action_id": "poke",
+            "intensity": "normal",
+            "touch_zone": touch_zone,
+            "text_context": _sanitize_avatar_interaction_text_context("live2d_model_poke"),
+        }
+        instruction = _build_avatar_interaction_instruction("zh", "YUI", MASTER, payload)
+        memory_note = _build_avatar_interaction_memory_meta("zh", payload, MASTER)[
+            "memory_note"
+        ]
+        assert "猫爪" not in instruction
+        assert "猫爪" not in memory_note
+        assert (
+            _AVATAR_INTERACTION_MODEL_POKE_ZONE_FACTS["zh"][touch_zone]
+            .format(actor=MASTER)
+            in instruction
+        )
+        assert _AVATAR_INTERACTION_TOUCH_ZONE_REACTION_HINTS["zh"][touch_zone] in instruction
+        assert _AVATAR_INTERACTION_RESPONSE_LOCK["zh"]["model_poke"] in instruction
+        assert "手指" in instruction or "用手" in instruction
+
+    # Free-form drafts still must not rewrite the event fact.
+    fist = {
+        "tool_id": "fist",
+        "action_id": "poke",
+        "intensity": "normal",
+        "touch_zone": "face",
+    }
+    assert _build_avatar_interaction_instruction(
+        "zh", "YUI", MASTER, {**fist, "text_context": "这段历史草稿不得进入模型事件事实"}
+    ) == _build_avatar_interaction_instruction("zh", "YUI", MASTER, fist)
+
+
+@pytest.mark.unit
+def test_touch_zone_preferred_emotions_are_distinct_for_motion_variety():
+    from config.prompts.prompts_avatar_interaction import (
+        _AVATAR_INTERACTION_TOUCH_ZONE_PREFERRED_EMOTION,
+    )
+
+    mapping = _AVATAR_INTERACTION_TOUCH_ZONE_PREFERRED_EMOTION
+    assert mapping == {
+        "ear": "surprised",
+        "head": "happy",
+        "face": "surprised",
+        "body": "angry",
+    }
+    # At least 3 distinct motion emotions across the 4 zones.
+    assert len(set(mapping.values())) >= 3
 
 
 @pytest.mark.unit
@@ -197,6 +276,11 @@ def test_avatar_instruction_is_one_direct_fact_and_ignores_text_context():
 
         assert with_compatibility_draft == expected
         assert "\n" not in expected
+        from config.prompts.prompts_avatar_interaction import (
+            _AVATAR_INTERACTION_RESPONSE_LOCK,
+        )
+
+        assert _AVATAR_INTERACTION_RESPONSE_LOCK[locale]["fist"] in expected
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -71,6 +71,7 @@ class TurnMixin:
         # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
         # proactive abort 等异常路径可能漏清，新轮次起点重置最稳）
         self._current_ai_turn_text = ''
+        self._reset_bilingual_speech_splitter()
 
         await self.send_user_activity()
 
@@ -124,6 +125,141 @@ class TurnMixin:
         self._tts_done_pending_until_ready = False
         async with self.lock:
             self.current_speech_id = str(uuid4())
+
+    def _dual_language_speech_enabled(self) -> bool:
+        try:
+            return bool(
+                self._config_manager.get_core_config().get("DUAL_LANGUAGE_SPEECH", False)
+            )
+        except Exception:
+            return False
+
+    def _force_japanese_tts_enabled(self) -> bool:
+        """News/proactive/JA-voice setups: TTS must speak Japanese."""
+        if self._dual_language_speech_enabled():
+            return True
+        voice = str(
+            getattr(self, "voice_id", None)
+            or getattr(self, "tts_voice_id", None)
+            or ""
+        ).strip().lower()
+        if voice.startswith("ja"):
+            return True
+        try:
+            cfg_voice = str(
+                self._config_manager.get_core_config().get("ttsVoiceId", "") or ""
+            ).strip().lower()
+            return cfg_voice.startswith("ja")
+        except Exception:
+            return False
+
+    def _is_avatar_interaction_turn(self) -> bool:
+        meta = getattr(self, "_pending_turn_meta", None)
+        return isinstance(meta, dict) and meta.get("kind") == "avatar_interaction"
+
+    async def _prepare_japanese_tts_text(self, text: str) -> str:
+        if not text or not self._force_japanese_tts_enabled():
+            return text or ""
+        from utils.tts_japanese_gate import ensure_japanese_tts_text, tts_text_looks_japanese
+
+        if tts_text_looks_japanese(text):
+            from utils.bilingual_speech import japanese_only_for_tts
+
+            return japanese_only_for_tts(text) or text
+        return await ensure_japanese_tts_text(text)
+
+    async def _prepare_avatar_display_text(
+        self,
+        *,
+        original_text: str,
+        display_text: str,
+        tts_text: str,
+    ) -> str:
+        """Poke/avatar: surface Chinese already in the chunk; defer JA→ZH to flush."""
+        if display_text:
+            return display_text
+        if not self._is_avatar_interaction_turn():
+            return display_text
+        from utils.bilingual_speech import chinese_only_for_display
+
+        zh = chinese_only_for_display(original_text or "")
+        if zh.strip():
+            return zh.strip()
+        return display_text
+
+    def _reset_bilingual_speech_splitter(self, speech_id: str | None = None) -> None:
+        splitter = getattr(self, "_bilingual_speech_splitter", None)
+        if splitter is None:
+            return
+        splitter.reset()
+        self._bilingual_speech_id = speech_id
+
+    def _split_bilingual_speech_chunk(
+        self,
+        text: str,
+        *,
+        speech_id: str | None,
+        reset: bool = False,
+    ) -> tuple[str, str]:
+        """Return (display_text, tts_text). Identity when dual-language is off."""
+        if not self._dual_language_speech_enabled():
+            return text, text
+        splitter = getattr(self, "_bilingual_speech_splitter", None)
+        if splitter is None:
+            return text, text
+        if reset or (
+            speech_id is not None and speech_id != getattr(self, "_bilingual_speech_id", None)
+        ):
+            splitter.reset()
+            self._bilingual_speech_id = speech_id
+        chunk = splitter.feed(text or "")
+        return chunk.display, chunk.tts
+
+    def _flush_bilingual_speech_chunk(self) -> tuple[str, str]:
+        if not self._dual_language_speech_enabled():
+            return "", ""
+        splitter = getattr(self, "_bilingual_speech_splitter", None)
+        if splitter is None:
+            return "", ""
+        chunk = splitter.flush()
+        return chunk.display, chunk.tts
+
+    async def _emit_flushed_bilingual_speech(self) -> None:
+        """Flush residual dual-language buffers at turn end."""
+        display_text, tts_text = self._flush_bilingual_speech_chunk()
+        if self._is_avatar_interaction_turn():
+            if tts_text:
+                self._avatar_tts_acc = (
+                    str(getattr(self, "_avatar_tts_acc", "") or "") + tts_text
+                )
+            if not display_text and not getattr(self, "_avatar_ui_published", False):
+                from utils.tts_japanese_gate import ensure_chinese_display_text
+
+                source = tts_text or str(getattr(self, "_avatar_tts_acc", "") or "")
+                if source:
+                    display_text = await ensure_chinese_display_text(source)
+            if (not tts_text) and display_text and self._force_japanese_tts_enabled():
+                tts_text = await self._prepare_japanese_tts_text(display_text)
+        if display_text:
+            await self.send_lanlan_response(
+                display_text,
+                is_first_chunk=False,
+                remember_voice_echo=self._should_remember_voice_echo(),
+            )
+            if self._is_avatar_interaction_turn():
+                self._avatar_ui_published = True
+        if tts_text and self.use_tts:
+            tts_text = await self._prepare_japanese_tts_text(tts_text)
+            if not tts_text:
+                return
+            async with self.tts_cache_lock:
+                if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
+                    try:
+                        self._enqueue_tts_text_chunk(self.current_speech_id, tts_text)
+                    except Exception as e:
+                        logger.warning(f"⚠️ 发送TTS请求失败: {e}")
+                else:
+                    self.tts_pending_chunks.append((self.current_speech_id, tts_text))
 
     async def handle_text_data(
         self,
@@ -184,11 +320,24 @@ class TurnMixin:
                     except Exception:
                         break
 
+        display_text, tts_text = self._split_bilingual_speech_chunk(
+            text,
+            speech_id=self.current_speech_id,
+            reset=bool(is_first_chunk),
+        )
+        display_text = await self._prepare_avatar_display_text(
+            original_text=text,
+            display_text=display_text,
+            tts_text=tts_text,
+        )
+        if self._is_avatar_interaction_turn() and tts_text:
+            self._avatar_tts_acc = str(getattr(self, "_avatar_tts_acc", "") or "") + tts_text
+
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
-        if ui_enabled:
+        if ui_enabled and display_text:
             on_published = None
             if expected_sid is not None and published_text_chunks is not None:
-                visible_text = self.emotion_pattern.sub('', text)
+                visible_text = self.emotion_pattern.sub('', display_text)
 
                 def _record_published_text(_published_at: float) -> None:
                     published_text_chunks.append(visible_text)
@@ -196,20 +345,22 @@ class TurnMixin:
                 on_published = _record_published_text
 
             publish_result = await self.send_lanlan_response(
-                text,
+                display_text,
                 is_first_chunk,
                 turn_id=expected_sid,
-                remember_voice_echo=not self.use_tts,
+                remember_voice_echo=self._should_remember_voice_echo(),
                 expected_speech_id=expected_sid,
                 on_published=on_published,
             )
+            if publish_result is not None and self._is_avatar_interaction_turn():
+                self._avatar_ui_published = True
             # ``None`` means the guarded send lost ownership at its internal
             # queue-write boundary.  Do not leak the same stale chunk into TTS.
             if expected_sid is not None and publish_result is None:
                 return
 
         # 如果配置了TTS，将文本发送到TTS队列或缓存
-        if self.use_tts and tts_enabled:
+        if self.use_tts and tts_enabled and tts_text:
             async with self.tts_cache_lock:
                 # ``send_lanlan_response`` may await the WebSocket after its
                 # synchronous UI publish.  Recheck before the TTS write so an
@@ -220,12 +371,12 @@ class TurnMixin:
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
-                        self._enqueue_tts_text_chunk(self.current_speech_id, text)
+                        self._enqueue_tts_text_chunk(self.current_speech_id, tts_text)
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
                     # TTS未就绪，先缓存（规范化延迟到 _flush_tts_pending_chunks）
-                    self.tts_pending_chunks.append((self.current_speech_id, text))
+                    self.tts_pending_chunks.append((self.current_speech_id, tts_text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
@@ -333,6 +484,10 @@ class TurnMixin:
         - ``handle_response_discarded``'s truncate-recovery / too-long-final
         Unified semantics: sync queue and WS carry the same meta, avoiding one
         having meta while the other doesn't."""
+        try:
+            await self._emit_flushed_bilingual_speech()
+        except Exception as e:
+            logger.debug("[%s] bilingual speech flush skipped: %s", self.lanlan_name, e)
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end'}
         pending_meta = self._pending_turn_meta
         if pending_meta:
@@ -970,6 +1125,19 @@ class TurnMixin:
         if confirmed_speech_ids is not None:
             confirmed_speech_ids.clear()
 
+    def _should_remember_voice_echo(self) -> bool:
+        """Whether AI text should seed echo suppression for the mic path.
+
+        Native realtime voice already tracks speaker-side audio; external TTS
+        historically skipped this because there was no native playback echo.
+        Independent ASR + speaker TTS *does* re-hear the AI, so remember the
+        text whenever the mic route is independent.
+        """
+
+        if not self.use_tts:
+            return True
+        return str(getattr(self, "_asr_route_mode", "") or "") == "independent"
+
     def _should_suppress_dirty_voice_transcript(self, transcript_text: str) -> bool:
         if not _core_facade.HIDE_DIRTY_VOICE_TRANSCRIPTS:
             return False
@@ -1230,9 +1398,9 @@ class TurnMixin:
             user_message["request_id"] = self._active_text_request_id
         self.sync_message_queue.put({"type": "user", "data": user_message})
         
-        # 只在语音模式（OmniRealtimeClient）下发送到前端显示用户转录
-        # 文本模式下前端会自己显示，无需后端发送，避免重复
-        # [DIAG] 切换猫娘后对话框空白问题：记录是否触发、session 类型、ws 状态
+        # Realtime voice and independent-ASR offline voice need the backend to
+        # push user_transcript. Plain text typing already renders locally —
+        # do not echo those here or bubbles duplicate.
         _ws_connected_dbg = bool(
             self.websocket
             and hasattr(self.websocket, 'client_state')
@@ -1242,7 +1410,11 @@ class TurnMixin:
             "[%s] voice user_transcript session=%s ws_connected=%s len=%d",
             self.lanlan_name, type(self.session).__name__, _ws_connected_dbg, len(record_transcript_text),
         )
-        if isinstance(self.session, OmniRealtimeClient):
+        _emit_user_transcript = is_voice_source and (
+            isinstance(self.session, OmniRealtimeClient)
+            or source_value == "independent_asr"
+        )
+        if _emit_user_transcript:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 try:
                     message = {
@@ -1281,26 +1453,34 @@ class TurnMixin:
                 expected_sid, self.current_speech_id, len(text),
             )
             return
-        # 无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(
+
+        display_text, tts_text = self._split_bilingual_speech_chunk(
             text,
-            is_first_chunk,
-            remember_voice_echo=not self.use_tts,
+            speech_id=self.current_speech_id,
+            reset=bool(is_first_chunk),
         )
+
+        # 无论是否使用TTS，都要发送文本到前端显示
+        if display_text:
+            await self.send_lanlan_response(
+                display_text,
+                is_first_chunk,
+                remember_voice_echo=self._should_remember_voice_echo(),
+            )
         
         # 如果配置了TTS，将文本发送到TTS队列或缓存
-        if self.use_tts:
+        if self.use_tts and tts_text:
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
-                        self._enqueue_tts_text_chunk(self.current_speech_id, text)
+                        self._enqueue_tts_text_chunk(self.current_speech_id, tts_text)
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
                     # TTS未就绪，先缓存（规范化延迟到 _flush_tts_pending_chunks）
-                    self.tts_pending_chunks.append((self.current_speech_id, text))
+                    self.tts_pending_chunks.append((self.current_speech_id, tts_text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
@@ -1709,12 +1889,15 @@ class TurnMixin:
 
         await self.ensure_tts_pipeline_alive()
         audio_queued = False
-        if self.tts_thread and self.tts_thread.is_alive():
+        speak_text = clean
+        if self._force_japanese_tts_enabled():
+            speak_text = await self._prepare_japanese_tts_text(clean)
+        if speak_text and self.tts_thread and self.tts_thread.is_alive():
             async with self.tts_cache_lock:
                 if self.tts_ready:
-                    self._enqueue_tts_text_chunk(turn_id, clean)
+                    self._enqueue_tts_text_chunk(turn_id, speak_text)
                 else:
-                    self.tts_pending_chunks.append((turn_id, clean))
+                    self.tts_pending_chunks.append((turn_id, speak_text))
                 status = self._request_tts_done_locked()
                 audio_queued = status in {"queued", "deferred", "already"}
         if emit_turn_end_after:

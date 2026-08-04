@@ -194,6 +194,14 @@ class NotifyMixin:
                 "[UserDirectives] prompt injection skipped: %s", _exc,
             )
 
+        # 中文聊天框 + 日语 TTS：要求模型双通道同义输出
+        try:
+            if bool(self._config_manager.get_core_config().get("DUAL_LANGUAGE_SPEECH", False)):
+                from utils.bilingual_speech import dual_language_speech_prompt_block
+                prompt += "\n\n" + dual_language_speech_prompt_block()
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug("[DualLanguageSpeech] prompt injection skipped: %s", _exc)
+
         # ── 防复读 soft hint 注入 ──────────────────────────────────
         # 把最近高 BM25 rank 的 topic 词列出来，提示模型"已经聊过这些"。这是
         # 对**所有路径**生效的软约束（与 user ban list 不同：那个是用户明确
@@ -518,6 +526,11 @@ class NotifyMixin:
             # ASR mixin should keep today's behaviour, not have every audio
             # start refuse the microphone.
             payload["microphone_route"] = route_mode
+        if input_mode != "text":
+            logger.info(
+                "[语音会话诊断] session_started microphone_route=%s",
+                route_mode or "<unset>",
+            )
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 data = json.dumps(payload)

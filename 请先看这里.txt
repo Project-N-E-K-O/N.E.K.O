@@ -1,0 +1,41 @@
+N.E.K.O 怎么用
+==============
+
+【桌面】
+  启动Neko桌面.bat  /  start_desktop.bat
+  （Steam Electron 壳 + 本仓库后端）
+
+【切到本地模型】
+  双击 set_local_ai.bat
+  然后重启 start_desktop.bat，并保持 Edge TTS 窗口开着。
+
+  会配置：
+  - 文本 / 视觉 → 本机 Ollama (qwen2.5:7b / llava)
+  - 麦克风 ASR → 内置独立 ASR + 本机 faster-whisper（不走 Omni 原生 / free 路由）
+  - 语音实时 Core（回复 LLM）→ 免费云端 (lanlan.tech)
+  - TTS → Edge TTS 桥 (端口 19000)，并同步角色音色
+  - 需要 ffmpeg
+
+  依赖：
+  - Ollama: https://ollama.com
+      ollama pull qwen2.5:7b
+      ollama pull llava
+  - ffmpeg: winget install Gyan.FFmpeg
+  - Edge TTS 桥: start_edge_tts.bat
+  - 本地 ASR: install_local_asr.bat（或 set_local_ai.bat 内会装）
+
+  可选环境变量：
+      NEKO_WHISPER_MODEL=small
+      NEKO_WHISPER_DEVICE=auto
+      NEKO_WHISPER_LANGUAGE=zh
+
+  可选 TTS=GPT-SoVITS：
+      .venv\Scripts\python scripts\set_local_ai.py --tts gptsovits
+
+【注意】
+  不要用 AIYS 壳启动（会写入无效 assistApi=ollama，文本会掉到通义 401）。
+  麦克风识别已可本地；语音会话的「回复」仍可能走免费云端 Core。
+  当前后端未开时桌面会空白：先 start_desktop.bat。
+
+【环境首次安装】
+  install_env.bat

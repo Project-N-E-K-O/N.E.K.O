@@ -2297,6 +2297,67 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
 
 
 @pytest.mark.asyncio
+async def test_offline_openai_tools_unsupported_retries_without_tools():
+    """Ollama llava returns 400 'does not support tools'; retry once bare."""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolDefinition
+
+    async def unused_handler(_args):
+        return {}
+
+    tool_def = ToolDefinition(
+        name="noop",
+        description="noop",
+        parameters={"type": "object", "properties": {}},
+        handler=unused_handler,
+    )
+
+    calls = {"n": 0}
+
+    class _Llm:
+        max_completion_tokens = 100
+
+        async def astream(self, _messages, **overrides):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                assert "tools" in overrides
+                raise RuntimeError(
+                    "Error code: 400 - {'error': {'message': "
+                    "'registry.ollama.ai/library/llava:latest does not support tools'}}"
+                )
+            assert "tools" not in overrides
+            yield LLMStreamChunk(content="我看到屏幕了", finish_reason="stop")
+
+        async def aclose(self):
+            return None
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.model = "llava"
+    client.base_url = "http://127.0.0.1:11434/v1"
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client._openai_tools_unsupported = False
+    client._tool_definitions = [tool_def]
+    client.on_tool_call = unused_handler
+    client.max_tool_iterations = 2
+    client.llm = _Llm()
+    client.has_tools = lambda: True
+
+    texts = []
+    async for chunk in client._astream_openai_with_tools(
+        [{"role": "user", "content": "看屏幕"}]
+    ):
+        if getattr(chunk, "content", None):
+            texts.append(chunk.content)
+
+    assert "".join(texts) == "我看到屏幕了"
+    assert calls["n"] == 2
+    assert client._openai_tools_unsupported is True
+
+
+@pytest.mark.asyncio
 async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
     """OpenAI-compat 路径同 turn 先 yield text 再进 tool_calls 时，写历史的
     assistant 消息 content 必须保留 streamed text，与 Gemini 路径对偶。

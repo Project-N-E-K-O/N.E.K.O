@@ -23,6 +23,7 @@ import time
 from collections import OrderedDict, deque
 from typing import Any, Awaitable, Callable, Optional
 from utils.frontend_utils import TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
+from utils.bilingual_speech import BilingualSpeechSplitter
 from main_logic.tool_calling import ToolRegistry
 from main_logic.session_state import SessionStateMachine, SessionEvent
 from main_logic.lifecycle_bus import LifecycleEventBus
@@ -102,6 +103,9 @@ class LLMSessionManager(
         # 否则 ``[`` ``]`` 会被 bracket 当成普通括号把链接文本一起吞掉。
         self._tts_markdown_stripper = TtsMarkdownStripper()
         self._tts_bracket_stripper = TtsBracketStripper()
+        # 中文聊天 / 日语 TTS 双通道分流（见 utils.bilingual_speech）
+        self._bilingual_speech_splitter = BilingualSpeechSplitter()
+        self._bilingual_speech_id: Optional[str] = None
         # 流式音频重采样器（24kHz→48kHz）- 维护内部状态避免 chunk 边界不连续
         self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
@@ -283,9 +287,6 @@ class LLMSessionManager(
         self._tts_respawn_task: Optional[asyncio.Task] = None  # 延迟重试 Task，end_session 时取消
         self._last_tts_error_code: str = ''  # 上次 TTS 错误码
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
-        # User-facing TTS notices must survive handler replacement during a
-        # worker respawn. Entries are released by audio_done or session reset.
-        self._tts_notified_error_keys: set[tuple[str, str]] = set()
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
         # Keep one utterance ledger so a replacement worker can replay consumed text.
@@ -483,8 +484,10 @@ class LLMSessionManager(
         # sync_message_queue 控制消息更原子：meta 与 turn end 事件
         # 同生共死，不会因为两条消息的时序错乱而把 avatar 轮当成 proactive。
         self._pending_turn_meta: Optional[dict] = None
+        self._avatar_ui_published = False
+        self._avatar_tts_acc = ""
 
-        # 内置 pseudo 工具（目前只有 recall_memory）。在 __init__ 末尾注册
+        # 内置工具（recall_memory / play_music / control_music）。在 __init__ 末尾注册
         # 一份占位，此时 user_language 还可能是 None → 短码兜底回退 'en'；
         # 真正进 session 前会再 refresh 一次，把 description 对齐到当时
         # 已知的 user_language。

@@ -1607,7 +1607,25 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                     ? window.live2dManager._getPreferredTouchSetHitArea(hitAreas, customAreaId)
                     : (customAreaId || "default");
                 if (!window.live2dManager._canTriggerTouchSetArea(UseBlock)) return;
-                await window.live2dManager._playTouchSetWithFallback(UseBlock);
+                // 戳模型：优先触发语音；动作等文本情绪分析后再播（无情绪不动，播完回归）。
+                // 语音发不出去时再回退到本地 touchSet / 随机表情。
+                let voiceDispatched = false;
+                if (typeof window.live2dManager._triggerModelPokeVoiceReaction === 'function') {
+                    try {
+                        voiceDispatched = await window.live2dManager._triggerModelPokeVoiceReaction(
+                            UseBlock,
+                            hitAreas,
+                            clickStartX,
+                            clickStartY
+                        );
+                    } catch (pokeErr) {
+                        console.warn('[Interaction] model poke voice failed:', pokeErr);
+                        voiceDispatched = false;
+                    }
+                }
+                if (!voiceDispatched) {
+                    await window.live2dManager._playTouchSetWithFallback(UseBlock);
+                }
                 
                 return; // 点击不需要保存位置
             }
@@ -3603,6 +3621,121 @@ Live2DManager.prototype._canTriggerTouchSetArea = function(hitAreaId) {
         return true;
     }
     return false;
+};
+
+/**
+ * Map Live2D HitArea / custom touch ids to avatar_interaction touch zones.
+ */
+Live2DManager.prototype._mapHitAreaToTouchZone = function(hitAreaId, hitAreas) {
+    const names = [];
+    if (hitAreaId) names.push(String(hitAreaId));
+    if (Array.isArray(hitAreas)) {
+        hitAreas.forEach((area) => {
+            if (area) names.push(String(area));
+        });
+    }
+    // Custom touch-set areas may carry human labels that encode the zone.
+    try {
+        const touchSet = typeof this._getCurrentTouchSetConfig === 'function'
+            ? this._getCurrentTouchSetConfig()
+            : null;
+        const cfg = touchSet && hitAreaId ? touchSet[hitAreaId] : null;
+        const custom = cfg && cfg.customArea;
+        if (custom) {
+            ['name', 'label', 'title', 'zone', 'id'].forEach((key) => {
+                if (custom[key]) names.push(String(custom[key]));
+            });
+        }
+    } catch (_) { /* ignore */ }
+    const joined = names.join(' ').toLowerCase();
+    // Order matters: more specific zones before generic body.
+    if (/ear|耳朵|耳側|耳侧|hitareaear/.test(joined)) return 'ear';
+    if (/head|头|頭|头顶|頭頂|hair|头发|頭髮|hitareahead|hit_area_head/.test(joined)) return 'head';
+    if (/face|脸|臉|cheek|嘴|mouth|face_|hitareaface|hit_area_face/.test(joined)) return 'face';
+    if (/body|bust|胸|身|肩|belly|hip|腰|hitareabody|hit_area_body|torso/.test(joined)) return 'body';
+    return '';
+};
+
+/**
+ * Geometric fallback when HitArea ids are missing/default (same bands as desktop tools).
+ */
+Live2DManager.prototype._classifyTouchZoneFromPoint = function(clientX, clientY) {
+    const x = Number(clientX);
+    const y = Number(clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return '';
+    const bounds = typeof this._getModelBoundsRect === 'function'
+        ? this._getModelBoundsRect(this.currentModel)
+        : null;
+    if (!bounds || !(bounds.width > 0) || !(bounds.height > 0)) return '';
+    const relativeX = Math.min(Math.max((x - bounds.left) / bounds.width, 0), 1);
+    const relativeY = Math.min(Math.max((y - bounds.top) / bounds.height, 0), 1);
+    if (relativeY <= 0.24 && (relativeX <= 0.24 || relativeX >= 0.76)) return 'ear';
+    if (relativeY <= 0.34) return 'head';
+    if (relativeY <= 0.62) return 'face';
+    return 'body';
+};
+
+/**
+ * Poke 2D model → spoken reaction via avatar_interaction (fist/poke).
+ * Emotion motion is applied later from reply text (see finalizeAssistantTurn).
+ * @returns {Promise<boolean>} true if the voice request was dispatched
+ */
+Live2DManager.prototype._triggerModelPokeVoiceReaction = async function(hitAreaId, hitAreas, clientX, clientY) {
+    if (window.isInTutorial) {
+        return false;
+    }
+    const send = window.sendAvatarInteractionPayload
+        || (window.AppButtons && typeof window.AppButtons.sendAvatarInteractionPayload === 'function'
+            ? window.AppButtons.sendAvatarInteractionPayload.bind(window.AppButtons)
+            : null);
+    if (typeof send !== 'function') {
+        console.warn('[Interaction] sendAvatarInteractionPayload unavailable');
+        return false;
+    }
+
+    let touchZone = this._mapHitAreaToTouchZone(hitAreaId, hitAreas);
+    if (!touchZone) {
+        touchZone = this._classifyTouchZoneFromPoint(clientX, clientY) || 'body';
+    } else if ((!hitAreaId || hitAreaId === 'default') && (!hitAreas || !hitAreas.length)) {
+        // Named HitAreas missing: prefer geometric zone over generic body.
+        const geometric = this._classifyTouchZoneFromPoint(clientX, clientY);
+        if (geometric) touchZone = geometric;
+    }
+    const interactionId = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+        ? crypto.randomUUID()
+        : (`model-poke-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    if (typeof window.registerModelPokeReaction === 'function') {
+        window.registerModelPokeReaction(interactionId, {
+            hitAreaId: hitAreaId || 'default',
+            touchZone
+        });
+    }
+
+    const ok = await send({
+        interaction_id: interactionId,
+        tool_id: 'fist',
+        action_id: 'poke',
+        target: 'avatar',
+        touch_zone: touchZone,
+        intensity: 'normal',
+        timestamp: Date.now(),
+        text_context: 'live2d_model_poke'
+    });
+
+    if (!ok && typeof window.consumeModelPokeReaction === 'function') {
+        window.consumeModelPokeReaction(interactionId);
+    }
+
+    logLive2DClickTriggerSummary('ModelPokeVoice', {
+        requestedHitArea: hitAreaId || 'default',
+        resolvedHitArea: hitAreaId || 'default',
+        touchZone,
+        dispatched: !!ok,
+        interactionId,
+        summaryType: 'routing_decision'
+    });
+    return !!ok;
 };
 
 Live2DManager.prototype._playTouchSetWithFallback = async function(hitAreaId) {

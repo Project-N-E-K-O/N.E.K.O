@@ -27,7 +27,7 @@
         SPATIAL_AUDIO_RAMP_SECONDS: 0.12,    // pan/gain 平滑过渡时长，避免突变 click
         SPATIAL_AUDIO_POLL_MS: 500,          // 位置轮询周期（兜底，事件驱动为主）
         DEFAULT_PROACTIVE_CHAT_INTERVAL: 15, // 默认搭话间隔 (秒)
-        DEFAULT_PROACTIVE_VISION_INTERVAL: 10, // 默认视觉间隔 (秒)
+        DEFAULT_PROACTIVE_VISION_INTERVAL: 5, // 默认视觉间隔 (秒)；屏幕分享关闭时低频监控
         MAX_SCREENSHOT_WIDTH: 1280,
         MAX_SCREENSHOT_HEIGHT: 720,
         VOICE_TRANSCRIPT_MERGE_WINDOW: 3000, // 语音转录合并时间窗 (ms)
@@ -235,7 +235,7 @@
         _proactiveStartupDelayApplied: false,
         proactiveChatInterval: 15,
         proactiveVisionFrameTimer: null,
-        proactiveVisionInterval: 10,
+        proactiveVisionInterval: 5,
         _lastProactiveChatScreenTime: 0,
 
         // --- 角色切换 ---

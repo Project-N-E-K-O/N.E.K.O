@@ -67,36 +67,61 @@ verify_asset = _asset_manifest.verify_asset
 require_downloadable_source = _asset_manifest.require_downloadable_source
 
 
+def _download_source_candidates(source: str) -> tuple[str, ...]:
+    """Prefer HF_ENDPOINT / hf-mirror when the pinned source is on huggingface.co.
+
+    Direct huggingface.co downloads often time out from mainland networks; the
+    bytes are still SHA-256 verified against the manifest, so mirrors are safe.
+    """
+
+    candidates: list[str] = [source]
+    if "huggingface.co/" not in source:
+        return tuple(candidates)
+
+    endpoint = (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/")
+    if endpoint:
+        rewritten = source.replace("https://huggingface.co", endpoint, 1)
+        if rewritten not in candidates:
+            candidates.insert(0, rewritten)
+
+    mirror = source.replace("https://huggingface.co", "https://hf-mirror.com", 1)
+    if mirror not in candidates:
+        candidates.append(mirror)
+    return tuple(candidates)
+
+
 def _download_verified(source: str, destination: Path, expected_sha256: str) -> None:
     temporary = destination.with_suffix(destination.suffix + ".part")
-    digest = hashlib.sha256()
-    request = urllib.request.Request(source, headers={"User-Agent": "NEKO-asset-preparer/1"})
     last_error: Exception | None = None
-    for attempt in range(3):
-        digest = hashlib.sha256()
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
-                "wb"
-            ) as output:
-                while chunk := response.read(1024 * 1024):
-                    digest.update(chunk)
-                    output.write(chunk)
-            actual = digest.hexdigest()
-            if actual.lower() != expected_sha256.lower():
-                raise AssetManifestError(
-                    f"download SHA-256 mismatch for {destination.name}: "
-                    f"expected {expected_sha256}, got {actual}"
-                )
-            os.replace(temporary, destination)
-            return
-        except AssetManifestError:
-            temporary.unlink(missing_ok=True)
-            raise
-        except (OSError, TimeoutError, URLError) as exc:
-            last_error = exc
-            temporary.unlink(missing_ok=True)
-            if attempt < 2:
-                time.sleep(1 << attempt)
+    for candidate in _download_source_candidates(source):
+        request = urllib.request.Request(
+            candidate, headers={"User-Agent": "NEKO-asset-preparer/1"}
+        )
+        for attempt in range(3):
+            digest = hashlib.sha256()
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
+                    "wb"
+                ) as output:
+                    while chunk := response.read(1024 * 1024):
+                        digest.update(chunk)
+                        output.write(chunk)
+                actual = digest.hexdigest()
+                if actual.lower() != expected_sha256.lower():
+                    raise AssetManifestError(
+                        f"download SHA-256 mismatch for {destination.name}: "
+                        f"expected {expected_sha256}, got {actual}"
+                    )
+                os.replace(temporary, destination)
+                return
+            except AssetManifestError:
+                temporary.unlink(missing_ok=True)
+                raise
+            except (OSError, TimeoutError, URLError) as exc:
+                last_error = exc
+                temporary.unlink(missing_ok=True)
+                if attempt < 2:
+                    time.sleep(1 << attempt)
     raise AssetManifestError(f"cannot download {destination.name}: {last_error}") from last_error
 
 

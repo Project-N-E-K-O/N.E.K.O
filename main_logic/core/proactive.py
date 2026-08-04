@@ -328,6 +328,15 @@ class ProactiveMixin:
         """
         if not self.use_tts:
             return True
+        speak_text = text
+        if self._force_japanese_tts_enabled():
+            speak_text = await self._prepare_japanese_tts_text(text)
+            if not speak_text:
+                logger.debug(
+                    "feed_tts_chunk skip: no Japanese after TTS gate len=%d",
+                    len(text or ""),
+                )
+                return True
         async with self.tts_cache_lock:
             if expected_speech_id is not None and self.current_speech_id != expected_speech_id:
                 logger.debug(
@@ -351,12 +360,12 @@ class ProactiveMixin:
                 return False
             if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                 try:
-                    self._enqueue_tts_text_chunk(self.current_speech_id, text)
+                    self._enqueue_tts_text_chunk(self.current_speech_id, speak_text)
                 except Exception as e:
                     logger.warning(f"⚠️ feed_tts_chunk 失败: {e}")
                     return False
             else:
-                self.tts_pending_chunks.append((self.current_speech_id, text))
+                self.tts_pending_chunks.append((self.current_speech_id, speak_text))
                 # Worker 已死亡则尝试拉起（受 12 秒冷却限制，不会风暴重连）
                 if self.tts_thread and not self.tts_thread.is_alive():
                     self._respawn_tts_worker()

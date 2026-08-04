@@ -162,6 +162,9 @@ def test_user_music_requests_retry_candidates_and_discard_stale_dispatches():
     assert "window.cancelActiveMusicPlayback();" in cancellation_handler
     assert "showMusicRequestFailure" not in cancellation_handler
     assert "response.type === 'music_request_cancelled'" in source
+    assert "response.type === 'music_control'" in source
+    assert "function handleMusicControlResponse(response)" in source
+    assert "window.getMusicPlayerInstance" in source
 
     player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
     active_cancel = player_source.split(

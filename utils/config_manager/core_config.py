@@ -1025,6 +1025,12 @@ class CoreConfigMixin:
             if isinstance(core_cfg.get('resolvedProviderUrls'), dict)
             else {}
         )
+        # Local ASR override (faster_whisper). Kept camelCase to match the file
+        # field written by scripts/set_local_ai.py and read by asr_client.
+        config['asrProvider'] = str(core_cfg.get('asrProvider') or '').strip()
+        local_ai_marker = core_cfg.get('_neko_local_ai')
+        if isinstance(local_ai_marker, dict):
+            config['_neko_local_ai'] = dict(local_ai_marker)
 
         # API Keys — 仅对与 coreApi/assistApi 匹配的服务商回退到 CORE_API_KEY
         if core_cfg.get('coreApiKey'):
@@ -1237,6 +1243,15 @@ class CoreConfigMixin:
             config['DISABLE_TTS'] = _raw_disable_tts.lower() in ('true', '1', 'yes', 'on')
         else:
             config['DISABLE_TTS'] = False
+
+        # 中文聊天框 + 日语 TTS：模型双通道同义输出（<ja>…</ja><zh>…</zh>）
+        _raw_dual = core_cfg.get('dualLanguageSpeech', core_cfg.get('dualLanguageSpeechEnabled', False))
+        if isinstance(_raw_dual, bool):
+            config['DUAL_LANGUAGE_SPEECH'] = _raw_dual
+        elif isinstance(_raw_dual, str):
+            config['DUAL_LANGUAGE_SPEECH'] = _raw_dual.lower() in ('true', '1', 'yes', 'on')
+        else:
+            config['DUAL_LANGUAGE_SPEECH'] = False
 
         # 文本模式回复长度守卫上限（tiktoken o200k_base tokens，超限触发 reroll；
         # reroll 耗尽后回退到最后一个句末标点截断后落定）

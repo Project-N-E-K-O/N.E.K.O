@@ -52,6 +52,35 @@ def replace_corner_mark(text):
     text = text.replace('³', '立方')
     return text
 
+
+# Symbols TTS engines tend to vocalize (「等于」「井号」「百分号」…).
+# Keep sentence / pause punctuation so prosody still works.
+# - ``\p{S}``: math / currency / modifier / other symbols (incl. many dingbats)
+# - extra ``\p{P}`` technical marks that are not prose pauses
+_TTS_MUTED_SYMBOL_RE = regex.compile(
+    r"["
+    r"\p{S}"
+    r"#＃@＠&＆\*＊\+_＿\-－﹣~～`｀\|｜\\\/／＼"
+    r"\^＾%％\$＄"
+    r"<>＜＞«»‹›"
+    r"•●○◆◇★☆※§¶†‡"
+    r"]+"
+)
+
+
+def strip_tts_muted_symbols(text: str) -> str:
+    """Drop symbol-class characters so TTS does not read them aloud.
+
+    Preserves CJK/Latin letters, digits, whitespace, and common prose
+    punctuation (。，、！？；：.!?,;: … · quotes). Safe for streaming chunks:
+    does not strip leading/trailing whitespace of the chunk itself.
+    """
+    if not text:
+        return text
+    cleaned = _TTS_MUTED_SYMBOL_RE.sub("", text)
+    # Collapse gaps left by deleted symbols without eating chunk-edge spaces.
+    return regex.sub(r" {2,}", " ", cleaned)
+
 def estimate_speech_time(text, unit_duration=0.2):
     # Per-class duration coefficients (heuristic, not corpus-calibrated):
     #   - Chinese hanzi: 1.5 units/char (polysyllabic, slower TTS)

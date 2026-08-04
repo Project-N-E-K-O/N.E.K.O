@@ -53,14 +53,19 @@ export const usePluginStore = defineStore('plugin', () => {
     return plugins.value.map(plugin => {
       const enabled = plugin.runtime_enabled !== false
       const autoStart = plugin.runtime_auto_start !== false
-      // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
-      // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
-      // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
-      // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
-      // 现在直接信任 runtime status（stopped / running / load_failed），
-      // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
-      // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
-      const displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
+      // Prefer live status from /plugin/status over the list snapshot so
+      // Start/Stop buttons and badges update after lifecycle actions.
+      const live = pluginStatuses.value[plugin.id]
+      const liveRaw = live?.status as unknown
+      let liveStatus = ''
+      if (typeof liveRaw === 'string') {
+        liveStatus = liveRaw
+      } else if (liveRaw && typeof liveRaw === 'object') {
+        const nested = (liveRaw as { status?: unknown }).status
+        if (typeof nested === 'string') liveStatus = nested
+      }
+      const listStatus = typeof plugin.status === 'string' ? plugin.status : ''
+      const displayStatus = liveStatus || listStatus || StatusEnum.STOPPED
       
       return {
         ...plugin,

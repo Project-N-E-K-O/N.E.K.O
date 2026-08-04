@@ -787,7 +787,25 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                     await websocket.close()
                     break
-                await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
+                # 踢人通知必须发到“本条旧连接”本身。
+                # send_status 走 mgr.websocket，已被新窗口占有；发到新窗口会
+                # 让当前用户看到“正在前往另一个终端”并放大重连抢占循环。
+                try:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "message": json.dumps(
+                                    {
+                                        "code": "CHARACTER_SWITCHING_TERMINAL",
+                                        "details": {"name": lanlan_name},
+                                    }
+                                ),
+                            }
+                        )
+                    )
+                except Exception:
+                    pass
                 await websocket.close()
                 break
             action = message.get("action")

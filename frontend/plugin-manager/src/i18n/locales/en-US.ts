@@ -217,6 +217,8 @@ export default {
     noPlugins: 'No Plugins',
     adapterNotFound: 'Adapter not found',
     pluginNotFound: 'Plugin not found',
+    runtimeHintTitle: 'Plugin is not running',
+    runtimeHintBody: 'Opening a plugin only opens management — it does not start or stop it. Click Start first so panels and UI can work.',
     pluginDetail: 'Plugin Detail',
     basicInfo: 'Basic Info',
     entries: 'Entry Points',

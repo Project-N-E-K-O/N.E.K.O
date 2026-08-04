@@ -1118,8 +1118,8 @@ def test_selection_change_cancellation_does_not_publish_voice_start_success():
     assert "var isMicrophoneStartCancelled = !!(" in catch_block
     assert "!isVoiceStartCancelled && !isMicrophoneStartCancelled" in catch_block
     assert (
-        "if (!isVoiceStartCancelled "
-        "&& !(error && error.voiceConfigSwitchTimedOut)"
+        "if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut)"
         in catch_block
     ), "selection cancellation must still close the accepted backend voice session"
+    assert "S.voiceInputRouteBlocked !== true" in catch_block
     assert "else if (!isMicrophoneStartCancelled)" in catch_block

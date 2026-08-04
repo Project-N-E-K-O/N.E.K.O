@@ -47,6 +47,24 @@ from ._shared import (
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
 )
+
+
+def _prefer_offline_voice_session(*, use_tts: bool) -> bool:
+    """Local ASR + external TTS should reply via conversation model, not free WSS.
+
+    ``asrProvider=faster_whisper`` already keeps mic PCM off Soniox; keeping the
+    session on free OmniRealtime still leaves replies (and Soniox timeouts) on
+    the cloud path. Offline voice reuses OmniOfflineClient + Ollama/custom chat.
+    """
+
+    if not use_tts:
+        return False
+    try:
+        from main_logic.asr_client import builtin_independent_asr_forced
+
+        return bool(builtin_independent_asr_forced())
+    except Exception:
+        return False
 from .callback_render import (
     _build_callback_instruction,
     _render_pending_extra_replies_by_origin,
@@ -1452,6 +1470,59 @@ class LifecycleMixin:
             )
             new_session.on_proactive_done = self.handle_proactive_complete
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
+        elif _prefer_offline_voice_session(use_tts=self.use_tts):
+            # Local ASR + external TTS: conversation model (Ollama/custom) replies.
+            # Keeps mic on independent ASR while avoiding free WSS / Soniox.
+            logger.info(
+                "🎤 语音模式：本地 ASR + Offline 对话模型（跳过 free realtime/Soniox）"
+            )
+            _fresh_core_config = await self._config_manager.aget_core_config()
+            if (str(core_config_snapshot.get('CORE_URL') or '')
+                    != str(_fresh_core_config.get('CORE_URL') or '')):
+                logger.warning(
+                    "[GeoIP] 区域结论在会话准备与连接创建之间发生变化"
+                    "（%s → %s），本场音色可能落到服务端默认",
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
+                self._drop_free_voice_on_route_flip(
+                    core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                )
+            conversation_config = await self._config_manager.aget_model_api_config(
+                'conversation', core_config=_fresh_core_config
+            )
+            vision_config = await self._config_manager.aget_model_api_config(
+                'vision', core_config=_fresh_core_config
+            )
+            new_session = OmniOfflineClient(
+                base_url=conversation_config['base_url'],
+                api_key=conversation_config['api_key'],
+                model=conversation_config['model'],
+                vision_model=vision_config['model'],
+                vision_base_url=vision_config['base_url'],
+                vision_api_key=vision_config['api_key'],
+                provider_type=conversation_config.get('provider_type'),
+                vision_provider_type=vision_config.get('provider_type'),
+                on_text_delta=self.handle_text_data,
+                on_input_transcript=self.handle_input_transcript,
+                on_output_transcript=self.handle_output_transcript,
+                on_connection_error=self.handle_connection_error,
+                on_response_done=self.handle_response_complete,
+                on_repetition_detected=self.handle_repetition_detected,
+                on_response_discarded=self.handle_response_discarded,
+                on_status_message=self.send_status,
+                max_response_length=guard_max_length,
+                lanlan_name=self.lanlan_name,
+                master_name=self.master_name,
+                user_language_provider=lambda: self.user_language,
+                on_tool_call=self._on_tool_call,
+                tool_definitions=_initial_tool_defs,
+                enable_long_response_summary=(
+                    self.use_tts
+                    and not core_config_snapshot.get('DISABLE_TTS', False)
+                ),
+            )
+            new_session.on_proactive_done = self.handle_proactive_complete
+            new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
             _prev_realtime_base = str((prepared_realtime_config or {}).get('base_url') or '')
@@ -1766,6 +1837,58 @@ class LifecycleMixin:
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 self.pending_session.on_thinking_active = self._make_thinking_active_callback(self.pending_session)
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
+            elif _prefer_offline_voice_session(use_tts=bool(self.pending_use_tts)):
+                logger.info(
+                    "🔄 热切换准备: 创建本地 ASR Offline 语音 OmniOfflineClient"
+                )
+                _fresh_core_config = await self._config_manager.aget_core_config()
+                if (str(core_config_snapshot.get('CORE_URL') or '')
+                        != str(_fresh_core_config.get('CORE_URL') or '')):
+                    logger.warning(
+                        "[GeoIP] 热切换准备: 区域结论在准备与连接创建之间发生变化"
+                        "（%s → %s），本场音色可能落到服务端默认",
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
+                    self._drop_free_voice_on_route_flip(
+                        core_config_snapshot.get('CORE_URL'), _fresh_core_config.get('CORE_URL'),
+                    )
+                conversation_config = await self._config_manager.aget_model_api_config(
+                    'conversation', core_config=_fresh_core_config
+                )
+                vision_config = await self._config_manager.aget_model_api_config(
+                    'vision', core_config=_fresh_core_config
+                )
+                guard_max_length = self._get_text_guard_max_length()
+                self.pending_session = OmniOfflineClient(
+                    base_url=conversation_config['base_url'],
+                    api_key=conversation_config['api_key'],
+                    model=conversation_config['model'],
+                    vision_model=vision_config['model'],
+                    vision_base_url=vision_config['base_url'],
+                    vision_api_key=vision_config['api_key'],
+                    on_text_delta=self.handle_text_data,
+                    on_input_transcript=self.handle_input_transcript,
+                    on_output_transcript=self.handle_output_transcript,
+                    on_connection_error=self.handle_connection_error,
+                    on_response_done=self.handle_response_complete,
+                    on_repetition_detected=self.handle_repetition_detected,
+                    on_response_discarded=self.handle_response_discarded,
+                    on_status_message=self.send_status,
+                    max_response_length=guard_max_length,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
+                    user_language_provider=lambda: self.user_language,
+                    on_tool_call=self._on_tool_call,
+                    tool_definitions=_pending_tool_defs,
+                    enable_long_response_summary=(
+                        self.pending_use_tts
+                        and not core_config_snapshot.get('DISABLE_TTS', False)
+                    ),
+                )
+                self.pending_session.on_proactive_done = self.handle_proactive_complete
+                self.pending_session.on_thinking_active = self._make_thinking_active_callback(
+                    self.pending_session
+                )
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 # 同上：不复用顶部快照

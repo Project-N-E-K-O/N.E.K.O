@@ -35,6 +35,57 @@ from config.prompts.prompts_memory import (
 )
 from ._shared import logger
 
+def _music_tool_i18n(zh: str, zh_tw: str, en: str) -> dict[str, str]:
+    """zh / zh-TW / en plus English copies for other memory-prompt langs."""
+    return {
+        "zh": zh,
+        "zh-TW": zh_tw,
+        "en": en,
+        "ja": en,
+        "ko": en,
+        "ru": en,
+        "es": en,
+        "pt": en,
+    }
+
+
+# Compact i18n for networked music tools.
+_PLAY_MUSIC_TOOL_DESCRIPTION = _music_tool_i18n(
+    "当用户想听歌、换歌或点播某首歌时调用。会联网搜索（含网易云与B站）并把候选推给前端播放器。可传歌名/歌手关键词，或直接给 Bilibili 的 BV 号。",
+    "當使用者想聽歌、換歌或點播某首歌時呼叫。會連網搜尋（含網易雲與B站）並把候選推給前端播放器。可傳歌名/歌手關鍵字，或直接給 Bilibili 的 BV 號。",
+    "Call when the user wants to play or change a song. Searches online (NetEase + Bilibili) and pushes candidates to the music player. Pass a keyword, song/artist, or a Bilibili BV id.",
+)
+_PLAY_MUSIC_TOOL_QUERY_DESCRIPTION = _music_tool_i18n(
+    "搜索关键词，例如歌名、歌手，或「B站 晴天」。与 song/artist/bvid 至少提供一个。",
+    "搜尋關鍵字，例如歌名、歌手，或「B站 晴天」。與 song/artist/bvid 至少提供一個。",
+    "Search keyword such as a song title, artist, or 'Bilibili Blue and White Porcelain'. Provide at least one of query/song/artist/bvid.",
+)
+_PLAY_MUSIC_TOOL_SONG_DESCRIPTION = _music_tool_i18n(
+    "可选。精确歌名。",
+    "選填。精確歌名。",
+    "Optional exact song title.",
+)
+_PLAY_MUSIC_TOOL_ARTIST_DESCRIPTION = _music_tool_i18n(
+    "可选。歌手名。",
+    "選填。歌手名。",
+    "Optional artist name.",
+)
+_PLAY_MUSIC_TOOL_BVID_DESCRIPTION = _music_tool_i18n(
+    "可选。Bilibili 视频 BV 号（如 BV1xxxxx），有则直接解析音轨。",
+    "選填。Bilibili 影片 BV 號（如 BV1xxxxx），有則直接解析音軌。",
+    "Optional Bilibili BV id (e.g. BV1xxxxx); resolves the audio stream directly.",
+)
+_CONTROL_MUSIC_TOOL_DESCRIPTION = _music_tool_i18n(
+    "控制当前联网播放：停止、暂停或继续。用户说停歌/别放了/暂停/继续时调用。",
+    "控制目前連網播放：停止、暫停或繼續。使用者說停歌/別放了/暫停/繼續時呼叫。",
+    "Control networked playback: stop, pause, or resume. Call when the user asks to stop/pause/resume music.",
+)
+_CONTROL_MUSIC_TOOL_ACTION_DESCRIPTION = _music_tool_i18n(
+    "stop=停止并关闭播放器；pause=暂停；resume=继续；next=暂不支持。",
+    "stop=停止並關閉播放器；pause=暫停；resume=繼續；next=暫不支援。",
+    "stop=stop and close the player; pause=pause; resume=resume; next=not supported yet.",
+)
+
 
 class ToolCallingMixin:
     """Tool-calling surface methods (see module docstring)."""
@@ -138,7 +189,7 @@ class ToolCallingMixin:
         """
         if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
             logger.info(
-                "[builtin tools] NEKO_DISABLE_BUILTIN_TOOLS set — skipping recall_memory registration"
+                "[builtin tools] NEKO_DISABLE_BUILTIN_TOOLS set — skipping builtin tool registration"
             )
             return
         _lang = _normalize_memory_prompt_lang(self.user_language)
@@ -166,6 +217,186 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+
+        play_music_tool = ToolDefinition(
+            name="play_music",
+            description=_loc(_PLAY_MUSIC_TOOL_DESCRIPTION, _lang),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": _loc(_PLAY_MUSIC_TOOL_QUERY_DESCRIPTION, _lang),
+                    },
+                    "song": {
+                        "type": "string",
+                        "description": _loc(_PLAY_MUSIC_TOOL_SONG_DESCRIPTION, _lang),
+                    },
+                    "artist": {
+                        "type": "string",
+                        "description": _loc(_PLAY_MUSIC_TOOL_ARTIST_DESCRIPTION, _lang),
+                    },
+                    "bvid": {
+                        "type": "string",
+                        "description": _loc(_PLAY_MUSIC_TOOL_BVID_DESCRIPTION, _lang),
+                    },
+                },
+                "required": [],
+            },
+            handler=self._handle_play_music_call,
+            metadata={"source": "builtin"},
+        )
+        self.tool_registry.register(play_music_tool, replace=True)
+
+        control_music_tool = ToolDefinition(
+            name="control_music",
+            description=_loc(_CONTROL_MUSIC_TOOL_DESCRIPTION, _lang),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["stop", "pause", "resume", "next"],
+                        "description": _loc(_CONTROL_MUSIC_TOOL_ACTION_DESCRIPTION, _lang),
+                    },
+                },
+                "required": ["action"],
+            },
+            handler=self._handle_control_music_call,
+            metadata={"source": "builtin"},
+        )
+        self.tool_registry.register(control_music_tool, replace=True)
+
+    async def _handle_play_music_call(self, arguments: dict) -> str:
+        """Queue networked music playback via the same path as voice requests."""
+        from main_logic.music_playback import queue_user_music_request
+        from main_logic.music_requests import MusicRequest
+
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        args_dict = arguments if isinstance(arguments, dict) else {}
+
+        def _str_arg(key: str) -> str:
+            value = args_dict.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        query = _str_arg("query")
+        song = _str_arg("song")
+        artist = _str_arg("artist")
+        bvid = _str_arg("bvid")
+        if bvid:
+            if bvid.lower().startswith("bv") and not bvid.startswith("BV"):
+                bvid = "BV" + bvid[2:]
+            request = MusicRequest(keyword=bvid, song_name=bvid)
+        elif song or artist:
+            keyword = " ".join(part for part in (song, artist) if part) or query
+            request = MusicRequest(
+                keyword=keyword,
+                song_name=song,
+                song_artist=artist,
+            )
+        elif query:
+            request = MusicRequest(keyword=query)
+        else:
+            return _loc(
+                _music_tool_i18n(
+                    "缺少点歌参数：请提供 query、song、artist 或 bvid。",
+                    "缺少點歌參數：請提供 query、song、artist 或 bvid。",
+                    "Missing play_music args: provide query, song, artist, or bvid.",
+                ),
+                _lang,
+            )
+
+        try:
+            request_id = queue_user_music_request(self, request)
+        except Exception as exc:
+            logger.warning(
+                "[play_music] queue failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return _loc(
+                _music_tool_i18n(
+                    "点歌失败，请稍后再试。",
+                    "點歌失敗，請稍後再試。",
+                    "Failed to queue music playback. Please try again later.",
+                ),
+                _lang,
+            )
+        logger.info(
+            "[play_music] queued name=%s request_id=%s has_bvid=%s",
+            self.lanlan_name,
+            request_id,
+            bool(bvid),
+        )
+        return _loc(
+            _music_tool_i18n(
+                "已开始联网搜歌并推送到播放器（request_id={request_id}）。",
+                "已開始連網搜歌並推送到播放器（request_id={request_id}）。",
+                "Queued networked music search for the player (request_id={request_id}).",
+            ),
+            _lang,
+        ).format(request_id=request_id)
+
+    async def _handle_control_music_call(self, arguments: dict) -> str:
+        """Stop / pause / resume networked music; next is explicitly unsupported."""
+        from main_logic.music_playback import control_user_music_playback
+
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        args_dict = arguments if isinstance(arguments, dict) else {}
+        action = args_dict.get("action")
+        action = action.strip().lower() if isinstance(action, str) else ""
+        if not action:
+            return _loc(
+                _music_tool_i18n(
+                    "缺少 action 参数（stop / pause / resume / next）。",
+                    "缺少 action 參數（stop / pause / resume / next）。",
+                    "Missing action (stop / pause / resume / next).",
+                ),
+                _lang,
+            )
+        try:
+            result = await control_user_music_playback(self, action)
+        except Exception as exc:
+            logger.warning(
+                "[control_music] failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            return _loc(
+                _music_tool_i18n(
+                    "控制播放失败，请稍后再试。",
+                    "控制播放失敗，請稍後再試。",
+                    "Failed to control playback. Please try again later.",
+                ),
+                _lang,
+            )
+        status = str(result.get("status") or "")
+        if status == "ok":
+            return _loc(
+                _music_tool_i18n(
+                    "已执行音乐控制：{action}。",
+                    "已執行音樂控制：{action}。",
+                    "Music control applied: {action}.",
+                ),
+                _lang,
+            ).format(action=action)
+        if action == "next":
+            return _loc(
+                _music_tool_i18n(
+                    "联网播放暂不支持「下一首」，可以让用户重新点歌或停止当前歌曲。",
+                    "連網播放暫不支援「下一首」，可以讓使用者重新點歌或停止目前歌曲。",
+                    "Next track is not supported for networked playback yet; ask the user to request another song or stop.",
+                ),
+                _lang,
+            )
+        return _loc(
+            _music_tool_i18n(
+                "不支持的音乐控制：{action}。",
+                "不支援的音樂控制：{action}。",
+                "Unsupported music control: {action}.",
+            ),
+            _lang,
+        ).format(action=action or "unknown")
 
     async def _handle_recall_memory_call(self, arguments: dict) -> str:
         """Handler for ``recall_memory`` — calls memory_server's

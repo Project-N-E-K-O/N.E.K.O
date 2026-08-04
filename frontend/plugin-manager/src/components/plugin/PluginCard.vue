@@ -43,7 +43,9 @@
             compact
           />
         </div>
-        <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
+        <div class="plugin-card-footer__actions" @click.stop @mousedown.stop @pointerdown.stop>
+          <PluginActions :plugin-id="plugin.id" compact />
+        </div>
       </footer>
     </div>
   </el-card>
@@ -54,6 +56,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
+import PluginActions from '@/components/plugin/PluginActions.vue'
 import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
@@ -81,10 +84,6 @@ defineEmits<{
   click: []
   contextmenu: [event: MouseEvent]
 }>()
-
-const entryCount = computed(() => {
-  return props.plugin.entries?.length || 0
-})
 
 const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 
@@ -186,6 +185,11 @@ const hasUpdate = computed<boolean>(() => {
   min-width: 0;
 }
 
+.plugin-card-footer__actions {
+  justify-self: end;
+  max-width: 100%;
+}
+
 .plugin-card-footer__main {
   display: flex;
   align-items: center;
@@ -247,7 +251,7 @@ const hasUpdate = computed<boolean>(() => {
     align-items: start;
   }
 
-  .plugin-entries {
+  .plugin-card-footer__actions {
     justify-self: start;
   }
 }

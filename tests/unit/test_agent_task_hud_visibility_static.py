@@ -145,3 +145,34 @@ def test_standalone_hud_uses_window_ownership_instead_of_floating_preference():
         "window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });"
         in template_source
     )
+
+
+@pytest.mark.unit
+def test_user_plugin_row_toggles_only_via_slider_and_management_always_opens():
+    """用户插件：点文字不开关，只点滑块；管理面板不依赖开关状态。"""
+    popup_source = _read(AVATAR_POPUP_PATH)
+    hud_source = _read(COMMON_UI_HUD_PATH)
+
+    agent_toggle_start = popup_source.index("function createToggleItem(")
+    settings_toggle_start = popup_source.index(
+        "function createSettingsToggleItem(", agent_toggle_start
+    )
+    agent_toggle_block = popup_source[agent_toggle_start:settings_toggle_start]
+
+    assert "agent-user-plugin" in agent_toggle_block
+    assert "controlOnlyToggle" in agent_toggle_block
+    assert "只有滑块按钮切换开/关" in agent_toggle_block
+    assert "indicator.addEventListener('click'" in agent_toggle_block
+    assert "有侧栏入口时" in agent_toggle_block
+
+    side_panel_start = hud_source.index("侧边快捷入口（用户插件管理面板")
+    side_panel_end = hud_source.index("// 创建 Agent 任务 HUD", side_panel_start)
+    side_panel_block = hud_source[side_panel_start:side_panel_end]
+    assert "管理面板不依赖「用户插件」开关状态" in side_panel_block
+    assert "openActionTarget" in side_panel_block
+    assert "sidePanel.style.pointerEvents = 'auto'" in side_panel_block
+    assert "toggleItem.addEventListener('click'" in side_panel_block
+    assert "closest(`.${avatarPrefix}-toggle-indicator`)" in side_panel_block
+
+    assert "return 40;" in popup_source
+    assert "agent-user-plugin-actions" in popup_source

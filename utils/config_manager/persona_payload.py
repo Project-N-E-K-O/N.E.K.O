@@ -242,6 +242,92 @@ def _get_persona_override(character_payload: dict) -> dict | None:
     return override
 
 
+_CHARACTER_CARD_PROMPT_FIELDS = (
+    "档案名",
+    "自称",
+    "昵称",
+    "种族",
+    "年龄",
+    "性别",
+    "核心特质",
+    "行为特点",
+    "厌恶",
+    "一句话台词",
+)
+
+_MASTER_PROFILE_PROMPT_FIELDS = (
+    "档案名",
+    "昵称",
+    "性别",
+)
+
+
+def _format_prompt_field_lines(payload: dict, fields: tuple[str, ...]) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    lines: list[str] = []
+    for key in fields:
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (dict, set, tuple)):
+            continue
+        if isinstance(value, list):
+            text = "、".join(str(item).strip() for item in value if str(item).strip())
+        else:
+            text = str(value).strip()
+        if not text:
+            continue
+        lines.append(f"- {key}: {text}")
+    return lines
+
+
+def _format_master_profile_prompt_block(master_payload: dict | None) -> str:
+    """Pin personal-profile naming: how the AI must address the human user."""
+    lines = _format_prompt_field_lines(master_payload or {}, _MASTER_PROFILE_PROMPT_FIELDS)
+    if not lines:
+        return ""
+    address = ""
+    if isinstance(master_payload, dict):
+        address = str(master_payload.get("档案名") or "").strip()
+        if not address:
+            address = str(master_payload.get("昵称") or "").strip()
+    address_line = (
+        f"- Address the user as: {address}\n" if address else ""
+    )
+    return (
+        "<User Profile>\n"
+        f"{address_line}"
+        + "\n".join(lines)
+        + "\n</User Profile>\n"
+        "User Profile is the human user's personal archive. "
+        "When speaking to the user, use the Address/档案名 from User Profile "
+        "(and 昵称 only as a secondary nickname if natural). "
+        "Never address the user with Character Card names."
+    )
+
+
+def _format_character_card_prompt_block(character_payload: dict) -> str:
+    """Surface the user-edited card fields as hard identity constraints.
+
+    Preset guidance alone can bury 自称/核心特质 in memory markdown; local
+    7B models often ignore them. Keep this block short and pinned in the
+    system prompt so card identity stays authoritative.
+    """
+    lines = _format_prompt_field_lines(character_payload, _CHARACTER_CARD_PROMPT_FIELDS)
+    if not lines:
+        return ""
+    return (
+        "<Character Card>\n"
+        + "\n".join(lines)
+        + "\n</Character Card>\n"
+        "Character Card describes the AI character only "
+        "(档案名/自称/昵称 are the AI's names, never the user's). "
+        "Treat these as hard identity constraints for self-reference and personality. "
+        "Never contradict them; never use them as the user's name."
+    )
+
+
 def _build_effective_character_payload(character_payload: dict, entity: str = "neko") -> dict:
     if not isinstance(character_payload, dict):
         return {}
@@ -269,9 +355,28 @@ def _build_effective_character_payload(character_payload: dict, entity: str = "n
     return effective_payload
 
 
-def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict) -> str:
+def _join_prompt_identity_blocks(*blocks: str) -> str:
+    parts = [str(block or "").strip() for block in blocks if str(block or "").strip()]
+    return "\n\n".join(parts)
+
+
+def _append_persona_guidance_to_prompt(
+    prompt_text: str,
+    character_payload: dict,
+    *,
+    master_payload: dict | None = None,
+) -> str:
     override = _get_persona_override(character_payload)
+    # User Profile first so address-the-user rules win over similarly worded
+    # Character Card nicknames (e.g. both containing the same Chinese stem).
+    identity_block = _join_prompt_identity_blocks(
+        _format_master_profile_prompt_block(master_payload),
+        _format_character_card_prompt_block(character_payload),
+    )
+
     if not isinstance(override, dict):
+        if identity_block:
+            return f"{prompt_text}\n\n{identity_block}".strip()
         return prompt_text
 
     guidance = ""
@@ -291,6 +396,8 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
         guidance = str(override.get("prompt_guidance") or "").strip()
 
     if not guidance:
+        if identity_block:
+            return f"{prompt_text}\n\n{identity_block}".strip()
         return prompt_text
 
     # preset 的 guidance 是一份**完整独立**的人设 prompt，骨架（fictional-character
@@ -300,9 +407,13 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     # 当 base 仍是默认 prompt 时，preset 本身就是完整人设 → 用它替换 base，避免重复；
     # 仅当用户写过自定义 system_prompt（非默认）时才退回 append 以保留其自定义内容。
     if from_preset and is_default_prompt(prompt_text):
-        return guidance
+        base = guidance
+    else:
+        base = f"{prompt_text}\n\nAdditional role guidance: {guidance}"
 
-    return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
+    if identity_block:
+        return f"{base}\n\n{identity_block}"
+    return base
 
 
 _AI_CONTEXT_RENAME_EVENT_FIELD = "__ai_context.profile_rename_events"

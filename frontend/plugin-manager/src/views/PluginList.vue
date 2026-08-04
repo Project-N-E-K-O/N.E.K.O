@@ -703,9 +703,20 @@ function stopMetricsAutoRefresh() {
   }
 }
 
-function handlePluginClick(pluginId: string) {
+async function handlePluginClick(pluginId: string) {
+  // Opening detail is navigation-only — never start/stop here.
+  // Close side rails first so their query sync does not race router.push.
+  if (packagePanelVisible.value) packagePanelVisible.value = false
+  if (marketPanelVisible.value) marketPanelVisible.value = false
   const safeId = encodeURIComponent(pluginId)
-  router.push(`/plugins/${safeId}`)
+  try {
+    await router.push(`/plugins/${safeId}`)
+  } catch (error: any) {
+    // Vue Router may reject duplicate navigations; ignore those.
+    if (error?.name === 'NavigationDuplicated' || error?.name === 'NavigationCancelled') return
+    console.error('[PluginList] open plugin detail failed', error)
+    ElMessage.error(t('messages.requestFailed'))
+  }
 }
 
 function handlePluginPrimaryAction(pluginId: string) {
@@ -713,7 +724,7 @@ function handlePluginPrimaryAction(pluginId: string) {
     togglePluginSelection(pluginId)
     return
   }
-  handlePluginClick(pluginId)
+  void handlePluginClick(pluginId)
 }
 
 function toggleMultiSelectMode() {

@@ -226,8 +226,10 @@ class AsrRuntimeMixin:
             None
         )
         self._audio_stream_queue = _AudioDurationQueue(
-            capacity_us=2_000_000,
-            max_frames=256,
+            # Local ASR on CPU can take multi-second turns; 8s absorbs a
+            # slow first Whisper encode without aborting the voice session.
+            capacity_us=8_000_000,
+            max_frames=512,
         )
         self._audio_stream_worker_task: asyncio.Task | None = None
         self._audio_stream_dropped_total = 0
@@ -688,6 +690,16 @@ class AsrRuntimeMixin:
             enabled = handshake_enabled
         else:
             enabled = bool(settings.get("independentAsrEnabled", True))
+        # Local-AI / asrProvider=faster_whisper: always take the built-in
+        # independent ASR path. Do not fall through to Omni-native mic, and do
+        # not follow CORE_ASR_ROUTES["free"] (blocked_backend).
+        try:
+            from main_logic.asr_client import builtin_independent_asr_forced
+
+            if builtin_independent_asr_forced():
+                enabled = True
+        except Exception:
+            pass
         optimization_handshake = resource_optimization_override
         if resource_optimization_override is ...:
             optimization_handshake = getattr(

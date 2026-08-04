@@ -450,7 +450,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 5, inverted: true, controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -1544,9 +1544,11 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     const container = document.createElement('div');
     container.setAttribute('data-neko-sidepanel', '');
     const getInteractionGuardDelay = () => {
+        // 用户插件「管理面板」需要立刻可点：开关开/关都不影响进入插件 UI。
+        // 保留极短保护即可，避免悬停展开动画期间误吞点击。
         const sidePanelType = container.getAttribute('data-neko-sidepanel-type') || '';
         if (sidePanelType === 'agent-user-plugin-actions' || sidePanelType === 'agent-openclaw-actions') {
-            return 220;
+            return 40;
         }
         return 0;
     };
@@ -2187,17 +2189,46 @@ function createToggleItem(manager, prefix, toggle, popup) {
     checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
+    // 侧栏入口开关（用户插件 / OpenClaw）：整行点击不切换，只靠右侧滑块，
+    // 避免点「用户插件」文字时误开/关，同时方便悬停/点击展开「管理面板」。
+    const controlOnlyToggle = !!toggle.controlOnlyToggle || toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw';
+
+    if (controlOnlyToggle) {
+        toggleItem.removeAttribute('role');
+        toggleItem.removeAttribute('tabIndex');
+        toggleItem.removeAttribute('aria-checked');
+        toggleItem.removeAttribute('aria-disabled');
+        indicator.removeAttribute('aria-hidden');
+        indicator.setAttribute('role', 'switch');
+        indicator.setAttribute('aria-checked', 'false');
+        indicator.setAttribute('aria-disabled', toggle.initialDisabled ? 'true' : 'false');
+        indicator.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
+        indicator.setAttribute('aria-label', toggle.label);
+    }
+
     const label = document.createElement('label');
     label.className = `${prefix}-toggle-label`;
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
-    label.htmlFor = `${prefix}-${toggle.id}`;
-    toggleItem.setAttribute('aria-label', toggle.label);
+    // controlOnly 时不要绑定 htmlFor，否则点文字仍会触发原生 checkbox 切换
+    if (!controlOnlyToggle) {
+        label.htmlFor = `${prefix}-${toggle.id}`;
+    }
+    if (controlOnlyToggle) {
+        indicator.setAttribute('aria-label', toggle.label);
+    } else {
+        toggleItem.setAttribute('aria-label', toggle.label);
+    }
 
     const updateLabelText = () => {
         if (toggle.labelKey && window.t) {
-            label.innerText = window.t(toggle.labelKey);
-            toggleItem.setAttribute('aria-label', window.t(toggle.labelKey));
+            const text = window.t(toggle.labelKey);
+            label.innerText = text;
+            if (controlOnlyToggle) {
+                indicator.setAttribute('aria-label', text);
+            } else {
+                toggleItem.setAttribute('aria-label', text);
+            }
         }
     };
     if (toggle.labelKey) {
@@ -2218,13 +2249,32 @@ function createToggleItem(manager, prefix, toggle, popup) {
 
     const updateStyle = () => {
         const isChecked = checkbox.checked;
-        toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
-        indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        if (controlOnlyToggle) {
+            indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        } else {
+            toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+            indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        }
         updateIndicatorStyle(isChecked);
     };
 
     const updateDisabledStyle = () => {
         const disabled = checkbox.disabled;
+        // 有侧栏入口时：即使能力未就绪 / 未开启，也保持行可点（展开管理面板），
+        // 只把滑块本身标成不可用，避免整行灰掉后用户误以为「插件管理」进不去。
+        if (controlOnlyToggle) {
+            toggleItem.removeAttribute('aria-disabled');
+            toggleItem.removeAttribute('tabIndex');
+            toggleItem.style.opacity = '1';
+            label.style.opacity = '1';
+            label.style.cursor = 'pointer';
+            toggleItem.style.cursor = 'default';
+            indicator.style.opacity = disabled ? '0.5' : '1';
+            indicator.style.cursor = disabled ? 'default' : 'pointer';
+            indicator.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+            indicator.setAttribute('tabIndex', disabled ? '-1' : '0');
+            return;
+        }
         toggleItem.setAttribute('aria-disabled', disabled ? 'true' : 'false');
         toggleItem.setAttribute('tabIndex', disabled ? '-1' : '0');
         toggleItem.style.opacity = disabled ? '0.5' : '1';
@@ -2278,17 +2328,30 @@ function createToggleItem(manager, prefix, toggle, popup) {
         e?.stopPropagation();
     };
 
-    toggleItem.addEventListener('keydown', (e) => {
-        if (checkbox.disabled) return;
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
+    if (controlOnlyToggle) {
+        // 只有滑块按钮切换开/关；点文字/行留给侧栏（管理面板）交互
+        indicator.addEventListener('click', (e) => {
             handleToggle(e);
-        }
-    });
-
-    [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
-        if (e.target !== checkbox) handleToggle(e);
-    }));
+        });
+        indicator.addEventListener('keydown', (e) => {
+            if (checkbox.disabled) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleToggle(e);
+            }
+        });
+    } else {
+        toggleItem.addEventListener('keydown', (e) => {
+            if (checkbox.disabled) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleToggle(e);
+            }
+        });
+        [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
+            if (e.target !== checkbox) handleToggle(e);
+        }));
+    }
 
     return toggleItem;
 }

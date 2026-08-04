@@ -50,6 +50,7 @@ class _ToolingMixin:
         """
         self._tool_definitions = list(tool_definitions or [])
         self._genai_tools_unsupported = False
+        self._openai_tools_unsupported = False
 
     def set_tool_call_handler(self, handler: Optional[OnToolCallCallback]) -> None:
         """Plug in (or replace) the callback that executes tool calls."""
@@ -85,7 +86,24 @@ class _ToolingMixin:
         tools, so ``_params`` skips both ``tools`` and ``tool_choice``."""
         if not self.has_tools():
             return None
+        if getattr(self, "_openai_tools_unsupported", False):
+            return None
         return [t.to_openai_chat() for t in self._tool_definitions]
+
+    @staticmethod
+    def _is_openai_tools_unsupported_error(exc: BaseException) -> bool:
+        """Detect Ollama/OpenAI-compat 'model does not support tools' 400s."""
+
+        msg = str(exc or "").lower()
+        if "does not support tools" in msg:
+            return True
+        if "does not support function" in msg:
+            return True
+        if "tools" in msg and "not support" in msg:
+            return True
+        if "tool use" in msg and ("unsupported" in msg or "not supported" in msg):
+            return True
+        return False
 
     async def _execute_and_append_openai_tool_calls(
         self,
@@ -394,6 +412,17 @@ class _ToolingMixin:
         # 封顶日志据此别谎称迭代被耗尽。
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            # Refresh after a prior tools-unsupported failure so we do not
+            # keep sending schemas that Ollama vision models reject with 400.
+            if getattr(self, "_openai_tools_unsupported", False):
+                tools_payload = None
+                overrides.pop("tools", None)
+                overrides.pop("tool_choice", None)
+            elif tools_payload is None:
+                tools_payload = self._openai_tools_payload()
+                if tools_payload:
+                    overrides.setdefault("tools", tools_payload)
+
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
             # 累积本轮已 yield 给上游的 text，下面 finish_reason=tool_calls
@@ -405,51 +434,73 @@ class _ToolingMixin:
             # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
             # 400（reasoning_content must be passed back）。普通端点恒为空。
             streamed_reasoning_buffer = ""
-            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
-                if getattr(chunk, "content", None):
-                    if tool_leak_filter is not None:
-                        chunk.content = self._filter_tool_leak_content(
-                            chunk.content, tool_leak_filter, provider=tool_leak_provider
-                        )
-                        setattr(chunk, "_tool_leak_filtered", True)
-                    streamed_text_buffer += chunk.content
-                if getattr(chunk, "reasoning_content", None):
-                    streamed_reasoning_buffer += chunk.reasoning_content
-                    # Pulse the thinking bubble on ANY chunk carrying reasoning,
-                    # BEFORE the pure-reasoning skip below — a thinking provider
-                    # can pack reasoning_content onto the SAME delta as a
-                    # tool_call_delta / finish_reason (the OpenAI adapter keeps
-                    # them in one LLMStreamChunk), and a reasoning tool-call turn
-                    # has no visible token to show feedback otherwise (Codex P2).
-                    await self._notify_reasoning_active()
-                if chunk.tool_call_deltas:
-                    deltas_per_chunk.append(chunk.tool_call_deltas)
-                if chunk.finish_reason:
-                    finish_reason = chunk.finish_reason
-                # Empty-completion 诊断：记最新的 finish_reason 和 prompt_tokens，
-                # 给上层 stream_text / prompt_ephemeral 的兜底 warning 用。
-                # usage chunk（terminal）才带 prompt_tokens；前面 text chunk 不带。
-                if chunk.usage_metadata:
-                    pt = chunk.usage_metadata.get("prompt_tokens")
-                    if pt:
-                        self._last_prompt_tokens = pt
-                # 纯 reasoning chunk（thinking 模型先吐推理链，content 为空、无
-                # tool delta / finish / usage）只在上面累积进 buffer，不向下游
-                # 转发：``stream_text`` 在首个 yield 的 chunk 上记 TTFT，放行
-                # reasoning-only 会把"首推理 token"误当首 token，拉低延迟埋点。
+            emitted_any_chunk = False
+            try:
+                async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+                    emitted_any_chunk = True
+                    if getattr(chunk, "content", None):
+                        if tool_leak_filter is not None:
+                            chunk.content = self._filter_tool_leak_content(
+                                chunk.content, tool_leak_filter, provider=tool_leak_provider
+                            )
+                            setattr(chunk, "_tool_leak_filtered", True)
+                        streamed_text_buffer += chunk.content
+                    if getattr(chunk, "reasoning_content", None):
+                        streamed_reasoning_buffer += chunk.reasoning_content
+                        # Pulse the thinking bubble on ANY chunk carrying reasoning,
+                        # BEFORE the pure-reasoning skip below — a thinking provider
+                        # can pack reasoning_content onto the SAME delta as a
+                        # tool_call_delta / finish_reason (the OpenAI adapter keeps
+                        # them in one LLMStreamChunk), and a reasoning tool-call turn
+                        # has no visible token to show feedback otherwise (Codex P2).
+                        await self._notify_reasoning_active()
+                    if chunk.tool_call_deltas:
+                        deltas_per_chunk.append(chunk.tool_call_deltas)
+                    if chunk.finish_reason:
+                        finish_reason = chunk.finish_reason
+                    # Empty-completion 诊断：记最新的 finish_reason 和 prompt_tokens，
+                    # 给上层 stream_text / prompt_ephemeral 的兜底 warning 用。
+                    # usage chunk（terminal）才带 prompt_tokens；前面 text chunk 不带。
+                    if chunk.usage_metadata:
+                        pt = chunk.usage_metadata.get("prompt_tokens")
+                        if pt:
+                            self._last_prompt_tokens = pt
+                    # 纯 reasoning chunk（thinking 模型先吐推理链，content 为空、无
+                    # tool delta / finish / usage）只在上面累积进 buffer，不向下游
+                    # 转发：``stream_text`` 在首个 yield 的 chunk 上记 TTFT，放行
+                    # reasoning-only 会把"首推理 token"误当首 token，拉低延迟埋点。
+                    if (
+                        getattr(chunk, "reasoning_content", None)
+                        and not getattr(chunk, "content", None)
+                        and not chunk.tool_call_deltas
+                        and not chunk.finish_reason
+                        and not chunk.usage_metadata
+                    ):
+                        # Pure reasoning-only chunk: already pulsed above; drop it so
+                        # the "first token" TTFT埋点 isn't fooled by a reasoning token.
+                        continue
+                    # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
+                    # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
+                    yield chunk
+            except Exception as stream_exc:
                 if (
-                    getattr(chunk, "reasoning_content", None)
-                    and not getattr(chunk, "content", None)
-                    and not chunk.tool_call_deltas
-                    and not chunk.finish_reason
-                    and not chunk.usage_metadata
+                    tools_payload
+                    and not emitted_any_chunk
+                    and self._is_openai_tools_unsupported_error(stream_exc)
                 ):
-                    # Pure reasoning-only chunk: already pulsed above; drop it so
-                    # the "first token" TTFT埋点 isn't fooled by a reasoning token.
+                    logger.warning(
+                        "OpenAI-compat model declined tools (%s); "
+                        "retrying this turn without tools",
+                        stream_exc,
+                    )
+                    self._openai_tools_unsupported = True
+                    tools_payload = None
+                    overrides.pop("tools", None)
+                    overrides.pop("tool_choice", None)
+                    if tool_leak_filter is not None:
+                        tool_leak_filter.reset()
                     continue
-                # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
-                # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
-                yield chunk
+                raise
             # 记录本次 attempt 的最终 finish_reason，供上层 empty-completion
             # 兜底警告引用（"safety" / "length" / "content_filter" / "stop" 都
             # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默

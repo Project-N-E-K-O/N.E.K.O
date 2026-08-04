@@ -142,6 +142,7 @@ def test_live2d_click_touch_set_logs_trigger_summary():
     summary_logger = _js_block(source, "function logLive2DClickTriggerSummary")
     touch_set_fallback = _js_block(source, "Live2DManager.prototype._playTouchSetWithFallback")
     touch_set_animation = _js_block(source, "Live2DManager.prototype._playTouchSetAnimation")
+    model_poke = _js_block(source, "Live2DManager.prototype._triggerModelPokeVoiceReaction")
 
     assert "function logLive2DClickTriggerSummary(label, details = {})" in summary_logger
     assert "triggered=${triggerCount}, motions=${motionCount}, expressions=${expressionCount}" in summary_logger
@@ -157,6 +158,39 @@ def test_live2d_click_touch_set_logs_trigger_summary():
     assert "summaryType: 'routing_decision'" in touch_set_fallback
     assert "triggerLog.motions.push({" in touch_set_animation
     assert "triggerLog.expressions.push({" in touch_set_animation
+    assert "tool_id: 'fist'" in model_poke
+    assert "action_id: 'poke'" in model_poke
+    assert "_triggerModelPokeVoiceReaction" in source
+    assert "applyTemporaryEmotionFromText" not in source  # lives in app-buttons.js
+    map_zone = _js_block(source, "Live2DManager.prototype._mapHitAreaToTouchZone")
+    assert "return 'ear';" in map_zone
+    assert "return 'head';" in map_zone
+    assert "return 'face';" in map_zone
+    assert "return 'body';" in map_zone
+    assert "_classifyTouchZoneFromPoint" in source
+    assert "text_context: 'live2d_model_poke'" in model_poke
+    assert "clickStartX" in source
+
+
+def test_model_poke_zone_emotion_helpers_exist_in_app_buttons():
+    buttons = (
+        PROJECT_ROOT / "static/app/app-buttons.js"
+    ).read_text(encoding="utf-8")
+    assert "MODEL_POKE_ZONE_PREFERRED_EMOTION" in buttons
+    assert "ear: 'surprised'" in buttons
+    assert "head: 'happy'" in buttons
+    assert "face: 'surprised'" in buttons
+    assert "body: 'angry'" in buttons
+    assert "function resolveModelPokeMotionEmotion" in buttons
+    assert "source: 'touch_zone'" in buttons
+    assert "function preferredEmotionForAvatarTool" in buttons
+    assert "function registerAvatarToolCharacterReaction" in buttons
+    assert "function playLocalAvatarToolFeedback" in buttons
+    assert "registerAvatarToolCharacterReaction(normalized)" in buttons
+    assert "AVATAR_TOOL_PREFERRED_EMOTION" in buttons
+    ws = (PROJECT_ROOT / "static/app/app-websocket.js").read_text(encoding="utf-8")
+    assert "applyTemporaryEmotionFromText(textEmotion, pokeMeta)" in ws
+    assert "consumeModelPokeReaction(interactionId)" in ws
 
 
 def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():

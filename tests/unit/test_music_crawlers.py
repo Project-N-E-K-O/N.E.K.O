@@ -11,9 +11,10 @@ import httpx
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from utils.music_crawlers import (
-    NeteaseCrawler, iTunesCrawler, SoundCloudCrawler, 
-    MusopenCrawler, FMACrawler, BandcampCrawler, MusicCache, fetch_music_content,
-    music_cache, close_all_crawlers, _select_requested_song
+    NeteaseCrawler, iTunesCrawler, SoundCloudCrawler,
+    MusopenCrawler, FMACrawler, BandcampCrawler, BilibiliMusicCrawler,
+    MusicCache, fetch_music_content,
+    music_cache, close_all_crawlers, _select_requested_song,
 )
 
 # ==========================================
@@ -1920,6 +1921,156 @@ async def test_fetch_music_content_rejects_unrelated_requested_song():
 
     assert response['success'] is False
     assert response['error_code'] == 'track_not_found'
+
+
+@pytest.mark.unit
+def test_bilibili_extract_bvid_from_text_and_url():
+    assert BilibiliMusicCrawler.extract_bvid("BV1xx411c7mD") == "BV1xx411c7mD"
+    assert (
+        BilibiliMusicCrawler.extract_bvid(
+            "看看 https://www.bilibili.com/video/BV1xx411c7mD"
+        )
+        == "BV1xx411c7mD"
+    )
+    assert BilibiliMusicCrawler.extract_bvid("no video here") == ""
+
+
+@pytest.mark.unit
+def test_bilibili_pick_lowest_bandwidth_audio():
+    url = BilibiliMusicCrawler._pick_audio_url(
+        {
+            "dash": {
+                "audio": [
+                    {
+                        "bandwidth": 320000,
+                        "baseUrl": "https://upos-sz-mirrorcos.bilivideo.com/high.m4s",
+                    },
+                    {
+                        "bandwidth": 64000,
+                        "base_url": "https://upos-sz-mirrorcos.bilivideo.com/low.m4s",
+                    },
+                ]
+            }
+        }
+    )
+    assert url == "https://upos-sz-mirrorcos.bilivideo.com/low.m4s"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bilibili_resolve_bvid_formats_item(monkeypatch):
+    import sys
+    import types
+
+    class FakeVideo:
+        def __init__(self, bvid, credential=None):
+            self.bvid = bvid
+
+        async def get_info(self):
+            return {
+                "title": "测试歌曲",
+                "duration": 180,
+                "pic": "https://i0.hdslb.com/cover.jpg",
+                "owner": {"name": "测试UP"},
+            }
+
+        async def get_download_url(self, page_index=0):
+            return {
+                "dash": {
+                    "audio": [
+                        {
+                            "bandwidth": 128000,
+                            "baseUrl": "https://upos.bilivideo.com/audio.m4s",
+                        }
+                    ]
+                }
+            }
+
+    video_mod = types.ModuleType("bilibili_api.video")
+    video_mod.Video = FakeVideo
+    api_mod = types.ModuleType("bilibili_api")
+    api_mod.video = video_mod
+    monkeypatch.setitem(sys.modules, "bilibili_api", api_mod)
+    monkeypatch.setitem(sys.modules, "bilibili_api.video", video_mod)
+
+    crawler = BilibiliMusicCrawler()
+    monkeypatch.setattr(crawler, "_credential", AsyncMock(return_value=None))
+    item = await crawler.resolve_bvid("BV1xx411c7mD")
+
+    assert item is not None
+    assert item["name"] == "测试歌曲"
+    assert item["artist"] == "测试UP"
+    assert item["url"] == "https://upos.bilivideo.com/audio.m4s"
+    assert item["source"] == "bilibili"
+    assert item["bvid"] == "BV1xx411c7mD"
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_music_content_china_searches_netease_and_bilibili():
+    mock_netease = MagicMock()
+    mock_bilibili = MagicMock()
+    mock_netease.search = AsyncMock(
+        return_value=[{"name": "Netease Hit", "url": "https://music.163.com/a", "artist": "A"}]
+    )
+    mock_bilibili.search = AsyncMock(
+        return_value=[
+            {
+                "name": "Bili Hit",
+                "url": "https://upos.bilivideo.com/a.m4s",
+                "artist": "UP",
+                "source": "bilibili",
+            }
+        ]
+    )
+
+    with (
+        patch(
+            "utils.music_crawlers.get_music_crawlers",
+            return_value={"netease": mock_netease, "bilibili": mock_bilibili},
+        ),
+        patch("utils.music_crawlers.is_china_region", return_value=True),
+    ):
+        response = await fetch_music_content("晴天", limit=2)
+
+    assert response["success"] is True
+    mock_netease.search.assert_awaited_once_with("晴天", 2)
+    mock_bilibili.search.assert_awaited_once_with("晴天", 2)
+    names = {track["name"] for track in response["data"]}
+    assert "Netease Hit" in names
+    assert "Bili Hit" in names
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_music_content_bv_short_circuits_to_bilibili():
+    mock_netease = MagicMock()
+    mock_netease.search = AsyncMock(return_value=[])
+    mock_bilibili = MagicMock()
+    mock_bilibili.resolve_text = AsyncMock(
+        return_value={
+            "name": "BV Track",
+            "url": "https://upos.bilivideo.com/bv.m4s",
+            "artist": "UP",
+            "source": "bilibili",
+            "bvid": "BV1xx411c7mD",
+        }
+    )
+
+    with (
+        patch(
+            "utils.music_crawlers.get_music_crawlers",
+            return_value={"netease": mock_netease, "bilibili": mock_bilibili},
+        ),
+        patch("utils.music_crawlers.is_china_region", return_value=True),
+    ):
+        response = await fetch_music_content("BV1xx411c7mD", limit=3)
+
+    assert response["success"] is True
+    assert response["data"][0]["bvid"] == "BV1xx411c7mD"
+    mock_bilibili.resolve_text.assert_awaited_once()
+    mock_netease.search.assert_not_awaited()
 
 
 @pytest.mark.manual

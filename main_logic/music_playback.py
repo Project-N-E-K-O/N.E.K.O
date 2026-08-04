@@ -26,9 +26,11 @@ from main_logic.agent_event_bus import register_user_utterance_sink
 from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 from main_logic.music_requests import (
     MusicRequest,
+    SingCoverRequest,
     fetch_music_request,
     is_explicit_music_cancellation,
     mark_music_request_query,
+    parse_explicit_sing_cover_request,
     parse_explicit_user_music_request,
 )
 from utils.logger_config import get_module_logger
@@ -40,6 +42,8 @@ _PLAYBACK_STATES = frozenset({"playing", "paused", "ended", "error"})
 _REPLY_START_GRACE_SECONDS = 1.0
 _REPLY_WAIT_TIMEOUT_SECONDS = 5.0
 _REPLY_WAIT_POLL_SECONDS = 0.05
+_RVC_COVER_PLUGIN_ID = "rvc_cover"
+_RVC_COVER_ENTRY_ID = "sing_cover"
 
 
 def register_music_session_manager_getter(
@@ -47,6 +51,380 @@ def register_music_session_manager_getter(
 ) -> None:
     global _session_manager_getter
     _session_manager_getter = getter
+
+
+def queue_user_music_request(manager: Any, request: MusicRequest) -> int:
+    """Cancel any in-flight search and queue networked playback. Returns request_id."""
+    previous_task = getattr(manager, "_music_request_task", None)
+    if previous_task is not None and not previous_task.done():
+        previous_task.cancel()
+    epoch = _next_music_request_epoch(manager)
+    _enqueue_music_request_context(manager, epoch)
+    fire_task = getattr(manager, "_fire_task", None)
+    if callable(fire_task):
+        manager._music_request_task = fire_task(
+            _execute_music_request(manager, request, epoch)
+        )
+    return epoch
+
+
+async def cancel_user_music_playback(manager: Any) -> int:
+    """Cancel in-flight search and tell the frontend to stop playback."""
+    previous_task = getattr(manager, "_music_request_task", None)
+    if previous_task is not None and not previous_task.done():
+        previous_task.cancel()
+    epoch = _next_music_request_epoch(manager)
+    pending_context = getattr(manager, "_music_request_pending_context", None)
+    if isinstance(pending_context, dict):
+        pending_context[DELIVERY_RETRACTED_KEY] = True
+        manager._music_request_pending_context = None
+    await _push_music_payload(
+        manager,
+        {
+            "type": "music_request_cancelled",
+            "request_id": epoch,
+        },
+    )
+    return epoch
+
+
+async def control_user_music_playback(manager: Any, action: str) -> dict[str, Any]:
+    """Map control_music tool actions onto cancel / frontend transport events."""
+    normalized = str(action or "").strip().lower()
+    if normalized == "stop":
+        request_id = await cancel_user_music_playback(manager)
+        return {"status": "ok", "action": "stop", "request_id": request_id}
+    if normalized in {"pause", "resume"}:
+        delivered = await _push_music_payload(
+            manager,
+            {
+                "type": "music_control",
+                "action": normalized,
+            },
+        )
+        return {
+            "status": "ok" if delivered else "playback_unavailable",
+            "action": normalized,
+        }
+    if normalized == "next":
+        return {
+            "status": "unsupported",
+            "action": "next",
+            "message": "next track is not supported for networked playback yet",
+        }
+    return {
+        "status": "unsupported",
+        "action": normalized,
+        "message": f"unknown music control action: {normalized}",
+    }
+
+
+def _plugin_server_origin() -> str:
+    import os
+
+    for key in (
+        "NEKO_PLUGIN_SERVER_ORIGIN",
+        "NEKO_USER_PLUGIN_SERVER_ORIGIN",
+        "NEKO_SERVER_ORIGIN",
+    ):
+        val = str(os.getenv(key, "") or "").strip().rstrip("/")
+        if val.startswith("http://") or val.startswith("https://"):
+            return val
+    try:
+        env_port = int(str(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "") or "").strip())
+        if 1 <= env_port <= 65535:
+            return f"http://127.0.0.1:{env_port}"
+    except Exception:
+        pass
+    try:
+        from config import USER_PLUGIN_SERVER_PORT
+
+        port = int(USER_PLUGIN_SERVER_PORT)
+        if 1 <= port <= 65535:
+            return f"http://127.0.0.1:{port}"
+    except Exception:
+        pass
+    return "http://127.0.0.1:48916"
+
+
+def _resolve_rvc_model_hint(hint: str) -> str:
+    text = str(hint or "").strip()
+    if not text:
+        return ""
+    if text.lower().endswith(".pth"):
+        return text
+    try:
+        from pathlib import Path
+
+        weights = Path(__file__).resolve().parents[1] / "vendor" / "rvc" / "assets" / "weights"
+        if not weights.is_dir():
+            return ""
+        needle = text.casefold()
+        for path in sorted(weights.glob("*.pth")):
+            stem = path.stem.casefold()
+            if needle in stem or stem in needle:
+                return path.name
+    except Exception:
+        return ""
+    return ""
+
+
+_RVC_COVER_RUN_POLL_SECONDS = 0.4
+_RVC_COVER_RUN_TIMEOUT_SECONDS = 45.0
+_RVC_COVER_TERMINAL_STATUSES = frozenset(
+    {"succeeded", "failed", "canceled", "timeout"}
+)
+
+
+def _unwrap_run_export_value(raw: Any) -> Any:
+    """Unwrap nested Run Protocol export payloads (json / data / value / error)."""
+    current = raw
+    while (
+        isinstance(current, dict)
+        and "data" in current
+        and isinstance(current.get("data"), dict)
+        and any(key in current["data"] for key in ("success", "error", "value"))
+    ):
+        current = current["data"]
+    if isinstance(current, dict) and isinstance(current.get("value"), dict):
+        return current["value"]
+    return current
+
+
+async def trigger_rvc_cover_plugin(
+    request: SingCoverRequest,
+    *,
+    target_lanlan: str = "",
+) -> dict[str, Any]:
+    """HTTP-trigger the rvc_cover plugin via Run Protocol (uses vendor/rvc)."""
+    import httpx
+
+    args: dict[str, Any] = {
+        "query": request.display_query or request.query,
+        "song": request.song_name,
+        "artist": request.song_artist,
+        "target_lanlan": target_lanlan,
+    }
+    model_name = _resolve_rvc_model_hint(request.model_hint) or str(
+        request.model_hint or ""
+    ).strip()
+    if model_name:
+        args["model_name"] = model_name
+    origin = _plugin_server_origin()
+    payload = {
+        "plugin_id": _RVC_COVER_PLUGIN_ID,
+        "entry_id": _RVC_COVER_ENTRY_ID,
+        "args": args,
+    }
+    try:
+        timeout = httpx.Timeout(15.0, connect=3.0)
+        async with httpx.AsyncClient(
+            timeout=timeout, proxy=None, trust_env=False
+        ) as client:
+            resp = await client.post(f"{origin}/runs", json=payload)
+            body: dict[str, Any] = {}
+            try:
+                parsed = resp.json()
+                if isinstance(parsed, dict):
+                    body = parsed
+            except Exception:
+                body = {"raw": (resp.text or "")[:300]}
+            if resp.status_code >= 400:
+                return {
+                    "ok": False,
+                    "error": "trigger_http_error",
+                    "status_code": resp.status_code,
+                    "body": body,
+                }
+            run_id = str(body.get("run_id") or body.get("id") or "").strip()
+            if not run_id:
+                return {
+                    "ok": False,
+                    "error": "missing_run_id",
+                    "status_code": resp.status_code,
+                    "body": body,
+                }
+
+            deadline = asyncio.get_running_loop().time() + _RVC_COVER_RUN_TIMEOUT_SECONDS
+            last_status = str(body.get("status") or "")
+            while True:
+                if last_status in _RVC_COVER_TERMINAL_STATUSES:
+                    break
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return {
+                        "ok": False,
+                        "error": "run_timeout",
+                        "run_id": run_id,
+                        "status": last_status or "timeout",
+                    }
+                await asyncio.sleep(
+                    min(_RVC_COVER_RUN_POLL_SECONDS, max(0.05, remaining))
+                )
+                poll = await client.get(f"{origin}/runs/{run_id}")
+                if poll.status_code in {404, 410}:
+                    return {
+                        "ok": False,
+                        "error": "run_not_found",
+                        "status_code": poll.status_code,
+                        "run_id": run_id,
+                    }
+                if poll.status_code != 200:
+                    continue
+                try:
+                    run_body = poll.json()
+                except Exception:
+                    continue
+                if isinstance(run_body, dict):
+                    last_status = str(run_body.get("status") or last_status)
+
+            if last_status != "succeeded":
+                return {
+                    "ok": False,
+                    "error": "run_failed",
+                    "run_id": run_id,
+                    "status": last_status,
+                    "body": body,
+                }
+
+            export_body: dict[str, Any] = {}
+            try:
+                exported = await client.get(f"{origin}/runs/{run_id}/export")
+                if exported.status_code == 200:
+                    parsed_export = exported.json()
+                    if isinstance(parsed_export, dict):
+                        export_body = parsed_export
+            except Exception:
+                export_body = {}
+
+            items = export_body.get("items") if isinstance(export_body, dict) else None
+            value: Any = {}
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "json" and item.get("json") is not None:
+                        value = _unwrap_run_export_value(item.get("json"))
+                        break
+                if not value and items:
+                    first = items[0]
+                    if isinstance(first, dict):
+                        value = _unwrap_run_export_value(
+                            first.get("json") if "json" in first else first
+                        )
+
+            if isinstance(value, dict) and value.get("error"):
+                return {
+                    "ok": False,
+                    "error": "entry_error",
+                    "run_id": run_id,
+                    "body": value,
+                    "message": str(
+                        value.get("message")
+                        or value.get("error")
+                        or "sing_cover failed"
+                    ),
+                }
+            if isinstance(value, dict) and value.get("ok") is False:
+                return {
+                    "ok": False,
+                    "error": str(value.get("error") or "sing_cover_failed"),
+                    "run_id": run_id,
+                    "body": value,
+                    "message": str(value.get("message") or ""),
+                }
+            return {
+                "ok": True,
+                "run_id": run_id,
+                "status": last_status,
+                "body": value if isinstance(value, dict) else {"value": value},
+            }
+    except Exception as exc:
+        logger.warning("rvc_cover trigger failed: %s", exc)
+        return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
+
+
+def _enqueue_sing_cover_pending_context(manager: Any, query: str) -> None:
+    enqueue = getattr(manager, "enqueue_agent_callback", None)
+    if not callable(enqueue):
+        return
+    title = f"「{query}」" if query else "这首歌"
+    detail = (
+        f"用户已明确要求翻唱{title}。"
+        "RVC 翻唱任务已开始联网搜歌并转换音色，请简短确认正在准备翻唱，"
+        "不要再改口成普通点歌，也不要假装已经唱完。"
+    )
+    enqueue(
+        {
+            "event": "agent_task_callback",
+            "origin": "event",
+            "task_id": f"rvc_cover:{int(getattr(manager, '_music_request_epoch', 0) or 0)}",
+            "channel": "music_playback",
+            "status": "in_progress",
+            "success": True,
+            "summary": detail,
+            "detail": detail,
+            "source_kind": "music",
+            "source_name": "rvc_cover",
+            "delivery_mode": "passive",
+            "priority": 10,
+            "coalesce_key": f"rvc-cover:{getattr(manager, 'lanlan_name', '')}",
+            "metadata": {"context_type": "rvc_cover_pending", "query": query},
+            "context_type": "rvc_cover_pending",
+        }
+    )
+
+
+def _enqueue_sing_cover_failure_context(
+    manager: Any,
+    query: str,
+    detail: str,
+) -> None:
+    enqueue = getattr(manager, "enqueue_agent_callback", None)
+    if not callable(enqueue):
+        return
+    text = detail or "RVC 翻唱触发失败"
+    if query:
+        text = f"{text}（{query}）"
+    enqueue(
+        {
+            "event": "agent_task_callback",
+            "origin": "event",
+            "task_id": f"rvc_cover:{int(getattr(manager, '_music_request_epoch', 0) or 0)}",
+            "channel": "music_playback",
+            "status": "failed",
+            "success": False,
+            "summary": text,
+            "detail": text,
+            "source_kind": "music",
+            "source_name": "rvc_cover",
+            "delivery_mode": "passive",
+            "priority": 10,
+            "coalesce_key": f"rvc-cover:{getattr(manager, 'lanlan_name', '')}",
+            "metadata": {"context_type": "rvc_cover_failed", "query": query},
+            "context_type": "rvc_cover_failed",
+        }
+    )
+
+
+async def _execute_sing_cover_request(
+    manager: Any,
+    request: SingCoverRequest,
+) -> dict[str, Any]:
+    query = request.display_query
+    result = await trigger_rvc_cover_plugin(
+        request,
+        target_lanlan=str(getattr(manager, "lanlan_name", "") or ""),
+    )
+    if result.get("ok"):
+        _enqueue_sing_cover_pending_context(manager, query)
+    else:
+        _enqueue_sing_cover_failure_context(
+            manager,
+            query,
+            "RVC 翻唱插件未就绪或触发失败，请确认 rvc_cover 已启用",
+        )
+    return result
 
 
 def _on_user_utterance(bucket: str, event: dict[str, Any]) -> None:
@@ -57,37 +435,20 @@ def _on_user_utterance(bucket: str, event: dict[str, Any]) -> None:
     if manager is None:
         return
     content = str(event.get("content") or "")
+    cover_request = parse_explicit_sing_cover_request(content)
+    if cover_request is not None:
+        fire_task = getattr(manager, "_fire_task", None)
+        if callable(fire_task):
+            fire_task(_execute_sing_cover_request(manager, cover_request))
+        return
     request = parse_explicit_user_music_request(content)
     if request is None:
         if is_explicit_music_cancellation(content):
-            previous_task = getattr(manager, "_music_request_task", None)
-            if previous_task is not None and not previous_task.done():
-                previous_task.cancel()
-            epoch = _next_music_request_epoch(manager)
-            pending_context = getattr(manager, "_music_request_pending_context", None)
-            if isinstance(pending_context, dict):
-                pending_context[DELIVERY_RETRACTED_KEY] = True
-                manager._music_request_pending_context = None
             fire_task = getattr(manager, "_fire_task", None)
             if callable(fire_task):
-                fire_task(
-                    _push_music_payload(
-                        manager,
-                        {
-                            "type": "music_request_cancelled",
-                            "request_id": epoch,
-                        },
-                    )
-                )
+                fire_task(cancel_user_music_playback(manager))
         return
-    previous_task = getattr(manager, "_music_request_task", None)
-    if previous_task is not None and not previous_task.done():
-        previous_task.cancel()
-    epoch = _next_music_request_epoch(manager)
-    _enqueue_music_request_context(manager, epoch)
-    manager._music_request_task = manager._fire_task(
-        _execute_music_request(manager, request, epoch)
-    )
+    queue_user_music_request(manager, request)
 
 
 def _next_music_request_epoch(manager: Any) -> int:
@@ -401,6 +762,7 @@ async def _execute_music_request(
             "artist": track.get("artist", ""),
             "url": track.get("url", ""),
             "cover": track.get("cover", ""),
+            "source": track.get("source", ""),
         }
         for track in tracks
         if isinstance(track, dict) and track.get("url")
@@ -474,6 +836,7 @@ async def _push_music_payload(manager: Any, payload: dict[str, Any]) -> bool:
     broadcast = payload.get("type") in {
         "music_request_started",
         "music_request_cancelled",
+        "music_control",
     }
     for candidate in tuple(
         getattr(manager, "_music_playback_websockets", ()) or ()

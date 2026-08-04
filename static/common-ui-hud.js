@@ -506,8 +506,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             });
 
             let isOpening = false;
-            configBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
+            const openActionTarget = () => {
                 if (isOpening) return;
                 isOpening = true;
                 const width = Math.min(1280, Math.round(screen.width * 0.8));
@@ -552,11 +551,34 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     } catch (_) {}
                 }
                 setTimeout(() => { isOpening = false; }, 500);
+            };
+
+            // 管理面板不依赖「用户插件」开关状态：未开启/不可用时也可进插件 UI
+            configBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openActionTarget();
             });
 
             sidePanel.appendChild(configBtn);
             document.body.appendChild(sidePanel);
             this._attachSidePanelHover(toggleItem, sidePanel);
+
+            // 点「用户插件」文字/行：展开侧栏（不切换开关）；滑块仍负责开/关
+            toggleItem.addEventListener('click', (e) => {
+                const target = e && e.target;
+                if (target && typeof target.closest === 'function') {
+                    if (target.closest(`.${avatarPrefix}-toggle-indicator`)) return;
+                    if (target.closest('input')) return;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof sidePanel._expand === 'function') {
+                    sidePanel._expand();
+                }
+                // 展开后立刻允许点击管理面板（不等 guard）
+                sidePanel.style.pointerEvents = 'auto';
+            });
         }
 
     });

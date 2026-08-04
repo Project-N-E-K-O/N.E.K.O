@@ -52,6 +52,14 @@
           <span class="plugin-list-row-card__meta-label">{{ t('plugins.entryPoint') }}</span>
           <span class="plugin-list-row-card__meta-value">{{ entryCount }}</span>
         </div>
+        <div
+          class="plugin-list-row-card__actions"
+          @click.stop
+          @mousedown.stop
+          @pointerdown.stop
+        >
+          <PluginActions :plugin-id="plugin.id" compact />
+        </div>
       </div>
     </div>
   </el-card>
@@ -62,6 +70,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
+import PluginActions from '@/components/plugin/PluginActions.vue'
 import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
@@ -225,6 +234,12 @@ const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
 .plugin-list-row-card__meta-value--code {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
+}
+
+.plugin-list-row-card__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
 }
 
 @media (max-width: 980px) {

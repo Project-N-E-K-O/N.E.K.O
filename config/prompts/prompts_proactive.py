@@ -1303,22 +1303,6 @@ def _normalize_startup_greeting_language(lang: str) -> str:
     return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
 
 
-def normalize_mini_game_invite_locale(lang: str) -> str:
-    """Normalize a locale to a key of the mini-game invite dicts, which include zh-TW.
-
-    Public on purpose: the consumer lives in ``main_logic.proactive_chat`` and the
-    two tables it indexes (``MINI_GAME_INVITE_LINES_BY_GAME`` and
-    ``MINI_GAME_INVITE_OPTION_LABELS``) live here. Exporting the normalizer next to
-    the tables keeps "which key scheme does this dict use" answerable in one place —
-    ``config.prompts._locale`` itself stays package-private.
-
-    ⚠️ This only pays off if the caller hands over a locale that still carries the
-    script. ``zh-TW`` that was already collapsed to ``zh`` upstream cannot be
-    recovered here, and the ``zh-TW`` rows above become unreachable data.
-    """
-    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
-
-
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
     """Normalize master_name into a string that can go straight into the {master} placeholder.
 
@@ -3509,7 +3493,6 @@ PROACTIVE_SOURCE_LABELS = {
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     "soccer": {
         "zh": "{master_name}，要不要现在跟我一起踢一会儿足球小游戏？",
-        "zh-TW": "{master_name}，要不要現在跟我一起踢一下足球小遊戲？",
         "en": "{master_name}, want to play a quick round of the soccer mini-game with me?",
         "ja": "{master_name}、今ちょっとサッカーのミニゲーム、一緒にやらない？",
         "ko": "{master_name}, 지금 같이 축구 미니게임 한 판 어때?",
@@ -3519,8 +3502,6 @@ MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
     },
     "badminton": {
         "zh": "{master_name}，要不要现在来一局羽毛球挑战？",
-        # 台湾惯用「羽球」而非「羽毛球」——这不是字形转换，是词汇选择。
-        "zh-TW": "{master_name}，要不要現在來一局羽球挑戰？",
         "en": "{master_name}, want to try a quick badminton rally challenge with me?",
         "ja": "{master_name}、今ちょっとバドミントンチャレンジやらない？",
         "ko": "{master_name}, 지금 배드민턴 랠리 챌린지 한 판 어때?",
@@ -3540,12 +3521,6 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
         "accept": "来一局！",
         "decline": "现在不想玩",
         "later": "等一会儿",
-    },
-    "zh-TW": {
-        "accept": "來一局！",
-        "decline": "現在不想玩",
-        # 「等一会儿」的台湾口语说法是「等一下」，不是「等一會兒」。
-        "later": "等一下",
     },
     "en": {
         "accept": "Let's play!",
@@ -3944,82 +3919,82 @@ def get_proactive_music_strict_constraint(lang: str = "zh") -> str:
 # 根据当前小时数给AI额外的时间感知，让问候更贴合实际场景
 
 _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
-    # 凌晨 0:00-5:59 —— 保留时段特征作为开场素材，只禁止断言对方的状态
+    # 凌晨 0:00-5:59 —— 只提供事实时间，不推断对方睡眠状态
     "late_night": {
-        "zh": "现在是凌晨，夜已经很深了。夜色、安静、这个时段本身都可以成为开场的话题方向；但不要断言{master}刚睡醒、还没睡或刚开机。",
-        "zh-TW": "現在是凌晨，夜已經很深了。夜色、安靜、這個時段本身都可以成為開場的話題方向；但不要斷言{master}剛睡醒、還沒睡或剛開機。",
-        "en": "It is the middle of the night. The dark, the quiet, and the late hour itself are fair material for an opening; but do not assert that {master} just woke up, has not slept, or just started the device.",
-        "ja": "今は深夜。夜の暗さや静けさ、深夜という時間帯そのものは話の糸口にしていい。ただし{master}が起きたばかり、まだ寝ていない、端末を起動したばかりだとは断定しない。",
-        "ko": "지금은 한밤중이다. 어둠과 고요함, 한밤중이라는 시간대 자체는 말을 꺼낼 소재로 삼아도 된다. 다만 {master}가 방금 일어났거나 아직 자지 않았거나 기기를 방금 켰다고 단정하지 마.",
-        "ru": "Сейчас глубокая ночь. Темнота, тишина и сама эта поздняя пора годятся как повод для начала разговора. Но не утверждай, что {master} только что проснулся, ещё не спал или включил устройство.",
-        "es": "Es de madrugada. La oscuridad, el silencio y la propia hora tardía sirven como material para abrir. Pero no afirmes que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
-        "pt": "É madrugada. O escuro, o silêncio e a própria hora avançada servem como material para abrir. Mas não afirme que {master} acabou de acordar, não dormiu ou acabou de ligar o dispositivo.",
+        "zh": "现在是凌晨。只把它当作当前时段，不要推断{master}刚睡醒、还没睡或刚开机。",
+        "zh-TW": "現在是凌晨。只把它當作目前時段，不要推斷{master}剛睡醒、還沒睡或剛開機。",
+        "en": "It is currently late at night. Treat this only as the current time of day; do not infer that {master} just woke up, has not slept, or just started the device.",
+        "ja": "今は深夜だ。これは現在の時間帯としてだけ扱い、{master}が起きたばかり、まだ寝ていない、端末を起動したばかりだとは推測しないこと。",
+        "ko": "지금은 한밤중이다. 현재 시간대로만 받아들이고, {master}가 방금 일어났거나 아직 자지 않았거나 기기를 방금 켰다고 추측하지 마.",
+        "ru": "Сейчас глубокая ночь. Считай это лишь текущим временем суток и не делай выводов, что {master} только что проснулся, ещё не спал или включил устройство.",
+        "es": "Ahora es de madrugada. Tómalo solo como la hora actual; no deduzcas que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
+        "pt": "Agora é madrugada. Trate isso apenas como o horário atual; não deduza que {master} acabou de acordar, ainda não dormiu ou acabou de ligar o dispositivo.",
     },
-    # 清晨 6:00-8:59 —— 新一天开始，保留早安方向
+    # 清晨 6:00-8:59 —— 早上好，新一天开始
     "early_morning": {
-        "zh": "现在是清晨，天刚亮，新的一天正在开始。可以道一句早安，也可以聊清晨本身的感觉；但不要断言{master}睡得好不好或刚起床。",
-        "zh-TW": "現在是清晨，天剛亮，新的一天正在開始。可以道一句早安，也可以聊清晨本身的感覺；但不要斷言{master}睡得好不好或剛起床。",
-        "en": "It is early morning; the day is just starting. A good-morning line fits, and the feel of early morning is fair material; but do not assert how {master} slept or that they just got up.",
-        "ja": "今は早朝で、一日が始まったところ。おはようの一言も、早朝の空気の話も自然だ。ただし{master}がよく眠れたかどうか、起きたばかりかどうかは断定しない。",
-        "ko": "지금은 이른 아침이고 하루가 막 시작됐다. 좋은 아침 인사도, 이른 아침의 공기 이야기도 자연스럽다. 다만 {master}가 잘 잤는지, 방금 일어났는지는 단정하지 마.",
-        "ru": "Сейчас раннее утро, день только начинается. Уместно пожелать доброго утра или заговорить о самом утреннем ощущении. Но не утверждай, как {master} спал и что он только что встал.",
-        "es": "Es temprano por la mañana y el día apenas empieza. Cabe un buenos días, y la sensación del amanecer también sirve de material. Pero no afirmes cómo durmió {master} ni que acaba de levantarse.",
-        "pt": "É bem cedo e o dia está começando. Cabe um bom dia, e a sensação da manhã cedo também serve de material. Mas não afirme como {master} dormiu nem que acabou de levantar.",
+        "zh": "现在是清晨，新的一天刚刚开始。适合温暖地问候早安。",
+        "zh-TW": "現在是清晨，新的一天剛剛開始。適合溫暖地問候早安。",
+        "en": "It is early morning — a new day is just beginning. A warm good-morning greeting would be fitting.",
+        "ja": "今は早朝、新しい一日の始まりだ。温かくおはようと挨拶するのがぴったり。",
+        "ko": "지금은 이른 아침, 새로운 하루가 시작되었다. 따뜻하게 좋은 아침 인사를 건네면 좋겠다.",
+        "ru": "Сейчас раннее утро — новый день только начинается. Тёплое утреннее приветствие будет к месту.",
+        "es": "Es temprano por la mañana; acaba de empezar un nuevo día. Un saludo cálido de buenos días encajaría bien.",
+        "pt": "É bem cedo; um novo dia está começando. Uma saudação calorosa de bom dia combinaria.",
     },
     # 上午 9:00-11:59
     "morning": {
-        "zh": "现在是上午。",
-        "zh-TW": "現在是上午。",
-        "en": "It is morning.",
+        "zh": "现在是上午。适合用一句「早上好」之类的短问候开场。",
+        "zh-TW": "現在是上午。適合用一句「早上好」之類的短問候開場。",
+        "en": "It is morning. A short good-morning greeting would fit as the whole opening.",
         "ja": "今は午前中だ。",
         "ko": "지금은 오전이다.",
         "ru": "Сейчас утро.",
         "es": "Es por la mañana.",
         "pt": "É de manhã.",
     },
-    # 中午 12:00-13:59 —— 午饭时段，保留吃饭这个搭话方向
+    # 中午 12:00-13:59
     "noon": {
-        "zh": "现在是中午，通常是午饭时段。可以把吃饭聊成一个轻松的方向；但不要断言{master}正在吃、已经吃过或刚忙完。",
-        "zh-TW": "現在是中午，通常是午餐時段。可以把吃飯聊成一個輕鬆的方向；但不要斷言{master}正在吃、已經吃過或剛忙完。",
-        "en": "It is around midday, which is usually lunchtime. Food is a fine light direction to open with; but do not assert that {master} is eating, has eaten, or just got free.",
-        "ja": "今は昼どきで、ふつうは昼食の時間帯。食事は軽い話の方向として使っていい。ただし{master}が食べている、食べ終えた、手が空いたばかりだとは断定しない。",
-        "ko": "지금은 정오 무렵이고 보통 점심시간이다. 음식은 가볍게 말을 꺼낼 방향으로 써도 된다. 다만 {master}가 먹는 중이거나 이미 먹었거나 방금 한가해졌다고 단정하지 마.",
-        "ru": "Сейчас около полудня — обычно это обеденное время. Еда вполне годится как лёгкое направление для начала. Но не утверждай, что {master} ест, уже поел или только что освободился.",
-        "es": "Es alrededor del mediodía, que suele ser la hora de comer. La comida es una dirección ligera perfectamente válida para abrir. Pero no afirmes que {master} está comiendo, ya comió o acaba de desocuparse.",
-        "pt": "É por volta do meio-dia, normalmente a hora do almoço. Comida é uma direção leve perfeitamente válida para abrir. Mas não afirme que {master} está comendo, já comeu ou acabou de ficar livre.",
+        "zh": "现在是中午。适合用一句「中午好」之类的短问候开场；不要默认{master}正在吃饭或刚忙完。",
+        "zh-TW": "現在是中午。只把它當作目前時段，不要預設{master}正在吃飯或剛忙完。",
+        "en": "It is around noon. Treat this only as the current time of day; do not assume {master} is eating or has just finished being busy.",
+        "ja": "今はお昼頃だ。現在の時間帯としてだけ扱い、{master}が食事中、または忙しい用事を終えたばかりだとは決めつけないこと。",
+        "ko": "지금은 정오 무렵이다. 현재 시간대로만 받아들이고, {master}가 식사 중이거나 방금 바쁜 일을 마쳤다고 단정하지 마.",
+        "ru": "Сейчас около полудня. Считай это лишь текущим временем суток и не предполагай, что {master} ест или только что освободился.",
+        "es": "Es alrededor del mediodía. Tómalo solo como la hora actual; no supongas que {master} está comiendo o que acaba de desocuparse.",
+        "pt": "É por volta do meio-dia. Trate isso apenas como o horário atual; não suponha que {master} está comendo ou que acabou de ficar livre.",
     },
     # 下午 14:00-17:59
     "afternoon": {
-        "zh": "现在是下午。",
-        "zh-TW": "現在是下午。",
-        "en": "It is afternoon.",
+        "zh": "现在是下午。适合用一句「下午好」之类的短问候开场。",
+        "zh-TW": "現在是下午。適合用一句「下午好」之類的短問候開場。",
+        "en": "It is afternoon. A short good-afternoon greeting would fit as the whole opening.",
         "ja": "今は午後だ。",
         "ko": "지금은 오후이다.",
         "ru": "Сейчас день.",
         "es": "Es por la tarde.",
         "pt": "É à tarde.",
     },
-    # 傍晚 18:00-20:59 —— 一天转入夜晚，保留氛围与晚饭方向
+    # 傍晚 18:00-20:59
     "evening": {
-        "zh": "现在是傍晚，天正在暗下来，一天开始转入夜晚。可以聊这个时段的氛围，或把晚饭当作轻松方向；但不要断言{master}刚下班、刚吃完或忙了一整天。",
-        "zh-TW": "現在是傍晚，天正在暗下來，一天開始轉入夜晚。可以聊這個時段的氛圍，或把晚餐當作輕鬆方向；但不要斷言{master}剛下班、剛吃完或忙了一整天。",
-        "en": "It is evening; the light is going and the day is turning into night. The mood of this hour, or dinner, is a fine light direction; but do not assert that {master} just finished work, just ate, or had a busy day.",
-        "ja": "今は夕方。日が落ちて、一日が夜に向かう時間だ。この時間帯の雰囲気や夕食は軽い話の方向にしていい。ただし{master}が仕事を終えた、食べたばかり、忙しい一日だったとは断定しない。",
-        "ko": "지금은 저녁이다. 해가 지고 하루가 밤으로 넘어가는 시간이다. 이 시간대의 분위기나 저녁 식사는 가벼운 방향으로 삼아도 된다. 다만 {master}가 방금 퇴근했거나 막 먹었거나 바쁜 하루를 보냈다고 단정하지 마.",
-        "ru": "Сейчас вечер: свет уходит, день переходит в ночь. Настроение этого часа или ужин — нормальное лёгкое направление. Но не утверждай, что {master} только что закончил работу, поел или провёл занятый день.",
-        "es": "Es el atardecer: cae la luz y el día pasa a la noche. El ambiente de esta hora, o la cena, sirven como dirección ligera. Pero no afirmes que {master} acaba de salir del trabajo, de comer o de tener un día ocupado.",
-        "pt": "É o fim da tarde: a luz vai embora e o dia vira noite. O clima desta hora, ou o jantar, servem como direção leve. Mas não afirme que {master} acabou de sair do trabalho, de comer ou de ter um dia corrido.",
+        "zh": "现在是傍晚。适合用一句「晚上好」之类的短问候开场；不要默认{master}刚下班、刚吃饭或忙了一天。",
+        "zh-TW": "現在是傍晚。只把它當作目前時段，不要預設{master}剛下班、剛吃飯或忙了一天。",
+        "en": "It is evening. Treat this only as the current time of day; do not assume {master} just finished work, ate, or had a busy day.",
+        "ja": "今は夕方だ。現在の時間帯としてだけ扱い、{master}が仕事を終えた、食事をした、忙しい一日を過ごしたとは決めつけないこと。",
+        "ko": "지금은 저녁이다. 현재 시간대로만 받아들이고, {master}가 방금 퇴근했거나 식사했거나 바쁜 하루를 보냈다고 단정하지 마.",
+        "ru": "Сейчас вечер. Считай это лишь текущим временем суток и не предполагай, что {master} только что закончил работу, поел или провёл занятый день.",
+        "es": "Es por la tarde-noche. Tómalo solo como la hora actual; no supongas que {master} acaba de salir del trabajo, de comer o de tener un día ocupado.",
+        "pt": "É início da noite. Trate isso apenas como o horário atual; não suponha que {master} acabou de sair do trabalho, comer ou ter um dia corrido.",
     },
-    # 夜晚 21:00-23:59 —— 保留夜的氛围，但休息只跟不提
+    # 夜晚 21:00-23:59
     "night": {
-        "zh": "现在是夜晚，时间不早了。可以聊夜里的氛围；只有近期对话明确提到休息时才顺着聊休息，不要主动断言{master}要睡了。",
-        "zh-TW": "現在是夜晚，時間不早了。可以聊夜裡的氛圍；只有近期對話明確提到休息時才順著聊休息，不要主動斷言{master}要睡了。",
-        "en": "It is late evening. The feel of the night is fair material; follow up on rest only if recent context explicitly raised it, and do not assert on your own that {master} is about to sleep.",
-        "ja": "今は夜で、もう遅い時間。夜の雰囲気は話の糸口にしていい。休むことに触れるのは直近の会話で明示された場合だけにして、自分から{master}が寝るところだとは断定しない。",
-        "ko": "지금은 밤이고 시간이 늦었다. 밤의 분위기는 말을 꺼낼 소재가 된다. 휴식 이야기는 최근 대화에서 명시적으로 나왔을 때만 이어가고, 먼저 나서서 {master}가 자려 한다고 단정하지 마.",
-        "ru": "Сейчас поздний вечер. Атмосфера ночи годится как повод заговорить. Тему отдыха поддерживай только если недавний разговор прямо её поднял, и не утверждай сама, что {master} собирается спать.",
-        "es": "Es de noche y ya es tarde. El ambiente nocturno sirve como material. Retoma el tema del descanso solo si el contexto reciente lo mencionó explícitamente, y no afirmes por tu cuenta que {master} va a dormir.",
-        "pt": "É noite e já está tarde. O clima noturno serve como material. Só retome o assunto de descansar se o contexto recente tiver levantado isso explicitamente, e não afirme por conta própria que {master} vai dormir.",
+        "zh": "现在是夜晚。只把它当作当前时段；除非近期对话明确提到休息，否则不要默认{master}要睡了。",
+        "zh-TW": "現在是夜晚。只把它當作目前時段；除非近期對話明確提到休息，否則不要預設{master}要睡了。",
+        "en": "It is nighttime. Treat this only as the current time of day; unless recent context explicitly mentions rest, do not assume {master} is going to sleep.",
+        "ja": "今は夜だ。現在の時間帯としてだけ扱い、直近の会話で休むことが明示されていない限り、{master}が寝るところだとは決めつけないこと。",
+        "ko": "지금은 밤이다. 현재 시간대로만 받아들이고, 최근 대화에서 휴식을 명확히 언급하지 않았다면 {master}가 자려 한다고 단정하지 마.",
+        "ru": "Сейчас ночь. Считай это лишь текущим временем суток; если недавний контекст прямо не упоминает отдых, не предполагай, что {master} собирается спать.",
+        "es": "Es de noche. Tómalo solo como la hora actual; salvo que el contexto reciente mencione explícitamente descansar, no supongas que {master} va a dormir.",
+        "pt": "É noite. Trate isso apenas como o horário atual; a menos que o contexto recente mencione descanso explicitamente, não suponha que {master} vai dormir.",
     },
 }
 
@@ -4354,55 +4329,65 @@ def get_greeting_prompt(gap_seconds: float, lang: str = "zh") -> str | None:
 
 
 _STARTUP_GREETING_VARIANTS: dict[str, dict[str, str]] = {
+    "time_greeting": {
+        "zh": "整段开场只说一句：按当前时段用符合角色性格的短问候（如早上好 / 中午好 / 下午好 / 晚上好，深夜可用还没睡之类的轻声招呼）。不要提问，不要再叠第二句或其它话题。",
+        "zh-TW": "整段開場只說一句：依目前時段用符合角色性格的短問候（如早上好 / 中午好 / 下午好 / 晚上好，深夜可用還沒睡之類的輕聲招呼）。不要提問，不要再疊第二句或其他話題。",
+        "en": "Speak only one short in-character greeting for the current time of day (good morning / good afternoon / good evening, or a soft late-night hello). No question and no second sentence or extra topic.",
+        "ja": "今回の一言だけ。今の時間帯に合うキャラらしい短い挨拶（おはよう／こんにちは／こんばんは、深夜ならまだ起きてる？のような軽い一言）。質問も二文目も他の話題も足さない。",
+        "ko": "이번엔 한 마디만. 지금 시간대에 맞는 캐릭터다운 짧은 인사(좋은 아침/좋은 오후/좋은 저녁, 한밤중이면 아직 안 잤어? 같은 가벼운 인사). 질문이나 두 번째 문장, 다른 화제는 붙이지 마.",
+        "ru": "Скажи только одну короткую реплику по времени суток в характере (доброе утро / добрый день / добрый вечер или мягкое ночное приветствие). Без вопроса и без второй фразы или другой темы.",
+        "es": "Di solo un saludo breve acorde con la hora y tu personalidad (buenos días / buenas tardes / buenas noches, o un hola suave de madrugada). Sin pregunta ni segunda frase ni otro tema.",
+        "pt": "Fale apenas uma saudação curta coerente com o horário e sua personalidade (bom dia / boa tarde / boa noite, ou um oi suave de madrugada). Sem pergunta, segunda frase ou outro assunto.",
+    },
     "memory_followup": {
-        "zh": "如果下面的记忆候选仍然自然、安全且未在近期对话中收尾，就从它轻柔续上；否则退回普通问候。",
-        "zh-TW": "如果下面的記憶候選仍然自然、安全且未在近期對話中收尾，就從它輕柔續上；否則退回普通問候。",
-        "en": "If the memory cue below is still natural, safe, and unresolved in recent context, continue from it gently; otherwise use a plain greeting.",
-        "ja": "下の記憶候補が今も自然で安全で、直近の会話で完了していない場合だけ、そっと続きを話す。そうでなければ普通の挨拶に戻す。",
-        "ko": "아래 기억 후보가 여전히 자연스럽고 안전하며 최근 대화에서 마무리되지 않았을 때만 부드럽게 이어가고, 아니면 평범한 인사로 돌아가.",
-        "ru": "Мягко продолжи тему из подсказки памяти ниже, только если она всё ещё естественна, безопасна и не завершена в недавнем контексте; иначе используй обычное приветствие.",
-        "es": "Continúa suavemente desde la pista de memoria solo si sigue siendo natural, segura y no quedó cerrada en el contexto reciente; si no, usa un saludo normal.",
-        "pt": "Continue suavemente a partir da pista de memória somente se ela ainda for natural, segura e não tiver sido encerrada no contexto recente; caso contrário, use uma saudação comum.",
+        "zh": "如果下面的记忆候选仍然自然、安全且未在近期对话中收尾，就从它轻柔续上；否则退回普通问候。整段开场仍然只说一句。",
+        "zh-TW": "如果下面的記憶候選仍然自然、安全且未在近期對話中收尾，就從它輕柔續上；否則退回普通問候。整段開場仍然只說一句。",
+        "en": "If the memory cue below is still natural, safe, and unresolved in recent context, continue from it gently; otherwise use a plain greeting. Still speak only one short line.",
+        "ja": "下の記憶候補が今も自然で安全で、直近の会話で完了していない場合だけ、そっと続きを話す。そうでなければ普通の挨拶に戻す。どちらでも一言だけ。",
+        "ko": "아래 기억 후보가 여전히 자연스럽고 안전하며 최근 대화에서 마무리되지 않았을 때만 부드럽게 이어가고, 아니면 평범한 인사로 돌아가. 어느 쪽이든 한 마디만.",
+        "ru": "Мягко продолжи тему из подсказки памяти ниже, только если она всё ещё естественна, безопасна и не завершена в недавнем контексте; иначе используй обычное приветствие. В любом случае — одна короткая реплика.",
+        "es": "Continúa suavemente desde la pista de memoria solo si sigue siendo natural, segura y no quedó cerrada en el contexto reciente; si no, usa un saludo normal. En cualquier caso, solo una frase corta.",
+        "pt": "Continue suavemente a partir da pista de memória somente se ela ainda for natural, segura e não tiver sido encerrada no contexto recente; caso contrário, use uma saudação comum. Em qualquer caso, só uma fala curta.",
     },
     "recent_continuity": {
-        "zh": "优先从近期对话里选一个安全、具体的小细节自然衔接；若对话已经明确结束，就只做轻松重逢。",
-        "zh-TW": "優先從近期對話裡選一個安全、具體的小細節自然銜接；若對話已經明確結束，就只做輕鬆重逢。",
-        "en": "Prefer one safe, concrete detail from recent conversation and continue naturally; if that exchange clearly ended, make this only a light reunion.",
-        "ja": "直近の会話から安全で具体的な小さな要素を一つ選んで自然につなぐ。会話が明確に終わっているなら、軽い再会の挨拶だけにする。",
-        "ko": "최근 대화에서 안전하고 구체적인 작은 한 가지를 골라 자연스럽게 이어가. 대화가 분명히 끝났다면 가벼운 재회 인사만 해.",
-        "ru": "Выбери одну безопасную конкретную деталь из недавнего разговора и естественно продолжи её; если разговор явно завершён, ограничься лёгким приветствием.",
-        "es": "Elige un detalle concreto y seguro de la conversación reciente y enlázalo con naturalidad; si esa conversación terminó claramente, haz solo un reencuentro ligero.",
-        "pt": "Escolha um detalhe concreto e seguro da conversa recente e continue naturalmente; se a conversa terminou claramente, faça apenas um reencontro leve.",
+        "zh": "优先从近期对话里选一个安全、具体的小细节自然衔接；若对话已经明确结束，就只做轻松重逢。整段开场只说一句。",
+        "zh-TW": "優先從近期對話裡選一個安全、具體的小細節自然銜接；若對話已經明確結束，就只做輕鬆重逢。整段開場只說一句。",
+        "en": "Prefer one safe, concrete detail from recent conversation and continue naturally; if that exchange clearly ended, make this only a light reunion. Speak only one short line.",
+        "ja": "直近の会話から安全で具体的な小さな要素を一つ選んで自然につなぐ。会話が明確に終わっているなら、軽い再会の挨拶だけにする。一言だけ。",
+        "ko": "최근 대화에서 안전하고 구체적인 작은 한 가지를 골라 자연스럽게 이어가. 대화가 분명히 끝났다면 가벼운 재회 인사만 해. 한 마디만.",
+        "ru": "Выбери одну безопасную конкретную деталь из недавнего разговора и естественно продолжи её; если разговор явно завершён, ограничься лёгким приветствием. Одна короткая реплика.",
+        "es": "Elige un detalle concreto y seguro de la conversación reciente y enlázalo con naturalidad; si esa conversación terminó claramente, haz solo un reencuentro ligero. Solo una frase corta.",
+        "pt": "Escolha um detalhe concreto e seguro da conversa recente e continue naturalmente; se a conversa terminou claramente, faça apenas um reencontro leve. Só uma fala curta.",
     },
     "personal_share": {
-        "zh": "由你分享一个符合角色性格的轻小念头或当下感受，不要求{master}必须回答。",
-        "zh-TW": "由你分享一個符合角色性格的輕小念頭或當下感受，不要求{master}必須回答。",
-        "en": "Share one small present thought or feeling that fits your character, without requiring {master} to answer.",
-        "ja": "自分らしい今の小さな考えや気持ちを一つ共有し、{master}に返事を求めない。",
-        "ko": "캐릭터다운 지금의 작은 생각이나 느낌 하나를 나누되, {master}에게 답을 요구하지 마.",
-        "ru": "Поделись одной небольшой нынешней мыслью или эмоцией, подходящей твоему характеру, не требуя ответа от {master}.",
-        "es": "Comparte un pequeño pensamiento o sentimiento actual acorde con tu personalidad, sin exigir una respuesta de {master}.",
-        "pt": "Compartilhe um pequeno pensamento ou sentimento atual que combine com sua personalidade, sem exigir resposta de {master}.",
+        "zh": "由你分享一个符合角色性格的轻小念头或当下感受，不要求{master}必须回答。整段开场只说一句，不要再叠时段问候。",
+        "zh-TW": "由你分享一個符合角色性格的輕小念頭或當下感受，不要求{master}必須回答。整段開場只說一句，不要再疊時段問候。",
+        "en": "Share one small present thought or feeling that fits your character, without requiring {master} to answer. Speak only one short line; do not also stack a separate time-of-day greeting.",
+        "ja": "自分らしい今の小さな考えや気持ちを一つ共有し、{master}に返事を求めない。一言だけ。時間帯の挨拶を別文で重ねない。",
+        "ko": "캐릭터다운 지금의 작은 생각이나 느낌 하나를 나누되, {master}에게 답을 요구하지 마. 한 마디만. 시간대 인사를 따로 덧붙이지 마.",
+        "ru": "Поделись одной небольшой нынешней мыслью или эмоцией, подходящей твоему характеру, не требуя ответа от {master}. Одна реплика; не добавляй отдельное приветствие по времени суток.",
+        "es": "Comparte un pequeño pensamiento o sentimiento actual acorde con tu personalidad, sin exigir una respuesta de {master}. Solo una frase; no añadas otro saludo por la hora.",
+        "pt": "Compartilhe um pequeno pensamento ou sentimento atual que combine com sua personalidade, sem exigir resposta de {master}. Só uma fala; não empilhe outra saudação pelo horário.",
     },
     "light_question": {
-        "zh": "可以提出一个轻松、容易跳过的问题，但必须基于已知上下文或当前时段，不能询问离线期间去了哪里。",
-        "zh-TW": "可以提出一個輕鬆、容易略過的問題，但必須基於已知上下文或目前時段，不能詢問離線期間去了哪裡。",
-        "en": "You may ask one light, easy-to-skip question based on known context or the current time, but never ask where they were during the gap.",
-        "ja": "既知の文脈か現在の時間帯に基づく、答えなくてもよい軽い質問を一つだけしてよい。ただし不在中どこにいたかは聞かない。",
-        "ko": "알려진 맥락이나 현재 시간대를 바탕으로 건너뛰기 쉬운 가벼운 질문 하나는 괜찮지만, 대화가 없던 동안 어디 있었는지는 묻지 마.",
-        "ru": "Можно задать один лёгкий необязательный вопрос на основе известного контекста или текущего времени, но не спрашивай, где человек был во время перерыва.",
-        "es": "Puedes hacer una pregunta ligera y fácil de omitir basada en el contexto conocido o la hora actual, pero nunca preguntes dónde estuvo durante el intervalo.",
-        "pt": "Você pode fazer uma pergunta leve e fácil de ignorar com base no contexto conhecido ou no horário atual, mas nunca pergunte onde a pessoa esteve durante o intervalo.",
+        "zh": "可以提出一个轻松、容易跳过的问题，但必须基于已知上下文或当前时段，不能询问离线期间去了哪里。整段开场只说这一句，不要先问候再提问。",
+        "zh-TW": "可以提出一個輕鬆、容易略過的問題，但必須基於已知上下文或目前時段，不能詢問離線期間去了哪裡。整段開場只說這一句，不要先問候再提問。",
+        "en": "You may ask one light, easy-to-skip question based on known context or the current time, but never ask where they were during the gap. That question is the whole opening — do not greet first and then ask.",
+        "ja": "既知の文脈か現在の時間帯に基づく、答えなくてもよい軽い質問を一つだけしてよい。ただし不在中どこにいたかは聞かない。その質問だけが今回の一言で、先に挨拶してから聞かない。",
+        "ko": "알려진 맥락이나 현재 시간대를 바탕으로 건너뛰기 쉬운 가벼운 질문 하나는 괜찮지만, 대화가 없던 동안 어디 있었는지는 묻지 마. 그 질문이 이번 한 마디 전부고, 먼저 인사한 뒤 묻지 마.",
+        "ru": "Можно задать один лёгкий необязательный вопрос на основе известного контекста или текущего времени, но не спрашивай, где человек был во время перерыва. Этот вопрос и есть вся реплика — не здоровайся отдельно и потом спрашивай.",
+        "es": "Puedes hacer una pregunta ligera y fácil de omitir basada en el contexto conocido o la hora actual, pero nunca preguntes dónde estuvo durante el intervalo. Esa pregunta es toda la apertura: no saludes primero y luego preguntes.",
+        "pt": "Você pode fazer uma pergunta leve e fácil de ignorar com base no contexto conhecido ou no horário atual, mas nunca pergunte onde a pessoa esteve durante o intervalo. Essa pergunta é a abertura inteira — não cumprimente primeiro e depois pergunte.",
     },
     "simple_presence": {
-        "zh": "只做一句有角色感的简短问候或陪伴表达，不提问。",
-        "zh-TW": "只做一句有角色感的簡短問候或陪伴表達，不提問。",
-        "en": "Give only one brief in-character greeting or expression of presence, with no question.",
-        "ja": "質問せず、キャラクターらしい短い挨拶か寄り添う一言だけにする。",
-        "ko": "질문 없이 캐릭터다운 짧은 인사나 곁에 있다는 표현 한마디만 해.",
-        "ru": "Ограничься одной короткой репликой-приветствием или выражением присутствия в характере, без вопроса.",
-        "es": "Haz solo un saludo breve o una expresión de compañía acorde con tu personalidad, sin preguntas.",
-        "pt": "Faça apenas uma breve saudação ou expressão de companhia de acordo com sua personalidade, sem perguntas.",
+        "zh": "只做一句有角色感的简短问候或陪伴表达，不提问。不要再叠第二句或单独的时段问候。",
+        "zh-TW": "只做一句有角色感的簡短問候或陪伴表達，不提問。不要再疊第二句或單獨的時段問候。",
+        "en": "Give only one brief in-character greeting or expression of presence, with no question. Do not add a second sentence or a separate time-of-day greeting.",
+        "ja": "質問せず、キャラクターらしい短い挨拶か寄り添う一言だけにする。二文目や別の時間帯挨拶は足さない。",
+        "ko": "질문 없이 캐릭터다운 짧은 인사나 곁에 있다는 표현 한마디만 해. 두 번째 문장이나 별도 시간대 인사는 붙이지 마.",
+        "ru": "Ограничься одной короткой репликой-приветствием или выражением присутствия в характере, без вопроса. Без второй фразы и без отдельного приветствия по времени суток.",
+        "es": "Haz solo un saludo breve o una expresión de compañía acorde con tu personalidad, sin preguntas. Sin segunda frase ni otro saludo por la hora.",
+        "pt": "Faça apenas uma breve saudação ou expressão de companhia de acordo com sua personalidade, sem perguntas. Sem segunda frase nem outra saudação pelo horário.",
     },
 }
 
@@ -4450,7 +4435,8 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "间隔只代表没有记录到对话。不得据此声称{master}刚睡醒、刚开机、刚忙完、消失了，或让你一直等待。\n"
     "若近期对话以晚安、休息、解决了、稍后或明天继续明确收尾，不要把它误当成未完成问题。\n"
     "避免复述或近义改写最近的启动问候；表达情绪时遵循角色设定，不要借间隔责怪或催促{master}。\n"
-    "最终只输出一句简短自然的话，最多一个轻问题，不输出思考过程。\n"
+    "最终只输出一句简短自然的话，禁止输出两句及以上；最多一个轻问题，不输出思考过程。\n"
+    "不要把时段问候和其它开场角度叠成两段语音。\n"
     "======以上为启动问候约束======",
     "zh-TW": "======以下為啟動問候約束======\n"
     "請結合已經載入的近期對話與角色設定來寫這一次開場。\n"
@@ -4470,7 +4456,8 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "The gap only means no conversation was recorded. Never claim from it that {master} just woke up, started the device, finished being busy, disappeared, or kept you waiting.\n"
     "If recent context clearly ended with goodnight, rest, solved, later, or tomorrow, do not misread that closure as an unfinished problem.\n"
     "Do not repeat or closely paraphrase recent startup greetings. Keep emotion consistent with the character, and do not use the gap to blame or pressure {master}.\n"
-    "Output only one short natural message, with at most one light question and no reasoning.\n"
+    "Output only one short natural message — never two or more spoken lines — with at most one light question and no reasoning.\n"
+    "Do not stack a time-of-day greeting with another opening angle as two separate utterances.\n"
     "======以上为启动问候约束======",
     "ja": "======以下为启动问候约束======\n"
     "すでに読み込まれた直近の会話とキャラクター設定を使って、今回の一言を書く。\n"
@@ -4537,32 +4524,6 @@ _STARTUP_REFERENCE_NOTICE = {
 }
 
 
-# 强约束层：24 小时内已经真正说出口的开场，必须完全另起说法。
-_STARTUP_RECENT_OPENINGS_LABEL = {
-    "zh": "过去 24 小时内已经说过的开场，绝对不要复述、翻译或近义改写：",
-    "zh-TW": "過去 24 小時內已經說過的開場，絕對不要複述、翻譯或近義改寫：",
-    "en": "Openings already said in the last 24 hours. Never repeat, translate, or closely paraphrase these:",
-    "ja": "過去24時間で実際に言った切り出し。繰り返しも、訳し直しも、近い言い換えも禁止：",
-    "ko": "지난 24시간 안에 이미 말한 첫마디. 반복도, 번역도, 비슷한 바꿔 말하기도 금지:",
-    "ru": "Приветствия, уже сказанные за последние 24 часа. Не повторяй, не переводи и близко не перефразируй их:",
-    "es": "Aperturas ya dichas en las últimas 24 horas. Nunca las repitas, traduzcas ni parafrasees de cerca:",
-    "pt": "Aberturas já ditas nas últimas 24 horas. Nunca as repita, traduza nem parafraseie de perto:",
-}
-
-
-# 弱约束层：1~3 天前的开场，只要求明显区别，不要求完全另起。
-_STARTUP_EARLIER_OPENINGS_LABEL = {
-    "zh": "更早（三天内）说过的开场，本次要和它们有明显区别：",
-    "zh-TW": "更早（三天內）說過的開場，本次要和它們有明顯區別：",
-    "en": "Earlier openings from the past three days. This one should be clearly different from them:",
-    "ja": "さらに前（三日以内）の切り出し。今回はこれらとはっきり違うものにする：",
-    "ko": "그보다 이전(사흘 이내)의 첫마디. 이번에는 이것들과 뚜렷이 달라야 한다:",
-    "ru": "Более ранние приветствия за последние три дня. Нынешнее должно заметно отличаться от них:",
-    "es": "Aperturas anteriores de los últimos tres días. Esta debe ser claramente distinta de ellas:",
-    "pt": "Aberturas anteriores dos últimos três dias. Esta deve ser claramente diferente delas:",
-}
-
-
 def startup_crossed_conversation_day(gap_seconds: float, observed_at=None) -> bool:
     """Whether the gap crosses the local 06:00 conversation-day boundary.
 
@@ -4577,10 +4538,6 @@ def startup_crossed_conversation_day(gap_seconds: float, observed_at=None) -> bo
     last_observed = observed - timedelta(seconds=max(0.0, float(gap_seconds)))
     shift = timedelta(hours=6)
     return (last_observed - shift).date() != (observed - shift).date()
-
-
-# 每层参考开场最多列几条。调用方按窗口自己封顶，这里是渲染侧的兜底。
-_STARTUP_OPENING_SAMPLE_CAP = 6
 
 
 def _sanitize_startup_reference(value, *, limit: int = 240) -> str:
@@ -4601,15 +4558,9 @@ def get_startup_greeting_guidance(
     master: str = "",
     memory_cue: str = "",
     recent_openings=(),
-    earlier_openings=(),
     observed_at=None,
 ) -> str:
-    """Render factual, varied constraints for one ordinary startup greeting.
-
-    ``recent_openings`` is the strict layer (last 24h, must not be reworded)
-    and ``earlier_openings`` the weaker 1-3 day layer (must merely read as
-    different).  Both are caller-capped; this function only bounds each entry.
-    """
+    """Render factual, varied constraints for one ordinary startup greeting."""
     lang_key = _normalize_startup_greeting_language(lang)
     template = _STARTUP_GREETING_CONSTRAINTS.get(
         lang_key,
@@ -4639,42 +4590,17 @@ def get_startup_greeting_guidance(
     safe_memory = _sanitize_startup_reference(memory_cue)
     if safe_memory:
         references.append(f"<memory-cue>{safe_memory}</memory-cue>")
-
-    def _opening_block(values, *, tag: str, label_table: dict, char_limit: int) -> str:
-        # Second line of defence only: the caller already caps how many records
-        # each layer contributes.  Everything here stays character-bounded and
-        # deterministic because this runs on the event loop, where cold-starting
-        # the tokenizer for a token budget would stall the greeting.
-        entries = [
-            cleaned
-            for value in list(values)[:_STARTUP_OPENING_SAMPLE_CAP]
-            if (cleaned := _sanitize_startup_reference(value, limit=char_limit))
-        ]
-        if not entries:
-            return ""
-        label = label_table.get(lang_key, label_table.get("en", label_table["zh"]))
-        return (
-            f"{label}\n<{tag}>\n"
-            + "\n".join(f"- {text}" for text in entries)
-            + f"\n</{tag}>"
+    safe_recent = [
+        cleaned
+        for value in list(recent_openings)[:3]
+        if (cleaned := _sanitize_startup_reference(value, limit=160))
+    ]
+    if safe_recent:
+        references.append(
+            "<recent-startup-openings>\n"
+            + "\n".join(f"- {text}" for text in safe_recent)
+            + "\n</recent-startup-openings>"
         )
-
-    recent_block = _opening_block(
-        recent_openings,
-        tag="recent-startup-openings",
-        label_table=_STARTUP_RECENT_OPENINGS_LABEL,
-        char_limit=160,
-    )
-    if recent_block:
-        references.append(recent_block)
-    earlier_block = _opening_block(
-        earlier_openings,
-        tag="earlier-startup-openings",
-        label_table=_STARTUP_EARLIER_OPENINGS_LABEL,
-        char_limit=100,
-    )
-    if earlier_block:
-        references.append(earlier_block)
     reference_block = ""
     if references:
         reference_notice = _STARTUP_REFERENCE_NOTICE.get(
