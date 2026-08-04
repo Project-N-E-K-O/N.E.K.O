@@ -1575,6 +1575,7 @@ def test_all_three_tails_accept_an_adverb_plus_english_verb(adverb, verb):
 
 WHOLE_CARD_MEASURES = _router_table("_WHOLE_CARD_MEASURE_WORDS")
 WHOLE_CARD_NUMERALS = _router_table("_WHOLE_CARD_NUMERAL_CHARS")
+WHOLE_CARD_INDEFINITE = _router_table("_WHOLE_CARD_INDEFINITE_QUANTITIES")
 
 
 def test_the_measure_and_numeral_tables_are_derived_not_transcribed():
@@ -1587,13 +1588,19 @@ def test_the_measure_and_numeral_tables_are_derived_not_transcribed():
 
     assert set(WHOLE_CARD_MEASURES) == {"遍", "次", "下", "轮", "輪", "遭", "回"}
     assert set(WHOLE_CARD_NUMERALS) == set("一二两兩三四五六七八九十几幾半")
+    assert set(WHOLE_CARD_INDEFINITE) == {
+        "好几", "好幾", "若干", "若幹", "许多", "許多", "数", "數", "多",
+    }
     assert router._WHOLE_CARD_MEASURE_COMPLEMENT == (
-        r"(?:[" + "".join(WHOLE_CARD_NUMERALS) + r"]+|\d+)\s*(?:"
+        r"(?:[" + "".join(WHOLE_CARD_NUMERALS) + r"]+|\d+|"
+        + "|".join(WHOLE_CARD_INDEFINITE) + r")\s*(?:"
         + "|".join(WHOLE_CARD_MEASURES) + r")"
     )
 
 
-@pytest.mark.parametrize("numeral", [*WHOLE_CARD_NUMERALS, "2", "10"])
+@pytest.mark.parametrize(
+    "numeral", [*WHOLE_CARD_NUMERALS, *WHOLE_CARD_INDEFINITE, "2", "10"]
+)
 @pytest.mark.parametrize("measure", WHOLE_CARD_MEASURES)
 def test_numeral_measure_complements_are_productive(numeral, measure):
     """⚠️ 动量补语是**能产**的（一遍/两遍/三次/2遍/几遍…），不是几个成品。
@@ -1762,3 +1769,25 @@ def test_english_negation_accepts_every_apostrophe(apostrophe):
     ):
         assert router._chat_text_requests_full_rewrite(text) is False, text
     assert router._chat_text_requests_full_rewrite('rewrite the whole card') is True
+
+
+@pytest.mark.parametrize("target", ["把所有字段", "重写所有字段", "把全部欄位"])
+@pytest.mark.parametrize("modifier", ["可见", "可見", "可见的", ""])
+def test_visibility_modifier_on_direct_scope_continuations(target, modifier):
+    """可见/可見 修饰要能挂在**每一节**续接上（base 是 True，Codex P2 第三十九轮）。
+
+    上一版只有「的」那一支带修饰，直接续接那三处都没有，于是
+    `把所有字段可见内容重写` 掉成 False。
+
+    ⚠️ 续接写法在整条正则里有**四处**，现在统一走
+    `_WHOLE_CARD_SCOPE_RUN_OPT` / `_WHOLE_CARD_SCOPE_RUN_ONE`。这是紧跟三张收尾表
+    之后的**第二个**「同一件事写四份」位置。
+    ⚠️ 配对反向断言：单字段保险没被顺手打开。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{target}{modifier}内容重写'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'{target}{modifier}名字重写'
+    ) is False

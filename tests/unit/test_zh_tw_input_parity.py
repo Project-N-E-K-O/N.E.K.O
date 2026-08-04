@@ -3608,3 +3608,52 @@ def test_english_playback_negation_accepts_every_apostrophe(apostrophe):
     ):
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('play Taylor Swift') is False
+
+
+@pytest.mark.parametrize("head", ["有", "是"])
+@pytest.mark.parametrize("pronoun", ["什么", "什麼", "啥"])
+def test_have_or_be_plus_interrogative_pronoun(head, pronoun):
+    """「有/是 + 什么/啥」是复合疑问式（Codex P2 第三十九轮）。
+
+    裸 `什么` 仍然不收——「没什么」「什么的」「什么都行」里它不是提问。
+    这跟这张表「裸形歧义、复合形不歧义」的一贯判据是同一条。
+
+    ⚠️ 左界必须挡住 没/沒/不：`没有什么好听的歌` 里 `有什么` 只是子串，
+    base 是 True。跟 任何人 / 哪吒 同一族——这是本 PR 里第三个这样的入口。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{head}{pronoun}影响'
+    ) is False
+    for text in (
+        '帮我停止播放没什么好听的歌',
+        '帮我停止播放没有什么好听的歌',
+        '帮我停止播放水果什么的',
+        '帮我停止播放什么都行',
+    ):
+        assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "aspect",
+    ["在", "正在", "现在", "現在", "还在", "還在", "仍在",
+     "依然在", "尚在", "一直在", "持续", "持續", "一直",
+     "当前", "目前", "刚"],
+)
+def test_continuing_state_aspect_markers(aspect):
+    """持续/进行体标记（base 全是 True，Codex P2 第三十九轮）。
+
+    ⚠️ 实现里 **以「在」收尾的成品全删了**：「在」本身就是汉语进行体的
+    核心构式（在 + V），列它一条就把 正在/现在/还在/仍在/依然在/尚在/
+    一直在 全收了。第二十九轮补 还在/仍在、第三十九轮又来 依然在/尚在/
+    一直在——同一个跑步机跑了两轮，到此为止。
+    ⚠️ 这条用例列的是**成品形式**，就是为了钉住删掉那些成品后它们仍然走得通。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (f'停止{aspect}播放的晴天',
+                 f'帮我停止{aspect}播放的Taylor Swift'):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+    assert is_explicit_music_cancellation('帮我停止播放按钮换个颜色') is False

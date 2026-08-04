@@ -863,12 +863,33 @@ _WHOLE_CARD_ADVERB_RUN = r"(?:" + _WHOLE_CARD_BARE_ADVERB + r"地?\s*)+"
 # 掉成 False（CodeRabbit Major）。**这已经是三张收尾表第三次漏改**（第二十九轮
 # 英文动词漏一张、第三十五轮副词叠加漏三张），所以跟副词一样收成共用常量：
 # 三张表现在只在「的」递归那一支上不同，其余判据全部共用同一个定义点。
+# ⚠️ 数量成分不止确数：`重写所有字段多次` / `好几遍` / `若干次` / `数次` base 都是
+# True（Codex P2 第三十九轮）。不定量词是闭集，跟确数并列成一支，别拿「多」去
+# 扩数词字符类——那会让 `多` 混进 `十多` 这类组合里说不清。
 _WHOLE_CARD_MEASURE_WORDS = ("遍", "次", "下", "轮", "輪", "遭", "回")
 _WHOLE_CARD_NUMERAL_CHARS = "一二两兩三四五六七八九十几幾半"
+_WHOLE_CARD_INDEFINITE_QUANTITIES = (
+    "好几", "好幾", "若干", "若幹", "许多", "許多", "数", "數", "多",
+)
 _WHOLE_CARD_MEASURE_COMPLEMENT = (
-    r"(?:[" + _WHOLE_CARD_NUMERAL_CHARS + r"]+|\d+)\s*(?:"
+    r"(?:[" + _WHOLE_CARD_NUMERAL_CHARS + r"]+|\d+|"
+    + "|".join(_WHOLE_CARD_INDEFINITE_QUANTITIES) + r")\s*(?:"
     + "|".join(_WHOLE_CARD_MEASURE_WORDS) + r")"
 )
+
+# 范围成分续接：`字段值` / `设定内容` / `属性值项`。
+# ⚠️ 「可见/可見」修饰要能挂在**每一节**上：`把所有字段可见内容重写` base 是 True，
+# 上一版只有「的」那一支带修饰、直接续接那三处都没有（Codex P2 第三十九轮）。
+# ⚠️ 四处续接统一走这两条常量。这是三张收尾表之后的**第二个**「同一件事写四份」
+# 的位置，别再各写一份——第二十九/三十五/三十六轮都在这种漂移上栽过。
+# ⚠️ 原子化不能去掉：重叠解析会指数回溯（`项目` × 40 那条最坏用例）。
+_WHOLE_CARD_SCOPE_RUN_BODY = (
+    r"(?:\s*" + _WHOLE_CARD_SCOPE_MODIFIER
+    + r"(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
+    + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))"
+)
+_WHOLE_CARD_SCOPE_RUN_OPT = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"*)"
+_WHOLE_CARD_SCOPE_RUN_ONE = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"+)"
 
 # 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
 # _WHOLE_CARD_BARE_QUANTIFIER_TAIL 同一套，空白同样只跳过不算收尾。
@@ -905,9 +926,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"|的\s*(?:(?:" + "|".join(_WHOLE_CARD_QUANTIFIERS) + r")\s*的?)?"
     # ⚠️ 嵌套范围也要允许「可见/可見」修饰（`把所有字段的可见内容重写`，
     # base 是 True，Codex P2 第三十一轮）——外层那一支早就允许了，这一支漏了。
-    + r"\s*" + _WHOLE_CARD_SCOPE_MODIFIER
-    + r"\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
-    + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
+    + _WHOLE_CARD_SCOPE_RUN_ONE
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
     + _WHOLE_CARD_ADVERB_RUN
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
@@ -955,7 +974,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # 否则 `把所有字段值重写` / `重写全部字段内容` 被自己的边界挡掉
     # （Codex P2 第十三轮，base 是 True）。
     # ⚠️ 续接前面也可能有空白（`把所有字段 内容重写`，base 是 True）。
-    rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
+    rf"{_WHOLE_CARD_SCOPE_RUN_OPT}"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     r"|(?:整个角色卡片|整個角色卡片|整个角色卡|整個角色卡|"
     r"整张卡片|整張卡片|整张卡|整張卡|"
@@ -1029,7 +1048,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # base 是 True，只让它当续接会把这类挡掉（Codex P2 第二十轮）。
     # 单字段保险不受影响——`名字` 既不是整卡级名词也不是范围后缀。
     rf"(?:{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}|{_WHOLE_CARD_SCOPE_SUFFIX})"
-    rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
+    rf"{_WHOLE_CARD_SCOPE_RUN_OPT}"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL}"
     rf"|{_WHOLE_CARD_BARE_QUANTIFIER_TAIL}))"
     # ⚠️ 头部名词那一支同样是前缀匹配，也要右边界：`把整个卡的内容名重写` /
@@ -1038,7 +1057,7 @@ _CHAT_FULL_REWRITE_RE = re.compile(
     # base 是 True（Codex P2 第二十轮）。`的内容名` 仍然被挡——「名」既不是范围
     # 后缀也不是整卡级名词。
     rf"|(?=\s*的(?:{'|'.join(_WHOLE_CARD_HEAD_NOUNS)})"
-    rf"(?>(?:\s*(?:{_WHOLE_CARD_SCOPE_SUFFIX}|{'|'.join(_WHOLE_CARD_SCOPE_NOUNS)}))*)"
+    rf"{_WHOLE_CARD_SCOPE_RUN_OPT}"
     rf"{_WHOLE_CARD_SCOPE_NOUN_TAIL})"
     r"|(?!\s*[的片]))"
     r"|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
