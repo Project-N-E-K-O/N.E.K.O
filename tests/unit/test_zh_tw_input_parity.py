@@ -4597,3 +4597,88 @@ def test_a_bare_a_not_a_after_an_unmatched_opener_is_read_as_a_question():
 
     assert is_explicit_music_cancellation('我想停止播放《好不好') is False
     assert is_explicit_music_cancellation('我想停止播放《好不好》') is True
+
+
+def test_the_cognition_and_inquiry_tables_are_pinned():
+    """⚠️ 下面的笛卡尔积从这两张表派生，先钉住（相等，不是包含）。
+
+    ⚠️ 还要钉住 `_ZH_ASSERTED_FRAMES` 确实是**划分**：肯定认知谓语全部移出去了，
+    其余一个不少。写成集合运算而不是抄一遍成品，抄的那种改表就漏。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert mr._ZH_POSITIVE_COGNITION_FRAMES == (
+        "知道", "曉得", "晓得", "记得", "記得", "清楚", "确定", "確定",
+    )
+    assert mr._ZH_INQUIRY_VERBS == (
+        "想", "要", "需要", "希望", "打算", "准备", "準備",
+    )
+    assert set(mr._ZH_ASSERTED_FRAMES) | set(mr._ZH_POSITIVE_COGNITION_FRAMES) == set(
+        mr._ZH_NON_INTERROGATIVE_FRAMES
+    )
+    assert set(mr._ZH_ASSERTED_FRAMES) & set(mr._ZH_POSITIVE_COGNITION_FRAMES) == set()
+
+
+def _positive_cognition_frames() -> list[str]:
+    from main_logic.music_requests import _ZH_POSITIVE_COGNITION_FRAMES
+
+    table = list(_ZH_POSITIVE_COGNITION_FRAMES)
+    assert table, "_ZH_POSITIVE_COGNITION_FRAMES 是空的"
+    return table
+
+
+def _inquiry_verbs() -> list[str]:
+    from main_logic.music_requests import _ZH_INQUIRY_VERBS
+
+    table = list(_ZH_INQUIRY_VERBS)
+    assert table, "_ZH_INQUIRY_VERBS 是空的"
+    return table
+
+
+@pytest.mark.parametrize("cognition", _positive_cognition_frames())
+@pytest.mark.parametrize("inquiry", _inquiry_verbs())
+def test_a_cognition_predicate_under_an_inquiry_verb_is_not_an_assertion(
+    inquiry, cognition
+):
+    """⚠️ `想知道` / `需要确定` 里的认知谓语不是在断言，恰恰是在**提问**
+    （base 是 False——危险方向，Codex P2 第六十二轮，同族实测 56 条）。
+
+    第五十八轮把肯定认知谓语收进框架表时没挡左界，于是
+    `停止播放前想知道是否合适` 的 `是否` 被中和掉、执行了取消，
+    用户还没决定要不要停。
+
+    ⚠️ 这是这个 PR 里第八个「白名单词是更长表达的子串」入口。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前{inquiry}{cognition}是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("cognition", _positive_cognition_frames())
+@pytest.mark.parametrize("wh", ["谁唱的", "哪首更好", "什么歌"])
+def test_an_asserted_cognition_predicate_still_governs(cognition, wh):
+    """⚠️ 反向：**没有**探询助动词时，肯定认知谓语照旧管着宾语从句
+    （第五十八轮修的，base 全是 True）。左界不能把这一族一起挡掉。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为我{cognition}{wh}'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "negated", ["不知道", "不记得", "不記得", "不清楚", "不确定", "不確定"]
+)
+def test_negated_cognition_predicates_keep_no_left_guard(negated):
+    """⚠️ 左界**只加在肯定形上**。否定形不挡——`想不知道` 不是说法，
+    而 `不知道` 前面本来就可以接任何主语。
+
+    这条同时是**边界断言**：把否定形也搬进 `_ZH_POSITIVE_COGNITION_FRAMES`
+    会当场见红。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert negated not in mr._ZH_POSITIVE_COGNITION_FRAMES
+    text = f'我想停止播放因为我{negated}谁唱的'
+    assert mr.is_explicit_music_cancellation(text) is True, text

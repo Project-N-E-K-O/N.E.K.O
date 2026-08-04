@@ -838,8 +838,32 @@ _ZH_NON_INTERROGATIVE_FRAMES = (
     # 不是在问我们（base 都是 True，Codex P2 第五十八轮）。
     "知道", "曉得", "晓得", "记得", "記得", "清楚", "确定", "確定",
 )
+# ⚠️⚠️ 上面那一族**肯定**认知谓语必须挡住探询左界：`想知道` / `需要知道` /
+# `希望确定` 里的 `知道` 不是在断言，恰恰是在**提问**——`停止播放前想知道是否合适`
+# 被中和掉 `是否` 之后执行了取消，用户还没决定要不要停
+# （Codex P2 第六十二轮，base 是 False——危险方向，同族实测 56 条）。
+# ⚠️ 这是这个 PR 里第八个「白名单词是更长表达的子串」入口，前七个是
+# 任何人 / 哪吒+哪怕 / 没有什么 / 任何时候 / 不是什么 / 因为什么 / 无论是什么。
+# ⚠️ 只挡肯定形。否定形（不知道/不清楚…）不挡：`想不知道` 不是说法，
+# 而 `不知道` 前面本来就可以接任何主语。两支分开列、正则合起来用。
+_ZH_POSITIVE_COGNITION_FRAMES = (
+    "知道", "曉得", "晓得", "记得", "記得", "清楚", "确定", "確定",
+)
+# 意愿/探询类助动词。⚠️ 写成元组而不是手写后视串：测试要按它自动派生用例，
+# 简繁配对守卫也要能扫到它（准备/準備 少一半的话当场见红）。
+# 定长后视，每条各自定长即可（Python 只要求单条定长，不要求彼此等长）。
+_ZH_INQUIRY_VERBS = (
+    "想", "要", "需要", "希望", "打算", "准备", "準備",
+)
+_ZH_INQUIRY_LEFT = "".join(rf"(?<!{verb})" for verb in _ZH_INQUIRY_VERBS)
+_ZH_ASSERTED_FRAMES = tuple(
+    frame for frame in _ZH_NON_INTERROGATIVE_FRAMES
+    if frame not in _ZH_POSITIVE_COGNITION_FRAMES
+)
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
-    r"(?:" + "|".join(_ZH_NON_INTERROGATIVE_FRAMES) + r")"
+    r"(?:" + "|".join(_ZH_ASSERTED_FRAMES) + r")"
+    r"|" + _ZH_INQUIRY_LEFT
+    + r"(?:" + "|".join(_ZH_POSITIVE_COGNITION_FRAMES) + r")"
 )
 # ⚠️ 要换掉的是**所有能当疑问标记的词**，不是其中几个：漏一个，
 # 框架里那句话就仍然被当成提问（`无论如何都不想听` / `不管怎么样都不好听` /

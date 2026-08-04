@@ -1348,8 +1348,35 @@ _CHAT_CLAUSE_SPLIT_RE = re.compile(r"[。，、！？,.!?;；]+")
 
 
 def _chat_clauses(text: str) -> list[str]:
-    """按句读把整段文本切成子句。"""  # noqa: DOCSTRING_CJK
-    return [c for c in _CHAT_CLAUSE_SPLIT_RE.split(text or "") if c.strip()]
+    """按句读把整段文本切成子句，**引用跨度里的句读不算数**。
+
+    ⚠️ `重写所有字段并把口头禅设为“好不好，随便”` 里那个逗号在**字段值内部**。
+    上一版先切后抹，逗号把引用跨度劈成两半、`好不好` 裸露在前半段，疑问守卫
+    当场把整条命令丢掉（Codex P2 第六十二轮，base 是 True，同族实测 15 条）。
+
+    ⚠️ 根子是**处理顺序**：抹引号的三个助手（_chat_clause_without_quotes 等）
+    都在切分**之后**才跑，可切分本身就已经把跨度破坏掉了。所以修在切分这一步，
+    而不是再加一道守卫。music_requests 的 `_zh_neutralize_free_choice` 找边界时
+    早就跳过跨度了（第五十四轮），这边是同一条道理。
+
+    ⚠️ 分隔符表仍然是 `_CHAT_CLAUSE_SPLIT_RE` 那一张，没动——否定守卫里那个
+    「同子句」窗口跟它同源，两边必须保持一致。
+    """  # noqa: DOCSTRING_CJK
+    text = text or ""
+    spans = [hit.span() for hit in _CHAT_QUOTED_SPAN_RE.finditer(text)]
+    clauses: list[str] = []
+    start = 0
+    for hit in _CHAT_CLAUSE_SPLIT_RE.finditer(text):
+        if any(lo <= hit.start() < hi for lo, hi in spans):
+            continue
+        piece = text[start:hit.start()]
+        if piece.strip():
+            clauses.append(piece)
+        start = hit.end()
+    tail = text[start:]
+    if tail.strip():
+        clauses.append(tail)
+    return clauses
 
 
 # ⚠️ 引号里的内容是**被引用的素材**，不是对我们下的指令。
@@ -1394,6 +1421,25 @@ def _chat_span_carries_a_prohibition(span: str) -> bool:
 
 
 _CHAT_ANY_QUOTED_SPAN_SUB = _CHAT_QUOTED_SPAN_RE.sub
+
+
+# ⚠️⚠️ 任指框架**必须连着关联词一起要求**，不能只看 都/就/也。
+# 音乐侧的 `_ZH_CORRELATIVE_RIGHT` 只前视关联词，那一侧代价是少停一次歌；
+# 这一侧的代价是**把用户没要求改的字段全覆盖掉**，方向重得多——只看关联词的话
+# `所有字段是不是都要重写` 这种**真提问**会被当成命令，直接走进整卡补全。
+# 所以这里要求「框架词 + 窗口 + 关联词」整段同时出现，两个条件缺一不可。
+_CHAT_FREE_CHOICE_FRAMES = (
+    "无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便",
+)
+_CHAT_FREE_CHOICE_SPAN_RE = re.compile(
+    r"(?:" + "|".join(_CHAT_FREE_CHOICE_FRAMES) + r")"
+    r"[^。，、！？,.!?;；]{0,12}?[都就也]"
+)
+
+
+def _chat_clause_without_free_choice(clause: str) -> str:
+    """把「任指框架 … 关联词」整段换成空格，只用于疑问守卫。"""  # noqa: DOCSTRING_CJK
+    return _CHAT_FREE_CHOICE_SPAN_RE.sub(" ", clause)
 
 
 def _chat_clause_without_quotes(clause: str) -> str:
@@ -1481,7 +1527,13 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         # （base 是 True，Codex P2 第五十九轮）。跟否定守卫那边同一条道理，
         # 只是方向相反——那边是「引号里的禁止一律算数」，这边是「引号里的疑问不算」。
         # 两边不矛盾：都取**少改用户数据**的那一侧。
-        if _CHAT_QUESTION_CLAUSE_RE.search(_chat_clause_without_quotes(clause)):
+        # ⚠️ 任指框架的辖域里，极性标记是「无论是否」的意思，不是提问：
+        # `无论是否缺失都重写所有字段` base 是 True，疑问守卫却把整条命令丢掉
+        # （Codex P2 第六十二轮，同族实测 60 条）。
+        readable_question = _chat_clause_without_free_choice(
+            _chat_clause_without_quotes(clause)
+        )
+        if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
             continue
         readable = _chat_clause_without_quoted_prohibitions(clause)
         if (

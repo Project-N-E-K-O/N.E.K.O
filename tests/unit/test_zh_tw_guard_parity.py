@@ -2538,6 +2538,11 @@ _SIMPLIFIED_TO_TRADITIONAL = {
 }
 _SIMPLIFIED_TO_TRADITIONAL.update({
     "并": ("並", "併"),
+    # ⚠️ `准` 也是多形字，而且**两个形都可能对**：批准/准许 里它繁体仍是 `准`，
+    # 準備/標準 里才是 `準`。第六十二轮加 `_ZH_INQUIRY_VERBS` 时这条断言当场
+    # 报了 `准备` 缺 `准備`——其实表里有 `準備`，是这张映射自己漏了 `准`。
+    # 两次了（上一轮是 `一并`/`暂时不`），漏的都是**映射**而不是词表。
+    "准": ("准", "準"),
     "几": ("幾",),
     "后": ("後",),
     "么": ("麼",),
@@ -2706,3 +2711,119 @@ def test_possibility_modals_stay_out(modal):
     assert modal not in router._WHOLE_CARD_MODAL_VERBS
     text = f'所有字段{modal}重写'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_the_free_choice_frame_table_is_pinned():
+    """⚠️ 下面两条笛卡尔积从这张表派生，先钉住表本身（相等，不是包含）。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._CHAT_FREE_CHOICE_FRAMES == (
+        "无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便",
+    )
+
+
+@pytest.mark.parametrize("frame", _router_table("_CHAT_FREE_CHOICE_FRAMES"))
+@pytest.mark.parametrize(
+    "polarity", ["是否", "好不好", "对不对", "行不行", "有没有"]
+)
+@pytest.mark.parametrize("correlative", ["都", "就", "也"])
+def test_polarity_inside_a_free_choice_frame_is_not_a_question(
+    correlative, polarity, frame
+):
+    """任指框架辖域里的极性标记是「无论是否」的意思，不是提问
+    （base 全是 True，Codex P2 第六十二轮，同族实测 60 条）。
+
+    上一版的疑问守卫无条件扫标记，`无论是否缺失都重写所有字段` 被整条丢掉，
+    整卡补全被跳过。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{frame}{polarity}缺失{correlative}重写所有字段'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "polarity", ["是不是", "是否", "好不好", "有没有", "对不对", "對不對"]
+)
+@pytest.mark.parametrize("correlative", ["都", "就", "也"])
+def test_a_correlative_without_a_frame_word_is_still_a_question(
+    correlative, polarity
+):
+    """⚠️⚠️ **这条是上面那条的安全边界，比它更重要。**
+
+    音乐侧的 `_ZH_CORRELATIVE_RIGHT` 只前视关联词 都/就/也 就放行。这一侧
+    **不能照抄**：那边放宽的代价是少停一次歌（轻），这一侧的代价是把用户没要求
+    改的字段全覆盖掉并 autosave（重）。只看关联词的话，这些**真提问**会被当成命令。
+    所以判据要求「框架词 + 窗口 + 关联词」**同时**出现，缺一不可。
+
+    ⚠️⚠️ 语序是承重的，别改成「所有字段是不是都要重写」。那个写法**测不出东西**：
+    `是不是都` 卡在整卡目标和重写动词之间，`_CHAT_FULL_REWRITE_RE` 本来就不匹配，
+    于是不管疑问守卫怎么写它都是 False——通过的理由是错的。
+    第六十二轮第一版就是这么写的，变异（把框架词改成可选）**存活**了才发现。
+    标记在前、`重写所有字段` 在后时，唯一让它变 False 的才是疑问守卫本身。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{polarity}{correlative}要重写所有字段'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    # ⚠️ 同时钉住这个语序在没有疑问标记时**确实是命令**——否则上面那条又会
+    # 因为「主判据压根不匹配」而通过。
+    assert router._chat_text_requests_full_rewrite(
+        f'{correlative}要重写所有字段'
+    ) is True
+
+
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
+@pytest.mark.parametrize("separator", ["，", ",", "；", ";", "、"])
+def test_separators_inside_a_quoted_value_do_not_split_the_clause(
+    separator, opener, closer
+):
+    """引用跨度里的句读**不算句读**（base 全是 True，Codex P2 第六十二轮，
+    同族实测 15 条）。
+
+    `重写所有字段并把口头禅设为“好不好，随便”` 里那个逗号在字段值内部。
+    上一版先切后抹，逗号把跨度劈成两半、`好不好` 裸露在前半段，疑问守卫当场
+    把整条命令丢掉。
+
+    ⚠️ 根子是**处理顺序**：三个抹引号的助手都在切分之后才跑，可切分本身已经
+    把跨度破坏掉了。所以修在切分那一步，不是再加一道守卫。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并把口头禅设为{opener}好不好{separator}随便{closer}'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+
+
+def test_clause_splitting_reports_quote_aware_pieces():
+    """⚠️ 直接钉住切分函数本身，别只从外层行为反推——外层还有好几道守卫，
+    切错但恰好被别的守卫兜住时那种测试就成了假绿。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_clauses('重写所有字段并设为“好不好，随便”') == [
+        '重写所有字段并设为“好不好，随便”'
+    ]
+    # ⚠️ 引号**外面**的句读照旧切——分隔符表没动，否定守卫那个「同子句」
+    # 窗口跟它同源，两边必须保持一致。
+    assert router._chat_clauses('重写所有字段，别改名字') == [
+        '重写所有字段', '别改名字'
+    ]
+    assert router._chat_clauses('重写所有字段，别改“名字，昵称”') == [
+        '重写所有字段', '别改“名字，昵称”'
+    ]
+
+
+@pytest.mark.parametrize("separator", ["，", ",", "；", ";", "、"])
+def test_a_prohibition_still_stays_inside_its_own_clause(separator):
+    """⚠️ 反向：切分改成跳过引用跨度之后，「否定只在自己子句内生效」不能被弄坏。
+
+    这是第四十二~四十八轮反复收敛过的判据，改切分是最容易碰坏它的地方。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (f'重写所有字段{separator}别改名字',
+                 f'别改名字{separator}重写所有字段'):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'别重写所有字段{separator}只改名字'
+    ) is False
