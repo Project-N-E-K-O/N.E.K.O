@@ -4160,3 +4160,111 @@ def test_correlative_what_clauses_are_declarative(head, what, correlative):
     assert is_explicit_music_cancellation(
         f'我想停止播放{head}{what}影响'
     ) is False
+
+
+@pytest.mark.parametrize("negator", ["不", "没", "沒", "没有", "沒有"])
+@pytest.mark.parametrize("wh", ["干嘛", "幹嘛", "干什么", "幹什麼", "干啥"])
+def test_negated_what_are_you_doing_branches(negator, wh):
+    """⚠️ `干嘛` 和 `干什么` 是同一个词的两种写法，否定左界也得一起挂。
+
+    上一轮只给 `干{什么}` 挂了，旁边的 `干嘛|幹嘛` 漏了
+    （base 是 True，Codex P2 第五十三轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为我{negator}{wh}它却自己响了'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(
+        f'我想停止播放《你好吗？》{wh}'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "negator", ["不是", "并非", "並非", "没有", "沒有", "没", "沒"]
+)
+@pytest.mark.parametrize(
+    # ⚠️ 后两个（哪张专辑 / 几张专辑）走的是**音乐复合式**那一支（量词槽），
+    # 跟 `哪首` 这种成品分支不是同一条——不列它们的话，「只给 `什么` 头
+    # 挂左界」那个变异会照样绿（变异 SURVIVED 才发现）。
+    "wh", ["谁", "誰", "哪个", "哪些", "哪首歌", "几首歌", "哪里", "哪首",
+           "哪张专辑", "几张专辑"]
+)
+def test_negated_wh_pronoun_branches_are_declarative(negator, wh):
+    """⚠️ **每一支** wh 都要挂陈述左界，不只是 `什么` 那几支。
+
+    `不是谁都喜欢` / `没有哪首歌好听` / `没有几首歌好听` 都是陈述的
+    取消理由，base 全是 True（Codex P2 第五十三轮）。同一个形状已经
+    出现过四轮，这一轮把剩下的分支一次挂完。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{negator}{wh}都好听'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}好听') is False
+
+
+@pytest.mark.parametrize(
+    "polarity", ["是不是", "能不能", "可不可以", "行不行", "是否", "能否", "有无"]
+)
+def test_frames_neutralize_polarity_markers_too(polarity):
+    """⚠️ 框架里要中和的不只是疑问代词，还有**极性标记**（base 全是 True）。
+
+    A-not-A 那一族直接复用生成器的结果，不另拄一张表。
+    ⚠️ 反向断言：没有框架时它们仍然是疑问标记。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for frame in ("无论", "不管", "不知道"):
+        text = f'我想停止播放因为{frame}{polarity}好歌都不想听'
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{polarity}'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), [("《", "》"), ("「", "」"), ("“", "”"), ('"', '"'), ("【", "】")]
+)
+def test_only_the_title_position_quote_shields_a_marker(opener, closer):
+    """⚠⚠ 引用跨度只在**紧跟播放动词**那一个位置算标题。
+
+    上一版把句子里每一对配平引号都当标题整段跳过，于是用户把真正的问题
+    放在引号里时整段被跳掉，一句提问执行了取消（Codex P2 第五十三轮，
+    base 是 False——危险方向）。
+
+    ⚠️ 下面第一条反向断言钉的是第七轮那个取舍：标题位置的引号仍然整段遮住，
+    `停止播放《你好吗？》` 照旧是命令。两边必须同时成立。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{opener}你好吗？{closer}'
+    ) is True
+    for questioned in (
+        f'我想停止播放晴天{opener}是否合适{closer}',
+        f'我想停止播放{opener}你好吗？{closer}是否合适',
+        f'我想停止播放是否适合{opener}你好吗？{closer}',
+    ):
+        assert is_explicit_music_cancellation(questioned) is False, questioned
+
+
+@pytest.mark.parametrize("negator", ["没有", "沒有", "没", "沒"])
+@pytest.mark.parametrize(
+    "phrase", ["哪张专辑", "几张专辑", "哪种唱片", "几首歌", "哪个歌单", "几张唱片"]
+)
+def test_negated_music_compound_heads_are_declarative(negator, phrase):
+    """⚠️ 音乐复合式里的 `哪` / `几` 两个头也要挂陈述左界，不只是 `什么`。
+
+    `因为没有哪张专辑好听` 是陈述的取消理由（base 是 True，
+    Codex P2 第五十三轮）。
+
+    ⚠️ 这条的句式**不能带 `都`**：带了的话关联构式前视已经把它中和掉了，
+    这条左界根本没受力——第一版用了 `都好听`，变异当场 SURVIVED。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{negator}{phrase}好听'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{phrase}好听'
+    ) is False

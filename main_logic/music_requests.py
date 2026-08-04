@@ -384,9 +384,32 @@ _ZH_UNPAIRED_QUOTE_OPENER = "|".join(
 # 停止动作被忽略（轻）。取轻的那一侧，跟这个文件里其它十几处取舍一致。
 # 代价：`我想停止播放然后看看网络好不好` 判成提问、不取消。用户把歌名加引号
 # （`《并蒂莲》`）时走的是跨度那一支，不受影响。
+# ⚠️⚠️ 引用跨度只在**紧跟播放动词**那一个位置算标题，不是句子里任意一对
+# 引号都算。上一版把每一对配平引号都当标题跳过去，于是
+# `我想停止播放晴天“是否合适”` 里用户真正的问题被整段跳掉，一句提问
+# 执行了取消（Codex P2 第五十三轮，base 是 False——危险方向）。
+# ⚠️ 改成「开头可选一个跨度 + 其余普通字符」之后，后面引号里的标记就扫得到了；
+# 而标题位置那一个跨度仍然被整段遮住，`停止播放《你好吗？》` 照旧是命令。
+# ⚠️ 这个形状也把回溯问题一并收了：跨度不再在 `*` 循环里，就不存在
+# 「同一段既可以当跨度又可以逐字吃」的指数分段（第四/三十/三十二轮的 ReDoS 就在那里）。
+_ZH_PLAYBACK_VERBS = ("播放", "放", "播", "听", "聽")
 _ZH_BEFORE_QUESTION_MARKER = (
-    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]|{_ZH_PAIRED_QUOTED_SPAN}"
-    rf"|{_ZH_UNPAIRED_QUOTE_OPENER})*"
+    # ⚠️⚠️ 引用跨度只在**紧跟播放动词**那一个位置算标题。
+    # 上一版把句子里**每一对**配平引号都当标题整段跳过，于是
+    # `我想停止播放晴天“是否合适”` 里用户真正的问题被跳掉，
+    # 一句提问执行了取消（Codex P2 第五十三轮，base 是 False——危险方向）。
+    # 形状：【懒扫到播放动词】+【可选的一个标题跨度】（整体原子化）
+    #       + 【其余字符，引号在这里只是普通字符】。
+    # ⚠️ 前两段必须**原子化**：不原子化的话正则会回溯成「不吃跨度、
+    # 逐字走进标题里」，`停止播放《你好吗？》` 里标题自带的 `吗` 又成了
+    # 疑问标记——那正是第七轮修过的东西。
+    # ⚠️ 跨度不再在 `*` 循环里，也就没了「同一段既可当跨度又可逐字吃」
+    # 的指数分段（第四/三十/三十二轮的 ReDoS 就在那里）。
+    # ⚠️ 可选性要写在原子组**里面**（`(?>(?:…)?)` 而不是 `(?>…)?`）：
+    # 写在外面时引擎仍然可以整个跳过这一段，然后逐字走进标题里。
+    rf"(?>(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)})"
+    rf"(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER})?)?)"
+    r"[^。！？!?]*"
 )
 
 # ⚠️ 播放动词后面紧跟「的」时，那个「的」有三种身份，只有一种不是命令：
@@ -500,18 +523,20 @@ _ZH_WH_QUESTION_MARKER = (
     # （`我想停止播放《你好吗？》干什么` base 是 False，Codex P2 第四十五轮）。
     # 三种 什么 的写法直接复用 _ZH_WHAT，不另抄。
     rf"|{_ZH_DEGREE_NEGATION_LEFT}(?:怎么|怎麼|怎样|怎樣)|如何"
-    rf"|干嘛|幹嘛|{_ZH_DEGREE_NEGATION_LEFT}(?:干|幹){_ZH_WHAT}"
+    rf"|{_ZH_DEGREE_NEGATION_LEFT}(?:干嘛|幹嘛|(?:干|幹){_ZH_WHAT})"
     rf"|{_ZH_FREE_CHOICE_LEFT}(?:{_ZH_WHAT}(?:时候|時候)|何时|何時)"
     # ⚠️ `没多久` 是陈述（“not long after”），跟 `不怎么` / `没什么` 同一个
     # 形状，复用同一个程度否定左界（Codex P2 第五十轮）。
     rf"|{_ZH_DEGREE_NEGATION_LEFT}多久|几时|幾時"
-    rf"|哪里|哪裡|哪儿|哪兒|{_ZH_WHAT}(?:地方)|哪一首|哪首"
+    rf"|{_ZH_FREE_CHOICE_LEFT}{_ZH_DECLARATIVE_LEFT}"
+rf"(?:哪里|哪裡|哪儿|哪兒|{_ZH_WHAT}(?:地方)|哪一首|哪首)"
     # ⚠️ 谁/哪个/多少 有非疑问用法（谁都行 / 哪个都可以 / 多少有点），严格按
     # 「只能用于提问」那条边界本该不收。但代价不对称：不收 =
     # `我想停止播放谁唱的《你好吗？》` 执行取消（危险方向）；收 =
     # `帮我停止播放谁的歌都行` 判成提问、少停一次歌（轻）。取轻的那一侧，
     # 跟这个文件里其它十几处取舍一致（Codex P2 第二十六轮）。
-    rf"|{_ZH_FREE_CHOICE_LEFT}(?:谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少)"
+    rf"|{_ZH_FREE_CHOICE_LEFT}{_ZH_DECLARATIVE_LEFT}"
+rf"(?:谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少)"
     # 口语/其它疑问复合式（Codex P2 第三十二轮）。
     rf"|咋|咋办|咋辦|何处|何處|几点|幾點|凭{_ZH_WHAT}|憑{_ZH_WHAT}|多会儿"
     # ⚠️ 「有/是 + 什么/啥」：`有什么影响` / `是什么原因` / `有啥影响`
@@ -555,7 +580,7 @@ _ZH_WH_QUESTION_MARKER = (
     # ⚠️ `哪` 在现代汉语里**只有这两个**非疑问的词化组合，不是开集——下次再被要求
     # 往这里加东西之前，先确认那真是个词，而不是「哪 + 量词」。
     rf"|{_ZH_FREE_CHOICE_LEFT}"
-rf"(?:{_ZH_DECLARATIVE_LEFT}{_ZH_WHAT}|哪(?![吒怕])|几|幾)"
+rf"{_ZH_DECLARATIVE_LEFT}(?:{_ZH_WHAT}|哪(?![吒怕])|几|幾)"
     rf"{_ZH_CORRELATIVE_RIGHT}"
 rf"一?[一-鿿]?{_ZH_MUSIC_OBJECT_NOUN})"
 )
@@ -787,8 +812,13 @@ _ZH_FREE_CHOICE_WH_WORDS = (
     "几时", "幾時", "多久", "多少",
     "怎么样", "怎麼樣", "怎样", "怎樣", "怎么", "怎麼",
 )
-_ZH_FREE_CHOICE_WH_TOKEN_RE = re.compile(
-    r"(?:" + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r")"
+# ⚠️ 框架里要中和的不只是疑问代词，还有**极性标记**（是不是/能不能/是否/有无）：
+# `无论是不是好歌都不想听` 里用户在说理由，不是在问我们
+# （base 全是 True，Codex P2 第五十三轮）。A-not-A 那一族直接复用生成器的结果。
+_ZH_FREE_CHOICE_TOKEN_RE = re.compile(
+    r"(?:" + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r"|"
+    + "|".join(_zh_a_not_a_forms())
+    + r"|是否|能否|可否|有无|有無)"
 )
 
 
@@ -828,7 +858,7 @@ def _zh_neutralize_free_choice(text: str) -> str:
         rest = text[marker.end():]
         boundary = _ZH_CLAUSE_BOUNDARY_RE.search(rest)
         stop = marker.end() + (boundary.start() if boundary else len(rest))
-        pieces.append(_ZH_FREE_CHOICE_WH_TOKEN_RE.sub("某", text[marker.end():stop]))
+        pieces.append(_ZH_FREE_CHOICE_TOKEN_RE.sub("某", text[marker.end():stop]))
         cursor = stop
     pieces.append(text[cursor:])
     return "".join(pieces)
@@ -873,7 +903,6 @@ _ZH_PLAYBACK_UI_NOUN = r"(?:按钮|按鈕|功能|键|鍵|控件|組件|组件)"
 # 听/聽 当播放动词，进行体这边却另抄了一份只有 播放/放/播 的——于是
 # `停止正在听的晴天` 掉了下来（Codex P2 第二十五轮）。「同一张表两处各写一份、
 # 然后漂开」在这个文件里已经是第 N 次，所以这次提成共用常量。
-_ZH_PLAYBACK_VERBS = ("播放", "放", "播", "听", "聽")
 _ZH_PROGRESSIVE_ADVERBS = (
     # ⚠️ 「在」是汉语进行体的**核心构式**（在 + V），单列它一条就把
     # 正在/现在/還在/仍在/依然在/尚在/一直在 全收了——第二十九轮补 还在/仍在、
