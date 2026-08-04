@@ -48,7 +48,8 @@ async def test_idless_orphan_survives_an_id_bearing_owner_terminal():
         arbiter.notify_response_terminal(
             {"type": "response.done", "response": {"id": "resp-owner"}}
         )
-        await asyncio.sleep(0)
+        for _ in range(5):
+            await asyncio.sleep(0)
 
         assert successor.sent.done() is False
         assert arbiter._idless_server_response_at is not None
@@ -56,6 +57,42 @@ async def test_idless_orphan_survives_an_id_bearing_owner_terminal():
         arbiter.notify_response_terminal(
             {"type": "response.done", "response": {"status": "completed"}}
         )
+        await asyncio.wait_for(successor.sent, 0.2)
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_idless_orphan_terminal_does_not_complete_id_bearing_owner():
+    async def send(_event):
+        return None
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        owner = await arbiter.enqueue(source="owner")
+        await asyncio.wait_for(owner.sent, 0.2)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-owner"}}
+        )
+        arbiter.notify_response_created({"type": "response.created"})
+
+        successor = await arbiter.enqueue(source="successor")
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert arbiter._response_owner is not None
+        assert arbiter._response_owner.ticket is owner
+        assert owner.done.done() is False
+        assert successor.sent.done() is False
+
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"id": "resp-owner"}}
+        )
+        await asyncio.wait_for(owner.done, 0.2)
         await asyncio.wait_for(successor.sent, 0.2)
     finally:
         await arbiter.shutdown()
@@ -78,7 +115,8 @@ async def test_late_created_is_one_shot_and_idless_successor_completes():
             await asyncio.wait_for(previous.done, 0.2)
 
         successor = await arbiter.enqueue(source="successor")
-        await asyncio.sleep(0)
+        for _ in range(5):
+            await asyncio.sleep(0)
         assert successor.sent.done() is False
 
         assert not arbiter.notify_response_created({"type": "response.created"})
@@ -174,9 +212,11 @@ async def test_owner_release_retires_its_inflight_cancel_send():
             if not arbiter._cancel_send_tasks:
                 break
             await asyncio.sleep(0)
+        assert not arbiter._cancel_send_tasks
 
         cancel_gate.set()
-        await asyncio.sleep(0)
+        for _ in range(5):
+            await asyncio.sleep(0)
         assert "response.cancel" not in sent
     finally:
         cancel_gate.set()

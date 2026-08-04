@@ -848,7 +848,10 @@ class RealtimeResponseArbiter:
             return
         self._cancel_stale_release_timer()
         self._server_response_active = False
-        self._idle.set()
+        if self._response_owner is None:
+            self._idle.set()
+        else:
+            self._idle.clear()
 
     def notify_response_created(self, event: dict[str, Any]) -> bool:
         """Attribute an announcement and report whether transport may expose it."""
@@ -997,8 +1000,20 @@ class RealtimeResponseArbiter:
             owner is not None and not owner.ticket.started.done()
         )
         response_id = self._event_response_id(event)
+        idless_orphan_terminal = bool(
+            response_id is None
+            and owner is not None
+            and owner.response_id is not None
+            and self._idless_server_response_live()
+        )
         if response_id is None:
             self._idless_server_response_at = None
+        if idless_orphan_terminal:
+            # An owner with a known id cannot own an id-less terminal. Consume
+            # the tracked orphan without completing the owner or opening its
+            # lane; the owner's matching terminal remains authoritative.
+            self._release_lane_if_clear()
+            return
         response = (event or {}).get("response")
         response_status = (
             str(response.get("status") or "").strip().lower()
