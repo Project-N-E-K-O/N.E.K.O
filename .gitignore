@@ -12,11 +12,15 @@ tests/test_inputs/
 # 一旦被 `git add -A` 带进提交就等于公开。两个位置都要挡：维护中的
 # docker-compose.yml 在 docker/ 下（它的 ./ 相对路径落在那里），而 README 教的是
 # 把 compose 片段存到自己的目录里跑，那个目录可能就是仓库根。
+# 旧布局的 N.E.K.O/ 与 ssl/ 一并挡上 —— 迁移做到一半时它们就摊在工作区里，
+# 那恰恰是最容易顺手 `git add -A` 的时候。
 /neko-home/
 /ssl/
+/N.E.K.O/
 /docker/neko-home/
 /docker/ssl/
 /docker/logs/
+/docker/N.E.K.O/
 
 # 忽略日志文件
 *.log

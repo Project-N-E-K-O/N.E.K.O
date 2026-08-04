@@ -1179,11 +1179,11 @@ LEGACY_LAYOUT_HINT=""
 detect_legacy_layout() {
     local data_root="/home/neko/.local/share/N.E.K.O"
 
-    # 数据目录有内容 → 挂载是通的，不用多嘴
-    if [ -n "$(ls -A "$data_root" 2>/dev/null)" ]; then
-        return 0
-    fi
-
+    # 放错位置的旧目录先查，且不拿「数据根是否为空」当前提。用户很可能是先用新版
+    # 起了一次（应用于是往数据根写了一份默认配置），发现东西不见了才去搬旧目录，
+    # 而后搬错层 —— 那正是最该提醒的时刻，此时数据根恰恰是非空的。这两个目录名
+    # 应用自己永远不会在家目录根下创建，出现即是人为放置。
+    #
     # 痕迹一：旧的 N.E.K.O 目录被整个当成了 neko-home，数据根的子目录直接躺在家目录里
     if [ -d /home/neko/config ] || [ -d /home/neko/memory ]; then
         LEGACY_LAYOUT_HINT="wrong-level"
@@ -1193,6 +1193,11 @@ detect_legacy_layout() {
     # 痕迹二：旧目录搬进 neko-home 了，但没落到 XDG 路径下
     if [ -d /home/neko/N.E.K.O ]; then
         LEGACY_LAYOUT_HINT="wrong-depth"
+        return 0
+    fi
+
+    # 剩下这条必须以数据根为空为前提：日志有历史 + 数据根有内容 = 正常运行中
+    if [ -n "$(ls -A "$data_root" 2>/dev/null)" ]; then
         return 0
     fi
 
@@ -1212,16 +1217,20 @@ warn_legacy_layout() {
 
     echo ""
     echo "=================================================="
-    echo "⚠️  数据目录为空，但检测到旧版部署的痕迹"
+    echo "⚠️  检测到旧版部署的痕迹"
     case "$LEGACY_LAYOUT_HINT" in
         wrong-level)
             echo "   /home/neko 下直接出现了 config/ 或 memory/ —— 旧的 N.E.K.O 目录"
             echo "   可能被整个当成了 neko-home。它应该放在下面这一层："
             echo "       neko-home/.local/share/N.E.K.O/"
+            echo "   若那个位置已经有本次启动生成的默认配置，别直接覆盖，按内容合并："
+            echo "       cp -a neko-home/config neko-home/memory ... neko-home/.local/share/N.E.K.O/"
             ;;
         wrong-depth)
             echo "   /home/neko/N.E.K.O 存在，但服务读的是 .local/share 下的路径。"
-            echo "   请把它移动到：neko-home/.local/share/N.E.K.O/"
+            echo "   请把它的内容并到：neko-home/.local/share/N.E.K.O/"
+            echo "       cp -a neko-home/N.E.K.O/. neko-home/.local/share/N.E.K.O/ \\"
+            echo "         && rm -rf neko-home/N.E.K.O"
             ;;
         stale-logs)
             echo "   日志目录里有历史日志，说明这个部署以前跑过，而数据目录是空的。"
