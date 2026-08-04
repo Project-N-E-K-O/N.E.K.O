@@ -5618,6 +5618,7 @@ def test_the_frame_scope_coordinator_table_is_pinned():
         "同时", "同時",
         "反而", "反倒", "况且", "況且", "何况", "何況", "再者", "此外",
         "只是", "不过是", "不過是", "无非", "無非",
+        "可",
         "因而", "从而", "從而",
         "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
         "另外", "再说", "再說", "所以", "因此",
@@ -6774,3 +6775,30 @@ def test_the_left_blacklist_and_the_left_bound_do_not_overlap():
     assert overlap == {}, f'黑名单与允许左邻集撞车，接缝会被重新打开: {overlap}'
     # ⚠️ 顺带钉住黑名单非空——它整张被清掉的话上面那条会**空转**。
     assert sum(len(c) for c in mr._ZH_FRAME_LEFT_BLACKLIST.values()) >= 50
+
+
+def test_bare_ke_is_an_adversative_boundary_but_not_inside_keyi_keneng():
+    """裸 `可` 作转折：`因为音质差可我不知道是否合适` 里理由属于 `可` 之前那一小句
+    （base 是 False，第八十轮）。
+
+    ⚠️⚠️ 第一版我给它加了 `(?![以能])` 右界，docstring 里写着「**必须**带右界，
+    不挡会造成少触发的回归」。**那是没验过的预测，而且是错的。**
+    43 条含 `可` 的用例（可以 / 可能 / 可不可以 / 认可 / 许可 / 宁可 / 可是 /
+    可+代词）跑下来，带右界、裸 `可`、以及**完全不加 `可`** 三种配置的 base 差分
+    **一模一样**——那个右界零作用。已按「没有失败用例支撑的防御就是死代码」删掉。
+
+    ⚠️ 教训：加边界前先**量风险面**，别把预测写成 docstring 里的断言口吻。
+    变异当时也提示过——「去掉右界」只打红了钉子、没打红任何行为断言。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        '我想停止播放因为音质差可我不知道是否合适'
+    ) is False
+    # ⚠️ 反向：这两句 base 是 True，加 `可` 之后照旧（实测三种配置都一样）。
+    assert is_explicit_music_cancellation(
+        '我想停止播放因为不知道可能是不是好歌都不想听'
+    ) is True
+    assert is_explicit_music_cancellation(
+        '我想停止播放因为无论什么歌可以停就停'
+    ) is True
