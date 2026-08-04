@@ -3357,3 +3357,57 @@ def test_a_playback_modifier_inside_the_aspect_phrase(aspect, modifier):
     assert is_explicit_music_cancellation(text) is True, text
     for blocked in ('我要停止播放的代码', '帮我停止播放按钮换个颜色'):
         assert is_explicit_music_cancellation(blocked) is False, blocked
+
+
+def test_symmetric_quote_runs_stay_deterministic():
+    """⚠️⚠️ P1：**对称定界符**（开=闭，如 ASCII 双引号）不能进「内嵌跨度」那一支。
+
+    进去之后，一串连续的 ASCII 双引号里外层既可以在每个引号处闭合、也可以把下一段当内嵌跨度
+    吃掉，分段方式指数级：实测 30 个引号 3.9ms、40 个 **127ms**，60 个要跑几十秒，
+    而入口上限是 160 字（Codex P1 第三十二轮）。
+
+    对称定界符本来也谈不上嵌套（连续三个双引号没有唯一读法），所以内嵌跨度只由非对称
+    对组成、对称对自己的跨度体不带内嵌支。
+
+    ⚠️ 结构 + 耗时双断言；「不是完整跨度的开头」那个条件也要同步（第三十轮的教训）。
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    from main_logic import music_requests as mr
+
+    for opening, closing in mr._QUOTE_PAIRS.items():
+        if opening in mr._ZH_AMBIGUOUS_QUOTE_OPENERS or closing != opening:
+            continue
+        assert f"{opening}(?:" not in mr._ZH_PAIRED_QUOTED_SPAN, (
+            f"对称定界符 {opening} 又带上内嵌支了——指数分段会回来"
+        )
+        # ⚠️ 只看每条内嵌分支的**开头**：定界符也会作为被排除的字符出现在
+        # `[^…]` 里，直接用 `in` 判断会误报（第一版就是这么写的）。
+        assert not any(
+            alt.startswith(opening)
+            for alt in mr._ZH_QUOTED_SPAN_INNER.split("|")
+        ), f"对称定界符 {opening} 还在开着内嵌跨度"
+
+    worst = ('我想停止播放' + '"' * 80 + '是否')[:160]
+    start = time.perf_counter()
+    mr.is_explicit_music_cancellation(worst)
+    assert time.perf_counter() - start < 1.0, "对称引号又开始指数分段了"
+    # 语义没变：非对称跨度（含一层嵌套）照旧保护标题。
+    assert mr.is_explicit_music_cancellation('帮我停止播放《“晴天”好不好》') is True
+    assert mr.is_explicit_music_cancellation('我想停止播放《晴天」是否合适》') is False
+
+
+@pytest.mark.parametrize(
+    "marker", ["为啥", "為啥", "咋办", "咋辦", "何处", "何處", "几点", "幾點",
+               "凭什么", "憑什麼"]
+)
+def test_colloquial_wh_compounds_are_questions(marker):
+    """口语疑问复合式（Codex P2 第三十二轮）。触发方式跟前几次一样：引号跨度
+    藏住标题内 `？` 之后，真标记不在表里就没有任何标记能触发守卫。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}换成《你好吗？》'
+    ) is False
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True

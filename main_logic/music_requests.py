@@ -316,13 +316,27 @@ _ZH_QUOTE_DELIMS = "".join(
         + [c for o, c in _QUOTE_PAIRS.items() if o not in _ZH_AMBIGUOUS_QUOTE_OPENERS]
     )
 )
+# ⚠️⚠️ **对称定界符**（开=闭，比如 ASCII 双引号）不能进「内嵌跨度」那一支。
+# 进去之后 `""""…` 里外层既可以在每个引号处闭合、也可以把下一段当内嵌跨度吃掉，
+# 分段方式指数级：实测 30 个引号 3.9ms、40 个 127ms，60 个要跑几十秒，而入口
+# 上限是 160 字（Codex P1 第三十二轮）。
+# 对称定界符本来也谈不上嵌套（`"a"b"` 没有唯一读法），所以：
+#   · 内嵌跨度只由**非对称**对组成；
+#   · 对称对自己的跨度体**不带**内嵌支，只是 `[^所有定界符]*`。
+# 两条合起来让每个位置只剩一种切法。
+def _zh_is_symmetric(opening: str) -> bool:
+    return _QUOTE_PAIRS[opening] == opening
+
+
 _ZH_QUOTED_SPAN_INNER = "|".join(
     f"{opening}[^{_ZH_QUOTE_DELIMS}]*{closing}"
     for opening, closing in _QUOTE_PAIRS.items()
-    if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS
+    if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS and not _zh_is_symmetric(opening)
 )
 _ZH_PAIRED_QUOTED_SPAN = "|".join(
-    f"{opening}(?:[^{_ZH_QUOTE_DELIMS}]|{_ZH_QUOTED_SPAN_INNER})*{closing}"
+    f"{opening}[^{_ZH_QUOTE_DELIMS}]*{closing}"
+    if _zh_is_symmetric(opening)
+    else f"{opening}(?:[^{_ZH_QUOTE_DELIMS}]|{_ZH_QUOTED_SPAN_INNER})*{closing}"
     for opening, closing in _QUOTE_PAIRS.items()
     if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS
 )
@@ -336,8 +350,12 @@ _ZH_PAIRED_QUOTED_SPAN = "|".join(
 # 于是 `《晴天」是否合适》` 两边都不认：跨度那支因为 `」` 断掉，这支又因为末尾
 # 真有个 `》` 而认为它「能闭合」，结果整个前缀过不去、守卫开不了火
 # （Codex P2 第三十轮，危险方向）。两处用同一个体定义就自洽了。
+# ⚠️ 这个条件必须**与上面的跨度定义逐字一致**（第三十轮踩过：只改一边会出现
+# 两边都不认、前缀整个过不去）。对称对同样不带内嵌支。
 _ZH_UNPAIRED_QUOTE_OPENER = "|".join(
-    f"{opening}(?!(?:[^{_ZH_QUOTE_DELIMS}]|{_ZH_QUOTED_SPAN_INNER})*{closing})"
+    f"{opening}(?![^{_ZH_QUOTE_DELIMS}]*{closing})"
+    if _zh_is_symmetric(opening)
+    else f"{opening}(?!(?:[^{_ZH_QUOTE_DELIMS}]|{_ZH_QUOTED_SPAN_INNER})*{closing})"
     for opening, closing in _QUOTE_PAIRS.items()
     if opening not in _ZH_AMBIGUOUS_QUOTE_OPENERS
 )
@@ -442,6 +460,8 @@ _ZH_WH_QUESTION_MARKER = (
     # `帮我停止播放谁的歌都行` 判成提问、少停一次歌（轻）。取轻的那一侧，
     # 跟这个文件里其它十几处取舍一致（Codex P2 第二十六轮）。
     r"|谁|誰|哪个|哪個|哪些|多少"
+    # 口语/其它疑问复合式（Codex P2 第三十二轮）。
+    r"|为啥|為啥|咋|咋办|咋辦|何处|何處|几点|幾點|凭什么|憑什麼|多会儿"
     # ⚠️ 音乐类疑问复合式：`什么歌` / `哪张专辑` / `几首歌`。这里正是「裸形歧义、
     # 复合形不歧义」那条规则的另一半——`什么` / `哪` / `几` 裸用时可能是「没什么」
     # 「哪怕」「几乎」，但后面跟**音乐名词**时只能是提问（Codex P2 第二十七轮）。
