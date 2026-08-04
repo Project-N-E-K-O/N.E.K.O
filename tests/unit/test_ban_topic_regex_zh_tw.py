@@ -943,7 +943,7 @@ def test_bracket_and_plain_branches_are_mutually_exclusive():
     [
         # ASCII 成对定界符：这些在 parent 上是完整的，不收就是回归（codex P2）
         ('"Everything, Everywhere"别提了。', "Everything, Everywhere"),
-        ("电影(Hello, World)别提了。", "电影(Hello, World"),
+        ("电影(Hello, World)别提了。", "电影(Hello, World)"),
         ('别提"你好，李焕英"了。', "你好，李焕英"),
     ],
 )
@@ -1021,8 +1021,8 @@ def test_every_bracket_delimiter_is_also_trimmed():
     [
         # ⚠️ 书名号 / 引号里的标点属于话题本身，不是句子边界。一刀切排除句读会把
         # term 截成后半截（"电影《你好，李焕英》别提了。" → "李焕英"，codex P2）。
-        ("电影《你好，李焕英》别提了。", "电影《你好，李焕英"),
-        ("電影《你好，李煥英》別提了。", "電影《你好，李煥英"),
+        ("电影《你好，李焕英》别提了。", "电影《你好，李焕英》"),
+        ("電影《你好，李煥英》別提了。", "電影《你好，李煥英》"),
         ("别提《你好，李焕英》了。", "你好，李焕英"),
         ("别提「你好，李焕英」了。", "你好，李焕英"),
         ("别提【重要，紧急】了。", "重要，紧急"),
@@ -1519,8 +1519,8 @@ def test_the_verb_table_has_no_complement_cartesian_product(alternation_name):
         # 带括号：括号里是被引用的专名，反问短语是名字的一部分
         ("別再提《最近你好嗎》。", "最近你好嗎"),
         ("别再提《最近你好吗》。", "最近你好吗"),
-        ("别再提电影《我们好不好》。", "电影《我们好不好"),
-        ("別再提電影《我們好不好》。", "電影《我們好不好"),
+        ("别再提电影《我们好不好》。", "电影《我们好不好》"),
+        ("別再提電影《我們好不好》。", "電影《我們好不好》"),
         ("别再提《你可以吗》。", "你可以吗"),
         ('别再提"我们好不好"。', "我们好不好"),
         ("別叫我《好不好》。", "好不好"),
@@ -1618,8 +1618,8 @@ def test_symmetric_ascii_quotes_do_not_span_sentences(text, expected):
 
 def test_only_symmetric_pairs_forbid_sentence_punctuation():
     """非对称括号里的句读属于话题（``《你好，李焕英》``），不能一起收紧。"""  # noqa: DOCSTRING_CJK
-    assert _zh_terms("电影《你好，李焕英》别提了。") == {"电影《你好，李焕英"}
-    assert _zh_terms("電影《你好，李煥英》別提了。") == {"電影《你好，李煥英"}
+    assert _zh_terms("电影《你好，李焕英》别提了。") == {"电影《你好，李焕英》"}
+    assert _zh_terms("電影《你好，李煥英》別提了。") == {"電影《你好，李煥英》"}
 
 
 # ── 10. 关于 的排除只属于前置话题 ────────────────────────────
@@ -1902,7 +1902,7 @@ def test_only_symmetric_pairs_temper_the_negation():
     assert D._ZH_BRACKET_RUN.count("(?![别別])") == sum(
         1 for lo, hi in D._ZH_BRACKET_PAIRS if lo == hi
     )
-    assert _zh_terms("电影(Hello, World)别提了。") == {"电影(Hello, World"}
+    assert _zh_terms("电影(Hello, World)别提了。") == {"电影(Hello, World)"}
 
 
 # ── 17. 反问尾巴落在引号之外时该剥 ───────────────────────────
@@ -1910,8 +1910,8 @@ def test_only_symmetric_pairs_temper_the_negation():
     ("text", "expected"),
     [
         # 尾巴在收尾括号**之后** = 句子级语气，剥
-        ("別再提電影《你好》好嗎。", "電影《你好"),
-        ("别再提电影《你好》好吗。", "电影《你好"),
+        ("別再提電影《你好》好嗎。", "電影《你好》"),
+        ("别再提电影《你好》好吗。", "电影《你好》"),
         ("别再提《你的名字》好吗。", "你的名字"),
         ("別再提《你的名字》好嗎。", "你的名字"),
         ("别再提《你的名字》好不好。", "你的名字"),
@@ -1919,13 +1919,13 @@ def test_only_symmetric_pairs_temper_the_negation():
         # 尾巴在括号**里面** = 名字的一部分，不剥
         ("别再提《最近你好吗》。", "最近你好吗"),
         ("別再提《最近你好嗎》。", "最近你好嗎"),
-        ("别再提电影《我们好不好》。", "电影《我们好不好"),
+        ("别再提电影《我们好不好》。", "电影《我们好不好》"),
         ("别再提《你可以吗》。", "你可以吗"),
         # ⚠️ 前缀以**开括号**结束 = 尾巴仍在书名里，不能剥（判据必须是收尾括号，
         # 换成「任意括号字符」这三条就会被削成 电影 / 剧集，标题整个丢掉）
-        ("别再提电影《好不好》。", "电影《好不好"),
-        ("別再提電影《好不好》。", "電影《好不好"),
-        ("别再提剧集《可以吗》。", "剧集《可以吗"),
+        ("别再提电影《好不好》。", "电影《好不好》"),
+        ("別再提電影《好不好》。", "電影《好不好》"),
+        ("别再提剧集《可以吗》。", "剧集《可以吗》"),
         # ⚠️ 引号和尾巴之间隔着普通修饰词也一样该剥——代理判据「前缀正好以收尾
         # 括号结尾」在这三行会判错（codex P2）
         ("我不想再聊電影《你好》續集好嗎。", "電影《你好》續集"),
@@ -1939,7 +1939,7 @@ def test_only_symmetric_pairs_temper_the_negation():
         # ⚠️ 多段括号要看**最后**一段的收尾，不是第一段（变异跑出来的）
         ("别再提《甲》《乙》好吗。", "甲》《乙"),
         ("别再提《甲》和《乙》好吗。", "甲》和《乙"),
-        ("别再提电影《甲》《乙》好吗。", "电影《甲》《乙"),
+        ("别再提电影《甲》《乙》好吗。", "电影《甲》《乙》"),
         # 一个括号都没有 = 无条件可剥
         ("别再提工作好吗。", "工作"),
         ("別再提工作好嗎。", "工作"),
@@ -2319,8 +2319,8 @@ def test_the_shortened_form_is_trimmed_before_comparing(text, expected):
         ('別再提5"螢幕好嗎。', '5"螢幕'),
         ('别再提27"顯示器好不好。', '27"顯示器'),
         # 非对称的开括号落单时确实是没写完的引文，尾巴仍在里面
-        ("别再提电影《我们好不好》。", "电影《我们好不好"),
-        ("别再提电影《好不好》。", "电影《好不好"),
+        ("别再提电影《我们好不好》。", "电影《我们好不好》"),
+        ("别再提电影《好不好》。", "电影《好不好》"),
     ],
 )
 def test_a_standalone_symmetric_quote_is_not_an_unclosed_opener(text, expected):
@@ -2399,7 +2399,7 @@ def test_blanking_the_quotes_keeps_evidence_outside_them():
     """反向：引号**外面**的证据照旧算数，否则整族中文指令会被打死。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms("别再提《想見你喔》。") == {"想見你喔"}
     assert _zh_terms("別叫我「お兄ちゃん」。") == {"お兄ちゃん"}
-    assert _zh_terms("别提《我很好吗》这件事。") == {"我很好吗》这件事"}
+    assert _zh_terms("别提《我很好吗》这件事。") == {"《我很好吗》这件事"}
 
 
 # ── 29. 裸的疑问语气词 ───────────────────────────────────────
@@ -2812,8 +2812,8 @@ def test_tail_tokens_are_tried_longest_first():
     ("text", "expected"),
     [
         # ⚠️ 落单的对称引号不能遮蔽**后面**的括号
-        ('别再提5"屏幕《你好吗》。', '5"屏幕《你好吗'),
-        ('別再提5"螢幕《你好嗎》。', '5"螢幕《你好嗎'),
+        ('别再提5"屏幕《你好吗》。', '5"屏幕《你好吗》'),
+        ('別再提5"螢幕《你好嗎》。', '5"螢幕《你好嗎》'),
         # 成对的仍然当引文
         ('别再提"你的名字"好吗。', "你的名字"),
     ],
@@ -2990,13 +2990,12 @@ def test_the_clause_start_boundary_needs_no_enumeration(text):
 def test_the_left_boundary_is_a_clause_start_class_not_an_enumeration():
     """结构面：判据必须是「左邻属于分句起点字符」，不能退回枚举日文标签字符。
 
-    ⚠️ 曾经写成否定式 ``(?<![^X])``。等价，但串首是**空真**——日文的 ``別提案``
-    从这个洞漏进来了，所以改成正向的 ``(?<=[X])``，串首单独一支并要求 ``再``。
+    ⚠️ 左界现在**只管有歧义动词 + ``再``** 那一支（提 / 講 / 談 / 討論）。日文里
+    没有的动词自己就消歧，不走左界。
     """  # noqa: DOCSTRING_CJK
     assert not hasattr(D, "_ZH_JA_LABEL_TAIL")
     assert "一-鿿" not in D._ZH_CLAUSE_START_LEFT
-    assert f"(?<=[{D._ZH_CLAUSE_START_LEFT}])" in D._ZH_NEG_VERB_EVIDENCE
-    assert f"(?<![^{D._ZH_CLAUSE_START_LEFT}])" not in D._ZH_NEG_VERB_EVIDENCE
+    assert f"(?<![^{D._ZH_CLAUSE_START_LEFT}])" in D._ZH_NEG_VERB_EVIDENCE
     # 反向：能起小句的那些左邻照常放行。
     # ⚠️ 判别得出这张表大小的用例有两个前提，缺一个就测不出来：
     # 1. 话题要**带日文语法**（``君の名は``）。话题是纯中文时守卫的第三条判据本来就
@@ -3004,7 +3003,8 @@ def test_the_left_boundary_is_a_clause_start_class_not_an_enumeration():
     # 2. 否定词要用**繁体 別**。简体 ``别`` 本身就在 _ZH_EVIDENCE_CHARS 里，单字证据
     #    先一步救下它；繁体 ``別`` 和日文共用码位、不能进那张字表，所以只剩结构证据
     #    这一条命——正是这个 PR 服务的那批用户。
-    for text in ("算了，別提君の名は。", "算了。別提君の名は。", "工作、別提君の名は。"):
+    # ⚠️ 3. 动词要用**有歧义**的（提），否则走的是另一支、根本碰不到左界。
+    for text in ("算了，別再提君の名は。", "算了。別再提君の名は。", "工作、別再提君の名は。"):
         assert _zh_terms(text) == {"君の名は"}, text
     assert _zh_terms("算了，别提工作。") == {"工作"}
     assert _zh_terms("别再提工作。") == {"工作"}
@@ -3119,12 +3119,14 @@ def test_every_allowed_final_particle_can_also_be_trimmed():
     ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
 )
 def test_an_opening_delimiter_can_start_a_clause(opener, closer):
-    """繁中指令写在引号里也要认：``「別提君の名は。」``（codex P2）。
+    """繁中指令写在引号里也要认：``「別再提君の名は。」``（codex P2）。
 
     日文的 ``〜別`` 后缀不可能紧跟在**开**括号后面，所以放行开括号不会
     把守卫拆掉——同一组括号的**收**那一半仍然挡着（见下一条）。
+    ⚠️ 探针必须用 ``別再提``（**有歧义**动词 + ``再``）：左界现在只管这一支，
+    换成 ``別聊`` 那种日文里没有的动词会走另一支、根本碰不到左界，测了个寂寞。
     """  # noqa: DOCSTRING_CJK
-    assert _zh_terms(f"{opener}別提君の名は。{closer}") == {"君の名は"}
+    assert _zh_terms(f"{opener}別再提君の名は。{closer}") == {"君の名は"}
 
 
 @pytest.mark.parametrize(
@@ -3132,6 +3134,7 @@ def test_an_opening_delimiter_can_start_a_clause(opener, closer):
 )
 def test_a_closing_delimiter_still_blocks_the_japanese_label(opener, closer):
     """``「地域」別提案`` 这类日文标签靠**收**括号挡住，一条都不能漏。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{opener}地域{closer}別再提案をお願いします。") == set()
     assert _zh_terms(f"{opener}地域{closer}別提案をお願いします。") == set()
 
 
@@ -3139,7 +3142,7 @@ def test_symmetric_delimiters_are_not_treated_as_clause_starters():
     """对称引号同一个字形两用，放行就等于把守卫拆了（``"地域"別提案``）。"""  # noqa: DOCSTRING_CJK
     for delim in D._ZH_SYMMETRIC_DELIMS:
         assert delim not in D._ZH_CLAUSE_START_LEFT, delim
-        assert _zh_terms(f"{delim}地域{delim}別提案をお願いします。") == set(), delim
+        assert _zh_terms(f"{delim}地域{delim}別再提案をお願いします。") == set(), delim
     for closer in set(D._ZH_CLOSE_FOR_OPEN.values()):
         assert closer not in D._ZH_CLAUSE_START_LEFT, closer
 
@@ -3195,31 +3198,51 @@ def test_a_clause_initial_bie_compound_stays_behind_the_japanese_guard(text):
 @pytest.mark.parametrize(
     "text",
     [
+        # 有歧义动词（提 / 講 / 談 / 討論）：靠 ``再`` 消歧
         "別再提君の名は。",
-        "算了，別提君の名は。",
-        "「別提君の名は。」",
+        "「別再提君の名は。」",
+        "算了，別再提君の名は。",
         "我們別再提君の名は。",
+        # 日文里没有的动词（聊 / 扯 / 說）：动词自己消歧，位置不限
+        "別聊君の名は。",
+        "別扯君の名は。",
+        "別說君の名は。",
+        "請別扯君の名は。",
+        "算了，別聊君の名は。",
+        # 话题本身是中文：日文守卫根本不启动
         "別提工作。",
         "別再提工作。",
     ],
 )
 def test_the_traditional_directive_still_works_where_it_is_unambiguous(text):
-    """选边的代价要收窄到只有串首**且没有 ``再``** 那一格。
+    """选边的代价要收窄到「有歧义动词 + 没有 ``再``」那一格。
 
-    ``再`` 能消歧：``別再`` 后面直接跟言说动词的形态在日文里不成立（日文写
-    ``別の再提案``）。左邻是真分句起点、有主语、纯中文话题的那几路都照旧。
+    ``再`` 消歧：``別再提`` 在日文里不成立（要写 ``別の再提案``）。动词也消歧：
+    ``聊 / 扯 / 說`` 在日文里组不出 ``別X`` 复合名词（``說`` 日文写 ``説``，
+    ``扯`` 日文根本没这个字），所以它们不设左界、也不要求 ``再``。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text), text
 
 
-def test_the_string_start_branch_still_needs_the_left_boundary():
-    """⚠️ 串首那一支不能省掉 ``^``——省了 ``地域別再提案`` 就从这里漏回来。"""  # noqa: DOCSTRING_CJK
+def test_the_ambiguous_verb_branch_needs_both_the_boundary_and_zai():
+    """⚠️ 有歧义动词那一支两个条件缺一不可，各自打掉一族日文。
+
+    左界挡 ``地域別再提案``（``〜別`` **后缀**）；``再`` 挡 ``別提案``（``別``
+    **前缀**）。两族都真实存在于本文件自带的 ja 语料里。
+    """  # noqa: DOCSTRING_CJK
     assert _zh_terms("地域別再提案をお願いします。") == set()
     assert _zh_terms("地域別提案をお願いします。") == set()
-    # 结构面：串首支必须锚在 ``^`` 上，且必须要求 ``再``。
-    assert "^(?:别|別)" in D._ZH_NEG_VERB_EVIDENCE.replace("\s*", "")
-    start_branch = D._ZH_NEG_VERB_EVIDENCE.split("^(?:")[1]
-    assert start_branch.split(")")[1].replace("\s*", "").startswith("再")
+    assert _zh_terms("今回は、別提案をお願いします。") == set()
+    assert _zh_terms("「別提案をお願いします。」") == set()
+    # 结构面：有歧义动词只出现在带左界**且**带 ``再`` 的那一支里。
+    flat = D._ZH_NEG_VERB_EVIDENCE.replace(r"\s*", "")
+    shared = "|".join(D._ZH_SAY_VERBS_JA_SHARED)
+    assert flat.count(shared) == 1, flat
+    head = flat.split(shared)[0]
+    assert head.endswith("(?:%s)再(?:" % "|".join(D._ZH_NEG_JA_AMBIGUOUS)), head
+    assert head[head.rindex("(?<!"):].startswith(
+        f"(?<![^{D._ZH_CLAUSE_START_LEFT}])"
+    ), head
 
 
 @pytest.mark.parametrize(
@@ -3233,11 +3256,11 @@ def test_an_unmatched_ascii_opener_does_not_mask_a_later_quote(opener):
     ASCII 开括号当**普通字符重扫一遍**，而不是扫完再丢掉栈——那时位置已经没了。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(f"别再提价格{opener}预算《你好吗》。") == {
-        f"价格{opener}预算《你好吗"
+        f"价格{opener}预算《你好吗》"
     }
     # 引文之外的尾巴照旧要剥掉。
     assert _zh_terms(f"别再提价格{opener}预算《你好吗》好吗？") == {
-        f"价格{opener}预算《你好吗"
+        f"价格{opener}预算《你好吗》"
     }
 
 
@@ -3258,7 +3281,7 @@ def test_the_rescan_only_ignores_the_unmatched_positions(lone, opener, closer):
     要以有歧义的尾词结尾，被误判成句子级语气才看得出来。
     """  # noqa: DOCSTRING_CJK
     text = f"别再提价格{lone}预算{opener}你好吗{closer}。"
-    assert _zh_terms(text) == {f"价格{lone}预算{opener}你好吗"}, _zh_terms(text)
+    assert _zh_terms(text) == {f"价格{lone}预算{opener}你好吗{closer}"}, _zh_terms(text)
 
 
 def test_the_quoted_span_end_boundaries():
@@ -3308,3 +3331,159 @@ def test_the_symmetric_quote_guard_is_the_temper_not_a_punctuation_class():
     # 而 temper 确实挡住了两条指令被并成一条。
     assert _zh_terms('尺寸5"别提了。尺寸6"别提了。') == {"尺寸5", "尺寸6"}
     assert _zh_terms('尺寸5"别提了，尺寸6"别提了。') == {"尺寸5", "尺寸6"}
+
+
+# ── 41. 逗号+空格 / 動詞級歧义 / 括号只在包住整条时才剥 ──────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Hello, World别提了。", "Hello, World"),
+        ("Hello, World別提了。", "Hello, World"),
+        ("关于Hello, World就别提了。", "Hello, World"),
+        ("關於Hello, World就別提了。", "Hello, World"),
+        # 没有空格的写法本来就是好的——这条补的正是它俩之间的不对称
+        ("Hello,World别提了。", "Hello,World"),
+    ],
+)
+def test_a_comma_followed_by_a_space_is_still_word_internal(text, expected):
+    """``Hello, World`` 是最常见的写法，右侧前视原样要求「不是空白」就吃不进去。
+
+    匹配从逗号之后重起，``Hello, World别提了。`` 只存下 ``World``、
+    ``关于Hello, World就别提了。`` 存下非词 ``World就``（parent 两条都完整；
+    codex P2）。同一句写成 ``Hello,World`` 反而是好的——补的是这处不对称。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_full_width_comma_decision_is_untouched():
+    """⚠️ 上一条**不是**在推翻「前置话题不跨小句」——那条管的是全角 ``，``。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("算了，工作别提了。") == {"工作"}
+    assert _zh_terms("说完了，工作别提了。") == {"工作"}
+    # 千分位那条更紧的规则也没动
+    assert _zh_terms("价格1，000元别提了。") == {"价格1，000元"}
+    # 有界而不是 \s*：模板 2/4 的空白护栏按字面找 \s*，不能被搅浑
+    assert r"\s*" not in D._ZH_IDENT_PUNCT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別提案をお願いします。",
+        "今回は、別提案をお願いします。",
+        "「別提案をお願いします。」",
+        "（別提案をお願いします。）",
+        "今回は 別提案をお願いします。",
+        "別談話でも可。",
+        "今回は、別談話でも可。",
+    ],
+)
+def test_a_japanese_bie_prefix_compound_is_suppressed_anywhere(text):
+    """歧义是**动词**的属性，不是位置的属性。
+
+    按位置切过三轮，每挡一格就漏下一格：只挡「左邻是汉字」→ 漏假名 / β；
+    改成「左邻要能起小句」→ 漏串首；串首单独要求 ``再`` → 漏分句边界之后
+    （``今回は、別提案…`` / ``「別提案…」``，codex P2）。位置根本不是判据。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize("verb", ["聊", "扯", "說", "说", "讲", "谈"])
+def test_a_verb_japanese_does_not_have_needs_no_disambiguation(verb):
+    """日文里组不出 ``別X`` 的动词：不设左界、也不要求 ``再``。
+
+    否则 ``別聊君の名は。`` / ``請別扯君の名は。`` 整条 0 命中，而同一句简体
+    因为 ``别`` 在 _ZH_EVIDENCE_CHARS 里有单字证据就是好的（codex P2）。
+    ⚠️ ``請`` 进不了主语白名单（它是日文汉字），所以这一族只能靠动词消歧。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"別{verb}君の名は。") == {"君の名は"}
+    assert _zh_terms(f"請別{verb}君の名は。") == {"君の名は"}
+
+
+def test_the_shared_verb_table_is_pinned_and_partitions_the_verbs():
+    """结构面：共用动词表是闭集，且必须是全部言说动词的一个真子集。
+
+    ⚠️ 往里加一个不该加的字，对应的繁中说法立刻整条丢掉；漏掉一个该加的，
+    对应的日文复合词就漏进来。所以用**相等**断言，不是包含。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_SAY_VERBS_JA_SHARED == ("提", "講", "談", "討論")
+    everything = set(D._ZH_SAY_COMPOUNDS + D._ZH_SAY_VERBS)
+    assert set(D._ZH_SAY_VERBS_JA_SHARED) < everything
+    assert set(D._ZH_ZH_ONLY_VERBS) == everything - set(D._ZH_SAY_VERBS_JA_SHARED)
+    # 简体字形一个都不该在共用表里：日文不用简化字。
+    for verb in D._ZH_SAY_VERBS_JA_SHARED:
+        assert verb not in ("说", "讲", "谈", "讨论"), verb
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+def test_a_closer_survives_when_the_title_is_only_a_suffix(opener, closer):
+    """括号只在**真的包住整条 term** 时才剥。
+
+    无条件放进 strip 字符集的话，标题只是 term 的一个后缀时收尾括号会被削掉——
+    ``别再提电影〈你好〉。`` 存成 ``电影〈你好``（parent 完整；``〈〉〔〕［］〖〗``
+    四对是本 PR 新加进 _TRIM_TRAIL 的，codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提电影{opener}你好{closer}。") == {
+        f"电影{opener}你好{closer}"
+    }
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+def test_a_pair_wrapping_the_whole_term_is_still_peeled(opener, closer):
+    """反向：整条被一对括号包住时，照旧连括号一起剥掉。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提{opener}你好{closer}。") == {"你好"}
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+def test_a_lone_closer_is_still_stripped(opener, closer):
+    """反向之二：落单的收尾括号（term 里没有对应开括号）照旧剥掉。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提你好{closer}。") == {"你好"}
+
+
+@pytest.mark.parametrize(
+    "opener", sorted(o for o in D._ZH_CLOSE_FOR_OPEN if o.isascii())
+)
+def test_a_lone_opener_of_the_same_type_still_shields_the_inner_run(opener):
+    """⚠️ 落单的开括号和配对的那个是**同一个字形**时才判别得出重扫的作用域。
+
+    ``别再提<预算<你好吗>。`` ——外层 ``<`` 落单、内层 ``<…>`` 配对。重扫要是
+    把所有 ASCII 开括号一起忽略（而不是只忽略落单的那几个下标），内层这段就
+    不再算引文，``好吗`` 被当句子级语气剥掉、存成 ``预算<你``。
+    上一轮我用「落单 × 配对」两两组合写这条，但把同型那一格排除了，于是漏掉。
+    """  # noqa: DOCSTRING_CJK
+    closer = D._ZH_CLOSE_FOR_OPEN[opener]
+    text = f"别再提{opener}预算{opener}你好吗{closer}。"
+    assert _zh_terms(text) == {f"预算{opener}你好吗"}, _zh_terms(text)
+
+
+def test_symmetric_quotes_need_no_dedicated_peel():
+    """结构面：对称引号不进 _ZH_COUNTERPART，通用 strip 就够，别再写一支死代码。"""  # noqa: DOCSTRING_CJK
+    for delim in D._ZH_SYMMETRIC_DELIMS:
+        assert delim not in D._ZH_COUNTERPART, delim
+        assert delim in D._TRIM_TRAIL, delim
+    assert "_ZH_SYMMETRIC_DELIMS" not in _strip_trail_source()
+    assert _zh_terms('别再提"Everything, Everywhere"。') == {"Everything, Everywhere"}
+    assert _zh_terms('别再提"你好吗"。') == {"你好吗"}
+
+
+def _strip_trail_source() -> str:
+    import inspect
+
+    return inspect.getsource(D._strip_trail)
+
+
+def test_the_counterpart_table_covers_every_asymmetric_pair():
+    """结构面：``_ZH_COUNTERPART`` 两个方向都要有，按括号表自动发现。"""  # noqa: DOCSTRING_CJK
+    for opener, closer in D._ZH_CLOSE_FOR_OPEN.items():
+        assert D._ZH_COUNTERPART[opener] == closer
+        assert D._ZH_COUNTERPART[closer] == opener
+    # 对称的那几个刻意不进这张表：同一个字形两用，判不出「另一半在不在」。
+    for delim in D._ZH_SYMMETRIC_DELIMS:
+        assert delim not in D._ZH_COUNTERPART, delim
