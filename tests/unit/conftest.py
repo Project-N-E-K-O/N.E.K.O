@@ -127,6 +127,41 @@ def _reset_steamworks_handle():
 
 
 @pytest.fixture(autouse=True)
+def _reset_sys_path():
+    """Restore ``sys.path`` around every unit test.
+
+    ``sys.path`` is process-global, and several product entry points prepend to
+    it as a deliberate, permanent side effect. ``_start_embedded_user_plugin_server``
+    (app/agent_server/plugin_host.py) inserts ``<repo>/plugin`` at index 1 so the
+    embedded server can import ``plugin.server.http_app``. In a real agent process
+    that entry is meant to stay for the process lifetime; in a unit test that calls
+    the function directly it stays for the rest of the session.
+
+    The leaked entry is not inert. ``<repo>/plugin`` ships its own ``config``
+    package, and under pytest the repo root is not ``sys.path[0]`` — the rootdir
+    insertions for ``tests`` and ``tests/unit/asr_client`` sit in front of it, so
+    a hardcoded index 1 lands *ahead* of the repo root. Every fresh resolution of
+    ``config`` then finds ``plugin/config``, and that includes ``importlib.reload``,
+    which re-runs the finder and rebinds the module object in place. So
+    ``launcher_core.runtime._reload_runtime_config_from_env`` — whose entire job is
+    to refresh the negotiated ``NEKO_*`` ports — reloaded ``plugin/config`` into the
+    root ``config`` module and left every port at its pre-negotiation value. That
+    is how ``test_runtime_config_reload_preserves_negotiated_fallback_ports``
+    turned red under seed 31337 while passing on its own.
+
+    The whole list is snapshotted rather than a named entry removed, so path leaks
+    nobody has thought of yet are covered without extending a checklist. Restoring
+    in place (``sys.path[:] =``) keeps the list identity that importers may hold.
+    """
+    snapshot = list(sys.path)
+    try:
+        yield
+    finally:
+        if sys.path != snapshot:
+            sys.path[:] = snapshot
+
+
+@pytest.fixture(autouse=True)
 def _reset_game_sessions(request):
     if not _needs_game_route_reset(request):
         yield
