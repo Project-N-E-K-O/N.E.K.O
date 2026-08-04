@@ -4212,10 +4212,18 @@ def test_negated_wh_pronoun_branches_are_declarative(negator, wh):
     "polarity", ["是不是", "能不能", "可不可以", "行不行", "是否", "能否", "有无", "有無"]
 )
 def test_frames_neutralize_polarity_markers_too(polarity):
-    """⚠️ 框架里要中和的不只是疑问代词，还有**极性标记**（base 全是 True）。
+    """⚠️ 框架里要中和的不只是疑问代词，还有**极性标记**。
 
     A-not-A 那一族直接复用生成器的结果，不另拄一张表。
     ⚠️ 反向断言：没有框架时它们仍然是疑问标记。
+
+    ⚠️⚠️ **这条 docstring 原本写着「base 全是 True」，那是错的**（第六十五轮实测）。
+    24 个参数里 A-not-A（是不是/能不能/可不可以/行不行）和 有无/有無 确实 base=True，
+    但 `是否`/`能否` 这 6 个 **base=False**——本 PR 在这里是放宽了 base。
+
+    没有跟着改回去，因为按这个 PR 的收敛边界它不属于必修的那一类：这些句子里
+    用户明确说了「我想停止播放…因为…」，动作是**请求过的**，放宽不会执行用户
+    没要求的事。记在这里是为了别让一个错的 base 声称继续误导后面的判断。
     """  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
 
@@ -4858,3 +4866,47 @@ def test_the_adversative_coordinator_ends_the_frame_scope(adversative):
 
     text = f'我想停止播放如果会影响歌单就算了{adversative}这样是否合适'
     assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("title", ["因为爱情", "原因", "既然青春留不住", "既然琴瑟起", "晴天", "红色高跟鞋"])
+def test_the_verdict_does_not_depend_on_the_song_title(title):
+    """⚠️ 找理由标记时要**跳过引用跨度**：《因为爱情》是歌名，里面的 `因为`
+    不是理由标记（第六十五轮扫描发现）。
+
+    ⚠️ 这条的判据不是「哪个值对」，而是**判定不能取决于歌名内容**——
+    同一句话换成《晴天》结论就反过来，那显然是错的。三行之上那个框架词循环
+    本来就跳过跨度，这里没跟上，同一段文本两套读法。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'帮我停止播放《{title}》不知道能否再点回来'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("reason", ["因为", "因為", "由于", "由於", "既然"])
+def test_a_reason_marker_outside_quotes_still_counts(reason):
+    """⚠️ 反向：引号**外面**的理由标记照旧算数，别把这一支一起挡掉。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{reason}不知道是不是好歌都不想听'
+    assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize("separator", ["，", ",", "；", ";", "。"])
+@pytest.mark.parametrize("reason", ["因为", "因為", "由于", "既然"])
+def test_a_reason_marker_in_an_earlier_clause_does_not_count(separator, reason):
+    """⚠️ 理由标记只在**同一子句内**算数：`因为下雨了，帮我停止播放不知道是否合适`
+    里那个 `因为` 管的是「下雨了」，不是后面这句犹豫。
+
+    ⚠️ 这条是第六十五轮变异验证补的——那次 `hit.start() >= boundary` 这道限制
+    **存活了**（没有任何用例覆盖）。它不是死代码，是活的但没测，两者要分清：
+    死代码该删（右界表那次就删了），活代码没测该补用例。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'{reason}下雨了{separator}帮我停止播放不知道是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+    # ⚠️ 反向：同一子句内的理由标记照旧算数。
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{reason}不知道是不是好歌都不想听'
+    ) is True

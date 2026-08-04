@@ -1075,7 +1075,16 @@ def _zh_neutralize_free_choice(text: str) -> str:
                 (hit.end() for hit in _ZH_CLAUSE_BOUNDARY_RE.finditer(head)),
                 default=0,
             )
-            if not _ZH_REASON_MARKER_RE.search(head, boundary):
+            # ⚠️ 找理由标记时要**跳过引用跨度**：《因为爱情》是歌名，里面的
+            # `因为` 不是理由标记。不跳过的话判定会取决于**歌名内容**——
+            # 同一句话换成《晴天》结论就反过来，这显然不对。
+            # 三行之上那个框架词循环本来就跳过 spans，这里没跟上，同一段文本两套读法。
+            asserted = any(
+                hit.start() >= boundary
+                and not any(lo <= hit.start() < hi for lo, hi in spans)
+                for hit in _ZH_REASON_MARKER_RE.finditer(head)
+            )
+            if not asserted:
                 token_re = _ZH_FREE_CHOICE_WH_ONLY_RE
         pieces.append(token_re.sub("某", text[marker.end():stop]))
         cursor = stop

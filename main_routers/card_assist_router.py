@@ -32,7 +32,6 @@ All four reuse the existing "agent API" provider so the bundled free path uses
 from __future__ import annotations
 
 import json
-import bisect
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -1354,82 +1353,30 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
 _CHAT_CLAUSE_SPLIT_RE = re.compile(r"[。，、！？,.!?;；]+")
 
 
-def _chat_clause_pairs_target_with_verb(readable: str) -> bool:
-    """这一子句里，整卡目标和重写动词**配得上**吗？
-
-    ⚠️⚠️ 两边本来是各自独立 search 的，窗口等于整个子句。第六十二轮把切分改成
-    跳过引用跨度之后，原先被引号内逗号劈开的两段并回了同一子句，于是隔着一段
-    引用的目标和动词重新相遇——`先展示整个卡“姓名，年龄”然后重写名字` 和
-    `不要把整个卡都用“姓名，年龄”做例子然后重写` 都因此走进整卡补全并 autosave
-    （base 都是 False——数据覆盖方向，第六十三轮）。**这是我自己上一轮改出来的。**
-
-    判据：目标和动词之间如果**整段夹着**一个引用跨度，就不算配上。夹着一段引用
-    意味着目标是被拿来当例子/素材，不是这个动词的宾语。
-
-    ⚠️ 必须是「完全落在两者之间」而不是「有重叠」：`把《整个卡》重写` 里目标
-    本身就写在引号里，跨度跟目标重叠，那条仍然要算命令（base 是 True）。
-
-    ⚠️ 动词遍历**所有**出现位置而不是只看第一个，这一段是**防御性的**：
-    我构造不出能区分两种写法的句子（目标在两个动词中间时，目标本身就不被
-    `_CHAT_FULL_REWRITE_RE` 接受）。所以这里**没有**对应的用例——写一条
-    只能是空断言，而空断言这一轮已经骗过我两次。留着循环是因为它不花钱，
-    但别把它当成有测试覆盖的行为。
-    """  # noqa: DOCSTRING_CJK
-    target = _CHAT_FULL_REWRITE_RE.search(readable)
-    if not target:
-        return False
-    spans = [hit.span() for hit in _CHAT_QUOTED_SPAN_RE.finditer(readable)]
-    # ⚠️ 跨度**有序且互不重叠**，所以「(lo, hi) 里有没有整段跨度」只要看
-    # 起点 ≥ lo 的**第一段**——它的终点在所有候选里最小。第一版对每个动词
-    # 线性扫全表，是 O(动词 × 跨度)：10K 字符要 21 ms、100K 就到秒级，
-    # 而这是条聊天输入路径。原来那两次 search 是线性的，二次方是我引进的。
-    starts = [start for start, _ in spans]
-    for verb in _CHAT_REWRITE_VERB_RE.finditer(readable):
-        if verb.start() >= target.end():
-            lo, hi = target.end(), verb.start()
-        else:
-            lo, hi = verb.end(), target.start()
-        index = bisect.bisect_left(starts, lo)
-        if index >= len(spans) or spans[index][1] > hi:
-            return True
-    return False
-
-
 def _chat_clauses(text: str) -> list[str]:
-    """按句读把整段文本切成子句，**引用跨度里的句读不算数**。
+    """按句读把整段文本切成子句。
 
-    ⚠️ `重写所有字段并把口头禅设为“好不好，随便”` 里那个逗号在**字段值内部**。
-    上一版先切后抹，逗号把引用跨度劈成两半、`好不好` 裸露在前半段，疑问守卫
-    当场把整条命令丢掉（Codex P2 第六十二轮，base 是 True，同族实测 15 条）。
+    ⚠️⚠️ **这里曾经改成「跳过引用跨度里的句读」，又退了回来。别再改第三次。**
 
-    ⚠️ 根子是**处理顺序**：抹引号的三个助手（_chat_clause_without_quotes 等）
-    都在切分**之后**才跑，可切分本身就已经把跨度破坏掉了。所以修在切分这一步，
-    而不是再加一道守卫。music_requests 的 `_zh_neutralize_free_choice` 找边界时
-    早就跳过跨度了（第五十四轮），这边是同一条道理。
+    当初改它是为了 `重写所有字段并把口头禅设为“好不好，随便”`——引号里的逗号
+    把跨度劈成两半、`好不好` 裸露出来被疑问守卫当成提问，整条命令丢掉。
+    那个现象是真的，但方向是**少补几个字段**，用户再说一遍就行。
 
-    ⚠️ 分隔符表仍然是 `_CHAT_CLAUSE_SPLIT_RE` 那一张，没动——否定守卫里那个
-    「同子句」窗口跟它同源，两边必须保持一致。
+    代价是它一口气造出**两条数据覆盖方向**的缺陷，都是不可逆的那一侧：
+      · 引号里的逗号不再切分，原本分属两个子句的整卡目标和重写动词并回同一句，
+        `先展示“整个卡，姓名”然后重写名字` 走进整卡补全并 autosave；
+      · 更糟的是 `_CHAT_NEGATED_REWRITE_RE` 中间那段窗口是**这张标点表的补集**，
+        它没跟着改，于是两边对「一个子句有多长」的定义脱钩——
+        `不要把“整个卡，包括头像”重写` 里 `不要` 够不到 `重写`，用户明说了禁止，
+        整张卡照样被覆盖。下面 `_CHAT_CLAUSE_SPLIT_RE` 那行注释写的「两处必须同源」
+        就是这个意思，当初只改了一处。
+
+    为一条「少做一件事」的缺陷去换两条「多做一件不可逆的事」的缺陷，方向反了。
+    退回之后那两条自动消失，第六十三轮为了补它而加的整套配对守卫也一起删掉了。
+    留下的代价写成了 by-design 用例，见
+    `test_a_separator_inside_a_quoted_value_still_splits_the_clause`。
     """  # noqa: DOCSTRING_CJK
-    text = text or ""
-    spans = [hit.span() for hit in _CHAT_QUOTED_SPAN_RE.finditer(text)]
-    # ⚠️ 跨度有序且互不重叠，用二分找「起点 ≤ 这个句读的最后一段」就够。
-    # 第一版对每个句读线性扫全表，是 O(句读 × 跨度)——42K 字符要 300 ms，
-    # 而这是条聊天输入路径。切分本来是一次 re.split，二次方是我上一轮引进的。
-    span_starts = [lo for lo, _ in spans]
-    clauses: list[str] = []
-    start = 0
-    for hit in _CHAT_CLAUSE_SPLIT_RE.finditer(text):
-        index = bisect.bisect_right(span_starts, hit.start()) - 1
-        if index >= 0 and hit.start() < spans[index][1]:
-            continue
-        piece = text[start:hit.start()]
-        if piece.strip():
-            clauses.append(piece)
-        start = hit.end()
-    tail = text[start:]
-    if tail.strip():
-        clauses.append(tail)
-    return clauses
+    return [c for c in _CHAT_CLAUSE_SPLIT_RE.split(text or "") if c.strip()]
 
 
 # ⚠️ 引号里的内容是**被引用的素材**，不是对我们下的指令。
@@ -1619,7 +1566,10 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         if _CHAT_QUESTION_CLAUSE_RE.search(readable_question):
             continue
         readable = _chat_clause_without_quoted_prohibitions(clause)
-        if _chat_clause_pairs_target_with_verb(readable):
+        if (
+            _CHAT_FULL_REWRITE_RE.search(readable)
+            and _CHAT_REWRITE_VERB_RE.search(readable)
+        ):
             return True
     return False
 

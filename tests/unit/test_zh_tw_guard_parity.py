@@ -2801,41 +2801,42 @@ def test_a_correlative_without_a_frame_word_is_still_a_question(
 
 @pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
 @pytest.mark.parametrize("separator", ["，", ",", "；", ";", "、"])
-def test_separators_inside_a_quoted_value_do_not_split_the_clause(
+def test_a_separator_inside_a_quoted_value_still_splits_the_clause(
     separator, opener, closer
 ):
-    """引用跨度里的句读**不算句读**（base 全是 True，Codex P2 第六十二轮，
-    同族实测 15 条）。
+    """⚠️⚠️ **这条是 by-design 的代价，不是缺陷。别再去"修"它。**
 
-    `重写所有字段并把口头禅设为“好不好，随便”` 里那个逗号在字段值内部。
-    上一版先切后抹，逗号把跨度劈成两半、`好不好` 裸露在前半段，疑问守卫当场
-    把整条命令丢掉。
+    `重写所有字段并把口头禅设为“好不好，随便”` base 是 True、现在是 False——
+    引号里那个逗号照样切子句，`好不好` 裸露出来被疑问守卫当成提问。
 
-    ⚠️ 根子是**处理顺序**：三个抹引号的助手都在切分之后才跑，可切分本身已经
-    把跨度破坏掉了。所以修在切分那一步，不是再加一道守卫。
+    我确实改过 `_chat_clauses` 让它跳过引用跨度，那条现象当场就好了。但那个改动
+    一口气造出两条**数据覆盖方向**的缺陷（都不可逆）：
+      · `先展示“整个卡，姓名”然后重写名字` 走进整卡补全并 autosave；
+      · `不要把“整个卡，包括头像”重写`——否定守卫那段窗口是这张标点表的**补集**，
+        它没跟着改，`不要` 够不到 `重写`，用户明说了禁止照样被覆盖。
+
+    为一条「少补几个字段」去换两条「多改一整张卡」，方向反了，所以退回。
+    这条用例把退回后的行为钉住，免得下一轮又被当成缺陷捡起来。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     text = f'重写所有字段并把口头禅设为{opener}好不好{separator}随便{closer}'
-    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    # ⚠️ 但**没有分隔符**的那一半仍然成立（第五十九轮修的），别一起退掉。
+    assert router._chat_text_requests_full_rewrite(
+        f'重写所有字段并把口头禅设为{opener}好不好{closer}'
+    ) is True
 
 
-def test_clause_splitting_reports_quote_aware_pieces():
-    """⚠️ 直接钉住切分函数本身，别只从外层行为反推——外层还有好几道守卫，
-    切错但恰好被别的守卫兜住时那种测试就成了假绿。
-    """  # noqa: DOCSTRING_CJK
+def test_clause_splitting_ignores_quotes_by_design():
+    """⚠️ 切分**不看引号**——见上一条为什么退回。这里直接钉住切分函数本身。"""  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_clauses('重写所有字段并设为“好不好，随便”') == [
-        '重写所有字段并设为“好不好，随便”'
+        '重写所有字段并设为“好不好', '随便”'
     ]
-    # ⚠️ 引号**外面**的句读照旧切——分隔符表没动，否定守卫那个「同子句」
-    # 窗口跟它同源，两边必须保持一致。
     assert router._chat_clauses('重写所有字段，别改名字') == [
         '重写所有字段', '别改名字'
-    ]
-    assert router._chat_clauses('重写所有字段，别改“名字，昵称”') == [
-        '重写所有字段', '别改“名字，昵称”'
     ]
 
 
@@ -2860,13 +2861,13 @@ def test_a_prohibition_still_stays_inside_its_own_clause(separator):
 def test_a_quoted_span_between_target_and_verb_breaks_the_pairing(
     separator, opener, closer
 ):
-    """⚠️⚠️ **这条修的是我自己上一轮改出来的回归。**
+    """整卡目标被拿来当例子/素材、真正的宾语在别处时，不算整卡重写命令
+    （base 都是 False）。
 
-    第六十二轮把切分改成跳过引用跨度之后，原先被引号内逗号劈开的两段并回了同一
-    子句，于是隔着一段引用的目标和动词重新相遇——而目标和动词本来就是各自独立
-    search 的，窗口等于整个子句（base 都是 False，数据覆盖方向，第六十三轮）。
-
-    夹着一段引用意味着目标是被拿来当例子/素材，不是这个动词的宾语。
+    ⚠️ 这两句一度变成 True——第六十二轮把切分改成跳过引用跨度，引号里的逗号
+    不再切子句，目标和动词并回同一句就配上了。第六十三轮我给它加了一道
+    「夹着跨度不算配上」的守卫；第六十五轮把切分整个退回之后，那道守卫不再需要，
+    连同它引进的 O(n²) 一起删掉。结论不变，靠的是切分本身，不是额外的守卫。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
@@ -2876,19 +2877,16 @@ def test_a_quoted_span_between_target_and_verb_breaks_the_pairing(
         assert router._chat_text_requests_full_rewrite(text) is False, text
 
 
-def test_a_span_overlapping_the_target_still_pairs():
-    """⚠️ 判据是「**完全落在**目标和动词之间」，不是「有重叠」。
+def test_a_target_written_inside_quotes_is_still_a_command():
+    """⚠️ 目标本身写在引号里时仍然是命令（base 是 True）。
 
-    `把《整个卡》重写` 里目标本身就写在引号里，跨度跟目标重叠，那条仍然是命令
-    （base 是 True）。写成「只要句子里有引号就不配对」会把它一起打掉。
+    第六十三轮我为此加过一个「目标和动词之间夹着引用跨度就不算配上」的守卫，
+    那是为了补第六十二轮切分改动的后果；切分退回之后那个守卫连同它的复杂度
+    一起删掉了，这条断言留着——它钉的是 base 行为，跟守卫在不在无关。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
     assert router._chat_text_requests_full_rewrite('把《整个卡》重写') is True
-    # 动词在目标**前面**时同样要能配上（第五十九/六十二轮那两条）。
-    assert router._chat_text_requests_full_rewrite(
-        '重写所有字段并把口头禅设为“好不好，随便”'
-    ) is True
 
 
 @pytest.mark.parametrize(
@@ -2995,3 +2993,46 @@ def test_clause_splitting_stays_roughly_linear_in_input_length():
     started = time.perf_counter()
     router._chat_text_requests_full_rewrite(text)
     assert time.perf_counter() - started < 3.0
+
+
+@pytest.mark.parametrize(("opener", "closer"),
+                         [("“", "”"), ("「", "」"), ("『", "』"), ("《", "》"), ("【", "】")])
+@pytest.mark.parametrize("target", ["整个卡", "整张卡", "所有字段", "全部欄位"])
+def test_a_quoted_span_enclosing_the_target_is_quoted_material(opener, closer, target):
+    """⚠️⚠️ 引号**包住整卡目标**时，那是被引用的素材，不是重写动词的宾语
+    （base 全是 False——数据覆盖方向，第六十五轮扫描发现）。
+
+    `先展示“整个卡，姓名”然后重写名字` 里用户只想改「名字」一个字段。
+    一度判成 True：第六十二轮让切分跳过引用跨度，引号里的逗号不再切子句，
+    目标和动词并回同一句。第六十三轮加的配对守卫只挡「跨度完全落在两者之间」，
+    跨度**往左吃掉目标本身**就绕过去了——同一族只堵住了一半。
+
+    切分退回之后整族一起消失，不需要那道守卫。这条用例钉住结论。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'先展示{opener}{target}，姓名{closer}然后重写名字'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("negation", ["不要", "别", "別", "不用", "不必", "无需"])
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
+def test_a_prohibition_reaches_the_verb_across_a_quoted_comma(
+    opener, closer, negation
+):
+    """⚠️⚠️ **这条是这个 PR 里最重的一条**：用户明确说了禁止，整张卡照样被覆盖。
+
+    `不要把“整个卡，包括头像”重写` base 是 False，一度变成 True。
+
+    根因是**两处脱钩**：`_CHAT_NEGATED_REWRITE_RE` 中间那段窗口是
+    `_CHAT_CLAUSE_SPLIT_RE` 那张标点表的**补集**，两边注释都写着「必须同源」；
+    第六十二轮只把切分那一侧改成跳过引用跨度，否定守卫没跟着改，于是两边对
+    「一个子句有多长」的定义不一致——切分认为整句是一个子句，否定守卫却在引号内
+    的逗号处停住，`不要` 够不到 `重写`，守卫一次都不触发。
+
+    切分退回之后两边重新同源。这条用例钉住这个不变量。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{negation}把{opener}整个卡，包括头像{closer}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
