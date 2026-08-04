@@ -6157,3 +6157,104 @@ def test_a_conditional_frame_opens_on_a_predicate_too(predicate, rest):
     text = f'我想停止播放要是{predicate}{rest}'
     assert mr._ZH_FREE_CHOICE_FRAME_RE.search(text) is not None, text
     assert mr.is_explicit_music_cancellation(text) is True, text
+
+
+def _music_join_negators() -> list[str]:
+    from main_logic.music_requests import _ZH_TEMPORAL_JOIN_NEGATORS
+
+    table = list(_ZH_TEMPORAL_JOIN_NEGATORS)
+    assert table, "_ZH_TEMPORAL_JOIN_NEGATORS 是空的"
+    return table
+
+
+
+@pytest.mark.parametrize("noun", ["基因", "原因", "病因", "死因", "成因"])
+def test_a_noun_containing_yin_is_not_a_reason_marker(noun):
+    """⚠️⚠️ 单字 `因`/`既` 已经从理由标记表里**删掉**，别再加回来。
+
+    它们是 基因 / 原因 / 病因 / 既有 的子串，一进表就把 `对基因报告不确定是否合适`
+    判成「有理由标记 → 是断言」，`是否` 被中和、执行了取消
+    （base 是 False——危险方向，第六十八轮）。
+
+    ⚠️ 删而不是加黑名单：含它们的名词是**开集**，黑名单堵不完；多字形
+    因为/由于/既然 已经覆盖真实用法。当初加这两个单字时**没有失败用例支撑**。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert "因" not in mr._ZH_REASON_MARKERS
+    assert "既" not in mr._ZH_REASON_MARKERS
+    text = f'我想停止播放前对{noun}报告不确定是否合适'
+    assert mr.is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("coordinator", ["但", "但是", "不过", "不過", "可是", "然而", "却"])
+@pytest.mark.parametrize("reason", ["因为", "由于", "既然"])
+def test_a_reason_does_not_govern_across_a_coordinator(coordinator, reason):
+    """⚠️ 理由标记的辖域边界要跟**框架辖域同源**：`因为音质差但不知道是否合适`
+    里那个理由属于 `但` 之前那一小句，管不到后面的犹豫（base 是 False，第六十八轮）。
+
+    上一版这里只认标点，框架那边早就连词也认了——这是这个 PR 里**第三次**栽在
+    「同一个概念两处各写一份」上（前两次：子句切分 vs 否定守卫窗口、标记表 vs 守卫）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{reason}音质差{coordinator}不知道是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("quote", ["'", "‘"])
+def test_an_ambiguous_quote_still_shields_a_title_from_reason_lookup(quote):
+    """⚠️ 理由标记的跨度要连**歧义引号**一起算：`'因为爱情'` 也是歌名。
+
+    主跨度表把 `'`/`‘` 排除在外是为了 Guns N' Roses 那个撇号，但那条取舍属于
+    **标题遮蔽**；放到理由标记这里方向正好相反——多算一段跨度 ＝ 少认一个理由标记
+    ＝ 少停一次歌（轻），少算一段则是把用户的犹豫执行成取消（重）。
+
+    ⚠️ 不这么改的话，第六十五轮那条修复自己写的理由「判定不该取决于歌名」就只
+    兑现了一半：换个引号同一个歌名结论又反过来。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    closer = quote if quote == "'" else "’"
+    text = f'帮我停止播放{quote}因为爱情{closer}不知道是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+    # ⚠️ 反向：撇号那条取舍没被打掉——标题遮蔽仍然不把 ' 当开引号。
+    assert is_explicit_music_cancellation("别放 Guns N' Roses 了") is True
+
+
+@pytest.mark.parametrize("negator", _music_join_negators())
+def test_the_temporal_join_skips_every_cancellation_form(negator):
+    """⚠️ 时间小句合并的否定前视要跟「取消播放」那一族**同源**：`无需再放音乐了` /
+    `取消再播放音乐` 都是明确的取消请求，合并之后前半句连上来就匹配不到了
+    （base 是 True，第六十八轮）。手写那一版只列了 不/别/甭/莫/勿/停。
+
+    ⚠️ 这条直接打**机制**（那个逗号有没有被吃掉），不打端到端结论。
+    第一版写成「每个词都要让整句成为取消请求」，结果 `停再放音乐了` /
+    `退出再放音乐了` 这些根本不成句的组合全红——**派生笛卡尔积断言了机制并不
+    保证的东西**。端到端只留下面那几句真实说法。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    text = f'播放的时候，{negator}再放音乐了'
+    assert mr._ZH_TEMPORAL_CLAUSE_JOIN_RE.sub(r"", text) == text, text
+
+
+def test_the_temporal_join_still_fires_without_a_negation():
+    """⚠️ 反向：没有否定时那条合并照旧生效（第四十六轮修的），别把它整条废掉。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    joined = '停止播放的时候，顺便关灯'
+    assert mr._ZH_TEMPORAL_CLAUSE_JOIN_RE.sub(r"", joined) != joined
+    assert mr.is_explicit_music_cancellation(joined) is True
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    ['播放的时候，无需再放音乐了', '播放的時候，無需再放音樂了',
+     '播放的时候，取消再播放音乐', '播放的时候，不要再放音乐了'],
+)
+def test_a_cancellation_after_a_temporal_clause_survives(sentence):
+    """端到端：这几句都是真实说法，base 全是 True。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(sentence) is True, sentence

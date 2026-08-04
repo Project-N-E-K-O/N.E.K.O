@@ -965,8 +965,17 @@ _ZH_FREE_CHOICE_WH_ONLY_RE = re.compile(
 # `因为不知道是否好歌都不想听` 是在说停歌的理由（第五十三轮，base 是 True）。
 # 有 `因为` 时整段是理由小句；没有时 `不知道是否合适` 就是在犹豫要不要停。
 # ⚠️ 理由标记是**封闭词类**，一次列全；只在**同一子句内、框架词之前**找。
+# ⚠️⚠️ **单字 `因`/`既` 已经删掉，别再加回来。**
+# 它们是 基因 / 原因 / 病因 / 死因 / 既有 / 既往 的子串，一进表就把
+# `对基因报告不确定是否合适` 判成「有理由标记 → 是断言」，`是否` 被中和掉、
+# 执行了取消（base 是 False——危险方向，第六十八轮）。
+# ⚠️ 删而不是加黑名单：包含它们的名词是**开集**（基因/原因/病因/成因/病因学…），
+# 黑名单堵不完；而多字形 因为/由于/既然 已经覆盖真实用法。
+# 当初加这两个单字时**没有任何失败用例支撑**，是我顺手补的——跟右界表那次
+# 一样，属于「没有失败用例的防御」。
+# ⚠️ 漏判方向是轻的那一侧：少认一个理由标记 ＝ 少中和一次 ＝ 少停一次歌。
 _ZH_REASON_MARKERS = (
-    "因为", "因為", "由于", "由於", "既然", "鉴于", "鑑於", "因", "既",
+    "因为", "因為", "由于", "由於", "既然", "鉴于", "鑑於",
 )
 _ZH_REASON_MARKER_RE = re.compile(r"(?:" + "|".join(_ZH_REASON_MARKERS) + r")")
 
@@ -1045,7 +1054,7 @@ _ZH_FREE_CHOICE_FRAME_RE = re.compile(
 )
 
 
-def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
+def _zh_quoted_spans(text: str, include_ambiguous: bool = False) -> list[tuple[int, int]]:
     """引用跨度区间，跟子句切分用的是同一张引号表。
 
     ⚠️ **没配平的开引号一直管到文末**：`停止播放《如果爱是否合适` 里用户漏了书名号
@@ -1065,7 +1074,9 @@ def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
                 spans.append((start, index + 1))
                 opener = ""
             continue
-        if char in _QUOTE_PAIRS and char not in _ZH_AMBIGUOUS_QUOTE_OPENERS:
+        if char in _QUOTE_PAIRS and (
+            include_ambiguous or char not in _ZH_AMBIGUOUS_QUOTE_OPENERS
+        ):
             opener = char
             start = index
     if opener:
@@ -1127,17 +1138,30 @@ def _zh_neutralize_free_choice(text: str) -> str:
         token_re = _ZH_FREE_CHOICE_TOKEN_RE
         if _ZH_COGNITION_FRAME_RE.fullmatch(marker.group(0)):
             head = text[:marker.start()]
+            # ⚠️ 边界要跟**框架辖域同源**：`因为音质差但不知道是否合适` 里那个
+            # 理由属于 `但` 之前那一小句，管不到后面的犹豫（base 是 False——
+            # 危险方向，第六十八轮）。上一版这里只认标点，框架那边早就连词也认了，
+            # 两处对「一个小句到哪为止」的定义又脱钩了——这是这个 PR 里第三次
+            # 栽在「同一个概念两处各写一份」上。
             boundary = max(
-                (hit.end() for hit in _ZH_CLAUSE_BOUNDARY_RE.finditer(head)),
+                (hit.end() for hit in _ZH_FRAME_SCOPE_END_RE.finditer(head)),
                 default=0,
             )
+            # ⚠️ 这里的跨度要连**歧义引号**（' 和 ‘）一起算：`'因为爱情'` 也是
+            # 歌名。主跨度表把它们排除在外是为了 Guns N' Roses 那个撇号，
+            # 但那条取舍属于**标题遮蔽**；放到理由标记这里方向正好相反——
+            # 多算一段跨度 ＝ 少认一个理由标记 ＝ 少中和 ＝ 少停一次歌（轻），
+            # 少算一段则是把用户的犹豫执行成取消（重）。
+            # 不这么改的话，第六十五轮那条修复自己写的理由「判定不该取决于歌名」
+            # 就只兑现了一半：换个引号同一个歌名结论又反过来。
+            reason_spans = _zh_quoted_spans(text, include_ambiguous=True)
             # ⚠️ 找理由标记时要**跳过引用跨度**：《因为爱情》是歌名，里面的
             # `因为` 不是理由标记。不跳过的话判定会取决于**歌名内容**——
             # 同一句话换成《晴天》结论就反过来，这显然不对。
             # 三行之上那个框架词循环本来就跳过 spans，这里没跟上，同一段文本两套读法。
             asserted = any(
                 hit.start() >= boundary
-                and not any(lo <= hit.start() < hi for lo, hi in spans)
+                and not any(lo <= hit.start() < hi for lo, hi in reason_spans)
                 for hit in _ZH_REASON_MARKER_RE.finditer(head)
             )
             if not asserted:
@@ -1178,7 +1202,17 @@ _ZH_FRAME_SCOPE_END_RE = re.compile(
 # ⚠️ 后一子句是**否定**时不能合并：`播放的时候，不要再放音乐了` 里的 `再`
 # 恰好是关联副词，合并之后 `不要再放` 跟前半句连成一体，整条取消请求丢掉
 # （base 是 True，第六十三轮）。否定词是闭集，直接前视排除。
-_ZH_TEMPORAL_JOIN_NEGATION = r"(?![^，,。！!？?]{0,4}?(?:不|别|別|甭|莫|勿|停|停止))"
+# ⚠️ 这张表要跟「取消播放」那一族**同源**，不能手写几个字：`无需再放音乐了` /
+# `取消再播放音乐` 都是明确的取消请求，合并之后前半句连上来就匹配不到了
+# （base 是 True，第六十八轮）。手写那一版只列了 不/别/甭/莫/勿/停。
+_ZH_TEMPORAL_JOIN_NEGATORS = (
+    "不", "别", "別", "甭", "莫", "勿", "停", "停止",
+    "无需", "無需", "无须", "無須", "取消", "关掉", "關掉", "关闭", "關閉",
+    "退出", "结束", "結束", "暂停", "暫停",
+)
+_ZH_TEMPORAL_JOIN_NEGATION = (
+    r"(?![^，,。！!？?]{0,4}?(?:" + "|".join(_ZH_TEMPORAL_JOIN_NEGATORS) + r"))"
+)
 _ZH_TEMPORAL_CLAUSE_JOIN_RE = re.compile(
     rf"(的(?:时候|時候))\s*[，,；;、]\s*"
     rf"{_ZH_TEMPORAL_JOIN_NEGATION}"

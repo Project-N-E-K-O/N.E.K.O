@@ -781,6 +781,9 @@ def test_the_negator_table_is_derived_and_complete():
         "别", "別", "甭", "莫", "休要",
         "先不", "暫不", "暂不", "暫時不", "暂时不",
         "無需", "无需", "勿", "切勿", "請勿", "请勿", "禁止", "嚴禁", "严禁",
+        # ⚠️ 「没有必要」那一族是**否定断言**不是祈使禁止，但对我们是同一件事：
+        # `没有必要重写整个卡的每一项内容` base 是 False（第六十八轮 P1）。
+        "没有必要", "沒有必要", "没必要", "沒必要", "不必要", "無必要", "无必要",
     }, NEGATORS
 
 
@@ -2568,6 +2571,9 @@ _SIMPLIFIED_TO_TRADITIONAL.update({
     # 报出映射自己的洞而不是词表的洞（前两次是 `一并`/`暂时不` 和 `准备`）——
     # 说明它真正在拦的东西比「补词条」更靠前一层。
     "着": ("着", "著"),
+    # ⚠️ 第四次了（一并/暂时不、准备、紧接着，现在是 无须）。这条断言真正在拦的
+    # 不是「词表少收一个词」，而是「映射表说不出这个词有繁体形」。
+    "须": ("须", "須"),
     "几": ("幾",),
     "后": ("後",),
     "么": ("麼",),
@@ -3040,3 +3046,122 @@ def test_a_prohibition_reaches_the_verb_across_a_quoted_comma(
 
     text = f'{negation}把{opener}整个卡，包括头像{closer}重写'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("head", ["怎么", "怎麼", "怎样", "怎樣", "如何"])
+def test_how_style_question_heads_are_not_edit_commands(head):
+    """wh 头当初只收了「为」那一支（为什么/为何/为啥），问**做法**的这一支漏了：
+    `怎么把整个卡的每一项内容重写` base 是 False，却走进整卡补全并 autosave
+    （第六十八轮 P1）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'{head}把整个卡的每一项内容重写'
+    ) is False, head
+    # ⚠️ 只认**子句句首**：句中的 `怎么` 太常见，`把所有字段该怎么重写就怎么重写`
+    # 是命令不是提问。第一版用左界黑名单（挡 不管/无论/该），变异验证显示那条黑名单
+    # **是多余的**（任指遮蔽早就把 `不管怎么…都` 抹掉了），而且它还漏掉了句尾
+    # 那个前面是 `就` 的 `怎么`。
+    assert router._chat_text_requests_full_rewrite(
+        f'不管{head}都把所有字段重写一遍'
+    ) is True, head
+    # ⚠️ 这条打**守卫本身**而不是端到端结论：`把所有字段该怎么重写就怎么重写`
+    # 端到端确实是 False，但根因不在这条分支——把整卡目标正则的介词左界剥掉之后
+    # 它照样匹配不上，是更早某轮的第 3 类回归（按边界不修）。拿端到端当断言会把
+    # 一个无关缺陷绑进来，这一轮已经在 `谁` 那条上栽过一次。
+    assert router._CHAT_QUESTION_CLAUSE_RE.search(
+        f'把所有字段该{head}重写就{head}重写'
+    ) is None, head
+
+
+def test_who_only_counts_at_the_start_of_a_clause():
+    """⚠️ `谁` 只认**子句句首**——那才是疑问主语。
+
+    第一版写成「左边黑名单 + 右边二十字内有重写动词」，实测误伤了两句 base=True 的
+    命令：`把所有字段里谁的名字都重写`、`告诉我谁写的然后重写所有字段`。
+    `谁` 在句中太常见，左邻是开集（里谁 / 我谁 / 问谁 / 看谁…），黑名单堵不完；
+    句首这条判据闭合。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite('谁把整个卡的每一项内容重写') is False
+    assert router._chat_text_requests_full_rewrite('誰把整個卡的每一項內容重寫') is False
+    # ⚠️ 反向断言要选**不受别处干扰**的句子。第一版用的是
+    # `把所有字段里谁的名字都重写`，那句确实 base=True / now=False，但根因不在
+    # `谁` 这条分支——把整卡目标正则的介词左界剥掉之后它照样匹配不上，是更早某轮
+    # 引进的第 3 类回归（少触发，按边界不修）。拿它当反向断言等于把一个无关缺陷
+    # 绑进这条用例，下次谁改 `谁` 分支都会被它误导。
+    assert router._chat_text_requests_full_rewrite(
+        '告诉我谁写的然后重写所有字段'
+    ) is True
+    assert router._CHAT_QUESTION_CLAUSE_RE.search('把所有字段里谁的名字都重写') is None
+
+
+@pytest.mark.parametrize(
+    "tail", ["并不是必要的", "並不是必要的", "不是必须的", "算不上必要", "谈不上必要"]
+)
+def test_a_postposed_negated_assertion_is_not_a_command(tail):
+    """⚠️ 否定在动词**后面**时前置窗口够不着：`把整个卡的每一项内容都重写并不是
+    必要的` base 是 False（第六十八轮 P1）。
+
+    这一族是闭集（并不是/不是/算不上/谈不上 + 必要/必须/必需 + 的），单列一条判据。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的每一项内容都重写{tail}'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("negator", ["没有必要", "沒有必要", "没必要", "不必要", "无必要"])
+def test_a_prefixed_negated_assertion_is_not_a_command(negator):
+    """`没有必要重写整个卡的每一项内容` —— 否定断言不是祈使禁止，但对我们是同一件事。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{negator}重写整个卡的每一项内容'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("preposition", _router_table("_CHAT_REFERENCE_PREPOSITIONS"))
+def test_reference_material_is_not_the_rewrite_target(preposition):
+    """⚠️ 介词引出的是**参照材料**，不是重写动词的宾语：`根据整个卡的每一项内容
+    重写名字` 里用户只想改「名字」（base 是 False——数据覆盖方向，第六十八轮 P1）。
+
+    ⚠️ 介词是**封闭词类**，列得干净。这跟「重写动词是否支配整卡目标」那个一般性
+    问题不是一回事——那个要建支配关系（新机制，归 issue #2693），这个只是给已有的
+    目标正则加一道左界。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'{preposition}整个卡的每一项内容重写名字'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+    # ⚠️ 反向：没有介词时它照旧是整卡目标。
+    assert router._chat_text_requests_full_rewrite('把整个卡的每一项内容重写') is True
+
+
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ('"', '"')])
+@pytest.mark.parametrize("head", ["Whenever", "If", "When", "Whether"])
+def test_a_quoted_conditional_clause_is_not_a_command(opener, closer, head):
+    """⚠️⚠️ 根子是**两份文本对同一段引用不对称**：疑问守卫读「抹掉所有跨度」之后的
+    文本、看不见引号里的 `Whenever`；正向信号读「只抹带禁止的跨度」之后的文本、
+    看得见引号里的 `all fields` 和 `rewrite`。缺口就在中间——
+    `卡里这句“Whenever you rewrite all fields…”有点奇怪` 走进整卡补全并 autosave
+    （base 是 False——数据覆盖方向，第六十八轮退出条件检查发现）。
+
+    ⚠️ 修在**正向信号**这一侧：引号里的疑问式本来就可能是字段值
+    （`把口头禅设为“好不好”`，第五十九轮），让疑问守卫看见它会把那条命令误杀。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'卡里这句{opener}{head} you rewrite all fields keep the tone{closer}有点奇怪'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+def test_quoted_field_values_and_quoted_targets_still_work():
+    """⚠️ 反向：抹掉「带疑问头的跨度」不能误伤这两条已经收敛过的判据。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        '重写所有字段并把口头禅设为“好不好”'
+    ) is True
+    assert router._chat_text_requests_full_rewrite('把《整个卡》重写') is True

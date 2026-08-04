@@ -1117,7 +1117,21 @@ _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
 # ⚠️ 只在紧贴「的」时算数：`把整个卡的名字整体重写` 里「整体」修饰的是单字段。
 _WHOLE_CARD_HEAD_NOUNS = ("整体", "整體", "内容", "內容")
 
+# ⚠️ 介词引出的是**参照材料**，不是重写动词的宾语：`根据整个卡的每一项内容重写
+# 名字` 里用户只想改「名字」，整卡短语是 `根据` 的宾语（base 是 False——数据
+# 覆盖方向，第六十八轮 P1）。
+# ⚠️ 介词是**封闭词类**，可以列干净——这跟「重写动词是否支配整卡目标」那个
+# 一般性问题不是一回事：那个要建支配关系（新机制，归 issue #2693），
+# 这个只是给已有的目标正则加一道左界。
+_CHAT_REFERENCE_PREPOSITIONS = (
+    "根据", "根據", "按照", "依据", "依據", "参考", "參考", "照着", "照著",
+    "对照", "對照", "比照", "仿照", "按", "依", "凭", "憑", "就着", "就著",
+)
+_CHAT_REFERENCE_PREPOSITION_LEFT = (
+    r"(?<!" + r")(?<!".join(_CHAT_REFERENCE_PREPOSITIONS) + r")"
+)
 _CHAT_FULL_REWRITE_RE = re.compile(
+    _CHAT_REFERENCE_PREPOSITION_LEFT +
     # 「整个卡」是本来就缺的简体配对（表里原有「整個卡」但没有它），不是繁体
     # 补齐引入的——它既不是「整张卡」的子串，也不是「整个角色卡」的子串，所以
     # 简体用户用「个」当量词时这条一直匹配不到（CodeRabbit）。
@@ -1307,6 +1321,9 @@ _CHAT_NEGATION_WORDS = (
     "不得", "不可", "不能",
     "别", "別", "甭", "莫", "休要", "先不", "暫不", "暂不", "暫時不", "暂时不",
     "無需", "无需", "勿", "切勿", "請勿", "请勿", "禁止", "嚴禁", "严禁",
+    # ⚠️ 「没有必要」那一族：`没有必要重写整个卡的每一项内容` base 是 False
+    # （第六十八轮 P1）。这是**否定断言**不是祈使禁止，但对我们是同一件事。
+    "没有必要", "沒有必要", "没必要", "沒必要", "不必要", "無必要", "无必要",
 )
 _CHAT_NEGATION_LEXEME = (
     r"(?:" + "|".join(_CHAT_NEGATION_WORDS)
@@ -1389,9 +1406,32 @@ def _chat_clauses(text: str) -> list[str]:
 # ⚠️ **不收 ASCII 单引号和左单引号**：`Don't Stop Believin'` 里它们是撇号不是引号，
 # 收了会把 `'t Stop Believin'` 当成一段引用、把真正的否定词抹掉——那是危险方向。
 # music_requests 的 _ZH_AMBIGUOUS_QUOTE_OPENERS 是同一条取舍。
+# 后置否定断言：动词在前、否定在后。闭集。
+_CHAT_POSTPOSED_NEGATION_RE = re.compile(
+    r"(?:并不是|並不是|不是|并非|並非|算不上|谈不上|談不上|没有一个是|沒有一個是)"
+    r"\s*(?:很|太|特别|特別)?\s*"
+    r"(?:必要|必须|必須|必需|需要|应该|應該)"
+)
 _CHAT_QUOTED_SPAN_RE = re.compile(
     r"“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|【[^】]*】|\"[^\"]*\""
 )
+
+
+def _chat_span_carries_a_question(span: str) -> bool:
+    """这一段引号里带着疑问/条件头吗？——跟上面那条禁止判据同一个形状。
+
+    ⚠️⚠️ 根子是**两份文本对同一段引用不对称**：疑问守卫读的是「抹掉所有跨度」
+    之后的文本，正向信号读的是「只抹带禁止的跨度」之后的文本。于是把一整条
+    条件小句塞进引号里，疑问守卫看不见、正向信号看得见——
+    `卡里这句“Whenever you rewrite all fields keep the tone”有点奇怪` 就这样
+    走进整卡补全并 autosave（base 是 False——数据覆盖方向，第六十八轮）。
+    用户只是在评论卡里某行字，或者在转述别人写的规则。
+
+    ⚠️ 修在**正向信号**这一侧而不是让疑问守卫去看引号里：引号里的疑问式
+    本来就可能是字段值（`把口头禅设为“好不好”`，第五十九轮），让守卫看见它
+    会把那条命令误杀。抹掉整段跨度则两条都对——那句里目标和动词都在引号外。
+    """  # noqa: DOCSTRING_CJK
+    return bool(_CHAT_QUESTION_CLAUSE_RE.search(span))
 
 
 def _chat_span_carries_a_prohibition(span: str) -> bool:
@@ -1474,9 +1514,19 @@ def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
     用户就是用引号强调目标，base 上那些说法都是 True。
     ⚠️ **否定守卫不用这份文本**，它永远读原句——理由见
     _chat_span_carries_a_prohibition 的注释。
+
+    ⚠️⚠️ 带**疑问/条件头**的跨度同样要抹（第六十八轮）：
+    `卡里这句“Whenever you rewrite all fields keep the tone”有点奇怪`
+    里用户在评论/转述，不是在下命令。疑问守卫读的是「抹掉所有跨度」的文本、
+    看不见引号里的 `Whenever`，正向信号读的是这份、看得见引号里的
+    `all fields` 和 `rewrite`——**同一段引用两处看法不一样**，缺口就在中间。
+    这里补上之后两处对「引号里的疑问式」口径一致。
     """  # noqa: DOCSTRING_CJK
     return _CHAT_QUOTED_SPAN_RE.sub(
-        lambda m: " " if _chat_span_carries_a_prohibition(m.group(0)) else m.group(0),
+        lambda m: " " if (
+            _chat_span_carries_a_prohibition(m.group(0))
+            or _chat_span_carries_a_question(m.group(0))
+        ) else m.group(0),
         clause,
     )
 
@@ -1505,6 +1555,20 @@ _CHAT_QUESTION_CLAUSE_RE = re.compile(
     # （base 是 True）。这是这个 PR 里第七个「白名单词是更长词子串」入口。
     r"|(?<!因)为什么|(?<!因)為什麼|(?<!因)为何|(?<!因)為何|(?<!因)为啥|(?<!因)為啥"
     r"|干嘛|幹嘛|凭什么|憑什麼"
+    # ⚠️ wh 头当初只收了「为」那一支（为什么/为何/为啥），`怎么把整个卡的每一项
+    # 内容重写` / `如何…` / `谁…` 这些**问做法**的照旧走进整卡补全并 autosave
+    # （base 都是 False——数据覆盖方向，第六十八轮 P1）。
+    # ⚠️ 跟下面的 `谁` 一样**只认子句句首**——那才是问做法的疑问头。
+    # 第一版用左界黑名单（挡 不管/无论/该），变异验证显示那条黑名单**是多余的**：
+    # `不管怎么…都…` 早被任指遮蔽先抹掉了，删掉黑名单一条测试都不红。
+    # 而它还顺手引进了一条第 3 类回归——`把所有字段该怎么重写就怎么重写` 里句尾
+    # 那个 `怎么` 前面是 `就` 不是 `该`，照样开火。句首这条判据两件事一起解决。
+    r"|^(?:怎么|怎麼|怎样|怎樣|如何)"
+    # ⚠️ `谁` 只认**子句句首**——那才是疑问主语。第一版用「左边黑名单 + 右边
+    # 二十字内有重写动词」，误伤了 `把所有字段里谁的名字都重写` 和
+    # `告诉我谁写的然后重写所有字段`（base 都是 True）：`谁` 在句中太常见，
+    # 左邻是开集（里谁/我谁/问谁/看谁…），黑名单堵不完。句首这条判据闭合。
+    r"|^(?:谁|誰)"
     # ⚠️⚠️ 英文侧一条守卫都没有：整卡目标和重写动词那两张表本来就有英文分支，
     # 疑问/条件守卫却只有中文，于是 `Whenever you rewrite all fields, keep the
     # tone consistent` 这种**条件小句**被判成整卡重写命令并 autosave
@@ -1549,6 +1613,11 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         # `all fields` 配上引号外的单字段 `rewrite` 进了整卡补全通路
         # （Codex P1 第四十四轮）。
         # ⚠️ 否定守卫读**原句**：引号里的禁止一律算数。
+        # ⚠️ 后置的否定断言：`把整个卡的每一项内容都重写并不是必要的`——否定在
+        # 动词**后面**，前置窗口够不着（base 是 False，第六十八轮 P1）。
+        # 这一族是闭集（并不是/不是/算不上 + 必要/必须/必需 + 的），单列一条。
+        if _CHAT_POSTPOSED_NEGATION_RE.search(clause):
+            continue
         if _CHAT_NEGATED_REWRITE_RE.search(clause):
             continue
         # ⚠️ 疑问子句同样跳过：用户在问要不要改，不是在下命令。
