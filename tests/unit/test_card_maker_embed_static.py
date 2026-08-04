@@ -98,7 +98,7 @@ def test_versioned_embed_assets_use_immutable_cache_headers() -> None:
     web_app = (ROOT / "app" / "main_server" / "web_app.py").read_text(encoding="utf-8")
     pages_router = (ROOT / "main_routers" / "pages_router.py").read_text(encoding="utf-8")
 
-    assert 'if b"v=" in scope.get("query_string", b""):' in web_app
+    assert 'if _has_generated_asset_version(scope.get("query_string", b"")):' in web_app
     assert '"public, max-age=31536000, immutable"' in web_app
     assert 'static/js/card_maker_embed_bootstrap.js' in pages_router
 
