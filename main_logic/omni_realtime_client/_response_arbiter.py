@@ -393,7 +393,12 @@ class RealtimeResponseArbiter:
 
         current = self._current
         if current is None:
-            if not self._server_response_active:
+            live_server_response = bool(
+                self._server_vad_response_pending
+                or self._server_response_ids
+                or self._idless_server_response_live()
+            )
+            if not live_server_response:
                 return
             await self._send_event({"type": "response.cancel"})
             try:
@@ -859,7 +864,13 @@ class RealtimeResponseArbiter:
 
         self._server_response_active = True
         self._idle.clear()
-        if self._retired_created_window_live():
+        retired_created_live = self._retired_created_window_live()
+        if retired_created_live and self._server_vad_response_pending:
+            raise RuntimeError(
+                "ambiguous response.created while retired and server-VAD "
+                "gates overlap"
+            )
+        if retired_created_live:
             # The preceding owner ended before its announcement arrived. This
             # is a one-shot quarantine: consume exactly this delayed frame,
             # then clear the gate before a successor can dispatch. Keeping a

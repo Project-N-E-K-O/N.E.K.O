@@ -100,7 +100,7 @@ async def test_idless_orphan_terminal_does_not_complete_id_bearing_owner():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_retired_created_precedes_pending_server_vad_created():
+async def test_retired_created_overlap_with_server_vad_fails_closed():
     async def send(_event):
         return None
 
@@ -116,18 +116,12 @@ async def test_retired_created_precedes_pending_server_vad_created():
 
         arbiter.notify_server_vad_response_pending(arm_timeout=False)
 
-        assert not arbiter.notify_response_created(
-            {"type": "response.created", "response": {"id": "resp-retired"}}
-        )
-        assert arbiter._retired_created_deadline is None
+        with pytest.raises(RuntimeError, match="ambiguous response.created"):
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-unknown"}}
+            )
+        assert arbiter._retired_created_deadline is not None
         assert arbiter._server_vad_response_pending
-        assert "resp-retired" not in arbiter._server_response_ids
-
-        assert arbiter.notify_response_created(
-            {"type": "response.created", "response": {"id": "resp-vad"}}
-        )
-        assert not arbiter._server_vad_response_pending
-        assert "resp-vad" in arbiter._server_response_ids
     finally:
         await arbiter.shutdown()
 
@@ -149,6 +143,33 @@ async def test_expired_retired_created_gate_is_not_rearmed_at_zero_delay():
         assert arbiter._retired_created_deadline is None
         assert arbiter._stale_release_handle is not None
         assert arbiter._stale_release_handle.when() > loop.time()
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retired_created_gate_is_not_treated_as_cancellable_response():
+    sent: list[str] = []
+
+    async def send(event):
+        sent.append(event["type"])
+
+    arbiter = RealtimeResponseArbiter(send)
+    try:
+        previous = await arbiter.enqueue(source="previous")
+        await asyncio.wait_for(previous.sent, 0.2)
+        arbiter.notify_response_terminal(
+            {"type": "response.done", "response": {"status": "completed"}}
+        )
+        with pytest.raises(RuntimeError, match="before response.created"):
+            await asyncio.wait_for(previous.done, 0.2)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert arbiter._retired_created_window_live()
+        await arbiter.cancel_current(timeout=0.01)
+        assert "response.cancel" not in sent
     finally:
         await arbiter.shutdown()
 
@@ -294,15 +315,20 @@ async def test_transport_ignores_retired_created_before_exposing_successor():
             {"type": "response.created", "response": {"id": "resp-successor"}}
         ),
     ]
-    client._response_arbiter.notify_response_created = Mock(
-        side_effect=[False, True]
-    )
+    announces_before_created: list[bool] = []
+
+    def expose_created(_event):
+        announces_before_created.append(client._announces_responses)
+        return len(announces_before_created) == 2
+
+    client._response_arbiter.notify_response_created = Mock(side_effect=expose_created)
     client._close_failed_transport = AsyncMock()
 
     try:
         await client.handle_messages()
 
         assert client._response_created_total == 2
+        assert announces_before_created == [False, False]
         assert client._announces_responses is True
         assert client._current_response_id == "resp-successor"
         assert client._is_responding is True

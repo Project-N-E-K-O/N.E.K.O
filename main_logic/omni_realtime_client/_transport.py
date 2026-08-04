@@ -1845,9 +1845,9 @@ class _TransportMixin:
                     expose_response = self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
-                    self._announces_responses = True
                     if not expose_response:
                         continue
+                    self._announces_responses = True
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._turn_epoch += 1
