@@ -157,12 +157,12 @@ class QQReplyDeliveryNode:
         self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str,
         *, keyboard: str = "",
     ) -> bool:
-        """Returns True when the send is confirmed or fire-and-forget.
+        """Returns True only when the send came back confirmed.
 
-        NapCat sends return None by design (failure surfaces as an
-        exception); the Open Platform client returns the message id, or
-        None on a swallowed failure - only that explicit None means the
-        message was not delivered."""
+        Both platforms report one: the Open Platform client returns the
+        message id (None when it swallowed a failure), and the NapCat
+        client returns the id from the echo round-trip (None on timeout).
+        None means the message was not confirmed delivered."""
         if not text:
             return False
         mode = self.plugin._get_reply_mode()
@@ -216,9 +216,8 @@ class QQReplyDeliveryNode:
                 result = await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
             result = await self.plugin.qq_client.send_message(plan.target_id, text)
-        # NapCat 是 fire-and-forget（无异常=成功），开放平台显式返回 None = 失败
-        if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
-            return True  # NapCat: no exception means delivered
+        # 两个平台的文本发送现在都有回执：开放平台失败吞异常返回 None，
+        # NapCat 走 echo 往返（超时返回 None）。显式 None = 未确认送达。
         return result is not None
 
     async def _send_sticker(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:
