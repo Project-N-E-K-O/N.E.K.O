@@ -425,8 +425,10 @@ class EmbeddingWarmupWorker:
         if dedup_resolver is not None:
             try:
                 from memory.fact_dedup import FactDedupResolver  # local import keeps the worker importable when dedup module isn't loaded
+                from memory.facts import _fact_scoped_identity
                 only_for_ids = {
-                    e.get("id") for e in targets if e.get("id")
+                    identity for e in targets
+                    if (identity := _fact_scoped_identity(e)) is not None
                 }
                 pairs = FactDedupResolver.detect_candidates(
                     facts, only_for_ids=only_for_ids,

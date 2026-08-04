@@ -898,6 +898,40 @@ SOCCER_PREGAME_CONTEXT_FORMATTER_LABELS = {
 }
 
 
+# ⚠️ 这三张表和本模块其余表**性质不同**：它们不是给模型看的文案，而是拿去撞
+# preGameContext 与 lanlan_prompt（用户自己写的人设）里的字，所以不按 locale 取，
+# 而是所有词条一起扫。中文侧必须简繁并列——繁体人设此前两个方向都塌回默认：
+# 「體力弱」拿不到 WEAK 上限（8 → 25，抬高三倍），「擅長運動」拿不到 STRONG
+# （50 → 25，压低一半），是双向的行为偏移而不只是失效。
+#
+# ⚠️ 单字条目（宅 / 哄）本身就有子串误伤（「宅」命中「住宅」），是既有取舍；
+# 补繁体时不要顺手再加单字。
+#
+# 从 main_routers/game_router/balance.py 搬来（后端多语言/匹配词表按项目规范落在
+# config/prompts 下）。badminton 的 anger cap 也复用这三张表。
+SOCCER_ANGER_CONTEXT_KEYWORDS: tuple[str, ...] = (
+    "生气", "生氣", "发火", "發火", "愤怒", "憤怒", "爆发", "爆發",
+    "惩罚", "懲罰", "教训", "教訓", "报复", "報復", "泄愤", "洩憤",
+    "冷战", "冷戰", "冲突", "衝突", "关系修复", "關係修復", "哄",
+    "道歉", "补偿", "補償", "赔偿", "賠償",
+    "angry", "punish", "punishment", "repair", "apology", "compensation",
+    "cold_war",
+)
+
+SOCCER_ANGER_CAP_WEAK_KEYWORDS: tuple[str, ...] = (
+    "不擅长运动", "不擅長運動", "运动差", "運動差", "体力弱", "體力弱",
+    "体弱", "體弱", "虚弱", "虛弱", "病弱", "容易累",
+    "缺乏运动", "缺乏運動", "宅", "懒得动", "懶得動",
+    "weak", "frail", "sickly",
+)
+
+SOCCER_ANGER_CAP_STRONG_KEYWORDS: tuple[str, ...] = (
+    "擅长运动", "擅長運動", "运动神经", "運動神經", "体育", "體育", "足球",
+    "体力强", "體力強", "耐力好", "精力充沛", "敏捷",
+    "athletic", "sporty", "stamina", "energetic",
+)
+
+
 SOCCER_ANGER_PRESSURE_CAP_MESSAGES = {
     "zh": (
         "这是生气/惩罚/哄生气场景的狂怒压制上限。达到上限后不能继续 angry + max；"

@@ -147,6 +147,27 @@ async def test_returns_empty_when_all_absorbed_facts_lack_valid_embedding():
 
 
 @pytest.mark.asyncio
+async def test_arbitration_archived_fact_stays_out_of_related_context():
+    engine = _make_engine([
+        {
+            "id": "loser", "text": "rejected", "absorbed": True,
+            "importance": 7, "arbitration_archived_at": "2026-08-01T00:00:00",
+        },
+        {"id": "valid", "text": "valid", "absorbed": True, "importance": 5},
+    ])
+    reranker = MagicMock()
+    reranker.aretrieve_per_query_topk = AsyncMock(return_value=[])
+    with patch("memory.embeddings.get_embedding_service", return_value=_enabled_service()), \
+         patch("memory.embeddings.is_cached_embedding_valid", return_value=True), \
+         patch("memory.recall.MemoryRecallReranker", return_value=reranker):
+        assert await engine._build_related_context_block(
+            "小天", [{"id": "fresh", "text": "query"}],
+        ) == ""
+    candidates = reranker.aretrieve_per_query_topk.await_args.args[0]
+    assert [row["id"] for row in candidates] == ["valid"]
+
+
+@pytest.mark.asyncio
 async def test_returns_empty_when_embedding_loading_not_ready():
     """INIT/LOADING：is_disabled=False 但 is_available=False → 仍要返回
     空，否则 reranker 降级 evidence-only 会注入无关 fact（Codex P2 #1392）。"""

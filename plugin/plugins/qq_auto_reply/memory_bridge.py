@@ -105,20 +105,19 @@ class QQMemoryBridge:
     ) -> str:
         if not subjects:
             return ""
-        from utils.language_utils import (
-            get_global_language_full,
-            is_supported_language_code,
-        )
+        from utils.language_utils import is_supported_language_code
 
-        prompt_language = (
-            language
-            if is_supported_language_code(language)
-            else get_global_language_full()
-        )
+        # Same contract as the sibling methods: only a caller-supplied locale
+        # has explicit provenance. Omitting the field lets the server restore
+        # the durable per-subject locale, which the host process fallback
+        # would otherwise overwrite with a coarser guess.
+        payload: dict[str, Any] = {"subjects": subjects}
+        if is_supported_language_code(language):
+            payload["language"] = language
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-            json={"subjects": subjects, "language": prompt_language},
+            json=payload,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -191,6 +190,17 @@ class QQMemoryBridge:
             request_payload["subjects"] = subjects
         from utils.language_utils import get_global_language_full
 
+        # Deliberately still sends the process locale, unlike the sibling
+        # bootstrap/history methods. The difference is who renders: those
+        # receive server-rendered text, so omitting the field lets the server
+        # use the durable per-subject locale end to end. This one receives
+        # *structured* rows and renders the tier/entity tags locally (see
+        # render_relevant_memory), so omitting it here would only move the
+        # server half to the subject locale while the tags stayed on this
+        # process's — worse than today's self-consistent pair. Moving this
+        # path onto the subject locale needs the resolved locale returned in
+        # the response (or the tags rendered server-side); that is a response
+        # contract change and belongs in its own PR.
         request_payload["language"] = get_global_language_full()
         client = self._client()
         response = await client.post(
@@ -315,14 +325,16 @@ class QQMemoryBridge:
         subject: dict[str, str],
         speaker_label: str | None = None,
         speaker_trust: float | None = None,
+        speaker_id: str | None = None,
+        speaker_is_owner: bool = False,
         display_name: str | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
         # speaker_label 只在单发言人批次（成员 bucket / 私聊 participant
         # digest）传：提取 prompt 用它替代私聊主人名渲染 user 轮，避免对方
         # 发言被抽成"关于主人"的事实。群 digest 不传——内容里每条消息已带
-        # 发言人头。speaker_trust 与 label 同源同段（信赖度阶段一：随 fact
-        # 落盘，与群成员段同一组字段）。display_name 是 subject 的人类可读
+        # 发言人头。speaker_trust 与 label 同源同段，作为 fact 的代码侧
+        # 仲裁 provenance；精确值不进入 prompt。display_name 是 subject 的人类可读
         # 名（群名/昵称），服务端中和后刷进 persona section 元数据，渲染
         # 标题用；纯装饰性，缺省即退化裸 id。
         payload: dict[str, Any] = {
@@ -333,6 +345,10 @@ class QQMemoryBridge:
             payload["speaker_label"] = speaker_label
         if speaker_trust is not None:
             payload["speaker_trust"] = speaker_trust
+        if speaker_id:
+            payload["speaker_id"] = speaker_id
+        if speaker_is_owner:
+            payload["speaker_is_owner"] = True
         if display_name:
             payload["display_name"] = display_name
         client = self._client()
@@ -371,6 +387,18 @@ class QQMemoryBridge:
             trust = segment.get("speaker_trust")
             if trust is not None:
                 wire["speaker_trust"] = trust
+            speaker_id = segment.get("speaker_id")
+            if speaker_id:
+                wire["speaker_id"] = speaker_id
+            if segment.get("speaker_is_owner"):
+                wire["speaker_is_owner"] = True
+            excluded_identities = segment.get(
+                "trust_signal_excluded_fact_identities"
+            )
+            if excluded_identities:
+                wire["trust_signal_excluded_fact_identities"] = [
+                    list(identity) for identity in excluded_identities
+                ]
             display_name = segment.get("display_name")
             if display_name:
                 wire["display_name"] = display_name

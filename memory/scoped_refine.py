@@ -46,16 +46,15 @@ scoped read path, so a merge that lost the stamp would silently destroy the
 memories it consumed.
 
 Speaker-trust hook (series 7/7): ``refine_pass`` and the prompt renderer
-accept ``trust_of: Callable[[dict], float | None]``. It is threaded through
-to the per-entry prompt lines so the arbitration model can weight sources;
-current callers pass ``None`` — the final PR of the series wires it to the
-``speaker_trust`` provenance recorded on scoped facts.
+accept a trust callback. Prompt lines receive only coarse high/medium/low
+bands; exact values stay in the code-side merge tie-break.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -104,7 +103,7 @@ except ImportError:
     _warn_once(__name__)
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
-from memory.temporal import to_naive_local
+from memory.temporal import explicit_event_window, to_naive_local
 from utils.language_utils import language_context
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -121,7 +120,122 @@ STORE_REFLECTION = 'reflection'
 VALID_SCOPED_REFINE_ACTIONS = frozenset({'merge'})
 
 # trust_of 回调签名（系列 7/7 的 speaker_trust 接入点）。
-TrustFn = Callable[[dict], float | None]
+TrustFn = Callable[[dict], str | float | None]
+
+
+def scoped_prompt_trust_band(entry: dict) -> str:
+    """Return exactly the coarse provenance band exposed to the model."""
+    from memory.speaker_trust import trust_band
+
+    if entry.get('speaker_provenance_mixed') is True:
+        return 'unknown'
+    return trust_band(entry.get('speaker_trust'))
+
+
+def _parse_temporal_boundary(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return to_naive_local(datetime.fromisoformat(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_distinct_temporal_context(
+    winner: dict, sources: list[dict],
+) -> bool:
+    """Return True when trust would collapse distinct temporal evidence."""
+    def _temporal_context(entry: dict) -> tuple:
+        raw_start, raw_end = explicit_event_window(entry)
+        start = _parse_temporal_boundary(raw_start)
+        end = _parse_temporal_boundary(raw_end)
+        return entry.get('temporal_scope'), start, end
+
+    winner_context = _temporal_context(winner)
+    for source in sources:
+        if source is winner:
+            continue
+        source_context = _temporal_context(source)
+        if source_context != winner_context and any(
+            value is not None for value in (*winner_context, *source_context)
+        ):
+            return True
+    return False
+
+
+def _latest_temporal_source(sources: list[dict]) -> dict:
+    """Choose metadata from the newest represented source when available."""
+    dated: list[tuple[datetime, dict]] = []
+    for source in sources:
+        represented_at = _parse_temporal_boundary(source.get('event_start_at'))
+        if represented_at is None:
+            represented_at = _parse_temporal_boundary(source.get('event_end_at'))
+        if represented_at is not None:
+            dated.append((represented_at, source))
+    return max(dated, key=lambda item: item[0])[1] if dated else sources[0]
+
+
+def _trust_weighted_merge_text(
+    sources: list[dict], proposed_text: str,
+) -> tuple[str, list[dict]]:
+    """Prefer the highest-trust source in code when the margin is decisive."""
+    from memory.speaker_trust import normalize_trust, stable_speaker_id, trust_band
+
+    usable = [
+        source for source in sources
+        if source.get('speaker_provenance_mixed') is not True
+        and stable_speaker_id(source.get('speaker_id')) is not None
+        and trust_band(source.get('speaker_trust')) != 'unknown'
+    ]
+    # A deterministic winner may replace the model merge only when every
+    # source being consumed participated in the comparison.  Otherwise an
+    # unscored legacy/mixed row could disappear behind a scored winner.
+    if len(usable) != len(sources):
+        return proposed_text, sources
+    speaker_ids = [
+        stable_speaker_id(source.get('speaker_id')) for source in usable
+    ]
+    if len(set(speaker_ids)) < 2:
+        return proposed_text, sources
+    # Multiple snapshots from one speaker are content that still needs the
+    # model merge.  Trust is per speaker, so score drift between their rows
+    # must not make an older statement beat their own later statement and a
+    # different speaker at once.
+    if len(speaker_ids) != len(set(speaker_ids)):
+        return proposed_text, sources
+    ordered = sorted(
+        usable, key=lambda source: normalize_trust(source.get('speaker_trust')),
+        reverse=True,
+    )
+    # The leader must beat the runner-up, not merely the weakest outlier.
+    # Otherwise 0.80/0.75/0.30 would discard the unresolved 0.75 source.
+    from memory.speaker_trust import preferred_by_trust
+    if preferred_by_trust(
+        ordered[0].get('speaker_trust'),
+        ordered[1].get('speaker_trust'),
+    ) != 'old':
+        return proposed_text, sources
+    from memory.speaker_trust import deterministic_relation
+    # Scoped ``merge`` also covers duplicates, complementary details, and
+    # mixed clusters.  Replacing the whole merge with one source is safe only
+    # when that winner conflicts with every row it would consume; a conflict
+    # between two other rows must not let an unrelated leader erase both.
+    winner = ordered[0]
+    # Trust resolves conflicting reports about the same state, not temporal
+    # evolution or bounded exceptions.  Distinct temporal contexts must not be
+    # collapsed merely because one speaker has a higher score; retain the
+    # model's temporal merge and every audit source instead.
+    if _has_distinct_temporal_context(winner, ordered):
+        return proposed_text, sources
+    if not all(
+        deterministic_relation(
+            str(winner.get('text') or ''), str(other.get('text') or ''),
+        ) == 'correction'
+        for other in ordered[1:]
+    ):
+        return proposed_text, sources
+    winner_text = str(winner.get('text') or '').strip()
+    return (winner_text or proposed_text), [winner]
 
 
 def _pick_temporal_boundary(values: list[str], *, latest: bool) -> str | None:
@@ -228,10 +342,13 @@ def gather_scoped_refine_buckets(
     return ready
 
 
-# apply_fn(bucket, cluster, actions, cluster_hash) -> 应用成功的 action 数；
+# apply_fn(bucket, cluster, actions, cluster_hash) -> 应用成功的 action 数。
+# 负值哨兵表示 LLM 窗口内 prompt-visible provenance 漂移：原样留队且
+# 不计 refine_attempts；正常 action 数永远非负。
 # failure_fn(bucket, cluster, cluster_hash)。存储读写全在回调侧（manager
 # 锁内），engine 不碰磁盘——同本体 refine 的分工。返回值参与失败判定：
 # 非空 actions 全被拒（语义垃圾）按 cluster 失败计 refine_attempts。
+SCOPED_REFINE_PROMPT_STALE = -1
 ScopedApplyFn = Callable[
     [ScopedRefineBucket, list[dict], list[dict], str], Awaitable[int]
 ]
@@ -331,7 +448,9 @@ class ScopedLiteRefineEngine:
                     ok = await self._resolve_cluster(
                         bucket, cluster, cluster_hash, apply_fn, trust_of,
                     )
-                if ok:
+                if ok is None:
+                    pass
+                elif ok:
                     result['resolved'] = 1
                 else:
                     result['failed'] = 1
@@ -448,8 +567,11 @@ class ScopedLiteRefineEngine:
 
     @staticmethod
     def _cluster_hash(cluster: list[dict]) -> str:
-        ids = sorted(str(e.get('id', '')) for e in cluster if e.get('id'))
-        return hashlib.sha1('|'.join(ids).encode('utf-8')).hexdigest()[:16]
+        signatures = sorted(
+            f"{e.get('id')}\0{scoped_prompt_trust_band(e)}"
+            for e in cluster if e.get('id')
+        )
+        return hashlib.sha1('|'.join(signatures).encode('utf-8')).hexdigest()[:16]
 
     @staticmethod
     def _all_stamped_fresh(cluster: list[dict], cluster_hash: str) -> bool:
@@ -482,7 +604,7 @@ class ScopedLiteRefineEngine:
         cluster_hash: str,
         apply_fn: ScopedApplyFn,
         trust_of: TrustFn | None,
-    ) -> bool:
+    ) -> bool | None:
         cluster_text = self._render_cluster(cluster, trust_of)
         if not cluster_text:
             return False
@@ -543,6 +665,12 @@ class ScopedLiteRefineEngine:
             return False
 
         applied = await apply_fn(bucket, cluster, actions, cluster_hash)
+        if applied == SCOPED_REFINE_PROMPT_STALE:
+            logger.info(
+                f"[ScopedRefine] prompt provenance changed while the model "
+                f"was running (cluster_hash={cluster_hash}); left queued"
+            )
+            return None
         if actions and not applied:
             # 非空 actions 但没有一条通过 apply 校验 = 语义垃圾输出。apply
             # 侧刻意不 stamp（等下轮重试），这里必须按失败计——否则毒
@@ -562,10 +690,9 @@ class ScopedLiteRefineEngine:
     ) -> str:
         """Numbered prompt lines; optional per-entry trust annotation.
 
-        The trust annotation slot is the series-7/7 wiring point: when
-        ``trust_of`` returns a float the line carries ``trust=x.x`` so the
-        arbitration prompt can weight contradicting sources by speaker
-        trust. With ``trust_of=None`` lines render without the field.
+        Numeric values and pre-banded values both render only as
+        ``trust=high|medium|low``. With ``trust_of=None`` lines render
+        without the field.
         """
         lines = []
         for i, e in enumerate(cluster):
@@ -574,10 +701,13 @@ class ScopedLiteRefineEngine:
             if not text or not eid:
                 continue
             trust = trust_of(e) if trust_of is not None else None
-            trust_part = (
-                f", trust={float(trust):.2f}" if isinstance(trust, (int, float))
-                and not isinstance(trust, bool) else ""
+            from memory.speaker_trust import trust_band
+            trust_label = (
+                trust_band(trust)
+                if isinstance(trust, (int, float)) and not isinstance(trust, bool)
+                else trust if trust in {'high', 'medium', 'low'} else None
             )
+            trust_part = f", trust={trust_label}" if trust_label else ""
             lines.append(f"[{i}] (id={eid}{trust_part}) {text}")
         return "\n".join(lines)
 
@@ -587,8 +717,8 @@ class ScopedLiteRefineEngine:
 
 def _valid_merge_source_ids(
     action: dict, cluster_ids: set, by_id: dict, consumed: set,
-    cluster_text_by_id: dict,
-) -> list[str]:
+    cluster_text_by_id: dict, cluster_trust_by_id: dict,
+) -> list[str] | None:
     """Return the action's source ids, or ``[]`` unless EVERY one is valid.
 
     All-or-nothing on purpose: the LLM wrote its conclusion text from the
@@ -617,9 +747,19 @@ def _valid_merge_source_ids(
     # 标记 suppress 的源若被消费，其内容会以普通可见条目的身份复活。
     # 任一源失效 → 整条 action 拒绝（见 docstring 的 all-or-nothing）。
     for sid in unique_ids:
+        if sid not in cluster_ids:
+            return []
+        current = by_id.get(sid)
         if (
-            sid not in cluster_ids
-            or sid not in by_id
+            current is not None
+            and scoped_prompt_trust_band(current) != cluster_trust_by_id.get(sid)
+        ):
+            # The LLM chose its action from a different prompt-visible trust
+            # annotation. ``None`` distinguishes this retryable drift from
+            # malformed output so the engine does not charge an attempt.
+            return None
+        if (
+            sid not in by_id
             or sid in consumed
             or by_id[sid].get('protected')
             or by_id[sid].get('suppress')
@@ -627,6 +767,23 @@ def _valid_merge_source_ids(
         ):
             return []
     return unique_ids
+
+
+def _requested_cluster_source_ids(action: dict, cluster_ids: set) -> set[str]:
+    """Return in-cluster ids named by an otherwise rejected model action."""
+    raw_ids = action.get('source_ids') or []
+    if not isinstance(raw_ids, list):
+        return set()
+    return {sid for sid in raw_ids if sid in cluster_ids}
+
+
+def _finite_counter_value(value: object) -> float:
+    """Return a finite evidence counter, treating malformed values as zero."""
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return parsed if math.isfinite(parsed) else 0.0
 
 
 async def apply_scoped_persona_merge(
@@ -663,30 +820,75 @@ async def apply_scoped_persona_merge(
             e.get('id'): e.get('text') for e in cluster
             if isinstance(e, dict) and e.get('id')
         }
+        cluster_trust_by_id = {
+            e.get('id'): scoped_prompt_trust_band(e) for e in cluster
+            if isinstance(e, dict) and e.get('id')
+        }
         consumed: set[str] = set()
         produced: list[dict] = []
+        retry_ids: set[str] = set()
         applied = 0
+        prompt_stale = False
         now_iso = datetime.now().isoformat()
 
         for act_obj in actions:
             if not isinstance(act_obj, dict):
                 continue
+            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             act = act_obj.get('action')
             if act not in VALID_SCOPED_REFINE_ACTIONS:
                 logger.warning(f"[ScopedRefine apply] persona: 非法 action {act!r}")
+                retry_ids.update(requested_ids)
                 continue
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
+                cluster_trust_by_id,
             )
+            if valid_ids is None:
+                prompt_stale = True
+                continue
             if len(valid_ids) < 2:
+                retry_ids.update(requested_ids)
                 continue
             text = str((act_obj.get('produce') or {}).get('text', '')).strip() \
                 if isinstance(act_obj.get('produce'), dict) \
                 else str(act_obj.get('text', '')).strip()
             if not text:
+                retry_ids.update(requested_ids)
                 continue
+            sources = [by_id[sid] for sid in valid_ids]
+            text, provenance_sources = _trust_weighted_merge_text(sources, text)
+            semantic_sources = (
+                provenance_sources if len(provenance_sources) == 1 else sources
+            )
+            temporal_source = (
+                semantic_sources[0]
+                if len(semantic_sources) == 1
+                else _latest_temporal_source(semantic_sources)
+            )
+            explicit_windows = [
+                window for window in (
+                    explicit_event_window(source)
+                    for source in semantic_sources
+                )
+                if any(boundary is not None for boundary in window)
+            ]
+            starts = [start for start, _end in explicit_windows if start]
+            ends = [end for _start, end in explicit_windows]
             merged = persona_manager._normalize_entry(text)
             merged['id'] = persona_manager._refine_persona_id(text)
+            if explicit_windows:
+                merged.update({
+                    'event_when_raw': temporal_source.get('event_when_raw'),
+                    'event_start_at': _pick_temporal_boundary(
+                        starts, latest=False,
+                    ),
+                    'event_end_at': (
+                        None
+                        if any(end is None for end in ends)
+                        else _pick_temporal_boundary(ends, latest=True)
+                    ),
+                })
             history = []
             max_rein = 0.0
             max_disp = 0.0
@@ -703,19 +905,33 @@ async def apply_scoped_persona_merge(
             merged_source_ids: list = []
             for sid in valid_ids:
                 src = by_id[sid]
-                history.append({
+                history_entry = {
                     'text': src.get('text', ''),
                     'replaced_at': now_iso,
                     'reason': 'scoped_refine_merge',
                     'source_fact_id': None,
-                })
+                }
+                if src.get('speaker_provenance_mixed') is True:
+                    history_entry['speaker_provenance_mixed'] = True
+                else:
+                    for provenance_key in (
+                        'speaker_id', 'speaker_label', 'speaker_trust',
+                    ):
+                        if src.get(provenance_key) is not None:
+                            history_entry[provenance_key] = src[provenance_key]
+                history.append(history_entry)
                 for upstream in (
                     [src.get('source_id')] + list(src.get('merged_source_ids') or [])
                 ):
                     if upstream and upstream not in merged_source_ids:
                         merged_source_ids.append(upstream)
-                max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
-                max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
+            for src in semantic_sources:
+                max_rein = max(
+                    max_rein, _finite_counter_value(src.get('reinforcement'))
+                )
+                max_disp = max(
+                    max_disp, _finite_counter_value(src.get('disputation'))
+                )
                 max_user_count = max(
                     max_user_count,
                     int(src.get('user_fact_reinforce_count', 0) or 0),
@@ -758,6 +974,8 @@ async def apply_scoped_persona_merge(
             merged['source_id'] = inherited_source_id
             merged['merged_from_ids'] = list(valid_ids)
             merged['merged_source_ids'] = merged_source_ids
+            from memory.speaker_trust import provenance_of_entries
+            merged.update(provenance_of_entries(provenance_sources))
             # subject 戳：无戳条目在 scoped 渲染路径 fail-closed 掉队，
             # 漏掉这行等于把被合并的记忆整体蒸发。
             merged.update(subject.as_entry_fields())
@@ -769,6 +987,7 @@ async def apply_scoped_persona_merge(
                     f"[ScopedRefine apply] persona: 产物 id 撞车，跳过该 action "
                     f"(id={merged['id']})"
                 )
+                retry_ids.update(requested_ids)
                 continue
             produced.append(merged)
             consumed.update(valid_ids)
@@ -777,6 +996,8 @@ async def apply_scoped_persona_merge(
         # stamp 三分支：同本体 refine apply 的语义（垃圾输出不 stamp，
         # 等下轮重试；明确 no-op 也 stamp 防 hash skip 失效）。
         if applied == 0 and actions:
+            if prompt_stale:
+                return SCOPED_REFINE_PROMPT_STALE
             return 0
 
         new_section = [
@@ -794,9 +1015,12 @@ async def apply_scoped_persona_merge(
             # 口内被并发改写的行若照常 stamp，新文本会被 hash-skip 静默压
             # 制 30 天——文本漂移的幸存者不 stamp，下轮重新入审。
             if (
-                eid in cluster_ids
+                not prompt_stale
+                and eid in cluster_ids
                 and eid not in consumed
+                and eid not in retry_ids
                 and e.get('text') == cluster_text_by_id.get(eid)
+                and scoped_prompt_trust_band(e) == cluster_trust_by_id.get(eid)
             ):
                 e['last_refine_cluster_hash'] = cluster_hash
                 e['last_refine_at'] = now_iso
@@ -815,7 +1039,7 @@ async def apply_scoped_persona_merge(
             f"stamped={stamped}, +{len(produced)} produced, "
             f"-{len(consumed)} consumed)"
         )
-    return applied
+    return SCOPED_REFINE_PROMPT_STALE if prompt_stale else applied
 
 
 async def apply_scoped_reflection_merge(
@@ -851,45 +1075,79 @@ async def apply_scoped_reflection_merge(
             e.get('id'): e.get('text') for e in cluster
             if isinstance(e, dict) and e.get('id')
         }
+        cluster_trust_by_id = {
+            e.get('id'): scoped_prompt_trust_band(e) for e in cluster
+            if isinstance(e, dict) and e.get('id')
+        }
         consumed: set[str] = set()
         produced: list[dict] = []
+        retry_ids: set[str] = set()
         applied = 0
+        prompt_stale = False
         now_iso = datetime.now().isoformat()
 
         for act_obj in actions:
             if not isinstance(act_obj, dict):
                 continue
+            requested_ids = _requested_cluster_source_ids(act_obj, cluster_ids)
             act = act_obj.get('action')
             if act not in VALID_SCOPED_REFINE_ACTIONS:
                 logger.warning(
                     f"[ScopedRefine apply] reflection: 非法 action {act!r}"
                 )
+                retry_ids.update(requested_ids)
                 continue
             valid_ids = _valid_merge_source_ids(
                 act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
+                cluster_trust_by_id,
             )
+            if valid_ids is None:
+                prompt_stale = True
+                continue
             if len(valid_ids) < 2:
+                retry_ids.update(requested_ids)
                 continue
             text = str((act_obj.get('produce') or {}).get('text', '')).strip() \
                 if isinstance(act_obj.get('produce'), dict) \
                 else str(act_obj.get('text', '')).strip()
             if not text:
+                retry_ids.update(requested_ids)
                 continue
             sources = [by_id[sid] for sid in valid_ids]
-            first = sources[0]
+            text, provenance_sources = _trust_weighted_merge_text(sources, text)
+            # A decisive trust arbitration narrows semantic content to one
+            # source.  Its ontology and event metadata must follow the same
+            # winner; all original sources remain below as audit provenance.
+            semantic_sources = (
+                provenance_sources if len(provenance_sources) == 1 else sources
+            )
+            semantic_source = (
+                semantic_sources[0]
+                if len(semantic_sources) == 1
+                else _latest_temporal_source(semantic_sources)
+            )
             source_fact_ids: list[str] = []
-            for src in sources:
+            for src in semantic_sources:
                 for fid in src.get('source_fact_ids') or []:
                     if fid not in source_fact_ids:
                         source_fact_ids.append(fid)
+            audit_source_fact_ids: list[str] = []
+            for src in sources:
+                for fid in src.get('source_fact_ids') or []:
+                    if fid not in audit_source_fact_ids:
+                        audit_source_fact_ids.append(fid)
             # 事件窗取并集而非继承首源：矛盾合并的结论（「曾X后Y」）覆盖
             # 全部源的时间跨度，只抄首源会把结论锚在旧时段，recall_by_time
             # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
             # （pattern/进行中，无结束点）则并集也无结束点，否则取最晚。
-            starts = [
-                s.get('event_start_at') for s in sources if s.get('event_start_at')
+            explicit_windows = [
+                window for window in (
+                    explicit_event_window(s) for s in semantic_sources
+                )
+                if any(boundary is not None for boundary in window)
             ]
-            ends = [s.get('event_end_at') for s in sources]
+            starts = [start for start, _ in explicit_windows if start]
+            ends = [end for _, end in explicit_windows]
             merged_start = _pick_temporal_boundary(starts, latest=False)
             merged_end = (
                 None if (not ends or any(e is None for e in ends))
@@ -904,27 +1162,33 @@ async def apply_scoped_reflection_merge(
                 # scoped 分支）。
                 'status': 'confirmed',
                 'source_fact_ids': source_fact_ids,
+                'audit_source_fact_ids': audit_source_fact_ids,
                 'created_at': now_iso,
                 'confirmed_at': now_iso,
                 'auto_confirmed': True,
                 'feedback': None,
-                'relation_type': first.get('relation_type'),
-                'temporal_scope': first.get('temporal_scope'),
-                'subject': first.get('subject'),
-                'event_when_raw': first.get('event_when_raw'),
+                'relation_type': semantic_source.get('relation_type'),
+                'temporal_scope': semantic_source.get('temporal_scope'),
+                'subject': semantic_source.get('subject'),
+                'event_when_raw': semantic_source.get('event_when_raw'),
                 'event_start_at': merged_start,
                 'event_end_at': merged_end,
-                'schema_version': first.get('schema_version', 1),
+                'schema_version': semantic_source.get('schema_version', 1),
                 'merged_from_ids': list(valid_ids),
             })
             # confirmed 渲染门要求 evidence_score > 0：继承源里最高的
             # reinforcement，floor 0.1（对齐 scoped 合成的最小正种子）。
             max_rein = max(
-                (float(s.get('reinforcement', 0) or 0) for s in sources),
+                (
+                    _finite_counter_value(s.get('reinforcement'))
+                    for s in semantic_sources
+                ),
                 default=0.0,
             )
             merged['reinforcement'] = max(max_rein, 0.1)
             merged['rein_last_signal_at'] = now_iso
+            from memory.speaker_trust import provenance_of_entries
+            merged.update(provenance_of_entries(provenance_sources))
             # subject 戳：无戳 reflection 在 scoped 读路径 fail-closed 掉队。
             merged.update(subject.as_entry_fields())
             # 产物 id 撞车守卫（同 persona 侧）：撞车会让源条目的
@@ -934,6 +1198,7 @@ async def apply_scoped_reflection_merge(
                     f"[ScopedRefine apply] reflection: 产物 id 撞车，跳过该 "
                     f"action (id={merged['id']})"
                 )
+                retry_ids.update(requested_ids)
                 continue
             for sid in valid_ids:
                 src = by_id[sid]
@@ -945,6 +1210,8 @@ async def apply_scoped_reflection_merge(
             applied += 1
 
         if applied == 0 and actions:
+            if prompt_stale:
+                return SCOPED_REFINE_PROMPT_STALE
             return 0
 
         stamped = 0
@@ -955,9 +1222,12 @@ async def apply_scoped_reflection_merge(
             # 同 persona 侧：文本漂移的幸存者不 stamp，防 hash-skip 把
             # 未经模型看过的新文本压制 30 天。
             if (
-                rid in cluster_ids
+                not prompt_stale
+                and rid in cluster_ids
                 and rid not in consumed
+                and rid not in retry_ids
                 and r.get('text') == cluster_text_by_id.get(rid)
+                and scoped_prompt_trust_band(r) == cluster_trust_by_id.get(rid)
             ):
                 r['last_refine_cluster_hash'] = cluster_hash
                 r['last_refine_at'] = now_iso
@@ -976,7 +1246,7 @@ async def apply_scoped_reflection_merge(
             f"stamped={stamped}, +{len(produced)} produced, "
             f"-{len(consumed)} merged-away)"
         )
-    return applied
+    return SCOPED_REFINE_PROMPT_STALE if prompt_stale else applied
 
 
 # ── liveness bump（失败路径；同本体字段，scoped 寻址） ────────────────

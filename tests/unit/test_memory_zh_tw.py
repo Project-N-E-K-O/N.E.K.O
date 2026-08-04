@@ -57,11 +57,29 @@ def test_greeting_preserves_full_locale_for_holiday_selection():
     assert GreetingMixin._greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
 
 
-def test_traditional_holiday_prompt_falls_back_to_simplified_chinese():
-    from config.prompts.prompts_proactive import HOLIDAY_HINT_TODAY
+def test_traditional_holiday_prompt_uses_its_own_templates():
+    """Was ``..._falls_back_to_simplified_chinese``: it pinned the gap itself.
+
+    The four holiday tables now carry ``zh-TW``, so the key selector picks it
+    instead of collapsing to ``zh``. ⚠️ All four must be asserted together —
+    ``_holiday_hint_language_key`` derives the key from ``HOLIDAY_HINT_TODAY``
+    alone and then indexes the other three with it, so a half-backfill selects
+    ``zh-TW`` and then misses, dropping the other three lines to English.
+    """
+    from config.prompts.prompts_proactive import (
+        HOLIDAY_HINT_SOON,
+        HOLIDAY_HINT_TODAY,
+        HOLIDAY_HINT_WEEK,
+        WEEKEND_HINT,
+    )
     from utils.holiday_cache import _holiday_hint_language_key
 
-    assert _holiday_hint_language_key("zh-TW", HOLIDAY_HINT_TODAY) == "zh"
+    key = _holiday_hint_language_key("zh-TW", HOLIDAY_HINT_TODAY)
+    assert key == "zh-TW"
+    for table in (HOLIDAY_HINT_TODAY, HOLIDAY_HINT_SOON, HOLIDAY_HINT_WEEK, WEEKEND_HINT):
+        assert key in table
+    # Simplified is unchanged.
+    assert _holiday_hint_language_key("zh-CN", HOLIDAY_HINT_TODAY) == "zh"
 
 
 def _localized_tables() -> list[tuple[str, dict[str, str]]]:
@@ -1425,6 +1443,177 @@ async def test_scoped_context_activates_request_locale(monkeypatch):
 
     assert await routes.get_scoped_context("Neko", request) == "ok"
     assert observed == [("Neko", "zh-TW", "zh-TW")]
+
+
+@pytest.mark.asyncio
+async def test_scoped_context_without_request_locale_uses_subject_durable(monkeypatch):
+    """No request locale → the subject's durable locale beats the process one.
+
+    The QQ bridge deliberately omits ``language`` when it has no caller-supplied
+    locale, so this fallback is the only thing that reads the per-subject state
+    the scoped locale writer maintains.
+    """
+    from app.memory_server import locale_state, routes
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+    lookups = []
+
+    async def render(name, req):
+        observed.append((name, req.language, get_global_language_full()))
+        return "ok"
+
+    async def fake_subject_locale(name, subject):
+        lookups.append((name, subject))
+        return "zh-TW"
+
+    def unreachable_character_locale(name):
+        raise AssertionError(
+            "the subject locale must be consumed before the character fallback"
+        )
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    monkeypatch.setattr(
+        locale_state, "aget_subject_prompt_locale", fake_subject_locale,
+    )
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", unreachable_character_locale,
+    )
+
+    request = routes.ScopedContextRequest(
+        subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
+    )
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    # The endpoint renders under the subject locale even though the request
+    # carried none — this is the assertion the old code failed.
+    assert observed == [("Neko", None, "zh-TW")]
+    assert [name for name, _subject in lookups] == ["Neko"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_context_falls_through_subject_to_character_locale(monkeypatch):
+    """A subject with no durable locale yet falls through to the character's."""
+    from app.memory_server import locale_state, routes
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    async def render(name, req):
+        observed.append((name, req.language, get_global_language_full()))
+        return "ok"
+
+    async def empty_subject_locale(_name, _subject):
+        return None
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    monkeypatch.setattr(
+        locale_state, "aget_subject_prompt_locale", empty_subject_locale,
+    )
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", lambda _name: "zh-TW",
+    )
+
+    request = routes.ScopedContextRequest(
+        subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
+    )
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    assert observed == [("Neko", None, "zh-TW")]
+
+
+@pytest.mark.asyncio
+async def test_scoped_locale_read_failure_degrades_instead_of_raising(monkeypatch):
+    """A transient sidecar read error must not escape as a 500.
+
+    ``_load_locale_state_unlocked`` raises ``PromptLocalePersistenceError`` on a
+    transient OSError deliberately — a *writer* caching that as empty state
+    would discard the real durable causal order. But these lookups are for
+    rendering, and the endpoints they sit in have their own fail-soft
+    contracts, so the read must degrade to the process locale instead.
+    """
+    from app.memory_server import locale_state, routes
+
+    rendered = []
+
+    async def render(_name, _req):
+        rendered.append(True)
+        return "ok"
+
+    async def broken_subject_locale(_name, _subject):
+        raise locale_state.PromptLocalePersistenceError("transient read failure")
+
+    def broken_character_locale(_name):
+        raise locale_state.PromptLocalePersistenceError("transient read failure")
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    monkeypatch.setattr(
+        locale_state, "aget_subject_prompt_locale", broken_subject_locale,
+    )
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", broken_character_locale,
+    )
+
+    request = routes.ScopedContextRequest(
+        subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
+    )
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    assert rendered == [True]
+
+
+@pytest.mark.asyncio
+async def test_character_locale_read_failure_degrades_instead_of_raising(monkeypatch):
+    """Same fail-soft contract on the character-level resolver (/cache path)."""
+    from app.memory_server import locale_state, routes
+
+    def broken_character_locale(_name):
+        raise locale_state.PromptLocalePersistenceError("transient read failure")
+
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", broken_character_locale,
+    )
+
+    resolved = await routes._resolve_foreground_memory_language("Neko", None)
+    assert resolved  # a usable locale, not an exception
+
+
+@pytest.mark.asyncio
+async def test_scoped_locale_lookup_is_bounded_for_oversized_requests(monkeypatch):
+    """An oversized subject list must not cost one durable lookup per item.
+
+    The resolver runs ahead of the endpoint's own ``1..8 subjects`` rejection,
+    so without its own bound an out-of-contract request would schedule one
+    thread-pool lookup per supplied subject on the way to a 422.
+    """
+    from app.memory_server import locale_state, routes
+
+    lookups = []
+
+    async def counting_subject_locale(_name, subject):
+        lookups.append(subject)
+        return None
+
+    async def render(_name, _req):
+        return "ok"
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    monkeypatch.setattr(
+        locale_state, "aget_subject_prompt_locale", counting_subject_locale,
+    )
+    monkeypatch.setattr(
+        locale_state, "get_character_prompt_locale", lambda _name: "zh-TW",
+    )
+
+    oversized = [
+        {"subject_kind": "group_chat", "subject_id": f"qq:{index}"}
+        for index in range(40)
+    ]
+    request = routes.ScopedContextRequest(subjects=oversized)
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    assert len(lookups) == routes._SCOPED_LOCALE_LOOKUP_LIMIT
+    assert len(lookups) < len(oversized)
 
 
 @pytest.mark.asyncio
@@ -3950,7 +4139,16 @@ async def test_plugins_without_session_locale_omit_process_fallback(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_plugin_memory_query_forwards_full_locale(monkeypatch):
+async def test_plugin_memory_query_omits_process_locale(monkeypatch):
+    """The plugin server must not push its own process locale across the boundary.
+
+    ``/search_for_memory`` is a deprecated placeholder endpoint, and the plugin
+    server has no session locale to contribute. Its ``get_global_language_full()``
+    also misses the Steam resolver that only the main server registers, so on a
+    Steam=Traditional / system=English machine it resolves to ``en`` and would
+    override the memory server's own (correct) resolution. Same contract as the
+    WeChat bridge assertion directly above.
+    """
     from plugin.server.application.messages import memory_query_service
 
     calls = []
@@ -3980,11 +4178,6 @@ async def test_plugin_memory_query_forwards_full_locale(monkeypatch):
         "AsyncClient",
         lambda **_kwargs: Client(),
     )
-    monkeypatch.setattr(
-        memory_query_service,
-        "get_global_language_full",
-        lambda: "zh-TW",
-    )
 
     result = await memory_query_service.MemoryQueryService().query_memory(
         lanlan_name="Neko",
@@ -3993,7 +4186,11 @@ async def test_plugin_memory_query_forwards_full_locale(monkeypatch):
     )
 
     assert result == {"result": {"items": []}}
-    assert calls[0][1]["params"] == {"language": "zh-TW"}
+    assert calls, "the query must still reach the memory server"
+    assert all("params" not in kwargs for _url, kwargs in calls)
+    # The module must not even hold a handle to the process-locale resolver —
+    # re-importing it is how this regression would come back.
+    assert not hasattr(memory_query_service, "get_global_language_full")
 
 
 def test_persona_correction_locale_ignores_formatter_labels():

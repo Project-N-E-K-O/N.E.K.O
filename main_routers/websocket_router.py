@@ -519,16 +519,42 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
     def _claim_voice_input_connection() -> None:
         nonlocal voice_input_claimed
-        if voice_input_claimed:
+        voice_mgr = session_manager[lanlan_name]
+        connection_id = str(this_session_id)
+        has_manager_lease_identity = hasattr(
+            voice_mgr,
+            "_voice_lease_connection_id",
+        )
+        manager_lease_connection_id = getattr(
+            voice_mgr,
+            "_voice_lease_connection_id",
+            None,
+        )
+        # ``voice_input_claimed`` means this socket engaged voice at least once;
+        # it does not guarantee the manager still binds the lease to it. A text
+        # session deliberately fail-closes the microphone route and vacates the
+        # manager lease while keeping this WebSocket alive. The next audio
+        # start on the same socket must therefore re-claim. Otherwise legacy
+        # authorization rejects before start_session is dispatched, leaving the
+        # frontend with no session_started/session_failed until its 15 s timeout.
+        #
+        # The global session-id guard above still prevents a superseded socket
+        # from reaching this path and stealing voice back from a newer window.
+        # Managers without the lease-identity field keep the historical
+        # claim-once behavior used by lightweight integrations and test doubles.
+        if voice_input_claimed and (
+            not has_manager_lease_identity
+            or manager_lease_connection_id == connection_id
+        ):
             return
         voice_input_claimed = True
         begin_voice_input = getattr(
-            session_manager[lanlan_name],
+            voice_mgr,
             "_begin_voice_input_connection",
             None,
         )
         if callable(begin_voice_input):
-            begin_voice_input(str(this_session_id))
+            begin_voice_input(connection_id)
             _voice_connection_sockets[lanlan_name] = (this_session_id, websocket)
             # Hand the socket to the manager too. mgr.websocket is reassigned
             # to every newly accepted socket, so it is the DISPLAY plane; the
@@ -537,12 +563,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # recorder superseded by a newer chat window never hears that its
             # route died and keeps the hardware mic open.
             set_voice_ws = getattr(
-                session_manager[lanlan_name],
+                voice_mgr,
                 "_set_voice_input_websocket",
                 None,
             )
             if callable(set_voice_ws):
-                set_voice_ws(str(this_session_id), websocket)
+                set_voice_ws(connection_id, websocket)
 
     def _owns_voice_connection() -> bool:
         """True while this socket still holds the manager voice identity.

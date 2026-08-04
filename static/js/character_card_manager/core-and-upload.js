@@ -18,6 +18,15 @@ const FRONTEND_FORCE_HIDDEN_FIELDS = [
     'mmd_idle_animation',
     'mmd_idle_animations',
 ];
+const PNGTUBER_UI_HIDDEN_FIELDS = [
+    'pngtuber',
+    'pngtuber_idle_image',
+    'pngtuber_talking_image',
+    'pngtuber_happy_image',
+    'pngtuber_sad_image',
+    'pngtuber_angry_image',
+    'pngtuber_surprised_image',
+];
 
 let charaCardParticleCanvas = null;
 let charaCardParticleContext = null;
@@ -63,7 +72,12 @@ function getWorkshopReservedFields() {
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
     // 即使运行中的后端还没重启、返回了旧保留字段列表，也不要把这些兼容字段渲染成普通设定。
-    return _uniqueFields([...cfg.all_reserved_fields, ...FRONTEND_FORCE_HIDDEN_FIELDS]);
+    // PNGTuber 兼容字段只在普通编辑 UI 中隐藏；工坊传输仍须保留它们，供旧格式迁移和模型类型推断使用。
+    return _uniqueFields([
+        ...cfg.all_reserved_fields,
+        ...FRONTEND_FORCE_HIDDEN_FIELDS,
+        ...PNGTUBER_UI_HIDDEN_FIELDS,
+    ]);
 }
 
 function normalizeCharacterFieldName(fieldName) {

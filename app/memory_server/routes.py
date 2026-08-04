@@ -87,14 +87,87 @@ async def _resolve_foreground_memory_language(
     lanlan_name: str,
     language: str | None,
 ) -> str:
-    """Resolve foreground prompt locale without persisting a process guess."""
+    """Resolve foreground prompt locale without persisting a process guess.
+
+    Fail-soft on a durable-state read error. ``_load_locale_state_unlocked``
+    raises ``PromptLocalePersistenceError`` on a transient ``OSError`` on
+    purpose — a *writer* must never cache that as empty state or it would
+    discard the real durable causal order. But this is a read for rendering
+    only: a temporarily unreadable sidecar must not turn into a 500 that drops
+    the caller's whole turn. Degrade to the request/process locale instead.
+    """
     if is_supported_language_code(language):
         return _activate_request_language(language)
-    durable_language = await asyncio.to_thread(
-        locale_state.get_character_prompt_locale,
-        lanlan_name,
-    )
+    try:
+        durable_language = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
+            lanlan_name,
+        )
+    except locale_state.PromptLocalePersistenceError:
+        logger.warning(
+            "[PromptLocale] %s: durable locale unreadable, rendering with the "
+            "process locale for this request",
+            lanlan_name,
+        )
+        return _activate_request_language(None)
     return _activate_request_language(durable_language)
+
+
+#: Upper bound on how many subjects one request may cost in durable-locale
+#: lookups. Matches the scoped endpoints' documented ``1..8`` subject contract,
+#: but is enforced independently so the resolver stays bounded even when it
+#: runs ahead of an endpoint's own validation.
+_SCOPED_LOCALE_LOOKUP_LIMIT = 8
+
+
+async def _resolve_scoped_memory_language(
+    lanlan_name: str,
+    subjects,
+    language: str | None,
+) -> str:
+    """Resolve scoped prompt locale: explicit request > subject > character.
+
+    ``subjects`` arrives in the caller's own priority order (see
+    ``_get_scoped_context``), so the first one carrying a durable locale wins.
+    Without this chain a group request falls straight through to the calling
+    process's locale, and the per-subject durable state is never read — which
+    is the whole point of storing it.
+    """
+    if is_supported_language_code(language):
+        return _activate_request_language(language)
+    # Bounded on purpose: this resolver runs before the endpoint's own
+    # ``1..8 subjects`` rejection, so an oversized list would otherwise
+    # schedule one thread-pool lookup per supplied item on its way to a 422.
+    # Bounding here (rather than requiring every caller to validate first)
+    # keeps the work bound a property of the resolver itself.
+    for subject in (subjects or [])[:_SCOPED_LOCALE_LOOKUP_LIMIT]:
+        descriptor = (
+            subject.model_dump()
+            if hasattr(subject, "model_dump")
+            else subject
+        )
+        try:
+            durable = await locale_state.aget_subject_prompt_locale(
+                lanlan_name,
+                descriptor,
+            )
+        except locale_state.PromptLocalePersistenceError:
+            # Same fail-soft contract as the character-level resolver: a
+            # transient sidecar read error must not bubble out of a rendering
+            # lookup and break the caller's fail-soft response contract.
+            logger.warning(
+                "[PromptLocale] %s: scoped locale unreadable, falling through "
+                "to the character locale for this request",
+                lanlan_name,
+            )
+            break
+        except ValueError:
+            # A malformed descriptor fails closed downstream (coerce_subject);
+            # locale lookup must not be the thing that rejects the request.
+            continue
+        if is_supported_language_code(durable):
+            return _activate_request_language(durable)
+    return await _resolve_foreground_memory_language(lanlan_name, None)
 
 
 class ExternalMemoryImportRequest(BaseModel):
@@ -603,7 +676,15 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         if is_supported_language_code(request.language)
         else None
     )
-    memory_language = _activate_request_language(request.language)
+    # Same resolution as the sibling /process /renew /settle endpoints. Today
+    # /cache runs update_history(compress=False), so nothing inside this
+    # context reaches a prompt and the asymmetry is invisible — but any future
+    # prompt work moved in here would silently render in the caller's process
+    # locale instead of the character's durable one.
+    memory_language = await _resolve_foreground_memory_language(
+        lanlan_name,
+        request.language,
+    )
     with language_context(memory_language):
         gates._touch_activity()
         try:
@@ -903,6 +984,16 @@ class ScopedHistorySegment(BaseModel):
     # Stage one of the speaker-trust mechanism: stored on each fact,
     # consumed by nothing yet.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Stable internal identity. Unlike speaker_label this never enters a prompt.
+    speaker_id: str | None = None
+    # Request-side authorization bit. It is never rendered or copied from LLM
+    # output; only owner-authored raw text may evolve another speaker's trust.
+    speaker_is_owner: bool = False
+    # Full fact identities authored after this retained owner's observation.
+    # Bare ids are not unique across participant scopes.
+    trust_signal_excluded_fact_identities: list[
+        tuple[str, str, str, str]
+    ] = Field(default_factory=list)
     # Optional display name for this segment's subject (see
     # ScopedFactsWriteRequest.display_name).
     display_name: str | None = None
@@ -927,6 +1018,8 @@ class ScopedHistoryRequest(BaseModel):
     # Only meaningful alongside speaker_label — without a speaker there is
     # no one to trust, so the handler drops it when the label is absent.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    speaker_id: str | None = None
+    speaker_is_owner: bool = False
     # Optional display name for the single-subject shape's subject (see
     # ScopedFactsWriteRequest.display_name). Group digests pass the group
     # name here.
@@ -1121,7 +1214,11 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=422,
             detail="speaker_label must contain at most 64 characters",
         )
-    from memory.facts import FactExtractionFailed, FactStore
+    from memory.facts import (
+        FactExtractionFailed,
+        FactStore,
+        _speaker_trust_fact_identity,
+    )
 
     speaker_label = (
         FactStore.sanitize_speaker_label(raw_speaker_label)
@@ -1142,6 +1239,12 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         speaker_provenance = {"speaker_label": speaker_label}
         if req.speaker_trust is not None:
             speaker_provenance["speaker_trust"] = req.speaker_trust
+        from memory.speaker_trust import stable_speaker_id
+        speaker_id = stable_speaker_id(req.speaker_id)
+        if req.speaker_id is not None and speaker_id is None:
+            raise HTTPException(status_code=422, detail="invalid speaker_id")
+        if speaker_id is not None:
+            speaker_provenance["speaker_id"] = speaker_id
     subject = req.subject.to_domain()
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
@@ -1180,6 +1283,14 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
     # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
     # 让调用方保留缓冲下轮重试；真·空抽取仍然 200 正常 checkpoint。
+    signal_facts = None
+    if req.speaker_is_owner:
+        signal_facts = [
+            dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict)
+        ]
+    reconciled_facts = []
     try:
         created = await runtime.fact_store.extract_facts(
             input_history,
@@ -1188,6 +1299,7 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             fail_closed=True,
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
+            reconciled_facts=reconciled_facts,
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -1195,11 +1307,111 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             detail="scoped fact extraction failed; retry later",
         ) from exc
     await _stamp_subject_display_name(lanlan_name, subject, display_name)
+    trust_events = []
+    if req.speaker_is_owner:
+        # Evaluate against the authored-order view, before this owner's exact
+        # dedup could mix away the target provenance.  The final reload still
+        # revalidates concurrent forgets and provenance changes; only a change
+        # reported by this extraction is replayed back to the pre-write row.
+        def _key(fact: dict) -> tuple:
+            identity = _speaker_trust_fact_identity(fact)
+            if identity is not None:
+                return identity
+            return (
+                str(fact.get("id")),
+                fact.get("subject_kind"),
+                fact.get("subject_id"),
+                fact.get("scope"),
+            )
+
+        def _provenance(fact: dict) -> dict:
+            return {
+                key: fact[key]
+                for key in (
+                    "speaker_id", "speaker_label", "speaker_trust",
+                    "speaker_provenance_mixed",
+                )
+                if key in fact
+            }
+
+        current_by_key = {
+            _key(fact): dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        reconciled_by_key = {
+            _key(fact): dict(fact)
+            for fact in reconciled_facts
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        authored_by_key = {
+            _key(fact): dict(fact)
+            for fact in signal_facts or []
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        active_signal_facts = []
+        for authored_fact in signal_facts or []:
+            if authored_fact.get("id") is None:
+                continue
+            current_fact = current_by_key.get(_key(authored_fact))
+            if current_fact is None:
+                continue
+            reconciled = reconciled_by_key.get(_key(authored_fact))
+            active_signal_facts.append(
+                authored_fact
+                if (
+                    reconciled is not None
+                    and _provenance(current_fact) == _provenance(reconciled)
+                )
+                else current_fact
+            )
+        replay_signal_facts = list(active_signal_facts)
+        replay_signal_facts.extend(
+            await runtime.fact_store
+            .aload_archived_speaker_trust_signal_facts(lanlan_name)
+        )
+        trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
+            lanlan_name,
+            input_history,
+            subject=subject,
+            speaker_provenance=speaker_provenance,
+            speaker_is_owner=True,
+            facts_snapshot=active_signal_facts,
+            replay_facts_snapshot=replay_signal_facts,
+        )
+        if trust_events:
+            try:
+                trust_events = await (
+                    runtime.fact_store.apersist_speaker_trust_events(
+                        lanlan_name,
+                        trust_events,
+                        expected_reconciliations=reconciled_by_key,
+                    )
+                )
+            except Exception:
+                # Exact dedup and trust-event attachment are separate durable
+                # writes. Restore this request's provenance reconciliation
+                # before retrying the event write so a transient second-write
+                # failure cannot make the retained caller bucket lose its
+                # authored signal on retry.
+                await runtime.fact_store.arollback_speaker_trust_reconciliations(
+                    lanlan_name,
+                    expected_reconciliations=reconciled_by_key,
+                    previous_facts=authored_by_key,
+                )
+                trust_events = await (
+                    runtime.fact_store.apersist_speaker_trust_events(
+                        lanlan_name,
+                        trust_events,
+                        expected_reconciliations=reconciled_by_key,
+                    )
+                )
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
         "created": len(created),
         "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+        "trust_events": trust_events,
     }
 
 
@@ -1222,13 +1434,19 @@ async def _process_scoped_history_segments(
         SCOPED_HISTORY_BATCH_MAX_MESSAGES,
         SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
     )
-    from memory.facts import FactExtractionFailed, FactStore
+    from memory.facts import (
+        FactExtractionFailed,
+        FactStore,
+        _speaker_trust_fact_identity,
+    )
 
     if (
         req.input_history is not None
         or req.subject is not None
         or req.speaker_label is not None
         or req.speaker_trust is not None
+        or req.speaker_id is not None
+        or req.speaker_is_owner
         or req.display_name is not None
     ):
         raise HTTPException(
@@ -1304,10 +1522,25 @@ async def _process_scoped_history_segments(
             "subject": subject,
             "speaker_label": speaker_label,
             "speaker_trust": segment.speaker_trust,
+            "speaker_id": segment.speaker_id,
+            "speaker_is_owner": bool(segment.speaker_is_owner),
+            "trust_signal_excluded_fact_identities": {
+                tuple(str(part).strip() for part in identity)
+                for identity in segment.trust_signal_excluded_fact_identities
+                if all(str(part).strip() for part in identity)
+            },
             "display_name": _sanitized_display_name(
                 segment.display_name, context=f"segment {position}",
             ),
         })
+        from memory.speaker_trust import stable_speaker_id
+        parsed_speaker_id = stable_speaker_id(segment.speaker_id)
+        if segment.speaker_id is not None and parsed_speaker_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"segment {position}: invalid speaker_id",
+            )
+        parsed[-1]["speaker_id"] = parsed_speaker_id
     if total_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES:
         # 单批的 LLM 输入工作量上界与 legacy 单发同一口径：调用方按这个
         # 常量打包，越界是契约 bug，fail loud。
@@ -1318,6 +1551,17 @@ async def _process_scoped_history_segments(
                 f"{SCOPED_HISTORY_BATCH_MAX_MESSAGES} messages in total"
             ),
         )
+    signal_facts = None
+    if any(segment.get("speaker_is_owner") for segment in parsed):
+        # Freeze the pre-batch view. After extraction we replay successful
+        # created rows into this private list in request order, so an owner
+        # sees earlier member statements but never borrows knowledge from a
+        # later segment that happened to persist in the same LLM batch.
+        signal_facts = [
+            dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict)
+        ]
     locale_orders: list[int | None]
     if is_supported_language_code(req.language):
         subjects = [segment["subject"] for segment in parsed]
@@ -1363,13 +1607,174 @@ async def _process_scoped_history_segments(
             status_code=502,
             detail="scoped fact extraction returned mismatched segments",
         )
+
+    def _speaker_provenance_fields(fact: dict) -> dict:
+        return {
+            key: fact[key]
+            for key in (
+                "speaker_id", "speaker_label", "speaker_trust",
+                "speaker_provenance_mixed",
+            )
+            if key in fact
+        }
+
+    def _fact_identity(fact: dict) -> tuple:
+        identity = _speaker_trust_fact_identity(fact)
+        if identity is not None:
+            return identity
+        return (
+            str(fact.get("id")), fact.get("subject_kind"),
+            fact.get("subject_id"), fact.get("scope"),
+        )
+
+    owner_signal_jobs = []
     for segment, result in zip(parsed, segment_results):
+        segment["trust_events"] = []
+        owner_signal_job = None
+        if (
+            signal_facts is not None
+            and segment.get("speaker_is_owner")
+        ):
+            # Every retained owner observation is evaluated, even when fact
+            # extraction wholly failed for that segment.  The durable event is
+            # hidden from a failed response below and replayed on retry, while
+            # freezing here prevents a later segment's reconciliation from
+            # erasing the provenance that was valid at authored time.
+            # Freeze the authored-order rows as well as their allow-list.
+            # The final reload below still revalidates concurrent changes,
+            # except for ids reconciled by this or a later request segment:
+            # those changes occurred after this owner's observation and must
+            # not flow backward into its trust decision.
+            owner_signal_job = {
+                "segment": segment,
+                "facts_by_key": {
+                    _fact_identity(fact): dict(fact)
+                    for fact in signal_facts
+                    if isinstance(fact, dict) and fact.get("id") is not None
+                },
+                "later_reconciled_by_key": {},
+                "own_reconciled_by_key": {},
+            }
+            owner_signal_jobs.append(owner_signal_job)
+        if signal_facts is not None:
+            reconciled_by_key = {
+                _fact_identity(fact): dict(fact)
+                for fact in (result.get("reconciled") or [])
+                if isinstance(fact, dict) and fact.get("id") is not None
+            }
+            if reconciled_by_key:
+                for job in owner_signal_jobs:
+                    job["later_reconciled_by_key"].update(reconciled_by_key)
+                if owner_signal_job is not None:
+                    owner_signal_job["own_reconciled_by_key"].update(
+                        reconciled_by_key
+                    )
+                signal_facts[:] = [
+                    reconciled_by_key.get(_fact_identity(fact), fact)
+                    for fact in signal_facts
+                ]
+            signal_facts.extend(
+                dict(fact)
+                for fact in (result.get("created") or [])
+                if isinstance(fact, dict)
+            )
         # 只给「模型对这一段给出了结论」的段刷新显示名：失败段整桶保留
         # 重试，下次照样带名字来，不必在失败路径上碰 persona。
         if result.get("status") == "ok":
             await _stamp_subject_display_name(
                 lanlan_name, segment["subject"], segment.get("display_name"),
             )
+    if owner_signal_jobs:
+        # This is the final I/O await in the endpoint. Every display-name
+        # write for every segment has completed, so a forget racing any of
+        # those writes is reflected in the active rows below.
+        current_by_key = {
+            _fact_identity(fact): dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        archived_signal_facts = await (
+            runtime.fact_store.aload_archived_speaker_trust_signal_facts(
+                lanlan_name,
+            )
+        )
+        for job in owner_signal_jobs:
+            segment = job["segment"]
+            excluded_fact_identities = segment[
+                "trust_signal_excluded_fact_identities"
+            ]
+            active_signal_facts = []
+            for key, authored_fact in job["facts_by_key"].items():
+                if key in excluded_fact_identities:
+                    continue
+                current_fact = current_by_key.get(key)
+                if current_fact is None:
+                    continue
+                batch_reconciled = job["later_reconciled_by_key"].get(key)
+                active_signal_facts.append(
+                    authored_fact
+                    if (
+                        batch_reconciled is not None
+                        and _speaker_provenance_fields(current_fact)
+                        == _speaker_provenance_fields(batch_reconciled)
+                    )
+                    else current_fact
+                )
+            replay_signal_facts = active_signal_facts + [
+                fact for fact in archived_signal_facts
+                if _fact_identity(fact) not in excluded_fact_identities
+            ]
+            segment["trust_events"] = [
+                event for event in (
+                    await runtime.fact_store.aevaluate_speaker_trust_events(
+                        lanlan_name,
+                        segment["messages"],
+                        subject=segment["subject"],
+                        speaker_provenance={
+                            "speaker_id": segment.get("speaker_id"),
+                            "speaker_trust": segment.get("speaker_trust"),
+                            "speaker_label": segment.get("speaker_label"),
+                        },
+                        speaker_is_owner=True,
+                        facts_snapshot=active_signal_facts,
+                        replay_facts_snapshot=replay_signal_facts,
+                    )
+                )
+                if (
+                    str(event.get("source_fact_id") or ""),
+                    event.get("source_subject_kind"),
+                    event.get("source_subject_id"),
+                    event.get("source_scope"),
+                ) not in excluded_fact_identities
+            ]
+            if segment["trust_events"]:
+                try:
+                    segment["trust_events"] = await (
+                        runtime.fact_store.apersist_speaker_trust_events(
+                            lanlan_name,
+                            segment["trust_events"],
+                            expected_reconciliations=job[
+                                "later_reconciled_by_key"
+                            ],
+                        )
+                    )
+                except Exception:
+                    await runtime.fact_store.arollback_speaker_trust_reconciliations(
+                        lanlan_name,
+                        expected_reconciliations=job[
+                            "own_reconciled_by_key"
+                        ],
+                        previous_facts=job["facts_by_key"],
+                    )
+                    segment["trust_events"] = await (
+                        runtime.fact_store.apersist_speaker_trust_events(
+                            lanlan_name,
+                            segment["trust_events"],
+                            expected_reconciliations=job[
+                                "later_reconciled_by_key"
+                            ],
+                        )
+                    )
     return {
         "status": "processed",
         "segments": [
@@ -1387,6 +1792,40 @@ async def _process_scoped_history_segments(
                     for fact in (result.get("created") or [])
                     if fact.get("id")
                 ],
+                "fact_identities": [
+                    list(_fact_identity(fact))
+                    for fact in (
+                        (result.get("created") or [])
+                        + (result.get("reconciled") or [])
+                    )
+                    if (
+                        isinstance(fact, dict)
+                        and fact.get("id")
+                        and all(_fact_identity(fact))
+                    )
+                ],
+                "created_fact_identities": [
+                    list(_fact_identity(fact))
+                    for fact in (result.get("created") or [])
+                    if (
+                        isinstance(fact, dict)
+                        and fact.get("id") is not None
+                        and all(_fact_identity(fact))
+                    )
+                ],
+                # Exact/semantic dedup can update an existing fact without
+                # creating a row.  Return the affected identities as well so
+                # retry cutoffs can exclude facts introduced by later
+                # authored segments; the plugin needs IDs, not fact content.
+                "reconciled": [
+                    {"id": fact.get("id")}
+                    for fact in (result.get("reconciled") or [])
+                    if isinstance(fact, dict) and fact.get("id")
+                ],
+                "trust_events": (
+                    list(segment.get("trust_events") or [])
+                    if result.get("status") == "ok" else []
+                ),
             }
             for segment, result in zip(parsed, segment_results)
         ],
@@ -1395,7 +1834,16 @@ async def _process_scoped_history_segments(
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
-    with language_context(_activate_request_language(req.language)):
+    # Validate before the locale lookup: it keys per-character state files by
+    # this name, so it must not run on an unvalidated path component. The
+    # inner handler validates again — the helper is idempotent.
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    resolved_language = await _resolve_scoped_memory_language(
+        lanlan_name,
+        req.subjects,
+        req.language,
+    )
+    with language_context(resolved_language):
         return await _get_scoped_context(lanlan_name, req)
 
 
@@ -1661,6 +2109,14 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             detail="subjects must be omitted (legacy private) or contain 1..8 items",
         )
     subjects = [subject.to_domain() for subject in (req.subjects or [])]
+    # Recall renders tier/entity tags and rerank prompts, so it needs the
+    # subject's own durable locale when the caller has none — not whichever
+    # locale the calling process happens to sit in.
+    resolved_language = await _resolve_scoped_memory_language(
+        lanlan_name,
+        subjects,
+        req.language,
+    )
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
@@ -1677,7 +2133,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             elif not query_text:
                 # 只给 time、没 query → 按时间邻近返回最接近的若干条。
                 from memory.hybrid_recall import recall_by_time
-                with language_context(_activate_request_language(req.language)):
+                with language_context(resolved_language):
                     return await recall_by_time(
                         lanlan_name=lanlan_name,
                         time_spec=time_spec,
@@ -1688,7 +2144,7 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
-        with language_context(_activate_request_language(req.language)):
+        with language_context(resolved_language):
             return await hybrid_recall(
                 lanlan_name=lanlan_name,
                 query=query_text,

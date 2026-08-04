@@ -57,7 +57,12 @@ from config.prompts.prompts_memory import (
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
-from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
+from memory.scopes import (
+    MemorySubject,
+    coerce_subject,
+    entry_matches_subject,
+    subject_from_entry,
+)
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import (
     detect_prompt_language_with_ascii_fallback,
@@ -177,18 +182,79 @@ def _readable_fact_id(entry: dict):
     return fact_id
 
 
+_TYPED_TRUST_FACT_ID_PREFIX = "__neko_typed_fact_id_v1__:"
+
+
+def _speaker_trust_fact_id(fact_id: object) -> str:
+    """Serialize a fact id without collapsing distinct scalar types.
+
+    Normal string ids keep their historical wire representation.  Strings
+    using our reserved prefix are escaped, while non-string legacy scalar ids
+    are tagged with their type so ``1`` and ``"1"`` cannot address the same
+    trust-signal row.
+    """
+    if isinstance(fact_id, str) and not fact_id.startswith(
+        _TYPED_TRUST_FACT_ID_PREFIX
+    ):
+        return fact_id
+    try:
+        payload = json.dumps(
+            fact_id, ensure_ascii=False, separators=(",", ":"),
+            sort_keys=True, allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        payload = repr(fact_id)
+    kind = "str" if isinstance(fact_id, str) else type(fact_id).__name__
+    return f"{_TYPED_TRUST_FACT_ID_PREFIX}{kind}:{payload}"
+
+
+def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | None:
+    """Return the full scoped identity used to attach a trust signal."""
+    if not isinstance(entry, dict):
+        return None
+    fact_id = _readable_fact_id(entry)
+    subject = subject_from_entry(entry)
+    if fact_id is None or subject is None:
+        return None
+    return (
+        _speaker_trust_fact_id(fact_id), subject.kind,
+        subject.subject_id, subject.scope,
+    )
+
+
+def _fact_scoped_identity(entry: dict) -> tuple[str, str, str, str] | None:
+    """Return an archive-safe identity without collapsing scoped duplicate ids."""
+    if not isinstance(entry, dict):
+        return None
+    fact_id = _readable_fact_id(entry)
+    if fact_id is None:
+        return None
+    subject = subject_from_entry(entry)
+    typed_fact_id = _speaker_trust_fact_id(fact_id)
+    if subject is not None:
+        return typed_fact_id, subject.kind, subject.subject_id, subject.scope
+    return (
+        typed_fact_id,
+        str(entry.get('subject_kind') or ''),
+        str(entry.get('subject_id') or ''),
+        str(entry.get('scope') or ''),
+    )
+
+
 def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
-    """Merge archive rows keyed by id: later occurrence wins, first slot kept.
+    """Merge archive rows by full scoped identity; later occurrence wins.
 
     facts_archive.json is appended by a two-file commit (archive first, then
     facts.json — see ``_archive_absorbed``). An interrupted commit leaves a row
     in BOTH files, so the next archive pass re-appends it. Keying on
-    ``_readable_fact_id`` makes that append idempotent, and merging ``existing``
-    against itself also heals duplicates an earlier half-commit already wrote to
-    a user's disk.
+    ``_fact_scoped_identity`` makes that append idempotent without folding two
+    subjects that happen to reuse the same fact id. Merging ``existing`` against
+    itself also heals duplicates an earlier half-commit already wrote to disk.
 
     Later wins because ``incoming`` is the live copy being archived right now —
-    it may carry flag updates the older archived copy predates.
+    it may carry flag updates the older archived copy predates. The one
+    exception is an existing arbitration marker: an archive-first crash must
+    not let a later subject archive turn that loser into a restorable row.
 
     Rows with an unusable id are all kept: there is no key to compare them on,
     and folding them together would trade a duplicate for silent data loss (the
@@ -199,14 +265,31 @@ def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     for entry in list(existing) + list(incoming):
         if not isinstance(entry, dict):
             continue
-        fid = _readable_fact_id(entry)
-        if fid is None:
+        identity = _fact_scoped_identity(entry)
+        if identity is None:
             out.append(entry)
             continue
-        if fid in pos:
-            out[pos[fid]] = entry
+        if identity in pos:
+            previous = out[pos[identity]]
+            replacement = entry
+            if (
+                previous.get('arbitration_archived_at')
+                and not entry.get('arbitration_archived_at')
+            ):
+                # Arbitration commits archive-first. If a crash leaves the
+                # loser active, a later subject archive can re-append that
+                # active copy. Keep newer live fields, but never erase the
+                # marker that excludes it from ordinary subject restore.
+                replacement = dict(entry)
+                for key in (
+                    'arbitration_archived_at', 'arbitration_reason',
+                    'superseded_by',
+                ):
+                    if key in previous:
+                        replacement[key] = previous[key]
+            out[pos[identity]] = replacement
         else:
-            pos[fid] = len(out)
+            pos[identity] = len(out)
             out.append(entry)
     return out
 
@@ -862,6 +945,36 @@ class FactStore:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
 
+    def _load_archived_speaker_trust_signal_facts(self, name: str) -> list[dict]:
+        """Strictly load archived rows carrying issued trust signals."""
+        archive_path = self._facts_archive_path(name)
+        if not os.path.exists(archive_path):
+            return []
+        try:
+            with open(archive_path, encoding='utf-8') as fh:
+                archived = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            raise RuntimeError(
+                f"facts_archive unreadable during trust replay: {exc}"
+            ) from exc
+        if not isinstance(archived, list):
+            raise RuntimeError("facts_archive is not a list during trust replay")
+        return [
+            dict(row)
+            for row in archived
+            if (
+                isinstance(row, dict)
+                and isinstance(row.get('_speaker_trust_signal_events'), list)
+            )
+        ]
+
+    async def aload_archived_speaker_trust_signal_facts(
+        self, name: str,
+    ) -> list[dict]:
+        return await asyncio.to_thread(
+            self._load_archived_speaker_trust_signal_facts, name,
+        )
+
     def _subject_forget_tombstones_path(self, name: str) -> str:
         return os.path.join(
             os.path.dirname(self._facts_path(name)),
@@ -929,6 +1042,865 @@ class FactStore:
                     )
 
             await asyncio.to_thread(_record_under_fact_lock)
+
+    async def aarchive_arbitrated_facts(
+        self,
+        name: str,
+        archive_specs: dict[tuple[object, str, str, str], dict],
+        *,
+        survivor_updates: dict[tuple[object, str, str, str], dict] | None = None,
+        expected_survivors: dict[tuple[object, str, str, str], dict] | None = None,
+        expected_losers: dict[tuple[object, str, str, str], dict] | None = None,
+    ) -> int:
+        """Archive trust/dedup losers with an archive-first two-file commit."""
+        if not archive_specs:
+            return 0
+        survivor_updates = survivor_updates or {}
+        expected_survivors = expected_survivors or {}
+        if (
+            expected_losers is not None
+            and set(expected_losers) != set(archive_specs)
+        ):
+            raise ValueError("loser snapshots must match archive specs")
+        if set(survivor_updates) != set(expected_survivors):
+            raise ValueError("survivor updates require matching expected snapshots")
+        async with self._get_persist_alock(name):
+            def _archive() -> int:
+                with self._get_lock(name):
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation="archive",
+                        target=f"memory/{name}/facts_archive.json",
+                    )
+                    facts = self._facts.get(name, [])
+                    fact_identities = {
+                        identity for fact in facts
+                        if isinstance(fact, dict)
+                        and (identity := _fact_scoped_identity(fact)) is not None
+                    }
+
+                    def _normalize_keys(values: dict) -> dict:
+                        normalized = {}
+                        for key, value in values.items():
+                            if isinstance(key, tuple) and len(key) == 4:
+                                identity = (
+                                    key[0],
+                                    str(key[1]),
+                                    str(key[2]),
+                                    str(key[3]),
+                                )
+                                if identity not in fact_identities:
+                                    identity = (
+                                        _speaker_trust_fact_id(key[0]),
+                                        *identity[1:],
+                                    )
+                            else:
+                                matches = [
+                                    candidate
+                                    for fact in facts
+                                    if isinstance(fact, dict)
+                                    and _readable_fact_id(fact) == key
+                                    and (
+                                        candidate := _fact_scoped_identity(fact)
+                                    ) is not None
+                                ]
+                                if len(matches) != 1:
+                                    raise RuntimeError(
+                                        "bare fact id is missing or ambiguous "
+                                        "during arbitration"
+                                    )
+                                identity = matches[0]
+                            normalized[identity] = value
+                        return normalized
+
+                    archive_specs_by_identity = _normalize_keys(archive_specs)
+                    survivor_updates_by_identity = _normalize_keys(
+                        survivor_updates,
+                    )
+                    expected_survivors_by_identity = _normalize_keys(
+                        expected_survivors,
+                    )
+                    expected_losers_by_identity = (
+                        _normalize_keys(expected_losers)
+                        if expected_losers is not None else None
+                    )
+                    losers = [
+                        fact for fact in facts
+                        if _fact_scoped_identity(fact) in archive_specs_by_identity
+                    ]
+                    if len(losers) != len(archive_specs_by_identity):
+                        # The resolver mutates its selected survivor before
+                        # entering this persistence lock.  A concurrent forget
+                        # may remove either side in that window; treating a
+                        # partial archive as success would leave the mutated
+                        # cache ahead of disk.  Raise inside this helper so its
+                        # exception path below evicts the cache atomically.
+                        raise RuntimeError(
+                            "fact arbitration archive mismatch: expected "
+                            f"{len(archive_specs_by_identity)}, archived {len(losers)}"
+                        )
+                    live_by_identity = {
+                        identity: fact
+                        for fact in facts
+                        if (identity := _fact_scoped_identity(fact)) is not None
+                    }
+                    stale_survivors = [
+                        identity
+                        for identity, expected in (
+                            expected_survivors_by_identity.items()
+                        )
+                        if live_by_identity.get(identity) != expected
+                    ]
+                    if stale_survivors:
+                        raise RuntimeError(
+                            "fact arbitration survivor mismatch: "
+                            + ",".join(map(str, sorted(stale_survivors)))
+                        )
+                    stale_losers = [
+                        identity for identity, expected in (
+                            expected_losers_by_identity or {}
+                        ).items()
+                        if live_by_identity.get(identity) != expected
+                    ]
+                    if stale_losers:
+                        raise RuntimeError(
+                            "fact arbitration loser mismatch: "
+                            + ",".join(map(str, sorted(stale_losers)))
+                        )
+                    archive_path = self._facts_archive_path(name)
+                    archived: list[dict] = []
+                    if os.path.exists(archive_path):
+                        try:
+                            with open(archive_path, encoding='utf-8') as fh:
+                                data = json.load(fh)
+                        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                            raise RuntimeError(
+                                f"facts_archive unreadable during arbitration: {exc}"
+                            ) from exc
+                        if not isinstance(data, list):
+                            raise RuntimeError(
+                                "facts_archive is not a list during arbitration"
+                            )
+                        archived = data
+                    now_iso = datetime.now().isoformat()
+                    stamped = []
+                    for fact in losers:
+                        copy = dict(fact)
+                        spec = archive_specs_by_identity.get(
+                            _fact_scoped_identity(fact),
+                        ) or {}
+                        copy['arbitration_archived_at'] = now_iso
+                        copy['arbitration_reason'] = str(
+                            spec.get('reason') or 'dedup_arbitration'
+                        )
+                        if spec.get('superseded_by'):
+                            copy['superseded_by'] = spec['superseded_by']
+                        stamped.append(copy)
+                    merged_archive = _merge_archive_entries(archived, stamped)
+                    loser_identities = {
+                        _fact_scoped_identity(fact) for fact in losers
+                    }
+                    active = []
+                    for fact in facts:
+                        identity = _fact_scoped_identity(fact)
+                        if identity in loser_identities:
+                            continue
+                        replacement = survivor_updates_by_identity.get(identity)
+                        active.append(
+                            dict(replacement) if replacement is not None else fact
+                        )
+                    # Never reverse: crash between writes leaves a recoverable
+                    # duplicate, not an unrecoverable missing fact.
+                    try:
+                        atomic_write_json(
+                            archive_path, merged_archive, indent=2,
+                            ensure_ascii=False,
+                        )
+                        atomic_write_json(
+                            self._facts_path(name), active, indent=2,
+                            ensure_ascii=False,
+                        )
+                    except Exception:
+                        # The active cache may no longer match either durable
+                        # file after a partial two-file commit.  Force reload;
+                        # archive-first ordering still guarantees recoverability.
+                        self._facts.pop(name, None)
+                        raise
+                    facts[:] = active
+                    for fact in losers:
+                        spec = archive_specs_by_identity.get(
+                            _fact_scoped_identity(fact),
+                        ) or {}
+                        logger.info(
+                            f"[FactStore] {name}: 仲裁归档 fact={fact.get('id')} "
+                            f"speaker={fact.get('speaker_id')} "
+                            f"superseded_by={spec.get('superseded_by')}"
+                        )
+                    return len(losers)
+
+            try:
+                return await asyncio.to_thread(_archive)
+            except BaseException:
+                # Any failure may follow a partial archive-first two-file
+                # commit, so discard the cache and reload durable truth.
+                def _invalidate() -> None:
+                    with self._get_lock(name):
+                        self._facts.pop(name, None)
+
+                await asyncio.to_thread(_invalidate)
+                raise
+
+    async def aevaluate_speaker_trust_events(
+        self,
+        name: str,
+        messages: list[dict],
+        *,
+        subject: MemorySubject | dict,
+        speaker_provenance: dict | None,
+        speaker_is_owner: bool,
+        facts_snapshot: list[dict] | None = None,
+        replay_facts_snapshot: list[dict] | None = None,
+    ) -> list[dict]:
+        """Derive owner confirmation/correction signals from raw request text."""
+        if not speaker_is_owner or not isinstance(speaker_provenance, dict):
+            return []
+        from memory.speaker_trust import (
+            deterministic_relation,
+            observation_texts,
+            stable_speaker_id,
+            trust_event_id,
+            trust_observation_id,
+        )
+        from memory.temporal import explicit_event_window
+
+        source_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
+        memory_subject = coerce_subject(subject)
+        texts = observation_texts(messages)
+        if source_id is None or memory_subject is None or not texts:
+            return []
+        facts = (
+            facts_snapshot
+            if facts_snapshot is not None
+            else await self.aload_facts(name)
+        )
+        replay_facts = (
+            replay_facts_snapshot
+            if replay_facts_snapshot is not None
+            else facts
+        )
+
+        def _in_signal_scope(entry: dict) -> bool:
+            if memory_subject.kind != 'group_participant':
+                return entry_matches_subject(entry, memory_subject)
+            candidate_subject = subject_from_entry(entry)
+            if (
+                candidate_subject is None
+                or candidate_subject.kind != 'group_participant'
+            ):
+                return False
+            # A group participant subject is qq:<group>:<speaker>. Owner
+            # confirmation in their own participant bucket may evaluate other
+            # members of that same group, but never a different group.
+            current_prefix = memory_subject.subject_id.rsplit(':', 1)[0]
+            candidate_prefix = candidate_subject.subject_id.rsplit(':', 1)[0]
+            current_scope_is_default = memory_subject.scope == (
+                f"{memory_subject.kind}:{memory_subject.subject_id}"
+            )
+            candidate_scope_is_default = candidate_subject.scope == (
+                f"{candidate_subject.kind}:{candidate_subject.subject_id}"
+            )
+            return (
+                candidate_prefix == current_prefix
+                and (
+                    candidate_subject.scope == memory_subject.scope
+                    or (
+                        current_scope_is_default
+                        and candidate_scope_is_default
+                    )
+                )
+            )
+
+        events: list[dict] = []
+        seen_event_ids: set[str] = set()
+        for text in texts:
+            observation_id = trust_observation_id(text)
+            for prior in replay_facts:
+                if not isinstance(prior, dict) or not _in_signal_scope(prior):
+                    continue
+                # A server-issued signal is persisted before the response is
+                # returned.  Re-deliver it after a lost response; the plugin's
+                # durable event-id ledger makes this replay idempotent.
+                for recorded in prior.get('_speaker_trust_signal_events') or []:
+                    if not isinstance(recorded, dict):
+                        continue
+                    event_id = str(recorded.get('event_id') or '').strip()[:96]
+                    prior_identity = _speaker_trust_fact_identity(prior)
+                    recorded_identity = (
+                        str(recorded.get('source_fact_id') or ''),
+                        recorded.get('source_subject_kind'),
+                        recorded.get('source_subject_id'),
+                        recorded.get('source_scope'),
+                    )
+                    if (
+                        event_id
+                        and event_id not in seen_event_ids
+                        and recorded.get('observation_id') == observation_id
+                        and prior_identity is not None
+                        and recorded_identity == prior_identity
+                        and stable_speaker_id(
+                            recorded.get('source_speaker_id')
+                        ) == source_id
+                        and recorded.get('kind') in {
+                            'confirmation', 'correction',
+                        }
+                        and stable_speaker_id(recorded.get('speaker_id'))
+                    ):
+                        seen_event_ids.add(event_id)
+                        events.append(dict(recorded))
+            for prior in facts:
+                if not isinstance(prior, dict) or not _in_signal_scope(prior):
+                    continue
+                if prior.get('speaker_provenance_mixed') is True:
+                    continue
+                target_id = stable_speaker_id(prior.get('speaker_id'))
+                if target_id is None or target_id == source_id:
+                    continue
+                # Raw owner observations carry no structured event window.
+                # Do not reinterpret an explicitly dated historical fact as a
+                # present-day confirmation/correction. Persisted events above
+                # still replay idempotently after a lost response.
+                if any(explicit_event_window(prior)):
+                    continue
+                relation = deterministic_relation(prior.get('text', ''), text)
+                if relation is None:
+                    continue
+                candidate_subject = subject_from_entry(prior)
+                if candidate_subject is None:
+                    continue
+                raw_source_fact_id = _readable_fact_id(prior)
+                source_fact_id = (
+                    _speaker_trust_fact_id(raw_source_fact_id)
+                    if raw_source_fact_id is not None else None
+                )
+                fallback_fact_id = hashlib.sha256(
+                    ' '.join(str(prior.get('text') or '').split()).casefold().encode(
+                        'utf-8'
+                    )
+                ).hexdigest()[:24]
+                signal_identity = json.dumps([
+                    name,
+                    source_id,
+                    candidate_subject.kind,
+                    candidate_subject.subject_id,
+                    candidate_subject.scope,
+                    source_fact_id or fallback_fact_id,
+                ], ensure_ascii=False, separators=(',', ':'))
+                signal_key = hashlib.sha256(
+                    signal_identity.encode('utf-8')
+                ).hexdigest()[:24]
+                event_id = trust_event_id(
+                    relation, signal_key, target_id,
+                )
+                if event_id in seen_event_ids:
+                    continue
+                seen_event_ids.add(event_id)
+                events.append({
+                    'kind': relation,
+                    'speaker_id': target_id,
+                    'event_id': event_id,
+                    'source_speaker_id': source_id,
+                    'source_fact_id': source_fact_id,
+                    'source_subject_kind': candidate_subject.kind,
+                    'source_subject_id': candidate_subject.subject_id,
+                    'source_scope': candidate_subject.scope,
+                    'observation_id': observation_id,
+                })
+        return events
+
+    async def apersist_speaker_trust_events(
+        self,
+        name: str,
+        events: list[dict],
+        *,
+        expected_reconciliations: dict[
+            tuple[str, str, str, str], dict
+        ] | None = None,
+    ) -> list[dict]:
+        """Attach issued owner signals and return only durably backed events."""
+        from memory.speaker_trust import stable_speaker_id
+
+        def _provenance(entry: dict) -> dict:
+            return {
+                key: entry[key]
+                for key in (
+                    'speaker_id', 'speaker_label', 'speaker_trust',
+                    'speaker_provenance_mixed',
+                )
+                if key in entry
+            }
+
+        valid_by_fact: dict[tuple[str, str, str, str], list[dict]] = {}
+        for raw in events or []:
+            if not isinstance(raw, dict):
+                continue
+            fact_id = str(raw.get('source_fact_id') or '').strip()
+            event_id = str(raw.get('event_id') or '').strip()[:96]
+            speaker_id = stable_speaker_id(raw.get('speaker_id'))
+            source_speaker_id = stable_speaker_id(raw.get('source_speaker_id'))
+            observation_id = str(raw.get('observation_id') or '').strip()[:96]
+            fact_identity = (
+                fact_id,
+                str(raw.get('source_subject_kind') or ''),
+                str(raw.get('source_subject_id') or ''),
+                str(raw.get('source_scope') or ''),
+            )
+            kind = raw.get('kind')
+            if (
+                not fact_id or not event_id or speaker_id is None
+                or source_speaker_id is None
+                or not observation_id
+                or not all(fact_identity[1:])
+                or kind not in {'confirmation', 'correction'}
+            ):
+                continue
+            valid_by_fact.setdefault(fact_identity, []).append({
+                'kind': kind,
+                'speaker_id': speaker_id,
+                'event_id': event_id,
+                'source_speaker_id': source_speaker_id,
+                'source_fact_id': fact_id,
+                'source_subject_kind': fact_identity[1],
+                'source_subject_id': fact_identity[2],
+                'source_scope': fact_identity[3],
+                'observation_id': observation_id,
+            })
+        if not valid_by_fact:
+            return []
+        expected_provenance_by_fact = {
+            identity: _provenance(snapshot)
+            for identity, snapshot in (expected_reconciliations or {}).items()
+            if identity in valid_by_fact and isinstance(snapshot, dict)
+        }
+
+        async with self._get_persist_alock(name):
+            await self.aload_facts(name)
+
+            def _persist() -> list[dict]:
+                changed = 0
+                durable_events: list[dict] = []
+                durable_event_ids: set[str] = set()
+                with self._get_lock(name):
+                    facts = self._facts.get(name) or []
+                    for fact in facts:
+                        if not isinstance(fact, dict):
+                            continue
+                        fact_identity = _speaker_trust_fact_identity(fact)
+                        additions = valid_by_fact.get(fact_identity)
+                        if not additions:
+                            continue
+                        matches_expected_reconciliation = (
+                            expected_provenance_by_fact.get(fact_identity)
+                            == _provenance(fact)
+                        )
+                        recorded = fact.get('_speaker_trust_signal_events')
+                        if not isinstance(recorded, list):
+                            recorded = []
+                            fact['_speaker_trust_signal_events'] = recorded
+                        known = {
+                            str(item.get('event_id') or '')
+                            for item in recorded if isinstance(item, dict)
+                        }
+                        for event in additions:
+                            is_replay = event['event_id'] in known
+                            if (
+                                not is_replay
+                                and not matches_expected_reconciliation
+                                and (
+                                    fact.get('speaker_provenance_mixed') is True
+                                    or stable_speaker_id(fact.get('speaker_id'))
+                                    != event['speaker_id']
+                                )
+                            ):
+                                continue
+                            if not is_replay:
+                                recorded.append(event)
+                                known.add(event['event_id'])
+                                changed += 1
+                            if event['event_id'] not in durable_event_ids:
+                                durable_event_ids.add(event['event_id'])
+                                durable_events.append(dict(event))
+                    if changed:
+                        self.save_facts(name, _fact_lock_held=True)
+                    archive_path = self._facts_archive_path(name)
+                    archived: list = []
+                    if os.path.exists(archive_path):
+                        try:
+                            with open(archive_path, encoding='utf-8') as fh:
+                                archived = json.load(fh)
+                        except (
+                            json.JSONDecodeError, UnicodeDecodeError, OSError,
+                        ) as exc:
+                            raise RuntimeError(
+                                "facts_archive unreadable during trust persist: "
+                                f"{exc}"
+                            ) from exc
+                        if not isinstance(archived, list):
+                            raise RuntimeError(
+                                "facts_archive is not a list during trust persist"
+                            )
+                    archive_changed = False
+                    for fact in archived:
+                        if not isinstance(fact, dict):
+                            continue
+                        fact_identity = _speaker_trust_fact_identity(fact)
+                        additions = valid_by_fact.get(fact_identity)
+                        if not additions:
+                            continue
+                        matches_expected_reconciliation = (
+                            expected_provenance_by_fact.get(fact_identity)
+                            == _provenance(fact)
+                        )
+                        recorded = fact.get('_speaker_trust_signal_events')
+                        if not isinstance(recorded, list):
+                            recorded = []
+                            fact['_speaker_trust_signal_events'] = recorded
+                        known = {
+                            str(item.get('event_id') or '')
+                            for item in recorded
+                            if isinstance(item, dict)
+                        }
+                        for event in additions:
+                            is_replay = event['event_id'] in known
+                            if (
+                                not is_replay
+                                and not matches_expected_reconciliation
+                                and (
+                                    fact.get('speaker_provenance_mixed') is True
+                                    or stable_speaker_id(fact.get('speaker_id'))
+                                    != event['speaker_id']
+                                )
+                            ):
+                                continue
+                            if not is_replay:
+                                recorded.append(event)
+                                known.add(event['event_id'])
+                                archive_changed = True
+                            if event['event_id'] not in durable_event_ids:
+                                durable_event_ids.add(event['event_id'])
+                                durable_events.append(dict(event))
+                    if archive_changed:
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation="save",
+                            target=f"memory/{name}/facts_archive.json",
+                        )
+                        atomic_write_json(
+                            archive_path, archived,
+                            indent=2, ensure_ascii=False,
+                        )
+                return durable_events
+
+            persist_task = asyncio.create_task(asyncio.to_thread(_persist))
+            try:
+                return await asyncio.shield(persist_task)
+            except asyncio.CancelledError as cancellation:
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    while current_task.cancelling():
+                        current_task.uncancel()
+                try:
+                    while not persist_task.done():
+                        try:
+                            await asyncio.shield(persist_task)
+                        except asyncio.CancelledError:
+                            if current_task is not None:
+                                while current_task.cancelling():
+                                    current_task.uncancel()
+                    _ = persist_task.result()
+                except BaseException:
+                    with self._get_lock(name):
+                        self._facts.pop(name, None)
+                    raise
+                raise cancellation
+            except BaseException:
+                # _persist mutates cached rows before the atomic file write.
+                # If that write fails, retaining those event objects would
+                # make the retry treat them as durable replay entries and
+                # skip the write that actually failed. Reload from disk on
+                # the next attempt instead.
+                with self._get_lock(name):
+                    self._facts.pop(name, None)
+                raise
+
+    async def arollback_speaker_trust_reconciliations(
+        self,
+        name: str,
+        *,
+        expected_reconciliations: dict[
+            tuple[str, str, str, str], dict
+        ],
+        previous_facts: dict[tuple[str, str, str, str], dict],
+    ) -> bool:
+        """Restore authored provenance after trust-event persistence fails.
+
+        Exact dedup can reconcile a source row to mixed provenance before the
+        separately persisted trust event is attached.  A transient failure in
+        that second write must not leave the retry unable to reconstruct the
+        original speaker.  Restore only rows whose current provenance still
+        equals this request's reconciliation snapshot; concurrent provenance
+        changes are deliberately left untouched.
+        """
+        provenance_keys = (
+            'speaker_id', 'speaker_label', 'speaker_trust',
+            'speaker_provenance_mixed',
+        )
+
+        def _provenance(entry: dict) -> dict:
+            return {
+                key: entry[key] for key in provenance_keys if key in entry
+            }
+
+        expected = {
+            identity: _provenance(snapshot)
+            for identity, snapshot in (expected_reconciliations or {}).items()
+            if isinstance(snapshot, dict)
+        }
+        previous = {
+            identity: _provenance(snapshot)
+            for identity, snapshot in (previous_facts or {}).items()
+            if identity in expected and isinstance(snapshot, dict)
+        }
+        if not previous:
+            return False
+
+        async with self._get_persist_alock(name):
+            await self.aload_facts(name)
+
+            def _rollback() -> bool:
+                changed = False
+
+                def _restore(rows: list) -> bool:
+                    view_changed = False
+                    for fact in rows:
+                        if not isinstance(fact, dict):
+                            continue
+                        identity = _speaker_trust_fact_identity(fact)
+                        if (
+                            identity not in previous
+                            or _provenance(fact) != expected.get(identity)
+                        ):
+                            continue
+                        for key in provenance_keys:
+                            fact.pop(key, None)
+                        fact.update(previous[identity])
+                        view_changed = True
+                    return view_changed
+
+                with self._get_lock(name):
+                    facts = self._facts.get(name) or []
+                    if _restore(facts):
+                        self.save_facts(name, _fact_lock_held=True)
+                        changed = True
+
+                    archive_path = self._facts_archive_path(name)
+                    archived: list = []
+                    if os.path.exists(archive_path):
+                        with open(archive_path, encoding='utf-8') as fh:
+                            archived = json.load(fh)
+                        if not isinstance(archived, list):
+                            raise RuntimeError(
+                                'facts_archive is not a list during trust rollback'
+                            )
+                    if _restore(archived):
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation='save',
+                            target=f'memory/{name}/facts_archive.json',
+                        )
+                        atomic_write_json(
+                            archive_path, archived,
+                            indent=2, ensure_ascii=False,
+                        )
+                        changed = True
+                return changed
+
+            rollback_task = asyncio.create_task(asyncio.to_thread(_rollback))
+            try:
+                return await asyncio.shield(rollback_task)
+            except asyncio.CancelledError as cancellation:
+                # ``to_thread`` keeps running after the caller is cancelled;
+                # keep shielding through any later cancellation (for example,
+                # request timeout followed by shutdown) until its mutation and
+                # disk writes have actually finished under the async lock.
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    while current_task.cancelling():
+                        current_task.uncancel()
+                while not rollback_task.done():
+                    try:
+                        await asyncio.shield(rollback_task)
+                    except asyncio.CancelledError:
+                        if current_task is not None:
+                            while current_task.cancelling():
+                                current_task.uncancel()
+                        continue
+                _ = rollback_task.result()
+                raise cancellation
+
+    async def arestore_arbitrated_fact(
+        self,
+        name: str,
+        fact_id: object,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> bool:
+        """Restore one arbitration row, rejecting ambiguous scoped IDs."""
+        target_id = str(fact_id if fact_id is not None else '').strip()
+        if not target_id:
+            return False
+        target_subject = coerce_subject(subject)
+        target_scope = (
+            (
+                target_subject.kind,
+                target_subject.subject_id,
+                target_subject.scope,
+            )
+            if target_subject is not None
+            else None
+        )
+        async with self._get_persist_alock(name):
+            def _restore() -> bool:
+                # Warm the non-reentrant cache lock before taking it below.
+                self.load_facts(name)
+                with self._get_lock(name):
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation='restore',
+                        target=f'memory/{name}/facts_archive.json',
+                    )
+                    archive_path = self._facts_archive_path(name)
+                    if not os.path.exists(archive_path):
+                        return False
+                    try:
+                        with open(archive_path, encoding='utf-8') as fh:
+                            archived = json.load(fh)
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            f'facts_archive unreadable during restore: {exc}'
+                        ) from exc
+                    if not isinstance(archived, list):
+                        raise RuntimeError('facts_archive is not a list during restore')
+
+                    def _restore_id(row: dict) -> str | None:
+                        readable = _readable_fact_id(row)
+                        if readable is None:
+                            return None
+                        normalized = str(readable).strip()
+                        return normalized or None
+
+                    def _restore_identity(row: dict) -> tuple | None:
+                        return _fact_scoped_identity(row)
+
+                    def _restore_scope(row: dict) -> tuple[str, str, str] | None:
+                        row_subject = subject_from_entry(row)
+                        if row_subject is None:
+                            return None
+                        return (
+                            row_subject.kind,
+                            row_subject.subject_id,
+                            row_subject.scope,
+                        )
+
+                    matches = [
+                        row for row in archived
+                        if isinstance(row, dict)
+                        and _restore_id(row) == target_id
+                        and row.get('arbitration_archived_at')
+                        and not row.get('subject_archived_at')
+                        and (
+                            target_scope is None
+                            or _restore_scope(row) == target_scope
+                        )
+                    ]
+                    if not matches:
+                        return False
+                    match_identities = {
+                        _restore_identity(row) for row in matches
+                    }
+                    exact_fact_id = (
+                        target_id if isinstance(fact_id, str) else fact_id
+                    )
+                    exact_identity = (
+                        _speaker_trust_fact_id(exact_fact_id),
+                        *(target_scope or ('', '', '')),
+                    )
+                    exact_matches = (
+                        [
+                            row for row in matches
+                            if _restore_identity(row) == exact_identity
+                        ]
+                        if target_scope is not None else []
+                    )
+                    if exact_matches:
+                        matches = exact_matches
+                        selected_identity = exact_identity
+                    elif len(match_identities) == 1:
+                        # Compatibility: a string request may address one
+                        # legacy numeric archive id when no exact string id
+                        # exists. Multiple scalar types remain ambiguous.
+                        selected_identity = next(iter(match_identities))
+                    else:
+                        return False
+                    facts = self._facts.get(name, [])
+                    active_identities = {
+                        _restore_identity(row)
+                        for row in facts
+                        if isinstance(row, dict)
+                    }
+                    restored = dict(matches[-1])
+                    for key in (
+                        'arbitration_archived_at', 'arbitration_reason',
+                        'superseded_by',
+                    ):
+                        restored.pop(key, None)
+                    restored_at = datetime.now().isoformat()
+                    restored['arbitration_restored_at'] = restored_at
+                    restored['restored_at'] = restored_at
+                    active = list(facts)
+                    if selected_identity not in active_identities:
+                        active.append(restored)
+                    remaining = [
+                        row for row in archived
+                        if not (
+                            isinstance(row, dict)
+                            and _restore_identity(row) == selected_identity
+                            and row.get('arbitration_archived_at')
+                        )
+                    ]
+                    # Restore is the mirror transaction: active first, archive
+                    # second. A crash leaves a duplicate, never a missing fact.
+                    atomic_write_json(
+                        self._facts_path(name), active, indent=2,
+                        ensure_ascii=False,
+                    )
+                    atomic_write_json(
+                        archive_path, remaining, indent=2, ensure_ascii=False,
+                    )
+                    facts[:] = active
+                    logger.info(
+                        f'[FactStore] {name}: 仲裁恢复 fact={target_id}'
+                    )
+                    return True
+
+            try:
+                return await asyncio.to_thread(_restore)
+            except BaseException:
+                def _invalidate() -> None:
+                    with self._get_lock(name):
+                        self._facts.pop(name, None)
+
+                await asyncio.to_thread(_invalidate)
+                raise
 
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
@@ -1109,6 +2081,7 @@ class FactStore:
                 if (
                     isinstance(f, dict)
                     and not f.get('subject_archived_at')
+                    and not f.get('arbitration_archived_at')
                     and entry_matches_subject(f, subject)
                 ):
                     f['subject_archived_at'] = archived_at_iso
@@ -1163,6 +2136,11 @@ class FactStore:
         so an explicit restore resets the subject's archival clock instead of
         being undone by the very next sweep.
 
+        A row carrying both subject and arbitration markers remains archived:
+        subject restoration clears only its subject marker, preserving the
+        independent trust-arbitration decision until an explicit arbitration
+        restore is requested.
+
         Returns the number of rows moved back, or ``None`` when the archive
         file is corrupt — mirroring the archival side's abort semantics, so
         the orchestrator skips the higher stores instead of leaving the
@@ -1195,7 +2173,7 @@ class FactStore:
                 )
                 return None
 
-            def _is_subject_archived_row(f) -> bool:
+            def _is_subject_marked_row(f) -> bool:
                 return (
                     isinstance(f, dict)
                     and f.get('subject_archived_at')
@@ -1206,8 +2184,17 @@ class FactStore:
                     and entry_matches_subject(f, subject)
                 )
 
-            to_restore = [f for f in archived if _is_subject_archived_row(f)]
-            if not to_restore:
+            to_restore = [
+                f for f in archived
+                if _is_subject_marked_row(f)
+                and not f.get('arbitration_archived_at')
+            ]
+            arbitration_rows = [
+                f for f in archived
+                if _is_subject_marked_row(f)
+                and f.get('arbitration_archived_at')
+            ]
+            if not to_restore and not arbitration_rows:
                 return 0
             facts = self._facts.get(name, [])
             active_ids = {
@@ -1226,9 +2213,19 @@ class FactStore:
                 copy.pop('subject_archived_at', None)
                 copy['restored_at'] = restored_at_iso
                 restored.append(copy)
-            remaining_archive = [
-                f for f in archived if not _is_subject_archived_row(f)
-            ]
+            restore_object_ids = {id(f) for f in to_restore}
+            arbitration_object_ids = {id(f) for f in arbitration_rows}
+            remaining_archive = []
+            for f in archived:
+                if id(f) in restore_object_ids:
+                    continue
+                if id(f) in arbitration_object_ids:
+                    copy = dict(f)
+                    copy.pop('subject_archived_at', None)
+                    copy['restored_at'] = restored_at_iso
+                    remaining_archive.append(copy)
+                    continue
+                remaining_archive.append(f)
             atomic_write_json(
                 self._facts_path(name), facts + restored, indent=2, ensure_ascii=False,
             )
@@ -1238,9 +2235,10 @@ class FactStore:
             facts.extend(restored)
             logger.info(
                 f"[FactStore] {name}: subject 恢复 [scoped {subject.kind}"
-                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池"
+                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池，"
+                f"{len(arbitration_rows)} 条仲裁 loser 清除 subject 标记后保持归档"
             )
-            return len(restored)
+            return len(restored) + len(arbitration_rows)
 
     async def arestore_subject_facts(
         self, name: str, subject: MemorySubject,
@@ -2097,8 +3095,8 @@ class FactStore:
     def _speaker_provenance_of(segment: dict) -> dict | None:
         """The provenance fields to stamp onto this segment's persisted facts.
 
-        只落字段不接消费（发言人信赖度阶段一）：speaker_label = 谁说的，
-        speaker_trust = 调用方按权限等级派生的 0..1 初值。永远来自请求段，
+        speaker_label = 谁说的，speaker_trust = 调用方的代码侧信赖度快照。
+        永远来自请求段，
         绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""  # noqa: DOCSTRING_CJK
         prov: dict = {}
         label = str(segment.get('speaker_label') or '').strip()
@@ -2111,6 +3109,10 @@ class FactStore:
             and 0.0 <= float(trust) <= 1.0
         ):
             prov['speaker_trust'] = float(trust)
+        from memory.speaker_trust import stable_speaker_id
+        speaker_id = stable_speaker_id(segment.get('speaker_id'))
+        if speaker_id is not None:
+            prov['speaker_id'] = speaker_id
         return prov or None
 
     async def extract_facts_batch(
@@ -2200,15 +3202,29 @@ class FactStore:
             )
 
         results: list[dict] = []
+        chronological_predecessor_failed = False
         for position, (segment, segment_facts) in enumerate(
             zip(segments, per_segment), start=1,
         ):
             dropped = dropped_per_segment[position - 1]
             suspect = suspect_per_segment[position - 1]
+            if chronological_predecessor_failed:
+                # Segments are authored-order input.  Persisting a later
+                # segment after an earlier one failed would give the retry of
+                # that predecessor a newer created_at and invert chronology.
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: 批抽取第 {position} 段因前序段"
+                    "失败而保留重试（未持久化）"
+                )
+                results.append(
+                    {'status': 'failed', 'created': [], 'dropped': dropped}
+                )
+                continue
             if segment_facts is None:
                 results.append(
                     {'status': 'failed', 'created': [], 'dropped': dropped}
                 )
+                chronological_predecessor_failed = True
                 continue
             if dropped:
                 logger.warning(
@@ -2227,6 +3243,7 @@ class FactStore:
                 )
                 status = 'failed'
             created: list[dict] = []
+            reconciled: list[dict] = []
             if segment_facts:
                 try:
                     created = await self._apersist_new_facts(
@@ -2237,19 +3254,28 @@ class FactStore:
                         expected_subject_generation=(
                             segment_generations[position - 1]
                         ),
+                        reconciled_facts=reconciled,
                     )
                 except Exception as exc:
                     logger.error(
                         f"[FactStore] {lanlan_name}: 批抽取第 "
-                        f"{position} 段持久化失败（其余段不受连累）: {exc}"
+                        f"{position} 段持久化失败（后序段保留重试）: {exc}"
                     )
                     results.append(
                         {'status': 'failed', 'created': [], 'dropped': dropped}
                     )
+                    chronological_predecessor_failed = True
                     continue
             results.append(
-                {'status': status, 'created': created, 'dropped': dropped}
+                {
+                    'status': status,
+                    'created': created,
+                    'reconciled': reconciled,
+                    'dropped': dropped,
+                }
             )
+            if status != 'ok':
+                chronological_predecessor_failed = True
         return results
 
     # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；
@@ -2291,6 +3317,7 @@ class FactStore:
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
         expected_subject_generation: int | None = None,
+        reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             memory_subject = coerce_subject(subject)
@@ -2321,6 +3348,7 @@ class FactStore:
                 semantic_dedup=semantic_dedup,
                 subject=subject,
                 speaker_provenance=speaker_provenance,
+                reconciled_facts=reconciled_facts,
             )
 
     async def apersist_scoped_facts(
@@ -2355,6 +3383,7 @@ class FactStore:
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
+        reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -2376,11 +3405,15 @@ class FactStore:
         re-evaluates. The reverse (user→ai) never downgrades — user
         corroboration is irreversible.
 
-        ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
-        trust'} 子集），只盖在本批**新建 user_observation** fact 上；AI
-        disclosure 不冒用参与者 provenance。字段只落盘不接消费（信赖度
-        阶段一）；来自调用方（scoped_history 请求段），绝不读 extracted
+        ``speaker_provenance``: 发言人来源标识（speaker_label / speaker_trust /
+        speaker_id 白名单），只盖在本批**新建 user_observation** fact 上；AI
+        disclosure 不冒用参与者 provenance。来自调用方（scoped_history
+        请求段），绝不读 extracted
         元素里的同名键——LLM 输出无法伪造它。
+
+        ``reconciled_facts`` receives snapshots of existing rows whose
+        provenance this call reconciled, so callers can distinguish their own
+        write from a concurrent provenance change.
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -2388,9 +3421,81 @@ class FactStore:
 
         new_facts: list[dict] = []
         upgraded_count = 0
+        provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
         # in-place 升级，否则重试撞守卫直接跳过保存。
         upgraded_snapshots: list[tuple[dict, Any, Any]] = []
+        provenance_snapshots: list[tuple[dict, dict[str, Any]]] = []
+        request_provenance: dict[str, Any] = {}
+        if isinstance(speaker_provenance, dict):
+            from memory.speaker_trust import stable_speaker_id
+            request_speaker_id = stable_speaker_id(
+                speaker_provenance.get('speaker_id')
+            )
+            if request_speaker_id is not None:
+                request_provenance['speaker_id'] = request_speaker_id
+            # label/trust predate stable speaker_id and remain valid request-
+            # derived provenance on legacy callers.  Keep them independent:
+            # model output still never enters this mapping.
+            label = str(
+                speaker_provenance.get('speaker_label') or ''
+            ).strip()
+            if label:
+                request_provenance['speaker_label'] = label[:64]
+            trust = speaker_provenance.get('speaker_trust')
+            if (
+                isinstance(trust, (int, float))
+                and not isinstance(trust, bool)
+                and 0.0 <= float(trust) <= 1.0
+            ):
+                request_provenance['speaker_trust'] = float(trust)
+
+        def _reconcile_existing_provenance(
+            existing: dict | None, *, dedup_stage: str,
+        ) -> None:
+            nonlocal provenance_updated_count
+            if (
+                existing is None
+                or source != 'user_observation'
+                or not request_provenance.get('speaker_id')
+            ):
+                return
+            from memory.speaker_trust import (
+                provenance_of_entries,
+                stable_speaker_id,
+            )
+            provenance_keys = (
+                'speaker_id', 'speaker_label', 'speaker_trust',
+                'speaker_provenance_mixed',
+            )
+            existing_speaker_id = stable_speaker_id(existing.get('speaker_id'))
+            if existing.get('speaker_provenance_mixed') is True:
+                desired_provenance = {'speaker_provenance_mixed': True}
+            elif existing_speaker_id is None:
+                desired_provenance = dict(request_provenance)
+            elif existing_speaker_id == request_provenance['speaker_id']:
+                desired_provenance = provenance_of_entries((
+                    existing, request_provenance,
+                ))
+            else:
+                desired_provenance = {'speaker_provenance_mixed': True}
+            current_provenance = {
+                key: existing[key]
+                for key in provenance_keys if key in existing
+            }
+            if current_provenance == desired_provenance:
+                return
+            provenance_snapshots.append((existing, current_provenance))
+            for key in provenance_keys:
+                existing.pop(key, None)
+            existing.update(desired_provenance)
+            provenance_updated_count += 1
+            logger.info(
+                f"[FactStore] {lanlan_name}: {dedup_stage} fact provenance "
+                f"reconciled fact_id={existing.get('id')} "
+                f"existing_speaker={existing_speaker_id or '-'} "
+                f"incoming_speaker={request_provenance['speaker_id']}"
+            )
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -2493,6 +3598,9 @@ class FactStore:
                     if existing.get('signal_processed') is False:
                         existing[self._SIGNAL_RESET_PENDING] = True
                     upgraded_count += 1
+                _reconcile_existing_provenance(
+                    existing, dedup_stage='exact',
+                )
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
@@ -2508,6 +3616,7 @@ class FactStore:
                 # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
                 # 文本本身是退化的口水句，去重已无意义）。
                 is_dup = False
+                duplicate_hit: dict | None = None
                 raw_limit = 10
                 archived_by_id: dict | None = None
 
@@ -2559,6 +3668,7 @@ class FactStore:
                         if (
                             hit is None
                             or hit.get('subject_archived_at')
+                            or hit.get('arbitration_archived_at')
                             or not entry_matches_subject(hit, memory_subject)
                         ):
                             continue
@@ -2580,6 +3690,7 @@ class FactStore:
                             if hit_date and hit_date != daily_event_date:
                                 continue
                         is_dup = True
+                        duplicate_hit = hit
                         break
                     if (
                         is_dup
@@ -2590,6 +3701,15 @@ class FactStore:
                         break
                     raw_limit = 200
                 if is_dup:
+                    # Archived absorbed rows are outside this active-facts
+                    # commit; only an active survivor can be reconciled here.
+                    if (
+                        duplicate_hit is not None
+                        and duplicate_hit.get('id') in facts_by_id
+                    ):
+                        _reconcile_existing_provenance(
+                            duplicate_hit, dedup_stage='semantic',
+                        )
                     continue
 
             created_at_iso = datetime.now().isoformat()
@@ -2657,18 +3777,11 @@ class FactStore:
             }
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
-            if speaker_provenance and source == 'user_observation':
-                # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
-                label = str(speaker_provenance.get('speaker_label') or '').strip()
-                if label:
-                    fact_entry['speaker_label'] = label[:64]
-                trust = speaker_provenance.get('speaker_trust')
-                if (
-                    isinstance(trust, (int, float))
-                    and not isinstance(trust, bool)
-                    and 0.0 <= float(trust) <= 1.0
-                ):
-                    fact_entry['speaker_trust'] = float(trust)
+            if request_provenance and source == 'user_observation':
+                # Whitelisted, request-derived fields only. Model-produced
+                # lookalike keys never enter request_provenance.
+                fact_entry.update(request_provenance)
+
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
@@ -2695,7 +3808,7 @@ class FactStore:
                     # facts.json 从未收到它（维护模式等场景）。
                     await self._rollback_uncommitted_facts(
                         lanlan_name, new_facts, existing_hashes,
-                        upgraded_snapshots,
+                        upgraded_snapshots, provenance_snapshots,
                     )
                     raise
 
@@ -2703,7 +3816,7 @@ class FactStore:
         # source field. Without the upgrade path: A 后 B 跑时撞到 hash 但
         # 上下源不同会丢 in-place 改的字段，下次启动 reload facts.json 就
         # 把升级 wipe 了。
-        if new_facts or upgraded_count:
+        if new_facts or upgraded_count or provenance_updated_count:
             try:
                 await self.asave_facts(lanlan_name)
             except BaseException:
@@ -2714,7 +3827,7 @@ class FactStore:
                 # 重试会重做），让重试重新走完整提取+持久化。
                 await self._rollback_uncommitted_facts(
                     lanlan_name, new_facts, existing_hashes,
-                    upgraded_snapshots,
+                    upgraded_snapshots, provenance_snapshots,
                 )
                 raise
         if new_facts:
@@ -2739,6 +3852,18 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: 升级 {upgraded_count} 条 ai_disclosure → user_observation "
                 f"(user 印证后重入 Stage-2 evidence loop)"
             )
+        if provenance_updated_count:
+            logger.info(
+                f"[FactStore] {lanlan_name}: reconciled provenance for "
+                f"{provenance_updated_count} exact facts"
+            )
+            if reconciled_facts is not None:
+                reconciled_by_identity = {
+                    identity: dict(entry)
+                    for entry, _before in provenance_snapshots
+                    if (identity := _fact_scoped_identity(entry)) is not None
+                }
+                reconciled_facts.extend(reconciled_by_identity.values())
 
         return new_facts
 
@@ -3229,6 +4354,7 @@ class FactStore:
         fail_closed: bool = False,
         speaker_label: str | None = None,
         speaker_provenance: dict | None = None,
+        reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -3254,11 +4380,14 @@ class FactStore:
         :meth:`_allm_extract_facts`.
 
         ``speaker_provenance``: stamped onto新建 user_observation fact
-        （speaker_label / speaker_trust，信赖度阶段一只落字段）；AI
+        （speaker_label / speaker_trust / speaker_id）；AI
         disclosure 保持独立来源。与 ``speaker_label`` 分开传：后者影响
         prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
         "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定
         是否给本参数。
+
+        ``reconciled_facts`` receives snapshots of existing rows whose
+        provenance this extraction reconciled.
         """  # noqa: DOCSTRING_CJK
         memory_subject = coerce_subject(subject)
         expected_subject_generation = (
@@ -3298,6 +4427,7 @@ class FactStore:
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
             expected_subject_generation=expected_subject_generation,
+            reconciled_facts=reconciled_facts,
         )
 
     # ── external import state (sidecar) ──────────────────────────────
@@ -3899,14 +5029,15 @@ class FactStore:
     async def _rollback_uncommitted_facts(
         self, lanlan_name: str, new_facts: list, existing_hashes: set,
         upgraded_snapshots: list | None = None,
+        provenance_snapshots: list | None = None,
     ) -> None:
         """Undo in-memory effects of a batch that never reached disk.
 
         The fail-closed callers retry on error; if the cache and hash set
         keep the uncommitted rows, that retry deduplicates into an empty
         success and the caller advances a volatile cursor over facts that
-        facts.json never received. Upgrades are left alone (field-level
-        idempotent, redone by the retry)."""
+        facts.json never received. In-place source and provenance changes are
+        restored so a retry cannot hit the dedup guard and skip persistence."""
         for entry, prev_source, prev_signal in (upgraded_snapshots or []):
             # in-place 升级同样要还原：留着的话重试会撞升级守卫（source
             # 已是 user_observation）→ upgraded_count=0 → 整轮跳过保存，
@@ -3916,6 +5047,13 @@ class FactStore:
                 entry.pop('signal_processed', None)
             else:
                 entry['signal_processed'] = prev_signal
+        for entry, previous in reversed(provenance_snapshots or []):
+            for key in (
+                'speaker_id', 'speaker_label', 'speaker_trust',
+                'speaker_provenance_mixed',
+            ):
+                entry.pop(key, None)
+            entry.update(previous)
         added_ids = {
             nf.get('id') for nf in new_facts if isinstance(nf, dict)
         }

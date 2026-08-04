@@ -261,6 +261,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _persist_business_config(self) -> bool:
         return await self.settings_service.persist_business_config()
 
+    async def _mutate_business_config(self, mutation) -> bool:
+        """Route direct action mutations through the serialized writer."""
+        settings_service = getattr(self, "settings_service", None)
+        if settings_service is not None:
+            return await settings_service.mutate_business_config(mutation)
+        # Preserve the established lightweight-host seam used by unit tests.
+        if not mutation(self._qq_settings):
+            return True
+        return await self._persist_business_config()
+
     def _ensure_qq_client_initialized(self) -> None:
         if self.qq_client is not None:
             return
@@ -1087,14 +1097,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             return Err(SdkError(f"INVALID_INPUT: 未知的提示词层: {layer_id}"))
         if layer_def.get("runtime"):
             return Err(SdkError(f"INVALID_INPUT: 运行时层不可编辑: {layer_id}"))
-        # 写入覆盖
-        overrides = dict((self._qq_settings or {}).get("prompt_overrides") or {})
-        if not isinstance(overrides, dict):
-            overrides = {}
-        overrides.setdefault(locale, {})
-        overrides[locale][layer_def["i18n_key"]] = text_val if text_val.strip() else ""
-        self._qq_settings["prompt_overrides"] = overrides
-        success = await self.settings_service.persist_business_config()
+        def _save_override(settings):
+            raw_overrides = settings.get("prompt_overrides") or {}
+            overrides = (
+                dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
+            )
+            overrides.setdefault(locale, {})
+            overrides[locale] = dict(overrides[locale])
+            overrides[locale][layer_def["i18n_key"]] = (
+                text_val if text_val.strip() else ""
+            )
+            settings["prompt_overrides"] = overrides
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _save_override,
+        )
         if success:
             self.session_instruction_service._discard_all_sessions_for_prompt_change()
         return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
@@ -1118,13 +1136,33 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         layer_def = next((ld for ld in self.session_instruction_service._PROMPT_LAYERS if ld["id"] == layer_id), None)
         if layer_def is None or layer_def.get("runtime"):
             return Err(SdkError(f"INVALID_INPUT: 无法重置的层: {layer_id}"))
-        overrides = dict((self._qq_settings or {}).get("prompt_overrides") or {})
-        if isinstance(overrides, dict) and locale in overrides and isinstance(overrides[locale], dict):
-            overrides[locale].pop(layer_def["i18n_key"], None)
-            if not overrides[locale]:
+        override_found = False
+
+        def _reset_override(settings):
+            nonlocal override_found
+            raw_overrides = settings.get("prompt_overrides") or {}
+            overrides = (
+                dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
+            )
+            locale_overrides = overrides.get(locale)
+            if not isinstance(locale_overrides, dict):
+                return False
+            locale_overrides = dict(locale_overrides)
+            if layer_def["i18n_key"] not in locale_overrides:
+                return False
+            override_found = True
+            locale_overrides.pop(layer_def["i18n_key"])
+            if locale_overrides:
+                overrides[locale] = locale_overrides
+            else:
                 overrides.pop(locale, None)
-            self._qq_settings["prompt_overrides"] = overrides
-            success = await self.settings_service.persist_business_config()
+            settings["prompt_overrides"] = overrides
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _reset_override,
+        )
+        if override_found:
             if success:
                 self.session_instruction_service._discard_all_sessions_for_prompt_change()
             return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
@@ -1137,15 +1175,31 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not gid:
             return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
         custom_text = str(text or "").strip()
-        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
-        if custom_text:
-            group_prompts[gid] = custom_text
-            self._emit_log("INFO", f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)")
+        def _save_group_prompt(settings):
+            group_prompts = dict(settings.get("group_prompts") or {})
+            if custom_text:
+                group_prompts[gid] = custom_text
+            else:
+                group_prompts.pop(gid, None)
+            settings["group_prompts"] = group_prompts
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _save_group_prompt,
+        )
+        if success:
+            if custom_text:
+                self._emit_log(
+                    "INFO",
+                    f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)",
+                )
+            else:
+                self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
         else:
-            group_prompts.pop(gid, None)
-            self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
-        self._qq_settings["group_prompts"] = group_prompts
-        success = await self._persist_business_config()
+            self._emit_log(
+                "WARNING",
+                f"群 {gid} 自定义提示词写盘失败，运行时变更未持久化",
+            )
         # 清除该群的当前会话，下次回复时重新注入新提示词
         if self.session_runtime_service:
             discarded = await self._run_with_session_lock(
@@ -1162,12 +1216,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         gid = str(group_id or "").strip()
         if not gid:
             return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
-        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
-        existed = gid in group_prompts
-        group_prompts.pop(gid, None)
-        self._qq_settings["group_prompts"] = group_prompts
+        existed = False
+
+        def _delete_group_prompt(settings):
+            nonlocal existed
+            group_prompts = dict(settings.get("group_prompts") or {})
+            existed = gid in group_prompts
+            if not existed:
+                return False
+            group_prompts.pop(gid)
+            settings["group_prompts"] = group_prompts
+            return True
+
+        success = await QQAutoReplyPlugin._mutate_business_config(
+            self, _delete_group_prompt,
+        )
         if existed:
-            success = await self._persist_business_config()
             if self.session_runtime_service:
                 discarded = await self._run_with_session_lock(
                     f"group:{gid}",
@@ -1175,7 +1239,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 )
                 if discarded is False:
                     self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
-            self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            if success:
+                self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            else:
+                self._emit_log(
+                    "WARNING",
+                    f"群 {gid} 自定义提示词删除写盘失败，运行时变更未持久化",
+                )
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
 
