@@ -2719,3 +2719,93 @@ def test_nesting_does_not_regress_the_bounded_scan():
     nested = time.perf_counter() - started
     assert unmatched < 1.0, unmatched
     assert nested < 0.2, nested
+
+
+# ── 34. trim 的四个边界（全部是同一轮 codex P2） ─────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 尾词本身就是整条话题 → 一律不剥（剥了整条指令就没了）
+        ("stop saying please", "please"),
+        ("stop saying porfa", "porfa"),
+        ("please is off limits", "please"),
+    ],
+)
+def test_a_tail_token_that_is_the_whole_topic_is_kept(text, expected):
+    terms = {t for _loc, _kind, t in extract_directives(text)}
+    assert expected in terms, terms
+
+
+def test_a_tail_token_as_a_real_suffix_is_still_stripped():
+    """反向：同一个词做**后缀**时照剥，剥完不够长再按长度丢弃。"""  # noqa: DOCSTRING_CJK
+    assert not extract_directives("stop saying X porfa")
+    assert not extract_directives("別再提錢please。")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 中文反问尾巴**不跟着 fallback 走**：en/es/ru/pt 的句法已经框定了宾语
+        ("stop saying 你好吗", "你好吗"),
+        ("你好吗 is off limits", "你好吗"),
+        ("no menciones 你好吗", "你好吗"),
+        # ⚠️ 话题够长时才判别得出来：短的会被「下限挡下的尾巴连后缀一起拦」那条兜住
+        ("stop saying 工作好吗", "工作好吗"),
+        ("no menciones 工作好嗎", "工作好嗎"),
+        ("工作好吗 is off limits", "工作好吗"),
+    ],
+)
+def test_chinese_interrogatives_do_not_leak_into_other_templates(text, expected):
+    terms = {t for _loc, _kind, t in extract_directives(text)}
+    assert expected in terms, terms
+
+
+def test_the_particle_fallback_still_applies_to_other_templates():
+    """反向：助词那批**要** fallback——中英混说的 term 常整段是中文。"""  # noqa: DOCSTRING_CJK
+    terms = {t for _loc, _kind, t in extract_directives("stop saying 前女友了")}
+    assert "前女友" in terms, terms
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 长尾巴被下限挡下之后，它的**后缀**也不许再剥
+        ("别提钱好吗？", "钱好吗"),
+        ("別提錢好嗎？", "錢好嗎"),
+        ("别提猫可以吗？", "猫可以吗"),
+        ("别提行吗。", "行吗"),
+    ],
+)
+def test_a_floor_blocked_tail_also_blocks_its_suffixes(text, expected):
+    """``好吗`` 因为只剩 ``钱`` 被下限挡下，紧接着 ``吗`` 又把它削成非词 ``钱好``。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_tail_tokens_are_tried_longest_first():
+    """短 token 往往是长 token 的后缀，先剥短的会把长的那次判断绕过去。"""  # noqa: DOCSTRING_CJK
+    import config.prompts.prompts_directives as _d
+    import inspect
+
+    src = inspect.getsource(_d._trim_term)
+    assert "key=len, reverse=True" in src
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 落单的对称引号不能遮蔽**后面**的括号
+        ('别再提5"屏幕《你好吗》。', '5"屏幕《你好吗'),
+        ('別再提5"螢幕《你好嗎》。', '5"螢幕《你好嗎'),
+        # 成对的仍然当引文
+        ('别再提"你的名字"好吗。', "你的名字"),
+    ],
+)
+def test_an_unpaired_symmetric_quote_does_not_mask_later_delimiters(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_quoted_span_scanner_ignores_odd_symmetric_delimiters():
+    end = D._zh_quoted_span_end
+    assert end('5"屏幕《你好吗》') == 9      # 落单引号忽略，括号照常记
+    assert end('5"屏幕好吗') == 0            # 只有落单引号 = 没有引文
+    assert end('"甲"好吗') == 3              # 成对的仍然算

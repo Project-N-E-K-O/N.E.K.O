@@ -241,14 +241,18 @@ def _trim_term(term: str, locale: str = "") -> str:
     cjk = tuple(
         tok for fam in families for tok in _TRIM_TRAIL_TOKENS_BY_LOCALE[fam]
     )
-    interrogatives = tuple(
-        tok for fam in families for tok in _TAIL_INTERROGATIVES_BY_LOCALE.get(fam, ())
-    )
+    # ⚠️ 反问尾巴**不跟着 fallback 走**：``好吗 / 吗`` 是**句子级**的中文疑问语气，
+    # 而 en/es/ru/pt 模板的句法本身已经框定了宾语——``stop saying 你好吗`` 里的
+    # ``你好吗`` 整个就是被 ban 的东西，剥掉尾巴会存成 ``你好``（codex P2）。
+    # 助词那批要 fallback（中英混说的 term 常整段是中文），反问短语不要。
+    interrogatives = _TAIL_INTERROGATIVES_BY_LOCALE.get(family, ())
     # 引号里的语气词判据对**所有** CJK 尾词生效，不只多字反问短语：单字的也一样是
     # 名字的一部分（``《想見你喔》`` / ``《就是愛唷》``，codex P2）。ASCII 的
     # please / porfa 不受这条约束——它们不会出现在 CJK 作品名里。
     gated = cjk + interrogatives
-    tokens = _TRIM_TRAIL_TOKENS_ANY + gated
+    # ⚠️ **长的先试**：短 token 往往是长 token 的后缀（``吗`` ⊂ ``好吗``），先剥短的
+    # 会把长的那次判断绕过去。
+    tokens = sorted(_TRIM_TRAIL_TOKENS_ANY + gated, key=len, reverse=True)
     # ⚠️ 长度下限只保护**有歧义**的那批：``耶 / 捏 / 咧`` 同时也是常见词尾字（坎耶 /
     # 拿捏 / 好咧），剥到存不下等于整条指令被丢，那还不如留着。而 ASCII 的 please /
     # porfa、假名、谚文都不可能是中文词的一部分——对它们套下限的话
@@ -262,16 +266,27 @@ def _trim_term(term: str, locale: str = "") -> str:
     # 削短；只有右端的削减会影响绝对下标，所以只需累计这一侧。
     right_removed = 0
     changed = True
+    # 被长度下限挡下来的尾词。⚠️ 它的**后缀**也不许再剥：``别提钱好吗？`` 里 ``好吗``
+    # 因为只剩 ``钱`` 被挡下，紧接着 ``吗`` 又把它削成非词 ``钱好``（codex P2）。
+    floor_blocked: set[str] = set()
     # 反复剥尾词，直到稳定（"了啊吧" 这种连续助词）
     while changed:
         changed = False
         for tok in tokens:
             if not s.endswith(tok):
                 continue
+            if any(tok != blocked and blocked.endswith(tok) for blocked in floor_blocked):
+                continue
             trimmed = s[: -len(tok)]
             shorter = trimmed.rstrip()
+            # ⚠️ 尾词就是整条话题时一律不剥：``stop saying please`` / ``no menciones
+            # porfa`` 里 ``please`` 本身就是被 ban 的东西，剥掉整条指令就没了
+            # （codex P2）。这条不看歧义——空串没有任何保留价值。
+            if not shorter:
+                continue
             # 剥到低于下限 = 整条指令被丢；**有歧义的**尾字宁可留着（codex P2）。
             if len(shorter) < _TERM_MIN_LEN and tok in ambiguous:
+                floor_blocked.add(tok)
                 continue
             # 语气词 / 反问短语同时也是大量作品名的结尾，所以只在它**落在引号之外**
             # 时才剥。判据是这个尾词在原 term 里的起点有没有越过最后一段括号的收尾：
@@ -510,6 +525,13 @@ def _zh_quoted_span_end(text: str) -> int:
     # 外层的开括号跟**内层**的收尾配成一对，同种括号嵌套时就记错了收尾位置——
     # ``《电影《你好吗》续集好吗》`` 会被当成到内层 ``》`` 为止，末尾的 ``好吗`` 被
     # 当句子级语气剥掉（codex P2）。
+    # ⚠️ 落单的对称引号（出现奇数次）整个忽略：它是英寸号 / 颜文字，不是引文。
+    # 不忽略的话它会把**后面所有**括号遮蔽掉——``5"屏幕《你好吗》`` 里那个英寸号一开
+    # 引号，后面的 ``《…》`` 就再也进不了扫描，``好吗`` 被当句子级语气剥掉、连
+    # ``《你`` 都被削（codex P2）。
+    paired_symmetric = {
+        ch for ch in _ZH_SYMMETRIC_DELIMS if text.count(ch) % 2 == 0
+    }
     end = 0
     stack: List[str] = []
     symmetric_open: str | None = None
@@ -526,7 +548,7 @@ def _zh_quoted_span_end(text: str) -> int:
                 end = index + 1
         elif char in _ZH_CLOSE_FOR_OPEN:
             stack.append(char)
-        elif char in _ZH_SYMMETRIC_DELIMS:
+        elif char in paired_symmetric:
             symmetric_open = char
     # 还剩没闭合的**非对称**开括号 = 有一段引文一直延伸到末尾（``电影《好不好``）。
     # ⚠️ 落单的对称引号不算——它是英寸号 / 颜文字，见 _ZH_SYMMETRIC_DELIMS 的注释。
