@@ -2513,7 +2513,7 @@ def test_a_quoted_title_after_de_is_still_a_command(determiner, opening, closing
 
 @pytest.mark.parametrize("space", [" ", "\u3000", "  "])
 def test_whitespace_before_a_playback_object_is_skipped(space):
-    """⚠️ 逃生项前面的空白只能**跳过**，而且判据只在跳过后落到白名单上才放行。
+    r"""⚠️ 逃生项前面的空白只能**跳过**，而且判据只在跳过后落到白名单上才放行。
 
     `停止正在播放的 音乐` base 是 True，被判成名物化（Codex P2 第六轮）。
 
@@ -3134,7 +3134,7 @@ def test_a_progressive_aspect_makes_any_following_name_a_playback_object(
 @pytest.mark.parametrize("space", ["", " ", "\u3000", "  "])
 @pytest.mark.parametrize("name", ["晴天", "Taylor Swift", "周杰伦"])
 def test_the_progressive_exception_survives_whitespace(space, name):
-    """⚠️ 进行体后视要挂在**动词末尾**，不能挂在「的」后面。
+    r"""⚠️ 进行体后视要挂在**动词末尾**，不能挂在「的」后面。
 
     挂在「的」后面就得写成 `(?<!正在播放的)` 这种定长后视，而 Python 的后视必须
     定长——`停止正在播放 的晴天` 中间多个空格就对不上了（Codex P2 第二十一轮）。
@@ -3370,7 +3370,7 @@ def test_a_mismatched_closer_inside_a_span_makes_it_malformed(malformed):
 @pytest.mark.parametrize("space", ["", " ", "\u3000"])
 @pytest.mark.parametrize("aspect", ["正在", "当前", "还在"])
 def test_whitespace_inside_the_aspect_phrase(aspect, space):
-    """⚠️ 体标记和播放动词之间也可能有空格。
+    r"""⚠️ 体标记和播放动词之间也可能有空格。
 
     Python 后视必须定长，`\s*` 塞不进去，所以把「有无空格」做进笛卡尔积——
     入口 normalize 把连续空白压成**一个** ASCII 空格，所以只需要两种
@@ -4189,8 +4189,8 @@ def test_negated_what_are_you_doing_branches(negator, wh):
     # ⚠️ 后两个（哪张专辑 / 几张专辑）走的是**音乐复合式**那一支（量词槽），
     # 跟 `哪首` 这种成品分支不是同一条——不列它们的话，「只给 `什么` 头
     # 挂左界」那个变异会照样绿（变异 SURVIVED 才发现）。
-    "wh", ["谁", "誰", "哪个", "哪些", "哪首歌", "几首歌", "哪里", "哪首",
-           "哪张专辑", "几张专辑"]
+    "wh", ["谁", "誰", "哪个", "哪個", "哪些", "哪首歌", "几首歌", "幾首歌",
+           "哪里", "哪裡", "哪首", "哪张专辑", "哪張專輯", "几张专辑", "幾張專輯"]
 )
 def test_negated_wh_pronoun_branches_are_declarative(negator, wh):
     """⚠️ **每一支** wh 都要挂陈述左界，不只是 `什么` 那几支。
@@ -4207,7 +4207,7 @@ def test_negated_wh_pronoun_branches_are_declarative(negator, wh):
 
 
 @pytest.mark.parametrize(
-    "polarity", ["是不是", "能不能", "可不可以", "行不行", "是否", "能否", "有无"]
+    "polarity", ["是不是", "能不能", "可不可以", "行不行", "是否", "能否", "有无", "有無"]
 )
 def test_frames_neutralize_polarity_markers_too(polarity):
     """⚠️ 框架里要中和的不只是疑问代词，还有**极性标记**（base 全是 True）。
@@ -4253,7 +4253,8 @@ def test_only_the_title_position_quote_shields_a_marker(opener, closer):
 
 @pytest.mark.parametrize("negator", ["没有", "沒有", "没", "沒"])
 @pytest.mark.parametrize(
-    "phrase", ["哪张专辑", "几张专辑", "哪种唱片", "几首歌", "哪个歌单", "几张唱片"]
+    "phrase", ["哪张专辑", "哪張專輯", "几张专辑", "幾張專輯", "哪种唱片", "哪種唱片",
+               "几首歌", "幾首歌", "哪个歌单", "哪個歌單", "几张唱片", "幾張唱片"]
 )
 def test_negated_music_compound_heads_are_declarative(negator, phrase):
     """⚠️ 音乐复合式里的 `哪` / `几` 两个头也要挂陈述左界，不只是 `什么`。
@@ -4329,7 +4330,7 @@ def test_evaluative_a_not_a_tails(predicate):
 
 
 @pytest.mark.parametrize("correlative", ["都", "就"])
-@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪些", "哪首歌", "哪里", "多少"])
+@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪個", "哪些", "哪首歌", "哪首歌", "哪里", "哪裡", "多少"])
 def test_general_pronouns_in_correlative_clauses(wh, correlative):
     """一般疑问代词在关联构式里也是陈述（base 是 True，Codex P2 第五十五轮）。
 
@@ -4359,7 +4360,8 @@ def test_whitespace_between_the_verb_and_its_quoted_title(verb, gap):
 
 @pytest.mark.parametrize(
     "wh", ["干嘛", "幹嘛", "咋办", "咋辦", "几点", "幾點", "多会儿", "咋", "如何",
-           "怎么样", "多久", "多少", "何人", "哪里", "什么歌"]
+           "怎么样", "怎樣", "多久", "多少", "何人", "何處", "哪里", "哪裡",
+           "什么歌", "什麼歌"]
 )
 def test_the_neutralizer_covers_every_marker_form(wh):
     """⚠️⚠️ 中和用的词表**直接复用疑问标记正则本身**，不再另维护一份。

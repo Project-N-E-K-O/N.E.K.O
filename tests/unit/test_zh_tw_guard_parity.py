@@ -696,7 +696,7 @@ def test_the_english_negation_branch_exists():
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    for branch in ("never", "dont", "no\s+need\s+to", "(?<![A-Za-z])", "(?![A-Za-z])"):
+    for branch in ("never", "dont", r"no\s+need\s+to", "(?<![A-Za-z])", "(?![A-Za-z])"):
         assert branch in router._CHAT_NEGATION_LEXEME, branch
     assert router._chat_text_requests_full_rewrite(
         "whenever you rewrite all fields"
@@ -1174,7 +1174,7 @@ def test_a_direct_field_list_consumes_scope_suffixes(phrasing):
 )
 @pytest.mark.parametrize("quantifier", ["全部", "所有", "每一个"])
 def test_only_punctuation_can_terminate_a_bare_quantifier(quantifier, field):
-    """⚠️⚠️ P1：收尾必须**正向白名单标点**，不能写「非汉字」的否定类。
+    r"""⚠️⚠️ P1：收尾必须**正向白名单标点**，不能写「非汉字」的否定类。
 
     否定类挡掉拉丁之后照样把**其它所有文字**当标点——ja 模板的字段名本来就是
     片假名（`ニックネーム`），俄/韩/希腊同理（Codex P1 第十三、十四轮各抓到
@@ -2192,7 +2192,11 @@ def test_numeral_shaped_adverbs_after_a_continuation_still_work(adverb):
     assert router._chat_text_requests_full_rewrite('重写所有字段最后一项') is False
 
 
-@pytest.mark.parametrize("numeral", ["2", "10", "3", "两", "三"])
+# ⚠️ 数词参数表从实现侧常量派生：手抄那一版只列了 几/数，繁体 幾/數
+# 被误删时不会见红（CodeRabbit）——跟 挨個 / 遭 是同一族。
+@pytest.mark.parametrize(
+    "numeral", ["2", "10", "3", *WHOLE_CARD_NUMERALS, *WHOLE_CARD_INDEFINITE]
+)
 @pytest.mark.parametrize("measure", ["段", "章", "节", "页", "项", "条"])
 def test_arabic_numerals_are_attributive_too(numeral, measure):
     """⚠️ 定语守卫的数词侧要带 `\\d+`（Codex P1 第五十五轮，base 是 False）。

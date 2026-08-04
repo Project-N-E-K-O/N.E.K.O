@@ -964,7 +964,15 @@ _WHOLE_CARD_CONTINUATION_NOT_ATTRIBUTIVE = (
     # ⚠️ 数词侧要带 `\d+`：只认汉字数词时 `最后2段` 从定语守卫底下漏过去，
     # 又回到整卡补全 autosave（Codex P1 第五十五轮，base 是 False）。
     # 旁边的动量补语常量早就是 `[汉字数词]+|\d+` 两支，这里当时只抄了一半。
-    r"(?:[一二两兩三四五六七八九十几幾数數]+|\d+)\s*[一-鿿])"
+    # ⚠️⚠️ 数词侧**复用** _WHOLE_CARD_NUMERAL_CHARS，不再手写一份。
+    # 上一轮那条 P1（`最后2段` 漏过守卫）的根因就是这里手抄了一份、只抄了一半；
+    # 同一维度在动量补语、这条守卫、测试参数表三处各写一份，是本 PR 里已经出现
+    # 四次的「多张表漂开」（CodeRabbit Major）。同源之后这一族到此为止。
+    # ⚠️ 两边要用**同一个并集**：动量补语那边就是
+    # 「数词字符 | \d+ | 不定量词」三支。只拿其中一支时 `最后数行` / `最后好几段`
+    # 又从守卫底下漏过去——这正是手抄表的典型后果，并集才是真的同源。
+    r"(?:[" + _WHOLE_CARD_NUMERAL_CHARS + r"]+|\d+|"
+    + "|".join(_WHOLE_CARD_INDEFINITE_QUANTITIES) + r")\s*[一-鿿])"
 )
 _WHOLE_CARD_CLAUSE_CONTINUATION = (
     r"(?:" + "|".join(_WHOLE_CARD_CLAUSE_CONTINUATIONS) + r")"
