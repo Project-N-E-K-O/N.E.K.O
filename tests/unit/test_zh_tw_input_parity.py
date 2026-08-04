@@ -2009,7 +2009,7 @@ def _quote_pairs() -> list[tuple[str, str]]:
     """⚠️ 排除 ASCII 单引号，而且是**按模块常量**排除、不是手写跳过。
 
     它在西文名字里是撇号（Guns N' Roses），当开引号会把疑问守卫整个关掉，所以
-    实现里刻意把它从开引号集合里去掉了（见 `_ZH_AMBIGUOUS_APOSTROPHE`）。这里
+    实现里刻意把它从开引号集合里去掉了（见 `_ZH_AMBIGUOUS_QUOTE_OPENERS`）。这里
     跟着排除，并单独有一条用例说明这个取舍——不能让它变成「测试悄悄少跑一格」。
     """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr

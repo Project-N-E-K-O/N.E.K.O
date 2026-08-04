@@ -289,7 +289,6 @@ _ZH_A_NOT_A_QUESTION_TAIL = "(?:" + "|".join(_zh_a_not_a_forms()) + ")"
 # 之后就不成立了：`《Don’t好不好》` 里的 `’` 会把跨度截断，标题保护当场失效。
 # 两种撇号在真实歌名/歌手名里都是撇号（Don’t / Guns N' Roses），一起排除。
 # 代价：`‘…’` 括起来的标题不再被识别——跟直单引号那格同一个取舍。
-_ZH_AMBIGUOUS_APOSTROPHE = "'"
 _ZH_AMBIGUOUS_QUOTE_OPENERS = ("'", "‘")
 _ZH_QUOTE_OPENERS = "".join(
     ch for ch in dict.fromkeys(_QUOTE_PAIRS.keys())
