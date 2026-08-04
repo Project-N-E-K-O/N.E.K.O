@@ -161,30 +161,56 @@ def test_approve_goes_through_when_a_task_is_live(wired):
     assert emitted and emitted[0].get("success") is True
 
 
-def test_a_recently_cancelled_task_does_not_open_the_gate(wired):
-    """⚠️ Cancelled is the one terminal status that must NOT open the window.
+@pytest.mark.parametrize("status", ["cancelled", "failed"])
+def test_terminal_statuses_that_cannot_carry_an_approval_prompt(wired, status):
+    """⚠️ The window's test is "could the user have SEEN the prompt", not "did the
+    task end".
 
-    The user just killed that task, so the upstream action is precisely what they
-    did not want; treating it as "something is pending" lets a later offhand 同意
-    reverse their own cancellation. Worse, ``_cancel_openclaw_tasks_for_stop``
-    writes ``end_time`` even when its upstream ``stop_running`` call failed — so a
-    cancelled entry is exactly the case where the daemon action may still be
-    hanging.
+    ``failed`` — the reply text only ships on the success branch
+    (``_emit_task_result(detail=reply)``); the failure branches send the fixed
+    ``openclaw_failed`` / ``openclaw_dispatch_failed`` phrases and never forward
+    ``reply``. So on a timeout, connection error, HTTP failure, or missing final
+    reply the user cannot know anything is awaiting approval, and a later 同意
+    is definitionally not answering one. Counting it would only open the door for
+    a *misclassified* approval, at exactly the moment the upstream action may
+    still be hanging.
+
+    ``cancelled`` — worse: the user just killed that task, so the upstream action
+    is precisely what they did not want, and ``_cancel_openclaw_tasks_for_stop``
+    writes ``end_time`` even when its ``stop_running`` call failed.
+
+    Anyone who learns of a pending approval by other means (QwenPaw's own
+    console) can still type the literal ``/openclaw approve`` — explicit commands
+    bypass the gate entirely.
     """  # noqa: DOCSTRING_CJK
     fake, emitted = wired
-    _register(
-        oc._shared.Modules.task_registry, "t-cancelled", status="cancelled",
-    )
+    _register(oc._shared.Modules.task_registry, f"t-{status}", status=status)
 
     _dispatch("/daemon approve")
 
-    assert fake.magic_calls == []
+    assert fake.magic_calls == [], f"status={status} 不可能承载审批提示，不该放行"
     assert emitted == []
 
 
-@pytest.mark.parametrize(
-    "status", ["queued", "running", "completed", "failed", "partial"]
-)
+def test_partial_is_not_reachable_for_openclaw_tasks():
+    """The window set lists only reachable statuses — no dead entries.
+
+    channels/openclaw.py only ever writes running / completed / failed /
+    cancelled into task_registry, so ``partial`` in the window set would be dead
+    weight that reads like a deliberate allowance.
+    """
+    import inspect
+
+    written = set()
+    source = inspect.getsource(oc)
+    for status in ("queued", "running", "completed", "failed", "cancelled", "partial"):
+        if f'"{status}"' in source:
+            written.add(status)
+    assert "partial" not in written, "partial 现在可达了，窗口集合要重新评估"
+    assert oc._APPROVAL_WINDOW_TERMINAL_STATUSES <= written
+
+
+@pytest.mark.parametrize("status", ["queued", "running", "completed"])
 def test_a_registry_entry_in_any_status_opens_the_gate(wired, status):
     """⚠️ Terminal statuses count on purpose — requiring "running" is backwards.
 

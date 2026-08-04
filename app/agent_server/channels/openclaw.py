@@ -100,8 +100,21 @@ def _collect_active_openclaw_task_ids(
     return task_ids
 
 
-# 能承载「上游回了一句需要许可」的终态。cancelled 不在其中——见下面函数里的说明。
-_APPROVAL_WINDOW_TERMINAL_STATUSES = frozenset({"completed", "failed", "partial"})
+# 能承载「上游回了一句需要许可」的终态——**只有 completed**。
+#
+# ⚠️ 判据是「用户有没有可能看见那句审批提示」，不是「任务是不是结束了」。
+# reply 文本只在 success 分支经 _emit_task_result(detail=reply) 投递；failed 分支发的是
+# openclaw_failed / openclaw_dispatch_failed 这两句固定文案，**reply 一个字都不出去**。
+# 所以超时、连不上、HTTP 失败、没拿到 final reply 这几种 failed，用户都不可能知道有东西
+# 待批准，随后那句「同意」在定义上就不是在回应它——收进窗口只会给**误判的**批准开门，
+# 而且恰好是在「上游动作可能还挂着」的时刻（Codex P1）。
+# ⚠️ cancelled 同理且更糟：用户刚亲手掐掉，见下面函数里的说明。
+# ⚠️ partial 对 openclaw 不可达——本文件只写 running/completed/failed/cancelled，
+# 列进来是死条目，所以不列。
+#
+# 真的从别处（比如 QwenPaw 自己的控制台）得知需要批准的用户，仍可直接敲字面
+# `/openclaw approve`——显式命令一律豁免闸。
+_APPROVAL_WINDOW_TERMINAL_STATUSES = frozenset({"completed"})
 
 
 def _has_recent_openclaw_task(
