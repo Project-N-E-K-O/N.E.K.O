@@ -29,6 +29,7 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
     resolve_callback_delivery_ack,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
@@ -1999,11 +2000,13 @@ class LifecycleMixin:
         swap (same semantics as the extras ``_deferred``).
 
         The queue is NOT drained here — removal is deferred to promote
-        success via :meth:`_remove_swap_delivered_passive_cbs`, mirroring the
-        ``_prime_selected_extras`` bookkeeping, so every pre-promote abort
-        keeps the queue intact with zero restore code. Topic-hook snapshots
-        are excluded: they have their own ack/retry lifecycle and delivery
-        gates that this path must not bypass.
+        success via :meth:`_remove_swap_delivered_passive_cbs`. Selected
+        entries are atomically marked provider-owned before this method
+        returns, so enqueue coalescing, text drain, staleness sweeps, and the
+        flood guard cannot retract them during the prime await. Every
+        pre-promote exit releases that claim in the swap sequence's ``finally``
+        block. Topic-hook snapshots are excluded: they have their own ack/retry
+        lifecycle and delivery gates that this path must not bypass.
         """
         try:
             candidates = [
@@ -2011,6 +2014,7 @@ class LifecycleMixin:
                 if isinstance(cb, dict)
                 and cb.get("delivery_mode") == "passive"
                 and not cb.get(DELIVERY_RETRACTED_KEY)
+                and not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
                 and cb.get("channel") != "topic_hook"
             ]
             if not candidates:
@@ -2041,11 +2045,23 @@ class LifecycleMixin:
                 master_name=getattr(self, "master_name", "") or "",
                 passive=True,
             )
+            # No await exists between selection and this ownership claim. From
+            # here until promote/abort, every queue mutation sees the same
+            # provider-owned boundary as the swap sequence.
+            for cb in selected:
+                cb[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
             return selected, rendered
         except Exception as e:
             # 选取/渲染失败绝不能打断 swap：这批 passive 留在队列等下一轮。
             logger.warning(f"Final Swap Sequence: passive callback selection failed: {e}")
             return [], ""
+
+    @staticmethod
+    def _release_swap_prime_passive_claims(selected: list) -> None:
+        """Release provider ownership after promote or any abort exit."""
+        for cb in selected or []:
+            if isinstance(cb, dict):
+                cb.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY, None)
 
     def _remove_swap_delivered_passive_cbs(self, selected: list) -> list:
         """[Hot-swap related] Dequeue prime-injected passive callbacks at
@@ -2058,6 +2074,7 @@ class LifecycleMixin:
         """
         if not selected:
             return []
+        self._release_swap_prime_passive_claims(selected)
         try:
             selected_obj_ids = {id(cb) for cb in selected}
             removed = [
@@ -2109,11 +2126,9 @@ class LifecycleMixin:
             if not restored:
                 return
             self.pending_agent_callbacks = restored + self.pending_agent_callbacks
-            # flood guard 与 enqueue_agent_callback 对齐：drop-oldest。
-            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
-                self.pending_agent_callbacks = (
-                    self.pending_agent_callbacks[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
-                )
+            self._enforce_agent_callback_queue_limit(
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            )
             logger.info(
                 "Final Swap Sequence: %d undelivered passive callback(s) restored to queue head after aborted swap",
                 len(restored),
@@ -2170,6 +2185,16 @@ class LifecycleMixin:
             _passive_sel: list = []
             _passive_swap_text = ""
             _extras_for_budget: list = []
+
+            def _abort_if_passive_claim_retracted(stage: str) -> None:
+                if any(cb.get(DELIVERY_RETRACTED_KEY)
+                       for cb in _prime_selected_passive_cbs):
+                    logger.info(
+                        "Final Swap Sequence: passive callback retracted %s; abandoning pending session",
+                        stage,
+                    )
+                    raise asyncio.CancelledError()
+
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -2304,11 +2329,9 @@ class LifecycleMixin:
             # 快照注进新会话（Codex P2）；剩余窗口只有本次注入自身的
             # await，与 extras 的 accepted residual window 对齐。skipped=True
             # 在非 Gemini 上走 session instructions（Qwen 同路），不产生
-            # turn，与播报 prime 物理隔离。失败 best-effort 兜住全部
-            # Exception（provider RuntimeError/超时不该中止已成功的主
-            # prime，Codex P2）：_prime_selected_passive_cbs 不赋值 →
-            # promote 不出队，条目留队等下一次热切换；pending session 若
-            # 真死了，promote 后的 ws 校验会兜住。
+            # turn，与播报 prime 物理隔离。provider 调用一旦开始后抛错，无法
+            # 证明远端是否已写入；因此必须放弃并关闭本次 pending session，
+            # 不能继续 promote 后又把 cue 留队造成未来重试/双投。
             if (isinstance(self.pending_session, OmniRealtimeClient)
                     and not getattr(self.pending_session, "_is_gemini", False)):
                 _passive_sel, _passive_swap_text = (
@@ -2322,8 +2345,14 @@ class LifecycleMixin:
                         _prime_selected_passive_cbs = _passive_sel
                     except Exception as e:
                         logger.warning(
-                            f"Final Swap Sequence: passive ride-along prime failed (kept queued): {e}"
+                            f"Final Swap Sequence: passive ride-along prime failed; abandoning pending session: {e}"
                         )
+                        await self._cleanup_pending_session_resources()
+                        await self._reset_preparation_state(clear_main_cache=True)
+                        self.is_hot_swap_imminent = False
+                        return
+
+            _abort_if_passive_claim_retracted("during prime")
 
             print(final_prime_text) #只在控制台显示，不输出到日志文件
 
@@ -2376,6 +2405,8 @@ class LifecycleMixin:
                 except Exception as e:
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
+            _abort_if_passive_claim_retracted("before old session close")
+
             # Exclude Core voice-final delivery across the entire close+promote
             # window. The ASR dispatcher shares this lock, so a final either
             # completes before the old arbiter closes or sees the replacement
@@ -2395,6 +2426,8 @@ class LifecycleMixin:
                         await old_main_session.close()
                     except Exception as e:
                         logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+
+                _abort_if_passive_claim_retracted("before promote")
 
                 # ── promote 前的协作取消检查点 ───────────────────────────────────
                 # Python 3.11 的 asyncio.wait_for（步骤 1）以及部分 session.close()
@@ -2603,6 +2636,8 @@ class LifecycleMixin:
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
+            self._release_swap_prime_passive_claims(_passive_sel)
+            self._purge_retracted_agent_callbacks()
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None

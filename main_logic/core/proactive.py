@@ -31,6 +31,7 @@ from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
 from main_logic.proactive_delivery import (
     DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
     VOICE_DELIVERY_COMMITTED_KEY,
     resolve_callback_delivery_ack,
 )
@@ -552,20 +553,30 @@ class ProactiveMixin:
         return True
 
     def _purge_retracted_agent_callbacks(self) -> None:
+        callbacks = getattr(self, "pending_agent_callbacks", None)
+        if not callbacks:
+            return
+        purgeable = [
+            cb for cb in callbacks
+            if cb.get(DELIVERY_RETRACTED_KEY)
+            and not (
+                cb.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            )
+        ]
+        if not purgeable:
+            return
+        purgeable_obj_ids = {id(cb) for cb in purgeable}
         retracted_ids = {
             cb.get("_callback_delivery_id")
-            for cb in self.pending_agent_callbacks
-            if cb.get(DELIVERY_RETRACTED_KEY) and cb.get("_callback_delivery_id")
+            for cb in purgeable
+            if cb.get("_callback_delivery_id")
         }
-        has_retracted = any(
-            cb.get(DELIVERY_RETRACTED_KEY)
-            for cb in self.pending_agent_callbacks
-        )
-        if not has_retracted:
-            return
+        for cb in purgeable:
+            resolve_callback_delivery_ack(cb, False)
         self.pending_agent_callbacks = [
-            cb for cb in self.pending_agent_callbacks
-            if not cb.get(DELIVERY_RETRACTED_KEY)
+            cb for cb in callbacks
+            if id(cb) not in purgeable_obj_ids
         ]
         if retracted_ids:
             self.pending_extra_replies = [
@@ -577,7 +588,12 @@ class ProactiveMixin:
         retracted_ids = {
             cb.get("_callback_delivery_id")
             for cb in callbacks
-            if cb.get(DELIVERY_RETRACTED_KEY) and cb.get("_callback_delivery_id")
+            if cb.get(DELIVERY_RETRACTED_KEY)
+            and not (
+                cb.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            )
+            and cb.get("_callback_delivery_id")
         }
         if retracted_ids:
             self.pending_extra_replies = [
@@ -965,6 +981,10 @@ class ProactiveMixin:
                         cb for cb in voice_snapshot
                         if not cb.get(DELIVERY_RETRACTED_KEY)
                     ]
+                    self._clear_voice_delivery_committed([
+                        cb for cb in voice_commit_snapshot
+                        if cb.get(DELIVERY_RETRACTED_KEY)
+                    ])
                     self._purge_retracted_agent_callbacks()
                     if not voice_snapshot:
                         self._clear_voice_delivery_committed(
@@ -1566,11 +1586,12 @@ class ProactiveMixin:
         stale — coalescing stays strictly opt-in."""
         if not isinstance(entry, dict):
             return False
-        if entry.get(VOICE_DELIVERY_COMMITTED_KEY):
-            # Once provider media delivery has begun, the matching callback
-            # text must complete the same turn. A newer same-key cue remains
-            # queued for the following turn instead of orphaning media that
-            # may already be persisted in provider context.
+        if (entry.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or entry.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)):
+            # Once provider delivery has begun (voice media or hot-swap prime),
+            # the matching callback text must complete that same delivery.
+            # A newer same-key cue stays queued for the following turn instead
+            # of orphaning context that may already be persisted provider-side.
             return False
         key = str(entry.get("coalesce_key") or "").strip()
         seq = entry.get("_coalesce_submit_seq")
@@ -2121,6 +2142,95 @@ class ProactiveMixin:
                 n += 1
         return n
 
+    def _enforce_agent_callback_queue_limit(self, max_items: int) -> None:
+        """Drop the oldest safely retractable callbacks above ``max_items``.
+
+        Provider-owned entries are never flood victims: voice delivery marks
+        them committed, while hot-swap prime marks them claimed before its
+        await. When all older entries are protected, a newly appended callback
+        is rejected instead.
+        """
+        overflow = len(self.pending_agent_callbacks) - max_items
+        if overflow <= 0:
+            return
+
+        dropped: list = []
+        surviving: list = []
+        for queued in self.pending_agent_callbacks:
+            protected = (
+                isinstance(queued, dict)
+                and (
+                    queued.get(VOICE_DELIVERY_COMMITTED_KEY)
+                    or queued.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+                )
+            )
+            if overflow > 0 and not protected:
+                dropped.append(queued)
+                overflow -= 1
+            else:
+                surviving.append(queued)
+
+        self.pending_agent_callbacks = surviving
+        dropped_ids = set()
+        for queued in dropped:
+            if not isinstance(queued, dict):
+                continue
+            resolve_callback_delivery_ack(queued, False)
+            queued[DELIVERY_RETRACTED_KEY] = True
+            delivery_id = queued.get("_callback_delivery_id")
+            if delivery_id:
+                dropped_ids.add(delivery_id)
+
+        if dropped_ids:
+            self.pending_extra_replies = [
+                extra for extra in self.pending_extra_replies
+                if not (
+                    isinstance(extra, dict)
+                    and extra.get("_callback_delivery_id") in dropped_ids
+                )
+            ]
+        if overflow > 0:
+            logger.warning(
+                "[%s] callback queue remains over limit: %d provider-owned entry(s) cannot be evicted",
+                self.lanlan_name,
+                overflow,
+            )
+
+    def _enforce_pending_extra_reply_queue_limit(self, max_items: int) -> None:
+        """Trim extras without orphaning a provider-owned callback mirror."""
+        overflow = len(self.pending_extra_replies) - max_items
+        if overflow <= 0:
+            return
+
+        provider_owned_ids = {
+            callback.get("_callback_delivery_id")
+            for callback in self.pending_agent_callbacks
+            if isinstance(callback, dict)
+            and (
+                callback.get(VOICE_DELIVERY_COMMITTED_KEY)
+                or callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+            )
+            and callback.get("_callback_delivery_id")
+        }
+        surviving: list = []
+        for extra in self.pending_extra_replies:
+            delivery_id = (
+                extra.get("_callback_delivery_id")
+                if isinstance(extra, dict)
+                else None
+            )
+            if overflow > 0 and delivery_id not in provider_owned_ids:
+                overflow -= 1
+            else:
+                surviving.append(extra)
+        self.pending_extra_replies = surviving
+        if overflow > 0:
+            logger.warning(
+                "[%s] extra reply queue remains over limit: %d provider-owned mirror(s) cannot be evicted",
+                self.lanlan_name,
+                overflow,
+            )
+
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
@@ -2230,6 +2340,7 @@ class ProactiveMixin:
                 incoming_superseded = False
                 dropped = 0
                 superseded_ids: set = set()
+                provider_owned_ids: set = set()
                 surviving: list[dict] = []
                 for _cb in self.pending_agent_callbacks:
                     # isinstance guard: the queue should hold dicts, but never let
@@ -2239,14 +2350,24 @@ class ProactiveMixin:
                             and str(_cb.get("coalesce_key") or "").strip() == new_key):
                         surviving.append(_cb)
                         continue
-                    if _cb.get(VOICE_DELIVERY_COMMITTED_KEY):
-                        # This cue has crossed the media-delivery commit
-                        # boundary. Keep it; the new cue queues for the next
-                        # turn instead of retracting already-persisted media.
-                        surviving.append(_cb)
-                        continue
                     _old_seq = _cb.get("_coalesce_submit_seq")
                     _old_seq = _old_seq if isinstance(_old_seq, int) else -1
+                    _provider_owned = (
+                        _cb.get(VOICE_DELIVERY_COMMITTED_KEY)
+                        or _cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+                    )
+                    if _provider_owned:
+                        # This cue has crossed a provider-delivery ownership
+                        # boundary and cannot be retracted. A genuinely newer
+                        # cue queues for the next turn; an older/equal late
+                        # arrival loses without disturbing provider state.
+                        if _old_seq >= new_seq:
+                            incoming_superseded = True
+                        _did = _cb.get("_callback_delivery_id")
+                        if _did:
+                            provider_owned_ids.add(_did)
+                        surviving.append(_cb)
+                        continue
                     if _old_seq > new_seq:
                         # A newer same-key cue is already queued → the incoming one
                         # (an older manager-released respond) loses; keep the queued.
@@ -2280,6 +2401,11 @@ class ProactiveMixin:
                     kept_extras: list = []
                     for _extra in self.pending_extra_replies:
                         if not isinstance(_extra, dict):
+                            kept_extras.append(_extra)
+                            continue
+                        if _extra.get("_callback_delivery_id") in provider_owned_ids:
+                            # Mirror of a provider-owned callback: it belongs to
+                            # the same in-flight delivery and must survive too.
                             kept_extras.append(_extra)
                             continue
                         # A mirror paired with a just-retracted callback is
@@ -2324,33 +2450,15 @@ class ProactiveMixin:
                     "source_name": source_name,
                     "error_message": error_message,
                 })
-            # Flood guard: a runaway plugin event stream must not grow either
-            # queue without bound. Keep the most recent N (newest = most
-            # relevant); drop-oldest.
-            if len(self.pending_agent_callbacks) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
-                overflow = len(self.pending_agent_callbacks) - AGENT_CALLBACK_QUEUE_MAX_ITEMS
-                dropped = self.pending_agent_callbacks[:overflow]
-                dropped_ids = {
-                    _cb.get("_callback_delivery_id")
-                    for _cb in dropped
-                    if isinstance(_cb, dict) and _cb.get("_callback_delivery_id")
-                }
-                self.pending_agent_callbacks = self.pending_agent_callbacks[overflow:]
-                # Resolve any delivery-ack future on a dropped callback NOW, so a
-                # waiter (e.g. topic-hook delivery) unblocks immediately instead
-                # of stalling until its timeout.
-                for _cb in dropped:
-                    resolve_callback_delivery_ack(_cb, False)
-                # Drop the matching voice-queue mirrors by delivery_id (the two
-                # queues drift, so positional trimming is unreliable) — otherwise
-                # a callback acked False here could still be injected via hot-swap.
-                if dropped_ids:
-                    self.pending_extra_replies = [
-                        _extra for _extra in self.pending_extra_replies
-                        if _extra.get("_callback_delivery_id") not in dropped_ids
-                    ]
-            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
-                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+            # Flood guard: evict only callbacks that have not crossed a
+            # provider-delivery ownership boundary. If every older entry is
+            # claimed/committed, the just-appended callback is the safe victim.
+            self._enforce_agent_callback_queue_limit(
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            )
+            self._enforce_pending_extra_reply_queue_limit(
+                AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            )
         except Exception:
             # Pruning is best-effort housekeeping — never let it break callback bookkeeping.
             pass
@@ -2388,6 +2496,7 @@ class ProactiveMixin:
         active_callbacks = [
             cb for cb in candidate_callbacks
             if not cb.get(DELIVERY_RETRACTED_KEY)
+            and not cb.get(SWAP_PRIME_DELIVERY_CLAIM_KEY)
         ]
         if not active_callbacks:
             return ""
@@ -2395,7 +2504,7 @@ class ProactiveMixin:
         # Budget-aware selection: render (and ack) only the callbacks that fit
         # the total budget this turn; defer the rest to the next drain instead
         # of acking them as delivered while their text falls off the cap.
-        callbacks_snapshot, deferred = _select_callbacks_within_token_budget(
+        callbacks_snapshot, _deferred = _select_callbacks_within_token_budget(
             active_callbacks, AGENT_CALLBACK_TOTAL_MAX_TOKENS
         )
         delivered_to_prompt = False
@@ -2414,6 +2523,10 @@ class ProactiveMixin:
             if delivered_to_prompt:
                 for cb in callbacks_snapshot:
                     resolve_callback_delivery_ack(cb, True)
-            # Keep deferred (over-budget) callbacks for the next turn; only the
-            # rendered+acked ones leave the queue.
-            self.pending_agent_callbacks = deferred
+            # Keep claimed and over-budget callbacks in their original order;
+            # only the entries actually rendered by this drain leave the queue.
+            delivered_obj_ids = {id(cb) for cb in callbacks_snapshot}
+            self.pending_agent_callbacks = [
+                cb for cb in self.pending_agent_callbacks
+                if id(cb) not in delivered_obj_ids
+            ]

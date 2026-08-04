@@ -16,6 +16,7 @@ from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
+    VOICE_DELIVERY_COMMITTED_KEY,
     effective_priority,
 )
 
@@ -430,6 +431,69 @@ def test_passive_flood_guard_bounds_callback_queue_without_extras(monkeypatch):
     ]
     assert mgr.pending_extra_replies == []
     assert dropped_ack.done() and dropped_ack.result is False
+
+
+def test_flood_guard_rejects_incoming_when_older_send_started(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed_ack = _FakeAckFuture()
+    incoming_ack = _FakeAckFuture()
+    committed = _passive_cb("provider send started")
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed[DELIVERY_ACK_FUTURE_KEY] = committed_ack
+    incoming = _passive_cb("cannot displace committed")
+    incoming[DELIVERY_ACK_FUTURE_KEY] = incoming_ack
+    mgr.pending_agent_callbacks = [committed]
+
+    mgr.enqueue_agent_callback(incoming)
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert not committed_ack.done()
+    assert incoming_ack.done() and incoming_ack.result is False
+    assert incoming.get(DELIVERY_RETRACTED_KEY) is True
+
+
+def test_newer_same_key_keeps_committed_callback_voice_mirror():
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started", coalesce_key="state")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_id = committed["_callback_delivery_id"]
+
+    newer = _proactive_cb("next snapshot", coalesce_key="state")
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [committed, newer]
+    assert [extra["summary"] for extra in mgr.pending_extra_replies] == [
+        "provider send started",
+        "next snapshot",
+    ]
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == committed_id
+
+
+def test_extra_flood_guard_keeps_provider_owned_voice_mirror(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_mirror = mgr.pending_extra_replies[0]
+    mgr.pending_extra_replies.append({
+        "_callback_delivery_id": "orphan-id",
+        "summary": "safe orphan",
+    })
+
+    # A passive incoming callback triggers both flood guards. It is rejected
+    # from the callback queue; the unrelated orphan, not the committed mirror,
+    # is the only safe extra victim.
+    mgr.enqueue_agent_callback(_passive_cb("incoming"))
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert mgr.pending_extra_replies == [committed_mirror]
 
 
 def test_enqueue_coalesce_resolves_superseded_ack_false():
