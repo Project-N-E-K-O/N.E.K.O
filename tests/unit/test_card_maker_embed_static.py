@@ -149,5 +149,7 @@ def test_template_versioned_static_assets_are_tracked() -> None:
             )
 
     tracked_paths = set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)
+    assert referenced_paths
+    assert ROOT / "static/js/card_maker_embed_bootstrap.js" in referenced_paths
     assert referenced_paths <= tracked_paths
     assert ROOT / "static/app/app-chat.js" in tracked_paths
