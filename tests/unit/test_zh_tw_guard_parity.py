@@ -1610,3 +1610,72 @@ def test_batch_rewrite_modifiers(scope, adverb):
     assert router._chat_text_requests_full_rewrite(
         '把所有字段的所有名字重写'
     ) is False
+
+
+WHOLE_CARD_ADVERBS = _router_table("_WHOLE_CARD_BARE_ADVERBS")
+
+
+def test_the_adverb_table_is_a_prefix_code():
+    """⚠️ 副词表是**前缀码**——这条性质就是 `_WHOLE_CARD_ADVERB_RUN` 那个 `+` 的安全依据。
+
+    没有哪个词是另一个词的前缀 → 任何输入至多只有一种切分 → 叠词失败时线性退出，
+    不会指数回溯。往表里加个会破坏这条性质的词（比如单独加「一」，它是 一并/一起/
+    一律/一次性 的前缀）会在这里当场见红，而不是等到线上被一串副词卡死。
+
+    ⚠️ 同时钉住整张表**相等**：下面按这张表派生的叠词用例会跟着表缩水而假绿。
+    ⚠️ 也钉住正则是从表拼出来的——手写那一版混进过重复的「统统」。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert len(WHOLE_CARD_ADVERBS) == len(set(WHOLE_CARD_ADVERBS)), WHOLE_CARD_ADVERBS
+    violations = [
+        (short, long)
+        for short in WHOLE_CARD_ADVERBS
+        for long in WHOLE_CARD_ADVERBS
+        if short != long and long.startswith(short)
+    ]
+    assert violations == [], f'副词表不再是前缀码: {violations}'
+    assert set(WHOLE_CARD_ADVERBS) == {
+        "一并", "一併", "一起", "统统", "統統", "通通", "全都", "彻底", "徹底",
+        "好好", "认真", "認真", "重新", "全面", "一律", "统一", "統一",
+        "逐一", "逐个", "逐個", "挨个", "挨個", "再",
+        "全部", "所有", "逐项", "逐項", "逐条", "逐條",
+        "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
+    }
+    assert router._WHOLE_CARD_BARE_ADVERB == (
+        r"(?:" + "|".join(WHOLE_CARD_ADVERBS) + r")"
+    )
+
+
+@pytest.mark.parametrize("adverb", WHOLE_CARD_ADVERBS)
+def test_stacked_rewrite_modifiers_across_all_three_tails(adverb):
+    """副词可以叠着用（base 是 True，Codex P2 第三十五轮）。
+
+    上一版只吃**一个**副词就要求重写动词，`把所有字段再统一重写` 这类请求全掉了。
+
+    ⚠️ 跟第二十九轮那条一样**同时打三条收尾路径**：叠词能力现在收在
+    `_WHOLE_CARD_ADVERB_RUN` 一处，只要有一张表没换过去就立刻见红。
+    ⚠️ 配对反向断言：叠词只放开了动词前面那一段，单字段那条保险没被顺手打开。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for phrasing in (
+        f'把所有字段再{adverb}重写',              # 限定词收尾
+        f'把整个卡的所有设定再{adverb}重写',       # 名词收尾
+        f'把所有字段的所有内容再{adverb}重写',      # 名词闭集收尾（「的」分支之后）
+    ):
+        assert router._chat_text_requests_full_rewrite(phrasing) is True, phrasing
+    assert router._chat_text_requests_full_rewrite(
+        '把所有字段的名字再统一重写'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["把所有字段再统一重写", "把全部欄位再統一重寫", "把整个卡的所有内容批量统一重写"],
+)
+def test_the_reported_stacked_modifier_cases(text):
+    """Codex 报的三条原样钉住——上面那条派生用例缩水时这里还在。"""  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(text) is True, text

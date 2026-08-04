@@ -3478,3 +3478,49 @@ def test_the_performer_wh_marker(marker):
         f'我想停止播放{marker}歌手唱的《你好吗？》'
     ) is False
     assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+_MUSIC_WH_CLASSIFIERS = [
+    "种", "種", "类", "類", "款", "批", "组", "組", "套", "盘", "盤", "碟",
+    "版", "支", "张", "張", "首", "个", "個", "部", "条", "條", "片", "段",
+]
+
+
+@pytest.mark.parametrize("classifier", _MUSIC_WH_CLASSIFIERS)
+def test_the_wh_classifier_slot_is_structural(classifier):
+    """⚠️ 量词槽是**结构化**的，不是一张枚举表（Codex P2 第三十五轮）。
+
+    上一版写死 `[张張首个個部条條片段]` 并在注释里断言「量词是闭集」，结果
+    种/種/类/類/款 一个没有——`我想停止播放哪种唱片…` 当场执行取消（base 是
+    False）。批/组/套/盘/碟/版 同样不在。汉语量词是开集，但这里根本不需要认出
+    是哪个量词：疑问性由**头**（什么/哪/几）和**尾**（音乐名词）两头钉死。
+
+    ⚠️ 这条用例列的量词只是**样本**，不是白名单——正则里已经没有这张表了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (
+        f'我想停止播放哪{classifier}唱片换成《你好吗？》',
+        f'我想停止播放哪一{classifier}专辑',
+    ):
+        assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+def test_nezha_is_a_word_not_a_quantified_wh_phrase():
+    """⚠️ `哪吒` 是词，不是「哪 + 量词」。
+
+    量词槽放开成任意单字之后，`我想停止播放哪吒主题曲` 会被误判成提问而不停歌——
+    《哪吒》主题曲是真实点播量很大的一类请求，所以单独挡掉。
+
+    ⚠️ 承载这条保护的只有**第一句**：它得同时满足「疑问守卫的前缀（我想/我要/
+    帮我）」和「哪吒 后面直接跟音乐名词、中间没有『的』」。带「的」的说法本来
+    就够不着音乐名词、没前缀的说法根本进不了疑问守卫，拿它们当断言是空的——
+    第一版就是这么写的，撤掉保护照样全绿。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation('我想停止播放哪吒主题曲') is True
+    for text in ('我要停止播放哪吒的歌', '帮我停止播放哪吒里的插曲'):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放哪种唱片') is False

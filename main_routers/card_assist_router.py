@@ -822,14 +822,29 @@ _WHOLE_CARD_TERMINATOR_PUNCT = (
 _WHOLE_CARD_EN_REWRITE_VERB = (
     r"(?:rewrite|revise|regenerate|redo|refresh)(?![A-Za-z0-9_])"
 )
-_WHOLE_CARD_BARE_ADVERB = (
-    r"(?:一并|一併|一起|统统|統統|通通|全都|彻底|徹底|好好|认真|認真|重新"
-    r"|全面|一律|统一|統一|逐一|逐个|逐個|挨个|挨個|再"
+# ⚠️ 写成元组而不是手写正则：测试要按这张表自动派生用例、并断言它是**前缀码**
+# （见下面 _WHOLE_CARD_ADVERB_RUN）。手写正则时这张表混进过一个重复的「统统」。
+_WHOLE_CARD_BARE_ADVERBS = (
+    "一并", "一併", "一起", "统统", "統統", "通通", "全都", "彻底", "徹底",
+    "好好", "认真", "認真", "重新", "全面", "一律", "统一", "統一",
+    "逐一", "逐个", "逐個", "挨个", "挨個", "再",
     # 全称限定词也能当副词用：`把所有字段全部重写`（base 是 True，Codex P2 第二十八轮）。
-    r"|全部|所有|逐项|逐項|逐条|逐條"
+    "全部", "所有", "逐项", "逐項", "逐条", "逐條",
     # 批量类副词（Codex P2 第三十四轮，base 全是 True）。
-    r"|批量|依次|各自|挨着|挨著|统统|一次性|集中)"
+    "批量", "依次", "各自", "挨着", "挨著", "一次性", "集中",
 )
+_WHOLE_CARD_BARE_ADVERB = r"(?:" + "|".join(_WHOLE_CARD_BARE_ADVERBS) + r")"
+# ⚠️ 副词可以**叠着用**：`把所有字段再统一重写` / `把整个卡的所有内容批量统一重写`
+# base 都是 True，上一版只吃一个副词就要求重写动词，这些请求全掉了
+# （Codex P2 第三十五轮）。
+# ⚠️ 三张收尾表统一走这一条，别再各写一份——第二十九轮改两张漏一张，静默失效过。
+# ⚠️ 这个 `+` 不会指数回溯：上面那张表是**前缀码**（没有哪个词是另一个词的前缀），
+# 所以任何输入至多只有一种切分，失败时线性退出。测试直接断言这条性质，往表里
+# 加会破坏前缀码的词（比如单独加个「一」）会当场见红。
+# ⚠️ 也**不能**写成原子组：`重新` 的首字就是重写动词的首字，`统一重新` 只有回退
+# 成「副词 统一 + 动词首字 重」才匹配得上，原子化会让这个 run 比原来的单副词
+# 写法更窄——它必须是原来那一版的严格超集。
+_WHOLE_CARD_ADVERB_RUN = r"(?:" + _WHOLE_CARD_BARE_ADVERB + r"地?\s*)+"
 
 # 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
 # _WHOLE_CARD_BARE_QUANTIFIER_TAIL 同一套，空白同样只跳过不算收尾。
@@ -845,10 +860,10 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     r"(?=\s*(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB
-    + "|" + _WHOLE_CARD_BARE_ADVERB + r"地?"
+    + "|" + _WHOLE_CARD_ADVERB_RUN
     # ⚠️ 副词后面也可能是英文重写动词。第二十九轮改了另外**两张**收尾表，唯独
     # 漏了这一张——同一件事三处各写一份，漏一处就静默失效（CodeRabbit）。
-    + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
+    + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
@@ -869,8 +884,8 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"\s*(?>(?:\s*(?:" + _WHOLE_CARD_SCOPE_SUFFIX + "|"
     + "|".join(_WHOLE_CARD_SCOPE_NOUNS) + r"))+)"
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
-    + _WHOLE_CARD_BARE_ADVERB + r"地?"
-    + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
+    + _WHOLE_CARD_ADVERB_RUN
+    + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     # ⚠️ 动量补语也是合法收尾：`重写所有字段一遍` / `请重写所有字段一次` 里动词
     # 在**目标前面**，目标后面跟的是 一遍/一次/一下（base 是 True，
     # Codex P2 第三十一轮）。这一族是封闭词类。
@@ -882,10 +897,10 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB + r"|"
-    + _WHOLE_CARD_BARE_ADVERB + r"地?"
+    + _WHOLE_CARD_ADVERB_RUN
     # ⚠️ 副词后面也可能是**英文**重写动词：`把所有字段全部 rewrite`
     # （base 是 True，Codex P2 第二十九轮）。
-    + r"\s*(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
+    + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。
