@@ -12,6 +12,11 @@ tests/test_inputs/
 *.log
 /logs/
 /data/
+
+# docker-compose.yml 在 docker/ 下，它的 ./ 相对路径落在这里
+/docker/neko-home/
+/docker/logs/
+
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe

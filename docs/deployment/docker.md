@@ -22,10 +22,26 @@ The entrypoint generates `/app/config/core_config.json` only when absent or when
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./neko-home` | `/home/neko` | User configuration, characters, memories, feature data, TLS certificates |
+| `./neko-home` | `/home/neko` | User configuration, characters, memories, feature data, TLS certificate and private key, OpenFang runtime state |
 | `./logs` | `/app/logs` | Logs |
 
 Back up the first mount before upgrades. Never expose the data or private-key directories through a web server.
+
+::: danger Upgrading from the two-mount layout
+Earlier versions mounted `./N.E.K.O` and `./ssl` separately. Pulling a new image without migrating leaves the container with an **empty** data directory: it starts normally and API keys are regenerated from the environment, so nothing looks wrong, but characters, memories and plugins are all missing. The old data is not deleted — it is simply no longer mounted.
+
+```bash
+docker compose down
+mkdir -p neko-home/.local/share
+mv N.E.K.O neko-home/.local/share/N.E.K.O
+mv ssl     neko-home/ssl
+docker compose up -d
+```
+
+If the host `N.E.K.O/` directory is empty, you followed the old README quickstart, whose mount target (`/root/Documents/N.E.K.O`) never matched where the services actually write. That data only exists inside the container, so export it before removing the old container: `docker cp neko:/home/neko/.local/share/N.E.K.O ./neko-home/.local/share/N.E.K.O`.
+
+`./logs` is unaffected. Ownership is corrected automatically on the next start.
+:::
 
 ## Build locally
 

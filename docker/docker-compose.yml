@@ -48,8 +48,11 @@ services:
       - "48912:443"
 
     # 卷挂载配置
+    # ⚠️ 旧版本用 ./N.E.K.O + ./ssl 两个挂载，现已合并为 ./neko-home 一个。
+    #    从旧版升级必须先迁移数据（见 README「从旧版本升级」一节），
+    #    否则容器会对着一个空目录启动，表现为"数据全没了"。
     volumes:
-      # 1. neko 用户主目录（持久化数据、SSL 证书、OpenFang 配置等）
+      # 1. neko 用户主目录（用户数据、SSL 证书与私钥、OpenFang 运行状态）
       - ./neko-home:/home/neko
 
       # 2. 日志目录

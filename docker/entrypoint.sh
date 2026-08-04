@@ -1168,24 +1168,107 @@ start_nginx_proxy() {
     return 0
 }
 
+# ── 旧版挂载布局检测 ──────────────────────────────────────────
+# 数据挂载从 ./N.E.K.O + ./ssl 两条合并成了 ./neko-home 一条。被落下的旧目录在
+# 宿主机上，根本没挂进容器，所以这里无法自动迁移；能做的只是在认出「这是一次升级」
+# 时把话说清楚，免得用户把一个空数据目录当成正常的全新安装 —— core_config.json
+# 会从环境变量重新生成，容器看起来一切正常，最容易让人误判。
+# 快照必须在本脚本自己往 /home/neko 和 /app/logs 写东西之前取。
+LEGACY_LAYOUT_HINT=""
+
+detect_legacy_layout() {
+    local data_root="/home/neko/.local/share/N.E.K.O"
+
+    # 数据目录有内容 → 挂载是通的，不用多嘴
+    if [ -n "$(ls -A "$data_root" 2>/dev/null)" ]; then
+        return 0
+    fi
+
+    # 痕迹一：旧的 N.E.K.O 目录被整个当成了 neko-home，数据根的子目录直接躺在家目录里
+    if [ -d /home/neko/config ] || [ -d /home/neko/memory ]; then
+        LEGACY_LAYOUT_HINT="wrong-level"
+        return 0
+    fi
+
+    # 痕迹二：旧目录搬进 neko-home 了，但没落到 XDG 路径下
+    if [ -d /home/neko/N.E.K.O ]; then
+        LEGACY_LAYOUT_HINT="wrong-depth"
+        return 0
+    fi
+
+    # 痕迹三：./logs 里有历史日志 → 这个部署以前跑起来过，而数据目录却是空的。
+    # 典型的「直接 pull 新镜像重启」，旧数据还留在宿主机的 ./N.E.K.O 里。
+    if [ -n "$(find /app/logs -type f -name '*.log' 2>/dev/null | head -n 1)" ]; then
+        LEGACY_LAYOUT_HINT="stale-logs"
+    fi
+
+    return 0
+}
+
+warn_legacy_layout() {
+    if [ -z "$LEGACY_LAYOUT_HINT" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo "=================================================="
+    echo "⚠️  数据目录为空，但检测到旧版部署的痕迹"
+    case "$LEGACY_LAYOUT_HINT" in
+        wrong-level)
+            echo "   /home/neko 下直接出现了 config/ 或 memory/ —— 旧的 N.E.K.O 目录"
+            echo "   可能被整个当成了 neko-home。它应该放在下面这一层："
+            echo "       neko-home/.local/share/N.E.K.O/"
+            ;;
+        wrong-depth)
+            echo "   /home/neko/N.E.K.O 存在，但服务读的是 .local/share 下的路径。"
+            echo "   请把它移动到：neko-home/.local/share/N.E.K.O/"
+            ;;
+        stale-logs)
+            echo "   日志目录里有历史日志，说明这个部署以前跑过，而数据目录是空的。"
+            echo "   本版本把 ./N.E.K.O + ./ssl 两个挂载合并成了 ./neko-home 一个，"
+            echo "   旧数据没有丢，只是不再挂进容器。请停止容器后执行："
+            echo "       mkdir -p neko-home/.local/share"
+            echo "       mv N.E.K.O neko-home/.local/share/N.E.K.O"
+            echo "       mv ssl     neko-home/ssl"
+            ;;
+    esac
+    echo "   详见 README「从旧版本升级」一节。全新安装可忽略本提示。"
+    echo "=================================================="
+    echo ""
+}
+
 # 9. 主执行流程
 main() {
     echo "=================================================="
     echo "   N.E.K.O. Container with Nginx Proxy - Startup"
     echo "=================================================="
-    
+
+    # 先取快照：后面的 setup_* 会往 /home/neko 和 /app/logs 里写东西
+    detect_legacy_layout
+
     setup_signal_handlers
     check_dependencies
     setup_configuration
     setup_dependencies
     setup_nginx_proxy
-    
-    # 确保 home 目录对 neko 用户可写（Docker volume 可能以 root 创建）
-    chown -R neko:neko /home/neko
-    
+
+    # 确保 home 目录对 neko 用户可写（Docker volume 可能以 root 创建）。
+    # 只改属主不对的条目：稳态下这一遍是纯遍历、不产生写入，数据量大的部署不必
+    # 每次启动都把整棵树重写一遍。
+    find /home/neko -path /home/neko/ssl -prune -o \
+        \( ! -user neko -o ! -group neko \) -exec chown neko:neko {} + || true
+
+    # ssl/ 被上面刻意跳过。私钥由 root 生成并 chmod 600，nginx 主进程也以 root
+    # 读取它，而三个业务进程（含内嵌的用户插件服务）以 neko 身份运行。合并挂载后
+    # ssl/ 落进了 /home/neko 里，若跟着一起 chown，等于把 TLS 私钥交给应用用户，
+    # 功能上却一分钱都不值。用户自带证书的属主同样不该被容器改写。
+
     # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
     start_openfang_daemon
-    
+
+    # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉
+    warn_legacy_layout
+
     # 启动N.E.K.O服务
     if ! start_services; then
         echo "❌ Failed to start N.E.K.O services"

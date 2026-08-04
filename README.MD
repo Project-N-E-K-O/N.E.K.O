@@ -176,13 +176,65 @@ docker run -d \
 
 </details>
 
+#### ⚠️ 从旧版本升级（挂载目录已变更）
+
+> 旧版把数据和证书分成 `./N.E.K.O`、`./ssl` 两个挂载，现在合并为 `./neko-home` 一个。**直接拉新镜像启动会得到一个空的数据目录**——容器照常起来、API Key 也会从环境变量重新生成，看上去一切正常，但人格、记忆、插件、模型都不在。旧数据不会被删除，只是不再挂进容器，按下面的步骤搬一次即可。
+
+<details>
+<summary>点击展开查看迁移步骤（旧版部署过的用户必看）</summary>
+
+先看一眼宿主机上的 `N.E.K.O/` 目录里有没有 `config/`、`memory/` 之类的内容，据此选择对应情况：
+
+```bash
+ls N.E.K.O/
+```
+
+**情况一：有内容，且用 Docker Compose 部署**
+
+```bash
+docker-compose down
+mkdir -p neko-home/.local/share
+mv N.E.K.O neko-home/.local/share/N.E.K.O
+mv ssl     neko-home/ssl
+# 把 docker-compose.yml 的 volumes 换成本文档上方的新版写法，再启动
+docker-compose up -d
+```
+
+**情况二：有内容，且用 Docker Run 部署**
+
+```bash
+docker rm -f neko
+mkdir -p "${NEKO_BASE_PATH}/neko-home/.local/share"
+mv "${NEKO_BASE_PATH}/N.E.K.O" "${NEKO_BASE_PATH}/neko-home/.local/share/N.E.K.O"
+mv "${NEKO_BASE_PATH}/ssl"     "${NEKO_BASE_PATH}/neko-home/ssl"
+# 再按本文档上方的新命令重新 docker run
+```
+
+**情况三：`N.E.K.O/` 是空的**
+
+旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `./ssl`）：
+
+```bash
+mkdir -p neko-home/.local/share
+docker cp neko:/home/neko/.local/share/N.E.K.O ./neko-home/.local/share/N.E.K.O
+mv ssl neko-home/ssl
+docker rm -f neko
+# 再按新版配置启动
+```
+
+若旧容器已经删除，这部分数据无法找回。本次挂载调整正是为了修掉这个问题。
+
+> `./logs` 挂载没有变化，无需处理。迁移完成后目录属主由容器启动时自动修正，不需要手动 `chown`。
+
+</details>
+
 #### 🔐 SSL 证书配置
 
 <details>
 <summary>点击展开查看 SSL 证书详细说明</summary>
 
 ##### 自动证书
-容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./ssl/` 目录。
+容器首次启动时会自动生成有效期为 **1000 年** 的自签名证书，证书文件保存在 `./neko-home/ssl/` 目录（即挂载目录下的 `ssl/`）。
 
 ##### 自定义证书
 如需使用自己的 SSL 证书：
@@ -191,11 +243,11 @@ docker run -d \
 
 ```bash
 # 创建证书目录
-mkdir -p ./ssl
+mkdir -p ./neko-home/ssl
 
 # 放入您的证书文件（必须命名为特定名称）
-cp your-cert.crt ./ssl/N.E.K.O.crt
-cp your-cert.key ./ssl/N.E.K.O.key
+cp your-cert.crt ./neko-home/ssl/N.E.K.O.crt
+cp your-cert.key ./neko-home/ssl/N.E.K.O.key
 ```
 
 **方法二：启动后替换**
@@ -205,8 +257,8 @@ cp your-cert.key ./ssl/N.E.K.O.key
 docker-compose down
 
 # 2. 替换证书文件
-cp your-cert.crt ./ssl/N.E.K.O.crt
-cp your-cert.key ./ssl/N.E.K.O.key
+cp your-cert.crt ./neko-home/ssl/N.E.K.O.crt
+cp your-cert.key ./neko-home/ssl/N.E.K.O.key
 
 # 3. 重新启动
 docker-compose up -d
@@ -299,9 +351,9 @@ ss -tulpn | grep ':4891[12]'
 
 ##### 2. 权限问题
 ```bash
-# 确保目录有正确权限
-mkdir -p N.E.K.O logs ssl
-chmod 755 N.E.K.O logs ssl
+# 确保目录有正确权限（容器启动时会把 neko-home 的属主改成容器内的 neko 用户）
+mkdir -p neko-home logs
+chmod 755 neko-home logs
 ```
 
 ##### 3. 容器启动失败
@@ -316,7 +368,7 @@ docker logs neko --tail=100
 ##### 4. SSL 证书错误
 ```bash
 # 删除错误证书，让容器重新生成
-rm -f ssl/N.E.K.O.crt ssl/N.E.K.O.key
+rm -f neko-home/ssl/N.E.K.O.crt neko-home/ssl/N.E.K.O.key
 docker-compose up -d
 ```
 
@@ -401,14 +453,16 @@ docker-compose up -d
 
 ##### 数据备份
 ```bash
-# 备份重要数据
+# 备份重要数据（neko-home/ 内含 SSL 私钥，备份文件请勿公开）
 tar -czf neko-backup-$(date +%Y%m%d).tar.gz \
-  N.E.K.O/ \
-  ssl/ \
+  neko-home/ \
+  logs/ \
   docker-compose.yml
 ```
 
 ##### 版本升级
+> 若现有部署仍在使用旧版的 `./N.E.K.O` + `./ssl` 双挂载，升级前请先完成上文「从旧版本升级（挂载目录已变更）」的迁移步骤，否则新容器会对着空数据目录启动。
+
 ```bash
 # 拉取最新镜像
 docker-compose pull
