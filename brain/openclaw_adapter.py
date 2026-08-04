@@ -225,7 +225,8 @@ _CLAUSE_LEAD_SOFT = re.compile(rf"^(?:{_SOFT_LEAD}|{_NEUTRAL_LEAD})+")
 # 口语说法，是授权。表内条目 `准了` / `準了` 自带的那个 `了` 靠**原样命中**，不靠剥。
 _NEUTRAL_TAIL = (
     r"好了|吧|啊|呀|喔|哦|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|一下|喵|"
-    r"耶|唷|哟|喲|欸|诶|咧|哈|噢|呐|吶|呦|哒|噠|齁|捏|~|～"
+    r"谢谢|謝謝|多谢|多謝|感谢|感謝|"
+r"耶|唷|哟|喲|欸|诶|咧|哈|噢|呐|吶|呦|哒|噠|齁|捏|~|～"
 )
 # 仅 /stop 与 /new：疑问尾 + 体标记 `了`。
 _SOFT_TAIL = (
@@ -317,7 +318,13 @@ def _clause_hits(
     pending = []
     # 三档起点：原样 / 剥掉两端装饰字符 / 再剥掉首部虚词。
     bare = decoration.sub("", text).strip()
-    for candidate in (text, bare, lead.sub("", bare).strip()):
+    # ⚠️ 拉丁字母的前缀（OK / okay）大小写写法是开集（oK / oKaY / OKay…），枚举必漏。
+    # 多试一个整体小写的候选，中文不受影响。
+    lowered = bare.lower()
+    starts = [text, bare, lead.sub("", bare).strip()]
+    if lowered != bare:
+        starts += [lowered, lead.sub("", lowered).strip()]
+    for candidate in starts:
         if candidate and candidate not in seen:
             if candidate in table:
                 return True
@@ -440,7 +447,11 @@ def _approve_clause_kind(clause: str) -> Optional[str]:
     # `那，去执行` 在旧实现里靠子串命中，而同样的词直接贴着写（`请去执行`）一直是通的。
     # 它们本来就被判定为「剥掉不改变谁被授权做什么」，单独成句自然也不改变。
     # 和其它应答子句一样：单独出现永远不算授权，必须同句里还有动作短语或裸应答。
-    lead_only = _CLAUSE_LEAD_NEUTRAL.sub("", _DECORATION.sub("", text).strip()).strip()
+    # ⚠️ 装饰用**严格**那张，和下面的应答/动作查表一致：`可以❌` 里的 ❌ 否定的是
+    # 这句应答，宽表会把它当装饰剥掉、于是整条被判成批准。
+    lead_only = _CLAUSE_LEAD_NEUTRAL.sub(
+        "", _DECORATION_TAIL_APPROVE.sub("", text).strip()
+    ).strip()
     if text and not lead_only:
         return "companion"
     if _clause_hits(
@@ -449,10 +460,11 @@ def _approve_clause_kind(clause: str) -> Optional[str]:
         strip_tail=True,
         lead_re=_CLAUSE_LEAD_NEUTRAL,
         tail_tokens=_NEUTRAL_TAIL_TOKENS,
-        # ⚠️ 应答子句用**宽**的装饰表（含 emoji），只有动作支用严格那张。
-        # 理由同上：应答子句单独出现永远不算授权，放宽它的写法不会扩大批准面；
-        # 而「否定符号」的风险落在**动作**子句上（`去執行❌` 才是「别执行」）。
-        decoration_re=_DECORATION_TAIL,
+        # ⚠️ 应答子句也用**严格**装饰表。早先这里放宽过（理由是应答子句单独出现
+        # 永远不算授权），但否定符号照样能落在它头上：`可以❌，去執行` 里的 ❌ 否定的
+        # 是那句应答，整条却仍被判成批准。👌 和 ❌ 在这一层区分不了，只能整类不剥。
+        # 代价：`好的👌，去执行` 相对旧实现丢了。
+        decoration_re=_DECORATION_TAIL_APPROVE,
     ):
         return "companion"
     return "action" if _approve_clause_hits(text) else None
