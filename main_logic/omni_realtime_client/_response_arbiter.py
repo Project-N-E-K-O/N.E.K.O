@@ -157,6 +157,7 @@ class _QueuedResponse:
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal_error: BaseException | None = field(default=None, compare=False)
     response_id: str | None = field(default=None, compare=False)
+    cancel_send_task: asyncio.Task[None] | None = field(default=None, compare=False)
     event_ids: frozenset[str] = field(default_factory=frozenset, compare=False)
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
@@ -261,6 +262,10 @@ class RealtimeResponseArbiter:
         # _server_response_max_age. Created adds, terminal removes.
         self._server_response_ids: dict[str, float] = {}
         self._idless_server_response_at: float | None = None
+        # An id-less terminal may retire an owner before that response's
+        # delayed response.created reaches us. Hold the lane for one bounded
+        # announcement so the frame cannot be credited to a successor.
+        self._retired_created_deadline: float | None = None
         # Staleness bound for the map above. Mirrors the response_done_timeout
         # semantics applied to owned responses: starts at the enqueue default
         # and only ever ratchets up, so a server response is never presumed
@@ -388,7 +393,12 @@ class RealtimeResponseArbiter:
 
         current = self._current
         if current is None:
-            if not self._server_response_active:
+            live_server_response = bool(
+                self._server_vad_response_pending
+                or self._server_response_ids
+                or self._idless_server_response_live()
+            )
+            if not live_server_response:
                 return
             await self._send_event({"type": "response.cancel"})
             try:
@@ -551,6 +561,7 @@ class RealtimeResponseArbiter:
 
     def _remember_idless_server_response(self) -> None:
         self._idless_server_response_at = asyncio.get_running_loop().time()
+        self._arm_stale_release_timer()
 
     def _idless_server_response_live(self) -> bool:
         announced_at = self._idless_server_response_at
@@ -559,6 +570,15 @@ class RealtimeResponseArbiter:
         if (asyncio.get_running_loop().time() - announced_at
                 >= self._server_response_max_age):
             self._idless_server_response_at = None
+            return False
+        return True
+
+    def _retired_created_window_live(self) -> bool:
+        deadline = self._retired_created_deadline
+        if deadline is None:
+            return False
+        if asyncio.get_running_loop().time() >= deadline:
+            self._retired_created_deadline = None
             return False
         return True
 
@@ -757,10 +777,20 @@ class RealtimeResponseArbiter:
         """(Re)start the timer that re-checks the lane at the next staleness deadline."""
 
         loop = asyncio.get_running_loop()
-        deadline = (
-            min(self._server_response_ids.values()) + self._server_response_max_age
-        )
+        deadlines = [
+            created_at + self._server_response_max_age
+            for created_at in self._server_response_ids.values()
+        ]
+        if self._idless_server_response_at is not None:
+            deadlines.append(
+                self._idless_server_response_at + self._server_response_max_age
+            )
+        if self._retired_created_deadline is not None:
+            deadlines.append(self._retired_created_deadline)
         self._cancel_stale_release_timer()
+        if not deadlines:
+            return
+        deadline = min(deadlines)
         self._stale_release_handle = loop.call_later(
             max(deadline - loop.time(), 0.0), self._stale_release_expired
         )
@@ -809,20 +839,52 @@ class RealtimeResponseArbiter:
                 self._server_response_max_age,
                 ", ".join(stale),
             )
-        if self._server_response_ids:
+        # Evaluate both bounded ID-less states before the blocker expression.
+        # Short-circuiting on an id-bearing response would otherwise leave an
+        # expired deadline in place and re-arm its timer at zero delay.
+        idless_response_live = self._idless_server_response_live()
+        retired_created_live = self._retired_created_window_live()
+        if self._server_response_ids or idless_response_live or retired_created_live:
             # A known server-initiated response is still live. Opening the
             # lane now would let the next queued response.create collide with
-            # it, so keep the lane closed until its terminal arrives (or its
-            # id goes stale).
+            # it, or let a delayed announcement cross into the next owner.
+            self._server_response_active = True
+            self._idle.clear()
             self._arm_stale_release_timer()
             return
         self._cancel_stale_release_timer()
         self._server_response_active = False
-        self._idle.set()
+        if self._response_owner is None:
+            self._idle.set()
+        else:
+            self._idle.clear()
 
-    def notify_response_created(self, event: dict[str, Any]) -> None:
+    def notify_response_created(self, event: dict[str, Any]) -> bool:
+        """Attribute an announcement and report whether transport may expose it."""
+
         self._server_response_active = True
         self._idle.clear()
+        retired_created_live = self._retired_created_window_live()
+        if retired_created_live and self._server_vad_response_pending:
+            raise RuntimeError(
+                "ambiguous response.created while retired and server-VAD "
+                "gates overlap"
+            )
+        if retired_created_live:
+            # The preceding owner ended before its announcement arrived. This
+            # is a one-shot quarantine: consume exactly this delayed frame,
+            # then clear the gate before a successor can dispatch. Keeping a
+            # second retirement window here would swallow a legitimate id-less
+            # successor, recreating the ownership failure in the other direction.
+            self._retired_created_deadline = None
+            response_id = self._event_response_id(event)
+            self._remember_seen_response_id(response_id)
+            logger.info(
+                "ignored late response.created %s from a retired owner",
+                response_id or "<idless>",
+            )
+            self._release_lane_if_clear()
+            return False
         if self._server_vad_response_pending:
             self._cancel_server_vad_pending_timer()
             self._server_vad_response_pending = False
@@ -836,7 +898,7 @@ class RealtimeResponseArbiter:
             # announcement the arbiter positively knows is the provider's own
             # automatic response, so it is the last thing a queued request
             # should be allowed to claim.
-            return
+            return True
         owner = self._response_owner
         if owner is not None and not owner.ticket.started.done():
             # The first response.created after the owner's response.create is
@@ -846,7 +908,7 @@ class RealtimeResponseArbiter:
             owner.response_id = self._event_response_id(event)
             self._remember_seen_response_id(owner.response_id)
             owner.ticket.started.set_result(None)
-            return
+            return True
         # This created event cannot be credited to a waiting owner (the owner
         # already started, or no owner is pending), so it announces a
         # server-initiated response. Remember its id so its terminal event is
@@ -865,6 +927,7 @@ class RealtimeResponseArbiter:
         # here decides that; ``_adoptable_id_for`` does, against evidence the
         # dispatching request captured for itself.
         self._note_unowned_announcement(response_id)
+        return True
 
     def notify_server_vad_started(self) -> None:
         """Deliberately leave ownership unchanged until speech_stopped.
@@ -930,11 +993,41 @@ class RealtimeResponseArbiter:
         ):
             self._arm_server_vad_pending_timer()
 
-    def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
+    @staticmethod
+    def _retire_owner_cancel_send(owner: _QueuedResponse) -> None:
+        task, owner.cancel_send_task = owner.cancel_send_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _detach_response_owner(self, owner: _QueuedResponse) -> bool:
+        if self._response_owner is not owner:
+            return False
+        self._retire_owner_cancel_send(owner)
+        self._response_owner = None
+        return True
+
+    def notify_response_terminal(self, event: dict[str, Any] | None = None) -> bool:
+        """Attribute a terminal and report whether transport may finalize it."""
+
         owner = self._response_owner
+        owner_was_unannounced = bool(
+            owner is not None and not owner.ticket.started.done()
+        )
         response_id = self._event_response_id(event)
+        idless_orphan_terminal = bool(
+            response_id is None
+            and owner is not None
+            and owner.response_id is not None
+            and self._idless_server_response_live()
+        )
         if response_id is None:
             self._idless_server_response_at = None
+        if idless_orphan_terminal:
+            # An owner with a known id cannot own an id-less terminal. Consume
+            # the tracked orphan without completing the owner or opening its
+            # lane; the owner's matching terminal remains authoritative.
+            self._release_lane_if_clear()
+            return False
         response = (event or {}).get("response")
         response_status = (
             str(response.get("status") or "").strip().lower()
@@ -1016,7 +1109,7 @@ class RealtimeResponseArbiter:
                         # already-terminal turn for a live id-less response.
                         self._cancel_stale_release_timer()
                         self._server_response_active = False
-                    return
+                    return False
             if owner.response_id is not None:
                 if response_id != owner.response_id:
                     # A server-initiated response finished while the owner's
@@ -1024,13 +1117,13 @@ class RealtimeResponseArbiter:
                     # would let a queued response.create collide with it, so
                     # treat the mismatched terminal as an orphan.
                     self._server_response_ids.pop(response_id, None)
-                    return
+                    return False
             elif response_id in self._server_response_ids:
                 # The owner's response.created carried no id, but this
                 # terminal matches a known server-initiated response, so it
                 # cannot be the owner's own terminal.
                 del self._server_response_ids[response_id]
-                return
+                return False
         elif response_id is not None:
             # No owner: a server-initiated response reached its terminal
             # state, so its id no longer holds the lane.
@@ -1059,11 +1152,17 @@ class RealtimeResponseArbiter:
                 # terminal and fail-close a healthy connection.
                 owner.terminal_error = terminal_error
                 owner.terminal.set_result(None)
-            self._response_owner = None
+            if owner_was_unannounced and response_id is None:
+                self._retired_created_deadline = (
+                    asyncio.get_running_loop().time()
+                    + _SERVER_VAD_RESPONSE_STARTED_TIMEOUT
+                )
+            self._detach_response_owner(owner)
         # The owner (if any) has terminated; the lane opens only once no
         # server-initiated response is still live, so a queued
         # response.create cannot overlap with one whose terminal is pending.
         self._release_lane_if_clear()
+        return True
 
     def notify_error(self, event_id: str | None, message: str) -> None:
         current = self._current
@@ -1138,8 +1237,15 @@ class RealtimeResponseArbiter:
         task = asyncio.create_task(
             self._send_cancel_best_effort(self._connection_generation)
         )
+        target.cancel_send_task = task
         self._cancel_send_tasks.add(task)
-        task.add_done_callback(self._cancel_send_tasks.discard)
+
+        def _finished(completed: asyncio.Task[None]) -> None:
+            self._cancel_send_tasks.discard(completed)
+            if target.cancel_send_task is completed:
+                target.cancel_send_task = None
+
+        task.add_done_callback(_finished)
 
     async def _send_cancel_best_effort(self, generation: int) -> None:
         if generation != self._connection_generation:
@@ -1187,6 +1293,7 @@ class RealtimeResponseArbiter:
         self._server_vad_response_pending = False
         self._server_response_ids.clear()
         self._idless_server_response_at = None
+        self._retired_created_deadline = None
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
@@ -1202,7 +1309,10 @@ class RealtimeResponseArbiter:
             self._wake_current_with_error(target, exc)
             if fail_current_tickets:
                 self._fail_ticket(target.ticket, exc)
-        self._response_owner = None
+        if owner is not None:
+            self._detach_response_owner(owner)
+        else:
+            self._response_owner = None
         self._idle.set()
         self._fail_queued(exc)
 
@@ -1214,6 +1324,7 @@ class RealtimeResponseArbiter:
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
         self._idless_server_response_at = None
+        self._retired_created_deadline = None
         # Response ids are scoped to a connection: a provider that restarts
         # its numbering would otherwise have the new session's first terminal
         # recognised as one this arbiter has "already seen" and withheld from
@@ -1556,8 +1667,8 @@ class RealtimeResponseArbiter:
             # discard a live response's identity, and the next queued create
             # would then overlap it. Nothing about the abandoned owner makes
             # those untrustworthy.
-            if self._response_owner is released_owner:
-                self._response_owner = None
+            if released_owner is not None:
+                self._detach_response_owner(released_owner)
             # Which is why the lane reopens through the ordinary release check
             # rather than by force — it already knows to keep the lane closed
             # while a live server response is being tracked, and to arm the
@@ -1813,8 +1924,7 @@ class RealtimeResponseArbiter:
             try:
                 await self._worker_send(queued.response_event)
             except Exception:
-                if self._response_owner is queued:
-                    self._response_owner = None
+                self._detach_response_owner(queued)
                 if not queued.terminal.done():
                     queued.terminal.cancel()
                 raise
@@ -1830,8 +1940,7 @@ class RealtimeResponseArbiter:
                     and not queued.ticket.started.cancelled()
                     else None
                 )
-                if self._response_owner is queued:
-                    self._response_owner = None
+                self._detach_response_owner(queued)
                 if not queued.terminal.done():
                     queued.terminal.cancel()
                 if provider_error is not None:
@@ -1939,7 +2048,7 @@ class RealtimeResponseArbiter:
                     # holding the lane until its own terminal event. For an
                     # id-less server response, retain the owner as the only
                     # safe terminal correlation instead of reopening early.
-                    self._response_owner = None
+                    self._detach_response_owner(queued)
                     if queued.terminal is not None and not queued.terminal.done():
                         queued.terminal.cancel()
                     self._release_lane_if_clear()
