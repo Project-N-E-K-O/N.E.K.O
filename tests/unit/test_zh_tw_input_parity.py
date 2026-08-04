@@ -5611,6 +5611,9 @@ def test_the_frame_scope_coordinator_table_is_pinned():
 
     assert music_requests._ZH_FRAME_SCOPE_COORDINATORS == (
         "然后", "然後", "然而", "接着", "接著", "接下来", "接下來",
+        "随后", "隨後", "继而", "繼而", "而后", "而後",
+        "紧接着", "緊接著", "跟着", "跟著", "于是", "於是",
+        "因而", "从而", "從而",
         "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
         "另外", "再说", "再說", "所以", "因此",
     )
@@ -5908,12 +5911,19 @@ def test_frame_words_matched_inside_a_longer_word_do_not_open_a_frame(compound):
 
 @pytest.mark.parametrize("frame", ["要是", "就是", "即使", "忘了", "不管"])
 def test_the_guarded_frames_still_work_on_their_own(frame):
-    """⚠️ 反向：挂了左界的那几个框架词，**自己单独出现时**照旧是框架。
-    黑名单只挡特定前缀，不能把整个词废掉。
+    """⚠️ 反向：挂了左右界的那几个框架词，**在正常语境里**照旧是框架。
+    黑名单只挡特定前缀/后缀，不能把整个词废掉。
+
+    ⚠️ 探测句要带上后续小句（`什么歌都不好听`）而不是让框架词悬在句尾——
+    第六十七轮给 `要是` 加了「右边必须跟谓词或疑问词」之后，光一个 `要是`
+    结尾本来就不该算框架。原来那句是**空断言**：它测的是「框架词还在表里」，
+    而不是「框架还成立」。
     """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
 
-    assert mr._ZH_FREE_CHOICE_FRAME_RE.search(f'我想停止播放{frame}') is not None
+    assert mr._ZH_FREE_CHOICE_FRAME_RE.search(
+        f'我想停止播放因为{frame}什么歌都不好听'
+    ) is not None
     text = f'我想停止播放因为{frame}什么歌都不好听'
     assert mr.is_explicit_music_cancellation(text) is True, text
 
@@ -6071,3 +6081,79 @@ def test_bu_guan_yong_is_an_adjective_not_a_frame(tail):
     assert is_explicit_music_cancellation(
         '我想停止播放因为不管什么歌都不好听'
     ) is True
+
+
+@pytest.mark.parametrize("noun", ["摘要", "纪要", "紀要", "概要", "提要", "纲要", "綱要", "简要", "简要", "主要"])
+def test_a_noun_ending_in_yao_does_not_open_a_conditional_frame(noun):
+    """⚠️⚠️ `要是` 单靠左界黑名单收不干净：它前面那个字构成的名词是**开集**——
+    摘要 / 纪要 / 概要 / 提要 / 纲要 / 简要 / 主要 / 只要 / 需要 / 重要 / 首要…
+    第六十六轮补了 主/只/需/重/首/次，第六十七轮 reviewer 又拿 `摘要是` 来了。
+
+    换个方向就闭合了：看**右边**。`摘要是最新版本` / `纪要是否完整` 里 `要是`
+    后面跟的是名词（那个 `是` 其实是下一小句的系词）；真条件框架后面跟的一定是
+    谓词或疑问词——`要是有新歌` / `要是不好听` / `要是什么歌都不好听`。
+    谓词和疑问词都是**闭集**，而且这两张表本来就在这个文件里，不用另立门户。
+
+    ⚠️ 左界黑名单**保留**：`主要是想问` 右边跟的是 `想`（谓词），右侧规则放它过去，
+    靠左界那条挡。两条各管一半，缺一不可——下面第二条断言钉住这一点。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前先检查{noun}是最新版本是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_the_left_and_right_guards_each_cover_a_different_half():
+    """⚠️ 两条判据各管一半，缺一不可：
+
+    * `摘要是最新版本` —— 右边是名词，**右**侧规则挡下；左界里没有 `摘`。
+    * `主要是想问` —— 右边是谓词 `想`，右侧规则放行，**左**界里的 `主` 挡下。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    assert "摘" not in mr._ZH_FRAME_LEFT_BLACKLIST["要是"]
+    assert "主" in mr._ZH_FRAME_LEFT_BLACKLIST["要是"]
+    assert mr._ZH_FRAME_RIGHT_REQUIRED.get("要是") is True
+    assert mr.is_explicit_music_cancellation(
+        '我想停止播放前先检查摘要是最新版本是否合适'
+    ) is False
+    assert mr.is_explicit_music_cancellation(
+        '我想停止播放主要是想问能否换一首'
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "coordinator", ["随后", "隨後", "继而", "繼而", "而后", "而後", "紧接着", "緊接著",
+                    "跟着", "跟著", "于是", "於是", "因而", "从而", "從而"]
+)
+def test_the_sequential_coordinators_also_end_the_frame_scope(coordinator):
+    """顺承类连词当初只收了 然后/接着，随后/继而/而后/紧接着 同族漏了
+    （base 都是 False——危险方向，第六十七轮）。
+
+    ⚠️ 这张表第六十一轮建立时写着「连词是封闭词类，一次列全」，到这里已经是
+    **第三次补**（第六十四轮补 却/卻，这一轮补顺承一族）。自称列全不等于列全，
+    所以这次按「顺承 / 转折 / 因果 / 并列」四族逐族过了一遍。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放如果会影响歌单就算了{coordinator}这样是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    ("predicate", "rest"),
+    [("有", "新歌再告诉我"), ("不", "好听就算了"), ("是", "新歌就留着"),
+     ("能", "联网就继续"), ("会", "卡就算了"), ("要", "收费就算了")],
+)
+def test_a_conditional_frame_opens_on_a_predicate_too(predicate, rest):
+    """⚠️ `要是` 的右侧判据认**两族**：谓词和疑问词。
+
+    ⚠️ 这条是第六十七轮变异验证补的——「小句开头表漏掉谓词那一族」那个变异体
+    **存活了**：原来的用例只走 wh 分支（`要是什么歌都不好听`），谓词分支
+    （`要是有新歌`）一条都没测到。两族各测一遍，缺哪半都会见红。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    text = f'我想停止播放要是{predicate}{rest}'
+    assert mr._ZH_FREE_CHOICE_FRAME_RE.search(text) is not None, text
+    assert mr.is_explicit_music_cancellation(text) is True, text
