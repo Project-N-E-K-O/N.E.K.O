@@ -65,19 +65,28 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 v2 schema でホストシステムにメッセージをプッシュします。
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # []、["chat"]、["hud"]、または両方
     ai_behavior="blind",       # "respond"、"read"、"blind"
     parts=[{"type": "text", "text": "タスクが完了しました"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # ローカル状態を保持します。再試行と重複排除はプラグイン側の方針です。
+    self.logger.warning("message submission failed: %s", result["reason"])
 ```
+
+`submitted=True` は、SDK が管理するローカル socket または queue が payload の
+送信責任を引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
+確認ではありません。拒否理由は `backpressure`、`transport_error`、
+`transport_unavailable` のいずれかで、メッセージ本文や生の例外テキストは含みません。
 
 v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は deprecated ですが current source では変換されます。今すぐ移行し、この文書から正確な removal release を保証しないでください。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
 

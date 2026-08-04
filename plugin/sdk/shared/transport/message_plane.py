@@ -64,9 +64,39 @@ class MessagePlaneTransport:
             if self.plugin_ctx is not None:
                 push = getattr(self.plugin_ctx, "push_message", None)
                 if callable(push):
-                    _result = push(source="message_plane", message_type="notify", description=topic, metadata={"payload": payload, "topic": topic})
-                    if _inspect.isawaitable(_result):
-                        await _result
+                    push_result = push(
+                        source="message_plane",
+                        message_type="notify",
+                        description=topic,
+                        metadata={"payload": payload, "topic": topic},
+                    )
+                    if _inspect.isawaitable(push_result):
+                        push_result = await push_result
+                    if (
+                        isinstance(push_result, dict)
+                        and push_result.get("submitted") is False
+                    ):
+                        raw_reason = push_result.get("reason")
+                        reason = (
+                            raw_reason
+                            if isinstance(raw_reason, str)
+                            and raw_reason in {
+                                "backpressure",
+                                "transport_error",
+                                "transport_unavailable",
+                            }
+                            else "transport_error"
+                        )
+                        return Err(
+                            TransportError(
+                                "local message submission was rejected",
+                                code="message_submission_failed",
+                                op_name=op_name,
+                                topic=topic,
+                                timeout=timeout,
+                                reason=reason,
+                            )
+                        )
             for handler in list(self._handlers.get(topic, [])):
                 _raw = handler(payload)
                 result = (await _raw) if _inspect.isawaitable(_raw) else _raw

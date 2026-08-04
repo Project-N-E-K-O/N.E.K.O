@@ -65,19 +65,28 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 使用 v2 schema 向宿主系统推送消息。
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # []、["chat"]、["hud"] 或二者
     ai_behavior="blind",       # "respond"、"read"、"blind"
     parts=[{"type": "text", "text": "任务已完成"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # 保留本地状态；重试和去重仍由插件自行决定。
+    self.logger.warning("消息提交失败：%s", result["reason"])
 ```
+
+`submitted=True` 只表示 SDK 管理的本地 socket 或 queue 已接收 payload，并由
+SDK 接管后续提交责任；它不表示宿主已经消费、模型已经生成或音频已经播放。
+拒绝结果使用稳定的 `backpressure`、`transport_error` 或
+`transport_unavailable` reason，且不会包含消息正文或原始异常文本。
 
 v1 字段（`message_type`、`content`、`delivery`、`reply` 及其他旧别名）已经弃用，但当前源码仍会转换。请立即迁移；本文档不保证确切移除版本。参见[迁移指南](./migration-v0.9#push-message-v2)。
 

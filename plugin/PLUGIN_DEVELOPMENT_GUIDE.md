@@ -276,7 +276,7 @@ self.report_status({
 ```
 
 <a id="push-message-v2"></a>
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 `push_message` 是插件 → 主系统的**唯一**消息推送入口。两条独立的轴
 决定下游行为，配合 `parts` 列表承载 OpenAI 风格的多模态内容。完整
@@ -306,6 +306,26 @@ ctx.push_message(
     priority=0,                     # 数字越大优先级越高
 )
 ```
+
+返回值是本地提交结果：
+
+```python
+result = ctx.push_message(
+    visibility=[],
+    ai_behavior="respond",
+    parts=[{"type": "text", "text": "请回应这条事件"}],
+)
+if not result["submitted"]:
+    # 可以保留本地任务，稍后由插件自己的策略决定是否重试。
+    # 不要把消息正文写入日志。
+    logger.warning("message submission failed: %s", result.get("reason"))
+```
+
+`submitted=True` 只表示 SDK 已把 payload 交给自己管理的本地 socket 或 queue，
+并接管后续提交责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
+`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`
+或 `transport_unavailable`。结果不会暴露内部 transport 名称，也不会回显消息正文
+或异常内容。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
 ##### 两条轴的语义
 
@@ -512,7 +532,7 @@ return await self.finish(data={"summary": "..."}, delivery="silent")
 ```
 
 > **`push_message()` 不再用 `delivery`**——改成 `visibility` + `ai_behavior`
-> 两条独立轴（见上面 `push_message(**kwargs) -> object` 节）。旧 `delivery=`
+> 两条独立轴（见上面 `push_message(**kwargs) -> PushMessageResult` 节）。旧 `delivery=`
 > / `reply=` 仍能用但会 emit DeprecationWarning，v0.9 移除。
 
 #### "任务汇报"vs"事件回应"：宿主自动分类

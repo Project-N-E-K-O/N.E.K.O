@@ -133,6 +133,20 @@ it. The whole class of bug can be removed only after the legacy
 `binary_data` wire field is no longer emitted; that cleanup has not happened
 in the source verified above.
 
+## Immediate local submission result
+
+`push_message` returns a `PushMessageResult`. Its `submitted` discriminator
+reports only whether an SDK-owned local socket or queue accepted responsibility
+for the payload. It is not an acknowledgement that the host consumed the
+message, a model generated a response, or playback completed.
+
+Synchronous rejection uses one of three stable reasons: `backpressure`,
+`transport_error`, or `transport_unavailable`. The result deliberately omits
+internal transport names, message content, and raw exception text. Existing
+callers that ignore the return value keep their previous fire-and-forget
+behaviour; stateful callers may retain local state and apply their own retry and
+deduplication policy.
+
 ## Recorded cleanup target (not a release guarantee)
 
 The current source still carries TODO/deprecation text that names v0.9 as a

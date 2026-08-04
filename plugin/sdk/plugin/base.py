@@ -16,6 +16,7 @@ from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
 from plugin.sdk.shared.core.base import PluginMeta as _SharedPluginMeta
 from plugin.sdk.shared.core.base_runtime import resolve_plugin_data_dir
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
+from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
 from plugin.sdk.shared.models.exceptions import EntryConflictError
 
@@ -156,7 +157,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         return await self.ctx.finish(**kwargs)
 
-    def push_message(self, **kwargs: Any) -> object:
+    def push_message(self, **kwargs: Any) -> PushMessageResult:
         """Stream a message from the plugin into the dialog channel.
 
         Role-aware text contract: ``text`` / ``summary`` / ``detail`` (and
@@ -165,6 +166,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         injection boundary, per session. See :meth:`finish` for the rationale
         and PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for the
         full guide.
+
+        The returned receipt only reports immediate local submission.  It is
+        not a host-consumption, generation, or playback acknowledgement.
         """
         return self.ctx.push_message(**kwargs)
 

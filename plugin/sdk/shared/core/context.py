@@ -17,7 +17,7 @@ from .finish import (
     normalize_structured_data,
 )
 from .result_contract import contract_from_meta, validate_reply_payload
-from .types import LoggerLike, Metadata, PluginContextProtocol
+from .types import LoggerLike, Metadata, PluginContextProtocol, PushMessageResult
 
 _UNSET = object()
 _SDK_CONTEXT_ATTR_NAMES = ("plugin_id", "metadata", "logger", "config_path", "bus")
@@ -88,7 +88,7 @@ class _HostContextProtocol(Protocol):
 
     async def export_push_async(self, **kwargs: object) -> object: ...
 
-    def push_message(self, **kwargs: object) -> object: ...
+    def push_message(self, **kwargs: object) -> PushMessageResult: ...
 
     def update_status(self, status: dict[str, object]) -> None: ...
 
@@ -411,7 +411,7 @@ class SdkContext:
         fast_mode: bool = False,
         delivery: str | bool | None = None,
         reply: bool | None = None,
-    ) -> object:
+    ) -> PushMessageResult:
         """Push a message from a plugin to the host.
 
         Two orthogonal axes drive the host's downstream behaviour:
@@ -441,6 +441,10 @@ class SdkContext:
 
         All other parameters are deprecated and emit ``DeprecationWarning``;
         scheduled for removal in v0.9 (``docs/changelog``).
+
+        The returned ``submitted`` flag only confirms that an SDK-owned local
+        socket or queue accepted responsibility for the payload, not host
+        consumption, model generation, or playback.
         """
         return self._host_ctx.push_message(
             visibility=visibility,
