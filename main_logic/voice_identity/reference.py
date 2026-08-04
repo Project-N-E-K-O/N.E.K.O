@@ -44,6 +44,7 @@ def _owned_normalized_embedding(
         raise ValueError("embedding must be convertible to float32") from None
 
     owned: np.ndarray | None = None
+    normalized: np.ndarray | None = None
     try:
         if np.iscomplexobj(materialized):
             raise ValueError("embedding must be real-valued")
@@ -72,8 +73,15 @@ def _owned_normalized_embedding(
         if not math.isfinite(norm) or norm == 0.0:
             raise ValueError("embedding norm must be finite and non-zero")
 
+        normalized = np.array(
+            owned,
+            dtype=np.float64,
+            order="C",
+            copy=True,
+        )
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-            np.divide(owned, norm, out=owned, casting="unsafe")
+            np.divide(normalized, norm, out=normalized)
+        owned[:] = normalized
         if not bool(np.all(np.isfinite(owned))):
             raise ValueError("normalized embedding must contain only finite values")
         return owned
@@ -82,6 +90,8 @@ def _owned_normalized_embedding(
             _wipe(owned)
         raise
     finally:
+        if normalized is not None:
+            _wipe(normalized)
         _wipe(materialized)
 
 

@@ -119,6 +119,27 @@ def test_reference_normalizes_and_defensively_copies_input() -> None:
 
 
 @pytest.mark.unit
+def test_reference_normalizes_float32_subnormals_in_float64() -> None:
+    smallest = np.nextafter(np.float32(0.0), np.float32(1.0))
+    reference = SpeakerReference(
+        _identity(),
+        np.array([smallest, smallest], dtype=np.float32),
+    )
+
+    observed = reference.copy_embedding()
+    try:
+        expected = np.float32(1.0 / np.sqrt(2.0))
+        np.testing.assert_array_equal(
+            observed,
+            np.array([expected, expected], dtype=np.float32),
+        )
+        assert np.linalg.norm(observed.astype(np.float64)) == pytest.approx(1.0)
+    finally:
+        observed.fill(0.0)
+        reference.close()
+
+
+@pytest.mark.unit
 def test_embedding_copies_have_independent_caller_ownership() -> None:
     reference = SpeakerReference(_identity(), [3.0, 4.0])
     first = reference.copy_embedding()
