@@ -1640,3 +1640,44 @@ def test_only_symmetric_pairs_temper_the_negation():
         1 for lo, hi in D._ZH_BRACKET_PAIRS if lo == hi
     )
     assert _zh_terms("电影(Hello, World)别提了。") == {"电影(Hello, World"}
+
+
+# ── 17. 反问尾巴落在引号之外时该剥 ───────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 尾巴在收尾括号**之后** = 句子级语气，剥
+        ("別再提電影《你好》好嗎。", "電影《你好"),
+        ("别再提电影《你好》好吗。", "电影《你好"),
+        ("别再提《你的名字》好吗。", "你的名字"),
+        ("別再提《你的名字》好嗎。", "你的名字"),
+        ("别再提《你的名字》好不好。", "你的名字"),
+        ('别再提"你的名字"好吗。', "你的名字"),
+        # 尾巴在括号**里面** = 名字的一部分，不剥
+        ("别再提《最近你好吗》。", "最近你好吗"),
+        ("別再提《最近你好嗎》。", "最近你好嗎"),
+        ("别再提电影《我们好不好》。", "电影《我们好不好"),
+        ("别再提《你可以吗》。", "你可以吗"),
+        # ⚠️ 前缀以**开括号**结束 = 尾巴仍在书名里，不能剥（判据必须是收尾括号，
+        # 换成「任意括号字符」这三条就会被削成 电影 / 剧集，标题整个丢掉）
+        ("别再提电影《好不好》。", "电影《好不好"),
+        ("別再提電影《好不好》。", "電影《好不好"),
+        ("别再提剧集《可以吗》。", "剧集《可以吗"),
+        # 一个括号都没有 = 无条件可剥
+        ("别再提工作好吗。", "工作"),
+        ("別再提工作好嗎。", "工作"),
+    ],
+)
+def test_an_interrogative_outside_the_quotes_is_still_a_tail(text, expected):
+    """⚠️ 判据不能只看「原 term 有没有括号」：剥配对括号发生在剥语气词之前，等轮到
+    语气词时括号已经没了。要看的是**剥完之后前缀是不是以收尾括号结束**（codex P2，
+    与「不要腰斩《最近你好嗎》」那条方向相反，两条得同时成立）。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+def test_the_interrogative_gate_uses_closing_delimiters():
+    closers = {hi for _lo, hi in D._ZH_BRACKET_PAIRS}
+    # 对称的一对里开合同字，所以收尾集必然是括号字符集的真子集或相等
+    assert closers <= D._ZH_BRACKET_CHARS
+    assert "》" in closers and "《" not in closers
