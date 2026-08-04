@@ -2646,3 +2646,49 @@ def test_the_guanyu_template_spacing_is_atomic_too():
         timings[n] = time.perf_counter() - started
     assert timings[80] < 0.5, timings
     assert timings[80] < timings[40] * 25 + 0.02, timings
+
+
+# ── 33. 括号段本身也要认一层同种嵌套 ─────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 正则只会在第一个同种收尾处闭合，后面的逗号就不再受保护
+        ("《电影《你好》续集，第二章》别提了。", "电影《你好》续集，第二章"),
+        ("《電影《你好》續集，第二章》別提了。", "電影《你好》續集，第二章"),
+        ("《甲《乙》丙，丁》别提了。", "甲《乙》丙，丁"),
+        ("别提《电影《你好》续集，第二章》。", "电影《你好》续集，第二章"),
+        ("别提「甲「乙」丙，丁」。", "甲「乙」丙，丁"),
+    ],
+)
+def test_a_bracket_run_recognizes_one_level_of_same_type_nesting(text, expected):
+    """⚠️ ``_zh_quoted_span_end`` 的深度扫描管的是**剥尾巴**，管不到匹配本身。
+    括号段正则自己也得认嵌套，否则 ``《甲《乙》丙，丁》别提了。`` 整条消失（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_nested_branch_only_applies_to_asymmetric_pairs():
+    """对称的一对里嵌套没有意义（``"a"b"`` 无法区分开合），只给非对称的加。"""  # noqa: DOCSTRING_CJK
+    for lo, hi in D._ZH_BRACKET_PAIRS:
+        body = D._zh_bracket_body(lo, hi)
+        if lo == hi:
+            assert "|" not in body.split("]", 1)[-1], (lo, body)
+        else:
+            import re as _re
+
+            assert f"|{_re.escape(lo)}[^" in body, (lo, body)
+
+
+def test_nesting_does_not_regress_the_bounded_scan():
+    """嵌套分支仍然有界——两个分支互斥，不会引进歧义回溯。"""  # noqa: DOCSTRING_CJK
+    import time
+
+    extract_directives(" ")  # 预热
+    started = time.perf_counter()
+    extract_directives("《" * 8000)
+    unmatched = time.perf_counter() - started
+    started = time.perf_counter()
+    extract_directives("别提" + "《《a》" * 40)
+    nested = time.perf_counter() - started
+    assert unmatched < 1.0, unmatched
+    assert nested < 0.2, nested

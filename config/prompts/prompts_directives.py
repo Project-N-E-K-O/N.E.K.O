@@ -453,6 +453,20 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
     """One bracketed run: bounded body, and symmetric pairs never span a sentence."""
     banned = re.escape(hi) + "\\r\\n"
     unit = f"[^{banned}]"
+    if lo != hi:
+        # ⚠️ 认**一层**同种嵌套：正则本身只会在第一个同种收尾处闭合，所以
+        # ``《电影《你好》续集，第二章》别提了。`` 里外层在内层的 ``》`` 就断了，后面
+        # 的逗号不再受保护、只存下 ``第二章``；``《甲《乙》丙，丁》别提了。`` 更是整条
+        # 消失（base 两条都完整；codex P2）。``_zh_quoted_span_end`` 那个深度扫描管的
+        # 是**剥尾巴**，管不到这里的匹配本身。
+        #
+        # 正则做不了任意深度，但作品名里的嵌套实际上只有一层（``《X《Y》Z》``）。
+        # 两个分支互斥（单字那支把 lo / hi 都排掉了），不会引进歧义回溯。
+        inner_banned = re.escape(lo) + re.escape(hi) + "\\r\\n"
+        nested = (
+            f"{re.escape(lo)}[^{inner_banned}]{{0,{_TERM_MAX_LEN}}}{re.escape(hi)}"
+        )
+        unit = f"(?:[^{inner_banned}]|{nested})"
     if lo == hi:
         # ⚠️ 对称的一对（只有 ASCII ``"``）不能跨句读配对。孤立的双引号很常见——
         # 英寸号、代码片段——两个不相干的句子各带一个就会被当成一整段引文：
