@@ -220,10 +220,9 @@ fi
 # 2) 停容器。Compose 部署用 down；Docker Run 部署改用 docker rm -f neko
 docker-compose down
 
-# 3) 若已经用新版启动过一次，neko-home 下的属主已经被容器改成了内部的 neko
-#    （一个系统 uid），宿主机上的普通用户写不进去，下面的 cp 会 Permission denied。
-#    先把属主要回来；容器下次启动会自行改回去。
-sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
+# 3) 容器内的 neko 固定为 uid/gid 1000，和绝大多数发行版第一个普通用户一致，
+#    所以通常不必动属主。只有你的宿主账号不是 1000 时才需要这一步。
+[ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
 
 # 4) 合并宿主机上的旧目录。容器已经在 neko-home 下建好了同名的空目录和一张新的
 #    自签证书，此时直接 mv 会把旧目录套进去多一层，所以按内容合并
@@ -241,9 +240,8 @@ cp -a "$BASE/ssl/."     "$BASE/neko-home/ssl/"                 && rm -rf "$BASE/
 旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `$BASE/ssl`）：
 
 ```bash
-# 若已经用新版启动过一次，neko-home 下的属主已经被容器改成内部的 neko（系统 uid），
-# 宿主机上的普通用户写不进去；先要回来，容器下次启动会自行改回去
-[ -d "$BASE/neko-home" ] && sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
+# 容器内的 neko 固定为 uid/gid 1000；宿主账号不是 1000 时才需要先要回属主
+[ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
 
 mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
 
@@ -268,7 +266,7 @@ docker rm -f neko
 
 若旧容器已经删除，这部分数据无法找回。本次挂载调整正是为了修掉这个问题。
 
-> `./logs` 挂载没有变化，无需处理。迁移完成后目录属主由容器启动时自动修正，不需要手动 `chown`。
+> `./logs` 挂载没有变化，无需处理。容器内的应用用户固定为 uid/gid **1000**，和绝大多数 Linux 发行版第一个普通用户的号一致——所以 `neko-home/` 在宿主机上的属主就是你自己，备份、编辑、删除都不需要 `sudo`。
 
 </details>
 
@@ -395,7 +393,7 @@ ss -tulpn | grep ':4891[12]'
 
 ##### 2. 权限问题
 ```bash
-# 确保目录有正确权限（容器启动时会把 neko-home 的属主改成容器内的 neko 用户）
+# 确保目录有正确权限（容器启动时会把数据目录的属主改成 1000:1000，即容器内的 neko）
 mkdir -p neko-home logs
 chmod 755 neko-home logs
 ```

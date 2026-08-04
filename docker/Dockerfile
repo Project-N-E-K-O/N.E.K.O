@@ -107,12 +107,25 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     unset https_proxy
 
 # Create nginx user and neko application user, plus Playwright cache directory
+#
+# neko 固定 uid/gid 1000（不用 `-r` 的系统号段）。/home/neko 是 bind mount 出去的
+# 持久化目录，容器给它的属主会原样出现在宿主机上；1000 是绝大多数 Linux 发行版第一个
+# 普通用户的号，对上之后用户备份、编辑、删除 neko-home 都不必 sudo。系统号段（100-999）
+# 是动态分配的，宿主上通常对应某个无关的服务账户，甚至每次重建镜像都可能变。
+# entrypoint 里对 /home/neko 的 chown 用的就是字面量 1000:1000，两处必须一致。
+# 1000 在 debian:bookworm 上是空的，而且是结构性的空：base-passwd 的静态表只到
+# uid 42 和 65534，Debian Policy 把 100-999 划给系统账户（`adduser --system` 强制落
+# 在这一段，上面的 nginx 就是），1000 起才是普通用户段，而基础镜像里压根没有"普通
+# 用户"这个概念。⚠️ 别把最终阶段的 FROM 换成 ubuntu:* 或 node:*-bookworm —— 它们
+# 预建的 ubuntu / node 用户正好占着 1000。（本文件的 node:24-slim 只是 builder 阶段，
+# 产物靠 COPY --from 取，不进最终镜像。）真撞上了，下面两条会直接失败让 build 红，
+# 而不是静默退回另一个号。
 RUN groupadd -r nginx && \
     useradd -r -g nginx nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
-    groupadd -r neko && \
-    useradd -r -g neko -d /home/neko -s /bin/bash neko && \
+    groupadd -g 1000 neko && \
+    useradd -u 1000 -g 1000 -d /home/neko -s /bin/bash neko && \
     mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl /opt/ms-playwright && \
     chown -R neko:neko /home/neko /app /opt/ms-playwright
 

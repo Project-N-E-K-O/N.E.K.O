@@ -1277,11 +1277,17 @@ main() {
     #
     # 失败必须停：三个业务进程都以 neko 跑，数据目录不可写的话它们会在运行期
     # 各处零散报错，比在这里干脆退出难诊断得多。
+    #
+    # 属主写字面量 1000:1000 而不是 neko:neko —— 两者在本镜像里是同一个（Dockerfile
+    # 用 `useradd -u 1000 -g 1000` 固定住了），但这些路径是 bind mount 出去的，落到
+    # 宿主机上只有数字有意义：宿主那边没有叫 neko 的账户，它看到的就是 1000，而 1000
+    # 恰是绝大多数发行版第一个普通用户的号，对上之后用户不必 sudo 就能管自己的备份。
+    # 写死数字也让这层契约在文件里是可见的：改 Dockerfile 里的号就必须同步改这里。
     mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
-    if ! chown neko:neko /home/neko /home/neko/.local /home/neko/.local/share \
+    if ! chown 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
         || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \
-               \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + ; then
-        echo "❌ 无法把数据目录的属主改为 neko"
+               \( ! -uid 1000 -o ! -gid 1000 \) -exec chown -h 1000:1000 {} + ; then
+        echo "❌ 无法把数据目录的属主改为 1000:1000（容器内的 neko）"
         echo "   宿主机的挂载可能不允许改属主 —— NFS 带 root_squash、CIFS 没带"
         echo "   cifsacl、或只读挂载都会这样。容器内的服务以 neko 身份运行，"
         echo "   数据目录写不进去会在启动之后才零散暴露，所以这里直接停。"

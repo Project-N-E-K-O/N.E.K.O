@@ -55,9 +55,9 @@ fi
 #    已经存在（还带一张新生成的自签证书），直接 mv 会把旧目录套进去多一层。
 #    同名文件以旧数据为准。
 docker compose down
-# 容器已经把 neko-home 的属主改成了内部的 neko（一个系统 uid），宿主机上的普通
-# 用户写不进去。先要回来，容器下次启动会自行改回去。
-sudo chown -R "$(id -u):$(id -g)" neko-home
+# 容器内的 neko 固定为 uid/gid 1000，和绝大多数发行版第一个普通用户一致，属主
+# 通常已经对上。只有宿主账号不是 1000 时才需要这一步。
+[ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
 cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
 cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 
@@ -65,7 +65,7 @@ cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 docker compose up -d
 ```
 
-`./logs` 不受影响；目录属主在下次启动时自动修正。
+`./logs` 不受影响。容器内的应用用户固定为 uid/gid **1000**（绝大多数 Linux 发行版第一个普通用户的号），因此 `neko-home/` 在宿主机上的属主就是你自己，备份和编辑都不需要 `sudo`。
 :::
 
 当前 Compose 没有 `build:`，旧的 `docker compose build` 说法无效。本地构建应在仓库根目录执行：

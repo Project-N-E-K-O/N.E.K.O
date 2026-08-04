@@ -64,10 +64,10 @@ fi
 #    freshly generated self-signed certificate) and `mv` would nest them one level
 #    deeper. Same-named files resolve in favour of the old data.
 docker compose down
-# The container has chowned neko-home to its internal neko user (a system uid),
-# so a normal host user cannot write there. Take it back; the container fixes it
-# again on the next start.
-sudo chown -R "$(id -u):$(id -g)" neko-home
+# The container's neko user is pinned to uid/gid 1000, matching the first regular
+# user on most distributions, so ownership usually already lines up. Only needed
+# when your host account is not 1000.
+[ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
 cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
 cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 
@@ -75,7 +75,7 @@ cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 docker compose up -d
 ```
 
-`./logs` is unaffected. Ownership is corrected automatically on the next start.
+`./logs` is unaffected. The application user inside the container is pinned to uid/gid **1000** — the first regular user on most Linux distributions — so `neko-home/` is owned by you on the host and needs no `sudo` to back up or edit.
 :::
 
 ## Build locally
