@@ -596,7 +596,9 @@ def test_zh_evidence_charclass_is_pinned():
     """闭集用相等断言：每个字都是一句"日文里不存在这个字形"的主张，加字要先核对
     日文新字体（别→別 说→説 关→関 为→為…）。"""  # noqa: DOCSTRING_CJK
     assert D._ZH_EVIDENCE_CHARS == "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
-    assert D._ZH_EVIDENCE_WORDS == ("叫我", "喊我", "管我叫", "不想", "懶得", "不願")
+    assert D._ZH_EVIDENCE_WORDS == (
+        "叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情",
+    )
     # 字类必须是整条正则的第一个分支——上面那条扫描不依赖这点，但 pin 住它能让
     # 「有人往字类前面插了新分支」这件事在 review 里显形。
     first = _split_top_level_alternatives(D._ZH_EVIDENCE_RE.pattern)[0]
@@ -1987,9 +1989,9 @@ def test_the_japanese_guard_gets_one_character_not_the_whole_prefix(monkeypatch)
     seen = []
     real = D._is_japanese_sentence_match
 
-    def spy(span, term, before=""):
+    def spy(span, term, before="", **kwargs):
         seen.append(len(before))
-        return real(span, term, before)
+        return real(span, term, before, **kwargs)
 
     monkeypatch.setattr(D, "_is_japanese_sentence_match", spy)
     extract_directives("工作别提了。" * 50 + "别提加班。")
@@ -2449,3 +2451,82 @@ def test_ascii_square_brackets_are_a_paired_delimiter(text, expected):
     变成硬边界（codex P2）。
     """  # noqa: DOCSTRING_CJK
     assert expected in _zh_terms(text), _zh_terms(text)
+
+
+# ── 31. 证据只看指令部分 / 长度下限只保护有歧义的尾巴 ────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ⚠️ 载荷里的中文不算证据——加不加引号都一样（codex P2 两轮）
+        "世代別講座で中国映画這就是愛について話します。",
+        "地域別提案で中国映画这就是爱について話します。",
+        "世代別講座で中国映画「這就是愛」について話します。",
+    ],
+)
+def test_chinese_in_the_payload_is_not_directive_evidence(text):
+    assert _zh_terms(text) == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 反向：证据在**指令部分**时照旧算数
+        "地域別提案をお願いします。",
+        "テーマ別討論スレッド。",
+        "個別提案をお願いします。",
+        "休講だそうです。",
+    ],
+)
+def test_blanking_the_payload_does_not_blind_the_kana_conditions(text):
+    """⚠️ 只有**证据**看挖空后的指令部分；假名和日文语法那两条判据仍看完整命中区间。
+    传挖空后的串进去会把假名一起挖掉，这批句子会因为「没有假名」被判成中文。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("我没心情聊君の名は。", "君の名は"),
+        ("我沒心情聊君の名は。", "君の名は"),
+        ("没心情提君の名は。", "君の名は"),
+        ("沒心情提君の名は。", "君の名は"),
+    ],
+)
+def test_meixinqing_is_structural_chinese_evidence(text, expected):
+    """⚠️ ``没`` 是日文标准字形（没収），不能进字类；但三个字连在一起是中文独有的。
+    不收的话简体侧整条被吞，而繁体 ``沒心情`` 因为 ``沒`` 在字类里侥幸活着——同一
+    模板内的行为不对称（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 无歧义的尾巴（ASCII / 假名 / 谚文）剥到低于下限也要剥，剥完按长度丢弃
+        ("stop talking about X porfa", set()),
+        ("別再提錢please。", set()),
+        ("别再提钱please。", set()),
+        # 有歧义的中文尾字仍然保护：剥到存不下等于整条被丢，不如留着
+        ("别再提好咧。", {"好咧"}),
+        ("别再提拿捏。", {"拿捏"}),
+        ("别提行吗。", {"行吗"}),
+    ],
+)
+def test_the_length_floor_only_protects_ambiguous_tails(text, expected):
+    """⚠️ ``耶 / 捏 / 咧`` 同时也是常见词尾字，而 ASCII 的 please / porfa、假名、谚文
+    不可能是中文词的一部分。对后者套下限的话 ``別再提錢please。`` 会存成 ``錢please``，
+    而 parent 是剥掉之后按长度丢弃（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected, _zh_terms(text)
+
+
+def test_the_ambiguity_criterion_is_the_presence_of_han():
+    """判据是「token 里含汉字」，不是手点名单。"""  # noqa: DOCSTRING_CJK
+    for tok in D._TRIM_TRAIL_TOKENS_ANY:
+        assert not D._HAN_RE.search(tok), tok
+    for fam in D._SCRIPT_DISJOINT_FAMILIES:
+        for tok in D._TRIM_TRAIL_TOKENS_BY_LOCALE[fam]:
+            assert not D._HAN_RE.search(tok), (fam, tok)
+    assert all(D._HAN_RE.search(t) for t in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"])

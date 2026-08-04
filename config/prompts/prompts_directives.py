@@ -249,6 +249,12 @@ def _trim_term(term: str, locale: str = "") -> str:
     # please / porfa 不受这条约束——它们不会出现在 CJK 作品名里。
     gated = cjk + interrogatives
     tokens = _TRIM_TRAIL_TOKENS_ANY + gated
+    # ⚠️ 长度下限只保护**有歧义**的那批：``耶 / 捏 / 咧`` 同时也是常见词尾字（坎耶 /
+    # 拿捏 / 好咧），剥到存不下等于整条指令被丢，那还不如留着。而 ASCII 的 please /
+    # porfa、假名、谚文都不可能是中文词的一部分——对它们套下限的话
+    # ``別再提錢please。`` 会存成 ``錢please``，而 parent 是剥掉之后按长度丢弃
+    # （codex P2）。判据：token 里含汉字才算有歧义。
+    ambiguous = frozenset(tok for tok in gated if _HAN_RE.search(tok))
     original = term.strip()
     quoted_until = _zh_quoted_span_end(original)
     s = original
@@ -264,8 +270,8 @@ def _trim_term(term: str, locale: str = "") -> str:
                 continue
             trimmed = s[: -len(tok)]
             shorter = trimmed.rstrip()
-            # 剥到低于下限 = 整条指令被丢；有歧义的尾字宁可留着（codex P2）。
-            if len(shorter) < _TERM_MIN_LEN:
+            # 剥到低于下限 = 整条指令被丢；**有歧义的**尾字宁可留着（codex P2）。
+            if len(shorter) < _TERM_MIN_LEN and tok in ambiguous:
                 continue
             # 语气词 / 反问短语同时也是大量作品名的结尾，所以只在它**落在引号之外**
             # 时才剥。判据是这个尾词在原 term 里的起点有没有越过最后一段括号的收尾：
@@ -702,7 +708,10 @@ _ZH_SUBJECT_BEFORE_NEG = (
     + ")"
 )
 _ZH_EVIDENCE_CHARS = "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
-_ZH_EVIDENCE_WORDS = ("叫我", "喊我", "管我叫", "不想", "懶得", "不願")
+# ⚠️ ``没心情`` 要整条收：``没`` 是日文标准字形（没収），不能进上面的字类，但三个字
+# 连在一起是中文独有的。不收的话 ``我没心情聊君の名は。`` 整条被吞，而繁体的
+# ``沒心情`` 因为 ``沒`` 在字类里侥幸活着——同一模板内的行为不对称（codex P2）。
+_ZH_EVIDENCE_WORDS = ("叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情")
 _ZH_EVIDENCE_RE = re.compile(
     "|".join(
         (f"[{_ZH_EVIDENCE_CHARS}]",)
@@ -740,7 +749,9 @@ _JA_GRAMMAR_RE = re.compile(
 )
 
 
-def _is_japanese_sentence_match(span: str, term: str, before: str = "") -> bool:
+def _is_japanese_sentence_match(
+    span: str, term: str, before: str = "", directive: str | None = None,
+) -> bool:
     """Is this zh-template hit actually a Japanese sentence caught by shared kanji?
 
     ``別`` is the same codepoint in Japanese and ``提 / 講 / 談 / 討論`` are shared
@@ -761,14 +772,13 @@ def _is_japanese_sentence_match(span: str, term: str, before: str = "") -> bool:
     # 汉字」，而 span 恰好**从否定词开头**，只搜 span 的话那条 lookbehind 永远落空，
     # ``地域別提案をお願いします。`` 会被当成中文（本文件的 ja 语料直接抓出来的）。
     #
-    # ⚠️ 引号**里面**的中文不算证据：日文句子引用一个中文片名是正常的，
-    # ``世代別講座で中国映画「這就是愛」について話します。`` 里的 ``這`` 会把整条日文
-    # 守卫短路掉，把日文句子的残片存进指令表（codex P2）。挖空配对引文再搜——用等长
-    # 空格替换，免得两侧的字被拼到一起产生新的假证据。
-    probe = _ZH_BRACKET_RUN_RE.sub(
-        lambda m: " " * len(m.group(0)), before[-1:] + span,
-    )
-    if _ZH_EVIDENCE_RE.search(probe):
+    # ⚠️ 中文证据只在**指令部分**搜，不看载荷：日文句子里出现中文片名是正常的，
+    # ``世代別講座で中国映画這就是愛について話します。`` 里的 ``這`` 会把整条守卫短路
+    # 掉，把日文句子的残片存进指令表（codex P2 两轮——先是加了引号的，后是没加的）。
+    # 调用方传进来的 ``span`` 已经把捕获组等长挖空。
+    # ⚠️ 必须**等长**挖空：直接删掉的话载荷两侧的字会被拼到一起，凭空造出多字证据
+    # （叫+我 / 不+想 / 懶+得 / 不+願 / 喊+我 都实测过）。
+    if _ZH_EVIDENCE_RE.search(before[-1:] + (span if directive is None else directive)):
         return False
     # 命中区间**左边紧挨着**假名 → 触发词是日文能产的 ``〜別`` 后缀（カテゴリ別 /
     # ジャンル別 / テーマ別），不是中文的祈使 ``別``。中文句子里 ``別`` 前面不会
@@ -1019,8 +1029,20 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             # ⚠️ 判据要看**未 trim** 的捕获：假名助词表现在对所有 locale 生效，
             # ``地域別講座だね。`` 的 ``だね`` 会在 trim 里被剥掉，等守卫拿到 term 时
             # 日文语法标记已经没了，整句反被判成中文（补假名回落时踩到的）。
+            # 指令部分 = 命中区间去掉被捕获的话题（等长空格填充，保住相对位置、也
+            # 避免两侧的字被拼到一起）。载荷里的中文不该当中文证据。
+            span = m.group(0)
+            payload_lo = m.start(1) - m.start()
+            payload_hi = m.end(1) - m.start()
+            directive_only = (
+                span[:payload_lo] + " " * (payload_hi - payload_lo) + span[payload_hi:]
+            )
+            # ⚠️ 只有**证据**看指令部分；假名和日文语法那两条判据仍看完整命中区间。
+            # 传挖空后的串进去会把假名一起挖掉，``地域別提案をお願いします。`` 会因为
+            # 「没有假名」被判成中文（补这条时踩到的）。
             if zh_family and _is_japanese_sentence_match(
-                m.group(0), m.group(1), text[max(0, m.start() - 1): m.start()]
+                span, m.group(1), text[max(0, m.start() - 1): m.start()],
+                directive=directive_only,
             ):
                 continue
             out.append((locale, kind, term))
