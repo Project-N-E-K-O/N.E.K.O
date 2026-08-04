@@ -743,8 +743,10 @@ def test_xiu_compound_left_set_is_pinned():
 # ── 5b. 台湾句末助词不能粘在 term 上 ─────────────────────────
 # 存进 user_directives 的是 term 本身，会逐字注进 system prompt。助词粘上去
 # ("工作喔") 就是把一个不存在的话题名喂给模型（codex P2）。
+# ⚠️ ``囉`` / ``啰`` 不在这里：它们同时是 ``嘍囉 / 喽啰`` 的末字，和 ``耶 / 捏``
+# 一样整个不收，见 test_luoluo_is_a_word_not_a_final_particle。
 TAIWANESE_FINAL_PARTICLES = (
-    "喔", "囉", "啰", "唷", "齁", "欸", "誒", "咧", "喲",
+    "喔", "唷", "齁", "欸", "誒", "咧", "喲",
 )
 # 反问尾巴跟在句末助词后面（"工作了好嗎"）：正则的可选助词组只放行一个，剩下的
 # 并进 term，靠 trim 的循环剥。
@@ -1203,7 +1205,7 @@ def test_the_objectless_guard_uses_only_the_parent_particle_set():
     而 parent 存的是 ``好咧``。那批字同时也是常见词尾字。
     """  # noqa: DOCSTRING_CJK
     assert D._ZH_BASE_FINAL_PARTICLES in D._ZH_OBJECTLESS_AHEAD
-    for tw_only in ("喔", "囉", "啰", "唷", "齁", "欸", "誒", "咧", "喲"):
+    for tw_only in TAIWANESE_FINAL_PARTICLES:
         assert tw_only not in D._ZH_OBJECTLESS_AHEAD, tw_only
         assert tw_only in D._ZH_FINAL_PARTICLES, tw_only
     # 行为面：两个方向各钉一条
@@ -2449,9 +2451,9 @@ def test_the_preposed_template_spacing_is_atomic():
     head = raw.split("(?:提了|")[0]
     assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
     assert r"(?>\s*)(?>\s*)" not in head, head
-    # 模板自己的 4 个 + 停顿标点常量里的 1 个
-    # 模板自己的 4 个 + 两处停顿标点常量各 1 个
-    assert head.count(r"(?>\s*)") == 6, head.count(r"(?>\s*)")
+    # 模板自己的 4 个 + 两处 _ZH_PAUSE_THEN_JIU 各带 2 个（停顿后一个、``就`` 后一个）
+    assert head.count(r"(?>\s*)") == 4 + 2 * D._ZH_PAUSE_THEN_JIU.count(r"(?>\s*)")
+    assert head.count(r"(?>\s*)") == 8, head.count(r"(?>\s*)")
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -2851,7 +2853,12 @@ def test_a_pause_before_the_trigger_is_consumed(text, expected):
 def test_the_separator_is_shared_by_both_sides():
     """两侧共用同一个常量，别各写各的——同一件事维护两份必然漂移（#2655）。"""  # noqa: DOCSTRING_CJK
     sources = _zh_pattern_sources()
-    assert sum(D._ZH_TOPIC_SEPARATOR in raw for raw in sources) == 4
+    # 模板 2 的两处换成了 _ZH_PAUSE_THEN_JIU（同一张标点表 + 停顿后的 ``就``），
+    # 所以裸分隔符只剩模板 3 和模板 4 的三处。两个常量的标点字符类必须一致。
+    assert sum(D._ZH_TOPIC_SEPARATOR in raw for raw in sources) == 3
+    assert sum(D._ZH_PAUSE_THEN_JIU in raw for raw in sources) == 1
+    assert D._ZH_PAUSE_THEN_JIU.count("[，、：,:]") == 1
+    assert D._ZH_TOPIC_SEPARATOR.count("[，、：,:]") == 1
 
 
 @pytest.mark.parametrize(
@@ -2991,3 +2998,162 @@ def test_the_left_boundary_is_a_negated_class_not_an_enumeration():
         assert _zh_terms(text) == {"君の名は"}, text
     assert _zh_terms("算了，别提工作。") == {"工作"}
     assert _zh_terms("别再提工作。") == {"工作"}
+
+
+# ── 38. 关于后的停顿 / 停顿后的就 / 逗号对偶 / 嘍囉 / 开括号 / ASCII 落单 ──
+#
+# 这一轮的六条互相咬合，放在一起读：前四条都是「前置话题 + 停顿」这一族，
+# 后两条是括号表这一族。
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "关于，工作，就别提了。",
+        "關於，工作，就別提了。",
+        "关于、工作就别提了。",
+        "关于：工作就别提了。",
+        "关于 ，工作就别提了。",
+        "关于，工作，这件事，就别提了。",
+    ],
+)
+def test_a_pause_right_after_the_topic_introducer_is_consumed(text):
+    """话题引导词之后也会停顿：``关于，工作，就别提了。``（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {"工作"}, _zh_terms(text)
+
+
+@pytest.mark.parametrize("pause", ["，", "、", "：", ",", ":"])
+def test_a_pause_before_jiu_lets_the_preposed_template_eat_it(pause):
+    """停顿之后的 ``就`` 要吃掉：``工作，就别提了。`` 在 parent 上是有命中的。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"工作{pause}就别提了。") == {"工作"}
+    assert _zh_terms(f"工作{pause}这件事{pause}就别提了。") == {"工作"}
+
+
+@pytest.mark.parametrize("term", ["成就", "迁就", "功成名就", "将就", "迁就"])
+def test_without_a_pause_no_jiu_is_eaten(term):
+    """没有停顿时一个字都不吃——模板 2 覆盖全部 "X别提了"，就尾词都住这里。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{term}别提了。") == {term}
+
+
+def test_the_jiu_slot_lives_inside_the_pause_branch():
+    """结构面：``就`` 必须关在停顿分支里，不能是独立可选项。
+
+    独立可选＝没有停顿时也能吃，``成就别提了。`` 立刻被削成 ``成``。
+    这条断言比上面的例子更强：它挡住"把 ``(?:就)?`` 挪出括号"这种改法，
+    哪怕改完恰好没有现成用例覆盖到。
+    """  # noqa: DOCSTRING_CJK
+    # 去掉停顿标点分支之后，``就`` 应当整个不可达（即这个模式退化成空匹配）。
+    assert D._ZH_PAUSE_THEN_JIU.startswith("(?:[")
+    assert D._ZH_PAUSE_THEN_JIU.endswith(")?")
+    inner = D._ZH_PAUSE_THEN_JIU[len("(?:") : -len(")?")]
+    assert inner.startswith("[，、：,:]"), inner
+    # ``就`` 出现在标点字符类**之后**，也就是必须先吃掉一个停顿才轮得到它。
+    assert inner.index("就") > inner.index("]")
+
+
+def test_the_preposed_topic_never_spans_a_full_width_comma():
+    """``，`` 刻意**不**进前置话题字符类，哪怕代价是识别不出结构时存下语篇副词。
+
+    ``工作，还是别提了。`` 存的是 ``还是``（同族还有 就是 / 那就 / 最好 / 反正 /
+    以后 / 咱们，是开集，枚举不干净），确实难看。但放开 ``，`` 就等于推翻
+    test_template2_prefix_never_spans_a_sentence_boundary 钉着的相反方向——
+    ``算了，工作别提了。`` 会存成 ``算了，工作``。两句结构完全同形（``X，Y别提了``），
+    差别纯粹是词汇性的（哪一半是话题），没有结构判据能分开；上一轮已经定了取右半边。
+    这条测试把「不要再来回翻」写进代码。
+    """  # noqa: DOCSTRING_CJK
+    excluded = set(re.findall(r"\[\^([^\]]+)\]", D._ZH_PLAIN_CHAR)[0])
+    assert {"，", ","} <= excluded
+    assert not hasattr(D, "_ZH_PLAIN_CHAR_PAUSE_OK")
+    assert _zh_terms("算了，工作别提了。") == {"工作"}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("別再提小嘍囉。", "小嘍囉"),
+        ("别再提小喽啰。", "小喽啰"),
+        ("我沒心情聊小嘍囉。", "小嘍囉"),
+        ("我没心情聊小喽啰。", "小喽啰"),
+        ("關於小嘍囉就別提了。", "小嘍囉"),
+    ],
+)
+def test_luoluo_is_a_word_not_a_final_particle(text, expected):
+    """``囉`` / ``啰`` 同时是词尾字（嘍囉 / 喽啰），无条件剥会造出非词 ``小嘍``。
+
+    简体那一侧 parent 本来是对的（``小喽啰``），是本 PR 拉坏的（codex P2）。
+    判据和同一段注释里的 ``耶`` / ``捏`` 一样：宁可多一个字，不可少一个字。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_ambiguous_tail_glyphs_are_absent_from_both_tables():
+    """结构面：两张表里都不能有 ``囉`` / ``啰``——少删一张就还是会削。"""  # noqa: DOCSTRING_CJK
+    for glyph in ("囉", "啰"):
+        assert glyph not in D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"], glyph
+        assert glyph not in D._ZH_FINAL_PARTICLES, glyph
+
+
+def test_every_allowed_final_particle_can_also_be_trimmed():
+    """两份手抄清单的漂移守卫：正则放行的助词必须都在 trim 表里。
+
+    反过来不要求（trim 表更大没关系，多出来的会被吃进 term 再剥掉）。但
+    正则有、trim 没有＝那个助词永远留在 term 里。
+    """  # noqa: DOCSTRING_CJK
+    allowed = D._ZH_FINAL_PARTICLES.rsplit("(?:", 1)[1].split(")")[0].split("|")
+    assert len(allowed) > 5, allowed
+    trimmable = set(D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"])
+    assert set(allowed) <= trimmable, set(allowed) - trimmable
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+def test_an_opening_delimiter_can_start_a_clause(opener, closer):
+    """繁中指令写在引号里也要认：``「別提君の名は。」``（codex P2）。
+
+    日文的 ``〜別`` 后缀不可能紧跟在**开**括号后面，所以放行开括号不会
+    把守卫拆掉——同一组括号的**收**那一半仍然挡着（见下一条）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{opener}別提君の名は。{closer}") == {"君の名は"}
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"), sorted(D._ZH_CLOSE_FOR_OPEN.items())
+)
+def test_a_closing_delimiter_still_blocks_the_japanese_label(opener, closer):
+    """``「地域」別提案`` 这类日文标签靠**收**括号挡住，一条都不能漏。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{opener}地域{closer}別提案をお願いします。") == set()
+
+
+def test_symmetric_delimiters_are_not_treated_as_clause_starters():
+    """对称引号同一个字形两用，放行就等于把守卫拆了（``"地域"別提案``）。"""  # noqa: DOCSTRING_CJK
+    for delim in D._ZH_SYMMETRIC_DELIMS:
+        assert delim not in D._ZH_CLAUSE_START_LEFT, delim
+        assert _zh_terms(f"{delim}地域{delim}別提案をお願いします。") == set(), delim
+    for closer in set(D._ZH_CLOSE_FOR_OPEN.values()):
+        assert closer not in D._ZH_CLAUSE_START_LEFT, closer
+
+
+def test_the_clause_start_boundary_lists_every_asymmetric_opener():
+    """结构面：开括号那一半必须整表放行，不能只点几个（自动发现）。"""  # noqa: DOCSTRING_CJK
+    for opener in D._ZH_CLOSE_FOR_OPEN:
+        assert opener in D._ZH_CLAUSE_START_LEFT, opener
+
+
+@pytest.mark.parametrize(
+    "opener", sorted(o for o in D._ZH_CLOSE_FOR_OPEN if o.isascii())
+)
+def test_an_unmatched_ascii_opener_is_an_operator_not_a_title(opener):
+    """落单的 ASCII 开括号是比较号 / 代码片段，不是没写完的书名号。
+
+    不这么判的话 ``别再提价格<预算好吗？`` 里的 ``好吗`` 永远剥不掉（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提价格{opener}预算好吗？") == {f"价格{opener}预算"}
+
+
+@pytest.mark.parametrize(
+    "opener", sorted(o for o in D._ZH_CLOSE_FOR_OPEN if not o.isascii())
+)
+def test_an_unmatched_fullwidth_opener_is_still_a_truncated_title(opener):
+    """全角开括号在中文里只用来引起引文，落单＝标题被截断，语气词不能剥。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提电影{opener}好不好") == {f"电影{opener}好不好"}
