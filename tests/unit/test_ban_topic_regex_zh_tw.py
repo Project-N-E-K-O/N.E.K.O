@@ -338,6 +338,14 @@ JAPANESE_BLOCKED_ELSEWHERE = [
     "話題別提案について検討します。",
     "俺別提案をお願いします。",
     "俺別講座のご案内。",
+    # ⚠️ ``〜別`` 的分类标签不止以汉字假名结尾：拉丁字母 / 数字（半角全角）/
+    # 收尾括号都会出现在它前面（codex P2）
+    "A別提案をお願いします。",
+    "タイプ2別提案をお願いします。",
+    "「地域」別提案をお願いします。",
+    "Ａ別提案をお願いします。",
+    "（地域）別提案をお願いします。",
+    "《地域》別提案をお願いします。",
     "特別講演について話しましょう。",
     "特別提供の商品です。",
     "特別講座に申し込んだ。",
@@ -2809,3 +2817,22 @@ def test_the_quoted_span_scanner_ignores_odd_symmetric_delimiters():
     assert end('5"屏幕《你好吗》') == 9      # 落单引号忽略，括号照常记
     assert end('5"屏幕好吗') == 0            # 只有落单引号 = 没有引文
     assert end('"甲"好吗') == 3              # 成对的仍然算
+
+
+def test_the_japanese_label_tail_covers_more_than_han_and_kana():
+    """⚠️ 判据是「左邻不是词的结尾」。只挡汉字假名的话，``A別提案`` / ``タイプ2別提案``
+    / ``「地域」別提案`` 全部漏网——它们都是真实的日文写法（codex P2）。
+    收尾括号从 _ZH_BRACKET_PAIRS 派生，不另抄一张。
+    """  # noqa: DOCSTRING_CJK
+    import re as _re
+
+    tail = D._ZH_JA_LABEL_TAIL
+    for span in ("一-鿿", "぀-ゟ", "゠-ヿ", "0-9A-Za-z", "０-９"):
+        assert span in tail, span
+    for _lo, hi in D._ZH_BRACKET_PAIRS:
+        assert _re.escape(hi) in tail, hi
+    # 而中文指令里 别 前面是句首 / 代词 / 标点——代词都是汉字（在 一-鿿 里），
+    # 标点则必须不在表内，否则 ``算了，别提工作。`` 会被挡掉
+    probe = _re.compile(f"[{tail}]")
+    for punctuation in "，。！？；、：":
+        assert not probe.match(punctuation), punctuation

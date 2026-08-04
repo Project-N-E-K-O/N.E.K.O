@@ -723,6 +723,17 @@ _KANA_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]")
 # ``我莫再提君の名は。`` / ``她莫再提地域の話。`` 在 parent 上是好的，套上左界之后整条
 # 被日文守卫吞掉（codex P2）。
 _ZH_NEG_JA_AMBIGUOUS = ("别", "別")
+# 日文 ``〜別`` 后缀的左邻可能是什么：分类标签不止是汉字和假名，还可能以拉丁字母、
+# 数字（半角或全角）、或一个收尾括号结束——``A別提案`` / ``タイプ2別提案`` /
+# ``「地域」別提案`` / ``（地域）別提案`` 都是真实的日文写法，只挡汉字假名会全部漏网
+# （codex P2）。收尾括号从 _ZH_BRACKET_PAIRS 派生，不另抄一张。
+#
+# ⚠️ 判据仍然是**左邻不是词的结尾**，而中文指令里 ``别`` 前面是句首、代词、或标点。
+_ZH_JA_LABEL_TAIL = (
+    "一-鿿぀-ゟ゠-ヿｦ-ﾟ"          # 汉字 / 平假名 / 片假名 / 半角片假名
+    "0-9A-Za-z０-９Ａ-Ｚａ-ｚ"      # 半角 / 全角 的字母数字
+    + "".join(sorted({re.escape(hi) for _lo, hi in _ZH_BRACKET_PAIRS}))
+)
 _ZH_NEG_UNAMBIGUOUS = tuple(
     "休(?!講)" if neg == "休" else neg
     for neg in _ZH_NEG_SINGLES
@@ -730,7 +741,7 @@ _ZH_NEG_UNAMBIGUOUS = tuple(
 )
 _ZH_NEG_VERB_EVIDENCE = (
     "(?:"
-    + r"(?<![一-鿿぀-ゟ゠-ヿｦ-ﾟ])(?:"
+    + f"(?<![{_ZH_JA_LABEL_TAIL}])(?:"
     + "|".join(_ZH_NEG_JA_AMBIGUOUS)
     + ")|"
     + "|".join(_ZH_NEG_UNAMBIGUOUS)
