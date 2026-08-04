@@ -82,6 +82,23 @@ def _reset_steamworks_handle():
     ``utils.steam_state``'s whole module namespace is snapshotted rather than a
     hand-listed set of names, so a global added there later is covered without
     anyone remembering to extend a checklist.
+
+    Restoring deliberately drops any handle a test installed instead of calling
+    ``STEAMWORKS.unload()`` on it, and that is not an oversight:
+
+    * ``unload()`` runs ``SteamAPI_Shutdown``, which is *process*-global — it
+      does not shut down "that instance". Unloading a handle a test created
+      would therefore also invalidate the snapshot handle this fixture is in the
+      middle of restoring, turning a dropped reference into a live-but-dead API.
+    * Production keeps the matching rule: ``SteamCloudBundleBridge.close()``
+      (utils/steam_cloud_bundle.py) unloads only ``_owned_steamworks``, the
+      handle it constructed itself, and never one that was passed in. A fixture
+      restoring a snapshot is by definition not the owner.
+
+    Dropping the reference is also strictly better than the status quo it
+    replaces: with the fixture in place the unit suite performs *zero* real
+    ``STEAMWORKS()`` initializations (measured; it was two without it), because
+    restoring ``_steamworks_initializer`` closes the lazy-init path as well.
     """
     # Importing here (not lazily via sys.modules) removes the "module not yet
     # imported" branch entirely; the module is a few globals and a lock, with no
