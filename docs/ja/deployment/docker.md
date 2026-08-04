@@ -38,7 +38,11 @@ docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
 if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
   docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
 fi
+```
 
+**手順 1 が成功したことを確認してから次へ進んでください。** `docker compose down` は container を削除しますが、host 側 `N.E.K.O/` が空の場合その container が data の唯一の複製です。権限・disk full・daemon 停止などで export が失敗した場合は、ここで止めて先にそちらを解決してください。
+
+```bash
 # 2. container を停止し、host 側の旧 directory を内容単位で merge。新レイアウトで
 #    一度でも起動していると宛先 directory は既に存在し（新しい自己署名証明書付き）、
 #    mv では一階層深くネストされます。同名 file は旧 data を優先します。

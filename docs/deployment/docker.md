@@ -49,7 +49,11 @@ docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
 if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
   docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
 fi
+```
 
+**Only continue once step 1 succeeded.** `docker compose down` removes the container, which for an empty host `N.E.K.O/` is the only copy of that data — if the export failed on permissions, a full disk or an unreachable daemon, stop here and fix that first.
+
+```bash
 # 2. Stop the container, then merge the host-side directories by content. If the
 #    new layout has been started once, the destinations already exist (plus a
 #    freshly generated self-signed certificate) and `mv` would nest them one level

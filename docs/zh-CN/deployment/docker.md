@@ -41,7 +41,11 @@ docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
 if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
   docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
 fi
+```
 
+**确认第 1 步成功后再往下。** `docker compose down` 会删除容器，而在宿主 `N.E.K.O/` 为空的情况下，容器是那部分数据唯一的副本——导出若因权限、磁盘满或 daemon 没起而失败，请先解决再继续。
+
+```bash
 # 2. 停容器，再把宿主机上的旧目录按内容合并。若已经用新布局启动过一次，目标目录
 #    已经存在（还带一张新生成的自签证书），直接 mv 会把旧目录套进去多一层。
 #    同名文件以旧数据为准。

@@ -239,17 +239,24 @@ cp -a "${NEKO_BASE_PATH}/ssl/."     "${NEKO_BASE_PATH}/neko-home/ssl/" \
 旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `./ssl`）：
 
 ```bash
-mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+# Docker Compose 部署的用这个（目录在 compose 文件旁边）
+BASE="."
+# Docker Run 部署的改用这个，路径要和你当初 docker run 时用的一致
+# BASE="/home/neko/neko-data"
+
+mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
 
 # 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层
-docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
-docker cp neko:/home/neko/.openfang/.            ./neko-home/.openfang/   # 报 "No such container:path" 可忽略
+docker cp neko:/home/neko/.local/share/N.E.K.O/. "$BASE/neko-home/.local/share/N.E.K.O/"
+docker cp neko:/home/neko/.openfang/.            "$BASE/neko-home/.openfang/"   # 报 "No such container:path" 可忽略
 
-cp -a ssl/. neko-home/ssl/ && rm -rf ssl
+cp -a "$BASE/ssl/." "$BASE/neko-home/ssl/" && rm -rf "$BASE/ssl"
+```
 
-# 确认上面几步都成功之后再删旧容器
+**确认上面几步都成功之后**，再删旧容器并按新版配置启动。导出这一步一旦失败（权限、磁盘满、daemon 没起），千万不要往下执行——容器是这部分数据唯一的副本：
+
+```bash
 docker rm -f neko
-# 再按新版配置启动
 ```
 
 若旧容器已经删除，这部分数据无法找回。本次挂载调整正是为了修掉这个问题。

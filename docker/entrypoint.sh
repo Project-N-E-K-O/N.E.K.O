@@ -1225,12 +1225,16 @@ warn_legacy_layout() {
             ;;
         stale-logs)
             echo "   日志目录里有历史日志，说明这个部署以前跑过，而数据目录是空的。"
-            echo "   本版本把 ./N.E.K.O + ./ssl 两个挂载合并成了 ./neko-home 一个，"
-            echo "   旧数据没有丢，只是不再挂进容器。请停止容器后执行："
-            echo "       mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl"
-            echo "       cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O"
-            echo "       cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl"
-            echo "   （本次启动已经在 neko-home 下建好了同名目录，直接 mv 会多套一层）"
+            echo "   本版本把 ./N.E.K.O + ./ssl 两个挂载合并成了 ./neko-home 一个。"
+            echo "   先看宿主机上的 N.E.K.O/ 是不是空的："
+            echo "     · 非空 —— 数据还在，停容器后执行（直接 mv 会多套一层，本次"
+            echo "       启动已经在 neko-home 下建好了同名目录）："
+            echo "         mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl"
+            echo "         cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O"
+            echo "         cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl"
+            echo "     · 空 —— 此前跟的是旧版 README，其挂载目标从来对不上服务的实际"
+            echo "       写入位置，数据只存在于旧容器里。若那个容器已被重建或删除，"
+            echo "       这部分数据无法找回；OpenFang 状态同理。"
             ;;
     esac
     echo "   详见 README「从旧版本升级」一节。全新安装可忽略本提示。"
