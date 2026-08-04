@@ -55,25 +55,35 @@ class BiliAuthService:
         credential = await self._credential_provider()
         if not credential:
             return None
+        uid_text = str(getattr(credential, "dedeuserid", "") or "")
         try:
             from bilibili_api import user
 
-            uid = int(getattr(credential, "dedeuserid", 0) or 0)
+            uid = int(uid_text or 0)
             if uid <= 0:
+                if not await self._credential_is_valid(credential):
+                    return None
                 return {
                     "status": "already_logged_in",
-                    "message": "已存在 B站 登录凭据。",
-                    "uid": str(getattr(credential, "dedeuserid", "") or ""),
+                    "message": "B站凭据有效；账号资料暂不可用。",
+                    "uid": uid_text,
                     "username": "",
                 }
             info = await user.User(uid=uid, credential=credential).get_user_info()
             return {
                 "status": "already_logged_in",
                 "message": "已登录B站，无需重复登录",
-                "uid": str(getattr(credential, "dedeuserid", "") or ""),
+                "uid": uid_text,
                 "username": info.get("name", ""),
             }
         except Exception:
+            if await self._credential_is_valid(credential):
+                return {
+                    "status": "already_logged_in",
+                    "message": "B站凭据有效；账号资料暂不可用。",
+                    "uid": uid_text,
+                    "username": "",
+                }
             return None
 
     async def login(self) -> Dict[str, Any]:

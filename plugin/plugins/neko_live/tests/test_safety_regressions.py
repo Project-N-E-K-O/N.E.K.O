@@ -221,10 +221,9 @@ async def test_bili_login_check_clears_session_when_credential_save_fails():
 
 
 class _CredentialCheckStub:
-    dedeuserid = "42"
-
-    def __init__(self, *, valid: bool = True) -> None:
+    def __init__(self, *, valid: bool = True, uid: str = "42") -> None:
         self.valid = valid
+        self.dedeuserid = uid
         self.validity_checks = 0
 
     async def check_valid(self) -> bool:
@@ -323,6 +322,82 @@ async def test_bili_credential_profile_failure_rejects_invalid_credential(
         "message": "credential may be invalid; please login again",
     }
     assert credential.validity_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_bili_login_profile_failure_keeps_valid_existing_login_without_qr(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=True)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("temporary profile outage")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+    service = _bili_auth_for_credential(credential)
+    service._require_login_sdk = lambda: (_ for _ in ()).throw(
+        AssertionError("valid existing login must not create a new QR session")
+    )
+
+    result = await service.login()
+
+    assert result == {
+        "status": "already_logged_in",
+        "message": "B站凭据有效；账号资料暂不可用。",
+        "uid": "42",
+        "username": "",
+    }
+    assert credential.validity_checks == 1
+    assert service._login_session is None
+
+
+@pytest.mark.asyncio
+async def test_bili_existing_login_profile_failure_rejects_invalid_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from bilibili_api import user as bili_user_module
+
+    credential = _CredentialCheckStub(valid=False)
+
+    class User:
+        def __init__(self, *, uid: int, credential: object) -> None:
+            assert uid == 42
+            assert credential is not None
+
+        async def get_user_info(self) -> dict[str, str]:
+            raise RuntimeError("profile unavailable")
+
+    monkeypatch.setattr(bili_user_module, "User", User)
+    service = _bili_auth_for_credential(credential)
+
+    assert await service._check_existing_login() is None
+    assert credential.validity_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_bili_existing_login_without_uid_requires_valid_credential():
+    valid = _CredentialCheckStub(valid=True, uid="")
+    invalid = _CredentialCheckStub(valid=False, uid="")
+
+    valid_result = await _bili_auth_for_credential(valid)._check_existing_login()
+    invalid_result = await _bili_auth_for_credential(invalid)._check_existing_login()
+
+    assert valid_result == {
+        "status": "already_logged_in",
+        "message": "B站凭据有效；账号资料暂不可用。",
+        "uid": "",
+        "username": "",
+    }
+    assert invalid_result is None
+    assert valid.validity_checks == 1
+    assert invalid.validity_checks == 1
 
 
 @pytest.mark.asyncio

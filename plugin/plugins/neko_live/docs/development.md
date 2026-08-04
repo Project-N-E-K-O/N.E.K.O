@@ -699,7 +699,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 **安全模型**：凭据（SESSDATA/bili_jct/DedeUserID/buvid3）经 **Fernet 对称加密**落盘到 per-plugin data 目录（`plugin.data_path()`），密钥 `bili_credential.key` + 密文 `bili_credential.enc` 分别 `chmod 600`（非 Windows）。**凭据绝不写 audit / log / config / UI**——只回显 uid / 用户名 / 是否登录。可**本地注销**（删 key+enc）。
 
-登录状态校验优先复用用户资料请求；资料请求成功时不会追加第二次校验。若资料接口瞬时异常，才调用 SDK 凭据有效性检查兜底：凭据仍有效时保持登录态但暂时不返回用户名，凭据检查失败或异常时才要求重新扫码。该兜底不做后台轮询、不记录异常正文或凭据，只在异常路径增加一次网络请求。
+登录状态校验和“开始登录前检查既有账号”都优先复用用户资料请求；资料请求成功时不会追加第二次校验。若资料接口瞬时异常，才调用 SDK 凭据有效性检查兜底：凭据仍有效时保持登录态但暂时不返回用户名，也不会错误生成新二维码；凭据检查失败或异常时才要求重新扫码。缺少可用 UID 的旧凭据也必须先通过该校验，不能仅凭本地文件存在就声明已登录。该兜底不做后台轮询、不记录异常正文或凭据，只在异常路径增加一次网络请求。
 
 **责任模块 / 入口数据流**：
 - `stores/credential_store.py` `CredentialStore`：命名空间加密 `save`/`load`/`delete`；默认 `bili` namespace 保持旧 `bili_credential.*` 文件名，抖音等新平台使用独立 `{namespace}_credential.*` 文件；`build_credential()` 仍只服务 B 站 `bilibili_api.Credential`，走 `to_thread` 不阻塞。
