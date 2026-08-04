@@ -1292,8 +1292,11 @@ main() {
     # 宿主机上只有数字有意义：宿主那边没有叫 neko 的账户，它看到的就是 1000，而 1000
     # 恰是绝大多数发行版第一个普通用户的号，对上之后用户不必 sudo 就能管自己的备份。
     # 写死数字也让这层契约在文件里是可见的：改 Dockerfile 里的号就必须同步改这里。
+    # 两条 chown 都必须带 -h。不带的话它会解引用命令行上的符号链接去改**目标**：
+    # neko-home 是用户的目录，.local 或 .local/share 完全可能是指向别处（甚至别的
+    # 磁盘）的软链，那样一来被改属主的就是 /home/neko 之外的宿主路径了。
     mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
-    if ! chown 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
+    if ! chown -h 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
         || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \
                \( ! -uid 1000 -o ! -gid 1000 \) -exec chown -h 1000:1000 {} + ; then
         echo "❌ 无法把数据目录的属主改为 1000:1000（容器内的 neko）"
