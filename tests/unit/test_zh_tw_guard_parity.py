@@ -2394,3 +2394,50 @@ def test_ordinal_prefixes_before_the_attributive_numeral(prefix, numeral):
 
     text = f'把整个卡的所有内容最后{prefix}{numeral}段重写'
     assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "head", ["为什么", "為什麼", "为何", "為何", "为啥", "為啥", "干嘛", "幹嘛", "凭什么", "憑什麼"]
+)
+def test_wh_question_heads_are_not_edit_commands(head):
+    """⚠️ 疑问守卫也要收 wh 头（Codex P1 第五十九轮）。
+
+    ⚠️ 但这条**不是本 PR 的回归**——`为什么要重写整个卡的所有内容` 在 base 上就是
+    True。是我第五十七轮加这道守卫时只收了极性/情态那一族，把它建了一半。
+    补齐会收窄一条 base 行为，方向是安全的那一侧（少补几个字段而不是多改数据）。
+
+    ⚠️ reviewer 举的 `为什么要重写整个卡的每一项` 到这一轮已经**不复现**了：
+    上一轮把 `每一项` 收回源头之后它就不再是整卡目标。这条补的是同族里剩下的
+    那半边。
+
+    ⚠️ 左界必须挡 `因`：`因为什么都没写…` 里 `为什么` 只是子串（base 是 True）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    question = f'{head}要重写整个卡的所有内容'
+    assert router._chat_text_requests_full_rewrite(question) is False, question
+    for command in ('把整个角色卡的全部设定重写一遍',
+                    '因为什么都没写所以重写整个卡的所有内容'):
+        assert router._chat_text_requests_full_rewrite(command) is True, command
+
+
+@pytest.mark.parametrize(
+    "value", ["好不好", "是否会员", "要不要", "为什么", "吗"]
+)
+@pytest.mark.parametrize(("opener", "closer"), [("“", "”"), ("「", "」"), ("《", "》")])
+def test_question_markers_inside_quoted_field_values(opener, closer, value):
+    """⚠️ 疑问守卫看的是**抹掉引用跨度之后**的文本（base 是 True，Codex P2 第五十九轮）。
+
+    `重写所有字段并把口头禅设为“好不好”` 里的 `好不好` 是字段内容不是提问。
+
+    ⚠️ 跟否定守卫那边**方向相反**——那边是「引号里的禁止一律算数」，这边是
+    「引号里的疑问不算」。两边不矛盾：都取**少改用户数据**的那一侧。
+    下面第二条反向断言钉住否定那一侧没被顺手改掉。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段并把口头禅设为{opener}{value}{closer}'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    prohibited = f'请{opener}不要重写{closer}所有字段'
+    assert router._chat_text_requests_full_rewrite(prohibited) is False, prohibited
+    assert router._chat_text_requests_full_rewrite('把整个卡的每一项都需要重写吗') is False

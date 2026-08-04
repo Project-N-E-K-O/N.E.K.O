@@ -4462,3 +4462,26 @@ def test_target_modifiers_before_a_quoted_title(modifier, title):
                        '我想停止播放哪位歌手唱的《你好吗？》',
                        '我想停止播放晴天“是否合适”'):
         assert is_explicit_music_cancellation(questioned) is False, questioned
+
+
+@pytest.mark.parametrize(
+    "modifier", ["", "周杰伦的", "那位歌手的", "我最喜欢的", "歌曲", "这首"]
+)
+def test_frame_words_after_unquoted_target_modifiers(modifier):
+    """⚠️ 框架词落在「播放动词 + 一段无引号修饰语」之后时，仍然属于**目标位**
+    （base 是 False，Codex P2 第五十九轮——危险方向）。
+
+    上一轮只判了「紧贴播放动词」，`播放周杰伦的如果爱是否合适` 就漏了。
+
+    ⚠️ 修饰语在这里可以放宽到「任意…的」，跟标题遮蔽那边**方向相反**：
+    这里放宽 = 少中和一个框架 = 疑问守卫更容易开火 = 少停一次歌（轻）；
+    那边放宽 = 疑问词被吞掉 = 提问执行取消（重）。同一个语料现象，两处取舍不同。
+
+    ⚠️ 第二条断言钉住第四十八轮的真条件框架没被打回去。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    questioned = f'我想停止播放{modifier}如果爱是否合适'
+    assert is_explicit_music_cancellation(questioned) is False, questioned
+    framed = '我想停止播放如果有什么新歌再告诉我'
+    assert is_explicit_music_cancellation(framed) is True

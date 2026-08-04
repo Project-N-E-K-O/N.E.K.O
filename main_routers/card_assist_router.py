@@ -1376,6 +1376,14 @@ def _chat_span_carries_a_prohibition(span: str) -> bool:
     return bool(_CHAT_NEGATED_REWRITE_LEXEME_RE.search(span))
 
 
+_CHAT_ANY_QUOTED_SPAN_SUB = _CHAT_QUOTED_SPAN_RE.sub
+
+
+def _chat_clause_without_quotes(clause: str) -> str:
+    """把**所有**引用跨度换成空格，只用于疑问守卫。"""  # noqa: DOCSTRING_CJK
+    return _CHAT_ANY_QUOTED_SPAN_SUB(" ", clause)
+
+
 def _chat_clause_without_quoted_prohibitions(clause: str) -> str:
     """把**带着禁止的引用跨度**换成空格，只用于正向信号。
 
@@ -1407,7 +1415,15 @@ _CHAT_QUESTION_CLAUSE_RE = re.compile(
     r"(?:[吗嗎呢]\s*[？?]?\s*$"
     r"|是否|能否|可否|有没有|有沒有"
     r"|需不需要|要不要|该不该|該不該|应不应该|應不應該|用不用|可不可以|能不能"
-    r"|是不是|好不好|行不行|对不对|對不對)"
+    r"|是不是|好不好|行不行|对不对|對不對"
+    # ⚠️ wh 疑问头。第五十七轮加这道守卫时只收了极性/情态那一族，
+    # 于是 `为什么要重写整个卡的所有内容` 照样走进整卡补全并 autosave。
+    # ⚠️ 这一条**不是**本 PR 的回归（base 也是 True）——是我上一轮把守卫建了一半。
+    # 补齐它会收窄一条 base 行为，方向是安全的那一侧（少补几个字段）。
+    # ⚠️ 左界必须挡 `因`：`因为什么都没写所以重写…` 里 `为什么` 只是子串
+    # （base 是 True）。这是这个 PR 里第七个「白名单词是更长词子串」入口。
+    r"|(?<!因)为什么|(?<!因)為什麼|(?<!因)为何|(?<!因)為何|(?<!因)为啥|(?<!因)為啥"
+    r"|干嘛|幹嘛|凭什么|憑什麼)"
 )
 
 
@@ -1443,7 +1459,12 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
         if _CHAT_NEGATED_REWRITE_RE.search(clause):
             continue
         # ⚠️ 疑问子句同样跳过：用户在问要不要改，不是在下命令。
-        if _CHAT_QUESTION_CLAUSE_RE.search(clause):
+        # ⚠️ 但要看**抹掉引用跨度之后**的文本：`重写所有字段并把口头禅设为“好不好”`
+        # 里的 `好不好` 是字段内容不是提问，整条命令不该被丢掉
+        # （base 是 True，Codex P2 第五十九轮）。跟否定守卫那边同一条道理，
+        # 只是方向相反——那边是「引号里的禁止一律算数」，这边是「引号里的疑问不算」。
+        # 两边不矛盾：都取**少改用户数据**的那一侧。
+        if _CHAT_QUESTION_CLAUSE_RE.search(_chat_clause_without_quotes(clause)):
             continue
         readable = _chat_clause_without_quoted_prohibitions(clause)
         if (

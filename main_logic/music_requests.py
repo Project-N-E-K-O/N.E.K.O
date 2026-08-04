@@ -883,6 +883,17 @@ def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+# 「播放动词 + 一段无引号的目标修饰语」到此为止——落在这后面的框架词仍算标题的
+# 一部分。⚠️ 修饰语在这里可以放宽到「任意…的」，跟标题遮蔽那边**方向相反**：
+# 这里放宽 = 少中和一个框架 = 疑问守卫更容易开火 = 少停一次歌（轻）；
+# 那边放宽 = 疑问词被吞掉 = 提问执行取消（重）。同一个语料现象，两处取舍不同。
+_ZH_TARGET_POSITION_RE = re.compile(
+    r"(?:" + "|".join(_ZH_PLAYBACK_VERBS) + r")"
+    + _ZH_TARGET_MODIFIER
+    + r"(?:[^。！？!?，,；;]{0,12}?的)?\s*$"
+)
+
+
 def _zh_neutralize_free_choice(text: str) -> str:
     """把任指框架辖域内的疑问词换成中性的「某」。
 
@@ -907,7 +918,7 @@ def _zh_neutralize_free_choice(text: str) -> str:
         # （有/是/没/要/能/会…）时它引的是小句，跟着其它字时更像标题。
         # 代价写在这里：《如果有一天》这类以谓词开头的歌名会被当成条件框架，
         # 少拦一次提问——轻的那一侧。
-        if (any(text[:marker.start()].endswith(verb) for verb in _ZH_PLAYBACK_VERBS)
+        if (_ZH_TARGET_POSITION_RE.search(text, 0, marker.start())
                 and not _ZH_FRAME_PREDICATE_RE.match(text, marker.end())):
             continue
         pieces.append(text[cursor:marker.end()])
