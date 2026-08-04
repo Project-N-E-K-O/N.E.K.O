@@ -40,6 +40,8 @@ config/characters.json
 config/user_preferences.json
 config/voice_storage.json
 N.E.K.O/
+neko-home/
+ssl/
 
 # 同样的用户数据，但在 docker/ 下：维护中的 compose 文件在那里，它的 ./ 相对路径
 # 也就落在那里。上面的模式是相对 build context 根的，`N.E.K.O/` 只匹配根级，
