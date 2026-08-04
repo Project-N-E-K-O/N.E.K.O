@@ -752,7 +752,12 @@ _ZH_COORDINATION_AFTER_DE = (
 # 两族共用同一张表、同一个辖域规则，别分开写。
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
     r"(?:无论|無論|不论|不論|不管|任凭|任憑|随便|隨便"
-    r"|如果|假如|若是|要是|倘若|万一|萬一|假若|设若|設若)"
+    r"|如果|假如|若是|要是|倘若|万一|萬一|假若|设若|設若"
+    # 让步框架（Codex P2 第四十九轮）——跟条件/任指同一件事。
+    r"|即使|即便|就算|哪怕|纵使|縱使|就是"
+    # 认知谓语内嵌的疑问是**宾语从句**，不是在问我们：
+    # `因为我不知道什么歌正在响` 里用户是在说理由（Codex P2 第四十九轮）。
+    r"|不知道|不记得|不記得|忘了|忘記|不清楚|不確定|不确定|没注意|沒注意)"
 )
 _ZH_FREE_CHOICE_WH_TOKEN_RE = re.compile(
     rf"(?:{_ZH_WHAT}|谁|誰|哪一首|哪首|哪个|哪個|哪些|哪位|何时|何時|几时|幾時|哪)"
@@ -872,7 +877,10 @@ _ZH_PROGRESSIVE_LOOKBEHIND = _zh_progressive_lookbehind()
 # 照旧被挡（那正是本 PR 缺陷三的本体）。
 _ZH_STATE_COMPLEMENT_AFTER_DE = (
     r"(?:(?P<redup_aa>[一-鿿])(?P=redup_aa)(?P<redup_bb>[一-鿿])(?P=redup_bb)"
-    r"|(?P<redup_ab>[一-鿿])[一-鿿](?P=redup_ab)[一-鿿])"
+    r"|(?P<redup_ab>[一-鿿])[一-鿿](?P=redup_ab)[一-鿿]"
+    # 可能补语 `V不C`：听不清 / 看不见 / 跟不上（Codex P2 第四十九轮）。
+    # 中间那个 `不` 是很强的结构信号，不会跟名词混。
+    r"|[一-鿿]不[一-鿿]{1,2})"
     r"\s*(?=$|[，,。！!？?])"
 )
 _ZH_PLAYBACK_NOT_NOMINALIZED = (

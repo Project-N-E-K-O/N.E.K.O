@@ -2049,3 +2049,27 @@ def test_compound_locative_continuations(locative):
     for kept in (f'重写所有字段{locative}名字',
                  f'重写所有字段{locative}名字内容'):
         assert router._chat_text_requests_full_rewrite(kept) is False, kept
+
+
+@pytest.mark.parametrize(
+    "modifier", ["可见", "可見", "现有", "現有", "已有", "既有", "当前", "當前", ""]
+)
+@pytest.mark.parametrize("de", ["的", ""])
+def test_existing_and_visible_field_modifiers(modifier, de):
+    """范围名词前面的属性限定语不只有「可见」（base 全是 True）。
+
+    现有/已有/既有/当前 跟 可见 同族：都不改变「范围是整张卡」这件事
+    （Codex P2 第四十九轮）。
+
+    ⚠️ 限定语后面**仍然要求是范围名词**：反向断言钉住单字段保险。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    if not modifier and de:
+        pytest.skip('裸的「的」不属于限定语，走的是另一支')
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的所有{modifier}{de}字段重写'
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡的所有{modifier}{de}名字重写'
+    ) is False

@@ -3978,3 +3978,45 @@ def test_negated_what_are_you_doing_is_an_indefinite(negator, stem, what):
     assert is_explicit_music_cancellation(
         f'我想停止播放《你好吗？》{stem}{what}'
     ) is False
+
+
+@pytest.mark.parametrize(
+    "frame",
+    ["即使", "即便", "就算", "哪怕", "纵使", "縱使",
+     "不知道", "不记得", "不記得", "忘了", "忘記",
+     "不清楚", "不确定", "没注意"],
+)
+@pytest.mark.parametrize("wh", ["有什么新歌", "什么歌", "谁唱的", "哪首歌"])
+def test_concessive_and_cognition_frames_neutralize_wh(frame, wh):
+    """让步框架（即使/就算/哪怕）和认知谓语（不知道/忘了）辖域里的
+    疑问词不是在问我们（base 全是 True，Codex P2 第四十九轮）。
+
+    ⚠️ 它们跟任指/条件框架是同一件事，所以进的是同一张表、同一个
+    辖域规则（到句读为止）——不另开机制。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为{frame}{wh}也不想听'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放什么歌') is False
+
+
+@pytest.mark.parametrize("verb", ["播放", "放", "听", "聽", "播"])
+@pytest.mark.parametrize(
+    "complement", ["听不清", "看不见", "跟不上", "听不清楚", "受不了"]
+)
+def test_potential_complements_after_a_mistyped_de(verb, complement):
+    """可能补语 `V不C`（base 全是 True，Codex P2 第四十九轮）。
+
+    中间那个 `不` 是很强的结构信号，不会跟名词混。
+
+    ⚠️ 反向断言钉住缺陷三的本体：`的代码` / `的教程` / `的听歌功能` /
+    `的播放器` 都没有那个 `不`，照旧被挡。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'不要{verb}的{complement}'
+    assert is_explicit_music_cancellation(text) is True, text
+    for kept in ('我要停止播放的代码', '我想停止播放的教程',
+                 '我要停止播放的听歌功能', '我想停止播放的播放器'):
+        assert is_explicit_music_cancellation(kept) is False, kept
