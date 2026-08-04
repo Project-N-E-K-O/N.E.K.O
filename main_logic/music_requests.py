@@ -149,16 +149,22 @@ def parse_music_request(value: str) -> MusicRequest:
     return MusicRequest(keyword=normalized)
 
 
+# ⚠️ 撇号有三种写法：ASCII `'`、iOS/macOS/Word 会自动替换成的 U+2019 `’`、
+# 以及 U+02BC `ʼ`。只认 ASCII 那个时 `don’t play X` 从英文否定分支底下漏过去
+# （CodeRabbit 在 card_assist_router 那边报的同一件事，这边是对偶的那一半）。
+# ⚠️ base 也一样，**不是**本 PR 的回归；两边一起改，别漂开。
+# ⚠️ 跟 card_assist_router 一样写成**字符集合**，用的地方自己拼 `[...]`。
+_EN_APOSTROPHE_CHARS = "'’ʼ"
 _EN_CLAUSE_AFTER_PERIOD = re.compile(
     r"\s+(?:actually\b|never\s+mind\b|please\b|"
     r"i\s+(?:want|would\s+like)\b|can\b|could\b|would\b|play\b|"
-    r"listen\b|do\s+not\b|don't\b|dont\b|stop\b|pause\b|cancel\b)",
+    rf"listen\b|do\s+not\b|don[{_EN_APOSTROPHE_CHARS}]t\b|dont\b|stop\b|pause\b|cancel\b)",
     re.IGNORECASE,
 )
 _EN_CLAUSE_CONJUNCTION = re.compile(
     r"\s+(?:and|but)\s+(?="
     r"(?:(?:actually|never\s+mind)[,\s]+)?(?:please\s+)?"
-    r"(?:(?:do\s+not|don't|dont)\s+(?:play|listen\s+to)\b"
+    rf"(?:(?:do\s+not|don[{_EN_APOSTROPHE_CHARS}]t|dont)\s+(?:play|listen\s+to)\b"
     r"|(?:play|listen\s+to|stop|pause|cancel)\b))",
     re.IGNORECASE,
 )
@@ -911,7 +917,7 @@ rf"|(?:别|別){_ZH_PLAYBACK_ADVERB}{_ZH_FOR_ME}{_ZH_PLAYBACK_ADVERB}(?:播放"
 _EN_NEGATIVE_MUSIC = re.compile(
     r"^(?:(?:actually|never\s*mind)[,\s]+)?"
     r"(?:(?:can|could|would)\s+you\s+(?:please\s+)?|(?:please\s+)?)"
-    r"(?:(?:do\s+not|don't|dont)\s+(?:play|listen\s+to)\b"
+    rf"(?:(?:do\s+not|don[{_EN_APOSTROPHE_CHARS}]t|dont)\s+(?:play|listen\s+to)\b"
     r"|(?:stop|pause|cancel)\b.{0,12}\b(?:music|song|tracks?|tunes?|playback|playing)\b"
     r"|(?:turn|shut)\s+(?:off\s+(?:the\s+)?(?:music|songs?|tracks?|tunes?|playback)"
     r"|(?:the\s+)?(?:music|songs?|tracks?|tunes?|playback)\s+off)\b)",

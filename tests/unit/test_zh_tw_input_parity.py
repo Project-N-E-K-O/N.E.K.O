@@ -3461,9 +3461,18 @@ def test_longer_playback_modifiers_inside_the_aspect_phrase(modifier):
 
     ⚠️ 上限是**性能与覆盖的取舍**：后视条数随它线性涨（现在按宽度分组后 8 条），
     再往上收益递减。计时复跑：普通输入 0.008ms、三种对抗形状 0.012~0.13ms。
-    """  # noqa: DOCSTRING_CJK
-    from main_logic.music_requests import is_explicit_music_cancellation
 
+    ⚠️ 参数直接跟实现里的上限对账：实现把上限调小时这条会先在断言上见红，而不是
+    留着一堆 4 字修饰语的用例悄悄变成「测了个更宽的实现」（CodeRabbit nitpick）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import (
+        _ZH_PROGRESSIVE_MAX_MODIFIER,
+        is_explicit_music_cancellation,
+    )
+
+    assert len(modifier) <= _ZH_PROGRESSIVE_MAX_MODIFIER, (
+        f'用例的修饰语比实现上限还长: {modifier}'
+    )
     text = f'停止正在{modifier}播放的晴天'
     assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我要停止播放的代码') is False
@@ -3586,3 +3595,16 @@ def test_coordinator_after_a_punctuated_temporal_clause(coordinator, punct):
         f'停止播放的时候。{coordinator}帮我关灯'
     ) is False
     assert is_explicit_music_cancellation('停止播放的时候通知我') is False
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’", "ʼ"])
+def test_english_playback_negation_accepts_every_apostrophe(apostrophe):
+    """英文否定分支的擇号——跟 card_assist_router 那边对偶的那一半。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (
+        f'don{apostrophe}t play Taylor Swift',
+        f'please don{apostrophe}t play music',
+    ):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('play Taylor Swift') is False

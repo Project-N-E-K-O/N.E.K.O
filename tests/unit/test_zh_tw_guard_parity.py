@@ -1204,12 +1204,22 @@ def test_scope_suffix_matching_is_unambiguous():
 
     import main_routers.card_assist_router as router
 
-    assert router._CHAT_FULL_REWRITE_RE.pattern.count("(?>") >= 2, (
-        "范围续接不再是原子组——重叠解析会指数回溯"
+    # ⚠️ 钉**相等**不是下界：`>= 2` 时删掉其中任意一处原子组测试照样绿，而现在
+    # 整条正则里有 6 处（CodeRabbit nitpick）。真要加/减原子组，改这个数的同时
+    # 得在下面补一条对应路径的最坏输入。
+    assert router._CHAT_FULL_REWRITE_RE.pattern.count("(?>") == 6, (
+        "范围续接的原子组数量变了——重叠解析会指数回溯，改这里前先补最坏用例"
     )
-    worst = '把所有字段' + '项目' * 40 + '名字重写'
+    # ⚠️ 最坏输入要**每条路径各来一条**：上一版只打了「限定词 + 范围成分」那条，
+    # 头部名词分支和「的」递归分支的回溯没人看着（CodeRabbit nitpick）。
+    worst_cases = (
+        '把所有字段' + '项目' * 40 + '名字重写',            # 限定词 + 范围成分续接
+        '把整个卡的内容' + '项目' * 40 + '名字重写',         # 头部名词分支
+        '把所有字段的所有内容' + '项目' * 40 + '名字重写',    # 「的」递归 + 闭集收尾
+    )
     start = time.perf_counter()
-    assert router._chat_text_requests_full_rewrite(worst) is False
+    for worst in worst_cases:
+        assert router._chat_text_requests_full_rewrite(worst) is False, worst
     # ⚠️ 指数回溯是**秒级起跳**（修前 N=20 已经 370ms、N=40 跑不完），所以上限
     # 留一个数量级余量：既能抓住回溯，又不会在共享 CI runner 上因负载抖动假红
     # （CodeRabbit nitpick）。
@@ -1731,3 +1741,24 @@ def test_separately_is_not_added_to_the_adverb_table(text):
     assert router._chat_text_requests_full_rewrite(text) is False, text
     assert router._chat_text_requests_full_rewrite('把所有字段别重写') is False
     assert router._chat_text_requests_full_rewrite('把所有字段分開重写') is True
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’", "ʼ"])
+def test_english_negation_accepts_every_apostrophe(apostrophe):
+    """⚠️ 擇号有三种写法，只认 ASCII 那个时否定守卫直接漏掉（CodeRabbit Major）。
+
+    iOS/macOS/Word 会把 `'` 自动替换成 U+2019，所以 `don’t` 反而是真实输入里
+    **更常见**的那个写法。漏了它 = 用户明确说了不要改，却触发整卡补全并 autosave。
+
+    ⚠️ base 也是这样，**不是**本 PR 的回归；方向是危险的那一侧、改动只有一个
+    字符类，就一起修了。music_requests 那边是对偶的那一半。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (
+        f'don{apostrophe}t rewrite the whole card',
+        f'please don{apostrophe}t rewrite the whole card',
+        f'do n{apostrophe}t rewrite the whole card',
+    ):
+        assert router._chat_text_requests_full_rewrite(text) is False, text
+    assert router._chat_text_requests_full_rewrite('rewrite the whole card') is True

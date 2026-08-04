@@ -1089,6 +1089,16 @@ def _chat_text_requests_edits(text: str) -> bool:
 # 路径（_complete_full_rewrite_actions 会给每个缺失字段合成内容并 autosave）。
 # `不要重写整个卡` 同时满足整卡目标和重写动词两条谓词。否定词是**封闭类虚词**，
 # 可以列干净；窗口 0-4 个非标点字符，保证「不要」管不到逗号后面。
+# ⚠️ 撇号有三种写法：ASCII `'`、iOS/macOS/Word 会自动替换成的 U+2019 `’`、
+# 以及 U+02BC `ʼ`。只认 ASCII 那个时 `don’t rewrite the whole card` 从否定守卫
+# 底下漏过去，直接触发整卡补全并 autosave——覆盖用户**明确说了不要动**的字段
+# （CodeRabbit Major）。
+# ⚠️ base 也是 True，**不是**本 PR 的回归；但方向是危险的那一侧、改动只有一个
+# 字符类，就一起修了。music_requests.py 的英文否定同一处理，两边别漂开。
+# ⚠️ 写成**字符集合**而不是现成的 `[...]`：下面 `n[o…]t` 那一支要把 o 和三个撇号
+# 放进同一个类里。第一版另开了个 `don[…]t` 分支，结果 `n[o…]t` 早就覆盖了它，
+# 变异「把这个常量收回 ASCII」照样全绿——两条写法重叠时常量根本不受力。
+_EN_APOSTROPHE_CHARS = "'’ʼ"
 _CHAT_NEGATED_REWRITE_RE = re.compile(
     # ⚠️ 否定/禁止是**封闭词类**，一次列全，不要被 reviewer 一个一个揪。
     # greptile 只报了「不准」，实测同时漏的还有 不許/不许/禁止/嚴禁/严禁/
@@ -1099,7 +1109,10 @@ _CHAT_NEGATED_REWRITE_RE = re.compile(
     # ⚠️ 英文否定同样要收——整卡目标和重写动词那两张表本来就含英文分支
     # （rewrite/regenerate/all fields），只有否定守卫是纯中文，于是
     # `don't rewrite the whole card` 直接绕过去了（CodeRabbit）。
-    r"|(?:do\s*n[o']t|don't|dont|do\s+not|never|no\s+need\s+to|please\s+do\s*n[o']t)\s*)"
+    # `do\s*n[o…]t` 一支就盖住 do not / don't / don’t / donʼt / do n’t；
+    # `dont`（整个撇号都不打）中间没有字符，只能单列。
+    rf"|(?:do\s*n[o{_EN_APOSTROPHE_CHARS}]t|dont|never|no\s+need\s+to"
+    rf"|please\s+do\s*n[o{_EN_APOSTROPHE_CHARS}]t)\s*)"
     # ⚠️ 窗口要盖住整个宾语短语。`請勿把整個角色卡全部重寫` 里 請勿 和 重寫
     # 之间隔了八个字，{0,4} 够不着。
     # 这里放宽是**安全方向**：否定守卫误触发 = 整卡补全不跑（少补几个字段），
