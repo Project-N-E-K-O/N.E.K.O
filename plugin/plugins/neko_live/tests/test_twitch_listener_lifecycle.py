@@ -9,7 +9,11 @@ from twitchio.eventsub import websockets as twitchio_websockets
 from twitchio.authentication import Scopes
 from twitchio.exceptions import WebsocketConnectionException
 
-from plugin.plugins.neko_live.modules.twitch_live_ingest import TwitchLiveIngestModule, _public_scopes
+from plugin.plugins.neko_live.modules.twitch_live_ingest import (
+    TwitchLiveIngestModule,
+    _public_scopes,
+    _safe_error,
+)
 from plugin.plugins.neko_live.core.runtime_live_controls import _resolve_connection_auth_mode
 from plugin.plugins.neko_live.modules.twitch_live_ingest.twitch_client import (
     NekoTwitchClient,
@@ -584,3 +588,10 @@ async def test_twitch_connection_rejects_missing_or_expired_authorization() -> N
 
 def test_scope_projection_accepts_real_twitchio_scopes() -> None:
     assert _public_scopes(Scopes(["user:read:chat"])) == ["user:read:chat"]
+
+
+def test_twitch_listener_error_never_exposes_exception_message() -> None:
+    message = _safe_error(RuntimeError("{'token': 'must-not-leak'}"))
+
+    assert message == "twitch listener failed: RuntimeError"
+    assert "must-not-leak" not in message

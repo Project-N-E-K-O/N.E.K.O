@@ -542,11 +542,7 @@ def _public_scopes(value: Any) -> list[str]:
 
 
 def _safe_error(exc: Exception) -> str:
-    message = _safe_text(str(exc), 160)
-    lowered = message.lower()
-    if any(marker in lowered for marker in ("token=", "authorization", "bearer ", "access_token", "refresh_token")):
-        message = ""
-    return message or f"twitch listener failed: {type(exc).__name__}"
+    return f"twitch listener failed: {type(exc).__name__}"
 
 
 async def _ignore_event(_payload: Any) -> None:

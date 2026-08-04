@@ -26,7 +26,7 @@ Runtime Timeline uses stable hosting gate/pressure reasons from `runtime-observa
 - **Affected interfaces:** `LiveHostingDirector`, runtime assembly, warmup/active modules, content candidates, pipeline metadata, and dashboard readiness projection.
 - **Alternatives:** a background scheduler or model-authored planner would add idle CPU/token cost and another output owner; the current request-driven deterministic director is recommended.
 - **Rollout / rollback:** keep all output behind existing feature gates. Rollback must remove the director import and construction from runtime assembly, its delegates, module registrations, configuration/UI references, and then run the focused tests plus CLI check.
-- **Approval:** the implementation remains part of Draft PR #2647 pending maintainer review.
+- **Acceptance:** the implementation is part of the current plugin validation baseline. Release confidence still requires the consolidated live-plugin acceptance run; this document does not claim browser playback completion.
 
 ## Testing
 

@@ -61,7 +61,7 @@ class LiveSupportEventsModule(BaseModule):
         self._scheduler = SupportEventScheduler(
             dispatch=self._handle_payload,
             audit=getattr(ctx, "audit", None),
-            queue_limit=max(8, int(getattr(ctx.config, "queue_limit", 64) or 64)),
+            queue_limit=int(getattr(ctx.config, "queue_limit", 64) or 64),
         )
         bus = getattr(ctx, "event_bus", None)
         if bus is not None:
@@ -93,16 +93,34 @@ class LiveSupportEventsModule(BaseModule):
         self._last_event_at = 0.0
         self._last_event_type = ""
 
+    def update_queue_limit(self, queue_limit: int) -> int:
+        scheduler = self._scheduler
+        if scheduler is None:
+            return max(1, min(100, int(queue_limit)))
+        return scheduler.update_queue_limit(queue_limit)
+
     def status(self) -> dict[str, Any]:
         scheduler_status = self._scheduler.status() if self._scheduler is not None else {}
         return {
             "enabled": self.enabled,
             "subscribed": bool(self._unsubscribes),
             "pending": scheduler_status.get("pending_count", 0),
+            "queue_limit": scheduler_status.get("queue_limit", 0),
             "active_combos": scheduler_status.get("active_combo_count", 0),
             "queue_overflow_count": scheduler_status.get("overflow_count", 0),
             "queue_dropped_count": scheduler_status.get("dropped_count", 0),
             "queue_aggregated_count": scheduler_status.get("aggregated_count", 0),
+            "active_dispatch_count": scheduler_status.get("current_dispatch_count", 0),
+            "dispatch_history_count": scheduler_status.get("dispatched_history_count", 0),
+            "dispatch_current_finalization_count": scheduler_status.get(
+                "current_finalization_count", 0
+            ),
+            "dispatch_retroactive_finalization_count": scheduler_status.get(
+                "retroactive_finalization_count", 0
+            ),
+            "dispatch_stray_finalization_count": scheduler_status.get(
+                "stray_finalization_count", 0
+            ),
             "last_event_at": self._last_event_at,
             "last_event_type": self._last_event_type,
         }
@@ -420,13 +438,19 @@ class LiveSupportEventsModule(BaseModule):
         viewer_preference_context: str = "",
         live_events_context: str = "",
     ) -> str:
-        nickname = identity.nickname or identity.uid or "this viewer"
+        nickname = safe_text(
+            identity.nickname or identity.uid or "this viewer",
+            max_len=80,
+        ) or "this viewer"
+        public_uid = safe_text(identity.uid, max_len=80) or "unknown"
         strength_hint = {
             "gentle": "warm, appreciative, and compact",
             "sharp": "playfully appreciative, never mocking the support itself",
             "normal": "natural, grateful, lightly playful, and concise",
         }.get(strength, "natural, grateful, lightly playful, and concise")
-        event_type = support["event_type"]
+        event_type = safe_text(support.get("event_type"), max_len=24) or "support"
+        support_label = safe_text(support.get("label"), max_len=80) or "support"
+        support_tier = safe_text(support.get("tier"), max_len=24) or "light"
         event_rules = {
             "super_chat": [
                 "Treat this as a highlighted paid message: acknowledge it before any joke.",
@@ -442,10 +466,10 @@ class LiveSupportEventsModule(BaseModule):
             ],
         }.get(event_type, ["Treat this support event as a brief thanks target."])
         facts = [
-            f"viewer: {nickname} (UID {identity.uid})",
+            f"viewer: {nickname} (UID {public_uid})",
             f"support_event_type: {event_type}",
-            f"support_label: {support['label']}",
-            f"support_tier: {support['tier']}",
+            f"support_label: {support_label}",
+            f"support_tier: {support_tier}",
         ]
         if support.get("gift_num"):
             facts.append(f"gift_num: {support['gift_num']}")

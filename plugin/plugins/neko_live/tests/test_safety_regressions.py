@@ -491,6 +491,82 @@ async def test_bili_identity_skips_avatar_download_when_analysis_is_disabled():
 
 
 @pytest.mark.asyncio
+async def test_bili_identity_support_resolution_skips_unneeded_profile_and_image_fetch():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        avatar_cache=SimpleNamespace(
+            get=lambda _key: (_ for _ in ()).throw(
+                AssertionError("avatar cache must not be read")
+            )
+        ),
+        config=SimpleNamespace(
+            avatar_analysis_enabled=True,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+
+    async def fail_profile(_uid: str) -> dict:
+        raise AssertionError("complete support identity must not fetch profile")
+
+    module._fetch_profile_by_uid = fail_profile  # type: ignore[method-assign]
+    module._fetch_avatar = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("support event must not download avatar")
+    )
+
+    identity = await module.resolve(
+        ViewerEvent(uid="7", nickname="supporter", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+
+    assert identity.nickname == "supporter"
+    assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_bili_identity_support_resolution_may_fetch_name_without_image_bytes():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        avatar_cache=SimpleNamespace(
+            get=lambda _key: (_ for _ in ()).throw(
+                AssertionError("avatar cache must not be read")
+            )
+        ),
+        config=SimpleNamespace(
+            avatar_analysis_enabled=True,
+            avatar_roast_enabled=True,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+    profile_calls = 0
+
+    async def fetch_profile(_uid: str) -> dict:
+        nonlocal profile_calls
+        profile_calls += 1
+        return {
+            "name": "supporter",
+            "face": "https://i0.hdslb.com/avatar.png",
+        }
+
+    module._fetch_profile_by_uid = fetch_profile  # type: ignore[method-assign]
+    module._fetch_bili_avatar = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("support event must not download avatar")
+    )
+
+    identity = await module.resolve(
+        ViewerEvent(uid="7", nickname="", source="live_danmaku"),
+        fetch_avatar_image=False,
+    )
+
+    assert profile_calls == 1
+    assert identity.nickname == "supporter"
+    assert identity.avatar_url == "https://i0.hdslb.com/avatar.png"
+    assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
 async def test_bili_identity_ignores_undecodable_avatar_bytes():
     module = BiliIdentityModule()
     module.ctx = SimpleNamespace(

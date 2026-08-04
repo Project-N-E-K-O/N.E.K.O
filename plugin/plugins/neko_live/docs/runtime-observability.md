@@ -279,6 +279,15 @@ declaration rather than an observed outcome. See `modules/live_support_events.md
 
 High-value events must still end in one of these outcomes. They must not directly produce output outside Dispatcher.
 
+`live_support_events` additionally records plugin-local dispatch-submission ownership as
+`support.dispatch_submission_finalized`. Its `current`, `retroactive`, and `stray` classifications
+only explain whether the scheduler may release its current slot; they are not new
+Dispatcher Outcomes and must not be projected as playback evidence. The audit detail is
+limited to opaque scheduler task ID, event category, priority, classification, outcome,
+and exception type. It excludes viewer identity, provider event ID, message/gift text, and
+raw payload. See `modules/live_support_events.md` for the approved state budget and exact
+ownership contract.
+
 ### High-value Event Priority Contract
 
 High-value Event Priority Contract defines how SC, Guard, and important gift events may influence Selection without bypassing NEKO Live guardrails.

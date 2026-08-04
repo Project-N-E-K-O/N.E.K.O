@@ -16,7 +16,10 @@ TOPIC_PRIVACY_PRIVATE = "private"
 _PUBLIC_TOPIC_SOURCES = {"fallback", "bili_trending"}
 _VIEWER_DERIVED_TOPIC_SOURCES = {"recent_danmaku", "live_thread"}
 
-_SENSITIVE_AUTH_RE = re.compile(r"\bauthorization\s*:\s*(?:bearer|basic)?\s*[^\s;,]+", re.IGNORECASE)
+_SENSITIVE_AUTH_RE = re.compile(
+    r"\b(?:proxy[-_]?authorization|authorization)\b\s*[:=]\s*(?:bearer|basic)?\s*[^\s;,]+",
+    re.IGNORECASE,
+)
 _SENSITIVE_COOKIE_HEADER_RE = re.compile(r"\bcookie\s*:\s*[^\r\n]*", re.IGNORECASE)
 _SENSITIVE_KEY_RE = re.compile(
     r"^(?:authorization|proxy_authorization|cookie|set-cookie|credentials?|auth|authentication|"
@@ -26,9 +29,9 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _SENSITIVE_TEXT_RE = re.compile(
-    r"\b(?:cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|odin_tt|sessionid|"
+    r"[\"']?\b(?:cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|odin_tt|sessionid|"
     r"sessdata|bili_jct|dedeuserid|buvid3|x-tt-token|password|passwd|secret|client_secret|"
-    r"api_key|apikey|credentials?)\b\s*[:=]\s*[^;\s,&]+",
+    r"api_key|apikey|credentials?)\b[\"']?\s*[:=]\s*[\"']?[^'\";}\s,&]+[\"']?",
     re.IGNORECASE,
 )
 

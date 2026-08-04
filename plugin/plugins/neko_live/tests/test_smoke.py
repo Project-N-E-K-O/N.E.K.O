@@ -389,6 +389,7 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         "panel.interaction.group.hosting",
         "panel.interaction.group.hostingHint",
         "panel.interaction.module.avatarRoast.avatarAnalysisHint",
+        "panel.interaction.module.avatarRoast.repeatRequestHint",
         "panel.interaction.module.avatarRoast.disabledHint",
         "panel.interaction.module.danmakuResponse.disabledHint",
         "panel.interaction.module.liveSupportEvents.disabledHint",
@@ -396,6 +397,14 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         "panel.interaction.module.idleHosting.disabledHint",
         "panel.interaction.module.activeEngagement.disabledHint",
         "panel.interaction.autoSaveHint",
+        "panel.coStreamEffects.title",
+        "panel.coStreamEffects.hint",
+        "panel.coStreamEffects.ambientContext",
+        "panel.coStreamEffects.channel.respond",
+        "panel.coStreamEffects.channel.read",
+        "panel.coStreamEffects.submitted",
+        "panel.coStreamEffects.deliveryLimit",
+        "panel.coStreamEffects.soloOnly",
     }
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -414,7 +423,16 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         assert interaction_source.index("{currentDecisionCard}") < interaction_source.index(
             't("panel.interaction.group.audience")'
         )
+        assert 'const coStreamEffectsCard = liveMode === "co_stream" ? (' in interaction_source
+        assert "submittedRouteCount(\"avatar_roast\")" in source
+        assert "submittedRouteCount(\"danmaku_response\")" in source
+        assert "submittedRouteCount(\"live_support_events\")" in source
+        assert "liveEventsStatus.ambient_publish_count" in source
+        assert 't("panel.coStreamEffects.channel.read")' not in interaction_source
+        assert 't(`panel.coStreamEffects.channel.${channelKey}`)' in interaction_source
+        assert "{coStreamEffectsCard}" in interaction_source
         assert 'disabled={!configForm.values.avatar_roast_enabled || settingsSaving}' in interaction_source
+        assert 't("panel.interaction.module.avatarRoast.repeatRequestHint")' in interaction_source
         assert '<Alert tone="info">{t("panel.interaction.autoSaveHint")}</Alert>' in interaction_source
         assert "<details" not in interaction_source
 

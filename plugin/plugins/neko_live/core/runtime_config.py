@@ -188,13 +188,14 @@ def _normalize_live_target_update(runtime: Any, clean: dict[str, Any]) -> None:
     target_platform = normalize_live_platform(
         clean.get("live_platform", current_platform)
     )
-    if target_platform != "douyin":
-        return
     if not {"live_platform", "live_room_ref"} & set(clean):
         return
     if "live_room_ref" not in clean and current_platform != target_platform:
         clean["live_room_ref"] = ""
         clean["live_room_id"] = 0
+        clean["live_enabled"] = False
+        return
+    if target_platform != "douyin":
         return
     raw_room_ref = clean.get("live_room_ref", getattr(runtime.config, "live_room_ref", ""))
     normalized = normalize_room_ref_for_platform(target_platform, raw_room_ref)

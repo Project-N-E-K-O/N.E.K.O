@@ -404,7 +404,7 @@ class DanmakuListener:
             url = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
             data = await self._request_json(url, params=params, headers=headers, cookies=cookies)
             api_code = data.get("code", -1)
-            self._log(f"getDanmuInfo API: code={api_code}, msg={data.get('message', '')}")
+            self._log(f"getDanmuInfo API: code={api_code}")
             if api_code == 0:
                 token = data["data"].get("token", "")
                 hosts = data["data"].get("host_list", [])
@@ -427,7 +427,7 @@ class DanmakuListener:
                     self._log(f"弹幕服务器列表: {[s[1] + ':' + str(s[2]) for s in servers]}")
                     return servers, token
             else:
-                self._log(f"getDanmuInfo 返回错误: {data}", "warning")
+                self._log(f"getDanmuInfo 请求被拒绝: code={api_code}", "warning")
         except Exception as e:
             self._log(f"获取弹幕服务器信息失败: {e}，使用默认地址", "warning")
 
@@ -990,7 +990,7 @@ class DanmakuListener:
                     self._log(f"✅ 认证成功，开始接收弹幕 [{self._current_server}]")
                 else:
                     self._connection_state = ConnectionState.DISCONNECTED
-                    self._log(f"❌ 认证失败: code={code} msg={result}", "warning")
+                    self._log(f"❌ 认证失败: code={code}", "warning")
                     # 认证失败，停止监听
                     self.running = False
                     self._stop_event.set()

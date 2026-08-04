@@ -1,6 +1,6 @@
 # NEKO Live Independent Mode Product Plan
 
-> Updated: 2026-07-15
+> Updated: 2026-08-03
 >
 > This document is the canonical product plan for Independent Mode. It describes product priorities, MVP scope, validation sequence, non-goals, and only the implementation status needed to evaluate those product gates. Internal architecture and runtime-observability contracts remain canonical in their dedicated documents.
 
@@ -23,9 +23,9 @@ Product success is not measured by the number of supported event types. It is me
 
 ## Current Priority
 
-Independent Mode remains the product target, but the current delivery task is offline release cleanup rather than another live-room run.
+Independent Mode remains the primary product target. The current delivery task is the consolidated NEKO Live acceptance pass: solo pacing and content quality, co-stream response/passive-context visibility, support-event single-dispatch behavior, instruction restoration, packaged UI, and real audible playback are reviewed together.
 
-Companion Mode remains part of NEKO Live, but it is not the current stage target. Short Gift, Super Chat, and Guard thanks are already implemented; more elaborate reading, welcome, ranking, privilege, or reward flows are optional later enhancements rather than prerequisites for proving Independent Mode.
+Companion Mode is now part of that acceptance baseline rather than a hidden follow-up. Every provider-verified Gift, Super Chat, and Guard tier uses the bounded active acknowledgement path in both modes; co-stream additionally keeps passive `read` context. More elaborate reading, welcome, ranking, privilege, or reward flows remain optional later enhancements.
 
 The release gate must eventually validate two promises:
 
@@ -34,7 +34,7 @@ The release gate must eventually validate two promises:
 
 ## Current Implementation Status
 
-Independent Mode is now past the first implementation and offline acceptance checks. The current offline closeout covers documentation consistency, bounded architecture cleanup, support-event scheduling hardening, and panel dialog state recovery. Controlled live-effect validation is still required before release, but the maintainer explicitly paused real-device testing on 2026-07-15. The legacy `bilibili_danmaku` capability migration matrix and retirement assessment begin in the next stage rather than being mixed into this closeout.
+Independent Mode is past its first implementation and offline acceptance checks. The current plugin baseline includes bounded co-stream room context, visible `respond`/`read` delivery counters, support-event dispatch-submission ownership, serialized instruction transitions, explicit route identity, and privacy-safe prompt/status/audit projection. Controlled live-effect validation is still required before release. The plugin can prove submission to the host, but browser playback still requires host lifecycle or real-device evidence. Legacy-plugin retirement remains separate from this acceptance work.
 
 - Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
@@ -371,7 +371,7 @@ Implemented before the next live test (offline verified; live feel still needs t
    - `solo_stream`: NEKO is the only on-stage host. She receives viewers, replies to danmaku, controls pacing, and fills dead air.
    - `co_stream`: the human streamer is the main host. NEKO is a low-interrupt partner who catches jokes, supports the streamer, and avoids taking over the room.
    - Streamer relationship labels must come from the current user/profile memory. Do not hard-code labels such as "older brother" or "owner"; if no label is available, use a neutral label or avoid naming the streamer.
-3. Reply Length Contract: the prompt contract is implemented offline for first-appearance roast, follow-up danmaku, warmup hosting, idle hosting, and active engagement. All speaking paths share the hard short-TTS limit: one sentence, no paragraph, at most 14 Chinese characters or 8 English words, with no explanation, setup, comma-chained clauses, or second sentence. `avatar_roast` and `danmaku_response` use reply rules: short danmaku should get even shorter replies and should not add a follow-up question unless the current danmaku asks one. `warmup_hosting`, `idle_hosting`, and `active_engagement` use host rules: they may include one concrete low-pressure reply hook, but must not expand into a host script or audience survey. Live feel still needs the next run.
+3. Reply Length Contract: every speaking path uses the plugin-owned short-TTS prompt contract, but the route ceilings are no longer one universal 14-character rule. Current metadata ceilings are 32 for `avatar_roast`, 28 for ordinary `danmaku_response`, 32 for `live_support_events`, 56 for warmup, 64 for idle hosting, and 72 for active engagement; explicit expanded danmaku and room-bridge modes use 56 and 48. These are plugin prompt/observability limits, not host-enforced post-generation truncation. Short reactions should still be tiny, while hosting may use one concrete low-pressure reply hook without becoming a script or survey.
 4. Active Engagement Pacing: make automatic Active Engagement more conservative after recent danmaku replies. It should not fire in `engaged` state and should wait longer after successful live danmaku output.
 5. Result Labels: validation and dashboard output should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club/guard signal capture instead of showing all ordinary live input as `live_danmaku`.
 6. Warmup Hosting Testability: the next live test should make the opening moment observable so the team can tell whether `warmup_hosting` fired, whether it spoke only one natural opening line, and whether it was not mistaken for idle hosting.

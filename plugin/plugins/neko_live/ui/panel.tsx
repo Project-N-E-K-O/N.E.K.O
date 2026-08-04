@@ -1795,6 +1795,15 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
         latestResult.event.host_beat_title,
       ].filter(Boolean).join(" / ")
     : ""
+  const liveEventsModule = modules.find((item: any) => String(item?.id || "") === "live_events") || {}
+  const liveEventsStatus = liveEventsModule.status || {}
+  const submittedRouteCount = (route: string) => results.filter((row: any) => (
+    String(row?.status || "") === "pushed" && interactionRoute(row) === route
+  )).length
+  const coStreamAvatarRoastCount = submittedRouteCount("avatar_roast")
+  const coStreamDanmakuCount = submittedRouteCount("danmaku_response")
+  const coStreamSupportCount = submittedRouteCount("live_support_events")
+  const coStreamAmbientCount = Number(liveEventsStatus.ambient_publish_count || 0)
 
   // Live roast card header state.
   const roastEnabled = configForm.values.avatar_roast_enabled !== false
@@ -1883,6 +1892,44 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       </Stack>
     </Card>
   )
+
+  const coStreamCapabilityValue = (configured: boolean, channelKey: "respond" | "read", count: number) => (
+    <Stack gap={4}>
+      <StatusBadge
+        tone={configured && connection.connected && configForm.values.live_enabled ? "success" : (configured ? "warning" : "default")}
+        label={configured ? (connection.connected && configForm.values.live_enabled ? t("panel.modules.online") : t("panel.modules.standby")) : t("panel.modules.off")}
+      />
+      <Text>{t(`panel.coStreamEffects.channel.${channelKey}`)} · {t("panel.coStreamEffects.submitted")}: {count}</Text>
+    </Stack>
+  )
+
+  const coStreamEffectsCard = liveMode === "co_stream" ? (
+    <Card title={t("panel.coStreamEffects.title")}>
+      <Stack gap={12}>
+        <Text>{t("panel.coStreamEffects.hint")}</Text>
+        <Grid cols={4}>
+          <StatCard
+            label={t("panel.interaction.module.avatarRoast.title")}
+            value={coStreamCapabilityValue(!!configForm.values.avatar_roast_enabled, "respond", coStreamAvatarRoastCount)}
+          />
+          <StatCard
+            label={t("panel.interaction.module.danmakuResponse.title")}
+            value={coStreamCapabilityValue(!!configForm.values.danmaku_response_enabled, "respond", coStreamDanmakuCount)}
+          />
+          <StatCard
+            label={t("panel.interaction.module.liveSupportEvents.title")}
+            value={coStreamCapabilityValue(!!configForm.values.live_support_events_enabled, "respond", coStreamSupportCount)}
+          />
+          <StatCard
+            label={t("panel.coStreamEffects.ambientContext")}
+            value={coStreamCapabilityValue(liveEventsModule.enabled === true, "read", coStreamAmbientCount)}
+          />
+        </Grid>
+        <Alert tone="info">{t("panel.coStreamEffects.deliveryLimit")}</Alert>
+        <Text>{t("panel.coStreamEffects.soloOnly")}</Text>
+      </Stack>
+    </Card>
+  ) : null
 
   // First-appearance roast card.
   const renderAvatarRoastCard = (m: any) => (
@@ -1992,6 +2039,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const interactionDialogContent = interactionDialog === "avatar_roast" ? (
     <Stack>
       <Text>{t("panel.interaction.module.avatarRoast.desc")}</Text>
+      <Text>{t("panel.interaction.module.avatarRoast.repeatRequestHint")}</Text>
       <ToggleSwitch checked={!!configForm.values.avatar_analysis_enabled} disabled={!configForm.values.avatar_roast_enabled || settingsSaving} label={t("panel.interaction.module.avatarRoast.avatarAnalysis")} onChange={(v) => { applySettingsPatch({ avatar_analysis_enabled: v }) }} />
       <Text>{t("panel.interaction.module.avatarRoast.avatarAnalysisHint")}</Text>
       <StatusBadgeRow t={t} items={[
@@ -2084,6 +2132,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const modulesSection = (
     <Stack>
       {currentDecisionCard}
+      {coStreamEffectsCard}
       {renderInteractionGroupHeader(t("panel.interaction.group.audience"), t("panel.interaction.group.audienceHint"))}
       <div style={interactionCardGridStyle}>
         <ModuleRenderBoundary title={t("panel.interaction.module.avatarRoast.title")} render={() => renderAvatarRoastCard(interactionModuleById.avatar_roast)} t={t} />

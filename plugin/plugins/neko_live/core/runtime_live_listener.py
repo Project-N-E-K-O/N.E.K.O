@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from .contracts import normalize_live_platform
 from .runtime_live_input import remember_live_room_context
 from .runtime_live_session import begin_live_session, invalidate_live_session
+
+
+def begin_live_listener_operation(runtime: Any) -> int:
+    """Claim ownership of the next listener state transition."""
+
+    operation_id = int(getattr(runtime, "_live_listener_operation_id", 0) or 0) + 1
+    runtime._live_listener_operation_id = operation_id
+    return operation_id
+
+
+def is_current_live_listener_operation(runtime: Any, operation_id: int) -> bool:
+    return int(getattr(runtime, "_live_listener_operation_id", 0) or 0) == operation_id
 
 
 def _disable_recent_chat_tool(runtime: Any) -> None:
@@ -99,12 +112,21 @@ async def reconcile_live_listener_after_config(
             )
             return
         runtime.live_connection_auth_mode = "authenticated"
+    elif platform == "twitch":
+        # Twitch validates the cached user token again while starting the new
+        # client, resolving the target channel and creating EventSub
+        # subscriptions.  Keep the public mode unknown until that succeeds;
+        # treating Twitch like a provider-managed transport loses the explicit
+        # authorization boundary used by the normal connect action.
+        runtime.live_connection_auth_mode = "unknown"
     else:
         runtime.live_connection_auth_mode = "provider_managed"
     await refresh_live_room_context(runtime, room_ref)
     started = await start_live_listener(runtime, room_ref)
     runtime._accepting_live_events = bool(started)
     if started:
+        if platform == "twitch":
+            runtime.live_connection_auth_mode = "authenticated"
         await runtime.sync_live_instructions(force=True)
     else:
         await runtime.restore_instructions(force=True)
@@ -128,6 +150,8 @@ async def reconcile_live_listener_after_config(
 
 
 async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
+    await _await_pending_live_listener_cleanup(runtime)
+    operation_id = begin_live_listener_operation(runtime)
     runtime._accepting_live_events = False
     # Tool calls can hold the realtime voice turn open after the plugin has
     # already returned. Passive next-turn snapshots provide the same facts
@@ -135,12 +159,32 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     _disable_recent_chat_tool(runtime)
     try:
         started = await runtime.live_provider.start_listening(room_ref)
+    except asyncio.CancelledError:
+        if is_current_live_listener_operation(runtime, operation_id):
+            invalidate_live_session(runtime)
+            runtime.live_connection_state = "disconnected"
+            runtime.live_connection_auth_mode = "unknown"
+            runtime.config.live_enabled = False
+            runtime.safety_guard.set_connected(False)
+            runtime._accepting_live_events = False
+        raise
     except Exception as exc:
         started = False
+        if is_current_live_listener_operation(runtime, operation_id):
+            runtime.audit.record(
+                "live_listener_start_failed",
+                f"listener start failed: {type(exc).__name__}",
+                level="warning",
+            )
+    if not is_current_live_listener_operation(runtime, operation_id):
         runtime.audit.record(
-            "live_listener_start_failed",
-            f"listener start failed: {type(exc).__name__}",
-            level="warning",
+            "live_listener_start_superseded",
+            "listener start completion ignored because a newer control operation owns state",
+            detail={"operation_id": operation_id},
+        )
+        return bool(
+            getattr(runtime, "_accepting_live_events", False)
+            and getattr(runtime, "live_connection_state", "") == "connected"
         )
     if started:
         begin_live_session(runtime)
@@ -172,22 +216,25 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
 
 
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
+    operation_id = begin_live_listener_operation(runtime)
     runtime._accepting_live_events = False
     _disable_recent_chat_tool(runtime)
     invalidate_live_session(runtime)
     try:
         await runtime.live_provider.stop_listening()
     finally:
-        try:
-            if mark_disabled:
-                runtime.config.live_enabled = False
-                _clear_connected_room_status(runtime)
-                await runtime.restore_instructions()
-        finally:
-            runtime.live_connection_state = "disconnected"
-            runtime.live_connection_auth_mode = "unknown"
-            runtime._live_listener_started_at = 0.0
-            runtime.safety_guard.set_connected(False)
+        if is_current_live_listener_operation(runtime, operation_id):
+            try:
+                if mark_disabled:
+                    runtime.config.live_enabled = False
+                    _clear_connected_room_status(runtime)
+                    await runtime.restore_instructions()
+            finally:
+                if is_current_live_listener_operation(runtime, operation_id):
+                    runtime.live_connection_state = "disconnected"
+                    runtime.live_connection_auth_mode = "unknown"
+                    runtime._live_listener_started_at = 0.0
+                    runtime.safety_guard.set_connected(False)
 
 
 async def handle_unexpected_live_listener_stop(
@@ -196,6 +243,63 @@ async def handle_unexpected_live_listener_stop(
     connection_state: str = "disconnected",
 ) -> None:
     """Converge runtime state after a provider stops without an explicit user action."""
+    _mark_unexpected_live_listener_stop(runtime, connection_state=connection_state)
+    await runtime.restore_instructions(force=True)
+
+
+def schedule_unexpected_live_listener_stop(
+    runtime: Any,
+    *,
+    connection_state: str = "disconnected",
+) -> "asyncio.Task[Any] | None":
+    """Immediately close event ownership, then restore host state off-callback."""
+
+    _mark_unexpected_live_listener_stop(runtime, connection_state=connection_state)
+    current = getattr(runtime, "_live_listener_cleanup_task", None)
+    if current is not None and not current.done():
+        return current
+
+    async def restore() -> None:
+        await runtime.restore_instructions(force=True)
+
+    task = asyncio.create_task(restore())
+    runtime._live_listener_cleanup_task = task
+
+    def cleanup(done: "asyncio.Task[Any]") -> None:
+        if getattr(runtime, "_live_listener_cleanup_task", None) is done:
+            runtime._live_listener_cleanup_task = None
+        if done.cancelled():
+            return
+        try:
+            error = done.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            runtime.audit.record(
+                "live_listener_cleanup_failed",
+                f"unexpected listener cleanup failed: {type(error).__name__}",
+                level="warning",
+            )
+
+    task.add_done_callback(cleanup)
+    return task
+
+
+async def _await_pending_live_listener_cleanup(runtime: Any) -> None:
+    """Finish an older disconnect restore before a new listener owns the scene."""
+
+    task = getattr(runtime, "_live_listener_cleanup_task", None)
+    if task is None or task.done() or task is asyncio.current_task():
+        return
+    await asyncio.shield(task)
+
+
+def _mark_unexpected_live_listener_stop(
+    runtime: Any,
+    *,
+    connection_state: str,
+) -> int:
+    operation_id = begin_live_listener_operation(runtime)
     runtime._accepting_live_events = False
     invalidate_live_session(runtime)
     runtime.config.live_enabled = False
@@ -206,7 +310,7 @@ async def handle_unexpected_live_listener_stop(
     runtime.live_connection_auth_mode = "unknown"
     runtime._live_listener_started_at = 0.0
     runtime.safety_guard.set_connected(False)
-    await runtime.restore_instructions(force=True)
+    return operation_id
 
 
 async def _stop_captured_provider(provider: Any) -> None:
@@ -219,6 +323,9 @@ async def refresh_live_room_context(runtime: Any, room_ref: str) -> dict[str, An
     """Replace room metadata without retaining fields from the previous room."""
 
     platform = runtime.live_provider.platform
+    if not _owns_live_room_context_target(runtime, platform, room_ref):
+        current = getattr(runtime, "live_room_context", {})
+        return current if isinstance(current, dict) else {}
     room_id = runtime.live_provider.configured_room_id()
     minimal_context: dict[str, Any] = {
         "platform": platform,
@@ -231,12 +338,16 @@ async def refresh_live_room_context(runtime: Any, room_ref: str) -> dict[str, An
     try:
         status = await runtime.live_provider.lookup_room_status(room_ref)
     except Exception as exc:
+        if not _owns_live_room_context_target(runtime, platform, room_ref):
+            return runtime.live_room_context
         runtime.audit.record(
             "live_room_context_lookup_failed",
             f"room context lookup failed: {type(exc).__name__}",
             level="warning",
             detail={"platform": platform, "room_ref": str(room_ref or "")[:120]},
         )
+        return runtime.live_room_context
+    if not _owns_live_room_context_target(runtime, platform, room_ref):
         return runtime.live_room_context
     if not getattr(status, "ok", False):
         runtime.audit.record(
@@ -252,6 +363,20 @@ async def refresh_live_room_context(runtime: Any, room_ref: str) -> dict[str, An
         platform=platform,
         room_ref=room_ref,
     )
+
+
+def _owns_live_room_context_target(runtime: Any, platform: str, room_ref: Any) -> bool:
+    provider = getattr(runtime, "live_provider", None)
+    if provider is None or getattr(provider, "platform", "") != platform:
+        return False
+    configured = getattr(provider, "configured_room_ref", None)
+    if not callable(configured):
+        return False
+    try:
+        current_room_ref = configured()
+    except Exception:
+        return False
+    return str(current_room_ref or "").strip() == str(room_ref or "").strip()
 
 
 def sync_douyin_listener_state(runtime: Any, state: Any) -> None:

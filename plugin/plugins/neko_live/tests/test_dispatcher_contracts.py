@@ -257,6 +257,60 @@ def test_output_contract_bridge_rejects_object_support_event_type():
     assert metadata_for_request(request)["response_module_hint"] == "danmaku_response"
 
 
+def test_output_contract_bridge_prefers_pipeline_owned_module_identity_over_image_capability():
+    request = InteractionRequest(
+        event=ViewerEvent(
+            uid="42",
+            nickname="viewer",
+            source="live_danmaku",
+            live_mode="solo_stream",
+        ),
+        identity=ViewerIdentity(uid="42", nickname="viewer"),
+        profile=ViewerProfile(uid="42", nickname="viewer"),
+        prompt_text="[NEKO Live first-appearance roast]",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=False,
+        metadata={"response_module_hint": "avatar_roast"},
+    )
+
+    metadata = metadata_for_request(request)
+
+    assert response_module_hint(request) == "avatar_roast"
+    assert metadata["response_module_hint"] == "avatar_roast"
+    assert metadata["max_reply_chars"] == 32
+
+
+def test_output_channel_status_never_stringifies_or_retains_secret_details():
+    class SecretDetail:
+        def __str__(self) -> str:
+            return "{'token': 'OBJECT-SECRET'}"
+
+    class Plugin:
+        def output_channel_status(self):
+            return {
+                "ready": False,
+                "reason": "output_channel_unavailable",
+                "detail": SecretDetail(),
+            }
+
+    status = NekoDispatcher(Plugin()).output_channel_status()
+
+    assert status["detail"] == ""
+    assert "OBJECT-SECRET" not in str(status)
+
+
+def test_output_channel_status_reports_exception_type_without_exception_text():
+    class Plugin:
+        def output_channel_status(self):
+            raise RuntimeError("{'token': 'CALL-SECRET'}")
+
+    status = NekoDispatcher(Plugin()).output_channel_status()
+
+    assert status["detail"] == "output channel check failed: RuntimeError"
+    assert "CALL-SECRET" not in str(status)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("allow_avatar_image", [False, True])
 async def test_dispatcher_keeps_live_viewer_as_question_author(allow_avatar_image: bool):

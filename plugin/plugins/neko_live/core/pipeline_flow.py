@@ -8,6 +8,7 @@ from typing import Any
 from .contracts import InteractionResult, PipelineStep, ViewerEvent
 from .pipeline_dispatch import dispatch_routed_request
 from .pipeline_requests import build_request_for_route
+from .pipeline_routing import support_event_type
 from .pipeline_results import (
     fail_pipeline,
     skip_already_roasted,
@@ -33,6 +34,7 @@ async def run_event_flow(
             event,
             steps,
             is_transient_event=is_transient_event,
+            fetch_avatar_image=not bool(support_event_type(event)),
         )
         identity = viewer.identity
         profile = viewer.profile
@@ -100,6 +102,7 @@ async def run_event_flow(
             if (
                 uid_lock is not None
                 and already_roasted
+                and route.viewer_gate_reason != "explicit_self_avatar_roast"
                 and (
                     route.response_module_id != "danmaku_response"
                     or not hasattr(ctx, "danmaku_response")

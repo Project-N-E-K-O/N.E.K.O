@@ -53,7 +53,12 @@ class BiliIdentityModule(BaseModule):
     id = "bili_identity"
     title = "B站身份解析"
 
-    async def resolve(self, event: ViewerEvent) -> ViewerIdentity:
+    async def resolve(
+        self,
+        event: ViewerEvent,
+        *,
+        fetch_avatar_image: bool = True,
+    ) -> ViewerIdentity:
         uid = str(event.uid or "").strip()
         nickname = str(event.nickname or "").strip()
         avatar_url = str(event.avatar_url or "").strip()
@@ -62,7 +67,7 @@ class BiliIdentityModule(BaseModule):
         pendant = ""
         errors: list[str] = []
 
-        if uid and uid.isdigit() and (not nickname or not avatar_url):
+        if uid and uid.isdigit() and (not nickname or (fetch_avatar_image and not avatar_url)):
             try:
                 profile = await self._fetch_profile_by_uid(uid)
                 display_name = str(profile.get("name") or nickname or uid).strip()
@@ -96,6 +101,8 @@ class BiliIdentityModule(BaseModule):
             is_default_avatar=bool(avatar_url) and "noface" in avatar_url.lower(),
             pendant=pendant,
         )
+        if not fetch_avatar_image:
+            return identity
         if self.ctx is not None:
             avatar_analysis_enabled = bool(
                 getattr(self.ctx.config, "avatar_analysis_enabled", True)

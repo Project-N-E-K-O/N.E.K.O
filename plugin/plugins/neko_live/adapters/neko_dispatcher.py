@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..core.contracts import InteractionRequest
+from ..core.contracts_public import public_text
 from ..core.live_output_contract_prompt import render_contract_instruction
 from ..core.live_output_quality import UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES, choose_fallback_reply
 from ..core.recent_output_families import spent_output_text
@@ -345,17 +346,18 @@ class NekoDispatcher:
                 return {
                     "ready": False,
                     "reason": "output_channel_unavailable",
-                    "detail": str(exc),
+                    "detail": f"output channel check failed: {type(exc).__name__}",
                 }
             if isinstance(data, dict):
                 ready = bool(data.get("ready", data.get("ok", False)))
                 return {
                     "ready": ready,
-                    "reason": str(
+                    "reason": public_text(
                         data.get("reason")
-                        or ("" if ready else "output_channel_unavailable")
+                        or ("" if ready else "output_channel_unavailable"),
+                        max_len=80,
                     ),
-                    "detail": str(data.get("detail") or ""),
+                    "detail": public_text(data.get("detail"), max_len=160),
                 }
 
         explicit_ready = getattr(self.plugin, "output_channel_ready", None)

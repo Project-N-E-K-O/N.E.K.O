@@ -14,8 +14,40 @@ from plugin.plugins.neko_live.core.contracts import (
 )
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
 from plugin.plugins.neko_live.core.pipeline import LivePipeline
+from plugin.plugins.neko_live.core.pipeline_requests import build_request_for_route
+from plugin.plugins.neko_live.core.pipeline_routing import PipelineRoute
 from plugin.plugins.neko_live.core.pipeline_session import PipelineSessionTracker
 from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
+
+
+def test_pipeline_route_stamps_avatar_roast_identity_when_image_is_disabled():
+    event = ViewerEvent(uid="42", nickname="viewer", source="live_danmaku")
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer")
+    request = InteractionRequest(
+        event=event,
+        identity=identity,
+        profile=profile,
+        prompt_text="avatar roast",
+        live_mode="solo_stream",
+        strength="normal",
+        allow_avatar_image=False,
+    )
+    ctx = SimpleNamespace(
+        avatar_roast=SimpleNamespace(
+            build_request=lambda *_args: request,
+        )
+    )
+
+    built = build_request_for_route(
+        ctx,
+        PipelineRoute("avatar_roast", "first_appearance", True),
+        event,
+        identity,
+        profile,
+    )
+
+    assert built.metadata["response_module_hint"] == "avatar_roast"
 
 
 @pytest.mark.asyncio
@@ -1018,6 +1050,14 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
+    explicit_avatar = await pipeline.handle_event(
+        ViewerEvent(
+            uid="42",
+            nickname="same",
+            danmaku_text="rate my avatar",
+            source="live_danmaku",
+        )
+    )
 
     assert first.status == "pushed"
     assert second.status == "pushed"
@@ -1025,7 +1065,15 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
     assert second.request is not None
     assert first.request.prompt_text == "avatar_roast:first"
     assert second.request.prompt_text == "danmaku_response:second"
+    assert explicit_avatar.request is not None
+    assert explicit_avatar.request.prompt_text == "avatar_roast:rate my avatar"
     assert any(step.id == "viewer_gate" and step.status == "ok" and step.message == "repeat_danmaku" for step in second.steps)
+    assert any(
+        step.id == "viewer_gate"
+        and step.status == "ok"
+        and step.message == "explicit_self_avatar_roast"
+        for step in explicit_avatar.steps
+    )
 
 @pytest.mark.asyncio
 async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_dispatcher_fails():

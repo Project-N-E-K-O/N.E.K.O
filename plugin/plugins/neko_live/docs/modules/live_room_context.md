@@ -2,7 +2,7 @@
 
 ## Status
 
-`RoomPulse v0`, its compact prompt projection, solo-only `SceneState v0`, the co-stream passive-context slice, session-scoped `RitualMemory v0`, and `RoomVerdict v0` are implemented in Draft PR #2647 pending maintainer approval. The host has a three-state floor gate, but the managed `pause` short-form path is not yet reachable; RoomVerdict also lacks playback-completion backflow.
+`RoomPulse v0`, its compact prompt projection, solo-only `SceneState v0`, the co-stream passive-context slice, session-scoped `RitualMemory v0`, and `RoomVerdict v0` are implemented in the current plugin baseline. They are tracked through the consolidated live-plugin acceptance work rather than a module-specific PR status. The host has a three-state floor gate, but the managed `pause` short-form path is not yet reachable; RoomVerdict also lacks playback-completion backflow.
 
 The prompt slices change only the context of an output that the existing selection and scheduling paths already chose. The co-stream passive slice adds one bounded debounce task and same-key queue replacement, but no automatic turn, model call, network request, timer-based expiry, or speaking authority.
 
@@ -103,8 +103,7 @@ Support behavior is mode- and tier-aware:
 
 - `solo_stream`: existing proactive selected danmaku and support behavior is unchanged;
 - `co_stream` ordinary danmaku: passive snapshot plus an independently selected bounded active reply when policy permits;
-- `co_stream` light/medium support: passive verified fact only;
-- `co_stream` high/milestone support: at most one bounded active acknowledgement plus a passive shadow marked as requested, never as audibly completed.
+- `co_stream` verified support at every tier: one bounded active acknowledgement attempt through the shared scheduler plus a passive shadow, never a claim of audible completion.
 
 **Delivery-delay tolerance (aligned with the host owner decision).** The host
 delivers a passive snapshot at the next NATURALLY-occurring hot swap and
@@ -361,12 +360,12 @@ The following decisions require maintainer approval before their corresponding r
 | Co-stream behavior | Enforce with unknown host turn, or remain read-only until a reliable provider exists | Keep `enforced=false`; RoomPulse never grants L3 speaking authority | Existing conservative downgrade remains the fallback |
 | Scene memory | Transcript/RAG, model-authored summaries, or one bounded deterministic state object | Slice 3 uses one runtime-only object, three viewer turns, 120-second lazy expiry, no persistence, and no transcript | Reset on all session/mode boundaries; remove the prompt consumer to revert behavior |
 | UI surface | Add controls now, display read-only diagnostics later, or no UI | No new UI in Slice 1; use tests/status evidence first | Avoids eight-locale and panel compatibility cost until product value is proven |
-| Slice 4A passive context | One bounded renderer plus one coalesced debounce task, or an automatic speaking turn/model summary | Use the renderer and at most one refresh plus one clear task; zero additional model calls or speaking turns | Draft pending maintainer approval; disable the passive publisher and keep active output unchanged |
-| Rollback fact guard | Publish explicit absence/expiry on session boundaries, or allow stale context to linger | Clear with the previous session key before publishing the new authoritative snapshot | Draft pending maintainer approval; remove the fact guard only together with its passive consumer; barrier tests cover ordering |
-| Slice 5 ritual memory | Bounded deterministic session memory, or transcript/model memory | Fixed-size runtime-only candidates, no transcript, persistence, timer, or model call | Draft pending maintainer approval; remove the ritual block consumer and reset state |
-| Slice 6 verdict | Bounded distinct-viewer ballots, or model-generated consensus | Deterministic session-only ballot with combined 520-character context ceiling | Draft pending maintainer approval; remove verdict subscription/rendering; tests and stable counters provide observability |
+| Slice 4A passive context | One bounded renderer plus one coalesced debounce task, or an automatic speaking turn/model summary | Use the renderer and at most one refresh plus one clear task; zero additional model calls or speaking turns | Disable the passive publisher and keep active output unchanged |
+| Rollback fact guard | Publish explicit absence/expiry on session boundaries, or allow stale context to linger | Clear with the previous session key before publishing the new authoritative snapshot | Remove the fact guard only together with its passive consumer; barrier tests cover ordering |
+| Slice 5 ritual memory | Bounded deterministic session memory, or transcript/model memory | Fixed-size runtime-only candidates, no transcript, persistence, timer, or model call | Remove the ritual block consumer and reset state |
+| Slice 6 verdict | Bounded distinct-viewer ballots, or model-generated consensus | Deterministic session-only ballot with combined 520-character context ceiling | Remove verdict subscription/rendering; tests and stable counters provide observability |
 
-The user approved the recommended Slice 1, Slice 2, and Slice 3 verification options on 2026-07-21. Slice 4A, its rollback guard, Slice 5, and Slice 6 remain Draft pending maintainer approval in PR #2647; Slice 4B co-stream enforcement remains open.
+Slices 1 through 6 are present in the current plugin baseline and covered by offline regression tests. Slice 4B co-stream enforcement remains open because the plugin still lacks reliable host-turn and playback-completion backflow; release acceptance stays consolidated with the rest of NEKO Live.
 
 Expected Slice 1 and Slice 2 cost budget:
 

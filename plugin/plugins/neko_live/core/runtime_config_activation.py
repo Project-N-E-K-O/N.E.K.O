@@ -49,6 +49,13 @@ def activate_config(runtime: Any, config: LiveConfig) -> LiveConfig:
     )
     runtime.permission_gate.update(runtime.config)
     runtime.safety_guard.update(runtime.config)
+    update_support_queue_limit = getattr(
+        getattr(runtime, "live_support_events", None),
+        "update_queue_limit",
+        None,
+    )
+    if callable(update_support_queue_limit):
+        update_support_queue_limit(runtime.config.queue_limit)
     if not _has_configured_live_target(runtime.config):
         runtime.live_connection_state = "disconnected"
         runtime.live_connection_auth_mode = "unknown"

@@ -19,7 +19,7 @@
 - 本场直播统计、观众档案和运行态解释；
 - 开发者沙盒、监控和压力工具。
 
-更新日期：2026-08-01
+更新日期：2026-08-03
 
 核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_live` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
 
@@ -648,6 +648,8 @@ host 的 `update_own_config`（把配置写回 `plugin.toml`）在「只重后�
 2. **再带预算尽力持久化**：`_persist_config_best_effort` 用 `asyncio.wait_for(self._persist_config_update(clean), timeout=_CONFIG_PERSIST_BUDGET_SECONDS)`（默认 4.0s，远低于 host 的 10s entry 限），超时记 `config_persist_timeout`、失败记 `config_persist_failed`，**都不回滚已生效的内存配置、不阻塞**。
 3. **串行化**：`asyncio.Lock`（`_get_config_lock`，懒初始化）覆盖旧配置快照、内存 apply、提示词副作用、持久化和 listener reconcile，避免并发 `update_config` 读取过期状态。平台或房间变化时必须先捕获并停止旧平台的具体 provider 实例，再启动新平台；不能在激活新配置后通过动态 router 反查并误停新 provider。
 
+平台切换若没有在同一 patch 中提供新 `live_room_ref`，必须清空旧平台目标、旧数字房号和 `live_enabled`；不同 provider 的目标字符串不能互相继承。房间元数据查询完成后还必须核对当前 provider 与当前配置目标，旧房间的迟到标题、主播名、直播状态或失败结果不得覆盖新房间语境。
+
 效果：host 持久化即便卡死，action 也在 ≤4s 内成功返回、runtime 行为已按新配置生效。代价：写竞争时那一次改动**不落盘**（stop/start 后还原成 `plugin.toml` 的值），且每次 `update_config` 等满 4s 预算（无竞争时秒过）。
 
 > 边界：这是**插件侧免疫**；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支，但插件仍保留这层预算兜底，避免未来 host 持久化异常拖垮直播 action。`connect/disconnect_live_room` 另对 `live_enabled` 做内存直设，不依赖持久化即时性。测试：契约 `test_update_config_does_not_block_on_hanging_persistence`、`test_connect_does_not_block_on_hanging_config_persistence`（注入卡死的 `update_own_config`，断言 action 不阻塞、内存生效、记 `config_persist_timeout`）。
@@ -834,29 +836,9 @@ danmaku_core._dispatch_message(DANMU_MSG)
 
 ## Gift / SC / Guard 短句致谢（live_support_events）
 
-**功能目的**：礼物、SC、上舰由 EventBus 直接交给独立模块的有界调度器，不再伪装成普通弹幕，也不只停在 signal-only 观测。调度器完成真实性门、去重、连击聚合与优先级选择后生成一条短句致谢；它不做贡献榜、奖励承诺、仪式化播报，也不能向观众索要更多礼物 / SC / 上舰。
+Gift / SC / Guard 由 `live_support_events` 独立订阅并经现有 Pipeline、Safety Guard 和 Dispatcher 生成一条短句致谢；普通弹幕文字不能伪造可信支持事件。该模块不做贡献榜、奖励承诺、仪式化播报、权益流程或主播运营动作。
 
-**责任模块**：`modules/live_support_events/__init__.py`（`LiveSupportEventsModule`），路由在 `core/pipeline_routing.py`，request 构造在 `core/pipeline_requests.py`。
-
-**入口与数据流**：
-```text
-live_events 选中 gift / super_chat / guard
-  -> ctx.handle_live_payload(payload)
-  -> pipeline_routing.support_event_type(event)
-  -> live_support_events.build_request(event, identity, profile)
-  -> safety_guard.before_output()
-  -> neko_dispatcher.push_roast()
-```
-
-**经过 safety_guard 吗 / 失败如何降级**：经过。`live_support_events` 只构造 `InteractionRequest`，仍走 profile 准备、request build step、`before_output`、dispatcher、dry-run、audit 和 Runtime Timeline；失败口径与其它 pipeline request 相同，不新增直连输出。`live_status_summary()` 的 `cooldown` 只描述当前普通输出节奏，Pipeline 的粗状态门不得据此提前拒绝事件；最终时序统一由 `SafetyGuard.before_output()` 判定，因此普通回复继续受全局冷却，而可信 Gift 可使用独立的短感谢冷却通道，SC / Guard 仍按既有高价值支持规则处理。
-
-**触碰的契约 / store / UI / action**：request metadata 新增 `support_event_type`、`support_event_tier`、`support_event_label`，`output_contract_bridge` 据此把 `response_module_hint` 标为 `live_support_events`，但 `support_event_type` 只接受真实字符串，object / bytes / container 不得被字符串化成支持事件路由；短回复合约给该模块独立 32 字上限，`live_output_contract_prompt` 要求第一分句先明确感谢当前已验证支持，不能先回答近期弹幕、续接上一轮或转移话题，也不能索要更多支持或做仪式。`runtime_live_input.expose_request_metadata()` 将 support metadata 投影进 recent result；`ViewerEvent.to_dict()` 只暴露 support summary 字段，不暴露 raw payload。UI 只新增模块卡和 route label，无新增 action。
-
-**读写了哪些用户数据**：不新增长期字段。观众档案仍由 normal pipeline / `viewer_profile` 更新；模块只读取当前事件摘要、近期上下文、观众偏好投影和 live-events prompt block。礼物名称、数量、coin 总量、guard level 只作为当前事件的安全摘要进入 request/result projection。
-
-**测试命令与主要场景**：`test_handle_live_payload_routes_gift_to_support_events` 锁住 gift 进入 `live_support_events`、timeline/metadata/result projection 完整；`test_handle_live_payload_routes_support_events_through_pipeline` 覆盖 `gift` / `guard` / `super_chat` / `sc`；solo stream simulation 覆盖 Gift 和 SC 与普通弹幕、hosting 路线共存。
-
-**已知限制**：当前只做短句感谢，不做 SC 朗读细分、舰长欢迎流程、贡献榜、粉丝牌权益或主播运营动作。
+真实性证据、优先级、连击合并、provider ID 去重、同播主动/被动行为、派发所有权、成本预算、回滚和测试的唯一详细说明见 [`docs/modules/live_support_events.md`](modules/live_support_events.md)。本文只锁住三条长期边界：不得另建第二套输出队列；失败不得自动重试；`submitted` / Dispatcher `pushed` 只表示交给宿主，不证明模型、TTS 或浏览器播放完成。
 
 ## 直播事件中枢（EventBus）与新增事件 handler
 
@@ -997,6 +979,10 @@ danmaku_core on_event(cmd, 富模型)
 直播开启后允许注入一份**轻全局直播情景**，用于保证真实直播质量；它只能走 `NekoDispatcher.push_context_instructions()` / `ai_behavior="read"`，不能由 runtime、module 或 UI action 直接 `plugin.push_message()`。`sync_live_instructions()` 通常在 `live_enabled=true`、`dry_run=false`、直播连接可用且 `live_status_summary=ready_to_stream` 时注入；但 provider 的房间查询可能滞后或误报 `offline`，此时用户已经显式开始直播且 listener 同时报告 `connected=true`、`listening=true`，可把这组运行事实作为仅限直播情景注入的权威入口。已连接并监听的会话在输出冷却、手动暂停或短暂 safety gate 期间仍保留直播情景；这些状态只阻止本次输出，不代表直播会话结束。dry-run、listener 断连、未配置房间、关闭直播等稳定终态才 fail closed 并在必要时 restore。轻全局情景只允许包含直播身份、`live_mode`、独播/人猫同播角色边界、观众对象、禁止提主人/后台/操作员、短 TTS 输出边界，以及 `stream_theme` 的短主题锚点。当前弹幕、头像、UID、冷场/暖场节奏、具体回复合约和 recent-output 负例仍必须收束在插件发出的单次 `respond` 事件 prompt 内。
 
 轻全局直播情景必须可清理：显式断开直播间、关闭 `live_enabled`、listener 断连、切换直播模式、短主题签名变化或插件管理器整体停止时，通过 `NekoDispatcher.push_context_restore()` 退出旧语境，再按新签名决定是否重新注入。保存 `live_mode`、`stream_theme`、`stream_goal`、`stream_columns` 或 `stream_avoid_topics` 后会立刻按签名同步；随后到达的配置回调若签名相同应保持无操作。旧配置中只有数字 `live_room_id`、`live_room_ref` 为空时，规范化不得把主题或模式单独保存误判成用户换房；只有当前更新显式携带且实际修改平台 / 房间字段时，才允许把情景同步延后到重连。单独的房间查询 `offline/preparing` 只在 listener 未连接时触发清理，不能覆盖用户已开始且正在收事件的会话。直播情景、开发者模式和 co-stream 房间快照都使用各自稳定 key 的宿主可替换覆盖层；restore 发送同 key 的过期事件，不进入 callback/hot-swap 队列，也不触发模型回复。宿主会在角色管理器中有界保留当前覆盖层：Realtime 活跃会话和 pending 热切换会话同步更新，新会话 connect 后重新应用；无活跃会话时保留到下一次 connect；离线历史只能追加当前状态或过期标记；Gemini 因缺少无回复更新能力而 fail closed。
+
+提示词覆盖层的注入、恢复和开发者模式切换共用一个 runtime-local `asyncio.Lock`，耗时宿主提交仍不新增 worker 或第二套队列。意外断线产生的异步 restore 必须在新 listener 认领会话前完成，避免旧完成清空新情景身份。宿主边界异常只允许审计固定操作名与异常类型，不得保留异常正文。provider 房间标题、主播名、观众昵称、UID、弹幕和头像元数据进入 prompt 前必须压成有界单行，并显式标记为不可信公开数据；它们可以作为回复事实，不能成为改变规则、索取隐藏上下文或要求执行动作的指令。
+
+单次请求的 `response_module_hint` 必须由 pipeline 已选定的实际 route 写入，dispatcher 不得根据头像图片是否可用反推模块身份；否则关闭头像分析会把 `avatar_roast` 错投影为普通弹幕回复。外部标题、近期弹幕聚合出的 `topic_material` 同样属于不可信公开数据。直播入口归一化只保留路由所需的公开标量、支持事件摘要、房间/会话代际和稳定 provider event id，不能把任意 payload 对象或异常正文隐式字符串化后带入 prompt、recent result、status 或 audit。
 `live_enabled` 也是运行态输出总闸，而不只是 UI 开关或 permission gate。`live_status_summary()` 必须在 `live_enabled=false` 时返回 `cannot_stream/live_disabled`，即使旧监听器快照仍显示 connected；自动 `warmup_hosting` / `active_engagement` / `idle_hosting` 因此不得进入 pipeline、不得写 recent result，避免 NEKO Live 未开启时污染其他插件测试或主猫普通发言。
 
 2026-08-01 补充：`live_status_summary()` 仍如实保留 provider 的 `cannot_stream/live_room_offline`，自动暖场、冷场和主动营业也继续等待真实可播状态；只对轻全局直播情景增加“用户已开始 + listener connected/listening”的窄例外。这样既不会让离线房间自动营业，也不会因为房间查询误报而让主语音对话丢失直播主题和人猫同播角色。
@@ -1015,6 +1001,10 @@ danmaku_core on_event(cmd, 富模型)
 
 即使主播关闭 `roast_once_per_uid`，同一直播运行会话内的同 UID 后续弹幕仍优先进入 `danmaku_response`，不继续重复头像 / ID 首评模板。该开关只影响是否用持久观众档案拦住跨会话首评，不允许把独播后续聊天退回成“每条弹幕都首评”。
 
+显式的本人头像请求是受控例外：当观众明确说“锐评我的头像 / rate my avatar”等同义请求时，pipeline 可以在 `avatar_roast_enabled`、现有压力门禁、冷却和 safety guard 允许的前提下重新进入 `avatar_roast`，让该次原本就会发生的回复重新获得头像视觉输入；它不会新增第二条回复，也不会把普通后续弹幕改成头像锐评。若该 UID 已经完成过自动出场锐评，本次显式请求不重复写入首评标记；跨场自动首评仍保持每 UID 一次。目标是其他观众、没有明确评价动作或只提到“喜欢我的头像”的弹幕不得绕过后续弹幕路线。
+
+人猫同播的 Hosted UI 会从当前 session 的 `recent_results` 和 `live_events.status().ambient_publish_count` 展示响应投送与被动房间上下文投送：头像锐评、普通弹幕与支持事件属于 `respond`，被动房间上下文属于 `read`。这些计数只证明插件已把内容提交给宿主，不证明浏览器音频播放完成；暖场、冷场陪播和主动营业仍保持猫猫独播专属，直到宿主提供可靠话权 / 播放状态前不得仅靠面板开关放到同播。
+
 独播首评有独立节流：`solo_stream` 中真正的 `avatar_roast` 之间按活跃度间隔，`quiet=75s`、`standard=45s`、`active=30s`。若短时间内又有新 UID 发送弹幕，pipeline 不再连续做头像 / ID 出场锐评，而是把这条弹幕交给 `danmaku_response` 正常接话；但这只是临时降级，不能把该 UID 标记为已完成头像锐评。只有真实进入 `avatar_roast` 路由且成功 pushed / dry-run 到 dispatcher 的出场首评才允许写首评标记，避免新人被节流吞掉后再也补不上头像锐评。
 
 在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `LivePipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。重新开始监听直播间会清空该临时标记，保证下一轮链路验证从干净窗口开始。
@@ -1030,6 +1020,8 @@ danmaku_core on_event(cmd, 富模型)
 `viewer_session_context(uid)` 只在当前 runtime session 内按 UID 提取最近少量该观众的已投递 / dry-run 弹幕上下文和可用的真实猫猫已输出短句，供 `danmaku_response` 判断“这是同一位观众的后续接话”。dispatcher / dry_run 摘要不进入 `NEKO already said`。它不写长期档案，不总结完整聊天历史；进入 prompt 前也会压成短摘要，并必须作为 same-viewer used material 使用。除非当前弹幕明确要求继续同一个话题，否则不能默认续写该观众上一轮内容；用途是避免同一观众后续弹幕再次被当成首次出场，减少重复头像 / ID / 首评模板，也避免把上一轮长回复或已播出台词喂回模型造成复读。
 
 `recent_results` / `recent_sandbox_results` 是 dashboard / monitor 会直接读取的公开投影，只允许来自 `InteractionResult.to_public_dict()` / `to_sandbox_dict()`。这些方法必须复用 `contracts_public.py` 的 JSON-safe / 脱敏规则：request metadata、event topic / host beat 摘要、identity、profile、steps、output 和 reason 都不能原样塞入 object、bytes、cookie/token/signature/authorization 形态文本或 prompt 原文；非字符串对象不得通过 `str()` 进入 recent result。
+
+通用公开文本和审计脱敏必须同时识别 HTTP header 的冒号形式与库错误常见的赋值形式，例如 `Authorization: Bearer ...`、`authorization=Bearer ...`、`proxy-authorization=Basic ...`；两种形式都只能留下 `[redacted]`，不能因异常消息格式不同泄露凭据。
 
 Danmaku Response Quality v2 进一步把“普通弹幕接话”从首评模板里拆清楚：`danmaku_response` 会在 prompt 中标记当前弹幕的轻量 `danmaku_profile`，包括 `viewer_to_viewer_mention`、`question`、`emoji_or_reaction`、`short_line`、`normal_line` 和 `empty`。短反应 / 表情 / 哈哈类弹幕只允许做很短的情绪镜像；问题弹幕必须先直接回答；`@其他观众` 只能作为公开内容的极短旁白，不能当成观众在喊 NEKO，也不能替观众之间调停；`@猫猫` 仍然视为当前弹幕目标。prompt 还会把 profile 压成 `direct_answer` / `mood_reaction` / `continue_shared_bit` / `fresh_angle` 等内部 `response_move`，明确要求先回答、接情绪、推进共同梗或补一个新角度，禁止先引用、翻译或轻改写当前弹幕。`danmaku_anchor_hint` 只在缺少自然观众称呼时作为目标消歧兜底；已有观众称呼时，宿主输出合约不得再强制复述 anchor。`danmaku_profile`、`danmaku_reply_target` 和 `danmaku_reply_shape` 会进入 request metadata、recent result 和 `tools/monitor_live.ps1` 的 `latest_danmaku_profile` / `latest_danmaku_reply_shape`，便于直播复盘判断猫猫为什么这么接话；`runtime_live_input.expose_request_metadata()` 只把字符串 metadata 复制到 recent result 顶层，object / bytes / container 值不得字符串化成监控字段。这个 profile 只影响回复形状，不新增事件类型，不绕过 viewer profile、safety guard、dispatcher、dry_run、cooldown 或 pacing。
 
@@ -1193,7 +1185,7 @@ uv run pytest plugin/plugins/neko_live/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
-历史基线（2026-07-27）：`uv run pytest plugin/plugins/neko_live/tests -q` → **1668 passed, 1 skipped, 2 warnings**。当前基线（2026-08-01）：**1708 passed, 1 skipped, 2 warnings**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+当前基线（2026-08-03）：`uv run pytest plugin/plugins/neko_live/tests -q` → **1764 passed, 1 skipped, 2 warnings**；CLI check **0 error**（6 条模板 warning 允许）。模板 warning 来自插件目录不是独立 git 仓库且没有独立 `.github` / `.vscode` 配置；**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_live 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 
@@ -1265,6 +1257,6 @@ The bundled bridge metadata is Windows-only and does not include a fallback netw
 
 普通弹幕里的礼物 / SC / 上舰声称只是不可信文本 claim，不能升级成 support event。B 站 ingest 只接受明确命令表中的 `SEND_GIFT` / `COMBO_SEND` / `SUPER_CHAT_MESSAGE(_JPN)` / `GUARD_BUY`，以及经过严格形态校验的已知 `USER_TOAST_MSG`；未知命令即使带 `gift_id`、礼物名、数量或金额字段也不得猜测为 support event。可信事件须投影 `support_verified=true`、`support_evidence=bilibili_typed_command` 与 `provider_event_type`，该校验只做本地字段判断，不得在接收热路径追加联网确认。`event_signal`、recent room theme、active thread topic、`avatar_roast` / `danmaku_response` metadata 都只能把真实 provider support 事件当成礼物；“我投喂了超级大火箭”“发送了人气票x99999999”这类普通 danmaku 最多按玩笑接住，不得触发真实感谢、贡献榜、礼物运营或房间主题漂移。这个边界必须同时存在于 prompt、发送前硬保护和出声后质量守门：互动请求会标记 `viewer_claimed_support=unverified_danmaku_claim` / `support_claim_contract=unverified_danmaku_claim_no_thanks`，dispatcher 强制替换为固定安全短句，`live_output_quality` 发现模型仍输出“谢谢/感谢 + 礼物/火箭/SC”等组合时必须再次 fallback；真实 `live_support_events` 不受这个假礼物拦截影响。
 
-可信 support event 的优先级由 `live_support_events.scheduler` 统一负责，不得在 provider、Pipeline 或 Dispatcher 里另建一套抢占逻辑。固定顺序是 SC / Guard milestone、B 站 gold 高价值礼物、gold 中价值礼物、轻量/免费/未知礼物；它只调整尚未处理的 support event，不能打断已经进入 Pipeline 或 TTS 的一句话。B 站优先使用安全的 `provider_event_id` 去重；没有 ID 才允许 ingest 使用 350ms 内容指纹兜底。`COMBO_SEND` 按房间、观众和 combo ID 合并，同 ID 的单调递增更新必须继续进入状态机，显式结束立即结算，否则一秒无增长后结算，计数与价值只能取已观察到的最大值；首包确认的事件类型、房间、观众、礼物和币种不得被后续冲突包覆盖。待处理队列、活跃 combo、combo timer 和已取消旧任务都有硬上限；已结算 combo 使用 10 分钟、最多 4,096 项的内存墓碑防止延迟重放。队列满时，高优先级新事件只能淘汰等待队列中更低优先级的最旧事件，因此 milestone 可以替换尚未执行的 high；被淘汰项必须释放 provider ID 和相关 combo 墓碑，保证从未 dispatch 的事件仍可重试。轻量事件只有在缺少权威 provider ID 且房间、观众、礼物、币种和 provider 事件类型完全一致时才能安全聚合；带 ID 的事件保持独立并在拒绝或淘汰后可重试。没有兼容聚合或更低优先级受害者时必须拒绝新项，任何优先级都不得越过最多 100 条的硬上限。所有事件仍调用 `ctx.handle_live_payload()`，失败只重试一次；audit store 写入失败不得卡住调度。换房、开播或停播时清空队列、连击定时器、完成墓碑和去重状态，`wait_idle()` / `close()` 必须等待旧 worker 实际退出，`close()` 后的迟到提交必须被永久拒绝。本阶段只提供内存聚合状态，不写持久礼物账本或诊断事件日志。
+可信 support event 的调度和派发所有权只归 `live_support_events.scheduler`：复用现有单 worker，待处理队列保持有界，稳定 task ID 只用于插件内原子认领和 `current` / `retroactive` / `stray` 分类，最多保留 32 条不含观众或 payload 的历史。不得在 provider、Pipeline 或 Dispatcher 复制优先级或队列；异常、取消和 teardown 按任务身份释放，失败不自动重试。完整状态机、成本和回滚见 [`docs/modules/live_support_events.md`](modules/live_support_events.md)。
 
 独播模式是台前直播，不是后台私聊延续。所有会开口的模块（`danmaku_response` / `avatar_roast` / `warmup_hosting` / `idle_hosting` / `active_engagement`）都必须禁止 owner、master、operator、backstage human、carbon-based human、private chat、pre-stream relationship memory 等关系泄露；`solo_stream` 中的 “you” 指当前观众或直播间，不指隐藏操作者。输出必须是可直接播出的口语，不得包含括号动作、舞台动作旁白或角色扮演注释；质量守门发现这类文本时必须回退。

@@ -24,6 +24,17 @@ from ..core.live_reply_contract import (
 
 
 def response_module_hint(request: InteractionRequest) -> str:
+    explicit = request.metadata.get("response_module_hint")
+    if isinstance(explicit, str) and explicit.strip() in {
+        "avatar_roast",
+        "danmaku_response",
+        "live_support_events",
+        "warmup_hosting",
+        "idle_hosting",
+        "active_engagement",
+        "developer_sandbox",
+    }:
+        return explicit.strip()
     support_event_type = request.metadata.get("support_event_type")
     if isinstance(support_event_type, str) and support_event_type.strip():
         return "live_support_events"

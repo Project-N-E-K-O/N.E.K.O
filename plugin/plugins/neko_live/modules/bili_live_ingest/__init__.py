@@ -11,9 +11,17 @@ from collections import OrderedDict
 from typing import Any
 
 from ...core.contracts import LiveEvent, LiveRoomStatus, ViewerEvent
+from ...core.contracts_public import public_text
+from ...core.runtime_live_listener import schedule_unexpected_live_listener_stop
 from ...core.runtime_timeline import record_timeline
 from .._base import BaseModule
-from ..live_events.provider_event import event_signal_fields, event_support_fields
+from ..live_events.provider_event import (
+    event_avatar_url,
+    event_provider_event_id,
+    event_room_ref,
+    event_signal_fields,
+    event_support_fields,
+)
 
 SUPPORT_EVENT_DEDUPE_SECONDS = 0.35
 SUPPORT_EVENT_DEDUPE_LIMIT = 4096
@@ -200,7 +208,11 @@ class BiliLiveIngestModule(BaseModule):
                 raise
             except Exception as exc:
                 if self.ctx is not None:
-                    self.ctx.audit.record("live_listener_stop_failed", str(exc)[:200], level="warning")
+                    self.ctx.audit.record(
+                        "live_listener_stop_failed",
+                        f"listener stop failed: {type(exc).__name__}",
+                        level="warning",
+                    )
         if task is not None and not task.done():
             try:
                 await asyncio.wait_for(task, timeout=2.0)
@@ -209,7 +221,11 @@ class BiliLiveIngestModule(BaseModule):
                 pass
             except Exception as exc:
                 if self.ctx is not None:
-                    self.ctx.audit.record("live_listener_task_failed", str(exc)[:200], level="warning")
+                    self.ctx.audit.record(
+                        "live_listener_task_failed",
+                        f"listener task failed: {type(exc).__name__}",
+                        level="warning",
+                    )
         if self.ctx is not None and listener is not None:
             self.ctx.audit.record("live_listener_stopped", "danmaku listener stopped", detail={"room_id": self._room_id})
 
@@ -225,29 +241,32 @@ class BiliLiveIngestModule(BaseModule):
             return
         self._listener = None
         self._listener_task = None
+        self._listener_generation += 1
         if self.ctx is None:
             return
         if exc is not None:
             self.ctx.audit.record("live_listener_task_failed", type(exc).__name__, level="warning")
-            return
-        live_ended = bool(getattr(listener, "_live_ended", False))
-        try:
-            state = listener.get_connection_state()
-        except Exception:
-            state = {}
-        last_packet_at = float(state.get("last_packet_at") or 0.0)
-        last_packet_age = max(0.0, time.time() - last_packet_at) if last_packet_at else 0.0
-        self.ctx.audit.record(
-            "live_listener_task_ended",
-            "live ended" if live_ended else "listener task ended unexpectedly",
-            level="info" if live_ended else "warning",
-            detail={
-                "generation": generation,
-                "reconnect_count": int(state.get("reconnect_count") or 0),
-                "last_packet_age_seconds": round(last_packet_age, 1),
-                "last_event_type": self._last_event_type,
-            },
-        )
+        else:
+            live_ended = bool(getattr(listener, "_live_ended", False))
+            try:
+                state = listener.get_connection_state()
+            except Exception:
+                state = {}
+            last_packet_at = float(state.get("last_packet_at") or 0.0)
+            last_packet_age = max(0.0, time.time() - last_packet_at) if last_packet_at else 0.0
+            self.ctx.audit.record(
+                "live_listener_task_ended",
+                "live ended" if live_ended else "listener task ended unexpectedly",
+                level="info" if live_ended else "warning",
+                detail={
+                    "generation": generation,
+                    "reconnect_count": int(state.get("reconnect_count") or 0),
+                    "last_packet_age_seconds": round(last_packet_age, 1),
+                    "last_event_type": self._last_event_type,
+                },
+            )
+        if bool(getattr(self.ctx, "_accepting_live_events", False)) and self._owns_current_live_session():
+            schedule_unexpected_live_listener_stop(self.ctx)
 
     # 命令名 → LiveEvent.type 路由键（见 core/contracts.LiveEvent）。未列出的命令回落 cmd 小写。
     _CMD_TO_TYPE = {
@@ -279,7 +298,11 @@ class BiliLiveIngestModule(BaseModule):
             try:
                 event.room_id = self._room_id
             except Exception as exc:
-                self.ctx.audit.record("live_event_room_id_fill_failed", str(exc)[:200], level="warning")
+                self.ctx.audit.record(
+                    "live_event_room_id_fill_failed",
+                    f"room id fill failed: {type(exc).__name__}",
+                    level="warning",
+                )
         bus = getattr(self.ctx, "event_bus", None)
         if bus is None:
             return
@@ -323,6 +346,10 @@ class BiliLiveIngestModule(BaseModule):
     def _owns_current_live_session(self) -> bool:
         """Reject events from a provider generation that no longer owns input."""
         if self.ctx is None or getattr(self.ctx, "_stopping", False) is True:
+            return False
+        if hasattr(self.ctx, "_accepting_live_events") and not bool(
+            getattr(self.ctx, "_accepting_live_events", False)
+        ):
             return False
         router = getattr(self.ctx, "live_provider", None)
         if router is None:
@@ -542,14 +569,27 @@ class BiliLiveIngestModule(BaseModule):
         if generation is not None and generation != self._listener_generation:
             return
         if self.ctx is not None:
-            self.ctx.audit.record("live_listener_error", str(exc)[:200], level="warning")
+            self.ctx.audit.record(
+                "live_listener_error",
+                f"listener error: {type(exc).__name__}",
+                level="warning",
+            )
 
     def normalize(self, payload: dict[str, Any]) -> ViewerEvent:
-        uid = str(payload.get("uid") or payload.get("user_id") or "").strip()
-        nickname = str(payload.get("nickname") or payload.get("uname") or payload.get("user_name") or "").strip()
-        avatar_url = str(payload.get("avatar_url") or payload.get("face_url") or payload.get("face") or "").strip()
-        text = str(payload.get("danmaku_text") or payload.get("text") or payload.get("content") or "").strip()
-        target_lanlan = str(payload.get("target_lanlan") or payload.get("lanlan_name") or "").strip()
+        uid = _public_uid(payload.get("uid") or payload.get("user_id"))
+        nickname = public_text(
+            payload.get("nickname") or payload.get("uname") or payload.get("user_name"),
+            max_len=80,
+        )
+        avatar_url = event_avatar_url(payload)
+        text = public_text(
+            payload.get("danmaku_text") or payload.get("text") or payload.get("content"),
+            max_len=512,
+        )
+        target_lanlan = public_text(
+            payload.get("target_lanlan") or payload.get("lanlan_name"),
+            max_len=80,
+        )
         return ViewerEvent(
             uid=uid,
             nickname=nickname,
@@ -558,8 +598,8 @@ class BiliLiveIngestModule(BaseModule):
             target_lanlan=target_lanlan,
             source="live_danmaku",
             live_mode=self.ctx.config.live_mode if self.ctx else "co_stream",
-            trace_id=str(payload.get("trace_id") or "").strip(),
-            raw=dict(payload),
+            trace_id=public_text(payload.get("trace_id"), max_len=128),
+            raw=_public_normalized_raw(payload),
         )
 
     async def lookup_room_status(self, room_id: int) -> LiveRoomStatus:
@@ -718,6 +758,49 @@ class BiliLiveIngestModule(BaseModule):
         if status == 2:
             return "rounding"
         return "unknown"
+
+
+def _public_uid(value: Any) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value) if value > 0 else ""
+    return public_text(value, max_len=128)
+
+
+def _public_normalized_raw(payload: dict[str, Any]) -> dict[str, Any]:
+    raw: dict[str, Any] = {}
+    event_type = public_text(
+        payload.get("event_type") or payload.get("type"),
+        max_len=48,
+    ).lower()
+    if event_type:
+        raw["event_type"] = event_type
+
+    raw.update(event_signal_fields(payload))
+    raw.update(event_support_fields(payload))
+
+    provider_event_id = event_provider_event_id(payload)
+    if provider_event_id:
+        raw["provider_event_id"] = provider_event_id
+    room_ref = event_room_ref(payload)
+    if room_ref:
+        raw["room_ref"] = room_ref
+    for key in (
+        "room_id",
+        "gift_num",
+        "gift_total_coin",
+        "gift_price",
+        "guard_level",
+        "_live_session_generation",
+    ):
+        value = _safe_non_negative_int(payload.get(key))
+        if value:
+            raw[key] = value
+    gift_coin_type = public_text(payload.get("gift_coin_type"), max_len=16).lower()
+    if gift_coin_type in {"gold", "silver"}:
+        raw["gift_coin_type"] = gift_coin_type
+    return raw
 
 
 def _safe_non_negative_int(value: Any) -> int:

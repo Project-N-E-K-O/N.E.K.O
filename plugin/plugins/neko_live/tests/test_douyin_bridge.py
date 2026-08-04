@@ -8,6 +8,7 @@ from plugin.plugins.neko_live.core.pipeline_routing import support_event_type
 from plugin.plugins.neko_live.core.runtime_douyin_auth import normalize_cookie
 from plugin.plugins.neko_live.core.runtime_live_input_api import RuntimeLiveInputApiMixin
 from plugin.plugins.neko_live.modules.douyin_live_ingest.transport_event import (
+    DouyinTransportEvent,
     DouyinTransportStartRequest,
     DouyinTransportState,
 )
@@ -268,6 +269,64 @@ def test_douyin_transport_state_syncs_runtime_and_ignores_old_provider_callback(
     module._apply_transport_state(DouyinTransportState(state="disconnected"))
     assert runtime.live_connection_state == "connected"
     assert runtime.safety_guard.connected is True
+
+
+@pytest.mark.asyncio
+async def test_terminal_douyin_disconnect_revokes_session_but_reconnecting_does_not(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = DouyinLiveIngestModule()
+    module.ctx = runtime
+    module._room_ref = "123456"
+    module._generation = 4
+    module._stop_requested = False
+    runtime.douyin_live_ingest = module
+    runtime.config.live_platform = "douyin"
+    runtime.config.live_room_ref = "123456"
+    runtime.config.live_enabled = True
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 7
+    runtime.safety_guard.set_connected(True)
+    restored = asyncio.Event()
+
+    async def restore_instructions(*, force: bool = False) -> str:
+        assert force is True
+        restored.set()
+        return "restored"
+
+    monkeypatch.setattr(runtime, "restore_instructions", restore_instructions)
+    module._apply_transport_state(
+        DouyinTransportState(state="reconnecting"),
+        generation=4,
+    )
+    assert runtime._accepting_live_events is True
+    assert runtime._live_session_generation == 7
+    assert runtime.config.live_enabled is True
+
+    module._apply_transport_state(
+        DouyinTransportState(state="disconnected"),
+        generation=4,
+    )
+    assert runtime._accepting_live_events is False
+    assert runtime._live_session_generation == 8
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_state == "disconnected"
+    assert runtime.safety_guard.connected is False
+    assert module._stop_requested is True
+    assert module._generation == 5
+    assert module._publish_transport_event_for_generation(
+        DouyinTransportEvent(
+            payload={
+                "event_type": "danmaku",
+                "room_ref": "123456",
+                "uid": "9",
+                "text": "late",
+            }
+        ),
+        4,
+    ) is None
+    await restored.wait()
 
 
 @pytest.mark.asyncio
