@@ -285,6 +285,55 @@ def test_featureless_periods_stay_minimal(lang):
         assert len(_TIME_OF_DAY_HINTS[period][lang]) <= 24
 
 
+# 每种语言里「用户是否醒着/睡着」的词根。这些只允许出现在禁令段——素材段一旦
+# 提到，就等于一边把「你还醒着」当开场素材、一边禁止断言同一件事。
+_SLEEP_STATE_TERMS = {
+    "zh": ("醒", "睡"),
+    "zh-TW": ("醒", "睡"),
+    "en": ("awake", "asleep", "slept", "woke"),
+    "ja": ("起き", "寝"),
+    "ko": ("깨어", "일어", "자지"),
+    "ru": ("бодрств", "просн", "спал"),
+    "es": ("despiert", "despert", "dorm"),
+    "pt": ("acordad", "acord", "dorm"),
+}
+
+# 素材段与禁令段的分界，逐语言。
+_LATE_NIGHT_PROHIBITION_MARKERS = {
+    "zh": "但不要断言",
+    "zh-TW": "但不要斷言",
+    "en": "but do not assert",
+    "ja": "ただし",
+    "ko": "다만",
+    "ru": "Но не утверждай",
+    "es": "Pero no afirmes",
+    "pt": "Mas não afirme",
+}
+
+
+@pytest.mark.parametrize("lang", SUPPORTED_PROMPT_LANGS)
+def test_late_night_material_never_claims_the_user_is_awake(lang):
+    """Atmosphere is fair material; the user's sleep state never is.
+
+    Regression for the localized drift where zh kept three environmental items
+    but the six translations turned the third one into "being awake this late",
+    contradicting the very prohibition in the same sentence.
+    """
+
+    hint = _TIME_OF_DAY_HINTS["late_night"][lang]
+    marker = _LATE_NIGHT_PROHIBITION_MARKERS[lang]
+    assert marker in hint, hint
+
+    material, _, prohibition = hint.partition(marker)
+    terms = _SLEEP_STATE_TERMS[lang]
+
+    offending = [term for term in terms if term in material]
+    assert not offending, f"{lang} material cites sleep state {offending}: {material}"
+    # The same vocabulary must still appear in the prohibition — otherwise the
+    # blacklist above could be silently wrong (typo, wrong stem) and pass.
+    assert any(term in prohibition for term in terms), prohibition
+
+
 def test_noon_and_night_keep_their_specific_conversation_openings():
     assert "午饭" in _TIME_OF_DAY_HINTS["noon"]["zh"]
     assert "午餐" in _TIME_OF_DAY_HINTS["noon"]["zh-TW"]

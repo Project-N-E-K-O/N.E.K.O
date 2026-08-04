@@ -3923,12 +3923,12 @@ _TIME_OF_DAY_HINTS: dict[str, dict[str, str]] = {
     "late_night": {
         "zh": "现在是凌晨，夜已经很深了。夜色、安静、这个时段本身都可以成为开场的话题方向；但不要断言{master}刚睡醒、还没睡或刚开机。",
         "zh-TW": "現在是凌晨，夜已經很深了。夜色、安靜、這個時段本身都可以成為開場的話題方向；但不要斷言{master}剛睡醒、還沒睡或剛開機。",
-        "en": "It is the middle of the night. The hour itself — the dark, the quiet, being awake this late — is fair material for an opening; but do not assert that {master} just woke up, has not slept, or just started the device.",
-        "ja": "今は深夜。夜の暗さや静けさ、この時間に起きていること自体は話の糸口にしていい。ただし{master}が起きたばかり、まだ寝ていない、端末を起動したばかりだとは断定しない。",
-        "ko": "지금은 한밤중이다. 어둠과 고요함, 이 시간까지 깨어 있다는 것 자체는 말을 꺼낼 소재로 삼아도 된다. 다만 {master}가 방금 일어났거나 아직 자지 않았거나 기기를 방금 켰다고 단정하지 마.",
-        "ru": "Сейчас глубокая ночь. Сама эта пора — темнота, тишина, бодрствование в такой час — годится как повод для начала разговора. Но не утверждай, что {master} только что проснулся, ещё не спал или включил устройство.",
-        "es": "Es de madrugada. La hora en sí —la oscuridad, el silencio, estar despierto tan tarde— sirve como material para abrir. Pero no afirmes que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
-        "pt": "É madrugada. A hora em si — o escuro, o silêncio, estar acordado tão tarde — serve como material para abrir. Mas não afirme que {master} acabou de acordar, não dormiu ou acabou de ligar o dispositivo.",
+        "en": "It is the middle of the night. The dark, the quiet, and the late hour itself are fair material for an opening; but do not assert that {master} just woke up, has not slept, or just started the device.",
+        "ja": "今は深夜。夜の暗さや静けさ、深夜という時間帯そのものは話の糸口にしていい。ただし{master}が起きたばかり、まだ寝ていない、端末を起動したばかりだとは断定しない。",
+        "ko": "지금은 한밤중이다. 어둠과 고요함, 한밤중이라는 시간대 자체는 말을 꺼낼 소재로 삼아도 된다. 다만 {master}가 방금 일어났거나 아직 자지 않았거나 기기를 방금 켰다고 단정하지 마.",
+        "ru": "Сейчас глубокая ночь. Темнота, тишина и сама эта поздняя пора годятся как повод для начала разговора. Но не утверждай, что {master} только что проснулся, ещё не спал или включил устройство.",
+        "es": "Es de madrugada. La oscuridad, el silencio y la propia hora tardía sirven como material para abrir. Pero no afirmes que {master} acaba de despertar, que no ha dormido o que acaba de encender el dispositivo.",
+        "pt": "É madrugada. O escuro, o silêncio e a própria hora avançada servem como material para abrir. Mas não afirme que {master} acabou de acordar, não dormiu ou acabou de ligar o dispositivo.",
     },
     # 清晨 6:00-8:59 —— 新一天开始，保留早安方向
     "early_morning": {
