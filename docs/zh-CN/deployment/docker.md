@@ -33,18 +33,25 @@ docker compose up -d
 #    实际写入的位置从来对不上，应用数据也在容器里。
 #    末尾的 /. 表示复制目录内容，避免出现 N.E.K.O/N.E.K.O 这样多套一层。
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
-# 这里报 "No such container:path" 只说明从没初始化过 OpenFang，可以忽略；
-# 其他错误（daemon 没起、权限、磁盘满）不能忽略，所以不加 `|| true` 吞掉
-# 容器若已经把 neko-home 挂在 /home/neko 上，源和目标就是同一个 bind mount，
-# 导出等于把目录复制到它自己；而那种情况下持有唯一副本的旧容器早已被重建掉了
-if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+# 判据用「容器实际挂了什么」，而不是「宿主目录里有没有东西」：旧版 README 把
+# ./N.E.K.O 挂到了 /root/Documents/N.E.K.O，那是服务从不写入的路径，所以那个宿主
+# 目录里可能有你自己放的文件，而真数据仍然只在容器可写层里。
+MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
+
+if printf '%s
+' "$MOUNTS" | grep -qx /home/neko; then
   echo "容器已按新布局挂载，没有待导出的内容"
 else
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
-  # 只有宿主目录为空时，应用数据才在容器里
-  if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+  # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
+  # 容器可写层。
+  if ! printf '%s
+' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
   fi
+  # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
+  # 对不存在的 SRC_PATH 是报错退出的 —— 不能让它挡住上面已经完成的关键导出。
+  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
+    || echo "（容器里没有 .openfang，或导出失败；不影响上面的应用数据）"
 fi
 ```
 

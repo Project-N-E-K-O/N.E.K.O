@@ -1292,9 +1292,23 @@ main() {
     # 宿主机上只有数字有意义：宿主那边没有叫 neko 的账户，它看到的就是 1000，而 1000
     # 恰是绝大多数发行版第一个普通用户的号，对上之后用户不必 sudo 就能管自己的备份。
     # 写死数字也让这层契约在文件里是可见的：改 Dockerfile 里的号就必须同步改这里。
-    # 两条 chown 都必须带 -h。不带的话它会解引用命令行上的符号链接去改**目标**：
-    # neko-home 是用户的目录，.local 或 .local/share 完全可能是指向别处（甚至别的
-    # 磁盘）的软链，那样一来被改属主的就是 /home/neko 之外的宿主路径了。
+    # 状态目录不接受软链。两条 chown 都带了 -h（不带会解引用命令行参数去改目标），
+    # 但那挡不住 find：路径中间那几段的符号链接是内核在解析路径时就跟随掉的，
+    # find 根本无从拒绝，于是它会走到 /home/neko 之外的树上，把那里每个不属于
+    # 1000 的条目都改掉。与其想办法处理，不如直接不收 —— 想把数据放到别的磁盘，
+    # 该在 compose 里把 neko-home 挂到那个位置，而不是在里面做软链。
+    for _state_dir in /home/neko/.local /home/neko/.local/share \
+                      /home/neko/.local/share/N.E.K.O /home/neko/.openfang; do
+        if [ -L "$_state_dir" ]; then
+            echo "❌ $_state_dir 是符号链接，数据目录不支持这样放"
+            echo "   启动时的属主修复会顺着它改到 /home/neko 之外的宿主路径上。"
+            echo "   请把它换成真实目录；想让数据落在别的位置，就在 compose 里把"
+            echo "   neko-home 直接挂到那个位置。"
+            exit 1
+        fi
+    done
+    unset _state_dir
+
     mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
     if ! chown -h 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
         || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \

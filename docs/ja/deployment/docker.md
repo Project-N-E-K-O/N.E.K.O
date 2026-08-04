@@ -29,19 +29,27 @@ Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 
 #    アプリケーション data も container 内にあります。
 #    末尾の /. は directory の中身をコピーする指定で、N.E.K.O/N.E.K.O のようなネストを防ぎます。
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
-# ここで "No such container:path" が出るのは OpenFang を一度も初期化していないだけなので無視して構いません。
-# それ以外（daemon 停止・権限・disk full）は無視してはいけないため `|| true` は付けません
-# container が既に neko-home を /home/neko に mount している場合、source と destination が
-# 同一の bind mount になり、directory を自分自身へコピーすることになります。その状況では
-# 唯一の複製を保持していた旧 container は既に再作成されて存在しません。
-if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+# 判断は「host 側 directory の中身」ではなく「container が実際に何を mount しているか」で
+# 行います：旧 README は ./N.E.K.O を /root/Documents/N.E.K.O に mount しており、そこは
+# サービスが書き込まない path なので、その host directory に自分で置いた file があっても
+# 実データは container の writable layer にしか存在しません。
+MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
+
+if printf '%s
+' "$MOUNTS" | grep -qx /home/neko; then
   echo "container は既に新レイアウトです。export するものはありません。"
 else
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
-  # data が container 内にあるのは host 側 directory が空の場合だけです
-  if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+  # application data を先に。失われると復旧できないのはこちらです。container が data
+  # directory を mount していない場合、その data は他のどこにも存在しません。
+  if ! printf '%s
+' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
   fi
+  # OpenFang state はその次で、致命的ではありません：一度も初期化していない container
+  # には該当 directory がなく、docker cp は存在しない SRC_PATH で失敗します。上の
+  # 重要な export が済んだ後にそれで中断させてはいけません。
+  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
+    || echo "（container に .openfang がないか export に失敗しました。上の application data には影響しません）"
 fi
 ```
 

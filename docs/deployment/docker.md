@@ -40,19 +40,27 @@ Order matters: `docker compose down` **removes** the container, and some state e
 #    actually write — the application data is in there too.
 #    The trailing /. copies directory *contents*, avoiding a nested N.E.K.O/N.E.K.O.
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
-# "No such container:path" here just means OpenFang was never initialised — ignore it.
-# Everything else (daemon down, permissions, disk full) must NOT be ignored, so no `|| true`.
-# Nothing to export once the container already mounts neko-home at /home/neko:
-# source and destination would be the same bind mount, and the old container that
-# held the only copy is long gone anyway.
-if docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null | grep -qx /home/neko; then
+# Decide from what the container actually mounts, not from what the host directory
+# contains: the old README mounted ./N.E.K.O at /root/Documents/N.E.K.O, a path the
+# services never write to, so that host directory can hold files you put there while
+# the real data still lives only in the container's writable layer.
+MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
+
+if printf '%s
+' "$MOUNTS" | grep -qx /home/neko; then
   echo "Container already uses the new layout — nothing to export."
 else
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
-  # The application data is inside the container only when the host directory is empty.
-  if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+  # Application data first; this is the part that cannot be recovered later. If the
+  # container does not mount the data directory, that data exists nowhere else.
+  if ! printf '%s
+' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
     docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
   fi
+  # OpenFang state second, and non-fatal: a container that never initialised it has
+  # no such directory, and `docker cp` fails on a missing SRC_PATH — that must not
+  # abort the run after the application data above already succeeded.
+  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
+    || echo "(no .openfang in the container, or its export failed — application data above is unaffected)"
 fi
 ```
 
