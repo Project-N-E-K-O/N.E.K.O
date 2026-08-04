@@ -935,6 +935,12 @@ def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
         # 「我想去執行」是在陈述自己的打算，不是授权别人去做。
         "我想去執行", "我想去执行", "我要去執行", "我要去执行", "想去执行",
         "我想删吧", "我要準了",
+        # ⚠️ 光挡 `我想`/`我要` 不够，**裸的第一人称主语**同理：「我去執行」是用户在说
+        # 自己要去做，不是授权 agent 去做。第二人称留着——`你去执行吧` 恰恰是授权。
+        "我去執行", "我去执行", "我删吧", "我刪吧", "我准了",
+        "咱去执行", "我们去执行吧", "我們去執行吧", "咱们去执行",
+        # ⚠️ 体标记 `了`：`去執行了` 是在报告「已经执行了」，是陈述不是授权。
+        "去執行了", "去执行了", "去執行了喔", "删吧了", "去执行了吧",
     ],
 )
 def test_a_question_never_approves(text):
@@ -965,21 +971,46 @@ def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
     stay separated: widening approve now means editing the narrow table, which is
     a visible, reviewable act.
     """  # noqa: DOCSTRING_CJK
-    from brain.openclaw_adapter import _NEUTRAL_LEAD, _NEUTRAL_TAIL, _SOFT_LEAD
+    from brain.openclaw_adapter import (
+        _NEUTRAL_LEAD,
+        _NEUTRAL_TAIL,
+        _SOFT_LEAD,
+        _SOFT_TAIL,
+    )
 
     narrow_lead = set(_NEUTRAL_LEAD.split("|"))
     soft_lead = set(_SOFT_LEAD.split("|"))
     narrow_tail = set(_NEUTRAL_TAIL.split("|"))
+    soft_tail = set(_SOFT_TAIL.split("|"))
 
-    assert not (narrow_lead & soft_lead), "试探/意图前缀漏进了 approve 的窄首部表"
-    # 试探提议 + 第一人称意图必须都在 soft 侧
-    for token in ("要不", "不如", "还是", "還是", "干脆", "乾脆",
-                  "我想", "我要", "想", "能不能", "可不可以"):
+    assert not (narrow_lead & soft_lead), "宽首部词漏进了 approve 的窄首部表"
+    assert not (narrow_tail & soft_tail), "宽词尾漏进了 approve 的窄词尾表"
+
+    # ⚠️ 入表判据只有一条：**剥掉它会不会把授权变成非授权**。下面按类逐一钉住，
+    # 因为这一系列 Codex P1 全是「又发现一类漏在中性表里」——问句、试探提议、
+    # 第一人称意图、裸第一人称主语、体标记，一轮一类。
+    for token in (
+        # 试探提议：是在抛方案，不是批准
+        "要不", "不如", "还是", "還是", "干脆", "乾脆", "能不能", "可不可以",
+        # 第一人称意图：陈述自己的打算
+        "我想", "我要", "想",
+        # 裸第一人称主语：宣告自己动手，不是授权 agent
+        "我", "咱", "我们", "我們", "咱们", "咱們",
+    ):
         assert token in soft_lead, f"{token} 不在 soft 首部表里"
         assert token not in narrow_lead, f"{token} 混进了 approve 的窄首部表"
-    # 疑问语气尾同理：approve 的窄词尾表里一个都不能有
-    for token in ("吗", "嗎", "呢", "好不好", "行不行", "可以吗", "怎么样"):
+    for token in (
+        # 疑问尾：问句不是授权
+        "吗", "嗎", "呢", "好不好", "行不行", "可以吗", "怎么样",
+        # 体标记：`去執行了` 是在报告已发生，不是授权
+        "了",
+    ):
+        assert token in soft_tail, f"{token} 不在 soft 词尾表里"
         assert token not in narrow_tail, f"{token} 混进了 approve 的窄词尾表"
+
+    # 反向：第二人称主语必须留在中性表——`你去执行吧` 正是指向 agent 的授权
+    for token in ("你", "妳"):
+        assert token in narrow_lead, f"{token} 是第二人称，不该被挪走"
 
 
 @pytest.mark.parametrize(
