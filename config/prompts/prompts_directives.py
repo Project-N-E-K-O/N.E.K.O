@@ -768,13 +768,20 @@ _ZH_FINAL_PARTICLES = (
 # parent 存的是 ``好咧``（codex P2）。把它们挡在捕获组外面，就不会去凑下限。
 # ⚠️ 里面的 ``\s*`` 也要原子化：它夹在两个 ``(?>\s*)`` 中间，不原子化就又能跟它们
 # 瓜分同一串空白（模板 2/4 的空白护栏会直接红）。
-_ZH_TOPIC_SEPARATOR = r"(?:[，、：,:](?>\s*))?"
+# ⚠️ 分号也要收。它在话题字符类里是被排除的（本模块把它当指令终结符），而这里原先
+# 不收，于是 ``别再提；工作。`` / ``工作；别提了。`` 整条 0 命中——parent 存的是
+# ``工作``（codex P2）。这一维本来就是闭的：能出现在这个位置的只有本模块自己那张
+# 终结符表里的分句标点，句号 / 问号 / 感叹号刻意不收（它们结束的是**句子**，收了就
+# 等于让指令跨句绑定）。
+# ⚠️ 两个常量从同一个字符串派生，别再各抄一份——同类两张表迟早漂。
+_ZH_PAUSE_CHARS = "，、：；,:;"
+_ZH_TOPIC_SEPARATOR = f"(?:[{_ZH_PAUSE_CHARS}]" + r"(?>\s*))?"
 # 模板 2 专用：只有在**显式停顿之后**才允许吃掉 ``就``。
 # ⚠️ 模板 2 覆盖全部 "X别提了" 句子，``成就 / 迁就 / 功成名就`` 都住在这里，所以它
 # 不能像模板 4 那样无条件带 ``(?:就)?``。但停顿标点是**硬词边界**——``工作，就别提
 # 了。`` 里的 ``就`` 不可能是前一个词的末字。把 ``就`` 关进分隔符分支里，两头都保住：
 # 没有停顿时一个字都不吃，有停顿时不再整条 0 命中（撤掉 ``(?:就)?`` 时带出来的）。
-_ZH_PAUSE_THEN_JIU = r"(?:[，、：,:](?>\s*)(?:就)?(?>\s*))?"
+_ZH_PAUSE_THEN_JIU = f"(?:[{_ZH_PAUSE_CHARS}]" + r"(?>\s*)(?:就)?(?>\s*))?"
 
 # 无宾语指令的前视：动词之后到句读之间，如果只剩**一个字 + 句末助词**，那个字是
 # 结果补语（说完 / 提上 / 聊死）而不是宾语，整条不该抽——本模块的 docstring 明确说
@@ -947,6 +954,21 @@ _ZH_SUBJECT_BEFORE_NEG = (
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
 )
+# ⚠️ 主语和否定词之间会有空格（``你 別提君の名は。``——中英混打时很常见）。上面那条
+# 是 lookbehind，只能看紧邻的一个字符，而调用方也只切一个字符的左文，于是空格一进来
+# 整条就没了，繁中用户拿不到指令；同一句简体因为 ``别`` 在 _ZH_EVIDENCE_CHARS 里有
+# 单字证据，照样是好的——又一处繁简不对称（codex P2）。
+# ⚠️ 单开一条**消耗式**的（lookbehind 是定长的，塞不进 ``\s*``），只给它加宽左文。
+# 字类证据仍然只看紧邻那一个字符：加宽了的话前一句话的中文字会漏进来，把守卫短路掉。
+# ⚠️ 空白有界（``{1,4}``）：这是每条用户消息的热路径。
+_ZH_SUBJECT_LEFT_MAX = 5
+_ZH_SUBJECT_ACROSS_SPACE = re.compile(
+    "[" + _ZH_SUBJECT_CHARS + r"]\s{1,4}(?:"
+    + "|".join(_ZH_NEG_SINGLES)
+    + r")\s*(?:再)?\s*(?:"
+    + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
+    + ")"
+)
 _ZH_EVIDENCE_CHARS = "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
 # ⚠️ ``没心情`` 要整条收：``没`` 是日文标准字形（没収），不能进上面的字类，但三个字
 # 连在一起是中文独有的。不收的话 ``我没心情聊君の名は。`` 整条被吞，而繁体的
@@ -1022,7 +1044,11 @@ def _is_japanese_sentence_match(
     # 调用方传进来的 ``span`` 已经把捕获组等长挖空。
     # ⚠️ 必须**等长**挖空：直接删掉的话载荷两侧的字会被拼到一起，凭空造出多字证据
     # （叫+我 / 不+想 / 懶+得 / 不+願 / 喊+我 都实测过）。
-    if _ZH_EVIDENCE_RE.search(before[-1:] + (span if directive is None else directive)):
+    payload = span if directive is None else directive
+    if _ZH_EVIDENCE_RE.search(before[-1:] + payload):
+        return False
+    # 主语和否定词之间隔着空格的那一格，见 _ZH_SUBJECT_ACROSS_SPACE。
+    if _ZH_SUBJECT_ACROSS_SPACE.search(before + payload):
         return False
     # 命中区间**左边紧挨着**假名 → 触发词是日文能产的 ``〜別`` 后缀（カテゴリ別 /
     # ジャンル別 / テーマ別），不是中文的祈使 ``別``。中文句子里 ``別`` 前面不会
@@ -1326,7 +1352,8 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             # 传挖空后的串进去会把假名一起挖掉，``地域別提案をお願いします。`` 会因为
             # 「没有假名」被判成中文（补这条时踩到的）。
             if zh_family and _is_japanese_sentence_match(
-                span, m.group(1), text[max(0, m.start() - 1): m.start()],
+                span, m.group(1),
+                text[max(0, m.start() - _ZH_SUBJECT_LEFT_MAX): m.start()],
                 directive=directive_only,
             ):
                 continue

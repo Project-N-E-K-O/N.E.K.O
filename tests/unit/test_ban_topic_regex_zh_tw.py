@@ -2020,7 +2020,10 @@ def test_the_japanese_guard_gets_one_character_not_the_whole_prefix(monkeypatch)
     monkeypatch.setattr(D, "_is_japanese_sentence_match", spy)
     extract_directives("工作别提了。" * 50 + "别提加班。")
     assert seen, "日文守卫根本没被调用，这条测试是空的"
-    assert max(seen) <= 1, max(seen)
+    # ⚠️ 上限是**常量**不是字面量 1：主语跨空格那条需要几个字符的左文
+    # （_ZH_SUBJECT_ACROSS_SPACE），但仍然必须是 O(1)，不能是整段前缀。
+    assert max(seen) <= D._ZH_SUBJECT_LEFT_MAX, max(seen)
+    assert D._ZH_SUBJECT_LEFT_MAX <= 8
 
 
 def test_the_quoted_span_end_marks_where_the_quotes_stop():
@@ -2862,8 +2865,14 @@ def test_the_separator_is_shared_by_both_sides():
     # 所以裸分隔符只剩模板 3 和模板 4 的三处。两个常量的标点字符类必须一致。
     assert sum(D._ZH_TOPIC_SEPARATOR in raw for raw in sources) == 3
     assert sum(D._ZH_PAUSE_THEN_JIU in raw for raw in sources) == 1
-    assert D._ZH_PAUSE_THEN_JIU.count("[，、：,:]") == 1
-    assert D._ZH_TOPIC_SEPARATOR.count("[，、：,:]") == 1
+    # ⚠️ 两个常量必须从**同一个**字符串派生，不是各抄一份——加分号那轮就是因为
+    # 只改一处才发现的。
+    klass = f"[{D._ZH_PAUSE_CHARS}]"
+    assert D._ZH_PAUSE_THEN_JIU.count(klass) == 1
+    assert D._ZH_TOPIC_SEPARATOR.count(klass) == 1
+    # 分句标点收，句子终结符（。！？）刻意不收：收了指令就能跨句绑定。
+    assert set(D._ZH_PAUSE_CHARS) == set("，、：；,:;")
+    assert not set(D._ZH_PAUSE_CHARS) & set("。！？.!?")
 
 
 @pytest.mark.parametrize(
@@ -3056,7 +3065,7 @@ def test_the_jiu_slot_lives_inside_the_pause_branch():
     assert D._ZH_PAUSE_THEN_JIU.startswith("(?:[")
     assert D._ZH_PAUSE_THEN_JIU.endswith(")?")
     inner = D._ZH_PAUSE_THEN_JIU[len("(?:") : -len(")?")]
-    assert inner.startswith("[，、：,:]"), inner
+    assert inner.startswith(f"[{D._ZH_PAUSE_CHARS}]"), inner
     # ``就`` 出现在标点字符类**之后**，也就是必须先吃掉一个停顿才轮得到它。
     assert inner.index("就") > inner.index("]")
 
@@ -3487,3 +3496,84 @@ def test_the_counterpart_table_covers_every_asymmetric_pair():
     # 对称的那几个刻意不进这张表：同一个字形两用，判不出「另一半在不在」。
     for delim in D._ZH_SYMMETRIC_DELIMS:
         assert delim not in D._ZH_COUNTERPART, delim
+
+
+# ── 42. 分号当停顿 / 主语跨空格 ──────────────────────────────
+
+
+@pytest.mark.parametrize("pause", ["；", ";"])
+def test_a_semicolon_is_a_pause_like_any_other(pause):
+    """分号在话题字符类里被排除（本模块把它当终结符），停顿表里却没收。
+
+    于是 ``别再提；工作。`` / ``工作；别提了。`` 整条 0 命中——parent 存的是
+    ``工作``（codex P2）。四条模板都要覆盖到。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别再提{pause}工作。") == {"工作"}
+    assert _zh_terms(f"別再提{pause}工作。") == {"工作"}
+    assert _zh_terms(f"工作{pause}别提了。") == {"工作"}
+    assert _zh_terms(f"關於工作{pause}就別提了。") == {"工作"}
+    assert _zh_terms(f"我不想聊{pause}工作。") == {"工作"}
+
+
+def test_sentence_terminators_are_not_pauses():
+    """反向：``。！？`` 刻意不进停顿表——收了指令就能跨**句**绑定。"""  # noqa: DOCSTRING_CJK
+    assert not set(D._ZH_PAUSE_CHARS) & set("。！？.!?")
+    # 前一句的残余不该被当成话题
+    assert _zh_terms("算了。别提工作。") == {"工作"}
+
+
+@pytest.mark.parametrize("subject", list("你妳您咱请們"))
+@pytest.mark.parametrize("gap", [" ", "  ", "\t"])
+def test_an_allowlisted_subject_survives_intervening_whitespace(subject, gap):
+    """主语和否定词之间会有空格，而守卫原来只看紧邻的一个字符。
+
+    ``你 別提君の名は。`` 整条 0 命中，同一句简体因为 ``别`` 在
+    _ZH_EVIDENCE_CHARS 里有单字证据照样好用——又一处繁简不对称（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{subject}{gap}別提君の名は。") == {"君の名は"}
+
+
+@pytest.mark.parametrize("subject", ["我", "他", "請"])
+def test_a_japanese_kanji_subject_still_does_not_open_the_guard(subject):
+    """⚠️ 加宽左文**不能**顺带放宽主语白名单。
+
+    ``我 / 他 / 請`` 都是日文汉字，收了它们 ``他別提案をお願いします。`` 这类
+    句子就会被当成中文存下来。白名单只收日文里根本没有的字形。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{subject} 別提君の名は。") == set()
+    assert _zh_terms(f"{subject}別提君の名は。") == set()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "地域別提案をお願いします。",
+        "カテゴリ別提案書。",
+        "世代別講座で話します。",
+        "テーマ別討論スレ",
+        "個別提案をお願いします。",
+    ],
+)
+def test_widening_the_left_context_does_not_leak_evidence(text):
+    """⚠️ 加宽的左文**只**给主语那条用；字类证据仍然只看紧邻一个字符。
+
+    加宽了的话前一句话里的中文字会漏进来，把整个日文守卫短路掉。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 前一句的中文证据字落在加宽后的左文里、但**不**紧邻日文那句
+        ("这话题。地域別提案をお願いします。", set()),
+        ("別提这个。世代別講座で話します。", {"这个"}),
+    ],
+)
+def test_evidence_still_reads_only_the_adjacent_character(text, expected):
+    """判别「字类证据吃加宽后的左文」这条变异的唯一形态。
+
+    ⚠️ 要**跨一句**：证据字紧邻时两种写法都成立，看不出差异；证据字离得太远
+    （超过 _ZH_SUBJECT_LEFT_MAX）也看不出。必须恰好落在加宽窗口里、又不紧邻。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == expected, _zh_terms(text)
