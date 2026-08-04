@@ -847,6 +847,80 @@ def test_clause_normalization_strips_only_function_words(text, expected):
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 中文里最常见的授权说法是「应答子句 + 命令子句」，改造前靠子串命中。
+        # `没错，去执行` 尤其要保住——它正是本文件论证「黑名单会误伤」时点名的例子，
+        # 白名单方案曾把它一起误伤，注释和行为对不上。
+        ("没错，去执行", "/daemon approve"), ("沒錯，去執行", "/daemon approve"),
+        ("没意见，去执行", "/daemon approve"), ("好的，去执行", "/daemon approve"),
+        ("行，去执行", "/daemon approve"), ("可以，去执行", "/daemon approve"),
+        ("嗯，去执行", "/daemon approve"), ("对，去执行", "/daemon approve"),
+        ("批准，去执行", "/daemon approve"), ("可以，删吧", "/daemon approve"),
+        ("好的，去执行吧", "/daemon approve"),
+        # 不带分隔符的写法走中性首部表
+        ("好的去执行", "/daemon approve"), ("可以去执行", "/daemon approve"),
+        ("同意去执行", "/daemon approve"), ("批准去执行", "/daemon approve"),
+        ("允许去执行", "/daemon approve"), ("没错去执行", "/daemon approve"),
+        # ⚠️ 但应答词**不能单独授权**：这些在改造前都是 None（旧的整句精确匹配表
+        # 只有那四条），当成授权就是扩大批准面。
+        ("好的", None), ("可以", None), ("行", None), ("嗯", None), ("对", None),
+        ("批准", None), ("好的，好的", None), ("好的喵~", None),
+        # ⚠️ 应答子句剥两端装饰是安全的（它单独出现永远不算授权），而这些形态在旧
+        # 实现里靠子串命中，逐字原样匹配会丢。裸应答不能这么放宽——对比
+        # test_a_question_never_approves 里的 `没问题喵~`。
+        ("好的喵~，去执行", "/daemon approve"), ("OK，去执行", "/daemon approve"),
+        ("好的👌，去执行", "/daemon approve"), ("好的喵~", None),
+        # ⚠️ 单字应答**不做前缀剥离**：`对方去执行` 不是授权
+        ("对方去执行", None), ("好人去执行", None),
+    ],
+)
+def test_an_affirmative_clause_needs_a_real_command_beside_it(text, expected):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 子句两端的装饰性字符：省略号、破折号、引号、括号、emoji。它们既不在
+        # _CLAUSE_SPLIT 也不是语气词，整条就落不到白名单上——而中文聊天里这是最常见
+        # 的收尾方式之一。用「非词字符」的补集来剥，不去枚举符号（符号是开集）。
+        ("去执行…", "/daemon approve"), ("去执行……", "/daemon approve"),
+        ("去执行👌", "/daemon approve"), ("（去执行）", "/daemon approve"),
+        ("停下来…", "/stop"), ("停下來……", "/stop"), ("停下來——", "/stop"),
+        ("別找了…", "/stop"), ("「停下來」", "/stop"), ("“停下来”", "/stop"),
+        ("換個話題…", "/new"), ("换个话题👍", "/new"), ("重新開始……", "/new"),
+        # 剥完装饰仍要过白名单——装饰不是万能钥匙
+        ("雨停下来了…", None), ("我准了假👌", None), ("比賽即將重新開始……", None),
+    ],
+)
+def test_decorative_characters_do_not_hide_a_command(text, expected):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+def test_peeling_is_bounded_for_pathological_input():
+    """⚠️ 分类器跑在用户输入路径上，剥词的候选集必须有硬上界。
+
+    Every peel step pushes another prefix of the clause, so the candidate count
+    grows with the run of trailing particles and each one costs a slice — a 20k
+    character tail used to stall the event loop for seconds.
+    """  # noqa: DOCSTRING_CJK
+    import time
+
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    start = time.perf_counter()
+    assert OpenClawAdapter.rule_magic_command("去执行" + "吧" * 20000) is None
+    assert OpenClawAdapter.rule_magic_command("停下来" + "啊呀" * 10000) is None
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"病态输入耗时 {elapsed:.2f}s，剥词的界没生效"
+
+
+@pytest.mark.parametrize(
     "text",
     [
         # ⚠️ 表内条目**被语气词截短后的残形**不是有效命令，改造前也是 None
@@ -963,6 +1037,131 @@ def test_a_question_never_approves(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+# 四张虚词表里出现过的简繁异体字，闭集。中性字形（简繁同形）单列，用于**发现表外
+# 字形**——这是上一版守卫的盲区：折不出对侧形态时 _fold 返回词条本身，而词条本身当然
+# 在表里，于是新加一个用了表外字的单侧词条会静默通过。
+_FUNCTION_T2S = {
+    "錯": "错", "見": "见", "許": "许", "麼": "么", "點": "点", "這": "这",
+    "幫": "帮", "給": "给", "煩": "烦", "託": "托", "勞": "劳", "駕": "驾",
+    "請": "请", "趕": "赶", "緊": "紧", "馬": "马", "現": "现", "盡": "尽",
+    "務": "务", "記": "记", "繼": "继", "續": "续", "們": "们", "還": "还",
+    "乾": "干", "囉": "啰", "嘍": "喽", "唄": "呗", "喲": "哟", "噠": "哒",
+    "吶": "呐", "嗎": "吗", "樣": "样", "沒": "没", "欸": "诶",
+}
+_FUNCTION_NEUTRAL_CHARS = set(
+    "一上下不了以你允先准刻即可同吧呀呢呦咧咯咱哈哦唷啊啦喔喵嘛嘞噢在好如妳定就得"
+    "心必忙快怎您想意我批拜捏接放是替有然的直立耶能脆行要那麻齁"
+)
+
+
+def test_function_word_tables_are_pinned():
+    """⚠️ 等值钉死四张虚词表——这是**唯一**能挡住「新加一类前缀」的守卫。
+
+    The per-category assertions below only catch tokens someone already thought
+    of: they check that known hedges live in the soft tables. A brand-new hedge
+    (或许 / 恐怕 / 说不定 …) dropped into the neutral table is in *neither* list,
+    so every one of those assertions sails past it — verified by mutation: adding
+    或许|恐怕|说不定 to _NEUTRAL_LEAD left the whole suite green while
+    「或许去执行」 became a real approval.
+
+    Equality is what closes that. Any edit to these tables now turns this red and
+    the reviewer has to state, in the same commit, which category the new token
+    belongs to and what its cross-script counterpart is.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import (
+        _NEUTRAL_LEAD,
+        _NEUTRAL_TAIL,
+        _SOFT_LEAD,
+        _SOFT_TAIL,
+    )
+
+    assert set(_NEUTRAL_LEAD.split("|")) == {
+        "没错", "沒錯", "没意见", "沒意見", "批准", "允许", "允許", "同意",
+        "好的", "好吧", "行了", "可以",
+        "那么", "那麼", "快点", "快點", "就这么", "就這麼", "这就", "這就",
+        "帮我", "幫我", "帮忙", "幫忙", "给我", "給我", "替我",
+        "麻烦", "麻煩", "拜托", "拜託", "劳驾", "勞駕", "有劳", "有勞",
+        "烦请", "煩請",
+        "赶紧", "趕緊", "赶快", "趕快", "马上", "馬上", "立刻", "立即",
+        "现在", "現在", "尽快", "盡快", "直接",
+        "务必", "務必", "记得", "記得", "一定", "放心", "继续", "繼續",
+        "你们", "你們", "您们", "您們", "您",
+        "那", "就", "先", "快", "请", "請", "你", "妳",
+    }
+    assert set(_SOFT_LEAD.split("|")) == {
+        "能不能", "可不可以", "要不然", "要不", "不如", "还是", "還是",
+        "干脆", "乾脆", "我想", "我要", "我们", "我們", "咱们", "咱們",
+        "想", "我", "咱",
+    }
+    assert set(_NEUTRAL_TAIL.split("|")) == {
+        "好了", "吧", "啊", "呀", "喔", "哦", "嘛", "囉", "啰", "咯", "喽",
+        "嘍", "呗", "唄", "嘞", "啦", "一下", "喵",
+        "耶", "唷", "哟", "喲", "欸", "诶", "咧", "哈", "噢", "呐", "吶",
+        "呦", "哒", "噠", "齁", "捏", "~", "～",
+    }
+    assert set(_SOFT_TAIL.split("|")) == {
+        "好不好", "好吗", "好嗎", "行不行", "行吗", "行嗎", "可以吗", "可以嗎",
+        "怎么样", "怎麼樣", "吗", "嗎", "呢", "了",
+    }
+
+
+def test_function_word_tables_are_script_symmetric():
+    """⚠️ 虚词表也是简繁两侧的东西，不只子句白名单。
+
+    The file's whole thesis is that these tables hit the characters a user
+    actually types, so both scripts must be collected in the same pass — yet
+    until now only the *clause* whitelists had a symmetry guard. Dropping 現在 /
+    嘍 / 可以嗎 / 給我 individually left the suite green while their Simplified
+    twins were covered: exactly the asymmetry this series exists to kill.
+
+    ⚠️ Unknown characters fail loudly. The previous guard folded with a partial
+    map and returned the entry unchanged when a character was missing — and the
+    entry is of course in its own table, so a one-sided addition using a new
+    character passed silently. Here every CJK character must be accounted for.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import (
+        _NEUTRAL_LEAD,
+        _NEUTRAL_TAIL,
+        _SOFT_LEAD,
+        _SOFT_TAIL,
+    )
+
+    s2t = {v: k for k, v in _FUNCTION_T2S.items()}
+    tables = {
+        "neutral_lead": _NEUTRAL_LEAD,
+        "soft_lead": _SOFT_LEAD,
+        "neutral_tail": _NEUTRAL_TAIL,
+        "soft_tail": _SOFT_TAIL,
+    }
+
+    unknown = {
+        char
+        for table in tables.values()
+        for word in table.split("|")
+        for char in word
+        if "㐀" <= char <= "鿿"
+        and char not in _FUNCTION_T2S
+        and char not in s2t
+        and char not in _FUNCTION_NEUTRAL_CHARS
+    }
+    assert not unknown, (
+        f"这些字形不在折叠表也不在中性清单里，简繁对称无法验证 → {sorted(unknown)}"
+    )
+
+    def _fold(text, mapping):
+        return "".join(mapping.get(char, char) for char in text)
+
+    for name, table in tables.items():
+        entries = set(table.split("|"))
+        missing = []
+        for entry in sorted(entries):
+            for direction, mapping in (("t2s", _FUNCTION_T2S), ("s2t", s2t)):
+                counterpart = _fold(entry, mapping)
+                if counterpart not in entries:
+                    missing.append(f"{entry} --{direction}--> {counterpart}")
+        assert not missing, f"{name}: 对侧字形缺失 → {missing}"
 
 
 def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():

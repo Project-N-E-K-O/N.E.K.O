@@ -210,22 +210,57 @@ def test_statuses_that_cannot_carry_an_approval_prompt(wired, status):
     assert emitted == []
 
 
-def test_partial_is_not_reachable_for_openclaw_tasks():
-    """The window set lists only reachable statuses — no dead entries.
+def test_the_window_set_contains_only_statuses_this_module_writes():
+    """⚠️ 「写进 registry 的状态」必须从**写入点**推导，不是从源码里出现过的字面量。
 
-    channels/openclaw.py only ever writes running / completed / failed /
-    cancelled into task_registry, so ``partial`` in the window set would be dead
-    weight that reads like a deliberate allowance.
-    """
+    An earlier version scanned the whole module text for each status name, which
+    also picked up comments, docstrings and — worse — read-only predicates like
+    ``if info.get("status") not in {"queued", "running"}`` in
+    _collect_active_openclaw_task_ids. ``queued`` therefore counted as "written",
+    and putting it into the approval window passed this guard unnoticed.
+
+    Here the write sites are located by AST: assignments to ``x["status"]`` plus
+    the ``"status"`` key of the registry-init dict literal.
+    """  # noqa: DOCSTRING_CJK
+    import ast
     import inspect
 
+    tree = ast.parse(inspect.getsource(oc))
+
+    def _literals(node):
+        """Every string constant a status expression can evaluate to."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.IfExp):  # "completed" if success else "failed"
+            return _literals(node.body) | _literals(node.orelse)
+        return set()
+
     written = set()
-    source = inspect.getsource(oc)
-    for status in ("queued", "running", "completed", "failed", "cancelled", "partial"):
-        if f'"{status}"' in source:
-            written.add(status)
+    for node in ast.walk(tree):
+        # info["status"] = ... / _reg["status"] = ...
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "status"
+                ):
+                    written |= _literals(node.value)
+        # task_registry[task_id] = {..., "status": "running", ...}
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "status":
+                    written |= _literals(value)
+
+    assert written, "没找到任何状态写入点，这条守卫的推导方式失效了"
     assert "partial" not in written, "partial 现在可达了，窗口集合要重新评估"
-    assert oc._APPROVAL_WINDOW_STATUSES <= written
+    assert "queued" not in written, (
+        "queued 现在是被写入的状态了；它此前只出现在只读判据里，"
+        "正是这条守卫上一版误收的那个"
+    )
+    assert oc._APPROVAL_WINDOW_STATUSES <= written, (
+        f"窗口收了不会被写入的状态 → {sorted(oc._APPROVAL_WINDOW_STATUSES - written)}"
+    )
 
 
 def test_a_recently_completed_task_opens_the_gate(wired):
@@ -315,6 +350,18 @@ def test_a_proactive_turn_can_never_authorize(wired):
 
     assert fake.magic_calls == [], "主动搭话轮没有用户，绝不能批准"
     assert emitted == []
+
+    # ⚠️ 显式敲字面 magic word **也**不行。「proactive 一律不放行」和「显式命令一律
+    # 豁免闸」是两条相邻分支，谁在前面决定了这一格的行为，而这个顺序此前没有任何测试
+    # 钉住：把豁免提到 proactive 之前，整个 gate 文件照样全绿。主动搭话轮里根本没有
+    # 用户输入，"显式"这个概念不成立——猫娘自己那句台词不该因为长得像命令就被豁免。
+    _dispatch(
+        "/daemon approve",
+        proactive=True,
+        sender=fake.default_sender_id,
+        user_text="/daemon approve",
+    )
+    assert fake.magic_calls == [], "proactive 轮里显式豁免不得越过 proactive 阻断"
 
     # sanity: 同一个 registry 状态、同一个 sender，非 proactive 轮照常放行——
     # 证明上面拦住它的确实是 proactive 而不是别的条件

@@ -180,9 +180,16 @@ _CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、：:\s]+")
 # 第二人称留着，因为 `你去执行吧` 恰恰是指向 agent 的授权。这条判据（剥掉它会不会
 # 把授权变成非授权）是这两张表的唯一入表标准，加词时逐词问一遍。
 _NEUTRAL_LEAD = (
-    r"那么|那麼|快点|快點|"
-    r"帮我|幫我|给我|給我|麻烦|麻煩|拜托|拜託|"
-    r"赶紧|趕緊|马上|馬上|立刻|立即|现在|現在|尽快|盡快|直接|"
+    # 应答式前缀（`好的去执行` 这种不带分隔符的写法）。⚠️ 只收**双字及以上**：
+    # 单字的 好 / 行 / 对 / 嗯 当前缀太糙（`对方去执行` 会被剥成 `方去执行`，
+    # `行不行` 更是词尾），它们只作为**应答子句**参与，见 _APPROVE_COMPANIONS——
+    # 那条路要求有分隔符，语义上也更接近「先应一声再下令」。
+    r"没错|沒錯|没意见|沒意見|批准|允许|允許|同意|好的|好吧|行了|可以|"
+    r"那么|那麼|快点|快點|就这么|就這麼|这就|這就|"
+    r"帮我|幫我|帮忙|幫忙|给我|給我|替我|麻烦|麻煩|拜托|拜託|"
+    r"劳驾|勞駕|有劳|有勞|烦请|煩請|"
+    r"赶紧|趕緊|赶快|趕快|马上|馬上|立刻|立即|现在|現在|尽快|盡快|直接|"
+    r"务必|務必|记得|記得|一定|放心|继续|繼續|"
     r"你们|你們|您们|您們|您|"
     r"那|就|先|快|请|請|你|妳"
 )
@@ -210,7 +217,8 @@ _CLAUSE_LEAD_SOFT = re.compile(rf"^(?:{_SOFT_LEAD}|{_NEUTRAL_LEAD})+")
 # 之后它和授权的 `去執行` 没法区分。`好了` 留着——「去执行好了」是「那就去执行吧」的
 # 口语说法，是授权。表内条目 `准了` / `準了` 自带的那个 `了` 靠**原样命中**，不靠剥。
 _NEUTRAL_TAIL = (
-    r"好了|吧|啊|呀|喔|哦|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|一下|喵|~|～"
+    r"好了|吧|啊|呀|喔|哦|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|一下|喵|"
+    r"耶|唷|哟|喲|欸|诶|咧|哈|噢|呐|吶|呦|哒|噠|齁|捏|~|～"
 )
 # 仅 /stop 与 /new：疑问尾 + 体标记 `了`。
 _SOFT_TAIL = (
@@ -233,6 +241,20 @@ _TAIL_ALTERNATION = f"{_SOFT_TAIL}|{_NEUTRAL_TAIL}"
 # 所以改成：每一步对**所有**能匹配的词尾各试一次，每剥一个查一次表。
 _NEUTRAL_TAIL_TOKENS = tuple(_NEUTRAL_TAIL.split("|"))
 _TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
+
+# ⚠️ 子句两端的**装饰性字符**：省略号 … 、破折号 ——、引号「」『』“”、括号（）、
+# emoji、颜文字符号……它们既不是 _CLAUSE_SPLIT 里的分隔符，也不是语气词，于是
+# `停下来…` / `换个话题👍` / `「停下來」` 整条落不到白名单上——中文聊天里这是最常见
+# 的收尾方式之一，`/stop` 和 `/new` 在其余方面都严格窄于旧实现，唯独这一类是大面积
+# 回归。用「非词字符」这个**补集**来剥，而不是去枚举符号：符号是开集，枚举必漏。
+# `\w` 在 Python3 下含 CJK，所以这条只吃标点、符号与 emoji。
+_DECORATION = re.compile(r"^\W+|\W+$")
+
+# ⚠️ 剥词尾的候选是原串的各级前缀，句尾语气词能连着写（`去执行吧吧吧吧…`），所以
+# 候选数随词尾连串长度增长、每个候选还要做一次切片——对超长输入是二次的，实测 20k
+# 字能在事件循环里卡住秒级。分类器跑在用户输入路径上，给它一个硬上界；表内最长条目
+# 才 6 个字，正常命令远够不到这个数。
+_MAX_PEEL_CANDIDATES = 32
 
 # ⚠️ 问号必须**单独**否决 approve：它是分隔符，切子句时就没了，剥不剥词尾都留不下痕迹
 # （`去執行？` 切完就是 `去執行`）。其余非授权语气——疑问尾、正反问、试探提议、第一
@@ -271,7 +293,9 @@ def _clause_hits(
     tokens = tail_tokens if tail_tokens is not None else _TAIL_TOKENS
     seen: set = set()
     pending = []
-    for candidate in (text, lead.sub("", text).strip()):
+    # 三档起点：原样 / 剥掉两端装饰字符 / 再剥掉首部虚词。
+    bare = _DECORATION.sub("", text).strip()
+    for candidate in (text, bare, lead.sub("", bare).strip()):
         if candidate and candidate not in seen:
             if candidate in table:
                 return True
@@ -279,12 +303,16 @@ def _clause_hits(
             pending.append(candidate)
     if not strip_tail:
         return False
-    while pending:
+    while pending and len(seen) < _MAX_PEEL_CANDIDATES:
         current = pending.pop()
         for token in tokens:
             if len(current) <= len(token) or not current.endswith(token):
                 continue
-            peeled = current[: -len(token)]
+            # 剥掉一个语气词之后可能又露出装饰字符（`去执行吧…` → `去执行吧` → …），
+            # 所以每一步都再剥一次两端装饰。
+            peeled = _DECORATION.sub("", current[: -len(token)]).strip()
+            if not peeled or peeled == current:
+                continue
             if peeled in table:
                 return True
             if peeled not in seen:
@@ -307,6 +335,24 @@ def _clause_hits(
 # 台词再喂进分类器，「没问题喵~」正是她的日常口癖，等于自批准。
 # 所以裸应答只认**整条子句原样**，一个字都不剥。
 _APPROVE_AFFIRMATIONS = frozenset({"同意", "我同意", "没问题", "沒問題"})
+
+# ⚠️ **应答子句**：只能陪跑，不能单独授权。
+#
+# 中文里最常见的授权说法是「应答子句 + 命令子句」——`好的，去执行` / `没错，去执行` /
+# `可以，删吧`。改造前它们靠子串 `去执行` 命中；改成 all-clauses fail-closed 之后，
+# `好的` 这一子句不在任何表里，整条就废了。**这不是收紧，是纯粹的召回损失**：`没错，
+# 去执行` 恰恰是本文件上面那段论证里点名「黑名单方案会误伤」的例子，白名单方案把它
+# 一起误伤了，注释和行为对不上。
+#
+# 但它们**不能**当成裸应答：`好的` / `可以` 单独一句在改造前是 None（旧的整句精确
+# 匹配表只有那四条），当成授权就是扩大批准面。所以规则是：
+#   一条应答子句只有在**同一句话里还存在至少一个动作短语或裸应答子句**时才算数。
+# `好的，去执行` → 通过；`好的` → None；`好的，好的` → None。
+# ⚠️ 和裸应答同理，应答子句只认**整条子句原样**，`好的喵~` 不算。
+_APPROVE_COMPANIONS = frozenset({
+    "好", "好的", "好吧", "行", "行了", "可以", "嗯", "对", "没错", "沒錯",
+    "没意见", "沒意見", "批准", "允许", "允許", "ok", "okay",
+})
 
 # 动作短语支：这些在改造前是**子串**触发，只要句子里含就命中，所以对它们剥首部虚词
 # 不可能超出旧行为的召回。繁体条目是本批新增（旧表繁体全空）——整子句判据下补繁体
@@ -349,16 +395,41 @@ _CLEAR_TRIGGERS = (
 )
 
 
-def _approve_clause_hits(clause: str) -> bool:
-    """Whether one clause counts toward /daemon approve.
+def _approve_clause_kind(clause: str) -> Optional[str]:
+    """Classify one clause for /daemon approve: action, affirmation, or companion.
 
-    Bare affirmations must match the clause verbatim; action phrases go through
-    the normal lead/tail probing. See the note above _APPROVE_AFFIRMATIONS for
-    why the two halves cannot share one judgement.
+    The three cannot share one judgement — see the notes above
+    _APPROVE_AFFIRMATIONS and _APPROVE_COMPANIONS.
     """
     text = str(clause or "").strip()
     if text in _APPROVE_AFFIRMATIONS:
-        return True
+        return "affirmation"
+    # ⚠️ 应答子句走**完整**归一化（装饰 + 首部 + 语气词），`好的喵~，去执行` /
+    # `OK，去执行` 在旧实现里都是 approve。它和裸应答的区别在于：应答子句单独出现
+    # 永远不算授权（下面 any(action|affirmation) 那道），所以放宽它的写法不会扩大
+    # 批准面；裸应答则相反，`没问题喵~` 一旦成立就是主动搭话轮的自批准。
+    #
+    # 这里用**窄**首部表是保守选择，不是安全必需：改成宽表跑 140239 条新旧差分，
+    # 简体侧扩大仍是 0（应答子句 + 动作子句的任意组合在旧实现里都被子串命中过）。
+    # 所以别为这一行写「必须是窄表」的测试——那是个等价变异，钉不住。
+    if _clause_hits(
+        text.lower(),
+        _APPROVE_COMPANIONS,
+        strip_tail=True,
+        lead_re=_CLAUSE_LEAD_NEUTRAL,
+        tail_tokens=_NEUTRAL_TAIL_TOKENS,
+    ):
+        return "companion"
+    return "action" if _approve_clause_hits(text) else None
+
+
+def _approve_clause_hits(clause: str) -> bool:
+    """Whether one clause is an approval **action phrase**.
+
+    Action phrases go through the normal lead/tail probing; bare affirmations
+    and companions must match verbatim and are handled by _approve_clause_kind.
+    """
+    text = str(clause or "").strip()
     # 动作短语可以剥首尾：它们在改造前是**子串**触发，句子里含就命中，所以归一化
     # 不可能超出旧召回。裸应答不行——那一支改造前是整句精确匹配。
     # ⚠️ 但只剥**中性**的那一套：试探提议、第一人称意图、疑问尾都不剥，剥了就分不出
@@ -733,8 +804,13 @@ class OpenClawAdapter:
         # ⚠️ 问号一票否决 approve。它是子句分隔符，切完就没了（`去執行？` → `去執行`），
         # 窄白名单看不见它。其余非授权语气（疑问尾 / 正反问 / 试探提议 / 第一人称意图）
         # 由 _approve_clause_hits 的窄首尾表结构性挡住，不在这里枚举。
-        if not _APPROVE_QUESTION_MARK.search(text) and all(
-            _approve_clause_hits(c) for c in clauses
+        # ⚠️ 每个子句都得有归属（fail-closed），且**至少有一个**是动作短语或裸应答——
+        # 光有应答子句不算授权（`好的` / `好的，好的` → None），必须有实质内容。
+        approve_kinds = [_approve_clause_kind(c) for c in clauses]
+        if (
+            not _APPROVE_QUESTION_MARK.search(text)
+            and all(approve_kinds)
+            and any(kind in ("action", "affirmation") for kind in approve_kinds)
         ):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
         if _clause_hits(clauses[-1], _NEW_CLAUSES):
