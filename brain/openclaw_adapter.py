@@ -155,58 +155,103 @@ _HIGH_PRECISION_NON_MAGIC = (
 # 词汇量**一个没加**，还是原来那些词，只是要求它们**独立成句**而不是嵌在任意
 # 长句里。`/clear` 不在本批（不在本次拍板的三条里），仍走子串包含。
 _CLAUSE_SPLIT = re.compile(r"[，,。．.！!？?；;、\s]+")
-# 首部虚词是**闭集**：代词 + 少数几个连接副词 + 收件人短语。不是黑名单——它只负责
-# 剥掉「我们/那你/先」这类不改变祈使内容的前缀，剥完还得整句命中白名单才算数。
+
+# 首部虚词是**闭集**：代词 + 祈使副词 + 收件人短语。不是黑名单——它只负责剥掉
+# 「我们/那你/赶紧」这类不改变祈使内容的前缀，剥完还得整条命中白名单才算数。
+#
+# ⚠️⚠️ **多字词必须排在它的首字前面**。正则多选支按书写顺序匹配，`那` 排在 `那么`
+# 前面时，「那么停下来吧」会被 `那` 吃掉首字、剩下一个 `么` 粘在后面
+# （子句变成「么停下来」），整条判据失效。`快` / `快点` 同理。加词时照抄这个顺序。
 _CLAUSE_LEAD = re.compile(
-    r"^(?:我们|我們|咱们|咱們|幫我|帮我|給我|给我|那|就|先|快|請|请|麻煩|麻烦|你|妳|我|咱)+"
+    r"^(?:"
+    r"那么|那麼|快点|快點|我们|我們|咱们|咱們|我想|我要|"
+    r"能不能|可不可以|帮我|幫我|给我|給我|麻烦|麻煩|拜托|拜託|"
+    r"赶紧|趕緊|马上|馬上|立刻|立即|现在|現在|尽快|盡快|"
+    r"直接|还是|還是|不如|干脆|乾脆|要不|想|"
+    r"那|就|先|快|请|請|你|妳|我|咱"
+    r")+"
 )
-_CLAUSE_TAIL = re.compile(r"(?:吧|啊|呀|喔|哦|呢|嘛|囉|啦|了|一下|喵|~|～)+$")
+
+# ⚠️ 尾部语气词只用于 `/stop` 和 `/new`，**不用于 `/daemon approve`**——见
+# `_APPROVE_CLAUSES` 上方那段。多字的征询尾（好吗/行不行）同样要排在单字前面。
+# ⚠️ 语气词也是简繁两侧的东西：囉/啰/咯/喽/嘍、呗/唄 必须同批收，否则同一句话
+# 繁体命中简体不命中——那正是这一系列改动要修的毛病。
+_CLAUSE_TAIL = re.compile(
+    r"(?:"
+    r"好不好|好吗|好嗎|行不行|行吗|行嗎|可以吗|可以嗎|怎么样|怎麼樣|好了|"
+    r"吧|啊|呀|喔|哦|呢|嘛|囉|啰|咯|喽|嘍|呗|唄|嘞|啦|了|一下|喵|吗|嗎|~|～"
+    r")+$"
+)
 
 
-def _normalize_clause(clause: str) -> str:
-    """Strip leading function words and trailing particles from one clause."""
+def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
+    """Strip leading function words and (optionally) trailing particles."""
     text = str(clause or "").strip()
     text = _CLAUSE_LEAD.sub("", text)
-    text = _CLAUSE_TAIL.sub("", text)
+    if strip_tail:
+        text = _CLAUSE_TAIL.sub("", text)
     return text.strip()
 
 
-def _clause_set(*words: str) -> frozenset:
-    """Close a raw word list under _normalize_clause.
+def _clause_hits(clause: str, table: frozenset, *, strip_tail: bool = True) -> bool:
+    """Match a clause against a table: raw, lead-stripped, then lead+tail.
 
-    Lookups always normalize the input, so the table has to carry the normalized
-    spelling as well as the raw one.
+    ⚠️ All three forms are load-bearing, and never the other way round (deriving
+    the stripped spellings INTO the table). The tables hold literal spellings and
+    some of those end in a particle the tail regex eats — 别找了 -> 别找,
+    删吧 -> 删. An earlier revision closed the tables under the normalizer, which
+    put bare single characters like 删 and 准 in them; 帮我删一下 (a fresh delete
+    request, not an approval) then dispatched /daemon approve. Keep the tables
+    literal and widen the *lookup* instead.
+
+    ⚠️ Lead-only is a separate probe from lead+tail, not an intermediate step:
+    现在别找了 lead-strips to 别找了, which IS a table entry, but stripping the
+    tail as well takes it to 别找, which is not.
     """
-    # 剥完尾部语气词后 `删吧`→`删`、`准了`→`准`、`别找了`→`别找`，只存原形会对不上。
-    # ⚠️ 闭包会让两个词收敛到同一条：`快停下來` 剥掉首部「快」就是 `停下來`，所以
-    # 单独删掉 `停下來` 是**等价变异**，变异测试杀不掉——要连 `快停下來` 一起删。
-    closed = set(words)
-    closed.update(_normalize_clause(w) for w in words)
-    return frozenset(c for c in closed if c)
+    text = str(clause or "").strip()
+    if not text:
+        return False
+    if text in table:
+        return True
+    lead_only = _normalize_clause(text, strip_tail=False)
+    if lead_only in table:
+        return True
+    return strip_tail and _normalize_clause(text, strip_tail=True) in table
 
 
 # ⚠️ 这三张表撞的是用户实际打出来的字，简繁不同码位，两侧必须同批收词。
-# ⚠️ 词汇量**刻意不扩**：这里每一条都是改造前那两支（子串表 + 整句精确匹配表）
-# 里已有的词。「可以 / 好 / 好的 / 行」这类更宽的应答词**没有**加进来——那是扩大
-# 批准面，得单独评估，不夹带在这次收口里。
-_APPROVE_CLAUSES = _clause_set(
-    # 原整句精确匹配支
-    "同意", "我同意", "没问题", "沒問題",
-    # 原子串支（本批补齐繁体：整子句判据下补繁体不再放大暴露面）
+# ⚠️ 词汇量**刻意不扩**：每一条都是改造前那两支（子串表 + 整句精确匹配表）里已有
+# 的词，字面照抄。「可以 / 好 / 好的 / 行」这类更宽的应答词**没有**加进来——那是
+# 扩大批准面，得单独评估，不夹带在这次收口里。
+#
+# ⚠️⚠️ approve 的两支**判据不同**，别合成一张表。
+#
+# 裸应答（同意 / 我同意 / 没问题 / 沒問題）在改造前走的是**整句精确匹配**，所以
+# `没问题喵~` / `同意~` / `沒問題喔` / `不如同意` / `那就同意` 在 main 上全是 None。
+# 一旦对它们做首尾归一化，这些统统变成批准——收口改动反而扩大高风险命令的命中面，
+# 本末倒置。主动搭话轮尤其致命：task_executor 在 proactive 轮把意图换成猫娘自己那句
+# 台词再喂进分类器，「没问题喵~」正是她的日常口癖，等于自批准。
+# 所以裸应答只认**整条子句原样**，一个字都不剥。
+_APPROVE_AFFIRMATIONS = frozenset({"同意", "我同意", "没问题", "沒問題"})
+
+# 动作短语支：这些在改造前是**子串**触发，只要句子里含就命中，所以对它们剥首部虚词
+# 不可能超出旧行为的召回。繁体条目是本批新增（旧表繁体全空）——整子句判据下补繁体
+# 不再放大暴露面，这是本次改动明确要补的那一格。
+_APPROVE_ACTIONS = frozenset({
     "删吧", "刪吧", "准了", "準了",
     "去执行", "去執行", "去执行吧", "去執行吧",
     "没问题去执行", "沒問題去執行",
-)
-_STOP_CLAUSES = _clause_set(
+})
+_STOP_CLAUSES = frozenset({
     "别找了", "別找了", "快停下来", "快停下來", "停下来", "停下來",
     "取消这个任务", "取消這個任務", "取消这个搜索", "取消這個搜尋",
     "算了别查了", "算了別查了", "停止搜索", "停止搜尋",
-)
-_NEW_CLAUSES = _clause_set(
+})
+_NEW_CLAUSES = frozenset({
     "换个话题", "換個話題", "重新开始", "重新開始",
     "说点别的", "說點別的", "聊点别的", "聊點別的",
     "重新开个话题", "重新開個話題",
-)
+})
 
 # ⚠️ `/clear` 仍走**子串包含**，触发词也仍**刻意保持简体**。
 #
@@ -216,17 +261,40 @@ _NEW_CLAUSES = _clause_set(
 #
 # 上面那套整子句白名单同样适用于它，但 /clear 不在本次拍板的三条里，不擅自扩——
 # 单独评估。繁中用户仍可直接打字面 magic word `/clear`（走 normalize_magic_command，
-# 整句精确匹配）；而且这只是零 LLM 的 pre-gate，返回 None 之后 LLM 分类器照常跑，
-# 真的 clear 意图不会丢。
+# 整句精确匹配）。
+#
+# ⚠️ 别把「LLM 分类器还会兜底」当安全垫——它**不是无条件的**。rule_magic_command 同时
+# 是 task_executor._deterministic_action_signal 的唯一 openclaw 信号，而那个廉价前置闸
+# （task_executor.py 的 `external_intent < AGENT_EXTERNAL_GATE_THRESHOLD and not
+# _deterministic_action_signal(...)` → `return None`）跑在 classify_magic_intent
+# **之前**。规则漏掉 + 小模型把这轮读成闲聊 = 整轮评估直接跳过，LLM 那一路根本到不了。
+# 也就是说规则表收窄的代价在低 external_intent 的短句上是实打实的，不是「多跑一次」。
 _CLEAR_TRIGGERS = (
     "忘了刚才的事", "忘掉刚才的事", "清除我们的聊天记录",
     "清除聊天记录", "删掉刚才的记录", "清空聊天记录",
 )
 
 
+def _approve_clause_hits(clause: str) -> bool:
+    """Whether one clause counts toward /daemon approve.
+
+    Bare affirmations match the clause verbatim; action phrases also match after
+    the leading function words are stripped. Never strip the tail here — see the
+    note above _APPROVE_AFFIRMATIONS.
+    """
+    text = str(clause or "").strip()
+    if text in _APPROVE_AFFIRMATIONS:
+        return True
+    return _clause_hits(text, _APPROVE_ACTIONS, strip_tail=False)
+
+
 def _split_clauses(text: str) -> list[str]:
-    """Split an utterance into normalized, non-empty clauses."""
-    parts = (_normalize_clause(p) for p in _CLAUSE_SPLIT.split(str(text or "").strip()))
+    """Split an utterance into raw, non-empty clauses.
+
+    Normalization happens per lookup (see _clause_hits), not here — approve and
+    stop/new normalize differently.
+    """
+    parts = (p.strip() for p in _CLAUSE_SPLIT.split(str(text or "").strip()))
     return [p for p in parts if p]
 
 
@@ -573,12 +641,17 @@ class OpenClawAdapter:
         # 差别看得见的地方：`我不同意，去执行` 在 approve 下是 None（有子句不在表里），
         # 换成末子句判据就会变成批准。反过来 `我还没同意，停止搜索` 必须仍是 /stop——
         # 前半句只是铺垫，祈使落在末子句上。
-        if all(clause in _APPROVE_CLAUSES for clause in clauses):
+        #
+        # ⚠️ 已知限制，没修：`停下来，我自己来`（先下命令、再补一句理由）在改造前
+        # 命中 /stop，现在是 None。它和 `停下来，这是我当时唯一的念头`（叙述）在**任何
+        # 子句位置判据下都不可区分**——两句的祈使短语都在首子句。子串包含把前者接住
+        # 是顺带的，代价是把后者也接住。要真的分开得看语义，不是这一层能做的事。
+        if all(_approve_clause_hits(c) for c in clauses):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
-        if clauses[-1] in _NEW_CLAUSES:
+        if _clause_hits(clauses[-1], _NEW_CLAUSES):
             return {"is_magic_intent": True, "command": "/new", "source": "rule"}
         # 台湾用「搜尋」不用「搜索」，所以繁体那条不是「搜索」的字形转换。
-        if clauses[-1] in _STOP_CLAUSES:
+        if _clause_hits(clauses[-1], _STOP_CLAUSES):
             return {"is_magic_intent": True, "command": "/stop", "source": "rule"}
 
         return {"is_magic_intent": False, "command": None, "source": "rule"}

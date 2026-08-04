@@ -98,6 +98,40 @@ def _collect_active_openclaw_task_ids(
     return task_ids
 
 
+def _has_recent_openclaw_task(
+    *,
+    sender_id: Optional[str],
+    lanlan_name: Optional[str],
+    exclude_task_id: Optional[str] = None,
+) -> bool:
+    """Whether this sender has any OpenClaw task still in the registry.
+
+    Deliberately looser than _collect_active_openclaw_task_ids: it counts
+    terminal tasks too, because the registry entry is what bounds the window.
+
+    ⚠️ Requiring a *running* task would be backwards. run_instruction is a
+    one-shot POST, so whatever QwenPaw says about needing permission arrives as
+    that POST's reply — and _run_openclaw_dispatch writes status=completed the
+    moment the POST returns, BEFORE _emit_task_result speaks the reply. The user
+    therefore learns an approval is wanted only after the task has already gone
+    terminal; gating on "running" would drop every legitimate approval and keep
+    open only the unrelated-task case. Terminal entries are purged after
+    TASK_REGISTRY_CLEANUP_TTL, so "present in the registry" is a self-bounding
+    recency window and needs no separate constant.
+    """
+    for task_id, info in _shared.Modules.task_registry.items():
+        if task_id == exclude_task_id or not isinstance(info, dict):
+            continue
+        if info.get("type") != "openclaw":
+            continue
+        if sender_id and str(info.get("sender_id") or "").strip() != str(sender_id).strip():
+            continue
+        if lanlan_name and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip():
+            continue
+        return True
+    return False
+
+
 async def _cancel_openclaw_tasks_for_stop(
     *,
     sender_id: Optional[str],
@@ -363,18 +397,31 @@ async def dispatch(
             # 由此彻底关掉；任务真在跑时行为一点不变，那个窗口靠分类器侧的整子句
             # 白名单收窄。
             #
+            # ⚠️ 闸只管**从自由文本推断出来的**批准。用户直接打字面 magic word
+            # （`/openclaw approve` 走 core/turn.py 那条显式分支，或聊天框里直接敲
+            # `/daemon approve`）意图毫无歧义，必须原样放行——那条路径上
+            # _emit_task_result 是**唯一**的用户可见回复，被闸掉的话用户敲了命令、图
+            # 被丢了、turn 被消耗了，屏幕上一个字都不回，只会反复重敲。
+            #
             # 静默丢弃：不 _emit_task_result，所以不会念出「收到许可！」那句固定台词。
             # magic command 自己不进 task_registry（注册在下面的非 magic 分支里），
             # exclude_task_id 是防御性的。
-            if magic_command == "/daemon approve":
-                live_task_ids = _collect_active_openclaw_task_ids(
+            explicitly_typed = False
+            if isinstance(result.tool_args, dict):
+                explicitly_typed = (
+                    _shared.Modules.openclaw.normalize_magic_command(
+                        result.tool_args.get("original_user_text")
+                    )
+                    == magic_command
+                )
+            if magic_command == "/daemon approve" and not explicitly_typed:
+                if not _has_recent_openclaw_task(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
                     exclude_task_id=result.task_id,
-                )
-                if not live_task_ids:
+                ):
                     logger.info(
-                        "[OpenClaw] /daemon approve dropped: no live openclaw task "
+                        "[OpenClaw] /daemon approve dropped: no openclaw task on record "
                         "for sender=%s lanlan=%s",
                         nk_sender_id,
                         lanlan_name,

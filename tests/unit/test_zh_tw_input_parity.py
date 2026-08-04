@@ -524,12 +524,47 @@ def test_clear_triggers_stay_simplified_only(text):
     deliberately rather than smuggled in.
 
     Traditional users can still reach it by typing the literal magic word
-    ``/clear`` (whole-string match in ``normalize_magic_command``), and this is
-    only the zero-LLM pre-gate — the LLM classifier still runs after a None.
+    ``/clear`` (whole-string match in ``normalize_magic_command``).
+
+    ⚠️ Do NOT lean on "the LLM classifier still runs after a None" — that is not
+    unconditional. See test_a_rule_miss_can_skip_the_llm_classifier_entirely.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+def test_a_rule_miss_can_skip_the_llm_classifier_entirely():
+    """⚠️ Pins that the rule table is NOT merely a zero-LLM fast path.
+
+    ``rule_magic_command`` is also the only OpenClaw signal in
+    ``_deterministic_action_signal``, and the cheap pre-gate in
+    ``_analyze_and_execute_inner`` returns None on
+    ``external_intent < threshold and not _deterministic_action_signal(...)`` —
+    which sits BEFORE ``classify_magic_intent``. So on a low-external-intent turn
+    a rule miss means the LLM classifier is never reached, and narrowing the
+    table costs real recall rather than one extra assessment.
+
+    Asserted structurally (the gate ordering in the source) plus behaviourally
+    (the signal really does flip with the table).
+    """  # noqa: DOCSTRING_CJK
+    import inspect
+
+    from brain.openclaw_adapter import OpenClawAdapter
+    from brain.task_executor import DirectTaskExecutor
+
+    source = inspect.getsource(DirectTaskExecutor._analyze_and_execute_inner)
+    gate_at = source.index("_deterministic_action_signal")
+    llm_at = source.index("classify_magic_intent")
+    assert gate_at < llm_at, "前置闸不再位于 LLM magic 分类器之前，这条测试的前提变了"
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor.plugin_list = []
+    signal = executor._deterministic_action_signal
+    # 表内 → 刹车豁免；表外 → 不豁免（低 external_intent 时整轮被跳过）
+    assert signal("停下来", openclaw_enabled=True, user_plugin_enabled=False) is True
+    assert OpenClawAdapter.rule_magic_command("我准了假") is None
+    assert signal("我准了假", openclaw_enabled=True, user_plugin_enabled=False) is False
 
 
 @pytest.mark.parametrize(
@@ -630,23 +665,55 @@ def test_whole_clause_whitelist_kills_free_text_misfires(text):
 
 
 def test_approve_whitelist_content_is_pinned():
-    """⚠️ Equality, not containment.
+    """⚠️ Equality, not containment, and the two tables must stay separate.
 
-    The whole-clause whitelist is the entire judgement for ``/daemon approve``:
-    every entry is a phrase that, said alone, dispatches a real high-risk action
-    upstream. Widening it is a security decision, so it must not be possible to
-    add a word without a test turning red. Broad affirmations (可以 / 好 / 好的 /
-    行) are deliberately absent — see the note above the table.
+    These are the entire judgement for ``/daemon approve``: every entry is a
+    phrase that, said alone, dispatches a real high-risk action upstream.
+    Widening is a security decision, so adding a word must turn a test red.
+
+    ⚠️ No bare single characters. An earlier revision derived the tables by
+    closing them under the clause normalizer, which put 删 / 刪 / 准 / 準 in —
+    and then 帮我删一下 (a fresh delete request) dispatched an approval. The
+    tables are literal now; the *lookup* widens, not the table.
+
+    Broad affirmations (可以 / 好 / 好的 / 行) are deliberately absent.
     """  # noqa: DOCSTRING_CJK
-    from brain.openclaw_adapter import _APPROVE_CLAUSES
+    from brain.openclaw_adapter import _APPROVE_ACTIONS, _APPROVE_AFFIRMATIONS
 
-    assert _APPROVE_CLAUSES == frozenset({
-        "同意", "我同意", "没问题", "沒問題",
-        "删吧", "删", "刪吧", "刪",
-        "准了", "准", "準了", "準",
+    assert _APPROVE_AFFIRMATIONS == frozenset({"同意", "我同意", "没问题", "沒問題"})
+    assert _APPROVE_ACTIONS == frozenset({
+        "删吧", "刪吧", "准了", "準了",
         "去执行", "去执行吧", "去執行", "去執行吧",
         "没问题去执行", "沒問題去執行",
     })
+    single_chars = sorted(
+        w for w in (_APPROVE_ACTIONS | _APPROVE_AFFIRMATIONS) if len(w) < 2
+    )
+    assert not single_chars, f"单字条目会让任意祈使句落到批准上：{single_chars}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 裸应答只认整条子句原样：剥首尾都不行，否则主动搭话轮里猫娘自己的口癖
+        # 「没问题喵~」就会自批准。这些在改造前全是 None，必须保持。
+        "没问题喵~", "没问题喵！", "沒問題喔", "同意~", "我同意喵", "没问题啦",
+        "沒問題囉", "同意啦", "不如同意", "那就同意", "马上同意", "同意了",
+        # 单字派生曾把这些变成批准 —— 它们是**新的删除请求**，不是批准
+        "帮我删了", "帮我删一下", "删一下", "删啦", "删", "准", "刪", "準",
+        "幫我刪了", "请删了", "那就删了吧", "删了吧", "快删了", "准一下", "删喵",
+    ],
+)
+def test_approve_never_widens_beyond_the_pre_change_behaviour(text):
+    """⚠️ 收口改动扩大高风险命令的命中面是本末倒置。
+
+    Every input here returned None before the change. The clause normalizer made
+    them approvals in an intermediate revision — via the table closure (删吧 -> 删)
+    and via tail stripping on the bare affirmations (没问题喵~ -> 没问题).
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
 
 
 # 这三张白名单里出现过的**全部**简繁异体字，闭集。opencc 不是本仓库依赖（只在
@@ -676,7 +743,8 @@ def test_clause_whitelists_are_script_symmetric():
     pairs somebody remembered to write down.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import (
-        _APPROVE_CLAUSES,
+        _APPROVE_ACTIONS,
+        _APPROVE_AFFIRMATIONS,
         _NEW_CLAUSES,
         _STOP_CLAUSES,
     )
@@ -685,7 +753,8 @@ def test_clause_whitelists_are_script_symmetric():
         return "".join(table.get(char, char) for char in text)
 
     for name, entries in (
-        ("approve", _APPROVE_CLAUSES),
+        ("approve_actions", _APPROVE_ACTIONS),
+        ("approve_affirmations", _APPROVE_AFFIRMATIONS),
         ("stop", _STOP_CLAUSES),
         ("new", _NEW_CLAUSES),
     ):
@@ -736,17 +805,58 @@ def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
         ("请停下来", "/stop"), ("請停下來", "/stop"),
         ("帮我停下来", "/stop"), ("幫我停下來", "/stop"),
         ("那你去执行吧", "/daemon approve"),
+        # ⚠️ 多字前缀必须整词剥。`那` 排在 `那么` 前面时正则会吃掉首字、留下一个
+        # `么` 粘在后面（子句变成「么停下来」），整条判据失效。`快`/`快点` 同理。
+        ("那么停下来吧", "/stop"), ("那麼換個話題吧", "/new"),
+        ("快点停下来", "/stop"), ("快點停下來", "/stop"),
+        ("快点去执行", "/daemon approve"),
+        # 祈使副词：中文祈使句最常见的修饰，闭集缺了它们等于这套口令只认「裸命令」
+        ("赶紧停下来", "/stop"), ("馬上取消這個任務", "/stop"),
+        ("立刻停止搜尋", "/stop"), ("现在别找了", "/stop"),
+        ("能不能停下来", "/stop"), ("不如換個話題", "/new"),
+        ("干脆换个话题", "/new"), ("还是换个话题吧", "/new"),
+        ("拜託停下來", "/stop"), ("我想取消这个任务", "/stop"),
+        ("我想重新开始", "/new"), ("马上去执行", "/daemon approve"),
         # trailing particles stripped
         ("重新开始吧", "/new"), ("重新開始吧", "/new"),
         ("停下来吧", "/stop"), ("停下來吧", "/stop"),
+        # 征询/疑问尾：「…好吗 / …行不行」是最常见的礼貌祈使口吻
+        ("停下来好吗", "/stop"), ("停下來好嗎", "/stop"),
+        ("停下来行不行", "/stop"), ("停下来好不好", "/stop"),
+        ("换个话题好吗", "/new"), ("換個話題好嗎", "/new"),
+        ("换个话题怎么样", "/new"), ("重新開始好嗎", "/new"),
+        # ⚠️ 语气词也是简繁两侧的东西：只收繁体「囉」会让同一句话繁体命中简体不命中
+        ("停下來囉", "/stop"), ("停下来啰", "/stop"), ("停下来咯", "/stop"),
+        ("停下來咯", "/stop"), ("停下来喽", "/stop"),
+        ("说点别的呗", "/new"), ("說點別的唄", "/new"),
         # ...but stripping must not resurrect a misfire
         ("雨停下来了", None), ("我准了假", None), ("比賽即將重新開始", None),
+        ("我想重新开始新的人生", None), ("我想让时间停下来", None),
+        ("可以去执行吗", None), ("能不能去執行嗎？我還沒決定", None),
     ],
 )
 def test_clause_normalization_strips_only_function_words(text, expected):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # ⚠️ 表内条目**被语气词截短后的残形**不是有效命令，改造前也是 None
+        # （旧表里只有完整的「别找了」「算了别查了」）。
+        # 一旦查表改成「把表闭包到归一化形态」而不是「把查询归一化后去比对」，这些
+        # 残形会全部命中——那正是单字「删 / 准」混进 approve 表的同一个错误。
+        "别找", "別找", "算了别查", "算了別查",
+        # 过去时叙述不是祈使：approve 的动作支刻意不剥尾，所以它停在 None
+        "去执行了", "去執行了",
+    ],
+)
+def test_truncated_table_entries_are_not_commands(text):
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
 
 
 def test_no_magic_command_fires_on_the_projects_own_ui_copy():

@@ -31,14 +31,14 @@ from app.agent_server.channels import openclaw as oc
 
 
 class _Result:
-    def __init__(self, command, task_id="magic-1"):
+    def __init__(self, command, task_id="magic-1", user_text="没问题"):
         self.task_id = task_id
         self.task_description = "批准当前 QwenPaw 高风险动作"
         self.tool_args = {
             "instruction": command,
             "attachments": [],
             "magic_command": command,
-            "original_user_text": "没问题",
+            "original_user_text": user_text,
             "direct_reply": True,
         }
 
@@ -94,11 +94,11 @@ def wired(monkeypatch):
     return fake, emitted
 
 
-def _dispatch(command, *, sender="USER_A", task_id="magic-1"):
-    messages = [{"role": "user", "content": "没问题", "sender_id": sender}]
+def _dispatch(command, *, sender="USER_A", task_id="magic-1", user_text="没问题"):
+    messages = [{"role": "user", "content": user_text, "sender_id": sender}]
     asyncio.run(
         oc.dispatch(
-            _Result(command, task_id=task_id),
+            _Result(command, task_id=task_id, user_text=user_text),
             messages=messages,
             lanlan_name="lan",
             conversation_id="c",
@@ -140,24 +140,56 @@ def test_approve_goes_through_when_a_task_is_live(wired):
     assert emitted and emitted[0].get("success") is True
 
 
-@pytest.mark.parametrize("status", ["queued", "running"])
-def test_both_live_statuses_open_the_gate(wired, status):
+@pytest.mark.parametrize(
+    "status", ["queued", "running", "completed", "failed", "cancelled", "partial"]
+)
+def test_a_registry_entry_in_any_status_opens_the_gate(wired, status):
+    """⚠️ Terminal statuses count on purpose — requiring "running" is backwards.
+
+    ``run_instruction`` is a one-shot POST, so QwenPaw's "I need permission"
+    surfaces as that POST's reply, and ``_run_openclaw_dispatch`` writes
+    ``status=completed`` the moment the POST returns — *before*
+    ``_emit_task_result`` speaks the reply. By the time the user can say 同意,
+    the task is necessarily terminal. Gating on "running" would drop every
+    legitimate approval and leave open only the unrelated-task case, i.e. exactly
+    inverted. ``TASK_REGISTRY_CLEANUP_TTL`` purges terminal entries, so the
+    registry itself bounds the window.
+    """  # noqa: DOCSTRING_CJK
     fake, _ = wired
     _register(oc._shared.Modules.task_registry, "t-live", status=status)
 
     _dispatch("/daemon approve")
 
-    assert fake.magic_calls, f"status={status} 应该算活任务"
+    assert fake.magic_calls, f"status={status} 仍在 registry 里，应该放行批准"
 
 
-@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "partial"])
-def test_finished_tasks_do_not_open_the_gate(wired, status):
-    fake, _ = wired
-    _register(oc._shared.Modules.task_registry, "t-done", status=status)
+def test_an_empty_registry_still_closes_the_gate(wired):
+    """The case the gate exists for: chatting with no agent activity at all."""
+    fake, emitted = wired
 
     _dispatch("/daemon approve")
 
-    assert fake.magic_calls == [], f"status={status} 是已结束任务，不该放行批准"
+    assert fake.magic_calls == []
+    assert emitted == []
+
+
+def test_an_explicitly_typed_magic_word_is_never_gated(wired):
+    """⚠️ The gate filters free-text inference only.
+
+    Typing ``/openclaw approve`` routes through core/turn.py's explicit branch,
+    which returns before the normal reply path — ``_emit_task_result`` is the
+    only user-visible output left on it. Dropping that silently means the user
+    typed an unambiguous command, lost their attached images and a turn, and got
+    nothing back, so they just retype it.
+    """  # noqa: DOCSTRING_CJK
+    fake, emitted = wired
+    assert oc._shared.Modules.task_registry == {}
+
+    for typed in ("/daemon approve", "daemon approve", "/approve", "approve"):
+        fake.magic_calls.clear()
+        _dispatch("/daemon approve", user_text=typed)
+        assert [c[0] for c in fake.magic_calls] == ["/daemon approve"], typed
+    assert emitted
 
 
 def test_another_senders_task_does_not_open_the_gate(wired):
