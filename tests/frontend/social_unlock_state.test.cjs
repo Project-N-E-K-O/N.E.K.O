@@ -13,6 +13,7 @@ const METHODS_SOURCE = fs.readFileSync(
 function loadSocialUnlock() {
     const storage = new Map();
     const listeners = new Map();
+    const registeredButtons = [];
     const window = {
         localStorage: {
             getItem(key) { return storage.has(key) ? storage.get(key) : null; },
@@ -21,16 +22,22 @@ function loadSocialUnlock() {
         addEventListener(type, listener) { listeners.set(type, listener); },
         t(key, params = {}) { return `${key}:${params.days ?? ''}`; }
     };
+    const document = {
+        querySelectorAll(selector) {
+            assert.equal(selector, '[data-social-button="true"]');
+            return registeredButtons;
+        }
+    };
     const context = vm.createContext({
         AvatarButtonMixin: { methods: {} },
         clearTimeout,
         console,
-        document: { querySelectorAll() { return []; } },
+        document,
         setTimeout,
         window
     });
     vm.runInContext(METHODS_SOURCE, context, { filename: 'methods-buttons.js' });
-    return { api: window.nekoSocialUnlock, storage, listeners };
+    return { api: window.nekoSocialUnlock, storage, listeners, registeredButtons };
 }
 
 test('natural-day countdown persists first-seen date and unlocks on day four', () => {
@@ -102,4 +109,33 @@ test('locked and unlocked button styles and titles are applied consistently', ()
     assert.equal(button['aria-disabled'], 'false');
     assert.equal(button.title, 'buttons.social:');
     assert.equal(button.style.cursor, 'pointer');
+});
+
+test('refreshButtons updates registered buttons after the unlock date', () => {
+    const { api, storage, registeredButtons } = loadSocialUnlock();
+    const button = {
+        dataset: {},
+        style: {},
+        setAttribute(name, value) { this[name] = value; },
+        removeAttribute(name) { delete this[name]; },
+        querySelectorAll() { return []; }
+    };
+
+    api.registerButton(button);
+    registeredButtons.push(button);
+    assert.equal(button.dataset.socialLocked, 'true');
+
+    const firstSeen = new Date();
+    firstSeen.setDate(firstSeen.getDate() - 3);
+    const firstSeenDate = [
+        firstSeen.getFullYear(),
+        String(firstSeen.getMonth() + 1).padStart(2, '0'),
+        String(firstSeen.getDate()).padStart(2, '0')
+    ].join('-');
+    storage.set('neko.social.unlock.v1', firstSeenDate);
+
+    api.refreshButtons();
+    assert.equal(button.dataset.socialLocked, 'false');
+    assert.equal(button['aria-disabled'], 'false');
+    assert.equal(button.title, 'buttons.social:');
 });

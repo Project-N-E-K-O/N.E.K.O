@@ -3,6 +3,9 @@ from types import SimpleNamespace
 
 from jinja2 import Environment, FileSystemLoader
 
+from main_routers import pages_router
+from tests.fake_clock import patch_module_clock
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -98,3 +101,35 @@ def test_versioned_embed_assets_use_immutable_cache_headers() -> None:
     assert 'if b"v=" in scope.get("query_string", b""):' in web_app
     assert '"public, max-age=31536000, immutable"' in web_app
     assert 'static/js/card_maker_embed_bootstrap.js' in pages_router
+
+
+def test_live2d_embed_runtime_assets_change_static_asset_version(monkeypatch) -> None:
+    runtime_paths = tuple(
+        ROOT / relative_path
+        for relative_path in (
+            "static/libs/live2dcubismcore.min.js",
+            "static/libs/live2d.min.js",
+            "static/libs/pixi.min.js",
+            "static/libs/index.min.js",
+            "static/live2d/live2d-core.js",
+            "static/live2d/live2d-emotion.js",
+            "static/live2d/live2d-model.js",
+        )
+    )
+    tracked_paths = set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)
+    assert set(runtime_paths) <= tracked_paths
+
+    class FakePath:
+        def __init__(self, mtime: int) -> None:
+            self._mtime = mtime
+
+        def stat(self):
+            return SimpleNamespace(st_mtime=self._mtime)
+
+    patch_module_clock(monkeypatch, pages_router, monotonic=lambda: 100.0)
+    for index, _runtime_path in enumerate(runtime_paths, start=1):
+        paths = tuple(FakePath(0) for _ in runtime_paths)
+        paths = paths[:index - 1] + (FakePath(index),) + paths[index:]
+        monkeypatch.setattr(pages_router, "_static_asset_version_cache", (0.0, "0"))
+        monkeypatch.setattr(pages_router, "_YUI_GUIDE_ASSET_VERSION_PATHS", paths)
+        assert pages_router._static_assets_ctx()["static_asset_version"].endswith(f"-{index}")

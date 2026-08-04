@@ -107,7 +107,7 @@
 
     function refreshButtons() {
         const status = getStatus();
-        document.querySelectorAll('[data-neko-social-button="true"]').forEach((btn) => {
+        document.querySelectorAll('[data-social-button="true"]').forEach((btn) => {
             const images = btn.querySelectorAll('img');
             applyButtonState(btn, images[0], images[1], status);
         });
