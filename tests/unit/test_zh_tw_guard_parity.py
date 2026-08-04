@@ -2636,9 +2636,13 @@ def test_the_paired_table_discovery_still_sees_the_known_tables():
     参数化会退化成空集合、静默变成零覆盖。这里钉住已知的 12 张一张都不能少。
 
     ⚠️ 只钉下限不钉上限——钉了上限就等于把手写清单换个地方写，新表照样漏。
+    ⚠️ 下限张数以 `_PAIRED_TABLE_FLOOR` 为准，这里**不重复写数字**——原来写着
+    「已知的 12 张」，集合后来加到 14 张，数字就漂了（CodeRabbit）。
     """  # noqa: DOCSTRING_CJK
     discovered = set(_paired_tables())
-    assert _PAIRED_TABLE_FLOOR <= discovered
+    assert _PAIRED_TABLE_FLOOR <= discovered, sorted(
+        _PAIRED_TABLE_FLOOR - discovered
+    )
     # ⚠️ 并且**确实比手写清单宽**：换成自动发现之后多盖到了 7 张表
     # （_WHOLE_CARD_SCOPE_NOUNS / _ZH_PROGRESSIVE_ADVERBS / _WHOLE_CARD_HEAD_NOUNS
     # 这三张里都有真的简繁对，删掉繁体形会当场见红——变异验证过）。

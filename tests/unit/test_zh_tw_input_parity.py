@@ -5437,7 +5437,9 @@ def test_evaluative_a_not_a_tails(predicate):
 
 
 @pytest.mark.parametrize("correlative", ["都", "就"])
-@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪個", "哪些", "哪首歌", "哪首歌", "哪里", "哪裡", "多少"])
+# ⚠️ `哪首歌` 原来写了两遍（CodeRabbit）——pytest 会自动加 0/1 后缀，用例照跑但
+# 同一个词跑两遍不增加覆盖。补成 `哪些歌`。
+@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪個", "哪些", "哪首歌", "哪些歌", "哪里", "哪裡", "多少"])
 def test_general_pronouns_in_correlative_clauses(wh, correlative):
     """一般疑问代词在关联构式里也是陈述（base 是 True，Codex P2 第五十五轮）。
 
@@ -6084,7 +6086,8 @@ def test_bu_guan_yong_is_an_adjective_not_a_frame(tail):
     ) is True
 
 
-@pytest.mark.parametrize("noun", ["摘要", "纪要", "紀要", "概要", "提要", "纲要", "綱要", "简要", "简要", "主要"])
+# ⚠️ `简要` 原来写了两遍（CodeRabbit）——本该是简繁成对，补成 `簡要`。
+@pytest.mark.parametrize("noun", ["摘要", "纪要", "紀要", "概要", "提要", "纲要", "綱要", "简要", "簡要", "主要"])
 def test_a_noun_ending_in_yao_does_not_open_a_conditional_frame(noun):
     """⚠️⚠️ `要是` 单靠左界黑名单收不干净：它前面那个字构成的名词是**开集**——
     摘要 / 纪要 / 概要 / 提要 / 纲要 / 简要 / 主要 / 只要 / 需要 / 重要 / 首要…
@@ -6344,3 +6347,28 @@ def test_question_marked_commands_without_the_inquiry_prefix_still_work():
     assert is_explicit_music_cancellation('帮我停止播放红心歌单？谢谢') is False
     assert is_explicit_music_cancellation('帮我停止播放红心歌单？') is False
     assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+@pytest.mark.parametrize("compound", ["成就算法", "迁就算了", "造就算不算"])
+def test_a_concessive_frame_inside_a_compound_does_not_open(compound):
+    """⚠️ 让步族也挂上「右边必须跟小句」：`成就算法是否正确` 里 `就算` 是
+    `成就`+`算法` 的接缝，却开出框架把 `是否` 中和掉（base 是 False，第七十一轮）。
+
+    左界黑名单在这一族上是打地鼠（成就/迁就/造就/将就/俯就…），右侧一条就闭合：
+    `就算法` 后面是 `法`，不是小句开头。这跟第六十七轮 `要是` 那次是同一条判据，
+    这轮把它从条件族推广到让步族。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前确认{compound}是否正确'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("frame", ["即使", "即便", "就算", "哪怕", "纵使", "縱使"])
+@pytest.mark.parametrize("head", ["有新歌", "不好听", "什么歌都一样", "听《晴天》"])
+def test_a_concessive_frame_still_opens_on_a_real_clause(frame, head):
+    """⚠️ 反向：真让步小句照旧开框架，右侧要求不能把整族废掉。"""  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    text = f'我想停止播放因为{frame}{head}都不想听'
+    assert mr._ZH_FREE_CHOICE_FRAME_RE.search(text) is not None, text
