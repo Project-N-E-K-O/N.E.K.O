@@ -6637,3 +6637,35 @@ def test_real_frames_survive_the_unified_left_bound(text):
     from main_logic.music_requests import is_explicit_music_cancellation
 
     assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize("marker", ["那么", "那麼", "那就", "的话", "的話"])
+def test_a_conditional_consequent_marker_ends_the_frame_scope(marker):
+    """⚠️ **后件标记跟连词是两回事。**
+
+    `那么/那麼/那就/的话/的話` 标的正是条件句**前件的终点**——而前件恰好就是框架
+    的辖域。所以它们不是「又几个连词」，是这条辖域判据在语言学上本来就该有的边界。
+
+    `如果有什么新歌那么这样是否合适` 里 `什么` 在前件内该中和，`是否` 在后件里
+    不该被碰（base 是 False——危险方向，第七十七轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放如果有什么新歌{marker}这样是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_correlatives_are_not_treated_as_consequent_markers():
+    """⚠️ 反向：裸 `就`/`都` **不收**——它们在任指框架里是**关联词**，
+    收了会把那一族的辖域提前截断（`无论唱什么歌都不好听` 会当场失效）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    for bare in ("就", "都"):
+        assert bare not in mr._ZH_CONDITIONAL_CONSEQUENT_MARKERS
+    assert mr.is_explicit_music_cancellation(
+        '我想停止播放因为无论唱什么歌都不好听'
+    ) is True
+    assert mr.is_explicit_music_cancellation(
+        '我想停止播放如果有什么新歌再告诉我'
+    ) is True

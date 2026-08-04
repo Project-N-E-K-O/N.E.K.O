@@ -1297,8 +1297,20 @@ _ZH_FRAME_SCOPE_COORDINATORS = (
     "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
     "另外", "再说", "再說", "所以", "因此",
 )
+# ⚠️ **后件标记**跟连词是两回事，单列一组：`那么/那麼/那就/的话/的話` 标的正是
+# 条件句**前件的终点**——而前件恰好就是框架的辖域。所以它们不是「又几个连词」，
+# 是这条辖域判据在语言学上本来就该有的边界。
+# `如果有什么新歌那么这样是否合适` 里 `什么` 在前件内该中和，`是否` 在后件里
+# 不该被碰（base 是 False——危险方向，第七十七轮）。
+# ⚠️ 不收裸 `就`/`都`：它们在任指框架里是**关联词**（`无论唱什么歌都不好听`），
+# 收了会把那一族的辖域提前截断。
+_ZH_CONDITIONAL_CONSEQUENT_MARKERS = (
+    "那么", "那麼", "那就", "的话", "的話",
+)
 _ZH_FRAME_SCOPE_END_RE = re.compile(
-    _ZH_CLAUSE_BOUNDARY_RE.pattern + "|" + "|".join(_ZH_FRAME_SCOPE_COORDINATORS)
+    _ZH_CLAUSE_BOUNDARY_RE.pattern
+    + "|" + "|".join(_ZH_FRAME_SCOPE_COORDINATORS)
+    + "|" + "|".join(_ZH_CONDITIONAL_CONSEQUENT_MARKERS)
 )
 # ⚠️ 后一子句是**否定**时不能合并：`播放的时候，不要再放音乐了` 里的 `再`
 # 恰好是关联副词，合并之后 `不要再放` 跟前半句连成一体，整条取消请求丢掉
