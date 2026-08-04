@@ -3657,3 +3657,33 @@ def test_continuing_state_aspect_markers(aspect):
         assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我要停止播放的代码') is False
     assert is_explicit_music_cancellation('帮我停止播放按钮换个颜色') is False
+
+
+@pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
+@pytest.mark.parametrize(
+    "template",
+    ["我想停止播放《你好吗？》{w}时候", "我想停止播放{w}时候合适",
+     "我想停止播放{w}地方的歌", "我想停止播放凭{w}",
+     "我想停止播放为{w}会卡", "我想停止播放有{w}影响",
+     "我想停止播放{w}歌"],
+)
+def test_colloquial_what_is_an_alias_everywhere(template, what):
+    """⚠️ `啥` 就是 `什么` 的口语形，凡是 `什么X` 成立的复合式，`啥X` 一样成立。
+
+    上一版把它们逐个**成品**列在表里，于是 为啥 有、啥时候 没有、
+    啥地方 没有、凭啥 没有（Codex P2 第四十轮，base 是 False）。现在三种写法
+    收成 `_ZH_WHAT` 一条常量，所有复合式从它拼出来。
+
+    ⚠️ 这条用例是 **7 种复合式 × 3 种写法**的笛卡尔积：只要哪一章又回到手写
+    成品，缺的那个格子就会见红。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = template.format(w=what)
+    assert is_explicit_music_cancellation(text) is False, text
+    for keep in (
+        '帮我停止播放没什么好听的歌',
+        '帮我停止播放什么都行',
+        '帮我停止播放红心歌单',
+    ):
+        assert is_explicit_music_cancellation(keep) is True, keep
