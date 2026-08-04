@@ -121,6 +121,8 @@ def _iter_approval_window_tasks(
     sender_id: Optional[str],
     lanlan_name: Optional[str],
     exclude_task_id: Optional[str] = None,
+    age_bounded: bool = True,
+    match_lanlan: bool = True,
 ) -> list[str]:
     """Task ids whose recent completion may carry an unanswered approval prompt.
 
@@ -131,7 +133,13 @@ def _iter_approval_window_tasks(
 
     Returns ids so callers can consume entries — one prompt authorizes one
     approval, and `/stop` retires every prompt still standing.
-    """
+
+    ⚠️ ``age_bounded`` / ``match_lanlan`` 是给**作废**用的放宽开关，不是调参位。
+    开闸和作废共用这个过滤器，但两者性质不同：开闸是**每次重新求值**的谓词，作废是
+    **一次性的状态写**。所以作废的条件必须比开闸的**更宽**——凡是「现在不算窗口、
+    以后可能又算」的条目，作废时漏掉一条，等它重新进窗口就是一个没人再作废得掉的洞。
+    具体见两个开关各自的注释。
+    """  # noqa: DOCSTRING_CJK
     # ⚠️ 这道闸和 _collect_active_openclaw_task_ids **状态集合互不相交**，不是笔误：
     # 那个是给 /stop 用的「谁还在跑」，这个是「谁刚把一次回复给到用户」。同一个判据
     # 贯穿始终——**用户有没有可能看见那句审批提示**：
@@ -165,7 +173,18 @@ def _iter_approval_window_tasks(
             continue
         if sender_id and str(info.get("sender_id") or "").strip() != str(sender_id).strip():
             continue
-        if lanlan_name and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip():
+        # ⚠️ 作废时不按角色收窄（match_lanlan=False）。上游的会话键是
+        # `_build_session_key`，里面第一行就是 `del role_name`——**同一个 sender 的所有
+        # 角色共用一个 QwenPaw 会话**。所以角色 B 说的「停下来」打掉的就是角色 A 那句
+        # 审批提示所指的同一个挂起动作；按 lanlan_name 过滤会把 A 的窗口留下来，用户
+        # 切回 A 随口一句「同意」就能把刚停掉的动作批回去。
+        # 代价记账：A、B 并存且 A 正等审批时，B 的「停下来」会让 A 那次必须手敲字面
+        # 命令。方向是 fail-closed，且 session 过滤仍在（跨会话不会被误伤）。
+        if (
+            match_lanlan
+            and lanlan_name
+            and str(info.get("lanlan_name") or "").strip() != str(lanlan_name).strip()
+        ):
             continue
         # ⚠️ queued / running 也**不算**。同一个判据：在途请求的 reply 还没返回，
         # _run_openclaw_dispatch 要等 run_instruction 返回、把状态写成 completed
@@ -178,6 +197,17 @@ def _iter_approval_window_tasks(
         if info.get(_APPROVAL_CONSUMED_KEY):
             continue
         if current_session and str(info.get("session_id") or "").strip() != current_session:
+            continue
+        # ⚠️ 作废时不判龄（age_bounded=False），因为判龄的结果**会随时间翻转**：
+        #   · 下界：时钟被回拨时 age 为负，条目此刻不算窗口，作废看不见它；等时钟追
+        #     上来它又进窗口，而那次 /stop 已经过去了，再没有人来作废它。
+        #   · 上界：同理，超龄条目今天不算窗口，回拨后又算。
+        #   · 缺 end_time：开闸侧 fail-closed 跳过，但 end_time 是可以晚一步写上的，
+        #     写上之后窗口就开了。
+        # 三种都是「现在不算、以后可能算」。作废一条本来就不在窗口里的条目是无害的
+        # （它本来也开不了闸），漏掉一条却是个洞——所以这里一律作废。
+        if not age_bounded:
+            matches.append(task_id)
             continue
         end_time = str(info.get("end_time") or "").strip()
         if not end_time:
@@ -230,6 +260,8 @@ def _retire_approval_windows(
         sender_id=sender_id,
         lanlan_name=lanlan_name,
         exclude_task_id=exclude_task_id,
+        age_bounded=False,
+        match_lanlan=False,
     ):
         info = _shared.Modules.task_registry.get(task_id)
         if isinstance(info, dict):
@@ -566,11 +598,21 @@ async def dispatch(
                 # 也不等 run_magic_command 的成败：本地取消（上面那个 helper 写
                 # status=cancelled）本来就不回滚，而「用户说了停」这件事跟上游那一趟调
                 # 用成没成无关。真想在停之后批准，直接敲 /daemon approve——显式命令豁免。
-                retired = _retire_approval_windows(
-                    sender_id=nk_sender_id,
-                    lanlan_name=lanlan_name,
-                    exclude_task_id=result.task_id,
-                )
+                #
+                # ⚠️ 但主动搭话轮不算。上面阻断 approve 的理由是「proactive 轮**没有
+                # 用户**」，那条理由在这里同样成立：作废的依据是「/stop 是用户对着那句
+                # 提示给出的回答」，而 proactive 轮里用户一个字都没说——那是猫娘自己的
+                # 台词被喂进了分类器。不能替用户批准，却可以替用户撤销授权，是自相矛盾
+                # 的。而且这一侧的后果不是「多批一次」而是**静默**：窗口被她说没就没，
+                # 用户随后那句「同意」走 approve 闸直接 return，不 _emit_task_result，
+                # 屏幕上一个字都不回，他只会反复重说。
+                retired = []
+                if not proactive:
+                    retired = _retire_approval_windows(
+                        sender_id=nk_sender_id,
+                        lanlan_name=lanlan_name,
+                        exclude_task_id=result.task_id,
+                    )
                 if retired:
                     logger.info(
                         "[OpenClaw] /stop retired %d approval window(s): %s",

@@ -678,7 +678,11 @@ def test_approve_whitelist_content_is_pinned():
 
     Broad affirmations (可以 / 好 / 好的 / 行) are deliberately absent.
     """  # noqa: DOCSTRING_CJK
-    from brain.openclaw_adapter import _APPROVE_ACTIONS, _APPROVE_AFFIRMATIONS
+    from brain.openclaw_adapter import (
+        _APPROVE_ACTIONS,
+        _APPROVE_AFFIRMATIONS,
+        _APPROVE_COMPANIONS,
+    )
 
     assert _APPROVE_AFFIRMATIONS == frozenset({"同意", "我同意", "没问题", "沒問題"})
     assert _APPROVE_ACTIONS == frozenset({
@@ -686,10 +690,26 @@ def test_approve_whitelist_content_is_pinned():
         "去执行", "去执行吧", "去執行", "去執行吧",
         "没问题去执行", "沒問題去執行",
     })
+    # ⚠️ 第三张表也要钉。它单独出现永远不授权，但它决定了「应答 + 动作」这一整类
+    # 说法认不认——往里加词同样是扩大 approve 的命中面，必须让评审在同一个 commit 里
+    # 说清楚。漏掉它的那一轮，`對` 缺失活了整整一个 PR。
+    assert _APPROVE_COMPANIONS == frozenset({
+        "好", "好的", "好吧", "行", "行了", "可以", "嗯",
+        "对", "對", "没错", "沒錯", "没意见", "沒意見",
+        "批准", "允许", "允許",
+    })
     single_chars = sorted(
         w for w in (_APPROVE_ACTIONS | _APPROVE_AFFIRMATIONS) if len(w) < 2
     )
     assert not single_chars, f"单字条目会让任意祈使句落到批准上：{single_chars}"
+    # 应答表里有单字（好 / 行 / 对 / 嗯）是有意的——它们单独一句永远是 None，
+    # 只能陪同动作子句出现。这条断言把「单字仅限应答表」钉住。
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert all(
+        OpenClawAdapter.rule_magic_command(word) is None
+        for word in sorted(_APPROVE_COMPANIONS)
+    ), "应答词单独成句必须是 None"
 
 
 @pytest.mark.parametrize(
@@ -724,12 +744,26 @@ _T2S = {
     "沒": "没", "問": "问", "題": "题", "刪": "删", "準": "准", "執": "执",
     "別": "别", "來": "来", "這": "这", "個": "个", "務": "务", "尋": "寻",
     "說": "说", "開": "开", "話": "话", "點": "点", "換": "换",
+    "對": "对", "錯": "错", "見": "见", "許": "许",
 }
+# 白名单里简繁同形的字，单列。用途和 _FUNCTION_NEUTRAL_CHARS 一样：**发现表外字形**。
+# 折叠表折不出对侧时 _fold 返回词条本身，而词条本身当然在表里 —— 于是一个用了表外字
+# 的单侧词条会静默通过。`對` 就是这么漏进来的：它不在 _T2S 里，所以 `对` 折不出 `對`，
+# 守卫查不出 _APPROVE_COMPANIONS 少了繁体侧。
+_CLAUSE_NEUTRAL_CHARS = set(
+    "下了以任停允去取可同吧嗯好始快意我批找搜新查止消的算索聊行重"
+)
 _S2T = {simplified: traditional for traditional, simplified in _T2S.items()}
 # ⚠️ 台湾用「搜尋」不用「搜索」——这是**词汇**差异，不是字形转换，折叠折不出来。
 # 只有这两组，单独豁免；别把豁免集当垃圾桶，每加一条都要说明为什么不是字形对。
 _LEXICAL_NOT_A_FOLD = frozenset({
     "停止搜索", "停止搜尋", "取消这个搜索", "取消這個搜尋",
+    # ⚠️ 准 是**一简对多繁**：許可義的繁体就写作「准」（批准 / 准許 / 不准），
+    # 「準」是準確義。所以 `批准` 两侧同形，机械折叠折出来的 `批準` 不是词，不能收
+    # 进白名单去凑对称——收了等于给 approve 白加一个词条。
+    # （表里同时有 `准了`/`準了` 是另一回事：那是把用户可能打错的写法一起认了，
+    #   属于放宽召回，不是对称性要求。）
+    "批准",
 })
 
 
@@ -745,6 +779,7 @@ def test_clause_whitelists_are_script_symmetric():
     from brain.openclaw_adapter import (
         _APPROVE_ACTIONS,
         _APPROVE_AFFIRMATIONS,
+        _APPROVE_COMPANIONS,
         _NEW_CLAUSES,
         _STOP_CLAUSES,
     )
@@ -752,12 +787,34 @@ def test_clause_whitelists_are_script_symmetric():
     def _fold(text, table):
         return "".join(table.get(char, char) for char in text)
 
-    for name, entries in (
+    tables = (
+        # ⚠️ approve 的判据是**三**张表。少列一张不会让任何断言变红，而 approve 的命中
+        # 面照样变宽——`對` 就是这么漏了一整轮：companions 一张守卫都没盖到。
         ("approve_actions", _APPROVE_ACTIONS),
         ("approve_affirmations", _APPROVE_AFFIRMATIONS),
+        ("approve_companions", _APPROVE_COMPANIONS),
         ("stop", _STOP_CLAUSES),
         ("new", _NEW_CLAUSES),
-    ):
+    )
+
+    # ⚠️ 表外字形必须报错，否则这条守卫在它身上是空转的：_fold 折不出对侧时返回词条
+    # 本身，而词条本身当然在表里 → 静默通过。补完 companions 还不够，`對` 当时也不在
+    # _T2S 里，两个漏洞叠在一起才让它活下来。
+    unknown = {
+        char
+        for _, entries in tables
+        for entry in entries
+        for char in entry
+        if "㐀" <= char <= "鿿"
+        and char not in _T2S
+        and char not in _S2T
+        and char not in _CLAUSE_NEUTRAL_CHARS
+    }
+    assert not unknown, (
+        f"这些字形不在折叠表也不在中性清单里，简繁对称无法验证 → {sorted(unknown)}"
+    )
+
+    for name, entries in tables:
         missing = []
         for entry in sorted(entries):
             if entry in _LEXICAL_NOT_A_FOLD:
@@ -2667,3 +2724,36 @@ def test_the_two_predicates_share_one_particle_table(simplified, traditional):
 
     for text in (simplified, traditional):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    ("simplified", "traditional"),
+    [
+        ("对，去执行", "對，去執行"),
+        ("对，删吧", "對，刪吧"),
+        ("对，同意", "對，同意"),
+        ("对，去执行吧", "對，去執行吧"),
+    ],
+)
+def test_the_companion_clause_works_in_both_scripts(simplified, traditional):
+    """⚠️ 应答子句表漏了繁体 `對`，同一句话简体通、繁体不通。
+
+    ``对`` was the only one-sided entry in _APPROVE_COMPANIONS — every other pair
+    (没错/沒錯, 没意见/沒意見, 允许/允許) was collected on both sides. Two guards
+    should have caught it and neither did: the table was absent from the symmetry
+    checklist, and ``對`` was absent from the fold map, so even adding the table
+    would have folded ``对`` to itself and passed.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    resolved = OpenClawAdapter.rule_magic_command(simplified)
+    assert resolved == "/daemon approve", f"{simplified}: 简体侧前提不成立"
+    assert OpenClawAdapter.rule_magic_command(traditional) == resolved
+
+
+@pytest.mark.parametrize("text", ["對", "对", "對嗎", "對吧", "對，好的", "對啊"])
+def test_a_traditional_companion_still_cannot_authorize_alone(text):
+    """补 `對` 不扩大批准面：应答子句单独出现永远不是授权。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text

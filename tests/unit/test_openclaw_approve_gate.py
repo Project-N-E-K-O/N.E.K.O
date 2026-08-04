@@ -626,16 +626,19 @@ def test_stop_retires_the_window_even_when_the_upstream_call_fails(wired):
 
 
 def test_stop_only_retires_windows_it_owns(wired):
-    """⚠️ 一个用户的「停下来」不该作废另一个用户 / 另一个角色的待批准提示。"""  # noqa: DOCSTRING_CJK
+    """⚠️ 一个用户的「停下来」不该作废**另一个用户**的待批准提示。
+
+    Sender is the real boundary; character is not — one sender's characters all
+    share a single upstream session, see
+    test_stop_retires_windows_of_the_senders_other_characters.
+    """  # noqa: DOCSTRING_CJK
     fake, _ = wired
     registry = oc._shared.Modules.task_registry
     _register(registry, "t-other-sender", status="completed", sender="USER_B")
-    _register(registry, "t-other-lanlan", status="completed", lanlan="other")
 
     _dispatch("/stop", sender="USER_A", task_id="magic-stop")
 
     assert registry["t-other-sender"].get(oc._APPROVAL_CONSUMED_KEY) is None
-    assert registry["t-other-lanlan"].get(oc._APPROVAL_CONSUMED_KEY) is None
 
     fake.magic_calls.clear()
     _dispatch("/daemon approve", sender="USER_B", task_id="magic-approve")
@@ -672,3 +675,119 @@ def test_only_stop_retires_windows(wired, command):
     consumed = [t for t in ("t-a", "t-b") if registry[t].get(oc._APPROVAL_CONSUMED_KEY)]
     expected = 1 if command == "/daemon approve" else 0
     assert len(consumed) == expected
+
+
+def test_stop_retires_every_standing_window_not_just_the_first(wired):
+    """⚠️ 复数是 finder 从「返回单个 id」改成「返回列表」的**全部**收益。
+
+    Two dispatches can both complete inside the TTL and both carry a prompt.
+    Retiring only the head leaves the second one standing for the rest of the
+    window — the same reversal this whole change exists to stop, just one
+    utterance later. Without this case, reverting the loop to the old
+    single-value semantics leaves the suite green.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-a", status="completed", ended_seconds_ago=3.0)
+    _register(registry, "t-b", status="completed", ended_seconds_ago=1.0)
+
+    _dispatch("/stop", task_id="magic-stop")
+
+    assert registry["t-a"].get(oc._APPROVAL_CONSUMED_KEY) is True
+    assert registry["t-b"].get(oc._APPROVAL_CONSUMED_KEY) is True
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-approve")
+    assert fake.magic_calls == [], "第二条窗口也必须被作废"
+
+
+def test_a_proactive_stop_never_retires_the_users_window(wired):
+    """⚠️ 不能替用户批准，就同样不能替用户撤销授权。
+
+    A proactive turn has no user — task_executor feeds the character's own line
+    back into the classifier, and both turns resolve to the same sender. Letting
+    her 「停下来」 retire the window silently eats the human's next 同意: the gate
+    returns without emitting anything, so nothing is spoken back either.
+    """  # noqa: DOCSTRING_CJK
+    fake, emitted = wired
+    # ⚠️ 两侧都用 default_sender_id，这才是生产形状：main_logic 从不往 analyze
+    # messages 上挂 sender_id，所以 _resolve_openclaw_sender_id 返回 ""，用户轮和
+    # 主动轮**落在同一个 sender 桶**。用夹具默认的 USER_A 会让主动轮的 sender
+    # (DEFAULT_SENDER) 跟窗口对不上，于是作废与否都不影响断言——测试为错误的理由而绿。
+    home = fake.default_sender_id
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed", sender=home)
+
+    _dispatch("/stop", task_id="magic-stop", sender=home, proactive=True)
+    assert [c[0] for c in fake.magic_calls] == ["/stop"], "主动轮的 /stop 本身照常派发"
+    assert oc._APPROVAL_CONSUMED_KEY not in oc._shared.Modules.task_registry["t-done"]
+
+    fake.magic_calls.clear()
+    emitted.clear()
+    _dispatch("/daemon approve", task_id="magic-approve", sender=home)
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+def test_stop_retires_a_window_whose_end_time_is_in_the_future(wired):
+    """⚠️ 作废是一次性的写，开闸却是每次重算的谓词。
+
+    A backward clock step makes ``now - ended`` negative, so the entry is not in
+    the window *right now* and a same-filter retirement walks past it. Once the
+    clock catches up it is back in the window — with nobody left to retire it.
+    Retirement must therefore match wider than the gate does.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-future", status="completed", ended_seconds_ago=-30.0)
+    _register(registry, "t-stale", status="completed", ended_seconds_ago=oc.TASK_REGISTRY_CLEANUP_TTL + 30)
+    _register(registry, "t-noend", status="completed", ended_seconds_ago=None)
+
+    _dispatch("/stop", task_id="magic-stop")
+
+    for task_id in ("t-future", "t-stale", "t-noend"):
+        assert registry[task_id].get(oc._APPROVAL_CONSUMED_KEY) is True, task_id
+
+
+def test_stop_retires_windows_of_the_senders_other_characters(wired):
+    """⚠️ 上游会话键忽略角色，所以 /stop 的影响半径也忽略角色。
+
+    ``_build_session_key`` opens with ``del role_name``: every character of one
+    sender shares a single upstream session. A stop issued under character B
+    cancels the very action character A's prompt was about, so leaving A's
+    window standing lets a later 同意 put it straight back.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-other-char", status="completed", lanlan="miku")
+    _register(registry, "t-other-sender", status="completed", sender="USER_B")
+
+    _dispatch("/stop", task_id="magic-stop")
+
+    assert registry["t-other-char"].get(oc._APPROVAL_CONSUMED_KEY) is True
+    assert registry["t-other-sender"].get(oc._APPROVAL_CONSUMED_KEY) is None, (
+        "跨 sender 是真的不相干，不能一起作废"
+    )
+
+
+def test_stop_retires_the_window_even_when_the_upstream_call_raises(wired):
+    """⚠️ 上游最常见的失败是**抛异常**（连接重置 / 超时），不是返回 success=False。
+
+    Retirement sits before the ``await``, so an exception cannot skip it. Only
+    the return-False half used to be covered, and moving the call after the
+    await left the whole file green — verified by hand-moving it, which now
+    turns this case red.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed")
+
+    async def _boom(command, *, sender_id=None, role_name=None):
+        fake.magic_calls.append((command, sender_id, role_name))
+        raise RuntimeError("connection reset")
+
+    fake.run_magic_command = _boom
+    _dispatch("/stop", task_id="magic-stop")
+    assert oc._shared.Modules.task_registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
+
+    fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-approve")
+    assert fake.magic_calls == [], "上游抛异常也不该让旧窗口活下来"
