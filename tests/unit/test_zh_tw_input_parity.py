@@ -3687,3 +3687,41 @@ def test_colloquial_what_is_an_alias_everywhere(template, what):
         '帮我停止播放红心歌单',
     ):
         assert is_explicit_music_cancellation(keep) is True, keep
+
+
+@pytest.mark.parametrize("marker", ["莫非", "难道", "難道"])
+def test_rhetorical_question_adverbs(marker):
+    """反诘语气副词（Codex P2 第四十一轮，base 是 False）。
+
+    它们后面不一定还有别的疑问标记，而歌名自带的问号又被配平跨度挡住，
+    所以整句只剩它一个标记。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (
+        f'我想停止播放{marker}会换成《你好吗？》',
+        f'我想停止播放{marker}不行',
+    ):
+        assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
+
+
+@pytest.mark.parametrize("word", ["哪吒", "哪怕"])
+@pytest.mark.parametrize("noun", ["音乐", "歌曲", "歌", "专辑"])
+def test_lexicalized_na_compounds_are_not_classifier_phrases(word, noun):
+    """⚠️ `哪吒` / `哪怕` 是**词**，不是「哪 + 量词」。
+
+    量词槽放开成任意单字之后，这两个词的第二个字会被当成量词，整句误判成
+    提问、歌停不下来（base 都是 True；哪吒 第三十五轮、哪怕 第四十一轮）。
+
+    ⚠️ `哪` 在现代汉语里**只有这两个**非疑问的词化组合，不是开集。
+    反向断言钉住真的「哪 + 量词」仍然算提问。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    for text in (
+        f'我想停止播放{word}{noun}很好听',
+        f'帮我停止播放{word}{noun}再好听',
+    ):
+        assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放哪种{noun}') is False
