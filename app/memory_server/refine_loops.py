@@ -41,6 +41,13 @@ from .gates import (
 )
 
 
+def _scoped_prompt_trust_band(entry: dict) -> str:
+    """Render mixed-source rows as unknown in LLM-facing refine prompts."""
+    from memory.scoped_refine import scoped_prompt_trust_band
+
+    return scoped_prompt_trust_band(entry)
+
+
 # ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
 
 _reflection_refine_subject_cursor: dict[
@@ -444,8 +451,8 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
         scope_label=f"scoped/{character}",
         failure_fn=_failure,
         start_after=_scoped_refine_cursor.get(character),
-        # trust_of 留空：系列 7/7（发言人信赖度）在这里接 speaker_trust。
-        trust_of=None,
+        # prompt 只看 coarse band；精确值仅供 apply 的代码侧 margin 仲裁。
+        trust_of=_scoped_prompt_trust_band,
         prompt_locale_resolver=_prompt_locale,
     )
     if result.get('served') is not None:

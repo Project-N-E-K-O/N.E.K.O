@@ -63,6 +63,31 @@ def test_character_card_manager_parts_load_in_dependency_order():
     assert script_positions == sorted(script_positions)
 
 
+def test_character_card_manager_hides_pngtuber_compatibility_fields_without_filtering_workshop_payloads():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+    ui_hidden_block = core.split("const PNGTUBER_UI_HIDDEN_FIELDS", 1)[1].split("];", 1)[0]
+    workshop_reserved_function = core.split("function getWorkshopReservedFields()", 1)[1].split(
+        "function getWorkshopHiddenFields()", 1
+    )[0]
+    workshop_hidden_function = core.split("function getWorkshopHiddenFields()", 1)[1].split(
+        "function normalizeCharacterFieldName", 1
+    )[0]
+    pngtuber_fields = (
+        "pngtuber",
+        "pngtuber_idle_image",
+        "pngtuber_talking_image",
+        "pngtuber_happy_image",
+        "pngtuber_sad_image",
+        "pngtuber_angry_image",
+        "pngtuber_surprised_image",
+    )
+
+    for field in pngtuber_fields:
+        assert f"'{field}'" in ui_hidden_block
+    assert "PNGTUBER_UI_HIDDEN_FIELDS" not in workshop_reserved_function
+    assert "PNGTUBER_UI_HIDDEN_FIELDS" in workshop_hidden_function
+
+
 def test_character_card_import_keeps_non_blocking_progress_visible_until_completion():
     core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
     styles = (PROJECT_ROOT / "static" / "css" / "character_card_manager.css").read_text(encoding="utf-8")

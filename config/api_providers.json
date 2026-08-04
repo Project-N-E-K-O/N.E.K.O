@@ -131,12 +131,12 @@
       "name": "阶跃星辰",
       "description": "价格便宜，功能较少，不支持Agent模式",
       "openrouter_url": "https://api.stepfun.com/v1",
-      "conversation_model": "step-2-mini",
-      "summary_model": "step-2-mini",
-      "correction_model": "step-2-mini",
-      "emotion_model": "step-2-mini",
+      "conversation_model": "step-1o-turbo-vision",
+      "summary_model": "step-1o-turbo-vision",
+      "correction_model": "step-1o-turbo-vision",
+      "emotion_model": "step-1o-turbo-vision",
       "vision_model": "step-1o-turbo-vision",
-      "agent_model": "step-3"
+      "agent_model": "step-3.7-flash"
     },
     "silicon": {
       "key": "silicon",

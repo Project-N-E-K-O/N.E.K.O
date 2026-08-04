@@ -119,16 +119,17 @@ class QQDashboardService:
         return Ok(self._build_open_ui_payload(available=True))
 
     async def init_config(self, *, guide_step_config_done: Optional[bool] = None):
-        if await self.plugin.config_store.exists():
-            config = await self.plugin.settings_service.load_business_config()
-        else:
-            config = await self.plugin.settings_service.create_business_config()
-        if guide_step_config_done is not None:
-            config["guide_step_config_done"] = bool(guide_step_config_done)
-            self.plugin._qq_settings = await self.plugin.config_store.save(config)
-            config = dict(self.plugin._qq_settings)
-        self.plugin.settings_service.rebuild_permission_managers(config)
-        self.plugin.settings_service.apply_runtime_settings(config)
+        async with self.plugin.settings_service.permission_manager_rebuild_guard():
+            if await self.plugin.config_store.exists():
+                config = await self.plugin.settings_service.load_business_config()
+            else:
+                config = await self.plugin.settings_service.create_business_config()
+            if guide_step_config_done is not None:
+                config["guide_step_config_done"] = bool(guide_step_config_done)
+                self.plugin._qq_settings = await self.plugin.config_store.save(config)
+                config = dict(self.plugin._qq_settings)
+            self.plugin.settings_service.rebuild_permission_managers(config)
+            self.plugin.settings_service.apply_runtime_settings(config)
         return Ok(await self.build_dashboard_state())
 
     async def get_dashboard_state(self):

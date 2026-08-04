@@ -4,6 +4,8 @@
 根据 QQ 号管理用户权限等级
 """
 
+import math
+
 from typing import Any, Dict, List, Optional
 
 
@@ -15,7 +17,24 @@ class PermissionManager:
     _NICKNAME_FORBIDDEN_CHARS = frozenset("[]|")
     _NICKNAME_ALLOWED_FORMAT_CHARS = frozenset({"\u200d"})
 
-    def __init__(self, trusted_users: List[Dict[str, Any]] = None):
+    @staticmethod
+    def _speaker_activity_count_cap() -> int:
+        from config import (
+            SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
+            SPEAKER_TRUST_ACTIVITY_WEIGHT,
+        )
+
+        if SPEAKER_TRUST_ACTIVITY_MAX_BONUS <= 0 or SPEAKER_TRUST_ACTIVITY_WEIGHT <= 0:
+            return 0
+        return max(0, math.ceil(
+            SPEAKER_TRUST_ACTIVITY_MAX_BONUS / SPEAKER_TRUST_ACTIVITY_WEIGHT
+        ))
+
+    def __init__(
+        self,
+        trusted_users: List[Dict[str, Any]] = None,
+        speaker_trust_profiles: Dict[str, Dict[str, Any]] | None = None,
+    ):
         """
         初始化权限管理器
 
@@ -23,6 +42,15 @@ class PermissionManager:
             trusted_users: 信任用户列表，格式: [{"qq": "123456", "level": "admin", "nickname": "小明"}, ...]
         """
         self._users: Dict[str, Dict[str, Any]] = {}  # {qq: {level, nickname?, normal_relay_probability?}}
+        self._speaker_trust_profiles: Dict[str, Dict[str, Any]] = {}
+
+        for raw_qq, raw_profile in (speaker_trust_profiles or {}).items():
+            qq = self._normalize_qq(raw_qq)
+            if not qq or not isinstance(raw_profile, dict):
+                continue
+            self._speaker_trust_profiles[qq] = self._normalize_speaker_profile(
+                raw_profile
+            )
 
         if trusted_users:
             for user in trusted_users:
@@ -144,6 +172,178 @@ class PermissionManager:
     def get_normal_relay_probability(self, qq_number: str) -> Optional[float]:
         user = self._users.get(self._normalize_qq(qq_number)) or {}
         return self._normalize_probability(user.get("normal_relay_probability"))
+
+    @staticmethod
+    def _normalize_speaker_profile(value: Dict[str, Any] | None) -> Dict[str, Any]:
+        from config import (
+            SPEAKER_TRUST_EVENT_HISTORY_LIMIT,
+        )
+
+        raw = value if isinstance(value, dict) else {}
+        try:
+            adjustment = float(raw.get("adjustment", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            adjustment = 0.0
+        if not math.isfinite(adjustment):
+            adjustment = 0.0
+        try:
+            message_count = min(
+                PermissionManager._speaker_activity_count_cap(),
+                max(0, int(raw.get("message_count", 0) or 0)),
+            )
+        except (TypeError, ValueError, OverflowError):
+            message_count = 0
+        def _event_ids(key: str, *, durable: bool = False) -> list[str]:
+            raw_events = raw.get(key)
+            if not isinstance(raw_events, list):
+                return []
+            events: list[str] = []
+            seen: set[str] = set()
+            for event_id in raw_events:
+                normalized = str(event_id or "").strip()[:96]
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    events.append(normalized)
+            if durable:
+                return events
+            return events[-SPEAKER_TRUST_EVENT_HISTORY_LIMIT:]
+        return {
+            "adjustment": adjustment,
+            "message_count": message_count,
+            # Activity and owner signals must not share an eviction ring:
+            # message spam could otherwise evict correction ids and replay them.
+            "processed_activity_events": _event_ids(
+                "processed_activity_events"
+            ),
+            "processed_signal_events": _event_ids(
+                "processed_signal_events", durable=True,
+            ),
+        }
+
+    def speaker_trust_profiles(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            qq: {
+                "adjustment": float(profile.get("adjustment", 0.0) or 0.0),
+                "message_count": int(profile.get("message_count", 0) or 0),
+                "processed_activity_events": list(
+                    profile.get("processed_activity_events") or []
+                ),
+                "processed_signal_events": list(
+                    profile.get("processed_signal_events") or []
+                ),
+            }
+            for qq, profile in self._speaker_trust_profiles.items()
+        }
+
+    def replace_speaker_trust_profiles(
+        self, profiles: Dict[str, Dict[str, Any]],
+    ) -> None:
+        self._speaker_trust_profiles = {
+            self._normalize_qq(qq): self._normalize_speaker_profile(profile)
+            for qq, profile in (profiles or {}).items()
+            if self._normalize_qq(qq) and isinstance(profile, dict)
+        }
+
+    def get_speaker_trust(
+        self, qq_number: str, permission_level: str | None = None,
+    ) -> float:
+        """Global per-QQ trust shared by every group and private participant."""
+        from config import (
+            SPEAKER_TRUST_ADJUSTMENT_LIMIT,
+            SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
+            SPEAKER_TRUST_ACTIVITY_WEIGHT,
+            SPEAKER_TRUST_BY_PERMISSION_LEVEL,
+            SPEAKER_TRUST_DEFAULT,
+        )
+
+        qq = self._normalize_qq(qq_number)
+        # A caller handling a buffered session may pass the permission snapshot
+        # captured when that session started.  Evolution remains global per QQ,
+        # while the baseline must not change halfway through the buffered write.
+        level = permission_level or self.get_permission_level(qq)
+        base = SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(level, SPEAKER_TRUST_DEFAULT)
+        profile = self._speaker_trust_profiles.get(qq) or {}
+        raw_adjustment = float(profile.get("adjustment", 0.0) or 0.0)
+        adjustment = max(
+            -SPEAKER_TRUST_ADJUSTMENT_LIMIT,
+            min(SPEAKER_TRUST_ADJUSTMENT_LIMIT, raw_adjustment),
+        )
+        activity_count = min(
+            self._speaker_activity_count_cap(),
+            max(0, int(profile.get("message_count", 0) or 0)),
+        )
+        activity = min(
+            SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
+            activity_count * SPEAKER_TRUST_ACTIVITY_WEIGHT,
+        )
+        return max(0.0, min(1.0, base + adjustment + activity))
+
+    def record_speaker_activity(
+        self, qq_number: str, message_count: int, event_id: str,
+    ) -> bool:
+        qq = self._normalize_qq(qq_number)
+        event = str(event_id or "").strip()[:96]
+        count = max(0, int(message_count or 0))
+        if not qq or not event or count == 0:
+            return False
+        profile = self._speaker_trust_profiles.setdefault(
+            qq, self._normalize_speaker_profile({}),
+        )
+        processed = profile["processed_activity_events"]
+        if event in processed:
+            return False
+        from config import SPEAKER_TRUST_EVENT_HISTORY_LIMIT
+        processed.append(event)
+        del processed[:-SPEAKER_TRUST_EVENT_HISTORY_LIMIT]
+        profile["message_count"] = min(
+            self._speaker_activity_count_cap(),
+            int(profile.get("message_count", 0) or 0) + count,
+        )
+        return True
+
+    def apply_speaker_trust_events(self, events: list[dict]) -> int:
+        """Apply only server-issued deterministic owner signals, idempotently."""
+        from config import (
+            SPEAKER_TRUST_CONFIRMATION_DELTA,
+            SPEAKER_TRUST_CORRECTION_DELTA,
+        )
+
+        applied = 0
+        for item in events or []:
+            if not isinstance(item, dict):
+                continue
+            speaker_id = str(item.get("speaker_id") or "")
+            platform, sep, qq = speaker_id.partition(":")
+            event_id = str(item.get("event_id") or "").strip()[:96]
+            kind = item.get("kind")
+            if platform != "qq" or not sep or not qq or not event_id:
+                continue
+            if kind not in {"confirmation", "correction"}:
+                continue
+            profile = self._speaker_trust_profiles.setdefault(
+                qq, self._normalize_speaker_profile({}),
+            )
+            processed = profile["processed_signal_events"]
+            if event_id in processed:
+                continue
+            # Owner signals change arbitration power.  Their deterministic
+            # IDs form an exact append-only replay ledger: truncating this
+            # list would let an old correction apply again after eviction.
+            processed.append(event_id)
+            delta = (
+                SPEAKER_TRUST_CONFIRMATION_DELTA
+                if kind == "confirmation"
+                else -SPEAKER_TRUST_CORRECTION_DELTA
+            )
+            # Keep the authored signal sum lossless.  Clamping each write is
+            # non-commutative near the cap, so concurrent session completion
+            # order could change the final trust.  The effective adjustment is
+            # capped in get_speaker_trust() instead.
+            profile["adjustment"] = (
+                float(profile.get("adjustment", 0.0) or 0.0) + delta
+            )
+            applied += 1
+        return applied
 
     def set_nickname(self, qq_number: str, nickname: str):
         """设置用户昵称"""
