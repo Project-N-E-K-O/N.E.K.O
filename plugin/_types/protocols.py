@@ -98,7 +98,7 @@ class PluginContextProtocol(Protocol):
         self,
         profile_name: Optional[str] = None,
         timeout: float = 5.0,
-    ) -> "PushMessageResult":
+    ) -> Dict[str, Any]:
         """获取有效配置
         
         Args:
@@ -451,7 +451,7 @@ class PluginContextProtocol(Protocol):
         fast_mode: bool = False,
         delivery: Any = None,
         reply: Optional[bool] = None,
-    ) -> Dict[str, Any]:
+    ) -> "PushMessageResult":
         """推送消息到主进程，并返回本地传输层提交结果。
 
         v2 推荐参数 (visibility/ai_behavior/parts) 见 push_message_schema 文档；

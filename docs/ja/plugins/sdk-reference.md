@@ -15,7 +15,7 @@ from plugin.sdk.plugin import (
     # plugin-local i18n と settings
     PluginI18n, tr, PluginSettings, SettingsField,
     # Result 型
-    Ok, Err, Result, unwrap, unwrap_or,
+    Ok, Err, Result, PushMessageResult, unwrap, unwrap_or,
     # ランタイムヘルパー
     Plugins, PluginRouter, PluginConfig, PluginStore,
     SystemInfo,
