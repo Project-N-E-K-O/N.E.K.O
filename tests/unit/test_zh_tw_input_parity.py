@@ -1175,6 +1175,7 @@ _FUNCTION_T2S = {
     "幫": "帮", "給": "给", "煩": "烦", "託": "托", "勞": "劳", "駕": "驾",
     "請": "请", "趕": "赶", "緊": "紧", "馬": "马", "現": "现", "盡": "尽",
     "務": "务", "記": "记", "繼": "继", "續": "续", "們": "们", "還": "还",
+    "問": "问",
     "乾": "干", "囉": "啰", "嘍": "喽", "唄": "呗", "喲": "哟", "噠": "哒",
     "吶": "呐", "嗎": "吗", "樣": "样", "沒": "没", "欸": "诶", "謝": "谢",
 }
@@ -1222,6 +1223,7 @@ def test_function_word_tables_are_pinned():
     assert set(_SOFT_LEAD.split("|")) == {
         "要不要", "能不能", "可不可以", "要不然", "要不", "不如", "还是", "還是",
         "是否可以", "是否能", "是否", "能否", "可否",
+        "请问", "請問",
         "干脆", "乾脆", "我想", "我要", "我们", "我們", "咱们", "咱們",
         "想", "我", "咱",
     }
@@ -2922,3 +2924,35 @@ def test_literal_magic_words_survive_the_slash_separator(text, expected):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("请问能不能停下来？", "/stop"),
+        ("請問能不能停下來", "/stop"),
+        ("请问可以换个话题吗", "/new"),
+        ("请问停下来", "/stop"),
+        ("請問換個話題", "/new"),
+    ],
+)
+def test_the_politest_interrogative_lead_still_reaches_its_command(text, expected):
+    """⚠️ `请问` 必须进**宽**表，不能只靠中性表里的 `请`。
+
+    The combined expression is ``^(?:SOFT|NEUTRAL)+`` and soft is tried first, so
+    a two-character entry there wins over the one-character neutral one. Leave it
+    out and neutral's ``请`` eats a single character, stranding ``问能不能停下来``
+    with nothing left that matches — the same multi-character-before-its-prefix
+    trap these tables have hit eight times now.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize("text", ["请问去执行吗", "請問去執行嗎", "请问同意吗", "请问", "請問"])
+def test_the_politest_interrogative_lead_never_approves(text):
+    """它是**征询**，approve 一侧看不见它（只在宽表里）。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
