@@ -144,10 +144,8 @@
             if (normalized === 'zh-CN' && typeof asset.nameZh === 'string' && asset.nameZh.trim()) {
                 return asset.nameZh.trim();
             }
-            // Community/local cards are allowed to ship a Chinese semantic name
-            // before translators cover every locale. Non-Chinese UIs fall back
-            // to the source title (normally the creator/Mixamo title), never to
-            // an unrelated hard-coded Chinese label.
+            // 动作卡可以先提供中文规范名，再逐步补齐各语言。非中文界面缺少
+            // 对应翻译时回退到素材标题，不能显示无关的硬编码中文名称。
             if (typeof names.en === 'string' && names.en.trim()) return names.en.trim();
             const sourceName = MotionPlayer.sourceName(asset);
             if (sourceName) return sourceName;

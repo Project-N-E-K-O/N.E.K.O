@@ -131,7 +131,7 @@
             if (!vrmIdleUrl) {
               vrmIdleUrl = window.lanlan_config && window.lanlan_config.vrmIdleAnimation;
             }
-            await window.vrmManager.playVRMAAnimation(vrmIdleUrl || '/static/vrm/animation/wait03.vrma', {
+            await window.vrmManager.playVRMAAnimation(vrmIdleUrl || '/static/vrm/animation/wait03.vrma.gz', {
               loop: true,
               isIdle: true
             });

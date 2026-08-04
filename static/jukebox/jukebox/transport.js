@@ -838,7 +838,7 @@ Object.assign(window.Jukebox, {
         var vrmIdleList = window.lanlan_config?.vrmIdleAnimations;
         var vrmIdleUrl = (Array.isArray(vrmIdleList) && vrmIdleList.length > 0) ? vrmIdleList[0] : null;
         if (!vrmIdleUrl) {
-          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma';
+          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma.gz';
         }
         await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
           loop: true,

@@ -3388,7 +3388,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
                 await vrmManager.loadModel(modelUrl, {
                     addShadow: false,
-                    idleAnimation: '/static/vrm/animation/wait03.vrma'
+                    idleAnimation: '/static/vrm/animation/wait03.vrma.gz'
                 });
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
@@ -5651,7 +5651,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
                     const displayName = anim.name || anim.filename || finalUrl.split('/').pop();
                     const fileName = finalUrl.split('/').pop() || '';
-                    const isDefault = /^wait\d*\.vrma$/i.test(fileName) || /\/wait\d*\.vrma$/i.test(animPath);
+                    const isDefault = /^wait\d*\.vrma(?:\.gz)?$/i.test(fileName) || /\/wait\d*\.vrma(?:\.gz)?$/i.test(animPath);
 
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';

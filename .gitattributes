@@ -37,4 +37,5 @@
 *.exe binary
 *.vrm binary
 *.vrma binary
+*.vrma.gz binary
 *.moc3 binary

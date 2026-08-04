@@ -1320,7 +1320,7 @@ class VRMManager {
         // 获取默认循环动画路径：优先从 options 传入，其次从配置读取，最后使用默认值
         const DEFAULT_LOOP_ANIMATION = options.idleAnimation ||
             window.lanlan_config?.vrmIdleAnimation ||
-            '/static/vrm/animation/wait03.vrma';
+            '/static/vrm/animation/wait03.vrma.gz';
 
         // 确保 animation 模块已初始化
         if (!this.animation) {

@@ -7,11 +7,16 @@ const zlib = require('node:zlib');
 
 const root = process.cwd();
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/manifest.json'), 'utf8'));
-const source = fs.readFileSync(path.join(root, manifest.assets[0].src[0]));
-const sourceBuffer = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+const packedSource = fs.readFileSync(path.join(root, manifest.assets[0].src[0]));
+const decodedSource = zlib.gunzipSync(packedSource);
+const sourceBuffer = packedSource.buffer.slice(
+    packedSource.byteOffset,
+    packedSource.byteOffset + packedSource.byteLength
+);
 
 global.window = global;
 global.location = { hostname: 'localhost' };
+global.document = { baseURI: 'http://localhost/' };
 global.crypto = crypto.webcrypto;
 global.CustomEvent = class CustomEvent {
     constructor(type, init) {
@@ -31,6 +36,10 @@ vm.runInThisContext(
     fs.readFileSync(path.join(root, 'static/vrm/motion/player.js'), 'utf8'),
     { filename: 'static/vrm/motion/player.js' }
 );
+vm.runInThisContext(
+    fs.readFileSync(path.join(root, 'static/vrm/vrm-animation.js'), 'utf8'),
+    { filename: 'static/vrm/vrm-animation.js' }
+);
 
 function response(body, status) {
     return {
@@ -47,15 +56,15 @@ function response(body, status) {
         return response(manifest);
     };
     const player = await new global.NekoMotionPlayer().load();
-    assert.equal(player.assets.length, 13);
-    assert.equal(player.assets.every(function (asset) { return asset.compression === 'none'; }), true);
+    assert.equal(player.assets.length, 75);
+    assert.equal(player.assets.every(function (asset) { return asset.compression === 'gzip'; }), true);
 
     const zhCatalog = player.catalog('zh-CN');
     const enCatalog = player.catalog('en-US');
-    assert.equal(zhCatalog.length, 13);
+    assert.equal(zhCatalog.length, 75);
     assert.equal(zhCatalog[0].name, '开心地回应喜欢和亲近');
     assert.equal(enCatalog[0].name, 'Happily respond with affection');
-    assert.equal(enCatalog[0].path, '/static/vrm/animation/liked.vrma');
+    assert.equal(enCatalog[0].path, '/static/vrm/animation/liked.vrma.gz');
     assert.equal(enCatalog[0].systemMotion, true);
 
     let previewPlan = null;
@@ -79,21 +88,21 @@ function response(body, status) {
         return response(sourceBuffer);
     };
     assert.match(await player._assetUrl(player.assets[0]), /^blob:test-/);
-    assert.equal(requested, '/static/vrm/' + player.assets[0].f);
+    assert.equal(requested, '/static/vrm/' + player.assets[0].f + '.gz');
 
-    const corrupted = Buffer.from(source);
+    const corrupted = Buffer.from(packedSource);
     corrupted[0] ^= 0xff;
     global.fetch = async function () {
         return response(corrupted.buffer.slice(corrupted.byteOffset, corrupted.byteOffset + corrupted.byteLength));
     };
     await assert.rejects(player._assetUrl(player.assets[0]), /packed SHA-256 mismatch/);
 
-    const packed = zlib.gzipSync(source);
+    const packed = zlib.gzipSync(decodedSource);
     const gzipAsset = Object.assign({}, player.assets[0], {
         compression: 'gzip',
         f: 'motion-pack/example.vrma',
         packedSha: crypto.createHash('sha256').update(packed).digest('hex'),
-        decodedSha: crypto.createHash('sha256').update(source).digest('hex')
+        decodedSha: crypto.createHash('sha256').update(decodedSource).digest('hex')
     });
     global.DecompressionStream = require('node:stream/web').DecompressionStream;
     global.fetch = async function (url) {
@@ -102,6 +111,23 @@ function response(body, status) {
     };
     assert.match(await player._assetUrl(gzipAsset), /^blob:test-/);
     assert.equal(requested, '/static/vrm/motion-pack/example.vrma.gz');
+
+    let parsedBytes = null;
+    let parsedResourcePath = '';
+    const directLoader = {
+        async parseAsync(bytes, resourcePath) {
+            parsedBytes = Buffer.from(bytes);
+            parsedResourcePath = resourcePath;
+            return { userData: { vrmAnimations: [{}] } };
+        }
+    };
+    global.fetch = async function () {
+        return response(sourceBuffer);
+    };
+    const animation = Object.create(global.VRMAnimation.prototype);
+    await animation._loadVRMAGltf(directLoader, '/static/vrm/animation/liked.vrma.gz');
+    assert.deepEqual(parsedBytes, decodedSource);
+    assert.equal(parsedResourcePath, 'http://localhost/static/vrm/animation/');
 
     const lowPosePlayer = new global.NekoMotionPlayer();
     lowPosePlayer.assets = [

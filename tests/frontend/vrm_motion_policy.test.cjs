@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
 const root = process.cwd();
 const motionRoot = path.join(root, 'static/vrm/motion');
@@ -11,27 +12,30 @@ const requiredLocales = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 assert.equal(manifest.policy.distribution, 'public-release');
 assert.equal(manifest.policy.localTestEnabled, false);
 assert.equal(manifest.policy.previewUnrated, false);
-assert.equal(manifest.assets.length, 13);
-assert.equal(manifest.counts.files, 13);
+assert.equal(manifest.assets.length, 75);
+assert.equal(manifest.counts.files, 75);
+assert.equal(manifest.counts.official, 13);
 
 manifest.assets.forEach(function (asset) {
     assert.equal(asset.ok, true, asset.id);
     assert.equal(asset.license, 'Apache-2.0', asset.id);
-    assert.equal(asset.compression, 'none', asset.id);
+    assert.equal(asset.compression, 'gzip', asset.id);
     assert.equal(asset.card.descriptionStatus, 'human-verified', asset.id);
-    assert.equal(asset.f, asset.src[0].replace(/^static\/vrm\//, ''), asset.id);
+    assert.equal(asset.src[0], 'static/vrm/' + asset.f + '.gz', asset.id);
     requiredLocales.forEach(function (locale) {
         assert.equal(typeof asset.names[locale], 'string', asset.id + ':' + locale);
         assert.notEqual(asset.names[locale].trim(), '', asset.id + ':' + locale);
     });
 
     const source = path.join(root, asset.src[0]);
-    const bytes = fs.readFileSync(source);
-    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
-    assert.equal(bytes.length, asset.packedBytes, asset.id);
-    assert.equal(bytes.length, asset.decodedBytes, asset.id);
-    assert.equal(digest, asset.packedSha, asset.id);
-    assert.equal(digest, asset.decodedSha, asset.id);
+    const packed = fs.readFileSync(source);
+    const decoded = zlib.gunzipSync(packed);
+    const packedDigest = crypto.createHash('sha256').update(packed).digest('hex');
+    const decodedDigest = crypto.createHash('sha256').update(decoded).digest('hex');
+    assert.equal(packed.length, asset.packedBytes, asset.id);
+    assert.equal(decoded.length, asset.decodedBytes, asset.id);
+    assert.equal(packedDigest, asset.packedSha, asset.id);
+    assert.equal(decodedDigest, asset.decodedSha, asset.id);
 });
 
 function walk(directory) {
@@ -45,14 +49,18 @@ const relativeFiles = walk(motionRoot).map(function (filename) {
     return path.relative(motionRoot, filename).split(path.sep).join('/');
 }).sort();
 
-assert.deepEqual(relativeFiles, [
+assert.deepEqual(relativeFiles.filter(function (name) { return !name.endsWith('.vrma.gz'); }), [
     'core.js',
     'manifest.json',
     'player.js',
     'runtime.js',
     'semantics.json'
 ]);
-assert.equal(relativeFiles.some(function (name) { return name.endsWith('.vrma.gz'); }), false);
+assert.equal(relativeFiles.filter(function (name) { return name.endsWith('.vrma.gz'); }).length, 62);
+
+const allVrmFiles = walk(path.join(root, 'static/vrm'));
+assert.equal(allVrmFiles.filter(function (name) { return name.endsWith('.vrma.gz'); }).length, 75);
+assert.equal(allVrmFiles.some(function (name) { return name.endsWith('.vrma'); }), false);
 
 const websocketSource = fs.readFileSync(path.join(root, 'static/app/app-websocket.js'), 'utf8');
 const relaySource = fs.readFileSync(
@@ -78,4 +86,4 @@ assert.match(modelManagerSource, /data-motion-asset-id/);
 assert.match(modelManagerSource, /playSelectedVrmAnimationOption/);
 assert.match(modelManagerTemplate, /static\/vrm\/motion\/player\.js/);
 
-console.log('VRM motion policy and source integrity: OK (13 localized official assets)');
+console.log('VRM motion policy and source integrity: OK (75 gzip assets)');

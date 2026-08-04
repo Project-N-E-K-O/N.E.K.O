@@ -229,6 +229,35 @@ class VRMAnimation {
         return await this._loaderPromise;
     }
 
+    async _loadVRMAGltf(loader, vrmaPath) {
+        if (!/\.vrma\.gz(?:$|[?#])/i.test(String(vrmaPath || ''))) {
+            return await loader.loadAsync(vrmaPath);
+        }
+
+        const response = await fetch(vrmaPath, { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`压缩动画加载失败: HTTP ${response.status}`);
+        }
+
+        let decoded = await response.arrayBuffer();
+        const bytes = new Uint8Array(decoded);
+        // 某些反向代理会根据 Content-Encoding 自动解压；只有仍带 gzip magic
+        // 的响应才在浏览器中再次解压，避免 double-decompression。
+        if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+            if (typeof DecompressionStream !== 'function') {
+                throw new Error('当前运行环境不支持 gzip 动作解压');
+            }
+            const stream = new Blob([decoded]).stream().pipeThrough(new DecompressionStream('gzip'));
+            decoded = await new Response(stream).arrayBuffer();
+        }
+
+        const pageUrl = typeof document !== 'undefined' && document.baseURI
+            ? document.baseURI
+            : window.location.href;
+        const resourcePath = new URL('.', new URL(vrmaPath, pageUrl)).href;
+        return await loader.parseAsync(decoded, resourcePath);
+    }
+
     _cleanupOldMixer(vrm) {
         // 只清理通用 animationMixer；vrmaMixer 由 _createAndConfigureAction 管理（复用 / 重建）
         if (this.manager.animationMixer) {
@@ -645,7 +674,7 @@ class VRMAnimation {
 
             this._cleanupOldMixer(vrm);
             const loader = await this._initLoader();
-            const gltf = await loader.loadAsync(vrmaPath);
+            const gltf = await this._loadVRMAGltf(loader, vrmaPath);
             const vrmAnimations = gltf.userData?.vrmAnimations;
             if (!vrmAnimations || vrmAnimations.length === 0) {
                 const error = new Error('动画文件加载成功，但没有找到 VRM 动画数据');
