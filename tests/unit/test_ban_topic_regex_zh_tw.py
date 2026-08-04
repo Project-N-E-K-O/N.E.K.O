@@ -860,8 +860,10 @@ def test_every_bracket_delimiter_is_also_trimmed():
         assert f"{_re.escape(lo)}[^{_re.escape(hi)}" in D._ZH_BRACKET_RUN, (
             f"{lo}{hi} 没进话题单位"
         )
+    # 模板 2 的前置话题走 NO_GUANYU 变体（见 _ZH_PLAIN_CHAR_NO_GUANYU），其余走共用的。
+    units = (D._ZH_TOPIC_CHAR, D._ZH_TOPIC_CHAR_NO_GUANYU)
     for raw in _zh_pattern_sources():
-        assert D._ZH_TOPIC_CHAR in raw, f"这条 zh 模板没走共用话题单位：{raw!r}"
+        assert any(u in raw for u in units), f"这条 zh 模板没走共用话题单位：{raw!r}"
 
 
 @pytest.mark.parametrize(
@@ -1355,3 +1357,120 @@ def test_interrogative_tails_are_a_separate_table_from_the_particles():
         assert len(tok) == 1, tok
 
 
+
+
+# ── 9. 括号段有界 + 对称引号不跨句 ──────────────────────────
+def test_bracket_bodies_are_bounded():
+    """无界的 ``*`` 在每个开括号处都会扫到串尾，是二次方（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert "]*" not in D._ZH_BRACKET_RUN, D._ZH_BRACKET_RUN
+    assert f"{{0,{D._TERM_MAX_LEN}}}" in D._ZH_BRACKET_RUN
+
+
+def test_unmatched_openers_stay_linear():
+    import time
+
+    timings = {}
+    for n in (2000, 8000):
+        text = "《" * n
+        start = time.perf_counter()
+        extract_directives(text)
+        timings[n] = time.perf_counter() - start
+    # 二次方的话 4 倍输入是 16 倍时间；给足余量只要求**远小于**二次方。
+    assert timings[8000] < timings[2000] * 8 + 0.2, timings
+    assert timings[8000] < 1.0, timings
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 两句各带一个孤立英寸号，不能被并成一段引文
+        ('尺寸5"别提了。尺寸6"别提了。', {"尺寸5", "尺寸6"}),
+        ('尺寸5"別提了。尺寸6"別提了。', {"尺寸5", "尺寸6"}),
+        # 真的成对引号仍然整体放行，逗号也还在
+        ('别提"你好，李焕英"了。', {"你好，李焕英"}),
+        ('別提"你好，李煥英"了。', {"你好，李煥英"}),
+        ('"Everything, Everywhere"别提了。', {"Everything, Everywhere"}),
+    ],
+)
+def test_symmetric_ascii_quotes_do_not_span_sentences(text, expected):
+    assert _zh_terms(text) == expected
+
+
+def test_only_symmetric_pairs_forbid_sentence_punctuation():
+    """非对称括号里的句读属于话题（``《你好，李焕英》``），不能一起收紧。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("电影《你好，李焕英》别提了。") == {"电影《你好，李焕英"}
+    assert _zh_terms("電影《你好，李煥英》別提了。") == {"電影《你好，李煥英"}
+
+
+# ── 10. 关于 的排除只属于前置话题 ────────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提关于公司的传闻。", "关于公司的传闻"),
+        ("別再提關於公司的傳聞。", "關於公司的傳聞"),
+        ("我不想聊关于钱的事", "关于钱"),
+        ("我不想聊關於錢的事", "關於錢"),
+    ],
+)
+def test_an_object_may_begin_with_guanyu(text, expected):
+    """⚠️ 排除 ``关于`` 是模板 2 **前置话题**的守卫，放进共用单字分支会把动宾结构的
+    宾语一起毙掉（codex P2）。前置话题与动词后宾语是两种结构。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["我觉得关于股票就别再讲了", "我覺得關於股票就別再講了", "其实关于工作别提了"],
+)
+def test_the_preposed_guard_still_suppresses_the_junk_prefix(text):
+    terms = _zh_terms(text)
+    assert not any("关于" in t or "關於" in t for t in terms), terms
+
+
+def test_the_guanyu_guard_is_scoped_to_one_template():
+    assert "关于" not in D._ZH_TOPIC_CHAR
+    assert "关于" in D._ZH_TOPIC_CHAR_NO_GUANYU
+    scoped = [
+        pat.pattern for loc, _k, pat in D.DIRECTIVE_PATTERNS
+        if loc == "zh" and "(?!关于|關於)" in pat.pattern
+    ]
+    assert len(scoped) == 1, len(scoped)
+
+
+# ── 11. 否定词全族都算中文证据 ───────────────────────────────
+# ⚠️ 笛卡尔积从 _ZH_NEG 派生的那批否定词，防的是「加了新否定词但忘了同步证据」。
+NEGATIONS_FOR_EVIDENCE = ("别", "別", "不要", "不许", "不許", "不准", "莫", "甭", "休")
+
+
+@pytest.mark.parametrize("negation", NEGATIONS_FOR_EVIDENCE)
+def test_every_negation_counts_as_chinese_evidence(negation):
+    """⚠️ 单字类覆盖不到 不准/莫/休/不要——它们一个字都不在里面，于是含日文语法标记
+    的标题被当成日文句子整条丢掉（codex P2）。补的是**结构**不是共用汉字：往字类里
+    塞 准/莫/休 会像 没/称 那样把守卫整个短路掉。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"{negation}提君の名は。") == {"君の名は"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "地域別講座の名称を確認します。",
+        "性別講座について話しました。",
+        "年代別講座の名称。",
+        "休講のお知らせを確認します。",
+    ],
+)
+def test_japanese_betsu_suffix_before_kou_is_not_chinese_evidence(text):
+    """⚠️ ``別`` 在日文是后缀「按…分」，``地域別講座`` 会满足「否定 + 言说动词」。
+    左界是开集（地域/年代/男女…都行），右界是闭集——日文里 ``別`` 之后成词的只有
+    ``講``。宁可漏判繁体用户的一次 ban，也不能把日文句子残片存进指令表。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set()
+
+
+def test_the_negation_evidence_is_derived_from_the_verb_tables():
+    for verb in D._ZH_SAY_VERBS + D._ZH_SAY_COMPOUNDS:
+        assert verb in D._ZH_NEG_VERB_EVIDENCE, verb
+    for negation in NEGATIONS_FOR_EVIDENCE:
+        assert negation in D._ZH_NEG_VERB_EVIDENCE, negation

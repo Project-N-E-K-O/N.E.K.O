@@ -380,15 +380,36 @@ _ZH_BRACKET_PAIRS = (
 # term 里出现任一括号字符 = 里面有被引用的专名，_trim_term 据此关掉反问尾巴的剥离。
 # ⚠️ 从 _ZH_BRACKET_PAIRS 派生，不另抄一张：同一件事维护两张表必然漂移（#2655）。
 _ZH_BRACKET_CHARS = frozenset(ch for pair in _ZH_BRACKET_PAIRS for ch in pair)
+def _zh_bracket_body(lo: str, hi: str) -> str:
+    """One bracketed run: bounded body, and symmetric pairs never span a sentence."""
+    banned = re.escape(hi) + "\\r\\n"
+    if lo == hi:
+        # ⚠️ 对称的一对（只有 ASCII ``"``）不能跨句读配对。孤立的双引号很常见——
+        # 英寸号、代码片段——两个不相干的句子各带一个就会被当成一整段引文：
+        # ``尺寸5"别提了。尺寸6"别提了。`` 被并成一条 ``尺寸5"别提了。尺寸6``，两条
+        # 指令全丢（codex P2）。非对称括号没有这个问题（``《`` 不会被误当收尾），
+        # 所以只对称的这一类收紧；逗号仍然放行，``别提"你好，李焕英"了。`` 要保住。
+        banned += "。！？；.!?;"
+    # ⚠️ 长度必须**有界**：无界的 ``*`` 在每个开括号处都会扫到串尾去找收尾，
+    # ``"《" * 8000`` 这种输入就是二次方——实测 2.6 秒，而 record_from_text 是在
+    # 用户每条消息上同步跑的（codex P2）。上界取 _TERM_MAX_LEN：比它长的括号段
+    # 无论如何都会被末尾的长度过滤丢掉，收紧不损失任何能存下来的 term。
+    return f"{re.escape(lo)}[^{banned}]{{0,{_TERM_MAX_LEN}}}{re.escape(hi)}"
+
+
 _ZH_BRACKET_RUN = "(?:" + "|".join(
-    f"{re.escape(lo)}[^{re.escape(hi)}\\r\\n]*{re.escape(hi)}"
-    for lo, hi in _ZH_BRACKET_PAIRS
+    _zh_bracket_body(lo, hi) for lo, hi in _ZH_BRACKET_PAIRS
 ) + ")"
 
-# ⚠️ 单字分支 temper 掉裸的 ``关于/關於``：``关于 X 就别提了`` 归模板 4 管，
-# 前缀能逐字吃过它的话，"我觉得关于股票就别再讲了" 会多产出一条 ``我觉得关于股票就``。
-# 括号分支在原子组里排在前面，所以 ``电影《关于爱》`` 仍作为一个整体放行。
-_ZH_PLAIN_CHAR = r"(?!关于|關於)[^，。！？；,.!?;\r\n]"
+_ZH_PLAIN_CHAR = r"[^，。！？；,.!?;\r\n]"
+# ⚠️ 只有模板 2 的**前置**话题 temper 掉裸的 ``关于/關於``：``关于 X 就别提了`` 归
+# 模板 4 管，前缀能逐字吃过它的话，"我觉得关于股票就别再讲了" 会多产出一条
+# ``我觉得关于股票就``。
+#
+# ⚠️ 这条**不能**放进共用的单字分支。放进去就变成"话题里任何位置都不许出现关于"，
+# 把动宾结构的宾语一起毙了：``别再提关于公司的传闻。`` 从 ``关于公司的传闻`` 变成
+# 完全不命中（codex P2）。前置话题与动词后宾语是两种结构，守卫只属于前者。
+_ZH_PLAIN_CHAR_NO_GUANYU = r"(?!关于|關於)" + _ZH_PLAIN_CHAR
 
 # ⚠️⚠️ 整个"单位"必须是**原子**的，否则是一条 ReDoS。单字分支也能匹配 ``《``，于是
 # ``《a》`` 既可以被括号分支整体吃掉、也可以被单字分支逐字吃掉——这个歧义放进
@@ -399,18 +420,22 @@ _ZH_PLAIN_CHAR = r"(?!关于|關於)[^，。！？；,.!?;\r\n]"
 # 消失。比"把开括号排除出单字分支"更好的地方：落单的 ``"`` / ``(`` （英寸号、颜
 # 文字 ``:(``）仍然能被当成普通字吃进话题，不会变成硬边界。
 _ZH_TOPIC_CHAR = f"(?>{_ZH_BRACKET_RUN}|{_ZH_PLAIN_CHAR})"
+_ZH_TOPIC_CHAR_NO_GUANYU = f"(?>{_ZH_BRACKET_RUN}|{_ZH_PLAIN_CHAR_NO_GUANYU})"
 
 
-def _zh_topic(minimum: int, maximum: int) -> str:
+def _zh_topic(minimum: int, maximum: int, *, block_guanyu: bool = False) -> str:
     """Topic capture body: ``minimum`` units, except a single bracketed run counts.
 
     ⚠️ 一整段括起来的内容算**一个**单位，所以 ``{2,30}`` 会把独立成句的
     ``《你好，李焕英》别提了。`` 卡掉（只有 1 个单位）。但它本身就 ≥3 个字符，
     长度闸根本不会丢它——所以单独放行"以一段括号开头"的形态（codex P2）。
+
+    ``block_guanyu`` 只给模板 2 的前置话题用，见 _ZH_PLAIN_CHAR_NO_GUANYU。
     """  # noqa: DOCSTRING_CJK
+    unit = _ZH_TOPIC_CHAR_NO_GUANYU if block_guanyu else _ZH_TOPIC_CHAR
     return (
-        f"(?:{_ZH_BRACKET_RUN}{_ZH_TOPIC_CHAR}{{0,{maximum - 1}}}?"
-        f"|{_ZH_TOPIC_CHAR}{{{minimum},{maximum}}}?)"
+        f"(?:{_ZH_BRACKET_RUN}{unit}{{0,{maximum - 1}}}?"
+        f"|{unit}{{{minimum},{maximum}}}?)"
     )
 
 # 模板 1 里 term 与终结符之间允许出现的句末助词。与 ``_TRIM_TRAIL_TOKENS`` 的 zh
@@ -459,8 +484,45 @@ _KANA_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]")
 # 助词判据根本没机会跑（codex P2）。下面每个字都对应一个不同的日文字形：
 # 别→別 说→説 讲→講 谈→談 讨→討 论→論 关→関 话→話 题→題 愿→願 懒→懶 许→許
 # 为→為；這 / 甭 日文没有；說 / 關 / 沒 / 稱 是与日文分道的繁体形。
+#
+# ⚠️ 光靠单字覆盖不到 _ZH_NEG 的全部否定词：``不准 / 莫 / 休 / 不要`` 一个字都不在
+# 上面的字类里（``不許`` 的繁体 ``許`` 也不在），于是 ``不准提君の名は。`` 被判成日文
+# 句子、整条丢掉——parent 上它是好的（codex P2；``不许`` 侥幸活着只因为 ``许`` 恰好
+# 在字类里，纯属巧合）。
+#
+# 补法是**结构**而不是再往字类里塞共用汉字：「否定词 + 可选的再 + 言说动词」这两维
+# 都是闭集，且两者相邻这件事本身就是中文句法——日文不会出现 ``不准提`` 这种相邻。
+# 往字类里加 ``准 / 莫 / 休`` 反而会短路守卫（``没`` / ``称`` 就是这么错过两轮的）。
+#
+# ⚠️⚠️ 两道边界都要，这是**实测踩到的**（本文件的 ja 语料直接抓出来的）：
+#
+# (a) 左界：``別`` 在日文里是后缀「按…分」——地域別 / 部門別 / 商品別 / 年齢別 /
+#     性別，后面接名词。``地域別提案をお願いします。`` 于是满足「否定 + 言说动词」，
+#     整句被判成中文、存下 ``案をお願いします``。``地域別談話でも可。`` 同理。
+#     一度以为只有 ``講`` 会撞（休講 / 特別講座），语料证明 ``提`` / ``談`` 一样撞。
+#     ⚠️「哪些名词后面能接 別」是开集（_BIE_COMPOUND_LEFT 那张表拦不住 地域別），
+#     但**日文里 別 永远贴在汉字后面**，而中文的否定词前面是句首、代词或标点。
+#     所以判据取「前一个字符不是汉字、也不是假名」——闭集，且不依赖枚举名词。
+#     ⚠️ 假名那一半是漏过一轮才补的：``カテゴリ別提案書。`` / ``テーマ別討論スレ``
+#     的 ``別`` 前面是片假名不是汉字，只挡汉字的话照样漏。
+#
+# (b) 右界：``休講``（＝停课）是词首也成立的日文，单独排掉，与 _ZH_XIU 的
+#     ``(?!講)`` 对齐。
+#
+# 剩下的残余：日文以 ``不要提案…`` 开头（不要＝ふよう）仍会误判。日文一般写
+# ``不要な提案``，且要同时撞上 zh 模板的其余结构，代价上接受。
+_ZH_NEG_VERB_EVIDENCE = (
+    r"(?<![一-鿿぀-ゟ゠-ヿｦ-ﾟ])(?:"
+    # ⚠️ ``休`` 这里**不用**再排 ``講``：``_ZH_XIU`` 的 ``(?!講)`` 已经让 ``休講…``
+    # 根本产不出 zh 匹配，证据判据永远走不到（变异验证过，加了是不可达分支）。
+    + "|".join(("不要", "不许", "不許", "不准", "莫", "甭", "别", "別", "休"))
+    + r")\s*(?:再)?\s*(?:"
+    + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
+    + ")"
+)
 _ZH_EVIDENCE_RE = re.compile(
     r"[别说讲谈讨论关这话题愿懒许为甭說這關沒稱]|叫我|喊我|管我叫|不想|懶得|不願"
+    + "|" + _ZH_NEG_VERB_EVIDENCE
 )
 
 # (2b) 日文的句法证据：助词 / 助动词 / 敬体词尾。日文**句子**几乎必然出现，而一个
@@ -509,7 +571,10 @@ def _is_japanese_sentence_match(span: str, term: str, before: str = "") -> bool:
     Japanese particles ("別提君の名は。") is indistinguishable from Japanese by any
     local rule and stays suppressed.
     """  # noqa: DOCSTRING_CJK
-    if _ZH_EVIDENCE_RE.search(span):
+    # ⚠️ 把左边一个字符接上再搜：``_ZH_NEG_VERB_EVIDENCE`` 的判据是「否定词前面不是
+    # 汉字」，而 span 恰好**从否定词开头**，只搜 span 的话那条 lookbehind 永远落空，
+    # ``地域別提案をお願いします。`` 会被当成中文（本文件的 ja 语料直接抓出来的）。
+    if _ZH_EVIDENCE_RE.search(before[-1:] + span):
         return False
     # 命中区间**左边紧挨着**假名 → 触发词是日文能产的 ``〜別`` 后缀（カテゴリ別 /
     # ジャンル別 / テーマ別），不是中文的祈使 ``別``。中文句子里 ``別`` 前面不会
@@ -562,7 +627,8 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 前缀；1 字前缀本来也只能产出 1 字 term、必然被丢，所以抬下限只赚不亏。
      # ``的`` 绑在指示词里、不单独可选：单独可选会把 "目的这个别提了。" 的 目的 切成
      # 目（对抗排查）。句尾的 ``就`` 不在正则里吃，见 _ZH_TRAILING_FILLERS。
-     r"(?!(?<=关)于)(?!(?<=關)於)(" + _zh_topic(2, 30) + r")\s*"
+     r"(?!(?<=关)于)(?!(?<=關)於)("
+     + _zh_topic(2, 30, block_guanyu=True) + r")\s*"
      r"(?:的事)?\s*(?:的?(?:这个|這個|这事|這事|这话题|這話題|这件事|這件事))?\s*"
      r"\s*[别別]\s*(?:再)?\s*"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
