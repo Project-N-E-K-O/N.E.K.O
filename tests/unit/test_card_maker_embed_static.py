@@ -1,3 +1,5 @@
+import re
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -135,3 +137,17 @@ def test_versioned_runtime_assets_change_static_asset_version(monkeypatch) -> No
         monkeypatch.setattr(pages_router, "_static_asset_version_cache", (0.0, "0"))
         monkeypatch.setattr(pages_router, "_YUI_GUIDE_ASSET_VERSION_PATHS", paths)
         assert pages_router._static_assets_ctx()["static_asset_version"].endswith(f"-{index}")
+
+
+def test_template_versioned_static_assets_are_tracked() -> None:
+    referenced_paths = set()
+    for template_path in (ROOT / "templates").glob("*.html"):
+        template_source = template_path.read_text(encoding="utf-8")
+        for match in re.finditer(r"/static/([^\"'\s?]+)\?v=\{\{\s*static_asset_version\b", template_source):
+            referenced_paths.add(
+                (ROOT / "static" / urllib.parse.unquote(match.group(1))).resolve()
+            )
+
+    tracked_paths = set(pages_router._YUI_GUIDE_ASSET_VERSION_PATHS)
+    assert referenced_paths <= tracked_paths
+    assert ROOT / "static/app/app-chat.js" in tracked_paths

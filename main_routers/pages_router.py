@@ -27,7 +27,9 @@ etc. See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import re
 import time
+import urllib.parse
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -55,6 +57,28 @@ _MODEL_MANAGER_JS_PATHS = tuple(sorted(
 _YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
 ))
+_STATIC_ASSET_VERSION_TEMPLATE_PATTERN = re.compile(
+    r"/static/([^\"'\s?]+)\?v=\{\{\s*static_asset_version\b"
+)
+
+
+def _template_static_asset_version_paths() -> tuple[Path, ...]:
+    """Collect literal static files that templates serve with the version query."""
+    static_root = (_PROJECT_ROOT / "static").resolve()
+    paths: set[Path] = set()
+    for template_path in (_PROJECT_ROOT / "templates").glob("*.html"):
+        try:
+            template_source = template_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in _STATIC_ASSET_VERSION_TEMPLATE_PATTERN.finditer(template_source):
+            asset_path = (static_root / urllib.parse.unquote(match.group(1))).resolve()
+            if asset_path.is_relative_to(static_root) and asset_path.is_file():
+                paths.add(asset_path)
+    return tuple(sorted(paths))
+
+
+_TEMPLATE_STATIC_ASSET_VERSION_PATHS = _template_static_asset_version_paths()
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/tutorial-styles.css",
@@ -167,6 +191,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
+    *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
