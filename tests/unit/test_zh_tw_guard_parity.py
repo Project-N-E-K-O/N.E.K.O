@@ -679,22 +679,31 @@ def test_a_sentence_particle_still_ends_a_complete_target(target, particle):
 
 
 def _negators() -> list[str]:
-    """从 `_CHAT_NEGATED_REWRITE_RE` 里把否定词闭集拆出来。
+    """否定词闭集从实现常量取。
 
-    ⚠️ 上一版是手抄 10 个，于是 不准/不許/禁止/嚴禁/休要/不得/莫 全没跑到——
-    reviewer 报了其中一个，实测才发现漏了七个。否定/禁止是**封闭词类**，
-    从常量推导就不会再落后于正则。
+    ⚠️ 最早一版是手抄 10 个，于是 不准/不許/禁止/嚴禁/休要/不得/莫 全没跑到。
+    ⚠️ 上一版改成从正则源码 scrape（按第一个 `)` 切开再拆 `|`），英文分支
+    一加拉丁词边界就把切点提前了，整张表静默截断——这就是为什么要提成
+    实现侧元组而不是对着正则做字符串手术。
+    """  # noqa: DOCSTRING_CJK
+    return _router_table("_CHAT_NEGATION_WORDS")
+
+
+def test_the_english_negation_branch_exists():
+    """英文否定分支不进上面那个笛卡尔积，但它的**存在**必须被断言。
+
+    ⚠️ 同时钉住拉丁词边界：没它的话 `never` 会匹配 `whenever` 的子串。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    head = router._CHAT_NEGATED_REWRITE_RE.pattern.split(')', 1)[0]
-    words = head.removeprefix('(?:').split('|')
-    # ⚠️ 闭集里现在也有英文分支（`don't rewrite the whole card` 曾经整类绕过
-    # 守卫，因为否定词和动词两侧都是纯中文）。笛卡尔积只吃中文那一半，英文
-    # 另有专门用例——但英文分支的存在必须被断言，否则删掉它没人发现。
-    chinese = [w for w in words if all('一' <= ch <= '鿿' for ch in w)]
-    assert len(words) - len(chinese) >= 5, f'英文否定分支丢了: {words}'
-    return chinese
+    for branch in ("never", "dont", "no\s+need\s+to", "(?<![A-Za-z])", "(?![A-Za-z])"):
+        assert branch in router._CHAT_NEGATION_LEXEME, branch
+    assert router._chat_text_requests_full_rewrite(
+        "whenever you rewrite all fields"
+    ) is True
+    assert router._chat_text_requests_full_rewrite(
+        "never rewrite all fields"
+    ) is False
 
 
 NEGATORS = _negators()
@@ -1878,6 +1887,7 @@ def test_the_continuation_table_is_derived_not_transcribed():
     }
     assert router._WHOLE_CARD_CLAUSE_CONTINUATION == (
         r"(?:" + "|".join(WHOLE_CARD_CONTINUATIONS) + r")"
+        + router._WHOLE_CARD_CONTINUATION_NOT_ATTRIBUTIVE
     )
 
 
@@ -2106,3 +2116,25 @@ def test_terminal_result_phrase_after_a_completed_target(target, phrase):
     assert router._chat_text_requests_full_rewrite(
         f'重写{target}名{phrase}'
     ) is False
+
+
+@pytest.mark.parametrize(
+    "sequential", ["随后", "隨後", "最后", "最後", "接下来", "接下來", "之后", "之後"]
+)
+def test_sequential_words_used_as_attributives_are_not_continuations(sequential):
+    """⚠⚠ 顺序类词后面跟**定语结构**时说的是某一项，不是整卡（CodeRabbit Major）。
+
+    `重写所有字段最后一项` / `最后两个` / `最后的名字` 如果算整卡，
+    就会给缺失字段合成内容并 autosave——危险方向。
+
+    判据：真正的承接词后面跟的是**谓语**，不会是 `的` 也不会是「数词 + 量词」。
+    ⚠️ 真承接用法（`最后保存`）必须保留，下面第一条正向断言钉的就是它。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'重写所有字段{sequential}保存'
+    ) is True
+    for attributive in ('一项', '两个', '的名字', '三条', '的内容'):
+        text = f'重写所有字段{sequential}{attributive}'
+        assert router._chat_text_requests_full_rewrite(text) is False, text

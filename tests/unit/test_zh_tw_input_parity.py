@@ -389,6 +389,47 @@ def test_excluding_one_source_is_not_read_as_stopping_playback(simplified, tradi
     )
 
 
+def _music_frames() -> list[str]:
+    """任指/条件/让步/认知框架词从**实现侧**取，不手抄。
+
+    ⚠️ 手抄那一版漏了简体的 `忘记`（实现侧当时也没收），
+    是 CodeRabbit 对着实现表核出来的。两边同源之后这一类漏项不会再发生。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import _ZH_NON_INTERROGATIVE_FRAMES
+
+    table = list(_ZH_NON_INTERROGATIVE_FRAMES)
+    assert table and len(table) == len(set(table)), table
+    return table
+
+
+NON_INTERROGATIVE_FRAMES = _music_frames()
+
+
+def test_the_frame_table_is_derived_not_transcribed():
+    """⚠️ 派生的盲点是「改常量=改测试」：实现侧删一个词，上面那些笛卡尔积
+    跟着缩水、照样全绿——变异「删掉简体忘记」当场 SURVIVED。所以钉相等。
+
+    ⚠️ 同时钉住**简繁成对**：这个 PR 就是为繁体对等性开的，实现里只收一半
+    （当时 `忘記` 有、`忘记` 没有）正是这类缺陷的典型形状。
+    """  # noqa: DOCSTRING_CJK
+    assert set(NON_INTERROGATIVE_FRAMES) == {
+        "无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便",
+        "如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若", "设若", "設若",
+        "即使", "即便", "就算", "哪怕", "纵使", "縱使", "就是",
+        "不知道", "不记得", "不記得", "忘了", "忘记", "忘記",
+        "不清楚", "不确定", "不確定", "没注意", "沒注意",
+    }
+    for simplified, traditional in (
+        ("无论", "無論"), ("不论", "不論"), ("任凭", "任憑"), ("随便", "隨便"),
+        ("万一", "萬一"), ("设若", "設若"), ("纵使", "縱使"),
+        ("不记得", "不記得"), ("忘记", "忘記"),
+        ("不确定", "不確定"), ("没注意", "沒注意"),
+    ):
+        assert simplified in NON_INTERROGATIVE_FRAMES, simplified
+        assert traditional in NON_INTERROGATIVE_FRAMES, traditional
+
+
+
 def test_traditional_liked_playlist_is_not_parsed_as_an_artist_search():
     """The worst case here was not a miss but a *misparse*.
 
@@ -3577,7 +3618,8 @@ def test_just_started_playback_aspect(aspect):
 
 @pytest.mark.parametrize("punct", ["，", ",", "；", ";", "、", ""])
 @pytest.mark.parametrize(
-    "coordinator", ["也", "再", "就", "顺便", "顺手", "一起", "同时"]
+    "coordinator", ["也", "再", "就", "顺便", "順便", "顺手", "順手",
+                    "一起", "同时", "同時"]
 )
 def test_coordinator_after_a_punctuated_temporal_clause(coordinator, punct):
     """「的时候」和并列副词之间隔着标点也算并列（base 是 True）。
@@ -3728,9 +3770,9 @@ def test_lexicalized_na_compounds_are_not_classifier_phrases(word, noun):
 
 
 @pytest.mark.parametrize(
-    "marker", ["任何时候都行", "任何時候都行", "无论何时都行",
-               "不论何时都行", "不管何时都行", "无论何人唱的都行",
-               "不管何人唱的都行"]
+    "marker", ["任何时候都行", "任何時候都行", "无论何时都行", "無論何時都行",
+               "不论何时都行", "不論何時都行", "不管何时都行", "不管何時都行",
+               "无论何人唱的都行", "不管何人唱的都行"]
 )
 def test_free_choice_phrases_are_not_questions(marker):
     """⚠️ 任指/无定构式里的疑问词**不是提问**（base 全是 True，Codex P2 第四十二轮）。
@@ -3785,7 +3827,9 @@ def test_negated_degree_phrases_are_not_questions(negator, marker):
 
 
 @pytest.mark.parametrize("prefix", ["无论", "無論", "不论", "不管", "任"])
-@pytest.mark.parametrize("what", ["什么时候", "什麼時候", "啥时候"])
+@pytest.mark.parametrize(
+    "what", ["什么时候", "什麼時候", "啥时候", "啥時候"]
+)
 def test_free_choice_applies_to_the_what_time_compound_too(prefix, what):
     """任指左界要同样盖住 `什么时候` 那一支（Codex P2 第四十三轮）。
 
@@ -3800,8 +3844,8 @@ def test_free_choice_applies_to_the_what_time_compound_too(prefix, what):
 
 @pytest.mark.parametrize("verb", ["播放", "放", "听", "聽", "播"])
 @pytest.mark.parametrize(
-    "complement", ["断断续续", "斷斷續續", "结结巴巴", "忽快忽慢",
-                   "一顿一顿", "忽高忽低"],
+    "complement", ["断断续续", "斷斷續續", "结结巴巴", "結結巴巴",
+                   "忽快忽慢", "一顿一顿", "一頓一頓", "忽高忽低"],
 )
 def test_reduplicated_state_complements_after_a_mistyped_de(verb, complement):
     """状态/结果补语里的「的」是补语标记「得」的误打（base 全是 True）。
@@ -3890,9 +3934,7 @@ def test_negated_or_free_choice_copulas_are_declarative(governor, what):
     assert is_explicit_music_cancellation(f'我想停止播放有{what}影响') is False
 
 
-@pytest.mark.parametrize(
-    "frame", ["无论", "無論", "不论", "不論", "不管", "任凭", "任憑", "随便", "隨便"]
-)
+@pytest.mark.parametrize("frame", NON_INTERROGATIVE_FRAMES)
 @pytest.mark.parametrize(
     "predicate", ["", "唱", "播放", "听", "问", "换成"]
 )
@@ -3915,7 +3957,7 @@ def test_free_choice_frame_with_an_intervening_predicate(frame, predicate, wh):
     assert is_explicit_music_cancellation(f'我想停止播放{wh}') is False
 
 
-@pytest.mark.parametrize("frame", ["无论", "不管", "不论", "随便", "任凭"])
+@pytest.mark.parametrize("frame", NON_INTERROGATIVE_FRAMES)
 @pytest.mark.parametrize(
     "body",
     ["谁唱什么歌", "哪个歌手唱什么", "什么人点啥歌",
@@ -3944,9 +3986,7 @@ def test_free_choice_frame_neutralizes_every_wh_in_scope(frame, body):
         assert is_explicit_music_cancellation(later_question) is False, later_question
 
 
-@pytest.mark.parametrize(
-    "conditional", ["如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若"]
-)
+@pytest.mark.parametrize("conditional", NON_INTERROGATIVE_FRAMES)
 @pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
 def test_conditional_frames_make_wh_existential(conditional, what):
     """⚠️ **条件框架**辖域里的疑问词是存在量词，不是提问（base 全是 True）。
@@ -3980,12 +4020,7 @@ def test_negated_what_are_you_doing_is_an_indefinite(negator, stem, what):
     ) is False
 
 
-@pytest.mark.parametrize(
-    "frame",
-    ["即使", "即便", "就算", "哪怕", "纵使", "縱使",
-     "不知道", "不记得", "不記得", "忘了", "忘記",
-     "不清楚", "不确定", "没注意"],
-)
+@pytest.mark.parametrize("frame", NON_INTERROGATIVE_FRAMES)
 @pytest.mark.parametrize("wh", ["有什么新歌", "什么歌", "谁唱的", "哪首歌"])
 def test_concessive_and_cognition_frames_neutralize_wh(frame, wh):
     """让步框架（即使/就算/哪怕）和认知谓语（不知道/忘了）辖域里的
@@ -4003,7 +4038,8 @@ def test_concessive_and_cognition_frames_neutralize_wh(frame, wh):
 
 @pytest.mark.parametrize("verb", ["播放", "放", "听", "聽", "播"])
 @pytest.mark.parametrize(
-    "complement", ["听不清", "看不见", "跟不上", "听不清楚", "受不了"]
+    "complement", ["听不清", "聽不清", "看不见", "看不見", "跟不上",
+                   "听不清楚", "聽不清楚", "受不了"]
 )
 def test_potential_complements_after_a_mistyped_de(verb, complement):
     """可能补语 `V不C`（base 全是 True，Codex P2 第四十九轮）。
@@ -4024,8 +4060,8 @@ def test_potential_complements_after_a_mistyped_de(verb, complement):
 
 @pytest.mark.parametrize("verb", ["播放", "放", "听", "聽"])
 @pytest.mark.parametrize(
-    "defect", ["卡顿", "卡頓", "延迟", "延遲", "断流", "斷流",
-               "失真", "破音", "跳针", "卡帧", "回声"]
+    "defect", ["卡顿", "卡頓", "延迟", "延遲", "断流", "斷流", "失真", "破音",
+               "跳针", "跳針", "卡帧", "卡幀", "回声", "回聲", "雜訊", "杂讯"]
 )
 def test_playback_defect_words_after_a_mistyped_de(verb, defect):
     """⚠️ 播放缺陷词是**白名单**，不是结构规则（base 全是 True）。

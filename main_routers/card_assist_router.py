@@ -944,8 +944,17 @@ _WHOLE_CARD_RESULT_PHRASES = (
 _WHOLE_CARD_RESULT_PHRASE = (
     r"(?:" + "|".join(_WHOLE_CARD_RESULT_PHRASES) + r")"
 )
+# ⚠️⚠️ 承接词后面不能是**定语结构**：`重写所有字段最后一项` /
+# `最后两个` / `最后的名字` 说的是**某一项**，不是整卡（CodeRabbit Major）。
+# 这一条是危险方向：误判成整卡会给缺失字段合成内容并 autosave。
+# 判据：真正的承接词后面跟的是**谓语**，不会是 `的` 也不会是「数词 + 量词」。
+_WHOLE_CARD_CONTINUATION_NOT_ATTRIBUTIVE = (
+    r"(?!\s*的)"
+    r"(?!\s*[一二两兩三四五六七八九十几幾数數]\s*[个個项項条條张張只隻件位组組])"
+)
 _WHOLE_CARD_CLAUSE_CONTINUATION = (
     r"(?:" + "|".join(_WHOLE_CARD_CLAUSE_CONTINUATIONS) + r")"
+    + _WHOLE_CARD_CONTINUATION_NOT_ATTRIBUTIVE
 )
 _WHOLE_CARD_SCOPE_RUN_OPT = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"*)"
 _WHOLE_CARD_SCOPE_RUN_ONE = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"+)"
@@ -1186,20 +1195,32 @@ _EN_APOSTROPHE_CHARS = "'’ʼ"
 # 否定/禁止词本身（不带后面那个重写动词）。
 # ⚠️ 提成单独常量是为了让 _chat_clause_without_quotes 判断「这段引号里到底有没有
 # 禁止」，两处必须同源——另抄一张表就是下一个漂移点。
-_CHAT_NEGATION_LEXEME = (
-    # ⚠️ 否定/禁止是**封闭词类**，一次列全，不要被 reviewer 一个一个揪。
+# ⚠️ 中文否定词写成元组：测试要按它派生笛卡尔积。上一版测试是把正则
+# 按第一个 `)` 切开再拆 `|` ——英文分支一加后视就把切点提前了，整张表静默截断
+# （CodeRabbit 提醒加拉丁词边界时当场碍了一下）。提成常量之后不用再 scrape。
+_CHAT_NEGATION_WORDS = (
+    # ⚠️ 否定/禁止是**封闭词类**，一次列全，不要被 reviewer 一个一个措。
     # greptile 只报了「不准」，实测同时漏的还有 不許/不许/禁止/嚴禁/严禁/
     # 休要/不得/莫——逐个补是打地鼠，这一维本来就可以枚举干净。
-    r"(?:不要|不用|不需要|不必|不想|不准|不準|不許|不许|不得|不可|不能"
-    r"|别|別|甭|莫|休要|先不|暫不|暂不|暫時不|暂时不"
-    r"|無需|无需|勿|切勿|請勿|请勿|禁止|嚴禁|严禁"
+    "不要", "不用", "不需要", "不必", "不想", "不准", "不準", "不許", "不许",
+    "不得", "不可", "不能",
+    "别", "別", "甭", "莫", "休要", "先不", "暫不", "暂不", "暫時不", "暂时不",
+    "無需", "无需", "勿", "切勿", "請勿", "请勿", "禁止", "嚴禁", "严禁",
+)
+_CHAT_NEGATION_LEXEME = (
+    r"(?:" + "|".join(_CHAT_NEGATION_WORDS)
     # ⚠️ 英文否定同样要收——整卡目标和重写动词那两张表本来就含英文分支
     # （rewrite/regenerate/all fields），只有否定守卫是纯中文，于是
     # `don't rewrite the whole card` 直接绕过去了（CodeRabbit）。
     # `do\s*n[o…]t` 一支就盖住 do not / don't / don’t / donʼt / do n’t；
-    # `dont`（整个撇号都不打）中间没有字符，只能单列。
-    rf"|(?:do\s*n[o{_EN_APOSTROPHE_CHARS}]t|dont|never|no\s+need\s+to"
-    rf"|please\s+do\s*n[o{_EN_APOSTROPHE_CHARS}]t)\s*)"
+    # `dont`（整个擇号都不打）中间没有字符，只能单列。
+    # ⚠️ 英文分支要带**拉丁词边界**：`never` 是 `whenever` 的子串，
+    # `whenever you rewrite all fields` 会被当成否定而静默跳过整卡补全（CodeRabbit）。
+    # ⚠️ 不用 `\b`：它在拉丁字母和汉字之间总是成立，这里要的只是拉丁侧的边界。
+    + r"|(?<![A-Za-z])"
+    + rf"(?:do\s*n[o{_EN_APOSTROPHE_CHARS}]t|dont|never|no\s+need\s+to"
+    + rf"|please\s+do\s*n[o{_EN_APOSTROPHE_CHARS}]t)(?![A-Za-z])"
+    + r"\s*)"
 )
 _CHAT_NEGATED_REWRITE_LEXEME_RE = re.compile(_CHAT_NEGATION_LEXEME, re.IGNORECASE)
 _CHAT_NEGATED_REWRITE_RE = re.compile(
