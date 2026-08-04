@@ -175,6 +175,7 @@ class _VoiceTurnAdapter:
         self._evaluation_tail_capacity_us = queue_capacity_ms * 1_000
         self._evaluation_tail: list[_AudioItem] = []
         self._evaluation_tail_duration_us = 0
+        self._evaluation_tail_candidate_start: _AudioItem | None = None
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._smart_turn_required = smart_turn_required
@@ -488,7 +489,8 @@ class _VoiceTurnAdapter:
                 duration_us=item.duration_us,
                 detector_identity=item.detector_identity,
             )
-        if self._evaluation_task is not None:
+        evaluation_in_flight = self._evaluation_task is not None
+        if evaluation_in_flight:
             self._evaluation_tail.append(item)
             self._evaluation_tail_duration_us += item.duration_us
         else:
@@ -533,11 +535,17 @@ class _VoiceTurnAdapter:
                 await self._on_scoped_activity(event, item.detector_identity)
             await self._coordinator.on_activity_event(event)
 
-        if any(
+        candidate_started = any(
             event
             in (SpeechActivityEvent.SPEECH_STARTED, SpeechActivityEvent.SPEECH_RESUMED)
             for event in events
-        ):
+        )
+        if candidate_started:
+            if (
+                evaluation_in_flight
+                and self._evaluation_tail_candidate_start is None
+            ):
+                self._evaluation_tail_candidate_start = item
             self._start_observed_candidate(item)
             self._cancel_smart_turn_unload()
             self._cancel_fallback()
@@ -639,6 +647,8 @@ class _VoiceTurnAdapter:
         evaluation_tail = tuple(self._evaluation_tail)
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
+        evaluation_tail_candidate_start = self._evaluation_tail_candidate_start
+        self._evaluation_tail_candidate_start = None
         reevaluate = self._reevaluation_requested
         reevaluation_reason = self._reevaluation_reason or item.reason
         self._reevaluation_requested = False
@@ -718,14 +728,18 @@ class _VoiceTurnAdapter:
             if completion_published is not None:
                 await completion_published
             for tail_item in evaluation_tail:
-                await self._process_audio(
-                    _AudioItem(
-                        identity=active_identity,
-                        pcm16=tail_item.pcm16,
-                        duration_us=tail_item.duration_us,
-                        detector_identity=tail_item.detector_identity,
-                    )
+                replay_item = _AudioItem(
+                    identity=active_identity,
+                    pcm16=tail_item.pcm16,
+                    duration_us=tail_item.duration_us,
+                    detector_identity=tail_item.detector_identity,
                 )
+                await self._process_audio(replay_item)
+                if (
+                    active_identity != item.identity
+                    and tail_item is evaluation_tail_candidate_start
+                ):
+                    self._start_observed_candidate(replay_item)
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
             self._observe_evaluation_tail(evaluation_tail)
@@ -825,6 +839,7 @@ class _VoiceTurnAdapter:
         self._latest_detector_identity = None
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
+        self._evaluation_tail_candidate_start = None
         self._successor_audio_fence = None
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)

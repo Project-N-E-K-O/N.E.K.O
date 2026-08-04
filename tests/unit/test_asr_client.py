@@ -2570,6 +2570,41 @@ async def test_candidate_rejection_suppresses_tail_until_exact_pause() -> None:
     runtime._ensure_transport_restart_task.assert_called_once_with()
 
 
+async def test_candidate_pause_waits_for_detached_cleanup_before_restart() -> None:
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    detector = _RuntimeDetectorStub()
+    request, _, _, candidate = _install_candidate_rejection_state(runtime, detector)
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def close_session() -> None:
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    runtime._asr_session.close = AsyncMock(side_effect=close_session)
+    runtime._ensure_transport_restart_task = MagicMock()
+    rejection = asyncio.create_task(
+        runtime._reject_candidate(
+            request,
+            active_profile_generation="profile-7",
+            active_filter_generation="beta-v1",
+        )
+    )
+    await asyncio.wait_for(cleanup_started.wait(), 1)
+    finish = asyncio.create_task(runtime._finish_candidate_rejection(candidate))
+    await asyncio.sleep(0)
+
+    assert finish.done() is False
+    detector.reset.assert_not_awaited()
+    runtime._ensure_transport_restart_task.assert_not_called()
+
+    release_cleanup.set()
+    assert await asyncio.wait_for(rejection, 1) is CandidateRejectionOutcome.APPLIED
+    assert await asyncio.wait_for(finish, 1) is True
+    detector.reset.assert_awaited_once_with(expected_candidate=candidate)
+    runtime._ensure_transport_restart_task.assert_called_once_with()
+
+
 async def test_candidate_pause_retries_unconditional_reset_before_restart() -> None:
     runtime = IndependentAsrRuntime(_runtime_callbacks())
     detector = _RuntimeDetectorStub()
@@ -2657,14 +2692,23 @@ async def test_candidate_rejection_cleanup_failure_recovers_upload() -> None:
 
 
 async def test_candidate_rejection_cleanup_failure_resets_detector_before_restart() -> None:
-    runtime = IndependentAsrRuntime(_runtime_callbacks())
+    recovery_steps: list[str] = []
+
+    async def on_turn_abandoned(_turn_token) -> None:
+        recovery_steps.append("abandoned")
+
+    callbacks = replace(
+        _runtime_callbacks(),
+        on_turn_abandoned=on_turn_abandoned,
+    )
+    runtime = IndependentAsrRuntime(callbacks)
     detector = _RuntimeDetectorStub()
     request, _, _, _ = _install_candidate_rejection_state(runtime, detector)
     runtime._asr_session.close = AsyncMock(side_effect=RuntimeError("close failed"))
-    recovery_steps: list[str] = []
 
     async def reset_detector(*, expected_candidate=None) -> bool:
         assert expected_candidate is None
+        assert runtime._asr_candidate_rejection is not None
         recovery_steps.append("reset")
         return True
 
@@ -2680,7 +2724,7 @@ async def test_candidate_rejection_cleanup_failure_resets_detector_before_restar
     )
 
     assert result is CandidateRejectionOutcome.FAILED
-    assert recovery_steps == ["reset", "restart"]
+    assert recovery_steps == ["reset", "abandoned", "restart"]
 
 
 async def test_candidate_rejection_recovery_escalates_detector_reset_error() -> None:

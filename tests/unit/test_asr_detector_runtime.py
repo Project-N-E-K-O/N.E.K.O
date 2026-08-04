@@ -644,7 +644,7 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
     predecessor = SpeakerShadowCandidateKey(0, 0, "smart_turn_turn")
     assert shadow.frames == [(first_pcm, 16_000, predecessor)]
-    gate.events = ()
+    gate.events = (SpeechActivityEvent.SPEECH_STARTED,)
     successor_pcm = b"\x02\x00" * 160
     successor = await detector.submit_audio(
         successor_pcm,
@@ -656,23 +656,29 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     async with asyncio.timeout(1):
         while gate.inputs.count(successor_pcm) < 1:
             await asyncio.sleep(0)
+    gate.events = ()
     assert shadow.frames == [(first_pcm, 16_000, predecessor)]
 
     coordinator.evaluate_release.set()
     await asyncio.wait_for(completed.wait(), 1)
     async with asyncio.timeout(1):
-        while gate.inputs.count(successor_pcm) < 2:
+        while gate.inputs.count(successor_pcm) < 2 or len(shadow.frames) < 2:
             await asyncio.sleep(0)
 
     assert successor.candidate is not None
     assert successor.candidate.candidate_generation == 0
     assert gate.inputs.count(successor_pcm) == 2
     assert coordinator.audio.count(successor_pcm) == 2
-    assert shadow.frames == [(first_pcm, 16_000, predecessor)]
+    successor_shadow = SpeakerShadowCandidateKey(0, 1, "smart_turn_turn")
+    assert shadow.frames == [
+        (first_pcm, 16_000, predecessor),
+        (successor_pcm, 16_000, successor_shadow),
+    ]
     assert shadow.finished == [predecessor]
     assert shadow.events == [
         ("submit", predecessor),
         ("finish", predecessor),
+        ("submit", successor_shadow),
     ]
     await detector.close()
 

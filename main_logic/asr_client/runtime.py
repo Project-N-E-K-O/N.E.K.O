@@ -138,6 +138,7 @@ class _CandidateRejectionSuppression:
     final_key: FinalKey
     lifecycle: VoiceInputLifecycleController
     detector: DetectorRuntime
+    cleanup_outcome: asyncio.Future[bool]
 
 
 class IndependentAsrRuntime:
@@ -2714,6 +2715,7 @@ class IndependentAsrRuntime:
                 final_key=final_key,
                 lifecycle=lifecycle,
                 detector=detector,
+                cleanup_outcome=asyncio.get_running_loop().create_future(),
             )
             self._asr_candidate_rejection = suppression
 
@@ -2735,11 +2737,24 @@ class IndependentAsrRuntime:
                 "[%s] candidate rejection session close failed open",
                 self.display_name,
             )
+        assert suppression is not None
+        if not suppression.cleanup_outcome.done():
+            suppression.cleanup_outcome.set_result(not cleanup_failed)
         if cleanup_failed:
-            assert suppression is not None
             await self._recover_candidate_rejection(suppression)
             return CandidateRejectionOutcome.FAILED
         return CandidateRejectionOutcome.APPLIED
+
+    def _candidate_rejection_matches_runtime(
+        self,
+        suppression: _CandidateRejectionSuppression,
+    ) -> bool:
+        return bool(
+            suppression.request.session_epoch == self._asr_session_epoch
+            and suppression.request.audio_generation == self._asr_audio_generation
+            and self._asr_lifecycle is suppression.lifecycle
+            and self._asr_detector is suppression.detector
+        )
 
     async def _recover_candidate_rejection(
         self,
@@ -2747,25 +2762,22 @@ class IndependentAsrRuntime:
     ) -> None:
         """Clear suppression after cleanup failure and resume fail-open input."""
 
-        should_restart = False
+        reset_required = False
         async with self._asr_final_lock:
             if self._asr_candidate_rejection is not suppression:
                 return
-            self._asr_candidate_rejection = None
-            lifecycle = suppression.lifecycle
-            if (
-                suppression.request.session_epoch == self._asr_session_epoch
-                and suppression.request.audio_generation == self._asr_audio_generation
-                and self._asr_lifecycle is lifecycle
-                and self._asr_detector is suppression.detector
-            ):
-                lifecycle.invalidate_audio()
-                should_restart = True
-        await self._notify_asr_turn_abandoned(suppression.turn_token)
-        if should_restart:
+            reset_required = self._candidate_rejection_matches_runtime(suppression)
+        if reset_required:
             try:
                 reset_applied = await suppression.detector.reset()
             except asyncio.CancelledError:
+                await self._notify_asr_turn_abandoned(suppression.turn_token)
+                async with self._asr_final_lock:
+                    if self._asr_candidate_rejection is suppression:
+                        lifecycle = suppression.lifecycle
+                        if self._candidate_rejection_matches_runtime(suppression):
+                            lifecycle.invalidate_audio()
+                        self._asr_candidate_rejection = None
                 raise
             except Exception:
                 logger.warning(
@@ -2773,14 +2785,35 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
                 reset_applied = False
-            if reset_applied:
-                self._ensure_transport_restart_task()
-            else:
+            if not reset_applied:
                 await self._handle_independent_asr_error(
                     suppression.request.session_epoch,
                     self._asr_provider or "unknown",
                     status_code="ASR_ENDPOINTING_FAILED",
                 )
+                notify_abandoned = False
+                async with self._asr_final_lock:
+                    if self._asr_candidate_rejection is suppression:
+                        self._asr_candidate_rejection = None
+                        notify_abandoned = True
+                if notify_abandoned:
+                    await self._notify_asr_turn_abandoned(suppression.turn_token)
+                return
+        should_restart = False
+        async with self._asr_final_lock:
+            if self._asr_candidate_rejection is not suppression:
+                return
+            self._asr_candidate_rejection = None
+            lifecycle = suppression.lifecycle
+            if (
+                reset_required
+                and self._candidate_rejection_matches_runtime(suppression)
+            ):
+                lifecycle.invalidate_audio()
+                should_restart = True
+        await self._notify_asr_turn_abandoned(suppression.turn_token)
+        if should_restart:
+            self._ensure_transport_restart_task()
 
     async def _finish_candidate_rejection(
         self,
@@ -2790,6 +2823,12 @@ class IndependentAsrRuntime:
 
         suppression = self._asr_candidate_rejection
         if suppression is None or suppression.request.candidate != candidate:
+            return False
+        cleanup_succeeded = await asyncio.shield(suppression.cleanup_outcome)
+        if (
+            not cleanup_succeeded
+            or self._asr_candidate_rejection is not suppression
+        ):
             return False
         reset_applied = False
         try:
