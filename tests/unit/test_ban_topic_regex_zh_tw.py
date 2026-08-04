@@ -1018,6 +1018,13 @@ def test_verb_plus_complement_keeps_the_complement_in_both_scripts(tw, cn, expec
         # 前视删掉照样全绿，而它同样会产出 "起了" / "到了" / "及了" 这种假话题。
         "我不想再提起了。", "我懒得再说起了。", "我不想聊到了。",
         "我不想再提及了。", "我沒心情提起了。", "我懶得再說起了。",
+        # ⚠️ 补语不是 到/起/及 这三个字：汉语的结果补语是开集，判据必须是「宾语只有
+        # 一个字」这个**数量**。一度只列了三个字，下面这批全部漏网（codex P2 只报了
+        # 完，实测 光/够/死/上 一样中招）。
+        "别说完了。", "別提完了。", "我不想再说完了。", "别说光了。",
+        "别提够了。", "别聊死了。", "别提上了。", "别提走了。",
+        # 单字宾语本身（不是补语）也一样不该抽——parent 靠长度过滤丢弃它们
+        "别提钱了。", "别提A了。", "別提錢了。",
     ],
 )
 def test_an_objectless_directive_does_not_invent_an_object(text):
@@ -1032,10 +1039,30 @@ def test_an_objectless_directive_does_not_invent_an_object(text):
 def test_the_objectless_guard_is_not_the_topic_minimum():
     """两道闸各管一头，谁都不能顶替谁——把下限调回 1 这条会红。"""  # noqa: DOCSTRING_CJK
     assert "_ZH_OBJECTLESS_AHEAD" in D.__dict__
-    assert D._ZH_COMPLEMENT_CHARS == ("到", "起", "及")
     for _loc, _kind, pat in D.DIRECTIVE_PATTERNS:
         if _loc == "zh":
             assert "{1," not in pat.pattern, pat.pattern[:80]
+
+
+def test_the_objectless_guard_counts_characters_not_complements():
+    """⚠️ 判据必须是「宾语只有一个字」，不能退回枚举补语字——那是开集。"""  # noqa: DOCSTRING_CJK
+    assert not hasattr(D, "_ZH_COMPLEMENT_CHARS")
+    # 前视里不许出现「某几个补语字的择一」这种形状
+    assert "到|起|及" not in D._ZH_OBJECTLESS_AHEAD
+    assert D._ZH_PLAIN_CHAR in D._ZH_OBJECTLESS_AHEAD
+
+
+def test_the_objectless_guard_uses_only_the_parent_particle_set():
+    """⚠️ 认上本 PR 新加的台湾口语助词，``别再提好咧。`` 会被判成「好 + 咧」整条毙掉，
+    而 parent 存的是 ``好咧``。那批字同时也是常见词尾字。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_BASE_FINAL_PARTICLES in D._ZH_OBJECTLESS_AHEAD
+    for tw_only in ("喔", "囉", "啰", "唷", "齁", "欸", "誒", "咧", "喲"):
+        assert tw_only not in D._ZH_OBJECTLESS_AHEAD, tw_only
+        assert tw_only in D._ZH_FINAL_PARTICLES, tw_only
+    # 行为面：两个方向各钉一条
+    assert _zh_terms("别再提好咧。") == {"好咧"}
+    assert _zh_terms("别再提工作喔。") == {"工作"}
 
 
 def test_the_verb_alternation_is_atomic():
@@ -1170,15 +1197,10 @@ def test_filler_dedup_stays_linear_on_many_directives():
     改成**确定性**判据：一条带填充词的 term 都没有时，函数应当**原样返回同一个
     列表对象**——那正是"没有进入逐对比对"的证据。
     """  # noqa: DOCSTRING_CJK
-    import inspect
-
-    source = inspect.getsource(D._drop_filler_suffixed_terms)
-    # 第二层：即使有一条带填充词的 term（早退不触发），也只让**它**去做重叠比对，
-    # 而不是全部 n 条。实测 800 条指令 + 1 条填充词：24.6ms → 74.4ms（3x）。
-    # 差距太小、不适合用时限钉，所以这里钉结构。
-    assert "index not in suspect_set" in source, (
-        "逐条跳过没了：有一条填充词 term 时，全部命中都会做 O(n) 的重叠比对"
-    )
+    # ⚠️ 这里**不**钉「逐条跳过 suspects」那一层。装上桶索引之后它只是个常数因子
+    #（800 条 + 1 条填充词：24.6ms → 74.4ms，量级没变），而钉它只能靠断言源码文本，
+    # 换个等价写法就误红。量级那一维由下面的时限断言负责（CodeRabbit）。
+    #
     # ⚠️ 光筛 suspects 不够：话题本身就以填充词结尾时（`成就别提了。` 重复几千遍）
     # 每条都是 suspect，逐条再扫全表又变回 O(n²)——4000 条曾要 1.25 秒。按起点分桶
     # 之后只看邻桶（命中区间长度有上界），这里用时限钉住那个量级差（codex P2）。
@@ -1188,7 +1210,6 @@ def test_filler_dedup_stays_linear_on_many_directives():
     extract_directives("成就别提了。" * 4000)
     elapsed = time.perf_counter() - started
     assert elapsed < 1.0, f"4000 条以填充词结尾的话题跑了 {elapsed:.2f}s，桶索引失效了"
-    assert "_span_buckets" in inspect.getsource(D._drop_filler_suffixed_terms)
 
     hits = [("zh", "ban_topic", f"话题{i}") for i in range(50)]
     spans = [(i * 10, i * 10 + 5) for i in range(50)]
@@ -1301,12 +1322,34 @@ def test_a_topic_beginning_with_a_complement_character_keeps_its_first_char(
     assert expected in _zh_terms(text)
 
 
-def test_the_verb_table_has_no_complement_cartesian_product():
+def _verb_branches(alternation: str) -> set[str]:
+    """把 ``(?>a|b|c)`` 拆成 {a, b, c}。
+
+    ⚠️ 不能用 ``f"|{x}|"`` 去搜：第一个分支前面是 ``(?>`` 不是 ``|``，最后一个分支
+    后面是 ``)`` 不是 ``|``，首尾两位永远搜不到——而「有人把 提到 加到表头或表尾」
+    正是这条护栏要防的事（CodeRabbit）。
+    """  # noqa: DOCSTRING_CJK
+    body = alternation.removeprefix("(?>").removesuffix(")")
+    return set(body.split("|"))
+
+
+def test_the_verb_branch_splitter_sees_both_ends():
+    """前提守卫：切分器本身要能看到首尾两个分支，否则上面那条护栏是空的。"""  # noqa: DOCSTRING_CJK
+    branches = _verb_branches("(?>头|中|尾)")
+    assert branches == {"头", "中", "尾"}
+
+
+@pytest.mark.parametrize(
+    "alternation_name", ["_ZH_VERBS_PLAIN", "_ZH_VERBS_WITH_ADDRESS"],
+)
+def test_the_verb_table_has_no_complement_cartesian_product(alternation_name):
     """补语族一旦回到动词表，上面那批话题就会被削掉首字。"""  # noqa: DOCSTRING_CJK
-    verbs = D._ZH_VERBS_PLAIN
+    branches = _verb_branches(getattr(D, alternation_name))
+    # 前提：切出来的分支里确实有已知的动词，否则下面的 not in 是空断言
+    assert "提" in branches and "討論" in branches, branches
     for verb in D._ZH_SAY_VERBS:
-        for complement in ("到", "起", "及"):
-            assert f"|{verb}{complement}|" not in verbs, f"{verb}{complement}"
+        for complement in ("到", "起", "及", "完", "上", "光", "死", "够"):
+            assert f"{verb}{complement}" not in branches, f"{verb}{complement}"
 
 
 # ── 8. 反问尾巴只在没有括号时才剥 ────────────────────────────
