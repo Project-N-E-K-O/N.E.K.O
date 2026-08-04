@@ -4383,7 +4383,9 @@ def test_the_neutralizer_covers_every_marker_form(wh):
 
 
 @pytest.mark.parametrize("correlative", ["都", "就", "也"])
-@pytest.mark.parametrize("wh", ["谁", "誰", "哪个", "哪首歌", "哪里", "什么歌"])
+@pytest.mark.parametrize(
+    "wh", ["谁", "誰", "哪个", "哪個", "哪首歌", "哪里", "哪裡", "什么歌", "什麼歌"]
+)
 def test_all_three_correlative_markers(wh, correlative):
     """关联标记不止 都/就，还有 也（base 都是 True，Codex P2 第五十七轮）。这一族是闭集。"""  # noqa: DOCSTRING_CJK
     from main_logic.music_requests import is_explicit_music_cancellation
@@ -4414,7 +4416,9 @@ def test_frame_words_in_unquoted_titles_do_not_govern(verb):
 
 
 @pytest.mark.parametrize("predicate", ["知道", "晓得", "曉得", "记得", "記得", "清楚", "确定", "確定"])
-@pytest.mark.parametrize("wh", ["怎么办", "谁唱的", "哪首歌", "什么歌"])
+@pytest.mark.parametrize(
+    "wh", ["怎么办", "怎麼辦", "谁唱的", "誰唱的", "哪首歌", "什么歌", "什麼歌"]
+)
 def test_positive_cognition_predicates_also_govern(predicate, wh):
     """**肯定**的认知谓语一样管着宾语从句（base 都是 True，Codex P2 第五十八轮）。
 
@@ -4429,7 +4433,11 @@ def test_positive_cognition_predicates_also_govern(predicate, wh):
 
 
 @pytest.mark.parametrize("correlative", ["都", "就", "也"])
-@pytest.mark.parametrize("polarity", ["好不好听", "能不能联网", "是不是会员", "要不要收费"])
+@pytest.mark.parametrize(
+    "polarity",
+    ["好不好听", "好不好聽", "能不能联网", "能不能聯網",
+     "是不是会员", "是不是會員", "要不要收费", "要不要收費"],
+)
 def test_a_not_a_in_correlative_clauses(polarity, correlative):
     """A-not-A 在关联构式里是「无论是否…」的意思，不是提问（base 都是 True）。
 
@@ -4443,7 +4451,12 @@ def test_a_not_a_in_correlative_clauses(polarity, correlative):
     assert is_explicit_music_cancellation('我想停止播放可不可以') is False
 
 
-@pytest.mark.parametrize("modifier", ["歌曲", "歌", "音乐", "专辑", "单曲", "唱片", "这首", "那张", ""])
+@pytest.mark.parametrize(
+    "modifier",
+    ["歌曲", "歌", "音乐", "音樂", "专辑", "專輯", "单曲", "單曲",
+     "唱片", "铃声", "鈴聲", "曲子", "歌单", "歌單",
+     "这首", "這首", "那张", "那張", ""],
+)
 @pytest.mark.parametrize("title", ["《好不好》", "《是不是》", "「能不能」"])
 def test_target_modifiers_before_a_quoted_title(modifier, title):
     """标题前面可以有**目标修饰语**：`播放歌曲《好不好》` / `播放这首《好不好》`
