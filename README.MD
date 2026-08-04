@@ -195,7 +195,9 @@ ls N.E.K.O/
 # 1) 先导出只存在于容器里的东西。旧版没有挂载 OpenFang 的工作目录，它的配置和
 #    agent 一直在容器可写层，容器一删就没了。这一步要赶在停容器之前做。
 mkdir -p neko-home/.openfang
-docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
+# 报 "No such container:path" 只说明从没初始化过 OpenFang，可以忽略；其他错误
+# （daemon 没起、权限、磁盘满）不能忽略，所以这里不用 `|| true` 吞掉
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
 
 # 2) 停容器，合并宿主机上的旧目录。若已经用新版启动过一次，容器会在 neko-home 下
 #    建好同名的空目录和一张新的自签证书，此时直接 mv 会把旧目录套进去多一层，
@@ -212,9 +214,14 @@ docker-compose up -d
 **情况二：有内容，且用 Docker Run 部署**
 
 ```bash
+# 0) 这一段是独立的 shell，NEKO_BASE_PATH 不会从上面的部署命令继承过来；
+#    改成你当初 docker run 时实际用的路径
+NEKO_BASE_PATH="/home/neko/neko-data"
+
 # 1) 先导出只存在于容器里的 OpenFang 状态（同上，必须赶在删容器之前）
 mkdir -p "${NEKO_BASE_PATH}/neko-home/.openfang"
-docker cp neko:/home/neko/.openfang/. "${NEKO_BASE_PATH}/neko-home/.openfang/" 2>/dev/null || true
+# 同上，不吞错误：报 "No such container:path" 可忽略，其他错误必须停下来看
+docker cp neko:/home/neko/.openfang/. "${NEKO_BASE_PATH}/neko-home/.openfang/"
 
 # 2) 删容器，合并宿主机上的旧目录
 docker rm -f neko
@@ -236,7 +243,7 @@ mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 
 # 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层
 docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
-docker cp neko:/home/neko/.openfang/.            ./neko-home/.openfang/ 2>/dev/null || true
+docker cp neko:/home/neko/.openfang/.            ./neko-home/.openfang/   # 报 "No such container:path" 可忽略
 
 cp -a ssl/. neko-home/ssl/ && rm -rf ssl
 

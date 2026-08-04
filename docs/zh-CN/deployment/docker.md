@@ -33,8 +33,14 @@ docker compose up -d
 #    实际写入的位置从来对不上，应用数据也在容器里。
 #    末尾的 /. 表示复制目录内容，避免出现 N.E.K.O/N.E.K.O 这样多套一层。
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
-docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
-docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/   # 仅当 N.E.K.O/ 为空
+# 这里报 "No such container:path" 只说明从没初始化过 OpenFang，可以忽略；
+# 其他错误（daemon 没起、权限、磁盘满）不能忽略，所以不加 `|| true` 吞掉
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
+# 只有宿主目录为空时数据才在容器里，这个条件要落到命令上：已经用新布局重启过的
+# 部署，容器挂的就是 neko-home 本身，无条件执行等于把目录复制到它自己
+if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+  docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+fi
 
 # 2. 停容器，再把宿主机上的旧目录按内容合并。若已经用新布局启动过一次，目标目录
 #    已经存在（还带一张新生成的自签证书），直接 mv 会把旧目录套进去多一层。

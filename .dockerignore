@@ -41,6 +41,16 @@ config/user_preferences.json
 config/voice_storage.json
 N.E.K.O/
 
+# 同样的用户数据，但在 docker/ 下：维护中的 compose 文件在那里，它的 ./ 相对路径
+# 也就落在那里。上面的模式是相对 build context 根的，`N.E.K.O/` 只匹配根级，
+# 匹配不到 docker/ 下的同名目录 —— 而文档教的构建命令是在仓库根执行
+# `docker build -f docker/Dockerfile .`，于是这些目录会随 `COPY . /app` 进镜像层。
+# 里面有用户记忆、角色卡、含 API key 的配置，以及 TLS 私钥。
+docker/neko-home/
+docker/N.E.K.O/
+docker/ssl/
+docker/logs/
+
 # Embedding model weights are intentionally NOT ignored: CI pre-fetches the
 # pinned revision on the native runner (cached via actions/cache) and ships it in
 # the build context so the in-image step runs fully offline — see step 6b in

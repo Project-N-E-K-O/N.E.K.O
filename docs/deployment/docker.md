@@ -40,8 +40,15 @@ Order matters: `docker compose down` **removes** the container, and some state e
 #    actually write — the application data is in there too.
 #    The trailing /. copies directory *contents*, avoiding a nested N.E.K.O/N.E.K.O.
 mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
-docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
-docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/   # only if N.E.K.O/ is empty
+# "No such container:path" here just means OpenFang was never initialised — ignore it.
+# Everything else (daemon down, permissions, disk full) must NOT be ignored, so no `|| true`.
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/
+# Only when the host directory is empty is the data inside the container. Guard it:
+# on a deployment already restarted under the new layout the container mounts
+# neko-home itself, and this would copy the directory onto itself.
+if [ -z "$(ls -A N.E.K.O 2>/dev/null)" ]; then
+  docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+fi
 
 # 2. Stop the container, then merge the host-side directories by content. If the
 #    new layout has been started once, the destinations already exist (plus a
