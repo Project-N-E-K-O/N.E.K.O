@@ -1523,13 +1523,15 @@ def test_interrogative_tails_are_stripped_only_outside_quoted_names(text, expect
 
 def test_the_bracket_char_set_is_derived_from_the_pairs():
     """两张表漂移过四次（#2655），这里钉死派生关系。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
-        lo for lo, hi in D._ZH_BRACKET_PAIRS if lo != hi
+    assert D._ZH_CLOSE_FOR_OPEN == {
+        lo: hi for lo, hi in D._ZH_BRACKET_PAIRS if lo != hi
+    }
+    assert D._ZH_SYMMETRIC_DELIMS == frozenset(
+        lo for lo, hi in D._ZH_BRACKET_PAIRS if lo == hi
     )
-    assert D._ZH_BRACKET_RUN_RE.pattern == D._ZH_BRACKET_RUN
     # 对称的那一对不算「未闭合的开括号」——落单的双引号是英寸号，不是没写完的引文
-    assert '"' not in D._ZH_BRACKET_OPEN_CHARS
-    assert "《" in D._ZH_BRACKET_OPEN_CHARS
+    assert '"' not in D._ZH_CLOSE_FOR_OPEN
+    assert "《" in D._ZH_CLOSE_FOR_OPEN
 
 
 def test_interrogative_tails_are_a_separate_table_from_the_particles():
@@ -2026,10 +2028,9 @@ def test_the_quoted_span_end_marks_where_the_quotes_stop():
 
 def test_the_quoted_span_end_is_derived_from_the_bracket_run():
     """别另开一张括号表——同一件事维护两份必然漂移（#2655）。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_BRACKET_RUN_RE.pattern == D._ZH_BRACKET_RUN
-    assert D._ZH_BRACKET_OPEN_CHARS == frozenset(
-        lo for lo, hi in D._ZH_BRACKET_PAIRS if lo != hi
-    )
+    assert D._ZH_CLOSE_FOR_OPEN == {
+        lo: hi for lo, hi in D._ZH_BRACKET_PAIRS if lo != hi
+    }
 
 
 # ── 21. 每条模板的每个分支都要真的驱动一次抽取 ───────────────
@@ -2149,16 +2150,36 @@ def test_template_four_consumes_the_demonstrative_filler(text, expected):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # (c) `(?:的事)?` 同时装在模板 2 和模板 4 上。模板 2 原先唯一带「的事」的
-        #     样本是 `钱的事别提了。`，而它的期望值恰恰是 `钱的事`——那个填充组
-        #     在那里根本没被消费，等于一条断言都没有。
-        ("工作的事别提了。", "工作"),
-        ("工作的事別提了。", "工作"),
-        ("前女友的事别提了。", "前女友"),
-        ("前女友的事別提了。", "前女友"),
+        # ⚠️ 这条测试原先的方向是**反的**：我给模板 2 加过 `(?:的事)?`，还补了断言
+        # 说 `工作的事别提了。` 该得 `工作`。但 base 存的是 `工作的事`，而且那才对——
+        # 模板 2 没有 `关于` 那样的锚，`的事` 就是话题本身的一部分。`我们的事别提了。`
+        # 被削成 `我们` 意味着让模型回避用户本人而不是那件事（codex P2）。
+        ("工作的事别提了。", "工作的事"),
+        ("工作的事別提了。", "工作的事"),
+        ("前女友的事别提了。", "前女友的事"),
+        ("前女友的事別提了。", "前女友的事"),
+        ("我们的事别提了。", "我们的事"),
+        ("我們的事別提了。", "我們的事"),
+        # 后置形态本来就保留，两侧对齐
+        ("别提我们的事。", "我们的事"),
+        ("別提我們的事。", "我們的事"),
     ],
 )
-def test_template_two_consumes_the_deshi_filler(text, expected):
+def test_the_preposed_template_keeps_deshi_in_the_topic(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 模板 4 保留 `(?:的事)?`——那里由句首的 `关于` 锚定，`的事` 确实是填充词
+        ("关于工作的事就别提了。", "工作"),
+        ("關於工作的事就別提了。", "工作"),
+        ("关于我们的事就别提了。", "我们"),
+        ("關於我們的事就別提了。", "我們"),
+    ],
+)
+def test_the_guanyu_template_still_consumes_deshi(text, expected):
     assert _zh_terms(text) == {expected}, _zh_terms(text)
 
 
@@ -2391,7 +2412,8 @@ def test_the_preposed_template_spacing_is_atomic():
     head = raw.split("(?:提了|")[0]
     assert r"\s*" not in head.replace(r"(?>\s*)", ""), head
     assert r"(?>\s*)(?>\s*)" not in head, head
-    assert head.count(r"(?>\s*)") == 5, head.count(r"(?>\s*)")
+    # 模板 2 撤掉 (?:的事)? 之后剩 4 个（原先 5 个，删的那个和相邻的合掉了）
+    assert head.count(r"(?>\s*)") == 4, head.count(r"(?>\s*)")
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
