@@ -277,9 +277,13 @@ blockquote {
 
 .primary-button,
 .record-button {
-    color: white;
     background: linear-gradient(100deg, #39c9f7, #159ff5);
     box-shadow: 0 9px 22px rgba(21, 159, 245, 0.24);
+}
+
+body.voice-identity-page .primary-button,
+body.voice-identity-page .record-button {
+    color: #082f45;
 }
 
 .secondary-button {
@@ -321,7 +325,7 @@ button:disabled {
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #fff;
+    background: currentColor;
 }
 
 .record-button.recording .record-icon {

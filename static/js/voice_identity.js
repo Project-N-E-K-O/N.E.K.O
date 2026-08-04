@@ -503,10 +503,17 @@
     }
 
     async function commitEnrollment() {
-        const committed = await apiRequest('/enrollment/commit', {
-            method: 'POST'
-        });
-        applyStatus(committed);
+        try {
+            const committed = await apiRequest('/enrollment/commit', {
+                method: 'POST'
+            });
+            applyStatus(committed);
+        } catch (error) {
+            const reconciled = await reconcileStatus();
+            if (
+                !reconciled || state.stage !== 'idle' || !state.profileAvailable
+            ) throw error;
+        }
         stopMicrophone();
         setMessage(
             state.persistenceState === 'secure_storage_unavailable'
@@ -528,7 +535,7 @@
         ) return;
         let uploadRequestPending = false;
         state.busy = true;
-        state.recording = true;
+        state.recording = state.stage !== 'ready_to_commit';
         setMessage('');
         render();
         try {
@@ -610,6 +617,7 @@
             state.sessionId = null;
             state.stage = 'idle';
         } else {
+            setMessage('');
             state.cancelPending = true;
             render();
         }
@@ -632,6 +640,7 @@
                     headers
                 });
                 applyStatus(payload);
+                setMessage('');
             }
         } catch (_) {
             if (!config.silent) {
@@ -687,6 +696,7 @@
         if (state.filterPending) return;
         const desired = elements.filter.checked;
         state.filterPending = true;
+        setMessage('');
         render();
         try {
             const payload = await apiRequest('/filter', {
@@ -696,11 +706,14 @@
             });
             applyStatus(payload);
         } catch (_) {
-            elements.filter.checked = state.filterEnabled;
-            setMessage(
-                translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
-                true
-            );
+            const reconciled = await reconcileStatus();
+            if (!reconciled || state.filterEnabled !== desired) {
+                elements.filter.checked = state.filterEnabled;
+                setMessage(
+                    translate('voiceIdentity.requestFailed', '操作失败，请稍后重试。'),
+                    true
+                );
+            }
         } finally {
             state.filterPending = false;
             render();

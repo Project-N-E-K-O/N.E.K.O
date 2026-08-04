@@ -410,6 +410,41 @@ test('filter updates block competing profile mutations with a scoped pending sta
     assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
 });
 
+test('ambiguous filter response reconciles the authoritative enabled state', async () => {
+    let statusRequests = 0;
+    let filterRequests = 0;
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                    filter: { enabled: statusRequests > 1 },
+                });
+            }
+            if (url === '/api/voice-identity/filter') {
+                filterRequests += 1;
+                throw new Error('connection_lost');
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const filter = harness.elements.get('voice-identity-filter');
+    filter.checked = true;
+    await filter.emit('change');
+
+    assert.equal(filterRequests, 1);
+    assert.equal(statusRequests, 2);
+    assert.equal(filter.checked, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+});
+
 test('locale changes re-render the current enrollment step and prompt', async () => {
     const harness = createHarness({
         route(url) {
@@ -477,6 +512,57 @@ test('failed enrollment commit exposes a retry that can finish without re-record
     assert.equal(harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'), true);
 });
 
+test('ambiguous commit response reconciles activation without entering recording state', async () => {
+    const commitResponse = deferred();
+    let statusRequests = 0;
+    let commitRequests = 0;
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse(statusRequests === 1
+                    ? {
+                        enrollment: {
+                            session_id: 'session-1',
+                            stage: 'ready_to_commit',
+                        },
+                    }
+                    : {
+                        enrollment: { stage: 'idle' },
+                        profile: { available: true, state: 'active' },
+                    });
+            }
+            if (url === '/api/voice-identity/enrollment/commit') {
+                commitRequests += 1;
+                return commitResponse.promise;
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const record = harness.elements.get('voice-identity-record');
+    const commit = record.emit('click');
+
+    assert.equal(record.disabled, true);
+    assert.equal(record.recordLabel.textContent, 'Retry');
+    assert.equal(record.classList.contains('recording'), false);
+
+    commitResponse.reject(new Error('connection_lost'));
+    await commit;
+
+    assert.equal(commitRequests, 1);
+    assert.equal(statusRequests, 2);
+    assert.equal(harness.elements.get('voice-identity-start').hidden, false);
+    assert.equal(
+        harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'),
+        true,
+    );
+});
+
 test('starting enrollment releases the permission-check microphone before the first prompt', async () => {
     const harness = createHarness({
         audio: true,
@@ -510,6 +596,7 @@ test('starting enrollment releases the permission-check microphone before the fi
 
 test('ambiguous enrollment start failure reconciles the server session', async () => {
     let statusRequests = 0;
+    let startRequests = 0;
     const harness = createHarness({
         audio: true,
         route(url) {
@@ -523,6 +610,7 @@ test('ambiguous enrollment start failure reconciles the server session', async (
                     : { enrollment: { session_id: 'session-1', stage: 'fixed_1' } });
             }
             if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
                 throw new Error('connection_lost');
             }
             throw new Error(`Unexpected request: ${url}`);
@@ -533,6 +621,7 @@ test('ambiguous enrollment start failure reconciles the server session', async (
     await harness.elements.get('voice-identity-start').emit('click');
 
     assert.equal(statusRequests, 2);
+    assert.equal(startRequests, 1);
     assert.equal(harness.elements.get('voice-identity-start').hidden, true);
     assert.equal(harness.elements.get('voice-identity-record').hidden, false);
     assert.equal(harness.elements.get('voice-identity-cancel').hidden, false);
@@ -612,6 +701,7 @@ test('underfilled recording times out without uploading a partial segment', asyn
 
 test('ambiguous segment upload failure refreshes the next recording stage', async () => {
     let statusRequests = 0;
+    let segmentRequests = 0;
     const harness = createHarness({
         audio: true,
         route(url) {
@@ -628,6 +718,7 @@ test('ambiguous segment upload failure refreshes the next recording stage', asyn
                 });
             }
             if (url === '/api/voice-identity/enrollment/segment') {
+                segmentRequests += 1;
                 throw new Error('connection_lost');
             }
             throw new Error(`Unexpected request: ${url}`);
@@ -638,6 +729,7 @@ test('ambiguous segment upload failure refreshes the next recording stage', asyn
     await harness.elements.get('voice-identity-record').emit('click');
 
     assert.equal(statusRequests, 2);
+    assert.equal(segmentRequests, 1);
     assert.equal(harness.elements.get('voice-identity-prompt').textContent, 'English two');
     assert.equal(harness.elements.get('voice-identity-record').disabled, false);
 });
@@ -848,10 +940,12 @@ test('failed explicit cancellation preserves the session and can be retried', as
     assert.equal(firstCall.options.headers.get('X-Voice-Identity-Enrollment'), 'session-1');
     assert.equal(cancel.hidden, false);
     assert.equal(cancel.disabled, false);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
 
     await cancel.emit('click');
     assert.equal(cancellationAttempts, 2);
     assert.equal(cancel.hidden, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('window close starts keepalive cancellation without waiting for the response', async () => {
@@ -904,6 +998,11 @@ test('dark theme overrides panel, text, accent, border, and action colors', () =
     }
     assert.match(stylesheet, /\[data-theme="dark"\] \.secondary-button/);
     assert.match(stylesheet, /\[data-theme="dark"\] \.danger-button/);
+    assert.match(
+        stylesheet,
+        /body\.voice-identity-page \.primary-button,[\s\S]*color: #082f45;/,
+    );
+    assert.match(template, /id="voice-identity-timer" aria-hidden="true"/);
     assert.match(template, /<body class="voice-identity-page">/);
     assert.match(
         stylesheet,
