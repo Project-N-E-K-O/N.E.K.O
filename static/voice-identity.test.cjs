@@ -556,6 +556,7 @@ test('ambiguous commit response reconciles activation without entering recording
 
     assert.equal(commitRequests, 1);
     assert.equal(statusRequests, 2);
+    assert.equal(record.classList.contains('recording'), false);
     assert.equal(harness.elements.get('voice-identity-start').hidden, false);
     assert.equal(
         harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'),
@@ -998,10 +999,11 @@ test('dark theme overrides panel, text, accent, border, and action colors', () =
     }
     assert.match(stylesheet, /\[data-theme="dark"\] \.secondary-button/);
     assert.match(stylesheet, /\[data-theme="dark"\] \.danger-button/);
-    assert.match(
-        stylesheet,
-        /body\.voice-identity-page \.primary-button,[\s\S]*color: #082f45;/,
+    const primaryButtonRule = stylesheet.match(
+        /body\.voice-identity-page \.primary-button,\s*body\.voice-identity-page \.record-button\s*\{([^}]*)\}/,
     );
+    assert.ok(primaryButtonRule, 'Missing primary/record button color rule');
+    assert.match(primaryButtonRule[1], /(?:^|;)\s*color:\s*#082f45\s*;/);
     assert.match(template, /id="voice-identity-timer" aria-hidden="true"/);
     assert.match(template, /<body class="voice-identity-page">/);
     assert.match(
