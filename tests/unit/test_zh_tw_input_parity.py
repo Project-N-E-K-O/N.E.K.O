@@ -870,10 +870,12 @@ def test_truncated_table_entries_are_not_commands(text):
         ("快别找了吧", "/stop"), ("别找了啊", "/stop"), ("別找了囉", "/stop"),
         ("准了吧", "/daemon approve"), ("準了吧", "/daemon approve"),
         # ⚠️ 每一步要对**所有**能匹配的词尾各试一次，不能只试正则挑中的那一个。
-        # 多选支从左优先：`去执行吗` 会被 `行吗` 命中、剥成 `去执` —— 它吃掉的是
-        # 「执行」的字。换词表顺序解决不了，`行吗` 本身必须收。
-        ("去执行吗", "/daemon approve"), ("去執行嗎", "/daemon approve"),
+        # 多选支从左优先：`停下来行吗` 里 `行吗` 会先命中、把它剥成 `停下来行`，
+        # 再也剥不出 `停下来`。换词表顺序解决不了，`行吗` 本身必须收。
+        # （approve 侧不能拿来测这个——疑问式对批准是一票否决，见
+        # test_a_question_never_approves。）
         ("停下来行吗", "/stop"), ("停下來行嗎", "/stop"), ("换个话题行吗", "/new"),
+        ("停下来吗", "/stop"), ("停下來嗎", "/stop"), ("换个话题怎么样", "/new"),
     ],
 )
 def test_particles_are_peeled_one_at_a_time(text, expected):
@@ -883,17 +885,50 @@ def test_particles_are_peeled_one_at_a_time(text, expected):
 
 
 @pytest.mark.parametrize(
+    ("clause", "table_name"),
+    [
+        # ⚠️ 这条**直接测查表层**，不经 rule_magic_command。
+        # 「多选支从左优先咬掉内容字」这个 bug 只在**以「行」结尾的表内条目**上发作
+        # （`去执行吗` 被 `行吗` 咬成 `去执`），而那些形式现在被疑问否决先拦掉了——
+        # 从 rule_magic_command 那一层再也观察不到，变异测试会误判成等价变异。
+        # 判据和否决是两层，分开钉，否则哪天否决被调整，剥词的 bug 会静默复活。
+        ("去执行吗", "_APPROVE_ACTIONS"), ("去執行嗎", "_APPROVE_ACTIONS"),
+        ("去执行行不行", "_APPROVE_ACTIONS"), ("去執行好不好", "_APPROVE_ACTIONS"),
+        ("停下来行吗", "_STOP_CLAUSES"), ("停下來行嗎", "_STOP_CLAUSES"),
+        ("换个话题好不好", "_NEW_CLAUSES"),
+    ],
+)
+def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
+    import brain.openclaw_adapter as adapter
+
+    table = getattr(adapter, table_name)
+    assert adapter._clause_hits(clause, table), f"{clause} 剥不出 {table_name} 里的条目"
+
+
+@pytest.mark.parametrize(
     "text",
-    ["去執行？", "去执行？", "刪吧？", "删吧？", "准了？", "準了？", "去執行?",
-     "没问题，去执行？", "沒問題，去執行？", "同意？", "我同意？"],
+    [
+        # 标点
+        "去執行？", "去执行？", "刪吧？", "删吧？", "准了？", "準了？", "去執行?",
+        "没问题，去执行？", "沒問題，去執行？", "同意？", "我同意？",
+        # ⚠️ 光认标点不够：归一化会把疑问语气整个抹掉。句末语气词……
+        "去執行嗎", "去执行吗", "刪吧嗎", "删吧吗", "準了嗎", "准了吗",
+        # ……正反问 / 选择问（首部或句中），剥完同样落在表内的动作短语上
+        "能不能去執行", "能不能去执行", "可不可以去執行", "可不可以去执行",
+        "去執行行不行", "去执行好不好", "要不要去执行", "是不是该去执行",
+        "是否可以去执行", "去执行怎么样", "去執行怎麼樣",
+    ],
 )
 def test_a_question_never_approves(text):
-    """⚠️ 问号一票否决 approve。
+    """⚠️ 一个**问句**绝不能授权高风险动作。
 
-    The clause splitter treats ？/? as a separator, so 去執行？ collapses to
-    去執行 and a *question* would authorize a high-risk action. Rejecting the
-    whole utterance is fail-closed and costs nothing: nobody granting permission
-    types a question mark.
+    Normalization erases the interrogative mood: 去執行嗎 loses its 嗎 and
+    能不能去執行 loses its 能不能, both landing on the whitelisted 去執行. The
+    Traditional spellings here were all None on main — the whole-clause switch
+    newly exposed them, which is exactly backwards for a hardening change.
+
+    Vetoing the whole utterance is fail-closed and costs nothing: nobody granting
+    permission phrases it as a question.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
@@ -908,6 +943,10 @@ def test_a_question_never_approves(text):
         ("停下来好吗？", "/stop"), ("停下來好嗎？", "/stop"),
         ("换个话题好吗？", "/new"), ("換個話題好嗎？", "/new"),
         ("能不能停下来？", "/stop"),
+        # 无标点的疑问式同理——「能不能停下来」是最常见的礼貌祈使之一
+        ("能不能停下来", "/stop"), ("可不可以停下來", "/stop"),
+        ("停下来吗", "/stop"), ("停下来行不行", "/stop"),
+        ("换个话题怎么样", "/new"), ("換個話題怎麼樣", "/new"),
     ],
 )
 def test_the_question_veto_is_scoped_to_approve(text, expected):

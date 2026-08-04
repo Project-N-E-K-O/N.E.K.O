@@ -192,11 +192,22 @@ _CLAUSE_TAIL = re.compile(rf"(?:{_TAIL_ALTERNATION})+$")
 # 所以改成：每一步对**所有**能匹配的词尾各试一次，每剥一个查一次表。
 _TAIL_TOKENS = tuple(_TAIL_ALTERNATION.split("|"))
 
-# ⚠️ 问号是**唯一**被子句切分器吃掉后还改变语义的分隔符：`去執行？` 切完就是
-# `去執行`，一个疑问句于是授权了一个高风险动作（Codex P1）。approve 因此对含问号的
-# 输入一律拒绝——`要去執行嗎？` 这类本来就该 None，而真要批准的人不会打问号。
-# 只作用于 approve：`停下来好吗？` 对 /stop 是完全正常的礼貌祈使。
-_INTERROGATIVE = re.compile(r"[?？]")
+# ⚠️⚠️ approve 的疑问否决。**问号只是其中一种疑问标记，光认标点不够。**
+#
+# 归一化会把疑问语气整个抹掉：`去執行嗎` 剥掉词尾 `嗎` 就是表内的 `去執行`，
+# `能不能去執行` 剥掉首部 `能不能` 也是 `去執行`——一个**问句**于是授权了高风险动作。
+# 实测这批繁体形式在 main 上全是 None（旧 approve 表没有繁体条目），是本次改动新开的
+# 暴露面：去執行嗎 / 刪吧嗎 / 準了嗎 / 能不能去執行 / 可不可以去執行 / 去執行行不行。
+# （Codex P1；它同时指出我为修「行吗 咬字」加的那条 `去執行嗎 → approve` 测试正是确证。）
+#
+# 所以按**疑问标记**否决，不是按标点：句末语气词、正反问、选择问一并算。
+# ⚠️ 只作用于 approve。`停下来行吗` / `能不能停下来` 对 /stop 是完全正常的礼貌祈使，
+# 一并毙掉是新的召回损失。这个不对称和 fail-closed 同源：批准要的是明确授权，
+# 而停任务/换话题用商量口吻再自然不过。
+_APPROVE_INTERROGATIVE = re.compile(
+    r"[?？]|吗|嗎|呢|能不能|可不可以|行不行|好不好|是不是|要不要|"
+    r"可否|是否|能否|怎么样|怎麼樣|如何"
+)
 
 
 def _normalize_clause(clause: str, *, strip_tail: bool = True) -> str:
@@ -679,10 +690,10 @@ class OpenClawAdapter:
         # 命中 /stop，现在是 None。它和 `停下来，这是我当时唯一的念头`（叙述）在**任何
         # 子句位置判据下都不可区分**——两句的祈使短语都在首子句。子串包含把前者接住
         # 是顺带的，代价是把后者也接住。要真的分开得看语义，不是这一层能做的事。
-        # ⚠️ 问号一票否决 approve：子句切分把 `？` 吃掉之后，`去執行？` 就是 `去執行`，
-        # 一个疑问句于是授权了高风险动作（Codex P1）。/stop 和 /new 不受影响——
-        # `停下来好吗？` 是完全正常的礼貌祈使。
-        if not _INTERROGATIVE.search(text) and all(
+        # ⚠️ 疑问标记一票否决 approve：归一化会把疑问语气抹掉，`去執行嗎` / `能不能去執行`
+        # 剥完都落在表内的 `去執行` 上，一个**问句**于是授权了高风险动作（Codex P1）。
+        # /stop 和 /new 不受影响——`停下来行吗` 是完全正常的礼貌祈使。
+        if not _APPROVE_INTERROGATIVE.search(text) and all(
             _approve_clause_hits(c) for c in clauses
         ):
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
