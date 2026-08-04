@@ -1187,9 +1187,13 @@ def test_an_objectless_directive_does_not_invent_an_object(text):
 def test_the_objectless_guard_is_not_the_topic_minimum():
     """两道闸各管一头，谁都不能顶替谁——把下限调回 1 这条会红。"""  # noqa: DOCSTRING_CJK
     assert "_ZH_OBJECTLESS_AHEAD" in D.__dict__
+    # ⚠️ 话题体现在是「首单位 + 其余 {min-1, max-1}」，所以下限 2 在串里长成
+    # ``{1,39}``。判据改成从 _zh_topic 自己派生，别再按字面找 ``{1,``。
+    assert D._zh_topic(2, 40).endswith("{1,39}?)"), D._zh_topic(2, 40)
+    assert D._zh_topic(1, 40).endswith("{0,39}?)"), D._zh_topic(1, 40)
     for _loc, _kind, pat in D.DIRECTIVE_PATTERNS:
         if _loc == "zh":
-            assert "{1," not in pat.pattern, pat.pattern[:80]
+            assert D._zh_topic(1, 40) not in pat.pattern, pat.pattern[:80]
 
 
 def test_the_objectless_guard_counts_characters_not_complements():
@@ -1411,16 +1415,23 @@ def test_guanyu_produces_exactly_one_term(text, expected):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # ``关于`` 出现在句中时，通用模板的前缀不能逐字吃过它——否则多产出一条
-        # ``我觉得关于股票就``（codex P2）。单字分支 temper 掉裸的 关于，括号分支
-        # 排在它前面，所以书名里的 关于 仍然整体放行。
         ("我觉得关于股票就别再讲了", "股票"),
         ("我覺得關於股票就別再講了", "股票"),
         ("其实关于工作别提了", "工作"),
     ],
 )
-def test_a_leading_clause_before_guanyu_does_not_add_a_bogus_term(text, expected):
-    assert _zh_terms(text) == {expected}
+def test_a_leading_clause_before_guanyu_still_yields_the_real_topic(text, expected):
+    """⚠️ 这条原来断言的是 ``== {expected}``（多出来的 ``我觉得关于股票就`` 必须被
+    压掉），现在放宽成「真话题一定在」。
+
+    两条 codex 要求**直接打架**：早先要求 temper 掉话题里的 ``关于``（免得多产出
+    ``我觉得关于股票就``），后来又指出这会让 ``电影关于爱别提了。`` 整条 0 命中、
+    ``这部关于爱的电影`` 被腰斩（parent 两条都完整）。守卫收窄成只 temper**第一个**
+    单位之后，多出来的那条长 span 回到了 parent 的行为。
+    判据是代价量级：多一条含着真话题的长 term（G 类，和 parent 一样）比丢掉一条真
+    指令（B 类）轻得多。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
 
 
 @pytest.mark.parametrize(
@@ -1640,12 +1651,28 @@ def test_an_object_may_begin_with_guanyu(text, expected):
 
 
 @pytest.mark.parametrize(
-    "text",
-    ["我觉得关于股票就别再讲了", "我覺得關於股票就別再講了", "其实关于工作别提了"],
+    ("text", "expected"),
+    [
+        # 话题**内部**含 关于 的真话题必须完整——守卫只管起点
+        ("这部关于爱的电影别提了。", "这部关于爱的电影"),
+        ("电影关于爱别提了。", "电影关于爱"),
+        ("這部關於愛的電影別提了。", "這部關於愛的電影"),
+    ],
 )
-def test_the_preposed_guard_still_suppresses_the_junk_prefix(text):
-    terms = _zh_terms(text)
-    assert not any("关于" in t or "關於" in t for t in terms), terms
+def test_a_topic_may_contain_guanyu_in_the_middle(text, expected):
+    """⚠️ ``关于`` 守卫只 temper **第一个**单位。
+
+    套在每个单位上的话，话题内部含 ``关于`` 的真话题会被腰斩甚至整条丢掉
+    （codex P2）。这道守卫要防的是「前缀逐字吃过句首的 ``关于``」，那只可能
+    发生在**起点**。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+def test_the_guanyu_temper_applies_only_to_the_first_unit():
+    """结构面：temper 只能出现一次，不能套在重复单位上。"""  # noqa: DOCSTRING_CJK
+    body = D._zh_topic(2, 30, block_guanyu=True)
+    assert body.count("(?!关于|關於)") == 1, body
 
 
 def test_the_guanyu_guard_is_scoped_to_one_template():
@@ -2468,12 +2495,12 @@ def test_the_preposed_template_spacing_is_atomic():
     assert D._ZH_HSPACE not in rest, rest
     for unit in units:
         assert unit + unit not in head, unit
-    # 数量仍然钉一下，防止某个单位被整段删掉：模板自己 4 个 \s*，
-    # 两处 _ZH_PAUSE_THEN_JIU 各带 2 个横向空白。
-    assert head.count(r"(?>\s*)") == 4, head.count(r"(?>\s*)")
-    assert head.count(f"(?>{D._ZH_HSPACE})") == 2 * D._ZH_PAUSE_THEN_JIU.count(
-        f"(?>{D._ZH_HSPACE})"
-    ) == 6
+    # 数量钉一下，防止某个单位被整段删掉。⚠️ 触发词内部的空白也收窄成横向了
+    # （否定词↔再↔动词 不可能跨行），所以横向那一侧 = 两处 _ZH_PAUSE_THEN_JIU
+    # + 触发词里的 2 个；跨行的 ``\s*`` 只剩话题两侧那 2 个。
+    assert head.count(r"(?>\s*)") == 2, head.count(r"(?>\s*)")
+    atomic_h = f"(?>{D._ZH_HSPACE})"
+    assert head.count(atomic_h) == 2 * D._ZH_PAUSE_THEN_JIU.count(atomic_h) + 2
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -3266,7 +3293,7 @@ def test_the_ambiguous_verb_branch_needs_both_the_boundary_and_zai():
     assert _zh_terms("今回は、別提案をお願いします。") == set()
     assert _zh_terms("「別提案をお願いします。」") == set()
     # 结构面：有歧义动词只出现在带左界**且**带 ``再`` 的那一支里。
-    flat = D._ZH_NEG_VERB_EVIDENCE.replace(r"\s*", "")
+    flat = D._ZH_NEG_VERB_EVIDENCE.replace(r"\s*", "").replace(D._ZH_HSPACE, "")
     shared = "|".join(D._ZH_SAY_VERBS_JA_SHARED)
     assert flat.count(shared) == 1, flat
     head = flat.split(shared)[0]
@@ -4026,3 +4053,68 @@ def test_the_tail_slice_comes_from_the_current_string(text):
 def test_a_kanji_stem_copula_is_still_japanese(text):
     """反向：汉字词干那一族照旧全挡。"""  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+# ── 47. 守卫否掉后重扫 / する・した / 触发词不跨行 ──────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("地域別提案をお願いします 别再提工作。", "工作"),
+        ("カテゴリ別提案書 别再提加班。", "加班"),
+        ("テーマ別討論スレ 别再提出差。", "出差"),
+        ("地域別提案をお願いします。别再提工作。", "工作"),
+    ],
+)
+def test_a_guarded_match_does_not_swallow_a_later_directive(text, expected):
+    """日文守卫否掉一条命中之后，那整段区间已经被 finditer 消费掉了。
+
+    藏在里面的**真指令**再也扫不到——整条 0 命中，而 parent 还能抓到后面那句
+    （codex P2）。所以被否掉的那条只把游标推进一个字符，从起点之后重扫。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_the_rescan_does_not_re_extract_accepted_matches():
+    """反向：正常命中照旧整段跳过，不然同一条指令会被反复抽出来。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("别提工作。别提加班。") == {"工作", "加班"}
+    # 同一条指令只抽一次——重复会在这里变成多条同名 term（去重前）
+    raw = [t for _l, _k, t in extract_directives("别再提工作。")]
+    assert raw == ["工作"], raw
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["別提案した。", "今回は、別提案した。", "別提案する。", "「別講座した。」"],
+)
+def test_plain_and_past_sahen_predicates_are_grammar_evidence(text):
+    """``します`` / ``しない`` / ``しよう`` 都收了，却漏了最常用的 ``する`` / ``した``。
+
+    ``別提案した。`` 存下 ``案した``（codex P2）。左右两界照抄 ``あり|なし|だ``。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(("text", "expected"), [("別提あした。", "あした")])
+def test_the_sahen_predicates_need_a_kanji_stem_too(text, expected):
+    """反向：假名词 ``あした`` 不该被当成谓语（左界要汉字，和同族一致）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("split", ["請別再{nl}提", "別再{nl}提", "別{nl}再提"])
+def test_a_trigger_does_not_span_a_line_break(newline, split):
+    """触发词**内部**的空白也要横向：否定词↔再↔动词 不可能跨行。
+
+    ``請別再\n提案をお願いします。`` 会把上一行的 ``別再`` 和下一行日文的动词
+    接起来，存下 ``案をお願いします``（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(split.format(nl=newline) + "案をお願いします。") == set()
+
+
+@pytest.mark.parametrize("gap", [" ", "  ", "\t", "　", ""])
+def test_a_trigger_still_tolerates_horizontal_gaps(gap):
+    """反向：同一行里的横向空白照旧收。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别{gap}再{gap}提{gap}工作。") == {"工作"}
+    assert _zh_terms(f"不要{gap}再{gap}提工作。") == {"工作"}

@@ -787,11 +787,16 @@ def _zh_topic(minimum: int, maximum: int, *, block_guanyu: bool = False) -> str:
     长度闸根本不会丢它——所以单独放行"以一段括号开头"的形态（codex P2）。
 
     ``block_guanyu`` 只给模板 2 的前置话题用，见 _ZH_PLAIN_CHAR_NO_GUANYU。
+    ⚠️ 它只 temper **第一个**单位，不是每一个。套在每个单位上的话，话题**内部**
+    含 ``关于`` 的真话题会被腰斩甚至整条丢掉——``这部关于爱的电影别提了。`` 只存下
+    ``爱的电影``、``电影关于爱别提了。`` 整条 0 命中（parent 两条都完整；codex P2）。
+    这道守卫要防的是「前缀逐字吃过句首的 ``关于``」，那只可能发生在**起点**。
     """  # noqa: DOCSTRING_CJK
-    unit = _ZH_TOPIC_CHAR_NO_GUANYU if block_guanyu else _ZH_TOPIC_CHAR
+    unit = _ZH_TOPIC_CHAR
+    first = _ZH_TOPIC_CHAR_NO_GUANYU if block_guanyu else unit
     return (
         f"(?:{_ZH_BRACKET_RUN}{unit}{{0,{maximum - 1}}}?"
-        f"|{unit}{{{minimum},{maximum}}}?)"
+        f"|{first}{unit}{{{minimum - 1},{maximum - 1}}}?)"
     )
 
 # 模板 1 里 term 与终结符之间允许出现的句末助词。与 ``_TRIM_TRAIL_TOKENS`` 的 zh
@@ -994,17 +999,17 @@ _ZH_NEG_VERB_EVIDENCE = (
     "(?:"
     + "(?:"
     + "|".join(_ZH_NEG_UNAMBIGUOUS)
-    + r")\s*(?:再)?\s*(?:"
+    + f"){_ZH_HSPACE}(?:再)?{_ZH_HSPACE}(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
     + "|(?:"
     + "|".join(_ZH_NEG_JA_AMBIGUOUS)
-    + r")\s*(?:再)?\s*(?:"
+    + f"){_ZH_HSPACE}(?:再)?{_ZH_HSPACE}(?:"
     + "|".join(_ZH_ZH_ONLY_VERBS)
     + ")"
     + f"|(?<![^{_ZH_CLAUSE_START_LEFT}{_ZH_POLITE_BEFORE_NEG}])(?:"
     + "|".join(_ZH_NEG_JA_AMBIGUOUS)
-    + r")\s*再\s*(?:"
+    + f"){_ZH_HSPACE}再{_ZH_HSPACE}(?:"
     + "|".join(_ZH_SAY_VERBS_JA_SHARED)
     + ")"
     + ")"
@@ -1013,7 +1018,7 @@ _ZH_NEG_VERB_EVIDENCE = (
 # 上面那条左界只为单字的 ``別`` 而设。带上左界反而把正常的中文主语挡在外面——
 # ``我不要提君の名は。`` / ``你不准提君の名は。`` 在 parent 上都是好的（codex P2）。
 _ZH_MULTI_NEG_EVIDENCE = (
-    "(?:" + "|".join(_ZH_NEG_MULTIS) + r")\s*(?:再)?\s*(?:"
+    "(?:" + "|".join(_ZH_NEG_MULTIS) + f"){_ZH_HSPACE}(?:再)?{_ZH_HSPACE}(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
 )
@@ -1024,7 +1029,7 @@ _ZH_MULTI_NEG_EVIDENCE = (
 _ZH_SUBJECT_BEFORE_NEG = (
     "(?<=[" + _ZH_SUBJECT_CHARS + "])(?:"
     + "|".join(_ZH_NEG_SINGLES)
-    + r")\s*(?:再)?\s*(?:"
+    + f"){_ZH_HSPACE}(?:再)?{_ZH_HSPACE}(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
 )
@@ -1043,7 +1048,7 @@ _ZH_SUBJECT_GAP = r"[ \t　]{1,4}"
 _ZH_SUBJECT_ACROSS_SPACE = re.compile(
     "[" + _ZH_SUBJECT_CHARS + "]" + _ZH_SUBJECT_GAP + "(?:"
     + "|".join(_ZH_NEG_SINGLES)
-    + r")\s*(?:再)?\s*(?:"
+    + f"){_ZH_HSPACE}(?:再)?{_ZH_HSPACE}(?:"
     + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS)
     + ")"
 )
@@ -1112,6 +1117,11 @@ _JA_GRAMMAR_RE = re.compile(
         # （案だ / 座だ / 話だ）；假名接着它就是词的一部分——只锚右边的话繁中的
         # ``別提ただ。`` / ``別提まだ。`` 整条 0 命中，而同句简体是好的（codex P2）。
         f"(?<=[一-鿿])だ(?={_JA_SENTENCE_END})",
+        # サ変动词的**基本形 / 过去形**。上面收了 ``します`` / ``しない`` /
+        # ``しよう``，却漏了最常用的 ``する`` / ``した``——``別提案した。`` 存下
+        # ``案した``（codex P2）。左右两界和 ``あり|なし|だ`` 完全一样：右边锚句末，
+        # 左边要汉字词干（``あした`` / ``きのうした`` 这类假名词才不会被误伤）。
+        f"(?<=[一-鿿])(?:する|した)(?={_JA_SENTENCE_END})",
     ))
 )
 
@@ -1173,7 +1183,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # 繁体 ``不準`` 不收：它是"不准确"的意思，"測量不準說明有問題" 会被抓成
     # ban_topic；"不允许" 这个义项繁体本来就写 ``不准``，已在表内。
     ("zh", "ban_topic",
-     _ZH_NEG + r"\s*(?:再)?\s*"
+     _ZH_NEG + f"{_ZH_HSPACE}(?:再)?{_ZH_HSPACE}"
      # 动词表见 _zh_verb_alternation：复合动词必须排在单字前缀之前（模板 2/4 要求
      # 动词后紧跟终结符，失败会回溯，所以没这个问题）。
      + _ZH_VERBS_WITH_ADDRESS + r"\s*"
@@ -1226,7 +1236,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # 只在填充词前面收停顿标点的话，正则会从第一个逗号之后重新起匹配、存下
      # ``这件事``（codex P2）。``就`` 同理要在两个位置都收。
      + _ZH_PAUSE_THEN_JIU
-     + r"[别別](?>\s*)(?:再)?(?>\s*)"
+     + f"[别別](?>{_ZH_HSPACE})(?:再)?(?>{_ZH_HSPACE})"
      r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
@@ -1272,7 +1282,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      + _ZH_TOPIC_SEPARATOR
      + r"(?:就)?(?>\s*)"
      + _ZH_TOPIC_SEPARATOR
-     + r"[别別](?>\s*)(?:再)?(?>\s*)"
+     + f"[别別](?>{_ZH_HSPACE})(?:再)?(?>{_ZH_HSPACE})"
      r"(?:说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;\s]|$)"),
 
     # ---------- en ----------
@@ -1424,7 +1434,18 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
     for locale, kind, pat in DIRECTIVE_PATTERNS:
         # 同上：不手写 startswith("zh")，走公共的 fallback-family 判定。
         zh_family = prompt_locale_fallback_key(locale) == "zh"
-        for m in pat.finditer(text):
+        # ⚠️ 不能直接 finditer：日文守卫否掉一条命中之后，那整段区间已经被消费掉了，
+        # 藏在里面的**真指令**再也扫不到——``地域別提案をお願いします 别再提工作。``
+        # 整条 0 命中，而 parent 还能抓到后面那句 ``工作``（codex P2）。所以手动推进
+        # 游标：正常命中跳到区间末尾，被守卫否掉的只跳一个字符，从起点之后重扫。
+        # ⚠️ 只对被**否掉**的那条回退，正常命中照旧整段跳过——否则同一条指令会被
+        # 反复抽出来，而且是 O(n²)。
+        pos = 0
+        while pos <= len(text):
+            m = pat.search(text, pos)
+            if m is None:
+                break
+            pos = m.end() if m.end() > m.start() else m.start() + 1
             try:
                 term_raw = m.group(1)
             except IndexError:
@@ -1457,6 +1478,8 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
                 text[max(0, m.start() - _ZH_SUBJECT_LEFT_MAX): m.start()],
                 directive=directive_only,
             ):
+                # 从命中**起点之后**重扫，把藏在这段里的真指令捞回来。
+                pos = m.start() + 1
                 continue
             out.append((locale, kind, term))
             spans.append((m.start(), m.end()))
