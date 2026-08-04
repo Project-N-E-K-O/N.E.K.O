@@ -1227,9 +1227,10 @@ warn_legacy_layout() {
             echo "   日志目录里有历史日志，说明这个部署以前跑过，而数据目录是空的。"
             echo "   本版本把 ./N.E.K.O + ./ssl 两个挂载合并成了 ./neko-home 一个，"
             echo "   旧数据没有丢，只是不再挂进容器。请停止容器后执行："
-            echo "       mkdir -p neko-home/.local/share"
-            echo "       mv N.E.K.O neko-home/.local/share/N.E.K.O"
-            echo "       mv ssl     neko-home/ssl"
+            echo "       mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl"
+            echo "       cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O"
+            echo "       cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl"
+            echo "   （本次启动已经在 neko-home 下建好了同名目录，直接 mv 会多套一层）"
             ;;
     esac
     echo "   详见 README「从旧版本升级」一节。全新安装可忽略本提示。"
@@ -1255,8 +1256,11 @@ main() {
     # 确保 home 目录对 neko 用户可写（Docker volume 可能以 root 创建）。
     # 只改属主不对的条目：稳态下这一遍是纯遍历、不产生写入，数据量大的部署不必
     # 每次启动都把整棵树重写一遍。
+    # chown 必须带 -h：不带的话它会解引用命令行上的符号链接，把宿主机备份里
+    # 可能存在的链接的**目标**改掉（`chown -R` 默认 -P 会跳过符号链接，这里换成
+    # find 驱动就没有那层保护了）。
     find /home/neko -path /home/neko/ssl -prune -o \
-        \( ! -user neko -o ! -group neko \) -exec chown neko:neko {} + || true
+        \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + || true
 
     # ssl/ 被上面刻意跳过。私钥由 root 生成并 chmod 600，nginx 主进程也以 root
     # 读取它，而三个业务进程（含内嵌的用户插件服务）以 neko 身份运行。合并挂载后

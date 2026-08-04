@@ -19,15 +19,29 @@ Persistent mounts は `./neko-home` → `/home/neko`（設定、データ、TLS 
 ::: danger 旧 2 マウント構成からの移行
 旧版は `./N.E.K.O` と `./ssl` を別々に mount していました。移行せずに新しい image を pull すると、container は**空の** data directory で起動します。サービスは正常に立ち上がり API key も環境変数から再生成されるため一見問題なく見えますが、キャラクター・記憶・plugin が全て存在しない状態です。旧 data は削除されておらず、mount されなくなっただけです。
 
+順序が重要です：`docker compose down` は container を**削除**しますが、container 内にしか存在しない state があります。
+
 ```bash
+# 1. container 内にしかないものを先に export（削除前に必ず実行）。
+#    旧レイアウトでは OpenFang の workspace を mount していませんでした。また host 側の
+#    N.E.K.O/ が空の場合は旧 README の quickstart のケースで、その mount 先
+#    （/root/Documents/N.E.K.O）はサービスの実際の書き込み先と一致していなかったため、
+#    アプリケーション data も container 内にあります。
+#    末尾の /. は directory の中身をコピーする指定で、N.E.K.O/N.E.K.O のようなネストを防ぎます。
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
+docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/   # N.E.K.O/ が空の場合のみ
+
+# 2. container を停止し、host 側の旧 directory を内容単位で merge。新レイアウトで
+#    一度でも起動していると宛先 directory は既に存在し（新しい自己署名証明書付き）、
+#    mv では一階層深くネストされます。同名 file は旧 data を優先します。
 docker compose down
-mkdir -p neko-home/.local/share
-mv N.E.K.O neko-home/.local/share/N.E.K.O
-mv ssl     neko-home/ssl
+cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+
+# 3. 再起動
 docker compose up -d
 ```
-
-host 側の `N.E.K.O/` が空の場合は旧 README の quickstart に従っていたケースです。その mount 先（`/root/Documents/N.E.K.O`）はサービスの実際の書き込み先と一致していなかったため、data は container 内部にしか存在しません。旧 container を削除する前に export してください：`docker cp neko:/home/neko/.local/share/N.E.K.O ./neko-home/.local/share/N.E.K.O`。
 
 `./logs` は影響を受けません。所有者は次回起動時に自動修正されます。
 :::

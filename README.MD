@@ -192,22 +192,39 @@ ls N.E.K.O/
 **情况一：有内容，且用 Docker Compose 部署**
 
 ```bash
+# 1) 先导出只存在于容器里的东西。旧版没有挂载 OpenFang 的工作目录，它的配置和
+#    agent 一直在容器可写层，容器一删就没了。这一步要赶在停容器之前做。
+mkdir -p neko-home/.openfang
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
+
+# 2) 停容器，合并宿主机上的旧目录。若已经用新版启动过一次，容器会在 neko-home 下
+#    建好同名的空目录和一张新的自签证书，此时直接 mv 会把旧目录套进去多一层，
+#    所以按内容合并（同名文件以旧数据为准）
 docker-compose down
-mkdir -p neko-home/.local/share
-mv N.E.K.O neko-home/.local/share/N.E.K.O
-mv ssl     neko-home/ssl
-# 把 docker-compose.yml 的 volumes 换成本文档上方的新版写法，再启动
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl
+cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+
+# 3) 把 docker-compose.yml 的 volumes 换成本文档上方的新版写法，再启动
 docker-compose up -d
 ```
 
 **情况二：有内容，且用 Docker Run 部署**
 
 ```bash
+# 1) 先导出只存在于容器里的 OpenFang 状态（同上，必须赶在删容器之前）
+mkdir -p "${NEKO_BASE_PATH}/neko-home/.openfang"
+docker cp neko:/home/neko/.openfang/. "${NEKO_BASE_PATH}/neko-home/.openfang/" 2>/dev/null || true
+
+# 2) 删容器，合并宿主机上的旧目录
 docker rm -f neko
-mkdir -p "${NEKO_BASE_PATH}/neko-home/.local/share"
-mv "${NEKO_BASE_PATH}/N.E.K.O" "${NEKO_BASE_PATH}/neko-home/.local/share/N.E.K.O"
-mv "${NEKO_BASE_PATH}/ssl"     "${NEKO_BASE_PATH}/neko-home/ssl"
-# 再按本文档上方的新命令重新 docker run
+mkdir -p "${NEKO_BASE_PATH}/neko-home/.local/share/N.E.K.O" "${NEKO_BASE_PATH}/neko-home/ssl"
+cp -a "${NEKO_BASE_PATH}/N.E.K.O/." "${NEKO_BASE_PATH}/neko-home/.local/share/N.E.K.O/" \
+  && rm -rf "${NEKO_BASE_PATH}/N.E.K.O"
+cp -a "${NEKO_BASE_PATH}/ssl/."     "${NEKO_BASE_PATH}/neko-home/ssl/" \
+  && rm -rf "${NEKO_BASE_PATH}/ssl"
+
+# 3) 再按本文档上方的新命令重新 docker run
 ```
 
 **情况三：`N.E.K.O/` 是空的**
@@ -215,9 +232,15 @@ mv "${NEKO_BASE_PATH}/ssl"     "${NEKO_BASE_PATH}/neko-home/ssl"
 旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `./ssl`）：
 
 ```bash
-mkdir -p neko-home/.local/share
-docker cp neko:/home/neko/.local/share/N.E.K.O ./neko-home/.local/share/N.E.K.O
-mv ssl neko-home/ssl
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+
+# 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层
+docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+docker cp neko:/home/neko/.openfang/.            ./neko-home/.openfang/ 2>/dev/null || true
+
+cp -a ssl/. neko-home/ssl/ && rm -rf ssl
+
+# 确认上面几步都成功之后再删旧容器
 docker rm -f neko
 # 再按新版配置启动
 ```

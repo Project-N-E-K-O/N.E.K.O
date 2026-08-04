@@ -24,15 +24,28 @@ docker compose up -d
 ::: danger 从旧版双挂载升级
 旧版本分别挂载 `./N.E.K.O` 与 `./ssl`。不迁移就直接拉新镜像，容器会对着一个**空的**数据目录启动：服务照常运行、API Key 也会从环境变量重新生成，看上去没有异常，但人格、记忆、插件都不在。旧数据没有被删除，只是不再挂进容器。
 
+顺序不能颠倒：`docker compose down` 会**删除**容器，而有些状态只存在于容器里。
+
 ```bash
+# 1. 先导出只存在于容器内的东西，必须赶在删容器之前。
+#    旧布局从没挂载 OpenFang 的工作目录；另外，若宿主机的 N.E.K.O/ 是空的，说明
+#    此前跟的是旧版 README 的快速开始，其挂载目标（/root/Documents/N.E.K.O）与服务
+#    实际写入的位置从来对不上，应用数据也在容器里。
+#    末尾的 /. 表示复制目录内容，避免出现 N.E.K.O/N.E.K.O 这样多套一层。
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
+docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/   # 仅当 N.E.K.O/ 为空
+
+# 2. 停容器，再把宿主机上的旧目录按内容合并。若已经用新布局启动过一次，目标目录
+#    已经存在（还带一张新生成的自签证书），直接 mv 会把旧目录套进去多一层。
+#    同名文件以旧数据为准。
 docker compose down
-mkdir -p neko-home/.local/share
-mv N.E.K.O neko-home/.local/share/N.E.K.O
-mv ssl     neko-home/ssl
+cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+
+# 3. 重新启动
 docker compose up -d
 ```
-
-若宿主机的 `N.E.K.O/` 是空的，说明此前跟的是旧版 README 的快速开始，其挂载目标（`/root/Documents/N.E.K.O`）与服务实际写入的位置从来对不上，数据只存在于容器内部。删除旧容器前先导出：`docker cp neko:/home/neko/.local/share/N.E.K.O ./neko-home/.local/share/N.E.K.O`。
 
 `./logs` 不受影响；目录属主在下次启动时自动修正。
 :::

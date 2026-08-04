@@ -30,15 +30,30 @@ Back up the first mount before upgrades. Never expose the data or private-key di
 ::: danger Upgrading from the two-mount layout
 Earlier versions mounted `./N.E.K.O` and `./ssl` separately. Pulling a new image without migrating leaves the container with an **empty** data directory: it starts normally and API keys are regenerated from the environment, so nothing looks wrong, but characters, memories and plugins are all missing. The old data is not deleted — it is simply no longer mounted.
 
+Order matters: `docker compose down` **removes** the container, and some state exists nowhere else.
+
 ```bash
+# 1. Export what lives only inside the container — before it is removed.
+#    OpenFang's workspace was never mounted under the old layout. And if the host
+#    N.E.K.O/ directory is empty, you followed the old README quickstart, whose
+#    mount target (/root/Documents/N.E.K.O) never matched where the services
+#    actually write — the application data is in there too.
+#    The trailing /. copies directory *contents*, avoiding a nested N.E.K.O/N.E.K.O.
+mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
+docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ 2>/dev/null || true
+docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/   # only if N.E.K.O/ is empty
+
+# 2. Stop the container, then merge the host-side directories by content. If the
+#    new layout has been started once, the destinations already exist (plus a
+#    freshly generated self-signed certificate) and `mv` would nest them one level
+#    deeper. Same-named files resolve in favour of the old data.
 docker compose down
-mkdir -p neko-home/.local/share
-mv N.E.K.O neko-home/.local/share/N.E.K.O
-mv ssl     neko-home/ssl
+cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
+cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
+
+# 3. Start again
 docker compose up -d
 ```
-
-If the host `N.E.K.O/` directory is empty, you followed the old README quickstart, whose mount target (`/root/Documents/N.E.K.O`) never matched where the services actually write. That data only exists inside the container, so export it before removing the old container: `docker cp neko:/home/neko/.local/share/N.E.K.O ./neko-home/.local/share/N.E.K.O`.
 
 `./logs` is unaffected. Ownership is corrected automatically on the next start.
 :::
