@@ -17,6 +17,7 @@
         audioContext: null,
         recording: false,
         cancelPending: false,
+        filterPending: false,
         busy: false,
         initialized: false,
         closeStarted: false
@@ -172,12 +173,16 @@
             );
         }
         elements.reenroll.disabled = !state.initialized || !isIdle
-            || state.busy || state.recording;
+            || state.busy || state.recording || state.filterPending;
         elements.delete.disabled = !state.profileAvailable || !isIdle
-            || !state.initialized || state.busy || state.recording;
-        elements.filter.checked = state.filterEnabled;
+            || !state.initialized || state.busy || state.recording
+            || state.filterPending;
+        if (!state.filterPending) {
+            elements.filter.checked = state.filterEnabled;
+        }
         elements.filter.disabled = !state.profileAvailable || !isIdle
-            || !state.initialized || state.busy || state.recording;
+            || !state.initialized || state.busy || state.recording
+            || state.filterPending;
     }
 
     function renderWizard() {
@@ -192,8 +197,10 @@
         elements.start.hidden = !isIdle;
         elements.record.hidden = !(isFixed || isFree || isReadyToCommit);
         elements.cancel.hidden = isIdle;
-        elements.start.disabled = !state.initialized || state.busy;
-        elements.record.disabled = state.busy || state.recording;
+        elements.start.disabled = !state.initialized || state.busy
+            || state.filterPending;
+        elements.record.disabled = state.busy || state.recording
+            || state.cancelPending;
         elements.cancel.disabled = state.busy || state.recording || state.cancelPending;
         elements.record.classList.toggle('recording', state.recording);
         const recordLabel = elements.record.querySelector('span:last-child');
@@ -430,12 +437,13 @@
     }
 
     async function startEnrollment() {
-        if (state.busy) return;
+        if (state.busy || state.filterPending) return;
         state.busy = true;
         setMessage('');
         render();
         try {
             await ensureMicrophone();
+            stopMicrophone();
             const payload = await apiRequest('/enrollment/start', {
                 method: 'POST'
             });
@@ -485,7 +493,9 @@
     }
 
     async function recordCurrentStep() {
-        if (state.busy || state.recording || !state.sessionId) return;
+        if (
+            state.busy || state.recording || state.cancelPending || !state.sessionId
+        ) return;
         state.busy = true;
         state.recording = true;
         setMessage('');
@@ -495,7 +505,12 @@
                 await commitEnrollment();
                 return;
             }
-            const pcm16 = await capturePcm16();
+            let pcm16;
+            try {
+                pcm16 = await capturePcm16();
+            } finally {
+                stopMicrophone();
+            }
             const verification = state.stage.startsWith('free_verify_');
             const payload = await apiRequest(
                 verification ? '/enrollment/verify' : '/enrollment/segment',
@@ -634,8 +649,10 @@
     }
 
     async function updateFilter() {
+        if (state.filterPending) return;
         const desired = elements.filter.checked;
-        elements.filter.disabled = true;
+        state.filterPending = true;
+        render();
         try {
             const payload = await apiRequest('/filter', {
                 method: 'PUT',
@@ -650,6 +667,7 @@
                 true
             );
         } finally {
+            state.filterPending = false;
             render();
         }
     }
@@ -664,9 +682,9 @@
         elements.delete.addEventListener('click', deleteProfile);
         elements.filter.addEventListener('change', updateFilter);
         window.addEventListener('localechange', render);
-        window.nekoBeforeWindowClose = async function () {
+        window.nekoBeforeWindowClose = function () {
             state.closeStarted = true;
-            await cancelEnrollment({ keepalive: true, silent: true });
+            cancelEnrollment({ keepalive: true, silent: true }).catch(function () {});
             return true;
         };
         window.addEventListener('pagehide', function () {

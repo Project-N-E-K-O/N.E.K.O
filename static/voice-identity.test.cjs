@@ -345,6 +345,51 @@ test('active enrollment disables profile mutations between recording steps', asy
     assert.equal(harness.elements.get('voice-identity-filter').disabled, true);
 });
 
+test('filter updates block competing profile mutations with a scoped pending state', async () => {
+    const filterUpdate = deferred();
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                    filter: { enabled: false },
+                });
+            }
+            if (url === '/api/voice-identity/filter') return filterUpdate.promise;
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const filter = harness.elements.get('voice-identity-filter');
+    filter.checked = true;
+    const update = filter.emit('change');
+
+    assert.equal(filter.checked, true);
+    assert.equal(filter.disabled, true);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, true);
+    await harness.elements.get('voice-identity-reenroll').emit('click');
+    assert.equal(harness.getMediaRequests(), 0);
+
+    filterUpdate.resolve(jsonResponse({
+        enrollment: { stage: 'idle' },
+        profile: { available: true, state: 'active' },
+        filter: { enabled: true },
+    }));
+    await update;
+
+    assert.equal(filter.checked, true);
+    assert.equal(filter.disabled, false);
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
+});
+
 test('locale changes re-render the current enrollment step and prompt', async () => {
     const harness = createHarness({
         route(url) {
@@ -412,6 +457,33 @@ test('failed enrollment commit exposes a retry that can finish without re-record
     assert.equal(harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'), true);
 });
 
+test('starting enrollment releases the permission-check microphone before the first prompt', async () => {
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(harness.getMediaRequests(), 1);
+    assert.equal(harness.getAudioContext().state, 'closed');
+    assert.equal(harness.elements.get('voice-identity-record').hidden, false);
+});
+
 test('recording upload is capped at four seconds of source samples', async () => {
     let segmentBody = null;
     const harness = createHarness({
@@ -442,7 +514,7 @@ test('recording upload is capped at four seconds of source samples', async () =>
     assert.equal(segmentBody.byteLength, 16000 * 4 * Int16Array.BYTES_PER_ELEMENT);
 });
 
-test('an existing suspended audio context is resumed before the next recording', async () => {
+test('microphone resources are released and reacquired between recording steps', async () => {
     let segments = 0;
     const harness = createHarness({
         audio: true,
@@ -471,14 +543,18 @@ test('an existing suspended audio context is resumed before the next recording',
     await harness.initialize();
     const record = harness.elements.get('voice-identity-record');
     await record.emit('click');
-    const context = harness.getAudioContext();
-    context.state = 'suspended';
+    const firstContext = harness.getAudioContext();
+
+    assert.equal(firstContext.state, 'closed');
+    assert.equal(harness.getMediaRequests(), 1);
 
     await record.emit('click');
+    const secondContext = harness.getAudioContext();
 
     assert.equal(segments, 2);
-    assert.equal(context.resumeCalls, 1);
-    assert.equal(harness.getMediaRequests(), 1);
+    assert.notEqual(secondContext, firstContext);
+    assert.equal(secondContext.state, 'closed');
+    assert.equal(harness.getMediaRequests(), 2);
 });
 
 test('downsampling attenuates microphone energy above the target Nyquist limit', async () => {
@@ -573,8 +649,12 @@ test('failed explicit cancellation preserves the session and can be retried', as
 
     await harness.initialize();
     const cancel = harness.elements.get('voice-identity-cancel');
+    const record = harness.elements.get('voice-identity-record');
     const cancellation = cancel.emit('click');
     assert.equal(cancel.disabled, true);
+    assert.equal(record.disabled, true);
+    await record.emit('click');
+    assert.equal(harness.getMediaRequests(), 0);
     firstCancellation.resolve(
         jsonResponse({ error: 'temporary_failure' }, { ok: false, status: 503 })
     );
@@ -592,7 +672,8 @@ test('failed explicit cancellation preserves the session and can be retried', as
     assert.equal(cancel.hidden, true);
 });
 
-test('window close uses the eager keepalive cancellation path once', async () => {
+test('window close starts keepalive cancellation without waiting for the response', async () => {
+    const keepaliveCancellation = deferred();
     const harness = createHarness({
         route(url) {
             if (url === '/api/config/page_config') {
@@ -604,14 +685,14 @@ test('window close uses the eager keepalive cancellation path once', async () =>
                 });
             }
             if (url === '/api/voice-identity/enrollment/cancel') {
-                return jsonResponse({});
+                return keepaliveCancellation.promise;
             }
             throw new Error(`Unexpected request: ${url}`);
         },
     });
 
     await harness.initialize();
-    await harness.beforeClose();
+    assert.equal(harness.beforeClose(), true);
     harness.pagehide();
 
     const cancellationCalls = harness.fetchCalls.filter(
@@ -619,6 +700,8 @@ test('window close uses the eager keepalive cancellation path once', async () =>
     );
     assert.equal(cancellationCalls.length, 1);
     assert.equal(cancellationCalls[0].options.keepalive, true);
+    keepaliveCancellation.resolve(jsonResponse({}));
+    await Promise.resolve();
 });
 
 test('dark theme overrides panel, text, accent, border, and action colors', () => {
