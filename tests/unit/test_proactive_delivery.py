@@ -498,6 +498,33 @@ def test_flood_rejected_newer_does_not_stale_provider_owned_old(
     assert mgr._retract_stale_coalesced([old]) is False
 
 
+def test_flood_rollback_preserves_newer_manager_held_sequence(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("claimed old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    async def _deliver(_batch):
+        return None
+
+    mgr.proactive_manager = ProactiveDeliveryManager(deliver=_deliver)
+    mgr.is_goodbye_silent = lambda: False
+    held = _proactive_cb("manager-held newer", coalesce_key="state")
+    mgr.submit_proactive_callback(held, coalesce_key="state")
+
+    rejected = _passive_cb("flood-rejected newest", coalesce_key="state")
+    mgr.enqueue_agent_callback(rejected)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected.get(DELIVERY_RETRACTED_KEY) is True
+    assert mgr._coalesce_latest["state"] == held["_coalesce_submit_seq"]
+    old.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+    assert mgr._retract_stale_coalesced([old]) is True
+
+
 def test_newer_same_key_keeps_committed_callback_voice_mirror():
     mgr = _make_session_mgr()
     committed = _proactive_cb("provider send started", coalesce_key="state")

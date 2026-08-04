@@ -2479,6 +2479,16 @@ class ProactiveMixin:
                     and str(entry.get("coalesce_key") or "").strip() == new_key
                     and isinstance(entry.get("_coalesce_submit_seq"), int)
                 ]
+                delivery_manager = getattr(self, "proactive_manager", None)
+                manager_seq_reader = getattr(
+                    delivery_manager,
+                    "latest_queued_coalesce_seq",
+                    None,
+                )
+                if callable(manager_seq_reader):
+                    manager_seq = manager_seq_reader(new_key)
+                    if isinstance(manager_seq, int):
+                        surviving_seqs.append(manager_seq)
                 if surviving_seqs:
                     self._coalesce_latest[new_key] = max(surviving_seqs)
                 else:

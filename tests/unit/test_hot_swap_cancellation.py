@@ -607,15 +607,14 @@ async def test_final_swap_rechecks_retraction_after_core_voice_lock_wait():
 
     mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
     swap_task = mgr.final_swap_task
-    await asyncio.wait_for(prime_entered.wait(), timeout=5)
-    allow_prime.set()
-    await asyncio.wait_for(voice_lock.entered.wait(), timeout=5)
-    callback[DELIVERY_RETRACTED_KEY] = True
-    mgr._purge_retracted_agent_callbacks()
-    assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
-    voice_lock.release.set()
-
     try:
+        await asyncio.wait_for(prime_entered.wait(), timeout=5)
+        allow_prime.set()
+        await asyncio.wait_for(voice_lock.entered.wait(), timeout=5)
+        callback[DELIVERY_RETRACTED_KEY] = True
+        mgr._purge_retracted_agent_callbacks()
+        assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+        voice_lock.release.set()
         await asyncio.wait_for(swap_task, timeout=10)
 
         assert mgr.session is old_session
@@ -626,6 +625,11 @@ async def test_final_swap_rechecks_retraction_after_core_voice_lock_wait():
         assert delivery_ack.done() and delivery_ack.result() is False
         assert mgr.is_hot_swap_imminent is False
     finally:
+        allow_prime.set()
+        voice_lock.release.set()
+        if not swap_task.done():
+            swap_task.cancel()
+        await _drain_task(swap_task)
         await _drain_task(mgr.message_handler_task)
 
 

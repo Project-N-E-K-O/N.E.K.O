@@ -291,6 +291,19 @@ class ProactiveDeliveryManager:
         self._queue = []
         return [c.callback for c in ordered]
 
+    def latest_queued_coalesce_seq(self, key: str) -> Optional[int]:
+        """Return the newest submit seq still waiting under ``key``."""
+        return max(
+            (
+                cue.callback.get("_coalesce_submit_seq")
+                for cue in self._queue
+                if cue.coalesce_key == key
+                and not cue.callback.get(DELIVERY_RETRACTED_KEY)
+                and isinstance(cue.callback.get("_coalesce_submit_seq"), int)
+            ),
+            default=None,
+        )
+
     # ── pump ─────────────────────────────────────────────────────────────
     def _suffix(self) -> str:
         return f":{self._name}" if self._name else ""
