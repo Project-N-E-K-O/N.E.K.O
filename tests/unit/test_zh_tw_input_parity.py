@@ -4506,7 +4506,7 @@ def test_the_frame_scope_coordinator_table_is_pinned():
 
     assert music_requests._ZH_FRAME_SCOPE_COORDINATORS == (
         "然后", "然後", "然而", "接着", "接著", "接下来", "接下來",
-        "但是", "但", "不过", "不過", "可是", "而且", "并且", "並且",
+        "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
         "另外", "再说", "再說", "所以", "因此",
     )
 
@@ -4824,3 +4824,37 @@ def test_a_temporal_clause_is_not_joined_across_a_negation():
 
     assert is_explicit_music_cancellation('播放的时候，不要再放音乐了') is True
     assert is_explicit_music_cancellation('停止播放的时候，顺便关灯') is True
+
+
+@pytest.mark.parametrize("inquiry", ["想问", "要问", "想問", "要問", "想说", "要说"])
+def test_the_focus_adverb_reading_of_jiushi_is_not_a_frame(inquiry):
+    """⚠️ `就是` 作**焦点副词**时（就是想问 / 就是要问）不是让步框架，恰恰在引出
+    用户的问题：`我想停止播放就是想问是否合适` 里 `是否` 被中和掉之后直接执行了
+    取消，用户只是在问（base 是 False——危险方向，第六十四轮）。
+
+    ⚠️ 右界表这一轮先被我当死代码删过一次——当时确实没有任何失败用例支撑它。
+    这条给出了真用例，所以加回来。删和加用的是同一条规则：**没有失败用例的
+    防御不留，有的就留**。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放就是{inquiry}是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+    # ⚠️ 反向：真让步用法不受影响。
+    assert is_explicit_music_cancellation(
+        '我想停止播放因为就是什么歌都不好听'
+    ) is True
+
+
+@pytest.mark.parametrize("adversative", ["却", "卻"])
+def test_the_adversative_coordinator_ends_the_frame_scope(adversative):
+    """转折连词 却/卻 当初漏在连词表外，框架辖域越过它把真疑问词中和掉
+    （base 是 False——危险方向，第六十四轮）。
+
+    ⚠️ 第六十一轮那张表自称「连词是封闭词类，一次列全」，结果还是漏了——
+    自称列全不等于列全，这条并进那张表之后由简繁配对守卫和这条用例一起兜住。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放如果会影响歌单就算了{adversative}这样是否合适'
+    assert is_explicit_music_cancellation(text) is False, text

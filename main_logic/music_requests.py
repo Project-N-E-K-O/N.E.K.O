@@ -899,17 +899,25 @@ _ZH_FRAME_LEFT_BLACKLIST = {
     "忘記": "别別点點差",
     "不管": "才就",
     # ⚠️ `不管用`（不管 + 用「有效」）不需要单独挡：实测有没有右界它都是 False,
-    # 早被别的判据拦下了。我一度为它加过一张右界表，变异验证发现**删掉它行为
-    # 完全不变**——没有失败用例支撑的防御就是死代码，删了。
+    # 早被别的判据拦下了。右界表这一轮先被我当死代码删过一次——当时确实没有
+    # 任何失败用例支撑它。下面又加回来，是因为 `就是想问` 给出了真用例。
+    # 删和加用的是同一条规则：**没有失败用例的防御不留，有的就留**。
 }
 
 
 def _zh_guarded_frame(frame: str) -> str:
     """给会被更长词从中间命中的框架词挂上左界。"""  # noqa: DOCSTRING_CJK
     left = _ZH_FRAME_LEFT_BLACKLIST.get(frame)
-    return rf"(?<![{left}]){frame}" if left else frame
+    right = _ZH_FRAME_RIGHT_BLACKLIST.get(frame)
+    guarded = rf"(?<![{left}]){frame}" if left else frame
+    return rf"{guarded}(?![{right}])" if right else guarded
 
 
+# ⚠️ `就是` 作**焦点副词**时（就是想问 / 就是要问 / 就是说）不是让步框架，
+# 恰恰在引出用户的问题：`我想停止播放就是想问是否合适` 里 `是否` 被中和掉
+# 之后直接执行了取消，用户只是在问（base 是 False——危险方向，第六十四轮）。
+# ⚠️ 右界只挡探询动词，`就是什么歌都不好听` 那种真让步不受影响。
+_ZH_FRAME_RIGHT_BLACKLIST = {"就是": "想要问問说說"}
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
     r"(?:" + "|".join(_zh_guarded_frame(f) for f in _ZH_ASSERTED_FRAMES) + r")"
     r"|" + _ZH_INQUIRY_LEFT
@@ -1089,7 +1097,7 @@ _ZH_CLAUSE_BOUNDARY_RE = re.compile(
 # 别把连词塞进那个字符类里，那张表要跟子句切分器保持一致。
 _ZH_FRAME_SCOPE_COORDINATORS = (
     "然后", "然後", "然而", "接着", "接著", "接下来", "接下來",
-    "但是", "但", "不过", "不過", "可是", "而且", "并且", "並且",
+    "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
     "另外", "再说", "再說", "所以", "因此",
 )
 _ZH_FRAME_SCOPE_END_RE = re.compile(
