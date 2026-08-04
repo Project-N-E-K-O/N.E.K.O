@@ -846,6 +846,24 @@ _WHOLE_CARD_BARE_ADVERB = r"(?:" + "|".join(_WHOLE_CARD_BARE_ADVERBS) + r")"
 # 写法更窄——它必须是原来那一版的严格超集。
 _WHOLE_CARD_ADVERB_RUN = r"(?:" + _WHOLE_CARD_BARE_ADVERB + r"地?\s*)+"
 
+# 动量补语：`重写所有字段一遍` / `请重写所有字段两次` 里动词在**目标前面**，
+# 目标后面跟的是 一遍/一次/一下（base 是 True，Codex P2 第三十一轮）。
+# ⚠️ 它是**能产**的：一遍/两遍/三次/2遍/几遍… 数词是闭集、量词也是闭集，
+# 所以写成「数词 + 量词」而不是逐个列成品（Codex P2 第三十三轮）。
+# ⚠️ 两张表都提成常量给测试派生用——上一版量词是手写的 `遍|次|下|轮|輪|遭|回`，
+# 测试那边人眼抄成六个、漏了「遭」，那一支被误删也不会见红（CodeRabbit）。
+# ⚠️⚠️ 第三十三轮加这一支时只加进了 _WHOLE_CARD_SCOPE_NOUN_TAIL，另外两张收尾表
+# 没有，于是 `重写所有字段的所有内容两遍` / `重写整个卡的全部两遍` 从 base 的 True
+# 掉成 False（CodeRabbit Major）。**这已经是三张收尾表第三次漏改**（第二十九轮
+# 英文动词漏一张、第三十五轮副词叠加漏三张），所以跟副词一样收成共用常量：
+# 三张表现在只在「的」递归那一支上不同，其余判据全部共用同一个定义点。
+_WHOLE_CARD_MEASURE_WORDS = ("遍", "次", "下", "轮", "輪", "遭", "回")
+_WHOLE_CARD_NUMERAL_CHARS = "一二两兩三四五六七八九十几幾半"
+_WHOLE_CARD_MEASURE_COMPLEMENT = (
+    r"(?:[" + _WHOLE_CARD_NUMERAL_CHARS + r"]+|\d+)\s*(?:"
+    + "|".join(_WHOLE_CARD_MEASURE_WORDS) + r")"
+)
+
 # 名词短语收尾：重写动词首字 / 副词「都」/ 语气词 / 句末 / 标点。与
 # _WHOLE_CARD_BARE_QUANTIFIER_TAIL 同一套，空白同样只跳过不算收尾。
 # ⚠️⚠️ 「的」是合法收尾，但**它后面必须再跟一个范围成分**。
@@ -864,6 +882,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     # ⚠️ 副词后面也可能是英文重写动词。第二十九轮改了另外**两张**收尾表，唯独
     # 漏了这一张——同一件事三处各写一份，漏一处就静默失效（CodeRabbit）。
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
+    + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
@@ -886,12 +905,8 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE + r"|"
     + _WHOLE_CARD_ADVERB_RUN
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
-    # ⚠️ 动量补语也是合法收尾：`重写所有字段一遍` / `请重写所有字段一次` 里动词
-    # 在**目标前面**，目标后面跟的是 一遍/一次/一下（base 是 True，
-    # Codex P2 第三十一轮）。这一族是封闭词类。
-    # ⚠️ 动量补语是**能产**的：一遍/两遍/三次/几遍… 数词是闭集、量词也是闭集，
-    # 所以写成「数词 + 量词」而不是逐个列成品（Codex P2 第三十三轮）。
-    + r"|(?:[一二两兩三四五六七八九十几幾半]+|\d+)\s*(?:遍|次|下|轮|輪|遭|回)"
+    # 动量补语也是合法收尾（定义与三表共用见 _WHOLE_CARD_MEASURE_COMPLEMENT）。
+    + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
@@ -901,6 +916,7 @@ _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
     # ⚠️ 副词后面也可能是**英文**重写动词：`把所有字段全部 rewrite`
     # （base 是 True，Codex P2 第二十九轮）。
     + r"(?:重|改|梳|完|" + _WHOLE_CARD_EN_REWRITE_VERB + r")"
+    + r"|" + _WHOLE_CARD_MEASURE_COMPLEMENT
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗)"
 )
 # 紧贴「的」时**自己就代表整卡**的副词/普通名词（`重寫整個卡片的內容`）。

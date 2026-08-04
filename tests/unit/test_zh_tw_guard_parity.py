@@ -1563,20 +1563,52 @@ def test_all_three_tails_accept_an_adverb_plus_english_verb(adverb, verb):
     ) is False
 
 
-@pytest.mark.parametrize(
-    "numeral", ["一", "两", "兩", "三", "五", "十", "几", "幾", "半", "2", "10"]
-)
-@pytest.mark.parametrize("measure", ["遍", "次", "下", "轮", "輪", "回"])
-def test_numeral_measure_complements_are_productive(numeral, measure):
-    """⚠️ 动量补语是**能产**的（一遍/两遍/三次/2遍/几遍…），不是六个成品。
+WHOLE_CARD_MEASURES = _router_table("_WHOLE_CARD_MEASURE_WORDS")
+WHOLE_CARD_NUMERALS = _router_table("_WHOLE_CARD_NUMERAL_CHARS")
 
-    数词是闭集、量词也是闭集，所以写成「数词 + 量词」而不是逐个列成品
-    （Codex P2 第三十三轮）。
+
+def test_the_measure_and_numeral_tables_are_derived_not_transcribed():
+    """⚠️ 上一版这两族是**人眼抄**的：实现侧七个量词，参数表只抄了六个、漏了「遭」。
+
+    漏掉的那一支被误删时测试不会见红（CodeRabbit）——跟副词表漏「挨個」同一族。
+    现在两张表都从实现侧取，并钉住**相等**：改实现必然要改这里。
     """  # noqa: DOCSTRING_CJK
     import main_routers.card_assist_router as router
 
-    text = f'重写所有字段{numeral}{measure}'
-    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert set(WHOLE_CARD_MEASURES) == {"遍", "次", "下", "轮", "輪", "遭", "回"}
+    assert set(WHOLE_CARD_NUMERALS) == set("一二两兩三四五六七八九十几幾半")
+    assert router._WHOLE_CARD_MEASURE_COMPLEMENT == (
+        r"(?:[" + "".join(WHOLE_CARD_NUMERALS) + r"]+|\d+)\s*(?:"
+        + "|".join(WHOLE_CARD_MEASURES) + r")"
+    )
+
+
+@pytest.mark.parametrize("numeral", [*WHOLE_CARD_NUMERALS, "2", "10"])
+@pytest.mark.parametrize("measure", WHOLE_CARD_MEASURES)
+def test_numeral_measure_complements_are_productive(numeral, measure):
+    """⚠️ 动量补语是**能产**的（一遍/两遍/三次/2遍/几遍…），不是几个成品。
+
+    数词是闭集、量词也是闭集，所以写成「数词 + 量词」而不是逐个列成品
+    （Codex P2 第三十三轮）。
+
+    ⚠️ 三条收尾路径**一条都不能少**：第三十三轮只把这一支加进了名词收尾那张表，
+    于是 `重写所有字段的所有内容两遍` / `重写整个卡的全部两遍` 从 base 的 True
+    掉成 False（CodeRabbit Major）。这已经是三张收尾表第三次漏改，所以判据收成了
+    共用常量，这条用例同时打三条路径把它钉住。
+    ⚠️ 配对反向断言：动量补语不是万能收尾，单字段那条保险照旧挡着。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (
+        f'重写整个卡的全部{numeral}{measure}',           # 限定词收尾（后面没有范围名词）
+        f'重写整个卡的所有设定{numeral}{measure}',       # 名词收尾
+        f'重写所有字段的所有内容{numeral}{measure}',      # 名词闭集收尾（「的」分支之后）
+        f'重写所有字段{numeral}{measure}',              # 第三十三轮原样那条
+    ):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'重写所有字段的名字{numeral}{measure}'
+    ) is False
 
 
 @pytest.mark.parametrize("adverb", ["彻底", "徹底", "统一", "統一", "全面", "认真"])
