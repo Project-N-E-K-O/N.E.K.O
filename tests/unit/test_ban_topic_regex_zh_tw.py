@@ -1681,3 +1681,66 @@ def test_the_interrogative_gate_uses_closing_delimiters():
     # 对称的一对里开合同字，所以收尾集必然是括号字符集的真子集或相等
     assert closers <= D._ZH_BRACKET_CHARS
     assert "》" in closers and "《" not in closers
+
+
+# ── 18. 引号里的单字语气词也是名字的一部分 ───────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提《想见你喔》。", "想见你喔"),
+        ("別再提《想見你喔》。", "想見你喔"),
+        ("别再提《就是爱唷》。", "就是爱唷"),
+        ("別再提《就是愛唷》。", "就是愛唷"),
+        ("别再提《你好啦》。", "你好啦"),
+        # 引号外的同一个字仍然是语气词，照剥
+        ("别再提工作喔。", "工作"),
+        ("別再提工作喔。", "工作"),
+        ("别再提工作啦。", "工作"),
+    ],
+)
+def test_single_char_particles_inside_a_quoted_name_survive(text, expected):
+    """⚠️ 引号判据对**所有** CJK 尾词生效，不只多字反问短语（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+# ── 19. 谚文助词对每个 locale 都适用 ─────────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提전남친은。", "전남친"),
+        ("別再提전남친은。", "전남친"),
+        ("别再提직장에。", "직장"),
+        ("我不想聊남자친구를", "남자친구"),
+    ],
+)
+def test_hangul_particles_are_trimmed_from_chinese_matches(text, expected):
+    """⚠️ 分表是为了拆开 CJK 之间的同码位歧义（``唄`` 中文语气词 / 日文"歌"），而
+    谚文与汉字、假名都不共码位，不可能撞——所以每个 locale 都该带上它（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+def test_the_hangul_table_is_not_script_ambiguous():
+    """判据是「谚文与 CJK 不共码位」，这条钉住它，别哪天往 ko 表里塞汉字。"""  # noqa: DOCSTRING_CJK
+    for tok in D._TRIM_TRAIL_TOKENS_BY_LOCALE["ko"]:
+        for ch in tok:
+            assert "\uac00" <= ch <= "\ud7a3" or "\u1100" <= ch <= "\u11ff", tok
+
+
+# ── 20. 日文守卫只拿一个字符，不复制整段前缀 ─────────────────
+def test_the_japanese_guard_gets_one_character_not_the_whole_prefix(monkeypatch):
+    """⚠️ 用**实参长度**断言，不用计时：计时的阈值只能拿变异后自己的基线来算，而
+    复制整段前缀在两个规模上同时变慢，比值反而看不出来（变异跑出来的）。守卫只读
+    ``before[-1:]``，切整段等于每条命中复制一次全文——几万条指令时是二次方。
+    """  # noqa: DOCSTRING_CJK
+    seen = []
+    real = D._is_japanese_sentence_match
+
+    def spy(span, term, before=""):
+        seen.append(len(before))
+        return real(span, term, before)
+
+    monkeypatch.setattr(D, "_is_japanese_sentence_match", spy)
+    extract_directives("工作别提了。" * 50 + "别提加班。")
+    assert seen, "日文守卫根本没被调用，这条测试是空的"
+    assert max(seen) <= 1, max(seen)

@@ -139,10 +139,9 @@ _TAIL_INTERROGATIVES_BY_LOCALE: dict[str, Tuple[str, ...]] = {
 # 混合语言是这个模块明确支持的路径（"stop talking about 前女友了" / "stop saying
 # 仕事ね"），term 整段可能是中文也可能是日文，不剥就把助词原样存进去（codex P2）。
 # 分表要隔离的是 zh/ja/ko **互相**污染——它们命中时用自己那张表，不受这里影响。
-# ⚠️ 三家都要收，不是只有 zh + ja：``stop saying 전남친은`` 在 parent 上是
-# ``전남친``，漏掉 ko 就成了回归。谚文与汉字/假名不共码位，本来就不存在当初促使
-# 分表的那种跨语言字形碰撞（codex P2）。
-_TRIM_TRAIL_FALLBACK_LOCALES = ("zh", "ja", "ko")
+# ⚠️ 这里只列 zh + ja：谚文那张表由 _trim_term 无条件追加（谚文与汉字/假名不共
+# 码位，任何 locale 带上它都不会撞），列在这儿反而是一份会漂移的冗余。
+_TRIM_TRAIL_FALLBACK_LOCALES = ("zh", "ja")
 
 # 与 locale 无关的尾巴：ASCII 词，字形上不可能和别的语言撞。中英混说很常见
 # （"别提 my ex please"），所以这些对每个 locale 都剥。
@@ -218,6 +217,11 @@ def _trim_term(term: str, locale: str = "") -> str:
         if family in _TRIM_TRAIL_TOKENS_BY_LOCALE
         else _TRIM_TRAIL_FALLBACK_LOCALES
     )
+    # ⚠️ 谚文那张表**每个 locale 都带上**：分表是为了拆开 CJK 之间的同码位歧义
+    # （``唄`` 中文语气词 / 日文"歌"），而谚文与汉字、假名都不共码位，不可能撞。
+    # 只带命中 locale 自己那张的话，``别再提전남친은。`` 存成 ``전남친은``——base 是
+    # ``전남친``（codex P2）。
+    families = tuple(dict.fromkeys(families + ("ko",)))
     cjk = tuple(
         tok for fam in families for tok in _TRIM_TRAIL_TOKENS_BY_LOCALE[fam]
     )
@@ -225,7 +229,11 @@ def _trim_term(term: str, locale: str = "") -> str:
         tok for fam in families for tok in _TAIL_INTERROGATIVES_BY_LOCALE.get(fam, ())
     )
     quoted = any(ch in _ZH_BRACKET_CHARS for ch in term)
-    tokens = _TRIM_TRAIL_TOKENS_ANY + cjk + interrogatives
+    # 引号里的语气词判据对**所有** CJK 尾词生效，不只多字反问短语：单字的也一样是
+    # 名字的一部分（``《想見你喔》`` / ``《就是愛唷》``，codex P2）。ASCII 的
+    # please / porfa 不受这条约束——它们不会出现在 CJK 作品名里。
+    gated = cjk + interrogatives
+    tokens = _TRIM_TRAIL_TOKENS_ANY + gated
     s = term.strip()
     changed = True
     # 反复剥尾词，直到稳定（"了啊吧" 这种连续助词）
@@ -246,7 +254,7 @@ def _trim_term(term: str, locale: str = "") -> str:
             # 判据取「剥完之后前缀是不是以**收尾**括号结尾」——原 term 一个括号都没有
             # 时无条件可剥。⚠️ 不能只看「原 term 有没有括号」：剥配对括号发生在剥语气
             # 词之前，等轮到语气词时括号已经没了。
-            if tok in interrogatives and quoted and not any(
+            if tok in gated and quoted and not any(
                 shorter.endswith(hi) for _lo, hi in _ZH_BRACKET_PAIRS
             ):
                 continue
@@ -861,8 +869,11 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             # zh 模板与日文共用 別/提/講/談/討論 这些汉字，日文句子会被抓成
             # ban_topic（见 _is_japanese_sentence_match）。只对 zh 生效——ja 模板
             # 本身要求假名，套上去会把自己全部否掉。
+            # ⚠️ 只切**一个**字符：守卫读的就是 before[-1:]，切整段前缀等于每条命中
+            # 复制一次全文——一条消息里几万条指令时是二次方（60000 条 2.5 秒，base
+            # 1.2 秒；codex P2）。
             if zh_family and _is_japanese_sentence_match(
-                m.group(0), term, text[: m.start()]
+                m.group(0), term, text[max(0, m.start() - 1): m.start()]
             ):
                 continue
             out.append((locale, kind, term))
