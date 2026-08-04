@@ -3,7 +3,6 @@
 
     const TARGET_SAMPLE_RATE = 16000;
     const RECORDING_MS = 4000;
-    const MAX_RECORDING_MS = 8000;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const API_ROOT = '/api/voice-identity';
 
@@ -325,7 +324,7 @@
 
         const startedAt = performance.now();
         const timer = window.setInterval(function () {
-            const elapsed = Math.min(MAX_RECORDING_MS, performance.now() - startedAt);
+            const elapsed = Math.min(RECORDING_MS, performance.now() - startedAt);
             elements.timer.textContent = translate(
                 'voiceIdentity.recordingSeconds',
                 `${(elapsed / 1000).toFixed(1)} s`,
@@ -333,7 +332,7 @@
             );
         }, 100);
         await new Promise(function (resolve) {
-            window.setTimeout(resolve, Math.min(RECORDING_MS, MAX_RECORDING_MS));
+            window.setTimeout(resolve, RECORDING_MS);
         });
         window.clearInterval(timer);
         processor.disconnect();
@@ -345,6 +344,9 @@
         const sampleCount = chunks.reduce(function (sum, chunk) {
             return sum + chunk.length;
         }, 0);
+        if (sampleCount === 0) {
+            throw new Error('empty_capture');
+        }
         const joined = new Float32Array(sampleCount);
         let offset = 0;
         chunks.forEach(function (chunk) {
@@ -459,12 +461,21 @@
                     state.persistenceState === 'secure_storage_unavailable'
                 );
             }
-        } catch (_) {
+        } catch (error) {
+            const microphoneError = error && (
+                error.name === 'NotAllowedError'
+                || error.name === 'NotFoundError'
+            );
             setMessage(
-                translate(
-                    'voiceIdentity.requestFailed',
-                    '操作失败，请稍后重试。'
-                ),
+                microphoneError
+                    ? translate(
+                        'voiceIdentity.microphoneDenied',
+                        '无法使用麦克风，请检查权限和设备。'
+                    )
+                    : translate(
+                        'voiceIdentity.requestFailed',
+                        '操作失败，请稍后重试。'
+                    ),
                 true
             );
         } finally {

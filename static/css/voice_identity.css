@@ -322,6 +322,11 @@ button:disabled {
     opacity: 0;
 }
 
+.switch input:focus-visible + .switch-track {
+    outline: 3px solid rgba(36, 184, 242, 0.32);
+    outline-offset: 3px;
+}
+
 .switch-track {
     display: block;
     width: 54px;

@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+
+
+def _literal_string_set(source: str, assignment_name: str) -> set[str]:
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == assignment_name
+            for target in node.targets
+        ):
+            continue
+        if not isinstance(node.value, ast.Set):
+            raise AssertionError(f"{assignment_name} must remain a set literal")
+        return {
+            element.value
+            for element in node.value.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        }
+    raise AssertionError(f"{assignment_name} not found")
 
 
 def test_voice_identity_page_is_routed_and_available_in_settings_window() -> None:
@@ -17,9 +37,14 @@ def test_voice_identity_page_is_routed_and_available_in_settings_window() -> Non
 
     assert '@router.get("/voice_identity", response_class=HTMLResponse)' in pages
     assert '"templates/voice_identity.html"' in pages
-    assert '"/voice_identity"' in server
+    assert "/voice_identity" in _literal_string_set(
+        server,
+        "_MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS",
+    )
     assert "finalUrl.startsWith('/voice_identity')" in popup
     assert "windowName = 'neko_voice_identity'" in popup
+    assert "icon: '/static/icons/mic_icon_off.png'" in popup
+    assert (ROOT / "static/icons/mic_icon_off.png").is_file()
 
     api_index = popup.index("id: 'api-keys'")
     identity_index = popup.index("id: 'voice-identity'")
@@ -31,19 +56,25 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     template = (ROOT / "templates/voice_identity.html").read_text(
         encoding="utf-8"
     )
+    stylesheet = (ROOT / "static/css/voice_identity.css").read_text(
+        encoding="utf-8"
+    )
 
     assert 'data-i18n="voiceIdentity.title"' in template
     assert 'id="voice-identity-step"' in template
     assert 'aria-live="polite"' in template
     assert 'id="voice-identity-record"' in template
     assert 'id="voice-identity-filter"' in template
+    assert 'aria-labelledby="voice-filter-title"' in template
+    assert 'aria-describedby="voice-filter-help"' in template
+    assert ".switch input:focus-visible + .switch-track" in stylesheet
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
     assert "embedding" not in template.lower()
     assert "similarity" not in template.lower()
 
 
-def test_browser_capture_is_bounded_pcm16_and_cancels_on_close() -> None:
+def test_browser_capture_is_fixed_pcm16_and_cancels_on_close() -> None:
     script = (ROOT / "static/js/voice_identity.js").read_text(encoding="utf-8")
 
     for contract in (
@@ -51,7 +82,7 @@ def test_browser_capture_is_bounded_pcm16_and_cancels_on_close() -> None:
         "AudioContext",
         "Int16Array",
         "TARGET_SAMPLE_RATE = 16000",
-        "MAX_RECORDING_MS = 8000",
+        "RECORDING_MS = 4000",
         "API_ROOT = '/api/voice-identity'",
         "'/enrollment/start'",
         "'/enrollment/segment'",
@@ -66,6 +97,12 @@ def test_browser_capture_is_bounded_pcm16_and_cancels_on_close() -> None:
         "pagehide",
     ):
         assert contract in script
+    assert "window.setTimeout(resolve, RECORDING_MS)" in script
+    assert "MAX_RECORDING_MS" not in script
+    assert "if (sampleCount === 0)" in script
+    assert "throw new Error('empty_capture')" in script
+    assert script.count("error.name === 'NotAllowedError'") == 2
+    assert script.count("error.name === 'NotFoundError'") == 2
     assert "MediaRecorder" not in script
     assert "embedding" not in script.lower()
     assert "similarity" not in script.lower()

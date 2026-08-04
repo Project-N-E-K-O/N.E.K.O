@@ -95,13 +95,14 @@
             <section class="filter-card" aria-labelledby="voice-filter-title">
                 <div>
                     <h2 id="voice-filter-title" data-i18n="voiceIdentity.filterLabel">声纹过滤（测试）</h2>
-                    <p data-i18n="voiceIdentity.filterHelp">
+                    <p id="voice-filter-help" data-i18n="voiceIdentity.filterHelp">
                         用于减少部分非 Owner 语音产生的 ASR 消耗，不属于安全认证。短语音、不确定语音或检测异常时将正常放行。
                     </p>
                 </div>
                 <label class="switch">
                     <input type="checkbox" id="voice-identity-filter"
-                        aria-describedby="voice-filter-title">
+                        aria-labelledby="voice-filter-title"
+                        aria-describedby="voice-filter-help">
                     <span class="switch-track" aria-hidden="true"></span>
                 </label>
             </section>
