@@ -1938,6 +1938,9 @@ def test_the_a_not_a_tail_table_is_derived_not_transcribed():
         "需要", "愿意", "願意", "要", "想", "行", "好", "是", "对", "對",
         "敢", "肯", "值得", "舍得", "捨得", "用", "配",
         "允许", "允許", "乐意", "樂意", "情愿", "情願",
+        # 评价类谓词同族（Codex P2 第五十四轮，base 都是 False）。
+        "合适", "合適", "方便", "容易", "可能", "清楚", "明显", "明顯",
+        "靠谱", "靠譜", "划算", "劃算", "合理", "恰当", "恰當",
     }, mr._ZH_A_NOT_A_MODALS
     # 两种构式都要生成出来，外加用「没」做中缀的 有没有。
     for form in ("应该不应该", "应不应该", "需不需要", "需要不需要",
@@ -4268,3 +4271,58 @@ def test_negated_music_compound_heads_are_declarative(negator, phrase):
     assert is_explicit_music_cancellation(
         f'我想停止播放{phrase}好听'
     ) is False
+
+
+@pytest.mark.parametrize("punctuation", ["，", ",", "；", ";"])
+def test_frame_scope_skips_punctuation_inside_a_quoted_title(punctuation):
+    """⚠️ 找辖域边界时要跳过引用跨度：标题里的逗号/分号不是句读。
+
+    子句切分器本来就把跨度当不透明的，这里不跟上就会在标题内部提前断掉，
+    后面的 `有什么` 又成了疑问标记（base 是 True，Codex P2 第五十四轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = (f'我想停止播放因为如果听《晴天{punctuation}雨天》'
+            '有什么问题再告诉我')
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我想停止播放有什么影响') is False
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [("听", "播放"), ("播放", "听"), ("放", "播放"), ("播放", "播放")]
+)
+def test_every_playback_target_title_is_shielded(first, second):
+    """一句话里可以有多个播放动词，**每个**都可能带自己的标题（base 是 True）。
+
+    ⚠️ 循环里标题跨度是**必需**的，只有最后一个动词可以不带标题：写成「标题可选 +
+    循环」时，`我想停止播放哪个好听` 里的 `听`（`好听` 的后半）会被当成另一个播放
+    动词，循环一路吃到那里，把疑问词 `哪个` 一并吞进前缀——一句提问又成了命令。
+    下面第二条反向断言钉的就是这个。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止{first}《晴天》然后停止{second}《好不好》'
+    assert is_explicit_music_cancellation(text) is True, text
+    for questioned in ('我想停止播放哪个好听', '我想停止播放哪首好听',
+                       '我想停止播放晴天“是否合适”'):
+        assert is_explicit_music_cancellation(questioned) is False, questioned
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    ["合适", "合適", "方便", "容易", "可能", "清楚", "明显", "明顯",
+     "靠谱", "靠譜", "划算", "劃算", "合理", "恰当", "恰當"],
+)
+def test_evaluative_a_not_a_tails(predicate):
+    """评价类谓词的重叠式也是 A-not-A 疑问尾（base 都是 False）。
+
+    ⚠️ 生成器会自动产出简叠式（`合不合适`）和全叠式（`合适不合适`），
+    所以相等断言挂在**谓词表**上，不列成品（Codex P2 第五十四轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    short = f'{predicate[0]}不{predicate}'
+    for tail in (short, f'{predicate}不{predicate}'):
+        text = f'我想停止播放《你好吗？》{tail}'
+        assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation('我想停止播放《你好吗？》') is True

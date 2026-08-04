@@ -2156,3 +2156,37 @@ def test_reflexive_emphasis_after_a_completed_target(target, reflexive):
     assert router._chat_text_requests_full_rewrite(
         f'重写{target}名{reflexive}'
     ) is False
+
+
+@pytest.mark.parametrize(
+    # ⚠️ 不列 块/塊：「一块」本身也是副词（together），已在下一条的口子里。
+    "measure", ["段", "章", "节", "頁", "页", "项", "个", "条", "张", "行", "篇", "句"]
+)
+@pytest.mark.parametrize("numeral", ["一", "两", "兩", "三", "几", "数"])
+def test_any_quantified_phrase_after_a_continuation_is_attributive(numeral, measure):
+    """⚠️⚠️ 量词不能枚举（Codex P1 第五十四轮，base 是 False）。
+
+    `段` / `章` / `节` / `页` 都不在上一版的短表里，于是
+    `把整个卡的每一项最后两段重写` 绕过去了——用户只要改每项的最后两段，
+    却触发整卡补全并 autosave。改成结构规则：**数词 + 任意单个汉字**就当定语。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'把整个卡的每一项最后{numeral}{measure}重写'
+    assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "adverb", ["一起", "一并", "一併", "一同", "一块", "一塊", "一律", "一概"]
+)
+def test_numeral_shaped_adverbs_after_a_continuation_still_work(adverb):
+    """⚠️ 留的那个口子：`一起` / `一并` 本身就是副词的「数词 + 字」组合。
+
+    `重写所有字段最后一起保存` base 是 True，不能跟定语一起挡掉
+    （Codex P1 第五十四轮修的是定语，不是这一族）。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    text = f'重写所有字段最后{adverb}保存'
+    assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite('重写所有字段最后一项') is False

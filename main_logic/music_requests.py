@@ -240,6 +240,10 @@ _ZH_A_NOT_A_MODALS = (
     "需要", "愿意", "願意", "要", "想", "行", "好", "是", "对", "對",
     "敢", "肯", "值得", "舍得", "捨得", "用", "配",
     "允许", "允許", "乐意", "樂意", "情愿", "情願",
+    # 评价类谓词的重叠式同族：`合不合适` / `方不方便` / `容不容易` / `可不可能`
+    # （base 都是 False，Codex P2 第五十四轮）。生成器会自动产出简叠式，不用另列成品。
+    "合适", "合適", "方便", "容易", "可能", "清楚", "明显", "明顯",
+    "靠谱", "靠譜", "划算", "劃算", "合理", "恰当", "恰當",
 )
 
 
@@ -407,8 +411,16 @@ _ZH_BEFORE_QUESTION_MARKER = (
     # 的指数分段（第四/三十/三十二轮的 ReDoS 就在那里）。
     # ⚠️ 可选性要写在原子组**里面**（`(?>(?:…)?)` 而不是 `(?>…)?`）：
     # 写在外面时引擎仍然可以整个跳过这一段，然后逐字走进标题里。
+    # ⚠️ 循环而不是只拿第一个：一句话里可以有多个播放动词，每个都可能带自己的
+    # 标题（`停止听《晴天》然后停止播放《好不好》`，Codex P2 第五十四轮）。
+    # 每轮至少吃掉一个动词，不会空转；扫描类不含开引号，所以跨不过非目标位的引号。
+    # ⚠️⚠️ 循环那一段里标题跨度是**必需**的，只有最后一个动词可以不带标题。
+    # 写成「标题可选 + 循环」时，`我想停止播放哪个好听` 里的 `听`
+    # （`好听` 的后半）会被当成另一个播放动词，循环一路吃到那里，
+    # 把疑问词 `哪个` 一并吞进前缀——一句提问又成了命令。
     rf"(?>(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)})"
-    rf"(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER})?)?)"
+    rf"(?:{_ZH_PAIRED_QUOTED_SPAN}|{_ZH_UNPAIRED_QUOTE_OPENER}))*"
+    rf"(?:[^。！？!?{_ZH_QUOTE_OPENERS}]*?(?:{'|'.join(_ZH_PLAYBACK_VERBS)}))?)"
     r"[^。！？!?]*"
 )
 
@@ -855,9 +867,15 @@ def _zh_neutralize_free_choice(text: str) -> str:
         if any(lo <= marker.start() < hi for lo, hi in spans):
             continue
         pieces.append(text[cursor:marker.end()])
-        rest = text[marker.end():]
-        boundary = _ZH_CLAUSE_BOUNDARY_RE.search(rest)
-        stop = marker.end() + (boundary.start() if boundary else len(rest))
+        # ⚠️ 找边界时要**跳过引用跨度**：标题里的逗号/分号不是句读
+        # （`《晴天，雨天》`）。子句切分器本来就把跨度当不透明的，这里不跟上
+        # 就会在标题内部提前断掉（Codex P2 第五十四轮）。
+        stop = len(text)
+        for hit in _ZH_CLAUSE_BOUNDARY_RE.finditer(text, marker.end()):
+            if any(lo <= hit.start() < hi for lo, hi in spans):
+                continue
+            stop = hit.start()
+            break
         pieces.append(_ZH_FREE_CHOICE_TOKEN_RE.sub("某", text[marker.end():stop]))
         cursor = stop
     pieces.append(text[cursor:])
