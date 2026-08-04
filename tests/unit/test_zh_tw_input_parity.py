@@ -5616,6 +5616,7 @@ def test_the_frame_scope_coordinator_table_is_pinned():
         "随后", "隨後", "继而", "繼而", "而后", "而後",
         "紧接着", "緊接著", "跟着", "跟著", "于是", "於是",
         "同时", "同時",
+        "反而", "反倒", "况且", "況且", "何况", "何況", "再者", "此外",
         "因而", "从而", "從而",
         "但是", "但", "不过", "不過", "可是", "却", "卻", "而且", "并且", "並且",
         "另外", "再说", "再說", "所以", "因此",
@@ -6265,7 +6266,10 @@ def test_a_cancellation_after_a_temporal_clause_survives(sentence):
 
 
 @pytest.mark.parametrize("frame", ["如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若"])
-@pytest.mark.parametrize("mention", ["这个说法", "的用法", "这个词", "这种写法"])
+@pytest.mark.parametrize(
+    "mention",
+    ["这个说法", "這個說法", "的用法", "这个词", "這個詞", "这种写法", "這種寫法"],
+)
 def test_a_metalinguistic_mention_does_not_open_a_conditional_frame(frame, mention):
     """⚠️ 用户在问**措辞**本身合不合适（元语言提及）时，框架不该开：
     `先确认万一这个说法是否合适` base 是 False，`是否` 被中和后执行了取消（第六十九轮）。
@@ -6282,7 +6286,11 @@ def test_a_metalinguistic_mention_does_not_open_a_conditional_frame(frame, menti
 
 
 @pytest.mark.parametrize("frame", ["如果", "假如", "要是", "万一"])
-@pytest.mark.parametrize("head", ["有新歌", "不好听", "是新歌", "听《晴天》", "放不出来"])
+@pytest.mark.parametrize(
+    "head",
+    ["有新歌", "不好听", "不好聽", "是新歌", "听《晴天》", "聽《晴天》",
+     "放不出来", "放不出來"],
+)
 def test_a_conditional_frame_still_opens_on_a_real_clause(frame, head):
     """⚠️ 反向：真小句照旧开框架。小句开头认三族——谓词、疑问词、**播放动词**。
 
@@ -6307,7 +6315,7 @@ def test_simultaneous_coordinators_end_the_frame_scope(coordinator):
     assert is_explicit_music_cancellation(text) is False, text
 
 
-@pytest.mark.parametrize("title", ["你好吗？", "是不是？", "好不好？"])
+@pytest.mark.parametrize("title", ["你好吗？", "你好嗎？", "是不是？", "好不好？"])
 def test_a_bare_question_mark_before_a_following_clause_still_counts(title):
     """⚠️ 标题自带的 `吗？` 被正确遮蔽之后，用户那个**裸问号**可能是整句唯一的疑问
     信号；切分把它丢掉，前缀疑问守卫（它要求标记在末尾）就永远看不到它
@@ -6349,7 +6357,7 @@ def test_question_marked_commands_without_the_inquiry_prefix_still_work():
     assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True
 
 
-@pytest.mark.parametrize("compound", ["成就算法", "迁就算了", "造就算不算"])
+@pytest.mark.parametrize("compound", ["成就算法", "迁就算了", "遷就算了", "造就算不算"])
 def test_a_concessive_frame_inside_a_compound_does_not_open(compound):
     """⚠️ 让步族也挂上「右边必须跟小句」：`成就算法是否正确` 里 `就算` 是
     `成就`+`算法` 的接缝，却开出框架把 `是否` 中和掉（base 是 False，第七十一轮）。
@@ -6365,7 +6373,11 @@ def test_a_concessive_frame_inside_a_compound_does_not_open(compound):
 
 
 @pytest.mark.parametrize("frame", ["即使", "即便", "就算", "哪怕", "纵使", "縱使"])
-@pytest.mark.parametrize("head", ["有新歌", "不好听", "什么歌都一样", "听《晴天》"])
+@pytest.mark.parametrize(
+    "head",
+    ["有新歌", "不好听", "不好聽", "什么歌都一样", "什麼歌都一樣",
+     "听《晴天》", "聽《晴天》"],
+)
 def test_a_concessive_frame_still_opens_on_a_real_clause(frame, head):
     """⚠️ 反向：真让步小句照旧开框架，右侧要求不能把整族废掉。"""  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
@@ -6409,3 +6421,49 @@ def test_only_the_fullwidth_question_mark_survives_clause_splitting():
     assert mr._split_music_request_clauses('stop playing? more text') == [
         'stop playing', 'more text'
     ]
+
+
+@pytest.mark.parametrize(
+    "text", ["播放《晴天》？", "播放晴天？", "播放《晴天》"]
+)
+def test_a_preserved_question_mark_does_not_leak_into_playback_parsing(text):
+    """⚠️⚠️ 保留下来的问号**只活到取消守卫为止**。
+
+    第七十轮为了让取消守卫看见裸问号而保留分隔符，可后面所有点歌判据都是
+    **精确匹配**：`播放《晴天》？` 的 keyword 变成 `晴天》？`，
+    `播放这个视频？` 更糟——base 正确地拒绝了它（不是音乐），却被当成歌名去搜
+    （base=None → now 有值，Codex P2 第七十三轮）。
+
+    ⚠️ 这是**同一个改动第二次漏到别的路径**：上一轮漏的是英文点歌（ASCII `?`，
+    跑全量才抓到），这次是中文点歌。保留分隔符这种改动的影响面比它看起来大。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    request = parse_explicit_user_music_request(text)
+    assert request is not None, text
+    assert request.keyword == "晴天", (text, request.keyword)
+
+
+def test_a_non_music_target_with_a_question_mark_is_still_rejected():
+    """⚠️ `播放这个视频？` base 是 None（不是音乐），保留问号一度让它绕过非音乐
+    目标的检查、变成一次音乐搜索。这条钉住它回到 base。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import parse_explicit_user_music_request
+
+    assert parse_explicit_user_music_request('播放这个视频？') is None
+    assert parse_explicit_user_music_request('play a video?') is None
+
+
+@pytest.mark.parametrize(
+    "coordinator", ["反而", "反倒", "况且", "況且", "何况", "何況", "再者", "此外"]
+)
+def test_adversative_and_additive_coordinators_end_the_frame_scope(coordinator):
+    """转折/递进类连词第七十三轮补——这张表**第五次**补了。
+
+    ⚠️ 它第六十一轮建立时写着「连词是封闭词类，一次列全」，五轮下来那句话一次都
+    没兑现过。记在这里不是为了再保证一次，是为了让下一个人知道这张表历史上一直在漏。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放即使会影响歌单也算了{coordinator}我想问这样是否合适'
+    assert is_explicit_music_cancellation(text) is False, text

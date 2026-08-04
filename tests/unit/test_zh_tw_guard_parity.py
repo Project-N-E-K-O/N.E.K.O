@@ -259,7 +259,9 @@ def test_the_quantifier_table_is_derived_not_transcribed():
     assert set(WHOLE_CARD_ALL_QUANTIFIERS) == {
         "全部", "所有", "每一个", "每一個", "每个", "每個",
         "每一项", "每一項", "每项", "每項", "各项", "各項", "一切",
-    }, WHOLE_CARD_QUANTIFIERS
+    # ⚠️ 失败消息也要打**全表**：打收窄表的话红了以后输出里正好少两项，
+    # 看的人会以为闭集本身缺词，排查方向就偏了（CodeRabbit）。
+    }, WHOLE_CARD_ALL_QUANTIFIERS
 
 
 def test_the_scope_noun_table_is_derived_not_transcribed():
