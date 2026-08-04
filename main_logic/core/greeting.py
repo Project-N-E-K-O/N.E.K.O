@@ -26,6 +26,7 @@ from main_logic.session_state import SessionEvent
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
     _STARTUP_GREETING_EARLIER_SAMPLES,
+    _STARTUP_GREETING_MIN_GAP_SECONDS,
     _STARTUP_GREETING_RECALL_SECONDS,
     _STARTUP_GREETING_STRICT_SAMPLES,
     _STARTUP_GREETING_VARIANT_MEMORY,
@@ -342,7 +343,7 @@ class GreetingMixin:
             logger.warning("[%s] trigger_greeting: failed to query gap: %s", self.lanlan_name, e)
             return
 
-        if gap_seconds < 900:  # < 15分钟，不触发
+        if gap_seconds < _STARTUP_GREETING_MIN_GAP_SECONDS:  # < 15分钟，不触发
             logger.debug("[%s] trigger_greeting: gap %.0fs < 15min, skipping", self.lanlan_name, gap_seconds)
             return
 

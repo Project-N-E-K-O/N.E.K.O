@@ -27,6 +27,11 @@ from memory.startup_greeting_history import StartupGreetingRecord
 _STARTUP_GREETING_RECALL_SECONDS = 3 * 24 * 60 * 60
 _STARTUP_GREETING_STRICT_SECONDS = 24 * 60 * 60
 _STARTUP_GREETING_BURST_SECONDS = 30 * 60
+# 触发的硬门槛：对话空闲不足这么久就完全不触发（trigger_greeting 的 gap gate）。
+# 这才是两次已提交问候之间的真实下界——burst 闸的 30 分钟在用户于上次问候之后
+# 说过话时会被豁免，所以任何「三天内最多攒多少条」的容量推算都必须用这个值，
+# 不能用 burst 窗。见 memory.startup_greeting_history._MAX_RECORDS。
+_STARTUP_GREETING_MIN_GAP_SECONDS = 15 * 60
 # prompt 里每层最多列多少条。召回窗满载时可达上百条（30 分钟 burst 闸下每天
 # 最多 48 条），全塞会把开屏 prompt 撑爆，所以两层都按条数封顶。
 _STARTUP_GREETING_STRICT_SAMPLES = 6

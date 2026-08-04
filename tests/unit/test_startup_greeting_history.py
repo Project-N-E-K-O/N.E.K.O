@@ -102,21 +102,25 @@ def test_history_is_newest_first_and_count_capped(tmp_path):
 def test_record_cap_outlasts_the_full_recall_window():
     """The rolling cap must not evict records the recall window still cites.
 
-    Without this the two windows drift apart silently: widening the recall
-    window (or loosening the burst gate) would start dropping the oldest day
-    while the prompt still claims to avoid three days of openings.
+    Capacity is measured against the trigger gap gate, not the burst gate: the
+    burst suppression is waived whenever the user spoke after the last
+    greeting, so back-to-back committed greetings can be one gap apart. Sizing
+    against the burst window silently under-provisions by 2x and drops the
+    oldest day while the prompt still claims to avoid three days of openings.
     """
 
     from main_logic.startup_greeting_policy import (
         _STARTUP_GREETING_BURST_SECONDS,
+        _STARTUP_GREETING_MIN_GAP_SECONDS,
         _STARTUP_GREETING_RECALL_SECONDS,
     )
 
-    # The burst gate admits at most one committed greeting per burst window.
     max_commits_in_recall_window = (
-        _STARTUP_GREETING_RECALL_SECONDS / _STARTUP_GREETING_BURST_SECONDS
+        _STARTUP_GREETING_RECALL_SECONDS / _STARTUP_GREETING_MIN_GAP_SECONDS
     )
     assert startup_history_module._MAX_RECORDS >= max_commits_in_recall_window
+    # The gap gate really is the tighter of the two bounds.
+    assert _STARTUP_GREETING_MIN_GAP_SECONDS < _STARTUP_GREETING_BURST_SECONDS
 
 
 @pytest.mark.asyncio
