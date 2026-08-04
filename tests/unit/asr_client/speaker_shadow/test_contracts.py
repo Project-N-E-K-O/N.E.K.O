@@ -28,6 +28,19 @@ from main_logic.asr_client.speaker_shadow.contracts import (
             "maximum_audio_ms",
         ),
         ({"maximum_audio_ms": 4_001}, "maximum_audio_ms"),
+        ({"observation_checkpoints_ms": ()}, "observation_checkpoints_ms"),
+        (
+            {"observation_checkpoints_ms": (1_500, 1_500)},
+            "observation_checkpoints_ms",
+        ),
+        (
+            {"observation_checkpoints_ms": (1_499, 3_000)},
+            "observation_checkpoints_ms",
+        ),
+        (
+            {"observation_checkpoints_ms": (1_500, 4_001)},
+            "observation_checkpoints_ms",
+        ),
         ({"queue_capacity": 0}, "queue_capacity"),
         (
             {"queue_capacity": MAX_SPEAKER_SHADOW_QUEUE_CAPACITY + 1},
@@ -107,6 +120,7 @@ def test_config_is_default_off_and_caps_candidate_audio() -> None:
 
     assert config.enabled is False
     assert config.maximum_audio_ms == 4_000
+    assert config.observation_checkpoints_ms is None
     assert MAX_SPEAKER_SHADOW_FRAME_PCM_BYTES == 128_000
     assert MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES == 128_000
     assert MAX_SPEAKER_SHADOW_RETAINED_PCM_BYTES < 8 * 1024 * 1024

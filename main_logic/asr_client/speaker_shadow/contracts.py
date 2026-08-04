@@ -21,6 +21,7 @@ MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES = (
 MAX_SPEAKER_SHADOW_FRAME_AUDIO_MS = MAX_SPEAKER_SHADOW_CANDIDATE_AUDIO_MS
 MAX_SPEAKER_SHADOW_FRAME_PCM_BYTES = MAX_SPEAKER_SHADOW_CANDIDATE_PCM_BYTES
 MAX_SPEAKER_SHADOW_THRESHOLDS = 16
+MAX_SPEAKER_SHADOW_CHECKPOINTS = 16
 MAX_SPEAKER_SHADOW_QUEUE_CAPACITY = 64
 MAX_SPEAKER_SHADOW_BUFFERED_CANDIDATES = 32
 MAX_SPEAKER_SHADOW_FINALIZED_CANDIDATES = 4_096
@@ -87,6 +88,7 @@ class SpeakerShadowConfig:
     similarity_thresholds: tuple[float, ...] = (0.40, 0.44, 0.48, 0.52, 0.55)
     minimum_audio_ms: int = 1_500
     maximum_audio_ms: int = 4_000
+    observation_checkpoints_ms: tuple[int, ...] | None = None
     idle_unload_seconds: float = 60.0
     queue_capacity: int = 32
     buffered_candidate_capacity: int = 32
@@ -129,6 +131,27 @@ class SpeakerShadowConfig:
             raise ValueError(
                 "maximum_audio_ms cannot exceed "
                 f"{MAX_SPEAKER_SHADOW_CANDIDATE_AUDIO_MS}"
+            )
+        checkpoints = self.observation_checkpoints_ms
+        if checkpoints is not None and (
+            type(checkpoints) is not tuple
+            or not checkpoints
+            or len(checkpoints) > MAX_SPEAKER_SHADOW_CHECKPOINTS
+            or any(
+                type(checkpoint) is not int
+                or checkpoint < self.minimum_audio_ms
+                or checkpoint > self.maximum_audio_ms
+                for checkpoint in checkpoints
+            )
+            or any(
+                left >= right
+                for left, right in zip(checkpoints, checkpoints[1:])
+            )
+        ):
+            raise ValueError(
+                "observation_checkpoints_ms must contain at most "
+                f"{MAX_SPEAKER_SHADOW_CHECKPOINTS} unique, increasing integer "
+                "values within [minimum_audio_ms, maximum_audio_ms]"
             )
         if not math.isfinite(self.idle_unload_seconds) or self.idle_unload_seconds <= 0:
             raise ValueError("idle_unload_seconds must be positive")
@@ -212,6 +235,7 @@ class SpeakerShadowObservation:
     similarity: float
     would_block: tuple[tuple[float, bool], ...]
     audio_ms: int
+    checkpoint_ms: int | None = None
 
 
 ObservationCallback = Callable[
