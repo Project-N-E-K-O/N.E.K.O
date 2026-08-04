@@ -488,6 +488,12 @@ _ZH_DEGREE_NEGATION_LEFT = r"(?<![不没沒])(?<!没有)(?<!沒有)"
 _ZH_FREE_CHOICE_LEFT = (
     r"(?<!任)(?<!无论)(?<!無論)(?<!不论)(?<!不論)(?<!不管)(?<!随便)(?<!隨便)"
 )
+# ⚠️ 关联构式 `有什么X…都/就…` 是**陈述**（“whatever there is”）：
+# `因为播放器有什么歌都自动放` 里用户在说理由，不是在问我们
+# （base 都是 True，Codex P2 第五十二轮）。
+# ⚠️ 跟框架机制不同：这里的标记（都/就）在疑问词**后面**，所以用前视；
+# 窗口有界且不跨子句标点，关联构式的辖域到句读为止。
+_ZH_CORRELATIVE_RIGHT = r"(?![^，,。！!？?；;]{0,8}?[都就])"
 _ZH_WH_QUESTION_MARKER = (
     rf"(?:为{_ZH_WHAT}|為{_ZH_WHAT}|为何|為何"
     # ⚠️ `干嘛` 和 `干什么/干啥` 是同一个词的不同写法，别只列前者
@@ -516,7 +522,7 @@ _ZH_WH_QUESTION_MARKER = (
     # base 是 True，不挡当场掉成 False。跟 任何人 / 哪吒 同一族。
     # ⚠️ 任指系词也要挡：`无论是什么歌都不喜欢` 里 `是什么` 只是子串，
     # 单字后视在 `是` 的位置看到的是 `论`（Codex P2 第四十五轮，base 是 True）。
-    rf"|{_ZH_FREE_CHOICE_LEFT}(?<![没沒不])(?:有|是){_ZH_WHAT}"
+    rf"|{_ZH_FREE_CHOICE_LEFT}(?<![没沒不])(?:有|是){_ZH_WHAT}{_ZH_CORRELATIVE_RIGHT}"
     # 书面语的「何 + X」疑问代词（Codex P2 第三十七轮，何人/何者 base 是 False）。
     # ⚠️ 这一族**不做成结构化**（`何` + 任意汉字），跟量词槽那边的取舍相反：
     # `何` 后面接任意字会把《何日君再来》这类歌名吃进去，那是真实点播；而
@@ -550,6 +556,7 @@ _ZH_WH_QUESTION_MARKER = (
     # 往这里加东西之前，先确认那真是个词，而不是「哪 + 量词」。
     rf"|{_ZH_FREE_CHOICE_LEFT}"
 rf"(?:{_ZH_DECLARATIVE_LEFT}{_ZH_WHAT}|哪(?![吒怕])|几|幾)"
+    rf"{_ZH_CORRELATIVE_RIGHT}"
 rf"一?[一-鿿]?{_ZH_MUSIC_OBJECT_NOUN})"
 )
 _ZH_PREFIXED_QUESTION_GUARD = (
@@ -769,17 +776,53 @@ _ZH_NON_INTERROGATIVE_FRAMES = (
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
     r"(?:" + "|".join(_ZH_NON_INTERROGATIVE_FRAMES) + r")"
 )
+# ⚠️ 要换掉的是**所有能当疑问标记的词**，不是其中几个：漏一个，
+# 框架里那句话就仍然被当成提问（`无论如何都不想听` / `不管怎么样都不好听` /
+# `不管等多久都会响`，Codex P2 第五十二轮）。
+# ⚠️ 长形式要排在短形式前面（怎么样 在 怎么 前），否则剩下的字留在原地。
+_ZH_FREE_CHOICE_WH_WORDS = (
+    "什么", "什麼", "啥", "谁", "誰",
+    "哪一首", "哪首", "哪个", "哪個", "哪些", "哪位", "哪里", "哪裡", "哪",
+    "何时", "何時", "何人", "何者", "何处", "何處", "如何",
+    "几时", "幾時", "多久", "多少",
+    "怎么样", "怎麼樣", "怎样", "怎樣", "怎么", "怎麼",
+)
 _ZH_FREE_CHOICE_WH_TOKEN_RE = re.compile(
-    rf"(?:{_ZH_WHAT}|谁|誰|哪一首|哪首|哪个|哪個|哪些|哪位|何时|何時|几时|幾時|哪)"
+    r"(?:" + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r")"
 )
 
 
+def _zh_quoted_spans(text: str) -> list[tuple[int, int]]:
+    """配平的引用跨度区间，跟子句切分用的是同一张引号表。"""  # noqa: DOCSTRING_CJK
+    spans: list[tuple[int, int]] = []
+    opener = ""
+    start = -1
+    for index, char in enumerate(text):
+        if opener:
+            if char == _QUOTE_PAIRS[opener]:
+                spans.append((start, index + 1))
+                opener = ""
+            continue
+        if char in _QUOTE_PAIRS and char not in _ZH_AMBIGUOUS_QUOTE_OPENERS:
+            opener = char
+            start = index
+    return spans
+
+
 def _zh_neutralize_free_choice(text: str) -> str:
-    """把任指框架辖域内的疑问词换成中性的「某」。"""  # noqa: DOCSTRING_CJK
+    """把任指框架辖域内的疑问词换成中性的「某」。
+
+    ⚠️ 落在**配平引用跨度里**的框架词不算：`我想停止播放《如果爱》为什么…`
+    里的 `如果` 是歌名的一部分，不应该去中和歌名外那个真疑问词
+    （Codex P2 第五十二轮，base 是 False——危险方向）。
+    """  # noqa: DOCSTRING_CJK
+    spans = _zh_quoted_spans(text)
     pieces: list[str] = []
     cursor = 0
     for marker in _ZH_FREE_CHOICE_FRAME_RE.finditer(text):
         if marker.start() < cursor:
+            continue
+        if any(lo <= marker.start() < hi for lo, hi in spans):
             continue
         pieces.append(text[cursor:marker.end()])
         rest = text[marker.end():]
@@ -791,7 +834,12 @@ def _zh_neutralize_free_choice(text: str) -> str:
     return "".join(pieces)
 
 
-_ZH_CLAUSE_BOUNDARY_RE = re.compile(r"[，,。！!？?]")
+# ⚠️ 边界表必须跟 `_CLAUSE_SEPARATOR_CHARS` **同源**：上一版手写时漏了
+# 分号，于是框架词能跨过分号去中和下一个子句里的疑问词，一句提问执行了取消
+# （Codex P2 第五十二轮，base 是 False——危险方向）。
+_ZH_CLAUSE_BOUNDARY_RE = re.compile(
+    "[" + re.escape("".join(sorted(_CLAUSE_SEPARATOR_CHARS))) + "]"
+)
 _ZH_TEMPORAL_CLAUSE_JOIN_RE = re.compile(
     rf"(的(?:时候|時候))\s*[，,；;、]\s*(?=[^，,。！!？?]{{0,4}}?{_ZH_COORDINATION_ADVERB})"
 )

@@ -4091,3 +4091,72 @@ def test_negated_duration_is_declarative(negator):
     text = f'我想停止播放因为{negator}多久它又自己响了'
     assert is_explicit_music_cancellation(text) is True, text
     assert is_explicit_music_cancellation('我想停止播放多久合适') is False
+
+
+@pytest.mark.parametrize("separator", ["，", ",", "。", "！", "!", "？", "?", "；", ";"])
+def test_frame_scope_stops_at_every_clause_separator(separator):
+    """⚠⚠ 框架辖域的边界表必须跟 `_CLAUSE_SEPARATOR_CHARS` **同源**。
+
+    上一版手写时漏了分号，于是框架词能跨过分号去中和下一个子句里的
+    疑问词，一句提问执行了取消（Codex P2 第五十二轮，base 是 False——危险方向）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import (
+        _CLAUSE_SEPARATOR_CHARS,
+        _ZH_CLAUSE_BOUNDARY_RE,
+        is_explicit_music_cancellation,
+    )
+
+    assert _ZH_CLAUSE_BOUNDARY_RE.match(separator), separator
+    assert set(_CLAUSE_SEPARATOR_CHARS) == set("，,。；;！？!?")
+    text = f'如果有问题再说{separator}我想停止播放为什么会换成《你好吗？》'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize(
+    "title", ["《如果爱》", "「如果爱」", "“如果爱”", "《就算不想》", "《不管你是谁》"]
+)
+def test_frame_words_inside_quoted_titles_do_not_govern(title):
+    """⚠⚠ 落在**配平引用跨度里**的框架词不算（base 是 False——危险方向）。
+
+    《如果爱》里的 `如果` 是歌名的一部分，不应该去中和歌名外那个真疑问词
+    （Codex P2 第五十二轮）。引号表跟子句切分用的是同一张。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{title}为什么会换成《你好吗？》'
+    assert is_explicit_music_cancellation(text) is False, text
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{title}'
+    ) is True
+
+
+@pytest.mark.parametrize("wh", ["如何", "怎么样", "怎麼樣", "怎么", "多久", "多少", "何处", "哪里"])
+def test_every_wh_form_is_neutralized_inside_a_frame(wh):
+    """⚠️ 要换掉的是**所有能当疑问标记的词**，不是其中几个。
+
+    漏一个，框架里那句话就仍然被当成提问（base 全是 True，
+    Codex P2 第五十二轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放因为无论{wh}都不想听'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(f'我想停止播放{wh}合适') is False
+
+
+@pytest.mark.parametrize("correlative", ["都", "就"])
+@pytest.mark.parametrize("head", ["有", "是"])
+@pytest.mark.parametrize("what", ["什么", "什麼", "啥"])
+def test_correlative_what_clauses_are_declarative(head, what, correlative):
+    """关联构式 `有什么X…都/就…` 是陈述（base 全是 True）。
+
+    ⚠️ 跟框架机制不同：这里的标记（都/就）在疑问词**后面**，所以用前视。
+    ⚠️ 反向断言：没有那个 都/就 时它仍然是提问。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放是因为播放器{head}{what}歌{correlative}自动放'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{head}{what}影响'
+    ) is False

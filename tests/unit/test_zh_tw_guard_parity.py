@@ -2138,3 +2138,21 @@ def test_sequential_words_used_as_attributives_are_not_continuations(sequential)
     for attributive in ('一项', '两个', '的名字', '三条', '的内容'):
         text = f'重写所有字段{sequential}{attributive}'
         assert router._chat_text_requests_full_rewrite(text) is False, text
+
+
+@pytest.mark.parametrize("reflexive", ["本身", "自身", "本体", "本體"])
+@pytest.mark.parametrize("target", ["所有字段", "所有欄位", "全部字段"])
+def test_reflexive_emphasis_after_a_completed_target(target, reflexive):
+    """反身强调加强的是已经明确的整卡范围，不是在点名某一个字段
+    （base 全是 True，Codex P2 第五十二轮）。
+
+    ⚠️ 它是**透明的**：后面该接什么还接什么（句末 / 副词 + 动词）。
+    ⚠️ 反向断言：字段**名**本身 仍然是单字段，保险没被打开。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    for text in (f'重写{target}{reflexive}', f'把{target}{reflexive}重新写'):
+        assert router._chat_text_requests_full_rewrite(text) is True, text
+    assert router._chat_text_requests_full_rewrite(
+        f'重写{target}名{reflexive}'
+    ) is False

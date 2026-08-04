@@ -969,8 +969,13 @@ _WHOLE_CARD_SCOPE_RUN_ONE = r"(?>" + _WHOLE_CARD_SCOPE_RUN_BODY + r"+)"
 # ⚠️ 名词收尾同样要接受并列副词（`把所有字段一并重写`，base 是 True，
 # Codex P2 第十四轮）——跟限定词那一支同一套副词表，两处别漂开。
 # 名词短语的**闭集收尾**（不含「的」那一支，否则下面那条会无限递归）。
+# ⚠️ 目标说完之后可以跟一个**反身强调**：`重写所有字段本身` /
+# `把所有字段自身重新写`（base 都是 True，Codex P2 第五十二轮）。
+# 它加强的是已经明确的整卡范围，不是在点名某一个字段，所以它是**透明的**：
+# 后面该接什么还接什么（句末 / 副词 + 动词 / 标点 …）。
+_WHOLE_CARD_REFLEXIVE_PREFIX = r"(?:(?:本身|自身|本体|本體)\s*)?"
 _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
-    r"(?=\s*(?:$|"
+    r"(?=\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB
     + "|" + _WHOLE_CARD_ADVERB_RUN
@@ -983,7 +988,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL_CLOSE = (
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_SCOPE_NOUN_TAIL = (
-    r"(?=\s*(?:$|"
+    r"(?=\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|"
     + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB
     # ⚠️⚠️ 「的」这一支自己也要**递归到收尾**，不能只检查一个范围成分：
@@ -1007,7 +1012,7 @@ _WHOLE_CARD_SCOPE_NOUN_TAIL = (
     + r"|重|改|梳|完|都|了|吧|啊|呀|呢|嘛|喔|哦|嗎|吗))"
 )
 _WHOLE_CARD_BARE_QUANTIFIER_TAIL = (
-    r"\s*(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
+    r"\s*" + _WHOLE_CARD_REFLEXIVE_PREFIX + r"(?:$|" + _WHOLE_CARD_TERMINATOR_PUNCT
     + "|" + _WHOLE_CARD_EN_REWRITE_VERB + r"|"
     + _WHOLE_CARD_ADVERB_RUN
     # ⚠️ 副词后面也可能是**英文**重写动词：`把所有字段全部 rewrite`
