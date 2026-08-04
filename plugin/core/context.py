@@ -1022,7 +1022,7 @@ class PluginContext:
 
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
-        primary_submission_attempted = False
+        primary_transport_failed = False
         if zmq is not None:
             try:
                 from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
@@ -1104,7 +1104,6 @@ class PluginContext:
                             )
                             item = {"store": "messages", "topic": "all", "payload": payload}
                             try:
-                                primary_submission_attempted = True
                                 batcher.enqueue(item)
                             except Exception:
                                 # [ISSUE4-DIAG] An important proactive cue
@@ -1230,7 +1229,6 @@ class PluginContext:
                     if ormsgpack is None:
                         raise RuntimeError("ormsgpack is required for message_plane push")
                     encoded = ormsgpack.packb(msg)
-                    primary_submission_attempted = True
                     sock.send(encoded, flags=0)
                     if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                         try:
@@ -1245,33 +1243,14 @@ class PluginContext:
                             pass
                     return {"submitted": True}
             except Exception as e:
-                if primary_submission_attempted:
-                    # Never amplify message-plane backpressure by retrying the
-                    # same payload through the control-plane fallback queue.
-                    try:
-                        _beh = canonical.get("ai_behavior")
-                        _lvl = self.logger.error if _beh != "read" else self.logger.warning
-                        _lvl(
-                            "[PluginContext] message_plane DROP: plugin_id={} "
-                            "ai_behavior={} priority={} reason=transport_error err_type={}",
-                            self.plugin_id,
-                            _beh,
-                            canonical.get("priority"),
-                            type(e).__name__,
-                        )
-                    except Exception:
-                        pass
-                    return {
-                        "submitted": False,
-                        "reason": "transport_error",
-                    }
-
-                # The primary path failed before it accepted responsibility for
-                # the payload.  Falling back here does not duplicate a send or
-                # redirect an already-backpressured message.
+                primary_transport_failed = True
+                # Exceptions can only escape before or from the blocking send;
+                # logging after a successful send is isolated above.  The
+                # fallback therefore preserves the existing transport contract
+                # without resubmitting a payload already accepted by ZMQ.
                 try:
                     self.logger.warning(
-                        "[PluginContext] message_plane unavailable before submission: "
+                        "[PluginContext] message_plane submission failed; trying fallback: "
                         "plugin_id={} ai_behavior={} priority={} err_type={}",
                         self.plugin_id,
                         canonical.get("ai_behavior"),
@@ -1281,7 +1260,7 @@ class PluginContext:
                 except Exception:
                     pass
 
-        # message_plane 不可用时，尝试回退到 message_queue（如果可用）
+        # message_plane 失败或不可用时，尝试回退到 message_queue（如果可用）
         if self.message_queue is not None:
             try:
                 payload = _build_wire_payload(
@@ -1327,7 +1306,11 @@ class PluginContext:
 
         return {
             "submitted": False,
-            "reason": "transport_unavailable",
+            "reason": (
+                "transport_error"
+                if primary_transport_failed
+                else "transport_unavailable"
+            ),
         }
 
     async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":

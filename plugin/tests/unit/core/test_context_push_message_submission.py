@@ -121,7 +121,7 @@ def test_slow_message_plane_success_reports_local_submission(
 
 
 @pytest.mark.plugin_unit
-def test_slow_message_plane_failure_is_distinguishable_and_redacted(
+def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -139,12 +139,39 @@ def test_slow_message_plane_failure_is_distinguishable_and_redacted(
         parts=[{"type": "text", "text": private_marker}],
     )
 
+    assert result == {"submitted": True}
+    assert len(fallback_queue.items) == 1
+    assert private_marker not in repr(logger.records)
+    assert "RuntimeError" in repr(logger.records)
+
+
+@pytest.mark.plugin_unit
+def test_slow_message_plane_and_fallback_failures_are_distinguishable_and_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_send_marker = "private-send-error"
+    private_queue_marker = "private-queue-error"
+    _install_slow_message_plane(
+        monkeypatch,
+        _Socket(send_error=RuntimeError(private_send_marker)),
+    )
+    fallback_queue = _Queue(error=RuntimeError(private_queue_marker))
+    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
+
+    result = ctx.push_message(
+        visibility=[],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": "synthetic payload"}],
+    )
+
     assert result == {
         "submitted": False,
         "reason": "transport_error",
     }
     assert fallback_queue.items == []
-    assert private_marker not in repr(logger.records)
+    assert private_send_marker not in repr(logger.records)
+    assert private_queue_marker not in repr(logger.records)
     assert "RuntimeError" in repr(logger.records)
 
 
