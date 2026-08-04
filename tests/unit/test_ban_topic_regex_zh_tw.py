@@ -120,7 +120,7 @@ def _is_excluded_pair(negation: str, verb: str) -> bool:
 # 构词维度各自用相等断言钉死（闭集），改动必须同时改这里。
 def test_verb_constants_are_pinned():
     assert D._ZH_SAY_VERBS == ("说", "說", "提", "聊", "讲", "講", "谈", "談", "扯")
-    assert D._ZH_SAY_COMPOUNDS == ("讨论", "討論", "谈论", "談論")
+    assert D._ZH_SAY_COMPOUNDS == ("讨论", "討論")
     assert not hasattr(D, "_ZH_VERB_COMPLEMENTS")
     assert D._ZH_ADDRESS_VERBS == (
         "管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我",
@@ -128,20 +128,22 @@ def test_verb_constants_are_pinned():
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("tw", "cn", "expected"),
     [
-        ("不要談論政治。", "政治"),
-        ("不要谈论政治。", "政治"),
-        ("別談論我的家人。", "我的家人"),
-        ("别谈论我的家人。", "我的家人"),
-        ("我不想談論政治。", "政治"),
-        ("我不想谈论政治。", "政治"),
+        ("不要談論政治。", "不要谈论政治。", ("論政治", "论政治")),
+        ("別談論我的家人。", "别谈论我的家人。", ("論我的家人", "论我的家人")),
+        ("我不想談論政治。", "我不想谈论政治。", ("論政治", "论政治")),
     ],
 )
-def test_tanlun_is_a_verb_not_a_cut_word(text, expected):
-    """``谈论/談論`` 缺席时单字 ``談`` 先匹配、``論`` 漏进宾语，存成非词「論政治」。
-    命中了但存错，比不命中更糟——模型对不上「政治」这个话题，禁令白设。"""  # noqa: DOCSTRING_CJK
-    assert _zh_terms(text) == {expected}
+def test_tanlun_keeps_lun_in_the_term_in_both_scripts(tw, cn, expected):
+    """⚠️ 这条曾经断言 ``不要谈论政治。`` 得到 ``政治``（把 ``谈论`` 当复合动词）。
+    撤掉了：同样的切分会把 ``别谈论语考试。`` 削成 ``语考试``、``别谈论语。`` 整条
+    削没（codex P2）。``論政治`` 多一个字但话题仍完整，模型对得上；``语考试`` 是非词。
+    繁简两侧必须同时是这个行为——这条测试的意义已经从「复合动词」变成「繁简一致」。
+    """  # noqa: DOCSTRING_CJK
+    tw_expected, cn_expected = expected
+    assert _zh_terms(tw) == {tw_expected}
+    assert _zh_terms(cn) == {cn_expected}
 
 
 @pytest.mark.parametrize("negation", TW_NEGATIONS + CN_NEGATIONS)
@@ -1474,3 +1476,96 @@ def test_the_negation_evidence_is_derived_from_the_verb_tables():
         assert verb in D._ZH_NEG_VERB_EVIDENCE, verb
     for negation in NEGATIONS_FOR_EVIDENCE:
         assert negation in D._ZH_NEG_VERB_EVIDENCE, negation
+
+
+# ── 12. 以 论/論 开头的话题不被 谈论 吃掉 ────────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别谈论语考试。", "论语考试"),
+        ("別談論語考試。", "論語考試"),
+        ("别谈论语。", "论语"),
+        ("別談論語。", "論語"),
+        ("别谈论文格式。", "论文格式"),
+        ("別談論文格式。", "論文格式"),
+        ("别谈论政治。", "论政治"),
+        ("別談論政治。", "論政治"),
+    ],
+)
+def test_a_topic_beginning_with_lun_survives(text, expected):
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+def test_only_verbs_that_cannot_stand_alone_are_compounds():
+    """⚠️ ``讨`` 不能单用（"别讨政治"不成话）所以 ``讨论`` 必须整体进表；``谈`` 能，
+    所以 ``谈论`` 不进——进了就把以 ``论`` 开头的话题削掉首字（codex P2，与结果补语
+    同一族）。这条是判据本身，加复合动词前先过一遍。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_SAY_COMPOUNDS == ("讨论", "討論")
+    for compound in D._ZH_SAY_COMPOUNDS:
+        assert compound[0] not in D._ZH_SAY_VERBS, compound
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("别讨论文格式。", "文格式"), ("別討論文格式。", "文格式")],
+)
+def test_the_unavoidable_taolun_overlap_is_symmetric(text, expected):
+    """``讨论`` 的同类重叠没法避免（base 也这样），但繁简两侧必须一致。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text)
+
+
+# ── 13. 标识符内部的 ASCII 点号/逗号不是边界 ─────────────────
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Python 3.11别提了。", "Python 3.11"),
+        ("Python 3.11別提了。", "Python 3.11"),
+        ("example.com别提了。", "example.com"),
+        ("example.com別提了。", "example.com"),
+        ("价格1,000元别提了。", "价格1,000元"),
+        ("價格1,000元別提了。", "價格1,000元"),
+    ],
+)
+def test_identifier_internal_punctuation_is_not_a_topic_boundary(text, expected):
+    assert expected in _zh_terms(text), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["工作别提了。", "功成名就别提了，功成名别提了。", "别提工作，别提加班。"],
+)
+def test_sentence_final_punctuation_is_still_a_boundary(text):
+    """判据是「左右都得是字母或数字」——句尾点号后面是空白或串尾，不满足。"""  # noqa: DOCSTRING_CJK
+    for term in _zh_terms(text):
+        assert "。" not in term and "，" not in term, term
+
+
+def test_the_identifier_punct_rule_needs_both_sides():
+    assert D._ZH_IDENT_PUNCT.startswith("(?<=[0-9A-Za-z])")
+    assert D._ZH_IDENT_PUNCT.endswith("(?=[0-9A-Za-z])")
+    for unit in (D._ZH_TOPIC_CHAR, D._ZH_TOPIC_CHAR_NO_GUANYU):
+        assert D._ZH_IDENT_PUNCT in unit
+
+
+# ── 14. 剥填充词之后要归一化括号再跟对手比 ───────────────────
+@pytest.mark.parametrize(
+    "text",
+    ["关于《你好，李焕英》就别提了。", "關於《你好，李煥英》就別提了。",
+     "关于「我的事」就别提了。", "关于工作就别提了。"],
+)
+def test_a_filler_stripped_form_is_normalized_before_comparing(text):
+    """⚠️ 填充词前面常常正好是一个收尾括号：剥掉 ``就`` 得到 ``你好，李焕英》``，
+    多一个 ``》`` 就跟专用切法的干净 term 对不上，畸形的那条照样存三天（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    terms = _zh_terms(text)
+    assert len(terms) == 1, terms
+    for term in terms:
+        assert not term.endswith("就"), term
+        assert not any(term.endswith(hi) for _lo, hi in D._ZH_BRACKET_PAIRS), term
+
+
+def test_normalizing_does_not_merge_two_separate_directives():
+    """⚠️ 归一化只在**重叠**的命中之间比，两条独立指令差一个 ``就`` 不能被吞掉。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms("功成名就别提了，功成名别提了。") == {"功成名就", "功成名"}
+    assert _zh_terms("他的成就别提了。") == {"他的成就"}

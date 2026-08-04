@@ -320,8 +320,16 @@ _ZH_NEG = f"(?:{_ZH_BIE}|不要|不许|不許|不准|莫|{_ZH_XIU}|甭)"
 # 「以 到/起/及 开头的词」是开集，枚不干净；而代价是不对称的：多留一个 ``到``，
 # term 里仍然完整含着真话题，模型对得上；吃掉一个字，存进去的是非词。
 _ZH_SAY_VERBS = ("说", "說", "提", "聊", "讲", "講", "谈", "談", "扯")
-# 双字言说动词（不是「动词 + 补语」构成的，单列）
-_ZH_SAY_COMPOUNDS = ("讨论", "討論", "谈论", "談論")
+# 双字言说动词。⚠️ 只收**单字拆不开**的那些：``讨`` 在现代汉语里不能单用（"别讨政治"
+# 不成话），所以 ``讨论`` 必须整体进表；它吃掉以 ``论`` 开头的话题（"别讨论文格式。"
+# → ``文格式``）是没法避免的代价，base 也一样。
+#
+# ⚠️ ``谈论 / 談論`` **不收**：``谈`` 本身就是独立动词，把 ``谈论`` 当复合词是可选的，
+# 而代价是实打实的——``别谈论语考试。`` 被削成 ``语考试``、``别谈论语。`` 整条消失
+# （base 分别是 ``论语考试`` / ``论语``；codex P2）。以 ``论`` 开头的话题是开集
+# （论语 / 论文 / 论坛 / 论证 / 论政治），跟结果补语那条是同一族问题：多留一个
+# ``论`` 话题仍完整，吃掉一个字存进去的是非词。
+_ZH_SAY_COMPOUNDS = ("讨论", "討論")
 # 称呼类：结构是「动词 + 我 + 称呼」，与上面两族都不同
 _ZH_ADDRESS_VERBS = ("管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我")
 
@@ -419,8 +427,16 @@ _ZH_PLAIN_CHAR_NO_GUANYU = r"(?!关于|關於)" + _ZH_PLAIN_CHAR
 # 原子组 ``(?>…)``（Python 3.11+）让"这个位置选哪个分支"一旦定下就不再回头，歧义
 # 消失。比"把开括号排除出单字分支"更好的地方：落单的 ``"`` / ``(`` （英寸号、颜
 # 文字 ``:(``）仍然能被当成普通字吃进话题，不会变成硬边界。
-_ZH_TOPIC_CHAR = f"(?>{_ZH_BRACKET_RUN}|{_ZH_PLAIN_CHAR})"
-_ZH_TOPIC_CHAR_NO_GUANYU = f"(?>{_ZH_BRACKET_RUN}|{_ZH_PLAIN_CHAR_NO_GUANYU})"
+# ⚠️ ASCII 的 ``.`` / ``,`` 夹在字母数字中间时是**标识符内部**的，不是句读：
+# ``Python 3.11别提了。`` / ``example.com别提了。`` / ``价格1,000元别提了。`` 上一版
+# 分别只存下 ``11`` / ``com`` / ``000元``，base 三条都是完整的（codex P2）。
+# 这一维是闭集：左右都得是字母或数字。句尾的 ``.`` 后面是空白或串尾，不满足。
+_ZH_IDENT_PUNCT = r"(?<=[0-9A-Za-z])[.,](?=[0-9A-Za-z])"
+
+_ZH_TOPIC_CHAR = f"(?>{_ZH_BRACKET_RUN}|{_ZH_IDENT_PUNCT}|{_ZH_PLAIN_CHAR})"
+_ZH_TOPIC_CHAR_NO_GUANYU = (
+    f"(?>{_ZH_BRACKET_RUN}|{_ZH_IDENT_PUNCT}|{_ZH_PLAIN_CHAR_NO_GUANYU})"
+)
 
 
 def _zh_topic(minimum: int, maximum: int, *, block_guanyu: bool = False) -> str:
@@ -910,11 +926,17 @@ def _drop_filler_suffixed_terms(
                 if not current.endswith(filler) or len(current) <= len(filler):
                     continue
                 shorter = current[: -len(filler)]
-                if shorter in rivals:
-                    return True
-                if shorter not in seen_forms:
-                    seen_forms.add(shorter)
-                    frontier.append(shorter)
+                # ⚠️ 剥完要把两端的括号 / 标点也归一化再比：填充词前面常常正好是一个
+                # 收尾括号。``关于《你好，李焕英》就别提了。`` 的通用切法是
+                # ``你好，李焕英》就``，剥掉 ``就`` 得到 ``你好，李焕英》``——多一个
+                # ``》`` 就跟专用切法的 ``你好，李焕英`` 对不上，畸形的那条照样存三天
+                # （codex P2）。归一化用的就是 term 落库前走的同一套 _TRIM_TRAIL。
+                for form in {shorter, shorter.strip(_TRIM_TRAIL)}:
+                    if form in rivals:
+                        return True
+                    if form and form not in seen_forms:
+                        seen_forms.add(form)
+                        frontier.append(form)
         return False
 
     return [
