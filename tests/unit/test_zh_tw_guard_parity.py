@@ -1593,3 +1593,20 @@ def test_an_adverbial_de_suffix_is_accepted(adverb):
     assert router._chat_text_requests_full_rewrite(
         '把所有字段的所有名字重写'
     ) is False
+
+
+@pytest.mark.parametrize(
+    "adverb", ["批量", "依次", "各自", "挨着", "一次性", "集中"]
+)
+@pytest.mark.parametrize("scope", ["把所有字段", "把全部欄位", "把整个卡的所有内容"])
+def test_batch_rewrite_modifiers(scope, adverb):
+    """批量类副词（base 全是 True，Codex P2 第三十四轮）。
+
+    ⚠️ 配对反向断言：副词后仍要求重写动词，单字段那条路没被放开。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(f'{scope}{adverb}重写') is True
+    assert router._chat_text_requests_full_rewrite(
+        '把所有字段的所有名字重写'
+    ) is False

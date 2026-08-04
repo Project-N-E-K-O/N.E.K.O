@@ -3450,3 +3450,31 @@ def test_high_low_comparative_complements(degree, suffix):
 
     assert is_explicit_music_cancellation(f'不要放的比刚才{degree}{suffix}') is True
     assert is_explicit_music_cancellation('停止播放的比赛结果') is False
+
+
+@pytest.mark.parametrize(
+    "modifier", ["单曲循环", "随机循环", "后台自动", "循环", "后台", ""]
+)
+def test_longer_playback_modifiers_inside_the_aspect_phrase(modifier):
+    """⚠️ 修饰语最长按 `_ZH_PROGRESSIVE_MAX_MODIFIER` 生成——「单曲循环」「随机循环」
+    「后台自动」都是 4 个字（Codex P2 第三十四轮）。
+
+    ⚠️ 上限是**性能与覆盖的取舍**：后视条数随它线性涨（现在按宽度分组后 8 条），
+    再往上收益递减。计时复跑：普通输入 0.008ms、三种对抗形状 0.012~0.13ms。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'停止正在{modifier}播放的晴天'
+    assert is_explicit_music_cancellation(text) is True, text
+    assert is_explicit_music_cancellation('我要停止播放的代码') is False
+
+
+@pytest.mark.parametrize("marker", ["哪位", "哪几位", "哪幾位"])
+def test_the_performer_wh_marker(marker):
+    """`哪位歌手唱的…` —— 人称疑问词（base 是 False，Codex P2 第三十四轮）。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation(
+        f'我想停止播放{marker}歌手唱的《你好吗？》'
+    ) is False
+    assert is_explicit_music_cancellation('帮我停止播放红心歌单') is True

@@ -459,7 +459,7 @@ _ZH_WH_QUESTION_MARKER = (
     # `我想停止播放谁唱的《你好吗？》` 执行取消（危险方向）；收 =
     # `帮我停止播放谁的歌都行` 判成提问、少停一次歌（轻）。取轻的那一侧，
     # 跟这个文件里其它十几处取舍一致（Codex P2 第二十六轮）。
-    r"|谁|誰|哪个|哪個|哪些|多少"
+    r"|谁|誰|哪个|哪個|哪些|哪位|哪幾位|哪几位|多少"
     # 口语/其它疑问复合式（Codex P2 第三十二轮）。
     r"|为啥|為啥|咋|咋办|咋辦|何处|何處|几点|幾點|凭什么|憑什麼|多会儿"
     # ⚠️ 音乐类疑问复合式：`什么歌` / `哪张专辑` / `几首歌`。这里正是「裸形歧义、
@@ -684,12 +684,17 @@ _ZH_PROGRESSIVE_VERBS = _ZH_PLAYBACK_VERBS
 # `停止正在循环播放的晴天` base 是 True（Codex P2 第三十一轮）。修饰语是开集，
 # 不枚举，用 `.` 占位；但 Python 的后视必须**定长**，所以按「总宽度」分组——
 # 同宽度的组合塞进一个 `(?<!(?:…|…))`，几百种组合收敛成十几条后视。
+# 体标记与播放动词之间修饰语的最大字数。⚠️ 「单曲循环」「随机循环」「后台自动」
+# 都是 4 个字（Codex P2 第三十四轮），所以放到 4；再往上收益递减而后视条数线性涨。
+_ZH_PROGRESSIVE_MAX_MODIFIER = 4
+
+
 def _zh_progressive_lookbehind() -> str:
     """按总宽度分组生成定长后视：体标记 + 可选空格 + 0~2 字修饰语 + 播放动词。"""  # noqa: DOCSTRING_CJK
     by_width: dict[int, list[str]] = {}
     for adverb in _ZH_PROGRESSIVE_ADVERBS:
         for sep in ("", " "):
-            for filler in range(3):
+            for filler in range(_ZH_PROGRESSIVE_MAX_MODIFIER + 1):
                 for verb in _ZH_PROGRESSIVE_VERBS:
                     piece = f"{adverb}{sep}{'.' * filler}{verb}"
                     width = len(adverb) + len(sep) + filler + len(verb)
