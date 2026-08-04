@@ -50,6 +50,9 @@ fi
 #    已经存在（还带一张新生成的自签证书），直接 mv 会把旧目录套进去多一层。
 #    同名文件以旧数据为准。
 docker compose down
+# 容器已经把 neko-home 的属主改成了内部的 neko（一个系统 uid），宿主机上的普通
+# 用户写不进去。先要回来，容器下次启动会自行改回去。
+sudo chown -R "$(id -u):$(id -g)" neko-home
 cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
 cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 

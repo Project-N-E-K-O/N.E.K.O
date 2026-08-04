@@ -47,6 +47,9 @@ fi
 #    一度でも起動していると宛先 directory は既に存在し（新しい自己署名証明書付き）、
 #    mv では一階層深くネストされます。同名 file は旧 data を優先します。
 docker compose down
+# container が neko-home の所有者を内部の neko（system uid）に変更済みのため、host 側の
+# 一般ユーザーでは書き込めません。一度取り戻します（次回起動時に container が戻します）。
+sudo chown -R "$(id -u):$(id -g)" neko-home
 cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
 cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 

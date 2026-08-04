@@ -213,14 +213,19 @@ docker cp neko:/home/neko/.openfang/. "$BASE/neko-home/.openfang/"
 # 2) 停容器。Compose 部署用 down；Docker Run 部署改用 docker rm -f neko
 docker-compose down
 
-# 3) 合并宿主机上的旧目录。若已经用新版启动过一次，容器会在 neko-home 下建好
-#    同名的空目录和一张新的自签证书，此时直接 mv 会把旧目录套进去多一层，
-#    所以按内容合并（同名文件以旧数据为准）
+# 3) 若已经用新版启动过一次，neko-home 下的属主已经被容器改成了内部的 neko
+#    （一个系统 uid），宿主机上的普通用户写不进去，下面的 cp 会 Permission denied。
+#    先把属主要回来；容器下次启动会自行改回去。
+sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
+
+# 4) 合并宿主机上的旧目录。容器已经在 neko-home 下建好了同名的空目录和一张新的
+#    自签证书，此时直接 mv 会把旧目录套进去多一层，所以按内容合并
+#    （同名文件以旧数据为准）
 mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl"
 cp -a "$BASE/N.E.K.O/." "$BASE/neko-home/.local/share/N.E.K.O/" && rm -rf "$BASE/N.E.K.O"
 cp -a "$BASE/ssl/."     "$BASE/neko-home/ssl/"                 && rm -rf "$BASE/ssl"
 
-# 4) Compose 部署把 volumes 换成本文档上方的新版写法后 docker-compose up -d；
+# 5) Compose 部署把 volumes 换成本文档上方的新版写法后 docker-compose up -d；
 #    Docker Run 部署按上方的新命令重新 docker run
 ```
 
@@ -229,6 +234,10 @@ cp -a "$BASE/ssl/."     "$BASE/neko-home/ssl/"                 && rm -rf "$BASE/
 旧版 README 的挂载目标写成了 `/root/Documents/N.E.K.O`，而容器内的服务实际把数据写在 `/home/neko/.local/share/N.E.K.O`，两者对不上，因此这部分数据一直留在容器内部、从未落到宿主机。**必须在旧容器还没删除时导出**（证书不受影响，仍在宿主机的 `$BASE/ssl`）：
 
 ```bash
+# 若已经用新版启动过一次，neko-home 下的属主已经被容器改成内部的 neko（系统 uid），
+# 宿主机上的普通用户写不进去；先要回来，容器下次启动会自行改回去
+[ -d "$BASE/neko-home" ] && sudo chown -R "$(id -u):$(id -g)" "$BASE/neko-home"
+
 mkdir -p "$BASE/neko-home/.local/share/N.E.K.O" "$BASE/neko-home/ssl" "$BASE/neko-home/.openfang"
 
 # 源路径末尾的 /. 表示复制目录内容，否则目标已存在时会多套一层

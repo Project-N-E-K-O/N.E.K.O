@@ -59,6 +59,10 @@ fi
 #    freshly generated self-signed certificate) and `mv` would nest them one level
 #    deeper. Same-named files resolve in favour of the old data.
 docker compose down
+# The container has chowned neko-home to its internal neko user (a system uid),
+# so a normal host user cannot write there. Take it back; the container fixes it
+# again on the next start.
+sudo chown -R "$(id -u):$(id -g)" neko-home
 cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O
 cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl
 

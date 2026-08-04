@@ -1263,8 +1263,17 @@ main() {
     # chown 必须带 -h：不带的话它会解引用命令行上的符号链接，把宿主机备份里
     # 可能存在的链接的**目标**改掉（`chown -R` 默认 -P 会跳过符号链接，这里换成
     # find 驱动就没有那层保护了）。
-    find /home/neko -path /home/neko/ssl -prune -o \
-        \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + || true
+    # 失败必须停：三个业务进程都以 neko 跑，数据目录不可写的话它们会在运行期
+    # 各种写入上零散报错，比在这里干脆退出难诊断得多。（原先这里挂了 `|| true`，
+    # 把 set -e 本来的 fail-fast 吞掉了。）
+    if ! find /home/neko -path /home/neko/ssl -prune -o \
+            \( ! -user neko -o ! -group neko \) -exec chown -h neko:neko {} + ; then
+        echo "❌ 无法把 /home/neko 的属主改为 neko"
+        echo "   宿主机的挂载可能不允许改属主 —— NFS 带 root_squash、CIFS 没带"
+        echo "   cifsacl、或只读挂载都会这样。容器内的服务以 neko 身份运行，"
+        echo "   数据目录写不进去会在启动之后才零散暴露，所以这里直接停。"
+        exit 1
+    fi
 
     # ssl/ 被上面刻意跳过。私钥由 root 生成并 chmod 600，nginx 主进程也以 root
     # 读取它，而三个业务进程（含内嵌的用户插件服务）以 neko 身份运行。合并挂载后
