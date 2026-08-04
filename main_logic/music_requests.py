@@ -989,6 +989,13 @@ _ZH_REASON_MARKER_RE = re.compile(r"(?:" + "|".join(_ZH_REASON_MARKERS) + r")")
 
 # 框架词后面紧跟这些谓词时，它引的是真小句而不是标题的一部分。
 _ZH_FRAME_PREDICATE_RE = re.compile(r"(?:有|是|没|沒|要|能|会|會|想|可以|不)")
+# 播放目标位上要区分「歌名以谓词开头」和「真条件小句」：真小句的谓词后面近处
+# 还会跟着疑问词（`如果有什么新歌`），歌名不会（`如果有一天`）。
+_ZH_FRAME_CLAUSE_WITH_WH_RE = re.compile(
+    _ZH_FRAME_PREDICATE_RE.pattern
+    + r"[^。！？!?，,；;]{0,4}?(?:" + _ZH_WH_QUESTION_MARKER
+    + r"|" + "|".join(_ZH_FREE_CHOICE_WH_WORDS) + r")"
+)
 
 
 # ⚠️ 这一块第六十七轮挪到了这里：它现在要引用上面那张谓词表和 wh 词表，
@@ -1005,8 +1012,16 @@ _ZH_FRAME_CLAUSE_HEAD = (
     + r"|" + "|".join(_ZH_PLAYBACK_VERBS) + r")"
 )
 _ZH_FRAME_LEFT_BLACKLIST = {
-    "要是": "主只需重首次",
-    "就是": "也不这這那还還可",
+    # ⚠️ 右侧必需只挡得住「系词接名词」那半边（`摘要是最新版本`）；系词最常见的
+    # 补语恰恰以 有/不/要/能/没 开头，那五个字都是合法小句开头，于是
+    # `纪要是有用的` / `概要是没写完的` 照旧开框架（base 是 False，第七十五轮）。
+    # ⚠️ 那条派生测试只喂**名词**补语，50 个组合里 45 个从没跑过。
+    "要是": "主只需重首次摘纪紀概提纲綱简簡",
+    # ⚠️ `就是` 和 `就算` 坐在**同一个接缝**上（动词+就），两张黑名单原来互不
+    # 相交、各缺对方那一半：`成就是有奖励的` / `将就是能听的` 照旧开框架
+    # （base 是 False，第七十五轮）。而 `成就是` 比触发第七十一轮那条的
+    # `造就算不算` 常见得多。两张表合并成同一族。
+    "就是": "也不这這那还還可成迁遷造将將俯",
     "即使": "立随隨当當",
     # ⚠️ `就算` 两侧都要挡：右侧「必跟小句」管得住 `成就算法`（后面是 `法`），
     # 管不住 `造就算不算`（后面是 `不`，本身就是合法的小句开头）。左界补上
@@ -1047,12 +1062,20 @@ _ZH_FRAME_LEFT_BLACKLIST = {
 _ZH_CONDITIONAL_FRAMES = (
     "如果", "假如", "若是", "要是", "倘若", "万一", "萬一", "假若", "设若", "設若",
 )
-# ⚠️ 右侧必需**只挂条件族**。第七十一轮我给让步族（即使/就算/哪怕…）也挂过一次，
-# 变异验证显示它是**多余的**：删掉之后所有用例照绿——`成就算法` 那一族已经被
-# `就算` 的左界黑名单挡住了。按这个文件里反复用的那条规则「没有失败用例支撑的
-# 防御就是死代码」删掉（第六十三轮删右界表、第六十八轮删单字 `因`/`既`，同一条）。
-# ⚠️ 它还是个**收窄**：留着会让让步族少认一些真框架，那是没有证据支撑的代价。
-_ZH_FRAME_RIGHT_REQUIRED = {frame: True for frame in _ZH_CONDITIONAL_FRAMES}
+# ⚠️⚠️ 右侧必需挂在**条件族 + 让步族**上。让步族这一支的来回值得记下来：
+#   第七十一轮加 → 变异验证显示**多余**（`成就算法` 已被左界挡住）→ 按
+#     「没有失败用例支撑的防御就是死代码」删掉；
+#   第七十四轮 `先确认即使这个说法是否合适` / `…就算这个说法…` 给出真用例
+#     （base 是 False——危险方向，元语言提及）→ 加回来。
+# 同一条规则用了四次（六十三轮右界表、六十八轮单字 `因`/`既`、七十一轮这一支、
+# 现在），变的不是规则是证据。
+_ZH_CONCESSIVE_FRAMES = (
+    "即使", "即便", "就算", "哪怕", "纵使", "縱使",
+)
+_ZH_FRAME_RIGHT_REQUIRED = {
+    frame: True
+    for frame in _ZH_CONDITIONAL_FRAMES + _ZH_CONCESSIVE_FRAMES
+}
 
 
 def _zh_guarded_frame(frame: str) -> str:
@@ -1079,7 +1102,9 @@ def _zh_guarded_frame(frame: str) -> str:
 #   第六十四轮 `就是想问` 给出真用例 → 加回来，只收 `就是`；
 #   第六十六轮 `按钮不管用` 给出真用例 → 才把 `不管` 收进来。
 # 三次用的是同一条规则，变的是证据。
-_ZH_FRAME_RIGHT_BLACKLIST = {"就是": "想要问問说說", "不管": "用"}
+# ⚠️ `就是` 右界补 `不`：`就是不知道是否合适` 是焦点副词 + 犹豫，不是让步框架
+# （base 是 False，第七十四轮）。原来只挡 想/要/问/说 那一族探询动词。
+_ZH_FRAME_RIGHT_BLACKLIST = {"就是": "想要问問说說不", "不管": "用"}
 _ZH_FREE_CHOICE_FRAME_RE = re.compile(
     r"(?:" + "|".join(_zh_guarded_frame(f) for f in _ZH_ASSERTED_FRAMES) + r")"
     r"|" + _ZH_INQUIRY_LEFT
@@ -1150,10 +1175,19 @@ def _zh_neutralize_free_choice(text: str) -> str:
         # ⚠️ 但不能一刀切：`停止播放如果有什么新歌再告诉我` 里的 `如果`
         # 真是条件框架（第四十八轮修的）。判据：框架词后面紧跟**谓词**
         # （有/是/没/要/能/会…）时它引的是小句，跟着其它字时更像标题。
-        # 代价写在这里：《如果有一天》这类以谓词开头的歌名会被当成条件框架，
-        # 少拦一次提问——轻的那一侧。
+        # ⚠️⚠️ 上一版这里写着「代价：《如果有一天》这类以谓词开头的歌名会被当成
+        # 条件框架，少拦一次提问——**轻的那一侧**」。**那句话把方向标反了**：
+        # 「少拦一次提问」＝提问没被拦住＝取消照常执行，那是**重**的那一侧。
+        # `我想停止播放如果有一天是否合适` base 是 False，现在是 True
+        # （Codex P2 第七十四轮）。一条写错方向的注释在这里躺了十一轮。
+        #
+        # 收紧判据：在播放目标位上，只有谓词后面**近处还跟着疑问词**时才算真框架
+        # （`如果有什么新歌` —— 有 + 什么，第四十八轮那条），否则一律当标题。
+        # `如果有一天` 的谓词后面是 `一天`，不是疑问词，所以是歌名。
+        # ⚠️ 判错的方向：多当一次标题 ＝ 少中和 ＝ 疑问守卫更容易开火 ＝
+        # 少停一次歌（轻）。这次的取舍站在轻的那一侧，跟上一版相反。
         if (_ZH_TARGET_POSITION_RE.search(text, 0, marker.start())
-                and not _ZH_FRAME_PREDICATE_RE.match(text, marker.end())):
+                and not _ZH_FRAME_CLAUSE_WITH_WH_RE.match(text, marker.end())):
             continue
         pieces.append(text[cursor:marker.end()])
         # ⚠️ 找边界时要**跳过引用跨度**：标题里的逗号/分号不是句读
@@ -1721,7 +1755,7 @@ def _split_music_request_clauses(text: str) -> list[str]:
             # ⚠️ 那个文件不在我常跑的几个文件里，是**全量**抓到的。
             # 需要保留问号的那条用例（`我想停止播放《你好吗？》？我还没决定`）
             # 用的是全角 `？`，中文侧的问号本来就是全角。
-            clauses.append(clause + char if char == "？" else clause)
+            clauses.append(clause + char if char in "？?" else clause)
         start = index + 1
     clause = text[start:].strip()
     if clause:
@@ -1739,7 +1773,7 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
     # 所以问号只活到这一行为止，再往下一律看剥掉问号的文本。
     # ⚠️ 这是**同一个改动第二次漏到别的路径**：上一轮漏的是英文点歌
     # （ASCII `?`），这次是中文点歌。保留分隔符这种改动的影响面比它看起来大。
-    clause = clause.rstrip("？")
+    clause = clause.rstrip("？?")
     if not clause:
         return None
     if _ZH_NON_MUSIC_SPEECH_REQUEST.fullmatch(clause):
@@ -1897,7 +1931,14 @@ def _parse_explicit_zh_clause(clause: str) -> MusicRequest | None:
 def _parse_explicit_en_clause(clause: str) -> MusicRequest | None:
     if not clause or _EN_NEGATIVE_MUSIC.search(clause):
         return None
-    normalized = clause.strip()
+    # ⚠️ 跟中文侧同一条：保留下来的问号只活到取消守卫为止，往下一律剥掉。
+    # 第七十二轮我是靠「切分不保留 ASCII `?`」来保英文点歌的，但中文用户也会
+    # 打半角问号（`《你好吗？》?我还没决定`），那样取消守卫又看不见了
+    # （base 是 False——危险方向，第七十四轮）。两边都保留、两个入口都剥，
+    # 才是对称的写法。
+    normalized = clause.strip().rstrip("？?").strip()
+    if not normalized:
+        return None
     request_prefix = (
         r"(?:(?:please\s+)?(?:i\s+(?:want|would like)\s+to\s+)?"
         r"|(?:can|could|would)\s+you\s+(?:please\s+)?)"

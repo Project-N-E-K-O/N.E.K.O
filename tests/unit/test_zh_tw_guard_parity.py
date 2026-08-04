@@ -3269,3 +3269,25 @@ def test_the_pr_only_quantifier_is_excluded_from_the_scoped_branch():
     assert router._chat_text_requests_full_rewrite('把整个卡的每个内容重写') is True
     # ⚠️ 第四十八轮那条（限定词修饰**另一个**整卡目标）不受影响。
     assert router._chat_text_requests_full_rewrite('把所有字段里的每一项内容重写') is True
+
+
+@pytest.mark.parametrize("particle", ["啦", "喽", "嘍", "咯", "嘞", "咧"])
+def test_a_terminal_particle_must_actually_terminate(particle):
+    """⚠️⚠️ 语气词必须**真的收尾**（后面只允许句末标点/空白）。
+
+    只写成「后面接语气词就算完整目标」时，`啦` 让 `整个卡啦OK` 成了合法整卡目标——
+    `把整个卡啦OK的名字重写` 里收窄到单字段的 `的名字` 被无视，整张卡被合成内容
+    并 autosave（base 是 False——数据覆盖方向，第七十五轮）。
+
+    ⚠️ 现有那条 `test_terminal_particles_after_a_target` 是**空转**的：它断言的是
+    `重写所有字段{语气词}`，那句走的是另一组交替、base 无条件 True，压根没碰到
+    「卡」类目标这一支——而这一支 base 恰恰是 False。派生测试选错了载体句，
+    参数再全也测不到目标分支。
+    """  # noqa: DOCSTRING_CJK
+    import main_routers.card_assist_router as router
+
+    assert router._chat_text_requests_full_rewrite(
+        f'把整个卡{particle}OK的名字重写'
+    ) is False, particle
+    # ⚠️ 反向：语气词**真收尾**时照旧是完整目标（这正是当初加它们的理由）。
+    assert router._chat_text_requests_full_rewrite(f'重写整个卡{particle}') is True

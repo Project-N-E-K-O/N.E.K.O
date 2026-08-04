@@ -6068,7 +6068,8 @@ def test_the_frame_right_blacklist_is_pinned():
     """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
 
-    assert mr._ZH_FRAME_RIGHT_BLACKLIST == {"就是": "想要问問说說", "不管": "用"}
+    # ⚠️ 第七十四轮给 `就是` 补了 `不`：`就是不知道是否合适` 是焦点副词 + 犹豫。
+    assert mr._ZH_FRAME_RIGHT_BLACKLIST == {"就是": "想要问問说說不", "不管": "用"}
 
 
 @pytest.mark.parametrize("tail", ["是否需要修复", "是否要修", "能否修好", "怎么办"])
@@ -6116,7 +6117,11 @@ def test_the_left_and_right_guards_each_cover_a_different_half():
     """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
 
-    assert "摘" not in mr._ZH_FRAME_LEFT_BLACKLIST["要是"]
+    # ⚠️ 第七十五轮起 `摘` **在**左界里了：右侧必需只挡得住「系词接名词」那半边，
+    # `纪要是有用的` 这种「系词接谓词」的照旧开框架（50 个组合里 45 个从没跑过，
+    # 因为那条派生测试只喂名词补语）。两条判据的分工因此变了——右侧管名词补语，
+    # 左界管这一族名词本身。
+    assert "摘" in mr._ZH_FRAME_LEFT_BLACKLIST["要是"]
     assert "主" in mr._ZH_FRAME_LEFT_BLACKLIST["要是"]
     assert mr._ZH_FRAME_RIGHT_REQUIRED.get("要是") is True
     assert mr.is_explicit_music_cancellation(
@@ -6413,13 +6418,20 @@ def test_english_question_form_requests_still_parse(sentence):
     assert "?" not in request.keyword, (sentence, request.keyword)
 
 
-def test_only_the_fullwidth_question_mark_survives_clause_splitting():
-    """⚠️ 直接钉住切分本身：全角 `？` 留下、ASCII `?` 丢掉。"""  # noqa: DOCSTRING_CJK
+def test_both_question_marks_survive_clause_splitting():
+    """⚠️ 切分**两种问号都留**，剥离放在两个解析入口里做。
+
+    第七十二轮我是靠「切分不保留 ASCII `?`」来保英文点歌的，那是个**只对一半输入
+    成立**的写法：中文用户也会打半角问号（`《你好吗？》?我还没决定`），那样取消
+    守卫又看不见了（base 是 False——危险方向，第七十四轮）。
+    两边都保留、`_parse_explicit_zh_clause` 和 `_parse_explicit_en_clause` 两个入口
+    都剥，才是对称的。
+    """  # noqa: DOCSTRING_CJK
     from main_logic import music_requests as mr
 
     assert mr._split_music_request_clauses('停止播放？后面还有') == ['停止播放？', '后面还有']
     assert mr._split_music_request_clauses('stop playing? more text') == [
-        'stop playing', 'more text'
+        'stop playing?', 'more text'
     ]
 
 
@@ -6467,3 +6479,96 @@ def test_adversative_and_additive_coordinators_end_the_frame_scope(coordinator):
 
     text = f'我想停止播放即使会影响歌单也算了{coordinator}我想问这样是否合适'
     assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("mark", ["？", "?"])
+def test_either_question_mark_reaches_the_cancellation_guard(mark):
+    """⚠️ 中文用户两种问号都会打。第七十二轮只保留全角是**只对一半输入成立**的写法。"""  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放《你好吗？》{mark}我还没决定'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("frame", ["即使", "即便", "就算", "哪怕", "纵使", "縱使"])
+@pytest.mark.parametrize("mention", ["这个说法", "這個說法", "的用法", "这个词"])
+def test_a_concessive_metalinguistic_mention_does_not_open_a_frame(frame, mention):
+    """⚠️ 让步族的右侧要求**加回来了**。这一支的来回值得记：
+
+    第七十一轮加 → 变异验证显示多余（`成就算法` 已被左界挡住）→ 按「没有失败用例
+    支撑的防御就是死代码」删掉；这一轮 `先确认即使这个说法是否合适` 给出真用例
+    （base 是 False——危险方向）→ 加回来。
+
+    同一条规则用了四次，变的不是规则是证据。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前先确认{frame}{mention}是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+def test_jiushi_before_an_uncertainty_predicate_is_not_a_frame():
+    """`就是不知道是否合适` 是焦点副词 + 犹豫（base 是 False，第七十四轮）。
+    原来的右界只挡 想/要/问/说 那一族探询动词，`不` 漏了。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    assert is_explicit_music_cancellation('我想停止播放就是不知道是否合适') is False
+    # ⚠️ 反向：真让步用法不受影响。
+    assert is_explicit_music_cancellation('我想停止播放因为就是什么歌都不好听') is True
+
+
+@pytest.mark.parametrize("title", ["如果有一天", "如果没有你", "假如爱有天意"])
+def test_a_predicate_initial_song_title_is_not_a_conditional_frame(title):
+    """⚠️⚠️ 第六十三轮那段注释把方向**标反了**，一躺十一轮。
+
+    它写着「《如果有一天》这类以谓词开头的歌名会被当成条件框架，少拦一次提问——
+    **轻的那一侧**」。可「少拦一次提问」＝提问没被拦住＝取消照常执行，那是**重**
+    的那一侧。`我想停止播放如果有一天是否合适` base 是 False、一度是 True。
+
+    收紧判据：在播放目标位上，只有谓词后面**近处还跟着疑问词**时才算真框架
+    （`如果有什么新歌`，第四十八轮那条），否则一律当标题。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放{title}是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+    # ⚠️ 反向：第四十八轮那条真条件框架不能被打回去。
+    assert is_explicit_music_cancellation(
+        '我想停止播放如果有什么新歌再告诉我'
+    ) is True
+
+
+@pytest.mark.parametrize("noun", ["摘要", "纪要", "紀要", "概要", "提要", "纲要", "綱要", "简要", "簡要"])
+@pytest.mark.parametrize(
+    "complement", ["有用的", "不完整的", "要保留的", "能看的", "没写完的"]
+)
+def test_a_yao_noun_before_a_predicate_complement_does_not_open_a_frame(noun, complement):
+    """⚠️⚠️ 右侧必需只挡得住「系词接**名词**」那半边（`摘要是最新版本`）。
+
+    系词最常见的补语恰恰以 有/不/要/能/没 开头，那五个字都在
+    `_ZH_FRAME_PREDICATE_RE` 里、是合法小句开头，于是 `纪要是有用的` 照旧开框架、
+    把 `是否` 中和掉（base 是 False——危险方向，第七十五轮）。
+
+    ⚠️ 这条缺口是**派生测试的固有盲区**：原来那条只喂名词补语，
+    9 名词 × 5 谓词补语的 45 个组合一个都没跑过。补上左界之后两侧都盖到。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic.music_requests import is_explicit_music_cancellation
+
+    text = f'我想停止播放前先检查{noun}是{complement}是否合适'
+    assert is_explicit_music_cancellation(text) is False, text
+
+
+@pytest.mark.parametrize("verb", ["成", "迁", "遷", "造", "将", "將", "俯"])
+def test_jiushi_shares_the_same_seam_as_jiusuan(verb):
+    """⚠️ `就是` 和 `就算` 坐在**同一个接缝**上（动词+就），两张左界黑名单原来
+    互不相交、各缺对方那一半。`成就是有奖励的` 比触发第七十一轮那条修复的
+    `造就算不算` 常见得多（base 是 False，第七十五轮）。
+    """  # noqa: DOCSTRING_CJK
+    from main_logic import music_requests as mr
+
+    for frame in ("就是", "就算"):
+        assert verb in mr._ZH_FRAME_LEFT_BLACKLIST[frame], (verb, frame)
+    assert mr.is_explicit_music_cancellation(
+        f'我想停止播放这个{verb}就是有奖励的是否合适'
+    ) is False, verb
