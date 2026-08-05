@@ -2847,7 +2847,8 @@ def test_the_nested_branch_only_applies_to_asymmetric_pairs():
         else:
             import re as _re
 
-            assert f"|{_re.escape(lo)}[^" in body, (lo, body)
+            # ⚠️ 嵌套支现在也带 temper（``lo(?!指令)[^…]``），不再是裸字符类。
+            assert f"|{_re.escape(lo)}(?:(?!" in body, (lo, body)
 
 
 def test_nesting_does_not_regress_the_bounded_scan():
@@ -4735,14 +4736,13 @@ def test_the_reachable_grammar_markers_are_actually_reachable():
     出来的：整行整行删表，测试全绿）。
     """  # noqa: DOCSTRING_CJK
     assert sorted(set(_JA_REACHABLE)) == [
-        "かな", "かも", "から", "が", "ください", "けど", "された", "される",
-        "しか", "している", "しない", "します", "しよう", "じゃない", "すべき",
-        "そうです", "たら", "だけ", "だっけ", "だった", "だって", "だな", "だね",
-        "だよ", "だろう", "てある", "ている", "ておく", "で", "である", "できる",
-        "でした", "でしょ", "です", "でも", "と", "という", "ながら", "など",
-        "に", "について", "に関して", "の", "ので", "は", "ばかり", "へ",
-        "ました", "ましょう", "ます", "ません", "まで", "みたい", "より",
-        "らしい", "を",
+        "かな", "かも", "から", "が", "ください", "けど", "された", "される", "しか", "している",
+        "しない", "します", "しよう", "じゃない", "すべき", "そうです", "たら", "だけ", "だっけ",
+        "だった", "だって", "だな", "だね", "だよ", "だろう", "てある", "ている", "ておく", "で",
+        "である", "できる", "でした", "でしょ", "です", "でも", "と", "という", "ながら", "など",
+        "に", "について", "に関して", "の", "ので", "は", "ばかり", "へ", "ました", "ましょう",
+        "ます", "ません", "まで", "みたい", "より", "らしい", "を", "下さい", "出来た", "出来ない",
+        "出来る",
     ]
     # ⚠️ 死条目**也**用相等断言钉住：再多一条就说明有人往表里加了永远打不中的
     # 标记。``そう？`` 的 ``？`` 是话题终结符，term 里不可能出现它。
@@ -5113,4 +5113,60 @@ def test_the_guanyu_template_shares_the_preposed_trigger_table(verb, prefix, exp
     """``关于`` 那条专用模板的触发词表原先还写死着，于是 ``關於工作就別提起了。``
     退回通用模板、把填充词 ``就`` 一起存下来（codex P2，简体同样）。"""  # noqa: DOCSTRING_CJK
     text = f"{prefix}{verb}了。"
+    assert expected in _zh_terms(text), (text, _zh_terms(text))
+
+
+# ── 57. temper 收进不情愿类 / 嵌套支也 temper / 汉字写法补齐 ──
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+@pytest.mark.parametrize("head", sorted(D._ZH_RELUCTANCE))
+def test_reluctance_directives_also_split_bracket_runs(opener, closer, head):
+    """temper 只认「否定词 + 动词」，``我不想 / 沒心情 / 懶得`` 那条模板漏在外面，
+    ``别提价格<预算.我不想聊收入>目标.`` 被并成一条（codex P2，简体回归）。"""  # noqa: DOCSTRING_CJK
+    text = f"别提价格{opener}预算.{head}聊收入{closer}目标."
+    assert f"价格{opener}预算" in _zh_terms(text), (text, _zh_terms(text))
+    assert f"价格{opener}预算.{head}聊收入{closer}目标" not in _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+def test_the_nested_branch_is_tempered_too(opener, closer):
+    """⚠️ 嵌套是**另一条**路径，只给外面那个单字分支加前视等于形同虚设。
+
+    引擎会走嵌套支把 ``<预算.别提收入>`` 整段当成一层嵌套吃下去，
+    ``别提价格<<预算.别提收入>目标>.`` 又被并成一条（codex P2，简体回归）。
+    和「嵌套支也要排句读」是同一处、同一个坑，第二次。
+    """  # noqa: DOCSTRING_CJK
+    text = f"别提价格{opener}{opener}预算.别提收入{closer}目标{closer}."
+    assert _zh_terms(text) == {f"价格{opener}{opener}预算", f"收入{closer}目标"}, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["別提案下さい。", "地域別講座下さい。", "別提案出来る。", "別提案出来ない。",
+     "別討論出来た。"],
+)
+def test_kanji_spellings_of_listed_markers_are_covered(text):
+    """``ください`` / ``できる`` 的**汉字写法**同样常见，表里只写假名等于漏了一半。
+
+    ⚠️ 这不是放宽判据，是把**已有表项**的正字法补齐——判据本身（哪些词标志日文句子）
+    一个字没动。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("别再提提出来的事。", "提出来的事"), ("別再提出来高。", "出来高"),
+     ("别再提下册。", "下册"), ("别再提出租车。", "出租车")],
+)
+def test_only_inflected_kanji_forms_are_added(text, expected):
+    """⚠️ 只补**带送假名**的活用形。裸的 ``出来`` / ``下`` 不能加——日文名词
+    ``出来高`` 和中文的 ``提出来`` / ``下册`` / ``出租车`` 都会被误伤。"""  # noqa: DOCSTRING_CJK
     assert expected in _zh_terms(text), (text, _zh_terms(text))
