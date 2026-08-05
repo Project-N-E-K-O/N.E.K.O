@@ -377,18 +377,26 @@ class NotifyMixin:
             return None
         return socket
 
-    async def _send_to_voice_owner(self, payload: dict) -> None:
-        """Best-effort push to the voice-lease holder; never raises."""
+    async def _send_to_voice_owner(self, payload: dict):
+        """Best-effort push to the voice-lease holder; never raises.
+
+        Returns the socket it actually reached, or None. Callers that need to
+        avoid a second copy must dedupe against THIS, not against a fresh
+        ``_voice_owner_socket()`` read: the send below is an await, and a lease
+        takeover inside it makes the second read a DIFFERENT socket, leaving the
+        one that just got the payload absent from the "already sent" set.
+        """
 
         socket = self._voice_owner_socket()
         if socket is None:
-            return
+            return None
         try:
             await socket.send_text(json.dumps(payload))
         except WebSocketDisconnect:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send To Voice Owner Error: {e}")
+        return socket
 
     async def send_status(self, message: str):
         """Send a status message to the frontend. message should be a JSON string {"code": "XXX", "details": {...}}, translated by the frontend via i18next."""
@@ -550,11 +558,19 @@ class NotifyMixin:
             # ASR mixin should keep today's behaviour, not have every audio
             # start refuse the microphone.
             payload["microphone_route"] = route_mode
+        # The sockets this call actually delivered to, recorded as it goes. Every
+        # membership below has to be answered from here rather than by re-reading
+        # self.websocket / _voice_owner_socket(): both can point somewhere else
+        # by the time the addressed send runs, and a socket that already got the
+        # payload would then look unserved (CodeRabbit).
+        delivered_to = []
+        display_socket = self.websocket
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            if display_socket and hasattr(display_socket, 'client_state') and display_socket.client_state == display_socket.client_state.CONNECTED:
                 data = json.dumps(payload)
                 try:
-                    await self.websocket.send_text(data)
+                    await display_socket.send_text(data)
+                    delivered_to.append(display_socket)
                 except WebSocketDisconnect:
                     # Isolated for the same reason as
                     # send_session_ended_by_server: the CONNECTED check and the
@@ -606,7 +622,9 @@ class NotifyMixin:
                 # isRecording true (which a game STT gate requires), releasing
                 # the game lease and closing hardware the text entry never
                 # meant to touch.
-                await self._send_to_voice_owner(dict(payload))
+                owner_socket = await self._send_to_voice_owner(dict(payload))
+                if owner_socket is not None:
+                    delivered_to.append(owner_socket)
             if also_notify is not None:
                 # Addressed delivery for a requester that neither plane is
                 # guaranteed to reach (Codex P2). The dedupe re-ack is the case:
@@ -617,17 +635,7 @@ class NotifyMixin:
                 # its promise until the 15s timeout, and that timeout's end_session
                 # tears down the session that just started.
                 await self._send_to_socket_if_new(
-                    also_notify,
-                    dict(payload),
-                    (
-                        self.websocket,
-                        # Mirrors the guard above: with a game owner the fan-out
-                        # never ran, so the lease socket has NOT been served and
-                        # must not be treated as already covered.
-                        self._voice_owner_socket()
-                        if getattr(self, "_voice_lease_owner", "none") != "game"
-                        else None,
-                    ),
+                    also_notify, dict(payload), delivered_to
                 )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.

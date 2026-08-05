@@ -201,10 +201,6 @@ async def test_cross_mode_background_start_does_not_restart():
     assert mgr._starting_session_count == 1
 
 
-# Mutable flag so the patched clock can be flipped from inside the wait loop.
-_stalled = {"on": False}
-
-
 def _make_deduping_manager(*, route_mode, session_input_mode="audio"):
     """Manager pre-positioned at the SAME-mode dedupe branch: an in-flight audio
     start occupies the count, and it has already settled the route to
@@ -446,21 +442,23 @@ async def test_same_mode_dedupe_measures_the_deadline_on_the_wall_clock(
     whose ack lands after the client has already given up and sent
     end_session."""
     real_monotonic = time.monotonic
-    _stalled["on"] = False
+    # Local rather than module-level: a shared mutable would couple this case to
+    # any future one that reuses it, and to test ordering (CodeRabbit).
+    stalled = {"on": False}
     # The counter will read ~0.1s of nominal sleep; the wall clock says the
     # frontend deadline is nearly spent. Scoped to the module under test --
     # patching stdlib time would hand the fake to every background thread too.
     patch_module_clock(
         monkeypatch,
         lifecycle_module,
-        monotonic=lambda: real_monotonic() + (14.0 if _stalled["on"] else 0.0),
+        monotonic=lambda: real_monotonic() + (14.0 if stalled["on"] else 0.0),
     )
     mgr = _make_deduping_manager(route_mode="blocked")
     calls = _record_dedupe_calls(mgr)
 
     async def _stall_the_loop():
         await asyncio.sleep(0.05)
-        _stalled["on"] = True
+        stalled["on"] = True
 
     stall = asyncio.create_task(_stall_the_loop())
     await _run_dedupe_start(mgr)

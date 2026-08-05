@@ -5702,14 +5702,18 @@ def test_session_started_ack_latches_a_blocked_microphone_route():
     started_handler = websocket_source.split(
         "S.isTextSessionActive = response.input_mode === 'text';", 1
     )[1].split("var _tiaStarted", 1)[0]
-    latch = started_handler.split("if (response.input_mode !== 'text'", 1)[1].split(
-        "}", 1
-    )[0]
+    latch = started_handler.split("S.voiceInputRouteBlocked = true;", 1)[0].rsplit(
+        "if (", 1
+    )[1]
+    # Only for a request this window actually made: the latch is set-only, so a
+    # blocked verdict belonging to another window's start would stick and this
+    # window's own healthy ack could not clear it.
+    assert "_ackAnswersThisWindow" in latch
+    assert "response.input_mode !== 'text'" in latch
     # Set-only, and only on a blocked verdict: the latch is sticky by design
     # (tearDownBlockedVoiceRoute relies on it surviving), and an ack that says
     # native/independent must not clear what a status verdict set.
     assert "response.microphone_route === 'blocked'" in latch
-    assert "S.voiceInputRouteBlocked = true;" in latch
     # Guarded on the field being present, so an older backend that omits it
     # keeps its current behaviour rather than refusing every microphone.
     assert "response.microphone_route !== 'blocked'" not in started_handler

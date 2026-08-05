@@ -4043,7 +4043,15 @@
                     // relies on it surviving), and clearing it from an ack
                     // would undo that. Guarded on the field being present so an
                     // older backend keeps exactly today's behaviour.
-                    if (response.input_mode !== 'text'
+                    // Gated on the request guard as well (CodeRabbit): the latch
+                    // is set-only, so a blocked verdict belonging to ANOTHER
+                    // window's start would stick, and this window's own healthy
+                    // ack could not clear it -- the microphone would refuse to
+                    // open even though the route re-decision succeeded. A window
+                    // with no start pending still latches: that is the case with
+                    // no other channel to learn the verdict from.
+                    if (_ackAnswersThisWindow
+                            && response.input_mode !== 'text'
                             && response.microphone_route === 'blocked') {
                         S.voiceInputRouteBlocked = true;
                     }

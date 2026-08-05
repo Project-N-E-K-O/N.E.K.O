@@ -3198,6 +3198,39 @@ async def test_dedupe_ack_reaches_the_requester_after_a_fail_closed_reroute():
     assert [json.loads(x) for x in requester.sent] == [expected]
 
 
+async def test_addressed_ack_dedupes_against_who_actually_got_it():
+    # CodeRabbit. The fan-out's send is an await, and a lease takeover inside it
+    # points _voice_owner_socket() at a DIFFERENT socket. Deduping against a
+    # fresh read would then miss the socket that just got the payload -- the
+    # requester -- and send it a second copy. One ack, one resolver, but the
+    # handler around it runs again in full: microphone teardown, composer
+    # visibility, the lot.
+    requester, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", requester)
+    mgr.websocket = chat
+
+    original_send = requester.send_text
+
+    async def _send_then_lose_the_lease(payload):
+        await original_send(payload)
+        # A third window claims the microphone while this send is in flight.
+        later, _ = _fake_socket_pair()
+        mgr._begin_voice_input_connection("socket-c")
+        _authorize_core_lease(mgr)
+        mgr._set_voice_input_websocket("socket-c", later)
+
+    requester.send_text = _send_then_lose_the_lease
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w5-1", also_notify=requester
+    )
+
+    assert len(requester.sent) == 1, "the requester must be acked exactly once"
+
+
 async def test_route_override_reports_blocked_over_a_live_healthy_route():
     # Codex P2. For a requester that LOST the voice lease while it waited, the
     # live route belongs to the new holder -- and it may well be healthy by
