@@ -1144,3 +1144,48 @@ async def test_a_rebind_also_records_who_asserted_it():
     )
     assert result.get("merged") is True
     assert _account_record("qq:2")["bound_by"] == "operator-b"
+
+
+async def test_unbind_clears_the_old_bind_actor():
+    """The old asserter did not assert the new standalone entity.
+
+    Carrying ``bound_by`` across the rollback makes the profile report that they
+    linked it at the UNBIND timestamp — an audit trail that starts lying exactly
+    when someone undoes a mistake.
+    """
+    await _open_gate()
+    entity_id = await trust_store.aensure_account("qq:1")
+    await trust_store.aensure_account("qq:2")
+    await trust_store.abind_account("qq:2", entity_id, bound_by="operator-a")
+    assert _account_record("qq:2")["bound_by"] == "operator-a"
+    await trust_store.aunbind_account("qq:2")
+    assert _account_record("qq:2").get("bound_by") is None
+    assert trust_store.trust_snapshot().profile("qq:2")["bound_by"] is None
+
+
+async def test_the_legacy_import_never_resurrects_a_forgotten_account():
+    """A privacy action must not be undone by a scheduled background job.
+
+    ``forget`` deletes the per-account sentinel along with the entity, and the
+    plugin re-pushes the frozen ledger on EVERY startup — so without a check the
+    very next start re-creates the account and restores its old adjustment.
+    """
+    source = "qq_auto_reply.business_config.speaker_trust_profiles.v1"
+    await trust_store.aimport_legacy_profiles(
+        platform="qq", source=source,
+        profiles={"1": {"adjustment": -0.08, "message_count": 4}}, final=True,
+    )
+    entity_id = trust_store.trust_snapshot().entity_of("qq:1")
+    assert entity_id is not None
+    await trust_store.aforget_entity(entity_id)
+    assert trust_store.trust_snapshot().entity_of("qq:1") is None
+
+    # The next startup re-push must leave it forgotten.
+    result = await trust_store.aimport_legacy_profiles(
+        platform="qq", source=source,
+        profiles={"1": {"adjustment": -0.08, "message_count": 4}}, final=True,
+    )
+    assert result["imported"] == []
+    assert {entry["reason"] for entry in result["skipped"]} == {"forgotten"}
+    assert trust_store.trust_snapshot().entity_of("qq:1") is None
+    assert trust_store.trust_snapshot().trust_inputs("qq:1") == (0.0, 0)

@@ -1268,12 +1268,26 @@ def _import_legacy_locked(
     imported: list[str] = []
     skipped: list[dict] = []
     dirty = False
+    # Accounts an operator explicitly forgot. The re-push runs on EVERY plugin
+    # startup by design, and forgetting an entity deletes the per-account
+    # sentinel along with it — so without this check the very next startup
+    # re-creates the account under a fresh entity and restores its old
+    # adjustment/message_count, silently undoing the forget. A privacy action
+    # undone by a scheduled background job is worse than one that never ran.
+    forgotten_accounts = {
+        account_id
+        for entry in (draft.pool.get("forgotten") or {}).values()
+        for account_id in ((entry or {}).get("accounts") or [])
+    }
     for bare_key, raw in (profiles or {}).items():
         account_id = normalize_account_id(f"{platform}:{str(bare_key).strip()}")
         if account_id is None or not isinstance(raw, dict):
             skipped.append({
                 "key": str(bare_key)[:64], "reason": "invalid_account_id",
             })
+            continue
+        if account_id in forgotten_accounts:
+            skipped.append({"key": str(bare_key)[:64], "reason": "forgotten"})
             continue
         record = draft.account(account_id, create=True, now=now)
         if record is None:  # pragma: no cover - defensive
@@ -1624,6 +1638,12 @@ def _unbind_locked(
     fresh = draft.create_entity(candidate, now=now)
     record["generation"] = generation
     record["bound_at"] = now
+    # The old asserter did NOT assert this new standalone entity. Carrying
+    # ``bound_by`` across the rollback would make ``/internal/trust/profile``
+    # report that they linked it at the unbind timestamp — an audit trail that
+    # starts lying precisely when someone undoes a mistake, which is the moment
+    # it most needs to be trusted.
+    record.pop("bound_by", None)
     fresh["accounts"][account_id] = record
     draft.pool["account_index"][account_id] = candidate
     remaining_adjustment = sum(

@@ -2775,6 +2775,30 @@ def _identity_error(exc) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
+def _require_loaded_identity_pool() -> None:
+    """Refuse identity mutations while the pool is read-only degraded.
+
+    ``_with_pool_write`` vetoes the write and returns ``persisted=False``, but
+    the endpoints would still answer 200 — so a human-triggered bind/unbind/
+    merge/forget silently becomes a no-op that reads as success. For unbind it
+    is worse than a no-op: ``_count_stranded_rows`` also resolves nothing on an
+    unloaded snapshot, so the operator's only remediation signal comes back as
+    a confident ``0``.
+
+    Same fail-closed rule already applied to ``scoped_forget``.
+    """
+    from memory import trust_store
+
+    if not trust_store.trust_snapshot().loaded:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "identity pool unreadable; identity changes are refused while "
+                "the trust pool is read-only, retry once it loads"
+            ),
+        )
+
+
 @app.get("/internal/trust/profile")
 async def get_trust_profile(account_id: str):
     """Read-only diagnostics for one account. Never returns the ledger rings."""
@@ -2871,6 +2895,7 @@ async def bind_identity_account(req: IdentityBindRequest):
     """
     from memory import trust_store
 
+    _require_loaded_identity_pool()
     try:
         return await trust_store.abind_account(
             req.account_id, req.entity_id, bound_by=req.bound_by,
@@ -2897,6 +2922,7 @@ async def unbind_identity_account(req: IdentityAccountRequest):
     """
     from memory import trust_store
 
+    _require_loaded_identity_pool()
     snapshot_before = trust_store.trust_snapshot()
     try:
         result = await trust_store.aunbind_account(req.account_id)
@@ -2913,6 +2939,7 @@ async def merge_identity_entities(req: IdentityMergeRequest):
     """Merge two entities. HUMAN-TRIGGERED ONLY. Idempotent/commutative/associative."""
     from memory import trust_store
 
+    _require_loaded_identity_pool()
     try:
         return await trust_store.amerge_entities(
             req.entity_id, req.other_entity_id,
@@ -2932,6 +2959,7 @@ async def forget_identity_entity(req: IdentityEntityRequest):
     """
     from memory import trust_store
 
+    _require_loaded_identity_pool()
     try:
         return await trust_store.aforget_entity(req.entity_id)
     except trust_store.TrustIdentityError as exc:

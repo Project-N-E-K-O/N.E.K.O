@@ -765,3 +765,40 @@ def test_stranded_row_counting_decodes_the_actor_segment():
     assert subject_actor(A1) == "111"
     assert subject_actor(P1) == "111"
     assert subject_actor(GROUP) is None
+
+
+async def test_identity_mutations_are_refused_while_the_pool_is_unreadable():
+    """A human-triggered mutation must not silently become a no-op.
+
+    ``_with_pool_write`` vetoes the write and reports ``persisted=False``, but a
+    200 reads as success — and for unbind it is worse: ``stranded_rows`` also
+    resolves nothing on an unloaded snapshot, so the operator's only remediation
+    signal comes back as a confident ``0``.
+    """
+    from app.memory_server import routes
+
+    await _linked("qq:111", "qq:222")
+    entity_id = _snap().entity_of("qq:111")
+    trust_store._set_load_failed(True)
+    try:
+        for call in (
+            routes.bind_identity_account(routes.IdentityBindRequest(
+                account_id="qq:333", entity_id=entity_id,
+            )),
+            routes.unbind_identity_account(routes.IdentityAccountRequest(
+                account_id="qq:222",
+            )),
+            routes.merge_identity_entities(routes.IdentityMergeRequest(
+                entity_id=entity_id, other_entity_id=entity_id,
+            )),
+            routes.forget_identity_entity(routes.IdentityEntityRequest(
+                entity_id=entity_id,
+            )),
+        ):
+            with pytest.raises(routes.HTTPException) as excinfo:
+                await call
+            assert excinfo.value.status_code == 503
+    finally:
+        trust_store._set_load_failed(False)
+    # Nothing was detached behind the 503.
+    assert _snap().same_entity("qq:111", "qq:222") is True
