@@ -1030,6 +1030,19 @@ class OpenClawAdapter:
         if not text:
             return {"is_magic_intent": False, "command": None, "source": "empty"}
 
+        # ⚠️⚠️ 字面命令在**最前面**判掉，不进 LLM。用户打出 `/stop` 意图毫无歧义，
+        # 让一个小模型来复核它是没有道理的——而在这之前它确实要复核：LLM 那条腿无条件
+        # 先跑，只要它返回一个 dict（哪怕说「不是命令」），规则层就再没机会说话，于是
+        # 打出来的 `/stop` 会被**静默丢弃**。实测：把 LLM 打桩成恒判 not-magic，
+        # `/stop` `stop` `/new` `/clear` `/daemon approve` 五条全丢。
+        #
+        # 这也顺手修掉下面那道自由文本过滤的误伤：`/new` `/clear` 只认字面命令，而
+        # 打出来的字面命令原本也要经 LLM 转一手，回来就被那道过滤当成「自由文本推断」
+        # 一起毙了。现在它根本到不了那一层。
+        literal = OpenClawAdapter.normalize_magic_command(text)
+        if literal:
+            return {"is_magic_intent": True, "command": literal, "source": "literal"}
+
         llm_result = await self._classify_magic_intent_with_llm(text)
         if isinstance(llm_result, dict):
             return _drop_commands_not_inferable_from_free_text(llm_result)
