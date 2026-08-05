@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_locking import file_lock, get_plugin_update_lock
 from plugin.server.infrastructure.config_merge import deep_merge
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
 from plugin.server.infrastructure.config_queries import load_plugin_config
 from plugin.server.infrastructure.config_storage import atomic_write_bytes, atomic_write_text
@@ -156,7 +156,7 @@ def _log_config_update_failure(
 
 def _resolve_config_path_for_update(*, operation: str, plugin_id: str) -> Path:
     try:
-        return get_plugin_config_path(plugin_id)
+        return ensure_plugin_runtime_config(plugin_id)
     except HTTPException as exc:
         _log_config_path_resolution_failure(operation=operation, plugin_id=plugin_id, exc=exc)
         raise
@@ -173,10 +173,10 @@ def _resolve_config_path_for_update(*, operation: str, plugin_id: str) -> Path:
 
 def replace_plugin_config(plugin_id: str, new_config: dict[str, object]) -> dict[str, object]:
     normalized_new_config = _ensure_string_key_mapping(new_config, field="config")
-    lock = get_plugin_update_lock(plugin_id)
     operation = "replace"
+    config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
+    lock = get_plugin_update_lock(plugin_id)
     with lock:
-        config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
         stage = "open"
         _log_config_update_start(operation=operation, plugin_id=plugin_id, config_path=config_path)
         try:
@@ -268,10 +268,10 @@ def replace_plugin_config(plugin_id: str, new_config: dict[str, object]) -> dict
 
 def update_plugin_config(plugin_id: str, updates: dict[str, object]) -> dict[str, object]:
     normalized_updates = _ensure_string_key_mapping(updates, field="updates")
-    lock = get_plugin_update_lock(plugin_id)
     operation = "update"
+    config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
+    lock = get_plugin_update_lock(plugin_id)
     with lock:
-        config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
         stage = "open"
         _log_config_update_start(operation=operation, plugin_id=plugin_id, config_path=config_path)
         try:
@@ -363,10 +363,10 @@ def update_plugin_config_toml(plugin_id: str, toml_text: str) -> dict[str, objec
         raise HTTPException(status_code=400, detail="toml_text cannot be None")
 
     parsed_new = parse_toml_text(toml_text, context=f"{plugin_id}.plugin.toml")
-    lock = get_plugin_update_lock(plugin_id)
     operation = "toml_update"
+    config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
+    lock = get_plugin_update_lock(plugin_id)
     with lock:
-        config_path = _resolve_config_path_for_update(operation=operation, plugin_id=plugin_id)
         stage = "open"
         _log_config_update_start(operation=operation, plugin_id=plugin_id, config_path=config_path)
         try:

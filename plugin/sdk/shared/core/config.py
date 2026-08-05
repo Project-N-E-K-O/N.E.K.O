@@ -146,7 +146,7 @@ class PluginConfig:
     """Plugin-facing config API.
 
     - `get/require/dump` read the current effective config
-    - `set/update` write to the active profile overlay
+    - `set/update` write to the plugin's persistent runtime config
     - `profile_*` methods manage profiles
     - `base_dump/base_get` read the base (non-profile) config
     """
@@ -195,16 +195,11 @@ class PluginConfig:
         return value
 
     async def set(self, path: str, value: JsonValue, *, timeout: float = 5.0) -> None:
-        active = await self._require_active_name(timeout=timeout)
-        current = await self._fetch_profile(active, timeout=timeout)
-        updated = _set_by_path(dict(current), path, value)
-        await self._upsert_profile(active, updated, timeout=timeout)
+        patch = _set_by_path({}, path, value)
+        await self._update_runtime_config(patch, timeout=timeout)
 
     async def update(self, patch: Mapping[str, JsonValue], *, timeout: float = 5.0) -> JsonObject:
-        active = await self._require_active_name(timeout=timeout)
-        current = await self._fetch_profile(active, timeout=timeout)
-        merged = deep_merge_config(current, patch)
-        return await self._upsert_profile(active, merged, timeout=timeout)
+        return await self._update_runtime_config(dict(patch), timeout=timeout)
 
     # --- base config reads ---
 
@@ -311,6 +306,17 @@ class PluginConfig:
         return normalized
 
     # --- internal helpers ---
+
+    async def _update_runtime_config(self, patch: JsonObject, *, timeout: float) -> JsonObject:
+        if timeout <= 0:
+            raise ValidationError("timeout must be > 0")
+        try:
+            raw = await self.ctx.update_own_config(dict(patch), timeout=timeout)
+        except AttributeError as error:
+            raise TransportError("ctx.update_own_config is not available") from error
+        except (RuntimeError, ValueError, TimeoutError, TypeError) as error:
+            raise TransportError(f"failed to update runtime config: {error}") from error
+        return unwrap_config_payload(raw)
 
     async def _require_active_name(self, *, timeout: float) -> str:
         active = await self.profile_active(timeout=timeout)

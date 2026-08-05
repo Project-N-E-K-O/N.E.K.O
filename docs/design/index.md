@@ -4,6 +4,10 @@ These documents preserve design intent and implementation context. They are grou
 
 > The current code and tests are authoritative. Read [Documentation Maintenance](/contributing/documentation) before treating a proposal or dated record as a current contract.
 
+## Active proposals
+
+- [N.E.K.O 插件替换与用户状态隔离：2–3 天重构提案](./plugin-package-lifecycle-proposal.zh-CN)
+
 ## Architecture and long-lived contracts
 
 - [Avatar performance module maintenance](./avatar-performance-module-maintenance)

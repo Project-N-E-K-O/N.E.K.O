@@ -197,11 +197,8 @@ async def test_core_config_plugins_router_behaviors() -> None:
     with pytest.raises((ValidationError, TransportError)):
         await cfg.require("feature.missing")
 
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.set("feature.flag", True)
-
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.update({"a": 1})
+    await cfg.set("feature.flag", True)
+    assert await cfg.update({"a": 1}) == {"a": 1}
 
     listed = await plugins.list()
     assert listed.is_ok()

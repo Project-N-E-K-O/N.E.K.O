@@ -541,8 +541,7 @@ async def test_core_config_error_paths() -> None:
     # get with missing path returns default (None)
     assert (await cfg_ok.get("missing", default=None)) is None
     assert (await cfg_ok.get("missing", default=1)) == 1
-    with pytest.raises(_CfgError):
-        await cfg_ok.set("", {"root": True})
+    await cfg_ok.set("", {"root": True})
     with pytest.raises(_CfgError):
         await cfg_ok.set("", 1)
 
@@ -665,8 +664,7 @@ async def test_core_config_remaining_error_paths() -> None:
         await cfg_bad.get("x")
     with pytest.raises(_CfgErr):
         await cfg_bad.require("x")
-    with pytest.raises(_CfgErr):
-        await cfg_bad.set("x", 1)
+    await cfg_bad.set("x", 1)
 
 
 def test_sdk_bus_context_missing_namespaces_return_empty_lists() -> None:
@@ -1487,10 +1485,8 @@ async def test_core_config_profile_error_paths() -> None:
             return {"config": updates}
 
     fallback = core_config.PluginConfig(_NoProfileApis())
-    with pytest.raises(Exception):
-        await fallback.set("x", 1)
-    with pytest.raises(Exception):
-        await fallback.update({"x": 1})
+    await fallback.set("x", 1)
+    assert await fallback.update({"x": 1}) == {"x": 1}
 
     class _NoActive(_CtxProfilesWrite):
         def __init__(self) -> None:
@@ -1502,10 +1498,8 @@ async def test_core_config_profile_error_paths() -> None:
     assert (await ensured.profile_active()) == "runtime"
 
     no_active = core_config.PluginConfig(_NoActive())
-    with pytest.raises(Exception):
-        await no_active.set("x", 1)
-    with pytest.raises(Exception):
-        await no_active.update({"x": 1})
+    await no_active.set("x", 1)
+    assert await no_active.update({"x": 1}) == {"x": 1}
 
 
 @pytest.mark.asyncio
