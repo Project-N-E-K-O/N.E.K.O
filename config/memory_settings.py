@@ -325,15 +325,19 @@ IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8
 
 
 def _assert_activity_bonus_reachable() -> None:
-    """启动断言：activity 的计数 cap 必须够得到 MAX_BONUS。
+    """Startup assertion: the activity count cap must be able to reach MAX_BONUS.
 
-    读侧算式是 `min(MAX_BONUS, min(cap, Σmc) * WEIGHT)`，其中
-    `cap = ceil(MAX_BONUS / WEIGHT)`。两道上限在数值上互为冗余——**正是这份
-    冗余在挡多账号刷分**：删掉外层 `min(MAX_BONUS, ...)` 后上确界变成
-    `0.02 * N`，N=8 就是 0.16 > 仲裁 margin 0.15，是真实可达的击穿。而外层
-    那个 min 在重构中极易被当成「被 cap 蕴含」而删掉。这条断言保的是另一半：
-    任一常量漂移导致 cap 够不到 MAX_BONUS 时立刻 fail loud，而不是静默地让
-    活跃度上限变成一个谁也没声明过的数。
+    The read-side formula is ``min(MAX_BONUS, min(cap, sum_mc) * WEIGHT)`` with
+    ``cap = ceil(MAX_BONUS / WEIGHT)``. The two ceilings are numerically
+    redundant, and THAT REDUNDANCY IS WHAT BLOCKS MULTI-ACCOUNT FARMING:
+    deleting the outer ``min(MAX_BONUS, ...)`` makes the supremum ``0.02 * N``,
+    which at N=8 is 0.16 — past the 0.15 arbitration margin, and reachable in
+    practice. That outer min is exactly the kind of thing a refactor deletes as
+    "implied by the cap".
+
+    This assertion guards the other half: if any constant drifts so that the
+    cap can no longer reach MAX_BONUS, fail loud instead of silently turning
+    the activity ceiling into a number nobody declared.
     """
     import math
 

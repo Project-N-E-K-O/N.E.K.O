@@ -701,6 +701,10 @@ class TrustSnapshot:
         for record in (entity.get("accounts") or {}).values():
             if not isinstance(record, dict):
                 continue
+            # A hand-edited or half-written value must not take the whole
+            # read path down: skip that one component and keep summing the
+            # rest. Dropping a component can only SHRINK the sum, so the
+            # failure direction is under-count, never inflation.
             try:
                 adjustment += float(record.get("adjustment", 0.0) or 0.0)
             except (TypeError, ValueError, OverflowError):
@@ -718,8 +722,9 @@ class TrustSnapshot:
     ) -> float | None:
         """Resolve one segment's trust, or ``None`` to abstain.
 
-        EXACTLY THREE abstention conditions, in this order. Adding a fourth
-        silently changes arbitration behaviour and is forbidden:
+        EXACTLY THREE REQUEST-LEVEL abstention conditions, in this order.
+        Adding a fourth REQUEST-LEVEL condition silently changes arbitration
+        behaviour and is forbidden:
 
         1. ``account_id`` is missing or malformed;
         2. that platform's legacy barrier is still pending;
@@ -728,6 +733,14 @@ class TrustSnapshot:
         Specifically NOT abstention conditions: a missing ledger entry (the
         sums are ``(0.0, 0)`` and aggregation proceeds normally) and an empty
         entity (an empty sum is 0.0).
+
+        Plus ONE process-level gate on a different axis: if this process could
+        not read the pool at all, every read abstains. That is not a fourth
+        request condition — it is the same read-only degradation that already
+        makes ``same_entity`` return False, ``canonical_subject`` the identity,
+        and ``same_provenance_source`` "unknown". Without it a platform that has
+        no seeded barrier would keep stamping base-only scores while the
+        adjustments on disk are unreadable, i.e. recording a guess as a fact.
 
         ``None`` means the handler must not write the ``speaker_trust`` key at
         all, which keeps ``preferred_by_trust`` abstaining. Falling back to 0.5
@@ -739,6 +752,8 @@ class TrustSnapshot:
             SPEAKER_TRUST_MAX_REPORTED_BASE,
         )
 
+        if not self._loaded:
+            return None
         normalized = normalize_account_id(account_id)
         if normalized is None:
             return None
@@ -898,6 +913,12 @@ def _persist_draft_locked(draft: _Draft) -> bool:
         # the gate here would make a later reader believe a protection exists.
         atomic_write_json(pool_path(), draft.pool, indent=2, ensure_ascii=False)
     except BaseException as exc:  # noqa: BLE001 - never let a pool write escape
+        # BaseException, not Exception, ON PURPOSE. This runs inside a worker
+        # thread as the handler's post-commit step; letting ANY throwable out —
+        # including a KeyboardInterrupt or a MaintenanceModeError — would
+        # discard an already-durable fact write's response. The draft is
+        # dropped either way, so memory and disk cannot fork.
+        #
         # NEVER raise. The pool write happens after the facts are already
         # durable; a MaintenanceModeError here would be turned into a 409 that
         # discards the whole response body (per-segment status / fact_ids /

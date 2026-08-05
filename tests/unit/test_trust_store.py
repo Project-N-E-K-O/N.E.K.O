@@ -98,7 +98,7 @@ async def test_barrier_is_account_local_not_entity_global():
         assert snap.resolve_trust("bili:1", tier="normal") is None
 
 
-# ── resolve_trust: exactly three abstention conditions ──────────────────────
+# ── resolve_trust: three request conditions + one process-level gate ───────
 
 async def test_resolve_trust_has_exactly_three_none_conditions():
     """I-T-6. A fourth condition would silently change arbitration."""
@@ -114,6 +114,30 @@ async def test_resolve_trust_has_exactly_three_none_conditions():
     # ...and these are explicitly NOT abstention conditions:
     assert snap.resolve_trust("qq:unregistered", tier="none") is not None
     assert snap.trust_inputs("qq:unregistered") == (0.0, 0)
+
+
+async def test_an_unreadable_pool_abstains_on_every_platform():
+    """The process-level gate, on a different axis from the three above.
+
+    A platform with no seeded barrier would otherwise keep stamping base-only
+    scores while the adjustments on disk are unreadable — recording a guess as
+    a fact, in a process that has already stopped accepting writes.
+    """
+    await _open_gate()
+    snap = trust_store.trust_snapshot()
+    assert snap.resolve_trust("qq:1", tier="admin") is not None
+    assert snap.resolve_trust("bili:1", tier="admin") is not None
+    trust_store._set_load_failed(True)
+    try:
+        degraded = trust_store.trust_snapshot()
+        assert degraded.loaded is False
+        assert degraded.resolve_trust("qq:1", tier="admin") is None
+        # ``bili`` has no seeded barrier, so only the process-level gate can
+        # stop it — this is the case the barrier cannot cover.
+        assert degraded.resolve_trust("bili:1", tier="admin") is None
+        assert degraded.resolve_trust("bili:1", base=0.5) is None
+    finally:
+        trust_store._set_load_failed(False)
 
 
 async def test_missing_ledger_scores_from_the_permission_tier_alone():

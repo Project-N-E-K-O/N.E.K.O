@@ -1412,11 +1412,22 @@ def _trust_response_block(parsed: dict, result, outcome) -> dict:
     letting the caller pop would break that chain, and one disk hiccup would
     silently and permanently lose a ±0.04/0.08 owner correction.
 
-    ``persisted=null`` means this segment carried no server-derived trust
-    source at all, which is different from "the write failed".
+    ``persisted=null`` means this segment had NOTHING to settle, which is
+    different from "the write failed".
+
+    The reported condition is "did this segment attempt a pool mutation", NOT
+    "did it carry a tier". An owner segment sent before the migration push
+    lands still carries ``speaker_is_owner`` with no ``speaker_tier``, and the
+    route still evaluates, persists and folds its owner signals — reporting
+    ``null`` for those would let the caller pop a bucket whose correction was
+    deferred by the barrier or lost to a failed pool write.
     """
     trust_source = parsed.get("trust_source") or {}
-    if not trust_source.get("has_server_source"):
+    attempted = bool(
+        trust_source.get("has_server_source")
+        or parsed.get("trust_signal_events")
+    )
+    if not attempted:
         return {
             "resolved": parsed.get("speaker_trust"),
             "persisted": None,

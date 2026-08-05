@@ -2390,8 +2390,8 @@ def test_participant_activity_id_survives_a_character_name_with_spaces():
     """The wire pattern is anchored ``[A-Za-z0-9_.:-]{8,96}``.
 
     Emitting a raw ``participant:{her_name}:{epoch}:...`` would 422 the whole
-    request for a character named "猫娘 A" — and what gets stuck is not trust
-    but the entire scoped memory write.
+    request for any character whose name contains a space or a CJK character —
+    and what gets stuck is not trust but the entire scoped memory write.
     """
     import pydantic
 
@@ -2426,6 +2426,34 @@ def test_persisted_false_is_the_only_value_that_forces_a_retry():
     assert service._trust_persisted(None) is True
     assert service._trust_persisted({}) is True
     assert service._trust_persisted({"persisted": False}) is False
+
+
+def test_participant_activity_id_is_keyed_by_the_batch_start_cursor():
+    """A grown retry must reuse the id the server already committed.
+
+    The server settles activity BEFORE responding, so a lost response leaves
+    the pool updated while the plugin retains and retries. If the id also
+    encoded the batch's END cursor, a retry that picked up newer messages
+    would mint a fresh id and the already-counted prefix would be counted
+    again. Keying on the START cursor makes the retry collide instead —
+    under-counting the new tail, which is bounded by ACTIVITY_MAX_BONUS.
+    """
+    service = _memory_service()
+    committed = service._participant_activity_events_for(
+        "1001", [{"role": "user", "content": "a"}],
+        stable="participant:Neko:99:7",
+    )
+    grown_retry = service._participant_activity_events_for(
+        "1001",
+        [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        stable="participant:Neko:99:7",
+    )
+    assert grown_retry[0]["id"] == committed[0]["id"]
+    # A genuinely later batch starts at a different cursor and is distinct.
+    assert service._participant_activity_events_for(
+        "1001", [{"role": "user", "content": "c"}],
+        stable="participant:Neko:99:8",
+    )[0]["id"] != committed[0]["id"]
 
 
 def test_channel_is_read_from_the_message_envelope_not_live_config():

@@ -1414,11 +1414,13 @@ async def test_participant_history_reset_rotates_activity_epoch():
     )
     # The rotated epoch reaches the wire through the HASHED activity event id
     # (a raw identity string would 422 on any character name with a space).
+    # Keyed by the batch's START cursor only — see the comment at the call
+    # site: including the end cursor would renumber a grown retry.
     sent = _bridge.post_scoped_memory_history.await_args.kwargs[
         "speaker_activity_events"
     ]
     assert sent[0]["id"] == memory_service._activity_event_id(
-        "qq:1001", f"participant:Neko:{activity_epoch}:1:2",
+        "qq:1001", f"participant:Neko:{activity_epoch}:1",
     )
     assert sent[0]["id"].startswith("activity_")
 

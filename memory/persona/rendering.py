@@ -631,8 +631,11 @@ class RenderingMixin:
         seen_suppressed: set[str] = set()
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
-                if self._entry_is_skipped(entry, skipped):
+                if self._entry_is_skipped(entry, skipped, marker_aliases):
                     # 该 subject 整段被跳过了，它的免预算段也不能单独露出来。
+                    # 必须过 aliases：`skipped` 装的是参与者的 primary marker，
+                    # 而 suppress 条目可能戳在同一个人的非 canonical account 上，
+                    # 不折叠就会让整段被丢的参与者漏出一条残片。
                     continue
                 text = self._renderable_text(entry)
                 if text:

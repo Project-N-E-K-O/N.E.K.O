@@ -983,10 +983,19 @@ class QQSessionMemoryService:
                 participant_extra["speaker_activity_events"] = (
                     self._participant_activity_events_for(
                         sender_id, scoped_messages,
+                        # Keyed by the batch's START cursor only. Including
+                        # the end cursor would change the id whenever a lost
+                        # response is retried after new messages arrived: the
+                        # server already committed the original id, so the
+                        # grown retry would look like a fresh batch and count
+                        # the same prefix twice. Keying on the start makes the
+                        # retry collide with the committed id and be ignored —
+                        # under-counting the newly added tail instead, which is
+                        # fail-closed and bounded by ACTIVITY_MAX_BONUS (0.02).
                         stable=(
                             f"participant:{her_name}:"
                             f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
-                            f"{last_participant_digest_index}:{next_index}"
+                            f"{last_participant_digest_index}"
                         ),
                     )
                 )

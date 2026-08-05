@@ -289,6 +289,17 @@ class CorrectionsMixin:
             speaker_id = stable_speaker_id(provenance.get('speaker_id'))
             if speaker_id is not None:
                 item[f'{prefix}_speaker_id'] = speaker_id
+                # Carried so the same-person guard below still works when the
+                # pool cannot answer (unreadable file), where a live lookup
+                # returns "unknown" and would let one person's two accounts
+                # arbitrate against each other. NOT part of
+                # `_LEGACY_CORRECTION_IDENTITY_FIELDS`, so queue-row identity
+                # and dedup are unchanged.
+                entity_id = str(
+                    provenance.get('speaker_entity_id') or ''
+                ).strip()
+                if entity_id:
+                    item[f'{prefix}_speaker_entity_id'] = entity_id
                 raw_trust = provenance.get('speaker_trust')
                 trust = _normalized_correction_trust(raw_trust)
                 if trust is not None:

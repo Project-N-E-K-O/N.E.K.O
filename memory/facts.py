@@ -5140,9 +5140,13 @@ class FactStore:
             else:
                 entry['signal_processed'] = prev_signal
         for entry, previous in reversed(provenance_snapshots or []):
+            # Must be the SAME key set `_reconcile_existing_provenance` pops
+            # and rewrites — a key it wrote but this loop does not clear would
+            # survive the rollback and leave the cached row carrying an
+            # attribution that never reached disk.
             for key in (
                 'speaker_id', 'speaker_label', 'speaker_trust',
-                'speaker_provenance_mixed',
+                'speaker_entity_id', 'speaker_provenance_mixed',
             ):
                 entry.pop(key, None)
             entry.update(previous)

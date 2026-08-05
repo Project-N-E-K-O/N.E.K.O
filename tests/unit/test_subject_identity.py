@@ -413,3 +413,117 @@ async def test_random_request_shapes_never_produce_duplicate_slots():
         flat = {(item.key, item.scope) for item in flatten_groups(groups)}
         for subject in request:
             assert (subject.key, subject.scope) in flat
+
+
+# ── review round 1: the gaps the reviewer found ────────────────────────────
+
+def test_owner_signals_without_a_tier_still_report_persistence():
+    """An owner segment sent BEFORE the migration push must not be popped.
+
+    The plugin sets ``speaker_is_owner`` unconditionally but withholds
+    ``speaker_tier`` until the legacy push lands. The route still evaluates,
+    persists and folds that segment's owner signals, so reporting
+    ``persisted: null`` would let the caller pop a bucket whose correction was
+    deferred by the barrier or lost to a failed pool write — and the replay
+    ring is keyed on THIS request's text, so it would never come back.
+    """
+    from app.memory_server.routes import _trust_response_block
+    from memory.trust_store import MutationOutcome, TrustApplyResult
+
+    no_source = {"has_server_source": False}
+    # Nothing to settle at all ⇒ null is correct.
+    assert _trust_response_block(
+        {"trust_source": no_source}, None, MutationOutcome(),
+    )["persisted"] is None
+    # Owner signals but no tier ⇒ the write outcome MUST be reported.
+    failed = _trust_response_block(
+        {"trust_source": no_source, "trust_signal_events": ({"event_id": "e"},)},
+        TrustApplyResult(persisted=False),
+        MutationOutcome(),
+    )
+    assert failed["persisted"] is False
+    deferred = _trust_response_block(
+        {"trust_source": no_source, "trust_signal_events": ({"event_id": "e"},)},
+        TrustApplyResult(persisted=True),
+        MutationOutcome(signals_deferred=1),
+    )
+    assert deferred["persisted"] is True
+    assert deferred["gated"] == "legacy_import_pending"
+
+
+def test_a_skipped_participant_hides_its_suppressed_entries_too():
+    """Budget-exempt sections must follow their participant off the page.
+
+    ``skipped`` holds the participant's PRIMARY marker, but a suppressed entry
+    can be stamped on a non-canonical account of that same person. Without
+    folding through the aliases it bypasses the skip and renders as exactly the
+    fragment ``SCOPED_RENDER_SUBJECT_MIN_TOKENS`` exists to prevent.
+    """
+    from memory.persona.rendering import RenderingMixin
+
+    aliases = {
+        (A2.key, A2.scope): (A1.key, A1.scope),
+        (A1.key, A1.scope): (A1.key, A1.scope),
+    }
+    skipped = {(A1.key, A1.scope)}
+    non_canonical_entry = {"text": "x", "suppress": True, **A2.as_entry_fields()}
+    unrelated_entry = {"text": "y", "suppress": True, **OTHER.as_entry_fields()}
+    # Without aliases the non-canonical account's entry escapes the skip.
+    assert RenderingMixin._entry_is_skipped(
+        non_canonical_entry, skipped,
+    ) is False
+    # With them it is dropped along with the rest of its participant...
+    assert RenderingMixin._entry_is_skipped(
+        non_canonical_entry, skipped, aliases,
+    ) is True
+    # ...and an unrelated participant is untouched.
+    assert RenderingMixin._entry_is_skipped(
+        unrelated_entry, skipped, aliases,
+    ) is False
+
+
+async def test_correction_queue_carries_the_entity_id_for_offline_guarding():
+    """The same-person guard must survive a pool it cannot read.
+
+    With the pool loaded the live lookup answers; with it unreadable
+    ``same_provenance_source`` returns "unknown" and arbitration would proceed
+    between one person's two accounts — the exact self-arbitration the guard
+    exists to stop. The persisted entity id closes that window.
+    """
+    from memory.persona.corrections import CorrectionsMixin
+    from memory.speaker_trust import same_provenance_source
+
+    entity_id = await _linked("qq:111", "qq:222")
+    queued = CorrectionsMixin._build_correction_list(
+        [], "旧说法", "新说法", "关于主人",
+        old_speaker_provenance={
+            "speaker_id": "qq:111", "speaker_trust": 1.0,
+            "speaker_entity_id": entity_id,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:222", "speaker_trust": 0.3,
+            "speaker_entity_id": entity_id,
+        },
+    )
+    item = queued[0]
+    assert item["old_speaker_entity_id"] == entity_id
+    assert item["new_speaker_entity_id"] == entity_id
+    # The guard's own inputs resolve to "same person" WITHOUT touching the pool.
+    trust_store._set_load_failed(True)
+    try:
+        assert same_provenance_source(
+            {"speaker_id": item["old_speaker_id"],
+             "speaker_entity_id": item["old_speaker_entity_id"]},
+            {"speaker_id": item["new_speaker_id"],
+             "speaker_entity_id": item["new_speaker_entity_id"]},
+        ) is True
+    finally:
+        trust_store._set_load_failed(False)
+
+
+def test_the_queue_row_identity_is_unchanged_by_the_new_field():
+    """Adding a key must not alter dedup identity of queued corrections."""
+    from memory.persona.corrections import _LEGACY_CORRECTION_IDENTITY_FIELDS
+
+    assert "old_speaker_entity_id" not in _LEGACY_CORRECTION_IDENTITY_FIELDS
+    assert "new_speaker_entity_id" not in _LEGACY_CORRECTION_IDENTITY_FIELDS

@@ -158,8 +158,9 @@ def test_wire_activity_event_id_pattern_is_anchored():
     """The pre-existing unanchored pattern accepted literally everything.
 
     ``pattern=r"[A-Za-z0-9_.:-]+"`` is UNANCHORED SEARCH under pydantic v2, so
-    ``'participant:猫娘 A:12:34:56'`` and values containing newlines both
-    passed — i.e. the documented guard was empty.
+    a raw participant identity carrying a space (any character name with one)
+    and values containing newlines both passed — i.e. the documented guard was
+    empty. The rejected inputs below are the evidence.
     """
     import pydantic
 
