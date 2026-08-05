@@ -4713,3 +4713,50 @@ def test_the_string_start_frame_really_disables_the_kana_tail_guard():
     assert D._is_japanese_sentence_match("地域別提案スレ", "案スレ", "地域")
     # 而串首的 ``案です`` 被判成日文，只可能是语法表干的。
     assert D._is_japanese_sentence_match("別提案です", "案です", "")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 词头是**假名** → 判据不成立。这是这道守卫从第一轮起就在保的东西。
+        ("動畫別提ドラえもん。", "ドラえもん"),
+        ("動漫別提お兄ちゃん。", "お兄ちゃん"),
+        # 词头是**两个以上**汉字 → 判据不成立。日文那一侧的复合名词只吃掉一个字。
+        ("遊戲別提初音ミク。", "初音ミク"),
+        ("動畫別提美少女戰士セーラームーン。", "美少女戰士セーラームーン"),
+        ("動漫別提哆啦A梦。", "哆啦A梦"),
+    ],
+)
+def test_the_kana_tail_guard_only_fires_on_one_han_char(text, expected):
+    """⚠️ 「恰好一个汉字接假名」这个形状是判据的**全部**——两条都拿掉就会打死
+    这一批（变异跑出来的：我在别处量过这几句，却没写进测试）。
+
+    左邻都有标签词（動畫 / 遊戲 / 動漫），所以左界那条是成立的；把它们保下来的
+    只有 term 形状这一条。
+    """  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), text
+
+
+def test_the_stem_is_never_kana_or_latin_by_construction():
+    """`_HAN_RE.match(stem)` 那道闸是**结构不变量**，不是行为判据。
+
+    词干取的是捕获组左邻那个字符，而它只可能是动词末字（汉字）、停顿标点或空白
+    ——四条模板里没有一条会让假名 / 拉丁落在那个位置。所以「把闸拿掉」是**等价
+    变异**：找不到能把它测红的输入。这里直接钉住不变量本身。
+    """  # noqa: DOCSTRING_CJK
+    seen = set()
+    for text in (
+        "別提案あり。", "別討論あり。", "别再提，君の名は。", "别再提 君の名は。",
+        "关于君の名は就别提了。", "我不想聊君の名は。", "別提ドラえもん。",
+        "地域別提案スレ", "别叫我 John Smith。", "別再提Dr. Who。",
+    ):
+        for locale, _kind, pattern in D.DIRECTIVE_PATTERNS:
+            if locale != "zh":
+                continue
+            for match in pattern.finditer(text):
+                lo = match.start(1) - match.start()
+                if lo:
+                    seen.add(match.group(0)[lo - 1])
+    assert seen, "一条都没扫到，用例或取法不对"
+    assert not any(D._KANA_RE.match(c) for c in seen), sorted(seen)
+    assert not any(c.isascii() and c.isalnum() for c in seen), sorted(seen)
