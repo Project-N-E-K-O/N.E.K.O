@@ -206,6 +206,63 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
     }
 
 
+@pytest.mark.frontend
+def test_jukebox_loader_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.t = (key, fallback) => fallback || key;
+          window.__nekoJukeboxToggle = function() {};
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    restored = mock_page.evaluate(
+        """
+        async () => {
+          const calls = [];
+          window.lanlan_config = {
+            model_type: 'live3d',
+            live3d_sub_type: 'vrm',
+            vrmIdleAnimations: ['/static/vrm/animation/wait03.vrma?legacy=1']
+          };
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => calls.push(url)
+          };
+          await window.Jukebox.restoreIdleAnimation();
+          return calls;
+        }
+        """
+    )
+
+    assert restored == ["/static/vrm/animation/wait03.vrma.gz?legacy=1"]
+
+
+@pytest.mark.frontend
+def test_jukebox_transport_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
+    setup_jukebox_page(mock_page)
+
+    restored = mock_page.evaluate(
+        """
+        async () => {
+          const calls = [];
+          window.Jukebox.getModelType = () => 'vrm';
+          window.lanlan_config = {
+            vrmIdleAnimation: '/static/vrm/animation/wait03.vrma#saved'
+          };
+          window.vrmManager = {
+            playVRMAAnimation: async (url) => calls.push(url)
+          };
+          await window.Jukebox.restoreIdleAnimation();
+          return calls;
+        }
+        """
+    )
+
+    assert restored == ["/static/vrm/animation/wait03.vrma.gz#saved"]
+
+
 def test_jukebox_parts_are_loaded_in_directory_order():
     expected_paths = [f"/static/jukebox/jukebox/{part.name}" for part in JUKEBOX_PARTS]
 

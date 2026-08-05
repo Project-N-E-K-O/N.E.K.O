@@ -840,6 +840,9 @@ Object.assign(window.Jukebox, {
         if (!vrmIdleUrl) {
           vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma.gz';
         }
+        if (/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(String(vrmIdleUrl || ''))) {
+          vrmIdleUrl = String(vrmIdleUrl).replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+        }
         const restoreRequestId = ++Jukebox.State.playRequestId;
         await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
           loop: true,
