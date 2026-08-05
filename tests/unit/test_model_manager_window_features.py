@@ -25,10 +25,21 @@ def test_vrm_catalog_preview_pause_does_not_resume_catalog_base_motion():
     source = Path("static/js/model_manager/page-controller.js").read_text(
         encoding="utf-8"
     )
+    play_button_handler = source.split("if (playVrmAnimationBtn) {", 1)[1].split(
+        "// ======================== MMD 模型/动画列表",
+        1,
+    )[0]
+    pause_branch = play_button_handler.split("if (isVrmAnimationPlaying) {", 1)[
+        1
+    ].split("} else {", 1)[0]
 
     assert (
         "vrmMotionCatalogPlayer.cancel('model_manager_pause', { resume: false });"
-        in source
+        in pause_branch
+    )
+    assert "vrmManager.stopVRMAAnimation();" in pause_branch
+    assert pause_branch.index("cancel('model_manager_pause'") < pause_branch.index(
+        "vrmManager.stopVRMAAnimation();"
     )
 
 
