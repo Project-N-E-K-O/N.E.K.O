@@ -6195,6 +6195,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 向前兼容: string -> array
                 if (typeof vrmIdleAnims === 'string') vrmIdleAnims = vrmIdleAnims ? [vrmIdleAnims] : [];
                 if (Array.isArray(vrmIdleAnims)) {
+                    const idleAnimationContainer = document.getElementById('vrm-idle-animation-multiselect');
+                    const availableIdleAnimationValues = new Set(Array.from(
+                        idleAnimationContainer?.querySelectorAll('.idle-animation-options input[type="checkbox"]') || []
+                    ).map(input => input.value));
+                    vrmIdleAnims = vrmIdleAnims.map(url =>
+                        normalizeBundledVrmAnimationUrl(url, availableIdleAnimationValues));
                     setSelectedIdleAnimations('vrm-idle-animation-multiselect', vrmIdleAnims);
                     if (vrmIdleAnims.length > 0) {
                         startIdleRotation('vrm', vrmIdleAnims);
