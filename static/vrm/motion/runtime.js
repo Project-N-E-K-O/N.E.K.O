@@ -50,6 +50,7 @@
     let selectedMode = configuredMode();
     let readyPromise = null;
     let activeCharacterProfile = null;
+    let ownsPlayback = false;
     const emotionState = {
         value: 'neutral',
         since: 0,
@@ -93,17 +94,27 @@
     }
 
     function acquirePlaybackOwnership() {
+        if (ownsPlayback) {
+            window.__nekoMotionOwnsVrmPlayback = true;
+            return false;
+        }
+        ownsPlayback = true;
         window.__nekoMotionOwnsVrmPlayback = true;
         stopOfficialIdleRotation();
+        return true;
     }
 
     function releasePlaybackOwnership() {
+        const hadOwnership = ownsPlayback;
+        ownsPlayback = false;
         window.__nekoMotionOwnsVrmPlayback = false;
+        if (!hadOwnership) return false;
         const idleAnimations = configuredRestAnimations();
         if (vrmReady() && Array.isArray(idleAnimations) && idleAnimations.length
             && typeof window._startVrmIdleRotation === 'function') {
             window._startVrmIdleRotation(idleAnimations);
         }
+        return true;
     }
 
     function configuredRestAnimations() {
@@ -486,8 +497,7 @@
             locale: currentLocale(),
             officialEmotion: turn.officialEmotion || '',
             profilePreset: characterProfile().preset || '',
-            userText: turn.userText || '',
-            posture: player.stats().posture
+            userText: turn.userText || ''
         });
         let plan = decoratePlan(result.plan);
         const explicitIntents = new Set(turn.explicitIntents || []);
@@ -772,7 +782,7 @@
             if (!ready) return;
             if (!isCurrentTurn(turn)) return;
             if (typeof player.noteActivity === 'function') {
-                player.noteActivity('assistant-turn:' + String(turnId || Date.now()));
+                player.noteActivity();
             }
             maintainPersistentEmotion();
             if (!vrmReady()) {
@@ -886,12 +896,18 @@
         }
     }
 
+    let motionLifecycleBridgeBound = false;
     function bindMotionLifecycleBridge() {
+        if (motionLifecycleBridgeBound) return false;
         window.addEventListener('neko:motion-lifecycle-relay', handleMotionLifecycleBridge);
-        window.addEventListener('pagehide', function () {
-            window.removeEventListener('neko:motion-lifecycle-relay', handleMotionLifecycleBridge);
-        }, { once: true });
+        motionLifecycleBridgeBound = true;
         return true;
+    }
+
+    function unbindMotionLifecycleBridge() {
+        if (!motionLifecycleBridgeBound) return;
+        window.removeEventListener('neko:motion-lifecycle-relay', handleMotionLifecycleBridge);
+        motionLifecycleBridgeBound = false;
     }
 
     bindMotionLifecycleBridge();
@@ -959,14 +975,38 @@
             scanTurnText();
             maintainPersistentEmotion();
         } else {
+            releasePlaybackOwnership();
             releaseExpressionControl(false);
         }
     });
 
-    setInterval(function () {
-        if (activeTurn && !activeTurn.ended) scanTurnText();
-    }, POLL_INTERVAL_MS);
-    setInterval(maintainPersistentEmotion, 1000);
+    let scanTimer = null;
+    let emotionTimer = null;
+    function startMaintenanceTimers() {
+        if (scanTimer === null) {
+            scanTimer = setInterval(function () {
+                if (activeTurn && !activeTurn.ended) scanTurnText();
+            }, POLL_INTERVAL_MS);
+        }
+        if (emotionTimer === null) emotionTimer = setInterval(maintainPersistentEmotion, 1000);
+    }
+    function stopMaintenanceTimers() {
+        if (scanTimer !== null) clearInterval(scanTimer);
+        if (emotionTimer !== null) clearInterval(emotionTimer);
+        scanTimer = null;
+        emotionTimer = null;
+    }
+    window.addEventListener('pagehide', function () {
+        stopMaintenanceTimers();
+        unbindMotionLifecycleBridge();
+    });
+    window.addEventListener('pageshow', function (event) {
+        if (event && event.persisted) {
+            bindMotionLifecycleBridge();
+            startMaintenanceTimers();
+        }
+    });
+    startMaintenanceTimers();
     if (refreshMode() === 'vrm') void initialize();
 
     window.NekoMotion = Object.freeze({

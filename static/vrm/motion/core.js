@@ -2,7 +2,7 @@
     'use strict';
 
     const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt']);
-    const SEQUENCE_MARKERS = /^(?:随后|然后|接着|紧接着|随即|接下来|而后|再|又|then|next|afterward)$/iu;
+    const SEQUENCE_MARKERS = /^(?:随后|然后|接着|紧接着|随即|接下来|而后|then|next|afterward)$/iu;
     const PARALLEL_MARKERS = /^(?:同时|与此同时|一边|并且|and|while)$/iu;
     const CLAUSE_BOUNDARY = /([，,。.!！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|then|next|afterward|while)/giu;
     const BODY_TERMS = Object.freeze([
@@ -66,32 +66,25 @@
             .replace(/(?:\.vrma(?:\.gz)?)$/iu, '');
     }
 
+    function matchesTerm(source, term) {
+        if (!term) return false;
+        const needle = folded(term);
+        if (!needle) return false;
+        if (/^[A-Za-zÀ-žА-Яа-яЁё ]+$/u.test(needle)) {
+            const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp('(^|[^\\p{L}\\p{N}_])' + escaped + '(?=$|[^\\p{L}\\p{N}_])', 'iu').test(source);
+        }
+        return source.includes(needle);
+    }
+
     function includesAny(text, terms) {
         const source = folded(text);
-        return (terms || []).some(function (term) {
-            if (!term) return false;
-            const needle = folded(term);
-            if (!needle) return false;
-            if (/^[A-Za-zÀ-žА-Яа-яЁё ]+$/u.test(needle)) {
-                const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                return new RegExp('(^|[^\\p{L}\\p{N}_])' + escaped + '(?=$|[^\\p{L}\\p{N}_])', 'iu').test(source);
-            }
-            return source.includes(needle);
-        });
+        return (terms || []).some(function (term) { return matchesTerm(source, term); });
     }
 
     function matchingTerms(text, terms) {
         const source = folded(text);
-        return (terms || []).filter(function (term) {
-            if (!term) return false;
-            const needle = folded(term);
-            if (!needle) return false;
-            if (/^[A-Za-zÀ-žА-Яа-яЁё ]+$/u.test(needle)) {
-                const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                return new RegExp('(^|[^\\p{L}\\p{N}_])' + escaped + '(?=$|[^\\p{L}\\p{N}_])', 'iu').test(source);
-            }
-            return source.includes(needle);
-        });
+        return (terms || []).filter(function (term) { return matchesTerm(source, term); });
     }
 
     function unique(values) {
@@ -359,6 +352,9 @@
             rows.forEach((asset) => {
                 const card = asset && asset.card;
                 if (!asset || !asset.m || !card || card.stableId !== asset.id) return;
+                if (this.actionCards.some(function (existing) {
+                    return existing.stableId === asset.id;
+                })) return;
                 const cardNameKey = actionNameKey(card.nameZh);
                 if (cardNameKey) {
                     const registeredCard = {
@@ -498,6 +494,7 @@
                 return unique(output).join('，');
             }
 
+            const matchedRules = [];
             this.pack.rules.forEach((rule) => {
                 let matchedLocale = null;
                 for (const candidateLocale of locales) {
@@ -517,13 +514,16 @@
                     }
                 }
                 if (!matchedLocale) return;
-
+                matchedRules.push({ rule: rule, locale: matchedLocale });
+            });
+            const maxRules = Number(this.pack.contract && this.pack.contract.maxPlanItems) || 3;
+            matchedRules.sort(function (left, right) {
+                return Number(right.rule.priority || 0) - Number(left.rule.priority || 0);
+            }).slice(0, maxRules).forEach(function (entry) {
                 // nameZh 是给人看的动作卡名称，不保证本身属于语义短语。
-                // 规范化链路必须输出一个能够稳定回到同一 intent 的权威短语，
-                // 不能再把自然语言名称二次猜测成别的动作。
-                output.push(localized(rule.phrases, 'zh-CN')[0] || rule.nameZh || rule.id);
-
-                const style = styleFor(source, rule.styles, matchedLocale);
+                output.push(localized(entry.rule.phrases, 'zh-CN')[0]
+                    || entry.rule.nameZh || entry.rule.id);
+                const style = styleFor(source, entry.rule.styles, entry.locale);
                 if (style.name && STYLE_ZH[style.name]) output.push(STYLE_ZH[style.name]);
             });
 

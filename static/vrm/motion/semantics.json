@@ -653,7 +653,7 @@
     },
     "ru": {
       "negation": [
-        "не ",
+        "не",
         "никогда",
         "перестал",
         "отмена"
@@ -684,7 +684,7 @@
     },
     "es": {
       "negation": [
-        "no ",
+        "no",
         "nunca",
         "deja de",
         "cancelar"
@@ -715,7 +715,7 @@
     },
     "pt": {
       "negation": [
-        "não ",
+        "não",
         "nunca",
         "parou de",
         "cancelar"
@@ -3504,7 +3504,7 @@
       "styles": {},
       "blocks": [],
       "replaces": [],
-      "emotion": "surprised",
+      "emotion": "fearful",
       "nameZh": "情绪过载地挥动身体"
     },
     {

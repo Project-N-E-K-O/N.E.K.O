@@ -5680,6 +5680,37 @@ def test_session_ended_by_server_stops_assistant_text_output():
     )
 
 
+def test_text_request_context_is_recorded_only_after_successful_send():
+    buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    send_block = _block_after(
+        buttons_source,
+        "async function sendTextPayloadInternal(rawText, options) {",
+    )
+    text_branch = _block_after(send_block, "if (text) {")
+    assert text_branch.index("S.socket.send(JSON.stringify(textMessage));") < text_branch.index(
+        "rememberSentTextRequest();"
+    )
+    assert "ensureRequestTextStore('_nekoMotionPendingUserTextByRequest')[requestId]" in send_block
+    assert "ensureRequestTextStore('_lastSubmittedTextByRequest')[requestId]" in send_block
+    assert "clearPendingTextRequest();" in send_block
+
+    turn_start_block = _block_after(
+        websocket_source,
+        "function ensureAssistantTurnStarted(source, serverTurnId, responseMeta, requestId) {",
+    )
+    assert "pendingTextForRequest('_nekoMotionPendingUserTextByRequest', resolvedRequestId)" in turn_start_block
+    assert "window._nekoMotionPendingUserTextRequestId === resolvedRequestId" in turn_start_block
+
+    rollback_helper = _block_after(
+        websocket_source,
+        "function clearPendingRollbackForRequest(requestId) {",
+    )
+    assert "delete window._lastSubmittedTextByRequest[requestId];" in rollback_helper
+    assert "delete window._nekoMotionPendingUserTextByRequest[requestId];" in rollback_helper
+
+
 def test_ws_open_resyncs_goodbye_state_and_defers_regular_greeting_until_release():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

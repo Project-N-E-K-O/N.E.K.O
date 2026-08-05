@@ -1303,13 +1303,32 @@
     }
 
     function clearPendingRollbackForRequest(requestId) {
-        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+        var preserveReactDraft = arguments[1] === true;
+        if (!preserveReactDraft && window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
             window.reactChatWindowHost.clearPendingRollbackDraft(requestId);
+        }
+        if (requestId && window._lastSubmittedTextByRequest) {
+            delete window._lastSubmittedTextByRequest[requestId];
+        }
+        if (requestId && window._nekoMotionPendingUserTextByRequest) {
+            delete window._nekoMotionPendingUserTextByRequest[requestId];
+        }
+        if (requestId && window._nekoMotionPendingUserTextRequestId === requestId) {
+            window._nekoMotionPendingUserText = '';
+            window._nekoMotionPendingUserTextRequestId = '';
         }
         if (requestId && window._lastSubmittedRequestId === requestId) {
             window._lastSubmittedText = '';
             window._lastSubmittedRequestId = '';
         }
+    }
+
+    function pendingTextForRequest(storeName, requestId) {
+        if (!requestId) return '';
+        var store = window[storeName];
+        if (!store || typeof store !== 'object'
+                || !Object.prototype.hasOwnProperty.call(store, requestId)) return '';
+        return String(store[requestId] || '');
     }
 
     function isNewUserIcebreakerMirrorTurnEnd(response) {
@@ -1549,6 +1568,16 @@
             return null;
         }
 
+        var resolvedRequestId = resolveAssistantRequestId(requestId, responseMeta);
+        var motionUserText = pendingTextForRequest('_nekoMotionPendingUserTextByRequest', resolvedRequestId);
+        if (!motionUserText && (!resolvedRequestId
+                || window._nekoMotionPendingUserTextRequestId === resolvedRequestId)) {
+            motionUserText = String(window._nekoMotionPendingUserText || '');
+        }
+        if (!motionUserText && (!resolvedRequestId
+                || window._lastSubmittedRequestId === resolvedRequestId)) {
+            motionUserText = String(window._lastSubmittedText || '');
+        }
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
@@ -1557,12 +1586,15 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
-            requestId: resolveAssistantRequestId(requestId, responseMeta),
+            requestId: resolvedRequestId,
             source: source || 'visible_gemini_bubble',
             meta: responseMeta,
-            userText: String(window._nekoMotionPendingUserText || window._lastSubmittedText || '').slice(0, 1000)
+            userText: motionUserText.slice(0, 1000)
         });
-        window._nekoMotionPendingUserText = '';
+        if (!resolvedRequestId || window._nekoMotionPendingUserTextRequestId === resolvedRequestId) {
+            window._nekoMotionPendingUserText = '';
+            window._nekoMotionPendingUserTextRequestId = '';
+        }
         logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
             source: source || 'visible_gemini_bubble',
             serverTurnId: normalizeAssistantTurnId(serverTurnId),
@@ -2577,32 +2609,22 @@
                             window.reactChatWindowHost.rollbackLastDraft(response.request_id);
                         }
                         var legacyInput = document.getElementById('textInputBox');
-                        if (legacyInput && !legacyInput.value &&
-                            response.request_id && window._lastSubmittedRequestId === response.request_id &&
-                            window._lastSubmittedText) {
-                            legacyInput.value = window._lastSubmittedText;
-                            window._lastSubmittedText = '';
-                            window._lastSubmittedRequestId = '';
+                        var rollbackText = pendingTextForRequest('_lastSubmittedTextByRequest', response.request_id);
+                        if (!rollbackText && response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                            rollbackText = String(window._lastSubmittedText || '');
                         }
+                        if (legacyInput && !legacyInput.value &&
+                            response.request_id && rollbackText) {
+                            legacyInput.value = rollbackText;
+                        }
+                        clearPendingRollbackForRequest(response.request_id, true);
                     } else if (_isLengthTruncated) {
                         // Suppress toast / error bubble. Keep the user's input cleared
                         // (truncated answer is a valid completion, no retry needed).
-                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                            window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
-                        }
-                        if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                            window._lastSubmittedText = '';
-                            window._lastSubmittedRequestId = '';
-                        }
+                        clearPendingRollbackForRequest(response.request_id);
                     } else {
                         if (!response.will_retry) {
-                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
-                                window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
-                            }
-                            if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
-                                window._lastSubmittedText = '';
-                                window._lastSubmittedRequestId = '';
-                            }
+                            clearPendingRollbackForRequest(response.request_id);
                         }
                         var retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
                         var failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
@@ -2657,10 +2679,19 @@
                     removeExternalAsrPreview();
                     var normalizedVoiceTranscript = String(response.text || '').trim();
                     if (normalizedVoiceTranscript) {
+                        var voiceRequestId = resolveAssistantRequestId(response.request_id, response.meta);
                         window._nekoMotionPendingUserText = normalizedVoiceTranscript.slice(0, 1000);
+                        window._nekoMotionPendingUserTextRequestId = voiceRequestId || '';
+                        if (voiceRequestId) {
+                            if (!window._nekoMotionPendingUserTextByRequest
+                                    || typeof window._nekoMotionPendingUserTextByRequest !== 'object') {
+                                window._nekoMotionPendingUserTextByRequest = Object.create(null);
+                            }
+                            window._nekoMotionPendingUserTextByRequest[voiceRequestId] = normalizedVoiceTranscript.slice(0, 1000);
+                        }
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
-                                requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                requestId: voiceRequestId,
                                 source: 'voice'
                             }
                         }));

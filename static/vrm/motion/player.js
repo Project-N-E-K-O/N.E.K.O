@@ -117,7 +117,7 @@
                     && asset.packedSha && asset.decodedSha
                     && ['none', 'gzip'].includes(asset.compression);
             });
-            if (isPublicRelease && this.assets.some(function (asset) {
+            if (isPublicRelease && manifest.assets.some(function (asset) {
                 return asset.ok !== true || asset.license === '?' || !asset.license;
             })) {
                 throw new Error('Public motion pack contains an unapproved or unlicensed asset');
@@ -575,7 +575,7 @@
             return true;
         }
 
-        noteActivity(seed) {
+        noteActivity() {
             this.idleActivityVersion += 1;
             this._clearIdleSwitch();
             return true;

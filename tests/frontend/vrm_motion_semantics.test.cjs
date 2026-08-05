@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const root = process.cwd();
+const root = path.resolve(__dirname, '..', '..');
 global.window = global;
 global.document = { documentElement: { lang: 'zh-CN' } };
 global.navigator = { language: 'zh-CN' };
@@ -16,6 +16,16 @@ vm.runInThisContext(
 const semantics = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/semantics.json'), 'utf8'));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/manifest.json'), 'utf8'));
 const core = new global.NekoMotionCore(semantics).registerActionCards(manifest.assets);
+const registeredCardCount = core.actionCards.length;
+const registeredRuleCount = core.pack.rules.length;
+core.registerActionCards(manifest.assets);
+assert.equal(core.actionCards.length, registeredCardCount, 'card registration must be idempotent');
+assert.equal(core.pack.rules.length, registeredRuleCount, 'rule registration must be idempotent');
+Object.values(semantics.common).forEach(function (common) {
+    (common.negation || []).forEach(function (term) {
+        assert.equal(term, term.trim(), 'negation terms must not contain edge whitespace');
+    });
+});
 
 function intent(text, options) {
     const result = core.analyze(text, Object.assign({ locale: 'zh-CN' }, options));
@@ -54,17 +64,18 @@ assert.notEqual(intent('只是听着钢琴曲'), 'piano');
 assert.notEqual(intent('停下舞步，只听着音乐'), 'dance');
 
 const bracketed = '（轻轻点头）我这就坐下陪你。';
+const bracketedStages = global.NekoMotionText.extractClosedStages(bracketed);
+assert.equal(bracketedStages.length, 1);
 const bracketPlan = core.analyze(
-    global.NekoMotionText.extractClosedStages(bracketed)[0].raw,
+    bracketedStages[0].raw,
     { locale: 'zh-CN' }
 );
-const prosePlan = core.analyzeSpeech(bracketed, { locale: 'zh-CN', posture: 'stand' });
+const prosePlan = core.analyzeSpeech(bracketed, { locale: 'zh-CN' });
 assert.equal(bracketPlan.plan[0].intent, 'nod');
 assert.deepEqual(prosePlan.plan.map(function (item) { return item.intent; }), ['sit']);
 
 const sequence = core.analyzeSpeech('我先坐起来，然后站好。', {
-    locale: 'zh-CN',
-    posture: 'lie'
+    locale: 'zh-CN'
 });
 assert.deepEqual(sequence.plan.map(function (item) { return item.intent; }), ['sit', 'recover']);
 
@@ -81,14 +92,13 @@ const recoveryByLocale = [
 
 recoveryByLocale.forEach(function ([locale, directText, acknowledgement, userText]) {
     assert.equal(
-        core.analyzeSpeech(directText, { locale: locale, posture: 'lie' }).plan[0].intent,
+        core.analyzeSpeech(directText, { locale: locale }).plan[0].intent,
         'recover',
         locale + ' direct recovery'
     );
     assert.equal(
         core.analyzeSpeech(acknowledgement, {
             locale: locale,
-            posture: 'lie',
             userText: userText
         }).plan[0].intent,
         'recover',
@@ -106,7 +116,6 @@ const acknowledgedPostures = [
 acknowledgedPostures.forEach(function ([userText, expectedIntent, expectedStyle]) {
     const result = core.analyzeSpeech('好的，我明白了。', {
         locale: 'zh-CN',
-        posture: 'lie',
         userText: userText
     });
     assert.equal(result.plan[0].intent, expectedIntent, userText);
@@ -114,20 +123,30 @@ acknowledgedPostures.forEach(function ([userText, expectedIntent, expectedStyle]
 });
 
 assert.deepEqual(core.analyzeSpeech('好的，但我这就站起来。', {
-    locale: 'zh-CN', posture: 'lie', userText: '你坐下吧'
+    locale: 'zh-CN', userText: '你坐下吧'
 }).plan.map(function (item) { return item.intent; }), ['recover']);
 assert.deepEqual(core.analyzeSpeech('好的，不过我这就坐下。', {
-    locale: 'zh-CN', posture: 'stand', userText: '你站起来吧'
+    locale: 'zh-CN', userText: '你站起来吧'
 }).plan.map(function (item) { return item.intent; }), ['sit']);
 
 assert.equal(core.analyzeSpeech('您先别急着起身。', {
-    locale: 'zh-CN', posture: 'lie'
+    locale: 'zh-CN'
 }).plan.length, 0);
 assert.equal(core.analyzeSpeech('我帮你坐起来。', {
-    locale: 'zh-CN', posture: 'lie'
+    locale: 'zh-CN'
 }).plan.length, 0);
 
 assert.notEqual(intent('Please wait while I check that.', { locale: 'en' }), 'plead');
+
+const boundedFrame = core.toChineseFrame('nod, shake head, wave, clap and dance', 'en');
+assert.ok(
+    boundedFrame.split('，').length <= semantics.contract.maxPlanItems,
+    'normalization must honor maxPlanItems'
+);
+assert.equal(
+    semantics.rules.find(function (rule) { return rule.id === 'overwhelm'; }).emotion,
+    'fearful'
+);
 
 assert.deepEqual(
     global.NekoMotionText.extractClosedStages('（轻轻点头）好的').map(function (stage) { return stage.raw; }),

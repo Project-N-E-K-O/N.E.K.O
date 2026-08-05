@@ -2946,16 +2946,51 @@
             }).filter(Boolean);
             var optimisticImageUrls = pendingAttachmentUrls.concat(extraImageDataUrls);
 
-            // Store last submitted text for rollback on RESPONSE_TOO_LONG.
-            // Clear stale text for pure-screenshot submissions.
-            window._lastSubmittedText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
-            window._lastSubmittedRequestId = window._lastSubmittedText ? requestId : '';
-            window._nekoMotionPendingUserText = window._lastSubmittedText;
+            var rollbackText = typeof options.rollbackText === 'string' ? options.rollbackText : text;
             var isReactWindowSource = options.source === 'react-chat-window';
             var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
+
+            function ensureRequestTextStore(name) {
+                var current = window[name];
+                if (!current || typeof current !== 'object') {
+                    current = Object.create(null);
+                    window[name] = current;
+                }
+                return current;
+            }
+
+            function rememberSentTextRequest() {
+                // Record request context only after WebSocket.send succeeds. This
+                // prevents a failed submission from driving a later assistant turn.
+                ensureRequestTextStore('_nekoMotionPendingUserTextByRequest')[requestId] = text.slice(0, 1000);
+                window._nekoMotionPendingUserText = text.slice(0, 1000);
+                window._nekoMotionPendingUserTextRequestId = requestId;
+                if (rollbackText) {
+                    ensureRequestTextStore('_lastSubmittedTextByRequest')[requestId] = rollbackText;
+                    window._lastSubmittedText = rollbackText;
+                    window._lastSubmittedRequestId = requestId;
+                }
+            }
+
+            function clearPendingTextRequest() {
+                if (window._nekoMotionPendingUserTextByRequest) {
+                    delete window._nekoMotionPendingUserTextByRequest[requestId];
+                }
+                if (window._lastSubmittedTextByRequest) {
+                    delete window._lastSubmittedTextByRequest[requestId];
+                }
+                if (window._nekoMotionPendingUserTextRequestId === requestId) {
+                    window._nekoMotionPendingUserText = '';
+                    window._nekoMotionPendingUserTextRequestId = '';
+                }
+                if (window._lastSubmittedRequestId === requestId) {
+                    window._lastSubmittedText = '';
+                    window._lastSubmittedRequestId = '';
+                }
+            }
 
             // Record user input time and reset proactive chat
             window.lastUserInputTime = Date.now();
@@ -3112,6 +3147,7 @@
                     refreshHomeTutorialLockedControls(false);
 
                     updateReactOptimisticMessageStatus('failed');
+                    clearPendingTextRequest();
                     return false; // Don't send if session start failed
                 }
             }
@@ -3140,6 +3176,7 @@
                                     try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
                                 }
                                 S.socket.send(JSON.stringify(msg));
+                                sentUserContent = true;
                             }
                         }
 
@@ -3179,6 +3216,7 @@
                                 extraMessage.source = messageSource;
                             }
                             S.socket.send(JSON.stringify(extraMessage));
+                            sentUserContent = true;
                         }
 
                         sentUserContent = true;
@@ -3213,6 +3251,8 @@
                             textMessage.source = messageSource;
                         }
                         S.socket.send(JSON.stringify(textMessage));
+                        sentUserContent = true;
+                        rememberSentTextRequest();
 
                         if (!options.preserveInputValue) {
                             textInputBox.value = '';
@@ -3222,8 +3262,6 @@
                                 skipReactSync: sentImageUrls.length > 0
                             });
                         }
-                        sentUserContent = true;
-
                         // Achievement: meow detection
                         if (window.incrementAchievementCounter && options.countTextForMeowAchievement !== false) {
                             var meowPattern = /\u55B5|miao|meow|nya[no]?|\u306B\u3083|\uB0E5|\u043C\u044F\u0443/i;
@@ -3274,6 +3312,7 @@
                 } catch (sendError) {
                     console.error('[Chat] send text payload failed:', sendError);
                     updateReactOptimisticMessageStatus('failed');
+                    if (!sentUserContent) clearPendingTextRequest();
                     window.showStatusToast(
                         window.t
                             ? window.t('app.sendFailed', { error: sendError.message })
@@ -3284,6 +3323,7 @@
                 }
             } else {
                 updateReactOptimisticMessageStatus('failed');
+                clearPendingTextRequest();
                 window.showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket\u672A\u8FDE\u63A5\uFF01', 4000);
                 return false;
             }

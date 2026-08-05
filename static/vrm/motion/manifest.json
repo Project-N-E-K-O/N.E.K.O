@@ -3074,7 +3074,9 @@
           "身体",
           "手臂"
         ],
-        "emotions": [],
+        "emotions": [
+          "fearful"
+        ],
         "default": false,
         "inputPose": "stand",
         "resultPose": "stand",

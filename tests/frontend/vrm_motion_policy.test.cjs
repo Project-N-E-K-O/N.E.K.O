@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const root = process.cwd();
+const root = path.resolve(__dirname, '..', '..');
 const motionRoot = path.join(root, 'static/vrm/motion');
 const manifest = JSON.parse(fs.readFileSync(path.join(motionRoot, 'manifest.json'), 'utf8'));
 const requiredLocales = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
@@ -15,6 +15,11 @@ assert.equal(manifest.policy.previewUnrated, false);
 assert.equal(manifest.assets.length, 75);
 assert.equal(manifest.counts.files, 75);
 assert.equal(manifest.counts.official, 13);
+assert.equal(manifest.assets.find(function (asset) { return asset.id === 'sit_01'; }).label, '半躺');
+assert.deepEqual(
+    manifest.assets.find(function (asset) { return asset.id === 'overwhelm_01'; }).card.emotions,
+    ['fearful']
+);
 
 manifest.assets.forEach(function (asset) {
     assert.equal(asset.ok, true, asset.id);
@@ -87,9 +92,21 @@ assert.equal(runtimeSource.includes("window.dispatchEvent(new CustomEvent(messag
 assert.match(runtimeSource, /await initialize\(\)/);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /casualTalkPending/);
-const nonVrmTurnBlock = runtimeSource.split("if (mode !== 'vrm') {")[1].split('}')[0];
+const nonVrmMarker = "if (mode !== 'vrm') {";
+const nonVrmParts = runtimeSource.split(nonVrmMarker);
+assert.equal(nonVrmParts.length, 2, 'non-VRM turn guard must remain unique');
+const nonVrmTurnBlock = nonVrmParts[1].split('}')[0];
 assert.match(nonVrmTurnBlock, /window\._nekoMotionPendingUserText = ''/);
 assert.ok(nonVrmTurnBlock.indexOf("window._nekoMotionPendingUserText = ''") < nonVrmTurnBlock.indexOf('return;'));
+const modeSetMarker = "window.addEventListener('neko-model-manager-mode-set'";
+const modeSetParts = runtimeSource.split(modeSetMarker);
+assert.equal(modeSetParts.length, 2, 'mode-set listener must remain unique');
+const modeSetBlock = modeSetParts[1].slice(0, 1800);
+assert.match(modeSetBlock, /else \{\s*releasePlaybackOwnership\(\)/);
+assert.match(runtimeSource, /function stopMaintenanceTimers\(\)/);
+assert.match(runtimeSource, /window\.addEventListener\('pagehide'/);
+assert.match(runtimeSource, /window\.addEventListener\('pageshow'/);
+assert.match(runtimeSource, /bindMotionLifecycleBridge\(\);\s*startMaintenanceTimers\(\)/);
 
 const modelManagerSource = fs.readFileSync(
     path.join(root, 'static/js/model_manager/page-controller.js'),
