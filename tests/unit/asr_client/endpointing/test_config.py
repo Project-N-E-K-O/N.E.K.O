@@ -10,6 +10,11 @@ def test_config_rejects_missing_vad_hysteresis():
         SmartTurnConfig(onset_probability=0.4, offset_probability=0.4)
 
 
+def test_config_rejects_negative_candidate_complete_confirmation():
+    with pytest.raises(ValueError):
+        SmartTurnConfig(candidate_complete_confirmation_seconds=-0.1)
+
+
 def test_config_has_one_endpointing_owned_type_identity():
     assert not hasattr(voice_contracts, "SmartTurnConfig")
     assert detector_runtime.SmartTurnConfig is SmartTurnConfig

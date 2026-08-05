@@ -17,6 +17,7 @@ class SmartTurnConfig:
     minimum_speech_ms: int = 200
     max_audio_seconds: int = 8
     inference_error_limit: int = 3
+    candidate_complete_confirmation_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         for name in ("evaluation_threshold", "onset_probability", "offset_probability"):
@@ -31,3 +32,7 @@ class SmartTurnConfig:
             raise ValueError("max_audio_seconds must be positive")
         if self.inference_error_limit <= 0:
             raise ValueError("inference_error_limit must be positive")
+        if self.candidate_complete_confirmation_seconds < 0:
+            raise ValueError(
+                "candidate_complete_confirmation_seconds must be non-negative"
+            )

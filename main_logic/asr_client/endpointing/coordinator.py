@@ -42,7 +42,9 @@ class CoordinatorState(Enum):
 class TurnCoordinator:
     """Own model evaluation state, but never commit a provider buffer."""
 
-    def __init__(self, predictor: ProbabilityPredictor, config: SmartTurnConfig) -> None:
+    def __init__(
+        self, predictor: ProbabilityPredictor, config: SmartTurnConfig
+    ) -> None:
         self._predictor = predictor
         self._config = config
         self._buffer = Pcm16RingBuffer(config.max_audio_seconds)
@@ -64,6 +66,10 @@ class TurnCoordinator:
         return self._activity_seq
 
     @property
+    def evaluation_threshold(self) -> float:
+        return self._config.evaluation_threshold
+
+    @property
     def state(self) -> CoordinatorState:
         return self._state
 
@@ -78,7 +84,10 @@ class TurnCoordinator:
         async with self._state_lock:
             if self._closed:
                 return
-            if event in (SpeechActivityEvent.SPEECH_STARTED, SpeechActivityEvent.SPEECH_RESUMED):
+            if event in (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.SPEECH_RESUMED,
+            ):
                 self._activity_seq += 1
                 self._state = CoordinatorState.SPEECH_ACTIVE
             elif event is SpeechActivityEvent.CANDIDATE_PAUSE:
@@ -114,24 +123,36 @@ class TurnCoordinator:
             activity_seq = self._activity_seq
             if self._closed:
                 return self._non_ok(
-                    EvaluationStatus.STALE, generation, activity_seq, "coordinator_closed"
+                    EvaluationStatus.STALE,
+                    generation,
+                    activity_seq,
+                    "coordinator_closed",
                 )
 
         async with self._evaluation_lock:
             async with self._state_lock:
                 if request != self._latest_request:
                     return self._non_ok(
-                        EvaluationStatus.STALE, generation, activity_seq, "candidate_superseded"
+                        EvaluationStatus.STALE,
+                        generation,
+                        activity_seq,
+                        "candidate_superseded",
                     )
                 if generation != self._generation or activity_seq != self._activity_seq:
                     return self._non_ok(
-                        EvaluationStatus.STALE, generation, activity_seq, "activity_changed"
+                        EvaluationStatus.STALE,
+                        generation,
+                        activity_seq,
+                        "activity_changed",
                     )
                 self._state = CoordinatorState.EVALUATING
 
             if not audio_tail:
                 result = self._non_ok(
-                    EvaluationStatus.UNAVAILABLE, generation, activity_seq, "empty_audio"
+                    EvaluationStatus.UNAVAILABLE,
+                    generation,
+                    activity_seq,
+                    "empty_audio",
                 )
             else:
                 try:
@@ -144,7 +165,10 @@ class TurnCoordinator:
                             "model_unavailable",
                         )
                     else:
-                        audio = np.frombuffer(audio_tail, dtype="<i2").astype(np.float32) / 32768.0
+                        audio = (
+                            np.frombuffer(audio_tail, dtype="<i2").astype(np.float32)
+                            / 32768.0
+                        )
                         probability = await self._run_predictor_call(
                             self._predictor.predict_probability, audio
                         )
@@ -191,7 +215,10 @@ class TurnCoordinator:
                     or activity_seq != self._activity_seq
                 ):
                     return self._non_ok(
-                        EvaluationStatus.STALE, generation, activity_seq, "result_became_stale"
+                        EvaluationStatus.STALE,
+                        generation,
+                        activity_seq,
+                        "result_became_stale",
                     )
                 self._state = (
                     CoordinatorState.WAIT_CONTINUATION
