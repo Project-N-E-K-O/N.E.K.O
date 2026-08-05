@@ -78,7 +78,6 @@ import json
 import math
 import os
 import time
-from collections import Counter
 from typing import Any
 
 from config import (
@@ -212,16 +211,30 @@ def _bm25_rank(
         return []
     avgdl = total_len / n_docs
 
-    # DF: number of docs containing each term (deduped within a doc).
-    df: dict[str, int] = {}
-    for terms in doc_terms_list:
-        for t in set(terms):
-            df[t] = df.get(t, 0) + 1
-
     query_unique = set(query_terms)
-    # 预算每个 doc 的词频表：替代 inner loop 里的 O(N) ``doc_terms.count(q_term)``。
-    # Pool 量级 ≤ 几百时 perf 差别可忽略，但 Counter 查表是 O(1) + 标准模式更干净。
-    doc_tf_list: list[Counter] = [Counter(terms) for terms in doc_terms_list]
+
+    # DF + per-doc TF, **restricted to query terms** (#2550).
+    #
+    # 这里以前是「先建全语料 df 表（每 doc 一个 set(terms)）+ 每 doc 一个
+    # Counter(terms)」。两张表都是全词表规模，但打分只会去查 query 里那几十个
+    # 词——5000 条语料下 df 表有 ~10.9 万项、查得到的不到 0.03%，Counter 同理。
+    # 实测这两步合计 80ms / 160ms，比分词本身（46ms）还贵。
+    #
+    # 改成单趟扫描、只累计落在 query_unique 里的词：df 由 tf 直接派生（doc 里
+    # 出现过 ⇔ tf 有键），语义与 set(terms) 去重计数完全一致。5000 条实测
+    # 160ms → 61ms。得分逐位不变——下面的打分循环仍按 ``query_unique`` 迭代，
+    # 浮点累加顺序没动（换成迭代 tf 会改累加顺序，末位 ULP 可能漂，并列时理论
+    # 上能翻排序，所以别顺手"优化"成那样）。
+    df: dict[str, int] = dict.fromkeys(query_unique, 0)
+    doc_tf_list: list[dict[str, int]] = []
+    for terms in doc_terms_list:
+        tf_map: dict[str, int] = {}
+        for t in terms:
+            if t in query_unique:
+                tf_map[t] = tf_map.get(t, 0) + 1
+        doc_tf_list.append(tf_map)
+        for t in tf_map:
+            df[t] += 1
 
     scored: list[tuple[dict, float]] = []
     for doc, doc_terms, doc_tf in zip(pool, doc_terms_list, doc_tf_list):
@@ -238,7 +251,7 @@ def _bm25_rank(
             idf = math.log((n_docs - n + 0.5) / (n + 0.5) + 1.0)
             if idf <= 0:
                 continue
-            tf = doc_tf[q_term]
+            tf = doc_tf.get(q_term, 0)
             if tf == 0:
                 continue
             score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
@@ -269,9 +282,8 @@ async def _cosine_rank(
         return []
 
     from memory.embeddings import (
-        decode_embedding,
+        decode_valid_cached_embedding,
         get_embedding_service,
-        is_cached_embedding_valid,
         parse_dim_from_model_id,
     )
 
@@ -304,9 +316,13 @@ async def _cosine_rank(
         scored: list[tuple[dict, float]] = []
         for doc in pool:
             text = doc.get('text', '') or ''
-            if not is_cached_embedding_valid(doc, text, model_id):
-                continue
-            cvec = decode_embedding(doc.get('embedding'))
+            # 一次解码拿到向量，而不是「is_cached_embedding_valid 里解一遍判维度
+            # → 丢掉 → decode_embedding 再解一遍」。两次 base64 解码 + 两次
+            # np.isfinite 全扫在 5000 条池子上实测约 26ms 纯白费（#2550）。
+            # 维度判定语义不变：valid 判的是 model_id 解析出的期望维度，下面这行
+            # 判的是 target_dim（model_id 解析失败时回落成 query 维度），后者仍是
+            # 兜底那一路唯一的约束，不能省。
+            cvec = decode_valid_cached_embedding(doc, text, model_id)
             if cvec is None or cvec.size != target_dim:
                 continue
             carr = np.asarray(cvec, dtype=np.float32)
@@ -375,6 +391,99 @@ def _rrf_fuse(
 
 
 # ── pool loaders ──────────────────────────────────────────────────────
+#
+# Per-file parse cache (#2550)
+# ============================
+# ``FactStore.aload_facts`` already keeps active facts in a process-level cache
+# (``FactStore._facts``), so facts.json is parsed once per process. The other two
+# pools had no cache at all and were fully re-read + re-parsed on **every**
+# recall. That was survivable while recall was an on-demand desktop tool call;
+# group memory (#2433) turned it into a per-turn cost multiplied by group message
+# rate.
+#
+# Invalidation is by file identity — ``(st_mtime_ns, st_size)`` — not by hooking
+# the write paths. That is deliberate: the "cache + invalidate on write" design
+# would require auditing every writer in memory_server (and fact_dedup, and the
+# archive sweeps, and the restore paths), and a single missed writer is a silent
+# stale read. Every writer here goes through ``atomic_write_json``'s
+# ``os.replace``, so the replacement always carries a fresh mtime; one ``os.stat``
+# per recall (microseconds) buys correctness that does not depend on knowing the
+# writer set. It also picks up edits made by other processes or by hand.
+#
+# Order matters: stat **before** load. Stat-then-load can only ever cache data
+# *newer* than the identity it is filed under (next stat mismatches → reload).
+# Load-then-stat would file stale data under a fresh identity and serve it until
+# the next write — the one direction that actually goes wrong.
+#
+# Entries are keyed by path and bounded by (characters × 2 files), so no eviction
+# policy is needed. Rows are shared, not copied — every consumer on the recall
+# path treats them as read-only (``_tag_tier`` shallow-copies before stamping,
+# ``_rrf_fuse`` copies again before adding ``_rrf_score``). Do not hand these
+# lists to a mutating caller.
+#
+# No lock: two concurrent recalls can both miss and both parse, which wastes one
+# parse but cannot corrupt anything (dict assignment is atomic under the GIL).
+# A lock would serialize recalls across groups for no correctness gain.
+
+_POOL_CACHE: dict[str, tuple[tuple[int, int], list[dict]]] = {}
+
+
+def _file_identity(path) -> tuple[int, int] | None:
+    """``(st_mtime_ns, st_size)`` — decides whether a cached parse is current.
+    ``None`` means "no usable cache key", and the caller must then load
+    uncached rather than assume the pool is empty.
+
+    The ``isinstance(path, str)`` guard is load-bearing, not defensive noise:
+    ``os.stat`` also accepts a **file descriptor**, and anything implementing
+    ``__index__`` gets taken as one. A ``MagicMock`` does (so does an ``int``
+    that leaked out of a path helper), which means a non-str path silently
+    stats an unrelated open fd and yields a plausible-looking identity for the
+    wrong file. Refusing to key the cache on anything but a real path string
+    turns that into a clean cache bypass.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+async def _aload_pool_cached(path, aload_fn) -> list[dict]:
+    """Return ``await aload_fn()``'s rows, reusing the last parse while the
+    file's ``(mtime_ns, size)`` is unchanged.
+
+    Fails **open**: when the file cannot be stat'd (missing, unreadable, or the
+    path isn't a usable cache key) this calls ``aload_fn`` uncached instead of
+    returning ``[]``. A caching layer that answered "no rows" on a stat failure
+    would silently degrade recall quality — much worse than losing the cache
+    hit, and invisible in the logs. Each loader already has its own correct
+    handling for a genuinely missing file.
+    """
+    identity = await asyncio.to_thread(_file_identity, path)
+    if identity is None:
+        if isinstance(path, str):
+            _POOL_CACHE.pop(path, None)
+        return await aload_fn()
+    cached = _POOL_CACHE.get(path)
+    if cached is not None and cached[0] == identity:
+        return cached[1]
+    rows = await aload_fn()
+    _POOL_CACHE[path] = (identity, rows)
+    return rows
+
+
+def _invalidate_pool_cache(path: str | None = None) -> None:
+    """Drop cached parses — whole cache by default, one path when given.
+
+    Exists for tests and for callers that knowingly bypass ``atomic_write_json``;
+    the normal path needs no explicit invalidation (see the module note above).
+    """
+    if path is None:
+        _POOL_CACHE.clear()
+    else:
+        _POOL_CACHE.pop(path, None)
 
 
 async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
@@ -384,6 +493,8 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
     Reaches into ``fact_store._facts_archive_path`` because there's no
     public archive loader (the FactStore archives but never re-reads its
     own archive in its hot path).
+
+    Parses are cached by file identity (see the module note above).
     """
     try:
         path = fact_store._facts_archive_path(lanlan_name)
@@ -393,35 +504,78 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
             lanlan_name, exc,
         )
         return []
-    if not await asyncio.to_thread(os.path.exists, path):
-        return []
-    try:
-        def _read() -> list[dict]:
-            with open(path, encoding='utf-8') as f:
-                data = json.load(f)
-            if not isinstance(data, list):
-                return []
-            # subject 时间归档（subject_archived_at 标记）的行不进召回：
-            # absorbed 归档行留在池里是设计（BM25 长尾），但 subject 归档
-            # 的语义就是「这个群/成员的记忆整体退出候选」——这里是两条召
-            # 回路径（hybrid_recall / recall_by_time）唯一的 archive 池装
-            # 配点，单点过滤即可覆盖。恢复路径会剥掉标记，行自然回池。
-            return [
-                row for row in data
-                if not (
-                    isinstance(row, dict)
-                    and (
-                        row.get('subject_archived_at')
-                        or row.get('arbitration_archived_at')
-                    )
+
+    def _read() -> list[dict]:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        # subject 时间归档（subject_archived_at 标记）的行不进召回：
+        # absorbed 归档行留在池里是设计（BM25 长尾），但 subject 归档
+        # 的语义就是「这个群/成员的记忆整体退出候选」——这里是两条召
+        # 回路径（hybrid_recall / recall_by_time）唯一的 archive 池装
+        # 配点，单点过滤即可覆盖。恢复路径会剥掉标记，行自然回池。
+        rows = [
+            row for row in data
+            if not (
+                isinstance(row, dict)
+                and (
+                    row.get('subject_archived_at')
+                    or row.get('arbitration_archived_at')
                 )
-            ]
+            )
+        ]
+        # 归档明确不进向量池（见模块顶部 Pool composition），所以归档行上的
+        # base64 向量在召回路径上是纯死重量——占了文件 ~12/13 的体积，解析出来
+        # 只为了被无视，还要一直挂在上面这份缓存里。落盘那份保持原样（恢复路径
+        # 把行搬回 active 时仍拿得到缓存向量），只在进内存这一刻剥掉。
+        # 指纹字段（embedding_text_sha256 / _model_id）留着不动：它们很小，
+        # 且删了会让行看起来像"从未嵌入过"，反而是误导。
+        for row in rows:
+            if isinstance(row, dict) and row.get('embedding') is not None:
+                row['embedding'] = None
+        return rows
+
+    async def _aread() -> list[dict]:
         return await asyncio.to_thread(_read)
+
+    try:
+        return await _aload_pool_cached(path, _aread)
+    except FileNotFoundError:
+        # "还没有归档文件" 是常态而非故障（新角色 / 从未触发过归档），以前由
+        # 一次显式 os.path.exists 提前拦掉；现在 _file_identity 的 stat 已经是
+        # 同一个答案，不必再多探一次盘，但也不该升级成 WARNING。
+        return []
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning(
             "[hybrid_recall] %s: 加载 facts_archive 失败: %s", lanlan_name, exc,
         )
         return []
+
+
+async def _aload_reflections_for_recall(
+    reflection_engine, lanlan_name: str,
+) -> list[dict]:
+    """``aload_reflections`` with the same file-identity parse cache.
+
+    Wrapped here rather than inside ``ReflectionPersistence`` on purpose: the
+    engine's own loader has many callers across refine / promotion / evidence
+    loops, and some of them mutate the rows they get back. The recall path does
+    not (see the module note above), so the cache is scoped to it.
+    """
+    async def _aload() -> list[dict]:
+        return await reflection_engine.aload_reflections(lanlan_name) or []
+
+    try:
+        path = reflection_engine._reflections_path(lanlan_name)
+    except Exception as exc:
+        logger.debug(
+            "[hybrid_recall] %s: 无法解析 reflections 路径，跳过缓存直读: %s",
+            lanlan_name, exc,
+        )
+        return await _aload()
+
+    return await _aload_pool_cached(path, _aload)
 
 
 def _drop_archive_overlap(
@@ -623,10 +777,12 @@ async def hybrid_recall(
             "candidates_total": 0, "elapsed_ms": 0.0,
         }
 
-    # Load pools concurrently — three independent JSON reads.
+    # Load pools concurrently. facts is served from FactStore's own process
+    # cache; the other two from the file-identity parse cache (#2550) — on a
+    # steady-state corpus all three collapse to a stat() apiece.
     active_facts, active_reflections, archive_facts = await asyncio.gather(
         fact_store.aload_facts(lanlan_name),
-        reflection_engine.aload_reflections(lanlan_name),
+        _aload_reflections_for_recall(reflection_engine, lanlan_name),
         _aload_archive_facts(fact_store, lanlan_name),
     )
     active_facts = active_facts or []
@@ -807,7 +963,7 @@ async def recall_by_time(
 
     active_facts, active_reflections, archive_facts = await asyncio.gather(
         fact_store.aload_facts(lanlan_name),
-        reflection_engine.aload_reflections(lanlan_name),
+        _aload_reflections_for_recall(reflection_engine, lanlan_name),
         _aload_archive_facts(fact_store, lanlan_name),
     )
     active_facts = active_facts or []

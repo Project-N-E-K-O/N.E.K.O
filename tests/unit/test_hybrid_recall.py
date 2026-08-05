@@ -644,5 +644,402 @@ class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("id 为 0 的 legacy 重叠行", texts)
 
 
+# ── #2550: hot-path cost removal (no behaviour change) ────────────────
+
+
+def _reference_bm25(query, pool, *, k1=1.5, b=0.75):
+    """Deliberately naive Okapi BM25, written straight from the formula.
+
+    ``_bm25_rank`` stopped materializing a whole-vocabulary df table and a
+    per-doc Counter (#2550) — both were built in full and then queried for only
+    the handful of terms actually in the query. This reference exists so that
+    refactor, and any future one, has to reproduce the textbook scores exactly
+    rather than merely "rank things about the same".
+    """
+    import math
+
+    q_terms = _tokenize(query, [])
+    if not q_terms or not pool:
+        return []
+    docs = [_tokenize(d.get("text", "") or "", []) for d in pool]
+    n_docs = len(pool)
+    total = sum(len(t) for t in docs)
+    if total == 0:
+        return []
+    avgdl = total / n_docs
+    out = []
+    for doc, terms in zip(pool, docs):
+        if not terms:
+            continue
+        score = 0.0
+        for q in set(q_terms):
+            df = sum(1 for t in docs if q in t)
+            if df <= 0:
+                continue
+            idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+            if idf <= 0:
+                continue
+            tf = terms.count(q)
+            if tf == 0:
+                continue
+            norm = 1.0 - b + b * len(terms) / avgdl
+            score += idf * (tf * (k1 + 1)) / (tf + k1 * norm)
+        if score > 0:
+            out.append((doc, score))
+    out.sort(key=lambda p: p[1], reverse=True)
+    return out
+
+
+class TestBM25MatchesReference(unittest.TestCase):
+    """Scores must stay identical to the textbook formula."""
+
+    def _assert_matches(self, query, pool):
+        got = _bm25_rank(query, pool, stop_names=[])
+        want = _reference_bm25(query, pool)
+        self.assertEqual([d["id"] for d, _ in got], [d["id"] for d, _ in want])
+        for (_, a), (_, b) in zip(got, want):
+            # Not assertAlmostEqual: the optimization deliberately preserves the
+            # float accumulation order, so equality is exact. A near-miss here
+            # means someone reordered the summation, and then ties can flip.
+            self.assertEqual(a, b)
+
+    def test_matches_on_cjk_corpus(self):
+        pool = [
+            {"id": "a", "text": "博士最喜欢的游戏是见证者"},
+            {"id": "b", "text": "博士养了一只猫，猫很喜欢博士"},
+            {"id": "c", "text": "今天天气不错适合出门散步"},
+            {"id": "d", "text": "博士博士博士"},
+        ]
+        self._assert_matches("博士 猫", pool)
+
+    def test_matches_on_mixed_script_corpus(self):
+        pool = [
+            {"id": "a", "text": "博士最喜欢 The Witness 这款游戏"},
+            {"id": "b", "text": "The Witness is a puzzle game"},
+            {"id": "c", "text": "猫咪喜欢晒太阳"},
+        ]
+        self._assert_matches("The Witness 游戏", pool)
+
+    def test_matches_when_some_docs_are_empty(self):
+        # Empty docs still count toward n_docs (and therefore IDF) while being
+        # skipped for scoring — an easy thing to break when rewriting the loop.
+        pool = [
+            {"id": "a", "text": "博士养了一只猫"},
+            {"id": "empty", "text": ""},
+            {"id": "b", "text": "博士今天很开心"},
+        ]
+        self._assert_matches("博士", pool)
+
+    def test_repeated_term_still_outscores_single_mention(self):
+        """TF must survive the df/tf rewrite — the whole point of not deduping."""
+        pool = [
+            {"id": "once", "text": "博士出现一次然后讲别的事情很多别的事情"},
+            {"id": "many", "text": "博士博士博士博士然后讲别的事情很多别的事情"},
+        ]
+        ranked = _bm25_rank("博士", pool, stop_names=[])
+        self.assertEqual(ranked[0][0]["id"], "many")
+
+    def test_no_overlap_scores_nothing(self):
+        pool = [{"id": "a", "text": "完全无关的内容"}]
+        self.assertEqual(_bm25_rank("博士 猫", pool, stop_names=[]), [])
+
+
+class TestCosineDecodesOnce(unittest.IsolatedAsyncioTestCase):
+    """The cosine path must base64-decode each candidate exactly once."""
+
+    async def test_each_candidate_decoded_once(self):
+        import numpy as np
+
+        import memory.embeddings as emb
+        from memory._embeddings.schema import stamp_embedding_fields
+        from memory.hybrid_recall import _cosine_rank
+
+        model_id = "local-text-retrieval-v1-4d-int8"
+        pool = []
+        for i, text in enumerate(["博士喜欢猫", "博士喜欢狗", "今天下雨了"]):
+            entry = {"id": "f%d" % i, "text": text}
+            stamp_embedding_fields(
+                entry,
+                np.array([1.0, 0.0, 0.0, float(i)], dtype=np.float32),
+                text,
+                model_id,
+            )
+            pool.append(entry)
+
+        real_decode = emb._decode_vector_fp16
+        calls = []
+
+        def counting_decode(encoded):
+            calls.append(encoded)
+            return real_decode(encoded)
+
+        service = MagicMock()
+        service.is_available = MagicMock(return_value=True)
+        service.model_id = MagicMock(return_value=model_id)
+        service.embed_batch = AsyncMock(
+            return_value=[np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+        )
+
+        with patch.object(emb, "_decode_vector_fp16", counting_decode), \
+             patch.object(emb, "get_embedding_service", MagicMock(return_value=service)):
+            scored = await _cosine_rank("博士", pool)
+
+        self.assertEqual(len(scored), 3)
+        # One decode per candidate. Two per candidate is the #2550 regression:
+        # is_cached_embedding_valid decoding to check the dimension, throwing the
+        # vector away, then the caller decoding the identical payload again.
+        self.assertEqual(len(calls), len(pool), calls)
+
+    async def test_invalid_fingerprint_still_skipped(self):
+        """Collapsing the two calls must not accidentally accept stale vectors."""
+        import numpy as np
+
+        import memory.embeddings as emb
+        from memory._embeddings.schema import stamp_embedding_fields
+        from memory.hybrid_recall import _cosine_rank
+
+        model_id = "local-text-retrieval-v1-4d-int8"
+        good = {"id": "good", "text": "博士喜欢猫"}
+        stamp_embedding_fields(
+            good, np.array([1.0, 0, 0, 0], dtype=np.float32), good["text"], model_id,
+        )
+        stale = {"id": "stale", "text": "博士喜欢狗"}
+        stamp_embedding_fields(
+            stale, np.array([1.0, 0, 0, 0], dtype=np.float32), "旧文本", model_id,
+        )
+        wrong_model = {"id": "wrong_model", "text": "博士喜欢鸟"}
+        stamp_embedding_fields(
+            wrong_model,
+            np.array([1.0, 0, 0, 0], dtype=np.float32),
+            wrong_model["text"],
+            "someone-elses-model-4d-int8",
+        )
+
+        service = MagicMock()
+        service.is_available = MagicMock(return_value=True)
+        service.model_id = MagicMock(return_value=model_id)
+        service.embed_batch = AsyncMock(
+            return_value=[np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
+        )
+        with patch.object(emb, "get_embedding_service", MagicMock(return_value=service)):
+            scored = await _cosine_rank("博士", [good, stale, wrong_model])
+
+        self.assertEqual([d["id"] for d, _ in scored], ["good"])
+
+
+class _ArchiveTmpCase(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from memory.hybrid_recall import _invalidate_pool_cache
+
+        _invalidate_pool_cache()
+        self.tmpdir = tempfile.mkdtemp()
+        self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
+
+    def _store(self):
+        store = MagicMock()
+        store._facts_archive_path = MagicMock(return_value=self.archive_path)
+        return store
+
+    def _write(self, rows):
+        with open(self.archive_path, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+
+
+class TestArchiveLoadShedsVectors(_ArchiveTmpCase):
+    """Archive rows never enter the embedding pool, so their vectors must not
+    stay resident in the cached pool either."""
+
+    async def test_embedding_payload_dropped_fingerprints_kept(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        self._write([{
+            "id": "fa_1", "text": "归档的一条",
+            "embedding": "AAAAAAAAAAA=",
+            "embedding_text_sha256": "a" * 64,
+            "embedding_model_id": "local-text-retrieval-v1-4d-int8",
+        }])
+        rows = await _aload_archive_facts(self._store(), "testcat")
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["embedding"])
+        # 指纹留着：删掉会让这行看起来像"从未嵌入过"，误导恢复/重嵌路径。
+        self.assertEqual(rows[0]["embedding_text_sha256"], "a" * 64)
+        self.assertEqual(rows[0]["text"], "归档的一条")
+
+    async def test_on_disk_archive_keeps_its_vectors(self):
+        """Shedding happens on read only — the restore path still needs the
+        stored vector, so the file itself must be untouched."""
+        from memory.hybrid_recall import _aload_archive_facts
+
+        self._write([{
+            "id": "fa_1", "text": "归档的一条", "embedding": "AAAAAAAAAAA=",
+        }])
+        await _aload_archive_facts(self._store(), "testcat")
+        with open(self.archive_path, encoding="utf-8") as f:
+            on_disk = json.load(f)
+        self.assertEqual(on_disk[0]["embedding"], "AAAAAAAAAAA=")
+
+    async def test_subject_archived_rows_still_filtered(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        self._write([
+            {"id": "keep", "text": "普通归档"},
+            {"id": "gone", "text": "群退场", "subject_archived_at": "2026-07-01T00:00:00"},
+            {"id": "gone2", "text": "仲裁归档", "arbitration_archived_at": "2026-07-01T00:00:00"},
+        ])
+        rows = await _aload_archive_facts(self._store(), "testcat")
+        self.assertEqual([r["id"] for r in rows], ["keep"])
+
+    async def test_missing_archive_is_empty_not_an_error(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        rows = await _aload_archive_facts(self._store(), "testcat")
+        self.assertEqual(rows, [])
+
+    async def test_corrupt_archive_degrades_to_empty(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        with open(self.archive_path, "w", encoding="utf-8") as f:
+            f.write("{ not json at all")
+        rows = await _aload_archive_facts(self._store(), "testcat")
+        self.assertEqual(rows, [])
+
+
+class TestPoolParseCache(_ArchiveTmpCase):
+    """File-identity cache: reuse while (mtime_ns, size) holds, reload after a
+    write, and never answer "empty" just because the stat failed."""
+
+    async def test_unchanged_file_is_parsed_once(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        self._write([{"id": "fa_1", "text": "归档内容"}])
+        store = self._store()
+        first = await _aload_archive_facts(store, "testcat")
+
+        real_open = open
+        opens = []
+
+        def counting_open(path, *a, **kw):
+            opens.append(path)
+            return real_open(path, *a, **kw)
+
+        with patch("builtins.open", counting_open):
+            second = await _aload_archive_facts(store, "testcat")
+            third = await _aload_archive_facts(store, "testcat")
+
+        self.assertEqual(opens, [])
+        self.assertEqual([r["id"] for r in second], ["fa_1"])
+        self.assertIs(second, first)
+        self.assertIs(third, first)
+
+    async def test_rewriting_the_file_invalidates(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        store = self._store()
+        self._write([{"id": "fa_1", "text": "第一版"}])
+        first = await _aload_archive_facts(store, "testcat")
+        self.assertEqual([r["id"] for r in first], ["fa_1"])
+
+        self._write([
+            {"id": "fa_1", "text": "第一版"},
+            {"id": "fa_2", "text": "第二版新增"},
+        ])
+        second = await _aload_archive_facts(store, "testcat")
+        self.assertEqual([r["id"] for r in second], ["fa_1", "fa_2"])
+
+    async def test_same_size_rewrite_invalidates_via_mtime(self):
+        from memory.hybrid_recall import _aload_archive_facts
+
+        store = self._store()
+        self._write([{"id": "fa_1", "text": "aaa"}])
+        first = await _aload_archive_facts(store, "testcat")
+        self.assertEqual(first[0]["text"], "aaa")
+
+        # Byte-identical length on purpose, so st_size cannot be what catches
+        # this. mtime is stamped explicitly rather than raced against the clock:
+        # a same-millisecond rewrite is exactly the case a coarse-resolution
+        # filesystem would hide, and the test should be deterministic about it.
+        self._write([{"id": "fa_1", "text": "bbb"}])
+        st = os.stat(self.archive_path)
+        os.utime(self.archive_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+        second = await _aload_archive_facts(store, "testcat")
+        self.assertEqual(second[0]["text"], "bbb")
+
+    async def test_deleting_the_file_drops_the_entry(self):
+        from memory.hybrid_recall import _POOL_CACHE, _aload_archive_facts
+
+        store = self._store()
+        self._write([{"id": "fa_1", "text": "归档内容"}])
+        await _aload_archive_facts(store, "testcat")
+        self.assertIn(self.archive_path, _POOL_CACHE)
+
+        os.remove(self.archive_path)
+        rows = await _aload_archive_facts(store, "testcat")
+        self.assertEqual(rows, [])
+        self.assertNotIn(self.archive_path, _POOL_CACHE)
+
+    async def test_reflections_cache_fails_open_when_file_is_missing(self):
+        """A stat failure must degrade to an uncached read, never to "no rows".
+
+        A cache layer that returned [] here would silently empty the recall
+        pool — invisible in the logs and indistinguishable from "this character
+        genuinely has no reflections".
+        """
+        from memory.hybrid_recall import _aload_reflections_for_recall
+
+        rows = [{"id": "r1", "text": "一条反思", "score": 1.0}]
+        engine = MagicMock()
+        engine._reflections_path = MagicMock(
+            return_value=os.path.join(self.tmpdir, "does_not_exist.json"),
+        )
+        engine.aload_reflections = AsyncMock(return_value=rows)
+
+        got = await _aload_reflections_for_recall(engine, "testcat")
+        self.assertEqual([r["id"] for r in got], ["r1"])
+        engine.aload_reflections.assert_awaited()
+
+    async def test_reflections_cache_fails_open_when_path_helper_raises(self):
+        from memory.hybrid_recall import _aload_reflections_for_recall
+
+        rows = [{"id": "r1", "text": "一条反思", "score": 1.0}]
+        engine = MagicMock()
+        engine._reflections_path = MagicMock(side_effect=RuntimeError("no path"))
+        engine.aload_reflections = AsyncMock(return_value=rows)
+
+        got = await _aload_reflections_for_recall(engine, "testcat")
+        self.assertEqual([r["id"] for r in got], ["r1"])
+
+    async def test_reflections_reuse_cached_rows_while_file_is_unchanged(self):
+        from memory.hybrid_recall import _aload_reflections_for_recall
+
+        path = os.path.join(self.tmpdir, "reflections.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([{"id": "r1", "text": "一条反思"}], f)
+
+        engine = MagicMock()
+        engine._reflections_path = MagicMock(return_value=path)
+        engine.aload_reflections = AsyncMock(
+            return_value=[{"id": "r1", "text": "一条反思", "score": 1.0}],
+        )
+
+        first = await _aload_reflections_for_recall(engine, "testcat")
+        second = await _aload_reflections_for_recall(engine, "testcat")
+        self.assertIs(first, second)
+        self.assertEqual(engine.aload_reflections.await_count, 1)
+
+    async def test_non_str_path_bypasses_cache_instead_of_statting_an_fd(self):
+        """os.stat also accepts a file descriptor, and anything with __index__
+        (a MagicMock, a stray int) is taken as one — which would key the cache
+        on an unrelated open file and hand back its identity. Such a path must
+        simply bypass the cache."""
+        from memory.hybrid_recall import _POOL_CACHE, _file_identity
+
+        self.assertIsNone(_file_identity(MagicMock()))
+        self.assertIsNone(_file_identity(1))
+        self.assertIsNone(_file_identity(""))
+        self.assertIsNone(_file_identity(None))
+        self.assertEqual(_POOL_CACHE, {})
+
+
 if __name__ == "__main__":
     unittest.main()
