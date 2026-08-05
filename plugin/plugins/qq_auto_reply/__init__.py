@@ -214,6 +214,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 identity_probe=lambda: bool(
                     (self._qq_settings or {}).get("qq_open_identity_probe_enabled", False)
                 ),
+                # 取证行要同时进 UI 的「运行日志」页，不能只落文件。
+                emit_log=self._emit_log,
             )
         return QQClient(
             onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://0.0.0.0:6199"),

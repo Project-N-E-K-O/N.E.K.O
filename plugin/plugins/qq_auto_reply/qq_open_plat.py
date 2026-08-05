@@ -119,10 +119,14 @@ class QQOpenPlatformConnection(QQConnectionBase):
         logger: Any = None,
         message_queue_size: int = 100,
         identity_probe: Any = None,
+        emit_log: Any = None,
     ):
         #: 零参回调，返回真时才记录 R11 取证日志（见模块顶部）。做成回调而不是
         #: 布尔值，是为了让开关改完立刻生效，不必重连。
         self._identity_probe = identity_probe
+        #: 插件的内存日志环（UI「运行日志」页读的就是它）。缺省无操作，与
+        #: QQClient 同惯例。
+        self._emit_log = emit_log or (lambda level, msg: None)
         self._identity_probe_emitted = 0
         self._app_id = str(app_id or "").strip()
         self._client_secret = str(client_secret or "").strip()
@@ -264,12 +268,24 @@ class QQOpenPlatformConnection(QQConnectionBase):
         probe = getattr(self, "_identity_probe", None)
         return bool(probe()) if callable(probe) else False
 
+    def _write_identity_probe(self, text: str) -> None:
+        """一条取证行同时进两个池子，缺一不可。
+
+        - ``self.logger``：文件日志（我的文档/N.E.K.O/logs/），**重启留存**，
+          这份才是能整个发给开发者的东西；
+        - ``self._emit_log``：插件的 500 条内存环，也就是 UI 上「运行日志」页
+          读的那个池子。少了它，用户勾完开关去日志页什么都看不到——而隔壁
+          「信任用户」页的现有文案刚教完他「ID…可在日志中查看」。
+          （``get_recent_logs`` 只在内存环为空时才回退读文件，而环从启动那刻
+          起就恒非空，所以只写文件 = 在 UI 上彻底隐身。）
+        """
+        # 单参数调用：行里带的是平台下发的原始 id，可能含 %，
+        # 交给 logging 做 %-格式化会炸。
+        self.logger.info(text)
+        self._emit_log("INFO", text)
+
     def _log_identity_probe(self, event_type: str, data: Any) -> None:
         """记录一条 R11 取证日志（见模块顶部）。
-
-        必须用 ``self.logger``（文件 logger，落 我的文档/N.E.K.O/logs/，重启
-        留存）而不是插件的 ``_emit_log``——后者只写 500 条的内存环，重启即失，
-        而取证要的恰恰是重启之后还能翻出来。
 
         **异常绝不外泄**：``_receive_loop`` 的兜底 ``except Exception`` 会把
         任何异常当成断连去重连，一条取证日志没有资格触发一次重连。
@@ -284,15 +300,16 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 return
             self._identity_probe_emitted = emitted + 1
             if emitted == _IDENTITY_PROBE_MAX_LINES:
-                self.logger.info(
-                    f"{_IDENTITY_PROBE_TAG} 本次连接已记录 "
-                    f"{_IDENTITY_PROBE_MAX_LINES} 条取证日志，达到上限，后续不再"
-                    "记录；重启 QQ 自动回复可重新开始记录。"
+                # 计数器挂在本连接对象上，而 qq_client 只有在**切换连接模式**
+                # 时才会被置 None 重建（runtime_ops_service.py:44-48）——侧栏
+                # 的「停止 → 启动」根本不重建它。所以这里只能说重启应用，
+                # 说「重启自动回复」是假的。
+                self._write_identity_probe(
+                    f"{_IDENTITY_PROBE_TAG} 已记录 {_IDENTITY_PROBE_MAX_LINES} "
+                    "条，达到上限，后续不再记录；重启应用后重新计数。"
                 )
                 return
-            # 单参数调用：日志行里带的是平台下发的原始 id，可能含 %，
-            # 交给 logging 做 %-格式化会炸。
-            self.logger.info(build_identity_probe_line(event_type, data))
+            self._write_identity_probe(build_identity_probe_line(event_type, data))
         except Exception:
             # 故意全吞：往上抛会被 _receive_loop 的兜底 except 当成断连，
             # 一条诊断日志失败不该让 bot 掉线重连一次。

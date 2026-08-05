@@ -157,8 +157,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
         <div class="form-group"><label class="form-label" data-i18n="ui.openplat.config.appid_label">AppID（机器人 ID）</label><input class="form-input" id="cfg-appid" data-i18n-placeholder="ui.openplat.config.appid_placeholder" placeholder="从 QQ 开放平台获取"></div>
         <div class="form-group"><label class="form-label" data-i18n="ui.openplat.config.secret_label">ClientSecret（密钥）</label><input class="form-input" id="cfg-secret" type="password" autocomplete="off" data-i18n-placeholder="ui.openplat.config.appid_placeholder" placeholder="从 QQ 开放平台获取"></div>
         <div class="form-hint" data-i18n="ui.openplat.config.hint">在 <a href="https://q.qq.com" target="_blank">QQ 开放平台</a> 创建机器人后获取。不需要额外进程，纯 API 接入。</div>
-        <div class="form-group" style="margin-top:12px"><label><input id="cfg-identity-probe" type="checkbox"> <span data-i18n="ui.openplat.config.identity_probe">记录身份取证日志（排查「群里认不出管理员」时才需要）</span></label></div>
-        <div class="form-hint" data-i18n="ui.openplat.config.identity_probe_hint">开启后，每条群消息／私聊会往日志文件写一行 [R11]，只含 ID 类字段和字段名，不含聊天内容。取证做完请关掉。</div>
     </div>
 </div>
 <div class="page" id="page-config-strategy" style="display:none">
@@ -188,6 +186,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div class="page" id="page-config-accounts">
     <div class="card"><div class="card-title" data-i18n="ui.shared.card.accounts">信任用户</div>
         <p style="color:#999;font-size:12px;margin-bottom:12px" data-i18n="ui.openplat.config.accounts_hint">第一个私聊的用户自动成为管理员。ID 为加密 openid（非 QQ 号），可在日志中查看。</p>
+        <div class="form-group"><label><input id="cfg-identity-probe" type="checkbox"> <span data-i18n="ui.openplat.config.identity_probe">记录每条消息里的 ID（群里认不出你是管理员时才开）</span></label></div>
+        <div class="form-hint" style="margin-bottom:12px" data-i18n="ui.openplat.config.identity_probe_hint">勾选后，每收到一条消息就多记一行 ID 和字段名，不含聊天内容。写满 200 行自动停，查完请关掉。</div>
         <button class="btn btn-primary btn-sm" onclick="showModal('user')" style="margin-bottom:10px" data-i18n="ui.shared.btn.add">+ 添加</button>
         <table class="data-table"><thead><tr><th data-i18n="ui.shared.table.user_id">用户ID</th><th data-i18n="ui.shared.table.qq_nickname">昵称</th><th data-i18n="ui.shared.table.qq_level">级别</th><th data-i18n="ui.shared.table.actions">操作</th></tr></thead><tbody id="user-table"></tbody></table>
     </div>

@@ -152,6 +152,7 @@ class _ScriptedWS:
 def _make_connection(*, probe_enabled, frames):
     connection = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
     connection.logger = MagicMock()
+    connection._emit_log = MagicMock()
     connection._closing = False
     connection._last_seq = 0
     connection._self_id = ""
@@ -226,6 +227,57 @@ async def test_probe_is_read_per_event_so_the_switch_needs_no_reconnect():
 
 
 @pytest.mark.asyncio
+async def test_probe_reaches_both_the_log_file_and_the_in_app_log_page():
+    # File-only would be invisible in the UI: get_recent_logs falls back to the
+    # log file only when the in-memory ring is EMPTY, and the ring is never
+    # empty (startup lines + one per message).  Meanwhile the neighbouring
+    # accounts hint tells the user their ID "can be seen in the logs".
+    connection = _make_connection(probe_enabled=True, frames=[
+        _dispatch("GROUP_AT_MESSAGE_CREATE", GROUP_EVENT),
+    ])
+
+    await asyncio.wait_for(connection._receive_loop(), timeout=5.0)
+
+    file_lines = _probe_lines(connection)
+    ring_calls = connection._emit_log.call_args_list
+    assert len(file_lines) == 1
+    assert len(ring_calls) == 1
+    assert ring_calls[0].args == ("INFO", file_lines[0])
+
+
+def test_connection_without_an_emit_log_sink_still_works():
+    # The napcat client defaults emit_log to a no-op; mirror that so a caller
+    # that only wants the file sink cannot crash the receive loop.
+    connection = QQOpenPlatformConnection(app_id="a", client_secret="b")
+    connection.logger = MagicMock()
+
+    # Called directly, i.e. OUTSIDE _log_identity_probe's catch-all -- a None
+    # sink would raise here.  Asserting through the catch-all would prove
+    # nothing: the file write happens first, so the exception is invisible.
+    connection._write_identity_probe("[R11] whatever")
+
+    assert connection.logger.info.call_args.args == ("[R11] whatever",)
+
+
+@pytest.mark.asyncio
+async def test_cap_notice_does_not_promise_a_reset_that_never_happens(monkeypatch):
+    # The counter lives on the connection object, and qq_client is only rebuilt
+    # when the *connection mode* changes -- the sidebar's stop/start does not
+    # touch it.  Telling the user to restart auto-reply would be a lie.
+    monkeypatch.setattr(open_plat_mod, "_IDENTITY_PROBE_MAX_LINES", 1)
+    connection = _make_connection(probe_enabled=True, frames=[
+        _dispatch("C2C_MESSAGE_CREATE", {"author": {"id": f"ID_{i}"}})
+        for i in range(3)
+    ])
+
+    await asyncio.wait_for(connection._receive_loop(), timeout=5.0)
+
+    notice = _probe_lines(connection)[1]
+    assert "重启应用" in notice
+    assert "自动回复" not in notice
+
+
+@pytest.mark.asyncio
 async def test_probe_stops_at_the_cap_with_exactly_one_notice(monkeypatch):
     monkeypatch.setattr(open_plat_mod, "_IDENTITY_PROBE_MAX_LINES", 3)
     connection = _make_connection(probe_enabled=True, frames=[
@@ -272,6 +324,7 @@ def test_plugin_wires_the_switch_from_settings():
 
     plugin = QQAutoReplyPlugin.__new__(QQAutoReplyPlugin)
     plugin.logger = MagicMock()
+    plugin._emit_log = MagicMock()
     plugin._qq_settings = {
         "qq_connection_mode": "open_platform",
         "qq_open_app_id": "app",
@@ -283,6 +336,9 @@ def test_plugin_wires_the_switch_from_settings():
     assert connection._identity_probe_enabled() is False
     plugin._qq_settings["qq_open_identity_probe_enabled"] = True
     assert connection._identity_probe_enabled() is True
+    # ...and the connector must be handed the plugin's in-app log ring, or the
+    # probe lines never reach the UI's log page.
+    assert connection._emit_log is plugin._emit_log
 
 
 def test_probe_setting_defaults_to_off_on_disk(tmp_path):
@@ -393,7 +449,114 @@ async def test_dashboard_hands_the_probe_flag_back(tmp_path):
 
 
 # ==========================================================================
-# C. The fail-closed alarm
+# C. The user-facing copy
+# ==========================================================================
+
+PROBE_KEYS = (
+    "ui.openplat.config.identity_probe",
+    "ui.openplat.config.identity_probe_hint",
+)
+
+#: Words that mean something only to whoever read the design doc.  The first
+#: version of this copy shipped "[R11]" and "取证" to end users; this list is
+#: what stops that happening again.  Deliberately case-insensitive and
+#: substring-matched.
+INSIDER_JARGON = (
+    "r11", "forensic", "probe", "identity scope", "actor_scope",
+    "openplat_identity", "取证", "取證", "作用域", "插桩", "member_openid",
+    "user_openid", "union_openid", "c2c", "payload",
+)
+
+
+def _locale_dir():
+    from pathlib import Path
+
+    import plugin.plugins.qq_auto_reply as pkg
+
+    return Path(pkg.__file__).parent / "i18n"
+
+
+def _locale_files():
+    return sorted(_locale_dir().glob("*.json"))
+
+
+def test_the_probe_copy_exists_in_every_locale():
+    # Adding the key to zh-CN only would leave eight languages showing the
+    # previous wording -- which is where the jargon was.
+    import json
+
+    files = _locale_files()
+    assert len(files) >= 9, files
+    for path in files:
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        for key in PROBE_KEYS:
+            assert key in catalogue, f"{path.name} is missing {key}"
+            assert catalogue[key].strip(), f"{path.name}:{key} is empty"
+
+
+def test_the_probe_copy_carries_no_insider_jargon():
+    import json
+
+    for path in _locale_files():
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        for key in PROBE_KEYS:
+            text = catalogue[key].lower()
+            for word in INSIDER_JARGON:
+                assert word not in text, (
+                    f"{path.name}:{key} leaks insider jargon {word!r}: "
+                    f"{catalogue[key]}"
+                )
+
+
+def test_the_probe_copy_never_claims_a_restart_resets_the_counter():
+    # Only relaunching the whole app rebuilds the connection object; the
+    # sidebar's stop/start does not.  Copy must not send users down that path.
+    import json
+
+    for path in _locale_files():
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        hint = catalogue["ui.openplat.config.identity_probe_hint"]
+        assert "每次启动" not in hint and "每次啟動" not in hint, path.name
+        assert "per launch" not in hint.lower(), path.name
+
+
+def _open_platform_html():
+    from pathlib import Path
+
+    import plugin.plugins.qq_auto_reply as pkg
+
+    return (Path(pkg.__file__).parent / "static" / "open_platform.html").read_text(
+        encoding="utf-8",
+    )
+
+
+def test_the_probe_checkbox_sits_on_the_trusted_users_page():
+    # It belongs next to the accounts hint that already teaches "your ID is an
+    # openid, look it up in the logs" -- not on the AppID/secret page every new
+    # user walks through during setup.
+    html = _open_platform_html()
+    assert html.count('id="cfg-identity-probe"') == 1
+
+    accounts_page = html.split('<div class="page" id="page-config-accounts">')[1]
+    accounts_page = accounts_page.split('<div class="page"')[0]
+    assert 'id="cfg-identity-probe"' in accounts_page
+    # ...and after the hint it leans on, not before it.
+    assert accounts_page.index("accounts_hint") < accounts_page.index(
+        "cfg-identity-probe",
+    )
+
+
+def test_the_probe_checkbox_is_read_and_written_by_the_page_script():
+    # A checkbox the save handler forgets is worse than no checkbox: it looks
+    # like it persists and doesn't.
+    html = _open_platform_html()
+    assert html.count("getElementById('cfg-identity-probe')") == 2
+    for key in PROBE_KEYS:
+        assert f'data-i18n="{key}"' in html
+
+
+# ==========================================================================
+# D. The fail-closed alarm
 # ==========================================================================
 
 
