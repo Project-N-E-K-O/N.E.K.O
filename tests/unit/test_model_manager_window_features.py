@@ -21,6 +21,29 @@ def read_model_manager_source() -> str:
     )
 
 
+def test_vrm_catalog_preview_preserves_selected_idle_and_stops_preview_rotation():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    preview = source.split("async function playSelectedVrmAnimationOption", 1)[1].split(
+        "// VRM动作选择按钮点击事件",
+        1,
+    )[0]
+    seed = "vrmMotionCatalogPlayer.setSavedRestAnimations("
+    play = "vrmMotionCatalogPlayer.playAsset(assetId, {"
+    assert seed in preview
+    assert "getSelectedIdleAnimations('vrm-idle-animation-multiselect')" in preview
+    assert "scheduleNext: false" in preview
+    assert preview.index(seed) < preview.index(play)
+
+    idle_switch = source.split("async function _playIdleAnimation", 1)[1].split(
+        "async function restoreVrmIdleAnimation",
+        1,
+    )[0]
+    assert "const idlePlaybackStarted = await vrmManager.playVRMAAnimation" in idle_switch
+    assert "if (idlePlaybackStarted !== true) return;" in idle_switch
+
+
 def test_vrm_catalog_preview_pause_does_not_resume_catalog_base_motion():
     source = Path("static/js/model_manager/page-controller.js").read_text(
         encoding="utf-8"
