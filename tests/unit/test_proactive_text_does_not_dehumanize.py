@@ -293,7 +293,13 @@ def test_cat_greeting_silences_short_returns() -> None:
         assert get_cat_greeting_prompt('awake', 180, lang) is not None
 
 
-_CAT_EPISODE_LOCALES = ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+# 'zh-TW' joined the tables with the issue #2500 backfill. The module's
+# normalizer still collapses Traditional to 'zh' (keep_traditional=False), so the
+# new rows are not reachable through get_cat_greeting_* yet — see
+# test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_english_fallback,
+# which pins that collapse. This tuple is the table-coverage list, not the
+# resolver's input domain.
+_CAT_EPISODE_LOCALES = ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
 _CAT_EPISODE_CASES = [
     {'kind': 'activity'},
     {'kind': 'activity', 'highlight': 'played_yarn'},

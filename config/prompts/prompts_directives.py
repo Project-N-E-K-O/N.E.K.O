@@ -1933,6 +1933,11 @@ USER_DIRECTIVES_PROMPT_BLOCK = {
         "{items}\n"
         "请在本次会话里主动避开这些话题或称呼，除非用户自己重新提起。"
     ),
+    'zh-TW': (
+        "\n\n[使用者最近明確表示過不想聊、或不喜歡被提到以下內容（共{n}項）]\n"
+        "{items}\n"
+        "請在這次的對話裡主動避開這些話題或稱呼，除非使用者自己重新提起。"
+    ),
     'en': (
         "\n\n[The user recently asked not to discuss or be referred to as the "
         "following ({n} item(s))]\n"
@@ -2008,6 +2013,11 @@ RECENT_TOPIC_HINT_PROMPT_BLOCK = {
         "{items}\n"
         "如果还没必要，尽量换个角度或换个话题，避免连续围绕同一主题打转。"
     ),
+    'zh-TW': (
+        "\n\n[最近幾輪你已經聊過的話題（{n}項）]\n"
+        "{items}\n"
+        "如果還沒必要，盡量換個角度或換個話題，避免一直繞著同一個主題打轉。"
+    ),
     'en': (
         "\n\n[Topics you've already touched on in the last few turns ({n})]\n"
         "{items}\n"
@@ -2079,6 +2089,13 @@ PROACTIVE_REGEN_AVOID_INSTRUCTION = {
         "如果想不出新角度，就只输出 [PASS]。"
         "不要复述或解释本要求，不要输出任何思考过程、清单或标签化回复以外的内容。"
     ),
+    'zh-TW': (
+        "【改寫要求】這些詞和話題最近已經聊得太多，這次必須避開：{terms}。"
+        "換個角度或換個話題，直接寫一句全新的搭話。"
+        "輸出嚴格遵守上面的格式：第一行寫來源標籤，第二行起只寫要對{master_name}說的原話；"
+        "如果想不出新角度，就只輸出 [PASS]。"
+        "不要複述或解釋這項要求，不要輸出任何思考過程、清單或標籤化回覆以外的內容。"
+    ),
     'en': (
         "[Rewrite] These words and topics have been used too much recently and MUST be "
         "avoided: {terms}. Pick a different angle or topic and write one brand-new line. "
@@ -2132,6 +2149,7 @@ PROACTIVE_REGEN_AVOID_INSTRUCTION = {
 # 不用"主人/master"等物化称呼（见项目约定）。
 _DEFAULT_ADDRESSEE = {
     "zh": "对方",
+    "zh-TW": "對方",
     "en": "them",
     "ja": "相手",
     "ko": "상대",
@@ -2177,6 +2195,13 @@ PROACTIVE_FORMAT_FIX_INSTRUCTION = {
         "如 [CHAT]、[WEB]、[MUSIC]、[MEME]），第二行起只写要对{master_name}说的话本身；"
         "没什么新鲜的可说就只输出 [PASS]。"
         "不要复述或解释任何规则，不要输出清单或思考过程，标签和正文以外的内容一律不要输出。"
+    ),
+    'zh-TW': (
+        "【格式修正】上一次的輸出沒有照規定的格式，把格式要求當成正文吐了出來。"
+        "請重寫：第一行只寫一個來源標籤（照上面輸出格式那段列出的來源標籤挑，"
+        "例如 [CHAT]、[WEB]、[MUSIC]、[MEME]），第二行起只寫要對{master_name}說的話本身；"
+        "沒什麼新鮮的可以講就只輸出 [PASS]。"
+        "不要複述或解釋任何規則，不要輸出清單或思考過程，標籤和正文以外的內容一律不要輸出。"
     ),
     'en': (
         "[Format fix] Your last output didn't follow the required format — it spat out the "

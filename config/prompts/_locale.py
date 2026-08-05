@@ -33,13 +33,24 @@ Three axes cover every prompt module's needs:
     the full ``"zh-CN"``.
 
 ``keep_traditional``
-    Whether ``zh-TW`` survives as its own key. Pass ``False`` for prompt
-    modules whose dicts have no ``'zh-TW'`` templates yet — collapsing to
-    Simplified there keeps the module's intended locale key explicit. The
-    shared ``_loc`` resolver independently uses Simplified Chinese as its
-    safety fallback when a Chinese variant key is absent.
-    Flip a module to ``True`` in the same change that adds its ``'zh-TW'``
-    templates, never before. See issue #2500.
+    Whether ``zh-TW`` survives as its own key. The shared ``_loc`` resolver
+    independently uses Simplified Chinese as its safety fallback when a Chinese
+    variant key is absent, so ``False`` is never a correctness hazard — it just
+    keeps the module's intended locale key explicit.
+
+    Every prompt dict under config/prompts/ now carries a ``'zh-TW'`` template
+    (issue #2500 step 1), so template coverage is no longer what gates the flag.
+    The two template-selecting ``False`` callers — ``prompts_minigame_common``
+    and ``prompts_proactive._normalize_prompt_language`` — are waiting on issue
+    #2500 step 2 instead: their call sites still pass a SHORT language code,
+    which collapses Traditional before it ever reaches this function. Flip a
+    module to ``True`` in the same change that switches its callers to the full
+    locale — flipping earlier is a no-op, and switching the callers first without
+    flipping hands Traditional users a resolver that silently drops the script.
+
+    ``prompts_directives._trim_term`` passes ``False`` for an
+    unrelated reason and stays that way: it is picking a *particle table family*,
+    and Traditional and Simplified Chinese share one. See issue #2500.
 
 Unlike ``config._runtime.normalize_language_code``, this normalizer is
 self-contained: it never routes through the runtime-injected forwarder, so a
