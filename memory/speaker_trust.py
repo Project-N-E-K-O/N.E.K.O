@@ -553,8 +553,110 @@ def observation_texts(messages: Iterable[Any]) -> list[str]:
     return texts
 
 
+def same_provenance_source(a: dict, b: dict) -> bool | None:
+    """Three-state: are these two rows the same PERSON?
+
+    ``True`` / ``False`` / ``None``, where ``None`` means "unknown" and is a
+    first-class answer, not a soft ``False``.
+
+    | condition                                                    | result |
+    |--------------------------------------------------------------|--------|
+    | ``speaker_id`` byte-equal                                     | True   |
+    | both carry ``speaker_entity_id`` and they are equal           | True   |
+    | pool loaded, both ids valid, resolve to the same entity       | True   |
+    | pool loaded, both ids valid, do not resolve to the same entity| False  |
+    | pool NOT loaded, or either id missing/malformed               | None   |
+
+    DEVIATION FROM THE DESIGN DOC, ON PURPOSE. The spec's table also returned
+    ``None`` when either account is merely *unregistered*. That is too broad and
+    silently retires an existing safety property: most accounts are unregistered
+    (a row only enters the pool once it has activity or a signal), so ``None``
+    would become the common answer and ``speaker_provenance_mixed`` would stop
+    being written for two genuinely different people — the exact regression
+    I-P-6 forbids.
+
+    An unregistered account is provably a SINGLETON entity: binding registers
+    both sides, so an account absent from ``account_index`` shares an entity
+    with nobody. Two different account strings, at least one of them
+    unregistered, therefore cannot be one person, and ``False`` is both correct
+    and regression-preserving. The doc's own justification for ``None`` is
+    exclusively the pool-unavailable window, which this keeps.
+
+    The mis-bind → unbind case still resolves to ``True`` without any pool
+    lookup: a row written while B was bound carries A's entity in its persisted
+    ``speaker_entity_id``, and the equality check above fires first. So there is
+    still no "mixed pump" after an unbind.
+
+    WHY ``None`` MUST EXIST. Canonical write routing makes two accounts of one
+    person share a subject for the first time, and the fact hash is salted with
+    the subject, so the same sentence now collides. The pre-existing ``else``
+    branch of ``_reconcile_existing_provenance`` stamps such a collision
+    ``speaker_provenance_mixed``, which is an absorbing state with no clearing
+    path anywhere in the repo: the row stops producing trust signals, is
+    excluded from refine and from dedup arbitration, and loses its speaker_id /
+    label / trust. "I do not know" must never be recorded as "I know these are
+    mixed" — that is the one unconditional rule here.
+
+    Callers must treat ``None`` as ABSTAIN (leave the existing provenance
+    exactly as it is), never as "different".
+    """
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return None
+    left_id = stable_speaker_id(a.get("speaker_id"))
+    right_id = stable_speaker_id(b.get("speaker_id"))
+    if left_id is not None and left_id == right_id:
+        return True
+    left_entity = str(a.get("speaker_entity_id") or "").strip()
+    right_entity = str(b.get("speaker_entity_id") or "").strip()
+    if left_entity and left_entity == right_entity:
+        return True
+    if left_id is None or right_id is None:
+        return None
+    try:
+        from memory.trust_store import trust_snapshot
+    except ImportError:  # pragma: no cover - defensive
+        return None
+    snap = trust_snapshot()
+    if not snap.loaded:
+        # The one genuinely unknown state: this process could not read the
+        # pool, yet still accepts scoped writes. Abstain.
+        return None
+    left_resolved = snap.entity_of(left_id)
+    right_resolved = snap.entity_of(right_id)
+    if left_resolved is None or right_resolved is None:
+        # At least one side is a singleton entity, so with different account
+        # strings these are two different people.
+        return False
+    return left_resolved == right_resolved
+
+
+_PROVENANCE_KEYS = (
+    "speaker_id", "speaker_label", "speaker_trust", "speaker_entity_id",
+    "speaker_provenance_mixed",
+)
+
+
+def _provenance_fields(entry: dict) -> dict:
+    return {key: entry[key] for key in _PROVENANCE_KEYS if key in entry}
+
+
 def provenance_of_entries(entries: Iterable[dict]) -> dict:
-    """Conservatively fold same-source provenance into a derived entry."""
+    """Conservatively fold same-source provenance into a derived entry.
+
+    ROW ORDER IS SIGNIFICANT and deliberately so: ``entries[0]`` is the
+    survivor / representative. When the rows turn out to be the SAME PERSON
+    under different accounts, this returns row 0's provenance VERBATIM rather
+    than folding.
+
+    Folding across accounts of one person would be a one-way ratchet on a
+    durable field: ``min(trusts)`` would rewrite an owner row already stamped
+    1.0 down to whatever their low-tier channel scored (e.g. 0.32) the moment
+    they say the same thing there. ``min`` only ever descends, so the row's
+    band drops from 'high' to 'low' permanently — and because it is not marked
+    mixed, ``scoped_refine`` no longer filters it out, so it enters
+    deterministic arbitration carrying 0.32 and loses to any ordinary member at
+    0.5. That is abstention turning into "participates and loses".
+    """
     rows = list(entries)
     if not rows or any(not isinstance(entry, dict) for entry in rows):
         return {}
@@ -570,7 +672,15 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
         return {"speaker_provenance_mixed": True}
     speaker_ids = set(known_speaker_ids)
     if len(speaker_ids) != 1:
-        return {"speaker_provenance_mixed": True}
+        # Different account strings. Only "different PERSON" justifies mixed;
+        # "unknown" must not be recorded as known-mixed, so an unresolved
+        # comparison keeps the representative row untouched as well.
+        verdicts = [
+            same_provenance_source(rows[0], other) for other in rows[1:]
+        ]
+        if any(verdict is False for verdict in verdicts):
+            return {"speaker_provenance_mixed": True}
+        return _provenance_fields(rows[0])
     speaker_id = next(iter(speaker_ids))
     trust_scores = [
         finite_trust_score(entry.get("speaker_trust")) for entry in rows
@@ -585,4 +695,10 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
     }
     if len(labels) == 1:
         result["speaker_label"] = next(iter(labels))[:64]
+    entity_ids = {
+        str(entry.get("speaker_entity_id") or "").strip() for entry in rows
+        if str(entry.get("speaker_entity_id") or "").strip()
+    }
+    if len(entity_ids) == 1:
+        result["speaker_entity_id"] = next(iter(entity_ids))
     return result

@@ -271,6 +271,23 @@ finally:
 | 池已加载 **且两侧 account 都已注册** 且解到不同 entity | `False` |
 | 其余（池未加载 / 任一 account 未注册 / 任一侧信息缺失） | **`None`（未知）** |
 
+> **【实现期更正：第 5 行收紧】** 落地时把「任一 account 未注册 ⇒ `None`」改成
+> **`False`**，`None` 只保留给「池未加载 / 任一 id 缺失或畸形」。
+>
+> 理由：account 只有在有活跃度或信号时才进池，所以「未注册」是绝大多数 account
+> 的常态；按原表 `None` 会成为最常见的返回值，`speaker_provenance_mixed` 对**两个
+> 真正不同的人**也基本不再写 —— 正是 I-P-6 明令禁止的回归。改造既有测试时这条被
+> 11 条既有用例同时抓到（`test_derived_provenance_marks_multiple_stable_speakers_as_mixed`
+> 等）。
+>
+> 而「未注册 ⇒ 不同人」是**可证的**：bind 会把两侧都注册，所以不在
+> `account_index` 里的 account 必然是单例实体，与另一个不同的 account 字符串不可能
+> 是同一个人。本行原本的论证（§2.15.2.10 P-3 第四行）通篇只针对「池未加载窗口」，
+> 收紧后那条论证逐字仍然成立。
+>
+> 「误绑 → 解绑」的 mixed 泵也依然封着：搁浅行持久化的 `speaker_entity_id` 等于 A
+> 当前的 entity，命中表格第 2 行 `True`，**在查池之前就短路**。
+
 **规范 P-3：三态各自的动作**
 
 | `same_provenance_source` | `_reconcile_existing_provenance` 的动作 | `_fold_survivor_provenance` / `provenance_of_entries` 的动作 |

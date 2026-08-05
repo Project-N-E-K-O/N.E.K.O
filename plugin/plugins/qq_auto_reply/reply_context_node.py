@@ -238,6 +238,7 @@ class QQReplyContextNode:
         source_kind: str = "",
         member_memory_at_receipt: bool | None = None,
         group_speaker_permission_level_at_receipt: str | None = None,
+        speaker_channel_at_receipt: str | None = None,
         participant_memory_at_receipt: bool | None = None,
         private_permission_level_at_receipt: str | None = None,
         inherited_consent_snapshot: dict[str, bool] | None = None,
@@ -624,6 +625,7 @@ class QQReplyContextNode:
             group_speaker_permission_level_at_receipt=(
                 group_speaker_permission_level_at_receipt
             ),
+            speaker_channel_at_receipt=speaker_channel_at_receipt,
             participant_memory_enabled=participant_memory_snapshot,
             private_memory_mode=private_memory_mode,
             private_permission_level_at_receipt=(

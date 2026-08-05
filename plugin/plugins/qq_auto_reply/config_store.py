@@ -162,7 +162,11 @@ class QQAutoReplyConfigStore:
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
-        merged["speaker_trust_profiles"] = payload.get("speaker_trust_profiles") if isinstance(payload.get("speaker_trust_profiles"), dict) else {}
+        # 存量 trust 池：**只读透传，永不改名、永不删键、永不归一**。池已上移
+        # memory_server，这份磁盘数据是一次性迁移源，且每次启动都会被重推
+        # （服务端按 account 哨兵幂等跳过）。归一/截断它等于悄悄改写迁移源，
+        # 而池文件一旦丢失就再也恢复不到迁移时刻的状态。
+        # `merged.update(payload)` 已经原样带过来了，这里刻意不做任何处理。
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
         reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
         if reply_mode != "text" or "reply_mode" in payload:
@@ -187,12 +191,8 @@ class QQAutoReplyConfigStore:
             normalized.update(dict(config or {}))
             normalized["trusted_users"] = list(normalized.get("trusted_users") or [])
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
-            normalized["speaker_trust_profiles"] = {
-                str(k): dict(v) for k, v in (
-                    normalized.get("speaker_trust_profiles") or {}
-                ).items()
-                if str(k).strip() and isinstance(v, dict)
-            }
+            # 见 load()：存量 trust 池只读透传，save 不重建、不归一。
+            # `normalized.update(dict(config))` 已原样保留原值。
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
             normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))

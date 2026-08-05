@@ -45,6 +45,17 @@ class QQMemoryBridge:
 
         return f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
 
+    #: The one place the platform literal lives. Subject builders below keep
+    #: composing their ids by hand ON PURPOSE — rewriting a subject_id would
+    #: make every stored scoped memory and persona section an unreachable
+    #: orphan, since attribution is byte equality of ``(key, scope)``.
+    PLATFORM = "qq"
+
+    @classmethod
+    def speaker_account_id(cls, sender_id: object) -> str:
+        """``platform:actor`` for the trust pool. Byte-identical to today."""
+        return f"{cls.PLATFORM}:{str(sender_id or '').strip()}"
+
     @staticmethod
     def group_subject(group_id: object) -> dict[str, str]:
         return {
@@ -324,7 +335,9 @@ class QQMemoryBridge:
         *,
         subject: dict[str, str],
         speaker_label: str | None = None,
-        speaker_trust: float | None = None,
+        speaker_tier: str | None = None,
+        speaker_activity_events: list[dict[str, Any]] | None = None,
+        speaker_channel: str | None = None,
         speaker_id: str | None = None,
         speaker_is_owner: bool = False,
         display_name: str | None = None,
@@ -333,18 +346,22 @@ class QQMemoryBridge:
         # speaker_label 只在单发言人批次（成员 bucket / 私聊 participant
         # digest）传：提取 prompt 用它替代私聊主人名渲染 user 轮，避免对方
         # 发言被抽成"关于主人"的事实。群 digest 不传——内容里每条消息已带
-        # 发言人头。speaker_trust 与 label 同源同段，作为 fact 的代码侧
-        # 仲裁 provenance；精确值不进入 prompt。display_name 是 subject 的人类可读
-        # 名（群名/昵称），服务端中和后刷进 persona section 元数据，渲染
-        # 标题用；纯装饰性，缺省即退化裸 id。
+        # 发言人头。speaker_tier 是权限档位，服务端据此自己算分并落库；插件
+        # 不再持有 trust 池、不再演化、不再接收回传。display_name 是 subject
+        # 的人类可读名（群名/昵称），服务端中和后刷进 persona section 元数据，
+        # 渲染标题用；纯装饰性，缺省即退化裸 id。
         payload: dict[str, Any] = {
             "input_history": json.dumps(messages, ensure_ascii=False),
             "subject": subject,
         }
         if speaker_label:
             payload["speaker_label"] = speaker_label
-        if speaker_trust is not None:
-            payload["speaker_trust"] = speaker_trust
+        if speaker_tier is not None:
+            payload["speaker_tier"] = speaker_tier
+        if speaker_activity_events:
+            payload["speaker_activity_events"] = speaker_activity_events
+        if speaker_channel:
+            payload["speaker_channel"] = speaker_channel
         if speaker_id:
             payload["speaker_id"] = speaker_id
         if speaker_is_owner:
@@ -360,6 +377,36 @@ class QQMemoryBridge:
         response.raise_for_status()
         return response.json()
 
+    async def post_legacy_speaker_trust(
+        self,
+        *,
+        platform: str,
+        source: str,
+        profiles: dict[str, Any],
+        chunk_index: int,
+        final: bool,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Push one chunk of the frozen legacy trust ledger to the server.
+
+        Character-agnostic route: trust is a property of the person, not of
+        their relationship with one character.
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/trust/import_legacy_profiles",
+            json={
+                "platform": platform,
+                "source": source,
+                "profiles": profiles,
+                "chunk_index": chunk_index,
+                "final": bool(final),
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def post_scoped_memory_history_batch(
         self,
         her_name: str,
@@ -370,7 +417,8 @@ class QQMemoryBridge:
         """The batched multi-speaker shape of /scoped_history.
 
         ``segments``: ``[{'messages': [...], 'subject': {...},
-        'speaker_label': str, 'speaker_trust': float|None,
+        'speaker_label': str, 'speaker_tier': str|None,
+        'speaker_activity_events': list|None, 'speaker_channel': str|None,
         'display_name': str|None}, ...]``——每段一位发言人。服务端一次抽取
         后按段分派，响应体按请求顺序逐段报 ok/failed，调用方只 pop 成功段
         的 bucket。display_name 是该段 subject 的显示名（昵称），只用于
@@ -384,9 +432,15 @@ class QQMemoryBridge:
                 "subject": segment.get("subject"),
                 "speaker_label": segment.get("speaker_label"),
             }
-            trust = segment.get("speaker_trust")
-            if trust is not None:
-                wire["speaker_trust"] = trust
+            tier = segment.get("speaker_tier")
+            if tier is not None:
+                wire["speaker_tier"] = tier
+            activity_events = segment.get("speaker_activity_events")
+            if activity_events:
+                wire["speaker_activity_events"] = activity_events
+            channel = segment.get("speaker_channel")
+            if channel:
+                wire["speaker_channel"] = channel
             speaker_id = segment.get("speaker_id")
             if speaker_id:
                 wire["speaker_id"] = speaker_id

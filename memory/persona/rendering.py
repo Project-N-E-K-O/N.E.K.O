@@ -52,9 +52,16 @@ class _RenderPrep(NamedTuple):
     ``_compose_from_prep``).
 
     ``subject_slots`` is the allocation order for scoped rendering: one
-    entry per authorized subject, in the order the CALLER supplied, plus a
-    trailing ``None`` slot when legacy-private rows are also allowed in.
+    entry per authorized PARTICIPANT, in the order the CALLER supplied, plus
+    a trailing ``None`` slot when legacy-private rows are also allowed in.
     Empty means legacy mode — one shared pool, pre-existing behaviour.
+
+    ``marker_aliases`` maps every member marker of a participant onto that
+    participant's primary marker. It is empty (identity) unless the caller
+    supplied participant groups, so every pre-existing caller renders exactly
+    as before. With it, one person holding several accounts gets ONE budget
+    slot, ONE ``### `` heading and ONE subject_id — rather than N slots whose
+    headings would all print the same id.
     """
 
     persona_view: dict
@@ -64,6 +71,7 @@ class _RenderPrep(NamedTuple):
     reflections: list
     suppressed_text_set: set
     subject_slots: tuple
+    marker_aliases: dict = {}
 
 class RenderingMixin:
     @staticmethod
@@ -587,6 +595,7 @@ class RenderingMixin:
         *,
         scoped_only: bool = False,
         skipped: set | None = None,
+        marker_aliases: dict | None = None,
     ) -> str:
         """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
 
@@ -657,13 +666,29 @@ class RenderingMixin:
             if ek:
                 per_entity[ek].append(entry)
 
+        # Fold sections that belong to the same PARTICIPANT into one heading.
+        # Without this a person with two accounts gets two ``### `` blocks whose
+        # ids are both rewritten to the primary — the model would read the same
+        # id twice and take it for two people.
+        section_group = self._section_group_keys(persona, marker_aliases)
         sections: list[str] = []
+        emitted_groups: set = set()
         # Iterate persona's natural key order so output is stable
         # regardless of which entries got trimmed.
         for entity_key in persona.keys():
-            entries = per_entity.get(entity_key)
+            group_key = section_group.get(entity_key, entity_key)
+            if group_key in emitted_groups:
+                continue
+            member_keys = [
+                key for key in persona.keys()
+                if section_group.get(key, key) == group_key
+            ]
+            entries: list = []
+            for key in member_keys:
+                entries.extend(per_entity.get(key) or ())
             if not entries:
                 continue
+            emitted_groups.add(group_key)
             lines = []
             for entry in entries:
                 if not isinstance(entry, dict):
@@ -673,7 +698,13 @@ class RenderingMixin:
                 if self._renderable_text(entry):
                     lines.append(f"- {entry.get('text', '')}")
             if lines:
-                section_meta = persona.get(entity_key, {})
+                # The heading always names the PRIMARY section of the group —
+                # for a single-section group that is the section itself, so
+                # nothing changes for every pre-existing caller.
+                primary_key = self._primary_section_key(
+                    persona, member_keys, marker_aliases,
+                )
+                section_meta = persona.get(primary_key, {})
                 subject_kind = section_meta.get('subject_kind')
                 subject_id = section_meta.get('subject_id')
                 if subject_kind in (
@@ -688,14 +719,16 @@ class RenderingMixin:
                     # 的地方，而 persona.json 可被手改（与 speaker_label 的
                     # 双侧中和同一道理，#2605）。中和后为空按无名回退。
                     display_name = FactStore.sanitize_speaker_label(
-                        section_meta.get('display_name'),
+                        self._group_display_name(
+                            persona, member_keys, primary_key,
+                        ),
                     )
                     header = get_scoped_persona_section_header(
                         subject_kind, subject_id, render_lang,
                         display_name=display_name or None,
                     )
                 else:
-                    header = _headers.get(entity_key, entity_key)
+                    header = _headers.get(primary_key, primary_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
         if trimmed_pending_reflections:
@@ -807,6 +840,7 @@ class RenderingMixin:
     @staticmethod
     def _subject_render_slots(
         subjects=None, include_legacy_private: bool | None = None,
+        participant_groups=None,
     ) -> tuple:
         """Allocation order for a scoped render, or `()` for legacy mode.
 
@@ -814,6 +848,11 @@ class RenderingMixin:
         `[group, current speaker]` and a later PR widens it to
         `[group, current speaker, the last three other speakers]`; deciding
         here who matters would silently override the only layer that knows.
+
+        With `participant_groups` supplied, one slot per PARTICIPANT rather
+        than per subject: a person's several accounts share one budget, one
+        heading and one id. Folding can only ever shrink the slot list, so
+        every wire-level `1..8` check still holds.
 
         A trailing `None` slot carries legacy-private rows whenever the
         caller opted them in alongside subjects — without it those rows
@@ -828,22 +867,111 @@ class RenderingMixin:
             return ()
         if include_legacy_private is None:
             include_legacy_private = not allowed
-        slots = list(allowed)
+        if participant_groups:
+            slots = [group.primary for group in participant_groups]
+        else:
+            slots = list(allowed)
         if include_legacy_private:
             slots.append(None)
         return tuple(slots)
 
     @staticmethod
-    def _subject_bucket_marker(subject):
+    def _section_group_keys(persona: dict, marker_aliases: dict | None) -> dict:
+        """`entity_key -> rendering group key`. Identity without aliases."""
+        if not marker_aliases:
+            return {}
+        from memory.scopes import persona_subject_from_section
+
+        mapping: dict = {}
+        for section_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            subject = persona_subject_from_section(section_key, section)
+            if subject is None:
+                continue
+            alias = marker_aliases.get((subject.key, subject.scope))
+            if alias is not None:
+                mapping[section_key] = alias
+        return mapping
+
+    @staticmethod
+    def _primary_section_key(
+        persona: dict, member_keys: list, marker_aliases: dict | None,
+    ) -> str:
+        """The section whose subject IS the participant's primary marker."""
+        if len(member_keys) == 1 or not marker_aliases:
+            return member_keys[0]
+        from memory.scopes import persona_subject_from_section
+
+        for key in member_keys:
+            section = persona.get(key)
+            if not isinstance(section, dict):
+                continue
+            subject = persona_subject_from_section(key, section)
+            if subject is None:
+                continue
+            marker = (subject.key, subject.scope)
+            if marker_aliases.get(marker) == marker:
+                return key
+        return member_keys[0]
+
+    @staticmethod
+    def _group_display_name(
+        persona: dict, member_keys: list, primary_key: str,
+    ) -> str | None:
+        """Name for a folded heading.
+
+        Primary's name wins; otherwise the group's single non-empty name; two
+        different names mean NO name — the same discipline
+        ``_persona_view_for_subjects`` already applies when it drops
+        ``display_name`` for a mixed-scope section rather than printing one
+        writer's label over another's rows.
+        """
+        primary_name = str(
+            (persona.get(primary_key) or {}).get('display_name') or ''
+        ).strip()
+        if primary_name:
+            return primary_name
+        names = {
+            name for name in (
+                str(
+                    (persona.get(key) or {}).get('display_name') or ''
+                ).strip()
+                for key in member_keys
+            ) if name
+        }
+        return next(iter(names)) if len(names) == 1 else None
+
+    @staticmethod
+    def _subject_marker_aliases(participant_groups=None) -> dict:
+        """`member marker -> primary marker` for every supplied participant.
+
+        One-to-one by construction: the resolver folds at request level so no
+        two groups share a participant, and it never truncates a group's
+        member set, so no marker can belong to two groups.
+        """
+        aliases: dict = {}
+        for group in participant_groups or ():
+            primary_marker = (group.primary.key, group.primary.scope)
+            for member in group.members:
+                aliases[(member.key, member.scope)] = primary_marker
+        return aliases
+
+    @staticmethod
+    def _subject_bucket_marker(subject, aliases: dict | None = None):
         """`(key, scope)` for a subject slot; `None` for the legacy slot.
 
         Mirrors what `filter_entries_for_subjects` matches on, so an entry
-        lands in the same bucket the authorization check used.
+        lands in the same bucket the authorization check used — then folds
+        through `aliases` so every account of one person shares a bucket.
         """
-        return None if subject is None else (subject.key, subject.scope)
+        if subject is None:
+            return None
+        marker = (subject.key, subject.scope)
+        return (aliases or {}).get(marker, marker)
 
     @classmethod
-    def _bucket_entries_by_subject(cls, entries) -> dict:
+    def _bucket_entries_by_subject(cls, entries, aliases: dict | None = None) -> dict:
         """Group already-authorized entries by the stamp on the entry.
 
         Bucketing on the entry's own subject rather than on its persona
@@ -862,7 +990,9 @@ class RenderingMixin:
             # expression: `_log_unslotted_buckets` builds its `known` set
             # from that helper, so two spellings that drift apart would
             # make every entry look unslotted (or hide a real drop).
-            marker = cls._subject_bucket_marker(subject_from_entry(entry))
+            marker = cls._subject_bucket_marker(
+                subject_from_entry(entry), aliases,
+            )
             buckets[marker].append(entry)
         return buckets
 
@@ -876,7 +1006,9 @@ class RenderingMixin:
         )
 
     @classmethod
-    def _log_unslotted_buckets(cls, slots: tuple, *bucket_maps) -> None:
+    def _log_unslotted_buckets(
+        cls, slots: tuple, *bucket_maps, aliases: dict | None = None,
+    ) -> None:
         """Loudly report entries that passed authorization but got no slot.
 
         Should be unreachable: everything in the view matched one of the
@@ -884,7 +1016,7 @@ class RenderingMixin:
         the filter and the allocator, and a silent drop is exactly the kind
         of thing that only surfaces as "the character forgot things".
         """
-        known = {cls._subject_bucket_marker(s) for s in slots}
+        known = {cls._subject_bucket_marker(s, aliases) for s in slots}
         for buckets in bucket_maps:
             for marker, entries in buckets.items():
                 if marker not in known and entries:
@@ -929,14 +1061,19 @@ class RenderingMixin:
         rolls forward to the next one, in the caller's order — no subject
         kind gets a reserved slice or otherwise jumps the queue.
         """
-        persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
-        reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
+        aliases = prep.marker_aliases
+        persona_buckets = cls._bucket_entries_by_subject(
+            prep.flat_non_protected, aliases,
+        )
+        reflection_buckets = cls._bucket_entries_by_subject(
+            prep.reflections, aliases,
+        )
         kept_persona: list = []
         kept_reflections: list = []
         skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
         for subject in prep.subject_slots:
-            marker = cls._subject_bucket_marker(subject)
+            marker = cls._subject_bucket_marker(subject, aliases)
             # Pure caller order: whatever the gate still holds, in the
             # order the caller listed. A subject that wants priority is
             # listed earlier — that is the whole contract, and it is the
@@ -981,6 +1118,7 @@ class RenderingMixin:
             kept_reflections.extend(reflection_kept)
         cls._log_unslotted_buckets(
             prep.subject_slots, persona_buckets, reflection_buckets,
+            aliases=aliases,
         )
         return kept_persona, cls._sort_kept_reflections(kept_reflections, now), skipped
 
@@ -990,14 +1128,19 @@ class RenderingMixin:
     ) -> tuple[list, list, set]:
         """Async twin of `_trim_scoped_by_subject` — same allocation, only
         the token counter differs (worker-thread tiktoken)."""
-        persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
-        reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
+        aliases = prep.marker_aliases
+        persona_buckets = cls._bucket_entries_by_subject(
+            prep.flat_non_protected, aliases,
+        )
+        reflection_buckets = cls._bucket_entries_by_subject(
+            prep.reflections, aliases,
+        )
         kept_persona: list = []
         kept_reflections: list = []
         skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
         for subject in prep.subject_slots:
-            marker = cls._subject_bucket_marker(subject)
+            marker = cls._subject_bucket_marker(subject, aliases)
             # Pure caller order: whatever the gate still holds, in the
             # order the caller listed. A subject that wants priority is
             # listed earlier — that is the whole contract, and it is the
@@ -1042,6 +1185,7 @@ class RenderingMixin:
             kept_reflections.extend(reflection_kept)
         cls._log_unslotted_buckets(
             prep.subject_slots, persona_buckets, reflection_buckets,
+            aliases=aliases,
         )
         return kept_persona, cls._sort_kept_reflections(kept_reflections, now), skipped
 
@@ -1051,6 +1195,7 @@ class RenderingMixin:
         confirmed_reflections: list[dict] | None,
         subjects=None,
         include_legacy_private: bool | None = None,
+        participant_groups=None,
     ) -> _RenderPrep:
         """Phase 1+2 shared by both render paths — see `_RenderPrep`."""
         persona_view = self._persona_view_for_subjects(
@@ -1083,8 +1228,9 @@ class RenderingMixin:
             reflections=reflections,
             suppressed_text_set=suppressed_text_set,
             subject_slots=self._subject_render_slots(
-                subjects, include_legacy_private,
+                subjects, include_legacy_private, participant_groups,
             ),
+            marker_aliases=self._subject_marker_aliases(participant_groups),
         )
 
     def _compose_from_prep(
@@ -1113,7 +1259,7 @@ class RenderingMixin:
         )
         protected_entries = self._cap_protected_entries([
             (entity_key, entry) for entity_key, entry in prep.protected_entries
-            if not self._entry_is_skipped(entry, skipped)
+            if not self._entry_is_skipped(entry, skipped, prep.marker_aliases)
         ])
         return self._compose_markdown_from_trimmed(
             name, prep.persona_view, name_mapping,
@@ -1124,16 +1270,21 @@ class RenderingMixin:
                 subjects, include_legacy_private,
             ),
             skipped=skipped,
+            marker_aliases=prep.marker_aliases,
         )
 
     @classmethod
-    def _entry_is_skipped(cls, entry, skipped: set | None) -> bool:
-        """True when `entry` belongs to a subject the allocator dropped."""
+    def _entry_is_skipped(
+        cls, entry, skipped: set | None, aliases: dict | None = None,
+    ) -> bool:
+        """True when `entry` belongs to a participant the allocator dropped."""
         if not skipped:
             return False
         from memory.scopes import subject_from_entry
 
-        return cls._subject_bucket_marker(subject_from_entry(entry)) in skipped
+        return cls._subject_bucket_marker(
+            subject_from_entry(entry), aliases,
+        ) in skipped
 
     def _compose_persona_markdown(
         self, name: str, persona: dict, name_mapping: dict,
@@ -1141,13 +1292,14 @@ class RenderingMixin:
         confirmed_reflections: list[dict] | None,
         subjects=None,
         include_legacy_private: bool | None = None,
+        participant_groups=None,
     ) -> str:
         """Sync 3-phase render path. Used by `render_persona_markdown` and
         any test/migration caller that doesn't have an event loop."""
         now = datetime.now()
         prep = self._prepare_render(
             persona, pending_reflections, confirmed_reflections,
-            subjects, include_legacy_private,
+            subjects, include_legacy_private, participant_groups,
         )
         skipped: set = set()
         if prep.subject_slots:
@@ -1205,7 +1357,8 @@ class RenderingMixin:
     def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
                                    confirmed_reflections: list[dict] | None = None,
                                    *, subjects=None,
-                                   include_legacy_private: bool | None = None) -> str:
+                                   include_legacy_private: bool | None = None,
+                                   participant_groups=None) -> str:
         """Render persona as markdown for LLM context injection.
 
         Suppressed entries are rendered in a separate "暂不主动提及" ("not
@@ -1218,7 +1371,7 @@ class RenderingMixin:
         _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
         return self._compose_persona_markdown(
             name, persona, name_mapping, pending_reflections, confirmed_reflections,
-            subjects, include_legacy_private,
+            subjects, include_legacy_private, participant_groups,
         )
 
     async def arender_persona_markdown(
@@ -1228,6 +1381,7 @@ class RenderingMixin:
         *,
         subjects=None,
         include_legacy_private: bool | None = None,
+        participant_groups=None,
     ) -> str:
         """Async 3-phase render path. Production hot path — uses
         `acount_tokens` so the event loop doesn't stall on tiktoken IO.
@@ -1242,7 +1396,7 @@ class RenderingMixin:
         now = datetime.now()
         prep = self._prepare_render(
             persona, pending_reflections, confirmed_reflections,
-            subjects, include_legacy_private,
+            subjects, include_legacy_private, participant_groups,
         )
         skipped: set = set()
         if prep.subject_slots:

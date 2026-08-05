@@ -17,6 +17,9 @@ _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
 
 class QQOpenPlatformConnection(QQConnectionBase):
+    #: Observed transport (see QQClient.CHANNEL). Never a key.
+    CHANNEL: str = "open"
+
     """QQ 开放平台官方 Bot API 连接
 
     WebSocket 事件 → 内部统一消息格式 → 上层管道
@@ -645,6 +648,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if event_type == "C2C_MESSAGE_CREATE":
             return {
                 "message_type": "private",
+                "channel": self.CHANNEL,
                 "user_id": user_id,
                 "user_nickname": user_nickname,
                 "content": str(data.get("content") or ""),
@@ -681,6 +685,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
             return {
                 "message_type": "group",
+                "channel": self.CHANNEL,
                 "user_id": user_id,
                 "user_nickname": user_nickname,
                 "content": clean_content,

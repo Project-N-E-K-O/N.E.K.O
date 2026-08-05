@@ -1282,6 +1282,7 @@ class FactDedupResolver:
                 deterministic_relation,
                 preferred_by_trust,
                 provenance_of_entries,
+                same_provenance_source,
                 stable_speaker_id,
             )
             cand_speaker = cand.get('speaker_id')
@@ -1297,6 +1298,16 @@ class FactDedupResolver:
                 and cand_speaker_id is not None
                 and exist_speaker_id is not None
                 and cand_speaker_id != exist_speaker_id
+                # Different account != different person. Canonical write
+                # routing puts one person's two accounts in the same subject
+                # and the same dedup domain, so "arbitrate against yourself"
+                # goes from theoretical to routine — and the base tier is NOT
+                # aggregated across accounts, so the same person can hold 1.0
+                # on QQ and 0.32 on a tier-less channel, a 0.68 gap against a
+                # 0.15 margin. Without this guard their own older statement
+                # deterministically overrides their own newer one.
+                # ``is not True`` so "unknown" still arbitrates as today.
+                and same_provenance_source(existing, cand) is not True
                 and isinstance(cand_trust, (int, float))
                 and not isinstance(cand_trust, bool)
                 and isinstance(exist_trust, (int, float))
@@ -1340,7 +1351,15 @@ class FactDedupResolver:
                     survivor.get('speaker_provenance_mixed') is True
                     or absorbed.get('speaker_provenance_mixed') is True
                     or (bool(attributed_ids) and None in known_ids)
-                    or len(attributed_ids) > 1
+                    # Two account strings only mean "mixed" when they are two
+                    # PEOPLE. ``is False`` (not ``is not True``): "unknown"
+                    # must not be recorded as known-mixed, and
+                    # ``provenance_of_entries`` already keeps the survivor's
+                    # own provenance verbatim in that case.
+                    or (
+                        len(attributed_ids) > 1
+                        and same_provenance_source(survivor, absorbed) is False
+                    )
                 )
                 for key in provenance_keys:
                     survivor.pop(key, None)

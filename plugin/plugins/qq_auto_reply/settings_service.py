@@ -324,15 +324,6 @@ class QQSettingsService:
             self._consent_lock = lock
         return lock
 
-    @property
-    def _speaker_trust_write_lock(self) -> asyncio.Lock:
-        """Return the global trust/settings writer lock, creating it lazily."""
-        lock = getattr(self, "_speaker_trust_lock", None)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._speaker_trust_lock = lock
-        return lock
-
     def _rollback_unpersisted_memory_toggles(
         self, persisted: bool, *,
         group_memory_before: bool, group_memory_after: bool,
@@ -581,19 +572,17 @@ class QQSettingsService:
         开关自己弹回去），而运行时要等写盘成功、由调用方显式发布。save()
         会返回规范化后的新 dict 并顶替 _qq_settings——发布之前得把这些键
         按旧值压回去，不然"延迟"会被这次顶替悄悄抵消。"""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                return await self._persist_business_config_locked(overlay)
+        async with self._consent_transaction_lock:
+            return await self._persist_business_config_locked(overlay)
 
     async def mutate_business_config(
         self, mutation: Callable[[dict[str, Any]], bool],
     ) -> bool:
-        """Run a direct settings read-modify-write under both writer locks."""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                if not mutation(self.plugin._qq_settings):
-                    return True
-                return await self._persist_business_config_locked()
+        """Run a direct settings read-modify-write under the writer lock."""
+        async with self._consent_transaction_lock:
+            if not mutation(self.plugin._qq_settings):
+                return True
+            return await self._persist_business_config_locked()
 
     async def _persist_business_config_locked(
         self,
@@ -611,31 +600,17 @@ class QQSettingsService:
             }
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
-            live_trust_profiles = (
-                self.plugin.permission_mgr.speaker_trust_profiles()
-                if self.plugin.permission_mgr else {}
-            )
-            self.plugin._qq_settings["speaker_trust_profiles"] = live_trust_profiles
-            staged_trust_profiles = getattr(
-                self, "_staged_speaker_trust_profiles", None,
-            )
             pre_publish = {
                 key: bool(self.plugin._qq_settings.get(key, False))
                 for key in (overlay or {})
             }
             payload = dict(self.plugin._qq_settings)
-            if isinstance(staged_trust_profiles, dict):
-                payload["speaker_trust_profiles"] = staged_trust_profiles
             if preserve_published_permissions:
                 payload.update(published_permissions)
             payload.update(overlay or {})
             saved = await self.plugin.config_store.save(payload)
             for key, value in pre_publish.items():
                 saved[key] = value
-            if isinstance(staged_trust_profiles, dict):
-                # The durable writer may publish the staged profile only
-                # after save succeeds; readers keep seeing the live snapshot.
-                saved["speaker_trust_profiles"] = live_trust_profiles
             if preserve_published_permissions:
                 saved.update(published_permissions)
             self.plugin._qq_settings = saved
@@ -688,108 +663,105 @@ class QQSettingsService:
     def rebuild_permission_managers(self, config: dict[str, Any]) -> None:
         self.plugin.permission_mgr = PermissionManager(
             config.get("trusted_users", []),
-            config.get("speaker_trust_profiles", {}),
         )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
         self.plugin._refresh_admin_qq()
 
     @asynccontextmanager
     async def permission_manager_rebuild_guard(self):
-        """Serialize reloads with the global trust read-modify-write path."""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                yield
+        """Serialize reloads with the settings writer path.
 
-    async def apply_speaker_trust_update(
-        self,
-        *,
-        sender_id: str,
-        message_count: int,
-        activity_event_id: str,
-        trust_events: list[dict] | None = None,
-    ) -> bool:
-        """Single durable writer for global per-QQ trust evolution."""
-        async with self._speaker_trust_write_lock:
-            # Share the full settings transaction lock as well: a dashboard
-            # save writes the same config file and could otherwise publish a
-            # stale snapshot over this trust update.
-            async with self._consent_transaction_lock:
-                # Dashboard reloads replace the manager object. Resolve it
-                # only after both writer locks so a queued update cannot
-                # mutate a detached instance and then report success.
-                manager = self.plugin.permission_mgr
-                if manager is None:
-                    return False
-                before = manager.speaker_trust_profiles()
-                staged_manager = PermissionManager(
-                    speaker_trust_profiles=before,
-                )
-                changed = staged_manager.record_speaker_activity(
-                    sender_id, message_count, activity_event_id,
-                )
-                changed = (
-                    bool(staged_manager.apply_speaker_trust_events(
-                        trust_events or [],
-                    ))
-                    or changed
-                )
-                if not changed:
-                    return True
-                after = staged_manager.speaker_trust_profiles()
-                self._staged_speaker_trust_profiles = after
-                save_task = asyncio.ensure_future(
-                    self._persist_business_config_locked(
-                        refresh_backlog_store=False,
-                        preserve_published_permissions=True,
-                    )
-                )
-                try:
-                    persisted = await asyncio.shield(save_task)
-                except asyncio.CancelledError as cancelled:
-                    try:
-                        while not save_task.done():
-                            try:
-                                await asyncio.shield(save_task)
-                            except asyncio.CancelledError:
-                                # A second cancellation must not cancel the
-                                # in-flight settings write. Keep both writer
-                                # locks until the worker publishes an outcome.
-                                continue
-                        persisted = save_task.result()
-                    except asyncio.CancelledError:
-                        persisted = False
-                    except Exception as exc:
-                        self.plugin.logger.error(
-                            f"取消期间的 speaker trust 写盘失败: {exc}"
+        Only ONE lock now. The trust pool moved to memory_server, so the
+        dedicated ``_speaker_trust_write_lock`` — and with it the
+        ``ensure_future`` + ``shield`` + second-cancellation loop +
+        before/after rollback that existed solely to hold a lock across an
+        await — is gone. The server-side critical section runs entirely inside
+        one ``asyncio.to_thread``, which cannot be cancelled once handed off.
+        """
+        async with self._consent_transaction_lock:
+            yield
+
+    #: Backoff for the legacy trust push, then a fixed 1800s.
+    _MIGRATION_BACKOFF = (0, 5, 30, 120, 600)
+    #: Ledger identity. The server's per-account sentinel is keyed by
+    #: ``(source, account_id)``, so this string must never change casually —
+    #: changing it re-imports every account additively.
+    LEGACY_TRUST_SOURCE = (
+        "qq_auto_reply.business_config.speaker_trust_profiles.v1"
+    )
+
+    async def push_legacy_speaker_trust_forever(self) -> None:
+        """Push the frozen legacy trust ledger to memory_server, then open the gate.
+
+        RUNS ON EVERY STARTUP, FOREVER — this is not a one-shot migration, and
+        that is the point. The original design put a "migration done" marker in
+        the plugin's own config and the "already imported" marker in the pool
+        file, with no atomic relationship between them: lose the pool once and
+        the plugin sees its own marker, returns immediately, and the new pool's
+        barrier stays pending forever — every user's trust silently zero, with
+        no path to self-heal.
+
+        After the flip the plugin no longer evolves this snapshot, so each
+        startup merely re-sends the same frozen data; the server's per-account
+        sentinel matches and skips it without writing. A lost or corrupted pool
+        therefore self-heals to the migration-time state on the next start.
+
+        An empty ``profiles`` still sends ONE chunk with ``final=true``: a fresh
+        install has nothing to import but its barrier must still be opened, or
+        trust never turns on at all.
+        """
+        delays = list(self._MIGRATION_BACKOFF)
+        raw_profiles = (
+            self.plugin._qq_settings.get("speaker_trust_profiles") or {}
+        )
+        if not isinstance(raw_profiles, dict):
+            raw_profiles = {}
+        items = list(raw_profiles.items())
+        from config import SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX
+
+        chunks = [
+            dict(items[index:index + SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX])
+            for index in range(
+                0, len(items), SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX,
+            )
+        ] or [{}]
+        while True:
+            try:
+                for index, chunk in enumerate(chunks):
+                    result = (
+                        await self.plugin.memory_bridge
+                        .post_legacy_speaker_trust(
+                            platform="qq",
+                            source=self.LEGACY_TRUST_SOURCE,
+                            profiles=chunk,
+                            chunk_index=index,
+                            final=(index == len(chunks) - 1),
+                            timeout=30.0,
                         )
-                        persisted = False
-                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
-                    if persisted:
-                        manager.replace_speaker_trust_profiles(after)
-                        if isinstance(runtime_settings, dict):
-                            runtime_settings['speaker_trust_profiles'] = after
-                    elif isinstance(runtime_settings, dict):
-                        runtime_settings['speaker_trust_profiles'] = before
-                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
-                    cancelled.speaker_trust_persisted = bool(persisted)
-                    raise
-                except Exception:
-                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
-                    raise
-                self.__dict__.pop('_staged_speaker_trust_profiles', None)
-                if persisted:
-                    manager.replace_speaker_trust_profiles(after)
-                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
-                    if isinstance(runtime_settings, dict):
-                        runtime_settings['speaker_trust_profiles'] = after
-                    return True
-                runtime_settings = getattr(self.plugin, '_qq_settings', None)
-                if isinstance(runtime_settings, dict):
-                    runtime_settings['speaker_trust_profiles'] = before
-                self.plugin.logger.warning(
-                    f"speaker trust 写盘失败，已回滚 sender={sender_id}"
+                    )
+                    if result.get("skipped"):
+                        self.plugin.logger.warning(
+                            f"speaker trust 迁移跳过 "
+                            f"{len(result['skipped'])} 个非法 key: "
+                            f"{result['skipped'][:5]}"
+                        )
+                    if result.get("persisted") is False:
+                        raise RuntimeError("legacy trust import not persisted")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.plugin.logger.debug(
+                    f"speaker trust 迁移待重试: {exc}"
                 )
-                return False
+            else:
+                trust_ready = getattr(self.plugin, "trust_ready", None)
+                if trust_ready is not None:
+                    trust_ready.set()
+                self.plugin.logger.info(
+                    "speaker trust 已迁移到服务端，trust 上报已启用"
+                )
+                return
+            await asyncio.sleep(delays.pop(0) if delays else 1800)
 
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
         """Serialize the whole settings transaction.
@@ -799,9 +771,8 @@ class QQSettingsService:
         url, token, reply mode, probabilities) are silently dropped when
         the winner replaces the dict, and the consent rollback cannot
         reason about a `before` value another request already changed."""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                return await self._save_settings_locked(**kwargs)
+        async with self._consent_transaction_lock:
+            return await self._save_settings_locked(**kwargs)
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
         onebot_url = kwargs.get("onebot_url")

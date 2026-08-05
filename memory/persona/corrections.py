@@ -722,6 +722,7 @@ class CorrectionsMixin:
             from memory.speaker_trust import (
                 deterministic_relation,
                 preferred_by_trust,
+                same_provenance_source,
                 stable_speaker_id,
             )
             old_speaker_id = item.get('old_speaker_id')
@@ -735,6 +736,18 @@ class CorrectionsMixin:
                 stable_old_speaker_id is not None
                 and stable_new_speaker_id is not None
                 and stable_old_speaker_id != stable_new_speaker_id
+                # Same discipline as fact_dedup / scoped_refine: one person's
+                # two accounts must not arbitrate against each other.
+                and same_provenance_source(
+                    {
+                        'speaker_id': stable_old_speaker_id,
+                        'speaker_entity_id': item.get('old_speaker_entity_id'),
+                    },
+                    {
+                        'speaker_id': stable_new_speaker_id,
+                        'speaker_entity_id': item.get('new_speaker_entity_id'),
+                    },
+                ) is not True
                 and item.get('old_speaker_provenance_mixed') is not True
                 and item.get('new_speaker_provenance_mixed') is not True
                 and isinstance(old_trust, (int, float))

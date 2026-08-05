@@ -654,6 +654,12 @@ class QQSessionMemoryService:
             "_speaker_permission_level": permission_level,
             "_speaker_activity_id": activity_id,
             "_speaker_sequence": sequence,
+            # Observed transport at RECEIPT time, so a buffer spanning a
+            # transport switch still reports the transport each message
+            # actually arrived on. Diagnostics only.
+            "_speaker_channel": getattr(
+                context, "speaker_channel_at_receipt", None,
+            ),
         })
         if len(messages) >= self.GROUP_MEMBER_MAX_MESSAGES:
             # 活跃群永远等不到 idle 结算，焦点 digest 又只冲群历史：到线
@@ -970,19 +976,31 @@ class QQSessionMemoryService:
                 participant_extra["display_name"] = display_name
             if speaker_is_owner:
                 participant_extra["speaker_is_owner"] = True
-            # Permission is frozen with the session, but trust evolves after
-            # each successful batch.  Refresh it before every POST so later
-            # facts never inherit the previous batch's stale score.
-            speaker_trust = self._speaker_trust_for(
-                sender_id, permission_level,
-            )
+            # 只在迁移推送成功之后才上报 trust 来源：闸门未开时插件根本不发
+            # tier/activity（纵深防御的第一层，服务端的闸门是第二层）。
+            if self._trust_reporting_ready():
+                participant_extra["speaker_tier"] = permission_level
+                participant_extra["speaker_activity_events"] = (
+                    self._participant_activity_events_for(
+                        sender_id, scoped_messages,
+                        stable=(
+                            f"participant:{her_name}:"
+                            f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
+                            f"{last_participant_digest_index}:{next_index}"
+                        ),
+                    )
+                )
+                channel = self._speaker_channel_for(scoped_messages)
+                if channel:
+                    participant_extra["speaker_channel"] = channel
             result = await self.plugin.memory_bridge.post_scoped_memory_history(
                 her_name,
                 scoped_messages,
                 subject=subject,
                 speaker_label=speaker_label,
-                speaker_trust=speaker_trust,
-                speaker_id=f"qq:{sender_id}",
+                speaker_id=self.plugin.memory_bridge.speaker_account_id(
+                    sender_id
+                ),
                 timeout=30.0,
                 **participant_extra,
             )
@@ -990,26 +1008,13 @@ class QQSessionMemoryService:
                 raise RuntimeError(
                     result.get("message", "scoped participant history failed")
                 )
-            try:
-                await self._apply_speaker_trust_update(
-                    sender_id,
-                    scoped_messages,
-                    result.get("trust_events") or [],
-                    activity_identity=(
-                        f"participant:{her_name}:"
-                        f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
-                        f"{last_participant_digest_index}:{next_index}"
-                    ),
-                )
-            except asyncio.CancelledError as cancelled:
-                # _apply_speaker_trust_update shields and joins its durable
-                # settings write before propagating cancellation. The memory
-                # server write also completed above, so retain that exact
-                # prefix checkpoint; otherwise a grown retry slice would
-                # count the already-receipted messages again.
-                if getattr(cancelled, "speaker_trust_persisted", False):
-                    user_data["last_participant_digest_index"] = next_index
-                raise
+            if not self._trust_persisted(result.get("trust")):
+                # HTTP 200 with ``trust.persisted == false`` means the facts are
+                # durable but the pool write is not. Retain this slice and retry
+                # the same idempotent activity/signal ids — the owner-signal
+                # replay ring is keyed on THIS request's text, so popping here
+                # would silently lose a correction for good.
+                raise RuntimeError("speaker trust update persistence failed")
             self.plugin.logger.info(
                 f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"
                 f"消息数: {len(scoped_messages)}"
@@ -1412,16 +1417,27 @@ class QQSessionMemoryService:
                         "speaker_label": (
                             str(member_labels.get(sender_id) or sender_id)[:64]
                         ),
-                        # 全局信赖度快照：权限基线 + 有界演化，随段落盘到
-                        # 该段抽出的每条 fact 上。
-                        "speaker_trust": self._speaker_trust_for(
-                            sender_id, permission_level,
+                        "speaker_id": (
+                            self.plugin.memory_bridge.speaker_account_id(
+                                sender_id
+                            )
                         ),
-                        "speaker_id": f"qq:{sender_id}",
                     }
-                    if self._speaker_is_owner_for(
+                    tier, is_owner = self._speaker_identity_for(
                         sender_id, permission_level,
-                    ):
+                    )
+                    if self._trust_reporting_ready():
+                        # 只上报权限档位：分数由服务端按全局 trust 池算。
+                        segment["speaker_tier"] = tier
+                        segment["speaker_activity_events"] = (
+                            self._speaker_activity_events_for(
+                                sender_id, messages,
+                            )
+                        )
+                        channel = self._speaker_channel_for(messages)
+                        if channel:
+                            segment["speaker_channel"] = channel
+                    if is_owner:
                         segment["speaker_is_owner"] = True
                         if excluded_fact_identities:
                             segment[
@@ -1592,80 +1608,24 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} 成员 {sender_id} "
                                 f"本次抽取丢弃了 {dropped} 条无内容条目"
                             )
-                        trust_events = list(
-                            segment_result.get("trust_events") or []
-                        )
-                        excluded_fact_identities = {
-                            tuple(str(part) for part in identity)
-                            for message in spec["messages"]
-                            if isinstance(message, dict)
-                            for identity in (
-                                message.get(
-                                    "_trust_signal_excluded_fact_identities"
-                                ) or []
-                            )
-                            if isinstance(identity, (list, tuple))
-                            and len(identity) == 4
-                            and all(identity)
-                        }
-                        if excluded_fact_identities:
-                            unfiltered_count = len(trust_events)
-                            trust_events = [
-                                event for event in trust_events
-                                if isinstance(event, dict)
-                                and (
-                                    str(event.get("source_fact_id") or ""),
-                                    str(event.get("source_subject_kind") or ""),
-                                    str(event.get("source_subject_id") or ""),
-                                    str(event.get("source_scope") or ""),
-                                ) not in excluded_fact_identities
-                            ]
-                            suppressed = unfiltered_count - len(trust_events)
-                            if suppressed:
-                                self.plugin.logger.warning(
-                                    f"[{reason}] 群 {group_id} 主人 {sender_id} "
-                                    f"重试信任信号忽略 {suppressed} 条后序事实"
-                                )
-                        try:
-                            await self._apply_speaker_trust_update(
-                                sender_id,
-                                list(spec["messages"]),
-                                trust_events,
-                                activity_identity=self._group_activity_identity(
-                                    group_id, spec,
-                                ),
-                            )
-                        except asyncio.CancelledError as cancelled:
-                            # The settings writer joins its shielded disk write
-                            # before propagating cancellation.  Consume exactly
-                            # the completed prefix when that write landed, so a
-                            # later message cannot enlarge the retry identity
-                            # and count the already-receipted prefix again.
-                            if getattr(
-                                cancelled, "speaker_trust_persisted", False,
-                            ):
-                                completed = {
-                                    id(message) for message in spec["messages"]
-                                }
-                                if sender_id in member_buckets:
-                                    member_buckets[sender_id] = [
-                                        message
-                                        for message in member_buckets[sender_id]
-                                        if id(message) not in completed
-                                    ]
-                                    if not member_buckets[sender_id]:
-                                        member_buckets.pop(sender_id, None)
-                                        if isinstance(member_labels, dict):
-                                            member_labels.pop(sender_id, None)
+                        if not self._trust_persisted(
+                            segment_result.get("trust")
+                        ):
+                            # Facts are durable, the pool write is not: retain
+                            # this segment and retry the same idempotent
+                            # activity/signal ids. Also exclude facts authored
+                            # by LATER successful segments from the retry, so a
+                            # retained owner segment cannot borrow knowledge it
+                            # did not have when it was authored — that second
+                            # responsibility is independent of trust and must
+                            # survive here.
                             _remember_later_fact_exclusions(spec, segment_index)
-                            raise
-                        except BaseException:
-                            # The memory server has already committed the whole
-                            # batch.  If trust/activity persistence aborts here,
-                            # the retained owner segment must not use facts from
-                            # later successful segments when it is retried.
-                            _remember_later_fact_exclusions(spec, segment_index)
-                            raise
+                            self.plugin.logger.warning(
+                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                                f"的 trust 未落盘，保留本段重试"
+                            )
+                            failed.add(sender_id)
+                            continue
                         successful_message_ids.setdefault(sender_id, set()).update(
                             id(message) for message in spec["messages"]
                         )
@@ -1937,27 +1897,6 @@ class QQSessionMemoryService:
         except Exception:
             return None
 
-    def _speaker_trust_for(
-        self, sender_id: str, permission_level: str | None = None,
-    ) -> float:
-        """Resolve current global trust using a frozen permission baseline."""
-        permission_mgr = getattr(self.plugin, "permission_mgr", None)
-        try:
-            get_trust = getattr(permission_mgr, "get_speaker_trust", None)
-            if get_trust is not None:
-                return get_trust(sender_id, permission_level)
-            get_level = getattr(permission_mgr, "get_permission_level", None)
-            if get_level is not None:
-                permission_level = permission_level or get_level(sender_id)
-        except Exception:
-            # Permission lookup is best-effort here; use the frozen/default
-            # config baseline below when lightweight integrations omit it.
-            pass
-        from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL, SPEAKER_TRUST_DEFAULT
-        return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
-            permission_level or "none", SPEAKER_TRUST_DEFAULT,
-        )
-
     def _speaker_permission_level_for(
         self, sender_id: str, permission_level: str | None = None,
     ) -> str:
@@ -1980,74 +1919,138 @@ class QQSessionMemoryService:
             pass
         return "none"
 
+    def _speaker_identity_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> tuple[str, bool]:
+        """The single source of truth: ``(canonical_tier, is_owner)``.
+
+        ``is_owner`` is DERIVED from the canonical tier rather than computed on
+        a second, differently-normalized path. The two used to disagree —
+        the tier resolver aliased ``"user" -> "normal"``, lowercased and
+        whitelisted, while the owner check compared the raw value against
+        ``"admin"`` — so a caller passing ``"Admin"`` got tier ``"none"`` and
+        owner ``False``, but a caller passing ``"admin "`` could get tier
+        ``"none"`` with owner ``False`` for a different reason. Now that the
+        server 422s ``speaker_is_owner=True`` without ``speaker_tier ==
+        "admin"``, any drift between the two would become a hard request
+        failure, so they must be one function.
+        """
+        tier = self._speaker_permission_level_for(sender_id, permission_level)
+        return tier, tier == "admin"
+
     def _speaker_is_owner_for(
         self, sender_id: str, permission_level: str | None = None,
     ) -> bool:
         """Use the request-side permission tier, never trust score or content."""
-        level = permission_level
-        if level is None:
-            manager = getattr(self.plugin, "permission_mgr", None)
-            try:
-                get_level = getattr(manager, "get_permission_level", None)
-                if get_level is not None:
-                    level = get_level(sender_id)
-            except Exception:
-                level = None
-        return level == "admin"
+        return self._speaker_identity_for(sender_id, permission_level)[1]
 
-    async def _apply_speaker_trust_update(
-        self, sender_id: str, messages: list[dict], trust_events: list[dict],
-        *, activity_identity: str | None = None,
-    ) -> None:
-        """Persist one idempotent raw-activity event plus server-verified signals."""
-        canonical = json.dumps(messages or [], ensure_ascii=False, sort_keys=True)
-        stable_activity = activity_identity or canonical
-        event_id = "activity_" + hashlib.sha256(
-            f"qq:{sender_id}|{stable_activity}".encode("utf-8")
-        ).hexdigest()[:24]
-        from memory.speaker_trust import observation_texts
-        authored_count = len(observation_texts(messages or []))
-        settings_service = getattr(self.plugin, "settings_service", None)
-        apply_update = getattr(
-            settings_service, "apply_speaker_trust_update", None,
-        )
-        # Lightweight integrations and old test harnesses may intentionally
-        # omit persistence services.  Fact writes must remain usable there.
-        if apply_update is None:
-            return
-        ok = await apply_update(
-            sender_id=sender_id,
-            message_count=authored_count,
-            activity_event_id=event_id,
-            trust_events=trust_events,
-        )
-        if not ok:
-            self.plugin.logger.warning(
-                f"speaker trust 演化未持久化 sender={sender_id} event={event_id}"
-            )
-            # The server-issued signal is durable, but the local application
-            # is not.  Propagate failure so callers retain this segment and
-            # retry the same idempotent activity/signal event IDs.
-            raise RuntimeError("speaker trust update persistence failed")
+    def _trust_reporting_ready(self) -> bool:
+        """Whether the legacy ledger has been pushed and trust may be reported.
+
+        Defence in depth, first layer: until the migration push has succeeded,
+        the plugin sends no ``speaker_tier`` / ``speaker_activity_events`` at
+        all. The server's own barrier is the second layer — if this gate is
+        buggy and a tier arrives early, the response reports
+        ``trust.gated = "legacy_import_pending"`` rather than double-counting.
+
+        Missing event (lightweight integrations, old test harnesses) reads as
+        NOT ready: no trust reporting is always safe, the reverse is not.
+        """
+        ready = getattr(self.plugin, "trust_ready", None)
+        try:
+            return bool(ready is not None and ready.is_set())
+        except Exception:
+            return False
 
     @staticmethod
-    def _group_activity_identity(group_id: str, spec: dict) -> str:
-        """Stable across retries, distinct for equal text in separate batches."""
-        message_ids = [
-            str(message.get("_speaker_activity_id") or "")
-            for message in spec.get("messages") or []
-            if isinstance(message, dict) and message.get("_speaker_activity_id")
-        ]
-        if message_ids:
-            batch_identity = "|".join(message_ids)
-        else:
-            batch_identity = json.dumps(
-                spec.get("messages") or [], ensure_ascii=False, sort_keys=True,
-            )
-        return (
-            f"group:{group_id}:{spec.get('permission_level') or 'none'}:"
-            f"{batch_identity}"
-        )
+    def _trust_persisted(trust_block: object) -> bool:
+        """Read the response's ``trust`` block. Absent/None ⇒ nothing to retry.
+
+        ``persisted`` is tri-state: ``true`` (written), ``false`` (RETAIN and
+        retry), ``null`` (this segment carried no server-derived trust source,
+        so there was nothing to write).
+        """
+        if not isinstance(trust_block, dict):
+            return True
+        return trust_block.get("persisted") is not False
+
+    @staticmethod
+    def _speaker_channel_for(messages: list[dict]) -> str | None:
+        """The transport these messages actually arrived on.
+
+        Read from the message envelope, NEVER from the live config: a session
+        buffer can span a transport switch (the switch is immediate and does
+        not clear buffers), so reading the current mode at flush time would
+        stamp the wrong channel on messages received under the old one.
+        Purely an observed attribute — it never affects any score.
+        """
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            channel = str(message.get("_speaker_channel") or "").strip().lower()
+            if channel:
+                return channel
+        return None
+
+    @staticmethod
+    def _activity_event_id(account_id: str, stable: str) -> str:
+        """Idempotent activity token. MUST be hashed, on both paths.
+
+        The wire pattern is anchored ``[A-Za-z0-9_.:-]{8,96}``, so emitting a
+        raw ``participant:{her_name}:{epoch}:{last}:{next}`` would 422 the whole
+        request for any character whose name contains a space or CJK — and what
+        gets stuck is not trust but the entire scoped memory write.
+        """
+        return "activity_" + hashlib.sha256(
+            f"{account_id}|{stable}".encode("utf-8")
+        ).hexdigest()[:24]
+
+    def _speaker_activity_events_for(
+        self, sender_id: str, messages: list[dict],
+    ) -> list[dict]:
+        """Per-message activity events for a group member bucket.
+
+        Per-message rather than per-batch: a batch-level identity changes when a
+        retry grows the batch, so already-acknowledged messages get counted
+        again — which is exactly why the old code needed a three-layer
+        ``cancelled.speaker_trust_persisted`` protocol. Every message in a
+        member bucket is ``role == "user"``, so ``count=1`` each is byte-equal
+        to the old ``len(observation_texts(...))``.
+        """
+        account_id = self.plugin.memory_bridge.speaker_account_id(sender_id)
+        events: list[dict] = []
+        seen: set[str] = set()
+        for message in messages or []:
+            if not isinstance(message, dict):
+                continue
+            stable = str(message.get("_speaker_activity_id") or "")
+            if not stable:
+                continue
+            event_id = self._activity_event_id(account_id, stable)
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+            events.append({"id": event_id, "count": 1})
+        return events
+
+    def _participant_activity_events_for(
+        self, sender_id: str, messages: list[dict], stable: str,
+    ) -> list[dict]:
+        """One batch-level event for the private participant path.
+
+        That path has no per-message stamp, so the epoch rotation stays the
+        stability source. ``count`` is the authored-message count, unchanged.
+        """
+        from memory.speaker_trust import observation_texts
+
+        count = len(observation_texts(messages or []))
+        if count <= 0:
+            return []
+        account_id = self.plugin.memory_bridge.speaker_account_id(sender_id)
+        return [{
+            "id": self._activity_event_id(account_id, stable),
+            "count": count,
+        }]
 
     def _member_memory_consent_live(self) -> bool:
         """Whether member memory is still authorized right now.

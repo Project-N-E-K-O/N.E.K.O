@@ -168,6 +168,12 @@ class QQMessageDispatcher:
                                 "private_participant_memory_enabled", False,
                             )
                         )
+                        # 通道观测的接收边界快照（对偶上面几枚）：会话缓冲
+                        # 可能跨越一次模式切换，flush 时读实时配置会把旧通道
+                        # 的消息记成新通道。纯诊断字段，不参与任何判定。
+                        message["_speaker_channel_at_receipt"] = str(
+                            message.get("channel") or ""
+                        ).strip().lower() or None
                         if message.get("message_type") == "group":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""
@@ -442,6 +448,10 @@ class QQMessageDispatcher:
                     )
                     if isinstance(message, dict) else None
                 ),
+                speaker_channel_at_receipt=(
+                    message.get("_speaker_channel_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
                 synthetic_source=(
                     str(message.get("_synthetic_source") or "")
                     if isinstance(message, dict) else ""
@@ -549,6 +559,7 @@ class QQMessageDispatcher:
         group_memory_at_receipt: bool | None = None,
         member_memory_at_receipt: bool | None = None,
         group_speaker_permission_level_at_receipt: str | None = None,
+        speaker_channel_at_receipt: str | None = None,
         synthetic_source: str = "",
     ):
         # 群记忆政策快照优先取消息接收边界（process_messages 在 task 创建
@@ -641,6 +652,7 @@ class QQMessageDispatcher:
             group_speaker_permission_level_at_receipt=(
                 group_speaker_permission_level_at_receipt
             ),
+            speaker_channel_at_receipt=speaker_channel_at_receipt,
         )
         if synthetic_source:
             # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，
