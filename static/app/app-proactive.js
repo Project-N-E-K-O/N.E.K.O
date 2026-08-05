@@ -1148,23 +1148,15 @@
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-            // Internal templates follow the per-character conversation language,
-            // not whichever locale happens to render the current UI.
-            var i18nLanguage = '';
+            // Only forward a stored per-character preference. If no explicit
+            // preference exists, the backend must keep resolving its UI fallback
+            // dynamically instead of persisting today's UI locale as a preference.
+            var explicitConversationLanguage = '';
             try {
-                if (typeof window.getConversationLanguagePreference === 'function') {
-                    i18nLanguage = window.getConversationLanguagePreference(lanlanName);
+                if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                    explicitConversationLanguage = window.getExplicitConversationLanguagePreference(lanlanName);
                 }
-                if (!i18nLanguage && window.i18next && typeof window.i18next.language === 'string') {
-                    i18nLanguage = window.i18next.language;
-                }
-                if (!i18nLanguage && typeof localStorage !== 'undefined') {
-                    i18nLanguage = localStorage.getItem('i18nextLng') || '';
-                }
-                if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {
-                    i18nLanguage = navigator.language;
-                }
-            } catch (_) { i18nLanguage = ''; }
+            } catch (_) { explicitConversationLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
@@ -1175,12 +1167,14 @@
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
-                i18n_language: i18nLanguage,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
                 // 时忽略此字段。
                 base_interval_seconds: S.proactiveChatInterval
             };
+            if (explicitConversationLanguage) {
+                requestBody.i18n_language = explicitConversationLanguage;
+            }
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
             if (availableModes.includes('vision') || availableModes.includes('window')) {

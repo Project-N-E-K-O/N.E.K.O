@@ -89,6 +89,8 @@ async def apply_character_language_preference(name: str, language: str) -> dict:
         "recent_history_cleared": False,
         "session_reset": False,
     }
+    if not result["changed"]:
+        return result
 
     # This is intentionally a partial reset: recent conversation text can steer
     # language choice, while durable facts/persona must survive the preference

@@ -151,13 +151,18 @@
     }
 
     window.NEKO_NATIVE_LANGUAGE_OPTIONS = NATIVE_LANGUAGE_OPTIONS;
-    window.getConversationLanguagePreference = function (characterName) {
+    window.getExplicitConversationLanguagePreference = function (characterName) {
         try {
             const storageKey = conversationLanguageStorageKey(characterName);
             const stored = storageKey ? localStorage.getItem(storageKey) : '';
             const normalizedStored = normalizeSupportedLanguageCode(stored);
             if (normalizedStored) return normalizedStored;
-        } catch (_) { /* use UI fallback */ }
+        } catch (_) { /* treat unavailable storage as no explicit preference */ }
+        return '';
+    };
+    window.getConversationLanguagePreference = function (characterName) {
+        const explicitLanguage = window.getExplicitConversationLanguagePreference(characterName);
+        if (explicitLanguage) return explicitLanguage;
 
         const liveUiLanguage = normalizeSupportedLanguageCode(
             (window.i18next && window.i18next.language)

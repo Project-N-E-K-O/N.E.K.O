@@ -165,12 +165,28 @@ def test_language_preference_events_are_strictly_character_scoped():
 
 
 @pytest.mark.unit
-def test_proactive_language_fallbacks_continue_after_empty_preference():
+def test_proactive_language_omits_dynamic_fallback_without_explicit_preference():
     proactive_source = (
         PROJECT_ROOT / "static" / "app" / "app-proactive.js"
     ).read_text(encoding="utf-8")
-    assert "if (!i18nLanguage && window.i18next" in proactive_source
-    assert "if (!i18nLanguage && typeof localStorage" in proactive_source
+    i18n_source = (
+        PROJECT_ROOT / "static" / "i18n-i18next.js"
+    ).read_text(encoding="utf-8")
+
+    assert "window.getExplicitConversationLanguagePreference" in i18n_source
+    assert (
+        "window.getExplicitConversationLanguagePreference(lanlanName)"
+        in proactive_source
+    )
+    assert "if (explicitConversationLanguage)" in proactive_source
+    assert "requestBody.i18n_language = explicitConversationLanguage;" in proactive_source
+    proactive_language_block = proactive_source.split(
+        "var explicitConversationLanguage = '';", 1
+    )[1].split("var requestBody = {", 1)[0]
+    assert "window.getConversationLanguagePreference" not in proactive_language_block
+    assert "window.i18next" not in proactive_language_block
+    assert "i18nextLng" not in proactive_language_block
+    assert "navigator.language" not in proactive_language_block
 
 
 @pytest.mark.unit
@@ -237,6 +253,52 @@ async def test_character_language_change_clears_only_recent_context_and_resets_s
     assert next(
         index for index, call in enumerate(calls) if call[0] == "end_session"
     ) < calls.index(("clear_recent", config_manager, "Mimi"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unchanged_language_preference_does_not_reset_context_or_session(monkeypatch):
+    calls = []
+
+    async def load_character(name):
+        calls.append(("load", name))
+        return object(), {"当前猫娘": name, "猫娘": {name: {}}}
+
+    async def persist_locale(method, name, *, language=None):
+        calls.append(("persist", method, name, language))
+        return {
+            "success": True,
+            "language": language,
+            "previous_language": language,
+            "changed": False,
+        }
+
+    class SessionManager:
+        def get(self, _name):
+            raise AssertionError("unchanged preference must not inspect live sessions")
+
+    async def clear_recent(_manager, _name):
+        raise AssertionError("unchanged preference must not clear recent context")
+
+    monkeypatch.setattr(preference_router, "_load_existing_character", load_character)
+    monkeypatch.setattr(preference_router, "_request_memory_prompt_locale", persist_locale)
+    monkeypatch.setattr(preference_router, "_clear_character_recent_history", clear_recent)
+    monkeypatch.setattr(preference_router, "get_session_manager", SessionManager)
+
+    result = await preference_router.apply_character_language_preference("Mimi", "ja")
+
+    assert result == {
+        "success": True,
+        "language": "ja",
+        "previous_language": "ja",
+        "changed": False,
+        "recent_history_cleared": False,
+        "session_reset": False,
+    }
+    assert calls == [
+        ("load", "Mimi"),
+        ("persist", "PUT", "Mimi", "ja"),
+    ]
 
 
 @pytest.mark.unit
