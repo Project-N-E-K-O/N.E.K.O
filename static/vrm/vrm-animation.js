@@ -235,7 +235,9 @@ class VRMAnimation {
             return await loader.loadAsync(vrmaPath);
         }
 
-        const response = await fetch(vrmaPath, { cache: 'no-store' });
+        // Revalidate replaced user assets while allowing unchanged built-ins to
+        // reuse the browser cache instead of downloading on every playback.
+        const response = await fetch(vrmaPath, { cache: 'no-cache' });
         if (!response.ok) {
             throw new Error(`压缩动画加载失败: HTTP ${response.status}`);
         }

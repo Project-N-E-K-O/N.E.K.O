@@ -38,10 +38,30 @@ def test_vrm_load_normalizes_legacy_bundled_idle_animation_path():
         1,
     )[0]
 
-    assert "/static\\/vrm\\/animation\\/" in helper
+    assert (
+        "^\\/static\\/vrm\\/animation\\/[^?#]+\\.vrma(?:[?#]|$)" in helper
+    )
     assert ".replace(/\\.vrma(?=[?#]|$)/i, '.vrma.gz')" in helper
     assert "normalizeBundledVrmAnimationPath(" in load_body
     assert "window.lanlan_config?.vrmIdleAnimation" in load_body
+    public_playback = source.split("async playVRMAAnimation", 1)[1].split(
+        "seekVRMAAnimation",
+        1,
+    )[0]
+    assert "normalizeBundledVrmAnimationPath(url)" in public_playback
+
+
+def test_vrm_reset_uses_the_same_desktop_framing_ratio_as_initial_load():
+    manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+    reset_body = manager_source.split("resetModelPosition()", 1)[1].split(
+        "resetModelScale()",
+        1,
+    )[0]
+
+    assert reset_body.count("screenHeight * 0.40") == 2
+    assert "screenHeight * 0.45" not in reset_body
 
 
 def test_vrm_load_model_uses_entry_token_without_blocking_queue():

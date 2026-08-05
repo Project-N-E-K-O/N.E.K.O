@@ -43,6 +43,32 @@ def test_vrm_catalog_preview_pause_does_not_resume_catalog_base_motion():
     )
 
 
+def test_vrm_animation_picker_separates_catalog_and_direct_playback():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    playback = source.split(
+        "async function playSelectedVrmAnimationOption",
+        1,
+    )[1].split("// VRM动作选择按钮点击事件", 1)[0]
+
+    assert "if (assetId && isCatalogMotion)" in playback
+    assert "if (played !== true)" in playback
+    assert "model_manager_direct_playback" in playback
+    assert playback.index("model_manager_direct_playback") < playback.index(
+        "vrmManager.playVRMAAnimation"
+    )
+
+
+def test_vrm_animation_picker_persists_official_gzip_only_from_allowed_directory():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "static\\/vrm\\/animation|user_vrm\\/animation" in source
+    assert "isCatalogMotion && !isPersistableAnimation" in source
+
+
 def test_avatar_model_manager_popup_opens_fullscreen():
     source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 

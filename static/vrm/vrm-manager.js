@@ -1091,7 +1091,7 @@ class VRMManager {
                     targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
                 } else if (unscaledHeight > 0 && Number.isFinite(unscaledHeight) && this.camera && this.camera.fov) {
                     // 使用固定参考距离（而非 camera.position.z，因相机可能已被 orbit 偏移）
-                    const targetScreenHeight = screenHeight * 0.45;
+                    const targetScreenHeight = screenHeight * 0.40;
                     const fov = this.camera.fov * (Math.PI / 180);
                     // 5 = vrm-core.js 首次加载计算缩放时所用的默认相机距离
                     //（见 vrm-core.js 里 `camera.position?.z || 5` 的 fallback）
@@ -1123,7 +1123,7 @@ class VRMManager {
                 const isMobileDevice = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
 
                 const scaledModelHeight = size.y > 0 ? size.y : 1.5;
-                const targetScreenHeight = screenHeight * 0.45;
+                const targetScreenHeight = screenHeight * 0.40;
                 const fov = this.camera.fov * (Math.PI / 180);
                 const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 
@@ -1573,7 +1573,10 @@ class VRMManager {
 
     async playVRMAAnimation(url, opts) {
         if (!this.animation) this._initModules();
-        if (this.animation) return this.animation.playVRMAAnimation(url, opts);
+        if (this.animation) {
+            return this.animation.playVRMAAnimation(normalizeBundledVrmAnimationPath(url), opts);
+        }
+        return false;
     }
 
     seekVRMAAnimation(timeSeconds, options) {

@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const zlib = require('node:zlib');
 
-const root = process.cwd();
+const root = path.resolve(__dirname, '..', '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/manifest.json'), 'utf8'));
 const packedSource = fs.readFileSync(path.join(root, manifest.assets[0].src[0]));
 const decodedSource = zlib.gunzipSync(packedSource);
@@ -58,6 +58,12 @@ function response(body, status) {
     };
 }
 
+function deferred() {
+    let resolve;
+    const promise = new Promise(function (done) { resolve = done; });
+    return { promise, resolve };
+}
+
 (async function () {
     global.fetch = async function (url) {
         assert.equal(String(url), '/static/vrm/motion/manifest.json');
@@ -106,6 +112,14 @@ function response(body, status) {
     };
     await assert.rejects(player._assetUrl(player.assets[0]), /packed SHA-256 mismatch/);
 
+    const secureCryptoDescriptor = Object.getOwnPropertyDescriptor(global, 'crypto');
+    Object.defineProperty(global, 'crypto', { configurable: true, value: undefined });
+    await assert.rejects(
+        player._assetUrl(player.assets[0]),
+        /SHA-256 integrity verification requires a secure browser context/
+    );
+    Object.defineProperty(global, 'crypto', secureCryptoDescriptor);
+
     const packed = zlib.gzipSync(decodedSource);
     const gzipAsset = Object.assign({}, player.assets[0], {
         compression: 'gzip',
@@ -113,6 +127,8 @@ function response(body, status) {
         packedSha: crypto.createHash('sha256').update(packed).digest('hex'),
         decodedSha: crypto.createHash('sha256').update(decodedSource).digest('hex')
     });
+    // Install an explicit implementation here because the following fixtures
+    // exercise both gzip bytes and already-decoded proxy responses.
     global.DecompressionStream = require('node:stream/web').DecompressionStream;
     global.fetch = async function (url) {
         requested = String(url);
@@ -203,12 +219,14 @@ function response(body, status) {
     const staleCatalogAsset = { id: 'stale-catalog', m: 'wave', i: 2 };
     let finishCatalogLoad;
     let catalogShouldApply;
+    const catalogLoadStarted = deferred();
     staleCatalogPlayer._assetUrl = async function () { return 'blob:test-stale-catalog'; };
     staleCatalogPlayer._manager = function () {
         return {
             playVRMAAnimation(url, options) {
                 assert.equal(url, 'blob:test-stale-catalog');
                 catalogShouldApply = options.shouldApply;
+                catalogLoadStarted.resolve();
                 return new Promise(function (resolve) { finishCatalogLoad = resolve; });
             }
         };
@@ -218,14 +236,40 @@ function response(body, status) {
         staleCatalogPlayer.queueGeneration,
         {}
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await catalogLoadStarted.promise;
     staleCatalogPlayer.cancel('model_manager_pause', { resume: false });
     assert.equal(catalogShouldApply(), false);
     finishCatalogLoad(false);
     assert.equal(await staleCatalogRequest, false);
     assert.equal(staleCatalogPlayer.state.currentAsset, null);
     assert.equal(staleCatalogPlayer.metrics.played, 0);
+
+    const failedPlanPlayer = new global.NekoMotionPlayer();
+    failedPlanPlayer._executeDecision = async function () { return false; };
+    assert.equal(await failedPlanPlayer.playPlan([{ intent: 'wave' }]), false);
+
+    const loopPlayer = new global.NekoMotionPlayer();
+    loopPlayer.manifest = {};
+    loopPlayer.assets = [{
+        id: 'manual-loop', m: 'dance', in: 'stand', out: 'stand', i: 2,
+        mode: 'loop', card: { kind: 'show' }
+    }];
+    loopPlayer._assetUrl = async function () { return 'blob:test-manual-loop'; };
+    let manualLoopOption = null;
+    loopPlayer._manager = function () {
+        return {
+            async playVRMAAnimation(url, options) {
+                assert.equal(url, 'blob:test-manual-loop');
+                manualLoopOption = options.loop;
+                return true;
+            }
+        };
+    };
+    loopPlayer._wait = async function () {
+        throw new Error('manual loop previews must not wait for a transient tail');
+    };
+    assert.equal(await loopPlayer.playAsset('manual-loop'), true);
+    assert.equal(manualLoopOption, true);
 
     const expression = new global.VRMExpression({});
     assert.deepEqual(expression._resolveMoodWeights('shy', ['relaxed', 'happy']), {
@@ -240,6 +284,22 @@ function response(body, status) {
     assert.deepEqual(expression._resolveMoodWeights('happy', ['happy', 'model_happy']), {
         model_happy: 1
     });
+
+    const switchingExpression = new global.VRMExpression({});
+    const firstMoodResponse = deferred();
+    const secondMoodResponse = deferred();
+    global.fetch = function (url) {
+        return String(url).includes('first-model')
+            ? firstMoodResponse.promise : secondMoodResponse.promise;
+    };
+    const firstMoodLoad = switchingExpression.loadMoodMap('first-model');
+    const secondMoodLoad = switchingExpression.loadMoodMap('second-model');
+    secondMoodResponse.resolve(response({ success: true, config: { happy: ['second_happy'] } }));
+    await secondMoodLoad;
+    firstMoodResponse.resolve(response({ success: true, config: { happy: ['first_happy'] } }));
+    await firstMoodLoad;
+    assert.deepEqual(switchingExpression.getMoodMap().happy, ['second_happy']);
+    assert.equal(switchingExpression.customMoodKeys.has('happy'), true);
 
     const savedRestPlayer = new global.NekoMotionPlayer();
     savedRestPlayer.assets = [];
@@ -280,6 +340,21 @@ function response(body, status) {
         intent: 'idle',
         systemRest: true
     }, 'saved-built-in', 'stand').id, 'saved-built-in');
+
+    savedCatalogPlayer.assets = [{
+        id: 'saved-motion-pack',
+        m: 'idle',
+        f: 'motion/01_base/natural-wait.vrma',
+        compression: 'gzip',
+        card: { systemRestEligible: true }
+    }];
+    savedCatalogPlayer.setSavedRestAnimations([
+        '/static/vrm/motion/01_base/natural-wait.vrma?legacy=1'
+    ]);
+    assert.equal(
+        savedCatalogPlayer.savedRestAssets[0].url,
+        '/static/vrm/motion/01_base/natural-wait.vrma.gz?legacy=1'
+    );
 
     const framing = global.NekoVRMSafeFraming;
     assert.equal(framing.calculateFramingRatio({
@@ -337,8 +412,7 @@ function response(body, status) {
     const staleRequest = staleAnimation.playVRMAAnimation('/delayed.vrma', {
         shouldApply() { return delayedRequestCurrent; }
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    while (!finishDelayedLoad) await new Promise(setImmediate);
     delayedRequestCurrent = false;
     finishDelayedLoad({ userData: { vrmAnimations: [{}] } });
     assert.equal(await staleRequest, false);
@@ -370,8 +444,7 @@ function response(body, status) {
     };
     stoppedAnimation._playAction = function () { stoppedRequestPlayed = true; };
     const stoppedRequest = stoppedAnimation.playVRMAAnimation('/stopped-during-load.vrma');
-    await Promise.resolve();
-    await Promise.resolve();
+    while (!finishStoppedLoad) await new Promise(setImmediate);
     stoppedAnimation.stopVRMAAnimation();
     finishStoppedLoad({ userData: { vrmAnimations: [{}] } });
     assert.equal(await stoppedRequest, false);
