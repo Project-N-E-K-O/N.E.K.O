@@ -373,6 +373,44 @@ test('active enrollment disables profile mutations between recording steps', asy
     assert.equal(harness.elements.get('voice-identity-filter').disabled, true);
 });
 
+test('an active partial enrollment response preserves the session id', async () => {
+    let segmentRequests = 0;
+    const sessionHeaders = [];
+    const harness = createHarness({
+        audio: true,
+        route(url, options) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/segment') {
+                segmentRequests += 1;
+                sessionHeaders.push(
+                    options.headers.get('X-Voice-Identity-Enrollment'),
+                );
+                return jsonResponse({
+                    enrollment: {
+                        stage: segmentRequests === 1 ? 'fixed_2' : 'fixed_3',
+                    },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    assert.equal(segmentRequests, 2);
+    assert.deepEqual(sessionHeaders, ['session-1', 'session-1']);
+    assert.equal(harness.elements.get('voice-identity-prompt').textContent, 'English three');
+});
+
 test('filter updates block competing profile mutations with a scoped pending state', async () => {
     const filterUpdate = deferred();
     const harness = createHarness({
@@ -1052,6 +1090,44 @@ test('ambiguous segment upload failure refreshes the next recording stage', asyn
     assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
+test('upload reconciliation rejects idle and regressed enrollment stages', async () => {
+    for (const reconciledEnrollment of [
+        { stage: 'idle' },
+        { session_id: 'session-1', stage: 'fixed_1' },
+    ]) {
+        let statusRequests = 0;
+        const harness = createHarness({
+            audio: true,
+            route(url) {
+                if (url === '/api/config/page_config') {
+                    return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+                }
+                if (url === '/api/voice-identity/status') {
+                    statusRequests += 1;
+                    return jsonResponse({
+                        enrollment: statusRequests === 1
+                            ? { session_id: 'session-1', stage: 'fixed_2' }
+                            : reconciledEnrollment,
+                    });
+                }
+                if (url === '/api/voice-identity/enrollment/segment') {
+                    throw new Error('connection_lost');
+                }
+                throw new Error(`Unexpected request: ${url}`);
+            },
+        });
+
+        await harness.initialize();
+        await harness.elements.get('voice-identity-record').emit('click');
+
+        assert.equal(statusRequests, 2);
+        assert.equal(
+            harness.elements.get('voice-identity-message').textContent,
+            'Request failed.',
+        );
+    }
+});
+
 test('a recovered final upload continues through automatic commit', async () => {
     let statusRequests = 0;
     let verificationRequests = 0;
@@ -1263,6 +1339,38 @@ test('async delete confirmation locks mutations and restores them when declined'
         harness.fetchCalls.some(call => call.url === '/api/voice-identity/profile'),
         false,
     );
+});
+
+test('a partial profile deletion response clears the stale filter state', async () => {
+    const harness = createHarness({
+        showConfirm() {
+            return true;
+        },
+        route(url, options) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                    filter: { enabled: true },
+                });
+            }
+            if (url === '/api/voice-identity/profile' && options.method === 'DELETE') {
+                return jsonResponse({
+                    profile: { available: false, state: 'empty' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-delete').emit('click');
+
+    assert.equal(harness.elements.get('voice-identity-filter').checked, false);
+    assert.equal(harness.elements.get('voice-identity-filter').disabled, true);
 });
 
 test('ambiguous profile deletion reconciles the authoritative absent state', async () => {

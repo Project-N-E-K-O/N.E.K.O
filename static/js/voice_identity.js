@@ -7,6 +7,14 @@
     const WINDOW_CLOSE_START_WAIT_MS = 500;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const API_ROOT = '/api/voice-identity';
+    const ENROLLMENT_STAGE_ORDER = Object.freeze({
+        fixed_1: 1,
+        fixed_2: 2,
+        fixed_3: 3,
+        free_verify_1: 4,
+        free_verify_2: 5,
+        ready_to_commit: 6
+    });
 
     const state = {
         csrfToken: '',
@@ -123,13 +131,24 @@
         const status = payload && typeof payload === 'object' ? payload : {};
         if (Object.prototype.hasOwnProperty.call(status, 'enrollment')) {
             const enrollment = status.enrollment || {};
-            state.sessionId = enrollment.session_id || null;
-            state.stage = enrollment.stage || 'idle';
+            const nextStage = enrollment.stage || 'idle';
+            if (nextStage === 'idle') {
+                state.sessionId = null;
+            } else if (Object.prototype.hasOwnProperty.call(enrollment, 'session_id')) {
+                state.sessionId = enrollment.session_id || null;
+            }
+            state.stage = nextStage;
         }
         if (Object.prototype.hasOwnProperty.call(status, 'profile')) {
             const profile = status.profile || {};
             state.profileAvailable = profile.available === true;
             state.persistenceState = profile.state || 'empty';
+            if (
+                !state.profileAvailable
+                && !Object.prototype.hasOwnProperty.call(status, 'filter')
+            ) {
+                state.filterEnabled = false;
+            }
         }
         if (Object.prototype.hasOwnProperty.call(status, 'filter')) {
             const filter = status.filter || {};
@@ -154,15 +173,7 @@
     }
 
     function stageNumber(stage) {
-        const order = {
-            fixed_1: 1,
-            fixed_2: 2,
-            fixed_3: 3,
-            free_verify_1: 4,
-            free_verify_2: 5,
-            ready_to_commit: 5
-        };
-        return order[stage] || 0;
+        return Math.min(ENROLLMENT_STAGE_ORDER[stage] || 0, 5);
     }
 
     function fixedPrompts() {
@@ -638,7 +649,8 @@
         } catch (error) {
             let recovered = uploadRequestPending
                 && await reconcileStatus()
-                && state.stage !== uploadStage;
+                && (ENROLLMENT_STAGE_ORDER[state.stage] || 0)
+                    > (ENROLLMENT_STAGE_ORDER[uploadStage] || 0);
             if (recovered && state.stage === 'ready_to_commit') {
                 try {
                     await commitEnrollment();
