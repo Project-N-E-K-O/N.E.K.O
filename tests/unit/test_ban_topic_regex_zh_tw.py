@@ -3727,8 +3727,13 @@ def test_only_the_comma_tolerates_a_following_space(text, expected):
 
 def test_the_two_identifier_punctuations_have_different_lookaheads():
     """结构面：两个符号必须分开写，别再合并回一个字符类。"""  # noqa: DOCSTRING_CJK
-    # ⚠️ 空格判据现在从 _ZH_HSPACE_ONE 派生（NBSP 等粘贴空白也要认）。
-    space = D._ZH_HSPACE_ONE + "?"
+    # ⚠️ 空格判据现在从 _ZH_HSPACE_ONE 派生（NBSP 等粘贴空白也要认），而且是**有界的
+    # 一串**而不是一个：粘来的标题常带两个空格（``Dr.  Who``）。逗号那支的空白可选，
+    # 所以是 {0,n}；句点那支必须有空白（不然就是 ``v1.2`` 那条通用判据管的），是 {1,n}。
+    # ⚠️ 可选那支必须写成 ``{0,n}``，不能在 ``{1,n}`` 后面加 ``?``——那是**惰性量词**。
+    space = D._ZH_IDENT_GAP_OPT
+    assert D._ZH_IDENT_GAP_OPT == D._ZH_HSPACE_ONE + "{0,8}"
+    assert D._ZH_IDENT_GAP == D._ZH_HSPACE_ONE + "{1,8}"
     assert D._ZH_IDENT_PUNCT.count(space) == 1
     branches = [b for b in D._ZH_IDENT_PUNCT.split("|") if b.startswith("(?<=")]
     # ⚠️ 判据用「这一支匹配的是哪个字符」，别拿字符类里的标点当特征——字符类里
@@ -3740,6 +3745,9 @@ def test_the_two_identifier_punctuations_have_different_lookaheads():
     comma = [b for b in branches if _matched(b) == ","]
     assert len(dot) == 1 and len(comma) == 1, branches
     assert space not in dot[0], dot[0]
+    # ⚠️ 这里的 dot 是**通用**那支（``v1.2``），它两侧都不许有空白；带空白的缩写
+    # 那几支以 ``(?<![A-Za-z]`` 开头，上面的 branches 过滤把它们排掉了。
+    assert D._ZH_IDENT_GAP in D._ZH_ABBREV_PERIOD
     assert space in comma[0], comma[0]
 
 
@@ -4690,7 +4698,11 @@ def test_the_reachable_grammar_markers_are_actually_reachable():
     ]
     # ⚠️ 死条目**也**用相等断言钉住：再多一条就说明有人往表里加了永远打不中的
     # 标记。``そう？`` 的 ``？`` 是话题终结符，term 里不可能出现它。
-    assert _JA_UNREACHABLE == ["そう？"], _JA_UNREACHABLE
+    # ⚠️ 死条目也用相等断言钉住：再多一条就说明有人往表里加了永远打不中的标记。
+    # 曾经有一条 ``そう？``——把**标点**写进了标记里，而句读永远落在捕获组之外
+    # （它就是这条指令的终结符）。这条守卫先认出它不可达，随后改成了 ``そう`` +
+    # 汉字词干 + 句末锚（codex P2）。现在一条都不该有。
+    assert _JA_UNREACHABLE == [], _JA_UNREACHABLE
 
 
 @pytest.mark.parametrize("marker", sorted(set(_JA_REACHABLE)))
@@ -4870,3 +4882,69 @@ def test_the_le_evidence_needs_a_non_han_on_its_left(text):
     1 条中文，撤了重做。
     """  # noqa: DOCSTRING_CJK
     assert _zh_terms(text) == set(), text
+
+
+# ── 54. 否定词字符从表派生 / 标识符空白有界成串 / そう 的死分支 ────
+
+
+@pytest.mark.parametrize("neg", sorted(D._ZH_NEG_SINGLES + D._ZH_NEG_MULTIS))
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+def test_every_negation_is_tempered_inside_ascii_brackets(neg, opener, closer):
+    """⚠️ 自动发现：**每个**否定词都不许把两条指令配成一段引文。
+
+    先写死成 ``别別`` 两个字，于是 ``不要提…`` / ``不许提…`` / ``甭提…`` 照样被并成
+    一条（codex P2，三条都是简体回归）。现在从否定词表派生，加一个否定词自动跟上。
+    """  # noqa: DOCSTRING_CJK
+    text = f"{neg}提价格{opener}预算.{neg}提收入{closer}目标."
+    assert _zh_terms(text) == {f"价格{opener}预算", f"收入{closer}目标"}, text
+
+
+def test_the_tempered_chars_are_derived_from_the_negation_tables():
+    """结构面：别再手抄。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_NEG_FIRST_CHARS == "".join(
+        dict.fromkeys(n[0] for n in D._ZH_NEG_SINGLES + D._ZH_NEG_MULTIS)
+    )
+    assert set(D._ZH_NEG_FIRST_CHARS) == set("别別莫休甭不")
+
+
+@pytest.mark.parametrize("gap", ["  ", "   ", " \u00a0", "\u3000\u3000"])
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("Dr.{g}Who别提了。", "Dr.{g}Who"), ("Dr.{g}Who別提了。", "Dr.{g}Who"),
+     ("Prof.{g}X别提了。", "Prof.{g}X"),
+     ("关于Hello,{g}World就别提了。", "Hello,{g}World")],
+)
+def test_repeated_spaces_after_identifier_punctuation(gap, text, expected):
+    """⚠️ 原先只认**一个**空格，注释还写着「一个就够了」——量下来不够。
+
+    从网页 / PDF 粘来的标题常带两个空格：``Dr.  Who别提了。`` 退回 ``Who``、
+    ``Prof.  X别提了。`` **整条丢**（codex P2，三条都是简体回归）。
+    """  # noqa: DOCSTRING_CJK
+    assert expected.format(g=gap) in _zh_terms(text.format(g=gap)), text.format(g=gap)
+
+
+def test_the_optional_gap_is_a_range_not_a_lazy_quantifier():
+    """⚠️ ``{1,8}?`` 是**惰性量词**，不是「零或一个 {1,8}」。
+
+    在 _ZH_IDENT_GAP 后面加 ``?`` 会让 ``Hello,World``（不带空格）整族失配——
+    改完一跑就抓到了。可选那支必须自己写成 ``{0,8}``。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_IDENT_GAP_OPT.endswith("{0,8}")
+    assert "{1,8}?" not in D._ZH_IDENT_PUNCT
+    assert "Hello,World" in _zh_terms("Hello,World别提了。")
+
+
+@pytest.mark.parametrize("mark", ["？", "?", "。", "！"])
+def test_sentence_final_sou_is_guarded(mark):
+    """``そう？`` 那条分支把**标点**写进了标记里，而句读永远落在捕获组之外
+    （它就是这条指令的终结符），所以那条分支是死的：``別提案そう？`` 照样存下
+    ``案そう``（守卫先认出不可达，codex 随后给出正解）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"別提案そう{mark}") == set(), mark
+
+
+def test_the_sou_branch_still_needs_a_han_stem():
+    """反向：``ドラえもんそう`` 的 ``そ`` 前面是假名，左界不成立。"""  # noqa: DOCSTRING_CJK
+    assert "ドラえもんそう" in _zh_terms("別提ドラえもんそう？")
