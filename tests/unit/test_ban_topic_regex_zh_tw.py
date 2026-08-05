@@ -406,6 +406,11 @@ KNOWN_JAPANESE_RESIDUALS = [
     # **开集**，逐个补就是打地鼠，而且和下面那条 kana-free 的是同一族——``別`` +
     # 共用动词 + 日文复合词，局部无规则可分。如实挂着，不装作已经关掉（codex P2）。
     ("別提案済み。", {"案済み"}),
+    # ⚠️ 纯假名标题 + 繁体裸 ``別提``：单字助词类（のにをはがでとへ）不带左右界，
+    # 标题里恰好含 ``に`` / ``が`` 就整条被吞。试过给它加「汉字词干」左界——
+    # ``にじさんじ`` 这条**依然**修不好（只顺带救回 ``ありがとう``），却连带打红
+    # 十条结构守卫，动的还是整个日文守卫最核心的字类。收益一半、风险最大，撤回。
+    ("別提にじさんじ。", set()),
     ("地域別講座向け。", {"座向け"}),
     ("別提案っぽい。", {"案っぽい"}),
     # ⚠️ 只剩**不含假名**的这一条。日文里 ``別`` + 共用动词 + 纯汉字复合词
@@ -1978,10 +1983,12 @@ def test_a_symmetric_quote_run_cannot_swallow_a_whole_directive(text, expected):
 
 def test_only_symmetric_pairs_temper_the_negation():
     """非对称括号不会被误当收尾，不需要 temper——``电影(Hello, World)`` 要保住。"""  # noqa: DOCSTRING_CJK
-    assert "(?![别別])" in D._ZH_BRACKET_RUN
-    assert D._ZH_BRACKET_RUN.count("(?![别別])") == sum(
-        1 for lo, hi in D._ZH_BRACKET_PAIRS if lo == hi
-    )
+    # ⚠️ 判据变了：temper 现在**每一对**都上。对称引号是最早的那一格（孤立的 ``"``
+    # 很常见），ASCII 非对称那几对是后来量出来的同一族（``别再提价格<预算.别再提
+    # 收入>目标.`` 被并成一条，codex P2）。全角非对称不会被误当收尾，但多一道
+    # 零宽前视不改变它们的行为，统一上比留个例外更不容易漂。
+    temper = f"(?!{D._ZH_DIRECTIVE_AHEAD})"
+    assert D._ZH_BRACKET_RUN.count(temper) >= len(D._ZH_BRACKET_PAIRS)
     assert _zh_terms("电影(Hello, World)别提了。") == {"电影(Hello, World)"}
 
 
@@ -2139,7 +2146,12 @@ def test_the_quoted_span_end_is_derived_from_the_bracket_run():
 # ``|聊``，两侧一起丢指令而所有结构断言全绿（变异跑出来的）。这里改成行为驱动：
 # 从模板自己的分支组里读出分支，逐个塞进该模板的句型，必须都能抽到同一个话题。
 def _group_containing(raw: str, needle: str) -> list[str]:
-    """取出这条模板里**含有 needle** 的那个分支组。"""  # noqa: DOCSTRING_CJK
+    """取出这条模板里**含有 needle** 的那个分支组。
+
+    ⚠️ 先摘掉括号体里那道 temper（``(?!否定词 + 再? + 言说动词)``）：它是**零宽**
+    前视，不驱动任何提取，但它自带一份言说动词交替，不摘的话按 needle 找到的是它。
+    """  # noqa: DOCSTRING_CJK
+    raw = raw.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
     for group in _alternation_groups(raw):
         if needle in group:
             return group
@@ -2536,6 +2548,9 @@ def test_the_preposed_template_spacing_is_atomic():
     原子化会把本该当终结符的那个空格吃掉（``工作别提 然后…`` 会从命中变成不命中）。
     """  # noqa: DOCSTRING_CJK
     raw = _zh_pattern_sources()[1]
+    # ⚠️ 同样先摘掉那道零宽 temper：它里面的空白是**判据的一部分**（否定词和动词
+    # 之间允许空格），不是会参与瓜分的量词。
+    raw = raw.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
     head = raw.split("(?:提了|")[0]
     # ⚠️ 判据是「**任何**会匹配空白的量词都得包在原子组里」，不是「数出几个 (?>\s*)」。
     # 停顿分隔符里的空白已经收窄成横向空白类（不跨行），数量断言会跟着漂——把两种
@@ -2812,7 +2827,10 @@ def test_the_nested_branch_only_applies_to_asymmetric_pairs():
     for lo, hi in D._ZH_BRACKET_PAIRS:
         body = D._zh_bracket_body(lo, hi)
         if lo == hi:
-            assert "|" not in body.split("]", 1)[-1], (lo, body)
+            # ⚠️ 摘掉 temper 再看：它自己就带 ``|``（否定词 / 动词的交替），
+            # 按字面找 ``|`` 会把它误当成嵌套分支。
+            plain = body.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
+            assert "|" not in plain.split("]", 1)[-1], (lo, body)
         else:
             import re as _re
 
@@ -3453,7 +3471,10 @@ def test_the_symmetric_quote_guard_is_the_temper_not_a_punctuation_class():
     排在 ``unit`` 组装**之后**，看着像实现了护栏、实际是死变量（coderabbit 报的）。
     """  # noqa: DOCSTRING_CJK
     body = D._zh_bracket_body('"', '"')
-    assert "(?![别別])" in body
+    # ⚠️ temper 的判据是**一条完整指令**（否定词 + 可选 再 + 言说动词），不是
+    # 「出现了否定词字符」。字符这一维根本不是判据：普通词里以 不 / 莫 / 休 / 别
+    # 开头的太多了（不可思议 / 莫名其妙 / 休闲 / 告别版，codex P2）。
+    assert f"(?!{D._ZH_DIRECTIVE_AHEAD})" in body
     for punct in "。！？；":
         assert punct not in body, punct
     # 而 temper 确实挡住了两条指令被并成一条。
@@ -4948,3 +4969,70 @@ def test_sentence_final_sou_is_guarded(mark):
 def test_the_sou_branch_still_needs_a_han_stem():
     """反向：``ドラえもんそう`` 的 ``そ`` 前面是假名，左界不成立。"""  # noqa: DOCSTRING_CJK
     assert "ドラえもんそう" in _zh_terms("別提ドラえもんそう？")
+
+
+# ── 55. temper 判据改成「一条完整指令」/ 双字动词的假名尾巴 ────
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+@pytest.mark.parametrize("word", ["不可思议", "莫名其妙", "休闲", "告别版", "不错"])
+def test_ordinary_words_starting_with_a_negation_stay_inside_brackets(
+    opener, closer, word,
+):
+    """⚠️ 上一轮把 temper 写成「禁否定词**首字**」，矫枉过正。
+
+    普通词里以 ``不 / 莫 / 休 / 别`` 开头的太多了：``电影(不可思议; 2020)别提了。``
+    退回 ``2020``（codex P2，简体回归）。字符这一维根本不是判据——真正说明「括号跨了
+    两条指令」的是**否定词后面跟着言说动词**。
+    """  # noqa: DOCSTRING_CJK
+    text = f"电影{opener}{word}; 2020{closer}别提了。"
+    assert _zh_terms(text) == {f"电影{opener}{word}; 2020{closer}"}, text
+
+
+@pytest.mark.parametrize("neg", sorted(D._ZH_NEG_SINGLES + D._ZH_NEG_MULTIS))
+def test_the_symmetric_quote_run_tempers_every_negation_too(neg):
+    """对称引号那支原先只挡 ``别別``，其余否定词照样把两条指令并成一条
+    （``不要提价格"预算.不要提收入"目标.``；codex P2，简体回归）。两处同源。"""  # noqa: DOCSTRING_CJK
+    text = f'{neg}提价格"预算.{neg}提收入"目标.'
+    assert _zh_terms(text) == {'价格"预算', '收入"目标'}, text
+
+
+def test_the_temper_is_a_full_directive_not_a_character_class():
+    """结构面：判据是完整指令，两处从同一个常量取。"""  # noqa: DOCSTRING_CJK
+    for neg in D._ZH_NEG_SINGLES + D._ZH_NEG_MULTIS:
+        assert neg in D._ZH_DIRECTIVE_AHEAD, neg
+    for verb in D._ZH_SAY_COMPOUNDS + D._ZH_SAY_VERBS:
+        assert verb in D._ZH_DIRECTIVE_AHEAD, verb
+    assert "(?![别別])" not in D._ZH_BRACKET_RUN
+
+
+@pytest.mark.parametrize(
+    "text", ["地域別討論スレ。", "A別討論ページ。", "カテゴリ別討論メモ。"],
+)
+def test_a_compound_verb_label_tail_is_suppressed(text):
+    """``討論`` 是**双字**共用复合词，整个进了触发词，term 直接以假名开头，
+    「一个汉字接假名」那条形状判据永远不成立（codex P2）。词干接回来再判。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("動畫別提ドラえもん。", "ドラえもん"), ("遊戲別提初音ミク。", "初音ミク"),
+     ("動漫別提お兄ちゃん。", "お兄ちゃん")],
+)
+def test_only_compound_verbs_reattach_the_stem(text, expected):
+    """⚠️ 反向：**只**在双字动词时接词干。单字动词（提 / 講 / 談）也接的话
+    ``提ドラえもん`` 就成了「一个汉字接假名」，把这道守卫从第一轮起就在保的东西
+    全打死（试过，实测回归）。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), text
+
+
+def test_the_compound_verb_table_is_derived():
+    """结构面：双字共用动词从 _ZH_SAY_VERBS_JA_SHARED 派生。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_COMPOUND_JA_SHARED_VERBS == tuple(
+        v for v in D._ZH_SAY_VERBS_JA_SHARED if len(v) > 1
+    )
+    assert D._ZH_COMPOUND_JA_SHARED_VERBS == ("討論",)

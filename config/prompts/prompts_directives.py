@@ -503,6 +503,11 @@ _ZH_SAY_COMPOUNDS = ("讨论", "討論")
 # 句简体因为 ``别`` 在 _ZH_EVIDENCE_CHARS 里就是好的（codex P2）。
 # ⚠️ 有相等断言钉着：往这里加一个不该加的字，对应的繁中说法立刻整条丢掉。
 _ZH_SAY_VERBS_JA_SHARED = ("提", "講", "談", "討論")
+# 其中**双字**的那些。⚠️ 双字复合词整个进了触发词，term 会直接以假名开头，
+# 「一个汉字接假名」那条形状判据够不着，见 _is_japanese_sentence_match。
+_ZH_COMPOUND_JA_SHARED_VERBS = tuple(
+    v for v in _ZH_SAY_VERBS_JA_SHARED if len(v) > 1
+)
 # 称呼类：结构是「动词 + 我 + 称呼」，与上面两族都不同
 _ZH_ADDRESS_VERBS = ("管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我")
 # 前置话题模板（``X 别提了``）自己的触发词表，比通用言说动词**窄**：谈 / 談 / 扯 /
@@ -572,12 +577,31 @@ _ZH_BRACKET_PAIRS = (
 # 少排一类就有一类能跨行（codex P2）。括号体、话题字符类、横向空白三处都从这里取。
 _ZH_LINE_SEP = r"\r\n\v\f\x1c-\x1f\x85\u2028\u2029"
 
+# 横向空白（除行分隔符外的任何空白）。⚠️ 定义挪到这里是因为 _ZH_DIRECTIVE_AHEAD
+# 要用它，而那条在括号体构建之前就得算出来。判据本身见下面 _ZH_HSPACE 那段注释。
+_ZH_HSPACE_ONE = r"[^\S" + _ZH_LINE_SEP + r"]"
+_ZH_HSPACE = _ZH_HSPACE_ONE + "*"
+
 
 # 所有否定词的**首字**。⚠️ 给 ASCII 括号体 temper 用（见 _zh_bracket_body）：
 # 括号体里出现任何一个否定词的开头，就说明这对括号跨了两条指令。从表派生，
 # 加一个否定词自动跟上。
 _ZH_NEG_FIRST_CHARS = "".join(
     dict.fromkeys(neg[0] for neg in _ZH_NEG_SINGLES + _ZH_NEG_MULTIS)
+)
+
+
+# 一条**完整**的指令头（否定词 + 可选的 ``再`` + 言说动词）。⚠️ 给括号体 temper 用。
+# 判据必须是「一条指令」而不是「一个否定词字符」：先写死成 ``别別`` 漏掉了
+# ``不要 / 不许 / 甭``，改成禁**首字**之后又矫枉过正——``电影(不可思议; 2020)别提了。``
+# 退回 ``2020``、``电影(莫名其妙; 2020)`` / ``电影(休闲; 2020)`` 同样（codex P2，
+# 三条都是简体回归）。普通词里以 ``不 / 莫 / 休 / 别`` 开头的太多了，字符这一维
+# 根本不是判据；真正说明「括号跨了两条指令」的是**后面跟着言说动词**。
+# ⚠️ 顺带把 ``别再提(告别版)。`` 这类也放开了：``别`` 后面是 ``版`` 不是动词。
+_ZH_DIRECTIVE_AHEAD = (
+    "(?:" + "|".join(_ZH_NEG_SINGLES + _ZH_NEG_MULTIS) + ")"
+    + _ZH_HSPACE + "(?:再)?" + _ZH_HSPACE
+    + "(?:" + "|".join(_ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS) + ")"
 )
 
 
@@ -632,11 +656,11 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
             # ``不要提价格<预算.不要提收入>目标.`` / ``不许提…`` / ``甭提…`` 照样被并成
             # 一条（codex P2，三条都是简体回归）。同一个「派生不手抄」的教训，同一天
             # 第三次。
-            inner_banned += "。！？" + _ZH_NEG_FIRST_CHARS
+            inner_banned += "。！？"
         nested = (
             f"{re.escape(lo)}[^{inner_banned}]{{0,{_TERM_MAX_LEN}}}{re.escape(hi)}"
         )
-        unit = f"(?:[^{inner_banned}]|{nested})"
+        unit = f"(?:(?!{_ZH_DIRECTIVE_AHEAD})[^{inner_banned}]|{nested})"
     if lo == hi:
         # ⚠️ 对称的一对（只有 ASCII ``"``）容易被误配：孤立的双引号很常见——英寸号、
         # 代码片段——两个不相干的句子各带一个就会被当成一整段引文：
@@ -657,7 +681,10 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
         #     ``关于"工作。加班"就别提了。`` 变成 ``加班"就``，两条都比 parent 还差。
         #   · 代价方向：留着句读最坏是多带一段（``我不想聊尺寸5"工作。尺寸6"加班。``
         #     存下整段），term 里仍含着真话题；排掉是吃字造非词。宁可多，不可少。
-        unit = f"(?![别別]){unit}"
+        # ⚠️ 和上面 ASCII 那支用**同一条**判据。这里原先只挡 ``别別`` 两个字符，
+        # 于是 ``不要提价格"预算.不要提收入"目标.`` 照样被并成一条（codex P2，
+        # 简体回归）。两处都从 _ZH_DIRECTIVE_AHEAD 取，别再各写一份。
+        unit = f"(?!{_ZH_DIRECTIVE_AHEAD}){unit}"
     # ⚠️ 长度必须**有界**：无界的 ``*`` 在每个开括号处都会扫到串尾去找收尾，
     # ``"《" * 8000`` 这种输入就是二次方——实测 2.6 秒，而 record_from_text 是在
     # 用户每条消息上同步跑的（codex P2）。上界取 _TERM_MAX_LEN：比它长的括号段
@@ -774,8 +801,6 @@ _ZH_PLAIN_CHAR_NO_GUANYU = r"(?!关于|關於)" + _ZH_PLAIN_CHAR
 # ⚠️ 排掉的是**所有**行分隔符，不只是 CR/LF。Python 的 ``\\s`` 还认
 # U+2028 / U+2029 / U+0085 / \\v / \\f 和 U+001C~U+001F——只排 CR/LF 的话
 # ``別再提<U+2028>案をお願いします。`` 照样跨两个视觉行（codex P2）。
-_ZH_HSPACE_ONE = r"[^\S" + _ZH_LINE_SEP + r"]"
-_ZH_HSPACE = _ZH_HSPACE_ONE + "*"
 
 # ⚠️⚠️ 整个"单位"必须是**原子**的，否则是一条 ReDoS。单字分支也能匹配 ``《``，于是
 # ``《a》`` 既可以被括号分支整体吃掉、也可以被单字分支逐字吃掉——这个歧义放进
@@ -1302,7 +1327,7 @@ _JA_GRAMMAR_RE = re.compile(
 
 def _is_japanese_sentence_match(
     span: str, term: str, before: str = "", directive: str | None = None,
-    stem: str = "",
+    stem: str = "", compound_verb: bool = False,
 ) -> bool:
     """Is this zh-template hit actually a Japanese sentence caught by shared kanji?
 
@@ -1367,11 +1392,18 @@ def _is_japanese_sentence_match(
     # ``動畫別提ドラえもん。``（term 直接以假名开头）、``遊戲別提初音ミク。`` /
     # ``別提美少女戰士セーラームーン。``（两个字以上的汉字词头）都照旧保留——这三条
     # 正是这道守卫从第一轮起就在保的东西。
+    # ⚠️ 动词是**双字**共用复合词（討論）时，日文那半个词已经整个进了触发词，
+    # term 直接以假名开头——``地域別討論スレ。`` 的 term 是 ``スレ``，形状这一条
+    # 永远不成立，非词照存（codex P2）。把词干接回来再判形状。
+    # ⚠️ **只**在双字动词时接。单字动词（提 / 講 / 談）接了的话
+    # ``動畫別提ドラえもん。`` 的 ``提ドラえもん`` 也成了「一个汉字接假名」，
+    # 把这道守卫从第一轮起就在保的东西打死（试过，实测回归）。
+    shaped = stem + term if compound_verb else term
     if (
         before
         and _ZH_NON_CLAUSE_START_RE.match(before[-1])
-        and _HAN_RE.match(term[:1])
-        and _KANA_RE.match(term[1:2])
+        and _HAN_RE.match(shaped[:1])
+        and _KANA_RE.match(shaped[1:2])
     ):
         return True
     # ⚠️ 判据要连上**被触发词吃掉的那个汉字**。``あり|なし`` / ``だ`` / ``する|した``
@@ -1718,6 +1750,9 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
                 text[max(0, m.start() - _ZH_SUBJECT_LEFT_MAX): m.start()],
                 directive=directive_only,
                 stem=stem if _HAN_RE.match(stem) else "",
+                compound_verb=span[:payload_lo].endswith(
+                    _ZH_COMPOUND_JA_SHARED_VERBS
+                ),
             ):
                 # 从命中**起点之后**重扫，把藏在这段里的真指令捞回来。
                 pos = m.start() + 1
