@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -647,7 +648,7 @@ class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
 # ── #2550: hot-path cost removal (no behaviour change) ────────────────
 
 
-def _reference_bm25(query, pool, *, k1=1.5, b=0.75):
+def _reference_bm25(query, pool, *, k1=None, b=None):
     """Deliberately naive Okapi BM25, written straight from the formula.
 
     ``_bm25_rank`` stopped materializing a whole-vocabulary df table and a
@@ -657,6 +658,15 @@ def _reference_bm25(query, pool, *, k1=1.5, b=0.75):
     rather than merely "rank things about the same".
     """
     import math
+
+    # Track the production constants rather than hard-coding 1.5 / 0.75: if
+    # someone retunes k1/b, this reference must follow them, otherwise the only
+    # symptom is "scores don't match" and the retune looks like a broken
+    # implementation. What is pinned here is the formula, not the tuning.
+    from memory.hybrid_recall import _BM25_B, _BM25_K1
+
+    k1 = _BM25_K1 if k1 is None else k1
+    b = _BM25_B if b is None else b
 
     q_terms = _tokenize(query, [])
     if not q_terms or not pool:
@@ -834,6 +844,12 @@ class _ArchiveTmpCase(unittest.IsolatedAsyncioTestCase):
         _invalidate_pool_cache()
         self.tmpdir = tempfile.mkdtemp()
         self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
+        # Clear the cache on the way out as well as on the way in: _POOL_CACHE
+        # is a module global keyed by these temp paths, so without this every
+        # method in every subclass leaves an entry behind for the rest of the
+        # session. Registered before the rmtree cleanup so it runs after it.
+        self.addCleanup(_invalidate_pool_cache)
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
 
     def _store(self):
         store = MagicMock()
