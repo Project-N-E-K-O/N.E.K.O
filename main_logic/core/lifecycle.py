@@ -916,6 +916,11 @@ class LifecycleMixin:
             # 被顶掉的那个窗口）的 handshake 去配新持有者的路由。新持有者自己也会
             # 走这条路径、且它的快照对得上，所以这里跳过不丢东西（Codex P2）。
             _lease_at_request = getattr(self, "_voice_lease_connection_id", "")
+            # 墙钟基准，供下面算「前端 deadline 还剩多少」。不能拿 _waited
+            # 当依据：它按标称 50ms 累加，事件循环一卡（或 sleep 超发）真实
+            # 时间会甩开它好几秒，于是预算被高估、放行一次最长 12s 的 ASR
+            # connect，补发的 ack 仍然赶在前端超时之后（Codex P2）。
+            _wait_started = time.monotonic()
             _waited = 0.0
             while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
                 await asyncio.sleep(0.05)
@@ -935,11 +940,18 @@ class LifecycleMixin:
                 # blocked 占位上且不发任何 status，结果两个窗口都 fail-closed latch
                 # 住、麦克风在本会话内再也打不开。先重跑一次决策再补 ack，让 ack
                 # 带的是本请求方真正成立的路由（详见 _rerun_route_for_deduped_start）。
+                # 麦克风是不是还归本请求方。重跑之前取：重跑若 fail-closed 会
+                # revoke lease 把这个字段清空，那时再判就分不清「被别人抢走」和
+                # 「自己刚放弃」了。
+                _lease_moved = (
+                    getattr(self, "_voice_lease_connection_id", "") != _lease_at_request
+                )
                 await self._rerun_route_for_deduped_start(
                     input_mode,
                     lease_connection_id=_lease_at_request,
                     remaining_deadline_seconds=(
-                        FRONTEND_START_SESSION_TIMEOUT_SECONDS - _waited
+                        FRONTEND_START_SESSION_TIMEOUT_SECONDS
+                        - (time.monotonic() - _wait_started)
                     ),
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
@@ -949,8 +961,18 @@ class LifecycleMixin:
                 # 就不在任何一条投递面上了（self.websocket 可能是更新的窗口）。
                 # 那样它会一直等到 15s 超时，而超时发的 end_session 会把刚起来的
                 # 会话撕掉。本请求那把 ws 是已知的，直接定向送一份（Codex P2）。
+                #
+                # lease 已易主时，ack 里的路由只能报 blocked。此刻 _asr_route_mode
+                # 是**新持有者**的裁决，可能已经 settle 成 native/independent；
+                # 照报会让本请求方（已经被顶掉的那个窗口）看到一条健康路由、
+                # 开麦，而服务端的 voice identity 归新持有者，它之后的每一帧
+                # PCM 都会被当 stale 丢掉——又一个"开着麦说给空气听"（Codex P2）。
+                # 报 blocked 让它 fail-closed 收口：UI 干净、可重试。
                 await self.send_session_started(
-                    input_mode, request_id=request_id, also_notify=websocket
+                    input_mode,
+                    request_id=request_id,
+                    also_notify=websocket,
+                    microphone_route_override="blocked" if _lease_moved else None,
                 )
         elif user_initiated and _allow_cross_mode_restart:
             # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /

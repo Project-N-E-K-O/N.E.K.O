@@ -1,10 +1,14 @@
 import asyncio
+import time
 from queue import Queue
 from unittest.mock import AsyncMock
 
 import pytest
 
 from main_logic.core import LLMSessionManager
+from main_logic.core import lifecycle as lifecycle_module
+
+from tests.fake_clock import patch_module_clock
 
 
 def _make_inactive_manager(*, starting_count=1):
@@ -197,6 +201,10 @@ async def test_cross_mode_background_start_does_not_restart():
     assert mgr._starting_session_count == 1
 
 
+# Mutable flag so the patched clock can be flipped from inside the wait loop.
+_stalled = {"on": False}
+
+
 def _make_deduping_manager(*, route_mode, session_input_mode="audio"):
     """Manager pre-positioned at the SAME-mode dedupe branch: an in-flight audio
     start occupies the count, and it has already settled the route to
@@ -357,6 +365,62 @@ async def test_same_mode_dedupe_skips_reroute_when_the_lease_moved_on():
     await claim
 
     assert [c[0] for c in calls] == ["ack"]
+    # And the ack must not report the NEW holder's route (Codex P2). It can well
+    # be healthy by now -- the new holder re-decided it -- and a superseded
+    # window that sees a healthy route opens a microphone whose every frame the
+    # server discards as stale. Report blocked so it fails closed and settles.
+    assert calls[0][2]["microphone_route_override"] == "blocked"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_reports_the_live_route_while_the_lease_holds():
+    """Dual of the above: the requester still owns the microphone, so the ack
+    must carry the real verdict rather than a blanket blocked."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert calls[-1][0] == "ack"
+    assert calls[-1][2]["microphone_route_override"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_measures_the_deadline_on_the_wall_clock(
+    monkeypatch,
+):
+    """Codex P2. The remaining budget must come from a monotonic clock, not from
+    the loop's nominal 50ms sleep counter: a stalled event loop (or an
+    overshooting sleep) burns seconds of the frontend's 15s timer while the
+    counter barely moves, and an inflated budget then permits a full 12s connect
+    whose ack lands after the client has already given up and sent
+    end_session."""
+    real_monotonic = time.monotonic
+    _stalled["on"] = False
+    # The counter will read ~0.1s of nominal sleep; the wall clock says the
+    # frontend deadline is nearly spent. Scoped to the module under test --
+    # patching stdlib time would hand the fake to every background thread too.
+    patch_module_clock(
+        monkeypatch,
+        lifecycle_module,
+        monotonic=lambda: real_monotonic() + (14.0 if _stalled["on"] else 0.0),
+    )
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _stall_the_loop():
+        await asyncio.sleep(0.05)
+        _stalled["on"] = True
+
+    stall = asyncio.create_task(_stall_the_loop())
+    await _run_dedupe_start(mgr)
+    await stall
+
+    assert [c[0] for c in calls] == ["ack"], (
+        "a budget read off the sleep counter would have permitted the reroute"
+    )
 
 
 @pytest.mark.unit

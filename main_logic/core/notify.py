@@ -495,6 +495,7 @@ class NotifyMixin:
         *,
         request_id: str | None = None,
         also_notify=None,
+        microphone_route_override: str | None = None,
     ): # 通知前端session已启动
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
@@ -534,7 +535,16 @@ class NotifyMixin:
         payload = {"type": "session_started", "input_mode": input_mode}
         if request_id:
             payload["request_id"] = request_id
-        route_mode = str(getattr(self, "_asr_route_mode", "") or "")
+        #
+        # ``microphone_route_override`` exists for one caller: the dedupe re-ack
+        # whose requester has since LOST the voice lease. The live route belongs
+        # to the new holder by then and may well be healthy, but reporting it
+        # would open a microphone on a window whose PCM the server now discards
+        # as superseded. It overrides rather than suppresses so the requester
+        # still gets an ack and settles its start instead of hanging.
+        route_mode = str(
+            microphone_route_override or getattr(self, "_asr_route_mode", "") or ""
+        )
         if route_mode:
             # Omitted when unknown rather than defaulted: a manager without the
             # ASR mixin should keep today's behaviour, not have every audio

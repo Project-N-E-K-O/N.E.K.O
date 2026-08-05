@@ -3198,6 +3198,27 @@ async def test_dedupe_ack_reaches_the_requester_after_a_fail_closed_reroute():
     assert [json.loads(x) for x in requester.sent] == [expected]
 
 
+async def test_route_override_reports_blocked_over_a_live_healthy_route():
+    # Codex P2. For a requester that LOST the voice lease while it waited, the
+    # live route belongs to the new holder -- and it may well be healthy by
+    # then. Reporting it opens a microphone on a window whose PCM the server
+    # discards as superseded: another mic that is on and reaching nobody.
+    # Override rather than suppress, or the requester hangs to its own timeout.
+    recorder, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = recorder
+    mgr._set_microphone_route("independent")
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w4-2", microphone_route_override="blocked"
+    )
+
+    assert json.loads(recorder.sent[0])["microphone_route"] == "blocked"
+
+
 async def test_addressed_ack_is_not_a_second_copy_for_the_same_socket():
     # The addressed send must stay a no-op when the requester is already on one
     # of the planes. A duplicate ack is not harmless: the resolver is one-shot
