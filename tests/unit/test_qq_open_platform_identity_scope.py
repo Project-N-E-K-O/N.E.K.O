@@ -587,8 +587,6 @@ IMPLEMENTATION_DETAIL = (
 
 
 def test_the_probe_copy_describes_no_implementation_detail():
-    import json
-
     for path in _locale_files():
         catalogue = json.loads(path.read_text(encoding="utf-8"))
         for key in PROBE_KEYS:
@@ -603,8 +601,6 @@ def test_the_probe_copy_describes_no_implementation_detail():
 def test_the_probe_hint_tells_the_reader_what_to_do():
     # A switch nobody knows how to act on is a switch nobody uses.  Every
     # locale must name the action (@ the bot) and where the result shows up.
-    import json
-
     for path in _locale_files():
         catalogue = json.loads(path.read_text(encoding="utf-8"))
         hint = catalogue["ui.openplat.config.identity_probe_hint"]
