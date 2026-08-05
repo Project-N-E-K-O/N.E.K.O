@@ -84,6 +84,10 @@ input:focus-visible {
     font-size: clamp(1.25rem, 2.5vw, 1.75rem);
 }
 
+.voice-identity-header .neko-window-control-btn {
+    color: #082f45;
+}
+
 .eyebrow {
     margin: 0;
     font-size: 0.72rem;
@@ -287,7 +291,7 @@ body.voice-identity-page .record-button {
 }
 
 .secondary-button {
-    color: var(--voice-blue-dark);
+    color: #075b80;
     background: #eaf8ff;
 }
 

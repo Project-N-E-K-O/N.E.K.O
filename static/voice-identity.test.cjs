@@ -564,6 +564,49 @@ test('ambiguous commit response reconciles activation without entering recording
     );
 });
 
+test('automatic commit clears the recording indicator before the save request settles', async () => {
+    const commitStarted = deferred();
+    const commitResponse = deferred();
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'free_verify_2' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/verify') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'ready_to_commit' },
+                    verification: { passed: true },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/commit') {
+                commitStarted.resolve();
+                return commitResponse.promise;
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const record = harness.elements.get('voice-identity-record');
+    const saving = record.emit('click');
+    await commitStarted.promise;
+
+    assert.equal(record.classList.contains('recording'), false);
+    assert.equal(record.recordLabel.textContent, 'Retry');
+
+    commitResponse.resolve(jsonResponse({
+        enrollment: { stage: 'idle' },
+        profile: { available: true, state: 'active' },
+    }));
+    await saving;
+});
+
 test('starting enrollment releases the permission-check microphone before the first prompt', async () => {
     const harness = createHarness({
         audio: true,
@@ -1011,7 +1054,7 @@ test('window close starts keepalive cancellation without waiting for the respons
     });
 
     await harness.initialize();
-    assert.equal(harness.beforeClose(), true);
+    assert.equal(await harness.beforeClose(), true);
     harness.pagehide();
 
     const cancellationCalls = harness.fetchCalls.filter(
@@ -1023,7 +1066,8 @@ test('window close starts keepalive cancellation without waiting for the respons
     await Promise.resolve();
 });
 
-test('pagehide cancels a session discovered after the close hook starts', async () => {
+test('window close waits for an in-flight start and cancels its late session', async () => {
+    const startRequested = deferred();
     const startResponse = deferred();
     let cancellationRequests = 0;
     const harness = createHarness({
@@ -1036,6 +1080,7 @@ test('pagehide cancels a session discovered after the close hook starts', async 
                 return jsonResponse({ enrollment: { stage: 'idle' } });
             }
             if (url === '/api/voice-identity/enrollment/start') {
+                startRequested.resolve();
                 return startResponse.promise;
             }
             if (url === '/api/voice-identity/enrollment/cancel') {
@@ -1048,13 +1093,18 @@ test('pagehide cancels a session discovered after the close hook starts', async 
 
     await harness.initialize();
     const starting = harness.elements.get('voice-identity-start').emit('click');
-    assert.equal(harness.beforeClose(), true);
+    await startRequested.promise;
+    const closing = harness.beforeClose();
+    assert.equal(typeof closing.then, 'function');
+    harness.pagehide();
+    await Promise.resolve();
+    assert.equal(cancellationRequests, 0);
 
     startResponse.resolve(jsonResponse({
         enrollment: { session_id: 'session-after-close', stage: 'fixed_1' },
     }));
     await starting;
-    harness.pagehide();
+    assert.equal(await closing, true);
     await Promise.resolve();
 
     assert.equal(cancellationRequests, 1);
@@ -1091,6 +1141,14 @@ test('dark theme overrides panel, text, accent, border, and action colors', () =
     );
     assert.ok(primaryButtonRule, 'Missing primary/record button color rule');
     assert.match(primaryButtonRule[1], /(?:^|;)\s*color:\s*#082f45\s*;/);
+    const secondaryButtonRule = stylesheet.match(/\.secondary-button\s*\{([^}]*)\}/);
+    assert.ok(secondaryButtonRule, 'Missing light-theme secondary button rule');
+    assert.match(secondaryButtonRule[1], /(?:^|;)\s*color:\s*#075b80\s*;/);
+    const windowControlRule = stylesheet.match(
+        /\.voice-identity-header \.neko-window-control-btn\s*\{([^}]*)\}/,
+    );
+    assert.ok(windowControlRule, 'Missing voice header window-control override');
+    assert.match(windowControlRule[1], /(?:^|;)\s*color:\s*#082f45\s*;/);
     assert.match(template, /id="voice-identity-timer" aria-hidden="true"/);
     assert.match(template, /<body class="voice-identity-page">/);
     assert.match(

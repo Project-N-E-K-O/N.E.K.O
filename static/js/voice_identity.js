@@ -21,7 +21,8 @@
         filterPending: false,
         busy: false,
         initialized: false,
-        closeStarted: false
+        closeStarted: false,
+        startSettled: null
     };
 
     const elements = {};
@@ -465,12 +466,19 @@
     async function startEnrollment() {
         if (state.busy || state.filterPending) return;
         let startRequestPending = false;
+        let startSettled = null;
+        let settleStart = null;
         state.busy = true;
         setMessage('');
         render();
         try {
             await ensureMicrophone();
             stopMicrophone();
+            if (state.closeStarted) return;
+            startSettled = new Promise(function (resolve) {
+                settleStart = resolve;
+            });
+            state.startSettled = startSettled;
             startRequestPending = true;
             const payload = await apiRequest('/enrollment/start', {
                 method: 'POST'
@@ -498,6 +506,10 @@
             );
         } finally {
             state.busy = false;
+            if (settleStart) {
+                if (state.startSettled === startSettled) state.startSettled = null;
+                settleStart();
+            }
             render();
         }
     }
@@ -562,6 +574,12 @@
                 }
             );
             uploadRequestPending = false;
+            if (
+                payload && payload.enrollment
+                && payload.enrollment.stage === 'ready_to_commit'
+            ) {
+                state.recording = false;
+            }
             applyStatus(payload);
             if (verification) {
                 const passed = payload.verification && payload.verification.passed;
@@ -735,8 +753,11 @@
         elements.delete.addEventListener('click', deleteProfile);
         elements.filter.addEventListener('change', updateFilter);
         window.addEventListener('localechange', render);
-        window.nekoBeforeWindowClose = function () {
+        window.nekoBeforeWindowClose = async function () {
             state.closeStarted = true;
+            stopMicrophone();
+            const pendingStart = state.startSettled;
+            if (pendingStart) await pendingStart;
             cancelEnrollment({ keepalive: true, silent: true }).catch(function () {});
             return true;
         };
