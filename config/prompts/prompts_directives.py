@@ -1396,7 +1396,7 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
      r"(?:我)?" + _ZH_HSPACE
-     + r"(?:不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)"
+     + r"(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)"
      + _ZH_HSPACE + r"(?:再)?" + _ZH_HSPACE
      + _ZH_VERBS_PLAIN
      + _ZH_HSPACE
