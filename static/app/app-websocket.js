@@ -1042,8 +1042,11 @@
     // Only relay when a stage direction has actually closed. Visible prose is
     // sent once by turn-end above, so the bridge never needs to poll or publish
     // the growing full reply on every streaming chunk.
-    function relayClosedMotionStage() {
+    function relayClosedMotionStage(event) {
         var text = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+        if (!text && event && event.detail && typeof event.detail.text === 'string') {
+            text = event.detail.text;
+        }
         if (!text) {
             motionLifecycleLastClosedText = '';
             return;

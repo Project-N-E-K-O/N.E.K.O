@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const root = path.resolve(__dirname, '..', '..');
+const fileRoot = path.resolve(__dirname, '..', '..');
+const root = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : process.cwd();
 global.window = global;
 global.document = { documentElement: { lang: 'zh-CN' } };
 global.navigator = { language: 'zh-CN' };

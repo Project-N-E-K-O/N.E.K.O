@@ -145,7 +145,6 @@
     function refreshMode() {
         const configured = configuredMode();
         if (configured) selectedMode = configured;
-        if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) selectedMode = 'vrm';
         return selectedMode;
     }
 

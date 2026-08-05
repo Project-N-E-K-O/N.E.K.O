@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const root = path.resolve(__dirname, '..', '..');
+const fileRoot = path.resolve(__dirname, '..', '..');
+const root = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : process.cwd();
 const motionRoot = path.join(root, 'static/vrm/motion');
 const manifest = JSON.parse(fs.readFileSync(path.join(motionRoot, 'manifest.json'), 'utf8'));
 const requiredLocales = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
@@ -76,10 +77,17 @@ const relaySource = fs.readFileSync(
 const runtimeSource = fs.readFileSync(path.join(motionRoot, 'runtime.js'), 'utf8');
 assert.equal(websocketSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
 assert.match(websocketSource, /appInterpage\.nekoBroadcastChannel/);
+assert.match(websocketSource, /function relayClosedMotionStage\(event\)/);
+assert.match(websocketSource, /event\.detail\.text/);
 assert.match(relaySource, /case 'motion_lifecycle'/);
 assert.match(relaySource, /neko:motion-lifecycle-relay/);
 assert.match(relaySource, /!motionCurrentName \|\| motionDetail\.lanlan_name !== motionCurrentName/);
 assert.equal(runtimeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
+assert.equal(
+    runtimeSource.includes("window.vrmManager.currentModel.vrm) selectedMode = 'vrm'"),
+    false,
+    'a retained hidden VRM model must not override the configured active mode'
+);
 assert.match(runtimeSource, /neko:motion-lifecycle-relay/);
 assert.match(runtimeSource, /window\.__nekoMotionOwnsVrmPlayback = false/);
 assert.match(runtimeSource, /releasePlaybackOwnership\(\)/);
