@@ -2499,12 +2499,12 @@ def test_the_preposed_template_spacing_is_atomic():
     assert D._ZH_HSPACE not in rest, rest
     for unit in units:
         assert unit + unit not in head, unit
-    # 数量钉一下，防止某个单位被整段删掉。⚠️ 触发词内部的空白也收窄成横向了
-    # （否定词↔再↔动词 不可能跨行），所以横向那一侧 = 两处 _ZH_PAUSE_THEN_JIU
-    # + 触发词里的 2 个；跨行的 ``\s*`` 只剩话题两侧那 2 个。
-    assert head.count(r"(?>\s*)") == 2, head.count(r"(?>\s*)")
+    # ⚠️ 模板 2 里**触发词之前**已经一个跨行空白都不剩了：话题两侧、填充词两侧、
+    # 触发词内部全部收窄成横向（一条指令不跨行）。数量钉一下防止某个单位被整段删掉：
+    # 两处 _ZH_PAUSE_THEN_JIU（各 3 个）+ 话题后 1 + 填充词后 1 + 触发词里 2。
+    assert head.count(r"(?>\s*)") == 0, head.count(r"(?>\s*)")
     atomic_h = f"(?>{D._ZH_HSPACE})"
-    assert head.count(atomic_h) == 2 * D._ZH_PAUSE_THEN_JIU.count(atomic_h) + 2
+    assert head.count(atomic_h) == 2 * D._ZH_PAUSE_THEN_JIU.count(atomic_h) + 4
 
 
 # ── 30. 嵌套引号 / 动宾停顿 / ASCII 方括号 ───────────────────
@@ -4186,3 +4186,126 @@ def test_the_ascii_bracket_exclusion_keeps_semicolons():
     assert "。" in body and "！" in body, body
     assert "；" not in body, body
     assert ";" not in body, body
+
+
+# ── 49. Unicode 横向空白 / サ変词尾 / 缩写句点 / 前置话题不跨行 ──
+
+
+@pytest.mark.parametrize("space", ["\u00a0", "\u202f", "\u2009", "\u3000", " ", "\t"])
+def test_any_non_newline_whitespace_is_a_horizontal_gap(space):
+    """判据是「**除换行外的任何空白**」，不是手点几个空白字符。
+
+    手点的话 NBSP / U+202F / U+2009 这些从网页、手机输入法粘进来的空白全被挡在
+    外面——``别<NBSP>再<NBSP>提工作。`` 整条 0 命中，而 parent 的 ``\s*`` 是认的
+    （codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"别{space}再{space}提工作。") == {"工作"}
+    assert _zh_terms(f"工作{space}别提了。") == {"工作"}
+
+
+def test_the_horizontal_class_is_a_negated_newline_class():
+    """结构面：写成否定式，别退回枚举空白字符。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_HSPACE == r"[^\S\r\n]*"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別提案して。",
+        "今回は、別提案したい。",
+        "「別講座しろ。」",
+        "別提案せよ。",
+        "別提案する。",
+        "別提案した。",
+    ],
+)
+def test_common_sahen_endings_are_grammar_evidence(text):
+    """サ変动词的常用词尾都是句末谓语（codex P2 两轮：先 する/した，后 して/したい/しろ）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(("text", "expected"), [("別提そして。", "そして")])
+def test_the_sahen_endings_still_need_a_kanji_stem(text, expected):
+    """反向：``そして`` 的 ``そ`` 是假名，够不着左界。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Dr. Who别提了。", "Dr. Who"),
+        ("关于Dr. Who就别提了。", "Dr. Who"),
+        ("Mr. Robot别提了。", "Mr. Robot"),
+        ("Mrs. Doubtfire别提了。", "Mrs. Doubtfire"),
+        ("U.S. Army别提了。", "U.S. Army"),
+        ("关于U.S. Army就别提了。", "U.S. Army"),
+    ],
+)
+def test_an_abbreviation_period_stays_inside_the_topic(text, expected):
+    """``Dr. Who`` / ``U.S. Army`` 的句点后面跟得了空格，不是句界（codex P2）。"""  # noqa: DOCSTRING_CJK
+    got = {term for _locale, _kind, term in extract_directives(text)}
+    assert got == {expected}, got
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("That was bad. Work别提了。", "Work"),
+        ("I am sad. Work别提了。", "Work"),
+        ("ABad. Work别提了。", "Work"),
+    ],
+)
+def test_a_real_sentence_period_is_still_a_boundary(text, expected):
+    """反向：真句界照旧断开（coderabbit 那条）。判据是**缩写词的形状**——
+    词首大写、总共 1~3 个字母；``bad.`` 词首小写、``ABad.`` 前面还连着字母。
+    """  # noqa: DOCSTRING_CJK
+    got = {term for _locale, _kind, term in extract_directives(text)}
+    assert got == {expected}, got
+
+
+def test_the_abbreviation_rule_survives_ignorecase():
+    """⚠️ 模板整个是 IGNORECASE 编译的，裸 ``[A-Z]`` 连小写一起匹配。
+
+    不写 ``(?-i:...)`` 的话判据会退化成「任何句点后跟空格加字母」，
+    ``That was bad. Work`` 又被整段吃进话题（自测抓到的）。
+    """  # noqa: DOCSTRING_CJK
+    assert "(?-i:[A-Z])" in D._ZH_IDENT_PUNCT
+    assert D._ZH_IDENT_PUNCT.count("(?-i:") >= 6
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize(
+    "text", ["工作正常{nl}別提了。", "關於工作{nl}別提了。", "工作正常{nl}别提了。"]
+)
+def test_a_preposed_topic_does_not_come_from_the_previous_line(text, newline):
+    """上一行会被当成前置话题接下来（codex P2）。
+
+    这是「一条指令不跨行」的第五、六处（触发词内部 / 主语间隔 / 停顿之后 /
+    动宾之间 / 话题之后 / 填充词之后）。
+    ⚠️ 代价：``工作正常`` 换行 ``别提了。`` 在 parent 上是有命中的，现在没有了。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text.format(nl=newline)) == set()
+
+
+def test_no_cross_line_gap_remains_before_any_zh_capture():
+    """结构面：四条模板里**捕获组之前**不许再有跨行空白（自动发现，不是手点清单）。
+
+    捕获**之后**的（句末助词、终结符 ``\s*$``）不在此列——它们拉不进 term。
+    """  # noqa: DOCSTRING_CJK
+    for index, raw in enumerate(_zh_pattern_sources()):
+        cut = None
+        for pos, char in enumerate(raw):
+            if char != "(" or (pos and raw[pos - 1] == chr(92)):
+                continue
+            if raw[pos : pos + 2] == "(?":
+                continue
+            cut = pos
+            break
+        assert cut is not None, index
+        # ⚠️ _ZH_OBJECTLESS_AHEAD 豁免：它是**零宽负前视**，只会「多挡一些」，
+        # 拉不进任何内容。判据管的是会 consume 的那些空白。
+        # ⚠️ 顺序要紧：先摘前视，再摘横向空白——反过来的话前视里的常量已经被改过，
+        # 就摘不掉了（写这条时踩到的）。
+        head = raw[:cut].replace(D._ZH_OBJECTLESS_AHEAD, "")
+        head = head.replace(D._ZH_HSPACE, "")
+        assert chr(92) + "s" not in head, (index, head[-120:])
