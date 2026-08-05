@@ -404,6 +404,8 @@ export default {
     install: {
       safeUpgradeHint: '重複匯入同一外掛時會先檢查版本，並透過可回復的安全升級取代原目錄，不會建立帶後綴的副本。',
       planFailed: '無法檢查安裝套件。',
+      packageRequired: '請先輸入套件路徑。',
+      installFailed: '安裝失敗：{error}',
       upgradeTitle: '升級 {plugin}？',
       upgradeBody: '版本 {current} 將替換為 {target}。正在執行的外掛會短暫重新啟動。',
       upgradeConfirm: '升級外掛',

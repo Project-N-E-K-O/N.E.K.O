@@ -404,6 +404,8 @@ export default {
     install: {
       safeUpgradeHint: '同じプラグインを再度取り込むと、バージョンを確認してロールバック可能な安全な置換を行い、接尾辞付きのコピーは作成しません。',
       planFailed: 'インストールパッケージを確認できませんでした。',
+      packageRequired: '先にパッケージのパスを入力してください。',
+      installFailed: 'インストールに失敗しました：{error}',
       upgradeTitle: '{plugin} をアップグレードしますか？',
       upgradeBody: 'バージョン {current} を {target} に置き換えます。実行中のプラグインは一時的に再起動します。',
       upgradeConfirm: 'プラグインをアップグレード',

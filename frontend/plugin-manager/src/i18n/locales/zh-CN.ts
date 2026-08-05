@@ -404,6 +404,8 @@ export default {
     install: {
       safeUpgradeHint: '重复导入同一插件时会先检查版本，并通过可回滚的安全升级替换原目录，不会生成带后缀的副本。',
       planFailed: '无法检查安装包。',
+      packageRequired: '请先输入包路径。',
+      installFailed: '安装失败：{error}',
       upgradeTitle: '升级 {plugin}？',
       upgradeBody: '版本 {current} 将替换为 {target}。正在运行的插件会短暂重启。',
       upgradeConfirm: '升级插件',

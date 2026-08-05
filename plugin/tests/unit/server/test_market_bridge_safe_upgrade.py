@@ -64,6 +64,51 @@ def _configure_paths(
 
 
 @pytest.mark.asyncio
+async def test_market_upgrade_delegates_file_replacement_to_shared_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+
+    calls: list[dict[str, Any]] = []
+
+    async def shared_replace(**kwargs: Any) -> SimpleNamespace:
+        calls.append(kwargs)
+        return SimpleNamespace(
+            install_result={"operation": "upgrade"},
+            restarted=False,
+            rollback_status="not_needed",
+            backup_dir=tmp_path / "backup",
+        )
+
+    monkeypatch.setattr(market_bridge, "replace_plugin", shared_replace, raising=False)
+
+    task: dict[str, Any] = {}
+    await market_bridge._do_upgrade(task, _payload(), {})
+
+    assert len(calls) == 1
+    assert calls[0]["layout"].installed_dir == plugin_dir.resolve()
+    assert calls[0]["additional_targets"] == (profiles_root / "demo",)
+    assert calls[0]["preserve_targets"] == (profiles_root / "demo",)
+    assert task["result"] == {
+        "operation": "upgrade",
+        "restarted": False,
+        "rollback_status": "not_needed",
+    }
+
+
+@pytest.mark.asyncio
 async def test_market_upgrade_rolls_back_plugin_profile_with_plugin_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -275,7 +320,7 @@ async def test_market_upgrade_rejects_legacy_rename_despite_stale_incoming_profi
     with pytest.raises(market_bridge._TaskError) as exc_info:
         await market_bridge._do_upgrade({}, _payload(), {})
 
-    assert exc_info.value.code == "upgrade_rollback_completed"
+    assert exc_info.value.code == "package_id_change"
     assert "package id changes are not supported" in str(exc_info.value)
     assert install_called is False
     assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
@@ -394,8 +439,12 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
         manager.current.source_detail = SimpleNamespace(version="2.0.0")
         return {"operation": "upgrade"}
 
+    start_calls = 0
+
     async def fail_new_start(_plugin_id: str, *, strict: bool) -> bool:
-        if strict:
+        nonlocal start_calls
+        start_calls += 1
+        if start_calls == 1:
             raise RuntimeError("replacement start failed")
         return True
 
@@ -418,32 +467,15 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
 
 
 @pytest.mark.asyncio
-async def test_market_rollback_marks_restart_failure_as_incomplete(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task: dict[str, Any] = {"rollback": {"prepared": True}}
-
-    async def fail_restart(plugin_id: str, *, strict: bool) -> bool:
-        assert plugin_id == "demo"
-        assert strict is False
-        return False
-
-    monkeypatch.setattr(market_bridge, "start_plugin_after_upgrade", fail_restart)
-
-    restored = await market_bridge._run_rollback(task, [], True, "demo")
-
-    assert restored is False
-    assert task["rollback"]["restored"] is False
-
-
-@pytest.mark.asyncio
 async def test_market_backup_failure_reports_incomplete_when_old_plugin_cannot_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugins_root = tmp_path / "plugins"
     profiles_root = tmp_path / "profiles"
-    (plugins_root / "demo").mkdir(parents=True)
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
     _configure_paths(
         monkeypatch,
         plugins_root=plugins_root,
@@ -454,8 +486,17 @@ async def test_market_backup_failure_reports_incomplete_when_old_plugin_cannot_r
     monkeypatch.setattr(
         market_bridge,
         "start_plugin_after_upgrade",
-        lambda plugin_id, strict: _async_false(),
+        lambda plugin_id, strict: _async_raise(RuntimeError("old plugin restart failed")),
     )
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+    monkeypatch.setattr(
+        market_bridge,
+        "_download_package",
+        lambda _url, _task: _async_value(package_path),
+    )
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
     monkeypatch.setattr(market_bridge.os, "rename", lambda source, target: _raise_permission_error())
 
     with pytest.raises(market_bridge._TaskError) as exc_info:
@@ -478,6 +519,10 @@ async def _async_false() -> bool:
 
 async def _async_value(value: Any) -> Any:
     return value
+
+
+async def _async_raise(error: Exception) -> None:
+    raise error
 
 
 def _raise_permission_error() -> None:

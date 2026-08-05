@@ -44,6 +44,7 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.scanner import (
     PluginDirectoryScanner,
 )
+from plugin.server.application.install_source.models import SourceDetailMarket
 from plugin.neko_plugin_cli.public import build_plugin
 
 
@@ -3564,6 +3565,8 @@ async def test_install_identity_match_no_warning(
 
     assert final_status is not None
     assert final_status["status"] == "completed", final_status
+    assert final_status["result"]["operation"] == "install"
+    assert final_status["result"]["rollback_status"] == "not_needed"
     # Match path: no identity warning surfaced. Other warnings (e.g.
     # legacy package_sha256 absence) are still permitted, but ours
     # specifically must not appear.
@@ -3969,7 +3972,7 @@ async def test_install_conflict_defaults_to_failure_without_lock_entry(
 
 
 @pytest.mark.asyncio
-async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
+async def test_upgrade_rejects_plugin_identity_mismatch_before_replacement(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
     """Upgrade must reject a package whose plugin.toml id changes identity."""
@@ -4047,7 +4050,7 @@ async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
         upgrade_status = await _wait_task(resp.json()["task_id"])
 
     assert upgrade_status["status"] == "failed", upgrade_status
-    assert upgrade_status["error_code"] == "upgrade_rollback_completed"
+    assert upgrade_status["error_code"] == "package_id_change"
     assert "plugin identity mismatch" in upgrade_status["error"]
     assert plugin_id in upgrade_status["error"]
     assert intruder_id in upgrade_status["error"]
@@ -4181,35 +4184,38 @@ async def test_upgrade_rejects_when_not_installed(
 
 
 @pytest.mark.asyncio
-async def test_upgrade_rejects_same_version(
+async def test_upgrade_accepts_same_and_older_version_replacements(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """mode=upgrade with target version equal to current → task fails
-    with ``version_already_at_target`` (R5.6). reinstall mode bypasses
-    this check.
+    """Market replacement uses the same version-agnostic transaction as a
+    local package, so explicitly selected same and older targets are accepted.
     """
 
     plugin_id = "e2e_same_version"
-    zip_bytes, payload_hash = _build_neko_plugin_zip(
+    current_zip, current_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="2.0.0",
+    )
+    target_zip, target_payload_hash = _build_neko_plugin_zip(
         plugin_id=plugin_id, version="1.0.0",
     )
-    sha = hashlib.sha256(zip_bytes).hexdigest()
+    current_sha = hashlib.sha256(current_zip).hexdigest()
+    target_sha = hashlib.sha256(target_zip).hexdigest()
 
     client: AsyncClient = bridge_e2e_env["client"]
     token: str = bridge_e2e_env["token"]
 
-    # Seed v1.0.0.
+    # Seed v2.0.0.
     with _serve_bytes(
-        filename=f"{plugin_id}-1.0.0.neko-plugin", content=zip_bytes,
+        filename=f"{plugin_id}-2.0.0.neko-plugin", content=current_zip,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
             json={
                 "package_url": package_url,
-                "package_sha256": sha,
-                "payload_hash": payload_hash,
+                "package_sha256": current_sha,
+                "payload_hash": current_payload_hash,
                 "plugin_id": plugin_id,
-                "version": "1.0.0",
+                "version": "2.0.0",
                 "channel": "stable",
                 "mode": "install",
             },
@@ -4222,16 +4228,48 @@ async def test_upgrade_rejects_same_version(
                 break
             await asyncio.sleep(0.05)
 
-    # Try to "upgrade" to the same version → version_already_at_target.
+    # Reinstall the current artifact through the same replacement path.
     with _serve_bytes(
-        filename=f"{plugin_id}-1.0.0-again.neko-plugin", content=zip_bytes,
+        filename=f"{plugin_id}-2.0.0-again.neko-plugin", content=current_zip,
     ) as package_url:
         resp = await client.post(
             f"/market/install?token={token}",
             json={
                 "package_url": package_url,
-                "package_sha256": sha,
-                "payload_hash": payload_hash,
+                "package_sha256": current_sha,
+                "payload_hash": current_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "2.0.0",
+                "channel": "stable",
+                "mode": "upgrade",
+            },
+        )
+        same_task_id = resp.json()["task_id"]
+        deadline = time.monotonic() + 30
+        same_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{same_task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                same_status = body
+                break
+            await asyncio.sleep(0.05)
+
+    assert same_status is not None
+    assert same_status["status"] == "completed", same_status
+    assert same_status["result"]["operation"] == "upgrade"
+    assert same_status["result"]["rollback_status"] == "not_needed"
+
+    # Explicitly replace with the older v1.0.0 artifact.
+    with _serve_bytes(
+        filename=f"{plugin_id}-1.0.0.neko-plugin", content=target_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": target_sha,
+                "payload_hash": target_payload_hash,
                 "plugin_id": plugin_id,
                 "version": "1.0.0",
                 "channel": "stable",
@@ -4250,16 +4288,25 @@ async def test_upgrade_rejects_same_version(
             await asyncio.sleep(0.05)
 
     assert final_status is not None
-    assert final_status["status"] == "failed", final_status
-    assert final_status["error_code"] == "version_already_at_target"
+    assert final_status["status"] == "completed", final_status
+    assert final_status["result"]["operation"] == "upgrade"
+    assert final_status["result"]["rollback_status"] == "not_needed"
+    manager: InstallSourceManager = bridge_e2e_env["manager"]
+    [active_entry] = [
+        entry
+        for entry in manager.snapshot().entries
+        if entry.plugin_id == plugin_id and not entry.removed
+    ]
+    assert isinstance(active_entry.source_detail, SourceDetailMarket)
+    assert active_entry.source_detail.version == "1.0.0"
 
 
 @pytest.mark.asyncio
 async def test_upgrade_rollback_on_download_failure(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """mode=upgrade with a download error → backup restored, lock
-    unchanged, ``upgrade_rollback_completed`` returned.
+    """A download error happens before the shared replacement transaction,
+    so the live directory and source lock remain untouched.
 
     Drives the rollback path by pointing ``package_url`` at a 404
     on a real localhost server (the server only serves the install
@@ -4340,7 +4387,7 @@ async def test_upgrade_rollback_on_download_failure(
 
     assert final_status is not None
     assert final_status["status"] == "failed", final_status
-    assert final_status["error_code"] == "upgrade_rollback_completed"
+    assert final_status["error_code"] == "download_failed"
 
     # Lock entry must be unchanged (still v1.0.0 with original installed_at).
     snapshot = mgr.snapshot()
@@ -4352,7 +4399,7 @@ async def test_upgrade_rollback_on_download_failure(
     assert isinstance(restored_entry.source_detail, SourceDetailMarket)
     assert restored_entry.source_detail.version == "1.0.0"
     assert restored_entry.installed_at == v1_installed_at
-    # Directory must have been restored from backup.
+    # Directory was never moved because replacement starts after download.
     assert (user_root / plugin_id / "plugin.toml").is_file()
     # No backup leak (best-effort cleanup runs in async task; we don't
     # strictly assert absence here because the cleanup is fire-and-forget,
