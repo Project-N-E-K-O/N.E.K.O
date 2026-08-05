@@ -98,7 +98,16 @@ def test_character_language_control_reuses_voice_dropdown_and_hot_refreshes():
     assert "const voicesLoadPromise = refreshVoiceCatalog" in form_source
     assert "void refreshVoiceCatalog(voiceSelect.value);" in form_source
     assert "form._voiceLocaleRefreshSequence !== refreshSequence" in form_source
-    assert "renderCharaCardsView();" in subscriptions_source
+
+    locale_handler = "function updateLocaleDependent()"
+    locale_listener = "window.addEventListener('localechange', updateLocaleDependent);"
+    locale_handler_start = subscriptions_source.find(locale_handler)
+    locale_listener_start = subscriptions_source.find(locale_listener)
+    assert 0 <= locale_handler_start < locale_listener_start
+    assert (
+        "renderCharaCardsView();"
+        in subscriptions_source[locale_handler_start:locale_listener_start]
+    )
 
     card_list_source = (
         PROJECT_ROOT / "static" / "js" / "character_card_manager"
@@ -266,13 +275,13 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
     websocket_source = (
         PROJECT_ROOT / "static" / "app" / "app-websocket.js"
     ).read_text(encoding="utf-8")
-    hydration_source = "function hydrateConversationLanguage(characterName)" + (
-        websocket_source.split(
-            "function hydrateConversationLanguage(characterName)", 1
-        )[1].split(
-            "// Upper bound for the settings-sync gate below", 1
-        )[0]
-    )
+    hydration_signature = "function hydrateConversationLanguage(characterName)"
+    hydration_end_anchor = "// Upper bound for the settings-sync gate below"
+    hydration_start = websocket_source.find(hydration_signature)
+    hydration_end = websocket_source.find(hydration_end_anchor, hydration_start)
+    assert hydration_start >= 0, "语言水合函数签名锚点已失效，请同步更新测试"
+    assert hydration_end > hydration_start, "语言水合结束锚点已失效，请同步更新测试"
+    hydration_source = websocket_source[hydration_start:hydration_end]
 
     harness = textwrap.dedent(
         """
