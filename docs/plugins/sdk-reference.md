@@ -87,7 +87,9 @@ if not result["submitted"]:
 accepted responsibility for the payload. It does not acknowledge host
 consumption, model generation, or playback. Rejections use the stable reasons
 `backpressure`, `transport_error`, or `transport_unavailable`; the result never
-contains the message body or raw exception text.
+contains the message body or raw exception text. Rejected results also carry
+`ok=False` for compatibility with legacy callers; new code should use
+`submitted` as the authoritative discriminator.
 
 The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated but still translated in current source. Migrate now; this documentation does not guarantee an exact removal release. See the [migration guide](./migration-v0.9#push-message-v2).
 

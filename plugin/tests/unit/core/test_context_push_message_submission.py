@@ -201,6 +201,7 @@ def test_slow_message_plane_backpressure_is_reported_when_fallback_fails(
     )
 
     assert result == {
+        "ok": False,
         "submitted": False,
         "reason": "backpressure",
     }
@@ -232,6 +233,7 @@ def test_slow_message_plane_and_fallback_failures_are_distinguishable_and_redact
     )
 
     assert result == {
+        "ok": False,
         "submitted": False,
         "reason": "transport_error",
     }
@@ -249,6 +251,7 @@ def test_slow_message_plane_and_fallback_failures_are_distinguishable_and_redact
         (
             RuntimeError("queue full"),
             {
+                "ok": False,
                 "submitted": False,
                 "reason": "backpressure",
             },
@@ -323,11 +326,36 @@ def test_fallback_queue_failure_is_distinguishable_and_redacted(
     )
 
     assert result == {
+        "ok": False,
         "submitted": False,
         "reason": "transport_error",
     }
     assert private_marker not in repr(logger.records)
     assert "RuntimeError" in repr(logger.records)
+
+
+@pytest.mark.plugin_unit
+def test_fallback_queue_backpressure_is_classified_and_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_marker = "private-queue-backpressure"
+    queue = _Queue(error=_Again(private_marker))
+    monkeypatch.setattr(context_module, "zmq", SimpleNamespace(Again=_Again))
+    monkeypatch.setattr(settings, "MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT", "")
+    ctx, logger = _context(tmp_path, message_queue=queue)
+
+    result = ctx.push_message(
+        parts=[{"type": "text", "text": private_marker}],
+    )
+
+    assert result == {
+        "ok": False,
+        "submitted": False,
+        "reason": "backpressure",
+    }
+    assert private_marker not in repr(logger.records)
+    assert "_Again" in repr(logger.records)
 
 
 @pytest.mark.plugin_unit
@@ -341,6 +369,7 @@ def test_missing_transports_report_unavailable(
     result = ctx.push_message(parts=[])
 
     assert result == {
+        "ok": False,
         "submitted": False,
         "reason": "transport_unavailable",
     }

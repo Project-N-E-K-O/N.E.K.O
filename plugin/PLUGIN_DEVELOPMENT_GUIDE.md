@@ -325,7 +325,8 @@ if not result["submitted"]:
 责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
 `submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`
 或 `transport_unavailable`。结果不会暴露内部 transport 名称，也不会回显消息正文
-或异常内容。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
+或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以
+`submitted` 为正式判据。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
 ##### 两条轴的语义
 

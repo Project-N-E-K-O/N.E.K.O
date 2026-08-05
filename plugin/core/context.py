@@ -8,6 +8,7 @@ import contextvars
 import asyncio
 import base64
 import copy
+import queue
 import time
 try:
     import tomllib
@@ -63,6 +64,14 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
+
+
+def _is_submission_backpressure(error: BaseException) -> bool:
+    """Return whether a non-blocking local submission path was full."""
+    if isinstance(error, (asyncio.QueueFull, queue.Full)):
+        return True
+    again_type = getattr(zmq, "Again", None) if zmq is not None else None
+    return isinstance(again_type, type) and isinstance(error, again_type)
 
 
 def _synthesize_legacy_message_type(canonical: Dict[str, Any]) -> str:
@@ -1163,6 +1172,7 @@ class PluginContext:
                                     except Exception:
                                         pass
                                 return {
+                                    "ok": False,
                                     "submitted": False,
                                     "reason": "backpressure",
                                 }
@@ -1298,8 +1308,13 @@ class PluginContext:
                 except Exception:
                     pass
                 return {
+                    "ok": False,
                     "submitted": False,
-                    "reason": primary_failure_reason or "transport_error",
+                    "reason": (
+                        "backpressure"
+                        if _is_submission_backpressure(e)
+                        else primary_failure_reason or "transport_error"
+                    ),
                 }
         
         # 所有方式都不可用时，记录警告而非抛错（避免插件崩溃）
@@ -1314,6 +1329,7 @@ class PluginContext:
             pass
 
         return {
+            "ok": False,
             "submitted": False,
             "reason": primary_failure_reason or "transport_unavailable",
         }

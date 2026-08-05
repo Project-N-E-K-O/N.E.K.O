@@ -40,6 +40,7 @@ class PushMessageSubmitted(TypedDict):
 class PushMessageRejected(TypedDict):
     """The SDK synchronously rejected a local message submission."""
 
+    ok: Literal[False]
     submitted: Literal[False]
     reason: PushMessageFailureReason
 

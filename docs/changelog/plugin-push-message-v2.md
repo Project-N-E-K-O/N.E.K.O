@@ -140,6 +140,9 @@ reports only whether the SDK's authoritative local submission path accepted
 responsibility for the payload. It is not an acknowledgement that the host
 consumed the message, a model generated a response, or playback completed.
 
+Rejected results also include `ok=False` for compatibility with legacy callers;
+new integrations should use `submitted` as the authoritative discriminator.
+
 Synchronous rejection uses one of three stable reasons: `backpressure`,
 `transport_error`, or `transport_unavailable`. The result deliberately omits
 internal transport names, message content, and raw exception text. Existing
