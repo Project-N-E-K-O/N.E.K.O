@@ -103,14 +103,21 @@
     }
 
     function applyStatus(payload) {
-        const enrollment = payload && payload.enrollment ? payload.enrollment : {};
-        const profile = payload && payload.profile ? payload.profile : {};
-        const filter = payload && payload.filter ? payload.filter : {};
-        state.sessionId = enrollment.session_id || null;
-        state.stage = enrollment.stage || 'idle';
-        state.profileAvailable = profile.available === true;
-        state.persistenceState = profile.state || 'empty';
-        state.filterEnabled = filter.enabled === true;
+        const status = payload && typeof payload === 'object' ? payload : {};
+        if (Object.prototype.hasOwnProperty.call(status, 'enrollment')) {
+            const enrollment = status.enrollment || {};
+            state.sessionId = enrollment.session_id || null;
+            state.stage = enrollment.stage || 'idle';
+        }
+        if (Object.prototype.hasOwnProperty.call(status, 'profile')) {
+            const profile = status.profile || {};
+            state.profileAvailable = profile.available === true;
+            state.persistenceState = profile.state || 'empty';
+        }
+        if (Object.prototype.hasOwnProperty.call(status, 'filter')) {
+            const filter = status.filter || {};
+            state.filterEnabled = filter.enabled === true;
+        }
         render();
     }
 
@@ -521,6 +528,7 @@
     }
 
     async function commitEnrollment() {
+        const profileAlreadyAvailable = state.profileAvailable;
         try {
             const committed = await apiRequest('/enrollment/commit', {
                 method: 'POST'
@@ -529,7 +537,10 @@
         } catch (error) {
             const reconciled = await reconcileStatus();
             if (
-                !reconciled || state.stage !== 'idle' || !state.profileAvailable
+                !reconciled
+                || state.stage !== 'idle'
+                || !state.profileAvailable
+                || profileAlreadyAvailable
             ) throw error;
         }
         stopMicrophone();
@@ -608,9 +619,16 @@
                 await commitEnrollment();
             }
         } catch (error) {
-            const recovered = uploadRequestPending
+            let recovered = uploadRequestPending
                 && await reconcileStatus()
                 && state.stage !== uploadStage;
+            if (recovered && state.stage === 'ready_to_commit') {
+                try {
+                    await commitEnrollment();
+                } catch (_) {
+                    recovered = false;
+                }
+            }
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'

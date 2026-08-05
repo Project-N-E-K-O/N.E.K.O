@@ -144,6 +144,7 @@ function createHarness({
             'voiceIdentity.retry': 'Retry',
             'voiceIdentity.record': 'Record',
             'voiceIdentity.recording': 'Recording...',
+            'voiceIdentity.enrollmentComplete': 'Enrollment complete.',
             'voiceIdentity.microphoneDenied': 'Microphone unavailable.',
             'voiceIdentity.requestFailed': 'Request failed.',
         },
@@ -418,6 +419,37 @@ test('filter updates block competing profile mutations with a scoped pending sta
     assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
 });
 
+test('partial cancellation status preserves the existing profile and filter state', async () => {
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                    profile: { available: true, state: 'active' },
+                    filter: { enabled: true },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-cancel').emit('click');
+
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-filter').checked, true);
+    assert.equal(
+        harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'),
+        true,
+    );
+});
+
 test('ambiguous filter response reconciles the authoritative enabled state', async () => {
     let statusRequests = 0;
     let filterRequests = 0;
@@ -593,6 +625,48 @@ test('ambiguous commit response reconciles activation without entering recording
     assert.equal(
         harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'),
         true,
+    );
+});
+
+test('a pre-existing profile does not prove that a failed re-enrollment committed', async () => {
+    let statusRequests = 0;
+    let commitRequests = 0;
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse(statusRequests === 1
+                    ? {
+                        enrollment: { session_id: 'session-1', stage: 'ready_to_commit' },
+                        profile: { available: true, state: 'active' },
+                    }
+                    : {
+                        enrollment: { stage: 'idle' },
+                        profile: { available: true, state: 'active' },
+                    });
+            }
+            if (url === '/api/voice-identity/enrollment/commit') {
+                commitRequests += 1;
+                return jsonResponse(
+                    { error: 'rejected' },
+                    { ok: false, status: 409 },
+                );
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    assert.equal(commitRequests, 1);
+    assert.equal(statusRequests, 2);
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Request failed.',
     );
 });
 
@@ -862,6 +936,54 @@ test('ambiguous segment upload failure refreshes the next recording stage', asyn
     assert.equal(harness.elements.get('voice-identity-prompt').textContent, 'English two');
     assert.equal(harness.elements.get('voice-identity-record').disabled, false);
     assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+});
+
+test('a recovered final upload continues through automatic commit', async () => {
+    let statusRequests = 0;
+    let verificationRequests = 0;
+    let commitRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse(statusRequests === 1
+                    ? {
+                        enrollment: { session_id: 'session-1', stage: 'free_verify_2' },
+                    }
+                    : {
+                        enrollment: { session_id: 'session-1', stage: 'ready_to_commit' },
+                    });
+            }
+            if (url === '/api/voice-identity/enrollment/verify') {
+                verificationRequests += 1;
+                throw new Error('connection_lost');
+            }
+            if (url === '/api/voice-identity/enrollment/commit') {
+                commitRequests += 1;
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    assert.equal(verificationRequests, 1);
+    assert.equal(statusRequests, 2);
+    assert.equal(commitRequests, 1);
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Enrollment complete.',
+    );
+    assert.equal(harness.elements.get('voice-identity-start').hidden, false);
 });
 
 test('microphone resources are released and reacquired between recording steps', async () => {
