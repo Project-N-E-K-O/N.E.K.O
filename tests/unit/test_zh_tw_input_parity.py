@@ -7045,3 +7045,42 @@ def test_a_narrated_addressed_phrase_never_becomes_a_command(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+def test_every_typed_command_key_starts_with_a_slash():
+    """⚠️ `parse_typed_magic_command` 里那句 `startswith("/")` 是**冗余**的防御。
+
+    Mutation testing flagged it as equivalent: every key in the table already
+    starts with "/", so a slashless word misses the lookup anyway. Rather than
+    contrive a test around a redundant guard, pin the premise that makes it
+    redundant — if someone ever adds a slashless alias, this turns red and they
+    have to decide deliberately.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    keys = sorted(OpenClawAdapter._TYPED_MAGIC_COMMANDS)
+    assert keys == ["/approve", "/clear", "/daemon approve", "/new", "/stop"]
+    assert all(k.startswith("/") for k in keys), keys
+    assert all(k == k.lower() for k in keys), "查表前会 lower()，键必须已经是小写"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 模糊词在**非末**子句，末子句不是命令 → 整句不该被分成模糊档
+        "别找了，我自己来", "停下来，这是我当时唯一的念头", "快停下来，他喊道",
+        "別找了，我自己來",
+    ],
+)
+def test_the_ambiguous_tier_only_reads_the_trailing_clause(text):
+    """⚠️ 明确档扫全句、模糊档只看末子句——这个不对称是有意的。
+
+    Scanning every clause for the ambiguous tier would label a narrated 停下来 as
+    "ambiguous" instead of None. Under the rule path that costs nothing (the
+    classifier already returned None), but on the LLM path it silently flips such
+    an utterance from "no corroboration needed" to "needs corroboration" — a
+    behaviour change nobody asked for, and one no dispatch test would notice.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.stop_trigger_tier(text) is None, text
