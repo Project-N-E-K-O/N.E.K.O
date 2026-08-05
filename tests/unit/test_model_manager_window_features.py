@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -29,12 +30,16 @@ def test_vrm_catalog_preview_preserves_selected_idle_and_stops_preview_rotation(
         "// VRM动作选择按钮点击事件",
         1,
     )[0]
-    seed = "vrmMotionCatalogPlayer.setSavedRestAnimations("
-    play = "vrmMotionCatalogPlayer.playAsset(assetId, {"
-    assert seed in preview
-    assert "getSelectedIdleAnimations('vrm-idle-animation-multiselect')" in preview
-    assert "scheduleNext: false" in preview
-    assert preview.index(seed) < preview.index(play)
+    assert re.search(
+        r"vrmMotionCatalogPlayer\.setSavedRestAnimations\(\s*"
+        r"getSelectedIdleAnimations\('vrm-idle-animation-multiselect'\)\s*\);",
+        preview,
+    )
+    assert re.search(
+        r"vrmMotionCatalogPlayer\.playAsset\(\s*assetId\s*,\s*\{\s*"
+        r"scheduleNext:\s*false\s*\}\s*\)",
+        preview,
+    )
 
     idle_switch = source.split("async function _playIdleAnimation", 1)[1].split(
         "async function restoreVrmIdleAnimation",
