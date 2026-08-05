@@ -127,6 +127,17 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     )
     assert switch_track_color is not None
     assert _contrast_ratio(switch_track_color.group(1), "#ffffff") >= 3
+    checked_track = re.search(
+        r"\.switch input:checked \+ \.switch-track\s*\{([^}]*)\}",
+        stylesheet,
+    )
+    assert checked_track is not None
+    checked_track_color = re.search(
+        r"background:\s*(#[0-9a-fA-F]{6})", checked_track.group(1)
+    )
+    assert checked_track_color is not None
+    assert _contrast_ratio(checked_track_color.group(1), "#ffffff") >= 3
+    assert _contrast_ratio(checked_track_color.group(1), "#1b2730") >= 3
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     dark_start = stylesheet.index('[data-theme="dark"] {')

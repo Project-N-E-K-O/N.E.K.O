@@ -557,13 +557,28 @@
 
     async function commitEnrollment() {
         const profileAlreadyAvailable = state.profileAvailable;
+        let reconciliationAttempted = false;
         try {
             const committed = await apiRequest('/enrollment/commit', {
                 method: 'POST'
             });
             applyStatus(committed);
+            const completeStatus = committed && typeof committed === 'object'
+                && Object.prototype.hasOwnProperty.call(committed, 'enrollment')
+                && Object.prototype.hasOwnProperty.call(committed, 'profile');
+            if (!completeStatus) {
+                reconciliationAttempted = true;
+                if (!await reconcileStatus()) {
+                    throw new Error('commit_status_unavailable');
+                }
+            }
+            if (state.stage !== 'idle' || !state.profileAvailable) {
+                throw new Error('commit_not_confirmed');
+            }
         } catch (error) {
-            const reconciled = await reconcileStatus();
+            const reconciled = reconciliationAttempted
+                ? state.stage === 'idle' && state.profileAvailable
+                : await reconcileStatus();
             if (
                 !reconciled
                 || state.stage !== 'idle'

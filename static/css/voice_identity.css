@@ -405,7 +405,7 @@ button:disabled {
 }
 
 .switch input:checked + .switch-track {
-    background: var(--voice-blue);
+    background: #18789f;
 }
 
 .switch input:checked + .switch-track::after {

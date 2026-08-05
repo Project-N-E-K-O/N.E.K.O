@@ -614,6 +614,55 @@ test('failed enrollment commit exposes a retry that can finish without re-record
     assert.equal(harness.elements.get('voice-identity-profile-status').textContent.includes('Owner Profile'), true);
 });
 
+test('partial commit success reconciles both enrollment and profile before completion', async () => {
+    for (const committedPayload of [
+        { profile: { available: true, state: 'active' } },
+        { enrollment: { stage: 'idle' } },
+    ]) {
+        let statusRequests = 0;
+        const harness = createHarness({
+            route(url) {
+                if (url === '/api/config/page_config') {
+                    return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+                }
+                if (url === '/api/voice-identity/status') {
+                    statusRequests += 1;
+                    return jsonResponse(statusRequests === 1
+                        ? {
+                            enrollment: {
+                                session_id: 'session-1',
+                                stage: 'ready_to_commit',
+                            },
+                        }
+                        : {
+                            enrollment: { stage: 'idle' },
+                            profile: { available: true, state: 'active' },
+                        });
+                }
+                if (url === '/api/voice-identity/enrollment/commit') {
+                    return jsonResponse(committedPayload);
+                }
+                throw new Error(`Unexpected request: ${url}`);
+            },
+        });
+
+        await harness.initialize();
+        await harness.elements.get('voice-identity-record').emit('click');
+
+        assert.equal(statusRequests, 2);
+        assert.equal(harness.elements.get('voice-identity-start').hidden, false);
+        assert.equal(
+            harness.elements.get('voice-identity-profile-status').textContent
+                .includes('Owner Profile'),
+            true,
+        );
+        assert.equal(
+            harness.elements.get('voice-identity-message').textContent,
+            'Enrollment complete.',
+        );
+    }
+});
+
 test('ambiguous commit response reconciles activation without entering recording state', async () => {
     const commitResponse = deferred();
     let statusRequests = 0;
