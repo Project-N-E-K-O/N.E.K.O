@@ -464,31 +464,33 @@ async def test_same_mode_dedupe_measures_the_deadline_on_the_wall_clock(
     await _run_dedupe_start(mgr)
     await stall
 
-    assert [c[0] for c in calls] == ["ack"], (
-        "a budget read off the sleep counter would have permitted the reroute"
+    assert calls[0][0] == "redecide"
+    budget = calls[0][1]["connect_budget_seconds"]
+    assert budget < 2.0, (
+        f"budget {budget} was read off the sleep counter, not the wall clock"
     )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_same_mode_dedupe_skips_reroute_without_room_in_the_deadline(
-    monkeypatch,
-):
-    """Codex P2. The re-decision runs a whole connect-and-retry phase on top of a
-    wait that has already spent part of the frontend's 15s deadline. Starting one
-    without room for it pushes the re-ack past the point where the client gives
-    up -- and the client's timeout fires end_session, tearing down the session
-    that did start. Out of budget, the bare re-ack (the pre-existing behaviour)
-    is the better trade."""
-    monkeypatch.setattr(
-        "main_logic.core.asr_runtime.ASR_CONNECT_TOTAL_BUDGET_SECONDS", 100.0
-    )
+async def test_same_mode_dedupe_hands_the_remaining_deadline_down_as_a_budget():
+    """Codex P2, twice. The re-decision can run a whole connect-and-retry phase
+    on top of a wait that already spent part of the frontend's 15s deadline, and
+    a re-ack past that deadline is worse than useless: the client's timeout fires
+    end_session and tears down the session that did start.
+
+    The budget travels DOWN rather than gating here, because only the route
+    decision knows whether it is going to connect at all -- a handshake that
+    disables independent ASR settles on native for free, and refusing that over
+    a connect budget would strand a microphone that had nothing to wait for."""
     mgr = _make_deduping_manager(route_mode="blocked")
     calls = _record_dedupe_calls(mgr)
 
     await _run_dedupe_start(mgr)
 
-    assert [c[0] for c in calls] == ["ack"]
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    budget = calls[0][1]["connect_budget_seconds"]
+    assert 14.0 < budget <= 15.0, budget
 
 
 @pytest.mark.unit

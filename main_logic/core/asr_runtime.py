@@ -540,6 +540,7 @@ class AsrRuntimeMixin:
         preserve_hot_swap_audio: bool = False,
         handshake_override=...,
         resource_optimization_override=...,
+        connect_budget_seconds: float | None = None,
     ) -> None:
         """Resolve the microphone route for one session start.
 
@@ -548,6 +549,17 @@ class AsrRuntimeMixin:
         await. Ellipsis means "not supplied" — the internal re-entry paths
         (hot-swap, device change) have no request of their own and reuse the
         accepted live session's optimization choice.
+
+        ``connect_budget_seconds`` bounds only the PROVIDER CONNECT. A caller
+        working against a deadline (the dedupe reroute) passes what is left of
+        it; when that cannot cover a whole connect-and-retry phase this returns
+        with the route on its blocked placeholder rather than produce a verdict
+        nobody is still listening for. Checked here rather than at the call site
+        on purpose: the cheap outcomes -- independent ASR disabled by handshake
+        or by the persisted setting, or a Core that owns recognition natively --
+        settle on ``native`` without connecting to anything, and gating those on
+        a connect budget would strand a microphone that had nothing to wait for
+        (Codex P2).
         """
         self._ensure_asr_runtime_state()
         operation_generation = self._begin_asr_route_operation()
@@ -738,6 +750,21 @@ class AsrRuntimeMixin:
                 )
             )
             return
+        if (
+            connect_budget_seconds is not None
+            and connect_budget_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS
+        ):
+            # Out of budget: leave the route on the blocked placeholder installed
+            # above, which is exactly the state the caller would have re-acked
+            # without re-deciding at all.
+            logger.info(
+                "[%s] independent ASR connect skipped: %.2fs of budget left,"
+                " under the %.1fs connect ceiling",
+                self.lanlan_name,
+                connect_budget_seconds,
+                ASR_CONNECT_TOTAL_BUDGET_SECONDS,
+            )
+            return
         start_kwargs: dict[str, object] = {
             "route_key": core_type,
             "resource_optimization_enabled": resolved_optimization_value,
@@ -846,26 +873,18 @@ class AsrRuntimeMixin:
         that does match, so skipping here loses nothing.
 
         ``remaining_deadline_seconds`` is what is left of the frontend's start
-        deadline. A re-decision runs a whole connect-and-retry phase whose
-        ceiling is ASR_CONNECT_TOTAL_BUDGET_SECONDS, so starting one without
-        room for it would push the re-ack past the point where the client gives
-        up -- and its timeout fires end_session, tearing down the session that
-        did start (Codex P2). Out of budget, the caller's bare re-ack is the
-        better trade: it is the pre-existing behaviour, and it still reaches the
-        requester in time.
+        deadline, handed down as the connect budget. A connect-and-retry phase
+        can run to ASR_CONNECT_TOTAL_BUDGET_SECONDS, so starting one without room
+        for it would push the re-ack past the point where the client gives up --
+        and its timeout fires end_session, tearing down the session that did
+        start (Codex P2). Out of budget the bare re-ack is the better trade: it
+        is the pre-existing behaviour, and it still reaches the requester in
+        time. The budget stops the CONNECT only, never the cheap native
+        outcomes -- see _start_independent_asr_if_enabled.
         """
         if input_mode != "audio":
             return
         self._ensure_asr_runtime_state()
-        if remaining_deadline_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS:
-            logger.info(
-                "[%s] dedupe reroute skipped: %.2fs left of the start deadline,"
-                " under the %.1fs connect budget",
-                self.lanlan_name,
-                remaining_deadline_seconds,
-                ASR_CONNECT_TOTAL_BUDGET_SECONDS,
-            )
-            return
         if self._voice_lease_connection_id != lease_connection_id:
             logger.info(
                 "[%s] dedupe reroute skipped: voice lease moved on during the wait",
@@ -886,6 +905,7 @@ class AsrRuntimeMixin:
             input_mode,
             handshake_override=handshake_override,
             resource_optimization_override=resource_optimization_override,
+            connect_budget_seconds=remaining_deadline_seconds,
         )
 
     def _abandon_core_voice_turn(
