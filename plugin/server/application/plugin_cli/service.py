@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.install import PackageInstaller
 from plugin.neko_plugin_cli.core.models import InstalledPlugin, InstallResult
@@ -247,22 +248,21 @@ class PluginCliService:
                 raise ValueError("installed plugin identity does not match the upgrade plan")
 
         async def start(plugin_id: str) -> None:
-            await upgrade_support.start_plugin_after_upgrade(plugin_id, strict=True)
+            await upgrade_support.start_plugin_after_replace(plugin_id, strict=True)
 
         try:
-            result = await upgrade_support.perform_safe_upgrade(
-                plan=plan,
-                target_dir=target_dir,
+            result = await upgrade_support.replace_plugin(
+                layout=resolve_plugin_layout(plan.plugin_id, target_dir),
                 install_new=install_new,
                 validate_new=validate_new,
                 is_running=upgrade_support.plugin_is_running,
-                stop=upgrade_support.stop_plugin_for_upgrade,
+                stop=upgrade_support.stop_plugin_for_replace,
                 start=start,
                 cleanup_backup=upgrade_support.remove_directory,
                 additional_targets=(profile_dir,),
                 preserve_targets=(profile_dir,),
             )
-        except upgrade_support.SafeUpgradeError as exc:
+        except upgrade_support.ReplacePluginError as exc:
             raise ServerDomainError(
                 code="PLUGIN_UPGRADE_ROLLED_BACK",
                 message="plugin upgrade failed and rollback was attempted",
@@ -272,7 +272,9 @@ class PluginCliService:
 
         return {
             **result.install_result,
-            "operation": result.operation,
+            # Compatibility response for the existing Package Manager UI.
+            # The shared file transaction itself is version-agnostic replace.
+            "operation": "upgrade",
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }

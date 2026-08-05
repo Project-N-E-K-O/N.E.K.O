@@ -7,29 +7,14 @@ import zipfile
 
 import pytest
 
+from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.neko_plugin_cli.public import build_plugin
 from plugin.server.application.plugin_cli.service import PluginCliService
-from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan
 from plugin.server.application.plugins import upgrade_support
-from plugin.server.application.plugins.upgrade_support import SafeUpgradeError, perform_safe_upgrade
+from plugin.server.application.plugins.upgrade_support import ReplacePluginError, replace_plugin
 from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
-
-
-def _upgrade_plan() -> PluginInstallPlan:
-    return PluginInstallPlan(
-        action="upgrade",
-        package_type="plugin",
-        package_id="demo",
-        plugin_id="demo",
-        directory_name="demo",
-        current_version="1.0.0",
-        target_version="2.0.0",
-        confirmation_token="a" * 64,
-        reason="",
-        legacy_plugin_ids=(),
-    )
 
 
 @pytest.mark.asyncio
@@ -47,6 +32,15 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
     profile = tmp_path / "profiles" / "demo"
     profile.mkdir(parents=True)
     (profile / "default.toml").write_text("version = 1\n", encoding="utf-8")
+    storage_root = tmp_path / "state"
+    expected_state = {
+        storage_root / "plugins" / "demo" / "config" / "plugin.toml": "user_config = true\n",
+        storage_root / "plugins" / "demo" / "data" / "value.txt": "user data\n",
+        storage_root / "plugins" / "demo" / "cache" / "value.txt": "cache data\n",
+    }
+    for path, content in expected_state.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     calls: list[str] = []
     start_attempts = 0
 
@@ -83,10 +77,9 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
     async def cleanup_backup(path: Path) -> None:
         calls.append(f"cleanup:{path.name}")
 
-    with pytest.raises(SafeUpgradeError, match=failure_stage):
-        await perform_safe_upgrade(
-            plan=_upgrade_plan(),
-            target_dir=target,
+    with pytest.raises(ReplacePluginError, match=failure_stage):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target, storage_root=storage_root),
             install_new=install_new,
             validate_new=validate_new,
             is_running=is_running,
@@ -100,6 +93,8 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
     assert (profile / "default.toml").read_text(encoding="utf-8") == "version = 1\n"
     assert "stop:demo" in calls
     assert "start:demo" in calls
+    for path, content in expected_state.items():
+        assert path.read_text(encoding="utf-8") == content
     assert not list((tmp_path / ".upgrade-backups").glob("demo.bak.*"))
     assert not list((profile.parent / ".upgrade-backups").glob("demo.bak.*"))
 
@@ -126,9 +121,8 @@ async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(tmp_pat
         calls.append(f"cleanup:{path.name}")
         shutil.rmtree(path)
 
-    result = await perform_safe_upgrade(
-        plan=_upgrade_plan(),
-        target_dir=target,
+    result = await replace_plugin(
+        layout=resolve_plugin_layout("demo", target),
         install_new=install_new,
         validate_new=lambda: _async_none(),
         is_running=lambda _plugin_id: _async_true(),
@@ -137,7 +131,6 @@ async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(tmp_pat
         cleanup_backup=cleanup_backup,
     )
 
-    assert result.operation == "upgrade"
     assert result.restarted is True
     assert result.rollback_status == "not_needed"
     assert result.backup_dir.name.startswith("demo.bak.")
@@ -186,10 +179,9 @@ async def test_safe_upgrade_removes_profile_created_by_failed_install(tmp_path: 
     async def validate_new() -> None:
         raise RuntimeError("validation failed")
 
-    with pytest.raises(SafeUpgradeError, match="validate"):
-        await perform_safe_upgrade(
-            plan=_upgrade_plan(),
-            target_dir=target,
+    with pytest.raises(ReplacePluginError, match="validate"):
+        await replace_plugin(
+            layout=resolve_plugin_layout("demo", target),
             install_new=install_new,
             validate_new=validate_new,
             is_running=lambda _plugin_id: _async_true(),
@@ -209,6 +201,10 @@ async def _async_none() -> None:
 
 async def _async_true() -> bool:
     return True
+
+
+async def _async_false() -> bool:
+    return False
 
 
 async def _record(calls: list[str], value: str) -> None:
@@ -250,6 +246,58 @@ def _rewrite_package_manifest_id(package_path: Path, package_id: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target_version", ["2.0.0", "1.0.0", "0.5.0"])
+async def test_service_replaces_with_new_same_or_old_version_without_touching_user_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_version: str,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", target_version)
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / f"demo-{target_version}.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    profiles_root = tmp_path / "profiles"
+    storage_root = tmp_path / "state"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage_root))
+
+    expected_state = {
+        storage_root / "plugins" / "demo" / "config" / "plugin.toml": "user_config = true\n",
+        storage_root / "plugins" / "demo" / "data" / "value.txt": "user data\n",
+        storage_root / "plugins" / "demo" / "cache" / "value.txt": "cache data\n",
+    }
+    for path, content in expected_state.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(upgrade_support, "plugin_is_running", lambda _plugin_id: _async_false())
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    assert plan["action"] == "upgrade"
+
+    result = await service.install(
+        package=str(package_path),
+        confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+
+    assert result["operation"] == "upgrade"
+    installed_manifest = (plugins_root / "demo" / "plugin.toml").read_text(encoding="utf-8")
+    assert f'version = "{target_version}"' in installed_manifest
+    for path, content in expected_state.items():
+        assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
 async def test_service_rejects_changed_target_before_stopping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,7 +329,7 @@ async def test_service_rejects_changed_target_before_stopping(
     async def unexpected_stop(plugin_id: str) -> None:
         stop_calls.append(plugin_id)
 
-    monkeypatch.setattr(upgrade_support, "stop_plugin_for_upgrade", unexpected_stop)
+    monkeypatch.setattr(upgrade_support, "stop_plugin_for_replace", unexpected_stop)
     with pytest.raises(ServerDomainError) as exc_info:
         await service.install(
             package=str(package_path),
@@ -335,7 +383,7 @@ async def test_service_rejects_unsafe_upgrade_plan_paths_before_backup(
         return object()
 
     monkeypatch.setattr(service, "plan_install", unsafe_plan_install)
-    monkeypatch.setattr(upgrade_support, "perform_safe_upgrade", unexpected_upgrade)
+    monkeypatch.setattr(upgrade_support, "replace_plugin", unexpected_upgrade)
 
     with pytest.raises(ValueError, match=field):
         await service.install(
