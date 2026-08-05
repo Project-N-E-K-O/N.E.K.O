@@ -253,9 +253,10 @@ SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
     "none": 0.3,
 }
 
-# 信赖度仲裁 / 演化（群记忆系列 7/7）。trust 池由 QQ 插件按稳定 QQ 号
-# 全局持有：同一人在不同群、以及非 admin 私聊 participant 中共用一份。
-# 这是产品拍板的跨 scope 通道，不得误改成 subject-local。
+# 信赖度仲裁 / 演化（群记忆系列 7/7）。trust 池由 memory_server 进程按
+# account_id（platform:actor）全局持有，落 <memory_dir>/speaker_trust.json：
+# 同一人在不同群、不同角色、以及非 admin 私聊 participant 中共用一份。
+# 这是产品拍板的跨 scope / 跨角色通道，不得误改成 subject-local 或角色态。
 SPEAKER_TRUST_ARBITRATION_MARGIN = 0.15
 SPEAKER_TRUST_ACTIVITY_WEIGHT = 0.001
 SPEAKER_TRUST_ACTIVITY_MAX_BONUS = 0.02
@@ -263,6 +264,99 @@ SPEAKER_TRUST_CONFIRMATION_DELTA = 0.04
 SPEAKER_TRUST_CORRECTION_DELTA = 0.08
 SPEAKER_TRUST_ADJUSTMENT_LIMIT = 0.30
 SPEAKER_TRUST_EVENT_HISTORY_LIMIT = 128
+"""Deprecated：插件本地 trust 池的活跃度环上限。池上移服务端后唯一使用者
+（`permission.py`）已删除，服务端活跃度环改用
+`SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT`。保留常量与 re-export 是因为
+删掉公开常量是破坏性变更，且它可能被树外插件读。"""
+
+# ── 服务端 trust 池（平台中立化） ────────────────────────────────────────
+# 落点必须是 memory_dir **根级平铺文件**，不能开子目录：
+# `utils/cloudsave_runtime/operations.py` 的 import 清理里 `delete_dir_targets`
+# 会把 memory_dir 下每一个不在导入角色名单里的**子目录** rmtree 掉，而
+# `delete_file_targets` 只认 `memory/<角色>/<白名单叶名>` 三段路径。根级平铺
+# 文件两条都躲开。先例：`app/memory_server/gates.py` 的
+# `idle_maintenance_state.json`、`main_logic/quota/ux_state.py`。
+# 将来若要分片，只能是 `speaker_trust.<n>.json` 这种平铺文件名。
+SPEAKER_TRUST_POOL_FILENAME = "speaker_trust.json"
+
+# 自报 base 通道（无四档权限阶梯的平台，如弹幕 guard_level）的上界。
+# **这个 clamp 施加在本段最终分上，不是只夹 base**：只夹 base 时
+# 0.8 + 0.30(adjustment) + 0.02(activity) = 1.0 = admin 同权，那样「上界
+# 0.8 < admin 的 1.0，封死把 guard_level 映射成 owner 级仲裁权」这句安全
+# 断言在算术上就是假的。上移之后引入一个**有意的不对称**：`tier='trusted'`
+# （base 0.8，有平台权限模型背书）能靠自己挣来的 adjustment/activity 爬到
+# 1.0，而无鉴权自报的 `base=0.8` 永远爬不过 0.8。
+SPEAKER_TRUST_MAX_REPORTED_BASE = 0.8
+
+# wire 上 `speaker_tier` 的合法取值。用 Literal 而不是 `.get(level, DEFAULT)`
+# 的 silent-default：拼错的 "Admin" 必须 422，不能静默落到中间档。
+SPEAKER_TRUST_PERMISSION_TIERS = ("admin", "trusted", "normal", "none")
+
+# 服务端 activity 事件环的截断上限。必须 > 单批最大消息数（200），否则同一
+# 批里靠后的消息会把靠前的 id 挤出环、重投时重复计数。signal 环**永不截断**
+# （append-only 账本，截断会让旧纠错事件重放），两个环必须分开处理。
+SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT = 256
+
+# 单次 legacy 导入请求携带的 profile 条数上限。分块由调用方控制，越界是契约
+# bug ⇒ 422。单条 profile 的 `processed_signal_events` **不设上限**。
+SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX = 500
+
+# 存量迁移闸门。池首次创建时按此表种成 `status="pending"`；pending 期间该
+# platform 的 account 一律：resolve_trust 返回 None（弃权，不盖 speaker_trust
+# 键）、活跃度不计、信号计入 signals_deferred、reconcile 跳过。
+# 这一把闸门是「导入窗口双算」的唯一防线：没有它，pending 期 owner 复述触发
+# 的重放事件会先按空账本扣一次，随后导入再把已含这一次的 legacy adjustment
+# 加上去 —— 单笔 correction 双记 0.16 > 仲裁 margin 0.15，且环里只存 id 不存
+# kind，事后不可反算。
+SPEAKER_TRUST_LEGACY_BARRIERS = {
+    "qq": "qq_auto_reply.business_config.speaker_trust_profiles.v1",
+}
+
+# channel（观测属性）的长度上限。channel **不是键**：它只用于碰撞探测与运维
+# 诊断，绝不参与账本分区、bind/merge 判据或任何权限判定。
+SPEAKER_TRUST_CHANNEL_MAX_LEN = 16
+
+# 一个 entity 在同一 platform 下最多绑几个 account。超限 bind/merge 返回 409。
+# 用「bind 时拒绝」换掉「读时截断」：读时截断会让「从 A₁ 出发」与「从 A₅
+# 出发」得到成员不同的展开集合，两个 ParticipantGroup 结构上不相等、按值去重
+# 救不回来，直接打破「同一 entity 在同一 group 只有一个 participant」。bind
+# 是人工稀有操作，409 是可接受的失败模式；读时截断不是。
+IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8
+
+
+def _assert_activity_bonus_reachable() -> None:
+    """Startup assertion: the activity count cap must be able to reach MAX_BONUS.
+
+    The read-side formula is ``min(MAX_BONUS, min(cap, sum_mc) * WEIGHT)`` with
+    ``cap = ceil(MAX_BONUS / WEIGHT)``. The two ceilings are numerically
+    redundant, and THAT REDUNDANCY IS WHAT BLOCKS MULTI-ACCOUNT FARMING:
+    deleting the outer ``min(MAX_BONUS, ...)`` makes the supremum ``0.02 * N``,
+    which at N=8 is 0.16 — past the 0.15 arbitration margin, and reachable in
+    practice. That outer min is exactly the kind of thing a refactor deletes as
+    "implied by the cap".
+
+    This assertion guards the other half: if any constant drifts so that the
+    cap can no longer reach MAX_BONUS, fail loud instead of silently turning
+    the activity ceiling into a number nobody declared.
+    """
+    import math
+
+    if SPEAKER_TRUST_ACTIVITY_MAX_BONUS <= 0 or SPEAKER_TRUST_ACTIVITY_WEIGHT <= 0:
+        return
+    cap = math.ceil(
+        SPEAKER_TRUST_ACTIVITY_MAX_BONUS / SPEAKER_TRUST_ACTIVITY_WEIGHT
+    )
+    if cap * SPEAKER_TRUST_ACTIVITY_WEIGHT < SPEAKER_TRUST_ACTIVITY_MAX_BONUS:
+        raise AssertionError(
+            "SPEAKER_TRUST_ACTIVITY_MAX_BONUS is unreachable: "
+            f"ceil({SPEAKER_TRUST_ACTIVITY_MAX_BONUS}/"
+            f"{SPEAKER_TRUST_ACTIVITY_WEIGHT}) * "
+            f"{SPEAKER_TRUST_ACTIVITY_WEIGHT} < "
+            f"{SPEAKER_TRUST_ACTIVITY_MAX_BONUS}"
+        )
+
+
+_assert_activity_bonus_reachable()
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +

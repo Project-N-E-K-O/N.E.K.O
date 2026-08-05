@@ -183,7 +183,7 @@ def _free_client(**hooks):
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     client = OmniRealtimeClient(
-        "wss://lanlan.app/realtime",
+        "wss://www.lanlan.app/realtime",
         "test-key",
         model="free-model",
         api_type="free",

@@ -139,10 +139,12 @@ async def get_core_config_api():
             core_config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             core_cfg = await read_json_async(core_config_path)
             api_key = core_cfg.get('coreApiKey', '')
+            runtime_core_config = await config_manager.aget_core_config()
         except FileNotFoundError:
             # 如果文件不存在，返回当前配置中的CORE_API_KEY
             _config_manager = get_config_manager()
             core_config = await _config_manager.aget_core_config()
+            runtime_core_config = core_config
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
@@ -161,6 +163,19 @@ async def get_core_config_api():
         _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
+        realtime_config = await config_manager.aget_model_api_config(
+            'realtime',
+            core_config=runtime_core_config,
+        )
+        _effective_core_api_provider = str(
+            realtime_config.get('api_type')
+            or runtime_core_config.get('CORE_API_TYPE')
+            or _core_api_provider
+        ).strip().lower()
+        from main_logic.asr_client import get_asr_core_capabilities
+        _core_asr_capabilities = get_asr_core_capabilities(
+            _effective_core_api_provider
+        )
         _fallback_providers = {_core_api_provider, _assist_api_provider}
         _doubao_tts_shared_key = ''
         if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
@@ -173,6 +188,12 @@ async def get_core_config_api():
         response = {
             "api_key": api_key,
             "coreApi": _core_api_provider,
+            "effectiveCoreApi": _effective_core_api_provider,
+            "supportsIndependentAsr": (
+                None
+                if _core_asr_capabilities is None
+                else _core_asr_capabilities.supports_independent_asr
+            ),
             "assistApi": _assist_api_provider,
             "assistApiKeyQwen": core_cfg.get('assistApiKeyQwen', '') or _fb('qwen'),
             "assistApiKeyQwenIntl": core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl'),

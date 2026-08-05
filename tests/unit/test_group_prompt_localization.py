@@ -36,8 +36,11 @@ from config.prompts.prompts_sys import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_LANGS = ("zh", "en", "ja", "ko", "ru", "es", "pt")
-_MEMORY_LANGS = _LANGS + ("zh-TW",)
+# 'zh-TW' joined the prompts_sys tables with the issue #2500 backfill, so the two
+# lists coincide again; _MEMORY_LANGS stays as its own name because the memory
+# tables have carried Traditional since long before that.
+_LANGS = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+_MEMORY_LANGS = _LANGS
 
 
 # ── scoped 渲染不得泄漏私聊对象的名字 ────────────────────────────────
@@ -219,9 +222,11 @@ def test_context_summary_ready_group_variant_has_no_counterpart_slot():
         assert "{master}" not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{name}" in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "{master}" in CONTEXT_SUMMARY_READY_TEXT[lang]
-        # 文字变体不能还说"语音"。
-        assert "语音" not in CONTEXT_SUMMARY_READY_TEXT[lang]
-        assert "语音" not in CONTEXT_SUMMARY_READY_GROUP[lang]
+        # 文字变体不能还说"语音"。简繁两种写法都要挡：只查简体的话，繁中那行
+        # 写成「語音」会从这条断言底下溜过去。
+        for spelling in ("语音", "語音"):
+            assert spelling not in CONTEXT_SUMMARY_READY_TEXT[lang]
+            assert spelling not in CONTEXT_SUMMARY_READY_GROUP[lang]
         assert "voice" not in CONTEXT_SUMMARY_READY_TEXT[lang].lower()
         assert "voice" not in CONTEXT_SUMMARY_READY_GROUP[lang].lower()
 
@@ -549,7 +554,7 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
     )
 
     assert "Group Chat Reply Guidelines" in rendered
-    assert "In group chats, you don't need to reply to every message" in rendered
+    assert "This is a multi-person QQ group" in rendered
     assert "群聊回复意愿" not in rendered
     assert SCENE_KIRA_UNIFIED_GROUP not in rendered
     # 而且不再每轮打一条"缺必需占位符"的 warning。

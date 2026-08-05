@@ -67,6 +67,7 @@ logger = logging.getLogger("main_logic.proactive_delivery")
 DELIVERY_ACK_FUTURE_KEY = "_proactive_delivery_ack_future"
 DELIVERY_RETRACTED_KEY = "_proactive_delivery_retracted"
 VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
+SWAP_PRIME_DELIVERY_CLAIM_KEY = "_swap_prime_delivery_claimed"
 
 
 def resolve_callback_delivery_ack(callback: dict, delivered: bool) -> None:
@@ -289,6 +290,19 @@ class ProactiveDeliveryManager:
         ordered = sorted(self._queue, key=lambda c: c.sort_key)
         self._queue = []
         return [c.callback for c in ordered]
+
+    def latest_queued_coalesce_seq(self, key: str) -> Optional[int]:
+        """Return the newest submit seq still waiting under ``key``."""
+        return max(
+            (
+                cue.callback.get("_coalesce_submit_seq")
+                for cue in self._queue
+                if cue.coalesce_key == key
+                and not cue.callback.get(DELIVERY_RETRACTED_KEY)
+                and isinstance(cue.callback.get("_coalesce_submit_seq"), int)
+            ),
+            default=None,
+        )
 
     # ── pump ─────────────────────────────────────────────────────────────
     def _suffix(self) -> str:

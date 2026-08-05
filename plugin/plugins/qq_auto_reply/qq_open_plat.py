@@ -7,13 +7,101 @@ import json
 import time
 from typing import Any, Optional
 
+import re as _re
 import httpx
 import websockets
 
 from .qq_connection import QQConnectionBase
 
+_CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
+
+# ==========================================
+# R11 身份作用域取证
+# （docs/design/speaker-trust-entity-semantics.md §2.15.4）
+# ==========================================
+#
+# 开放平台在群消息里下发的 author.id 与在私聊里下发的 author.id 是不是同一个
+# 作用域（全局 user_openid 还是 app×群×人 的 member_openid），**离线无法判定**：
+# 零 fixture、零 vendored SDK、零文档样例。判定只能靠真机跑一遍、读日志。
+#
+# 下面这组常量与函数就是为了让那次取证可做。它们不参与任何判定、不改变任何
+# 行为；取证结论回来之前，权限逻辑一行都不该动。
+_IDENTITY_PROBE_TAG = "[R11]"
+_IDENTITY_PROBE_EVENTS = ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE")
+#: 单次连接最多记录多少条。取证只需要三条（群 X、群 Y、私聊各一），上限
+#: 存在的意义是「开关忘了关」时日志不会无限长，而不是限制取证。
+_IDENTITY_PROBE_MAX_LINES = 200
+#: 单个字段值的字符上限，防御异常长的 payload 把日志撑爆。
+_IDENTITY_PROBE_VALUE_MAX_CHARS = 128
+
+
+def _is_identifier_key(name: str) -> bool:
+    """按**形状**判断一个字段名是不是标识符字段。
+
+    刻意不写成枚举 ``{"id", "member_openid", ...}``：取证要回答的问题之一
+    正是「author 下还有没有别的 openid 兄弟键」，枚举会把没预料到的那个键
+    的值挡在日志外面，取证就白做了。
+    """
+    lowered = str(name).lower()
+    return lowered == "id" or lowered.endswith("_id") or "openid" in lowered
+
+
+def _probe_identifier_values(mapping: Any) -> str:
+    """挑出标识符字段的**值**，其余字段一律不取值。"""
+    if not isinstance(mapping, dict):
+        return "{}"
+    picked: dict[str, str] = {}
+    for raw_key, raw_value in mapping.items():
+        key = str(raw_key)
+        if not _is_identifier_key(key):
+            continue
+        value = str(raw_value)
+        if len(value) > _IDENTITY_PROBE_VALUE_MAX_CHARS:
+            value = value[:_IDENTITY_PROBE_VALUE_MAX_CHARS] + "…"
+        picked[key] = value
+    return json.dumps(picked, ensure_ascii=False, sort_keys=True)
+
+
+def _probe_key_names(mapping: Any) -> str:
+    """只取字段**名**。字段名不含用户内容，可以整份打出来。"""
+    if not isinstance(mapping, dict):
+        return "[]"
+    return json.dumps(sorted(str(k) for k in mapping), ensure_ascii=False)
+
+
+def build_identity_probe_line(event_type: str, data: Any) -> str:
+    """拼一条取证日志。纯函数，无副作用。
+
+    输出四项，恰好对应 §2.15.4.2 表里的四个判据：
+
+    - ``author.ids``  —— ① author.id 本身；② member_openid / user_openid /
+      union_openid 这类兄弟键的值（哪一个跨群相等，靠比对这里）；
+    - ``author.keys`` —— ② 兄弟键的**全量键名**（含没预料到的那些）；
+    - ``group.ids``   —— ③ 群标识挂在哪个键上、值是多少；
+    - ``data.keys``   —— ③ 的兜底：万一群 id 的键名连 "group" 都不含。
+
+    **只打标识符字段的值。** 正文、附件 URL、@ 列表一律不进日志——这条日志
+    落的是持久文件（我的文档/N.E.K.O/logs/，重启留存，取证正需要它持久），
+    取证结束后插桩可以关掉，但已经落盘的行不会跟着回滚。
+    """
+    payload = data if isinstance(data, dict) else {}
+    author = payload.get("author")
+    group_fields = {
+        str(k): v for k, v in payload.items() if "group" in str(k).lower()
+    }
+    return (
+        f"{_IDENTITY_PROBE_TAG} event={event_type} "
+        f"author.ids={_probe_identifier_values(author)} "
+        f"author.keys={_probe_key_names(author)} "
+        f"group.ids={_probe_identifier_values(group_fields)} "
+        f"data.keys={_probe_key_names(payload)}"
+    )
+
 
 class QQOpenPlatformConnection(QQConnectionBase):
+    #: Observed transport (see QQClient.CHANNEL). Never a key.
+    CHANNEL: str = "open"
+
     """QQ 开放平台官方 Bot API 连接
 
     WebSocket 事件 → 内部统一消息格式 → 上层管道
@@ -30,7 +118,16 @@ class QQOpenPlatformConnection(QQConnectionBase):
         client_secret: str,
         logger: Any = None,
         message_queue_size: int = 100,
+        identity_probe: Any = None,
+        emit_log: Any = None,
     ):
+        #: 零参回调，返回真时才记录 R11 取证日志（见模块顶部）。做成回调而不是
+        #: 布尔值，是为了让开关改完立刻生效，不必重连。
+        self._identity_probe = identity_probe
+        #: 插件的内存日志环（UI「运行日志」页读的就是它）。缺省无操作，与
+        #: QQClient 同惯例。
+        self._emit_log = emit_log or (lambda level, msg: None)
+        self._identity_probe_emitted = 0
         self._app_id = str(app_id or "").strip()
         self._client_secret = str(client_secret or "").strip()
         self.token = ""
@@ -167,6 +264,57 @@ class QQOpenPlatformConnection(QQConnectionBase):
     # 消息接收
     # ==========================================
 
+    def _identity_probe_enabled(self) -> bool:
+        probe = getattr(self, "_identity_probe", None)
+        return bool(probe()) if callable(probe) else False
+
+    def _write_identity_probe(self, text: str) -> None:
+        """一条取证行同时进两个池子，缺一不可。
+
+        - ``self.logger``：文件日志（我的文档/N.E.K.O/logs/），**重启留存**，
+          这份才是能整个发给开发者的东西；
+        - ``self._emit_log``：插件的 500 条内存环，也就是 UI 上「运行日志」页
+          读的那个池子。少了它，用户勾完开关去日志页什么都看不到——而隔壁
+          「信任用户」页的现有文案刚教完他「ID…可在日志中查看」。
+          （``get_recent_logs`` 只在内存环为空时才回退读文件，而环从启动那刻
+          起就恒非空，所以只写文件 = 在 UI 上彻底隐身。）
+        """
+        # 单参数调用：行里带的是平台下发的原始 id，可能含 %，
+        # 交给 logging 做 %-格式化会炸。
+        self.logger.info(text)
+        self._emit_log("INFO", text)
+
+    def _log_identity_probe(self, event_type: str, data: Any) -> None:
+        """记录一条 R11 取证日志（见模块顶部）。
+
+        **异常绝不外泄**：``_receive_loop`` 的兜底 ``except Exception`` 会把
+        任何异常当成断连去重连，一条取证日志没有资格触发一次重连。
+        """
+        try:
+            if event_type not in _IDENTITY_PROBE_EVENTS:
+                return
+            if not self.logger or not self._identity_probe_enabled():
+                return
+            emitted = getattr(self, "_identity_probe_emitted", 0)
+            if emitted > _IDENTITY_PROBE_MAX_LINES:
+                return
+            self._identity_probe_emitted = emitted + 1
+            if emitted == _IDENTITY_PROBE_MAX_LINES:
+                # 计数器挂在本连接对象上，而 qq_client 只有在**切换连接模式**
+                # 时才会被置 None 重建（runtime_ops_service.py:44-48）——侧栏
+                # 的「停止 → 启动」根本不重建它。所以这里只能说重启应用，
+                # 说「重启自动回复」是假的。
+                self._write_identity_probe(
+                    f"{_IDENTITY_PROBE_TAG} 已记录 {_IDENTITY_PROBE_MAX_LINES} "
+                    "条，达到上限，后续不再记录；重启应用后重新计数。"
+                )
+                return
+            self._write_identity_probe(build_identity_probe_line(event_type, data))
+        except Exception:
+            # 故意全吞：往上抛会被 _receive_loop 的兜底 except 当成断连，
+            # 一条诊断日志失败不该让 bot 掉线重连一次。
+            pass
+
     async def _receive_loop(self) -> None:
         while not self._closing:
             if not self._ws:
@@ -179,6 +327,11 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 if op == 0:  # Dispatch
                     self._last_seq = payload.get("s", self._last_seq)
                     event_type = payload.get("t", "")
+                    # R11 取证插桩必须落在这里，而不是 _convert_event 里面：
+                    # 一是绕开群 id 键名的不确定性（_convert_event 只读
+                    # group_id，若平台下发 group_openid 就什么都看不见），
+                    # 二是早于信任群白名单闸，未配置的群也能取到证。
+                    self._log_identity_probe(event_type, payload.get("d"))
                     if event_type in ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"):
                         msg = self._convert_event(event_type, payload["d"])
                         if msg:
@@ -222,6 +375,46 @@ class QQOpenPlatformConnection(QQConnectionBase):
     # 消息发送
     # ==========================================
 
+    @staticmethod
+    def _expand_cq_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """将 text segment 中的 CQ 码展开为 typed segments。
+
+        reply_delivery_node 用 CQ 码字符串（如 [CQ:reply,id=...]）嵌入
+        text 字段，NapCat 的 OneBot 协议原生认识这些码，但开放平台需要真
+        正的 typed segments。这里把 text 段里的 CQ 码拆出来。
+        """
+        expanded: list[dict[str, Any]] = []
+        for seg in segments:
+            if seg.get("type") != "text":
+                expanded.append(seg)
+                continue
+            raw = str(seg.get("data", {}).get("text", "") or "")
+            if not raw:
+                expanded.append(seg)
+                continue
+            # 没有 CQ 码 → 原样放回
+            if "[CQ:" not in raw:
+                expanded.append(seg)
+                continue
+            # 有 CQ 码 → 逐段拆分
+            pos = 0
+            for m in _CQ_CODE_RE.finditer(raw):
+                if m.start() > pos:
+                    expanded.append({"type": "text", "data": {"text": raw[pos:m.start()]}})
+                cq_type = m.group(1)
+                params_str = m.group(2)
+                data: dict[str, str] = {}
+                for param in params_str.split(","):
+                    param = param.strip()
+                    if "=" in param:
+                        k, v = param.split("=", 1)
+                        data[k.strip()] = v.strip()
+                expanded.append({"type": cq_type, "data": data})
+                pos = m.end()
+            if pos < len(raw):
+                expanded.append({"type": "text", "data": {"text": raw[pos:]}})
+        return expanded
+
     async def send_group_message_segments(
         self, group_id: str, segments: list[dict[str, Any]], *, record_sent: bool = True, keyboard: str = ""
     ) -> Optional[str]:
@@ -231,7 +424,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         at_user_id = ""
         image_url = ""
 
-        for seg in segments:
+        for seg in self._expand_cq_segments(segments):
             seg_type = str(seg.get("type") or "").strip()
             data = seg.get("data") or {}
             if seg_type == "reply":
@@ -296,14 +489,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if keyboard:
             buttons = [b.strip() for b in keyboard.split("|") if b.strip()][:4]
             if buttons:
-                if "msg_type" not in body:
-                    # 按钮只能挂在 type-2 上，而 type-2 的正文放在
-                    # markdown.content（见上面的 Markdown 分支）——强行改
-                    # msg_type 却把正文留在 content 里，发出去的是一个没有
-                    # 正文体的 type-2 载荷：平台不返回 message id，投递侧
-                    # 据此判未投递，回复既没送出也进不了记忆。
-                    body["msg_type"] = 2
-                    body["markdown"] = {"content": body.pop("content", "")}
+                body.setdefault("msg_type", 2)
                 body["keyboard"] = {
                     "content": {
                         "rows": [{
@@ -318,6 +504,9 @@ class QQOpenPlatformConnection(QQConnectionBase):
                         }]
                     }
                 }
+                if content:
+                    body.pop("content", None)
+                    body["markdown"] = {"content": content}
 
         try:
             resp = await self._http.post(
@@ -347,31 +536,55 @@ class QQOpenPlatformConnection(QQConnectionBase):
             group_id, [{"type": "text", "data": {"text": message}}],
         )
 
-    async def send_private_record(self, user_id: str, file_uri: str) -> Optional[str]:
-        """发送私聊语音 — 开放平台不支持，返回 None 表示"这个平台送不出去"。
-
-        以前它发一句字面量 "[语音消息]" 并把那条的回执当成语音已送达：
-        用户只收到占位符，而记忆侧按"语音已送达"记下了那句话的内容。返回
-        None 让投递层走它自己的文本回退（把 record 原文当文本发出去），
-        用户拿到的与记下来的才一致。"""
-        return None
+    async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = "") -> None:
+        """发送私聊语音 — 开放平台不支持，返回 None 让上层回退到文本"""
 
     async def send_private_message_segments(
-        self, user_id: str, segments: list[dict[str, Any]]
+        self, user_id: str, segments: list[dict[str, Any]], *, record_sent: bool = True
     ) -> Optional[str]:
+        """将 OneBot segments 转换为 QQ 开放平台私聊格式并发送。
+
+        QQ 开放平台私聊仅支持纯文本 + 图片，其他类型降级为文本占位。
+        """
         content_parts: list[str] = []
         image_url = ""
-        for seg in segments:
+
+        for seg in self._expand_cq_segments(segments):
+            seg_type = str(seg.get("type") or "").strip()
             data = seg.get("data") or {}
-            if seg.get("type") == "text":
+            if seg_type == "text":
                 content_parts.append(str(data.get("text") or ""))
-            elif seg.get("type") == "image":
+            elif seg_type == "image":
                 image_url = str(data.get("file") or "")
+            elif seg_type == "reply":
+                content_parts.append("[回复]")
+            elif seg_type == "at":
+                at_qq = str(data.get("qq") or "")
+                content_parts.append(f"[@{at_qq}]" if at_qq else "[@某人]")
+            elif seg_type == "face":
+                content_parts.append(f"[表情{data.get('id','')}]")
+            elif seg_type == "record":
+                content_parts.append("[语音]")
+            elif seg_type == "rps":
+                content_parts.append("[猜拳]")
+            elif seg_type == "dice":
+                content_parts.append("[骰子]")
+            elif seg_type == "contact":
+                content_parts.append("[推荐联系人]")
+            elif seg_type == "music":
+                content_parts.append("[音乐分享]")
+            elif seg_type == "mface":
+                content_parts.append("[动画表情]")
+            elif seg_type == "file":
+                content_parts.append(f"[文件 {data.get('name', '')}]")
+            elif seg_type == "json":
+                content_parts.append("[卡片消息]")
+            else:
+                pass  # 忽略未知类型
 
         content = "".join(content_parts).strip()
         if not content and not image_url:
             return None
-        # 私聊图片需要先上传获取 file_info，当前仅支持文本；纯图片降级为文本占位
         if image_url and not content:
             content = "[图片]"
 
@@ -383,7 +596,10 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 headers=self._auth_headers(),
             )
             data = resp.json()
-            return str(data.get("id") or "") or None
+            msg_id = str(data.get("id") or "")
+            if msg_id and record_sent:
+                self.record_sent_message_id(msg_id)
+            return msg_id if msg_id else None
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"[QQOpenPlatform] 发送私聊失败: {e}")
@@ -399,7 +615,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         )
 
     async def send_group_image(
-        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = ""
+        self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "", sub_type: str = ""
     ) -> Optional[str]:
         segments: list[dict[str, Any]] = []
         if reply_message_id:
@@ -411,15 +627,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
     async def send_group_record(
         self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
-    ) -> Optional[str]:
-        segments: list[dict[str, Any]] = []
-        if reply_message_id:
-            segments.append({"type": "reply", "data": {"id": reply_message_id}})
-        if at_user_id:
-            segments.append({"type": "at", "data": {"qq": at_user_id}})
-        # 同 send_private_record：开放平台没有语音通道，返回 None 让投递层
-        # 用 record 原文走文本回退，别拿占位符的回执冒充语音已送达。
-        return None
+    ) -> None:
+        """发送群聊语音 — 开放平台不支持，返回 None 让上层回退到文本"""
 
     async def get_login_status(self) -> dict[str, Any]:
         if self._ws and self._self_id:
@@ -479,6 +688,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
         }
 
     async def _refresh_token(self) -> None:
+        if self._http is None:
+            raise RuntimeError("QQ 开放平台未连接，请先调用 connect()")
         try:
             resp = await self._http.post(self._TOKEN_URL, json={
                 "appId": self._app_id,
@@ -584,6 +795,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if event_type == "C2C_MESSAGE_CREATE":
             return {
                 "message_type": "private",
+                "channel": self.CHANNEL,
                 "user_id": user_id,
                 "user_nickname": user_nickname,
                 "content": str(data.get("content") or ""),
@@ -602,7 +814,12 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             content = str(data.get("content") or "")
-            group_id = str(data.get("group_id") or "")
+            # 该通道的群标识本就是 openid（见 display_name_service 的说明），
+            # 平台按 v2 语义可能挂在 group_openid 而不是 group_id。顺序不能反：
+            # group_id 有值时必须继续用它，否则群 subject_id 会整体换键，而
+            # memory/scopes.py 是字节相等匹配、无别名，存量 scoped 群记忆会一次
+            # 性失联。只在原键为空时兜底，才能既零行为变化又挡住全量丢消息。
+            group_id = str(data.get("group_id") or data.get("group_openid") or "")
             mentioned_ids: list[str] = []
             mentions_all = False
             # 检查 @ 目标（content 中 <@!id> 格式）
@@ -611,9 +828,16 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 mentioned_ids.append(m.group(1))
             # 去掉 <@!id> 占位符后的纯文本
             clean_content = re.sub(r"<@!\d+>", "", content).strip()
+            if self._self_id:
+                mentions_other_user = any(mid != self._self_id for mid in mentioned_ids)
+            else:
+                # GROUP_AT_MESSAGE_CREATE always includes the bot mention; without
+                # READY self_id, only multiple mentions prove another user was named.
+                mentions_other_user = len(mentioned_ids) > 1
 
             return {
                 "message_type": "group",
+                "channel": self.CHANNEL,
                 "user_id": user_id,
                 "user_nickname": user_nickname,
                 "content": clean_content,
@@ -624,7 +848,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 "group_id": group_id,
                 "quoted_message_id": "",  # 暂不支持引用回复检测
                 "mentioned_user_ids": mentioned_ids,
-                "mentions_other_user": len(mentioned_ids) > 1,
+                "mentions_other_user": mentions_other_user,
                 "mentions_all": mentions_all,
                 "raw": data,
                 "attachments": self._extract_attachments(data),
@@ -643,3 +867,136 @@ class QQOpenPlatformConnection(QQConnectionBase):
                     att_type = "image" if content_type.startswith("image/") else "file"
                     attachments.append({"type": att_type, "url": url})
         return attachments
+
+    # ==========================================
+    # Stub API methods (QQ 开放平台不支持)
+    # ==========================================
+
+    # Message operations
+    async def set_msg_emoji_like(self, **kw) -> dict: return {}
+    async def delete_msg(self, **kw) -> dict: return {}
+    async def get_msg(self, **kw) -> dict: return {}
+    async def get_forward_msg(self, **kw) -> dict: return {}
+    async def send_like(self, **kw) -> dict: return {}
+    async def mark_msg_as_read(self, **kw) -> dict: return {}
+    async def mark_private_msg_as_read(self, **kw) -> dict: return {}
+    async def mark_group_msg_as_read(self, **kw) -> dict: return {}
+    async def _mark_all_as_read(self, **kw) -> dict: return {}
+    async def send_group_forward_msg(self, **kw) -> dict: return {}
+    async def send_private_forward_msg(self, **kw) -> dict: return {}
+    async def send_forward_msg(self, **kw) -> dict: return {}
+    async def forward_friend_single_msg(self, **kw) -> dict: return {}
+    async def forward_group_single_msg(self, **kw) -> dict: return {}
+    async def get_friend_msg_history(self, **kw) -> dict: return {}
+    async def get_group_msg_history(self, **kw) -> dict: return {}
+
+    # Friend operations
+    async def set_friend_add_request(self, **kw) -> dict: return {}
+    async def delete_friend(self, **kw) -> dict: return {}
+    async def get_friends_with_category(self, **kw) -> dict: return {}
+    async def friend_poke(self, **kw) -> dict: return {}
+    async def get_profile_like(self, **kw) -> dict: return {}
+
+    # Group operations
+    async def set_group_kick(self, **kw) -> dict: return {}
+    async def set_group_ban(self, **kw) -> dict: return {}
+    async def set_group_whole_ban(self, **kw) -> dict: return {}
+    async def set_group_admin(self, **kw) -> dict: return {}
+    async def set_group_card(self, **kw) -> dict: return {}
+    async def set_group_name(self, **kw) -> dict: return {}
+    async def set_group_leave(self, **kw) -> dict: return {}
+    async def set_group_special_title(self, **kw) -> dict: return {}
+    async def set_group_add_request(self, **kw) -> dict: return {}
+    async def set_group_sign(self, **kw) -> dict: return {}
+    async def send_group_sign(self, **kw) -> dict: return {}
+    async def set_group_portrait(self, **kw) -> dict: return {}
+    async def get_group_at_all_remain(self, **kw) -> dict: return {}
+    async def get_group_ignore_add_request(self, **kw) -> dict: return {}
+    async def get_group_system_msg(self, **kw) -> dict: return {}
+    async def _send_group_notice(self, **kw) -> dict: return {}
+    async def _get_group_notice(self, **kw) -> dict: return {}
+    async def _del_group_notice(self, **kw) -> dict: return {}
+    async def group_poke(self, **kw) -> dict: return {}
+    async def send_group_ai_record(self, **kw) -> dict: return {}
+
+    # Group file operations
+    async def upload_group_file(self, **kw) -> dict: return {}
+    async def delete_group_file(self, **kw) -> dict: return {}
+    async def create_group_file_folder(self, **kw) -> dict: return {}
+    async def delete_group_folder(self, **kw) -> dict: return {}
+    async def get_group_file_system_info(self, **kw) -> dict: return {}
+    async def get_group_root_files(self, **kw) -> dict: return {}
+    async def get_group_files_by_folder(self, **kw) -> dict: return {}
+    async def get_group_file_url(self, **kw) -> dict: return {}
+
+    # Info queries
+    async def get_stranger_info(self, **kw) -> dict: return {}
+    async def get_group_info(self, **kw) -> dict: return {}
+    async def get_group_member_info(self, **kw) -> dict: return {}
+    async def get_group_member_list(self, **kw) -> list: return []
+    async def get_group_honor_info(self, **kw) -> dict: return {}
+    async def get_group_shut_list(self, **kw) -> list: return []
+    async def get_group_info_ex(self, **kw) -> dict: return {}
+    async def get_essence_msg_list(self, **kw) -> dict: return {}
+    async def set_essence_msg(self, **kw) -> dict: return {}
+    async def delete_essence_msg(self, **kw) -> dict: return {}
+
+    # Credentials / cookies
+    async def get_cookies(self, **kw) -> dict: return {}
+    async def get_csrf_token(self, **kw) -> dict: return {}
+    async def get_credentials(self, **kw) -> dict: return {}
+
+    # Image / file
+    async def get_image(self, **kw) -> dict: return {}
+    async def upload_private_file(self, **kw) -> dict: return {}
+    async def download_file(self, **kw) -> dict: return {}
+    async def get_file(self, **kw) -> dict: return {}
+
+    # Status
+    async def can_send_image(self) -> bool: return True
+    async def can_send_record(self) -> bool: return False
+    async def get_status(self) -> dict: return {"online": self._ws is not None}
+    async def get_version_info(self, **kw) -> dict: return {}
+    async def get_online_clients(self, **kw) -> dict: return {}
+    async def get_robot_uin_range(self, **kw) -> dict: return {}
+
+    # Profile
+    async def clean_cache(self, **kw) -> dict: return {}
+    async def set_qq_profile(self, **kw) -> dict: return {}
+    async def set_qq_avatar(self, **kw) -> dict: return {}
+    async def set_self_longnick(self, **kw) -> dict: return {}
+    async def set_online_status(self, **kw) -> dict: return {}
+
+    # Input / typing
+    async def set_input_status(self, **kw) -> dict: return {}
+    async def get_recent_contact(self, **kw) -> dict: return {}
+
+    # OCR / util
+    async def ocr_image(self, **kw) -> dict: return {}
+    async def check_url_safely(self, **kw) -> dict: return {}
+    async def translate_en2zh(self, **kw) -> dict: return {}
+    async def fetch_custom_face(self, **kw) -> dict: return {}
+    async def fetch_emoji_like(self, **kw) -> dict: return {}
+
+    # Collection
+    async def create_collection(self, **kw) -> dict: return {}
+    async def get_collection_list(self, **kw) -> dict: return {}
+
+    # Model show
+    async def _get_model_show(self, **kw) -> dict: return {}
+    async def _set_model_show(self, **kw) -> dict: return {}
+
+    # Ark
+    async def ArkSharePeer(self, **kw) -> dict: return {}
+    async def ArkShareGroup(self, **kw) -> dict: return {}
+    async def handle_quick_operation(self, **kw) -> dict: return {}
+    async def get_mini_app_ark(self, **kw) -> dict: return {}
+
+    # NC
+    async def nc_get_packet_status(self, **kw) -> dict: return {}
+    async def nc_get_user_status(self, **kw) -> dict: return {}
+    async def nc_get_rkey(self, **kw) -> dict: return {}
+
+    # AI record
+    async def get_ai_record(self, **kw) -> dict: return {}
+    async def get_ai_characters(self, **kw) -> dict: return {}

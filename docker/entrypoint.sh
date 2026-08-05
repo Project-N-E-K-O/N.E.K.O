@@ -1171,25 +1171,164 @@ start_nginx_proxy() {
     return 0
 }
 
+# ── 旧版挂载布局检测 ──────────────────────────────────────────
+# 数据挂载从 ./N.E.K.O + ./ssl 两条合并成了 ./neko-home 一条。被落下的旧目录在
+# 宿主机上，根本没挂进容器，所以这里无法自动迁移；能做的只是在认出「这是一次升级」
+# 时把话说清楚，免得用户把一个空数据目录当成正常的全新安装 —— core_config.json
+# 会从环境变量重新生成，容器看起来一切正常，最容易让人误判。
+# 快照必须在本脚本自己往 /home/neko 和 /app/logs 写东西之前取。
+LEGACY_LAYOUT_HINT=""
+
+detect_legacy_layout() {
+    local data_root="/home/neko/.local/share/N.E.K.O"
+
+    # 放错位置的旧目录先查，且不拿「数据根是否为空」当前提。用户很可能是先用新版
+    # 起了一次（应用于是往数据根写了一份默认配置），发现东西不见了才去搬旧目录，
+    # 而后搬错层 —— 那正是最该提醒的时刻，此时数据根恰恰是非空的。这两个目录名
+    # 应用自己永远不会在家目录根下创建，出现即是人为放置。
+    #
+    # 痕迹一：旧的 N.E.K.O 目录被整个当成了 neko-home，数据根的子目录直接躺在家目录里
+    if [ -d /home/neko/config ] || [ -d /home/neko/memory ]; then
+        LEGACY_LAYOUT_HINT="wrong-level"
+        return 0
+    fi
+
+    # 痕迹二：旧目录搬进 neko-home 了，但没落到 XDG 路径下
+    if [ -d /home/neko/N.E.K.O ]; then
+        LEGACY_LAYOUT_HINT="wrong-depth"
+        return 0
+    fi
+
+    # 剩下这条必须以数据根为空为前提：日志有历史 + 数据根有内容 = 正常运行中
+    if [ -n "$(ls -A "$data_root" 2>/dev/null)" ]; then
+        return 0
+    fi
+
+    # 痕迹三：./logs 里有历史日志 → 这个部署以前跑起来过，而数据目录却是空的。
+    # 典型的「直接 pull 新镜像重启」，旧数据还留在宿主机的 ./N.E.K.O 里。
+    if [ -n "$(find /app/logs -type f -name '*.log' 2>/dev/null | head -n 1)" ]; then
+        LEGACY_LAYOUT_HINT="stale-logs"
+    fi
+
+    return 0
+}
+
+warn_legacy_layout() {
+    if [ -z "$LEGACY_LAYOUT_HINT" ]; then
+        return 0
+    fi
+
+    echo ""
+    echo "=================================================="
+    echo "⚠️  检测到旧版部署的痕迹"
+    case "$LEGACY_LAYOUT_HINT" in
+        wrong-level)
+            echo "   /home/neko 下直接出现了 config/ 或 memory/ —— 旧的 N.E.K.O 目录"
+            echo "   可能被整个当成了 neko-home。它应该放在下面这一层："
+            echo "       neko-home/.local/share/N.E.K.O/"
+            echo "   若那个位置已经有本次启动生成的默认配置，别直接覆盖，按内容合并："
+            echo "       cp -a neko-home/config neko-home/memory ... neko-home/.local/share/N.E.K.O/"
+            ;;
+        wrong-depth)
+            echo "   /home/neko/N.E.K.O 存在，但服务读的是 .local/share 下的路径。"
+            echo "   请把它的内容并到：neko-home/.local/share/N.E.K.O/"
+            echo "       cp -a neko-home/N.E.K.O/. neko-home/.local/share/N.E.K.O/ \\"
+            echo "         && rm -rf neko-home/N.E.K.O"
+            ;;
+        stale-logs)
+            echo "   日志目录里有历史日志，说明这个部署以前跑过，而数据目录是空的。"
+            echo "   本版本把 ./N.E.K.O + ./ssl 两个挂载合并成了 ./neko-home 一个。"
+            echo "   先看宿主机上的 N.E.K.O/ 是不是空的："
+            echo "     · 非空 —— 数据还在，停容器后执行（直接 mv 会多套一层，本次"
+            echo "       启动已经在 neko-home 下建好了同名目录）："
+            echo "         mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl"
+            echo "         cp -a N.E.K.O/. neko-home/.local/share/N.E.K.O/ && rm -rf N.E.K.O"
+            echo "         cp -a ssl/.     neko-home/ssl/                 && rm -rf ssl"
+            echo "     · 空 —— 此前跟的是旧版 README，其挂载目标从来对不上服务的实际"
+            echo "       写入位置，数据只存在于旧容器里。若那个容器已被重建或删除，"
+            echo "       这部分数据无法找回；OpenFang 状态同理。"
+            ;;
+    esac
+    echo "   详见 README「从旧版本升级」一节。全新安装可忽略本提示。"
+    echo "=================================================="
+    echo ""
+}
+
 # 9. 主执行流程
 main() {
     echo "=================================================="
     echo "   N.E.K.O. Container with Nginx Proxy - Startup"
     echo "=================================================="
-    
+
+    # 先取快照：后面的 setup_* 会往 /home/neko 和 /app/logs 里写东西
+    detect_legacy_layout
+
     setup_signal_handlers
     check_dependencies
     setup_configuration
     setup_dependencies
     setup_nginx_proxy
-    
-    # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）
-    mkdir -p /home/neko/.local/share/N.E.K.O
-    chown -R neko:neko /home/neko/.local/share/N.E.K.O
-    
+
+    # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）。
+    #
+    # 只认应用真正要写的两棵子树，不扫整个 home。合并挂载之后 /home/neko 是宿主
+    # 目录，用户完全可以往它下面再挂别的东西；递归整棵树意味着那些嵌套挂载的宿主
+    # 侧对象会被改成 neko —— 挂进来的要是个 docker socket，等于把 docker 控制权
+    # 交给以 neko 运行的业务进程和插件代码。（-xdev 挡不住：同一宿主文件系统的
+    # bind mount 设备号相同。）
+    #
+    # /home/neko 本身只非递归地给一次：neko 要能在自己家里创建 .cache 之类的
+    # 目录，否则运行期任何往 $HOME 写东西的库都会踩坑；但它下面挂了什么不归我们管。
+    #
+    # ssl/ 因此天然不在范围内。私钥由 root 生成并 chmod 600，nginx 主进程也以
+    # root 读取，业务进程没有任何理由读得到它。
+    #
+    # 只改属主不对的条目：稳态下这一遍是纯遍历、不产生写入。chown 必须带 -h，
+    # 否则它会解引用符号链接去改**目标**（`chown -R` 默认 -P 有这层保护，换成
+    # find 驱动就没有了）。
+    #
+    # 失败必须停：三个业务进程都以 neko 跑，数据目录不可写的话它们会在运行期
+    # 各处零散报错，比在这里干脆退出难诊断得多。
+    #
+    # 属主写字面量 1000:1000 而不是 neko:neko —— 两者在本镜像里是同一个（Dockerfile
+    # 用 `useradd -u 1000 -g 1000` 固定住了），但这些路径是 bind mount 出去的，落到
+    # 宿主机上只有数字有意义：宿主那边没有叫 neko 的账户，它看到的就是 1000，而 1000
+    # 恰是绝大多数发行版第一个普通用户的号，对上之后用户不必 sudo 就能管自己的备份。
+    # 写死数字也让这层契约在文件里是可见的：改 Dockerfile 里的号就必须同步改这里。
+    # 状态目录不接受软链。两条 chown 都带了 -h（不带会解引用命令行参数去改目标），
+    # 但那挡不住 find：路径中间那几段的符号链接是内核在解析路径时就跟随掉的，
+    # find 根本无从拒绝，于是它会走到 /home/neko 之外的树上，把那里每个不属于
+    # 1000 的条目都改掉。与其想办法处理，不如直接不收 —— 想把数据放到别的磁盘，
+    # 该在 compose 里把 neko-home 挂到那个位置，而不是在里面做软链。
+    for _state_dir in /home/neko/.local /home/neko/.local/share \
+                      /home/neko/.local/share/N.E.K.O /home/neko/.openfang; do
+        if [ -L "$_state_dir" ]; then
+            echo "❌ $_state_dir 是符号链接，数据目录不支持这样放"
+            echo "   启动时的属主修复会顺着它改到 /home/neko 之外的宿主路径上。"
+            echo "   请把它换成真实目录；想让数据落在别的位置，就在 compose 里把"
+            echo "   neko-home 直接挂到那个位置。"
+            exit 1
+        fi
+    done
+    unset _state_dir
+
+    mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang
+    if ! chown -h 1000:1000 /home/neko /home/neko/.local /home/neko/.local/share \
+        || ! find /home/neko/.local/share/N.E.K.O /home/neko/.openfang \
+               \( ! -uid 1000 -o ! -gid 1000 \) -exec chown -h 1000:1000 {} + ; then
+        echo "❌ 无法把数据目录的属主改为 1000:1000（容器内的 neko）"
+        echo "   宿主机的挂载可能不允许改属主 —— NFS 带 root_squash、CIFS 没带"
+        echo "   cifsacl、或只读挂载都会这样。容器内的服务以 neko 身份运行，"
+        echo "   数据目录写不进去会在启动之后才零散暴露，所以这里直接停。"
+        exit 1
+    fi
+
     # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
     start_openfang_daemon
-    
+
+    # 放在服务启动前打印：此时前面的初始化日志已经刷完，这条不会被淹掉
+    warn_legacy_layout
+
     # 启动N.E.K.O服务
     if ! start_services; then
         echo "❌ Failed to start N.E.K.O services"

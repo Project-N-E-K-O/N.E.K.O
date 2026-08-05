@@ -3084,9 +3084,9 @@ async def test_audio_start_ack_carries_the_settled_blocked_route():
     # ack says "started" -- so the microphone opens onto a route that discards
     # every frame, with no status and no recovery path.
     #
-    # Qualifying the ack covers that, and covers the in-flight dedupe re-ack
-    # (_start_session_handle_inflight) which re-acks without re-running the
-    # route decision at all.
+    # Qualifying the ack covers that, and carries the in-flight dedupe re-ack's
+    # verdict too (_start_session_handle_inflight re-decides a blocked route
+    # before re-acking; see test_session_start_guard.py).
     recorder, chat = _fake_socket_pair()
     mgr = _make_routable_audio_manager(True)
     mgr._begin_voice_input_connection("socket-a")
@@ -3125,6 +3125,183 @@ async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
     assert [json.loads(x) for x in recorder.sent] == [
         {"type": "session_started", "input_mode": "audio", "microphone_route": "native"}
     ], "a single window must be acked exactly once"
+
+
+async def test_start_ack_names_the_request_it_answers():
+    # #2539 / Codex P2. An anonymous ack is settled by whichever window receives
+    # it, and the lease fan-out routinely delivers one start's ack to a DIFFERENT
+    # window -- the claimant that took the microphone mid-start. That window's
+    # frontend then clears its timeout, resolves, reads the blocked route the ack
+    # carries and aborts its own microphone flow; its real ack arrives to a flow
+    # that already gave up. The id is what lets the receiver tell the two apart.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+
+    await LLMSessionManager.send_session_started(mgr, "audio", request_id="w1-7")
+
+    expected = {
+        "type": "session_started",
+        "input_mode": "audio",
+        "request_id": "w1-7",
+        "microphone_route": "native",
+    }
+    # Both planes carry it, or the plane that reaches the requester is the one
+    # that cannot be recognised.
+    assert [json.loads(x) for x in recorder.sent] == [expected]
+    assert [json.loads(x) for x in chat.sent] == [expected]
+
+
+async def test_start_ack_stays_anonymous_without_a_request_id():
+    # Internal starts (proactive, greeting, the disconnect recovery) carry no
+    # request of their own. The field must be absent rather than null: the
+    # frontend treats an ack with no id as "mine" to keep those paths working,
+    # and a null would have to be special-cased at every reader.
+    recorder, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = recorder
+
+    await LLMSessionManager.send_session_started(mgr, "audio")
+
+    assert "request_id" not in json.loads(recorder.sent[0])
+
+
+async def test_dedupe_ack_reaches_the_requester_after_a_fail_closed_reroute():
+    # Codex P2. The dedupe re-ack runs a route re-decision first, and that can
+    # fail closed -- which REVOKES the lease, clearing _voice_lease_connection_id
+    # and the voice socket. With a newer window as self.websocket the requester
+    # is then on neither plane: it sits on its promise until the 15s timeout, and
+    # that timeout's end_session tears down the session that just started.
+    requester, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr.websocket = chat
+    # Post-revoke state: no lease identity, no voice socket.
+    mgr._voice_lease_connection_id = ""
+    mgr._set_microphone_route("blocked")
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w2-3", also_notify=requester
+    )
+
+    expected = {
+        "type": "session_started",
+        "input_mode": "audio",
+        "request_id": "w2-3",
+        "microphone_route": "blocked",
+    }
+    assert [json.loads(x) for x in requester.sent] == [expected]
+
+
+async def test_addressed_ack_dedupes_against_who_actually_got_it():
+    # CodeRabbit. The fan-out's send is an await, and a lease takeover inside it
+    # points _voice_owner_socket() at a DIFFERENT socket. Deduping against a
+    # fresh read would then miss the socket that just got the payload -- the
+    # requester -- and send it a second copy. One ack, one resolver, but the
+    # handler around it runs again in full: microphone teardown, composer
+    # visibility, the lot.
+    requester, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", requester)
+    mgr.websocket = chat
+
+    original_send = requester.send_text
+
+    async def _send_then_lose_the_lease(payload):
+        await original_send(payload)
+        # A third window claims the microphone while this send is in flight.
+        later, _ = _fake_socket_pair()
+        mgr._begin_voice_input_connection("socket-c")
+        _authorize_core_lease(mgr)
+        mgr._set_voice_input_websocket("socket-c", later)
+
+    requester.send_text = _send_then_lose_the_lease
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w5-1", also_notify=requester
+    )
+
+    assert len(requester.sent) == 1, "the requester must be acked exactly once"
+
+
+async def test_route_override_reaches_only_the_addressed_requester():
+    # Codex P2, twice over. For a requester that LOST the voice lease while it
+    # waited, the live route belongs to the new holder -- and it may well be
+    # healthy by then. Reporting it opens a microphone on a window whose PCM the
+    # server discards as superseded, so that requester needs a blocked verdict
+    # (override rather than suppress, or it hangs to its own timeout).
+    #
+    # But the verdict is true of the REQUESTER, not of the session: the new
+    # holder is on the very same fan-out, and a window with no start pending
+    # latches any blocked route it sees. Broadcasting the override would
+    # fail-close the microphone of the window that legitimately owns it.
+    requester, new_holder = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-c")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-c", new_holder)
+    mgr.websocket = new_holder
+    mgr._set_microphone_route("independent")
+
+    await LLMSessionManager.send_session_started(
+        mgr,
+        "audio",
+        request_id="w4-2",
+        also_notify=requester,
+        microphone_route_override="blocked",
+    )
+
+    assert json.loads(requester.sent[0])["microphone_route"] == "blocked"
+    assert [json.loads(x)["microphone_route"] for x in new_holder.sent] == [
+        "independent"
+    ], "the live route must stay intact for everyone but the requester"
+
+
+async def test_route_override_travels_when_the_requester_is_the_display_socket():
+    # The requester is simply the newest connection often enough, and then the
+    # display plane is its ONLY copy -- the addressed send would dedupe itself
+    # away. The override has to ride that plane in exactly that case.
+    requester, _other = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr.websocket = requester
+    mgr._voice_lease_connection_id = ""
+    mgr._set_microphone_route("independent")
+
+    await LLMSessionManager.send_session_started(
+        mgr,
+        "audio",
+        request_id="w4-3",
+        also_notify=requester,
+        microphone_route_override="blocked",
+    )
+
+    assert [json.loads(x)["microphone_route"] for x in requester.sent] == ["blocked"]
+
+
+async def test_addressed_ack_is_not_a_second_copy_for_the_same_socket():
+    # The addressed send must stay a no-op when the requester is already on one
+    # of the planes. A duplicate ack is not harmless: the resolver is one-shot
+    # but the handler around it runs again in full -- microphone teardown,
+    # composer visibility, the lot.
+    requester, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", requester)
+    mgr.websocket = requester
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w3-1", also_notify=requester
+    )
+
+    assert len(requester.sent) == 1, "the requester must be acked exactly once"
 
 
 async def test_audio_start_ack_does_not_reach_the_game_microphone():

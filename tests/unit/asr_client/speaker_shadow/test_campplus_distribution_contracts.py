@@ -99,7 +99,9 @@ def test_ignore_rules_keep_only_reviewable_campplus_metadata() -> None:
 
 
 def test_legacy_voice_identity_and_model_locations_are_absent() -> None:
-    assert not (ROOT / "main_logic" / "voice_identity").exists()
+    voice_identity = ROOT / "main_logic" / "voice_identity"
+    assert not (voice_identity / "runtime.py").exists()
+    assert not (voice_identity / "campplus.py").exists()
     assert not (ROOT / "data" / "speaker_models").exists()
     assert not (ROOT / "tools" / "voice_eval").exists()
     assert not (ROOT / "main_logic" / "asr_client" / "campplus.py").exists()

@@ -1054,12 +1054,19 @@ def test_cli_against_head_is_clean():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_cli_count_reports_a_nonempty_backlog():
-    """--count exits 0 and reports a real number.
+def test_cli_count_reports_an_empty_backlog():
+    """--count exits 0 and reports exactly zero — the issue #2500 backfill landed.
 
-    The non-zero assertion guards the scanner itself: the issue #2500 backlog is
-    large, so a zero means detection silently broke, not that the work finished.
-    When the backfill genuinely lands, replace this with the full-scan gate.
+    This replaces the earlier ``count > 0`` guard, which existed only because the
+    backlog was still open: back then a zero meant detection had silently broken,
+    not that the work was done. Now that every localized table under
+    config/prompts/ carries a 'zh-TW' row, zero is the invariant and any regrowth
+    is a real regression — the ratchet in the gate itself stops the count from
+    *growing* within one PR, but only this assertion pins it to the floor.
+
+    Detection is not taken on faith here: the rest of this module drives
+    ``count_offenders`` over synthetic sources that DO offend, so a scanner that
+    stopped seeing anything fails those long before it reaches this one.
 
     Deliberately one subprocess, not two: --count re-parses every prompt module
     (prompts_proactive.py alone is ~5k lines) and the Windows CI runner shares
@@ -1069,7 +1076,10 @@ def test_cli_count_reports_a_nonempty_backlog():
     assert result.returncode == 0, result.stdout + result.stderr
     assert "missing 'zh-TW'" in result.stdout
     count = int(result.stdout.strip().rsplit(":", 1)[1])
-    assert count > 0, "scanner found nothing; detection likely broke"
+    assert count == 0, (
+        f"issue #2500 backlog regrew to {count}; run "
+        f"`uv run python scripts/check_prompt_zh_tw.py --full` to see which tables"
+    )
 
 
 def test_disk_side_excludes_files_git_does_not_know(tmp_path, monkeypatch):

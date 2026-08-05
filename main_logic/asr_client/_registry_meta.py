@@ -14,7 +14,7 @@
 
 """Single source of truth for Core-to-ASR routing and provider metadata."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
@@ -39,6 +39,13 @@ class AsrProviderAvailability(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class AsrCoreCapabilities:
+    """Feature capabilities owned by one Core-to-ASR route."""
+
+    supports_independent_asr: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class AsrCoreRoute:
     """Bind one Core to its ASR provider, credential slot, and region."""
 
@@ -46,6 +53,9 @@ class AsrCoreRoute:
     credential_field: str
     region: Literal["cn", "intl"] | None = None
     default_endpointing_mode: AsrEndpointingMode = "manual"
+    capabilities: AsrCoreCapabilities = field(
+        default_factory=AsrCoreCapabilities,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,9 +145,17 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
         provider_key="gemini",
         credential_field="ASSIST_API_KEY_GEMINI",
     ),
-    # The free backend is blocked before credential resolution. An empty field
-    # makes it impossible to accidentally borrow AUDIO_API_KEY in the future.
-    "free": AsrCoreRoute(provider_key="free", credential_field=""),
+    # Free Core owns microphone transcription natively. Keep that product
+    # capability separate from the provider's implementation status: callers
+    # deciding between native and independent routing must never attempt this
+    # provider, while direct independent-ASR construction continues to fail
+    # closed if it is called incorrectly. An empty credential field also makes
+    # it impossible to accidentally borrow AUDIO_API_KEY in the future.
+    "free": AsrCoreRoute(
+        provider_key="free",
+        credential_field="",
+        capabilities=AsrCoreCapabilities(supports_independent_asr=False),
+    ),
 }
 
 

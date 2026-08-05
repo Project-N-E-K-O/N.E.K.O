@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -18,6 +19,14 @@ REMOVED_ROOT_SDK_MODULES = (
 )
 
 
+def _ensure_project_root_first() -> None:
+    """Keep PyInstaller's isolated scanner on the repository package tree."""
+    root = str(ROOT)
+    while root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
+
+
 def _sdk_module_names() -> list[str]:
     module_names: set[str] = set()
     for source_path in (ROOT / "plugin" / "sdk").rglob("*.py"):
@@ -29,11 +38,13 @@ def _sdk_module_names() -> list[str]:
 
 
 def test_current_sdk_modules_are_importable() -> None:
+    _ensure_project_root_first()
     for module_name in _sdk_module_names():
         importlib.import_module(module_name)
 
 
 def test_pyinstaller_collects_complete_sdk_tree() -> None:
+    _ensure_project_root_first()
     assert sorted(collect_submodules("plugin.sdk", on_error="raise")) == (
         _sdk_module_names()
     )

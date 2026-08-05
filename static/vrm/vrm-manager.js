@@ -284,6 +284,7 @@ class VRMManager {
         }
 
         // ── 回退：旧的 lookAt 跟踪（CursorFollowController 未加载时） ──
+        if (!this.isMouseTrackingEnabled()) return;
         if (!this._ensureMouseLookAtResources()) return;
 
         if (!this._lookAtTarget) {
@@ -307,6 +308,7 @@ class VRMManager {
 
         if (!this._mouseMoveHandler) {
             this._mouseMoveHandler = (event) => {
+                if (!this.isMouseTrackingEnabled()) return;
                 // 供空闲低频 governor 判定"光标最近在动"（legacy 视线跟随路径）
                 this._lastLookAtPointerMoveAt = performance.now();
                 this._setLookAtTargetByMouse(event.clientX, event.clientY);
@@ -714,6 +716,11 @@ class VRMManager {
                         }
                     } else if (this._cursorFollow && !this._cursorFollow.isEnabled()) {
                         // CursorFollow 已加载但禁用 → 设为 null，SDK 内部自动跳过 lookAt 求解
+                        if (this.currentModel.vrm.lookAt.target !== null) {
+                            this.currentModel.vrm.lookAt.target = null;
+                        }
+                    } else if (!this.isMouseTrackingEnabled()) {
+                        // 旧 fallback 也必须遵守禁用状态（例如轻量卡片嵌入未加载 CursorFollow）
                         if (this.currentModel.vrm.lookAt.target !== null) {
                             this.currentModel.vrm.lookAt.target = null;
                         }
@@ -1914,7 +1921,21 @@ class VRMManager {
 
         if (this._cursorFollow) {
             this._cursorFollow.setEnabled(effectiveEnabled);
+            return;
         }
+
+        if (!effectiveEnabled) {
+            if (this._mouseMoveHandler) {
+                document.removeEventListener('mousemove', this._mouseMoveHandler);
+                this._mouseMoveHandler = null;
+            }
+            if (this.currentModel?.vrm?.lookAt) {
+                this.currentModel.vrm.lookAt.target = null;
+            }
+            return;
+        }
+
+        this._initMouseLookAtTracking();
     }
 
     /**

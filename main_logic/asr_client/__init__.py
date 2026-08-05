@@ -32,6 +32,7 @@ from ._infra import (
 from ._registry_meta import (
     ASR_PROVIDER_REGISTRY as _ASR_PROVIDER_REGISTRY,
     CORE_ASR_ROUTES as _CORE_ASR_ROUTES,
+    AsrCoreCapabilities,
     AsrEndpointingMode as _AsrEndpointingMode,
     AsrProviderAvailability as _AsrProviderAvailability,
 )
@@ -60,10 +61,24 @@ from .workers.step import (
 
 
 __all__ = [
+    "AsrCoreCapabilities",
     "AsrSessionConfig",
     "RealtimeAsrSession",
     "create_asr_session",
+    "get_asr_core_capabilities",
 ]
+
+
+def get_asr_core_capabilities(core_type: str) -> AsrCoreCapabilities | None:
+    """Return route-owned ASR capabilities, or ``None`` for an unknown Core.
+
+    Callers must preserve their fail-closed behavior for ``None`` instead of
+    treating an unrecognized route as native-only.
+    """
+
+    core_key = str(core_type or "").strip().lower()
+    route = _CORE_ASR_ROUTES.get(core_key)
+    return None if route is None else route.capabilities
 
 
 # Providers with a restricted language matrix reuse their worker's own

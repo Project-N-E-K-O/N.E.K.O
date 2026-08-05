@@ -19,6 +19,7 @@
 # Windows batch files must use CRLF
 *.bat text eol=crlf
 *.cmd text eol=crlf
+*.jsonl text eol=lf
 
 # Denote all files that are truly binary and should not be modified
 *.png binary

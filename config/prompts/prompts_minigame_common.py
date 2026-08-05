@@ -42,9 +42,14 @@ def _normalize_prompt_lang(lang: str | None) -> str:
     parameter at all), so the module-internal default is Chinese while the
     cross-module fallback (``resolve_global_language``) stays English.
 
-    ``keep_traditional=False`` because no dict reached through this normalizer
-    carries a ``'zh-TW'`` template yet. Flip it together with the templates.
-    See issue #2500.
+    ``keep_traditional=False`` even though every dict reached through this
+    normalizer now carries a ``'zh-TW'`` template (issue #2500 step 1). Flipping
+    it here would change nothing on its own: the callers still hand over a SHORT
+    code, which collapses Traditional upstream of this function. The flip belongs
+    to step 2 of issue #2500 — switching the call sites from
+    ``get_global_language()`` to ``get_global_language_full()`` — and has to land
+    in the same change, or Traditional users get Simplified from a normalizer
+    that claims to keep the script.
     """
     return normalize_prompt_locale(lang, default="zh", simplified="zh", keep_traditional=False)
 

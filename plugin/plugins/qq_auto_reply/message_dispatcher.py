@@ -6,8 +6,20 @@ from typing import Any, Optional
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import QQReplyRequest
 
+#: 开放平台通道的观测值。真相在 ``QQOpenPlatformConnection.CHANNEL``，这里抄一
+#: 份而不是 import，是为了不把 websockets / httpx 拖进本模块的导入链；两者相
+#: 等由测试钉死。
+_OPEN_PLATFORM_CHANNEL = "open"
+
 
 class QQMessageDispatcher:
+    #: 一个群里连续出现多少个**互不相同**的说话人、且无一对得上名册，才认为
+    #: 「这个群从来认不出任何已登记用户」值得报一条。1 个陌生人本来就该认不
+    #: 出，那是正常的；一连几个都认不出、而名册里明明有管理员，才是信号。
+    OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS = 3
+    #: 最多跟踪多少个群的告警状态，避免长期运行时无界增长。
+    OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS = 128
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._open_platform_bootstrap_lock = asyncio.Lock()
@@ -52,6 +64,143 @@ class QQMessageDispatcher:
             self._open_platform_bootstrap_admin_id = sender_id
             message["_private_permission_level_at_receipt"] = "admin"
             message["_open_platform_admin_promoted_at_receipt"] = True
+
+    @staticmethod
+    def _resolve_open_platform_group_key(
+        message: dict[str, Any],
+    ) -> tuple[str, str]:
+        """告警用的群标识，外加「它是从哪个字段取到的」。
+
+        不能只认 ``message["group_id"]``：``_convert_event`` 只读
+        ``data.get("group_id")``，而开放平台若按 v2 语义下发 ``group_openid``，
+        这个键恒为空串——于是这个告警会在**最可能出问题的那种部署上整个哑
+        掉**，正好是设计文档 §2.15.4.4(a) 点名「比 R11 更早爆」的那一种。
+        一个只负责「让问题可见」的东西，不能在兄弟缺陷兑现时自己先瞎。
+
+        所以回落到原始 payload 里任何一个带 group 的标识字段（按名字找，不
+        枚举，理由同取证插桩）。**刻意只读、绝不回填** ``message["group_id"]``：
+        回填会改变该通道 ``speaker_id`` / subject 的字节，那是 §2.15.4.4(a)
+        自己的事，取证数据回来之前一行都不该动。
+
+        Returns:
+            ``(群标识, 它来自 raw 的哪个键)``。第二项为空串表示走的是正常的
+            ``group_id``；非空本身就是 §2.15.4.4(a) 已兑现的证据。
+        """
+        group_id = str(message.get("group_id") or "").strip()
+        if group_id:
+            return group_id, ""
+        raw = message.get("raw")
+        if not isinstance(raw, dict):
+            return "", ""
+        for key in sorted(str(k) for k in raw):
+            if "group" not in key.lower():
+                continue
+            value = str(raw.get(key) or "").strip()
+            if value:
+                return value, key
+        return "", ""
+
+    def _note_open_platform_identity_scope(
+        self,
+        message: dict[str, Any],
+        permission_level: Any,
+    ) -> None:
+        """开放平台身份作用域的**纯观测**告警（R11）。
+
+        设计出处：``docs/design/speaker-trust-entity-semantics.md`` §2.15.4。
+
+        怀疑的是：开放平台在私聊里下发的 author.id 与在群里下发的可能不是同
+        一个作用域（``user_openid`` vs ``member_openid``）。若真如此，
+        ``_maybe_reserve_open_platform_admin`` 通过**第一条私聊**授权的主人，
+        在**所有群**里都匹配不上名册——档位解析成 ``none``、
+        ``speaker_is_owner`` 恒假、信赖度的 confirmation/correction 来源直接
+        断供。
+
+        这个怀疑**尚未取证**（取证插桩见 ``qq_open_plat.py`` 顶部的 R11 一
+        节）。所以这里只报，不修：
+
+        - 不改任何权限判定，不写名册，不碰 message 的任何既有键；
+        - 若 id 本来就同作用域（R11 不成立），本方法永远走不到告警那一步，
+          是彻底的 no-op。
+
+        **不要**顺手把 ``_maybe_reserve_open_platform_admin`` 里那句全局
+        ``if permission_mgr.list_users(): return`` 改成「按当前通道过滤后判
+        空」。那不是疏漏，是让通道切换 fail-closed 的门：按通道过滤在刚切到
+        open_platform 时恒为空，等于让切换后第一个私聊 bot 的陌生人自动拿到
+        admin。
+        """
+        try:
+            channel = str(message.get("channel") or "").strip().lower()
+            if channel != _OPEN_PLATFORM_CHANNEL:
+                return
+            group_id, group_key_source = self._resolve_open_platform_group_key(
+                message,
+            )
+            sender_id = str(message.get("user_id") or "").strip()
+            if not group_id or not sender_id:
+                return
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            if permission_mgr is None:
+                return
+            roster = permission_mgr.list_users() or []
+            admins = [
+                user for user in roster
+                if str((user or {}).get("level") or "") == "admin"
+            ]
+            # 名册里没有管理员 ⇒ 群里认不出人是理所当然的，不是信号。
+            if not admins:
+                return
+
+            states = getattr(self, "_open_platform_scope_alarm_state", None)
+            if states is None:
+                states = {}
+                self._open_platform_scope_alarm_state = states
+            state = states.get(group_id)
+            if state is None:
+                if len(states) >= self.OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS:
+                    return
+                state = {"unmatched": set(), "matched": False, "warned": False}
+                states[group_id] = state
+            # 这个群里但凡有过一个人对上名册，就证明群侧 id 与名册同作用域，
+            # 此后永久闭嘴。
+            if state["matched"]:
+                return
+            if str(permission_level or "none") != "none":
+                state["matched"] = True
+                state["unmatched"].clear()
+                return
+            if state["warned"]:
+                return
+            state["unmatched"].add(sender_id)
+            if len(state["unmatched"]) < self.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS:
+                return
+            state["warned"] = True
+            state["unmatched"].clear()
+            text = (
+                f"[R11] 开放平台身份作用域告警: 群 {group_id} 已出现 "
+                f"{self.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS} 个不同说话人，"
+                f"无一匹配已登记用户（名册中有 {len(admins)} 个管理员）。"
+                "若主人是靠「第一条私聊自动授权」拿到的管理员，那个 id 可能"
+                "只在私聊作用域有效，需要在本群单独把群内 id 加进信任用户。"
+                "本条仅为诊断，不改变任何权限判定。"
+            )
+            if group_key_source:
+                # 顺带报的是另一件事，而且比 R11 更早爆：群 id 根本不在
+                # _convert_event 读的那个键上（§2.15.4.4(a)）。
+                text += (
+                    f"（另：本群的群 id 不在 group_id 字段上，实际挂在 "
+                    f"{group_key_source}——这会让群消息在别处被当成「无群」，"
+                    "需要单独修，见设计文档 §2.15.4.4(a)。）"
+                )
+            logger = getattr(self.plugin, "logger", None)
+            if logger is not None:
+                logger.warning(text)
+            emit_log = getattr(self.plugin, "_emit_log", None)
+            if callable(emit_log):
+                emit_log("WARN", text)
+        except Exception:
+            # 观测绝不允许把消息管线带下去。
+            pass
 
     def _resolve_poke_nickname(self, user_id: str, raw_msg: dict[str, Any]) -> str:
         """从戳一戳事件中获取用户昵称"""
@@ -168,6 +317,12 @@ class QQMessageDispatcher:
                                 "private_participant_memory_enabled", False,
                             )
                         )
+                        # 通道观测的接收边界快照（对偶上面几枚）：会话缓冲
+                        # 可能跨越一次模式切换，flush 时读实时配置会把旧通道
+                        # 的消息记成新通道。纯诊断字段，不参与任何判定。
+                        message["_speaker_channel_at_receipt"] = str(
+                            message.get("channel") or ""
+                        ).strip().lower() or None
                         if message.get("message_type") == "group":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""
@@ -185,6 +340,11 @@ class QQMessageDispatcher:
                             message[
                                 "_group_speaker_permission_level_at_receipt"
                             ] = permission_at_receipt
+                            # 纯观测，挂在刚算出的那个档位后面：告警读的必须
+                            # 是管线真正用的那个值，不能自己再查一次。
+                            self._note_open_platform_identity_scope(
+                                message, permission_at_receipt,
+                            )
                         if message.get("message_type") == "private":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""
@@ -296,6 +456,67 @@ class QQMessageDispatcher:
         # eligibility filters but before backlog/context work.  A filtered
         # first sender must never acquire owner-memory privileges.
         await self._maybe_reserve_open_platform_admin(message)
+
+        # 后台拉取引用/转发/语音内容（在独立 handler task 中 await，避免 WS handler 死锁）
+        if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
+            reply_ids = message.get("_pending_reply_ids")
+            if isinstance(reply_ids, list) and reply_ids:
+                await self.plugin.qq_client._fetch_reply_content(message, reply_ids)
+                message.pop("_pending_reply_ids", None)
+            forward_ids = message.get("_pending_forward_ids")
+            if isinstance(forward_ids, list) and forward_ids:
+                await self.plugin.qq_client._fetch_forward_content(message, forward_ids)
+                message.pop("_pending_forward_ids", None)
+            record_files = message.get("_pending_record_files")
+            if isinstance(record_files, list) and record_files:
+                try:
+                    await asyncio.wait_for(
+                        self.plugin.qq_client._fetch_record_content(message, record_files),
+                        timeout=60.0,
+                    )
+                except (asyncio.TimeoutError, Exception) as e:
+                    self.plugin._emit_log("DEBUG", f"[Voice] 语音转录超时或失败: {type(e).__name__}")
+                message.pop("_pending_record_files", None)
+            # 语音/引用/转发可能丰富了消息内容 → 复检黑名单
+            enriched_content = str(message.get("content") or "").strip()
+            if enriched_content != raw_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs):
+                self.plugin._emit_log("INFO", f"黑名单过滤(转录后): text={enriched_content[:40]}")
+                return
+            # 主消息图片：调用 VLM 获取描述
+            if self.plugin.qq_client._image_describer:
+                import asyncio as _asyncio
+                from .qq_client import QQClient
+                # 从 raw message 数组或 raw_message 字符串中提取图片 URL
+                raw_msg = message.get("raw") or {}
+                segments = raw_msg.get("message") or message.get("message") or []
+                if isinstance(segments, list):
+                    img_urls = []
+                    for seg in segments:
+                        if isinstance(seg, dict) and seg.get("type") == "image":
+                            sd = seg.get("data") or {}
+                            u = str(sd.get("url") or sd.get("file") or "").strip()
+                            if u:
+                                img_urls.append(u)
+                    if img_urls:
+                        self.plugin._emit_log("DEBUG", f"[VLM] 检测到 {len(img_urls)} 张主消息图片, 开始描述...")
+                    for img_url in img_urls:
+                        try:
+                            desc = await _asyncio.wait_for(
+                                self.plugin.qq_client._image_describer(img_url),
+                                timeout=8.0,
+                            )
+                            if desc:
+                                # 替换 content 中第一个未处理的图片 CQ 码
+                                import re as _re
+                                raw = str(message.get("raw_message") or message.get("content") or "")
+                                new_raw = _re.sub(r'\[CQ:image,[^\]]*\]', f"[Image {desc}]", raw, count=1)
+                                message["raw_message"] = new_raw
+                                message["content"] = new_raw
+                                self.plugin._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
+                            else:
+                                self.plugin._emit_log("DEBUG", "[VLM] 图片描述返回为空")
+                        except Exception as e:
+                            self.plugin._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
         await self.plugin._record_backlog_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
@@ -314,6 +535,8 @@ class QQMessageDispatcher:
         )
         attachments = list(message.get("attachments") or [])
         user_nickname = message.get("user_nickname")
+        # 引用上下文：仅注入 LLM prompt，不混入 message_text 以防污染会话历史
+        reply_context = str(message.get("_reply_context", "") or "").strip()
         if message_type == "private":
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
             if session_key in self.plugin._user_sessions:
@@ -324,6 +547,7 @@ class QQMessageDispatcher:
                 sender_id, message_text, attachments=attachments,
                 user_nickname=user_nickname, forward_sub_count=fwd_count,
                 current_message_id=current_message_id,
+                reply_context=reply_context,
                 participant_memory_at_receipt=(
                     message.get("_participant_memory_at_receipt")
                     if isinstance(message, dict) else None
@@ -340,6 +564,7 @@ class QQMessageDispatcher:
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
+            is_reply_to_bot = message.get("is_reply_to_bot", False)
             current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
             quoted_message_id = str(message.get("quoted_message_id") or "").strip()
             mentioned_user_ids = [
@@ -354,6 +579,10 @@ class QQMessageDispatcher:
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
+            # ── 禁言检查：bot 在该群被禁言 → 只记录不入 pipeline ──
+            if self.plugin.qq_client and self.plugin.qq_client.is_group_muted(group_id):
+                self.plugin._emit_log("INFO", f"[Mute] 群{group_id} 禁言中，跳过消息处理")
+                return
             await self.handle_group_message(
                 group_id,
                 sender_id,
@@ -373,6 +602,10 @@ class QQMessageDispatcher:
                     )
                     if isinstance(message, dict) else None
                 ),
+                speaker_channel_at_receipt=(
+                    message.get("_speaker_channel_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
                 synthetic_source=(
                     str(message.get("_synthetic_source") or "")
                     if isinstance(message, dict) else ""
@@ -386,6 +619,8 @@ class QQMessageDispatcher:
                 mentions_all=mentions_all,
                 message_timestamp=message_timestamp,
                 forward_sub_count=fwd_count,
+                reply_context=reply_context,
+                is_reply_to_bot=is_reply_to_bot,
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
@@ -394,6 +629,7 @@ class QQMessageDispatcher:
         attachments: Optional[list[dict[str, Any]]] = None,
         user_nickname: Optional[str] = None, forward_sub_count: int = 0,
         current_message_id: str = "",
+        reply_context: str = "",
         participant_memory_at_receipt: bool | None = None,
         private_permission_level_at_receipt: str | None = None,
         open_platform_admin_promoted_at_receipt: bool = False,
@@ -442,6 +678,7 @@ class QQMessageDispatcher:
             fallback_to_text_on_voice_failure=True,
             source_kind="incoming_private",
             forward_sub_count=forward_sub_count,
+            reply_context=reply_context,
             # 接收边界的 participant 记忆政策章（None=旁路调用者，build
             # 内回退实时读）：排队期间 OFF→ON 不得让收到时无授权的私聊
             # 被收集。
@@ -471,9 +708,12 @@ class QQMessageDispatcher:
         mentions_all: bool = False,
         message_timestamp: int = 0,
         forward_sub_count: int = 0,
+        reply_context: str = "",
+        is_reply_to_bot: bool = False,
         group_memory_at_receipt: bool | None = None,
         member_memory_at_receipt: bool | None = None,
         group_speaker_permission_level_at_receipt: str | None = None,
+        speaker_channel_at_receipt: str | None = None,
         synthetic_source: str = "",
     ):
         # 群记忆政策快照优先取消息接收边界（process_messages 在 task 创建
@@ -497,7 +737,10 @@ class QQMessageDispatcher:
                 )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
-        if strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
+        # 新人入群：绕过门控，必定让猫娘欢迎
+        if synthetic_source == "group_join_notice":
+            force_reply = True
+        elif strategy_mode == "neko_dynamic" and hasattr(self.plugin, "attention_gate_service") and self.plugin.attention_gate_service is not None:
             gate_decision = await self.plugin.attention_gate_service.evaluate(
                 group_id=group_id,
                 sender_id=sender_id,
@@ -514,6 +757,10 @@ class QQMessageDispatcher:
                 )
                 return
             force_reply = gate_decision.force_reply
+            # 焦点群消息猫娘已看过，从 backlog 清除
+            if gate_decision.reason == "focus_group" and current_message_id:
+                if hasattr(self.plugin, "backlog_store") and self.plugin.backlog_store:
+                    await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
         group_scene_mode = "directed_user" if is_at_bot else "shared_context"
         # 猫娘动态模式下跳过插话抑制检测（由注意力门控替代）
@@ -538,6 +785,7 @@ class QQMessageDispatcher:
             group_id=group_id,
             user_nickname=user_nickname,
             is_at_bot=is_at_bot,
+            is_reply_to_bot=is_reply_to_bot,
             source_kind=synthetic_source or "incoming_group",
             forward_sub_count=forward_sub_count,
             group_scene_mode=group_scene_mode,
@@ -546,6 +794,7 @@ class QQMessageDispatcher:
             mentioned_user_ids=list(mentioned_user_ids or []),
             mentions_other_user=mentions_other_user,
             mentions_all=mentions_all,
+            reply_context=reply_context,
             reply_message_id=current_message_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
             at_user_id=sender_id if (strategy_mode != "neko_dynamic" and group_scene_mode == "directed_user") else "",
             fallback_to_text_on_voice_failure=True,
@@ -557,6 +806,7 @@ class QQMessageDispatcher:
             group_speaker_permission_level_at_receipt=(
                 group_speaker_permission_level_at_receipt
             ),
+            speaker_channel_at_receipt=speaker_channel_at_receipt,
         )
         if synthetic_source:
             # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，

@@ -304,6 +304,11 @@ def test_full_cloudsave_chain_runtime_snapshot_steam_cloud_and_manual_apply():
 @pytest.mark.asyncio
 async def test_main_server_manual_startup_performs_fallback_import_and_continues_boot():
     from app import main_server
+    from utils import steam_state
+
+    leaked_steamworks = SimpleNamespace(source="prior-test")
+    main_server.steamworks = leaked_steamworks
+    steam_state.set_steamworks(leaked_steamworks)
 
     fake_config_manager = SimpleNamespace(
         app_docs_dir=Path("/tmp/N.E.K.O"),
@@ -333,6 +338,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
         stack.enter_context(patch.object(main_server, "agent_event_bridge", None))
+        stack.enter_context(patch.object(main_server, "steamworks", None))
         stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
         stack.enter_context(
             patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value=""))

@@ -27,20 +27,6 @@ async def _persist_trust_events(_name, events, **_kwargs):
     return events
 
 
-def test_message_volume_cannot_cross_arbitration_margin():
-    normal = PermissionManager([
-        {"qq": "1001", "level": "normal"},
-        {"qq": "2002", "level": "trusted"},
-    ])
-    assert normal.record_speaker_activity("1001", 1_000_000, "bulk")
-    assert normal.get_speaker_trust("1001") == pytest.approx(0.52)
-    assert normal.get_speaker_trust("2002") == pytest.approx(0.8)
-    assert preferred_by_trust(
-        normal.get_speaker_trust("2002"),
-        normal.get_speaker_trust("1001"),
-    ) == "old"
-
-
 def test_trust_normalization_rejects_non_finite_values():
     from config import SPEAKER_TRUST_DEFAULT
 
@@ -50,16 +36,6 @@ def test_trust_normalization_rejects_non_finite_values():
     assert preferred_by_trust(0.8, float("inf")) is None
     assert trust_band(float("nan")) == "unknown"
     assert trust_band(float("inf")) == "unknown"
-    manager = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={"1001": {"adjustment": float("nan")}},
-    )
-    assert manager.speaker_trust_profiles()["1001"]["adjustment"] == 0.0
-    overflow = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={"1001": {"adjustment": 10 ** 400}},
-    )
-    assert overflow.speaker_trust_profiles()["1001"]["adjustment"] == 0.0
 
 
 def test_trust_normalization_rejects_overflowing_integers():
@@ -74,149 +50,10 @@ def test_trust_normalization_rejects_overflowing_integers():
     }]) == {"speaker_id": "qq:1001"}
 
 
-def test_imported_activity_count_is_clamped_before_float_math():
-    manager = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={"1001": {"message_count": 10 ** 400}},
-    )
-
-    assert manager.speaker_trust_profiles()["1001"]["message_count"] == (
-        manager._speaker_activity_count_cap()
-    )
-    assert manager.get_speaker_trust("1001") == pytest.approx(0.52)
-
-
 def test_arbitration_margin_is_stable_at_decimal_boundary():
     assert preferred_by_trust(0.60, 0.45) == "old"
     assert preferred_by_trust(0.80, 0.65) == "old"
     assert preferred_by_trust(0.45, 0.60) == "new"
-
-
-def test_activity_spam_cannot_evict_owner_signal_id():
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    signal = {
-        "kind": "correction",
-        "speaker_id": "qq:1001",
-        "event_id": "owner-correction-1",
-    }
-    assert manager.apply_speaker_trust_events([signal]) == 1
-    for index in range(300):
-        manager.record_speaker_activity("1001", 1, f"activity-{index}")
-    assert manager.apply_speaker_trust_events([signal]) == 0
-
-
-def test_owner_signal_replay_ledger_survives_history_limit():
-    from config import SPEAKER_TRUST_EVENT_HISTORY_LIMIT
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    signals = [
-        {
-            "kind": "confirmation" if index % 2 == 0 else "correction",
-            "speaker_id": "qq:1001",
-            "event_id": f"owner-signal-{index}",
-        }
-        for index in range(SPEAKER_TRUST_EVENT_HISTORY_LIMIT + 1)
-    ]
-    assert manager.apply_speaker_trust_events(signals) == len(signals)
-    before = manager.speaker_trust_profiles()["1001"]
-    assert len(before["processed_signal_events"]) == len(signals)
-    assert manager.apply_speaker_trust_events([signals[0]]) == 0
-    assert manager.speaker_trust_profiles()["1001"] == before
-    reloaded = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={"1001": before},
-    )
-    assert reloaded.apply_speaker_trust_events([signals[0]]) == 0
-
-
-def test_owner_signal_adjustment_is_independent_of_writer_completion_order():
-    from config import SPEAKER_TRUST_ADJUSTMENT_LIMIT
-
-    signals = [
-        {"kind": "confirmation", "speaker_id": "qq:1001", "event_id": "c1"},
-        {"kind": "correction", "speaker_id": "qq:1001", "event_id": "x1"},
-    ]
-    forward = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={
-            "1001": {"adjustment": SPEAKER_TRUST_ADJUSTMENT_LIMIT},
-        },
-    )
-    reverse = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={
-            "1001": {"adjustment": SPEAKER_TRUST_ADJUSTMENT_LIMIT},
-        },
-    )
-
-    forward.apply_speaker_trust_events(signals)
-    reverse.apply_speaker_trust_events(list(reversed(signals)))
-
-    forward_profile = forward.speaker_trust_profiles()["1001"]
-    reverse_profile = reverse.speaker_trust_profiles()["1001"]
-    assert forward_profile["adjustment"] == pytest.approx(
-        reverse_profile["adjustment"]
-    )
-    assert forward.get_speaker_trust("1001") == pytest.approx(
-        reverse.get_speaker_trust("1001")
-    )
-    reloaded = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={"1001": forward_profile},
-    )
-    assert reloaded.speaker_trust_profiles()["1001"]["adjustment"] == pytest.approx(
-        forward_profile["adjustment"]
-    )
-
-
-def test_durable_signal_ledger_normalizes_in_linear_time():
-    event_ids = [f"owner-signal-{index}" for index in range(30_000)]
-    event_ids += ["x" * 96 + "a", "x" * 96 + "b"]
-    started = time.perf_counter()
-    manager = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={
-            "1001": {"processed_signal_events": event_ids},
-        },
-    )
-    elapsed = time.perf_counter() - started
-    ledger = manager.speaker_trust_profiles()["1001"][
-        "processed_signal_events"
-    ]
-    assert elapsed < 1.5
-    assert len(ledger) == 30_001
-    assert ledger[-1] == "x" * 96
-
-
-def test_global_qq_profile_is_shared_by_group_and_private_callers():
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    manager.apply_speaker_trust_events([{
-        "kind": "confirmation",
-        "speaker_id": "qq:1001",
-        "event_id": "confirmed-in-group-a",
-    }])
-    group_value = manager.get_speaker_trust("1001")
-    private_value = manager.get_speaker_trust("1001")
-    other_group_value = manager.get_speaker_trust("1001")
-    assert group_value == private_value == other_group_value
-    assert set(manager.speaker_trust_profiles()) == {"1001"}
-
-
-def test_malformed_replay_ledgers_are_dropped_without_splitting_strings():
-    manager = PermissionManager(
-        [{"qq": "1001", "level": "normal"}],
-        speaker_trust_profiles={
-            "1001": {
-                "processed_activity_events": "activity-id",
-                "processed_signal_events": 5,
-                "message_count": float("inf"),
-            },
-        },
-    )
-    profile = manager.speaker_trust_profiles()["1001"]
-    assert profile["processed_activity_events"] == []
-    assert profile["processed_signal_events"] == []
-    assert profile["message_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -1202,6 +1039,88 @@ def test_duplicate_correction_persists_residual_mixed_cleanup():
     assert queued[0]["new_speaker_provenance_mixed"] is True
     assert "new_speaker_id" not in queued[0]
     assert "new_speaker_trust" not in queued[0]
+
+
+def test_duplicate_correction_clears_entity_id_when_marked_mixed():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued = [{
+        "old_text": "old",
+        "new_text": "new",
+        "entity": "master",
+        "scope": None,
+        "new_speaker_id": "qq:1001",
+        "new_speaker_trust": 0.9,
+        "new_speaker_entity_id": "entity:abc",
+    }]
+
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        new_speaker_provenance={"speaker_provenance_mixed": True},
+    )
+
+    assert queued[0]["new_speaker_provenance_mixed"] is True
+    # The entity id is the FIRST thing same_provenance_source compares, so a
+    # survivor here reads a mixed item back as a single person.
+    assert "new_speaker_entity_id" not in queued[0]
+    assert "new_speaker_id" not in queued[0]
+    assert "new_speaker_trust" not in queued[0]
+
+
+def test_duplicate_correction_clears_entity_id_on_speaker_conflict():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.9,
+            "speaker_entity_id": "entity:abc",
+        },
+    )
+    assert queued[0]["old_speaker_entity_id"] == "entity:abc"
+
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002",
+            "speaker_trust": 0.9,
+            "speaker_entity_id": "entity:zzz",
+        },
+    )
+
+    assert queued[0]["old_speaker_provenance_mixed"] is True
+    assert "old_speaker_entity_id" not in queued[0]
+    assert "old_speaker_id" not in queued[0]
+    assert "old_speaker_trust" not in queued[0]
+
+
+def test_duplicate_correction_backfills_missing_entity_id():
+    from memory.persona.corrections import CorrectionsMixin
+
+    # First hit predates the account being bound, so it carries no entity id.
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.7},
+    )
+    assert "old_speaker_entity_id" not in queued[0]
+
+    result = CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.7,
+            "speaker_entity_id": "entity:abc",
+        },
+    )
+
+    # A queue row outlives many retries; without the backfill it never gains
+    # the evidence in the one case it exists for (an unreadable pool).
+    assert result is queued
+    assert queued[0]["old_speaker_entity_id"] == "entity:abc"
+    assert queued[0]["old_speaker_id"] == "qq:1001"
 
 
 @pytest.mark.parametrize(
@@ -2462,491 +2381,29 @@ def test_model_shaped_fields_never_replace_request_provenance():
 
 
 @pytest.mark.asyncio
-async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    plugin = SimpleNamespace(
-        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
-    )
-    service = QQSettingsService(plugin)
-    active = 0
-    max_active = 0
-
-    async def _persist(**_kwargs):
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        await asyncio.sleep(0)
-        active -= 1
-        return True
-
-    service._persist_business_config_locked = _persist
-    await asyncio.gather(
-        service.apply_speaker_trust_update(
-            sender_id="1001", message_count=1,
-            activity_event_id="activity-a", trust_events=[],
-        ),
-        service.apply_speaker_trust_update(
-            sender_id="1001", message_count=1,
-            activity_event_id="activity-b", trust_events=[],
-        ),
-    )
-    assert max_active == 1
-    assert manager.speaker_trust_profiles()["1001"]["message_count"] == 2
-
-    before = manager.speaker_trust_profiles()
-    service._persist_business_config_locked = AsyncMock(return_value=False)
-    assert not await service.apply_speaker_trust_update(
-        sender_id="1001", message_count=9,
-        activity_event_id="activity-failed", trust_events=[],
-    )
-    assert manager.speaker_trust_profiles() == before
-    assert plugin._qq_settings["speaker_trust_profiles"] == before
-
-
-@pytest.mark.asyncio
-async def test_trust_only_save_preserves_backlog_store_instance():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    backlog_store = object()
-
-    async def _save(payload):
-        return dict(payload)
-
-    plugin = SimpleNamespace(
-        permission_mgr=manager,
-        group_permission_mgr=None,
-        logger=MagicMock(),
-        _qq_settings={},
-        config_store=SimpleNamespace(save=_save),
-        backlog_store=backlog_store,
-        _create_backlog_store_from_settings=MagicMock(),
-    )
-    service = QQSettingsService(plugin)
-
-    assert await service.apply_speaker_trust_update(
-        sender_id="1001",
-        message_count=1,
-        activity_event_id="preserve-backlog-lock",
-        trust_events=[],
-    )
-    assert plugin.backlog_store is backlog_store
-    plugin._create_backlog_store_from_settings.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_trust_only_save_does_not_publish_staged_permission_mutations():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    published_users = [{"qq": "1001", "level": "normal"}]
-    manager = PermissionManager(published_users)
-    payloads = []
-
-    async def _save(payload):
-        payloads.append(json.loads(json.dumps(payload)))
-        return dict(payload)
-
-    plugin = SimpleNamespace(
-        permission_mgr=manager,
-        group_permission_mgr=None,
-        logger=MagicMock(),
-        _qq_settings={"trusted_users": published_users},
-        config_store=SimpleNamespace(save=_save),
-        backlog_store=None,
-        _create_backlog_store_from_settings=lambda _settings: None,
-    )
-    service = QQSettingsService(plugin)
-
-    # Dashboard actions mutate the live manager before awaiting session
-    # invalidation and entering the settings writer locks.
-    assert manager.add_user("2002", "trusted")
-    assert await service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="trust-during-dashboard-invalidation",
-        trust_events=[],
-    )
-
-    assert payloads[0]["trusted_users"] == published_users
-    assert plugin._qq_settings["trusted_users"] == published_users
-    assert {row["qq"] for row in manager.list_users()} == {"1001", "2002"}
-
-    assert await service.persist_business_config()
-    assert {row["qq"] for row in payloads[1]["trusted_users"]} == {
-        "1001", "2002",
-    }
-
-
-@pytest.mark.asyncio
-async def test_failed_trust_save_restores_published_permission_snapshot():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    published_users = [{"qq": "1001", "level": "normal"}]
-    manager = PermissionManager(published_users)
-    payloads = []
-
-    async def _save(payload):
-        payloads.append(json.loads(json.dumps(payload)))
-        if len(payloads) == 1:
-            raise OSError("disk full")
-        return dict(payload)
-
-    plugin = SimpleNamespace(
-        permission_mgr=manager,
-        group_permission_mgr=None,
-        logger=MagicMock(),
-        _qq_settings={"trusted_users": published_users},
-        config_store=SimpleNamespace(save=_save),
-        backlog_store=None,
-        _create_backlog_store_from_settings=lambda _settings: None,
-    )
-    service = QQSettingsService(plugin)
-
-    assert manager.add_user("2002", "trusted")
-    assert not await service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="failed-trust-during-dashboard-invalidation",
-        trust_events=[],
-    )
-    assert plugin._qq_settings["trusted_users"] == published_users
-    assert manager.speaker_trust_profiles() == {}
-
-    assert await service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="retry-after-failed-trust-save",
-        trust_events=[],
-    )
-    assert payloads[1]["trusted_users"] == published_users
-
-
-@pytest.mark.asyncio
-async def test_unpersisted_trust_is_invisible_during_slow_failed_save():
-    from plugin.plugins.qq_auto_reply.session_memory_service import (
-        QQSessionMemoryService,
-    )
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    plugin = SimpleNamespace(
-        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
-    )
-    service = QQSettingsService(plugin)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _persist(**_kwargs):
-        started.set()
-        await release.wait()
-        return False
-
-    service._persist_business_config_locked = _persist
-    before = manager.get_speaker_trust("1001")
-    writer = asyncio.create_task(service.apply_speaker_trust_update(
-        sender_id="1001", message_count=0,
-        activity_event_id="slow-failed-save",
-        trust_events=[{
-            "kind": "confirmation",
-            "speaker_id": "qq:1001",
-            "event_id": "confirmation-during-slow-save",
-        }],
-    ))
-    await asyncio.wait_for(started.wait(), timeout=5.0)
-
-    memory_service = QQSessionMemoryService(SimpleNamespace(
-        permission_mgr=manager,
-    ))
-    assert memory_service._speaker_trust_for("1001", "normal") == before
-
-    release.set()
-    assert not await writer
-    assert memory_service._speaker_trust_for("1001", "normal") == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("persisted", [False, True])
-async def test_cancelled_trust_writer_waits_for_the_inflight_save(persisted):
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    plugin = SimpleNamespace(
-        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
-    )
-    service = QQSettingsService(plugin)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _persist(**_kwargs):
-        started.set()
-        await release.wait()
-        return persisted
-
-    service._persist_business_config_locked = _persist
-    task = asyncio.create_task(service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id=f"cancelled-{persisted}", trust_events=[],
-    ))
-    await asyncio.wait_for(started.wait(), timeout=5.0)
-    task.cancel()
-    release.set()
-    with pytest.raises(asyncio.CancelledError) as exc_info:
-        await task
-    assert exc_info.value.speaker_trust_persisted is persisted
-    profiles = manager.speaker_trust_profiles()
-    if persisted:
-        assert profiles["1001"]["message_count"] == 1
-    else:
-        assert profiles == {}
-        assert plugin._qq_settings["speaker_trust_profiles"] == {}
-
-
-@pytest.mark.asyncio
-async def test_repeated_cancellation_keeps_trust_save_shielded():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    plugin = SimpleNamespace(
-        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
-    )
-    service = QQSettingsService(plugin)
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _persist(**_kwargs):
-        started.set()
-        await release.wait()
-        return True
-
-    service._persist_business_config_locked = _persist
-    task = asyncio.create_task(service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="cancelled-twice", trust_events=[],
-    ))
-    await asyncio.wait_for(started.wait(), timeout=5.0)
-    task.cancel()
-    await asyncio.sleep(0)
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    release.set()
-    with pytest.raises(asyncio.CancelledError) as exc_info:
-        await task
-    assert exc_info.value.speaker_trust_persisted is True
-    assert manager.speaker_trust_profiles()["1001"]["message_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_trust_writer_is_mutexed_with_dashboard_settings_transaction():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    service = QQSettingsService(SimpleNamespace(
-        permission_mgr=manager, logger=MagicMock(),
-    ))
-    service._persist_business_config_locked = AsyncMock(return_value=True)
-    async with service._consent_transaction_lock:
-        task = asyncio.create_task(service.apply_speaker_trust_update(
-            sender_id="1001", message_count=1,
-            activity_event_id="blocked-by-dashboard", trust_events=[],
-        ))
-        await asyncio.sleep(0)
-        service._persist_business_config_locked.assert_not_awaited()
-    assert await task
-    service._persist_business_config_locked.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_trust_writer_resolves_manager_after_dashboard_rebuild():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    old_manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    plugin = SimpleNamespace(
-        permission_mgr=old_manager, logger=MagicMock(), _qq_settings={},
-    )
-    service = QQSettingsService(plugin)
-    service._persist_business_config_locked = AsyncMock(return_value=True)
-    async with service._consent_transaction_lock:
-        task = asyncio.create_task(service.apply_speaker_trust_update(
-            sender_id="1001", message_count=1,
-            activity_event_id="after-rebuild", trust_events=[],
-        ))
-        await asyncio.sleep(0)
-        replacement = PermissionManager([{"qq": "1001", "level": "normal"}])
-        plugin.permission_mgr = replacement
-    assert await task
-    assert old_manager.speaker_trust_profiles() == {}
-    assert replacement.speaker_trust_profiles()["1001"]["message_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_direct_settings_save_waits_for_failed_trust_transaction():
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    save_started = asyncio.Event()
-    save_release = asyncio.Event()
-    payloads = []
-
-    async def _save(payload):
-        payloads.append(dict(payload))
-        if len(payloads) == 1:
-            save_started.set()
-            await save_release.wait()
-            raise OSError("disk full")
-        return dict(payload)
-
-    plugin = SimpleNamespace(
-        permission_mgr=manager,
-        group_permission_mgr=None,
-        logger=MagicMock(),
-        _qq_settings={},
-        config_store=SimpleNamespace(save=_save),
-        _create_backlog_store_from_settings=lambda _settings: None,
-    )
-    service = QQSettingsService(plugin)
-    writer = asyncio.create_task(service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="failed-before-dashboard", trust_events=[],
-    ))
-    await asyncio.wait_for(save_started.wait(), timeout=5.0)
-
-    dashboard_save = asyncio.create_task(service.persist_business_config())
-    await asyncio.sleep(0)
-    assert len(payloads) == 1
-    save_release.set()
-
-    assert not await writer
-    assert await dashboard_save
-    assert payloads[1]["speaker_trust_profiles"] == {}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize((
-    "action_name", "action_args", "setting_key", "initial_value",
-    "expected_value",
-), [
-    (
-        "save_prompt_override", ("zh-CN", "identity", "new prompt"),
-        "prompt_overrides", {}, {"zh-CN": {"identity": "new prompt"}},
-    ),
-    (
-        "reset_prompt_override", ("zh-CN", "identity"),
-        "prompt_overrides", {"zh-CN": {"identity": "old prompt"}}, {},
-    ),
-    (
-        "save_group_prompt", ("7788", "new group prompt"),
-        "group_prompts", {}, {"7788": "new group prompt"},
-    ),
-    (
-        "delete_group_prompt", ("7788",),
-        "group_prompts", {"7788": "old group prompt"}, {},
-    ),
-])
-async def test_direct_action_mutation_waits_for_trust_writer(
-    action_name, action_args, setting_key, initial_value, expected_value,
-):
-    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
-    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
-
-    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
-    save_started = asyncio.Event()
-    save_release = asyncio.Event()
-    payloads = []
-
-    async def _save(payload):
-        payloads.append(dict(payload))
-        if len(payloads) == 1:
-            save_started.set()
-            await save_release.wait()
-        return dict(payload)
-
-    plugin = SimpleNamespace(
-        permission_mgr=manager,
-        group_permission_mgr=None,
-        logger=MagicMock(),
-        _qq_settings={
-            setting_key: json.loads(json.dumps(initial_value)),
-        },
-        config_store=SimpleNamespace(save=_save),
-        backlog_store=None,
-        _create_backlog_store_from_settings=lambda _settings: None,
-        session_instruction_service=SimpleNamespace(
-            _PROMPT_LAYERS=[{
-                "id": "identity", "i18n_key": "identity", "runtime": False,
-            }],
-            _discard_all_sessions_for_prompt_change=MagicMock(),
-        ),
-        session_runtime_service=None,
-        _emit_log=lambda *_args, **_kwargs: None,
-    )
-    service = QQSettingsService(plugin)
-    plugin.settings_service = service
-    action_started = asyncio.Event()
-    mutate_business_config = service.mutate_business_config
-
-    async def _observe_action_start(mutation):
-        action_started.set()
-        return await mutate_business_config(mutation)
-
-    service.mutate_business_config = _observe_action_start
-    trust_writer = asyncio.create_task(service.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="trust-before-prompt", trust_events=[],
-    ))
-    await asyncio.wait_for(save_started.wait(), timeout=5.0)
-
-    action = getattr(QQAutoReplyPlugin, action_name)
-    action_writer = asyncio.create_task(action(plugin, *action_args))
-    await asyncio.wait_for(action_started.wait(), timeout=5.0)
-    assert not action_writer.done()
-    assert plugin._qq_settings[setting_key] == initial_value
-
-    save_release.set()
-    assert await trust_writer
-    action_result = await action_writer
-    assert action_result.value["persisted"] is True
-    assert payloads[-1][setting_key] == expected_value
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("action_name", "action_args"), [
-    ("save_group_prompt", ("7788", "new group prompt")),
-    ("delete_group_prompt", ("7788",)),
-])
-async def test_group_prompt_persist_failure_never_logs_success(
-    action_name, action_args,
-):
-    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
-
-    logs: list[tuple[str, str]] = []
-    plugin = SimpleNamespace(
-        _qq_settings={"group_prompts": {"7788": "old group prompt"}},
-        settings_service=None,
-        session_runtime_service=None,
-        _persist_business_config=AsyncMock(return_value=False),
-        _emit_log=lambda level, message: logs.append((level, message)),
-    )
-
-    result = await getattr(QQAutoReplyPlugin, action_name)(plugin, *action_args)
-
-    assert result.value["persisted"] is False
-    assert not any(level == "INFO" for level, _message in logs)
-    assert any(
-        level == "WARNING" and "写盘失败" in message
-        for level, message in logs
-    )
-
-
-@pytest.mark.asyncio
-async def test_all_settings_writers_acquire_both_transaction_locks():
+async def test_settings_writers_share_exactly_one_transaction_lock():
+    """The dedicated trust writer lock is GONE, and that is the point.
+
+    The pool moved to memory_server, whose whole critical section runs inside a
+    single ``asyncio.to_thread`` that cannot be cancelled once handed off. With
+    it went the ``ensure_future`` + ``shield`` + second-cancellation loop +
+    before/after rollback + the cross-layer ``cancelled.speaker_trust_persisted``
+    attribute — all of which existed solely to hold a lock across an await.
+    """
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     service = QQSettingsService(SimpleNamespace())
+    # BOTH names: `_speaker_trust_lock` is the attribute the constructor used
+    # to create, `_speaker_trust_write_lock` was the property that wrapped it.
+    # Asserting only the property name is an empty assertion — it passed while
+    # the real lock was still being allocated on every instance.
+    assert not hasattr(service, "_speaker_trust_lock")
+    assert not hasattr(service, "_speaker_trust_write_lock")
+    assert not hasattr(service, "apply_speaker_trust_update")
     service._persist_business_config_locked = AsyncMock(return_value=True)
     service._save_settings_locked = AsyncMock(return_value={})
 
-    async with service._speaker_trust_write_lock:
+    async with service._consent_transaction_lock:
         direct = asyncio.create_task(service.persist_business_config())
         settings = asyncio.create_task(service.save_settings())
         await asyncio.sleep(0)
@@ -2955,122 +2412,165 @@ async def test_all_settings_writers_acquire_both_transaction_locks():
     assert await direct
     assert await settings == {}
 
-    service._persist_business_config_locked.reset_mock()
-    async with service._consent_transaction_lock:
-        direct = asyncio.create_task(service.persist_business_config())
-        await asyncio.sleep(0)
-        service._persist_business_config_locked.assert_not_awaited()
-    assert await direct
 
-
-@pytest.mark.asyncio
-async def test_activity_counts_only_the_speaker_not_assistant_replies():
+def _memory_service():
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
 
-    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
-        return_value=True,
-    ))
-    service = QQSessionMemoryService(SimpleNamespace(
-        settings_service=settings, logger=MagicMock(),
-    ))
-    await service._apply_speaker_trust_update(
+    plugin = SimpleNamespace(logger=MagicMock(), trust_ready=asyncio.Event())
+    plugin.memory_bridge = QQMemoryBridge(plugin)
+    return QQSessionMemoryService(plugin)
+
+
+def test_group_activity_events_are_per_message_and_user_only():
+    """Every message in a member bucket is ``role == "user"`` by construction,
+    so ``count=1`` each is byte-equal to the old ``len(observation_texts(...))``
+    while making an amplified retry harmless."""
+    service = _memory_service()
+    events = service._speaker_activity_events_for("1001", [
+        {"role": "user", "_speaker_activity_id": "m1"},
+        {"role": "user", "_speaker_activity_id": "m2"},
+    ])
+    assert [event["count"] for event in events] == [1, 1]
+    assert len({event["id"] for event in events}) == 2
+
+
+def test_participant_activity_event_counts_only_the_speaker():
+    service = _memory_service()
+    events = service._participant_activity_events_for(
         "1001",
         [
             {"role": "user", "content": [{"type": "text", "text": "hello"}]},
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
         ],
-        [],
+        stable="participant:Neko:1:0:2",
     )
-    assert settings.apply_speaker_trust_update.await_args.kwargs[
-        "message_count"
-    ] == 1
+    assert [event["count"] for event in events] == [1]
 
 
-@pytest.mark.asyncio
-async def test_failed_trust_persist_keeps_the_segment_retryable():
-    from plugin.plugins.qq_auto_reply.session_memory_service import (
-        QQSessionMemoryService,
-    )
+def test_activity_ids_are_stable_across_retries_and_distinct_across_batches():
+    """The whole reason the cancellation protocol could be deleted."""
+    service = _memory_service()
+    first = service._speaker_activity_events_for("1001", [
+        {"role": "user", "_speaker_activity_id": "m1"},
+    ])
+    # A retry that GREW the batch must not renumber the already-sent prefix.
+    grown = service._speaker_activity_events_for("1001", [
+        {"role": "user", "_speaker_activity_id": "m1"},
+        {"role": "user", "_speaker_activity_id": "m2"},
+    ])
+    assert grown[0]["id"] == first[0]["id"]
+    # Identical text in a different batch gets a different per-message stamp.
+    other = service._speaker_activity_events_for("1001", [
+        {"role": "user", "_speaker_activity_id": "m3"},
+    ])
+    assert other[0]["id"] != first[0]["id"]
+    # And the same message for a different speaker is a different id.
+    assert service._speaker_activity_events_for("2002", [
+        {"role": "user", "_speaker_activity_id": "m1"},
+    ])[0]["id"] != first[0]["id"]
 
-    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
-        return_value=False,
-    ))
-    logger = MagicMock()
-    service = QQSessionMemoryService(SimpleNamespace(
-        settings_service=settings, logger=logger,
-    ))
 
-    with pytest.raises(
-        RuntimeError, match="speaker trust update persistence failed",
-    ):
-        await service._apply_speaker_trust_update(
-            "1001", [{"role": "user", "content": "hello"}],
-            [{"event_id": "server-issued"}],
+def test_participant_activity_id_survives_a_character_name_with_spaces():
+    """The wire pattern is anchored ``[A-Za-z0-9_.:-]{8,96}``.
+
+    Emitting a raw ``participant:{her_name}:{epoch}:...`` would 422 the whole
+    request for any character whose name contains a space or a CJK character —
+    and what gets stuck is not trust but the entire scoped memory write.
+    """
+    import pydantic
+
+    from app.memory_server.routes import ActivityEvent
+
+    service = _memory_service()
+    for her_name in ("猫娘 A", "x" * 300, "a|b", "line\nbreak"):
+        events = service._participant_activity_events_for(
+            "1001", [{"role": "user", "content": "hi"}],
+            stable=f"participant:{her_name}:12:34:56",
         )
-    logger.warning.assert_called_once()
+        assert ActivityEvent(id=events[0]["id"]).count == 1
+    with pytest.raises(pydantic.ValidationError):
+        ActivityEvent(id="participant:猫娘 A:12:34:56")
 
 
-@pytest.mark.asyncio
-async def test_identical_text_in_distinct_batches_has_distinct_activity_ids():
-    from plugin.plugins.qq_auto_reply.session_memory_service import (
-        QQSessionMemoryService,
-    )
-
-    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
-        return_value=True,
-    ))
-    service = QQSessionMemoryService(SimpleNamespace(
-        settings_service=settings, logger=MagicMock(),
-    ))
-    messages = [{"role": "user", "content": "好的"}]
-    await service._apply_speaker_trust_update(
-        "1001", messages, [], activity_identity="group:a:batch-1",
-    )
-    await service._apply_speaker_trust_update(
-        "1001", messages, [], activity_identity="group:b:batch-2",
-    )
-    await service._apply_speaker_trust_update(
-        "1001", messages, [], activity_identity="group:a:batch-1",
-    )
-    event_ids = [
-        call.kwargs["activity_event_id"]
-        for call in settings.apply_speaker_trust_update.await_args_list
-    ]
-    assert event_ids[0] != event_ids[1]
-    assert event_ids[0] == event_ids[2]
+def test_trust_reporting_is_off_until_the_legacy_push_lands():
+    """Defence in depth, layer one: no tier is sent while the gate is closed."""
+    service = _memory_service()
+    assert service._trust_reporting_ready() is False
+    service.plugin.trust_ready.set()
+    assert service._trust_reporting_ready() is True
+    # A harness without the event at all reads as NOT ready.
+    service.plugin.trust_ready = None
+    assert service._trust_reporting_ready() is False
 
 
-@pytest.mark.asyncio
-async def test_retry_metadata_does_not_change_stable_activity_id():
-    from plugin.plugins.qq_auto_reply.session_memory_service import (
-        QQSessionMemoryService,
-    )
+def test_persisted_false_is_the_only_value_that_forces_a_retry():
+    service = _memory_service()
+    assert service._trust_persisted({"persisted": True}) is True
+    assert service._trust_persisted({"persisted": None}) is True
+    assert service._trust_persisted(None) is True
+    assert service._trust_persisted({}) is True
+    assert service._trust_persisted({"persisted": False}) is False
 
-    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
-        return_value=True,
-    ))
-    service = QQSessionMemoryService(SimpleNamespace(
-        settings_service=settings, logger=MagicMock(),
-    ))
-    messages = [{"role": "user", "content": "好的"}]
-    await service._apply_speaker_trust_update(
-        "1001", messages, [], activity_identity="group:a:batch-1",
-    )
-    messages[0]["_trust_signal_excluded_fact_identities"] = [[
-        "later", "group_participant", "qq:a:2",
-        "group_participant:qq:a:2",
-    ]]
-    await service._apply_speaker_trust_update(
-        "1001", messages, [], activity_identity="group:a:batch-1",
-    )
 
-    event_ids = [
-        call.kwargs["activity_event_id"]
-        for call in settings.apply_speaker_trust_update.await_args_list
-    ]
-    assert event_ids[0] == event_ids[1]
+def test_a_gated_segment_is_logged_but_not_retried():
+    """The barrier window must be visible, not silent — and not a spin.
+
+    During the legacy import the owner's signal is already durable on the fact
+    row while the pool defers it; §4.5 says a gated segment still pops. Forcing
+    a retry instead would re-run the LLM extraction for a bucket whose facts
+    are already committed. Logging is the difference between an accepted
+    bounded cost and an invisible one.
+    """
+    service = _memory_service()
+    assert service._trust_persisted({
+        "persisted": True, "gated": "legacy_import_pending",
+    }) is True
+    assert service.plugin.logger.warning.called
+    message = str(service.plugin.logger.warning.call_args[0][0])
+    assert "legacy_import_pending" in message
+
+
+def test_participant_activity_id_is_keyed_by_the_batch_start_cursor():
+    """A grown retry must reuse the id the server already committed.
+
+    The server settles activity BEFORE responding, so a lost response leaves
+    the pool updated while the plugin retains and retries. If the id also
+    encoded the batch's END cursor, a retry that picked up newer messages
+    would mint a fresh id and the already-counted prefix would be counted
+    again. Keying on the START cursor makes the retry collide instead —
+    under-counting the new tail, which is bounded by ACTIVITY_MAX_BONUS.
+    """
+    service = _memory_service()
+    committed = service._participant_activity_events_for(
+        "1001", [{"role": "user", "content": "a"}],
+        stable="participant:Neko:99:7",
+    )
+    grown_retry = service._participant_activity_events_for(
+        "1001",
+        [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        stable="participant:Neko:99:7",
+    )
+    assert grown_retry[0]["id"] == committed[0]["id"]
+    # A genuinely later batch starts at a different cursor and is distinct.
+    assert service._participant_activity_events_for(
+        "1001", [{"role": "user", "content": "c"}],
+        stable="participant:Neko:99:8",
+    )[0]["id"] != committed[0]["id"]
+
+
+def test_channel_is_read_from_the_message_envelope_not_live_config():
+    """A session buffer can span a transport switch; the switch is immediate
+    and does not clear buffers, so a flush-time config read would misattribute
+    every buffered message."""
+    service = _memory_service()
+    assert service._speaker_channel_for([
+        {"role": "user", "_speaker_channel": None},
+        {"role": "user", "_speaker_channel": "napcat"},
+    ]) == "napcat"
+    assert service._speaker_channel_for([{"role": "user"}]) is None
 
 
 def test_correction_relation_preserves_argument_order():
@@ -3376,14 +2876,20 @@ async def test_malformed_participant_scope_cannot_emit_trust_events():
 
 
 @pytest.mark.asyncio
-async def test_dashboard_reload_waits_before_reading_trust_config():
+async def test_dashboard_reload_waits_for_an_inflight_settings_write():
+    """The reload race that remains is about SETTINGS, not about trust.
+
+    Trust no longer lives in ``business_config.json``, so a reload can no
+    longer read a half-written trust snapshot. The guard that survives is the
+    ordinary one: a dashboard reload must not read the config while a settings
+    write is still in flight.
+    """
     from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     stored = {
         "trusted_users": [{"qq": "1001", "level": "normal"}],
         "trusted_groups": [],
-        "speaker_trust_profiles": {},
     }
     manager = PermissionManager(stored["trusted_users"])
     persist_started = asyncio.Event()
@@ -3398,20 +2904,14 @@ async def test_dashboard_reload_waits_before_reading_trust_config():
     settings = QQSettingsService(plugin)
     plugin.settings_service = settings
 
-    async def _persist(**_kwargs):
+    async def _persist(*_args, **_kwargs):
         persist_started.set()
         await persist_release.wait()
-        stored["speaker_trust_profiles"] = dict(
-            settings._staged_speaker_trust_profiles
-        )
         return True
 
     async def _load():
         load_called.set()
-        return {
-            **stored,
-            "speaker_trust_profiles": dict(stored["speaker_trust_profiles"]),
-        }
+        return dict(stored)
 
     settings._persist_business_config_locked = _persist
     settings.load_business_config = _load
@@ -3419,10 +2919,10 @@ async def test_dashboard_reload_waits_before_reading_trust_config():
     dashboard = QQDashboardService(plugin)
     dashboard.build_dashboard_state = AsyncMock(return_value={})
 
-    writer = asyncio.create_task(settings.apply_speaker_trust_update(
-        sender_id="1001", message_count=1,
-        activity_event_id="reload-race", trust_events=[],
-    ))
+    writer = asyncio.create_task(settings.persist_business_config())
+    # Handshake, not a bare sleep(0): the reload must start while the writer is
+    # provably INSIDE the critical section, otherwise the test can pass by
+    # simply winning a scheduling race.
     await asyncio.wait_for(persist_started.wait(), timeout=5.0)
     reload_task = asyncio.create_task(dashboard.init_config())
     await asyncio.sleep(0)
@@ -3430,6 +2930,70 @@ async def test_dashboard_reload_waits_before_reading_trust_config():
     persist_release.set()
     assert await writer
     await reload_task
-    assert plugin.permission_mgr.speaker_trust_profiles()["1001"][
-        "message_count"
-    ] == 1
+    assert load_called.is_set()
+
+
+def test_a_returning_barrier_rearms_the_migration_push():
+    """memory_server restarting must not gate QQ trust until the plugin restarts.
+
+    The every-startup re-push exists so a lost pool self-heals. But the pusher
+    RETURNS after success, so a server that restarts (or recreates a missing
+    pool) afterwards leaves the barrier pending while this process still has
+    ``trust_ready`` set — trust silently gated for the rest of its life. Seeing
+    ``gated`` come back is the signal to re-arm.
+    """
+    async def _main():
+        service = _memory_service()
+        pushed = asyncio.Event()
+
+        async def _pusher():
+            pushed.set()
+
+        service.plugin.settings_service = SimpleNamespace(
+            push_legacy_speaker_trust_forever=_pusher,
+        )
+        service.plugin._trust_migration_task = None
+        service.plugin.trust_ready.set()
+
+        # An ordinary segment does not disturb anything.
+        assert service._trust_persisted({"persisted": True}) is True
+        assert service.plugin.trust_ready.is_set()
+        assert not pushed.is_set()
+
+        # A returning barrier clears readiness and restarts the push.
+        assert service._trust_persisted({
+            "persisted": True, "gated": "legacy_import_pending",
+        }) is True
+        assert not service.plugin.trust_ready.is_set()
+        await asyncio.wait_for(pushed.wait(), timeout=2.0)
+        await service.plugin._trust_migration_task
+
+    asyncio.run(_main())
+
+
+def test_rearming_is_idempotent_while_a_push_is_already_in_flight():
+    """Every gated segment in a batch must not spawn its own pusher."""
+    async def _main():
+        service = _memory_service()
+        calls = {"n": 0}
+        release = asyncio.Event()
+
+        async def _pusher():
+            calls["n"] += 1
+            await release.wait()
+
+        service.plugin.settings_service = SimpleNamespace(
+            push_legacy_speaker_trust_forever=_pusher,
+        )
+        service.plugin._trust_migration_task = None
+        service.plugin.trust_ready.set()
+        for _ in range(5):
+            service._trust_persisted({
+                "persisted": True, "gated": "legacy_import_pending",
+            })
+            await asyncio.sleep(0)
+        assert calls["n"] == 1
+        release.set()
+        await service.plugin._trust_migration_task
+
+    asyncio.run(_main())

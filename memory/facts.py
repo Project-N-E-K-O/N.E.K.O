@@ -1260,8 +1260,20 @@ class FactStore:
         speaker_is_owner: bool,
         facts_snapshot: list[dict] | None = None,
         replay_facts_snapshot: list[dict] | None = None,
+        identity=None,
     ) -> list[dict]:
-        """Derive owner confirmation/correction signals from raw request text."""
+        """Derive owner confirmation/correction signals from raw request text.
+
+        ``identity`` is an optional ``TrustSnapshot``. With it, the
+        self-attestation ban widens from "same account" to "same PERSON", which
+        closes off "the owner endorses their own earlier statement from a second
+        account". Default ``None`` degrades byte-for-byte to the pre-existing
+        string comparison, so every existing caller and test is unaffected.
+
+        The entity layer decides whether an event is PRODUCED. It never decides
+        whose ledger the event lands in — that stays keyed by account all the
+        way down.
+        """
         if not speaker_is_owner or not isinstance(speaker_provenance, dict):
             return []
         from memory.speaker_trust import (
@@ -1347,6 +1359,17 @@ class FactStore:
                         and recorded.get('observation_id') == observation_id
                         and prior_identity is not None
                         and recorded_identity == prior_identity
+                        # DELIBERATELY account-level, NOT entity-level. This
+                        # is the replay ring: it re-delivers an already-durable
+                        # event after a lost response, keyed on the owner's own
+                        # account string. Widening it to ``same_entity`` would
+                        # let the replay ring re-issue events on behalf of a
+                        # DIFFERENT account of the same person. Asymmetry with
+                        # the self-attestation ban above is intended: after the
+                        # owner switches accounts the ban gets stricter (fewer
+                        # events) and replay gets stricter (fewer re-deliveries)
+                        # — both directions under-count, i.e. fail closed. Do
+                        # not "symmetrize" this.
                         and stable_speaker_id(
                             recorded.get('source_speaker_id')
                         ) == source_id
@@ -1364,6 +1387,13 @@ class FactStore:
                     continue
                 target_id = stable_speaker_id(prior.get('speaker_id'))
                 if target_id is None or target_id == source_id:
+                    continue
+                if identity is not None and identity.same_entity(
+                    source_id, target_id,
+                ):
+                    # Same person, second account: still self-attestation.
+                    # ``same_entity`` is conservative (unloaded pool ⇒ False),
+                    # so this can only ever suppress events, never invent them.
                     continue
                 # Raw owner observations carry no structured event window.
                 # Do not reinterpret an explicitly dated historical fact as a
@@ -1434,7 +1464,7 @@ class FactStore:
                 key: entry[key]
                 for key in (
                     'speaker_id', 'speaker_label', 'speaker_trust',
-                    'speaker_provenance_mixed',
+                    'speaker_entity_id', 'speaker_provenance_mixed',
                 )
                 if key in entry
             }
@@ -1652,7 +1682,7 @@ class FactStore:
         """
         provenance_keys = (
             'speaker_id', 'speaker_label', 'speaker_trust',
-            'speaker_provenance_mixed',
+            'speaker_entity_id', 'speaker_provenance_mixed',
         )
 
         def _provenance(entry: dict) -> dict:
@@ -3113,6 +3143,16 @@ class FactStore:
         speaker_id = stable_speaker_id(segment.get('speaker_id'))
         if speaker_id is not None:
             prov['speaker_id'] = speaker_id
+            # Persisted alongside speaker_id, never in place of it — and taken
+            # from the segment, so it comes from the SAME request-start pool
+            # snapshot that decided routing and trust (see
+            # ``_reconcile_existing_provenance`` for why a fresh lookup here
+            # would be wrong).
+            entity_id = str(
+                segment.get('speaker_entity_id') or ''
+            ).strip()
+            if entity_id:
+                prov['speaker_entity_id'] = entity_id
         return prov or None
 
     async def extract_facts_batch(
@@ -3434,6 +3474,25 @@ class FactStore:
             )
             if request_speaker_id is not None:
                 request_provenance['speaker_id'] = request_speaker_id
+                # Persisted alongside — NOT instead of — ``speaker_id``, whose
+                # bytes never change. It lets a same-person comparison succeed
+                # even when the pool is unavailable later; when it goes stale
+                # after a merge, the live pool lookup in
+                # ``same_provenance_source`` backs it up.
+                #
+                # Comes FROM THE CALLER, never from a fresh pool read here. The
+                # route resolves subject routing, trust and this id from ONE
+                # snapshot taken at request start (§4.4). Re-reading the live
+                # pool at persistence time would let an unbind landing
+                # mid-request write a row under the OLD canonical subject while
+                # stamping the account's NEW entity — and those stranded rows
+                # would then miss the persisted-entity equality that keeps the
+                # mixed pump closed.
+                entity_id = str(
+                    speaker_provenance.get('speaker_entity_id') or ''
+                ).strip()
+                if entity_id:
+                    request_provenance['speaker_entity_id'] = entity_id
             # label/trust predate stable speaker_id and remain valid request-
             # derived provenance on legacy callers.  Keep them independent:
             # model output still never enters this mapping.
@@ -3462,11 +3521,12 @@ class FactStore:
                 return
             from memory.speaker_trust import (
                 provenance_of_entries,
+                same_provenance_source,
                 stable_speaker_id,
             )
             provenance_keys = (
                 'speaker_id', 'speaker_label', 'speaker_trust',
-                'speaker_provenance_mixed',
+                'speaker_entity_id', 'speaker_provenance_mixed',
             )
             existing_speaker_id = stable_speaker_id(existing.get('speaker_id'))
             if existing.get('speaker_provenance_mixed') is True:
@@ -3478,7 +3538,39 @@ class FactStore:
                     existing, request_provenance,
                 ))
             else:
-                desired_provenance = {'speaker_provenance_mixed': True}
+                # Three-state. Canonical write routing makes two accounts of
+                # one person share a subject, and the fact hash is salted with
+                # the subject, so the same sentence now collides here for the
+                # first time. The old unconditional ``mixed`` would make that
+                # collision destroy the row's provenance permanently.
+                verdict = same_provenance_source(
+                    existing, request_provenance,
+                )
+                if verdict is False:
+                    # Genuinely two different people — today's behaviour, and
+                    # this regression must be preserved (I-P-6): the relaxation
+                    # applies to one person's accounts, NEVER across people.
+                    desired_provenance = {'speaker_provenance_mixed': True}
+                else:
+                    # ``True``  → same person, different account: keep the
+                    #             existing provenance verbatim. Abstain rather
+                    #             than merge, so ``min(trusts)`` can never
+                    #             ratchet an owner row down (see
+                    #             ``provenance_of_entries``).
+                    # ``None`` → unknown (pool unloaded / account unregistered).
+                    #             "I don't know" must never be written down as
+                    #             "I know it's mixed". Fail-closed: leave the
+                    #             row exactly as it is and count it.
+                    desired_provenance = {
+                        key: existing[key]
+                        for key in provenance_keys if key in existing
+                    }
+                    if verdict is None:
+                        logger.info(
+                            f"[FactStore] {lanlan_name}: {dedup_stage} "
+                            f"provenance_deferred fact_id={existing.get('id')} "
+                            f"(身份未知，保留原样、不写 mixed)"
+                        )
             current_provenance = {
                 key: existing[key]
                 for key in provenance_keys if key in existing
@@ -5048,9 +5140,13 @@ class FactStore:
             else:
                 entry['signal_processed'] = prev_signal
         for entry, previous in reversed(provenance_snapshots or []):
+            # Must be the SAME key set `_reconcile_existing_provenance` pops
+            # and rewrites — a key it wrote but this loop does not clear would
+            # survive the rollback and leave the cached row carrying an
+            # attribution that never reached disk.
             for key in (
                 'speaker_id', 'speaker_label', 'speaker_trust',
-                'speaker_provenance_mixed',
+                'speaker_entity_id', 'speaker_provenance_mixed',
             ):
                 entry.pop(key, None)
             entry.update(previous)
