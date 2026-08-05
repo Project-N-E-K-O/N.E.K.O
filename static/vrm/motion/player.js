@@ -415,7 +415,7 @@
             // 官方内置动作直接复用 static/vrm/animation，避免在源码和安装包
             // 同时保存 VRMA 与 gzip 副本。外部已授权动作包仍可声明 gzip transport。
             // 无论 transport 为何，解码后的 Blob URL 都只在当前播放期间存在。
-            const response = await fetch(assetUrl(asset));
+            const response = await fetch(assetUrl(asset), { cache: 'no-store' });
             if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
             const packed = await response.arrayBuffer();
             const packedBytes = new Uint8Array(packed);

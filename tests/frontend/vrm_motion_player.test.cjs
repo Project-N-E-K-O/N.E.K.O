@@ -124,12 +124,15 @@ async function waitForLoadStart(predicate, message) {
     await assert.rejects(new global.NekoMotionPlayer().load(), /unapproved or unlicensed/);
 
     let requested = '';
-    global.fetch = async function (url) {
+    let requestedOptions = null;
+    global.fetch = async function (url, options) {
         requested = String(url);
+        requestedOptions = options;
         return response(sourceBuffer);
     };
     assert.match(await player._assetUrl(player.assets[0]), /^blob:test-/);
     assert.equal(requested, '/static/vrm/' + player.assets[0].f + '.gz');
+    assert.equal(requestedOptions.cache, 'no-store');
 
     const corrupted = Buffer.from(packedSource);
     corrupted[2] ^= 0xff;

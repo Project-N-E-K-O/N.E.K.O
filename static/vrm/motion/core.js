@@ -508,7 +508,12 @@
                         localized(rule.frames, candidateLocale),
                         common.negation
                     );
-                    if (phrase || frame.length) {
+                    const anchor = phrase || frame[frame.length - 1];
+                    const blocked = anchor && (
+                        scopedBefore(source, anchor, common.negation, 9)
+                        || scopedBefore(source, anchor, common.hypothetical, 12)
+                    );
+                    if ((phrase || frame.length) && !blocked) {
                         matchedLocale = candidateLocale;
                         break;
                     }
