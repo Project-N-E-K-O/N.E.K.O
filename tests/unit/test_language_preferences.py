@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import shutil
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ import pytest
 from main_routers.characters_router import language_preference as preference_router
 from main_logic import cross_server
 from main_logic.core.lifecycle import LifecycleMixin
+from tests.node_harness import run_node_script
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -230,11 +233,6 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
     assert "explicitLanguage: explicitLanguage" in hydration
     assert "if (hydrated.explicitLanguage" in hydration
     assert "hydrated.explicitLanguage," in hydration
-    assert "requestFailed: true" in hydration
-    assert "timedOut: true" in hydration
-    assert "if (hydrated.timedOut)" in hydration
-    assert "request.then(function (lateHydrated)" in hydration
-    assert "applyHydratedConversationLanguage(lateHydrated)" in hydration
 
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
     assert "payload.language.trim() || null" in memory_source
@@ -247,6 +245,182 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
         "input, textarea, select:not(.conversation-language-select)"
         in form_source
     )
+
+
+@pytest.mark.unit
+def test_conversation_language_hydration_timeout_and_late_response_runtime():
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is not installed; skipping language hydration harness")
+
+    websocket_source = (
+        PROJECT_ROOT / "static" / "app" / "app-websocket.js"
+    ).read_text(encoding="utf-8")
+    hydration_source = "function hydrateConversationLanguage(characterName)" + (
+        websocket_source.split(
+            "function hydrateConversationLanguage(characterName)", 1
+        )[1].split(
+            "// Upper bound for the settings-sync gate below", 1
+        )[0]
+    )
+
+    harness = textwrap.dedent(
+        """
+        const assert = require('node:assert/strict');
+
+        let fallbackLanguage = 'en';
+        const S = {
+          _conversationLanguageHydrationId: 0,
+          conversationLanguage: '',
+          conversationLanguageHydrated: false
+        };
+        const fetches = [];
+        const timers = [];
+        const events = [];
+
+        const window = {
+          setConversationLanguagePreference(language, characterName, options) {
+            events.push({ type: 'cache', language, characterName, options });
+          }
+        };
+
+        function getConversationLanguageForCurrentCharacter() {
+          return fallbackLanguage;
+        }
+
+        function fetch(url) {
+          return new Promise((resolve, reject) => {
+            fetches.push({ url, resolve, reject });
+          });
+        }
+
+        function setTimeout(callback, delay) {
+          timers.push({ callback, delay });
+          return timers.length;
+        }
+
+        function _syncLanguageToBackend(language) {
+          events.push({ type: 'sync', language });
+        }
+
+        function _sendGreetingCheckIfReady() {
+          events.push({ type: 'greeting' });
+        }
+
+        function response(payload) {
+          return { ok: true, json: () => Promise.resolve(payload) };
+        }
+
+        async function flushPromises() {
+          for (let index = 0; index < 8; index += 1) {
+            await Promise.resolve();
+          }
+        }
+
+        __HYDRATION_SOURCE__
+
+        (async () => {
+          // A timeout must apply the fallback immediately, then a valid response
+          // from the same hydration generation must replace it exactly once.
+          const sameGeneration = hydrateConversationLanguage('Mimi');
+          assert.equal(fetches.length, 1);
+          assert.equal(timers[0].delay, 2500);
+          timers[0].callback();
+          assert.equal(await sameGeneration, 'en');
+          assert.deepEqual(events, [
+            { type: 'sync', language: 'en' },
+            { type: 'greeting' }
+          ]);
+
+          fetches[0].resolve(response({
+            success: true,
+            language: 'ja',
+            effective_language: 'en'
+          }));
+          await flushPromises();
+          assert.equal(S.conversationLanguage, 'ja');
+          assert.deepEqual(events.slice(2), [
+            {
+              type: 'cache',
+              language: 'ja',
+              characterName: 'Mimi',
+              options: { dispatch: false, source: 'server' }
+            },
+            { type: 'sync', language: 'ja' },
+            { type: 'greeting' }
+          ]);
+
+          // A late response from an older character/generation must not overwrite
+          // the language selected by the newer hydration.
+          events.length = 0;
+          fallbackLanguage = 'pt';
+          const oldGeneration = hydrateConversationLanguage('Old');
+          timers[1].callback();
+          assert.equal(await oldGeneration, 'pt');
+
+          fallbackLanguage = 'ko';
+          const currentGeneration = hydrateConversationLanguage('Current');
+          timers[2].callback();
+          assert.equal(await currentGeneration, 'ko');
+          assert.equal(S.conversationLanguage, 'ko');
+
+          const eventsBeforeStaleResponse = events.length;
+          fetches[1].resolve(response({ success: true, language: 'ru' }));
+          await flushPromises();
+          assert.equal(S.conversationLanguage, 'ko');
+          assert.equal(events.length, eventsBeforeStaleResponse);
+
+          fetches[2].resolve(response({ success: true, language: 'zh-CN' }));
+          await flushPromises();
+          assert.equal(S.conversationLanguage, 'zh-CN');
+          assert.deepEqual(events.slice(-3), [
+            {
+              type: 'cache',
+              language: 'zh-CN',
+              characterName: 'Current',
+              options: { dispatch: false, source: 'server' }
+            },
+            { type: 'sync', language: 'zh-CN' },
+            { type: 'greeting' }
+          ]);
+
+          // A failed request that settles before its timeout applies the fallback
+          // once; the later timer cannot trigger a duplicate application.
+          events.length = 0;
+          fallbackLanguage = 'es';
+          const failedGeneration = hydrateConversationLanguage('Failure');
+          fetches[3].reject(new Error('network failed'));
+          assert.equal(await failedGeneration, 'es');
+          assert.deepEqual(events, [
+            { type: 'sync', language: 'es' },
+            { type: 'greeting' }
+          ]);
+          timers[3].callback();
+          await flushPromises();
+          assert.deepEqual(events, [
+            { type: 'sync', language: 'es' },
+            { type: 'greeting' }
+          ]);
+
+          process.stdout.write('ok');
+        })().catch((error) => {
+          console.error(error && error.stack ? error.stack : error);
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__HYDRATION_SOURCE__", hydration_source)
+
+    result = run_node_script(
+        node_path,
+        harness,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ok"
 
 
 @pytest.mark.unit
