@@ -4617,3 +4617,99 @@ def test_the_stem_is_taken_from_inside_the_match_not_guessed():
     # 拉丁 / 假名不许当词干接进去——接了就等于把判据的左界整个作废。
     assert not D._HAN_RE.match("A")
     assert not D._HAN_RE.match("ス")
+
+
+# ── 52. 日文语法表逐条钉住（新守卫盖住旧判据之后补的） ──────────
+
+
+def _ja_grammar_alternatives() -> tuple[list[str], list[str]]:
+    """把 _JA_GRAMMAR_RE 拆成顶层分支，分出「裸字面量」和「带左右界的」。"""  # noqa: DOCSTRING_CJK
+    pattern = D._JA_GRAMMAR_RE.pattern
+    alts, depth, cur, i = [], 0, "", 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == chr(92):
+            cur += pattern[i:i + 2]
+            i += 2
+            continue
+        if char == "[":
+            end = pattern.index("]", i + 1)
+            cur += pattern[i:end + 1]
+            i = end + 1
+            continue
+        depth += (char == "(") - (char == ")")
+        if char == "|" and depth == 0:
+            alts.append(cur)
+            cur = ""
+            i += 1
+            continue
+        cur += char
+        i += 1
+    alts.append(cur)
+    plain: list[str] = []
+    for alt in alts:
+        if "(?<=" in alt or "(?=" in alt:
+            continue
+        if alt.startswith("[") and alt.endswith("]"):
+            plain.extend(alt[1:-1])
+        else:
+            plain.append(alt)
+    # 话题字符类排掉的字符**不可能**出现在 term 里，含它的分支对 zh 模板是死的。
+    # 判据自动推导，不写死清单。
+    banned = set("，。！？；,.!?;")
+    reachable = [lit for lit in plain if not (set(lit) & banned)]
+    unreachable = [lit for lit in plain if set(lit) & banned]
+    return reachable, unreachable
+
+
+_JA_REACHABLE, _JA_UNREACHABLE = _ja_grammar_alternatives()
+
+
+def test_the_reachable_grammar_markers_are_actually_reachable():
+    """自动发现：表里每个裸字面量都要么可达、要么被判定为死条目，没有第三种。
+
+    ⚠️ 这里必须是**相等**断言，不能写成 ``len(...) > 45`` 那种下界。下面那批用例
+    是从这张表**派生**出来的参数——摘掉一条表项就等于少一个用例，永远不红；下界
+    也挡不住（摘掉七条还剩五十）。这条相等断言才是真正钉住表内容的东西（变异跑
+    出来的：整行整行删表，测试全绿）。
+    """  # noqa: DOCSTRING_CJK
+    assert sorted(set(_JA_REACHABLE)) == [
+        "かな", "かも", "から", "が", "ください", "けど", "された", "される",
+        "しか", "している", "しない", "します", "しよう", "じゃない", "すべき",
+        "そうです", "たら", "だけ", "だっけ", "だった", "だって", "だな", "だね",
+        "だよ", "だろう", "てある", "ている", "ておく", "で", "である", "できる",
+        "でした", "でしょ", "です", "でも", "と", "という", "ながら", "など",
+        "に", "について", "に関して", "の", "ので", "は", "ばかり", "へ",
+        "ました", "ましょう", "ます", "ません", "まで", "みたい", "より",
+        "らしい", "を",
+    ]
+    # ⚠️ 死条目**也**用相等断言钉住：再多一条就说明有人往表里加了永远打不中的
+    # 标记。``そう？`` 的 ``？`` 是话题终结符，term 里不可能出现它。
+    assert _JA_UNREACHABLE == ["そう？"], _JA_UNREACHABLE
+
+
+@pytest.mark.parametrize("marker", sorted(set(_JA_REACHABLE)))
+def test_every_japanese_grammar_marker_is_pinned_on_its_own(marker):
+    """逐条钉住日文语法表——**串首**的框架把新守卫关掉，只剩这张表在干活。
+
+    ⚠️ 这一批是补覆盖洞的：``〜別 + 一个汉字 + 假名`` 那条新判据一上，原先钉这
+    张表的用例全被它先拦下了，于是「把表整个删掉」不再见红（变异跑出来的）。
+    串首没有左邻字符，新判据的左界这一条不成立，语法表是唯一还在拦的东西。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"別提案{marker}。") == set(), marker
+
+
+def test_the_string_start_frame_really_disables_the_kana_tail_guard():
+    """反向钉住上面那批用例的**前提**：串首确实走不到新判据。
+
+    前提要是塌了（比如以后给新判据去掉左界），上面那批就会变成两条判据一起
+    拦——表删掉照样绿，覆盖洞悄悄回来。这里直接断言判据本身。
+    """  # noqa: DOCSTRING_CJK
+    # 同一个 term 形状（一个汉字 + 假名），只差左邻有没有标签词：
+    #   · 串首 → 新判据不成立，``スレ`` 又没有语法标记 → 放行
+    #   · 有标签词 → 新判据自己就拦下来了
+    # 上面那批用例走的是第一行这条路，所以它们钉的确实只有语法表。
+    assert not D._is_japanese_sentence_match("別提案スレ", "案スレ", "")
+    assert D._is_japanese_sentence_match("地域別提案スレ", "案スレ", "地域")
+    # 而串首的 ``案です`` 被判成日文，只可能是语法表干的。
+    assert D._is_japanese_sentence_match("別提案です", "案です", "")
