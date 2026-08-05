@@ -6980,9 +6980,9 @@ def test_a_typed_command_rejects_bare_words_and_anything_extra(text):
 
 def test_no_ui_string_in_any_locale_is_a_magic_command():
     """⚠️ 8 个 locale 的全部文案：一条命令意图都没有，命中数必须是 0。"""  # noqa: DOCSTRING_CJK
-    import glob
     import io
     import json
+    from pathlib import Path
 
     from brain.openclaw_adapter import OpenClawAdapter
 
@@ -6997,7 +6997,11 @@ def test_no_ui_string_in_any_locale_is_a_magic_command():
                 _walk(value, out)
 
     strings: list[str] = []
-    for path in sorted(glob.glob("static/locales/*.json")):
+    # ⚠️ 用 __file__ 锚定，别用相对路径：`cd tests && pytest ...` 时 glob 会是空的，
+    # 断言变成「语料没加载到」的伪失败。同文件的
+    # test_no_magic_command_fires_on_the_projects_own_ui_copy 已经是这个写法。
+    locales_dir = Path(__file__).resolve().parents[2] / "static" / "locales"
+    for path in sorted(locales_dir.glob("*.json")):
         with io.open(path, encoding="utf-8") as handle:
             _walk(json.load(handle), strings)
     assert len(strings) > 30000, "语料没加载到，断言会变成空转"

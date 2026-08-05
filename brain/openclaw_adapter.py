@@ -948,7 +948,7 @@ class OpenClawAdapter:
             return {"is_magic_intent": False, "command": None, "source": "rule"}
 
         # ⚠️ `/clear` 与 `/new` **不再从自由文本触发**，只认字面命令
-        # （`normalize_magic_command` 在本函数最开头就拦掉并提前返回）。
+        # （`parse_typed_magic_command` 在本函数最开头就拦掉并提前返回）。
         # 拿掉的理由是实测出来的三条乘在一起：
         #   · 误触率最高：纯聊天语境的「换话题」说法 6/14 命中，而那 6 条全部指的是
         #     **聊天话题**，不是 agent 会话；中文语料里 `/new` 触发词出现频率是 `/stop`

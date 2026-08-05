@@ -1023,7 +1023,7 @@ def test_stop_needs_a_running_task_when_the_phrasing_is_ambiguous(wired):
 
 
 @pytest.mark.parametrize(
-    "text", ["取消这个任务", "停止搜索", "算了别查了", "取消這個搜尋", "/stop", "stop"]
+    "text", ["取消这个任务", "停止搜索", "算了别查了", "取消這個搜尋", "/stop"]
 )
 def test_an_addressed_stop_never_needs_corroboration(wired, text):
     """⚠️ 逃生阀不能焊死。
@@ -1039,3 +1039,43 @@ def test_an_addressed_stop_never_needs_corroboration(wired, text):
 
     _dispatch("/stop", user_text=text)
     assert [c[0] for c in fake.magic_calls] == ["/stop"], text
+
+
+def test_an_unclassified_stop_phrasing_falls_through_to_dispatch(wired):
+    """⚠️ 分不出档的说法走**兜底放行**，这是独立于两档词表的一条判据。
+
+    ``stop`` used to sit in the addressed-tier parametrization, where it was
+    green for the wrong reason: it is not a literal command (no slash) and it is
+    in neither tier table, so it rides the ``tier is None`` fallback. Deleting
+    the entire addressed tier would have left that case passing.
+
+    The fallback itself is deliberate — the LLM leg can produce ``/stop`` from
+    phrasings no table knows, and welding those shut would close the escape
+    hatch that exists precisely because the registry lies when it matters most.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    fake, _ = wired
+    assert oc._shared.Modules.task_registry == {}
+
+    # 前提：既不是字面命令，也不在任何一档词表里
+    assert OpenClawAdapter.parse_typed_magic_command("stop") is None
+    assert OpenClawAdapter.stop_trigger_tier("stop") is None
+    assert OpenClawAdapter.stop_trigger_tier("请把这个停一停") is None
+
+    for text in ("stop", "请把这个停一停"):
+        fake.magic_calls.clear()
+        _dispatch("/stop", user_text=text)
+        assert [c[0] for c in fake.magic_calls] == ["/stop"], text
+
+
+def test_the_addressed_tier_is_what_carries_the_addressed_cases(wired):
+    """⚠️ 上面那条兜底会掩盖「明确档被删掉」——所以这里直接打词表。
+
+    Without this, removing _STOP_ADDRESSED entirely leaves every dispatch test
+    green: those phrasings would simply fall through the same None-tier path.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    for text in ("取消这个任务", "停止搜索", "算了别查了", "取消這個搜尋"):
+        assert OpenClawAdapter.stop_trigger_tier(text) == "addressed", text
