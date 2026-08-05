@@ -1341,6 +1341,49 @@ async def test_ui_language_keeps_synced_locale_when_context_isolation_is_partial
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_ui_language_restores_previous_locale_when_sync_fails(monkeypatch):
+    saved_ui_languages = []
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"当前猫娘": "Mimi", "猫娘": {"Mimi": {}}}
+
+    async def save_ui(language):
+        saved_ui_languages.append(language)
+        return True
+
+    async def apply_language(_name, _language):
+        return {
+            "success": False,
+            "error": "角色语言偏好保存失败",
+        }
+
+    class Request:
+        async def json(self):
+            return {"language": "ja"}
+
+    async def load_ui():
+        return "en"
+
+    monkeypatch.setattr(config_language_router, "aload_ui_language_override", load_ui)
+    monkeypatch.setattr(config_language_router, "asave_ui_language_override", save_ui)
+    monkeypatch.setattr(config_language_router, "get_config_manager", lambda: ConfigManager())
+    monkeypatch.setattr(preference_router, "apply_character_language_preference", apply_language)
+
+    response = await config_language_router.set_ui_language_api(Request())
+    payload = json.loads(response.body)
+
+    assert response.status_code == 500
+    assert payload["success"] is False
+    assert payload["ui_language"] == "en"
+    assert payload["ui_language_rollback_succeeded"] is True
+    assert "partial_success" not in payload
+    assert "partial_persistence" not in payload
+    assert saved_ui_languages == ["ja", "en"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_ui_language_reports_partial_persistence_when_rollback_fails(monkeypatch):
     saved_ui_languages = []
 
