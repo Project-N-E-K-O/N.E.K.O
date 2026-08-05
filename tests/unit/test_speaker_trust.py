@@ -2860,8 +2860,6 @@ def test_a_returning_barrier_rearms_the_migration_push():
     ``trust_ready`` set — trust silently gated for the rest of its life. Seeing
     ``gated`` come back is the signal to re-arm.
     """
-    import asyncio
-
     async def _main():
         service = _memory_service()
         pushed = asyncio.Event()
@@ -2893,8 +2891,6 @@ def test_a_returning_barrier_rearms_the_migration_push():
 
 def test_rearming_is_idempotent_while_a_push_is_already_in_flight():
     """Every gated segment in a batch must not spawn its own pusher."""
-    import asyncio
-
     async def _main():
         service = _memory_service()
         calls = {"n": 0}
