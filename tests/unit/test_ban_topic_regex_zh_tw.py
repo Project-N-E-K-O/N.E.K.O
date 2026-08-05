@@ -2145,6 +2145,17 @@ def test_the_quoted_span_end_is_derived_from_the_bracket_run():
 # ⚠️ 字形对偶抓不到繁简**同形**的分支（``聊`` / ``提及`` / ``不想``）——删掉模板 2 的
 # ``|聊``，两侧一起丢指令而所有结构断言全绿（变异跑出来的）。这里改成行为驱动：
 # 从模板自己的分支组里读出分支，逐个塞进该模板的句型，必须都能抽到同一个话题。
+def _capture_start(raw: str) -> int:
+    """这条模板里第一个**捕获**组的起点（跳过 ``(?:`` / ``(?=`` 这类）。"""  # noqa: DOCSTRING_CJK
+    for pos, char in enumerate(raw):
+        if char != "(" or (pos and raw[pos - 1] == chr(92)):
+            continue
+        if raw[pos : pos + 2] == "(?":
+            continue
+        return pos
+    raise AssertionError(f"这条模板没有捕获组：{raw!r}")
+
+
 def _group_containing(raw: str, needle: str) -> list[str]:
     """取出这条模板里**含有 needle** 的那个分支组。
 
@@ -2175,9 +2186,11 @@ BRANCH_DRIVE_CASES = [
     (3, "不想", ("不想", "不愿意", "不願意", "不愿", "不願", "懒得", "懶得",
                  "没心情", "沒心情"),
      "我{branch}聊工作。", "工作"),
-    (4, "提", ("说", "說", "提", "聊", "讲", "講"),
+    # ⚠️ 模板 4 的触发词表现在和模板 2 同源（_ZH_PREPOSED_SAY_VERBS）——原先它
+    # 写死着，``關於工作就別提起了。`` 走不进来（codex P2）。
+    (4, "提", ("提起", "提及", "说", "說", "提", "聊", "讲", "講"),
      "关于工作就别{branch}了。", "工作"),
-    (4, "提", ("说", "說", "提", "聊", "讲", "講"),
+    (4, "提", ("提起", "提及", "说", "說", "提", "聊", "讲", "講"),
      "關於工作就別{branch}了。", "工作"),
 ]
 
@@ -4606,15 +4619,29 @@ def test_every_preposed_trigger_form_is_also_chinese_evidence(verb):
 
 def test_the_preposed_trigger_list_is_not_hardcoded_in_the_template():
     """结构面：模板里不许再写死触发词表——写死过一次，证据那侧就漏了两个形式。"""  # noqa: DOCSTRING_CJK
-    preposed = [
-        raw for raw in _zh_pattern_sources() if "|".join(D._ZH_PREPOSED_SAY_VERBS) in raw
+    # ⚠️ 原先只断言「有**一条**模板从常量派生」——于是模板 4 那份写死的表就漏掉了：
+    # ``關於工作就別提起了。`` 走不进专用模板、退回通用的，把 ``就`` 一起存下来
+    # （codex P2）。清单式漏项的典型形态，改成「**每一条**带 ``别/別`` 触发词的
+    # 模板都必须派生」。
+    # 判据：触发词落在捕获组**之后**的那些模板（前置话题式），它们共用这张表。
+    # ⚠️ 又要先摘掉那道零宽 temper：它自带 ``[别別]``，不摘的话模板 3（``我不想聊X``）
+    # 也会被算成前置话题式（第一版就是这么错的）。
+    stripped = [
+        raw.replace(f"(?!{D._ZH_DIRECTIVE_AHEAD})", "")
+        for raw in _zh_pattern_sources()
     ]
-    assert len(preposed) == 1, "前置话题模板应当从 _ZH_PREPOSED_SAY_VERBS 派生"
+    preposed = [
+        raw for raw in stripped
+        if "[别別]" in raw and raw.index("[别別]") > _capture_start(raw)
+    ]
+    assert len(preposed) == 2, [r[:80] for r in preposed]
+    for raw in preposed:
+        assert "|".join(D._ZH_PREPOSED_SAY_VERBS) in raw, raw[:160]
     # ⚠️ 判「有没有写死」只能读**源文件**：编译出来的模板串必然长得跟字面量一样，
     # 拿它去断言等于什么都没测（这条测试第一版就是这么写的，一跑就红）。
     source = pathlib.Path(D.__file__).read_text(encoding="utf-8")
     assert "提起|提及" not in source, "触发词表又被写死进模板了"
-    assert source.count("_ZH_PREPOSED_SAY_VERBS") >= 3
+    assert source.count("_ZH_PREPOSED_SAY_VERBS") >= 4
 
 
 @pytest.mark.parametrize(
@@ -5036,3 +5063,54 @@ def test_the_compound_verb_table_is_derived():
         v for v in D._ZH_SAY_VERBS_JA_SHARED if len(v) > 1
     )
     assert D._ZH_COMPOUND_JA_SHARED_VERBS == ("討論",)
+
+
+# ── 56. temper 的语法要和模板一致 / 关于模板的触发词表同源 ────
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+@pytest.mark.parametrize("addr", sorted(D._ZH_ADDRESS_VERBS))
+def test_address_directives_still_split_through_brackets(opener, closer, addr):
+    """temper 漏掉称呼类动词，两条 ``别叫我…`` 指令被并成一条（codex P2，简体回归）。"""  # noqa: DOCSTRING_CJK
+    verb = addr.replace("?", "")
+    text = f"别{verb}价格{opener}预算.别{verb}收入{closer}目标."
+    assert _zh_terms(text) == {f"价格{opener}预算", f"收入{closer}目标"}, text
+
+
+# ⚠️ ``分别`` 刻意不在这里：``分`` 不在 _BIE_COMPOUND_LEFT 里，那是**模板自己**的
+# 左邻表，parent 上同样把 ``分别讨论`` 当指令。本轮改的是 temper 要和模板一致，
+# 不是去改模板的判据。
+@pytest.mark.parametrize("word", ["个别讨论", "告别演说", "休息"])
+def test_compound_words_are_not_mistaken_for_a_directive(word):
+    """⚠️ temper 里的否定词必须是**加了护**的那份。
+
+    裸 ``别`` 会把 ``个别讨论`` 这类复合词看成一条指令，括号就护不住内部标点，
+    ``电影(个别讨论; 2020)别提了。`` 整条退回 ``2020``（codex P2，简体回归）。
+    """  # noqa: DOCSTRING_CJK
+    text = f"电影({word}; 2020)别提了。"
+    assert _zh_terms(text) == {f"电影({word}; 2020)"}, text
+
+
+def test_the_temper_grammar_matches_the_templates():
+    """结构面：temper 用的是加了护的否定词表和完整动词表（含称呼类）。"""  # noqa: DOCSTRING_CJK
+    for neg in D._ZH_NEG_SINGLES_GUARDED + D._ZH_NEG_MULTIS:
+        assert neg in D._ZH_DIRECTIVE_AHEAD, neg
+    assert D._ZH_VERBS_WITH_ADDRESS in D._ZH_DIRECTIVE_AHEAD
+    # 裸的单字否定词不许直接出现——那正是复合词被误判的原因。
+    assert '"|".join(_ZH_NEG_SINGLES ' not in D._ZH_DIRECTIVE_AHEAD
+
+
+@pytest.mark.parametrize("verb", sorted(D._ZH_PREPOSED_SAY_VERBS))
+@pytest.mark.parametrize(
+    ("prefix", "expected"),
+    [("關於工作就別", "工作"), ("关于工作就别", "工作"),
+     ("工作別", "工作"), ("工作别", "工作")],
+)
+def test_the_guanyu_template_shares_the_preposed_trigger_table(verb, prefix, expected):
+    """``关于`` 那条专用模板的触发词表原先还写死着，于是 ``關於工作就別提起了。``
+    退回通用模板、把填充词 ``就`` 一起存下来（codex P2，简体同样）。"""  # noqa: DOCSTRING_CJK
+    text = f"{prefix}{verb}了。"
+    assert expected in _zh_terms(text), (text, _zh_terms(text))
