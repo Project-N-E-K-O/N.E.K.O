@@ -111,6 +111,7 @@ packages = [
   "main_logic",
   "main_routers",
   "memory",
+  "knowledge",
   "plugin",
   "steamworks",
   "utils",
@@ -132,6 +133,7 @@ include = [
   "main_logic",
   "main_routers",
   "memory",
+  "knowledge",
   "plugin",
   "steamworks",
   "utils",
@@ -141,6 +143,10 @@ include = [
   "launcher.py",
   "README.MD",
   "LICENSE",
+  "scripts/validate_knowledge_pack.py",
+  "docs/architecture/knowledge-pack-sdk.md",
+  "docs/architecture/builtin-knowledge-domains.md",
+  "examples/knowledge-packs",
 ]
 exclude = [
   "plugin/plugins",
@@ -171,6 +177,7 @@ override-dependencies = [
 [dependency-groups]
 dev = [
     "hypothesis>=6.100",
+    "jsonschema>=4.23",
     "nest-asyncio>=1.6.0",
     "pyinstaller==6.12.0",
     "pytest>=9.0.2",

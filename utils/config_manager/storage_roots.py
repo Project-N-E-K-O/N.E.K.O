@@ -159,6 +159,7 @@ class StorageRootsMixin:
         self.docs_dir = self.app_docs_dir.parent
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
+        self.knowledge_dir = self.app_docs_dir / "knowledge"
         self.plugins_dir = self.app_docs_dir / "plugins"
         self.live2d_dir = self.app_docs_dir / "live2d"
         # VRM模型存储在用户文档目录下（与Live2D保持一致）
@@ -656,6 +657,18 @@ class StorageRootsMixin:
             return True
         except Exception as e:
             print(f"Warning: Failed to create memory directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_knowledge_directory(self):
+        """Ensure the public-knowledge directory under Documents exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+
+            self.knowledge_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create knowledge directory: {e}", file=sys.stderr)
             return False
 
     def ensure_plugins_directory(self):
@@ -1239,6 +1252,7 @@ class StorageRootsMixin:
             "app_dir": str(self.app_docs_dir),
             "config_dir": str(self.config_dir),
             "memory_dir": str(self.memory_dir),
+            "knowledge_dir": str(self.knowledge_dir),
             "plugins_dir": str(self.plugins_dir),
             "live2d_dir": str(self.live2d_dir),
             "readable_live2d_dir": str(self.readable_live2d_dir) if self.readable_live2d_dir else "",

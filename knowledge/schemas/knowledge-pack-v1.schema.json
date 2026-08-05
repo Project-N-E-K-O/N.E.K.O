@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/knowledge/schemas/knowledge-pack-v1.schema.json",
+  "title": "N.E.K.O. Knowledge Pack v1",
+  "description": "A data-only knowledge pack for N.E.K.O.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_id",
+    "collection_id",
+    "source",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "pack_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "collection_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "collection": {
+      "$ref": "#/$defs/collection"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$",
+      "not": {
+        "pattern": "^(?:con|prn|aux|nul|clock\\$|com[1-9]|lpt[1-9])(?:\\.|$)"
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "display_name"
+      ],
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "license"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "homepage": {
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^https?://(?:\\[[0-9A-Fa-f:.]+\\]|[^/?#\\s:@]+)(?::[0-9]+)?(?:[/?#]|$)"
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "terms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "$ref": "#/$defs/string_list"
+        },
+        "recognition": {
+          "$ref": "#/$defs/string_list"
+        }
+      }
+    },
+    "string_list": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "maxLength": 300
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "content"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "maxLength": 300,
+            "pattern": "^(?!source:)"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80000
+        }
+      }
+    }
+  }
+}
