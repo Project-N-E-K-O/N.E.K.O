@@ -126,6 +126,12 @@ from .persona import (  # noqa: F401
     update_character_persona_selection,
     clear_character_persona_selection,
 )
+from .language_preference import (  # noqa: F401
+    _request_memory_prompt_locale,
+    apply_character_language_preference,
+    get_character_language_preference,
+    set_character_language_preference,
+)
 from .crud import (  # noqa: F401
     DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
     _get_new_catgirl_default_voice_id,

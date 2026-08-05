@@ -20,6 +20,7 @@ Method-only mixin: every instance attribute is assigned in
 """
 
 import asyncio
+import inspect
 import json
 import time
 from datetime import datetime
@@ -2714,7 +2715,68 @@ class LifecycleMixin:
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup(expected_session=expected_session)
 
-    async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
+    def _queue_session_end_memory_barrier(self, callback):
+        """Queue a terminal memory settlement followed by one local callback."""
+        completion = asyncio.get_running_loop().create_future()
+        self.sync_message_queue.put({
+            'type': 'system',
+            'data': 'session end',
+            '_after_memory_settlement': callback,
+            '_memory_settlement_done': completion,
+        })
+        return completion
+
+    async def _wait_for_session_end_memory_barrier(
+        self,
+        completion,
+        callback,
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        """Wait for connector settlement, with an idempotent immediate fallback.
+
+        The queue item retains the callback after a timeout.  Therefore a slow or
+        temporarily stopped connector will run it again *after* its eventual
+        memory write, closing the late-write window that motivated the barrier.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(completion),
+                timeout=max(0.1, float(timeout_seconds)),
+            )
+            return
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] memory settlement barrier timed out; clearing recent "
+                "context now and leaving a queued post-settlement cleanup",
+                self.lanlan_name,
+            )
+
+            # The caller no longer awaits this future after the fallback. Consume
+            # a possible late callback exception to avoid an unhandled-future log;
+            # the connector logs the failure at its source as well.
+            def _consume_late_completion(future):
+                if future.cancelled():
+                    return
+                try:
+                    future.exception()
+                except Exception:
+                    pass
+
+            completion.add_done_callback(_consume_late_completion)
+            result = callback()
+            if inspect.isawaitable(result):
+                await result
+
+    async def end_session(
+        self,
+        by_server=False,
+        *,
+        expected_session=None,
+        reset_starting_count=True,
+        after_memory_settlement=None,
+        memory_settlement_timeout=15.0,
+    ):  # 与Core API断开连接
         # 「用户/前端主动结束启动」信号：只有前端发来的 end_session / pause_session
         # （by_server=False 且 reset_starting_count=True，见 websocket_router）才计。
         # 内部 recovery（reset_starting_count=False）与各类 by_server=True cleanup
@@ -2723,6 +2785,7 @@ class LifecycleMixin:
         # 早退之前，确保 in-flight（尚未 active）期间前端 end_session 也能计上。
         if not by_server and reset_starting_count:
             self._user_session_abandon_epoch += 1
+        memory_barrier_completion = None
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -2783,6 +2846,15 @@ class LifecycleMixin:
             await self._teardown_tts_runtime(
                 _orphan_tts_handler, _orphan_tts_thread,
                 _orphan_tts_rq, _orphan_tts_rsq)
+            if callable(after_memory_settlement):
+                memory_barrier_completion = self._queue_session_end_memory_barrier(
+                    after_memory_settlement,
+                )
+                await self._wait_for_session_end_memory_barrier(
+                    memory_barrier_completion,
+                    after_memory_settlement,
+                    timeout_seconds=memory_settlement_timeout,
+                )
             return
 
         await self._init_renew_status()
@@ -2794,6 +2866,15 @@ class LifecycleMixin:
                 self._clear_audio_stream_queue("end_session_post_init_inactive")
                 self._cancel_audio_stream_worker("end_session_post_init_inactive")
                 self._reset_voice_echo_suppression_cache()
+                if callable(after_memory_settlement):
+                    memory_barrier_completion = self._queue_session_end_memory_barrier(
+                        after_memory_settlement,
+                    )
+                    await self._wait_for_session_end_memory_barrier(
+                        memory_barrier_completion,
+                        after_memory_settlement,
+                        timeout_seconds=memory_settlement_timeout,
+                    )
                 return
             if expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
@@ -2826,7 +2907,8 @@ class LifecycleMixin:
             tts_response_queue_ref = self.tts_response_queue
 
         logger.info("End Session: Starting cleanup...")
-        self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
+        if not callable(after_memory_settlement):
+            self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
 
         if message_handler_task_ref:
             message_handler_task_ref.cancel()
@@ -2874,6 +2956,19 @@ class LifecycleMixin:
             self._clear_pending_context_appends()
 
         self.last_time = None
+        if callable(after_memory_settlement):
+            # The isolation barrier is intentionally queued only after every
+            # session producer has been stopped.  Otherwise an output callback
+            # racing with teardown could enqueue old text *behind* the barrier
+            # and survive its post-settlement clear.
+            memory_barrier_completion = self._queue_session_end_memory_barrier(
+                after_memory_settlement,
+            )
+            await self._wait_for_session_end_memory_barrier(
+                memory_barrier_completion,
+                after_memory_settlement,
+                timeout_seconds=memory_settlement_timeout,
+            )
         if not by_server:
             await self.send_status(json.dumps({"code": "CHARACTER_LEFT", "details": {"name": self.lanlan_name}}))
             logger.info("End Session: Resources cleaned up.")

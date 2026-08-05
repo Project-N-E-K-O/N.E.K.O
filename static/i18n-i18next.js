@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：合并独立窗口置顶、社区入口、记忆浏览和社交解锁文案；递增版本让 Electron、
-    // Docker 等长期缓存重新拉取包含完整新 key 的语言包。
-    const LOCALE_VERSION = '2026-08-04-social-unlock';
+    // 修改原因：合并社区入口、社交解锁、界面语言与角色语言偏好文案；递增版本让
+    // Electron、Docker 等长期缓存重新拉取包含完整新 key 的语言包。
+    const LOCALE_VERSION = '2026-08-06-language-preferences-v5';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
@@ -116,6 +116,75 @@
         }
         return '';
     }
+
+    const CONVERSATION_LANGUAGE_STORAGE_PREFIX = 'nekoConversationLanguage:';
+    const NATIVE_LANGUAGE_OPTIONS = Object.freeze([
+        Object.freeze({ code: 'zh-CN', label: '简体中文' }),
+        Object.freeze({ code: 'zh-TW', label: '繁體中文' }),
+        Object.freeze({ code: 'en', label: 'English' }),
+        Object.freeze({ code: 'ja', label: '日本語' }),
+        Object.freeze({ code: 'ko', label: '한국어' }),
+        Object.freeze({ code: 'ru', label: 'Русский' }),
+        Object.freeze({ code: 'es', label: 'Español' }),
+        Object.freeze({ code: 'pt', label: 'Português' })
+    ]);
+
+    function resolveConversationLanguageCharacterName(characterName) {
+        const explicit = String(characterName || '').trim();
+        if (explicit) return explicit;
+        try {
+            return String(
+                (window.lanlan_config && window.lanlan_config.lanlan_name)
+                || (window.appState && window.appState.lanlan_name)
+                || window._currentCatgirl
+                || window.currentCatgirl
+                || ''
+            ).trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function conversationLanguageStorageKey(characterName) {
+        const name = resolveConversationLanguageCharacterName(characterName);
+        return name ? CONVERSATION_LANGUAGE_STORAGE_PREFIX + encodeURIComponent(name) : '';
+    }
+
+    window.NEKO_NATIVE_LANGUAGE_OPTIONS = NATIVE_LANGUAGE_OPTIONS;
+    window.getConversationLanguagePreference = function (characterName) {
+        try {
+            const storageKey = conversationLanguageStorageKey(characterName);
+            const stored = storageKey ? localStorage.getItem(storageKey) : '';
+            const normalizedStored = normalizeSupportedLanguageCode(stored);
+            if (normalizedStored) return normalizedStored;
+        } catch (_) { /* use UI fallback */ }
+
+        const liveUiLanguage = normalizeSupportedLanguageCode(
+            (window.i18next && window.i18next.language)
+            || (window.i18n && window.i18n.language)
+            || ''
+        );
+        return liveUiLanguage || getBrowserLanguage();
+    };
+    window.setConversationLanguagePreference = function (language, characterName, options = {}) {
+        const normalized = normalizeSupportedLanguageCode(language);
+        if (!normalized) return false;
+        const name = resolveConversationLanguageCharacterName(characterName);
+        const storageKey = conversationLanguageStorageKey(name);
+        try {
+            if (storageKey) localStorage.setItem(storageKey, normalized);
+        } catch (_) { /* keep the live event usable without storage */ }
+        if (options.dispatch !== false) {
+            window.dispatchEvent(new CustomEvent('neko:conversation-language-changed', {
+                detail: {
+                    language: normalized,
+                    character_name: name,
+                    source: options.source || 'local'
+                }
+            }));
+        }
+        return true;
+    };
 
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {

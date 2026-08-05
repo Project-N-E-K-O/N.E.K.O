@@ -1148,15 +1148,13 @@
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-            // 当前 UI locale —— 让后端 mini-game 邀请短路 + Phase 1/2 LLM 与
-            // 前端 i18n 显示完全对齐，不再依赖后端 ``get_global_language()``
-            // 的进程级缓存（Steam SDK 启动期 race 失败时会退化到系统 locale，
-            // Steam=中文 / 系统=英文 的用户会看到邀请文案是英文）。后端
-            // ``_resolve_proactive_locale`` 优先读这个字段，缺时再回落到
-            // ``mgr.user_language`` / 全局缓存。
+            // Internal templates follow the per-character conversation language,
+            // not whichever locale happens to render the current UI.
             var i18nLanguage = '';
             try {
-                if (window.i18next && typeof window.i18next.language === 'string') {
+                if (typeof window.getConversationLanguagePreference === 'function') {
+                    i18nLanguage = window.getConversationLanguagePreference(lanlanName);
+                } else if (window.i18next && typeof window.i18next.language === 'string') {
                     i18nLanguage = window.i18next.language;
                 } else if (typeof localStorage !== 'undefined') {
                     i18nLanguage = localStorage.getItem('i18nextLng') || '';

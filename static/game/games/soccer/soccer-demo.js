@@ -820,7 +820,9 @@
       window.addEventListener('localechange', () => setTimeout(applySoccerI18nFallbacks, 0));
       setTimeout(applySoccerI18nFallbacks, 0);
       const _resolveSpeechLang = () => {
-        const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+        const raw = (typeof window.getConversationLanguagePreference === 'function'
+            && window.getConversationLanguagePreference())
+          || (typeof window.i18next !== 'undefined' && window.i18next.language)
           || (typeof navigator !== 'undefined' && navigator.language)
           || 'zh-CN';
         const tag = String(raw).toLowerCase();
@@ -834,13 +836,14 @@
         if (tag.startsWith('pt')) return 'pt-BR';
         return raw;
       };
-      // 当前 UI locale（同 app-proactive.js 的 i18nLanguage 三级兜底）。
-      // 后端 _absorb_request_language 优先吃这个字段并回写 mgr.user_language，
-      // 不再依赖 ws greeting_check 的同步时机或全局缓存的 Steam SDK race。
-      // Steam=中文 / 系统=英文 + Steam SDK 启动期 race 失败的场景下，没有这条
-      // 路径 in-game LLM 的 prompt 会跑成英文。
+      // In-game internal templates follow the conversation preference. UI copy
+      // can switch independently without rewriting the character's language.
       window.SoccerCurrentI18nLang = function () {
         try {
+          if (typeof window.getConversationLanguagePreference === 'function') {
+            const preferred = window.getConversationLanguagePreference();
+            if (preferred) return preferred;
+          }
           if (typeof window.i18next !== 'undefined'
               && typeof window.i18next.language === 'string'
               && window.i18next.language) {

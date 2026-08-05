@@ -1694,6 +1694,63 @@
         return v == null ? '' : String(v);
     }
 
+    function getConversationLanguageForCurrentCharacter() {
+        try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                return window.getConversationLanguagePreference(getWebSocketLanlanName() || '');
+            }
+            if (S.conversationLanguage) return S.conversationLanguage;
+            if (window.i18next && window.i18next.language) return window.i18next.language;
+            return localStorage.getItem('i18nextLng') || navigator.language || 'en';
+        } catch (_) {
+            return S.conversationLanguage || 'en';
+        }
+    }
+
+    function hydrateConversationLanguage(characterName) {
+        var hydrationId = (Number(S._conversationLanguageHydrationId) || 0) + 1;
+        S._conversationLanguageHydrationId = hydrationId;
+        S.conversationLanguageHydrated = false;
+        var fallback = getConversationLanguageForCurrentCharacter();
+        if (!characterName) {
+            S.conversationLanguage = fallback;
+            S.conversationLanguageHydrated = true;
+            return Promise.resolve(fallback);
+        }
+
+        var request = fetch('/api/characters/character/' + encodeURIComponent(characterName) + '/language-preference', {
+            cache: 'no-store'
+        }).then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json();
+        }).then(function (payload) {
+            if (!payload || payload.success !== true) throw new Error('invalid language preference response');
+            return payload.language || payload.effective_language || fallback;
+        }).catch(function (error) {
+            console.warn('[ConversationLanguage] preference hydration failed, using UI fallback:', error);
+            return fallback;
+        });
+
+        return Promise.race([
+            request,
+            new Promise(function (resolve) { setTimeout(function () { resolve(fallback); }, 2500); })
+        ]).then(function (language) {
+            if (S._conversationLanguageHydrationId !== hydrationId) return language;
+            S.conversationLanguage = language || fallback;
+            S.conversationLanguageHydrated = true;
+            if (typeof window.setConversationLanguagePreference === 'function') {
+                window.setConversationLanguagePreference(
+                    S.conversationLanguage,
+                    characterName,
+                    { dispatch: false, source: 'server' }
+                );
+            }
+            _syncLanguageToBackend(S.conversationLanguage);
+            _sendGreetingCheckIfReady();
+            return S.conversationLanguage;
+        });
+    }
+
     // Upper bound for the settings-sync gate below: a hung POST must never
     // block session starts or socket-dependent flows for longer than this.
     var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
@@ -2050,6 +2107,8 @@
             return;
         }
         resetMusicCandidateRequestScope(currentLanlanName, true);
+
+        S._conversationLanguageHydration = hydrateConversationLanguage(currentLanlanName);
 
         // 新连接重置模型就绪标志，等待模型重新加载
         S._modelReady = false;
@@ -4867,6 +4926,9 @@
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
             return;
         }
+        if (S.conversationLanguageHydrated !== true) {
+            return;
+        }
         if (S._startupGreetingReleasePending) {
             return;
         }
@@ -4879,23 +4941,10 @@
         }
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
-                // greeting_check 是 ws 链路上唯一会推 mgr.user_language 的消息。
-                // 后端 set_user_language 见空串就 no-op（保留旧值，旧值是
-                // start_session seed 的全局缓存），所以这里宁可送 navigator
-                // 的 BCP47 也别送空串——至少能纠正 Steam SDK race 失败后留下
-                // 的错误英文（例如 Steam=zh / 系统=en，i18next 还在异步拉
-                // Steam API 时，navigator.language 通常已经是 zh-CN）。
-                var greetingLang = '';
-                try {
-                    if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
-                        greetingLang = window.i18next.language;
-                    } else if (typeof localStorage !== 'undefined') {
-                        greetingLang = localStorage.getItem('i18nextLng') || '';
-                    }
-                    if (!greetingLang && typeof navigator !== 'undefined' && navigator.language) {
-                        greetingLang = navigator.language;
-                    }
-                } catch (_) { greetingLang = ''; }
+                // UI locale and conversation locale are independent.  Hydration
+                // above resolves the durable per-character preference; only a
+                // character with no explicit choice falls back to the UI locale.
+                var greetingLang = getConversationLanguageForCurrentCharacter();
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
                 S.socket.send(JSON.stringify({
@@ -4941,15 +4990,9 @@
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
 
-    // i18next 'languageChanged' → 重新把 i18n 真值同步到后端 mgr.user_language。
-    // 关键场景：socket open 早于 i18next bootstrap 完成时，首次 greeting_check
-    // 用 navigator/localStorage 兜底（可能跟 Steam 真值不同），i18next 异步从
-    // /api/config/steam_language 拉到对的值后 fire 'languageChanged'，这里重发
-    // 一条只携带 language 的 ws 消息，让后端 line 136-139 通用 language handler
-    // 把 mgr.user_language 纠正回真值。不复用 greeting_check action，避免再次
-    // 触发 greeting fire 逻辑——后端任何消息带 language 字段都会先调
-    // set_user_language（main_routers/websocket_router.py:136-139），用任意 action
-    // 即可。
+    // Only the dedicated conversation-language event updates mgr.user_language.
+    // A plain i18next languageChanged event is UI-only and must not overwrite a
+    // character's explicit template-language preference.
     function _syncLanguageToBackend(lng) {
         if (!lng || typeof lng !== 'string') return;
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
@@ -4962,18 +5005,25 @@
             console.warn('[language_update] send failed:', e);
         }
     }
-    if (window.i18next && typeof window.i18next.on === 'function') {
-        window.i18next.on('languageChanged', _syncLanguageToBackend);
-    } else {
-        // i18next 还没就绪：监听 i18n-i18next.js 完成时 dispatch 的 localechange。
-        window.addEventListener('localechange', function () {
-            try {
-                var lng = (window.i18next && typeof window.i18next.language === 'string')
-                    ? window.i18next.language : '';
-                _syncLanguageToBackend(lng);
-            } catch (_) { /* noop */ }
-        });
-    }
+    window.addEventListener('neko:conversation-language-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var currentName = getWebSocketLanlanName() || '';
+        if (detail.character_name && detail.character_name !== currentName) return;
+        if (!detail.language || typeof detail.language !== 'string') return;
+        S.conversationLanguage = detail.language;
+        S.conversationLanguageHydrated = true;
+        _syncLanguageToBackend(detail.language);
+    });
+    window.addEventListener('storage', function (event) {
+        var currentName = getWebSocketLanlanName() || '';
+        var expectedKey = currentName
+            ? 'nekoConversationLanguage:' + encodeURIComponent(currentName)
+            : '';
+        if (!expectedKey || event.key !== expectedKey || !event.newValue) return;
+        S.conversationLanguage = event.newValue;
+        S.conversationLanguageHydrated = true;
+        _syncLanguageToBackend(event.newValue);
+    });
 
     window.addEventListener('neko:new-user-icebreaker-ended', function () {
         _sendGreetingCheckIfReady();
@@ -5004,12 +5054,7 @@
         if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS) {
             return;
         }
-        var catLang = '';
-        try {
-            if (window.i18next && window.i18next.language) catLang = window.i18next.language;
-            else catLang = localStorage.getItem('i18nextLng') || '';
-            if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
-        } catch (_) { catLang = ''; }
+        var catLang = getConversationLanguageForCurrentCharacter();
         try {
             var catGreetingMessage = {
                 action: 'cat_greeting_check',

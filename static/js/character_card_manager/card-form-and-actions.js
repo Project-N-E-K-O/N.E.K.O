@@ -1,4 +1,104 @@
-// Part responsibility: detail-form construction, voice selectors, save, switch, and delete actions.
+// Part responsibility: detail-form construction, language/voice selectors, save, switch, and delete actions.
+
+const CHARACTER_LANGUAGE_OPTIONS = Object.freeze([
+    { code: 'zh-CN', label: '简体中文' },
+    { code: 'zh-TW', label: '繁體中文' },
+    { code: 'en', label: 'English' },
+    { code: 'ja', label: '日本語' },
+    { code: 'ko', label: '한국어' },
+    { code: 'ru', label: 'Русский' },
+    { code: 'es', label: 'Español' },
+    { code: 'pt', label: 'Português' }
+]);
+
+function _characterLanguageT(key, fallback) {
+    if (typeof window.t !== 'function') return fallback;
+    const translated = window.t(key);
+    return translated && translated !== key ? translated : fallback;
+}
+
+function _cacheCharacterLanguagePreference(name, language, source) {
+    if (typeof window.setConversationLanguagePreference === 'function') {
+        window.setConversationLanguagePreference(language, name, {
+            source: source || 'character-card-manager'
+        });
+    }
+}
+
+async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
+    try {
+        const response = await fetch(
+            '/api/characters/character/' + encodeURIComponent(name) + '/language-preference',
+            { cache: 'no-store' }
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.success !== true) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+        }
+        const language = payload.language || payload.effective_language;
+        if (CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === language)) {
+            select.value = language;
+            _cacheCharacterLanguagePreference(name, language, 'server-hydration');
+        }
+        select.dataset.previousValue = select.value;
+        if (selectUi) selectUi.setDisabled(false);
+        else select.disabled = false;
+    } catch (error) {
+        console.warn('[ConversationLanguage] load failed:', error);
+        if (selectUi) selectUi.setDisabled(true);
+        else select.disabled = true;
+        select.title = _characterLanguageT(
+            'character.languagePreferenceLoadFailed',
+            '语言偏好加载失败'
+        );
+    } finally {
+        if (selectUi) selectUi.refresh();
+    }
+}
+
+async function _saveCharacterLanguagePreference(name, select, selectUi) {
+    const previous = select.dataset.previousValue || select.value;
+    const language = select.value;
+    if (selectUi) selectUi.setDisabled(true);
+    else select.disabled = true;
+    try {
+        const response = await fetch(
+            '/api/characters/character/' + encodeURIComponent(name) + '/language-preference',
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ language })
+            }
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (payload.language === language) {
+            select.dataset.previousValue = language;
+            _cacheCharacterLanguagePreference(name, language, 'character-card-manager');
+        }
+        if (!response.ok || payload.success !== true) {
+            if (!payload.partial_success) {
+                select.value = previous;
+                if (selectUi) selectUi.refresh();
+            }
+            throw new Error(payload.error || ('HTTP ' + response.status));
+        }
+        showMessage(
+            _characterLanguageT('character.languagePreferenceSaved', '语言偏好已更新'),
+            'success'
+        );
+    } catch (error) {
+        console.error('[ConversationLanguage] save failed:', error);
+        if (typeof showAlert === 'function') {
+            await showAlert(
+                _characterLanguageT('character.languagePreferenceSaveFailed', '语言偏好保存失败')
+                + (error && error.message ? ': ' + error.message : '')
+            );
+        }
+    } finally {
+        if (selectUi) selectUi.setDisabled(false);
+        else select.disabled = false;
+    }
+}
 
 function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const previousForm = container && typeof container.querySelector === 'function'
@@ -7,8 +107,17 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     if (previousForm && previousForm._voiceSelectCleanup) {
         previousForm._voiceSelectCleanup();
     }
+    if (previousForm && previousForm._languageSelectCleanup) {
+        previousForm._languageSelectCleanup();
+    }
+    if (previousForm && previousForm._localeChangeHandler) {
+        window.removeEventListener('localechange', previousForm._localeChangeHandler);
+    }
     if (previousForm && previousForm._characterPersonalityUpdateHandler) {
         window.removeEventListener('neko:character-personality-updated', previousForm._characterPersonalityUpdateHandler);
+    }
+    if (previousForm && previousForm._conversationLanguageUpdateHandler) {
+        window.removeEventListener('neko:conversation-language-changed', previousForm._conversationLanguageUpdateHandler);
     }
 
     let cat = rawData || {};
@@ -108,6 +217,114 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
     form.appendChild(baseWrapper);
 
+    // Language preference for internal templates (native labels intentionally bypass i18n).
+    // Build it here so hydration can start early, but mount it later beside the
+    // other runtime preferences (personality and voice) instead of profile data.
+    let languagePreferenceWrapper = null;
+    if (!isNew && name) {
+        languagePreferenceWrapper = document.createElement('div');
+        languagePreferenceWrapper.className = 'field-row-wrapper language-preference-row';
+        const languageLabel = document.createElement('div');
+        languageLabel.className = 'language-preference-label';
+        const languageLabelText = document.createElement('span');
+        const languageLabelId = 'language-preference-label-' + Date.now().toString(36)
+            + '-' + Math.random().toString(36).slice(2, 8);
+        languageLabelText.id = languageLabelId;
+        languageLabelText.className = 'language-preference-label-text';
+        languageLabelText.dataset.i18n = 'character.languagePreference';
+        languageLabelText.textContent = _characterLanguageT(
+            'character.languagePreference',
+            '语言偏好'
+        );
+        languageLabel.appendChild(languageLabelText);
+
+        const languageHelp = document.createElement('span');
+        languageHelp.className = 'language-preference-help';
+        const languageHelpButton = document.createElement('button');
+        languageHelpButton.type = 'button';
+        languageHelpButton.className = 'language-preference-help-button';
+        languageHelpButton.textContent = '?';
+        languageHelpButton.dataset.i18nAria = 'character.languagePreferenceDescription';
+        languageHelpButton.setAttribute(
+            'aria-label',
+            _characterLanguageT(
+                'character.languagePreferenceDescription',
+                '此偏好并非强制限制，角色设定以及当前对话中使用的语言仍可能影响实际回复。'
+            )
+        );
+        const languageTooltip = document.createElement('span');
+        languageTooltip.className = 'language-preference-tooltip';
+        languageTooltip.id = languageLabelId + '-tooltip';
+        languageTooltip.setAttribute('role', 'tooltip');
+        languageTooltip.dataset.i18n = 'character.languagePreferenceDescription';
+        languageTooltip.textContent = _characterLanguageT(
+            'character.languagePreferenceDescription',
+            '此偏好并非强制限制，角色设定以及当前对话中使用的语言仍可能影响实际回复。'
+        );
+        languageHelpButton.setAttribute('aria-describedby', languageTooltip.id);
+        languageHelp.appendChild(languageHelpButton);
+        languageHelp.appendChild(languageTooltip);
+        languageLabel.appendChild(languageHelp);
+        languagePreferenceWrapper.appendChild(languageLabel);
+
+        const languageField = document.createElement('div');
+        languageField.className = 'field-row';
+        const languageSelect = document.createElement('select');
+        languageSelect.className = 'conversation-language-select voice-native-select';
+        languageSelect.dataset.testid = 'character-language-preference';
+        languageSelect.disabled = true;
+        languageSelect.tabIndex = -1;
+        languageSelect.setAttribute('aria-hidden', 'true');
+        languageSelect.setAttribute('aria-labelledby', languageLabelId);
+        languageSelect.setAttribute('aria-describedby', languageTooltip.id);
+        languageSelect.dataset.i18nTitle = 'character.languagePreferenceDescription';
+        languageSelect.title = _characterLanguageT(
+            'character.languagePreferenceDescription',
+            '选择内部模板使用的语言，用于引导回复而非强制限定语言'
+        );
+        CHARACTER_LANGUAGE_OPTIONS.forEach(option => {
+            const element = document.createElement('option');
+            element.value = option.code;
+            element.textContent = option.label;
+            languageSelect.appendChild(element);
+        });
+        const cachedLanguage = typeof window.getConversationLanguagePreference === 'function'
+            ? window.getConversationLanguagePreference(name)
+            : '';
+        if (CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === cachedLanguage)) {
+            languageSelect.value = cachedLanguage;
+        }
+        languageSelect.dataset.previousValue = languageSelect.value;
+        languageSelect.addEventListener('change', function () {
+            void _saveCharacterLanguagePreference(name, languageSelect, languageSelectUi);
+        });
+        languageField.appendChild(languageSelect);
+        const languageSelectUi = _panelCreateVoiceSelectUi(languageSelect);
+        languageSelectUi.container.classList.add('language-preference-custom-select');
+        const languageSelectHeader = languageSelectUi.container.querySelector('.voice-select-header');
+        if (languageSelectHeader) {
+            languageSelectHeader.setAttribute('aria-labelledby', languageLabelId);
+            languageSelectHeader.setAttribute('aria-describedby', languageTooltip.id);
+        }
+        languageField.appendChild(languageSelectUi.container);
+        form._languageSelectCleanup = languageSelectUi.destroy;
+        languagePreferenceWrapper.appendChild(languageField);
+
+        form._conversationLanguageUpdateHandler = function (event) {
+            const detail = event && event.detail ? event.detail : {};
+            if (detail.character_name && detail.character_name !== name) return;
+            if (!CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === detail.language)) return;
+            languageSelect.value = detail.language;
+            languageSelect.dataset.previousValue = detail.language;
+            languageSelectUi.refresh();
+        };
+        window.addEventListener(
+            'neko:conversation-language-changed',
+            form._conversationLanguageUpdateHandler
+        );
+        void _hydrateCharacterLanguagePreference(name, languageSelect, languageSelectUi);
+    }
+
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
     const renderedCustomFields = new Set();
@@ -133,6 +350,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
             : '可输入详细描述';
+        textareaEl.dataset.i18nPlaceholder = 'character.detailDescriptionPlaceholder';
         textareaEl.value = cat[k];
         fr.appendChild(textareaEl);
         wrapper.appendChild(fr);
@@ -245,6 +463,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
             : '可输入详细描述';
+        textareaEl.dataset.i18nPlaceholder = 'character.detailDescriptionPlaceholder';
         fr.appendChild(textareaEl);
         wrapper.appendChild(fr);
 
@@ -333,6 +552,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const personalityWrapper = document.createElement('div');
     personalityWrapper.className = 'field-row-wrapper personality-row';
     const personalityLabel = document.createElement('label');
+    personalityLabel.dataset.i18n = 'character.personalitySetting';
     personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
     personalityLabel.style.fontSize = '1rem';
     personalityWrapper.appendChild(personalityLabel);
@@ -351,6 +571,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalitySummary.textContent = personalitySelection.hasOverride
         ? personalitySelection.displayName
         : (window.t ? window.t('character.personalityUseDefault') : '跟随角色卡默认设定');
+    if (!personalitySelection.hasOverride) {
+        personalitySummary.dataset.i18n = 'character.personalityUseDefault';
+    }
     personalityRow.appendChild(personalitySummary);
     personalityWrapper.appendChild(personalityRow);
 
@@ -358,7 +581,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalitySelectBtn.type = 'button';
     personalitySelectBtn.className = 'btn sm row-action-btn personality-select-action';
     personalitySelectBtn.dataset.testid = 'character-personality-select';
-    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span>'
+    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span data-i18n="character.personalitySelect">'
         + (window.t ? window.t('character.personalitySelect') : '选择人格') + '</span>';
     personalitySelectBtn.disabled = !!isNew;
     personalitySelectBtn.addEventListener('click', async function () {
@@ -379,7 +602,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityClearBtn.type = 'button';
     personalityClearBtn.className = 'btn sm delete row-action-btn personality-clear-action';
     personalityClearBtn.dataset.testid = 'character-personality-clear';
-    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span>'
+    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span data-i18n="character.personalityClear">'
         + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
     personalityClearBtn.disabled = !personalitySelection.hasOverride;
     personalityClearBtn.addEventListener('click', async function () {
@@ -412,6 +635,12 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityWrapper.appendChild(personalityClearBtn);
     form.appendChild(personalityWrapper);
 
+    // Language is a conversation behavior preference, so it sits between
+    // personality and voice rather than among the editable character-card fields.
+    if (languagePreferenceWrapper) {
+        form.appendChild(languagePreferenceWrapper);
+    }
+
     // 模型信息仅用于保存时保留 Live2D 待机动作，模型管理入口已移到卡面按钮。
     function validateModelPath(path) {
         if (path === undefined || path === null) return '';
@@ -430,6 +659,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const voiceWrapper = document.createElement('div');
     voiceWrapper.className = 'field-row-wrapper voice-row';
     const voiceLabel = document.createElement('label');
+    voiceLabel.dataset.i18n = 'character.voiceSetting';
     voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
     voiceLabel.style.fontSize = '1rem';
     voiceWrapper.appendChild(voiceLabel);
@@ -454,6 +684,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceSelect.style.alignSelf = 'stretch';
     const defaultOption = document.createElement('option');
     defaultOption.value = '';
+    defaultOption.dataset.i18n = 'character.voiceNotSet';
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
     voiceRow.appendChild(voiceSelect);
@@ -520,7 +751,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     saveButton.id = 'save-button';
     saveButton.className = 'btn sm settings-save-action';
     if (!isNew) saveButton.style.display = 'none';
-    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span>'
+    const saveButtonI18nKey = isNew ? 'character.confirmNewCatgirl' : 'character.saveChanges';
+    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span data-i18n="' + saveButtonI18nKey + '">'
         + (isNew
             ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
             : (window.t ? window.t('character.saveChanges') : '保存修改'))
@@ -533,7 +765,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     cancelButton.id = 'cancel-button';
     cancelButton.className = 'btn sm settings-cancel-action';
     if (!isNew) cancelButton.style.display = 'none';
-    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span>'
+    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span data-i18n="character.cancel">'
         + (window.t ? window.t('character.cancel') : '取消') + '</span>';
     cancelButton.onclick = function () {
         if (saveButton) saveButton.style.display = 'none';
@@ -609,6 +841,48 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         voiceSelectUi.refresh();
     });
     form._voicesLoadPromise = voicesLoadPromise;
+
+    // updatePageTexts handles declarative data-i18n nodes. The remaining form
+    // content is derived from character data or the voice catalog, so refresh it
+    // in place to preserve unsaved edits while the interface language changes.
+    form._lastRenderedLocale = String(window.i18n && window.i18n.language || '');
+    form._localeChangeHandler = function () {
+        const currentLocale = String(window.i18n && window.i18n.language || '');
+        if (currentLocale && currentLocale === form._lastRenderedLocale) return;
+        form._lastRenderedLocale = currentLocale;
+
+        form.querySelectorAll('[data-character-field-name]').forEach(label => {
+            _panelSetFieldLabel(label, label.dataset.characterFieldName || '');
+        });
+        form.querySelectorAll('.setting-field-delete').forEach(_panelConfigureFieldDeleteButton);
+
+        const currentPersonality = readCharacterPersonalitySelection(cat);
+        if (currentPersonality.hasOverride) {
+            delete personalitySummary.dataset.i18n;
+            personalitySummary.textContent = currentPersonality.displayName;
+        } else {
+            personalitySummary.dataset.i18n = 'character.personalityUseDefault';
+            personalitySummary.textContent = window.t
+                ? window.t('character.personalityUseDefault')
+                : '跟随角色卡默认设定';
+        }
+
+        const selectedVoiceId = voiceSelect.value;
+        const refreshSequence = (form._voiceLocaleRefreshSequence || 0) + 1;
+        form._voiceLocaleRefreshSequence = refreshSequence;
+        voiceSelectUi.setDisabled(true);
+        void _loadPanelVoices(voiceSelect, selectedVoiceId).then(() => {
+            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
+            voiceSelectUi.refresh();
+            voiceSelectUi.setDisabled(false);
+        }, () => {
+            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
+            voiceSelectUi.refresh();
+            voiceSelectUi.setDisabled(false);
+        });
+    };
+    window.addEventListener('localechange', form._localeChangeHandler);
+
     form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
     form._modelType = normalizedModelType;
@@ -665,6 +939,7 @@ function _panelAttachProfileNameLimiter(input) {
 // label 设置（支持i18n + 超长title提示）
 function _panelSetFieldLabel(labelEl, key) {
     const MAX_LABEL_LEN = 8;
+    labelEl.dataset.characterFieldName = key;
     let displayText = key;
     if (window.t && typeof window.t === 'function') {
         const profileLabelKey = 'characterProfile.labels.' + key;
@@ -690,6 +965,7 @@ function _panelConfigureFieldDeleteButton(button) {
         ? window.t('character.deleteField')
         : '删除设定';
     button.removeAttribute('title');
+    button.dataset.i18nAria = 'character.deleteField';
     button.setAttribute('aria-label', deleteText);
     button.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon" aria-hidden="true">';
 }
@@ -924,6 +1200,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
     }
 
     function openDropdown() {
+        if (selectEl.disabled) return;
         document.querySelectorAll('.voice-custom-select.active').forEach(activeSelect => {
             if (activeSelect === container) return;
             activeSelect.classList.remove('active', 'open-up', 'open-down');
@@ -944,6 +1221,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
     }
 
     function toggleDropdown() {
+        if (selectEl.disabled) return;
         if (container.classList.contains('active')) {
             closeDropdown();
         } else {
@@ -967,6 +1245,19 @@ function _panelCreateVoiceSelectUi(selectEl) {
             item.classList.toggle('selected', isSelected);
             item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
+    }
+
+    function syncDisabledState() {
+        const disabled = !!selectEl.disabled;
+        header.disabled = disabled;
+        header.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+        container.classList.toggle('disabled', disabled);
+        if (disabled) closeDropdown();
+    }
+
+    function setDisabled(disabled) {
+        selectEl.disabled = !!disabled;
+        syncDisabledState();
     }
 
     function selectOptionValue(value) {
@@ -1043,6 +1334,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
             }
         });
         syncSelectionState();
+        syncDisabledState();
         setOptionTabbability(container.classList.contains('active'));
         updateScrollbarState();
     }
@@ -1080,6 +1372,7 @@ function _panelCreateVoiceSelectUi(selectEl) {
     return {
         container,
         refresh,
+        setDisabled,
         destroy() {
             closeDropdown();
             selectEl.removeEventListener('change', syncSelectionState);
@@ -1104,6 +1397,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
             const defaultOption = document.createElement('option');
             defaultOption.value = '';
+            defaultOption.dataset.i18n = 'character.voiceNotSet';
             defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
             selectEl.appendChild(defaultOption);
 

@@ -2415,7 +2415,11 @@
         return btoa(binary);
     }
 
-    function getCurrentUiLanguage() {
+    function getConversationTemplateLanguage(characterName) {
+        if (typeof window.getConversationLanguagePreference === 'function') {
+            const preferred = window.getConversationLanguagePreference(characterName);
+            if (preferred) return preferred;
+        }
         const candidates = [
             window.i18n && window.i18n.language,
             window.i18next && window.i18next.language,
@@ -2450,7 +2454,7 @@
             return {
                 character_name: targetCharacter,
                 source_format: format ? format.value : 'auto',
-                language: getCurrentUiLanguage(),
+                language: getConversationTemplateLanguage(targetCharacter),
                 archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
             };
         }
@@ -2472,7 +2476,7 @@
         return {
             character_name: targetCharacter,
             source_format: format ? format.value : 'auto',
-            language: getCurrentUiLanguage(),
+            language: getConversationTemplateLanguage(targetCharacter),
             files: files
         };
     }

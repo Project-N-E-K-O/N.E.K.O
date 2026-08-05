@@ -277,6 +277,12 @@
 
     function currentLocale() {
         try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                var preferred = window.getConversationLanguagePreference(resolveLanlanName());
+                if (preferred) return normalizeLocale(preferred);
+            }
+        } catch (_) {}
+        try {
             if (window.i18next && window.i18next.language) {
                 return normalizeLocale(window.i18next.language);
             }

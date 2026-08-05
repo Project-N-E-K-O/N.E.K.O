@@ -70,6 +70,10 @@ class HistoryRequest(BaseModel):
     language: str | None = None
 
 
+class PromptLocalePreferenceRequest(BaseModel):
+    language: str
+
+
 def _activate_request_language(language: str | None) -> str:
     """Resolve the locale for this request without changing the process default.
 
@@ -3240,6 +3244,60 @@ async def cancel_correction(lanlan_name: str):
         return {"status": "cancelled"}
     
     return {"status": "no_task"}
+
+
+@app.get("/prompt-locale/{lanlan_name}")
+async def get_prompt_locale_preference(lanlan_name: str):
+    """Return the durable internal-template locale for one character."""
+    name = validate_lanlan_name(lanlan_name)
+    language = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale,
+        name,
+    )
+    return {
+        "success": True,
+        "language": language,
+        "effective_language": language or get_global_language_full(),
+    }
+
+
+@app.put("/prompt-locale/{lanlan_name}")
+async def set_prompt_locale_preference(
+    lanlan_name: str,
+    request: PromptLocalePreferenceRequest,
+):
+    """Persist a character's template locale without injecting prompt text."""
+    name = validate_lanlan_name(lanlan_name)
+    if not is_supported_language_code(request.language):
+        raise HTTPException(status_code=400, detail="Unsupported language")
+
+    normalized = normalize_language_code(request.language, format="full")
+    previous = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale,
+        name,
+    )
+    order = await asyncio.to_thread(
+        locale_state.reserve_character_prompt_locale_order,
+        name,
+    )
+    persisted = await asyncio.to_thread(
+        locale_state.record_character_prompt_locale,
+        name,
+        normalized,
+        order=order,
+    )
+    if persisted != normalized:
+        raise HTTPException(
+            status_code=409,
+            detail="A newer language preference superseded this request",
+        )
+    return {
+        "success": True,
+        "language": normalized,
+        "previous_language": previous,
+        "changed": previous != normalized,
+    }
+
 
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(lanlan_name: str, language: str | None = None):

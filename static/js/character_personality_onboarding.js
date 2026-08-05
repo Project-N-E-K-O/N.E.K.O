@@ -64,8 +64,12 @@
         return payload;
     }
 
-    function getCurrentLanguage() {
+    function getCurrentLanguage(characterName) {
         try {
+            if (typeof window.getConversationLanguagePreference === 'function') {
+                const preferred = window.getConversationLanguagePreference(characterName);
+                if (preferred) return preferred;
+            }
             if (window.i18next && typeof window.i18next.language === 'string' && window.i18next.language) {
                 return window.i18next.language;
             }
@@ -211,7 +215,7 @@
             await this.waitForTutorialFlowToSettle();
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = getCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             this.ensureOverlay();
             this.renderStageOne();
@@ -387,7 +391,7 @@
             }
 
             this.openReason = 'manual_reselect';
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = getCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.presets.length) {
                 return false;
@@ -407,7 +411,7 @@
 
             this.openReason = 'onboarding';
             this.currentCharacterName = await this.fetchCurrentCharacterName();
-            this.currentLanguage = getCurrentLanguage();
+            this.currentLanguage = getCurrentLanguage(this.currentCharacterName);
             this.presets = await this.fetchPresets(this.currentLanguage);
             if (!this.currentCharacterName || !this.presets.length) {
                 return;
