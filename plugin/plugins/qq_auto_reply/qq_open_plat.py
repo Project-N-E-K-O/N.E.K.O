@@ -667,7 +667,12 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             content = str(data.get("content") or "")
-            group_id = str(data.get("group_id") or "")
+            # 该通道的群标识本就是 openid（见 display_name_service 的说明），
+            # 平台按 v2 语义可能挂在 group_openid 而不是 group_id。顺序不能反：
+            # group_id 有值时必须继续用它，否则群 subject_id 会整体换键，而
+            # memory/scopes.py 是字节相等匹配、无别名，存量 scoped 群记忆会一次
+            # 性失联。只在原键为空时兜底，才能既零行为变化又挡住全量丢消息。
+            group_id = str(data.get("group_id") or data.get("group_openid") or "")
             mentioned_ids: list[str] = []
             mentions_all = False
             # 检查 @ 目标（content 中 <@!id> 格式）
