@@ -57,3 +57,18 @@ A required follow-up question triggered by architectural or operational risk, su
 ### Plugin Design Brief
 
 The Markdown confirmation artifact produced before implementation. It records the settled plugin identity, purpose, shape, first-version scope, out-of-scope items, inferred architecture, risks, and read/write boundaries.
+
+### Installed Payload
+
+The host-managed files deployed from a plugin package, including executable code, static resources, package metadata, and vendored dependencies. An upgrade may replace the payload as a whole.
+_Avoid_: Plugin data, user state
+
+### Plugin User State
+
+The user- or plugin-owned runtime configuration and persistent data associated with a Plugin Identity. Installation replacement preserves this state; cache belongs to the same namespace but may be discarded.
+_Avoid_: Installed payload, plugin source
+
+### Logical Compatibility
+
+A new plugin version's ability to understand state written for an older version. It is owned by the plugin implementation and is distinct from the host preserving the underlying files.
+_Avoid_: File preservation, successful installation

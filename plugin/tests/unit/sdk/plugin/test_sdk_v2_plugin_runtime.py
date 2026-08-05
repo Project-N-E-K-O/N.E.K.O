@@ -161,7 +161,7 @@ async def test_os_activity_snapshot_privacy_and_unavailable_states(monkeypatch: 
 
 
 @pytest.mark.asyncio
-async def test_plugin_config_contract_methods_raise_not_implemented() -> None:
+async def test_plugin_config_contract_methods() -> None:
     cfg = rt.PluginConfig(_Ctx())
     dumped = await cfg.dump()
     assert dumped["feature"]["enabled"] is True
@@ -171,10 +171,8 @@ async def test_plugin_config_contract_methods_raise_not_implemented() -> None:
     assert required is True
     with pytest.raises((ValidationError, TransportError)):
         await cfg.require("feature.missing")
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.set("feature.new", True)
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.update({"x": 1})
+    assert await cfg.set("feature.new", True) is None
+    assert await cfg.update({"x": 1}) == {"x": 1}
 
 
 @pytest.mark.asyncio
