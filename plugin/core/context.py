@@ -1251,11 +1251,11 @@ class PluginContext:
                     primary_failure_reason = "transport_error"
                 # Exceptions can only escape before or from the blocking send;
                 # logging after a successful send is isolated above.  The
-                # legacy queue below is cache-only and is not an authoritative
-                # message-plane submission path.
+                # legacy host queue below remains a distinct local submission
+                # path and may drive bus-backed consumers.
                 try:
                     self.logger.warning(
-                        "[PluginContext] message_plane submission failed; caching legacy record: "
+                        "[PluginContext] message_plane submission failed; trying legacy host queue: "
                         "plugin_id={} ai_behavior={} priority={} reason={} err_type={}",
                         self.plugin_id,
                         canonical.get("ai_behavior"),
@@ -1266,9 +1266,10 @@ class PluginContext:
                 except Exception:
                     pass
 
-        # Keep the legacy control-plane cache populated for compatibility, but
-        # do not report it as submitted: no active handler forwards this queue
-        # into the authoritative message plane.
+        # The legacy control-plane queue is still a valid local host submission
+        # path: host-side message records emit bus changes consumed by fallback
+        # watchers.  A successful enqueue therefore accepts responsibility even
+        # though it does not acknowledge later host consumption.
         if self.message_queue is not None:
             try:
                 payload = _build_wire_payload(
@@ -1279,7 +1280,7 @@ class PluginContext:
                 if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                     try:
                         self.logger.debug(
-                            "Plugin {} cached message (legacy control plane; not submitted): "
+                            "Plugin {} submitted message (legacy host queue): "
                             "ai_behavior={} priority={}",
                             self.plugin_id,
                             canonical.get("ai_behavior"),
@@ -1287,10 +1288,7 @@ class PluginContext:
                         )
                     except Exception:
                         pass
-                return {
-                    "submitted": False,
-                    "reason": primary_failure_reason or "transport_unavailable",
-                }
+                return {"submitted": True}
             except Exception as e:
                 try:
                     self.logger.warning(
