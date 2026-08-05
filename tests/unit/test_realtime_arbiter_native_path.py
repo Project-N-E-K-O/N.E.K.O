@@ -43,6 +43,7 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client import _response_arbiter as _arbiter_module
+from main_logic.omni_realtime_client import _transport as _transport_module
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 from main_logic.omni_realtime_client._shared import (
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
@@ -348,6 +349,73 @@ async def test_a_terminal_resets_the_per_turn_output_state():
         "visual context for its whole duration"
     )
     assert client._image_recognized_this_turn is False
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_created_resets_the_per_response_output_state():
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    client._interrupted = True
+    client._output_transcript_buffer = "previous buffered transcript"
+    client._current_response_transcript = "previous repetition transcript"
+    client._last_response_created_time = 0.0
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-new"}})
+    await _settle()
+
+    assert client._interrupted is False
+    assert client._output_transcript_buffer == ""
+    assert client._current_response_transcript == ""
+    assert client._last_response_created_time > 0.0
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_transcript_flush_failure_does_not_stop_the_receive_loop(monkeypatch):
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        _transport_module.logger,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+
+    async def _raise_from_output_transcript(_text: str, _is_first: bool) -> None:
+        raise RuntimeError("host transcript sink disconnected")
+
+    client = _native_client()
+    client.on_output_transcript = _raise_from_output_transcript
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    client._audio_delta_count = 1
+    client._output_transcript_buffer = "already spoken"
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert receive_loop.done() is False
+    assert client._output_transcript_buffer == ""
+    assert warnings == [
+        ("response.done transcript flush failed (%s); continuing", "RuntimeError")
+    ]
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-2"}})
+    await _settle()
+    assert client._current_response_id == "resp-2"
+    assert client._response_created_total == 2
 
     socket.finish()
     await asyncio.wait_for(receive_loop, timeout=1)

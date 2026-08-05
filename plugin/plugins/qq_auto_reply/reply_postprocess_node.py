@@ -180,7 +180,7 @@ class QQReplyPostprocessNode:
         reply_id = ""; at_id = ""; poke_user = ""; sticker_id = ""; voice_text = ""; keyboard = ""
 
         m = re.search(r"<reply>(.*?)</reply>", text, re.IGNORECASE)
-        if m: reply_id = m.group(1).strip(); text = re.sub(r"<reply>.*?</reply>", "", text, count=1, flags=re.IGNORECASE)
+        if m: reply_id = m.group(1).strip(); text = re.sub(r"<reply>.*?</reply>", "", text, flags=re.IGNORECASE)
 
         m = re.search(r"<at>(.*?)</at>", text, re.IGNORECASE)
         if m: at_id = m.group(1).strip(); text = re.sub(r"<at>.*?</at>", "", text, count=1, flags=re.IGNORECASE)
@@ -269,14 +269,56 @@ class QQReplyPostprocessNode:
 
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         blocks: list[QQMessageBlock] = []
+        emoji_reaction_id = ""
+        feeling = ""
+        forward_content = ""
+        forward_target = ""
+        forward_count = 0
+        mark_flag = False
 
         if strategy_mode == "neko_dynamic" and reply_text:
-            # 先提取 <wait> 标签（XML 解析会忽略它），保存到 raw_reply_text 供 buffer 读取
             import re
+            # 先提取 <wait> 标签（XML 解析会忽略它），保存到 raw_reply_text 供 buffer 读取
             wm = re.search(r"<wait>(\d+(?:\.\d+)?)</wait>", reply_text, re.IGNORECASE)
             if wm:
-                # 保留 raw_reply_text 中的 <wait> 标签（不清理），让 buffer 能读到
                 pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
+            # --- 提取独立标签（仅限 <msg> 之外的标签，不碰块内内容）---
+            # 计算 <msg> 块区间，辅助判断标签是否在块外
+            _msg_ranges = [(m.start(), m.end()) for m in re.finditer(r"<msg[\s>][\s\S]*?</msg>", reply_text, re.IGNORECASE)]
+            def _outside_msg(pos: int) -> bool:
+                return not any(start <= pos < end for start, end in _msg_ranges)
+            # extract <emoji>ID</emoji> (standalone reaction tag)
+            em = re.search(r"<emoji>(\d+)</emoji>", reply_text, re.IGNORECASE)
+            if em and _outside_msg(em.start()):
+                emoji_reaction_id = em.group(1).strip()
+                reply_text = reply_text[:em.start()] + reply_text[em.end():]
+                reply_text = reply_text.strip()
+            # extract <mark/> (forward bookmark)
+            mk = re.search(r"<mark\s*/>", reply_text, re.IGNORECASE)
+            if mk and _outside_msg(mk.start()):
+                reply_text = reply_text[:mk.start()] + reply_text[mk.end():]
+                reply_text = reply_text.strip()
+                mark_flag = True
+            # extract <feeling>emotion</feeling> (mood tag)
+            fm = re.search(r"<feeling>(\w+)</feeling>", reply_text, re.IGNORECASE)
+            if fm and _outside_msg(fm.start()):
+                feeling = fm.group(1).strip().lower()
+                reply_text = reply_text[:fm.start()] + reply_text[fm.end():]
+                reply_text = reply_text.strip()
+            # extract <forward to="群号" count="30">content</forward>
+            fw = re.search(r"<forward(\s+to\s*=\s*\"(\d+)\")?(\s+count\s*=\s*\"(\d+)\")?\s*>(.*?)</forward>", reply_text, re.DOTALL | re.IGNORECASE)
+            if fw and _outside_msg(fw.start()):
+                forward_content = fw.group(5).strip() if fw.group(5) else ""
+                forward_target = fw.group(2) or ""
+                forward_count = int(fw.group(4)) if fw.group(4) else 0
+                reply_text = reply_text[:fw.start()] + reply_text[fw.end():]
+                reply_text = reply_text.strip()
+
+            # 刷新 wait_directive_text：上面可能剥离了 <feeling>/<emoji>/<mark>/<forward>，
+            # 用旧值会导致 buffer 把空 feeling 当成有待投递内容
+            wait_directive_text = reply_text
+
+            # --- 处理 pre-tool 文本（core 在 tool-round start 捕获的模型文本）---
             explicit_prefix = ""
             parse_text = reply_text
             if structural_pre_tool:
@@ -286,6 +328,7 @@ class QQReplyPostprocessNode:
                 explicit_prefix = structural_pre_tool.strip()
                 parse_text = reply_text[len(structural_pre_tool):]
 
+            # --- XML 解析 ---
             dynamic_parts = self._split_dynamic_xml(parse_text)
             parse_failed = dynamic_parts is None and "</msg>" in parse_text
             broken_xml = parse_text if parse_failed else ""
@@ -316,6 +359,20 @@ class QQReplyPostprocessNode:
             # 构建人类可读的 reply_text（首个块的文本）
             first_text = blocks[0].text if blocks else ""
             reply_text = first_text or reply_text
+            # 日志：LLM 使用的标签
+            tags = []
+            if emoji_reaction_id: tags.append(f"emoji={emoji_reaction_id}")
+            if feeling: tags.append(f"feeling={feeling}")
+            if forward_content: tags.append("forward")
+            for b in (blocks or []):
+                if b.reply_to: tags.append(f"reply={b.reply_to}")
+                if b.at_user: tags.append(f"at={b.at_user}")
+                if b.sticker: tags.append(f"sticker={b.sticker}")
+                if b.poke: tags.append(f"poke={b.poke}")
+                if b.record: tags.append("record")
+                if b.keyboard: tags.append("keyboard")
+            if tags:
+                self.plugin._emit_log("INFO", f"[Tags] {' | '.join(tags)}")
 
         if blocks or reply_text:
             return QQReplyOutcome(
@@ -327,6 +384,12 @@ class QQReplyPostprocessNode:
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
+                feeling=feeling,
+                emoji_reaction_id=emoji_reaction_id,
+                forward_content=forward_content,
+                forward_target=forward_target,
+                forward_count=forward_count,
+                forward_mark=mark_flag,
             )
         if context.ephemeral_session:
             return QQReplyOutcome(
@@ -337,6 +400,12 @@ class QQReplyPostprocessNode:
                 wait_directive_text=wait_directive_text,
                 postprocess_reason="empty",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
+                feeling=feeling,
+                emoji_reaction_id=emoji_reaction_id,
+                forward_content=forward_content,
+                forward_target=forward_target,
+                forward_count=forward_count,
+                forward_mark=mark_flag,
             )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_forced = getattr(context, "force_reply", False) or context.permission_level == "admin"
@@ -349,6 +418,12 @@ class QQReplyPostprocessNode:
                 wait_directive_text=wait_directive_text,
                 postprocess_reason="llm_skip",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
+                feeling=feeling,
+                emoji_reaction_id=emoji_reaction_id,
+                forward_content=forward_content,
+                forward_target=forward_target,
+                forward_count=forward_count,
+                forward_mark=mark_flag,
             )
         # default/forced 回复同样没有本轮历史 ai 行：标记必须保留，
         # 否则 buffer 会把上一条已投递回复误记成未投递草稿。
@@ -361,6 +436,11 @@ class QQReplyPostprocessNode:
             wait_directive_text=wait_directive_text,
             postprocess_reason="default",
             used_fallback=bool(getattr(model_result, "used_fallback", False)),
+            feeling=feeling,
+            emoji_reaction_id=emoji_reaction_id,
+            forward_content=forward_content,
+            forward_target=forward_target,
+            forward_count=forward_count,
         )
 
     def build_delivery_plan(self, request: Any, outcome: QQReplyOutcome) -> QQDeliveryPlan | None:

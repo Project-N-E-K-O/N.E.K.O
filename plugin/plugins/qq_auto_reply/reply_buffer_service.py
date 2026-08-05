@@ -15,6 +15,9 @@ import time
 from typing import Any, Optional
 
 
+_MAX_BUFFER_COUNT = 17
+
+
 class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
     __slots__ = ("buffered_texts", "buffered_user_texts", "materialized_user_count",
@@ -419,7 +422,7 @@ class QQReplyBufferService:
                 hist_before = self._session_history_len(session_key)
                 try:
                     from .pipeline_models import QQReplyRequest
-                    combined = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(existing.buffered_texts[-5:]))
+                    combined = "\n".join(f"[{i+1}] {t[:100]}" for i, t in enumerate(existing.buffered_user_texts[-5:]))
                     request = QQReplyRequest(
                         message_text=f"[系统] 对方连续发了多条消息，你需要发一句简短的话表示\"我在听\"吗？如果需要，只回复那句话（不超过10个字，要自然，符合人设）；如果不需要，回复空内容。以下是最近内容：\n{combined}",
                         sender_id=existing.sender_id or "0",
@@ -445,7 +448,7 @@ class QQReplyBufferService:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
-            if n >= 17 and self._consent_revoked_since(existing):
+            if n >= _MAX_BUFFER_COUNT and self._consent_revoked_since(existing):
                 # 与 ack 同理：总结的 prompt 会原样引用这些记忆派生的旧
                 # 草稿。授权撤销后不总结、不投递，草稿保持未投递（排除
                 # 记录留存）并解除游标屏障——与 _deliver_after_wait 的
@@ -463,7 +466,7 @@ class QQReplyBufferService:
                     existing,
                 )
                 return
-            if n >= 17:
+            if n >= _MAX_BUFFER_COUNT:
                 # 本分支提前 return，函数尾部的补关联不会执行——先把本轮
                 # 草稿行绑上，否则 settle 按 draft_rows 清 provisional 时
                 # 漏掉它，游标屏障永久卡死、此后所有消息进不了 scoped 记忆。
@@ -473,7 +476,7 @@ class QQReplyBufferService:
                 hist_before = self._session_history_len(session_key)
                 try:
                     from .pipeline_models import QQReplyRequest
-                    combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(existing.buffered_texts))
+                    combined = "\n".join(f"[{i+1}] {t[:150]}" for i, t in enumerate(existing.buffered_user_texts))
                     request = QQReplyRequest(
                         message_text=f"[系统] 对方连续发了以下消息，请用一两句话自然总结回复：\n{combined}",
                         sender_id=existing.sender_id or "0",

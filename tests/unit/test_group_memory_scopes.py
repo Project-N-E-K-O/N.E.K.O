@@ -4644,6 +4644,7 @@ async def test_force_summary_branch_binds_draft_before_settling():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="_trigger_proactive_speech removed; icebreaker now uses _try_icebreaker")
 async def test_proactive_prompt_row_excluded_from_digest():
     """The silence-timer proactive turn appends a synthetic system-
     instruction human row to the shared history; like rapid-fire control
@@ -4697,6 +4698,7 @@ async def test_proactive_prompt_row_excluded_from_digest():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="_reply_to_ignored_message removed; retro now uses buffer-style summary")
 async def test_retro_replay_honors_receipt_time_policy():
     """Retroactive review replays a backlog message through the shared
     session: consent belongs to when it was SAID. A message received while
@@ -10344,6 +10346,8 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     client = QQClient.__new__(QQClient)
     client._pending_actions = {}
     client.logger = None
+    client._sent_message_ids = []
+    client.record_sent_message_id = client._sent_message_ids.append
     sent: list = []
 
     class _WS:
@@ -10361,6 +10365,9 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     assert await client.send_private_record("2046", "file:///a.wav") == "pm-1"
     assert sent[-1]["action"] == "send_private_msg"
     assert not client._pending_actions  # no leaked futures
+    # A confirmed private send records its id too (the quoted-reply check
+    # asks "is this one of mine?" for private chats as well).
+    assert client._sent_message_ids == ["pm-1"]
 
     # No receipt -> None (the caller falls back to text).
     class _SilentWS:
@@ -14890,7 +14897,7 @@ async def test_group_handler_snapshots_permission_before_first_await():
 
     async def evaluate(**_kwargs):
         permission["level"] = "admin"
-        return SimpleNamespace(action="reply", force_reply=False)
+        return SimpleNamespace(action="reply", force_reply=False, reason="test")
 
     run = AsyncMock(return_value=SimpleNamespace(
         action="skip", reply_text="", traces=[],

@@ -1815,11 +1815,15 @@ class _TransportMixin:
                 elif event_type == "conversation.item.created":
                     self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
-                    self._response_arbiter.notify_response_terminal(event)
+                    finalize_response = (
+                        self._response_arbiter.notify_response_terminal(event)
+                    )
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
                     # 解析实时 API 返回的 token 用量
                     self._record_response_usage(event.get("response"))
+                    if finalize_response is False:
+                        continue
                     self._clear_turn_response_state()
                     # 响应完成，检测重复度
                     await self._record_response_repetition(
@@ -1834,15 +1838,25 @@ class _TransportMixin:
                     # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
                     # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
                     # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
-                    await self._flush_pending_output_transcript()
+                    try:
+                        await self._flush_pending_output_transcript()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "response.done transcript flush failed (%s); continuing",
+                            type(exc).__name__,
+                        )
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished()
                 elif event_type == "response.created":
-                    self._response_arbiter.notify_response_created(event)
+                    expose_response = self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
-                    self._current_response_id = event.get("response", {}).get("id")
+                    if not expose_response:
+                        continue
                     self._announces_responses = True
+                    self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
