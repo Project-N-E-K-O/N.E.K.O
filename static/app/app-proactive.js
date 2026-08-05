@@ -1154,9 +1154,11 @@
             try {
                 if (typeof window.getConversationLanguagePreference === 'function') {
                     i18nLanguage = window.getConversationLanguagePreference(lanlanName);
-                } else if (window.i18next && typeof window.i18next.language === 'string') {
+                }
+                if (!i18nLanguage && window.i18next && typeof window.i18next.language === 'string') {
                     i18nLanguage = window.i18next.language;
-                } else if (typeof localStorage !== 'undefined') {
+                }
+                if (!i18nLanguage && typeof localStorage !== 'undefined') {
                     i18nLanguage = localStorage.getItem('i18nextLng') || '';
                 }
                 if (!i18nLanguage && typeof navigator !== 'undefined' && typeof navigator.language === 'string') {

@@ -2859,6 +2859,7 @@ class LifecycleMixin:
 
         await self._init_renew_status()
 
+        _post_init_inactive = False
         async with self.lock:
             # Re-check after await: another task may have deactivated or swapped session.
             if not self.is_active:
@@ -2866,45 +2867,49 @@ class LifecycleMixin:
                 self._clear_audio_stream_queue("end_session_post_init_inactive")
                 self._cancel_audio_stream_worker("end_session_post_init_inactive")
                 self._reset_voice_echo_suppression_cache()
-                if callable(after_memory_settlement):
-                    memory_barrier_completion = self._queue_session_end_memory_barrier(
-                        after_memory_settlement,
-                    )
-                    await self._wait_for_session_end_memory_barrier(
-                        memory_barrier_completion,
-                        after_memory_settlement,
-                        timeout_seconds=memory_settlement_timeout,
-                    )
-                return
-            if expected_session is not None and expected_session is not self.session:
+                _post_init_inactive = True
+            elif expected_session is not None and expected_session is not self.session:
                 logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
                 return
-            self.is_active = False
-            # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
-            # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
-            # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
-            # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
-            # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
-            # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
-            if reset_starting_count:
-                self._starting_session_count = 0
-                self._starting_input_mode = None
-            self._audio_stream_epoch += 1
-            self._clear_audio_stream_queue("end_session")
-            self._cancel_audio_stream_worker("end_session")
-            self._reset_voice_echo_suppression_cache()
+            else:
+                self.is_active = False
+                # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），
+                # 前端超时后发来 end_session，必须解除这个 guard，否则用户手动重试会被
+                # 静默丢弃（_starting_session_count>0 → return），导致"必须重启应用才能恢复"。
+                # 但 start_session 内部自己调 end_session 清理旧 session 时必须传
+                # reset_starting_count=False，否则 guard 被清零后并发的第二次 start_session
+                # 会穿过，产生孤儿 OmniRealtimeClient（silence_check_task/ws 泄漏）。
+                if reset_starting_count:
+                    self._starting_session_count = 0
+                    self._starting_input_mode = None
+                self._audio_stream_epoch += 1
+                self._clear_audio_stream_queue("end_session")
+                self._cancel_audio_stream_worker("end_session")
+                self._reset_voice_echo_suppression_cache()
 
-            # Activity tracker：session 关闭，voice_engaged 不再可能触发。
-            self._activity_tracker.on_voice_mode(False)
+                # Activity tracker：session 关闭，voice_engaged 不再可能触发。
+                self._activity_tracker.on_voice_mode(False)
 
-            # Snapshot all mutable resource refs while holding the lock,
-            # then operate only on locals to prevent killing newly created resources.
-            main_session_ref = self.session
-            message_handler_task_ref = self.message_handler_task
-            tts_handler_task_ref = self.tts_handler_task
-            tts_thread_ref = self.tts_thread
-            tts_request_queue_ref = self.tts_request_queue
-            tts_response_queue_ref = self.tts_response_queue
+                # Snapshot all mutable resource refs while holding the lock,
+                # then operate only on locals to prevent killing newly created resources.
+                main_session_ref = self.session
+                message_handler_task_ref = self.message_handler_task
+                tts_handler_task_ref = self.tts_handler_task
+                tts_thread_ref = self.tts_thread
+                tts_request_queue_ref = self.tts_request_queue
+                tts_response_queue_ref = self.tts_response_queue
+
+        if _post_init_inactive:
+            if callable(after_memory_settlement):
+                memory_barrier_completion = self._queue_session_end_memory_barrier(
+                    after_memory_settlement,
+                )
+                await self._wait_for_session_end_memory_barrier(
+                    memory_barrier_completion,
+                    after_memory_settlement,
+                    timeout_seconds=memory_settlement_timeout,
+                )
+            return
 
         logger.info("End Session: Starting cleanup...")
         if not callable(after_memory_settlement):

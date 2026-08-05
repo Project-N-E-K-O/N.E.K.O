@@ -5008,7 +5008,7 @@
     window.addEventListener('neko:conversation-language-changed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         var currentName = getWebSocketLanlanName() || '';
-        if (detail.character_name && detail.character_name !== currentName) return;
+        if (!detail.character_name || detail.character_name !== currentName) return;
         if (!detail.language || typeof detail.language !== 'string') return;
         S.conversationLanguage = detail.language;
         S.conversationLanguageHydrated = true;

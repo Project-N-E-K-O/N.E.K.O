@@ -115,6 +115,26 @@ def test_language_preference_has_accessible_explanatory_tooltip():
 
 
 @pytest.mark.unit
+def test_language_preference_events_are_strictly_character_scoped():
+    websocket_source = (
+        PROJECT_ROOT / "static" / "app" / "app-websocket.js"
+    ).read_text(encoding="utf-8")
+    assert (
+        "if (!detail.character_name || detail.character_name !== currentName) return;"
+        in websocket_source
+    )
+
+
+@pytest.mark.unit
+def test_proactive_language_fallbacks_continue_after_empty_preference():
+    proactive_source = (
+        PROJECT_ROOT / "static" / "app" / "app-proactive.js"
+    ).read_text(encoding="utf-8")
+    assert "if (!i18nLanguage && window.i18next" in proactive_source
+    assert "if (!i18nLanguage && typeof localStorage" in proactive_source
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_character_language_change_clears_only_recent_context_and_resets_session(monkeypatch):
     calls = []
@@ -173,6 +193,95 @@ async def test_character_language_change_clears_only_recent_context_and_resets_s
     assert next(
         index for index, call in enumerate(calls) if call[0] == "end_session"
     ) < calls.index(("clear_recent", config_manager, "Mimi"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_partial_language_preference_response_uses_http_200(monkeypatch):
+    async def read_payload(_request):
+        return {"language": "ja"}, None
+
+    async def apply_language(_name, _language):
+        return {
+            "success": False,
+            "partial_success": True,
+            "language": "ja",
+            "error": "近期上下文清理失败",
+        }
+
+    monkeypatch.setattr(preference_router, "_read_json_object_or_400", read_payload)
+    monkeypatch.setattr(
+        preference_router,
+        "apply_character_language_preference",
+        apply_language,
+    )
+
+    response = await preference_router.set_character_language_preference(
+        "Mimi",
+        object(),
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["partial_success"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_post_init_inactive_memory_barrier_waits_outside_session_lock():
+    lock_states = []
+
+    class SessionManager(LifecycleMixin):
+        def __init__(self):
+            self.lock = asyncio.Lock()
+            self.is_active = True
+            self.session = object()
+            self._user_session_abandon_epoch = 0
+            self._audio_stream_epoch = 0
+
+        def _reset_tts_retry_state(self):
+            pass
+
+        def _reset_proactive_gate(self):
+            pass
+
+        async def _close_independent_asr(self, **_kwargs):
+            pass
+
+        async def _init_renew_status(self):
+            self.is_active = False
+
+        def _clear_audio_stream_queue(self, _reason):
+            pass
+
+        def _cancel_audio_stream_worker(self, _reason):
+            pass
+
+        def _reset_voice_echo_suppression_cache(self):
+            pass
+
+        def _queue_session_end_memory_barrier(self, _callback):
+            return object()
+
+        async def _wait_for_session_end_memory_barrier(
+            self,
+            _completion,
+            _callback,
+            *,
+            timeout_seconds,
+        ):
+            assert timeout_seconds == 15.0
+            lock_states.append(self.lock.locked())
+
+    async def clear_recent():
+        pass
+
+    manager = SessionManager()
+    await manager.end_session(
+        by_server=True,
+        after_memory_settlement=clear_recent,
+    )
+
+    assert lock_states == [False]
 
 
 @pytest.mark.unit

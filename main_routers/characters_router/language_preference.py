@@ -225,7 +225,11 @@ async def set_character_language_preference(name: str, request: Request):
         )
         return JSONResponse(
             result,
-            status_code=200 if result.get("success") else 500,
+            status_code=(
+                200
+                if result.get("success") or result.get("partial_success")
+                else 500
+            ),
         )
     except ValueError as exc:
         return JSONResponse(
