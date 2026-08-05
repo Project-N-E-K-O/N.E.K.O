@@ -5666,6 +5666,13 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert agent_callback_turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < agent_callback_turn_end_block.index(
         "clearPendingAssistantTurnStart();"
     )
+    normal_agent_callback_end = agent_callback_turn_end_block.split(
+        "console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');",
+        1,
+    )[1]
+    assert normal_agent_callback_end.index("ensureAssistantTurnStarted(") < normal_agent_callback_end.index(
+        "clearPendingRollbackForRequest(response.request_id);"
+    )
 
     turn_end_block = source.split("// -------- system turn end --------", 1)[1].split(
         "// AI turn_end 后只 reschedule",

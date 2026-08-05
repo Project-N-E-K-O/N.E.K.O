@@ -3916,7 +3916,6 @@
                         clearPendingAssistantTurnStart();
                         return;
                     }
-                    clearPendingRollbackForRequest(response.request_id);
                     console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
@@ -3932,6 +3931,7 @@
                             response.request_id
                         );
                     }
+                    clearPendingRollbackForRequest(response.request_id);
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
                         logAssistantLifecycle('ws:turn_end_agent_callback:emit', {
