@@ -64,6 +64,12 @@ class _FakeOpenClaw:
 
         return OpenClawAdapter.normalize_magic_command(command)
 
+    @staticmethod
+    def stop_trigger_tier(user_text):
+        from brain.openclaw_adapter import OpenClawAdapter
+
+        return OpenClawAdapter.stop_trigger_tier(user_text)
+
     async def run_magic_command(self, command, *, sender_id=None, role_name=None):
         self.magic_calls.append((command, sender_id, role_name))
         return {"success": True, "reply": "收到", "command": command}
@@ -139,6 +145,7 @@ def _register(
     kind="openclaw",
     ended_seconds_ago=1.0,
     session_id="sess-1",
+    reply="发现 3 个重复文件，要删掉吗？",
 ):
     info = {
         "id": task_id,
@@ -149,6 +156,10 @@ def _register(
         "session_id": session_id,
         "start_time": _iso((ended_seconds_ago or 0) + 5),
         "params": {},
+        # ⚠️ 默认带一句**问句**回复。窗口现在要求那条 reply 真的问过问题——只判「有任务
+        # 跑完过」的话，一次「整理完成，共移动 12 个文件」也会给随后随口的「同意」开闸。
+        # 想测「回复不是问句」走 reply=... 显式传。
+        "result": {"reply": reply},
     }
     # ⚠️ 连 queued / running 也带上 end_time，明知生产里它们不会有。
     # 目的是**隔离状态判据**：不带的话，把 running 塞进窗口集合的变异会被
@@ -938,3 +949,80 @@ def test_stop_retires_before_the_cancel_helper_can_raise(wired, monkeypatch):
     assert registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True, (
         "取消 helper 抛出之前，窗口就该已经作废掉了"
     )
+
+
+def test_a_completion_that_asked_nothing_does_not_open_the_gate(wired):
+    """⚠️ 窗口判的应该是「问过问题」，不是「跑完过任务」。
+
+    Only a reply that actually asked something can be an approval prompt. Opening
+    on any completion means a plain "整理完成，共移动 12 个文件" hands the next
+    casual 同意 a live approval — the task never asked for one.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-done",
+        status="completed",
+        reply="整理完成，共移动 12 个文件。",
+    )
+
+    _dispatch("/daemon approve")
+    assert fake.magic_calls == [], "没问过问题的完成不该开闸"
+
+    # 逃生口：显式敲字面命令仍然豁免
+    _dispatch("/daemon approve", user_text="/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    ["要删掉吗？", "Proceed?", "确认执行这个动作", "是否继续", "需要我删掉嗎"],
+)
+def test_replies_that_can_carry_a_prompt_open_the_gate(wired, reply):
+    """带明确疑问标记的回复才算提示。判据只认标记，不枚举「提示长什么样」。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed", reply=reply)
+
+    _dispatch("/daemon approve")
+    assert [c[0] for c in fake.magic_calls] == ["/daemon approve"], reply
+
+
+def test_stop_needs_a_running_task_when_the_phrasing_is_ambiguous(wired):
+    """⚠️ 「停下来」在角色扮演里可能是对猫娘本人说的，不是要掐后台任务。
+
+    Whole-clause matching kills the narration cases (雨停下来了) but cannot tell
+    these apart — the sentence is identical either way. So this tier asks for
+    corroboration: something must actually be running.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+
+    _dispatch("/stop", user_text="停下来")
+    assert fake.magic_calls == [], "没有在跑的任务时，模糊说法不该派 /stop"
+
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-live",
+        status="running",
+        ended_seconds_ago=None,
+    )
+    _dispatch("/stop", user_text="停下来")
+    assert [c[0] for c in fake.magic_calls] == ["/stop"]
+
+
+@pytest.mark.parametrize(
+    "text", ["取消这个任务", "停止搜索", "算了别查了", "取消這個搜尋", "/stop", "stop"]
+)
+def test_an_addressed_stop_never_needs_corroboration(wired, text):
+    """⚠️ 逃生阀不能焊死。
+
+    registry lies exactly when /stop matters most — a timed-out request is written
+    as ``failed``, a restart empties the registry, TTL drops the entry — and the
+    upstream job may well still be running. The one channel that can stop it is
+    this POST, so phrasings that unambiguously address the agent, and the literal
+    command, must go through with nothing on record.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    assert oc._shared.Modules.task_registry == {}
+
+    _dispatch("/stop", user_text=text)
+    assert [c[0] for c in fake.magic_calls] == ["/stop"], text
