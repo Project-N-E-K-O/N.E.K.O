@@ -211,6 +211,24 @@ def test_browser_capture_is_fixed_pcm16_and_cancels_on_close() -> None:
     assert "similarity" not in script.lower()
 
 
+def test_voice_identity_route_is_reserved_for_character_profiles() -> None:
+    backend = (ROOT / "utils/character_name.py").read_text(encoding="utf-8")
+    frontend = (
+        ROOT
+        / "static/js/character_card_manager/character-data-and-transfer.js"
+    ).read_text(encoding="utf-8")
+
+    backend_routes = backend.split(
+        "RESERVED_ROUTE_NAMES = frozenset({", 1
+    )[1].split("})", 1)[0]
+    frontend_routes = frontend.split(
+        "CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([", 1
+    )[1].split("]);", 1)[0]
+
+    assert '"voice_identity"' in backend_routes
+    assert "'voice_identity'" in frontend_routes
+
+
 def test_all_locales_define_complete_voice_identity_copy() -> None:
     required = {
         "title",

@@ -320,6 +320,9 @@ function createHarness({
         pagehide() {
             return window.dispatchEvent({ type: 'pagehide' });
         },
+        pageshow() {
+            return window.dispatchEvent({ type: 'pageshow', persisted: true });
+        },
     };
 }
 
@@ -800,6 +803,42 @@ test('automatic commit clears the recording indicator before the save request se
         profile: { available: true, state: 'active' },
     }));
     await saving;
+});
+
+test('ordinary upload clears the recording indicator before the request settles', async () => {
+    const uploadStarted = deferred();
+    const uploadResponse = deferred();
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/segment') {
+                uploadStarted.resolve();
+                return uploadResponse.promise;
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const record = harness.elements.get('voice-identity-record');
+    const uploading = record.emit('click');
+    await uploadStarted.promise;
+
+    assert.equal(record.classList.contains('recording'), false);
+    assert.equal(record.recordLabel.textContent, 'Record');
+
+    uploadResponse.resolve(jsonResponse({
+        enrollment: { session_id: 'session-1', stage: 'fixed_2' },
+    }));
+    await uploading;
 });
 
 test('starting enrollment releases the permission-check microphone before the first prompt', async () => {
@@ -1618,6 +1657,35 @@ test('direct pagehide blocks a start waiting on microphone permission', async ()
         harness.getMediaStreams()[0].getTracks().every(track => track.stopped),
         true,
     );
+});
+
+test('bfcache restore clears close state so enrollment can start again', async () => {
+    let startRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    harness.pagehide();
+    harness.pageshow();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(startRequests, 1);
 });
 
 test('window close waits for an in-flight start and cancels its late session', async () => {

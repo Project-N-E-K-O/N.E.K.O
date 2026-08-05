@@ -622,6 +622,8 @@
             } finally {
                 stopMicrophone();
             }
+            state.recording = false;
+            render();
             const verification = state.stage.startsWith('free_verify_');
             uploadStage = state.stage;
             uploadRequestPending = true;
@@ -636,12 +638,6 @@
                 }
             );
             uploadRequestPending = false;
-            if (
-                payload && payload.enrollment
-                && payload.enrollment.stage === 'ready_to_commit'
-            ) {
-                state.recording = false;
-            }
             applyStatus(payload);
             if (verification) {
                 const passed = payload.verification && payload.verification.passed;
@@ -846,6 +842,9 @@
         };
         window.addEventListener('pagehide', function () {
             window.nekoBeforeWindowClose().catch(function () {});
+        });
+        window.addEventListener('pageshow', function (event) {
+            if (event.persisted) state.closeStarted = false;
         });
     }
 
