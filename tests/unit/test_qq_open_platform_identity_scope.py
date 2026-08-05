@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -292,30 +292,40 @@ def test_probe_setting_defaults_to_off_on_disk(tmp_path):
     assert defaults["qq_open_identity_probe_enabled"] is False
 
 
-@pytest.mark.asyncio
-async def test_dashboard_hands_the_probe_flag_back(tmp_path):
-    # Without this the checkbox would reopen unticked every time, and the
-    # maintainer would have no way to tell whether the probe is on.
+def _full_stack_plugin(tmp_path):
+    """A plugin fake wired with the REAL dashboard and settings services.
+
+    Only the disk write is stubbed.  Everything else -- entry -> dashboard ->
+    settings -> `_qq_settings` -- runs for real, which is the point: each of
+    those layers has its own explicit parameter list and drops what it doesn't
+    name.
+    """
     from plugin.plugins.qq_auto_reply.config_store import QQAutoReplyConfigStore
     from plugin.plugins.qq_auto_reply.dashboard_service import QQDashboardService
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     store = QQAutoReplyConfigStore(tmp_path)
-    settings = store.default_config()
-    settings["qq_open_identity_probe_enabled"] = True
     runtime_status = {
         "napcat_managed": False,
         "napcat_running": False,
         "recent_pipeline_traces": [],
     }
-    dashboard = QQDashboardService.__new__(QQDashboardService)
-    dashboard.plugin = SimpleNamespace(
-        _qq_settings=settings,
+    plugin = SimpleNamespace(
+        _qq_settings=store.default_config(),
+        _user_sessions={},
         _running=False,
+        _startup_error=None,
         _relay_backlog_items=[],
         _mask_token=lambda token: "***",
         _normal_relay_probability=0.1,
         _truth_reply_probability=0.1,
+        _ensure_qq_client_initialized=MagicMock(),
+        _spawn_memory_sync_task=MagicMock(),
+        logger=MagicMock(),
+        _emit_log=MagicMock(),
         config_store=store,
+        attention_service=None,
+        qq_client=None,
         permission_mgr=None,
         group_permission_mgr=None,
         plugin_id="qq_auto_reply",
@@ -326,9 +336,10 @@ async def test_dashboard_hands_the_probe_flag_back(tmp_path):
             build_runtime_status=lambda: dict(runtime_status),
         ),
     )
-
-    state = await dashboard.build_dashboard_state()
-    assert state["settings"]["qq_open_identity_probe_enabled"] is True
+    plugin.settings_service = QQSettingsService(plugin)
+    plugin.settings_service.persist_business_config = AsyncMock(return_value=True)
+    plugin.dashboard_service = QQDashboardService(plugin)
+    return plugin
 
 
 def _async_value(value):
@@ -336,6 +347,49 @@ def _async_value(value):
         return value
 
     return _call
+
+
+@pytest.mark.asyncio
+async def test_the_switch_survives_every_layer_of_the_save_path(tmp_path):
+    # The flag has to be declared and forwarded at four layers -- entry schema,
+    # entry, dashboard, settings branch -- and every one of them drops what it
+    # doesn't name.  Miss any single layer and the checkbox looks like it saves
+    # while the connector never sees it.
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+    from plugin.sdk.shared.core.decorators import EVENT_META_ATTR
+
+    schema = getattr(QQAutoReplyPlugin.save_settings, EVENT_META_ATTR).input_schema
+    assert schema["additionalProperties"] is False  # unnamed keys are rejected
+    assert schema["properties"]["qq_open_identity_probe_enabled"] == {
+        "type": "boolean",
+    }
+
+    plugin = _full_stack_plugin(tmp_path)
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
+
+    await QQAutoReplyPlugin.save_settings(
+        plugin, qq_open_identity_probe_enabled=True,
+    )
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is True
+    await QQAutoReplyPlugin.save_settings(
+        plugin, qq_open_identity_probe_enabled=False,
+    )
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
+    # A save that doesn't mention the flag must not silently reset it.
+    plugin._qq_settings["qq_open_identity_probe_enabled"] = True
+    await QQAutoReplyPlugin.save_settings(plugin, sticker_cooldown_messages=5)
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_dashboard_hands_the_probe_flag_back(tmp_path):
+    # Without this the checkbox would reopen unticked every time, and the
+    # maintainer would have no way to tell whether the probe is on.
+    plugin = _full_stack_plugin(tmp_path)
+    plugin._qq_settings["qq_open_identity_probe_enabled"] = True
+
+    state = await plugin.dashboard_service.build_dashboard_state()
+    assert state["settings"]["qq_open_identity_probe_enabled"] is True
 
 
 # ==========================================================================

@@ -204,6 +204,7 @@ class QQDashboardService:
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        qq_open_identity_probe_enabled: Optional[bool] = None,
         local_stt_url: Optional[str] = None,
     ):
         try:
@@ -243,6 +244,7 @@ class QQDashboardService:
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
                 local_stt_url=local_stt_url,
             )
         except ValueError as exc:

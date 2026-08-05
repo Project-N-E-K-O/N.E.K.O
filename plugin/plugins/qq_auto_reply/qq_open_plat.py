@@ -294,6 +294,8 @@ class QQOpenPlatformConnection(QQConnectionBase):
             # 交给 logging 做 %-格式化会炸。
             self.logger.info(build_identity_probe_line(event_type, data))
         except Exception:
+            # 故意全吞：往上抛会被 _receive_loop 的兜底 except 当成断连，
+            # 一条诊断日志失败不该让 bot 掉线重连一次。
             pass
 
     async def _receive_loop(self) -> None:
