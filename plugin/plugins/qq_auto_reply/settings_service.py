@@ -173,6 +173,8 @@ class QQSettingsService:
         participant_markers_created: list[
             tuple[dict[str, Any], int]
         ] | None = None,
+        identity_probe_before: bool | None = None,
+        identity_probe_after: bool | None = None,
         deferred_opt_ins: dict[str, bool] | None = None,
     ) -> bool:
         # 取消路径也要能发布：写盘被 shield 保护，取消 await 不取消它。
@@ -191,6 +193,8 @@ class QQSettingsService:
             participant_memory_before=participant_memory_before,
             participant_memory_after=participant_memory_after,
             participant_markers_created=participant_markers_created,
+            identity_probe_before=identity_probe_before,
+            identity_probe_after=identity_probe_after,
         )
         # 写盘跑成独立 task：config_store.save 内部是 to_thread 的原子写，
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
@@ -332,6 +336,8 @@ class QQSettingsService:
         participant_markers_created: list[
             tuple[dict[str, Any], int]
         ] | None = None,
+        identity_probe_before: bool | None = None,
+        identity_probe_after: bool | None = None,
     ) -> None:
         """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
         按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
@@ -355,6 +361,22 @@ class QQSettingsService:
                     "WARNING",
                     "跨群上下文开关变更未能写盘，已回滚运行时策略",
                 )
+        if (
+            identity_probe_before is not None
+            and identity_probe_after is not None
+            and identity_probe_before != identity_probe_after
+        ):
+            # 只有 ON→OFF 方向能走到这里（OFF→ON 被延迟发布扣着，写盘失败
+            # 时根本没发布过）。磁盘还写着 ON，运行时若停在 OFF，下次重启
+            # 这个开关会自己"变回打开"——一个悄悄取消了自己的关闭动作。
+            # 恢复运行时值让两边一致，失败本身由 persisted=False 报给用户。
+            self.plugin._qq_settings["qq_open_identity_probe_enabled"] = (
+                identity_probe_before
+            )
+            self.plugin._emit_log(
+                "WARNING",
+                "ID 记录开关的变更未能写盘，已回滚运行时状态",
+            )
         if (
             participant_memory_before is not None
             and participant_memory_after is not None
@@ -802,16 +824,9 @@ class QQSettingsService:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:
             self.plugin._qq_settings["qq_open_client_secret"] = str(qq_open_client_secret or "").strip()
-        qq_open_identity_probe_enabled = kwargs.get("qq_open_identity_probe_enabled")
-        if qq_open_identity_probe_enabled is not None:
-            self.plugin._qq_settings["qq_open_identity_probe_enabled"] = bool(
-                qq_open_identity_probe_enabled
-            )
-            self.plugin._emit_log(
-                "INFO",
-                "身份作用域取证日志已"
-                + ("开启" if self.plugin._qq_settings["qq_open_identity_probe_enabled"] else "关闭"),
-            )
+        # qq_open_identity_probe_enabled 不在这里就地写：它和记忆开关同族，
+        # 是「一打开就开始把别人的 ID 落进持久日志」的采集授权，必须走下面
+        # 那套延迟发布（开启只在写盘成功后才对运行时可见）。
         local_stt_url = kwargs.get("local_stt_url")
         if local_stt_url is not None:
             self.plugin._qq_settings["local_stt_url"] = str(local_stt_url or "").strip()
@@ -914,6 +929,9 @@ class QQSettingsService:
         cross_group_before = bool(
             self.plugin._qq_settings.get("allow_cross_group_context", False)
         )
+        identity_probe_before = bool(
+            self.plugin._qq_settings.get("qq_open_identity_probe_enabled", False)
+        )
         # 授权方向不对称：关掉立刻生效（多关一会儿只是保守），打开必须等
         # 写盘成功——消息处理不取设置事务锁，写盘期间到达的轮次会照新开关
         # 读 scoped/跨群记忆并把回复**发出去**，而回滚只能清本地状态，收不
@@ -924,6 +942,10 @@ class QQSettingsService:
             "group_member_memory_enabled",
             "private_participant_memory_enabled",
             "allow_cross_group_context",
+            # 取证开关同属采集授权：打开后每条消息都会把发送者 ID 落进
+            # **持久**日志文件，而写盘失败的授权是从未成立的授权——落下的
+            # 行不会跟着回滚。关掉照旧立刻生效（多关一会儿只是保守）。
+            "qq_open_identity_probe_enabled",
         ):
             value = kwargs.get(key)
             if value is None:
@@ -1034,6 +1056,12 @@ class QQSettingsService:
             participant_memory_before=participant_memory_before,
             participant_memory_after=participant_memory_after,
             participant_markers_created=participant_markers_created,
+            identity_probe_before=identity_probe_before,
+            identity_probe_after=bool(
+                self.plugin._qq_settings.get(
+                    "qq_open_identity_probe_enabled", False,
+                )
+            ),
         )
         if success and participant_settle_needed:
             # Do not race a failed-write rollback against this task: rollback

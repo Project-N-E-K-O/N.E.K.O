@@ -438,6 +438,75 @@ async def test_the_switch_survives_every_layer_of_the_save_path(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_turning_the_switch_on_waits_for_the_write_to_land(tmp_path):
+    # Turning it on is a collection consent: it starts writing other people's
+    # IDs into a file that outlives the app.  A consent whose write failed was
+    # never given -- and the lines it would have written do not roll back.
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    plugin = _full_stack_plugin(tmp_path)
+    plugin.settings_service.persist_business_config = AsyncMock(return_value=False)
+
+    result = await QQAutoReplyPlugin.save_settings(
+        plugin, qq_open_identity_probe_enabled=True,
+    )
+
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
+    assert getattr(result, "value", result).get("persisted") is False
+
+
+@pytest.mark.asyncio
+async def test_turning_the_switch_off_applies_at_once_when_the_write_lands(tmp_path):
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    plugin = _full_stack_plugin(tmp_path)
+    plugin._qq_settings["qq_open_identity_probe_enabled"] = True
+
+    await QQAutoReplyPlugin.save_settings(
+        plugin, qq_open_identity_probe_enabled=False,
+    )
+
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
+
+
+def test_rollback_only_touches_a_switch_this_request_actually_changed(tmp_path):
+    # Every save carries the flag, changed or not.  A failed save that restores
+    # its own stale "before" would shove back an opt-out another request just
+    # persisted -- disk off, runtime on, invisible until restart.
+    plugin = _full_stack_plugin(tmp_path)
+    plugin._qq_settings["qq_open_identity_probe_enabled"] = False  # a later save landed
+
+    plugin.settings_service._rollback_unpersisted_memory_toggles(
+        False,
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+        # This request never touched the probe: before == after.
+        identity_probe_before=True, identity_probe_after=True,
+    )
+
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_does_not_leave_the_switch_silently_off(tmp_path):
+    # The disk still says on.  Leaving the runtime off would make the switch
+    # turn itself back on at the next restart -- an unchecked box that quietly
+    # undid itself.  Restore it and let persisted=False be the news.
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    plugin = _full_stack_plugin(tmp_path)
+    plugin._qq_settings["qq_open_identity_probe_enabled"] = True
+    plugin.settings_service.persist_business_config = AsyncMock(return_value=False)
+
+    result = await QQAutoReplyPlugin.save_settings(
+        plugin, qq_open_identity_probe_enabled=False,
+    )
+
+    assert plugin._qq_settings["qq_open_identity_probe_enabled"] is True
+    assert getattr(result, "value", result).get("persisted") is False
+
+
+@pytest.mark.asyncio
 async def test_dashboard_hands_the_probe_flag_back(tmp_path):
     # Without this the checkbox would reopen unticked every time, and the
     # maintainer would have no way to tell whether the probe is on.
@@ -468,12 +537,16 @@ INSIDER_JARGON = (
 )
 
 
-def _locale_dir():
+def _plugin_dir():
     from pathlib import Path
 
-    import plugin.plugins.qq_auto_reply as pkg
+    from plugin.plugins.qq_auto_reply import __file__ as plugin_init
 
-    return Path(pkg.__file__).parent / "i18n"
+    return Path(plugin_init).parent
+
+
+def _locale_dir():
+    return _plugin_dir() / "i18n"
 
 
 def _locale_files():
@@ -483,8 +556,6 @@ def _locale_files():
 def test_the_probe_copy_exists_in_every_locale():
     # Adding the key to zh-CN only would leave eight languages showing the
     # previous wording -- which is where the jargon was.
-    import json
-
     files = _locale_files()
     assert len(files) >= 9, files
     for path in files:
@@ -495,8 +566,6 @@ def test_the_probe_copy_exists_in_every_locale():
 
 
 def test_the_probe_copy_carries_no_insider_jargon():
-    import json
-
     for path in _locale_files():
         catalogue = json.loads(path.read_text(encoding="utf-8"))
         for key in PROBE_KEYS:
@@ -511,8 +580,6 @@ def test_the_probe_copy_carries_no_insider_jargon():
 def test_the_probe_copy_never_claims_a_restart_resets_the_counter():
     # Only relaunching the whole app rebuilds the connection object; the
     # sidebar's stop/start does not.  Copy must not send users down that path.
-    import json
-
     for path in _locale_files():
         catalogue = json.loads(path.read_text(encoding="utf-8"))
         hint = catalogue["ui.openplat.config.identity_probe_hint"]
@@ -521,11 +588,7 @@ def test_the_probe_copy_never_claims_a_restart_resets_the_counter():
 
 
 def _open_platform_html():
-    from pathlib import Path
-
-    import plugin.plugins.qq_auto_reply as pkg
-
-    return (Path(pkg.__file__).parent / "static" / "open_platform.html").read_text(
+    return (_plugin_dir() / "static" / "open_platform.html").read_text(
         encoding="utf-8",
     )
 
