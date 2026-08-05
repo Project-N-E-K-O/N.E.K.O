@@ -80,7 +80,7 @@ class _ProtocolManager:
         self.calls.append(("resource_optimization_handshake", value))
 
     def start_session(self, *_args, **_kwargs):
-        self.calls.append(("start_session", None))
+        self.calls.append(("start_session", _kwargs))
 
         async def _complete() -> None:
             return None
@@ -528,6 +528,70 @@ async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
             strict=True,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_start_session_forwards_the_request_id_it_was_given(
+    monkeypatch,
+) -> None:
+    # #2539 / Codex P2. The ack has to name the start it answers, or a window
+    # with its own start pending settles on the first same-mode ack that reaches
+    # it -- and the lease fan-out routinely delivers one start's ack to the
+    # window that claimed the microphone mid-start.
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [
+            {"action": "start_session", "input_type": "audio", "request_id": "w1-4"},
+            {"action": "start_session", "input_type": "text"},
+            # Not a string, and an empty one: both mean "no request", not a
+            # crash and not an id the frontend could never match.
+            {"action": "start_session", "input_type": "audio", "request_id": 17},
+            {"action": "start_session", "input_type": "audio", "request_id": "   "},
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    assert [
+        kwargs.get("request_id")
+        for name, kwargs in manager.calls
+        if name == "start_session"
+    ] == ["w1-4", None, None, None]
+
+
+@pytest.mark.asyncio
+async def test_start_session_bounds_the_request_id_length(monkeypatch) -> None:
+    # The id is echoed back on every ack for the session's whole start, and it
+    # arrives from the client. Bound it rather than mirror an arbitrary payload.
+    manager = _ProtocolManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "audio",
+                "request_id": "x" * 500,
+            },
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+
+    forwarded = next(
+        kwargs["request_id"]
+        for name, kwargs in manager.calls
+        if name == "start_session"
+    )
+    assert forwarded == "x" * 128
 
 
 @pytest.mark.asyncio

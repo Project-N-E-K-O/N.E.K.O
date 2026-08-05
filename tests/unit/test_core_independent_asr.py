@@ -6351,7 +6351,7 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
         side_effect=lambda _mode, **_kwargs: order.append("asr")
     )
     manager.send_session_started = AsyncMock(
-        side_effect=lambda _mode: order.append("started")
+        side_effect=lambda _mode, **_kwargs: order.append("started")
     )
 
     stop = asyncio.Event()

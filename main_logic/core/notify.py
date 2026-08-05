@@ -489,7 +489,13 @@ class NotifyMixin:
         except Exception as e:
             logger.error(f"💥 WS Send Session Preparing Error: {e}")
     
-    async def send_session_started(self, input_mode: str): # 通知前端session已启动
+    async def send_session_started(
+        self,
+        input_mode: str,
+        *,
+        request_id: str | None = None,
+        also_notify=None,
+    ): # 通知前端session已启动
         # Carry the SETTLED microphone route on the ack itself (Codex P2).
         #
         # The route verdict otherwise travels only as an ASR_INDEPENDENT_*
@@ -513,7 +519,21 @@ class NotifyMixin:
         # be worse -- the dedupe re-ack exists precisely so the requester is not
         # stranded on its 15s timeout, whose end_session tears down the session
         # that did start.
+        #
+        # ``request_id`` names WHICH start this acks. Without it an ack is
+        # anonymous, and a window with its own start pending settles on the
+        # first same-mode ack that reaches it -- including one fanned out for
+        # somebody else's start. That is exactly what happens when a second
+        # window claims the microphone mid-start: the claim moves the voice
+        # socket, so the in-flight start's ack lands on the claimant, whose
+        # frontend clears its timeout, resolves, reads the blocked route it
+        # carries and aborts its microphone flow outright. The claimant's own
+        # ack -- the one carrying the re-decided route -- arrives to a flow that
+        # has already given up. Tagging the ack lets the frontend ignore acks
+        # that are not answering its request.
         payload = {"type": "session_started", "input_mode": input_mode}
+        if request_id:
+            payload["request_id"] = request_id
         route_mode = str(getattr(self, "_asr_route_mode", "") or "")
         if route_mode:
             # Omitted when unknown rather than defaulted: a manager without the
@@ -577,12 +597,54 @@ class NotifyMixin:
                 # the game lease and closing hardware the text entry never
                 # meant to touch.
                 await self._send_to_voice_owner(dict(payload))
+            if also_notify is not None:
+                # Addressed delivery for a requester that neither plane is
+                # guaranteed to reach (Codex P2). The dedupe re-ack is the case:
+                # its own re-decision can fail closed, and _fail_closed_voice_route
+                # REVOKES the lease -- clearing _voice_lease_connection_id and the
+                # voice socket -- before this ack goes out. With a newer window as
+                # self.websocket, the requester is then on neither plane, sits on
+                # its promise until the 15s timeout, and that timeout's end_session
+                # tears down the session that just started.
+                await self._send_to_socket_if_new(
+                    also_notify,
+                    dict(payload),
+                    (
+                        self.websocket,
+                        # Mirrors the guard above: with a game owner the fan-out
+                        # never ran, so the lease socket has NOT been served and
+                        # must not be treated as already covered.
+                        self._voice_owner_socket()
+                        if getattr(self, "_voice_lease_owner", "none") != "game"
+                        else None,
+                    ),
+                )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Started Error: {e}")
-    
+
+    async def _send_to_socket_if_new(self, socket, payload: dict, already_sent) -> None:
+        """Best-effort push to ``socket`` unless it already got this payload.
+
+        Identity comparison, not equality: the planes above hold the very same
+        socket objects, and a second copy of an ack is not harmless -- the
+        frontend's start resolver is one-shot but the handler around it runs
+        again in full (microphone teardown, composer visibility).
+        """
+        if socket is None or any(socket is sent for sent in already_sent):
+            return
+        state = getattr(socket, "client_state", None)
+        if state is None or state != socket.client_state.CONNECTED:
+            return
+        try:
+            await socket.send_text(json.dumps(payload))
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Addressed Ack Error: {e}")
+
     async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
         payload = {"type": "session_failed", "input_mode": input_mode}

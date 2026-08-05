@@ -3258,7 +3258,11 @@
                                     // that follow (codex P2).
                                     await ensureWebSocketOpen();
                                     if (restartMustStandDown()) return;
-                                    S.socket.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+                                    S.socket.send(JSON.stringify({
+                                        action: 'start_session',
+                                        input_type: 'audio',
+                                        request_id: window.sessionStartRequestId(restartStartOwner)
+                                    }));
 
                                     window.sessionTimeoutId = setTimeout(function () {
                                         // Only for the start this timer was armed for.
@@ -3991,6 +3995,26 @@
                         }
                         return;
                     }
+                    // 请求标识守卫：这条 ack 是不是在回应**本窗口**那次启动。
+                    //
+                    // 模式守卫拦不住同模式的串台：抢麦的窗口会把 voice socket 换成
+                    // 自己的，于是别人那次 audio start 的 ack 经 fan-out 落到本窗口。
+                    // 本窗口据此清超时、resolve、按 ack 里的 blocked 路由直接
+                    // abortVoiceStartForBlockedRoute()——而真正回应本窗口的那条 ack
+                    // （带着重跑后的路由）到达时，麦克风流程早就放弃了。
+                    //
+                    // 只 gate「收口」（清超时 + resolve），不 gate 下面的 UI 同步：
+                    // 后端确实起了一个会话，文本框显隐、停麦这些对本窗口照样成立。
+                    // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
+                    // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
+                    // pending 启动的情形本就由上面的模式守卫负责。
+                    var _ackAnswersThisWindow = !S._pendingSessionStartRequestId
+                        || !response.request_id
+                        || response.request_id === S._pendingSessionStartRequestId;
+                    if (!_ackAnswersThisWindow) {
+                        console.log('[App] session_started answers another start',
+                            response.request_id, 'pending', S._pendingSessionStartRequestId);
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
@@ -4098,7 +4122,7 @@
                     // 500ms 后才清，贴近 15s deadline 的 ack（如 14.8s，尤其跨模式等待+重启
                     // 链路）会被先一步触发的超时误 reject + end_session，把后端已接受的会话
                     // 打断（Codex P2）。resolve 仍延后做（留时间收尾 UI），但超时此刻就拆。
-                    if (S.sessionStartedResolver && window.sessionTimeoutId) {
+                    if (_ackAnswersThisWindow && S.sessionStartedResolver && window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
@@ -4113,9 +4137,13 @@
                     // and let the queued message go out before the backend has
                     // acknowledged the text session at all (Codex P2). Resolve
                     // only if the slot still holds the very start we acked.
-                    var _ackedResolver = S.sessionStartedResolver;
+                    var _ackedResolver = _ackAnswersThisWindow ? S.sessionStartedResolver : null;
                     setTimeout(function () {
-                        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        // Not gated on the resolver: a window with no pending
+                        // start (chat.html) still has to drop the banner. Gated
+                        // on the request guard, though -- a window still waiting
+                        // for ITS ack must keep showing "preparing".
+                        if (_ackAnswersThisWindow && typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
                         if (!_ackedResolver) return;
                         if (S.sessionStartedResolver === _ackedResolver) {
                             // Still ours: release the shared slot and its timer.
@@ -4126,6 +4154,7 @@
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
                             S._pendingSessionStartMode = null;
+                            S._pendingSessionStartRequestId = null;
                         }
                         // Settle OUR promise either way, INCLUDING when the slot
                         // has moved on (Codex P2). Its timeout was already
@@ -4210,6 +4239,7 @@
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
                     S._pendingSessionStartMode = null;
+                    S._pendingSessionStartRequestId = null;
 
                 // -------- session_ended_by_server --------
                 } else if (response.type === 'session_ended_by_server') {
@@ -4234,6 +4264,7 @@
                     S.sessionStartedResolver = null;
                     S.sessionStartedRejecter = null;
                     S._pendingSessionStartMode = null;
+                    S._pendingSessionStartRequestId = null;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);

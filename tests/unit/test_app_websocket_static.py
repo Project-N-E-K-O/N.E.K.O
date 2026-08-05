@@ -5594,6 +5594,94 @@ def test_blocked_route_latch_blocks_game_exit_microphone_resume():
     assert "S.voiceInputRouteBlocked = false;" not in started_handler
 
 
+def test_every_start_session_send_carries_a_request_id():
+    # #2539 / Codex P2. The ack names the start it answers, and the receiver
+    # ignores acks that name a different one. A send site that forgets the id
+    # gets an anonymous ack back, which every window treats as "mine" -- the
+    # exact failure the id exists to prevent. Discovered rather than listed, so
+    # a NEW send site cannot slip past this.
+    sources = {
+        "app-buttons.js": APP_BUTTONS_PATH.read_text(encoding="utf-8"),
+        "app-websocket.js": APP_WEBSOCKET_PATH.read_text(encoding="utf-8"),
+    }
+    found = 0
+    for name, source in sources.items():
+        cursor = 0
+        while True:
+            at = source.find("action: 'start_session'", cursor)
+            if at == -1:
+                break
+            cursor = at + 1
+            found += 1
+            payload_end = source.index("}", at)
+            payload = source[at:payload_end]
+            assert "request_id: window.sessionStartRequestId(" in payload, (
+                f"{name}: a start_session send at offset {at} carries no request id"
+            )
+    assert found >= 4, "the send sites were not discovered; the search anchor moved"
+
+    # Read off the flow's OWN owner token, never the shared slot: a start
+    # displaced during its reconnect await would otherwise stamp the newer
+    # start's id onto its own stale request.
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    assert "window.sessionStartRequestId = function (owner) {" in state_source
+    assert "startRequestIdByOwner.get(owner)" in state_source
+
+
+def test_pending_request_id_is_claimed_and_released_with_the_slot():
+    # The id lives and dies with the shared start slot. Left behind after a
+    # release, it would make the NEXT anonymous-or-foreign ack look mismatched
+    # and strand a start that nothing else settles.
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "_pendingSessionStartRequestId: null," in state_source
+    claim = state_source.split("window.claimSessionStart = function (", 1)[1].split(
+        "\n    };", 1
+    )[0]
+    assert "S._pendingSessionStartRequestId = requestId;" in claim
+
+    # Every slot teardown clears it. Paired with the mode, which is the field
+    # that already had to be cleared everywhere -- so count against that rather
+    # than list the sites.
+    for source in (state_source, websocket_source):
+        assert source.count("S._pendingSessionStartRequestId = null;") == source.count(
+            "S._pendingSessionStartMode = null;"
+        )
+
+
+def test_session_started_only_settles_the_start_it_answers():
+    # Codex P2. The cross-mode guard cannot catch a SAME-mode ack meant for
+    # another window, and that is the load-bearing case: the window that claims
+    # the microphone mid-start becomes the lease holder, so the in-flight start's
+    # ack is fanned out to it. Without this guard it clears its own timeout,
+    # resolves, reads the blocked route that ack carries and aborts its
+    # microphone flow -- and its real ack, carrying the re-decided route, lands
+    # on a flow that already gave up.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    started_handler = websocket_source.split(
+        "S.isTextSessionActive = response.input_mode === 'text';", 1
+    )[0].rsplit("} else if (response.type === 'session_started') {", 1)[1]
+    guard = started_handler.split("var _ackAnswersThisWindow =", 1)[1].split(";", 1)[0]
+    assert "response.request_id === S._pendingSessionStartRequestId" in guard
+    # An ack with no id counts as ours: the internal starts (proactive,
+    # greeting, disconnect recovery) carry no request, and the cross-mode guard
+    # already covers them.
+    assert "!response.request_id" in guard
+    assert "!S._pendingSessionStartRequestId" in guard
+
+    # Settling is what the guard gates -- the timeout clear and the deferred
+    # resolve. The UI sync below it is deliberately NOT gated: the backend did
+    # start a session, so composer visibility and the microphone teardown still
+    # apply to this window.
+    tail = websocket_source.split("var _ackAnswersThisWindow =", 1)[1]
+    timeout_clear = tail.split("clearTimeout(window.sessionTimeoutId);", 1)[0]
+    assert "_ackAnswersThisWindow && S.sessionStartedResolver" in timeout_clear
+    capture = next(l for l in tail.splitlines() if "var _ackedResolver =" in l)
+    assert "_ackAnswersThisWindow ?" in capture
+
+
 def test_session_started_ack_latches_a_blocked_microphone_route():
     # The one clear of the latch that is NOT tied to a route verdict is user
     # intent (app-buttons.js, next to _pendingSessionStartMode = 'audio'). What
@@ -6189,8 +6277,16 @@ def test_deferred_session_start_resolve_is_pinned_to_the_ack_it_belongs_to():
     #     forever, isMicStarting true and the button stuck.
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
-    capture = "var _ackedResolver = S.sessionStartedResolver;"
-    assert capture in source, "the ack must capture the pending start it belongs to"
+    capture_line = next(
+        l for l in source.splitlines() if "var _ackedResolver =" in l
+    )
+    assert "S.sessionStartedResolver" in capture_line, (
+        "the ack must capture the pending start it belongs to"
+    )
+    # And only when the ack is answering THIS window's request: a same-mode ack
+    # fanned out for somebody else's start must not settle our promise.
+    assert "_ackAnswersThisWindow" in capture_line
+    capture = capture_line.strip()
 
     # The capture has to happen at ack time, i.e. before the deferred callback
     # is scheduled -- capturing inside it would read the same shared slot again

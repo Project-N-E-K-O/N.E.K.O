@@ -3127,6 +3127,96 @@ async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
     ], "a single window must be acked exactly once"
 
 
+async def test_start_ack_names_the_request_it_answers():
+    # #2539 / Codex P2. An anonymous ack is settled by whichever window receives
+    # it, and the lease fan-out routinely delivers one start's ack to a DIFFERENT
+    # window -- the claimant that took the microphone mid-start. That window's
+    # frontend then clears its timeout, resolves, reads the blocked route the ack
+    # carries and aborts its own microphone flow; its real ack arrives to a flow
+    # that already gave up. The id is what lets the receiver tell the two apart.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+
+    await LLMSessionManager.send_session_started(mgr, "audio", request_id="w1-7")
+
+    expected = {
+        "type": "session_started",
+        "input_mode": "audio",
+        "request_id": "w1-7",
+        "microphone_route": "native",
+    }
+    # Both planes carry it, or the plane that reaches the requester is the one
+    # that cannot be recognised.
+    assert [json.loads(x) for x in recorder.sent] == [expected]
+    assert [json.loads(x) for x in chat.sent] == [expected]
+
+
+async def test_start_ack_stays_anonymous_without_a_request_id():
+    # Internal starts (proactive, greeting, the disconnect recovery) carry no
+    # request of their own. The field must be absent rather than null: the
+    # frontend treats an ack with no id as "mine" to keep those paths working,
+    # and a null would have to be special-cased at every reader.
+    recorder, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = recorder
+
+    await LLMSessionManager.send_session_started(mgr, "audio")
+
+    assert "request_id" not in json.loads(recorder.sent[0])
+
+
+async def test_dedupe_ack_reaches_the_requester_after_a_fail_closed_reroute():
+    # Codex P2. The dedupe re-ack runs a route re-decision first, and that can
+    # fail closed -- which REVOKES the lease, clearing _voice_lease_connection_id
+    # and the voice socket. With a newer window as self.websocket the requester
+    # is then on neither plane: it sits on its promise until the 15s timeout, and
+    # that timeout's end_session tears down the session that just started.
+    requester, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr.websocket = chat
+    # Post-revoke state: no lease identity, no voice socket.
+    mgr._voice_lease_connection_id = ""
+    mgr._set_microphone_route("blocked")
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w2-3", also_notify=requester
+    )
+
+    expected = {
+        "type": "session_started",
+        "input_mode": "audio",
+        "request_id": "w2-3",
+        "microphone_route": "blocked",
+    }
+    assert [json.loads(x) for x in requester.sent] == [expected]
+
+
+async def test_addressed_ack_is_not_a_second_copy_for_the_same_socket():
+    # The addressed send must stay a no-op when the requester is already on one
+    # of the planes. A duplicate ack is not harmless: the resolver is one-shot
+    # but the handler around it runs again in full -- microphone teardown,
+    # composer visibility, the lot.
+    requester, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", requester)
+    mgr.websocket = requester
+
+    await LLMSessionManager.send_session_started(
+        mgr, "audio", request_id="w3-1", also_notify=requester
+    )
+
+    assert len(requester.sent) == 1, "the requester must be acked exactly once"
+
+
 async def test_audio_start_ack_does_not_reach_the_game_microphone():
     # Same exemption the text path carries: the galgame gate owns the mic
     # through its built-in consumer route, and a session_started handler that

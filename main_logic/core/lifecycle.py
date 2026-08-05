@@ -694,6 +694,7 @@ class LifecycleMixin:
         _allow_cross_mode_restart=True,
         handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
         resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
+        request_id=None,
     ):
         # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
         # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
@@ -741,6 +742,7 @@ class LifecycleMixin:
             websocket, new, input_mode,
             user_initiated=user_initiated,
             _allow_cross_mode_restart=_allow_cross_mode_restart,
+            request_id=request_id,
             handshake_override=session_handshake_override,
             resource_optimization_override=(
                 session_resource_optimization_handshake_override
@@ -834,6 +836,7 @@ class LifecycleMixin:
                     input_mode,
                     llm_result,
                     _diag_start,
+                    request_id=request_id,
                     handshake_override=session_handshake_override,
                     resource_optimization_override=(
                         session_resource_optimization_handshake_override
@@ -874,6 +877,7 @@ class LifecycleMixin:
         *,
         user_initiated,
         _allow_cross_mode_restart,
+        request_id,
         handshake_override,
         resource_optimization_override,
     ):
@@ -940,7 +944,14 @@ class LifecycleMixin:
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
                 )
-                await self.send_session_started(input_mode)
+                # ``also_notify``：重跑若 fail-closed 会 revoke lease，把
+                # _voice_lease_connection_id 和 voice socket 一起清掉，本请求方
+                # 就不在任何一条投递面上了（self.websocket 可能是更新的窗口）。
+                # 那样它会一直等到 15s 超时，而超时发的 end_session 会把刚起来的
+                # 会话撕掉。本请求那把 ws 是已知的，直接定向送一份（Codex P2）。
+                await self.send_session_started(
+                    input_mode, request_id=request_id, also_notify=websocket
+                )
         elif user_initiated and _allow_cross_mode_restart:
             # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
             # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
@@ -1004,6 +1015,7 @@ class LifecycleMixin:
                     input_mode,
                     user_initiated=True,
                     _allow_cross_mode_restart=False,
+                    request_id=request_id,
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
                 )
@@ -1592,6 +1604,7 @@ class LifecycleMixin:
         next_context_count,
         diag_start,
         *,
+        request_id=None,
         handshake_override=...,
         resource_optimization_override=...,
     ):
@@ -1630,8 +1643,10 @@ class LifecycleMixin:
             self.set_goodbye_silent(False)
 
         logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - diag_start:.2f}秒)")
-        # 通知前端 session 已成功启动
-        await self.send_session_started(input_mode)
+        # 通知前端 session 已成功启动。带上本次 start 的 request_id：别的窗口
+        # 若也有 start 在等，它据此认出这条不是回应自己的，从而不会用一条属于
+        # 别人的 ack 收口自己的 promise（详见 send_session_started）。
+        await self.send_session_started(input_mode, request_id=request_id)
 
         # 在 queued context 写入 session 前保持输入闸门关闭；否则第一条
         # 缓存/并发用户输入可能抢在上下文前面进入模型。

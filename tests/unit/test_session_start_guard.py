@@ -156,6 +156,7 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
         "audio",
         user_initiated=True,
         _allow_cross_mode_restart=False,
+        request_id=None,
         handshake_override=None,
         resource_optimization_override=None,
     )
@@ -221,8 +222,8 @@ def _record_dedupe_calls(mgr):
     async def _redecide(*_a, **kwargs):
         calls.append(("redecide", kwargs))
 
-    async def _ack(input_mode):
-        calls.append(("ack", input_mode))
+    async def _ack(input_mode, **kwargs):
+        calls.append(("ack", input_mode, kwargs))
 
     mgr._start_independent_asr_if_enabled = _redecide
     mgr.send_session_started = _ack
@@ -257,7 +258,7 @@ async def test_same_mode_dedupe_redecides_a_blocked_route_before_reacking():
 
     await _run_dedupe_start(mgr)
 
-    assert [name for name, _ in calls] == ["redecide", "ack"]
+    assert [c[0] for c in calls] == ["redecide", "ack"]
     assert calls[0][1]["handshake_override"] is None
     assert calls[1][1] == "audio"
 
@@ -274,7 +275,7 @@ async def test_same_mode_dedupe_keeps_a_settled_route():
 
         await _run_dedupe_start(mgr)
 
-        assert [name for name, _ in calls] == ["ack"], settled
+        assert [c[0] for c in calls] == ["ack"], settled
 
 
 @pytest.mark.unit
@@ -290,7 +291,7 @@ async def test_same_mode_dedupe_does_not_redecide_against_a_text_session():
 
     await _run_dedupe_start(mgr)
 
-    assert [name for name, _ in calls] == ["ack"]
+    assert [c[0] for c in calls] == ["ack"]
 
 
 @pytest.mark.unit
@@ -306,7 +307,7 @@ async def test_same_mode_dedupe_does_not_redecide_for_a_text_request():
 
     await _run_dedupe_start(mgr, request_mode="text")
 
-    assert [name for name, _ in calls] == ["ack"]
+    assert [c[0] for c in calls] == ["ack"]
     assert calls[0][1] == "text"
 
 
@@ -355,7 +356,7 @@ async def test_same_mode_dedupe_skips_reroute_when_the_lease_moved_on():
     await _run_dedupe_start(mgr)
     await claim
 
-    assert [name for name, _ in calls] == ["ack"]
+    assert [c[0] for c in calls] == ["ack"]
 
 
 @pytest.mark.unit
@@ -377,7 +378,7 @@ async def test_same_mode_dedupe_skips_reroute_without_room_in_the_deadline(
 
     await _run_dedupe_start(mgr)
 
-    assert [name for name, _ in calls] == ["ack"]
+    assert [c[0] for c in calls] == ["ack"]
 
 
 @pytest.mark.unit
@@ -459,6 +460,7 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
         "audio",
         user_initiated=True,
         _allow_cross_mode_restart=False,
+        request_id=None,
         handshake_override=None,
         resource_optimization_override=None,
     )
