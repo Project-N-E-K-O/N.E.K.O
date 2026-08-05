@@ -223,9 +223,14 @@ class CorrectionsMixin:
                         continue
                     mixed_key = f'{prefix}_speaker_provenance_mixed'
                     if provenance.get('speaker_provenance_mixed') is True:
+                        # ``speaker_entity_id`` belongs in this residual set:
+                        # ``same_provenance_source`` compares entity equality
+                        # BEFORE anything else, so a stale id left beside the
+                        # mixed marker reads the item back as "same person".
                         for residual_key in (
                             f'{prefix}_speaker_id',
                             f'{prefix}_speaker_trust',
+                            f'{prefix}_speaker_entity_id',
                         ):
                             if residual_key in existing:
                                 existing.pop(residual_key)
@@ -246,12 +251,29 @@ class CorrectionsMixin:
                     current_trust = _normalized_correction_trust(
                         raw_current_trust
                     )
+                    queued_entity = str(
+                        provenance.get('speaker_entity_id') or ''
+                    ).strip()
+                    if (
+                        queued_entity
+                        and not existing.get(f'{prefix}_speaker_entity_id')
+                    ):
+                        # Backfill on a repeat hit: a queue row outlives many
+                        # retries, and without this an item first queued before
+                        # the account was registered never gains the offline
+                        # same-person evidence.
+                        existing[f'{prefix}_speaker_entity_id'] = queued_entity
+                        changed = True
                     if current_id is None:
                         existing[f'{prefix}_speaker_id'] = speaker_id
                         changed = True
                     elif stable_speaker_id(current_id) != speaker_id:
+                        # Same rule as the branch above — clearing two of the
+                        # three provenance keys is what leaves the stale
+                        # entity id behind.
                         existing.pop(f'{prefix}_speaker_id', None)
                         existing.pop(f'{prefix}_speaker_trust', None)
+                        existing.pop(f'{prefix}_speaker_entity_id', None)
                         existing[mixed_key] = True
                         changed = True
                         continue

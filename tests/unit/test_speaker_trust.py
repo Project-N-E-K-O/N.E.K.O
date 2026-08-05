@@ -1041,6 +1041,88 @@ def test_duplicate_correction_persists_residual_mixed_cleanup():
     assert "new_speaker_trust" not in queued[0]
 
 
+def test_duplicate_correction_clears_entity_id_when_marked_mixed():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued = [{
+        "old_text": "old",
+        "new_text": "new",
+        "entity": "master",
+        "scope": None,
+        "new_speaker_id": "qq:1001",
+        "new_speaker_trust": 0.9,
+        "new_speaker_entity_id": "entity:abc",
+    }]
+
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        new_speaker_provenance={"speaker_provenance_mixed": True},
+    )
+
+    assert queued[0]["new_speaker_provenance_mixed"] is True
+    # The entity id is the FIRST thing same_provenance_source compares, so a
+    # survivor here reads a mixed item back as a single person.
+    assert "new_speaker_entity_id" not in queued[0]
+    assert "new_speaker_id" not in queued[0]
+    assert "new_speaker_trust" not in queued[0]
+
+
+def test_duplicate_correction_clears_entity_id_on_speaker_conflict():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.9,
+            "speaker_entity_id": "entity:abc",
+        },
+    )
+    assert queued[0]["old_speaker_entity_id"] == "entity:abc"
+
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002",
+            "speaker_trust": 0.9,
+            "speaker_entity_id": "entity:zzz",
+        },
+    )
+
+    assert queued[0]["old_speaker_provenance_mixed"] is True
+    assert "old_speaker_entity_id" not in queued[0]
+    assert "old_speaker_id" not in queued[0]
+    assert "old_speaker_trust" not in queued[0]
+
+
+def test_duplicate_correction_backfills_missing_entity_id():
+    from memory.persona.corrections import CorrectionsMixin
+
+    # First hit predates the account being bound, so it carries no entity id.
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.7},
+    )
+    assert "old_speaker_entity_id" not in queued[0]
+
+    result = CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.7,
+            "speaker_entity_id": "entity:abc",
+        },
+    )
+
+    # A queue row outlives many retries; without the backfill it never gains
+    # the evidence in the one case it exists for (an unreadable pool).
+    assert result is queued
+    assert queued[0]["old_speaker_entity_id"] == "entity:abc"
+    assert queued[0]["old_speaker_id"] == "qq:1001"
+
+
 @pytest.mark.parametrize(
     "invalid_trust", [float("nan"), float("inf"), 10 ** 400],
 )
