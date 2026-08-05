@@ -1271,6 +1271,8 @@ def test_the_retirement_set_is_always_a_superset_of_the_gate_set(wired):
     assert "other-session" not in narrow and "other-session" in wide, "session 维没起作用"
     assert "other-char" not in narrow and "other-char" in narrow_any_role, "角色维没起作用"
     assert "no-prompt" not in narrow and "no-prompt" in wide, "疑问标记维没起作用"
+    assert "future" not in narrow and "future" in wide, "判龄**下界**没起作用"
+    assert "no-end" not in narrow and "no-end" in wide, "缺 end_time 的 fail-closed 没起作用"
     # 非 completed 状态两侧都看不见
     for task_id in ("running", "failed", "cancelled"):
         assert task_id not in wide, task_id
