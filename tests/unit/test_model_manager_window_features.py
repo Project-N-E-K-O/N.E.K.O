@@ -21,6 +21,17 @@ def read_model_manager_source() -> str:
     )
 
 
+def test_vrm_catalog_preview_pause_does_not_resume_catalog_base_motion():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "vrmMotionCatalogPlayer.cancel('model_manager_pause', { resume: false });"
+        in source
+    )
+
+
 def test_avatar_model_manager_popup_opens_fullscreen():
     source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 

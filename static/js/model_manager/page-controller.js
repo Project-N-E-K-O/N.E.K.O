@@ -3789,7 +3789,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (isVrmAnimationPlaying) {
                 // 当前正在播放，点击后停止，恢复 idle 轮换
-                if (vrmMotionCatalogPlayer) vrmMotionCatalogPlayer.cancel('model_manager_pause');
+                if (vrmMotionCatalogPlayer) {
+                    vrmMotionCatalogPlayer.cancel('model_manager_pause', { resume: false });
+                }
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;

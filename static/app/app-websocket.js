@@ -2309,6 +2309,9 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    if (!response.will_retry) {
+                        window._nekoMotionPendingUserText = '';
+                    }
                     if (S.suppressAssistantStreamUntilNextSession) {
                         logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
                             reason: response.reason,

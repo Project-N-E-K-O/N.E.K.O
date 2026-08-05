@@ -357,11 +357,21 @@
             const response = await fetch(ASSET_ROOT + asset.f + suffix, { cache: 'no-store' });
             if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
             const packed = await response.arrayBuffer();
-            if (await sha256(packed) !== asset.packedSha) {
+            const packedBytes = new Uint8Array(packed);
+            const isGzipPayload = packedBytes.length >= 2
+                && packedBytes[0] === 0x1f
+                && packedBytes[1] === 0x8b;
+            let decoded = packed;
+            if (asset.compression === 'gzip' && isGzipPayload) {
+                if (await sha256(packed) !== asset.packedSha) {
+                    this.metrics.integrityFailures += 1;
+                    throw new Error(asset.id + ' packed SHA-256 mismatch');
+                }
+                decoded = await gunzip(packed);
+            } else if (asset.compression !== 'gzip' && await sha256(packed) !== asset.packedSha) {
                 this.metrics.integrityFailures += 1;
                 throw new Error(asset.id + ' packed SHA-256 mismatch');
             }
-            const decoded = asset.compression === 'gzip' ? await gunzip(packed) : packed;
             if (await sha256(decoded) !== asset.decodedSha) {
                 this.metrics.integrityFailures += 1;
                 throw new Error(asset.id + ' decoded SHA-256 mismatch');

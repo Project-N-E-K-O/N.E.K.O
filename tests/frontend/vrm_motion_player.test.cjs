@@ -100,7 +100,7 @@ function response(body, status) {
     assert.equal(requested, '/static/vrm/' + player.assets[0].f + '.gz');
 
     const corrupted = Buffer.from(packedSource);
-    corrupted[0] ^= 0xff;
+    corrupted[2] ^= 0xff;
     global.fetch = async function () {
         return response(corrupted.buffer.slice(corrupted.byteOffset, corrupted.byteOffset + corrupted.byteLength));
     };
@@ -120,6 +120,24 @@ function response(body, status) {
     };
     assert.match(await player._assetUrl(gzipAsset), /^blob:test-/);
     assert.equal(requested, '/static/vrm/motion-pack/example.vrma.gz');
+
+    global.fetch = async function () {
+        return response(decodedSource.buffer.slice(
+            decodedSource.byteOffset,
+            decodedSource.byteOffset + decodedSource.byteLength
+        ));
+    };
+    assert.match(await player._assetUrl(gzipAsset), /^blob:test-/);
+
+    const corruptedDecoded = Buffer.from(decodedSource);
+    corruptedDecoded[0] ^= 0xff;
+    global.fetch = async function () {
+        return response(corruptedDecoded.buffer.slice(
+            corruptedDecoded.byteOffset,
+            corruptedDecoded.byteOffset + corruptedDecoded.byteLength
+        ));
+    };
+    await assert.rejects(player._assetUrl(gzipAsset), /decoded SHA-256 mismatch/);
 
     let parsedBytes = null;
     let parsedResourcePath = '';
