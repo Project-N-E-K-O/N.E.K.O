@@ -641,6 +641,10 @@ class NotifyMixin:
         try:
             await socket.send_text(json.dumps(payload))
         except WebSocketDisconnect:
+            # The CONNECTED check above and this send are separated by an await,
+            # so the requester can disconnect in between. A window that is gone
+            # has no start left to settle -- swallow it like the sibling planes
+            # do, rather than fail an ack the other windows still need.
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Addressed Ack Error: {e}")
