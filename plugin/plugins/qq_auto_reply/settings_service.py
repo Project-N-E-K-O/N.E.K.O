@@ -14,9 +14,6 @@ from .group_permission import GroupPermissionManager
 class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
-        # trust 演化的唯一写者锁：不同群/私聊会话可能同时结算同一个 QQ，
-        # 所有 read-modify-persist 必须在这里串行，不能依赖 session lock。
-        self._speaker_trust_lock = asyncio.Lock()
 
     def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
         """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理

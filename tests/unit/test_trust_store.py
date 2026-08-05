@@ -855,14 +855,24 @@ def test_signal_ledger_normalizes_in_linear_time():
 
     from memory.identity import normalize_account_record
 
+    def _elapsed(size: int) -> float:
+        ids = [f"owner-signal-{index}" for index in range(size)]
+        started = time.perf_counter()
+        normalize_account_record("qq:1", {"processed_signal_events": ids})
+        return time.perf_counter() - started
+
+    # Scale RATIO, not wall clock: an absolute threshold red-lines whenever a
+    # shared runner is busy, which is luck rather than a regression. Linear
+    # gives ~10x for 10x input, quadratic ~100x — machine speed cancels out.
+    small = max(_elapsed(3_000), 1e-6)
+    large = _elapsed(30_000)
+    assert large / small < 30, f"superlinear: {large / small:.1f}x for 10x input"
+
     event_ids = [f"owner-signal-{index}" for index in range(30_000)]
     event_ids += ["x" * 96 + "a", "x" * 96 + "b"]
-    started = time.perf_counter()
     record = normalize_account_record(
         "qq:1", {"processed_signal_events": event_ids},
     )
-    elapsed = time.perf_counter() - started
-    assert elapsed < 1.5
     # The two 97-char ids both truncate to the same 96-char prefix and dedup.
     assert len(record["processed_signal_events"]) == 30_001
     assert record["processed_signal_events"][-1] == "x" * 96

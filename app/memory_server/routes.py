@@ -1358,9 +1358,15 @@ async def _trust_snapshot_for_request():
 def _apply_canonical_write_routing(parsed: dict, snap) -> None:
     """Route this segment's write to the participant's canonical subject.
 
-    Lazily seals on first write (R-CANON-1) so that the account currently
-    speaking becomes canonical when the entity has none for this platform yet.
-    Sealing rather than deriving is what keeps canonical stable across merges.
+    READ-ONLY against the snapshot: it resolves the canonical subject and
+    rewrites ``parsed["subject"]``, and seals NOTHING itself. R-CANON-1 lazy
+    sealing lives in ``trust_store._apply_trust_mutations_locked``, inside the
+    pool's critical section, so it shares that handler's single file write.
+
+    A consequence worth stating on a function labelled IRREVERSIBLE SURFACE:
+    ``/scoped_facts`` calls this but carries no trust mutation, so it never
+    seals — it only routes by an ALREADY sealed canonical. That is correct, but
+    it is not what "lazily seals on first write" would lead a reader to expect.
 
     IRREVERSIBLE SURFACE, stated plainly: rows written while routing is active
     carry the CANONICAL subject_id and the REAL account's speaker_id. After an
@@ -1510,12 +1516,16 @@ def _trust_response_block(parsed: dict, result, outcome) -> dict:
         or parsed.get("trust_signal_events")
     )
     if not attempted:
+        # Same key set as the branch below — a field that appears in only one
+        # shape of the same response block is a contract a caller cannot write
+        # against without a KeyError guard.
         return {
             "resolved": parsed.get("speaker_trust"),
             "persisted": None,
             "signals_applied": 0,
             "activity_applied": 0,
             "gated": None,
+            "channel_collision": False,
         }
     return {
         "resolved": parsed.get("speaker_trust"),

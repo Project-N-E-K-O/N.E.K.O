@@ -2311,6 +2311,11 @@ async def test_settings_writers_share_exactly_one_transaction_lock():
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     service = QQSettingsService(SimpleNamespace())
+    # BOTH names: `_speaker_trust_lock` is the attribute the constructor used
+    # to create, `_speaker_trust_write_lock` was the property that wrapped it.
+    # Asserting only the property name is an empty assertion — it passed while
+    # the real lock was still being allocated on every instance.
+    assert not hasattr(service, "_speaker_trust_lock")
     assert not hasattr(service, "_speaker_trust_write_lock")
     assert not hasattr(service, "apply_speaker_trust_update")
     service._persist_business_config_locked = AsyncMock(return_value=True)

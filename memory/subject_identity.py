@@ -186,10 +186,18 @@ def participant_key(subject: MemorySubject, snap: Any = None) -> tuple:
             entity_id = snap.entity_of(account_id)
     if entity_id is None and subject.kind != SUBJECT_GROUP_CHAT:
         return identity
+    # ``platform`` is part of the key, not decoration: the conversation
+    # segment is a RAW id, so one entity active in `qq:G` and `bili:G` would
+    # otherwise fold into a single slot — sharing one heading, one primary
+    # subject_id and one token budget across two conversations. ``expand_subject``
+    # already isolates members by platform; the key has to agree with it.
+    #
     # ``conversation`` is currently its own raw id; conversation-entity binding
     # (the O(number of groups) half of S2) reuses this slot without changing
     # anything else here.
-    return (subject.kind, entity_id or subject.subject_id, conversation)
+    return (
+        subject.kind, entity_id or subject.subject_id, platform, conversation,
+    )
 
 
 def expand_subject(

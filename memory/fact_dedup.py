@@ -1337,9 +1337,16 @@ class FactDedupResolver:
             def _fold_survivor_provenance(
                 survivor: dict, absorbed: dict,
             ) -> None:
+                # Must match what `provenance_of_entries` WRITES (and what
+                # `_reconcile_existing_provenance` / the rollback path pop).
+                # Leaving `speaker_entity_id` behind is worse than cosmetic: a
+                # survivor marked `speaker_provenance_mixed` would keep a stale
+                # entity id, and `same_provenance_source` checks entity
+                # equality BEFORE anything else — so an already-mixed row would
+                # start reading back as "same person".
                 provenance_keys = (
                     'speaker_id', 'speaker_label', 'speaker_trust',
-                    'speaker_provenance_mixed',
+                    'speaker_entity_id', 'speaker_provenance_mixed',
                 )
                 folded = provenance_of_entries((survivor, absorbed))
                 known_ids = [

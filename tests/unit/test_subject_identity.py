@@ -89,13 +89,22 @@ async def test_a_single_account_entity_degrades_to_the_identity():
     assert flatten_groups(fold_participants([GROUP, A1], snap)) == (GROUP, A1)
 
 
-def test_a_custom_scope_is_never_folded_or_rerouted():
+async def test_a_custom_scope_is_never_folded_or_rerouted():
     """N-1: a custom scope is an isolation boundary the caller declared.
 
     Silently redirecting it would void that boundary on the caller's behalf,
     and it matches the domain of the two subject foldings already in the tree.
+
+    The binding below is load-bearing: with no registered accounts the
+    resolver degrades to the identity anyway, so the assertions would pass
+    whether or not the custom-scope guard exists. With a real alias plus a
+    sealed canonical, the DEFAULT-scope twin genuinely reroutes — which is what
+    makes this a test of the guard rather than of an empty pool.
     """
     trust_store._set_load_failed(False)
+    await _linked("qq:111", "qq:222")
+    await trust_store.aseal_canonical("qq:222")
+    assert canonical_subject(A1, _snap()).subject_id == "qq:G:222"
     custom = MemorySubject.create(
         "group_participant", "qq:G:111", scope="tenant-a",
     )
@@ -551,3 +560,84 @@ def test_forget_stats_are_summed_across_the_fan_out_not_overwritten():
     assert stats["note"] == "a"
     _merge_forget_stats(stats, "not a dict")
     assert stats["facts"] == 3
+
+
+# ── review round 3 (CodeRabbit) ────────────────────────────────────────────
+
+async def test_the_same_conversation_id_on_two_platforms_never_folds():
+    """The conversation segment is a RAW id, so it collides across platforms.
+
+    One entity active in `qq:G` and `bili:G` must stay two participants: they
+    are two conversations, and folding them would share one heading, one
+    primary subject_id and one token budget across both. ``expand_subject``
+    already isolates members by platform — the participant KEY has to agree.
+    """
+    entity_id = await _linked("qq:111")
+    await trust_store.awaive_legacy_barrier("bili")
+    await trust_store.aensure_account("bili:222")
+    await trust_store.abind_account("bili:222", entity_id)
+    snap = _snap()
+    assert snap.same_entity("qq:111", "bili:222") is True
+
+    qq_side = MemorySubject.group_participant("qq", "G", "111")
+    bili_side = MemorySubject.group_participant("bili", "G", "222")
+    assert participant_key(qq_side, snap) != participant_key(bili_side, snap)
+    groups = fold_participants([qq_side, bili_side], snap)
+    assert len(groups) == 2
+    # And each slot only ever authorizes its own platform.
+    for group in groups:
+        platforms = {
+            marker[0].split(":")[1] for marker in group.markers
+        }
+        assert len(platforms) == 1
+
+
+async def test_a_merge_that_would_clobber_a_ledger_raises_under_O():
+    """The guard must not be an ``assert`` — ``-O`` strips those.
+
+    This is the one place a violation would silently overwrite a live account
+    sub-ledger (adjustment plus both rings) irreversibly, so it has to fail
+    loud regardless of the interpreter's optimize flag.
+    """
+    import ast
+    import inspect
+
+    source = inspect.getsource(trust_store._merge_entities_locked)
+    tree = ast.parse(source.lstrip())
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.Assert)]
+    assert "raise TrustIdentityError" in source
+
+    # And the guard actually fires rather than clobbering.
+    await _linked("qq:111")
+    snap = _snap()
+    survivor_id = snap.entity_of("qq:111")
+    draft = trust_store._Draft(trust_store._POOL)
+    other_id = "ent_" + "b" * 24
+    draft.pool["entities"][other_id] = {
+        "entity_id": other_id, "status": "active", "created_at": "2099-01-01",
+        "accounts": {"qq:111": {"account_id": "qq:111", "adjustment": -0.5,
+                                "message_count": 0,
+                                "processed_activity_events": [],
+                                "processed_signal_events": []}},
+    }
+    draft._owned_entities.add(other_id)
+    with pytest.raises(trust_store.TrustIdentityError):
+        trust_store._merge_entities_locked(
+            draft, survivor_id, other_id, now="2026-08-05T00:00:00+00:00",
+        )
+
+
+def test_the_trust_response_block_has_one_shape():
+    """A field present in only one branch is a contract callers cannot use."""
+    from app.memory_server.routes import _trust_response_block
+    from memory.trust_store import MutationOutcome, TrustApplyResult
+
+    empty = _trust_response_block(
+        {"trust_source": {"has_server_source": False}}, None, MutationOutcome(),
+    )
+    filled = _trust_response_block(
+        {"trust_source": {"has_server_source": True}},
+        TrustApplyResult(persisted=True), MutationOutcome(),
+    )
+    assert set(empty) == set(filled)
+    assert empty["channel_collision"] is False

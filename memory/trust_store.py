@@ -1464,11 +1464,16 @@ def _merge_entities_locked(
     for account_id, record in (absorbed.get("accounts") or {}).items():
         # Structurally guaranteed disjoint: ``account_index`` is a function and
         # the key is the immutable ``account_id``, so no path can give one
-        # account two keys. Assert rather than comment — a violation here would
-        # silently drop a ledger.
-        assert account_id not in survivor["accounts"], (
-            f"merge would clobber an existing ledger for {account_id}"
-        )
+        # account two keys. An explicit raise rather than ``assert``: ``-O`` /
+        # PYTHONOPTIMIZE strips assert statements entirely, and this is exactly
+        # the guard whose whole point is to fail loud — under -O it would
+        # degrade into the silent, irreversible ledger overwrite it exists to
+        # prevent.
+        if account_id in survivor["accounts"]:
+            raise TrustIdentityError(
+                f"merge would clobber an existing ledger for {account_id}",
+                status_code=500,
+            )
         survivor["accounts"][account_id] = record
         draft.pool["account_index"][account_id] = survivor["entity_id"]
     # R-CANON-3: the survivor keeps its own canonical. It only adopts the

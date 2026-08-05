@@ -537,8 +537,19 @@ R11 **无法离线判定**：零 fixture、零 vendored SDK、零文档样例、
 
 ```python
 if self.logger and event_type in ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"):
-    self.logger.info("[R11] %s %s", event_type, json.dumps(payload["d"], ensure_ascii=False))
+    _d = payload["d"] or {}
+    self.logger.info("[R11] %s author=%s group_keys=%s author_keys=%s", event_type,
+                     json.dumps((_d.get("author") or {}).get("id"), ensure_ascii=False),
+                     sorted(k for k in _d if "group" in k.lower()),
+                     sorted((_d.get("author") or {}).keys()))
 ```
+
+> **只打取证需要的那四项，不要 `json.dumps(payload["d"])`。** §2.15.4.2 的判定
+> 只需要 ①`author.id` ②`author` 的兄弟键**名** ③群 id 的键**名** ④C2C 的
+> `author.id` —— 四项里没有一项需要消息正文。而这条日志落的是**持久**文件
+> （`我的文档/N.E.K.O/logs/`，重启留存，正是取证要它持久的原因），整份 `d`
+> 会把群聊原文、附件 URL、@ 列表一起写进去。取证结束后插桩本身要回滚，但
+> 已经落盘的日志不会跟着回滚。
 
 - **必须用 `self.logger`**（文件 logger，`__init__.py:100-101` `enable_file_logging`），落 `我的文档/N.E.K.O/logs/N.E.K.O_Plugin_qq_auto_reply_*.log`（`plugin/core/plugin_logger.py:15`），重启留存。**不能用 `_emit_log`**——它只写 `collections.deque(maxlen=500)` 内存环（`__init__.py:104-111`），重启即失。
 - **必须插在 `:181` 而不是 `_convert_event` 内**：绕开 `group_id` 键名不确定性，也早于 `backlog_service.py:91-93` 的信任群白名单闸。
@@ -663,7 +674,7 @@ QQ 发来的是一串 id、B 站发来的另一串 id。没有任何一条消息
 | `memory/scopes.py` | 新增 frozen+slots 纯值类型 `ParticipantGroup` 与 `flatten_groups`。**不 import trust_store、零 IO**。`entry_matches_subject`(:221-229) / `filter_entries_for_subjects`(:250-277) / `subject_from_entry`(:182-203) / `normalize_subjects`(:232-247) **一字不改** | E1 |
 | `app/memory_server/routes.py` | 读侧折叠+展开：`:1894` / `:2053` / `:2111`；`:1949` forget 改单事务多 subject；写侧路由：`:1142` / `:1248` / `:1504`，**必须在 locale 预约 `:1152`/`:1258`/`:1567` 之前**；`_resolve_scoped_memory_language`(:123-150) 内部先 canonical 再查表、只喂 primary。wire 侧 `1..8` 校验（`:1892`/`:2048`/`:2106`）**一字不动** | E1/E3/E4 |
 | `memory/persona/rendering.py` | `_subject_render_slots`(:806-834) 返回 group 槽；`_subject_bucket_marker`(:837-844) / `_bucket_entries_by_subject`(:846-868) 改 marker→group 查表；`:663-699` 段落循环按 group 合并标题（display_name 规则见 §2.15.2.12）；`_persona_view_for_subjects`(:88-135) 继续吃扁平 allowed_keys，**不动** | E1 |
-| `memory/speaker_trust.py` | 新增 `same_provenance_source(a,b) -> bool|None`（三态）；`provenance_of_entries`(:556-588) 的两条 mixed 早退改用它，**同实体跨 account ⇒ 保留原样、不折叠、不取 min**；模块 docstring 补「零 IO 靠注入保持」 | E2 |
+| `memory/speaker_trust.py` | 新增 `same_provenance_source(a,b) -> bool \| None`（三态）；`provenance_of_entries`(:556-588) 的两条 mixed 早退改用它，**同实体跨 account ⇒ 保留原样、不折叠、不取 min**；模块 docstring 补「零 IO 靠注入保持」 | E2 |
 | `memory/facts.py` | `_reconcile_existing_provenance`(:3453-3499) 按 §2.15.2.10 三态改写（`None` ⇒ 弃权，**绝不写 mixed**）；写路径 provenance 增列 `speaker_entity_id`（`speaker_id` 字节不动）；`:1365-1367` 自证禁令实体化；`:1349-1351` 重放环**明确保持 account 级字符串相等，加注释锁死** | E2 |
 | `memory/fact_dedup.py` | `_fold_survivor_provenance`(:1325-1350) 的 `len(attributed_ids) > 1` 改用 `same_provenance_source`；`:1294-1312` 守门加同实体弃权 | E2 |
 | `memory/scoped_refine.py` | `:203-205` 的重复 speaker 早退提升到 entity 维度 | E2 |
