@@ -5678,6 +5678,10 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < turn_end_block.index(
         "clearPendingAssistantTurnStart();"
     )
+    normal_turn_end = turn_end_block.split("console.log(window.t('console.turnEndReceived'));", 1)[1]
+    assert normal_turn_end.index("ensureAssistantTurnStarted(") < normal_turn_end.index(
+        "clearPendingRollbackForRequest(response.request_id);"
+    )
 
 
 def test_text_request_context_is_recorded_only_after_successful_send():

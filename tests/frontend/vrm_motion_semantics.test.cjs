@@ -140,6 +140,8 @@ assert.equal(core.analyzeSpeech('我帮你坐起来。', {
 assert.notEqual(intent('Please wait while I check that.', { locale: 'en' }), 'plead');
 assert.equal(core.analyze('if she waves goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyze('do not wave goodbye', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('The user claps.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
 
 const boundedFrame = core.toChineseFrame('nod, shake head, wave, clap and dance', 'en');
 assert.ok(

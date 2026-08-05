@@ -271,6 +271,23 @@
         console.info('[NekoMotion] persistent emotion cleared:', emotionState.source);
     }
 
+    function resetCharacterMotionState() {
+        activeCharacterProfile = null;
+        latestOfficialEmotion = '';
+        clearPersistentEmotion('model_switched');
+        emotionState.value = 'neutral';
+        emotionState.since = 0;
+        emotionState.lastEvidenceAt = 0;
+        emotionState.expiresAt = 0;
+        emotionState.neutralStreak = 0;
+        emotionState.continuationCount = 0;
+        emotionState.pulseUntil = 0;
+        emotionState.pulseDurationMs = 0;
+        emotionState.lastAppliedAt = 0;
+        emotionState.applyCount = 0;
+        emotionState.source = 'model_switched';
+    }
+
     function updatePersistentEmotion(value, source) {
         const emotion = normalizeEmotion(value);
         const now = Date.now();
@@ -687,6 +704,7 @@
             casualTalkFinalized: false,
             speechIntents: [],
             bodyEmotionPlayed: null,
+            deferredUntilVrmReady: false,
             finishTimer: null,
             processing: Promise.resolve()
         };
@@ -721,6 +739,10 @@
         queueTurnTask(turn, 'finish-turn:' + turn.id, async function () {
             const ready = await initialize();
             if (!ready || !isCurrentTurn(turn)) return false;
+            if (!vrmReady()) {
+                turn.deferredUntilVrmReady = true;
+                return false;
+            }
             await processUnseenStagesDirect(turn);
             await waitForOfficialEmotion(turn);
             if (!isCurrentTurn(turn)) return false;
@@ -785,10 +807,12 @@
             }
             maintainPersistentEmotion();
             if (!vrmReady()) {
+                turn.deferredUntilVrmReady = true;
                 metrics.deferredUntilVrmReady += 1;
                 console.info('[NekoMotion] assistant turn accepted; waiting for VRM model readiness');
                 return;
             }
+            turn.deferredUntilVrmReady = false;
             if (turn.ended) return;
             console.info('[NekoMotion] assistant turn accepted in VRM mode');
             scanTurnText();
@@ -863,6 +887,18 @@
 
     function cancelObservedSpeech() {
         if (player) player.cancel('assistant_speech_cancel');
+        const turn = activeTurn;
+        if (turn) {
+            if (turn.finishTimer) clearTimeout(turn.finishTimer);
+            turn.finishTimer = null;
+            if (!turn.ended) turn.ended = true;
+            turn.cancelled = true;
+            turn.deferredUntilVrmReady = false;
+            if (turn.resolveEmotionReady) turn.resolveEmotionReady();
+            turn.resolveEmotionReady = null;
+        }
+        activeTurn = null;
+        bridgedText = '';
     }
 
     function handleMotionLifecycleBridge(event) {
@@ -923,23 +959,50 @@
         emotionObserved(event && event.detail);
     });
 
-    window.addEventListener('vrm-model-loaded', function () {
-        void initialize().then(function (ready) {
-            if (!ready || !vrmReady()) return;
+    async function handleVrmModelLoaded() {
+        const loadedModel = window.vrmManager && window.vrmManager.currentModel;
+        resetCharacterMotionState();
+        try {
+            const ready = await initialize();
+            if (!ready || !vrmReady()
+                || window.vrmManager.currentModel !== loadedModel) return;
+            const profile = await resolveCharacterProfile();
+            if (!vrmReady() || window.vrmManager.currentModel !== loadedModel) return;
             stopOfficialIdleRotation();
             syncSavedRestAnimations();
-            player.setProfile(characterProfile());
-            return player.enterRest({
-                profile: characterProfile(),
+            player.setProfile(profile);
+
+            const turn = activeTurn;
+            if (turn && isCurrentTurn(turn) && turn.deferredUntilVrmReady) {
+                turn.deferredUntilVrmReady = false;
+                if (turn.ended) {
+                    await processUnseenStagesDirect(turn);
+                    if (!isCurrentTurn(turn)
+                        || window.vrmManager.currentModel !== loadedModel) return;
+                    await waitForOfficialEmotion(turn);
+                    if (!isCurrentTurn(turn)
+                        || window.vrmManager.currentModel !== loadedModel) return;
+                    await processSpeechFallback(turn);
+                } else {
+                    scanTurnText();
+                    await turn.processing;
+                }
+                if (!isCurrentTurn(turn) || turn.playerStarted) return;
+            }
+            if (!vrmReady() || window.vrmManager.currentModel !== loadedModel) return;
+            await player.enterRest({
+                profile: profile,
                 seed: 'model-loaded',
                 force: true,
                 reselect: false
             });
-        }).then(function () {
-            maintainPersistentEmotion();
-        }).catch(function (error) {
+        } catch (error) {
             console.warn('[NekoMotion] failed to enter rest after model load:', error);
-        });
+        }
+    }
+
+    window.addEventListener('vrm-model-loaded', function () {
+        void handleVrmModelLoaded();
     });
 
     window.addEventListener('neko:character-personality-updated', function () {

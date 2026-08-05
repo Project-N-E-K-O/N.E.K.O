@@ -3962,7 +3962,6 @@
                         clearPendingAssistantTurnStart();
                         return;
                     }
-                    clearPendingRollbackForRequest(response.request_id);
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
@@ -3979,6 +3978,7 @@
                             response.request_id
                         );
                     }
+                    clearPendingRollbackForRequest(response.request_id);
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
                         logAssistantLifecycle('ws:turn_end:emit', {

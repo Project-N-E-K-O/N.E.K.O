@@ -450,7 +450,8 @@
          * translator: prose remains owned by N.E.K.O, while the motion system
          * normalizes action, posture, emotion, degree and negation evidence.
          */
-        toChineseFrame(text, inputLocale) {
+        toChineseFrame(text, inputLocale, options) {
+            const settings = options || {};
             const locale = localeKey(inputLocale);
             const source = normalize(text);
             if (!source) return '';
@@ -482,11 +483,16 @@
                         .concat(localized(rule.aliases, candidateLocale))
                         .some(function (phrase) { return folded(phrase) === folded(source); });
                 });
-                return exactLocale ? { rule: rule, locale: exactLocale } : null;
+                if (!exactLocale) return null;
+                const anchor = localized(rule.phrases, exactLocale)
+                    .concat(localized(rule.aliases, exactLocale))
+                    .find(function (phrase) { return folded(phrase) === folded(source); });
+                return { rule: rule, locale: exactLocale, anchor: anchor };
             }).filter(Boolean).sort(function (left, right) {
                 return Number(right.rule.priority || 0) - Number(left.rule.priority || 0);
             })[0];
-            if (exactRule) {
+            if (exactRule && (!settings.speechMode
+                || speechActorAllowed(source, exactRule.anchor))) {
                 output.push(localized(exactRule.rule.phrases, 'zh-CN')[0]
                     || exactRule.rule.nameZh || exactRule.rule.id);
                 const exactStyle = styleFor(source, exactRule.rule.styles, exactRule.locale);
@@ -513,7 +519,9 @@
                         scopedBefore(source, anchor, common.negation, 9)
                         || scopedBefore(source, anchor, common.hypothetical, 12)
                     );
-                    if ((phrase || frame.length) && !blocked) {
+                    const actorBlocked = settings.speechMode && anchor
+                        && !speechActorAllowed(source, anchor);
+                    if ((phrase || frame.length) && !blocked && !actorBlocked) {
                         matchedLocale = candidateLocale;
                         break;
                     }
@@ -724,7 +732,9 @@
         analyze(text, options) {
             const settings = options || {};
             const inputLocale = localeKey(settings.locale);
-            const canonicalZh = this.toChineseFrame(text, inputLocale);
+            const canonicalZh = this.toChineseFrame(text, inputLocale, {
+                speechMode: settings.speechMode === true
+            });
             const locale = 'zh-CN';
             const clauses = splitClauses(canonicalZh).map(function (clause) {
                 clause.role = discourseRole(clause);
@@ -1059,7 +1069,7 @@
                 locale: locale,
                 canonicalZh: decision && decision.evidence.canonicalZh
                     || directResult && directResult.canonicalZh
-                    || this.toChineseFrame(assistantText, locale),
+                    || this.toChineseFrame(assistantText, locale, { speechMode: true }),
                 clauses: assistantText ? splitClauses(assistantText) : [],
                 plan: plan,
                 trace: directResult && directResult.trace || [],
