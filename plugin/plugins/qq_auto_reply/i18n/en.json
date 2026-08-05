@@ -443,6 +443,8 @@
   "ui.openplat.config.appid_placeholder": "Get from QQ Open Platform",
   "ui.openplat.config.secret_label": "ClientSecret",
   "ui.openplat.config.hint": "Create a bot on QQ Open Platform to get these. No extra process needed - pure API access~",
+  "ui.openplat.config.identity_probe": "Log identity forensics (only needed when the bot can't recognize its admin in groups)",
+  "ui.openplat.config.identity_probe_hint": "When on, every group message / DM writes one [R11] line to the log file - ID fields and field names only, no chat content. Turn it off once you're done~",
   "ui.openplat.config.accounts_hint": "The first user who sends a DM becomes admin automatically. IDs are encrypted openids (not QQ numbers), visible in the logs.",
   "ui.openplat.guide.step_openplat": "QQ Open Platform",
   "ui.openplat.guide.step_openplat_hint": "Set up AppID and ClientSecret",

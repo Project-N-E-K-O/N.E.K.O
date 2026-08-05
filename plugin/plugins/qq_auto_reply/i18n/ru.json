@@ -443,6 +443,8 @@
   "ui.openplat.config.appid_placeholder": "Получи на QQ Open Platform",
   "ui.openplat.config.secret_label": "ClientSecret (ключ)",
   "ui.openplat.config.hint": "Получи после создания бота на QQ Open Platform. Не нужен отдельный процесс — чистый API.",
+  "ui.openplat.config.identity_probe": "Записывать диагностику идентификаторов (нужно, только если бот не узнаёт администратора в группах)",
+  "ui.openplat.config.identity_probe_hint": "Когда включено, на каждое групповое или личное сообщение в файл журнала пишется строка [R11]: только поля с ID и имена полей, без содержимого переписки. Выключи, когда закончишь.",
   "ui.openplat.config.accounts_hint": "Первый пользователь в личке автоматически станет администратором. ID — зашифрованный openid (не QQ номер), можно посмотреть в логах.",
   "ui.openplat.guide.step_openplat": "QQ Open Platform",
   "ui.openplat.guide.step_openplat_hint": "Настрой AppID и ClientSecret",

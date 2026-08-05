@@ -802,6 +802,16 @@ class QQSettingsService:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:
             self.plugin._qq_settings["qq_open_client_secret"] = str(qq_open_client_secret or "").strip()
+        qq_open_identity_probe_enabled = kwargs.get("qq_open_identity_probe_enabled")
+        if qq_open_identity_probe_enabled is not None:
+            self.plugin._qq_settings["qq_open_identity_probe_enabled"] = bool(
+                qq_open_identity_probe_enabled
+            )
+            self.plugin._emit_log(
+                "INFO",
+                "身份作用域取证日志已"
+                + ("开启" if self.plugin._qq_settings["qq_open_identity_probe_enabled"] else "关闭"),
+            )
         local_stt_url = kwargs.get("local_stt_url")
         if local_stt_url is not None:
             self.plugin._qq_settings["local_stt_url"] = str(local_stt_url or "").strip()

@@ -443,6 +443,8 @@
   "ui.openplat.config.appid_placeholder": "QQ 오픈 플랫폼에서 가져오기",
   "ui.openplat.config.secret_label": "ClientSecret (비밀 키)",
   "ui.openplat.config.hint": "QQ 오픈 플랫폼에서 봇을 생성한 후 가져옵니다. 추가 프로세스 없이 순수 API로 연결됩니다.",
+  "ui.openplat.config.identity_probe": "신원 진단 로그 기록 (그룹에서 관리자를 인식하지 못할 때만 필요)",
+  "ui.openplat.config.identity_probe_hint": "켜면 그룹 메시지와 개인 메시지마다 로그 파일에 [R11] 한 줄을 씁니다. ID 계열 필드와 필드 이름만 담기고 대화 내용은 들어가지 않습니다. 진단이 끝나면 꺼 주세요.",
   "ui.openplat.config.accounts_hint": "첫 번째 개인 메시지를 보낸 사용자가 자동으로 관리자가 됩니다. ID는 암호화된 openid(QQ 번호 아님)이며 로그에서 확인할 수 있습니다.",
   "ui.openplat.guide.step_openplat": "QQ 오픈 플랫폼",
   "ui.openplat.guide.step_openplat_hint": "AppID 및 ClientSecret 설정",

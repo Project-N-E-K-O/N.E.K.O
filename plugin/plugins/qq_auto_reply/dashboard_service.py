@@ -50,6 +50,9 @@ class QQDashboardService:
                 "token": str(settings.get("token") or ""),
                 "qq_open_app_id": str(settings.get("qq_open_app_id") or ""),
                 "qq_open_client_secret": str(settings.get("qq_open_client_secret") or ""),
+                "qq_open_identity_probe_enabled": bool(
+                    settings.get("qq_open_identity_probe_enabled", False)
+                ),
                 "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
                 "napcat_directory": str(napcat_dir),

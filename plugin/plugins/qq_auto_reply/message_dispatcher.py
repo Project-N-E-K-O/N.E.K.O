@@ -6,8 +6,20 @@ from typing import Any, Optional
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import QQReplyRequest
 
+#: 开放平台通道的观测值。真相在 ``QQOpenPlatformConnection.CHANNEL``，这里抄一
+#: 份而不是 import，是为了不把 websockets / httpx 拖进本模块的导入链；两者相
+#: 等由测试钉死。
+_OPEN_PLATFORM_CHANNEL = "open"
+
 
 class QQMessageDispatcher:
+    #: 一个群里连续出现多少个**互不相同**的说话人、且无一对得上名册，才认为
+    #: 「这个群从来认不出任何已登记用户」值得报一条。1 个陌生人本来就该认不
+    #: 出，那是正常的；一连几个都认不出、而名册里明明有管理员，才是信号。
+    OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS = 3
+    #: 最多跟踪多少个群的告警状态，避免长期运行时无界增长。
+    OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS = 128
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._open_platform_bootstrap_lock = asyncio.Lock()
@@ -52,6 +64,98 @@ class QQMessageDispatcher:
             self._open_platform_bootstrap_admin_id = sender_id
             message["_private_permission_level_at_receipt"] = "admin"
             message["_open_platform_admin_promoted_at_receipt"] = True
+
+    def _note_open_platform_identity_scope(
+        self,
+        message: dict[str, Any],
+        permission_level: Any,
+    ) -> None:
+        """开放平台身份作用域的**纯观测**告警（R11）。
+
+        设计出处：``docs/design/speaker-trust-entity-semantics.md`` §2.15.4。
+
+        怀疑的是：开放平台在私聊里下发的 author.id 与在群里下发的可能不是同
+        一个作用域（``user_openid`` vs ``member_openid``）。若真如此，
+        ``_maybe_reserve_open_platform_admin`` 通过**第一条私聊**授权的主人，
+        在**所有群**里都匹配不上名册——档位解析成 ``none``、
+        ``speaker_is_owner`` 恒假、信赖度的 confirmation/correction 来源直接
+        断供。
+
+        这个怀疑**尚未取证**（取证插桩见 ``qq_open_plat.py`` 顶部的 R11 一
+        节）。所以这里只报，不修：
+
+        - 不改任何权限判定，不写名册，不碰 message 的任何既有键；
+        - 若 id 本来就同作用域（R11 不成立），本方法永远走不到告警那一步，
+          是彻底的 no-op。
+
+        **不要**顺手把 ``_maybe_reserve_open_platform_admin`` 里那句全局
+        ``if permission_mgr.list_users(): return`` 改成「按当前通道过滤后判
+        空」。那不是疏漏，是让通道切换 fail-closed 的门：按通道过滤在刚切到
+        open_platform 时恒为空，等于让切换后第一个私聊 bot 的陌生人自动拿到
+        admin。
+        """
+        try:
+            channel = str(message.get("channel") or "").strip().lower()
+            if channel != _OPEN_PLATFORM_CHANNEL:
+                return
+            group_id = str(message.get("group_id") or "").strip()
+            sender_id = str(message.get("user_id") or "").strip()
+            if not group_id or not sender_id:
+                return
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            if permission_mgr is None:
+                return
+            roster = permission_mgr.list_users() or []
+            admins = [
+                user for user in roster
+                if str((user or {}).get("level") or "") == "admin"
+            ]
+            # 名册里没有管理员 ⇒ 群里认不出人是理所当然的，不是信号。
+            if not admins:
+                return
+
+            states = getattr(self, "_open_platform_scope_alarm_state", None)
+            if states is None:
+                states = {}
+                self._open_platform_scope_alarm_state = states
+            state = states.get(group_id)
+            if state is None:
+                if len(states) >= self.OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS:
+                    return
+                state = {"unmatched": set(), "matched": False, "warned": False}
+                states[group_id] = state
+            # 这个群里但凡有过一个人对上名册，就证明群侧 id 与名册同作用域，
+            # 此后永久闭嘴。
+            if state["matched"]:
+                return
+            if str(permission_level or "none") != "none":
+                state["matched"] = True
+                state["unmatched"].clear()
+                return
+            if state["warned"]:
+                return
+            state["unmatched"].add(sender_id)
+            if len(state["unmatched"]) < self.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS:
+                return
+            state["warned"] = True
+            state["unmatched"].clear()
+            text = (
+                f"[R11] 开放平台身份作用域告警: 群 {group_id} 已出现 "
+                f"{self.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS} 个不同说话人，"
+                f"无一匹配已登记用户（名册中有 {len(admins)} 个管理员）。"
+                "若主人是靠「第一条私聊自动授权」拿到的管理员，那个 id 可能"
+                "只在私聊作用域有效，需要在本群单独把群内 id 加进信任用户。"
+                "本条仅为诊断，不改变任何权限判定。"
+            )
+            logger = getattr(self.plugin, "logger", None)
+            if logger is not None:
+                logger.warning(text)
+            emit_log = getattr(self.plugin, "_emit_log", None)
+            if callable(emit_log):
+                emit_log("WARN", text)
+        except Exception:
+            # 观测绝不允许把消息管线带下去。
+            pass
 
     def _resolve_poke_nickname(self, user_id: str, raw_msg: dict[str, Any]) -> str:
         """从戳一戳事件中获取用户昵称"""
@@ -191,6 +295,11 @@ class QQMessageDispatcher:
                             message[
                                 "_group_speaker_permission_level_at_receipt"
                             ] = permission_at_receipt
+                            # 纯观测，挂在刚算出的那个档位后面：告警读的必须
+                            # 是管线真正用的那个值，不能自己再查一次。
+                            self._note_open_platform_identity_scope(
+                                message, permission_at_receipt,
+                            )
                         if message.get("message_type") == "private":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""

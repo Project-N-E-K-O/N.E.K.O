@@ -15,6 +15,88 @@ from .qq_connection import QQConnectionBase
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
+# ==========================================
+# R11 身份作用域取证
+# （docs/design/speaker-trust-entity-semantics.md §2.15.4）
+# ==========================================
+#
+# 开放平台在群消息里下发的 author.id 与在私聊里下发的 author.id 是不是同一个
+# 作用域（全局 user_openid 还是 app×群×人 的 member_openid），**离线无法判定**：
+# 零 fixture、零 vendored SDK、零文档样例。判定只能靠真机跑一遍、读日志。
+#
+# 下面这组常量与函数就是为了让那次取证可做。它们不参与任何判定、不改变任何
+# 行为；取证结论回来之前，权限逻辑一行都不该动。
+_IDENTITY_PROBE_TAG = "[R11]"
+_IDENTITY_PROBE_EVENTS = ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE")
+#: 单次连接最多记录多少条。取证只需要三条（群 X、群 Y、私聊各一），上限
+#: 存在的意义是「开关忘了关」时日志不会无限长，而不是限制取证。
+_IDENTITY_PROBE_MAX_LINES = 200
+#: 单个字段值的字符上限，防御异常长的 payload 把日志撑爆。
+_IDENTITY_PROBE_VALUE_MAX_CHARS = 128
+
+
+def _is_identifier_key(name: str) -> bool:
+    """按**形状**判断一个字段名是不是标识符字段。
+
+    刻意不写成枚举 ``{"id", "member_openid", ...}``：取证要回答的问题之一
+    正是「author 下还有没有别的 openid 兄弟键」，枚举会把没预料到的那个键
+    的值挡在日志外面，取证就白做了。
+    """
+    lowered = str(name).lower()
+    return lowered == "id" or lowered.endswith("_id") or "openid" in lowered
+
+
+def _probe_identifier_values(mapping: Any) -> str:
+    """挑出标识符字段的**值**，其余字段一律不取值。"""
+    if not isinstance(mapping, dict):
+        return "{}"
+    picked: dict[str, str] = {}
+    for raw_key, raw_value in mapping.items():
+        key = str(raw_key)
+        if not _is_identifier_key(key):
+            continue
+        value = str(raw_value)
+        if len(value) > _IDENTITY_PROBE_VALUE_MAX_CHARS:
+            value = value[:_IDENTITY_PROBE_VALUE_MAX_CHARS] + "…"
+        picked[key] = value
+    return json.dumps(picked, ensure_ascii=False, sort_keys=True)
+
+
+def _probe_key_names(mapping: Any) -> str:
+    """只取字段**名**。字段名不含用户内容，可以整份打出来。"""
+    if not isinstance(mapping, dict):
+        return "[]"
+    return json.dumps(sorted(str(k) for k in mapping), ensure_ascii=False)
+
+
+def build_identity_probe_line(event_type: str, data: Any) -> str:
+    """拼一条取证日志。纯函数，无副作用。
+
+    输出四项，恰好对应 §2.15.4.2 表里的四个判据：
+
+    - ``author.ids``  —— ① author.id 本身；② member_openid / user_openid /
+      union_openid 这类兄弟键的值（哪一个跨群相等，靠比对这里）；
+    - ``author.keys`` —— ② 兄弟键的**全量键名**（含没预料到的那些）；
+    - ``group.ids``   —— ③ 群标识挂在哪个键上、值是多少；
+    - ``data.keys``   —— ③ 的兜底：万一群 id 的键名连 "group" 都不含。
+
+    **只打标识符字段的值。** 正文、附件 URL、@ 列表一律不进日志——这条日志
+    落的是持久文件（我的文档/N.E.K.O/logs/，重启留存，取证正需要它持久），
+    取证结束后插桩可以关掉，但已经落盘的行不会跟着回滚。
+    """
+    payload = data if isinstance(data, dict) else {}
+    author = payload.get("author")
+    group_fields = {
+        str(k): v for k, v in payload.items() if "group" in str(k).lower()
+    }
+    return (
+        f"{_IDENTITY_PROBE_TAG} event={event_type} "
+        f"author.ids={_probe_identifier_values(author)} "
+        f"author.keys={_probe_key_names(author)} "
+        f"group.ids={_probe_identifier_values(group_fields)} "
+        f"data.keys={_probe_key_names(payload)}"
+    )
+
 
 class QQOpenPlatformConnection(QQConnectionBase):
     #: Observed transport (see QQClient.CHANNEL). Never a key.
@@ -36,7 +118,12 @@ class QQOpenPlatformConnection(QQConnectionBase):
         client_secret: str,
         logger: Any = None,
         message_queue_size: int = 100,
+        identity_probe: Any = None,
     ):
+        #: 零参回调，返回真时才记录 R11 取证日志（见模块顶部）。做成回调而不是
+        #: 布尔值，是为了让开关改完立刻生效，不必重连。
+        self._identity_probe = identity_probe
+        self._identity_probe_emitted = 0
         self._app_id = str(app_id or "").strip()
         self._client_secret = str(client_secret or "").strip()
         self.token = ""
@@ -173,6 +260,42 @@ class QQOpenPlatformConnection(QQConnectionBase):
     # 消息接收
     # ==========================================
 
+    def _identity_probe_enabled(self) -> bool:
+        probe = getattr(self, "_identity_probe", None)
+        return bool(probe()) if callable(probe) else False
+
+    def _log_identity_probe(self, event_type: str, data: Any) -> None:
+        """记录一条 R11 取证日志（见模块顶部）。
+
+        必须用 ``self.logger``（文件 logger，落 我的文档/N.E.K.O/logs/，重启
+        留存）而不是插件的 ``_emit_log``——后者只写 500 条的内存环，重启即失，
+        而取证要的恰恰是重启之后还能翻出来。
+
+        **异常绝不外泄**：``_receive_loop`` 的兜底 ``except Exception`` 会把
+        任何异常当成断连去重连，一条取证日志没有资格触发一次重连。
+        """
+        try:
+            if event_type not in _IDENTITY_PROBE_EVENTS:
+                return
+            if not self.logger or not self._identity_probe_enabled():
+                return
+            emitted = getattr(self, "_identity_probe_emitted", 0)
+            if emitted > _IDENTITY_PROBE_MAX_LINES:
+                return
+            self._identity_probe_emitted = emitted + 1
+            if emitted == _IDENTITY_PROBE_MAX_LINES:
+                self.logger.info(
+                    f"{_IDENTITY_PROBE_TAG} 本次连接已记录 "
+                    f"{_IDENTITY_PROBE_MAX_LINES} 条取证日志，达到上限，后续不再"
+                    "记录；重启 QQ 自动回复可重新开始记录。"
+                )
+                return
+            # 单参数调用：日志行里带的是平台下发的原始 id，可能含 %，
+            # 交给 logging 做 %-格式化会炸。
+            self.logger.info(build_identity_probe_line(event_type, data))
+        except Exception:
+            pass
+
     async def _receive_loop(self) -> None:
         while not self._closing:
             if not self._ws:
@@ -185,6 +308,11 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 if op == 0:  # Dispatch
                     self._last_seq = payload.get("s", self._last_seq)
                     event_type = payload.get("t", "")
+                    # R11 取证插桩必须落在这里，而不是 _convert_event 里面：
+                    # 一是绕开群 id 键名的不确定性（_convert_event 只读
+                    # group_id，若平台下发 group_openid 就什么都看不见），
+                    # 二是早于信任群白名单闸，未配置的群也能取到证。
+                    self._log_identity_probe(event_type, payload.get("d"))
                     if event_type in ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"):
                         msg = self._convert_event(event_type, payload["d"])
                         if msg:

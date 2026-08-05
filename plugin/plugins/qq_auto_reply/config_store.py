@@ -82,6 +82,10 @@ class QQAutoReplyConfigStore:
             # QQ 开放平台
             "qq_open_app_id": "",
             "qq_open_client_secret": "",
+            # R11 身份作用域取证开关（qq_open_plat.py 顶部有完整说明）。默认
+            # 关：打开后每条群/私聊事件都会往持久日志里写一行标识符字段，只有
+            # 维护者做那次取证时才需要。
+            "qq_open_identity_probe_enabled": False,
             "trusted_users": [],
             "trusted_groups": [],
             # 全局 per-QQ 信赖度演化账本；群与私聊 participant 共池。

@@ -443,6 +443,8 @@
   "ui.openplat.config.appid_placeholder": "Obtener desde QQ Open Platform",
   "ui.openplat.config.secret_label": "ClientSecret (clave secreta)",
   "ui.openplat.config.hint": "Obtén estos datos tras crear un bot en QQ Open Platform. No requiere procesos adicionales, solo API.",
+  "ui.openplat.config.identity_probe": "Registrar diagnóstico de identidad (solo si el bot no reconoce al administrador en los grupos)",
+  "ui.openplat.config.identity_probe_hint": "Al activarlo, cada mensaje de grupo o privado escribe una línea [R11] en el archivo de registro: solo campos de ID y nombres de campo, sin contenido del chat. Desactívalo cuando termines.",
   "ui.openplat.config.accounts_hint": "El primer usuario que envíe un mensaje privado se convierte automáticamente en administrador. El ID es un openid cifrado (no un número QQ), visible en los logs.",
   "ui.openplat.guide.step_openplat": "QQ Open Platform",
   "ui.openplat.guide.step_openplat_hint": "Configurar AppID y ClientSecret",

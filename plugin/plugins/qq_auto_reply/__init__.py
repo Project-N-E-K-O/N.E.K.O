@@ -210,6 +210,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 app_id=str((self._qq_settings or {}).get("qq_open_app_id") or "").strip(),
                 client_secret=str((self._qq_settings or {}).get("qq_open_client_secret") or "").strip(),
                 logger=self.logger,
+                # 每条事件现读，开关改完立刻生效，不必重连。
+                identity_probe=lambda: bool(
+                    (self._qq_settings or {}).get("qq_open_identity_probe_enabled", False)
+                ),
             )
         return QQClient(
             onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://0.0.0.0:6199"),
