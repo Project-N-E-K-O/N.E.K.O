@@ -15,6 +15,76 @@ const LIVE2D_MOTION_PRIORITY = Object.freeze({
     FORCE: 3
 });
 
+Live2DManager.prototype.hasActiveActionMotion = function(model = this.currentModel) {
+    if (
+        model === this.currentModel
+        && (this._actionMotionRequestPendingModel === model || this._simpleMotionActive === true)
+    ) {
+        return true;
+    }
+
+    const state = model?.internalModel?.motionManager?.state;
+    if (!state) return false;
+    return Number(state.currentPriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE
+        || Number(state.reservePriority || 0) > LIVE2D_MOTION_PRIORITY.IDLE;
+};
+
+Live2DManager.prototype.playActionMotion = async function(groupName, index) {
+    const model = this.currentModel;
+    const motionManager = model?.internalModel?.motionManager;
+    if (!model || typeof model.motion !== 'function' || !motionManager) return false;
+    if (this.hasActiveActionMotion(model)) {
+        console.log(`[Live2D] 已有动作正在播放，忽略新动作: ${groupName}`);
+        return false;
+    }
+
+    const cachedMotion = motionManager.motionGroups?.[groupName]?.[index];
+    let restoreCachedMotionLoop = null;
+    if (cachedMotion) {
+        let previousLoop;
+        let hasPreviousLoop = false;
+        if (typeof cachedMotion.isLoop === 'function') {
+            previousLoop = cachedMotion.isLoop();
+            hasPreviousLoop = true;
+        } else if (cachedMotion._loop !== undefined) {
+            previousLoop = cachedMotion._loop;
+            hasPreviousLoop = true;
+        }
+        if (hasPreviousLoop) {
+            restoreCachedMotionLoop = () => {
+                if (typeof cachedMotion.setIsLoop === 'function') cachedMotion.setIsLoop(previousLoop);
+                else cachedMotion._loop = previousLoop;
+            };
+        }
+        if (typeof cachedMotion.setIsLoop === 'function') cachedMotion.setIsLoop(false);
+        else if (cachedMotion._loop !== undefined) cachedMotion._loop = false;
+    }
+
+    this._actionMotionRequestPendingModel = model;
+    let started;
+    try {
+        started = await model.motion(groupName, index, LIVE2D_MOTION_PRIORITY.NORMAL);
+        if (started === true) {
+            this._actionMotionGeneration = (this._actionMotionGeneration || 0) + 1;
+        }
+        return started;
+    } finally {
+        if (started !== true && restoreCachedMotionLoop) {
+            restoreCachedMotionLoop();
+        }
+        if (
+            started !== true
+            && motionManager.state?.reservedGroup === groupName
+            && (index == null || motionManager.state?.reservedIndex === index)
+        ) {
+            motionManager.state.setReserved(undefined, undefined, LIVE2D_MOTION_PRIORITY.NONE);
+        }
+        if (this._actionMotionRequestPendingModel === model) {
+            this._actionMotionRequestPendingModel = null;
+        }
+    }
+};
+
 // 缓动函数集合（用于眨眼、口型等动画的平滑过渡）
 const Easing = {
     linear: (t) => t,
@@ -89,6 +159,11 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this.appearanceBaselineParameters = {};
     this._activeExpressionParamIds = null;
     this._activeMotionParamIds = null;
+    this._actionMotionRequestPendingModel = null;
+    this._simpleMotionActive = false;
+    this._transientExpressionGeneration = (this._transientExpressionGeneration || 0) + 1;
+    this._transientExpressionTask = null;
+    this._activeTransientExpression = false;
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     if (typeof this._nextMotionTimerGeneration === 'function') {
         this._nextMotionTimerGeneration();
@@ -1698,7 +1773,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
     const startTrackedMotion = async (groupName, index, file) => {
         if (!isCurrentIdleRequest()) return false;
         try {
-            const started = await motionManager.startMotion(groupName, index);
+            const started = await motionManager.startMotion(groupName, index, LIVE2D_MOTION_PRIORITY.IDLE);
             if (!isCurrentIdleRequest()) return false;
             if (started === false) {
                 console.warn(`[Live2D] 启动 ${groupName} 待机动作失败，尝试下一个 Idle 候选`);
@@ -1770,7 +1845,7 @@ Live2DManager.prototype._playIdleMotion = async function(motionManager) {
 
     if (!isCurrentIdleRequest()) return;
     try {
-        const started = await motionManager.startRandomMotion('Idle');
+        const started = await motionManager.startRandomMotion('Idle', LIVE2D_MOTION_PRIORITY.IDLE);
         if (!isCurrentIdleRequest()) return;
         if (started === false) {
             this._clearActiveMotionParamIds();

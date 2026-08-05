@@ -942,6 +942,7 @@
         "voiceRecognitionSettings": "Configurações de reconhecimento de voz",
         "voiceRecognitionDisabled": "Usando o reconhecimento de voz nativo do Omni",
         "voiceRecognitionDisabledHint": "O ASR independente está desativado; a entrada de voz usa o reconhecimento de voz nativo do Omni",
+        "voiceRecognitionNativeCoreHint": "Este Core usa a API gratuita; os controles de ASR independente não se aplicam",
         "voiceRecognitionUnavailable": "O reconhecimento de voz independente está indisponível. A entrada de voz desta sessão foi interrompida",
         "voiceRecognitionStatusReady": "● Funcionando normalmente",
         "voiceRecognitionSettingsPending": "◐ As configurações terão efeito na próxima sessão de voz",

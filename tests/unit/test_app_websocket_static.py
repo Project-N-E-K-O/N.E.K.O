@@ -261,7 +261,7 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
     # from the toggle handler so the visible route never lags the user's choice.
     summary_block = capture_source.split(
         "function updateVoiceRecognitionUi() {", 1
-    )[1].split("function positionVoicePanel()", 1)[0]
+    )[1].split("function onVoiceLifecycleChanged()", 1)[0]
     assert "'microphone.independentAsrSummary'" in summary_block
     assert "{ provider: provider }" in summary_block
     assert "'microphone.voiceRecognitionDisabled'" in summary_block
@@ -269,7 +269,7 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
 
     change_handler = capture_source.split(
         "var asrToggle = createVoiceSettingToggle(", 1
-    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    )[1].split("var voicePanelId", 1)[0]
     assert "updateVoiceRecognitionUi();" in change_handler
 
 
@@ -575,6 +575,7 @@ def test_start_session_payload_carries_independent_asr_handshake():
     # other messages pass through untouched.
     assert "typeof data === 'string'" in wrapper
     assert "msg.action === 'start_session'" in wrapper
+    assert "coreApiSupportsIndependentAsr" not in wrapper
 
     # The wrapper is attached at the single socket-creation seam, so every
     # start_session send site (including the ones in app-buttons.js) carries
@@ -582,6 +583,136 @@ def test_start_session_payload_carries_independent_asr_handshake():
     creation_index = websocket_source.index("S.socket = new WebSocket(wsUrl);")
     attach_index = websocket_source.index("attachStartSessionHandshake(S.socket);")
     assert 0 < attach_index - creation_index < 200
+
+
+def test_stale_unsupported_capability_does_not_override_paid_core_preference_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function attachStartSessionHandshake(ws)")
+    end = source.index("function connectWebSocket()", start)
+    attach_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          coreApiSupportsIndependentAsr: false,
+          settingsHydrated: true,
+          independentAsrAuthoritative: true,
+          independentAsrEnabled: true,
+          voiceInputResourceOptimizationAuthoritative: false,
+        };
+        """
+        + attach_source
+        + """
+        const frames = [];
+        const ws = { send(data) { frames.push(data); } };
+        attachStartSessionHandshake(ws);
+        ws.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
+        const sent = JSON.parse(frames[0]);
+        if (sent.independent_asr_enabled !== true) {
+          throw new Error('stale capability must not replace the authoritative preference');
+        }
+        console.log('ok');
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_core_capability_refresh_failures_fail_open_and_coalesce_requests_harness():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    start = source.index("function publishCoreApiCapability(provider, capability)")
+    end = source.index("// Prime the capability once", start)
+    refresh_source = source[start:end]
+    harness = (
+        """
+        const S = {
+          coreApiProvider: 'free',
+          coreApiSupportsIndependentAsr: false,
+        };
+        let _coreApiCapabilityRefreshPromise = null;
+        let _coreApiCapabilityRequestGeneration = 0;
+        const events = [];
+        class CustomEvent {
+          constructor(type, options) {
+            this.type = type;
+            this.detail = options && options.detail;
+          }
+        }
+        const window = {
+          dispatchEvent(event) { events.push(event); },
+          fetch: null,
+        };
+        """
+        + refresh_source
+        + """
+        function response(data) {
+          return { ok: true, json: async () => data };
+        }
+        function assert(condition, message) {
+          if (!condition) throw new Error(message);
+        }
+        async function main() {
+          window.fetch = async () => response({ success: false, coreApi: 'qwen' });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.coreApiSupportsIndependentAsr === null, 'success:false must fail open');
+          assert(S.coreApiProvider === '', 'failed response provider must become unknown');
+
+          S.coreApiProvider = 'free';
+          S.coreApiSupportsIndependentAsr = false;
+          window.fetch = async () => response({ success: true, coreApi: 'qwen' });
+          await refreshCoreApiCapability({ force: true });
+          assert(S.coreApiSupportsIndependentAsr === null, 'legacy response must fail open');
+          assert(S.coreApiProvider === 'qwen', 'usable provider context should be retained');
+
+          const validCapability = {
+            success: true,
+            coreApi: 'free',
+            effectiveCoreApi: 'qwen',
+            supportsIndependentAsr: true,
+          };
+          let fetchCalls = 0;
+          let resolveShared;
+          window.fetch = () => {
+            fetchCalls += 1;
+            return new Promise((resolve) => { resolveShared = resolve; });
+          };
+          const firstRequest = refreshCoreApiCapability({ force: true });
+          const joinedForceRequest = refreshCoreApiCapability({ force: true });
+          const joinedDefaultRequest = refreshCoreApiCapability();
+          assert(firstRequest === joinedForceRequest, 'force callers must share the in-flight request');
+          assert(firstRequest === joinedDefaultRequest, 'all callers must share the in-flight request');
+          assert(fetchCalls === 1, 'coalesced callers must issue one fetch');
+          resolveShared(response(validCapability));
+          await firstRequest;
+          assert(S.coreApiSupportsIndependentAsr === true, 'shared success must publish capability');
+          assert(S.coreApiProvider === 'qwen', 'effective provider must win');
+
+          let resolveNext;
+          window.fetch = () => {
+            fetchCalls += 1;
+            return new Promise((resolve) => { resolveNext = resolve; });
+          };
+          const nextRequest = refreshCoreApiCapability({ force: true });
+          assert(nextRequest !== firstRequest, 'force must bypass completed cache data');
+          assert(fetchCalls === 2, 'force after settlement must issue a fresh fetch');
+          resolveNext(response(validCapability));
+          await nextRequest;
+          assert(
+            events.length === 3
+              && events.every((event) => event.type === 'neko:core-api-capability-changed'),
+            'capability changes should notify the shared UI exactly once per change'
+          );
+          console.log('ok');
+        }
+        main().catch((error) => {
+          console.error(error);
+          process.exitCode = 1;
+        });
+        """
+    )
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
 
 
 def test_start_session_payload_carries_resource_optimization_handshake():
@@ -2982,6 +3113,275 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
         f"stderr:\n{result.stderr}"
     )
     assert "HARNESS_OK" in result.stdout
+
+
+def test_boot_get_converges_on_a_peer_asr_flip_it_did_not_witness_harness():
+    # Issue #2540 (residual 2 of #2345): window A's boot GET merged the stale
+    # server value onto independentAsrEnabled just because the key was not in
+    # _dirtySettingsKeys, and A then stayed on that value. The sibling test
+    # above only covers the flip arriving DURING the in-flight GET, where the
+    # flip gate marks the key dirty. Pin the two interleavings it does not
+    # reach -- the flip already sitting in the boot snapshot, and the flip
+    # arriving after the merge already landed -- so the decision-tuple ordering
+    # that makes both converge cannot silently regress into dirty-mark-only
+    # gating again.
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext(bootSnapshot) {
+          const postCalls = [];
+          const getCalls = [];
+          const listeners = [];
+          const store = Object.create(null);
+          if (bootSnapshot) {
+            store['project_neko_settings'] = JSON.stringify(bootSnapshot);
+          }
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            CustomEvent: class {
+              constructor(type) { this.type = type; }
+            },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) {
+                return Object.prototype.hasOwnProperty.call(store, key)
+                  ? store[key]
+                  : null;
+              },
+              setItem(key, value) { store[key] = value; },
+              removeItem(key) { delete store[key]; },
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ url, body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ url, resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: {
+              independentAsrEnabled: false,
+              independentAsrActive: true,
+              voiceChatActive: true,
+              voiceInputLifecycleState: 'active',
+              voiceSessionStartEpoch: 10,
+              voiceSettingsPendingUntilEpoch: null,
+              pendingVoiceRouteIndependentAsr: null,
+              settingsHydrated: false,
+            },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener(type, fn) { listeners.push({ type, fn }); },
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          const storage = listeners.filter((entry) => entry.type === 'storage');
+          assert(storage.length === 1, 'module must register exactly one storage listener');
+          return {
+            postCalls,
+            getCalls,
+            S: sandbox.window.appState,
+            fireStorage(value) {
+              storage[0].fn({
+                key: 'project_neko_settings',
+                newValue: JSON.stringify(value),
+              });
+            },
+            postedAsrValues() {
+              return postCalls.map((call) => {
+                try { return JSON.parse(call.body).independentAsrEnabled; }
+                catch (_) { return undefined; }
+              });
+            },
+          };
+        }
+
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const NOW = Date.now();
+        // The peer toggled a second ago; the server snapshot this window is
+        // about to read still carries the decision from a minute ago.
+        const PEER_WRITE_ID = NOW - 1000;
+        const SERVER_DECISION_ID = NOW - 60000;
+
+        function peerFlipSnapshot(writeId, value) {
+          return {
+            independentAsrEnabled: value,
+            _sharedWriteMeta: {
+              writeId,
+              writerId: 'peerwindow',
+              changedKeys: ['independentAsrEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              pendingRecovery: false,
+              asrDecision: { writeId, writerId: 'peerwindow', value },
+            },
+          };
+        }
+
+        function resolveStaleGet(getCall, options) {
+          const withDecision = !(options && options.withoutDecisions);
+          const body = {
+            success: true,
+            revision: 7,
+            settings: { independentAsrEnabled: false },
+            telemetryBranch: null,
+          };
+          if (withDecision) {
+            body.decisions = {
+              independentAsrEnabled: {
+                writeId: SERVER_DECISION_ID,
+                writerId: 'serverside',
+                value: false,
+              },
+            };
+          }
+          getCall.resolve({
+            ok: true,
+            headers: {
+              get(header) {
+                return header === 'ETag' ? '"conversation-settings-7"' : null;
+              },
+            },
+            json: async () => body,
+          });
+        }
+
+        async function main() {
+          // Scenario 1: the peer's flip reached localStorage before this window
+          // loaded, so no storage event ever announces it and the key is not
+          // dirty here. The restored decision tuple must still outrank the
+          // server's older one.
+          const ctx = makeContext(peerFlipSnapshot(PEER_WRITE_ID, true));
+          assert(ctx.S.independentAsrEnabled === true, 'boot must load the peer flip');
+          assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
+          resolveStaleGet(ctx.getCalls[0]);
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            ctx.S.independentAsrEnabled === true,
+            'the stale boot GET must not overwrite a non-dirty key the peer already decided'
+          );
+          assert(
+            ctx.postedAsrValues().every((value) => value !== false),
+            'the stale value must not be POSTed back over the peer decision'
+          );
+
+          // Scenario 1 negative: the SAME shape with a decision OLDER than the
+          // server's is a genuine hydration, not a conflict -- the merge must
+          // still apply the server value, or scenario 1 would pass vacuously.
+          const stale = makeContext(
+            peerFlipSnapshot(SERVER_DECISION_ID - 1000, true)
+          );
+          assert(stale.S.independentAsrEnabled === true, 'boot must load the local value');
+          resolveStaleGet(stale.getCalls[0]);
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            stale.S.independentAsrEnabled === false,
+            'a local decision older than the server tuple must still hydrate from the server'
+          );
+
+          // Scenario 2: the merge lands first and the peer's flip only arrives
+          // afterwards. Adopting the server tuple must not pin this window.
+          const late = makeContext(null);
+          resolveStaleGet(late.getCalls[0]);
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            late.S.independentAsrEnabled === false,
+            'the clean boot must merge the server value'
+          );
+          late.fireStorage(peerFlipSnapshot(NOW, true));
+          assert(
+            late.S.independentAsrEnabled === true,
+            'a peer flip newer than the adopted server tuple must win after the merge'
+          );
+
+          // Scenario 3: a server with no decisions block at all carries no
+          // ordering evidence, so it must never displace a restored local one.
+          const legacyServer = makeContext(peerFlipSnapshot(PEER_WRITE_ID, true));
+          resolveStaleGet(legacyServer.getCalls[0], { withoutDecisions: true });
+          await tick();
+          await tick();
+          await tick();
+          assert(
+            legacyServer.S.independentAsrEnabled === true,
+            'a decision-less server snapshot must not overwrite a restored local decision'
+          );
+
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "boot-GET convergence harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_boot_merge_orders_asr_on_the_decision_tuple_not_only_the_dirty_mark():
+    # Structural half of the #2540 pin. The behavioural harness above can only
+    # observe the outcome; this asserts the boot path actually keeps the two
+    # inputs the issue said were conflated -- "I never changed this key" and
+    # "I never had an authoritative value for it" -- separate.
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    load_fn = _block_after(settings_source, "function loadSettings() {")
+    # The boot snapshot restores the decision tuple, so a flip a peer wrote
+    # before this window loaded is still ordered against the server's.
+    assert "bootMeta.asrDecision" in load_fn
+    assert "_adoptAsrDecisionTuple(" in load_fn
+    assert "const bootDecision = bootMeta.asrDecision || bootMeta;" in load_fn
+
+    # The field-level merge skips the ASR key on decision ordering, which is
+    # evaluated INDEPENDENTLY of _dirtySettingsKeys.
+    assert (
+        "if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;"
+        in load_fn
+    )
+    preserve = load_fn.split("const preserveLocalAsrDecision =", 1)[1].split(
+        ";", 1
+    )[0]
+    assert "_lastAsrDecision" in preserve
+    assert "_asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)" in preserve
+    # A server snapshot with no decision tuple carries no ordering evidence:
+    # the local decision must win rather than the absence counting as newer.
+    assert "!serverAsrDecision" in preserve
+    assert "_dirtySettingsKeys" not in preserve
 
 
 def test_shared_settings_writes_carry_explicit_change_metadata():

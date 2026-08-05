@@ -28,7 +28,9 @@ end to end against stub collaborators, so any unbound name, missing argument,
 or renamed collaborator in either branch fails here.
 """
 
+import ast
 import asyncio
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -178,6 +180,71 @@ async def test_session_creation_runs_end_to_end(monkeypatch, input_mode):
     client = _StubClient.instances[0]
     assert client.connected_with is not None, "构造了 client 却没有 connect"
     assert mgr.session is client, "connect 成功后必须提升为 self.session"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_mode", ["audio", "text"])
+async def test_session_creation_does_not_emit_prompt_content(
+    monkeypatch, capsys, input_mode
+):
+    sentinel = "PRIVATE_PROMPT_SENTINEL_2635"
+    mgr = _make_manager(monkeypatch, input_mode=input_mode)
+    mgr._build_initial_prompt = _async_return(sentinel)
+
+    logged = []
+
+    def _capture_log(message, *args, **kwargs):
+        del kwargs
+        logged.append(str(message) % args if args else str(message))
+
+    for level in ("debug", "info", "warning", "error", "exception"):
+        monkeypatch.setattr(lifecycle.logger, level, _capture_log)
+
+    await LLMSessionManager._start_session_start_llm(
+        mgr,
+        input_mode,
+        await mgr._config_manager.aget_core_config(),
+        await mgr._config_manager.aget_model_api_config("realtime"),
+        asyncio.create_task(_new_dialog_task()),
+        0.0,
+    )
+
+    captured = capsys.readouterr()
+    emitted = captured.out + captured.err + "\n".join(logged)
+    assert sentinel not in emitted
+
+
+@pytest.mark.unit
+def test_lifecycle_never_emits_sensitive_prompt_objects():
+    source = inspect.getsource(lifecycle)
+    tree = ast.parse(source)
+    sensitive_names = {"initial_prompt", "final_prime_text"}
+    offenders = []
+
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        is_output_call = (
+            isinstance(call.func, ast.Name)
+            and call.func.id == "print"
+        ) or (
+            isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "logger"
+            and call.func.attr in {"debug", "info", "warning", "error", "exception"}
+        )
+        if not is_output_call:
+            continue
+        referenced_names = {
+            node.id
+            for argument in (*call.args, *(keyword.value for keyword in call.keywords))
+            for node in ast.walk(argument)
+            if isinstance(node, ast.Name)
+        }
+        leaked = sorted(referenced_names & sensitive_names)
+        if leaked:
+            offenders.append((call.lineno, leaked))
+
+    assert offenders == []
 
 
 @pytest.mark.unit

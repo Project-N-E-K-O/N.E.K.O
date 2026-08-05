@@ -2070,6 +2070,39 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   animation: bubblePopoverAppear 0.24s cubic-bezier(0.2, 0.9, 0.2, 1.15) both;
 }
 
+.composer-icon-popover .full-avatar-tool-settings-button {
+  animation-delay: -1.55s;
+}
+
+.composer-icon-popover .full-avatar-tool-settings-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(1),
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(4) {
+  top: 8px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(2),
+.composer-icon-popover[data-avatar-tool-button-count="4"] .composer-icon-button:nth-child(3) {
+  top: -2px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="3"] .composer-icon-button:nth-child(1),
+.composer-icon-popover[data-avatar-tool-button-count="3"] .composer-icon-button:nth-child(3) {
+  top: 6px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="3"] .composer-icon-button:nth-child(2) {
+  top: -3px;
+}
+
+.composer-icon-popover[data-avatar-tool-button-count="2"] .composer-icon-button,
+.composer-icon-popover[data-avatar-tool-button-count="1"] .composer-icon-button {
+  top: 0;
+}
+
 .composer-icon-button {
   --composer-icon-bubble-scale: 1;
   position: relative;

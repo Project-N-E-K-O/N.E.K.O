@@ -139,9 +139,11 @@ async def _wrong_generation_ready_worker(
 
 def test_public_exports_are_frozen():
     assert asr_client.__all__ == [
+        "AsrCoreCapabilities",
         "AsrSessionConfig",
         "RealtimeAsrSession",
         "create_asr_session",
+        "get_asr_core_capabilities",
     ]
     assert not hasattr(asr_client, "get_asr_worker")
     assert not hasattr(asr_client, "AsrWorkerFn")
@@ -233,6 +235,23 @@ def test_phase2_registry_routes_and_capabilities():
     assert CORE_ASR_ROUTES["step"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["grok"].credential_field == "ASSIST_API_KEY_GROK"
     assert CORE_ASR_ROUTES["grok"].default_endpointing_mode == "provider"
+    assert {
+        core_key: route.capabilities.supports_independent_asr
+        for core_key, route in CORE_ASR_ROUTES.items()
+    } == {
+        "qwen": True,
+        "qwen_intl": True,
+        "openai": True,
+        "step": True,
+        "grok": True,
+        "glm": True,
+        "gemini": True,
+        "free": False,
+    }
+    assert asr_client.get_asr_core_capabilities(" FREE ") == (
+        asr_client.AsrCoreCapabilities(supports_independent_asr=False)
+    )
+    assert asr_client.get_asr_core_capabilities("unknown") is None
 
     assert ASR_PROVIDER_REGISTRY["qwen"].supported_endpointing_modes == {
         "manual",

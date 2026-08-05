@@ -72,6 +72,7 @@ class QQReplyRequest:
     group_id: Optional[str] = None
     user_nickname: Optional[str] = None
     is_at_bot: bool = False
+    is_reply_to_bot: bool = False
     source_kind: str = "incoming"
     use_memory_context: Optional[bool] = None
     persist_memory: Optional[bool] = None
@@ -84,6 +85,7 @@ class QQReplyRequest:
     mentions_other_user: bool = False
     mentions_all: bool = False
     reply_message_id: str = ""
+    reply_context: str = ""
     at_user_id: str = ""
     fallback_to_text_on_voice_failure: bool = True
     # 内嵌合成轮（ack / 强制总结 / 缓冲汇总）继承缓冲里那些草稿的授权
@@ -288,6 +290,12 @@ class QQReplyOutcome:
     wait_directive_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
+    emoji_reaction_id: str = ""
+    feeling: str = ""                 # <feeling> 标签提取的情绪
+    forward_content: str = ""
+    forward_target: str = ""
+    forward_count: int = 0              # <forward count="N">，0=默认20条
+    forward_mark: bool = False          # <mark/> 标记转发起点
     relay_plan: QQRelayPlan | None = None
     relay_result: QQRelayResult | None = None
     delivery_plan: QQDeliveryPlan | None = None

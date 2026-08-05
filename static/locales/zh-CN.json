@@ -942,6 +942,7 @@
         "voiceRecognitionSettings": "语音识别设置",
         "voiceRecognitionDisabled": "当前使用 Omni 原生语音识别",
         "voiceRecognitionDisabledHint": "独立 ASR 已关闭；语音输入使用 Omni 原生语音识别",
+        "voiceRecognitionNativeCoreHint": "当前核心使用免费API；独立 ASR 相关开关不适用",
         "voiceRecognitionUnavailable": "独立语音识别不可用，本次语音输入已停止",
         "voiceRecognitionStatusReady": "● 当前运行正常",
         "voiceRecognitionSettingsPending": "◐ 设置将在下次语音会话生效",

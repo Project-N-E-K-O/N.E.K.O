@@ -16,6 +16,7 @@ from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
+from main_logic.asr_client import get_asr_core_capabilities
 from main_logic.asr_client.runtime import (
     AsrRuntimeCallbacks,
     AsrStartStatus,
@@ -558,6 +559,11 @@ class AsrRuntimeMixin:
             return
         self._omni_mic_audio_bytes = 0
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
+        core_asr_capabilities = get_asr_core_capabilities(core_type)
+        supports_independent_asr = bool(
+            core_asr_capabilities is None
+            or core_asr_capabilities.supports_independent_asr
+        )
         self._independent_asr_route_key = core_type
         session_epoch = self._capture_ingress_token().session_epoch
         start_connection_id = self._voice_lease_connection_id
@@ -631,7 +637,7 @@ class AsrRuntimeMixin:
                 if handshake_override is ...
                 else handshake_override
             )
-            if unreadable_handshake is False:
+            if not supports_independent_asr or unreadable_handshake is False:
                 if not core_start_is_current():
                     return
                 # Same landing as the ordinary `not enabled` path below.
@@ -681,7 +687,13 @@ class AsrRuntimeMixin:
             if handshake_override is ...
             else handshake_override
         )
-        if handshake_enabled is not None:
+        if not supports_independent_asr:
+            # Some Core routes own speech recognition natively. Their route
+            # capability takes precedence over both the persisted preference
+            # and the per-session handshake, so a stale enabled toggle cannot
+            # turn a healthy native voice session into a blocked one.
+            enabled = False
+        elif handshake_enabled is not None:
             # The start_session handshake carries the frontend's authoritative
             # toggle; it overrides the persisted read, which is stale when the
             # settings POST failed or was still in flight at session start.

@@ -89,6 +89,11 @@
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
         independentAsrEnabled: true,
+        // Current Core capability loaded from /api/config/core_api. Keep this
+        // tri-state: only an explicit false may disable the effective UI;
+        // null means unknown and leaves the user's persisted preference alone.
+        coreApiProvider: '',
+        coreApiSupportsIndependentAsr: null,
         voiceInputResourceOptimizationEnabled: true,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
         // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；

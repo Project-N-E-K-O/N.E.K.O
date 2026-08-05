@@ -975,6 +975,10 @@ const pluginId = 'qq_auto_reply';
             return value;
         }
 
+        function isMaskedTokenPlaceholder(value) {
+            return /^[*●•]{3,8}$/.test(String(value || '').trim());
+        }
+
         async function persistBacklogLabels(options = {}) {
             const { successMessage = t('ui.toast.saved', '设置已保存') } = options;
             await callPlugin('save_settings', {
@@ -992,10 +996,10 @@ const pluginId = 'qq_auto_reply';
                 try {
                     const normalRelayProbability = validateProbability(document.getElementById('cfg-normal-probability').value, 'ui.probability.normal.invalid');
                     const truthReplyProbability = validateProbability(document.getElementById('cfg-truth-probability').value, 'ui.probability.truth.invalid');
-                    await callPlugin('save_settings', {
+                    const tokenValue = document.getElementById('cfg-token').value;
+                    const args = {
                         qq_connection_mode: document.getElementById('cfg-connection-mode').value,
                         onebot_url: document.getElementById('cfg-url').value.trim(),
-                        token: document.getElementById('cfg-token').value,
                         napcat_directory: document.getElementById('cfg-path').value.trim(),
                         show_napcat_window: document.getElementById('cfg-show-napcat-window').checked,
                         qq_open_app_id: document.getElementById('cfg-open-app-id').value.trim(),
@@ -1005,7 +1009,11 @@ const pluginId = 'qq_auto_reply';
                         truth_reply_probability: truthReplyProbability,
                         backlog_labels: buildBacklogLabelsPayload(),
                         strategy_mode: document.getElementById('cfg-strategy-mode').value,
-                    });
+                    };
+                    if (!isMaskedTokenPlaceholder(tokenValue)) {
+                        args.token = tokenValue;
+                    }
+                    await callPlugin('save_settings', args);
                     await reloadDashboard();
                     await loadBacklogSummary();
                     showToast(t('ui.toast.saved', '设置已保存'));

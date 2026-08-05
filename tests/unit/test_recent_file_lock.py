@@ -639,9 +639,11 @@ def test_compression_splice_keeps_messages_appended_during_compression(tmp_path)
     _write_disk(path, seeded)
 
     gate = asyncio.Event()
+    compressing = asyncio.Event()
     memo = SystemMessage(content="先前对话的备忘录: compressed")
 
     async def _blocking_compress(messages, lanlan_name, detailed=False):
+        compressing.set()
         await gate.wait()
         return (memo, "compressed")
 
@@ -651,7 +653,12 @@ def test_compression_splice_keeps_messages_appended_during_compression(tmp_path)
         task = asyncio.create_task(
             mgr_a.update_history([HumanMessage(content="trigger")], name, compress=True)
         )
-        await asyncio.sleep(0)
+        # update_history 要先过两次真正的 asyncio.to_thread（云存档栅栏 +
+        # CS-1 落盘）才走到 compress_history，实测要 ~3000 个事件循环 tick。
+        # 用 sleep(0) 只让出 1 个 tick，等于没握手：谁先落盘完全由线程池调度
+        # 决定，负载一重（整套 tests/unit 跑在前面时）mgr_b 就可能抢先，
+        # "trigger" 落在 "Z" 后面，末尾断言随机转红。
+        await asyncio.wait_for(compressing.wait(), timeout=5)
         await mgr_b.update_history([HumanMessage(content="Z")], name, compress=False)
         assert [m.content for m in _read_disk(path)][-1] == "Z"
         gate.set()
@@ -1492,9 +1499,11 @@ def test_review_commit_does_not_lose_messages_appended_during_review(tmp_path, m
     monkeypatch.setattr(recent_file, "atomic_write_json", _spy_write)
 
     gate = asyncio.Event()
+    reviewing = asyncio.Event()
 
     class _BlockingLLM(_ReviewLLM):
         async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+            reviewing.set()
             await gate.wait()
             return await super().ainvoke(prompt, **kwargs)
 
@@ -1502,7 +1511,10 @@ def test_review_commit_does_not_lose_messages_appended_during_review(tmp_path, m
 
     async def _go():
         review_task = asyncio.create_task(mgr.review_history(name, snapshot=list(snapshot)))
-        await asyncio.sleep(0)
+        # 同 test_compression_splice_*：review 走到 LLM 之前隔着真正的
+        # asyncio.to_thread，sleep(0) 只让出一个 tick，握不住这个窗口。
+        # 等 LLM 真的被调用才是确定的握手点。
+        await asyncio.wait_for(reviewing.wait(), timeout=5)
         # review LLM 卡在 gate 上时插一条新消息并确认已上盘
         await mgr.update_history([HumanMessage(content="Z")], name, compress=False)
         assert [m.content for m in _read_disk(path)][-1] == "Z"

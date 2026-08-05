@@ -1559,7 +1559,7 @@ def test_route_capability_predicate_knows_the_free_proxy():
         "free-model", "https://www.lanlan.app/text/v1",
     ) is False
     assert route_supports_tool_calls(
-        "free-model", "https://lanlan.tech/text/v1",
+        "free-model", "https://www.lanlan.tech/text/v1",
     ) is False
     # 区域改写只动 URL：模型名单独命中也算免费路由。
     assert route_supports_tool_calls("free-model", "https://example.com/v1") is False

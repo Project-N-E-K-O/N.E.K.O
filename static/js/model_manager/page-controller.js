@@ -479,13 +479,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconAlt: window.i18next?.t('live2d.selectModel') || '选择模型',
                 iconAltKey: 'live2d.selectModel',
                 alwaysShowDefault: false,  // 显示选中的模型名字，而不是默认文本
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('请选择') ||
-                        option.textContent.includes('选择模型') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onChange: () => {
                     updateLive2DModelSelectButtonText();
                 }
@@ -504,13 +497,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultTextKey: 'live2d.selectMotion',
                 iconAlt: window.i18next?.t('live2d.selectMotion') || '选择动作',
                 iconAltKey: 'live2d.selectMotion',
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('请先加载') ||
-                        option.textContent.includes('没有动作') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onChange: () => {
                     updateMotionSelectButtonText();
                 }
@@ -529,13 +515,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultTextKey: 'live2d.selectExpression',
                 iconAlt: window.i18next?.t('live2d.selectExpression') || '选择表情',
                 iconAltKey: 'live2d.selectExpression',
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('请先加载') ||
-                        option.textContent.includes('没有表情') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onChange: () => {
                     updateExpressionSelectButtonText();
                 }
@@ -572,12 +551,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconAlt: window.i18next?.t('live2d.selectVRMModel') || '选择模型',
                 iconAltKey: 'live2d.selectVRMModel',
                 alwaysShowDefault: false,
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('加载中') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onChange: () => {
                     if (typeof updateVRMModelSelectButtonText === 'function') {
                         updateVRMModelSelectButtonText();
@@ -597,13 +570,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultTextKey: 'live2d.vrmAnimation.selectAnimation',
                 iconAlt: window.i18next?.t('live2d.vrmAnimation.selectAnimation') || '选择动作',
                 iconAltKey: 'live2d.vrmAnimation.selectAnimation',
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('请先加载') ||
-                        option.textContent.includes('没有动作') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onBeforeShow: async () => {
                     // 首次点击时加载动作列表
                     if (!animationsLoaded && currentModelType === 'live3d') {
@@ -636,13 +602,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultTextKey: 'live2d.vrmExpression.selectExpression',
                 iconAlt: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
                 iconAltKey: 'live2d.vrmExpression.selectExpression',
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('请先加载') ||
-                        option.textContent.includes('没有表情') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onChange: () => {
                     if (typeof updateVRMExpressionSelectButtonText === 'function') {
                         updateVRMExpressionSelectButtonText();
@@ -663,13 +622,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultTextKey: 'live2d.mmdAnimation.selectAnimation',
                 iconAlt: window.i18next?.t('live2d.mmdAnimation.selectAnimation') || '选择VMD动画',
                 iconAltKey: 'live2d.mmdAnimation.selectAnimation',
-                shouldSkipOption: (option) => {
-                    return option.value === '' && (
-                        option.textContent.includes('请先加载') ||
-                        option.textContent.includes('没有动画') ||
-                        option.textContent.includes('Select')
-                    );
-                },
                 onChange: () => {
                     if (typeof updateMMDAnimationSelectButtonText === 'function') {
                         updateMMDAnimationSelectButtonText();
@@ -6496,7 +6448,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const motionSelectBtn = document.getElementById('motion-select-btn');
                 if (motionSelectBtn) motionSelectBtn.disabled = true;
                 playMotionBtn.disabled = true;
-                motionSelect.innerHTML = `<option value="">${t('live2d.noMotionFiles', '没有动作文件')}</option>`;
+                motionSelect.innerHTML = `<option value="" data-placeholder="true">${t('live2d.noMotionFiles', '没有动作文件')}</option>`;
                 // 更新按钮文字
                 if (typeof updateMotionSelectButtonText === 'function') {
                     updateMotionSelectButtonText();
@@ -7765,7 +7717,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     try {
                         const modelsResponse = await fetch('/api/live2d/models');
                         availableModels = await modelsResponse.json();
-                        modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
+                        modelSelect.innerHTML = `<option value="" data-placeholder="true">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
                         availableModels.forEach(model => {
                             const option = document.createElement('option');
                             option.value = model.name;
@@ -8400,7 +8352,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (deletedLive2D && currentModelType === 'live2d') {
             try {
                 availableModels = await RequestHelper.fetchJson('/api/live2d/models');
-                modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
+                modelSelect.innerHTML = `<option value="" data-placeholder="true">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
                 availableModels.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.name;

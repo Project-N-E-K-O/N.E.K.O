@@ -169,10 +169,10 @@ def test_active_realtime_base_is_route_agnostic_on_lanlan_app():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
-            return {"api_type": "free", "base_url": "wss://lanlan.app/realtime"}
+            return {"api_type": "free", "base_url": "wss://www.lanlan.app/realtime"}
 
         def get_core_config(self):
-            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://www.lanlan.app/realtime"}
 
     assert get_active_realtime_native_provider(_CM()) == "free"
 
@@ -181,10 +181,10 @@ def test_active_realtime_for_ui_remaps_free_to_free_intl_on_lanlan_app_route():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
-            return {"api_type": "free", "base_url": "wss://lanlan.app/realtime"}
+            return {"api_type": "free", "base_url": "wss://www.lanlan.app/realtime"}
 
         def get_core_config(self):
-            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://www.lanlan.app/realtime"}
 
     assert get_active_realtime_native_provider_for_ui(_CM()) == "free_intl"
 
@@ -217,10 +217,10 @@ def test_active_realtime_for_ui_keeps_free_provider_on_lanlan_tech_route():
     class _CM:
         def get_model_api_config(self, model_type):
             assert model_type == "realtime"
-            return {"api_type": "free", "base_url": "wss://lanlan.tech/realtime"}
+            return {"api_type": "free", "base_url": "wss://www.lanlan.tech/realtime"}
 
         def get_core_config(self):
-            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.tech/realtime"}
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://www.lanlan.tech/realtime"}
 
     assert get_active_realtime_native_provider_for_ui(_CM()) == "free"
 
@@ -233,7 +233,7 @@ def test_active_realtime_for_ui_falls_back_to_core_url_when_base_url_empty():
             return {"api_type": "free", "base_url": ""}
 
         def get_core_config(self):
-            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://lanlan.app/realtime"}
+            return {"CORE_API_TYPE": "free", "CORE_URL": "wss://www.lanlan.app/realtime"}
 
     assert get_active_realtime_native_provider_for_ui(_CM()) == "free_intl"
 
