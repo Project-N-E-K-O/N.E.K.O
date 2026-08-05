@@ -65,6 +65,14 @@ function deferred() {
     return { promise, resolve };
 }
 
+async function waitForLoadStart(predicate, message) {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+        if (predicate()) return;
+        await new Promise(setImmediate);
+    }
+    assert.fail(message);
+}
+
 (async function () {
     global.fetch = async function (url) {
         assert.equal(String(url), '/static/vrm/motion/manifest.json');
@@ -88,10 +96,11 @@ function deferred() {
         previewPlan = plan;
         return true;
     };
-    await player.playAsset('official_liked');
+    await player.playAsset('official_liked', { scheduleNext: false });
     assert.equal(previewPlan.length, 1);
     assert.equal(previewPlan[0].intent, 'like');
     assert.equal(previewPlan[0].evidence.assetId, 'official_liked');
+    assert.equal(previewPlan[0].scheduleNextRest, false);
 
     const unlicensed = JSON.parse(JSON.stringify(manifest));
     unlicensed.assets[0].license = '?';
@@ -413,7 +422,10 @@ function deferred() {
     const staleRequest = staleAnimation.playVRMAAnimation('/delayed.vrma', {
         shouldApply() { return delayedRequestCurrent; }
     });
-    while (!finishDelayedLoad) await new Promise(setImmediate);
+    await waitForLoadStart(
+        function () { return finishDelayedLoad; },
+        'delayed VRMA load did not start'
+    );
     delayedRequestCurrent = false;
     finishDelayedLoad({ userData: { vrmAnimations: [{}] } });
     assert.equal(await staleRequest, false);
@@ -445,7 +457,10 @@ function deferred() {
     };
     stoppedAnimation._playAction = function () { stoppedRequestPlayed = true; };
     const stoppedRequest = stoppedAnimation.playVRMAAnimation('/stopped-during-load.vrma');
-    while (!finishStoppedLoad) await new Promise(setImmediate);
+    await waitForLoadStart(
+        function () { return finishStoppedLoad; },
+        'stopped VRMA load did not start'
+    );
     stoppedAnimation.stopVRMAAnimation();
     finishStoppedLoad({ userData: { vrmAnimations: [{}] } });
     assert.equal(await stoppedRequest, false);

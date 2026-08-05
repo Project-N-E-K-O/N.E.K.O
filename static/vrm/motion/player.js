@@ -184,6 +184,7 @@
 
         async playAsset(assetId, options) {
             if (!this.manifest) await this.load();
+            const settings = options || {};
             const asset = this.assets.find(function (candidate) {
                 return candidate.id === assetId;
             });
@@ -201,11 +202,12 @@
                     assetExplicit: true,
                     canonicalZh: asset.nameZh || ''
                 },
-                manualLoop: asset.mode === 'loop'
+                manualLoop: asset.mode === 'loop',
+                scheduleNextRest: settings.scheduleNext !== false
             };
             return this.playPlan([decision], Object.assign({
                 seed: 'catalog-preview:' + asset.id + ':' + Date.now()
-            }, options || {}));
+            }, settings));
         }
 
         _manager() {
@@ -788,7 +790,8 @@
                     force: true,
                     reselect: decision.intent === 'idle',
                     allowOfficial: decision.intent === 'idle',
-                    assetId: decision.evidence && decision.evidence.assetId
+                    assetId: decision.evidence && decision.evidence.assetId,
+                    scheduleNext: decision.scheduleNextRest !== false
                 });
             }
 

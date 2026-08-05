@@ -3616,7 +3616,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (assetId && isCatalogMotion) {
             if (!vrmMotionCatalogPlayer) await loadVrmMotionCatalog();
             if (!vrmMotionCatalogPlayer) throw new Error('Motion catalog player is unavailable');
-            const played = await vrmMotionCatalogPlayer.playAsset(assetId);
+            vrmMotionCatalogPlayer.setSavedRestAnimations(
+                getSelectedIdleAnimations('vrm-idle-animation-multiselect')
+            );
+            const played = await vrmMotionCatalogPlayer.playAsset(assetId, {
+                scheduleNext: false
+            });
             if (played !== true) throw new Error('Motion catalog playback did not start');
             isLooping = selectedOption.getAttribute('data-playback') === 'loop';
         } else {
@@ -5491,12 +5496,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 改由 _playAction 的 crossfade 分支直接 fadeOut(old) + fadeIn(new)。
                     // previousAction 的延迟 stop 在 vrm-animation.js `_playAction` 内部按本次
                     // fadeDuration schedule，不再依赖 idle 轮换路径来 drain。
-                    await vrmManager.playVRMAAnimation(url, {
+                    const idlePlaybackStarted = await vrmManager.playVRMAAnimation(url, {
                         loop: true,
                         immediate: false,
                         fadeDuration: IDLE_VRM_FADE_SEC,
                         isIdle: true,
                     });
+                    if (idlePlaybackStarted !== true) return;
                     played = true;
                     console.log('[VRM IdleAnimation] 待机动作已切换:', url.split('/').pop());
 
