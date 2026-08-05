@@ -842,6 +842,34 @@ class OpenClawAdapter:
             return "/daemon approve"
         return raw if raw in MAGIC_COMMANDS else None
 
+    # ⚠️ 用户**打出来**的 magic command 必须是 `/` 开头、且**裸的**——整条输入就是那个
+    # 命令，前后不带任何东西。这条严格判据只用在「这句用户输入算不算字面命令」的地方；
+    # `normalize_magic_command` 保持宽松，因为它另有一类调用者传的是**内部命令值**
+    # （run_magic_command 的入参、台词查表、解析 LLM 输出的 command 字段），那些地方
+    # 收紧只会误伤。
+    #
+    # 收紧掉的是不带斜杠的裸词 `stop` / `new` / `clear` / `approve`：它们是**普通英文单词**，
+    # 8 个 locale 里那 9 条残留误命中全部来自这里（"Stop" / "Clear" 按钮标签）。
+    _TYPED_MAGIC_COMMANDS = {
+        "/clear": "/clear",
+        "/new": "/new",
+        "/stop": "/stop",
+        "/daemon approve": "/daemon approve",
+        "/approve": "/daemon approve",
+    }
+
+    @staticmethod
+    def parse_typed_magic_command(user_text: Any) -> Optional[str]:
+        """The magic command a user typed verbatim, or None.
+
+        Strict on purpose: leading "/" required, and the whole utterance must be
+        the command — no bare word, no prefix, no trailing text.
+        """  # noqa: DOCSTRING_CJK
+        raw = str(user_text or "").strip()
+        if not raw.startswith("/"):
+            return None
+        return OpenClawAdapter._TYPED_MAGIC_COMMANDS.get(raw.lower())
+
     @staticmethod
     def get_magic_command_feedback(command: str) -> str:
         normalized = OpenClawAdapter.normalize_magic_command(command) or ""
@@ -905,7 +933,7 @@ class OpenClawAdapter:
     @staticmethod
     def _classify_magic_intent_with_rules(user_text: str) -> Dict[str, Any]:
         text = str(user_text or "").strip()
-        normalized = OpenClawAdapter.normalize_magic_command(text)
+        normalized = OpenClawAdapter.parse_typed_magic_command(text)
         if normalized:
             return {"is_magic_intent": True, "command": normalized, "source": "rule"}
 
@@ -1001,7 +1029,7 @@ class OpenClawAdapter:
         must never be gated.
         """  # noqa: DOCSTRING_CJK
         text = str(user_text or "").strip()
-        if not text or OpenClawAdapter.normalize_magic_command(text):
+        if not text or OpenClawAdapter.parse_typed_magic_command(text):
             return None
         clauses = _split_clauses(text)
         if not clauses:
@@ -1039,7 +1067,7 @@ class OpenClawAdapter:
         # 这也顺手修掉下面那道自由文本过滤的误伤：`/new` `/clear` 只认字面命令，而
         # 打出来的字面命令原本也要经 LLM 转一手，回来就被那道过滤当成「自由文本推断」
         # 一起毙了。现在它根本到不了那一层。
-        literal = OpenClawAdapter.normalize_magic_command(text)
+        literal = OpenClawAdapter.parse_typed_magic_command(text)
         if literal:
             return {"is_magic_intent": True, "command": literal, "source": "literal"}
 
