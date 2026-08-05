@@ -199,6 +199,34 @@ function response(body, status) {
     await Promise.resolve();
     assert.equal(resumedAfterCancel, 0);
 
+    const staleCatalogPlayer = new global.NekoMotionPlayer();
+    const staleCatalogAsset = { id: 'stale-catalog', m: 'wave', i: 2 };
+    let finishCatalogLoad;
+    let catalogShouldApply;
+    staleCatalogPlayer._assetUrl = async function () { return 'blob:test-stale-catalog'; };
+    staleCatalogPlayer._manager = function () {
+        return {
+            playVRMAAnimation(url, options) {
+                assert.equal(url, 'blob:test-stale-catalog');
+                catalogShouldApply = options.shouldApply;
+                return new Promise(function (resolve) { finishCatalogLoad = resolve; });
+            }
+        };
+    };
+    const staleCatalogRequest = staleCatalogPlayer._playAsset(
+        staleCatalogAsset,
+        staleCatalogPlayer.queueGeneration,
+        {}
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    staleCatalogPlayer.cancel('model_manager_pause', { resume: false });
+    assert.equal(catalogShouldApply(), false);
+    finishCatalogLoad(false);
+    assert.equal(await staleCatalogRequest, false);
+    assert.equal(staleCatalogPlayer.state.currentAsset, null);
+    assert.equal(staleCatalogPlayer.metrics.played, 0);
+
     const expression = new global.VRMExpression({});
     assert.deepEqual(expression._resolveMoodWeights('shy', ['relaxed', 'happy']), {
         relaxed: 0.55,

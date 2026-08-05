@@ -382,9 +382,10 @@
         }
 
         async _playAsset(asset, generation, options) {
-            if (generation !== this.queueGeneration) return false;
-            if (options.idleActivityVersion !== undefined
-                && options.idleActivityVersion !== this.idleActivityVersion) return false;
+            const requestIsCurrent = () => generation === this.queueGeneration
+                && (options.idleActivityVersion === undefined
+                    || options.idleActivityVersion === this.idleActivityVersion);
+            if (!requestIsCurrent()) return false;
             const manager = this._manager();
             if (!manager) {
                 this.metrics.skipped += 1;
@@ -393,16 +394,16 @@
             let url = null;
             try {
                 url = await this._assetUrl(asset);
-                if (generation !== this.queueGeneration) return false;
-                if (options.idleActivityVersion !== undefined
-                    && options.idleActivityVersion !== this.idleActivityVersion) return false;
-                await manager.playVRMAAnimation(url, {
+                if (!requestIsCurrent()) return false;
+                const played = await manager.playVRMAAnimation(url, {
                     loop: options.loop === true,
                     immediate: options.immediate === true,
                     isIdle: options.idle === true,
                     timeScale: options.timeScale === undefined ? 1 : options.timeScale,
-                    fadeDuration: options.fadeDuration === undefined ? DEFAULT_FADE_SECONDS : options.fadeDuration
+                    fadeDuration: options.fadeDuration === undefined ? DEFAULT_FADE_SECONDS : options.fadeDuration,
+                    shouldApply: requestIsCurrent
                 });
+                if (played !== true || !requestIsCurrent()) return false;
                 this.state.currentAsset = asset;
                 this.metrics.played += 1;
                 if (asset.m !== 'idle') this.lastByIntent.set(asset.m, asset.id);

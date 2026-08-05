@@ -84,6 +84,9 @@ assert.equal(runtimeSource.includes("window.dispatchEvent(new CustomEvent(messag
 assert.match(runtimeSource, /await initialize\(\)/);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /casualTalkPending/);
+const nonVrmTurnBlock = runtimeSource.split("if (mode !== 'vrm') {")[1].split('}')[0];
+assert.match(nonVrmTurnBlock, /window\._nekoMotionPendingUserText = ''/);
+assert.ok(nonVrmTurnBlock.indexOf("window._nekoMotionPendingUserText = ''") < nonVrmTurnBlock.indexOf('return;'));
 
 const modelManagerSource = fs.readFileSync(
     path.join(root, 'static/js/model_manager/page-controller.js'),

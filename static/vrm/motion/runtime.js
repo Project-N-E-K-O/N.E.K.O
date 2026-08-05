@@ -724,6 +724,7 @@
         if (!bridgeEvent) bridgedText = '';
         const mode = refreshMode();
         if (mode !== 'vrm') {
+            window._nekoMotionPendingUserText = '';
             metrics.nonVrmTurns += 1;
             console.info('[NekoMotion] ignored assistant turn because avatar mode is', mode);
             return;
