@@ -1099,3 +1099,48 @@ def test_folding_a_duplicate_clears_the_losing_entitys_dangling_canonical():
     # No canonical ⇒ identity. Before the fix this routed to `qq:G:dup`, i.e.
     # into an account belonging to a DIFFERENT entity.
     assert canonical_subject(other, snap) == other
+
+
+async def test_bind_persists_who_asserted_the_link():
+    """``bound_by`` must reach the ledger, not just the response.
+
+    Auditability is one of the three edges that make the bind-time trust
+    transfer acceptable at all (+0.32 / −0.30, both >= 2x the arbitration
+    margin): an operator has to be able to ask "who said these are the same
+    person, and when". A parameter the endpoint accepts and then drops is worse
+    than no parameter — it reads as an audit trail that does not exist.
+    """
+    await _open_gate()
+    entity_id = await trust_store.aensure_account("qq:1")
+    await trust_store.aensure_account("qq:2")
+    result = await trust_store.abind_account(
+        "qq:2", entity_id, bound_by="dashboard:operator-a",
+    )
+    assert result["changed"] is True
+    record = _account_record("qq:2")
+    assert record["bound_by"] == "dashboard:operator-a"
+    assert record["bound_at"]
+    # And it survives a round trip through disk normalization...
+    reloaded = trust_store._normalize_pool(trust_store._POOL)
+    assert reloaded["entities"][
+        reloaded["account_index"]["qq:2"]
+    ]["accounts"]["qq:2"]["bound_by"] == "dashboard:operator-a"
+    # ...and is visible where an operator would look for it.
+    assert trust_store.trust_snapshot().profile("qq:2")["bound_by"] == (
+        "dashboard:operator-a"
+    )
+
+
+async def test_a_rebind_also_records_who_asserted_it():
+    """A re-bind is just as much a human assertion as a first bind."""
+    await _open_gate()
+    first = await trust_store.aensure_account("qq:1")
+    await trust_store.aensure_account("qq:2")
+    await trust_store.abind_account("qq:2", first, bound_by="operator-a")
+    third = await trust_store.aensure_account("qq:3")
+    # qq:2 already belongs to an entity ⇒ this bind degenerates into a merge.
+    result = await trust_store.abind_account(
+        "qq:2", third, bound_by="operator-b",
+    )
+    assert result.get("merged") is True
+    assert _account_record("qq:2")["bound_by"] == "operator-b"

@@ -887,6 +887,7 @@ class TrustSnapshot:
                 record.get("processed_activity_events") or []
             ),
             "bound_at": record.get("bound_at"),
+            "bound_by": record.get("bound_by"),
             "channels_seen": list(self.channels_seen(normalized)),
             "channel_collision": self.channel_collision(normalized),
             "platform_identity_scope": self.platform_identity_scope(
@@ -1551,7 +1552,18 @@ def _bind_locked(
         # The account already belongs to another entity: binding is then
         # exactly a merge, and the ledger follows automatically.
         merged = _merge_entities_locked(draft, current, target, now=now)
-        return True, {"entity_id": merged, "changed": True, "merged": True}
+        # Stamp the asserting operator here too — a re-bind is just as much a
+        # human assertion as a first bind, and an audit trail with a hole in it
+        # is the one an operator cannot rely on.
+        merged_entity = draft.entity(merged)
+        record = (merged_entity or {}).get("accounts", {}).get(account_id)
+        if record is not None and bound_by:
+            record["bound_by"] = bound_by
+            record["bound_at"] = now
+        return True, {
+            "entity_id": merged, "changed": True, "merged": True,
+            "bound_by": bound_by,
+        }
     entity = draft.entity(target)
     if entity is None:  # pragma: no cover - defensive
         raise TrustIdentityError("unknown entity", status_code=404)
@@ -1560,7 +1572,7 @@ def _bind_locked(
     # tombstone for an entity that never held anything.
     _account_limit_guard(entity, account_platform(account_id), [account_id])
     entity["accounts"][account_id] = normalize_account_record(
-        account_id, {"bound_at": now},
+        account_id, {"bound_at": now, "bound_by": bound_by},
     )
     entity["updated_at"] = now
     draft.pool["account_index"][account_id] = target

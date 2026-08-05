@@ -282,6 +282,11 @@ def normalize_account_record(
         "account_id": account_id,
         "generation": generation,
         "bound_at": str(raw.get("bound_at") or "") or None,
+        # WHO asserted this link. Auditability is one of the three edges that
+        # make the bind-time trust transfer (+0.32 / −0.30, both >= 2x the
+        # arbitration margin) acceptable at all — an operator has to be able to
+        # ask "who said these are the same person, and when".
+        "bound_by": str(raw.get("bound_by") or "") or None,
         "adjustment": adjustment,
         "message_count": message_count,
         # The two rings must never share an eviction policy: message spam
