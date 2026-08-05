@@ -115,6 +115,15 @@ _APPROVAL_WINDOW_STATUSES = frozenset({"completed"})
 # 批到同一个上游会话里更晚出现的另一个挂起动作上（Codex P1）。
 _APPROVAL_CONSUMED_KEY = "_approval_window_consumed"
 
+# ⚠️ 窗口还要求那条回复**真的问过问题**。原来只判「5 分钟内有任务跑完过」，于是任何一次
+# 成功的任务（哪怕回的是「整理完成，共移动 12 个文件」）都会给随后一句随口的「同意」开闸。
+# 上游那句 reply 就存在 registry 条目的 result 里，拿来判一下几乎不要钱。
+#
+# ⚠️ 判据只认**明确的疑问标记**，不枚举「审批提示长什么样」——后者是开集。代价记在
+# 这里：上游若用不带问号的陈述句征询（英文 "Proceed?" 有问号，但 "Let me know" 没有），
+# 这条会误关窗口，用户得手敲字面命令。方向是 fail-closed。
+_APPROVAL_PROMPT_MARKERS = ("？", "?", "吗", "嗎", "要不要", "是否", "确认", "確認")
+
 
 def _iter_approval_window_tasks(
     *,
@@ -210,6 +219,13 @@ def _iter_approval_window_tasks(
         # ⚠️ 已经兑现过一次推断批准的条目不再算数：一次审批提示只授权一次。
         if info.get(_APPROVAL_CONSUMED_KEY):
             continue
+        # ⚠️ 只有**问过问题**的那条回复才可能是审批提示。作废侧（require_session=False
+        # 那一路）不判这个：宁可多作废，不可漏作废。
+        if require_session:
+            raw = info.get("result")
+            reply = str((raw or {}).get("reply") or "") if isinstance(raw, dict) else ""
+            if not any(marker in reply for marker in _APPROVAL_PROMPT_MARKERS):
+                continue
         if current_session and str(info.get("session_id") or "").strip() != current_session:
             continue
         # ⚠️ 作废时不判龄（age_bounded=False），因为判龄的结果**会随时间翻转**：
@@ -632,6 +648,36 @@ async def dispatch(
                     len(consumed),
                     ", ".join(consumed),
                 )
+            if magic_command == "/stop" and not explicitly_typed:
+                # ⚠️ 「停下来」「别找了」这类祈使句在日常对话里字面完全相同——用户可能是
+                # 对**猫娘本人**说的（角色扮演里尤其常见），不是要掐后台任务。整子句判据
+                # 挡得掉叙述（`雨停下来了` 不命中），挡不掉这一类。
+                # 所以这一档额外要求**确实有在跑的 openclaw 任务**佐证。
+                #
+                # ⚠️ 明确指向 agent 的说法（取消这个任务 / 停止搜索 …）**不受此限**，
+                # 字面命令也不受限。这是有意的：registry 恰恰在最需要 /stop 的时刻说谎
+                # ——请求超时后状态被写成 failed、进程重启后 registry 全空、条目过 TTL
+                # 被删，而这些时刻上游那个活儿可能还在跑。唯一能让上游停手的通道就是
+                # 这次 POST，把它整个门在 registry 上等于把逃生阀焊死。
+                tier = None
+                tier_fn = getattr(_shared.Modules.openclaw, "stop_trigger_tier", None)
+                if callable(tier_fn) and isinstance(result.tool_args, dict):
+                    try:
+                        tier = tier_fn(result.tool_args.get("original_user_text"))
+                    except Exception:
+                        logger.debug("[OpenClaw] stop_trigger_tier failed", exc_info=True)
+                if tier == "ambiguous" and not _collect_active_openclaw_task_ids(
+                    sender_id=nk_sender_id,
+                    lanlan_name=lanlan_name,
+                    exclude_task_id=result.task_id,
+                ):
+                    logger.info(
+                        "[OpenClaw] /stop dropped: ambiguous phrasing with no running "
+                        "task for sender=%s lanlan=%s",
+                        nk_sender_id,
+                        lanlan_name,
+                    )
+                    return
             if magic_command == "/stop":
                 # ⚠️ 作废排在取消 helper **之前**。那个 helper 里有 `await` 和一处没包
                 # try 的 `_task_tracker.record_completed`，一旦抛出就把后面的作废整个

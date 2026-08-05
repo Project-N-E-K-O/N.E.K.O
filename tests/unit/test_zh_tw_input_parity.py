@@ -499,9 +499,6 @@ def test_mood_words_are_not_mistaken_for_artist_names():
 MAGIC_PAIRS = [
     # ⚠️ /clear 的触发词不在这里：它不可逆地清掉上游会话上下文，判据又还是自由文本
     # 子串，所以刻意保持简体。见 test_clear_triggers_stay_simplified_only。
-    ("换个话题", "換個話題"),
-    ("说点别的", "說點別的"),
-    ("重新开始", "重新開始"),
     # 台湾用「搜尋」，所以这一条不是「搜索」的字形转换。
     ("停止搜索", "停止搜尋"),
     ("取消这个任务", "取消這個任務"),
@@ -823,7 +820,6 @@ def test_clause_whitelists_are_script_symmetric():
         _APPROVE_ACTIONS,
         _APPROVE_AFFIRMATIONS,
         _APPROVE_COMPANIONS,
-        _NEW_CLAUSES,
         _STOP_CLAUSES,
     )
 
@@ -837,7 +833,6 @@ def test_clause_whitelists_are_script_symmetric():
         ("approve_affirmations", _APPROVE_AFFIRMATIONS),
         ("approve_companions", _APPROVE_COMPANIONS),
         ("stop", _STOP_CLAUSES),
-        ("new", _NEW_CLAUSES),
     )
 
     # ⚠️ 表外字形必须报错，否则这条守卫在它身上是空转的：_fold 折不出对侧时返回词条
@@ -888,10 +883,11 @@ def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
     # non-final clause is narration, not an imperative, and must not dispatch.
     # ⚠️ 这四条是「末子句」和「任意子句」判据的唯一区分点：换成 any(...) 时只有它们会红。
     assert OpenClawAdapter.rule_magic_command("我还没同意，停止搜索") == "/stop"
-    assert OpenClawAdapter.rule_magic_command("我不同意这个方案，换个话题") == "/new"
+    assert OpenClawAdapter.rule_magic_command("我不同意这个方案，取消这个任务") == "/stop"
     assert OpenClawAdapter.rule_magic_command("停下来，这是我当时唯一的念头") is None
     assert OpenClawAdapter.rule_magic_command("停下來，這是我當時唯一的念頭") is None
-    assert OpenClawAdapter.rule_magic_command("换个话题，他总是这么逃避") is None
+    # ⚠️ `/new` 已从自由文本路径摘除，这里不再有它的对照；末子句判据仍由上面
+    # 那两条 /stop 钉住（换成 any(...) 时「停下来，这是我当时唯一的念头」会红）。
     assert OpenClawAdapter.rule_magic_command("換個話題，他總是這麼逃避") is None
     assert OpenClawAdapter.rule_magic_command("别找了，他说，然后转身走了") is None
     assert OpenClawAdapter.rule_magic_command("重新开始，说起来简单做起来难") is None
@@ -901,43 +897,33 @@ def test_approve_requires_every_clause_but_stop_and_new_only_the_last():
     ("text", "expected"),
     [
         # leading function words stripped
-        ("我们换个话题吧", "/new"), ("我們換個話題吧", "/new"),
         ("请停下来", "/stop"), ("請停下來", "/stop"),
         ("帮我停下来", "/stop"), ("幫我停下來", "/stop"),
         ("那你去执行吧", "/daemon approve"),
         # ⚠️ 第二人称的复数/敬称写法要**整词**排在单字 `你` 前面，否则 `你们停下来`
         # 被 `你` 吃掉首字、剩下 `们停下来`。这条和 `那么`/`快点` 是同一个坑。
         ("你们停下来", "/stop"), ("你們停下來", "/stop"),
-        ("您换个话题吧", "/new"), ("您們換個話題", "/new"),
         ("您去执行吧", "/daemon approve"), ("你们去执行吧", "/daemon approve"),
         # ⚠️ 多字前缀必须整词剥。`那` 排在 `那么` 前面时正则会吃掉首字、留下一个
         # `么` 粘在后面（子句变成「么停下来」），整条判据失效。`快`/`快点` 同理。
-        ("那么停下来吧", "/stop"), ("那麼換個話題吧", "/new"),
-        ("快点停下来", "/stop"), ("快點停下來", "/stop"),
+        ("那么停下来吧", "/stop"), ("快点停下来", "/stop"), ("快點停下來", "/stop"),
         ("快点去执行", "/daemon approve"),
         # 祈使副词：中文祈使句最常见的修饰，闭集缺了它们等于这套口令只认「裸命令」
         ("赶紧停下来", "/stop"), ("馬上取消這個任務", "/stop"),
         ("立刻停止搜尋", "/stop"), ("现在别找了", "/stop"),
-        ("能不能停下来", "/stop"), ("不如換個話題", "/new"),
-        ("干脆换个话题", "/new"), ("还是换个话题吧", "/new"),
-        ("拜託停下來", "/stop"), ("我想取消这个任务", "/stop"),
+        ("能不能停下来", "/stop"), ("拜託停下來", "/stop"), ("我想取消这个任务", "/stop"),
         # ⚠️ `要不要` 必须排在 `要不` 前面，否则被咬成 `要停下来`——这是这套表
         # 第五次栽在「多字词排在它的首字/前缀后面」上（那么·快点·我想·你们·要不要）。
         ("要不要停下来？", "/stop"), ("要不要停下來", "/stop"),
-        ("要不要换个话题", "/new"), ("要不要換個話題", "/new"),
-        ("我想重新开始", "/new"), ("马上去执行", "/daemon approve"),
+        ("马上去执行", "/daemon approve"),
         # trailing particles stripped
-        ("重新开始吧", "/new"), ("重新開始吧", "/new"),
         ("停下来吧", "/stop"), ("停下來吧", "/stop"),
         # 征询/疑问尾：「…好吗 / …行不行」是最常见的礼貌祈使口吻
         ("停下来好吗", "/stop"), ("停下來好嗎", "/stop"),
         ("停下来行不行", "/stop"), ("停下来好不好", "/stop"),
-        ("换个话题好吗", "/new"), ("換個話題好嗎", "/new"),
-        ("换个话题怎么样", "/new"), ("重新開始好嗎", "/new"),
         # ⚠️ 语气词也是简繁两侧的东西：只收繁体「囉」会让同一句话繁体命中简体不命中
         ("停下來囉", "/stop"), ("停下来啰", "/stop"), ("停下来咯", "/stop"),
         ("停下來咯", "/stop"), ("停下来喽", "/stop"),
-        ("说点别的呗", "/new"), ("說點別的唄", "/new"),
         # ...but stripping must not resurrect a misfire
         ("雨停下来了", None), ("我准了假", None), ("比賽即將重新開始", None),
         ("我想重新开始新的人生", None), ("我想让时间停下来", None),
@@ -1023,31 +1009,27 @@ def test_an_affirmative_clause_needs_a_real_command_beside_it(text, expected):
         ("去执行👌", None),
         ("停下来…", "/stop"), ("停下來……", "/stop"), ("停下來——", "/stop"),
         ("別找了…", "/stop"), ("「停下來」", "/stop"), ("“停下来”", "/stop"),
-        ("換個話題…", "/new"), ("换个话题👍", "/new"), ("重新開始……", "/new"),
         # 剥完装饰仍要过白名单——装饰不是万能钥匙
         ("雨停下来了…", None), ("我准了假👌", None), ("比賽即將重新開始……", None),
         # ⚠️ 中文省略号是**句中分隔符**，不只是句尾装饰
         ("同意……去执行", "/daemon approve"), ("同意⋯⋯去执行", "/daemon approve"),
         # 破折号同理，也是句中分隔符
         ("同意——去执行", "/daemon approve"), ("同意—去执行", "/daemon approve"),
-        ("好吧——换个话题", "/new"), ("停下來——別找了", "/stop"),
-        ("好吧……换个话题", "/new"), ("停下來……別找了", "/stop"),
+        ("停下來——別找了", "/stop"),
+        ("停下來……別找了", "/stop"),
         # ⚠️⚠️ approve **只剥句尾装饰**：句首那一格是语义位。`❌去執行` 是「别执行」，
         # `「去執行」` 是在**提及**这个词而不是下令。一律当装饰剥掉就全变成了授权。
         ("❌去執行", None), ("❌去执行", None), ("🚫去執行🚫", None),
         ("🚫去执行", None), ("「去執行」", None), ("「去执行」", None),
         ("『去执行』", None), ("（去执行）", None),
         # /stop 与 /new 后果小，两端照剥
-        ("「停下來」", "/stop"), ("『別找了』", "/stop"), ("（换个话题）", "/new"),
-        # ⚠️ 空白也是分隔符，会把语气词切成独立末子句；末子句判据要往回跳过它们
-        ("停下来 吧", "/stop"), ("停下來 👍", "/stop"), ("换个话题 喵", "/new"),
-        # ⚠️ 剥这段尾巴要试**所有**匹配的词尾并取最长：`_TAIL_TOKENS` 里 `了` 排在
+        ("「停下來」", "/stop"), ("『別找了』", "/stop"), # ⚠️ 空白也是分隔符，会把语气词切成独立末子句；末子句判据要往回跳过它们
+        ("停下来 吧", "/stop"), ("停下來 👍", "/stop"), # ⚠️ 剥这段尾巴要试**所有**匹配的词尾并取最长：`_TAIL_TOKENS` 里 `了` 排在
         # `好了` 前面，只取第一个匹配会把 `好了` 剥成 `好`，于是这段尾巴不被认成
         # 「纯语气词」、反倒被当成命令子句。和 _clause_hits 里那个坑是同一个。
-        ("换个话题 好了", "/new"), ("停下来 好了", "/stop"), ("別找了 好了", "/stop"),
+        ("停下来 好了", "/stop"), ("別找了 好了", "/stop"),
         # 礼貌收尾也是纯语气：`谢谢` 不该被当成命令子句
-        ("停下来谢谢", "/stop"), ("停下來，謝謝", "/stop"), ("换个话题，谢谢", "/new"),
-        ("别找了 谢谢", "/stop"), ("停下来多谢", "/stop"),
+        ("停下来谢谢", "/stop"), ("停下來，謝謝", "/stop"), ("别找了 谢谢", "/stop"), ("停下来多谢", "/stop"),
         ("别找了 吧", "/stop"),
         # ⚠️ 但**不给 approve 用**：那样 `同意 吧` 会变成裸应答被批准（旧实现是 None）。
         # 代价是 `去执行 吧` 也丢了，二选一，选了 fail-closed 那边。
@@ -1124,9 +1106,7 @@ def test_truncated_table_entries_are_not_commands(text):
         # 再也剥不出 `停下来`。换词表顺序解决不了，`行吗` 本身必须收。
         # （approve 侧不能拿来测这个——疑问式对批准是一票否决，见
         # test_a_question_never_approves。）
-        ("停下来行吗", "/stop"), ("停下來行嗎", "/stop"), ("换个话题行吗", "/new"),
-        ("停下来吗", "/stop"), ("停下來嗎", "/stop"), ("换个话题怎么样", "/new"),
-    ],
+        ("停下来行吗", "/stop"), ("停下來行嗎", "/stop"), ("停下来吗", "/stop"), ("停下來嗎", "/stop"), ],
 )
 def test_particles_are_peeled_one_at_a_time(text, expected):
     from brain.openclaw_adapter import OpenClawAdapter
@@ -1145,20 +1125,17 @@ def test_particles_are_peeled_one_at_a_time(text, expected):
         ("去执行吗", "_APPROVE_ACTIONS"), ("去執行嗎", "_APPROVE_ACTIONS"),
         ("去执行行不行", "_APPROVE_ACTIONS"), ("去執行好不好", "_APPROVE_ACTIONS"),
         ("停下来行吗", "_STOP_CLAUSES"), ("停下來行嗎", "_STOP_CLAUSES"),
-        ("换个话题好不好", "_NEW_CLAUSES"),
     ],
 )
 def test_the_lookup_layer_peels_every_matching_tail(clause, table_name):
     from brain.openclaw_adapter import (
         _APPROVE_ACTIONS,
-        _NEW_CLAUSES,
         _STOP_CLAUSES,
         _clause_hits,
     )
 
     tables = {
         "_APPROVE_ACTIONS": _APPROVE_ACTIONS,
-        "_NEW_CLAUSES": _NEW_CLAUSES,
         "_STOP_CLAUSES": _STOP_CLAUSES,
     }
     assert _clause_hits(clause, tables[table_name]), f"{clause} 剥不出 {table_name} 里的条目"
@@ -1402,8 +1379,7 @@ def test_narrow_and_wide_lead_sets_are_disjoint_where_it_matters():
         # 落不到任何白名单条目上（Codex P2）。
         ("同意：去执行", "/daemon approve"), ("沒問題:去執行", "/daemon approve"),
         ("没问题：去执行", "/daemon approve"), ("同意:删吧", "/daemon approve"),
-        ("先说明一下：停下来", "/stop"), ("这样吧：换个话题", "/new"),
-    ],
+        ("先说明一下：停下来", "/stop"), ],
 )
 def test_colons_are_clause_boundaries(text, expected):
     from brain.openclaw_adapter import OpenClawAdapter
@@ -1435,16 +1411,13 @@ def test_decisive_adverbs_still_approve(text):
         # ⚠️ 问号否决**只作用于 approve**：对 /stop 和 /new 而言，
         # 「停下来好吗？」是完全正常的礼貌祈使，不能一并毙掉。
         ("停下来好吗？", "/stop"), ("停下來好嗎？", "/stop"),
-        ("换个话题好吗？", "/new"), ("換個話題好嗎？", "/new"),
         ("能不能停下来？", "/stop"),
         # 无标点的疑问式同理——「能不能停下来」是最常见的礼貌祈使之一
         ("能不能停下来", "/stop"), ("可不可以停下來", "/stop"),
         ("停下来吗", "/stop"), ("停下来行不行", "/stop"),
-        ("换个话题怎么样", "/new"), ("換個話題怎麼樣", "/new"),
         # 试探/提议型对 /stop 和 /new 同样是完全正常的祈使
-        ("要不换个话题", "/new"), ("不如换个话题", "/new"), ("还是换个话题吧", "/new"),
         ("要不停下来", "/stop"), ("不如停下來", "/stop"), ("還是停下來吧", "/stop"),
-        ("干脆换个话题", "/new"), ("乾脆停下來", "/stop"),
+        ("乾脆停下來", "/stop"),
     ],
 )
 def test_the_question_veto_is_scoped_to_approve(text, expected):
@@ -1509,11 +1482,8 @@ def test_stop_triggers_containing_a_negator_are_untouched(text):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("我不同意这个方案，换个话题", "/new"),
-        ("我不同意這個方案，換個話題", "/new"),
         ("我还没同意，停止搜索", "/stop"),
         ("我還沒同意，停止搜尋", "/stop"),
-        ("我不同意，清空聊天记录", "/clear"),
         # 繁体那条不在这里：/clear 的触发词刻意保持简体（见
         # test_destructive_command_triggers_stay_simplified_only），所以
         # 「我不同意，清空聊天記錄」本来就该是 None，不是被否定短语压掉的。
@@ -2813,19 +2783,15 @@ def test_a_traditional_companion_still_cannot_authorize_alone(text):
     [
         # ASCII `-`：Unicode 破折号收了一整排，最常打的那个反而漏了
         ("同意--去执行", "/daemon approve"),
-        ("好吧--换个话题", "/new"),
         ("同意——去执行", "/daemon approve"),
         ("停下来-好吗", "/stop"),
         # 句尾礼貌语：_command_clause 只剥得掉 `了`，剩下的 `拜托` 成了命令子句
         ("停下来，拜托了", "/stop"),
         ("停下來，拜託了", "/stop"),
-        ("换个话题，麻烦了", "/new"),
-        ("換個話題，麻煩了", "/new"),
         ("别找了，拜托了", "/stop"),
         # `_` 在 Python 的 \w 里，所以 \W 剥不掉它
         ("_停下来_", "/stop"),
         ("__停下來__", "/stop"),
-        ("_换个话题_", "/new"),
         ("停下来 _", "/stop"),
         ("**停下来**", "/stop"),
     ],
@@ -2914,19 +2880,15 @@ def test_the_affirmation_narrowing_keeps_every_real_authorization(text):
     ("text", "expected"),
     [
         # 斜杠当分隔符用（聊天里很常见）
-        ("好吧/换个话题", "/new"),
         ("同意/去执行", "/daemon approve"),
         ("停下来/谢谢", "/stop"),
         # 前缀在外、包裹在内：剥完首部虚词还得再剥一次装饰
         ("请「停下来」", "/stop"),
-        ("麻烦（换个话题）", "/new"),
         ("你_停下来_", "/stop"),
         ("請「停下來」", "/stop"),
         # 书面疑问式请求（只进宽表，approve 永远看不到）
         ("能否停下来？", "/stop"),
-        ("可否换个话题", "/new"),
         ("是否可以停下来", "/stop"),
-        ("是否能换个话题", "/new"),
         ("能否停下來", "/stop"),
     ],
 )
@@ -2960,7 +2922,7 @@ def test_the_new_leads_and_separators_do_not_manufacture_approvals(text):
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("/stop", "/stop"), ("/daemon approve", "/daemon approve"), ("/new", "/new")],
+    [("/stop", "/stop"), ("/daemon approve", "/daemon approve"), ],
 )
 def test_literal_magic_words_survive_the_slash_separator(text, expected):
     """⚠️ `/` 成了子句分隔符，但字面命令由 normalize_magic_command 在更早一层拦下。"""  # noqa: DOCSTRING_CJK
@@ -2974,9 +2936,7 @@ def test_literal_magic_words_survive_the_slash_separator(text, expected):
     [
         ("请问能不能停下来？", "/stop"),
         ("請問能不能停下來", "/stop"),
-        ("请问可以换个话题吗", "/new"),
         ("请问停下来", "/stop"),
-        ("請問換個話題", "/new"),
     ],
 )
 def test_the_politest_interrogative_lead_still_reaches_its_command(text, expected):
@@ -6835,3 +6795,78 @@ def test_dao_in_ordinary_words_does_not_break_real_frames():
                  '我想停止播放因为无论唱什么歌都不好听',
                  '帮我停止播放红心歌单'):
         assert is_explicit_music_cancellation(text) is True, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "换个话题", "換個話題", "换个话题吧", "重新开始", "重新開始", "重新开始吧",
+        "说点别的", "說點別的", "聊点别的", "聊點別的", "重新开个话题",
+        "我们换个话题好不好", "不聊这个了，换个话题", "这局输了，重新开始",
+        "忘了刚才的事", "忘掉刚才的事", "清除聊天记录", "清空聊天记录",
+        "删掉刚才的记录", "清除我们的聊天记录", "忘了刚才的事吧",
+    ],
+)
+def test_new_and_clear_are_unreachable_from_free_text(text):
+    """⚠️ `/new` 与 `/clear` 只认字面命令，自由文本一律不触发。
+
+    Three measured facts multiplied: the highest misfire rate (6 of 14 pure-chat
+    "change topic" phrasings fired, and all six meant the *chat* topic), no local
+    state to gate on at all, and an irreversible effect — ``/new`` overwrites the
+    one pointer to the upstream session in place, after which a later ``/stop``
+    lands on the new session and cannot reach the job still running in the old.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/new", "/new"), ("new", "/new"), ("/clear", "/clear"), ("clear", "/clear"),
+        ("/stop", "/stop"), ("stop", "/stop"),
+        ("/daemon approve", "/daemon approve"), ("approve", "/daemon approve"),
+    ],
+)
+def test_the_literal_commands_all_still_resolve(text, expected):
+    """摘掉的是自由文本推断，不是命令本身——四条字面命令必须原样可用。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    ("text", "tier"),
+    [
+        ("停下来", "ambiguous"), ("停下來", "ambiguous"),
+        ("快停下来", "ambiguous"), ("别找了", "ambiguous"), ("別找了", "ambiguous"),
+        ("取消这个任务", "addressed"), ("取消這個任務", "addressed"),
+        ("停止搜索", "addressed"), ("停止搜尋", "addressed"),
+        ("算了别查了", "addressed"), ("取消这个搜索", "addressed"),
+        ("/stop", None), ("stop", None), ("今天天气真好", None),
+    ],
+)
+def test_stop_phrasings_are_split_into_two_tiers(text, tier):
+    """⚠️ 分档是纯函数：状态在 agent_server，brain 不能伸手去拿。
+
+    The ambiguous tier is the set of imperatives that are word-for-word identical
+    when addressed to the character instead of the agent, so the dispatcher asks
+    for corroboration there. The addressed tier and the literal command never
+    need it — the registry lies exactly when /stop matters most.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.stop_trigger_tier(text) == tier, text
+
+
+def test_the_two_stop_tiers_are_disjoint_and_cover_the_table():
+    """两档必须是对整张表的划分：既不重叠，也不能漏。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import (
+        _STOP_ADDRESSED,
+        _STOP_AMBIGUOUS,
+        _STOP_CLAUSES,
+    )
+
+    assert _STOP_ADDRESSED & _STOP_AMBIGUOUS == frozenset()
+    assert _STOP_ADDRESSED | _STOP_AMBIGUOUS == _STOP_CLAUSES

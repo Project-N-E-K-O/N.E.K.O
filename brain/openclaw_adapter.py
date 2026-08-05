@@ -68,8 +68,10 @@ You are a high-accuracy automation assessment agent, and your task is to determi
 
 # Strategy
 Prefer false negatives over false positives. Only trigger when the user explicitly asks to manipulate system state.
-- Trigger example: "忘了刚才的事吧" -> /clear
-- Misfire trap: "我忘了带伞" / "雨停了" -> do NOT trigger
+Only two commands may be inferred from free text: /stop and /daemon approve.
+- Trigger example: "取消这个任务" -> /stop
+- Trigger example (only right after the backend asked for permission): "同意" -> /daemon approve
+- Misfire trap: "我忘了带伞" / "雨停了" / "换个话题吧" -> do NOT trigger
 
 # Output
 Output strict JSON only:
@@ -425,37 +427,40 @@ _APPROVE_ACTIONS = frozenset({
     "去执行", "去執行", "去执行吧", "去執行吧",
     "没问题去执行", "沒問題去執行",
 })
-_STOP_CLAUSES = frozenset({
-    "别找了", "別找了", "快停下来", "快停下來", "停下来", "停下來",
+# ⚠️ `/stop` 的触发词分**两档**，判据是「这句话在日常对话里会不会有别的意思」。
+#
+# 明确指向「正在干活的 agent」的说法：日常聊天里几乎不会这么讲，单凭词就够。
+_STOP_ADDRESSED = frozenset({
     "取消这个任务", "取消這個任務", "取消这个搜索", "取消這個搜尋",
     "算了别查了", "算了別查了", "停止搜索", "停止搜尋",
 })
-_NEW_CLAUSES = frozenset({
-    "换个话题", "換個話題", "重新开始", "重新開始",
-    "说点别的", "說點別的", "聊点别的", "聊點別的",
-    "重新开个话题", "重新開個話題",
+# 日常对话里同样成立的祈使句：整子句判据已经挡掉了叙述（`雨停下来了` 不命中），但挡不掉
+# 用户对着**猫娘本人**说「停下来」——那句话字面上和对 agent 说的一模一样。
+# 这一档在派单侧**额外要求「确实有在跑的 openclaw 任务」**，见 channels/openclaw.py。
+_STOP_AMBIGUOUS = frozenset({
+    "停下来", "停下來", "快停下来", "快停下來", "别找了", "別找了",
 })
+_STOP_CLAUSES = _STOP_ADDRESSED | _STOP_AMBIGUOUS
 
-# ⚠️ `/clear` 仍走**子串包含**，触发词也仍**刻意保持简体**。
-#
-# 它会不可逆地清掉上游 QwenPaw 的整段会话上下文，而判据是对自由文本做子串包含：
-# 实测 `我想知道如何清除聊天记录`（一句提问）就会返回 /clear。补繁体等于把这个既有
-# 缺陷的暴露面翻倍——`我想知道如何清除聊天記錄` 目前是 None。
-#
-# 上面那套整子句白名单同样适用于它，但 /clear 不在本次拍板的三条里，不擅自扩——
-# 单独评估。繁中用户仍可直接打字面 magic word `/clear`（走 normalize_magic_command，
-# 整句精确匹配）。
-#
-# ⚠️ 别把「LLM 分类器还会兜底」当安全垫——它**不是无条件的**。rule_magic_command 同时
-# 是 task_executor._deterministic_action_signal 的唯一 openclaw 信号，而那个廉价前置闸
-# （task_executor.py 的 `external_intent < AGENT_EXTERNAL_GATE_THRESHOLD and not
-# _deterministic_action_signal(...)` → `return None`）跑在 classify_magic_intent
-# **之前**。规则漏掉 + 小模型把这轮读成闲聊 = 整轮评估直接跳过，LLM 那一路根本到不了。
-# 也就是说规则表收窄的代价在低 external_intent 的短句上是实打实的，不是「多跑一次」。
-_CLEAR_TRIGGERS = (
-    "忘了刚才的事", "忘掉刚才的事", "清除我们的聊天记录",
-    "清除聊天记录", "删掉刚才的记录", "清空聊天记录",
-)
+# ⚠️ 能从**自由文本**推断出来的命令只有这两条。`/new` `/clear` 只认字面命令。
+# 这道过滤挡的是 LLM 那条腿：提示词里写了「只准这两条」，但提示词管不住模型，而这两条
+# 命令的后果都不可逆（覆盖上游会话指针 / 清掉上游上下文），不能只靠模型守规矩。
+_FREE_TEXT_INFERABLE = frozenset({"/stop", "/daemon approve"})
+
+
+def _drop_commands_not_inferable_from_free_text(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Veto an inferred command that free text is not allowed to reach."""
+    if not isinstance(result, dict) or not result.get("is_magic_intent"):
+        return result
+    command = OpenClawAdapter.normalize_magic_command(result.get("command"))
+    if command in _FREE_TEXT_INFERABLE:
+        return result
+    logger.info(
+        "[OpenClaw] magic intent %r dropped: not inferable from free text",
+        result.get("command"),
+    )
+    return {"is_magic_intent": False, "command": None, "source": "free-text-veto"}
+
 
 
 def _approve_clause_kind(clause: str) -> Optional[str]:
@@ -914,9 +919,18 @@ class OpenClawAdapter:
         if any(token in lowered for token in _HIGH_PRECISION_NON_MAGIC):
             return {"is_magic_intent": False, "command": None, "source": "rule"}
 
-        if any(token in text for token in _CLEAR_TRIGGERS):
-            return {"is_magic_intent": True, "command": "/clear", "source": "rule"}
-
+        # ⚠️ `/clear` 与 `/new` **不再从自由文本触发**，只认字面命令
+        # （`normalize_magic_command` 在本函数最开头就拦掉并提前返回）。
+        # 拿掉的理由是实测出来的三条乘在一起：
+        #   · 误触率最高：纯聊天语境的「换话题」说法 6/14 命中，而那 6 条全部指的是
+        #     **聊天话题**，不是 agent 会话；中文语料里 `/new` 触发词出现频率是 `/stop`
+        #     的 4.3 倍（30 次 vs 7 次 / 304 万字）。
+        #   · 零状态可用：这两条命令本地没有任何前置条件可查（不像 `/stop` 有「在跑的
+        #     任务」、approve 有「刚完成的任务」），想拦也无从拦起。
+        #   · 后果不可逆：`/new` 就地覆盖指向上游会话的**唯一**指针，无备份、无写回入口；
+        #     而且之后的 `/stop` 会打到新会话上，旧会话里真正在跑的活儿**停不下来**，
+        #     本地却照样标成 cancelled。
+        # 用户说「换个话题」九成是在说聊天话题，不是要重置 agent 会话。想重置就敲命令。
         clauses = _split_clauses(text)
         if not clauses:
             return {"is_magic_intent": False, "command": None, "source": "rule"}
@@ -968,13 +982,36 @@ class OpenClawAdapter:
             return {"is_magic_intent": True, "command": "/daemon approve", "source": "rule"}
         # ⚠️ 末子句要跳过「只有语气词/装饰」的尾巴，见 _command_clause。
         command_clause = _command_clause(clauses)
-        if _clause_hits(command_clause, _NEW_CLAUSES):
-            return {"is_magic_intent": True, "command": "/new", "source": "rule"}
         # 台湾用「搜尋」不用「搜索」，所以繁体那条不是「搜索」的字形转换。
         if _clause_hits(command_clause, _STOP_CLAUSES):
             return {"is_magic_intent": True, "command": "/stop", "source": "rule"}
 
         return {"is_magic_intent": False, "command": None, "source": "rule"}
+
+    @staticmethod
+    def stop_trigger_tier(user_text: str) -> Optional[str]:
+        """Which `/stop` tier an utterance matched: "addressed", "ambiguous", None.
+
+        Pure function on purpose. The tier decides whether the dispatcher demands
+        corroborating state (an actually running task), and that state lives in
+        agent_server — brain must not reach into it, so brain answers "which kind
+        of phrasing was this" and lets the caller combine it with what it knows.
+
+        A literal magic word returns None: typing the command is unambiguous and
+        must never be gated.
+        """  # noqa: DOCSTRING_CJK
+        text = str(user_text or "").strip()
+        if not text or OpenClawAdapter.normalize_magic_command(text):
+            return None
+        clauses = _split_clauses(text)
+        if not clauses:
+            return None
+        command_clause = _command_clause(clauses)
+        if _clause_hits(command_clause, _STOP_ADDRESSED):
+            return "addressed"
+        if _clause_hits(command_clause, _STOP_AMBIGUOUS):
+            return "ambiguous"
+        return None
 
     @staticmethod
     def rule_magic_command(user_text: str) -> Optional[str]:
@@ -995,7 +1032,7 @@ class OpenClawAdapter:
 
         llm_result = await self._classify_magic_intent_with_llm(text)
         if isinstance(llm_result, dict):
-            return llm_result
+            return _drop_commands_not_inferable_from_free_text(llm_result)
         return self._classify_magic_intent_with_rules(text)
 
     async def stop_running(
