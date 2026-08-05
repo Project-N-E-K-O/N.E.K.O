@@ -1743,15 +1743,16 @@
         });
 
         function applyHydratedConversationLanguage(hydrated) {
-            var language = hydrated && hydrated.language ? hydrated.language : fallback;
+            var resolved = hydrated || {};
+            var language = resolved.language || fallback;
             if (S._conversationLanguageHydrationId !== hydrationId) return language;
             S.conversationLanguage = language || fallback;
             S.conversationLanguageHydrated = true;
             // Only mirror an explicit character preference into the local cache.
             // effective_language is a UI/global fallback and must remain dynamic.
-            if (hydrated.explicitLanguage && typeof window.setConversationLanguagePreference === 'function') {
+            if (resolved.explicitLanguage && typeof window.setConversationLanguagePreference === 'function') {
                 window.setConversationLanguagePreference(
-                    hydrated.explicitLanguage,
+                    resolved.explicitLanguage,
                     characterName,
                     { dispatch: false, source: 'server' }
                 );
@@ -1770,11 +1771,11 @@
             })
         ]).then(function (hydrated) {
             var language = applyHydratedConversationLanguage(hydrated);
-            if (hydrated.timedOut) {
+            if (hydrated && hydrated.timedOut) {
                 // The timeout keeps startup responsive, but it must not discard a
                 // valid server preference that arrives later for the same character.
                 void request.then(function (lateHydrated) {
-                    if (!lateHydrated.requestFailed) {
+                    if (lateHydrated && !lateHydrated.requestFailed) {
                         applyHydratedConversationLanguage(lateHydrated);
                     }
                 });

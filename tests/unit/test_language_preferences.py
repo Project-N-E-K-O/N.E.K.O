@@ -17,6 +17,8 @@ from tests.node_harness import run_node_script
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+HYDRATION_START_ANCHOR = "function hydrateConversationLanguage(characterName)"
+HYDRATION_END_ANCHOR = "// Upper bound for the settings-sync gate below"
 
 
 @pytest.mark.unit
@@ -75,9 +77,12 @@ def test_character_language_control_is_grouped_with_runtime_preferences():
         / "card-form-and-actions.js"
     ).read_text(encoding="utf-8")
 
-    personality_mount = source.index("form.appendChild(personalityWrapper);")
-    language_mount = source.index("form.appendChild(languagePreferenceWrapper);")
-    voice_mount = source.index("form.appendChild(voiceWrapper);")
+    personality_mount = source.find("form.appendChild(personalityWrapper);")
+    language_mount = source.find("form.appendChild(languagePreferenceWrapper);")
+    voice_mount = source.find("form.appendChild(voiceWrapper);")
+    assert personality_mount >= 0, "personalityWrapper 挂载锚点已失效，请同步更新测试"
+    assert language_mount >= 0, "languagePreferenceWrapper 挂载锚点已失效，请同步更新测试"
+    assert voice_mount >= 0, "voiceWrapper 挂载锚点已失效，请同步更新测试"
     assert personality_mount < language_mount < voice_mount
 
 
@@ -104,19 +109,19 @@ def test_character_language_control_reuses_voice_dropdown_and_hot_refreshes():
     locale_handler_start = subscriptions_source.find(locale_handler)
     locale_body_start = subscriptions_source.find("{", locale_handler_start)
     locale_listener_start = subscriptions_source.find(locale_listener)
-    assert 0 <= locale_handler_start < locale_body_start < locale_listener_start
+    assert locale_handler_start >= 0, "语言热刷新函数锚点已失效，请同步更新测试"
+    assert locale_body_start > locale_handler_start, "语言热刷新函数体锚点已失效，请同步更新测试"
+    assert locale_listener_start > locale_body_start, "语言热刷新监听器锚点已失效，请同步更新测试"
 
-    brace_depth = 0
-    locale_body_end = -1
-    for index in range(locale_body_start, locale_listener_start):
-        if subscriptions_source[index] == "{":
-            brace_depth += 1
-        elif subscriptions_source[index] == "}":
-            brace_depth -= 1
-            if brace_depth == 0:
-                locale_body_end = index
-                break
-    assert locale_body_start < locale_body_end < locale_listener_start
+    locale_body_end_anchor = "\n    }\n    updateLocaleDependent();"
+    locale_body_end = subscriptions_source.find(
+        locale_body_end_anchor,
+        locale_body_start,
+        locale_listener_start,
+    )
+    assert locale_body_start < locale_body_end < locale_listener_start, (
+        "语言热刷新函数结束锚点已失效，请同步更新测试"
+    )
     assert (
         "renderCharaCardsView();"
         in subscriptions_source[locale_body_start:locale_body_end]
@@ -146,9 +151,13 @@ def test_language_preference_has_accessible_explanatory_tooltip():
     assert "delete select.dataset.i18nTitle;" in form_source
     assert ".language-preference-help-button:hover + .language-preference-tooltip" in css_source
     assert ".language-preference-help-button:focus-visible + .language-preference-tooltip" in css_source
-    tooltip_rule = css_source.split(
-        ".catgirl-panel-right .language-preference-tooltip {", 1
-    )[1].split("}", 1)[0]
+    tooltip_anchor = ".catgirl-panel-right .language-preference-tooltip {"
+    tooltip_start = css_source.find(tooltip_anchor)
+    assert tooltip_start >= 0, "语言偏好提示样式锚点已失效，请同步更新测试"
+    tooltip_body_start = tooltip_start + len(tooltip_anchor)
+    tooltip_body_end = css_source.find("}", tooltip_body_start)
+    assert tooltip_body_end > tooltip_body_start, "语言偏好提示样式规则不完整，请同步更新测试"
+    tooltip_rule = css_source[tooltip_body_start:tooltip_body_end]
     assert "top: auto;" in tooltip_rule
     assert "bottom:" in tooltip_rule
 
@@ -321,12 +330,14 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
         "window.getConversationLanguagePreference"
     )
 
-    hydration = websocket_source.split(
-        "function hydrateConversationLanguage(characterName)", 1
-    )[1].split("var SETTINGS_SYNC_GATE_TIMEOUT_MS", 1)[0]
+    hydration_start = websocket_source.find(HYDRATION_START_ANCHOR)
+    hydration_end = websocket_source.find(HYDRATION_END_ANCHOR, hydration_start)
+    assert hydration_start >= 0, "语言水合函数签名锚点已失效，请同步更新测试"
+    assert hydration_end > hydration_start, "语言水合结束锚点已失效，请同步更新测试"
+    hydration = websocket_source[hydration_start:hydration_end]
     assert "explicitLanguage: explicitLanguage" in hydration
-    assert "if (hydrated.explicitLanguage" in hydration
-    assert "hydrated.explicitLanguage," in hydration
+    assert "if (resolved.explicitLanguage" in hydration
+    assert "resolved.explicitLanguage," in hydration
 
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
     assert "payload.language.trim() || null" in memory_source
@@ -350,10 +361,8 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
     websocket_source = (
         PROJECT_ROOT / "static" / "app" / "app-websocket.js"
     ).read_text(encoding="utf-8")
-    hydration_signature = "function hydrateConversationLanguage(characterName)"
-    hydration_end_anchor = "// Upper bound for the settings-sync gate below"
-    hydration_start = websocket_source.find(hydration_signature)
-    hydration_end = websocket_source.find(hydration_end_anchor, hydration_start)
+    hydration_start = websocket_source.find(HYDRATION_START_ANCHOR)
+    hydration_end = websocket_source.find(HYDRATION_END_ANCHOR, hydration_start)
     assert hydration_start >= 0, "语言水合函数签名锚点已失效，请同步更新测试"
     assert hydration_end > hydration_start, "语言水合结束锚点已失效，请同步更新测试"
     hydration_source = websocket_source[hydration_start:hydration_end]

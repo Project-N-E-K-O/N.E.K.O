@@ -296,11 +296,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             languageSelect.value = cachedLanguage;
         }
         languageSelect.dataset.previousValue = languageSelect.value;
+        languageField.appendChild(languageSelect);
+        const languageSelectUi = _panelCreateVoiceSelectUi(languageSelect);
         languageSelect.addEventListener('change', function () {
             void _saveCharacterLanguagePreference(name, languageSelect, languageSelectUi);
         });
-        languageField.appendChild(languageSelect);
-        const languageSelectUi = _panelCreateVoiceSelectUi(languageSelect);
         languageSelectUi.container.classList.add('language-preference-custom-select');
         const languageSelectHeader = languageSelectUi.container.querySelector('.voice-select-header');
         if (languageSelectHeader) {
@@ -955,6 +955,7 @@ function _panelSetFieldLabel(labelEl, key) {
         }
     }
     labelEl.textContent = displayText;
+    labelEl.removeAttribute('title');
     if (displayText.length > MAX_LABEL_LEN) {
         labelEl.title = displayText;
     }
