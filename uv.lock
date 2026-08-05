@@ -1525,6 +1525,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "jsonschema" },
     { name = "nest-asyncio" },
     { name = "pyinstaller" },
     { name = "pytest" },
@@ -1602,6 +1603,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = ">=6.100" },
+    { name = "jsonschema", specifier = ">=4.23" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "pyinstaller", specifier = "==6.12.0" },
     { name = "pytest", specifier = ">=9.0.2" },

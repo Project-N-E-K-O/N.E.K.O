@@ -54,7 +54,7 @@ import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
-import { Odometer, Box, VideoPlay, Monitor, Link } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Collection } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -65,6 +65,7 @@ const adapters = computed(() => pluginStore.pluginsWithStatus.filter((p) => p.ty
 const navItems = computed(() => [
   { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
+  { path: '/knowledge', icon: Collection, label: t('nav.knowledge'), guideId: 'sidebar-knowledge' },
   { path: '/runs', icon: VideoPlay, label: t('nav.runs'), guideId: 'sidebar-runs' },
   { path: '/logs/_server', icon: Monitor, label: t('nav.serverLogs'), guideId: 'sidebar-server-logs' },
 ])

@@ -669,6 +669,18 @@ _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 
 
+def _prepare_builtin_knowledge():
+    """Import and warm built-in knowledge outside the event loop."""
+    from knowledge.builtin import open_builtin_knowledge
+    from knowledge.corpora import import_bundled_corpora
+
+    if not _config_manager.ensure_knowledge_directory():
+        raise RuntimeError("knowledge directory is unavailable")
+    result = import_bundled_corpora(_config_manager.knowledge_dir)
+    open_builtin_knowledge(_config_manager.knowledge_dir).refresh_routing_index()
+    return result
+
+
 from .preload import _background_preload, _sync_preload_modules  # noqa: F401
 
 
@@ -863,6 +875,21 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             await initialize_character_data()
             await _sync_memory_server_after_startup_import(import_result)
+
+            try:
+                knowledge_result = await asyncio.to_thread(
+                    _prepare_builtin_knowledge
+                )
+                logger.info(
+                    "Built-in knowledge initialized: entries=%s changed=%s",
+                    knowledge_result.entries,
+                    knowledge_result.changed,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Built-in knowledge initialization failed (non-critical): %s",
+                    type(e).__name__,
+                )
 
             logger.info("正在初始化 Steamworks...")
             steamworks = initialize_steamworks()

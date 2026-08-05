@@ -46,7 +46,22 @@ export default {
     adapters: 'Адаптеры',
     adapterUI: 'Интерфейс адаптера',
     packageManager: 'Менеджер пакетов',
-    market: 'Маркет плагинов'
+    market: 'Маркет плагинов',
+    knowledge: 'База знаний'
+  },
+  knowledge: {
+    marketConnected: 'Маркет знаний подключён. Пакеты проверяются перед локальной установкой.',
+    openMarket: 'Открыть маркет знаний', marketUnavailable: 'Маркет плагинов недоступен',
+    loginRequired: 'Сначала войдите в маркет на странице управления плагинами', marketPairFailed: 'Не удалось безопасно связаться с локальным клиентом N.E.K.O',
+    title: 'Управление знаниями', subtitle: 'Управление локальными знаниями, пакетами данных и совпадениями в диалогах',
+    overview: 'Обзор', ready: 'Готово', degraded: 'Ошибка', entries: 'Записи', disabled: 'Отключено', packs: 'Пакеты',
+    autoContext: 'Использовать в диалоге', catalog: 'Каталог', searchPlaceholder: 'Поиск по заголовкам, псевдонимам, описаниям и тексту',
+    term: 'Запись', summary: 'Описание', source: 'Источник', actions: 'Действия', details: 'Подробнее', restore: 'Восстановить', disable: 'Отключить',
+    previous: 'Назад', next: 'Далее', packId: 'ID пакета', subscription: 'Подписка', localImport: 'Локальный импорт',
+    importPack: 'Импортировать пакет', diagnostics: 'Последние совпадения', time: 'Время', collection: 'Коллекция', matchMode: 'Режим совпадения',
+    delivered: 'Карточка передана', result: 'Результат', errorType: 'Тип ошибки', yes: 'Да', no: 'Нет', terms: 'Термины', tags: 'Теги', content: 'Содержимое',
+    loadFailed: 'Не удалось загрузить данные', operationFailed: 'Операция не выполнена', importSuccess: 'Пакет импортирован',
+    invalidPack: 'Недопустимый пакет', removeConfirm: 'Удалить пакет {name}?'
   },
   market: {
     title: 'Получить новые плагины',

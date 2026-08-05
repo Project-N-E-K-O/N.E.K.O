@@ -46,7 +46,22 @@ export default {
     adapters: '어댑터',
     adapterUI: '어댑터 UI',
     packageManager: '패키지 관리',
-    market: '플러그인 마켓'
+    market: '플러그인 마켓',
+    knowledge: '지식 저장소'
+  },
+  knowledge: {
+    marketConnected: '지식 마켓이 연결되었습니다. 패키지를 검증한 뒤 로컬에 설치합니다.',
+    openMarket: '지식 마켓 둘러보기', marketUnavailable: '플러그인 마켓을 사용할 수 없습니다',
+    loginRequired: '먼저 플러그인 관리 페이지에서 마켓에 로그인하세요', marketPairFailed: '로컬 N.E.K.O 클라이언트와 안전하게 페어링할 수 없습니다',
+    title: '지식 저장소 관리', subtitle: '로컬 공개 지식, 데이터 팩, 대화 일치 기록을 관리합니다',
+    overview: '개요', ready: '정상', degraded: '오류', entries: '항목', disabled: '비활성', packs: '데이터 팩',
+    autoContext: '자동 대화에 사용', catalog: '항목 관리', searchPlaceholder: '제목, 별칭, 요약 또는 본문 검색',
+    term: '항목', summary: '요약', source: '출처', actions: '작업', details: '상세', restore: '복원', disable: '비활성화',
+    previous: '이전', next: '다음', packId: '팩 ID', subscription: '구독 출처', localImport: '로컬 가져오기',
+    importPack: '지식 팩 가져오기', diagnostics: '최근 일치', time: '시간', collection: '컬렉션', matchMode: '일치 방식',
+    delivered: '카드 전달', result: '결과', errorType: '오류 유형', yes: '예', no: '아니요', terms: '인식어', tags: '태그', content: '본문',
+    loadFailed: '지식 데이터를 불러오지 못했습니다', operationFailed: '지식 작업에 실패했습니다', importSuccess: '지식 팩을 가져왔습니다',
+    invalidPack: '잘못된 지식 팩입니다', removeConfirm: '지식 팩 {name}을(를) 제거할까요?'
   },
   market: {
     title: '새 플러그인 받기',

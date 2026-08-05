@@ -46,7 +46,22 @@ export default {
     adapters: 'アダプター',
     adapterUI: 'アダプターUI',
     packageManager: 'パッケージ管理',
-    market: 'プラグインマーケット'
+    market: 'プラグインマーケット',
+    knowledge: 'ナレッジ'
+  },
+  knowledge: {
+    marketConnected: 'ナレッジマーケットに接続しました。パッケージは検証後にローカルへ保存されます。',
+    openMarket: 'ナレッジマーケットを見る', marketUnavailable: 'プラグインマーケットを利用できません',
+    loginRequired: '先にプラグイン管理画面でマーケットにログインしてください', marketPairFailed: 'ローカルの N.E.K.O と安全にペアリングできませんでした',
+    title: 'ナレッジ管理', subtitle: 'ローカル公開知識、データパック、会話の一致履歴を管理します',
+    overview: '概要', ready: '正常', degraded: '異常', entries: '項目', disabled: '無効', packs: 'データパック',
+    autoContext: '自動会話で使用', catalog: '項目管理', searchPlaceholder: 'タイトル、別名、要約、本文を検索',
+    term: '項目', summary: '要約', source: '出典', actions: '操作', details: '詳細', restore: '復元', disable: '無効化',
+    previous: '前へ', next: '次へ', packId: 'パック ID', subscription: '購読元', localImport: 'ローカル導入',
+    importPack: 'ナレッジパックを導入', diagnostics: '最近の一致', time: '時刻', collection: 'コレクション', matchMode: '一致方式',
+    delivered: 'カード送信', result: '結果', errorType: 'エラー種別', yes: 'はい', no: 'いいえ', terms: '認識語', tags: 'タグ', content: '本文',
+    loadFailed: 'ナレッジデータを読み込めません', operationFailed: 'ナレッジ操作に失敗しました', importSuccess: 'ナレッジパックを導入しました',
+    invalidPack: 'ナレッジパックが無効です', removeConfirm: 'ナレッジパック {name} を削除しますか？'
   },
   market: {
     title: '新しいプラグインを取得',

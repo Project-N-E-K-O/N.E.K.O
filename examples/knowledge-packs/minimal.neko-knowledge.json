@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "pack_id": "example-colors",
+  "collection_id": "example-colors",
+  "collection": {
+    "display_name": "Example Colors"
+  },
+  "source": {
+    "name": "N.E.K.O. SDK Example",
+    "homepage": "https://github.com/Project-N-E-K-O/N.E.K.O",
+    "license": "CC0-1.0"
+  },
+  "entries": [
+    {
+      "title": "Copper",
+      "terms": {
+        "alias": [
+          "copper color"
+        ],
+        "recognition": []
+      },
+      "tags": [
+        "topic:color"
+      ],
+      "summary": "A warm reddish-brown color inspired by copper metal.",
+      "content": "Copper is commonly described as a warm reddish-brown color."
+    }
+  ]
+}

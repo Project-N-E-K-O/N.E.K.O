@@ -420,6 +420,7 @@ class _StreamingMixin:
         text: str,
         *,
         system_prefix: str | None = None,
+        ephemeral_response_instruction: str | None = None,
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
@@ -463,6 +464,9 @@ class _StreamingMixin:
         ``history_replacement_text`` keeps the full prompt available for the current
         LLM turn, then replaces the just-appended user history entry before the next
         turn reuses ``_conversation_history``.
+
+        ``ephemeral_response_instruction`` is appended only for the current model
+        invocation and removed before history or memory can reuse it.
 
         ``response_discarded_callback`` binds discard ownership to this invocation.
         It avoids re-reading mutable session-level request state after a later text
@@ -579,6 +583,8 @@ class _StreamingMixin:
 
         self._conversation_history.append(user_message)
         history_replacement_index = len(self._conversation_history) - 1
+        _ephemeral_instruction_clean = (ephemeral_response_instruction or "").strip()
+        _ephemeral_instruction_message = None
         history_replacement_text = (
             str(history_replacement_text).strip()
             if history_replacement_text is not None
@@ -626,6 +632,11 @@ class _StreamingMixin:
             )
 
         try:
+            if _ephemeral_instruction_clean:
+                _ephemeral_instruction_message = HumanMessage(
+                    content=_ephemeral_instruction_clean
+                )
+                self._conversation_history.append(_ephemeral_instruction_message)
             self._is_responding = True
             reroll_count = 0
             set_call_type("conversation")
@@ -1606,6 +1617,12 @@ class _StreamingMixin:
                     break
         finally:
             self._is_responding = False
+
+            if _ephemeral_instruction_message is not None:
+                for index in range(len(self._conversation_history) - 1, -1, -1):
+                    if self._conversation_history[index] is _ephemeral_instruction_message:
+                        del self._conversation_history[index]
+                        break
 
             if (
                 history_replacement_text

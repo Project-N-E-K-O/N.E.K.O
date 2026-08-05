@@ -46,7 +46,22 @@ export default {
     adapters: 'Adaptadores',
     adapterUI: 'UI del adaptador',
     packageManager: 'Gestor de paquetes',
-    market: 'Mercado de plugins'
+    market: 'Mercado de plugins',
+    knowledge: 'Conocimiento'
+  },
+  knowledge: {
+    marketConnected: 'El mercado de conocimiento está conectado. Los paquetes se validan antes de instalarlos localmente.',
+    openMarket: 'Explorar mercado de conocimiento', marketUnavailable: 'El mercado de plugins no está disponible',
+    loginRequired: 'Inicia sesión en el mercado desde la página de plugins', marketPairFailed: 'No se pudo emparejar de forma segura con el cliente N.E.K.O local',
+    title: 'Gestor de conocimiento', subtitle: 'Gestiona conocimiento público local, paquetes de datos y coincidencias de conversación',
+    overview: 'Resumen', ready: 'Listo', degraded: 'Degradado', entries: 'Entradas', disabled: 'Desactivadas', packs: 'Paquetes',
+    autoContext: 'Usar en conversación automática', catalog: 'Catálogo', searchPlaceholder: 'Buscar títulos, alias, resúmenes o contenido',
+    term: 'Entrada', summary: 'Resumen', source: 'Fuente', actions: 'Acciones', details: 'Detalles', restore: 'Restaurar', disable: 'Desactivar',
+    previous: 'Anterior', next: 'Siguiente', packId: 'ID del paquete', subscription: 'Suscripción', localImport: 'Importación local',
+    importPack: 'Importar paquete', diagnostics: 'Coincidencias recientes', time: 'Hora', collection: 'Colección', matchMode: 'Modo de coincidencia',
+    delivered: 'Tarjeta enviada', result: 'Resultado', errorType: 'Tipo de error', yes: 'Sí', no: 'No', terms: 'Términos', tags: 'Etiquetas', content: 'Contenido',
+    loadFailed: 'No se pudieron cargar los datos', operationFailed: 'La operación falló', importSuccess: 'Paquete importado',
+    invalidPack: 'Paquete no válido', removeConfirm: '¿Eliminar el paquete {name}?'
   },
   market: {
     title: 'Obtener nuevos plugins',

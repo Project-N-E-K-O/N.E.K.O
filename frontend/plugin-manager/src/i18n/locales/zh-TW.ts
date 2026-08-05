@@ -46,7 +46,22 @@ export default {
     adapters: '適配器',
     adapterUI: '適配器介面',
     packageManager: '包管理',
-    market: '外掛市集'
+    market: '外掛市集',
+    knowledge: '知識庫'
+  },
+  knowledge: {
+    marketConnected: '知識包市集已接通；訂閱後會先驗證，再寫入本機知識庫。',
+    openMarket: '瀏覽知識庫市集', marketUnavailable: '外掛市集目前無法使用',
+    loginRequired: '請先在外掛管理頁面登入市集帳號', marketPairFailed: '無法與本機 N.E.K.O 安全配對',
+    title: '知識庫管理', subtitle: '管理本機公共知識、資料包與對話命中情況',
+    overview: '總覽', ready: '正常', degraded: '異常', entries: '詞條', disabled: '已停用', packs: '資料包',
+    autoContext: '參與自動搭話', catalog: '詞條管理', searchPlaceholder: '搜尋標題、別名、摘要或正文',
+    term: '詞條', summary: '摘要', source: '來源', actions: '操作', details: '詳情', restore: '恢復', disable: '停用',
+    previous: '上一頁', next: '下一頁', packId: '資料包 ID', subscription: '訂閱來源', localImport: '本機匯入',
+    importPack: '匯入知識包', diagnostics: '最近命中', time: '時間', collection: '知識庫', matchMode: '匹配方式',
+    delivered: '已遞卡', result: '結果', errorType: '異常類型', yes: '是', no: '否', terms: '識別詞', tags: '標籤', content: '正文',
+    loadFailed: '知識庫資料載入失敗', operationFailed: '知識庫操作失敗', importSuccess: '知識包匯入成功',
+    invalidPack: '知識包格式無效', removeConfirm: '確定移除知識包 {name} 嗎？'
   },
   market: {
     title: '取得新外掛',

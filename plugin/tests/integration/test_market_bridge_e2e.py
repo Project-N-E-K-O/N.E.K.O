@@ -418,6 +418,25 @@ async def test_bridge_token_allows_local_same_origin(
 
 
 @pytest.mark.asyncio
+async def test_pair_code_uses_plugin_host_port(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    res = await bridge_e2e_env["client"].post(
+        "/market/pair-code",
+        headers={
+            "Host": "127.0.0.1:48916",
+            "Origin": "http://127.0.0.1:48916",
+        },
+    )
+
+    assert res.status_code == 200
+    assert res.json()["port"] == 48916
+    assert res.json()["one_time_code"] in market_bridge_module._ONE_TIME_CODES
+
+
+@pytest.mark.asyncio
 async def test_install_happy_path_writes_v2_lock_entry(
     bridge_e2e_env: dict[str, Any],
 ) -> None:

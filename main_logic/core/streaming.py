@@ -481,6 +481,13 @@ class StreamingMixin:
                     # read a hidden scaffold prompt (e.g. avatar-drop file
                     # contents) the user never typed, mismatching the cadence
                     # signal and entering Focus on evidence the user didn't author.
+                    from main_logic.public_knowledge_tool import (
+                        build_public_knowledge_turn_context,
+                    )
+
+                    _public_knowledge_context = (
+                        await build_public_knowledge_turn_context(record_data)
+                    )
                     _focus_thinking = await self._focus_inline_decision(record_data)
 
                     async def response_discarded_callback(
@@ -521,6 +528,9 @@ class StreamingMixin:
 
                     stream_text_kwargs = {
                         "system_prefix": _agent_cb_ctx or None,
+                        "ephemeral_response_instruction": (
+                            _public_knowledge_context or None
+                        ),
                         "thinking_on": _focus_thinking,
                         "response_discarded_callback": response_discarded_callback,
                     }

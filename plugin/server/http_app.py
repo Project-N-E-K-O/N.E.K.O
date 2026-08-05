@@ -25,6 +25,7 @@ from plugin.server.routes import (
     config_router,
     frontend_router,
     health_router,
+    knowledge_market_router,
     llm_tools_router,
     logs_router,
     market_bridge_router,
@@ -246,6 +247,8 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
+    # Specific knowledge routes must precede the general Market bridge.
+    app.include_router(knowledge_market_router)
     app.include_router(market_bridge_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.

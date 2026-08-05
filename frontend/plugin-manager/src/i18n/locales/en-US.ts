@@ -46,7 +46,22 @@ export default {
     adapters: 'Adapters',
     adapterUI: 'Adapter UI',
     packageManager: 'Package Manager',
-    market: 'Plugin Market'
+    market: 'Plugin Market',
+    knowledge: 'Knowledge'
+  },
+  knowledge: {
+    marketConnected: 'The knowledge market is connected. Packages are verified before local installation.',
+    openMarket: 'Browse knowledge market', marketUnavailable: 'The plugin market is unavailable',
+    loginRequired: 'Sign in to the market from the Plugins page first', marketPairFailed: 'Could not securely pair with the local N.E.K.O client',
+    title: 'Knowledge Manager', subtitle: 'Manage local public knowledge, data packs, and conversation matches',
+    overview: 'Overview', ready: 'Ready', degraded: 'Degraded', entries: 'Entries', disabled: 'Disabled', packs: 'Data packs',
+    autoContext: 'Use in automatic conversation', catalog: 'Catalog', searchPlaceholder: 'Search titles, aliases, summaries, or content',
+    term: 'Entry', summary: 'Summary', source: 'Source', actions: 'Actions', details: 'Details', restore: 'Restore', disable: 'Disable',
+    previous: 'Previous', next: 'Next', packId: 'Pack ID', subscription: 'Subscription', localImport: 'Local import',
+    importPack: 'Import knowledge pack', diagnostics: 'Recent matches', time: 'Time', collection: 'Collection', matchMode: 'Match mode',
+    delivered: 'Card delivered', result: 'Result', errorType: 'Error type', yes: 'Yes', no: 'No', terms: 'Recognition terms', tags: 'Tags', content: 'Content',
+    loadFailed: 'Failed to load knowledge data', operationFailed: 'Knowledge operation failed', importSuccess: 'Knowledge pack imported',
+    invalidPack: 'Invalid knowledge pack', removeConfirm: 'Remove knowledge pack {name}?'
   },
   market: {
     title: 'Get New Plugins',

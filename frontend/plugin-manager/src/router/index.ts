@@ -63,6 +63,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'knowledge',
+        name: 'KnowledgeManager',
+        component: () => import('@/views/KnowledgeManager.vue'),
+        meta: {
+          titleKey: 'nav.knowledge'
+        }
+      },
+      {
         path: 'logs/:id',
         name: 'Logs',
         component: () => import('@/views/Logs.vue'),
@@ -100,4 +108,3 @@ router.beforeEach((to, from, next) => {
 })
 
 export default router
-

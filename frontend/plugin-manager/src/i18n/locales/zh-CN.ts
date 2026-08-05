@@ -46,7 +46,22 @@ export default {
     adapters: '适配器',
     adapterUI: '适配器界面',
     packageManager: '包管理',
-    market: '插件市场'
+    market: '插件市场',
+    knowledge: '知识库'
+  },
+  knowledge: {
+    marketConnected: '知识包市场已经接通；订阅后会先校验，再写入本地知识库。',
+    openMarket: '浏览知识库市场', marketUnavailable: '插件市场当前不可用',
+    loginRequired: '请先在插件管理页面登录市场账号', marketPairFailed: '无法与本机 N.E.K.O 安全配对',
+    title: '知识库管理', subtitle: '管理本地公共知识、数据包和对话命中情况',
+    overview: '总览', ready: '正常', degraded: '异常', entries: '词条', disabled: '已禁用', packs: '数据包',
+    autoContext: '参与自动搭话', catalog: '词条管理', searchPlaceholder: '搜索标题、别名、摘要或正文',
+    term: '词条', summary: '摘要', source: '来源', actions: '操作', details: '详情', restore: '恢复', disable: '禁用',
+    previous: '上一页', next: '下一页', packId: '数据包 ID', subscription: '订阅来源', localImport: '本地导入',
+    importPack: '导入知识包', diagnostics: '最近命中', time: '时间', collection: '知识库', matchMode: '匹配方式',
+    delivered: '已递卡', result: '结果', errorType: '异常类型', yes: '是', no: '否', terms: '识别词', tags: '标签', content: '正文',
+    loadFailed: '知识库数据加载失败', operationFailed: '知识库操作失败', importSuccess: '知识包导入成功',
+    invalidPack: '知识包格式无效', removeConfirm: '确定移除知识包 {name} 吗？'
   },
   market: {
     title: '获取新插件',

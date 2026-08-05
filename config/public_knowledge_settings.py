@@ -1,0 +1,4 @@
+"""Runtime limits for local public knowledge."""
+
+PUBLIC_KNOWLEDGE_AUTO_CONTEXT_ENABLED = True
+PUBLIC_KNOWLEDGE_AUTO_CONTEXT_TIMEOUT_SECONDS = 0.25

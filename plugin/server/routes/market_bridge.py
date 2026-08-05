@@ -29,6 +29,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
+from knowledge.api import MAX_PACK_BYTES
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.public import inspect_package
 from plugin.server.application.install_source import (
@@ -97,6 +98,20 @@ _ACCOUNT_SUMMARY_CACHE: dict[str, Any] | None = None
 _DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 _DOWNLOAD_TIMEOUT = 120.0  # 秒
 _ALLOWED_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
+_KNOWLEDGE_BRIDGE_PATHS = frozenset({
+    "collections",
+    "entries",
+    "entry",
+    "entry/disabled",
+    "collection/auto-context",
+    "packs",
+    "packs/import",
+    "packs/auto-context",
+    "packs/remove",
+    "subscriptions/apply",
+    "diagnostics/recent",
+})
+_KNOWLEDGE_BRIDGE_ENVELOPE_BYTES = 64 * 1024
 
 
 def _normalize_required_sha256(value: str | None) -> str:
@@ -119,6 +134,102 @@ def _normalize_required_sha256(value: str | None) -> str:
 def get_bridge_token() -> str:
     """获取当前 bridge token（供 URI scheme handler 使用）。"""
     return _BRIDGE_TOKEN
+
+
+@router.api_route("/knowledge/{path:path}", methods=["GET", "POST"])
+async def public_knowledge_bridge(
+    path: str,
+    request: Request,
+    authorization: str | None = Header(None, alias="Authorization"),
+):
+    """Bounded same-origin bridge from the manager UI to Main Server."""
+    _verify_token(authorization=authorization)
+    _require_local_knowledge_bridge_origin(request)
+    normalized_path = path.strip("/")
+    if normalized_path not in _KNOWLEDGE_BRIDGE_PATHS:
+        raise HTTPException(status_code=404, detail="knowledge endpoint not found")
+    body = b""
+    if request.method == "POST":
+        maximum = MAX_PACK_BYTES + _KNOWLEDGE_BRIDGE_ENVELOPE_BYTES
+        content_length = request.headers.get("content-length", "")
+        try:
+            if content_length and int(content_length) > maximum:
+                raise HTTPException(status_code=413, detail="knowledge request too large")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid Content-Length") from exc
+        body = await request.body()
+        if len(body) > maximum:
+            raise HTTPException(status_code=413, detail="knowledge request too large")
+    main_port = _main_server_port()
+    target = f"http://127.0.0.1:{main_port}/api/public-knowledge/{normalized_path}"
+    if request.url.query:
+        forwarded = [
+            (key, value)
+            for key, value in request.query_params.multi_items()
+            if key != "token"
+        ]
+    else:
+        forwarded = []
+    headers = {"Accept": "application/json"}
+    if request.method == "POST":
+        import config
+
+        headers.update({
+            "Content-Type": request.headers.get("content-type", "application/json"),
+            "Origin": f"http://127.0.0.1:{main_port}",
+            "X-CSRF-Token": str(config.AUTOSTART_CSRF_TOKEN),
+        })
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=2.0),
+            proxy=None,
+            trust_env=False,
+        ) as client:
+            response = await client.request(
+                request.method,
+                target,
+                params=forwarded,
+                content=body if request.method == "POST" else None,
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Main Server unavailable") from exc
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        headers={
+            "Content-Type": response.headers.get(
+                "content-type",
+                "application/json",
+            )
+        },
+    )
+
+
+def _require_local_knowledge_bridge_origin(request: Request) -> None:
+    """Reject browser calls from the remote Market while allowing local clients."""
+    if request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
+        raise HTTPException(status_code=403, detail="local manager origin required")
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        parsed = None
+    if (
+        parsed is None
+        or parsed.scheme != "http"
+        or not parsed.hostname
+        or not _is_loopback_host(parsed.hostname)
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(status_code=403, detail="local manager origin required")
 
 
 def _main_server_port() -> int:
@@ -155,7 +266,7 @@ def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
     return (parsed.port or 80) == expected_port
 
 
-def _require_local_bridge_token_access(request: Request) -> None:
+def _require_local_bridge_token_access(request: Request) -> int:
     """Allow bridge-token only to the local plugin-manager origin.
 
     Remote Market origins are intentionally excluded here even when CORS trusts
@@ -164,16 +275,20 @@ def _require_local_bridge_token_access(request: Request) -> None:
 
     host_header = request.headers.get("host", "")
     try:
-        host = urlparse(f"//{host_header}").hostname or ""
+        parsed_host = urlparse(f"//{host_header}")
+        host = parsed_host.hostname or ""
+        request_port = parsed_host.port or 80
     except ValueError:
         host = ""
+        request_port = 0
     client_host = request.client.host if request.client else ""
     if not _is_loopback_host(client_host) or not _is_loopback_host(host):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
     origin = request.headers.get("origin")
-    if origin and not _is_local_bridge_origin(origin, _main_server_port()):
+    if origin and not _is_local_bridge_origin(origin, request_port):
         raise HTTPException(status_code=403, detail="仅允许本地同源访问")
+    return request_port
 
 
 def write_bridge_token_file(directory: Path) -> Path:
@@ -388,6 +503,12 @@ class MarketBridgeTokenResponse(BaseModel):
     """供同源前端（plugin-manager UI）直接获取 bridge token。"""
     bridge_token: str
     port: int = 48911
+
+
+class MarketPairCodeResponse(BaseModel):
+    one_time_code: str
+    port: int = 48911
+    expires_in: int = _ONE_TIME_CODE_TTL_SECONDS
 
 
 class MarketOAuthStartResponse(BaseModel):
@@ -819,9 +940,19 @@ async def market_bridge_token(request: Request):
     不需要走 one-time code 配对。只允许 127.0.0.1 / localhost 来源，避免
     被外部网页拿到 token。
     """
-    _require_local_bridge_token_access(request)
+    request_port = _require_local_bridge_token_access(request)
 
-    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
+    return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=request_port)
+
+
+@router.post("/pair-code", response_model=MarketPairCodeResponse)
+async def market_pair_code(request: Request):
+    """Issue a short-lived code to the local manager for a remote Market page."""
+    request_port = _require_local_bridge_token_access(request)
+    return MarketPairCodeResponse(
+        one_time_code=_issue_one_time_code(),
+        port=request_port,
+    )
 
 
 @router.post("/oauth/start", response_model=MarketOAuthStartResponse)
@@ -1399,7 +1530,10 @@ def _verify_token(
         # were ever empty, but we'd rather 403 explicitly.
         candidate = (token or "").strip() or None
 
-    if not candidate or not secrets.compare_digest(candidate, _BRIDGE_TOKEN):
+    if not candidate or not secrets.compare_digest(
+        candidate.encode("utf-8", "surrogatepass"),
+        _BRIDGE_TOKEN.encode("utf-8", "surrogatepass"),
+    ):
         raise HTTPException(status_code=403, detail="无效的 bridge token")
 
 

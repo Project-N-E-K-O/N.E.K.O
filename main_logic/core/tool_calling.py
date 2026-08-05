@@ -138,7 +138,7 @@ class ToolCallingMixin:
         """
         if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
             logger.info(
-                "[builtin tools] NEKO_DISABLE_BUILTIN_TOOLS set — skipping recall_memory registration"
+                "[builtin tools] NEKO_DISABLE_BUILTIN_TOOLS set — skipping builtin registration"
             )
             return
         _lang = _normalize_memory_prompt_lang(self.user_language)
@@ -166,6 +166,15 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+        try:
+            from main_logic.public_knowledge_tool import register_public_knowledge_tool
+
+            register_public_knowledge_tool(self.tool_registry, language=_lang)
+        except Exception as exc:
+            logger.warning(
+                "[builtin tools] public knowledge registration failed: %s",
+                type(exc).__name__,
+            )
 
     async def _handle_recall_memory_call(self, arguments: dict) -> str:
         """Handler for ``recall_memory`` — calls memory_server's
