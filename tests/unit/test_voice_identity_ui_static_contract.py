@@ -113,6 +113,23 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert _contrast_ratio("#082f45", "#159ff5") >= 3
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
+    dark_start = stylesheet.index('[data-theme="dark"] {')
+    dark_block = stylesheet[
+        dark_start:stylesheet.index("}", dark_start)
+    ]
+    dark_focus = re.search(
+        r"--voice-focus:\s*(#[0-9a-fA-F]{6})", dark_block
+    )
+    dark_panel = re.search(
+        r"--voice-panel:\s*rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)",
+        dark_block,
+    )
+    assert dark_focus is not None
+    assert dark_panel is not None
+    dark_panel_hex = "#" + "".join(
+        f"{int(channel):02x}" for channel in dark_panel.groups()
+    )
+    assert _contrast_ratio(dark_focus.group(1), dark_panel_hex) >= 3
     header_block = stylesheet[
         stylesheet.index(".voice-identity-header {"):
         stylesheet.index("}", stylesheet.index(".voice-identity-header {"))
@@ -201,6 +218,10 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         copy = payload["voiceIdentity"]
         assert required <= set(copy)
         assert len(copy["fixedPrompts"]) == 3
+        assert all(
+            isinstance(prompt, str) and prompt.strip()
+            for prompt in copy["fixedPrompts"]
+        )
         if locale in {"en", "ru", "es", "pt"}:
             assert all(
                 len(prompt.split()) <= 10
