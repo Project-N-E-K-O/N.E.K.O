@@ -577,6 +577,40 @@ def test_the_probe_copy_carries_no_insider_jargon():
                 )
 
 
+#: Implementation detail that has no meaning to the person reading the panel.
+#: Two rounds of this copy shipped "字段名" and a "200 行" cap before the
+#: maintainer asked, twice, what the sentence was even supposed to mean.
+IMPLEMENTATION_DETAIL = (
+    "字段名", "欄位名", "field name", "フィールド", "필드", "campo", "поле",
+    "200", "计数器", "計數器", "counter", "カウンタ", "счётчик",
+)
+
+
+def test_the_probe_copy_describes_no_implementation_detail():
+    import json
+
+    for path in _locale_files():
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        for key in PROBE_KEYS:
+            text = catalogue[key].lower()
+            for word in IMPLEMENTATION_DETAIL:
+                assert word.lower() not in text, (
+                    f"{path.name}:{key} describes plumbing, not what to do: "
+                    f"{catalogue[key]}"
+                )
+
+
+def test_the_probe_hint_tells_the_reader_what_to_do():
+    # A switch nobody knows how to act on is a switch nobody uses.  Every
+    # locale must name the action (@ the bot) and where the result shows up.
+    import json
+
+    for path in _locale_files():
+        catalogue = json.loads(path.read_text(encoding="utf-8"))
+        hint = catalogue["ui.openplat.config.identity_probe_hint"]
+        assert "@" in hint, f"{path.name} never says to @ the bot: {hint}"
+
+
 def test_the_probe_copy_never_claims_a_restart_resets_the_counter():
     # Only relaunching the whole app rebuilds the connection object; the
     # sidebar's stop/start does not.  Copy must not send users down that path.

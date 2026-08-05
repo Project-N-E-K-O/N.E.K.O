@@ -444,7 +444,7 @@
   "ui.openplat.config.secret_label": "ClientSecret (ключ)",
   "ui.openplat.config.hint": "Получи после создания бота на QQ Open Platform. Не нужен отдельный процесс — чистый API.",
   "ui.openplat.config.identity_probe": "Записывать ID из каждого сообщения (включай, только если бот в группе не считает тебя администратором)",
-  "ui.openplat.config.identity_probe_hint": "Когда включено, на каждое входящее сообщение в лог добавляется строка с ID и названиями полей — без текста переписки. После 200 строк запись сама остановится. Выключи, когда закончишь.",
+  "ui.openplat.config.identity_probe_hint": "После включения упомяни бота через @ в группе — в «Логах работы» появятся строки с ID. Их можно отправить разработчику, он поможет разобраться. Текста переписки в них нет. Выключи, когда закончишь.",
   "ui.openplat.config.accounts_hint": "Первый пользователь в личке автоматически станет администратором. ID — зашифрованный openid (не QQ номер), можно посмотреть в логах.",
   "ui.openplat.guide.step_openplat": "QQ Open Platform",
   "ui.openplat.guide.step_openplat_hint": "Настрой AppID и ClientSecret",

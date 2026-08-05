@@ -446,7 +446,7 @@
   "ui.openplat.config.secret_label": "ClientSecret（密钥）",
   "ui.openplat.config.hint": "在 QQ 开放平台 创建机器人后获取。不需要额外进程，纯 API 接入。",
   "ui.openplat.config.identity_probe": "记录每条消息里的 ID（群里认不出你是管理员时才开）",
-  "ui.openplat.config.identity_probe_hint": "勾选后，每收到一条消息就多记一行 ID 和字段名，不含聊天内容。写满 200 行自动停，查完请关掉。",
+  "ui.openplat.config.identity_probe_hint": "打开后在群里 @ 一下猫娘，运行日志里就会多出几行 ID 信息，可以发给开发者帮你排查。这些行不含聊天内容。用完请关掉。",
   "ui.openplat.config.accounts_hint": "第一个私聊的用户自动成为管理员。ID 为加密 openid（非 QQ 号），可在日志中查看。",
   "ui.openplat.guide.step_openplat": "QQ 开放平台",
   "ui.openplat.guide.step_openplat_hint": "配置 AppID 和 ClientSecret",
