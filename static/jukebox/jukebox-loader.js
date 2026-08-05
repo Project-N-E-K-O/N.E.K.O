@@ -142,7 +142,10 @@
             );
             await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
               loop: true,
-              isIdle: true
+              isIdle: true,
+              shouldApply: function() {
+                return restoreRequestId === state.playRequestId;
+              }
             });
           } catch (error) {
             console.warn('[Jukebox] VRM 待机动画恢复失败:', error);

@@ -34,7 +34,7 @@ class VRMExpression {
 
         // 情绪映射表：把一种情绪映射到多种可能的 VRM 表情名上
         // 默认值，可通过 loadMoodMap() 从后端加载覆盖
-        this.moodMap = {
+        this.defaultMoodMap = {
             'neutral': ['neutral'],
             // 开心类：兼容 VRM1.0(happy), VRM0.0(joy, fun), 其他(smile, warau)
             'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01'],
@@ -99,8 +99,17 @@ class VRMExpression {
             'tired': ['tired', 'sleepy', 'drowsy']
         };
 
-        this.currentWeights = {};
         this.customMoodKeys = new Set();
+        this._moodMapLoadGeneration = 0;
+        this._resetMoodMapToDefaults();
+        this.currentWeights = {};
+    }
+
+    _resetMoodMapToDefaults() {
+        this.moodMap = Object.fromEntries(Object.entries(this.defaultMoodMap).map(function ([key, value]) {
+            return [key, value.slice()];
+        }));
+        this.customMoodKeys.clear();
     }
 
     /**
@@ -108,6 +117,8 @@ class VRMExpression {
      * @param {string} modelName - 模型名称
      */
     async loadMoodMap(modelName) {
+        const loadGeneration = ++this._moodMapLoadGeneration;
+        this._resetMoodMapToDefaults();
         if (!modelName) {
             console.warn('[VRM Expression] loadMoodMap: 模型名称为空');
             return;
@@ -115,12 +126,14 @@ class VRMExpression {
 
         try {
             const response = await fetch(`/api/model/vrm/emotion_mapping/${encodeURIComponent(modelName)}`);
+            if (loadGeneration !== this._moodMapLoadGeneration) return;
             if (!response.ok) {
                 console.warn(`[VRM Expression] 加载情感映射失败: HTTP ${response.status}`);
                 return;
             }
 
             const data = await response.json();
+            if (loadGeneration !== this._moodMapLoadGeneration) return;
             if (data.success && data.config) {
                 // 规范化配置：确保每个映射值都是字符串数组
                 const normalizedConfig = {};

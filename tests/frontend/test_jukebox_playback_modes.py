@@ -241,6 +241,44 @@ def test_jukebox_loader_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
     assert restored == ["/static/vrm/animation/wait03.vrma.gz?legacy=1"]
 
 
+@pytest.mark.frontend
+def test_jukebox_loader_rejects_stale_idle_restore(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.t = (key, fallback) => fallback || key;
+          window.__nekoJukeboxToggle = function() {};
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          let finishRestore;
+          let shouldApply;
+          window.lanlan_config = { model_type: 'live3d', live3d_sub_type: 'vrm' };
+          window.vrmManager = {
+            playVRMAAnimation: (url, options) => {
+              shouldApply = options.shouldApply;
+              return new Promise((resolve) => { finishRestore = resolve; });
+            }
+          };
+          const restore = window.Jukebox.restoreIdleAnimation();
+          const currentBefore = shouldApply();
+          window.Jukebox.State.playRequestId += 1;
+          const currentAfter = shouldApply();
+          finishRestore(false);
+          await restore;
+          return { currentBefore, currentAfter };
+        }
+        """
+    )
+
+    assert result == {"currentBefore": True, "currentAfter": False}
+
+
 def test_jukebox_builtin_vrm_actions_are_gzip_only():
     vrm_actions = [
         action

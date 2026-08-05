@@ -4291,7 +4291,7 @@
     {
       "id": "sit_01",
       "m": "lie",
-      "label": "坐姿",
+      "label": "半躺",
       "f": "motion/05_pose/嚣张地斜靠着半躺.vrma",
       "in": "any",
       "out": "lie",

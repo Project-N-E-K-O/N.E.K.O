@@ -29,7 +29,16 @@
         window.dispatchEvent(new CustomEvent(name, { detail: detail || {} }));
     }
 
+    function assetUrl(asset) {
+        const suffix = asset.compression === 'gzip' ? '.gz' : '';
+        return ASSET_ROOT + asset.f + suffix;
+    }
+
     async function sha256(buffer) {
+        if (typeof crypto === 'undefined' || !crypto.subtle
+            || typeof crypto.subtle.digest !== 'function') {
+            throw new Error('SHA-256 integrity verification requires a secure browser context');
+        }
         const digest = await crypto.subtle.digest('SHA-256', buffer);
         return Array.from(new Uint8Array(digest)).map(function (byte) {
             return byte.toString(16).padStart(2, '0');
@@ -158,14 +167,13 @@
             return this.assets.filter(function (asset) {
                 return asset.disabled !== true && !DISABLED_INTENTS.has(asset.m);
             }).map(function (asset) {
-                const suffix = asset.compression === 'gzip' ? '.gz' : '';
                 return {
                     id: asset.id,
                     name: MotionPlayer.localizedName(asset, locale),
                     nameZh: asset.nameZh,
                     filename: MotionPlayer.sourceName(asset),
-                    path: ASSET_ROOT + asset.f + suffix,
-                    url: ASSET_ROOT + asset.f + suffix,
+                    path: assetUrl(asset),
+                    url: assetUrl(asset),
                     type: 'vrma',
                     compression: asset.compression,
                     playback: asset.mode,
@@ -192,7 +200,8 @@
                     assetId: asset.id,
                     assetExplicit: true,
                     canonicalZh: asset.nameZh || ''
-                }
+                },
+                manualLoop: asset.mode === 'loop'
             };
             return this.playPlan([decision], Object.assign({
                 seed: 'catalog-preview:' + asset.id + ':' + Date.now()
@@ -272,7 +281,7 @@
                 .map(function (value) { return typeof value === 'string' ? value.trim() : ''; })
                 .map(function (value) {
                     return value.replace(
-                        /^(\/static\/vrm\/animation\/[^?#]+)\.vrma(?=([?#]|$))/i,
+                        /^(\/static\/vrm\/[^?#]+)\.vrma(?=([?#]|$))/i,
                         '$1.vrma.gz'
                     );
                 })
@@ -284,8 +293,7 @@
             this.savedRestAssetIds = new Set();
             const externalUrls = normalizedUrls.filter((url) => {
                 const catalogAsset = this.assets.find(function (asset) {
-                    const suffix = asset.compression === 'gzip' ? '.gz' : '';
-                    return ASSET_ROOT + asset.f + suffix === url;
+                    return assetUrl(asset) === url;
                 });
                 if (!catalogAsset) return true;
                 this.savedRestAssetIds.add(catalogAsset.id);
@@ -405,8 +413,7 @@
             // 官方内置动作直接复用 static/vrm/animation，避免在源码和安装包
             // 同时保存 VRMA 与 gzip 副本。外部已授权动作包仍可声明 gzip transport。
             // 无论 transport 为何，解码后的 Blob URL 都只在当前播放期间存在。
-            const suffix = asset.compression === 'gzip' ? '.gz' : '';
-            const response = await fetch(ASSET_ROOT + asset.f + suffix, { cache: 'no-store' });
+            const response = await fetch(assetUrl(asset));
             if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
             const packed = await response.arrayBuffer();
             const packedBytes = new Uint8Array(packed);
@@ -591,7 +598,7 @@
                 return false;
             }
             if (settings.profile) this.setProfile(settings.profile);
-            if (this.state.posture !== 'stand' || this.busy && settings.force !== true) return false;
+            if (this.state.posture !== 'stand' || (this.busy && settings.force !== true)) return false;
             const requestedRest = settings.assetId && this.assets.concat(this.savedRestAssets).find(function (asset) {
                 return asset.id === settings.assetId && asset.m === 'idle';
             });
@@ -676,7 +683,7 @@
             const timeScale = this._timeScale(intensity);
             this.state.phase = 'transient';
             const played = await this._playAsset(asset, generation, {
-                loop: false,
+                loop: decision.manualLoop === true,
                 idle: false,
                 intensity: intensity,
                 repeatIndex: settings.repeatIndex,
@@ -684,6 +691,7 @@
                 timeScale: timeScale
             });
             if (!played) return false;
+            if (decision.manualLoop === true) return generation === this.queueGeneration;
             const reachedTail = await this._wait(this._tailMilliseconds(asset, timeScale), generation);
             return reachedTail && generation === this.queueGeneration;
         }
@@ -768,22 +776,20 @@
 
         async _executeDecision(decision, generation, seed, resumeAfter) {
             if (LOW_POSES.has(decision.intent)) {
-                await this._enterLowPose(decision, generation, seed);
-                return;
+                return this._enterLowPose(decision, generation, seed);
             }
             if (decision.intent === 'recover' || decision.intent === 'idle') {
                 if (this.state.posture !== 'stand') {
                     const recovered = await this._recoverToStand(generation, seed, false);
-                    if (!recovered || generation !== this.queueGeneration) return;
+                    if (!recovered || generation !== this.queueGeneration) return false;
                 }
-                await this.enterRest({
+                return this.enterRest({
                     seed: seed,
                     force: true,
                     reselect: decision.intent === 'idle',
                     allowOfficial: decision.intent === 'idle',
                     assetId: decision.evidence && decision.evidence.assetId
                 });
-                return;
             }
 
             const requestedAssetId = decision.evidence && decision.evidence.assetId;
@@ -798,12 +804,12 @@
                     intensity: 1,
                     evidence: { canonicalZh: '双脚平放端正地坐' }
                 }, generation, seed + ':required-sit');
-                if (!entered || generation !== this.queueGeneration) return;
+                if (!entered || generation !== this.queueGeneration) return false;
             } else if (requestedAsset && requestedAsset.in === 'stand'
                 && decision.evidence.assetExplicit === true
                 && this.state.posture !== 'stand') {
                 const recovered = await this._recoverToStand(generation, seed + ':required-stand', false);
-                if (!recovered || generation !== this.queueGeneration) return;
+                if (!recovered || generation !== this.queueGeneration) return false;
             }
 
             let asset = this.select(decision, seed, this.state.posture);
@@ -821,10 +827,10 @@
                         reason: 'preserve_low_pose',
                         posture: this.state.posture
                     });
-                    return;
+                    return false;
                 }
                 const recovered = await this._recoverToStand(generation, seed, false);
-                if (!recovered || generation !== this.queueGeneration) return;
+                if (!recovered || generation !== this.queueGeneration) return false;
                 asset = this.select(decision, seed, 'stand');
             }
             if (!asset) {
@@ -835,14 +841,14 @@
                     reason: 'no_compatible_asset',
                     posture: this.state.posture
                 });
-                return;
+                return false;
             }
 
             const repeatTotal = COUNTABLE_INTENTS.has(decision.intent)
                 ? Math.max(1, Math.min(3, Math.round(Number(decision.count) || 1)))
                 : 1;
             for (let repeatIndex = 1; repeatIndex <= repeatTotal; repeatIndex += 1) {
-                if (generation !== this.queueGeneration) return;
+                if (generation !== this.queueGeneration) return false;
                 if (repeatIndex > 1) {
                     asset = this.select(decision, seed + ':repeat:' + repeatIndex, this.state.posture) || asset;
                 }
@@ -850,14 +856,15 @@
                     repeatIndex: repeatIndex,
                     repeatTotal: repeatTotal
                 });
-                if (!finished) return;
+                if (!finished) return false;
             }
-            if (resumeAfter && generation === this.queueGeneration) {
+            if (resumeAfter && decision.manualLoop !== true && generation === this.queueGeneration) {
                 // Crossfade immediately from the authored action tail into the
                 // current posture base. Do not freeze the final frame between
                 // actions; _resumeBase never inserts a T-pose.
-                await this._resumeBase(generation, seed + ':post-action');
+                return this._resumeBase(generation, seed + ':post-action');
             }
+            return generation === this.queueGeneration;
         }
 
         beginPlan() {
@@ -877,16 +884,19 @@
             this.sequence += 1;
             const task = async () => {
                 this.busy = true;
+                let succeeded = true;
                 for (let index = 0; index < items.length; index += 1) {
                     if (generation !== this.queueGeneration) break;
                     try {
-                        await this._executeDecision(
+                        const completed = await this._executeDecision(
                             items[index],
                             generation,
                             seed + ':' + index,
                             index === items.length - 1
                         );
+                        if (completed !== true) succeeded = false;
                     } catch (error) {
+                        succeeded = false;
                         this.metrics.failures += 1;
                         console.warn('[NekoMotion] playback failed:', error);
                         emit('neko-motion-playback', {
@@ -897,7 +907,7 @@
                     }
                 }
                 if (generation === this.queueGeneration) this.busy = false;
-                return generation === this.queueGeneration;
+                return succeeded && generation === this.queueGeneration;
             };
             this.queue = this.queue.then(task, task);
             return this.queue;
