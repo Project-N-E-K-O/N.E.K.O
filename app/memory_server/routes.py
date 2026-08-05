@@ -1401,6 +1401,14 @@ def _stamp_resolved_trust(parsed: dict, snap) -> None:
     already go through a shape that omits it), flipping arbitration from
     abstention to an active vote.
     """
+    # From the SAME snapshot that routed the subject — one pool read per
+    # request (§4.4), so the stamp stays a pure function of the request-start
+    # state even if a bind/unbind lands mid-request.
+    speaker_id = parsed.get("speaker_id")
+    if speaker_id:
+        entity_id = snap.entity_of(speaker_id)
+        if entity_id:
+            parsed["speaker_entity_id"] = entity_id
     source = parsed.get("trust_source") or {}
     if not source.get("has_server_source"):
         return
@@ -1774,6 +1782,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_provenance["speaker_trust"] = resolved_trust
         if speaker_id is not None:
             speaker_provenance["speaker_id"] = speaker_id
+            entity_id = trust_state.get("speaker_entity_id")
+            if entity_id:
+                speaker_provenance["speaker_entity_id"] = entity_id
     subject = req.subject.to_domain()
     # Canonical write routing, deliberately BEFORE the locale reservation below
     # so the durable per-subject locale is keyed by the same subject the read
@@ -2562,6 +2573,24 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
     subject = req.subject.to_domain()
+    from memory import trust_store as _trust_store
+    if not _trust_store.trust_snapshot().loaded:
+        # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
+        # ``expand_subject`` degrades to just the requested subject — so a
+        # non-canonical account whose rows were routed into the canonical pile
+        # would get a PARTIAL erase reported as ``forgotten``. Under-deleting
+        # on a privacy path and calling it success is the one outcome worth a
+        # hard failure; the caller retries once the pool loads.
+        #
+        # Narrow by construction: a fresh or empty pool is ``loaded`` with no
+        # entities, so a deployment that never linked accounts never sees this.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "identity pool unreadable; refusing a partial scoped forget, "
+                "retry once the trust pool loads"
+            ),
+        )
     targets = _forget_fanout_targets(subject)
     stats: dict = {}
     fact_forget_started: list = []

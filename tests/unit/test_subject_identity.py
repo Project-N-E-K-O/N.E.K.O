@@ -641,3 +641,76 @@ def test_the_trust_response_block_has_one_shape():
     )
     assert set(empty) == set(filled)
     assert empty["channel_collision"] is False
+
+
+# ── review round 4 (Codex) ─────────────────────────────────────────────────
+
+async def test_forget_fails_closed_when_the_identity_pool_is_unreadable():
+    """A partial erase reported as success is the one outcome worth a 503.
+
+    With the pool unreadable the fan-out set is unknown and ``expand_subject``
+    degrades to the requested subject alone — so a non-canonical account whose
+    rows were routed into the canonical pile would keep them, while the caller
+    is told ``forgotten``.
+    """
+    from app.memory_server import routes
+
+    await _linked("qq:111", "qq:222")
+    # Loaded pool: the fan-out is known, so the endpoint proceeds.
+    assert trust_store.trust_snapshot().loaded is True
+    assert len(_forget_targets(A1)) == 2
+
+    trust_store._set_load_failed(True)
+    try:
+        # Degradation is real: expansion silently narrows to one subject...
+        assert expand_subject(A1, _snap()) == (A1,)
+        # ...so the endpoint must refuse rather than under-delete quietly.
+        request = routes.ScopedForgetRequest(subject={
+            "subject_kind": A1.kind, "subject_id": A1.subject_id,
+        })
+        with pytest.raises(routes.HTTPException) as excinfo:
+            await routes.forget_scoped_subject("Neko", request)
+        assert excinfo.value.status_code == 503
+    finally:
+        trust_store._set_load_failed(False)
+
+
+def _forget_targets(subject):
+    from app.memory_server.routes import _forget_fanout_targets
+
+    return _forget_fanout_targets(subject)
+
+
+async def test_the_entity_stamp_comes_from_the_request_snapshot():
+    """One pool read per request — routing, trust and the entity id agree.
+
+    A fresh live lookup at persistence time would let an unbind landing
+    mid-request write the row under the OLD canonical subject while stamping
+    the account's NEW entity, and those stranded rows would then miss the
+    persisted-entity equality that keeps the mixed pump closed.
+    """
+    import ast
+    import inspect
+
+    from memory import facts as facts_module
+
+    # FactStore must not reach into the pool for this field at all.
+    source = inspect.getsource(facts_module)
+    assert "_speaker_entity_id_for" not in source
+    tree = ast.parse(source)
+    provenance_fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_speaker_provenance_of"
+    )
+    assert "trust_snapshot" not in ast.dump(provenance_fn)
+
+    # And the route fills it from the snapshot it already took.
+    entity_id = await _linked("qq:111")
+    snap = _snap()
+    parsed: dict = {"speaker_id": "qq:111", "trust_source": {
+        "has_server_source": True, "tier": "normal", "base": None,
+    }}
+    from app.memory_server.routes import _stamp_resolved_trust
+    _stamp_resolved_trust(parsed, snap)
+    assert parsed["speaker_entity_id"] == entity_id

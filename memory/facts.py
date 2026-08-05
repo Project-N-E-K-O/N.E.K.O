@@ -222,23 +222,6 @@ def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | Non
     )
 
 
-def _speaker_entity_id_for(account_id: str) -> str | None:
-    """Entity id for one account, or ``None`` when the pool cannot answer.
-
-    Never raises and never auto-vivifies: an unloaded pool or an unregistered
-    account simply means the row carries no ``speaker_entity_id``, which the
-    three-state comparison reads as "unknown" rather than "different".
-    """
-    try:
-        from memory.trust_store import trust_snapshot
-    except ImportError:  # pragma: no cover - defensive
-        return None
-    try:
-        return trust_snapshot().entity_of(account_id)
-    except Exception:  # noqa: BLE001 - provenance must never break a write
-        return None
-
-
 def _fact_scoped_identity(entry: dict) -> tuple[str, str, str, str] | None:
     """Return an archive-safe identity without collapsing scoped duplicate ids."""
     if not isinstance(entry, dict):
@@ -3160,9 +3143,15 @@ class FactStore:
         speaker_id = stable_speaker_id(segment.get('speaker_id'))
         if speaker_id is not None:
             prov['speaker_id'] = speaker_id
-            # Persisted alongside speaker_id, never in place of it.
-            entity_id = _speaker_entity_id_for(speaker_id)
-            if entity_id is not None:
+            # Persisted alongside speaker_id, never in place of it — and taken
+            # from the segment, so it comes from the SAME request-start pool
+            # snapshot that decided routing and trust (see
+            # ``_reconcile_existing_provenance`` for why a fresh lookup here
+            # would be wrong).
+            entity_id = str(
+                segment.get('speaker_entity_id') or ''
+            ).strip()
+            if entity_id:
                 prov['speaker_entity_id'] = entity_id
         return prov or None
 
@@ -3490,8 +3479,19 @@ class FactStore:
                 # even when the pool is unavailable later; when it goes stale
                 # after a merge, the live pool lookup in
                 # ``same_provenance_source`` backs it up.
-                entity_id = _speaker_entity_id_for(request_speaker_id)
-                if entity_id is not None:
+                #
+                # Comes FROM THE CALLER, never from a fresh pool read here. The
+                # route resolves subject routing, trust and this id from ONE
+                # snapshot taken at request start (§4.4). Re-reading the live
+                # pool at persistence time would let an unbind landing
+                # mid-request write a row under the OLD canonical subject while
+                # stamping the account's NEW entity — and those stranded rows
+                # would then miss the persisted-entity equality that keeps the
+                # mixed pump closed.
+                entity_id = str(
+                    speaker_provenance.get('speaker_entity_id') or ''
+                ).strip()
+                if entity_id:
                     request_provenance['speaker_entity_id'] = entity_id
             # label/trust predate stable speaker_id and remain valid request-
             # derived provenance on legacy callers.  Keep them independent:

@@ -2849,3 +2849,73 @@ async def test_dashboard_reload_waits_for_an_inflight_settings_write():
     assert await writer
     await reload_task
     assert load_called.is_set()
+
+
+def test_a_returning_barrier_rearms_the_migration_push():
+    """memory_server restarting must not gate QQ trust until the plugin restarts.
+
+    The every-startup re-push exists so a lost pool self-heals. But the pusher
+    RETURNS after success, so a server that restarts (or recreates a missing
+    pool) afterwards leaves the barrier pending while this process still has
+    ``trust_ready`` set — trust silently gated for the rest of its life. Seeing
+    ``gated`` come back is the signal to re-arm.
+    """
+    import asyncio
+
+    async def _main():
+        service = _memory_service()
+        pushed = asyncio.Event()
+
+        async def _pusher():
+            pushed.set()
+
+        service.plugin.settings_service = SimpleNamespace(
+            push_legacy_speaker_trust_forever=_pusher,
+        )
+        service.plugin._trust_migration_task = None
+        service.plugin.trust_ready.set()
+
+        # An ordinary segment does not disturb anything.
+        assert service._trust_persisted({"persisted": True}) is True
+        assert service.plugin.trust_ready.is_set()
+        assert not pushed.is_set()
+
+        # A returning barrier clears readiness and restarts the push.
+        assert service._trust_persisted({
+            "persisted": True, "gated": "legacy_import_pending",
+        }) is True
+        assert not service.plugin.trust_ready.is_set()
+        await asyncio.wait_for(pushed.wait(), timeout=2.0)
+        await service.plugin._trust_migration_task
+
+    asyncio.run(_main())
+
+
+def test_rearming_is_idempotent_while_a_push_is_already_in_flight():
+    """Every gated segment in a batch must not spawn its own pusher."""
+    import asyncio
+
+    async def _main():
+        service = _memory_service()
+        calls = {"n": 0}
+        release = asyncio.Event()
+
+        async def _pusher():
+            calls["n"] += 1
+            await release.wait()
+
+        service.plugin.settings_service = SimpleNamespace(
+            push_legacy_speaker_trust_forever=_pusher,
+        )
+        service.plugin._trust_migration_task = None
+        service.plugin.trust_ready.set()
+        for _ in range(5):
+            service._trust_persisted({
+                "persisted": True, "gated": "legacy_import_pending",
+            })
+            await asyncio.sleep(0)
+        assert calls["n"] == 1
+        release.set()
+        await service.plugin._trust_migration_task
+
+    asyncio.run(_main())

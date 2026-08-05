@@ -1993,7 +1993,38 @@ class QQSessionMemoryService:
                 f"{trust_block.get('gated')}（信号已 durable 在 fact 行上，"
                 f"闸门开后需主人复述或手动 reconcile 才折叠）"
             )
+            # A barrier we already opened has come back ⇒ memory_server was
+            # restarted or its pool file was recreated underneath us. Re-arm the
+            # migration push instead of waiting for the plugin's own restart:
+            # otherwise QQ trust stays gated for the rest of this process's
+            # life, which is exactly the "silent, unrecoverable" failure the
+            # every-startup re-push exists to prevent. The server's per-account
+            # sentinel makes the re-push a no-op when it is not needed.
+            self._rearm_trust_migration()
         return trust_block.get("persisted") is not False
+
+    def _rearm_trust_migration(self) -> None:
+        """Restart the legacy push after the server lost its pool. Idempotent."""
+        plugin = self.plugin
+        trust_ready = getattr(plugin, "trust_ready", None)
+        if trust_ready is None or not trust_ready.is_set():
+            # Never armed, or a push is already in flight — nothing to redo.
+            return
+        settings_service = getattr(plugin, "settings_service", None)
+        pusher = getattr(
+            settings_service, "push_legacy_speaker_trust_forever", None,
+        )
+        if pusher is None:
+            return
+        existing = getattr(plugin, "_trust_migration_task", None)
+        if existing is not None and not existing.done():
+            return
+        trust_ready.clear()
+        plugin.logger.warning(
+            "speaker trust 闸门重新变回 pending（服务端应已重建空池），"
+            "重新推送存量账本；期间不再上报 tier"
+        )
+        plugin._trust_migration_task = asyncio.create_task(pusher())
 
     @staticmethod
     def _speaker_channel_for(messages: list[dict]) -> str | None:

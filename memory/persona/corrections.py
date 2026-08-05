@@ -868,6 +868,17 @@ class CorrectionsMixin:
                     new_entry['speaker_provenance_mixed'] = True
                 elif item.get('new_speaker_id'):
                     new_entry['speaker_id'] = item['new_speaker_id']
+                    # Carry the entity evidence onto the DURABLE row too: the
+                    # queue item is deleted once resolved, and this field is the
+                    # only same-person evidence that survives a pool the process
+                    # cannot read. Losing it here would let refine/dedup
+                    # arbitrate one person's two accounts against each other —
+                    # exactly what queueing it was for.
+                    entity_id = str(
+                        item.get('new_speaker_entity_id') or ''
+                    ).strip()
+                    if entity_id:
+                        new_entry['speaker_entity_id'] = entity_id
                     trust = _normalized_correction_trust(
                         item.get('new_speaker_trust')
                     )
@@ -926,6 +937,14 @@ class CorrectionsMixin:
                                 'speaker_id': new_speaker_id,
                                 'speaker_trust': item.get('new_speaker_trust'),
                             }
+                            # Same reason as the fresh-entry path above: the
+                            # queue row is about to disappear, so the folded
+                            # provenance has to inherit its entity evidence.
+                            _queued_entity = str(
+                                item.get('new_speaker_entity_id') or ''
+                            ).strip()
+                            if _queued_entity:
+                                new_source['speaker_entity_id'] = _queued_entity
                             if item.get(
                                 'new_speaker_provenance_mixed'
                             ) is True:
