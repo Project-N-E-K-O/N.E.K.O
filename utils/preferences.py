@@ -610,6 +610,60 @@ def load_ui_language_override() -> Optional[str]:
     return None
 
 
+def save_ui_language_override(language: Optional[str]) -> bool:
+    """Persist the optional UI locale without mixing it into conversation settings.
+
+    ``uiLanguage`` deliberately lives beside the global conversation entry rather
+    than inside its validated settings payload.  This keeps UI copy selection
+    independent from the per-character prompt locale while still making the
+    desktop tray choice available to every renderer on the next navigation.
+    Passing ``None`` removes the manual override.
+    """
+    try:
+        assert_cloudsave_writable(
+            _config_manager,
+            operation="save",
+            target="user_preferences.json",
+        )
+        _config_manager.ensure_config_directory()
+        normalized = str(language or "").strip() or None
+        with _locked_preferences_store():
+            data = _load_preferences_data_for_write_unlocked()
+            global_index = -1
+            for index, pref in enumerate(data):
+                if (
+                    isinstance(pref, dict)
+                    and pref.get("model_path") == GLOBAL_CONVERSATION_KEY
+                ):
+                    global_index = index
+                    break
+
+            global_pref = data[global_index].copy() if global_index >= 0 else {
+                "model_path": GLOBAL_CONVERSATION_KEY,
+            }
+            if normalized is None:
+                global_pref.pop("uiLanguage", None)
+            else:
+                global_pref["uiLanguage"] = normalized
+
+            if global_index >= 0:
+                data[global_index] = global_pref
+            else:
+                data.append(global_pref)
+            _save_user_preferences_unlocked(data)
+        return True
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        print(f"保存 UI 语言覆盖失败: {e}")
+        return False
+
+
+async def asave_ui_language_override(language: Optional[str]) -> bool:
+    """Async wrapper for ``save_ui_language_override``."""
+    return await asyncio.to_thread(save_ui_language_override, language)
+
+
 async def aload_ui_language_override() -> Optional[str]:
     """Async wrapper for ``load_ui_language_override``."""
     return await asyncio.to_thread(load_ui_language_override)

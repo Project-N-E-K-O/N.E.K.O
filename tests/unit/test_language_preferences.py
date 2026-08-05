@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from main_routers.characters_router import language_preference as preference_router
+from main_routers.config_router import language as config_language_router
 from main_logic import cross_server
 from main_logic.core.lifecycle import LifecycleMixin
 from tests.node_harness import run_node_script
@@ -1295,3 +1296,44 @@ async def test_memory_barrier_timeout_keeps_late_cleanup_armed():
         "Mimi",
     )
     assert calls == ["clear", "clear"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ui_language_keeps_synced_locale_when_context_isolation_is_partial(monkeypatch):
+    saved_ui_languages = []
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"当前猫娘": "Mimi", "猫娘": {"Mimi": {}}}
+
+    async def save_ui(language):
+        saved_ui_languages.append(language)
+        return True
+
+    async def apply_language(name, language):
+        return {
+            "success": False,
+            "partial_success": True,
+            "language": language,
+            "error": "近期上下文清理失败",
+        }
+
+    class Request:
+        async def json(self):
+            return {"language": "ja"}
+
+    async def load_ui():
+        return "en"
+
+    monkeypatch.setattr(config_language_router, "aload_ui_language_override", load_ui)
+    monkeypatch.setattr(config_language_router, "asave_ui_language_override", save_ui)
+    monkeypatch.setattr(config_language_router, "get_config_manager", lambda: ConfigManager())
+    monkeypatch.setattr(preference_router, "apply_character_language_preference", apply_language)
+
+    result = await config_language_router.set_ui_language_api(Request())
+
+    assert result["success"] is True
+    assert result["partial_success"] is True
+    assert result["language"] == "ja"
+    assert saved_ui_languages == ["ja"]

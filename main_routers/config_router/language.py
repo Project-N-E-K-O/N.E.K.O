@@ -18,10 +18,17 @@
 Split out of the former monolithic ``main_routers/config_router.py``.
 """
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
 from ._shared import logger, router
 
 from ..shared_state import ensure_steamworks
-from utils.preferences import aload_ui_language_override
+from ..shared_state import get_config_manager
+from utils.preferences import (
+    aload_ui_language_override,
+    asave_ui_language_override,
+)
 
 
 @router.get("/steam_language")
@@ -179,3 +186,85 @@ async def get_user_language_api():
             "error": str(e),
             "language": "zh"  # 默认中文
         }
+
+
+@router.put("/ui-language")
+async def set_ui_language_api(request: Request):
+    """Persist the desktop UI locale and sync the current character preference."""
+    from utils.language_utils import (
+        is_supported_language_code,
+        normalize_language_code,
+    )
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = None
+    language = payload.get("language") if isinstance(payload, dict) else None
+    if not is_supported_language_code(language):
+        return JSONResponse(
+            {"success": False, "error": "不支持的语言"},
+            status_code=400,
+        )
+
+    normalized = normalize_language_code(language, format="full")
+    previous_ui_language = await aload_ui_language_override()
+    if not await asave_ui_language_override(normalized):
+        return JSONResponse(
+            {"success": False, "error": "保存界面语言失败"},
+            status_code=500,
+        )
+
+    try:
+        config_manager = get_config_manager()
+        characters = await config_manager.aload_characters()
+        current_name = str(characters.get("当前猫娘") or "").strip()
+        conversation_sync = None
+        if current_name and current_name in (characters.get("猫娘") or {}):
+            from ..characters_router.language_preference import (
+                apply_character_language_preference,
+            )
+
+            conversation_sync = await apply_character_language_preference(
+                current_name,
+                normalized,
+            )
+            if conversation_sync.get("success") is not True:
+                # The memory-server write happens before best-effort context
+                # isolation.  If it committed, rolling back only the UI value
+                # would split the two settings again.  Keep both languages in
+                # sync and surface the isolation failure as a partial warning.
+                locale_was_synced = (
+                    conversation_sync.get("partial_success") is True
+                    and conversation_sync.get("language") == normalized
+                )
+                if not locale_was_synced:
+                    await asave_ui_language_override(previous_ui_language)
+                    return JSONResponse(
+                        {
+                            "success": False,
+                            "error": conversation_sync.get("error")
+                            or "同步语言偏好失败",
+                            "language": normalized,
+                            "character_name": current_name,
+                            "conversation_sync": conversation_sync,
+                        },
+                        status_code=500,
+                    )
+
+        return {
+            "success": True,
+            "language": normalized,
+            "character_name": current_name or None,
+            "partial_success": bool(
+                conversation_sync and conversation_sync.get("partial_success")
+            ),
+            "conversation_sync": conversation_sync,
+        }
+    except Exception:
+        await asave_ui_language_override(previous_ui_language)
+        logger.exception("同步界面语言和语言偏好失败")
+        return JSONResponse(
+            {"success": False, "error": "同步语言设置失败"},
+            status_code=503,
+        )
