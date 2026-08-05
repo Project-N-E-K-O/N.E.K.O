@@ -4,6 +4,7 @@
     const TARGET_SAMPLE_RATE = 16000;
     const RECORDING_MS = 4000;
     const CAPTURE_TIMEOUT_GRACE_MS = 1000;
+    const WINDOW_CLOSE_START_WAIT_MS = 500;
     const SESSION_HEADER = 'X-Voice-Identity-Enrollment';
     const API_ROOT = '/api/voice-identity';
 
@@ -757,7 +758,14 @@
             state.closeStarted = true;
             stopMicrophone();
             const pendingStart = state.startSettled;
-            if (pendingStart) await pendingStart;
+            if (pendingStart) {
+                let timeoutId = null;
+                const waitLimit = new Promise(function (resolve) {
+                    timeoutId = window.setTimeout(resolve, WINDOW_CLOSE_START_WAIT_MS);
+                });
+                await Promise.race([pendingStart, waitLimit]);
+                if (timeoutId !== null) window.clearTimeout(timeoutId);
+            }
             cancelEnrollment({ keepalive: true, silent: true }).catch(function () {});
             return true;
         };

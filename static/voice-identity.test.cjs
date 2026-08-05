@@ -102,6 +102,7 @@ function createHarness({
     audioSample,
     nativeConfirm,
     showConfirm,
+    scheduleTimeout,
 } = {}) {
     const elementIds = [
         'voice-identity-status-dot',
@@ -220,7 +221,8 @@ function createHarness({
             return 1;
         },
         clearInterval() {},
-        setTimeout(callback) {
+        setTimeout(callback, delay) {
+            if (scheduleTimeout) return scheduleTimeout(callback, delay);
             if (audio && processor?.onaudioprocess) {
                 for (let index = 0; index < audioBlocks; index += 1) {
                     const input = new Float32Array(2048);
@@ -1072,6 +1074,9 @@ test('window close waits for an in-flight start and cancels its late session', a
     let cancellationRequests = 0;
     const harness = createHarness({
         audio: true,
+        scheduleTimeout() {
+            return 1;
+        },
         route(url) {
             if (url === '/api/config/page_config') {
                 return jsonResponse({ autostart_csrf_token: 'csrf-token' });
@@ -1116,6 +1121,55 @@ test('window close waits for an in-flight start and cancels its late session', a
         cancellationCall.options.headers.get('X-Voice-Identity-Enrollment'),
         'session-after-close',
     );
+});
+
+test('window close stops waiting after the bounded start timeout', async () => {
+    const startRequested = deferred();
+    const startResponse = deferred();
+    const scheduledTimeouts = [];
+    let cancellationRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        scheduleTimeout(callback, delay) {
+            scheduledTimeouts.push({ callback, delay });
+            return scheduledTimeouts.length;
+        },
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequested.resolve();
+                return startResponse.promise;
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                cancellationRequests += 1;
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    void harness.elements.get('voice-identity-start').emit('click');
+    await startRequested.promise;
+    const closing = harness.beforeClose();
+    let closeSettled = false;
+    void closing.then(() => {
+        closeSettled = true;
+    });
+    await Promise.resolve();
+
+    assert.equal(closeSettled, false);
+    assert.equal(scheduledTimeouts.length, 1);
+    assert.equal(scheduledTimeouts[0].delay, 500);
+    scheduledTimeouts[0].callback();
+
+    assert.equal(await closing, true);
+    assert.equal(cancellationRequests, 0);
 });
 
 test('dark theme overrides panel, text, accent, border, and action colors', () => {
