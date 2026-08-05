@@ -182,9 +182,15 @@ async def _resolve_scoped_memory_language(
     # forever and silently falls back to the character locale. Feeding the
     # expansion instead of the primaries would multiply this bounded
     # thread-pool budget by the number of accounts per person.
-    for subject in _locale_lookup_subjects(subjects)[
-        :_SCOPED_LOCALE_LOOKUP_LIMIT
-    ]:
+    # Slice BEFORE canonicalizing, not after: this resolver runs ahead of the
+    # endpoint's own 1..8 rejection, and the comment above declares the bound to
+    # be a property of the resolver itself. Canonicalizing the full list first
+    # would do unbounded per-item work on input that is on its way to a 422.
+    # For a valid request (<= 8 subjects) the two orders are identical, since
+    # folding can only ever shrink the list.
+    for subject in _locale_lookup_subjects(
+        list(subjects or [])[:_SCOPED_LOCALE_LOOKUP_LIMIT]
+    ):
         descriptor = (
             subject.model_dump()
             if hasattr(subject, "model_dump")
@@ -1243,7 +1249,14 @@ async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
     stranded = 0
     for name in names:
         try:
-            rows = await runtime.fact_store.aload_facts(name)
+            # ``aload_facts_full`` = active + archived. Rows routed into the
+            # canonical pile can have aged into ``facts_archive.json`` already,
+            # and counting only the active file would report zero for an
+            # account whose stranded copies all archived — while this count is
+            # the operator's only cue that ``scoped_forget`` is still needed.
+            # The loader already collapses rows present in both files and
+            # degrades to active-only on a corrupt archive.
+            rows = await runtime.fact_store.aload_facts_full(name)
         except Exception as exc:  # noqa: BLE001 - same
             logger.warning(f"[Identity] stranded_rows 读取 {name} 失败: {exc}")
             return None

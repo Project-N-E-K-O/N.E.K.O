@@ -520,6 +520,17 @@ def _normalize_pool(data: Any) -> dict[str, Any]:
                 list(keeper.get("processed_activity_events") or [])
                 + list(account.get("processed_activity_events") or [])
             )[-SPEAKER_TRUST_ACTIVITY_EVENT_HISTORY_LIMIT:]
+            # The one-shot import sentinel has to survive the fold. The plugin
+            # re-pushes the frozen legacy ledger on EVERY startup by design and
+            # `_import_locked` skips only on a matching sentinel — so dropping
+            # the loser's marker (when the keeper has none) makes the very next
+            # startup add that same legacy adjustment a second time. Double
+            # counting is the exact failure the barrier exists to prevent; it
+            # must not sneak back in through duplicate folding.
+            if not isinstance(keeper.get("legacy_import"), dict):
+                loser_import = account.get("legacy_import")
+                if isinstance(loser_import, dict):
+                    keeper["legacy_import"] = dict(loser_import)
             record["accounts"].pop(account_id, None)
     if duplicates:
         logger.warning(

@@ -999,3 +999,53 @@ async def test_malformed_channel_diagnostics_survive_a_load_and_a_write(pool):
     assert result.persisted is True
     observed = trust_store._POOL["channel_observations"]["qq"]["napcat"]
     assert isinstance(observed, dict) and observed["accounts"] == 1
+
+
+async def test_folding_a_duplicate_account_keeps_the_legacy_import_sentinel():
+    """Dropping the sentinel would make the next startup double-count.
+
+    The plugin re-pushes the frozen legacy ledger on EVERY startup by design,
+    and ``_import_locked`` skips only on a matching per-account sentinel. If the
+    fold keeps the copy WITHOUT the marker, that same legacy adjustment is added
+    a second time — the exact double count the barrier exists to prevent.
+    """
+    source = "qq_auto_reply.business_config.speaker_trust_profiles.v1"
+    pool = trust_store._normalize_pool({
+        "version": 2,
+        "legacy_barriers": {"qq": {"status": "cleared"}},
+        "entities": {
+            # Keeper (earlier key order) carries NO sentinel...
+            "ent_" + "a" * 24: {
+                "entity_id": "ent_" + "a" * 24, "status": "active",
+                "created_at": "2026-01-01",
+                "accounts": {"qq:1": {
+                    "account_id": "qq:1", "adjustment": -0.04,
+                }},
+            },
+            # ...while the copy being folded away does.
+            "ent_" + "b" * 24: {
+                "entity_id": "ent_" + "b" * 24, "status": "active",
+                "created_at": "2026-02-01",
+                "accounts": {"qq:1": {
+                    "account_id": "qq:1", "adjustment": -0.04,
+                    "legacy_import": {"source": source, "at": "2026-01-01"},
+                }},
+            },
+        },
+    })
+    owner = pool["account_index"]["qq:1"]
+    kept = pool["entities"][owner]["accounts"]["qq:1"]
+    assert kept["legacy_import"]["source"] == source
+    assert kept["adjustment"] == pytest.approx(-0.08)
+
+    # And the re-push really is a no-op afterwards.
+    trust_store._rebind_locked(pool)
+    before = dict(_account_record("qq:1"))
+    result = await trust_store.aimport_legacy_profiles(
+        platform="qq", source=source,
+        profiles={"1": {"adjustment": -0.04}}, final=True,
+    )
+    assert result["imported"] == []
+    assert _account_record("qq:1")["adjustment"] == pytest.approx(
+        before["adjustment"]
+    )

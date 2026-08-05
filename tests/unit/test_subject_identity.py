@@ -714,3 +714,34 @@ async def test_the_entity_stamp_comes_from_the_request_snapshot():
     from app.memory_server.routes import _stamp_resolved_trust
     _stamp_resolved_trust(parsed, snap)
     assert parsed["speaker_entity_id"] == entity_id
+
+
+def test_the_locale_resolver_bounds_work_before_canonicalizing():
+    """The bound must stay a property of the resolver, not of its callers.
+
+    This helper runs AHEAD of the endpoint's own ``1..8`` rejection, so an
+    oversized list would otherwise be fully coerced and canonicalized on its
+    way to a 422. Slicing first is also behaviour-preserving for valid input:
+    folding can only ever shrink the list.
+    """
+    import inspect
+
+    from app.memory_server import routes
+
+    source = inspect.getsource(routes._resolve_scoped_memory_language)
+    # The slice has to be applied to the ARGUMENT, not to the result.
+    assert "_locale_lookup_subjects(subjects)[" not in source
+    assert "[:_SCOPED_LOCALE_LOOKUP_LIMIT]" in source
+    sliced = source.index("_SCOPED_LOCALE_LOOKUP_LIMIT")
+    called = source.index("_locale_lookup_subjects(")
+    assert called < sliced, "slice must be inside the call, not after it"
+
+    # Behavioural half: an oversized list only canonicalizes the bounded prefix.
+    oversized = [
+        MemorySubject.group_participant("qq", "G", str(index))
+        for index in range(40)
+    ]
+    resolved = routes._locale_lookup_subjects(
+        oversized[:routes._SCOPED_LOCALE_LOOKUP_LIMIT]
+    )
+    assert len(resolved) == routes._SCOPED_LOCALE_LOOKUP_LIMIT
