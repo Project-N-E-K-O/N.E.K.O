@@ -605,9 +605,16 @@ def test_no_zh_evidence_alternative_matches_the_japanese_corpus():
 def test_zh_evidence_charclass_is_pinned():
     """闭集用相等断言：每个字都是一句"日文里不存在这个字形"的主张，加字要先核对
     日文新字体（别→別 说→説 关→関 为→為…）。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_EVIDENCE_CHARS == "别说讲谈讨论关这话题愿懒许为甭說這關沒稱"
+    # ⚠️ 拆成「触发词字」+「中文独有的句末助词」两段，各自相等断言。后者是新加的：
+    # 话题本身带日文助词时（``別提君の名は吧。``），落在捕获组外的 ``吧`` 是唯一能
+    # 证明这是中文指令的东西（codex P2）。
+    assert D._ZH_EVIDENCE_CHARS == (
+        "别说讲谈讨论关这话题愿懒许为甭說這關沒稱" + D._ZH_ZH_ONLY_FINAL_PARTICLES
+    )
+    assert D._ZH_ZH_ONLY_FINAL_PARTICLES == "吧呗啦咧喔嘛呀呢哦唷囉啰喲"
     assert D._ZH_EVIDENCE_WORDS == (
         "叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情",
+        "提了", "說了", "讲了", "講了",
         "称呼我", "稱呼我",
     )
     # 字类必须是整条正则的第一个分支——上面那条扫描不依赖这点，但 pin 住它能让
@@ -3661,7 +3668,8 @@ def test_only_the_comma_tolerates_a_following_space(text, expected):
 
 def test_the_two_identifier_punctuations_have_different_lookaheads():
     """结构面：两个符号必须分开写，别再合并回一个字符类。"""  # noqa: DOCSTRING_CJK
-    space = "[ " + chr(92) + "t]?"
+    # ⚠️ 空格判据现在从 _ZH_HSPACE_ONE 派生（NBSP 等粘贴空白也要认）。
+    space = D._ZH_HSPACE_ONE + "?"
     assert D._ZH_IDENT_PUNCT.count(space) == 1
     branches = [b for b in D._ZH_IDENT_PUNCT.split("|") if b.startswith("(?<=")]
     # ⚠️ 判据用「这一支匹配的是哪个字符」，别拿字符类里的标点当特征——字符类里
@@ -4205,7 +4213,14 @@ def test_any_non_newline_whitespace_is_a_horizontal_gap(space):
 
 def test_the_horizontal_class_is_a_negated_newline_class():
     """结构面：写成否定式，别退回枚举空白字符。"""  # noqa: DOCSTRING_CJK
-    assert D._ZH_HSPACE == r"[^\S\r\n]*"
+    # ⚠️ 排掉的是**所有**行分隔符，不只 CR/LF——Python 的 ``\s`` 还认 U+2028 /
+    # U+2029 / U+0085 / \v / \f 和 U+001C~U+001F（codex P2）。
+    assert D._ZH_HSPACE == D._ZH_HSPACE_ONE + "*"
+    assert D._ZH_HSPACE_ONE == r"[^\S" + D._ZH_LINE_SEP + r"]"
+    for sep in "\r\n\v\f\x85\u2028\u2029":
+        assert not re.fullmatch(D._ZH_HSPACE_ONE, sep), repr(sep)
+    for space in " \t\u00a0\u202f\u2009\u3000":
+        assert re.fullmatch(D._ZH_HSPACE_ONE, space), repr(space)
 
 
 @pytest.mark.parametrize(
@@ -4309,3 +4324,150 @@ def test_no_cross_line_gap_remains_before_any_zh_capture():
         head = raw[:cut].replace(D._ZH_OBJECTLESS_AHEAD, "")
         head = head.replace(D._ZH_HSPACE, "")
         assert chr(92) + "s" not in head, (index, head[-120:])
+
+
+# ── 50. Unicode 行分隔符 / 标点后空格 / 主语间隔 / 日文终助词 /
+#        中文助词当证据 / 终结符不吃换行 / ASCII 括号里的 ?! ──
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029", "\u0085", "\v", "\f"])
+@pytest.mark.parametrize(
+    "text", ["別再提{s}案をお願いします。", "工作正常{s}別提了。", "别再提{s}工作。"]
+)
+def test_every_unicode_line_separator_blocks_a_match(sep, text):
+    """Python 的 ``\s`` 还认 U+2028 / U+2029 / U+0085 / ``\v`` / ``\f``。
+
+    只排 CR/LF 的话这些照样跨两个视觉行（codex P2）。判据抽成 _ZH_LINE_SEP，
+    括号体、话题字符类、横向空白三处都从它取。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text.format(s=sep)) == set()
+
+
+def test_the_line_separator_table_is_the_single_source():
+    """结构面：三处都从 _ZH_LINE_SEP 派生，别再各写一份 ``\r\n``。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_LINE_SEP in D._ZH_PLAIN_CHAR
+    assert D._ZH_LINE_SEP in D._ZH_HSPACE_ONE
+    assert D._ZH_LINE_SEP in D._zh_bracket_body("《", "》")
+
+
+@pytest.mark.parametrize("space", ["\u00a0", "\u202f", "\u2009", "\u3000", " ", "\t"])
+def test_unicode_spaces_after_internal_punctuation(space):
+    """``Dr.<NBSP>Who`` 这类从网页粘来的写法同样要认（codex P2）。"""  # noqa: DOCSTRING_CJK
+    got = {t for _l, _k, t in extract_directives(f"Dr.{space}Who别提了。")}
+    assert got == {f"Dr.{space}Who"}, got
+    assert _zh_terms(f"关于Hello,{space}World就别提了。") == {f"Hello,{space}World"}
+
+
+@pytest.mark.parametrize("space", ["\u00a0", "\u202f", "\u2009", "\u3000", " ", "\t"])
+def test_unicode_spaces_between_subject_and_negation(space):
+    """主语间隔也用同一套横向空白（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"你{space}別提君の名は。") == {"君の名は"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["別提案か？", "今回は、別提案も。", "「別講座じゃん。」", "別提案ね。", "別提案よ。"],
+)
+def test_sentence_final_japanese_particles_are_grammar_evidence(text):
+    """句末终助词也是日文谓语证据（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("别再提ドラえもん。", "ドラえもん"),
+        ("別再提ドラえもん。", "ドラえもん"),
+        ("別叫我「お兄ちゃん」。", "お兄ちゃん"),
+    ],
+)
+def test_the_final_particles_do_not_kill_titles(text, expected):
+    """⚠️ ``も`` 当初被排除在单字助词类外正是因为 ``ドラえもん``。
+
+    加上「汉字词干 + 句末」两道界之后就安全了：``ドラえもん`` 的 ``も`` 前面是
+    假名、也不在句末。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # ⚠️ 判别「终助词要不要汉字词干」的用例必须是**假名接着终助词**的词，而且
+        # 那个词要落在守卫真会跑的那条路上（繁体 + 共用动词 + 无 ``再``）。
+        # ``ドラえもん`` 本身不以终助词结尾，测不出来（变异跑出来的）。
+        ("別提すいか。", "すいか"),
+        ("別提ドラえもんか。", "ドラえもんか"),
+        ("別提あかさ。", "あかさ"),
+    ],
+)
+def test_the_final_particles_need_a_kanji_stem(text, expected):
+    """句末终助词也要「汉字词干」这道左界，否则以假名结尾的日文专名被整条吞掉。"""  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("別提君の名は吧。", "君の名は"),
+        ("君の名は別提了。", "君の名は"),
+        ("别提君の名は吧。", "君の名は"),
+        ("君の名は别提了。", "君の名は"),
+    ],
+)
+def test_chinese_only_final_particles_count_as_evidence(text, expected):
+    """话题本身带日文助词时，落在捕获组外的 ``吧`` / ``提了`` 是唯一的中文证据。
+
+    不收的话繁中整条 0 命中，同句简体因为 ``别`` 有单字证据而正常（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == {expected}, _zh_terms(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "地域別提案をお願いします。",
+        "カテゴリ別提案書。",
+        "世代別講座で話します。",
+        "テーマ別討論スレ",
+        "個別提案をお願いします。",
+        "別提案をお願いします。",
+    ],
+)
+def test_the_new_evidence_chars_do_not_open_the_japanese_guard(text):
+    """⚠️ 往证据字类里加字最容易短路守卫（``没`` / ``称`` 踩过两轮）。
+
+    这批是中文独有的句末助词，日文根本不用——整份 ja 语料复测。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), _zh_terms(text)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\u2028"])
+def test_a_trigger_terminator_does_not_eat_a_newline(newline):
+    """触发词落在行末时，换行本身被当成「这条指令说完了」，上一行被绑成话题。
+
+    ``工作正常別提`` 换行 ``下一句。`` 存下 ``工作正常``（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(f"工作正常別提{newline}下一句。") == set()
+    assert _zh_terms(f"工作正常别提{newline}下一句。") == set()
+
+
+def test_a_horizontal_space_is_still_a_terminator():
+    """反向：同一行里的空格照旧算终结（``工作别提 然后…``）。"""  # noqa: DOCSTRING_CJK
+    assert "工作" in _zh_terms("工作别提 然后…")
+    assert _zh_terms("工作正常别提了。") == {"工作正常"}
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+@pytest.mark.parametrize("mark", ["?", "!", ".", ";"])
+def test_ascii_punctuation_inside_a_closed_pair_is_content(opener, closer, mark):
+    """ASCII 的 ``? ! . ;`` 在**闭合**的标题 / 代码段里是内容。
+
+    上一轮为挡跨句配对把 ASCII 句末标点也排掉了，``电影(Who?)别提了。`` 整条
+    0 命中（parent 还留着 ``电影(Who``；codex P2）。跨句那族用的是全角 ``。``。
+    """  # noqa: DOCSTRING_CJK
+    text = f"电影{opener}Who{mark}{closer}别提了。"
+    assert _zh_terms(text) == {f"电影{opener}Who{mark}{closer}"}, _zh_terms(text)
