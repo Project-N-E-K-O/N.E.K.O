@@ -121,6 +121,10 @@ input:focus-visible {
     filter: brightness(0) saturate(100%);
 }
 
+[data-theme="dark"] .voice-close img {
+    filter: brightness(0) saturate(100%);
+}
+
 .voice-identity-content {
     display: grid;
     width: min(920px, calc(100% - 32px));

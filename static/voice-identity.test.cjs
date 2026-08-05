@@ -100,6 +100,7 @@ function createHarness({
     audio = false,
     audioBlocks = 120,
     audioSample,
+    fixedPrompts,
     nativeConfirm,
     showConfirm,
     scheduleTimeout,
@@ -208,7 +209,9 @@ function createHarness({
         t: translate,
         i18next: {
             t(key) {
-                return key === 'voiceIdentity.fixedPrompts' ? prompts[locale] : translate(key);
+                return key === 'voiceIdentity.fixedPrompts'
+                    ? (fixedPrompts === undefined ? prompts[locale] : fixedPrompts)
+                    : translate(key);
             },
         },
         addEventListener(type, listener) {
@@ -471,6 +474,30 @@ test('locale changes re-render the current enrollment step and prompt', async ()
     assert.equal(harness.elements.get('voice-identity-prompt').textContent, '日本語一');
 });
 
+test('invalid localized fixed prompts fall back to the short recording copy', async () => {
+    const harness = createHarness({
+        fixedPrompts: null,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+
+    assert.equal(
+        harness.elements.get('voice-identity-prompt').textContent,
+        '今天我想和你分享一件趣事。',
+    );
+});
+
 test('failed enrollment commit exposes a retry that can finish without re-recording', async () => {
     let commitAttempts = 0;
     const harness = createHarness({
@@ -671,6 +698,7 @@ test('ambiguous enrollment start failure reconciles the server session', async (
     assert.equal(harness.elements.get('voice-identity-start').hidden, true);
     assert.equal(harness.elements.get('voice-identity-record').hidden, false);
     assert.equal(harness.elements.get('voice-identity-cancel').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('recording upload is capped at four seconds of source samples', async () => {
@@ -778,6 +806,7 @@ test('ambiguous segment upload failure refreshes the next recording stage', asyn
     assert.equal(segmentRequests, 1);
     assert.equal(harness.elements.get('voice-identity-prompt').textContent, 'English two');
     assert.equal(harness.elements.get('voice-identity-record').disabled, false);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
 test('microphone resources are released and reacquired between recording steps', async () => {
@@ -1243,5 +1272,9 @@ test('dark theme overrides panel, text, accent, border, and action colors', () =
     assert.match(
         stylesheet,
         /html\[data-theme="dark"\] body\.voice-identity-page:not\(\.subtitle-web-host\):not\(\.subtitle-window-host\)/,
+    );
+    assert.match(
+        stylesheet,
+        /\[data-theme="dark"\] \.voice-close img\s*\{[^}]*filter:\s*brightness\(0\) saturate\(100%\)/,
     );
 });

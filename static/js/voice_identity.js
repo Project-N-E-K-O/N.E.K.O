@@ -158,9 +158,9 @@
             return translated;
         }
         return [
-            '今天我想和你分享一件有趣的小事，也期待听到你的回应。',
-            '窗外的光线慢慢变化，我会用自然的语气继续和你聊天。',
-            '无论今天忙碌还是轻松，我都希望这段对话让人感到自在。'
+            '今天我想和你分享一件趣事。',
+            '窗外的光线正在慢慢变化。',
+            '今天也用自然的声音聊天。'
         ];
     }
 
@@ -488,23 +488,27 @@
             applyStatus(payload);
         } catch (error) {
             stopMicrophone();
-            if (startRequestPending) await reconcileStatus();
+            const recovered = startRequestPending
+                && await reconcileStatus()
+                && Boolean(state.sessionId);
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'
             );
-            setMessage(
-                microphoneError
-                    ? translate(
-                        'voiceIdentity.microphoneDenied',
-                        '无法使用麦克风，请检查权限和设备。'
-                    )
-                    : translate(
-                        'voiceIdentity.requestFailed',
-                        '操作失败，请稍后重试。'
-                    ),
-                true
-            );
+            if (!recovered) {
+                setMessage(
+                    microphoneError
+                        ? translate(
+                            'voiceIdentity.microphoneDenied',
+                            '无法使用麦克风，请检查权限和设备。'
+                        )
+                        : translate(
+                            'voiceIdentity.requestFailed',
+                            '操作失败，请稍后重试。'
+                        ),
+                    true
+                );
+            }
         } finally {
             state.busy = false;
             if (settleStart) {
@@ -547,6 +551,7 @@
             state.busy || state.recording || state.cancelPending || !state.sessionId
         ) return;
         let uploadRequestPending = false;
+        let uploadStage = null;
         state.busy = true;
         state.recording = state.stage !== 'ready_to_commit';
         setMessage('');
@@ -563,6 +568,7 @@
                 stopMicrophone();
             }
             const verification = state.stage.startsWith('free_verify_');
+            uploadStage = state.stage;
             uploadRequestPending = true;
             const payload = await apiRequest(
                 verification ? '/enrollment/verify' : '/enrollment/segment',
@@ -601,23 +607,27 @@
                 await commitEnrollment();
             }
         } catch (error) {
-            if (uploadRequestPending) await reconcileStatus();
+            const recovered = uploadRequestPending
+                && await reconcileStatus()
+                && state.stage !== uploadStage;
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'
             );
-            setMessage(
-                microphoneError
-                    ? translate(
-                        'voiceIdentity.microphoneDenied',
-                        '无法使用麦克风，请检查权限和设备。'
-                    )
-                    : translate(
-                        'voiceIdentity.requestFailed',
-                        '操作失败，请稍后重试。'
-                    ),
-                true
-            );
+            if (!recovered) {
+                setMessage(
+                    microphoneError
+                        ? translate(
+                            'voiceIdentity.microphoneDenied',
+                            '无法使用麦克风，请检查权限和设备。'
+                        )
+                        : translate(
+                            'voiceIdentity.requestFailed',
+                            '操作失败，请稍后重试。'
+                        ),
+                    true
+                );
+            }
         } finally {
             state.recording = false;
             state.busy = false;
