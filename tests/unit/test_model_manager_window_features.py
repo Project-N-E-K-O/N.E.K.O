@@ -101,6 +101,31 @@ def test_vrm_animation_picker_persists_official_gzip_only_from_allowed_directory
     assert "isCatalogMotion && !isPersistableAnimation" in source
 
 
+def test_vrm_catalog_options_preserve_motion_pack_urls():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    option_build = source.split(
+        "const isCatalogMotion = anim.systemMotion === true;", 1
+    )[1].split("vrmAnimationSelect.appendChild(option);", 1)[0]
+
+    assert "const finalUrl = isCatalogMotion" in option_build
+    assert "? animPath" in option_build
+    assert ": ModelPathHelper.vrmToUrl(animPath, 'animation');" in option_build
+
+
+def test_vrm_saved_legacy_url_normalization_ignores_query_and_hash_suffixes():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    helper = source.split("function normalizeBundledVrmAnimationUrl", 1)[1].split(
+        "function mergeVrmAnimationLists", 1
+    )[0]
+
+    assert "\\.vrma(?:[?#]|$)" in helper
+    assert ".replace(/\\.vrma(?:[?#].*)?$/i, '.vrma.gz')" in helper
+
+
 def test_avatar_model_manager_popup_opens_fullscreen():
     source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 

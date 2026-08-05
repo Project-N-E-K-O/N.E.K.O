@@ -3432,8 +3432,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function normalizeBundledVrmAnimationUrl(url, availableValues) {
         const value = String(url || '');
-        if (!value.endsWith('.vrma') || !value.startsWith('/static/vrm/animation/')) return value;
-        const compressed = value + '.gz';
+        if (!/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(value)) return value;
+        const compressed = value.replace(/\.vrma(?:[?#].*)?$/i, '.vrma.gz');
         return availableValues && availableValues.has(compressed) ? compressed : value;
     }
 
@@ -3500,13 +3500,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
 
                         const option = document.createElement('option');
-                        const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
+                        const isCatalogMotion = anim.systemMotion === true;
+                        const finalUrl = isCatalogMotion
+                            ? animPath
+                            : ModelPathHelper.vrmToUrl(animPath, 'animation');
 
                         option.value = finalUrl;
                         option.setAttribute('data-path', animPath);
                         option.setAttribute('data-filename', anim.name || anim.filename || finalUrl.split('/').pop());
                         if (anim.id) option.setAttribute('data-motion-asset-id', anim.id);
-                        if (anim.systemMotion) option.setAttribute('data-system-motion', 'true');
+                        if (isCatalogMotion) option.setAttribute('data-system-motion', 'true');
                         if (anim.compression) option.setAttribute('data-compression', anim.compression);
                         if (anim.playback) option.setAttribute('data-playback', anim.playback);
                         option.textContent = option.getAttribute('data-filename');
