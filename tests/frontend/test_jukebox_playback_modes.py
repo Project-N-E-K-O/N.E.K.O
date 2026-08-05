@@ -1,5 +1,6 @@
-from pathlib import Path
+import json
 import re
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page
@@ -13,6 +14,7 @@ JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "jukebox-loader.js")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
 JUKEBOX_MANAGER_TEMPLATE = (REPO_ROOT / "templates" / "jukebox_manager.html").read_text(encoding="utf-8")
 VRM_ANIMATION_SCRIPT = (REPO_ROOT / "static" / "vrm" / "vrm-animation.js").read_text(encoding="utf-8")
+JUKEBOX_BUILTINS = json.loads((REPO_ROOT / "static" / "jukebox" / "songs.json").read_text(encoding="utf-8"))
 
 HARNESS_HTML = """
 <!DOCTYPE html>
@@ -239,6 +241,17 @@ def test_jukebox_loader_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
     assert restored == ["/static/vrm/animation/wait03.vrma.gz?legacy=1"]
 
 
+def test_jukebox_builtin_vrm_actions_are_gzip_only():
+    vrm_actions = [
+        action
+        for action in JUKEBOX_BUILTINS["actions"].values()
+        if action.get("format") == "vrma"
+    ]
+
+    assert vrm_actions
+    assert all(action["file"].endswith(".vrma.gz") for action in vrm_actions)
+
+
 @pytest.mark.frontend
 def test_jukebox_transport_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
     setup_jukebox_page(mock_page)
@@ -311,7 +324,7 @@ def test_jukebox_loader_fetches_all_parts_sequentially(mock_page: Page):
 
     assert loaded_parts == [part.name for part in JUKEBOX_PARTS]
     assert result == {
-        "keyCount": 146,
+        "keyCount": 147,
         "hasLoadSongs": True,
         "hasManager": True,
         "hasScriptTag": True,
@@ -644,8 +657,21 @@ def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
             audio: song.audio,
             playerUrls,
             vrmaCalls,
-            legacyStaticVrma: J.resolveJukeboxFileUrl('/static/jukebox/actions/song_001.vrma'),
-            legacyFlatVrma: J.resolveJukeboxFileUrl('static/jukebox/song_001.vrma')
+            legacyStaticVrma: J.resolveJukeboxActionUrl({
+              file: '/static/jukebox/actions/song_001.vrma',
+              format: 'vrma',
+              isBuiltin: true
+            }),
+            legacyFlatVrma: J.resolveJukeboxActionUrl({
+              file: 'static/jukebox/song_001.vrma',
+              format: 'vrma',
+              isBuiltin: true
+            }),
+            customVrma: J.resolveJukeboxActionUrl({
+              file: 'actions/custom.vrma',
+              format: 'vrma',
+              isBuiltin: false
+            })
           };
         }
         """
@@ -654,9 +680,10 @@ def test_jukebox_builtin_paths_keep_resource_directories(mock_page: Page):
     assert result == {
         "audio": "songs/song_001.mp3",
         "playerUrls": ["/api/jukebox/file/songs/song_001.mp3"],
-        "vrmaCalls": ["/api/jukebox/file/actions/song_001.vrma"],
-        "legacyStaticVrma": "/api/jukebox/file/actions/song_001.vrma",
-        "legacyFlatVrma": "/api/jukebox/file/song_001.vrma",
+        "vrmaCalls": ["/api/jukebox/file/actions/song_001.vrma.gz"],
+        "legacyStaticVrma": "/api/jukebox/file/actions/song_001.vrma.gz",
+        "legacyFlatVrma": "/api/jukebox/file/song_001.vrma.gz",
+        "customVrma": "/api/jukebox/file/actions/custom.vrma",
     }
 
 

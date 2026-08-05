@@ -50,7 +50,7 @@
     "action_003": {
       "id": "action_003",
       "name": "桃源恋歌",
-      "file": "actions/song_001.vrma",
+      "file": "actions/song_001.vrma.gz",
       "fileMd5": "e4b85f670b0722982dab3591ff2d9f64",
       "format": "vrma",
       "uploadDate": "2024-01-01T00:00:00",
@@ -60,7 +60,7 @@
     "action_004": {
       "id": "action_004",
       "name": "甩葱歌",
-      "file": "actions/song_002.vrma",
+      "file": "actions/song_002.vrma.gz",
       "fileMd5": "0f9a0f206140f80d01d177952da6a650",
       "format": "vrma",
       "uploadDate": "2024-01-01T00:00:00",
