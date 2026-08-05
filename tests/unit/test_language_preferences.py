@@ -102,11 +102,24 @@ def test_character_language_control_reuses_voice_dropdown_and_hot_refreshes():
     locale_handler = "function updateLocaleDependent()"
     locale_listener = "window.addEventListener('localechange', updateLocaleDependent);"
     locale_handler_start = subscriptions_source.find(locale_handler)
+    locale_body_start = subscriptions_source.find("{", locale_handler_start)
     locale_listener_start = subscriptions_source.find(locale_listener)
-    assert 0 <= locale_handler_start < locale_listener_start
+    assert 0 <= locale_handler_start < locale_body_start < locale_listener_start
+
+    brace_depth = 0
+    locale_body_end = -1
+    for index in range(locale_body_start, locale_listener_start):
+        if subscriptions_source[index] == "{":
+            brace_depth += 1
+        elif subscriptions_source[index] == "}":
+            brace_depth -= 1
+            if brace_depth == 0:
+                locale_body_end = index
+                break
+    assert locale_body_start < locale_body_end < locale_listener_start
     assert (
         "renderCharaCardsView();"
-        in subscriptions_source[locale_handler_start:locale_listener_start]
+        in subscriptions_source[locale_body_start:locale_body_end]
     )
 
     card_list_source = (
