@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import shutil
 import textwrap
 from pathlib import Path
@@ -64,7 +65,7 @@ def test_language_options_use_native_names_instead_of_translated_labels():
         "Português",
     }
     for label in expected:
-        assert f"label: '{label}'" in source
+        assert re.search(rf'''label:\s*(["']){re.escape(label)}\1''', source)
 
 
 @pytest.mark.unit
@@ -94,8 +95,16 @@ def test_character_language_control_reuses_voice_dropdown_and_hot_refreshes():
     assert "_panelCreateVoiceSelectUi(languageSelect)" in form_source
     assert "language-preference-custom-select" in form_source
     assert "window.addEventListener('localechange', form._localeChangeHandler)" in form_source
-    assert "_loadPanelVoices(voiceSelect, selectedVoiceId)" in form_source
+    assert "const voicesLoadPromise = refreshVoiceCatalog" in form_source
+    assert "void refreshVoiceCatalog(voiceSelect.value);" in form_source
+    assert "form._voiceLocaleRefreshSequence !== refreshSequence" in form_source
     assert "renderCharaCardsView();" in subscriptions_source
+
+    card_list_source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-list-and-panel.js"
+    ).read_text(encoding="utf-8")
+    assert "img.alt = window.t ? window.t('steam.characterCardCover')" in card_list_source
 
 
 @pytest.mark.unit
@@ -112,6 +121,7 @@ def test_language_preference_has_accessible_explanatory_tooltip():
     assert "language-preference-tooltip" in form_source
     assert "languageHelpButton.setAttribute('aria-describedby', languageTooltip.id)" in form_source
     assert "languageTooltip.setAttribute('role', 'tooltip')" in form_source
+    assert "delete select.dataset.i18nTitle;" in form_source
     assert ".language-preference-help-button:hover + .language-preference-tooltip" in css_source
     assert ".language-preference-help-button:focus-visible + .language-preference-tooltip" in css_source
     tooltip_rule = css_source.split(

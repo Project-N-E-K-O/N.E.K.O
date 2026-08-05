@@ -636,7 +636,7 @@ function openCatgirlPanel(card, originEl) {
         const cardFaceUrl = `/api/characters/catgirl/${encodeURIComponent(name)}/card-face`;
         const img = document.createElement('img');
         img.className = 'card-face-img';
-        img.alt = '角色卡面';
+        img.alt = window.t ? window.t('steam.characterCardCover') : '角色卡面';
         img.dataset.i18nAlt = 'steam.characterCardCover';
         img.onload = () => {
             imgPlaceholder.style.display = 'none';

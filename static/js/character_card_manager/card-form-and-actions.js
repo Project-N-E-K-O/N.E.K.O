@@ -47,6 +47,7 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
         console.warn('[ConversationLanguage] load failed:', error);
         if (selectUi) selectUi.setDisabled(true);
         else select.disabled = true;
+        delete select.dataset.i18nTitle;
         select.title = _characterLanguageT(
             'character.languagePreferenceLoadFailed',
             '语言偏好加载失败'
@@ -834,12 +835,23 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         });
     }
 
-    // 加载音色列表
-    const voicesLoadPromise = _loadPanelVoices(voiceSelect, String(cat['voice_id'] || '').trim()).then(() => {
-        voiceSelectUi.refresh();
-    }, () => {
-        voiceSelectUi.refresh();
-    });
+    const refreshVoiceCatalog = function (selectedVoiceId) {
+        const refreshSequence = (form._voiceLocaleRefreshSequence || 0) + 1;
+        form._voiceLocaleRefreshSequence = refreshSequence;
+        voiceSelectUi.setDisabled(true);
+        return _loadPanelVoices(voiceSelect, selectedVoiceId).then(() => {
+            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
+            voiceSelectUi.refresh();
+            voiceSelectUi.setDisabled(false);
+        }, () => {
+            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
+            voiceSelectUi.refresh();
+            voiceSelectUi.setDisabled(false);
+        });
+    };
+
+    // 加载音色列表；与语言热切换共用序列号，避免较早请求覆盖较新的本地化选项。
+    const voicesLoadPromise = refreshVoiceCatalog(String(cat['voice_id'] || '').trim());
     form._voicesLoadPromise = voicesLoadPromise;
 
     // updatePageTexts handles declarative data-i18n nodes. The remaining form
@@ -867,19 +879,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 : '跟随角色卡默认设定';
         }
 
-        const selectedVoiceId = voiceSelect.value;
-        const refreshSequence = (form._voiceLocaleRefreshSequence || 0) + 1;
-        form._voiceLocaleRefreshSequence = refreshSequence;
-        voiceSelectUi.setDisabled(true);
-        void _loadPanelVoices(voiceSelect, selectedVoiceId).then(() => {
-            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
-            voiceSelectUi.refresh();
-            voiceSelectUi.setDisabled(false);
-        }, () => {
-            if (form._voiceLocaleRefreshSequence !== refreshSequence || !form.isConnected) return;
-            voiceSelectUi.refresh();
-            voiceSelectUi.setDisabled(false);
-        });
+        void refreshVoiceCatalog(voiceSelect.value);
     };
     window.addEventListener('localechange', form._localeChangeHandler);
 
