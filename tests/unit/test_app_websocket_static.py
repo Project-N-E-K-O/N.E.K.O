@@ -5665,6 +5665,11 @@ def test_session_started_only_settles_the_start_it_answers():
     )[0].rsplit("} else if (response.type === 'session_started') {", 1)[1]
     guard = started_handler.split("var _ackAnswersThisWindow =", 1)[1].split(";", 1)[0]
     assert "response.request_id === S._pendingSessionStartRequestId" in guard
+    # Anchored on the resolver first (Codex P2): a dozen places clear the
+    # resolver, and expecting every one of them to also clear the id is exactly
+    # the checklist that goes stale. A window with no start pending must treat
+    # any ack as its own, or a leaked id silently disables the latch forever.
+    assert "!S.sessionStartedResolver" in guard
     # An ack with no id counts as ours: the internal starts (proactive,
     # greeting, disconnect recovery) carry no request, and the cross-mode guard
     # already covers them.

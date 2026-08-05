@@ -4008,7 +4008,14 @@
                     // ack 不带标识时按「是我的」处理：后端内部路径（proactive /
                     // greeting / 断线自恢复）不经用户请求、没有标识，而它们撞上
                     // pending 启动的情形本就由上面的模式守卫负责。
-                    var _ackAnswersThisWindow = !S._pendingSessionStartRequestId
+                    //
+                    // 主判据是 resolver 而不是标识本身：清 resolver 的地方有十来处，
+                    // 指望每一处都记得连标识一起清是靠不住的，漏一处就会留下一个陈旧
+                    // 标识，让本窗口从此把所有别人的 ack 都判成「不是我的」，连
+                    // blocked latch 和准备中提示都不再处理（Codex P2）。没有 resolver
+                    // 在等 = 本窗口没有启动在途 = 任何 ack 都按旧行为处理。
+                    var _ackAnswersThisWindow = !S.sessionStartedResolver
+                        || !S._pendingSessionStartRequestId
                         || !response.request_id
                         || response.request_id === S._pendingSessionStartRequestId;
                     if (!_ackAnswersThisWindow) {
