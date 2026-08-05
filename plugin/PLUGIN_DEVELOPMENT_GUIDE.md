@@ -321,8 +321,8 @@ if not result["submitted"]:
     logger.warning("message submission failed: %s", result.get("reason"))
 ```
 
-`submitted=True` 只表示 SDK 已把 payload 交给自己管理的本地 socket 或 queue，
-并接管后续提交责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
+`submitted=True` 只表示 SDK 已把 payload 交给权威本地提交路径，并接管后续提交
+责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
 `submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`
 或 `transport_unavailable`。结果不会暴露内部 transport 名称，也不会回显消息正文
 或异常内容。调用方可以保留本地状态，但重试和去重仍由具体插件决定。

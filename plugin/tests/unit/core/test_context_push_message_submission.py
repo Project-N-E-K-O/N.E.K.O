@@ -61,6 +61,10 @@ class _Queue:
         self.items.append(payload)
 
 
+class _Again(Exception):
+    pass
+
+
 def _context(tmp_path: Path, *, message_queue: object = None) -> tuple[PluginContext, _Logger]:
     logger = _Logger()
     return (
@@ -87,7 +91,13 @@ def _install_slow_message_plane(
     monkeypatch.setattr(
         context_module,
         "zmq",
-        SimpleNamespace(Context=_ZmqContext, PUSH=1, LINGER=2, SNDTIMEO=3),
+        SimpleNamespace(
+            Again=_Again,
+            Context=_ZmqContext,
+            PUSH=1,
+            LINGER=2,
+            SNDTIMEO=3,
+        ),
     )
     monkeypatch.setattr(
         context_module,
@@ -121,7 +131,7 @@ def test_slow_message_plane_success_reports_local_submission(
 
 
 @pytest.mark.plugin_unit
-def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
+def test_slow_message_plane_failure_caches_but_reports_transport_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -139,10 +149,41 @@ def test_slow_message_plane_failure_uses_fallback_and_is_redacted(
         parts=[{"type": "text", "text": private_marker}],
     )
 
-    assert result == {"submitted": True}
+    assert result == {
+        "submitted": False,
+        "reason": "transport_error",
+    }
     assert len(fallback_queue.items) == 1
     assert private_marker not in repr(logger.records)
     assert "RuntimeError" in repr(logger.records)
+
+
+@pytest.mark.plugin_unit
+def test_slow_message_plane_backpressure_survives_legacy_cache_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_marker = "private-backpressure-detail"
+    _install_slow_message_plane(
+        monkeypatch,
+        _Socket(send_error=_Again(private_marker)),
+    )
+    fallback_queue = _Queue()
+    ctx, logger = _context(tmp_path, message_queue=fallback_queue)
+
+    result = ctx.push_message(
+        visibility=[],
+        ai_behavior="respond",
+        parts=[{"type": "text", "text": private_marker}],
+    )
+
+    assert result == {
+        "submitted": False,
+        "reason": "backpressure",
+    }
+    assert len(fallback_queue.items) == 1
+    assert private_marker not in repr(logger.records)
+    assert "_Again" in repr(logger.records)
 
 
 @pytest.mark.plugin_unit
@@ -228,7 +269,7 @@ def test_fast_batcher_reports_enqueue_outcome(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_async_wrapper_returns_fallback_queue_submission(
+async def test_async_wrapper_reports_legacy_cache_as_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -238,7 +279,10 @@ async def test_async_wrapper_returns_fallback_queue_submission(
 
     result = await ctx.push_message_async(parts=[])
 
-    assert result == {"submitted": True}
+    assert result == {
+        "submitted": False,
+        "reason": "transport_unavailable",
+    }
     assert len(queue.items) == 1
 
 
@@ -281,7 +325,7 @@ def test_missing_transports_report_unavailable(
 
 
 @pytest.mark.plugin_unit
-def test_primary_setup_failure_can_use_fallback_before_submission_attempt(
+def test_primary_setup_failure_caches_but_reports_transport_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -299,7 +343,10 @@ def test_primary_setup_failure_can_use_fallback_before_submission_attempt(
         parts=[{"type": "text", "text": private_marker}],
     )
 
-    assert result == {"submitted": True}
+    assert result == {
+        "submitted": False,
+        "reason": "transport_error",
+    }
     assert len(fallback_queue.items) == 1
     assert private_marker not in repr(logger.records)
     assert "RuntimeError" in repr(logger.records)

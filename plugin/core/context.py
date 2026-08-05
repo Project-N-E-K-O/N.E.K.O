@@ -886,9 +886,10 @@ class PluginContext:
         deprecation window but emit ``DeprecationWarning`` and are scheduled
         for removal in v0.9 (see ``docs/changelog``).
 
-        The returned ``submitted`` flag only reports whether an SDK-owned local
-        socket or queue accepted responsibility for the payload.  It does not
-        acknowledge host consumption, model generation, or playback.
+        The returned ``submitted`` flag only reports whether the SDK's
+        authoritative local submission path accepted responsibility for the
+        payload.  It does not acknowledge host consumption, model generation,
+        or playback.
         """
         from plugin.sdk.shared.core.push_message_schema import (
             translate_push_message,
@@ -987,8 +988,8 @@ class PluginContext:
         def _build_wire_payload(*, message_id: str, ts: Any) -> Dict[str, Any]:
             """Construct the message_plane envelope (v2 + legacy compat fields).
 
-            Used by all three send paths (fast batcher / slow per-call / fallback
-            queue).  Keeps the wire shape identical regardless of transport.
+            Used by both message-plane send paths and the legacy control-plane
+            cache.  Keeps the wire shape identical regardless of transport.
             """
             return {
                 "type": "MESSAGE_PUSH",
@@ -1022,7 +1023,7 @@ class PluginContext:
 
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
-        primary_transport_failed = False
+        primary_failure_reason: Optional[str] = None
         if zmq is not None:
             try:
                 from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
@@ -1243,24 +1244,31 @@ class PluginContext:
                             pass
                     return {"submitted": True}
             except Exception as e:
-                primary_transport_failed = True
+                again_type = getattr(zmq, "Again", None)
+                if isinstance(again_type, type) and isinstance(e, again_type):
+                    primary_failure_reason = "backpressure"
+                else:
+                    primary_failure_reason = "transport_error"
                 # Exceptions can only escape before or from the blocking send;
                 # logging after a successful send is isolated above.  The
-                # fallback therefore preserves the existing transport contract
-                # without resubmitting a payload already accepted by ZMQ.
+                # legacy queue below is cache-only and is not an authoritative
+                # message-plane submission path.
                 try:
                     self.logger.warning(
-                        "[PluginContext] message_plane submission failed; trying fallback: "
-                        "plugin_id={} ai_behavior={} priority={} err_type={}",
+                        "[PluginContext] message_plane submission failed; caching legacy record: "
+                        "plugin_id={} ai_behavior={} priority={} reason={} err_type={}",
                         self.plugin_id,
                         canonical.get("ai_behavior"),
                         canonical.get("priority"),
+                        primary_failure_reason,
                         type(e).__name__,
                     )
                 except Exception:
                     pass
 
-        # message_plane 失败或不可用时，尝试回退到 message_queue（如果可用）
+        # Keep the legacy control-plane cache populated for compatibility, but
+        # do not report it as submitted: no active handler forwards this queue
+        # into the authoritative message plane.
         if self.message_queue is not None:
             try:
                 payload = _build_wire_payload(
@@ -1271,7 +1279,7 @@ class PluginContext:
                 if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                     try:
                         self.logger.debug(
-                            "Plugin {} submitted message (fallback queue): "
+                            "Plugin {} cached message (legacy control plane; not submitted): "
                             "ai_behavior={} priority={}",
                             self.plugin_id,
                             canonical.get("ai_behavior"),
@@ -1279,7 +1287,10 @@ class PluginContext:
                         )
                     except Exception:
                         pass
-                return {"submitted": True}
+                return {
+                    "submitted": False,
+                    "reason": primary_failure_reason or "transport_unavailable",
+                }
             except Exception as e:
                 try:
                     self.logger.warning(
@@ -1290,7 +1301,7 @@ class PluginContext:
                     pass
                 return {
                     "submitted": False,
-                    "reason": "transport_error",
+                    "reason": primary_failure_reason or "transport_error",
                 }
         
         # 所有方式都不可用时，记录警告而非抛错（避免插件崩溃）
@@ -1306,11 +1317,7 @@ class PluginContext:
 
         return {
             "submitted": False,
-            "reason": (
-                "transport_error"
-                if primary_transport_failed
-                else "transport_unavailable"
-            ),
+            "reason": primary_failure_reason or "transport_unavailable",
         }
 
     async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":

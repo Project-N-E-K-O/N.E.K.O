@@ -83,9 +83,9 @@ if not result["submitted"]:
     self.logger.warning("message submission failed: %s", result["reason"])
 ```
 
-`submitted=True` means only that an SDK-owned local socket or queue accepted
-responsibility for the payload. It does not acknowledge host consumption,
-model generation, or playback. Rejections use the stable reasons
+`submitted=True` means only that the SDK's authoritative local submission path
+accepted responsibility for the payload. It does not acknowledge host
+consumption, model generation, or playback. Rejections use the stable reasons
 `backpressure`, `transport_error`, or `transport_unavailable`; the result never
 contains the message body or raw exception text.
 

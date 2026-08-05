@@ -136,9 +136,9 @@ in the source verified above.
 ## Immediate local submission result
 
 `push_message` returns a `PushMessageResult`. Its `submitted` discriminator
-reports only whether an SDK-owned local socket or queue accepted responsibility
-for the payload. It is not an acknowledgement that the host consumed the
-message, a model generated a response, or playback completed.
+reports only whether the SDK's authoritative local submission path accepted
+responsibility for the payload. It is not an acknowledgement that the host
+consumed the message, a model generated a response, or playback completed.
 
 Synchronous rejection uses one of three stable reasons: `backpressure`,
 `transport_error`, or `transport_unavailable`. The result deliberately omits

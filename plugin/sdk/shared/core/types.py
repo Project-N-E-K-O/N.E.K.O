@@ -44,9 +44,10 @@ class PushMessageRejected(TypedDict):
     reason: PushMessageFailureReason
 
 
-# Immediate local submission result. ``submitted=True`` only means that an
-# SDK-owned local socket or queue accepted responsibility for the payload; it
-# does not acknowledge host consumption, model generation, or playback.
+# Immediate local submission result. ``submitted=True`` only means that the
+# SDK's authoritative local submission path accepted responsibility for the
+# payload; it does not acknowledge host consumption, model generation, or
+# playback.
 PushMessageResult: TypeAlias = PushMessageSubmitted | PushMessageRejected
 
 

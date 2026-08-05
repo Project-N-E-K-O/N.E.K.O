@@ -83,8 +83,8 @@ if not result["submitted"]:
     self.logger.warning("消息提交失败：%s", result["reason"])
 ```
 
-`submitted=True` 只表示 SDK 管理的本地 socket 或 queue 已接收 payload，并由
-SDK 接管后续提交责任；它不表示宿主已经消费、模型已经生成或音频已经播放。
+`submitted=True` 只表示 SDK 的权威本地提交路径已接收 payload，并由 SDK 接管后续
+提交责任；它不表示宿主已经消费、模型已经生成或音频已经播放。
 拒绝结果使用稳定的 `backpressure`、`transport_error` 或
 `transport_unavailable` reason，且不会包含消息正文或原始异常文本。
 

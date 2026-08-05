@@ -83,8 +83,8 @@ if not result["submitted"]:
     self.logger.warning("message submission failed: %s", result["reason"])
 ```
 
-`submitted=True` は、SDK が管理するローカル socket または queue が payload の
-送信責任を引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
+`submitted=True` は、SDK の正規ローカル送信経路が payload の送信責任を
+引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
 確認ではありません。拒否理由は `backpressure`、`transport_error`、
 `transport_unavailable` のいずれかで、メッセージ本文や生の例外テキストは含みません。
 
