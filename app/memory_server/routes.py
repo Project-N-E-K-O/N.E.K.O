@@ -1204,6 +1204,88 @@ def _resolve_trust_source(
     }
 
 
+async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
+    """Rows this account wrote into someone else's pile while routing was on.
+
+    The one remediation signal an operator gets for the irreversible surface:
+    rows written during a binding carry the CANONICAL subject_id and this
+    account's ``speaker_id``, and after an unbind they stay there. There is
+    deliberately no move-back endpoint — moving a row means recomputing its
+    subject-salted hash, which can collapse it into an existing row at the
+    destination. So the operator has to be told a count and decide whether the
+    nuclear option (``scoped_forget``) is warranted.
+
+    Best-effort: returns ``None`` if the scan cannot run. An unbind must never
+    fail because a diagnostic count did.
+    """
+    from memory.identity import account_platform, normalize_account_id
+    from memory.scopes import subject_from_entry
+
+    normalized = normalize_account_id(account_id)
+    if normalized is None or runtime.fact_store is None:
+        return None
+    entity_id = snapshot_before.entity_of(normalized)
+    if entity_id is None:
+        return 0
+    platform = account_platform(normalized)
+    canonical = snapshot_before.canonical_account(entity_id, platform)
+    if not canonical or canonical == normalized:
+        # This account WAS the canonical, so nothing of its was ever routed
+        # away from its own subject.
+        return 0
+    canonical_actor = str(canonical).partition(":")[2]
+    try:
+        character_data = await runtime._config_manager.aload_characters()
+        names = list(character_data.get("猫娘", {}).keys())
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not break unbind
+        logger.warning(f"[Identity] stranded_rows 无法枚举角色: {exc}")
+        return None
+    stranded = 0
+    for name in names:
+        try:
+            rows = await runtime.fact_store.aload_facts(name)
+        except Exception as exc:  # noqa: BLE001 - same
+            logger.warning(f"[Identity] stranded_rows 读取 {name} 失败: {exc}")
+            return None
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            if normalize_account_id(row.get("speaker_id")) != normalized:
+                continue
+            subject = subject_from_entry(row)
+            if subject is None:
+                continue
+            parts = subject.subject_id.split(":")
+            # The actor segment is last for both group_participant (3 parts)
+            # and participant (2 parts); group_chat has no actor at all.
+            if len(parts) < 2 or parts[0] != platform:
+                continue
+            if parts[-1] == canonical_actor:
+                stranded += 1
+    return stranded
+
+
+def _merge_forget_stats(stats: dict, delta) -> None:
+    """Accumulate one target's forget counters into the running total.
+
+    Numeric counters add; booleans OR (a store either did or did not act);
+    anything else keeps the last non-null value. Never silently replaces a
+    non-zero count with a later zero.
+    """
+    if not isinstance(delta, dict):
+        return
+    for key, value in delta.items():
+        current = stats.get(key)
+        if isinstance(value, bool) or isinstance(current, bool):
+            stats[key] = bool(current) or bool(value)
+        elif isinstance(value, (int, float)) and isinstance(
+            current, (int, float),
+        ):
+            stats[key] = current + value
+        elif value is not None or key not in stats:
+            stats[key] = value
+
+
 def _forget_fanout_targets(subject):
     """Every subject a forget must erase, in a deterministic total order.
 
@@ -2505,29 +2587,40 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             )
             reflection_forget_started.append(target)
         for target in targets:
-            stats.update(
+            # SUM, never replace. Every store returns the same counter keys, so
+            # a per-target ``update`` reports only the LAST account's numbers —
+            # if the first account deleted rows and a later one deleted none,
+            # the endpoint would report zero for data it just erased. This is a
+            # privacy operation whose response is the operator's only receipt.
+            _merge_forget_stats(
+                stats,
                 await runtime.fact_dedup_resolver.aforget_subject(
                     lanlan_name, target,
-                )
+                ),
             )
-            stats.update(
-                await runtime.fact_store.aforget_subject(lanlan_name, target)
+            _merge_forget_stats(
+                stats,
+                await runtime.fact_store.aforget_subject(lanlan_name, target),
             )
-            stats.update(
+            _merge_forget_stats(
+                stats,
                 await runtime.reflection_engine.aforget_subject(
                     lanlan_name, target,
-                )
+                ),
             )
-            stats.update(
+            _merge_forget_stats(
+                stats,
                 await runtime.persona_manager.aforget_subject(
                     lanlan_name, target,
-                )
+                ),
             )
-            stats["prompt_locale"] = await asyncio.to_thread(
-                locale_state.forget_subject_prompt_locale,
-                lanlan_name,
-                target,
-            )
+            _merge_forget_stats(stats, {
+                "prompt_locale": await asyncio.to_thread(
+                    locale_state.forget_subject_prompt_locale,
+                    lanlan_name,
+                    target,
+                ),
+            })
         # Reflection/persona archive writers take their store locks. Their
         # forget calls above therefore drain any writer that had already
         # snapshotted this subject. Advance the persistent cutoff only now,
@@ -2749,10 +2842,15 @@ async def unbind_identity_account(req: IdentityAccountRequest):
     """
     from memory import trust_store
 
+    snapshot_before = trust_store.trust_snapshot()
     try:
-        return await trust_store.aunbind_account(req.account_id)
+        result = await trust_store.aunbind_account(req.account_id)
     except trust_store.TrustIdentityError as exc:
         raise _identity_error(exc) from exc
+    result["stranded_rows"] = await _count_stranded_rows(
+        req.account_id, snapshot_before,
+    )
+    return result
 
 
 @app.post("/internal/identity/entities/merge")

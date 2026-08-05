@@ -527,3 +527,27 @@ def test_the_queue_row_identity_is_unchanged_by_the_new_field():
 
     assert "old_speaker_entity_id" not in _LEGACY_CORRECTION_IDENTITY_FIELDS
     assert "new_speaker_entity_id" not in _LEGACY_CORRECTION_IDENTITY_FIELDS
+
+
+def test_forget_stats_are_summed_across_the_fan_out_not_overwritten():
+    """The response is the operator's only receipt for a privacy operation.
+
+    Per-target ``dict.update`` reports only the LAST account's numbers: if the
+    first account deleted rows and a later one deleted none, the endpoint would
+    report zero for data it had just erased.
+    """
+    from app.memory_server.routes import _merge_forget_stats
+
+    stats: dict = {}
+    _merge_forget_stats(stats, {"facts": 3, "reflections": 1, "restored": True})
+    _merge_forget_stats(stats, {"facts": 0, "reflections": 2, "restored": False})
+    assert stats["facts"] == 3
+    assert stats["reflections"] == 3
+    # A boolean "something happened" must not be flipped back off.
+    assert stats["restored"] is True
+    # Non-numeric payloads keep the last non-null value; None never clobbers.
+    _merge_forget_stats(stats, {"note": "a"})
+    _merge_forget_stats(stats, {"note": None})
+    assert stats["note"] == "a"
+    _merge_forget_stats(stats, "not a dict")
+    assert stats["facts"] == 3

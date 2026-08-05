@@ -899,3 +899,93 @@ def test_the_pool_lock_is_a_threading_lock_not_an_asyncio_lock():
     import threading
 
     assert isinstance(trust_store._pool_lock, type(threading.Lock()))
+
+
+# ── review round 2 ─────────────────────────────────────────────────────────
+
+class _ArchiveFactStore(_FakeFactStore):
+    def __init__(self, rows, archived):
+        super().__init__(rows)
+        self._archived = archived
+
+    async def aload_archived_speaker_trust_signal_facts(self, _name):
+        return self._archived
+
+
+async def test_reconcile_also_restores_signals_from_archived_rows():
+    """The DR tool must not skip the OLDEST adjustments.
+
+    ``apersist_speaker_trust_events`` updates archived rows too, so a signal
+    that has aged out of ``facts.json`` still exists — and those are exactly
+    the ones least likely to be re-earned by an owner repeating themselves.
+    """
+    await _open_gate()
+    store = _ArchiveFactStore(
+        rows=[{
+            "id": "fact_active",
+            "_speaker_trust_signal_events": [
+                {"speaker_id": "qq:5", "event_id": "live", "kind": "correction"},
+            ],
+        }],
+        archived=[{
+            "id": "fact_archived",
+            "_speaker_trust_signal_events": [
+                {"speaker_id": "qq:5", "event_id": "aged",
+                 "kind": "correction"},
+            ],
+        }],
+    )
+    result = await trust_store.areconcile_from_facts(store, ["Neko"])
+    assert result["applied"] == 2
+    ring = _account_record("qq:5")["processed_signal_events"]
+    assert set(ring) == {"live", "aged"}
+
+
+async def test_reconcile_survives_a_store_without_the_archive_loader():
+    """Archive access is best-effort: a store that lacks it still reconciles."""
+    await _open_gate()
+    result = await trust_store.areconcile_from_facts(
+        _FakeFactStore([{
+            "id": "f",
+            "_speaker_trust_signal_events": [
+                {"speaker_id": "qq:6", "event_id": "e", "kind": "correction"},
+            ],
+        }]),
+        ["Neko"],
+    )
+    assert result["applied"] == 1
+
+
+async def test_malformed_channel_diagnostics_survive_a_load_and_a_write(pool):
+    """Hand-edited diagnostics must not reach a mutation as a non-dict.
+
+    ``channel_observations`` nests one level deeper than the other containers,
+    so a shallow copy would leave a per-channel value un-normalized. The
+    copy-on-write draft coerces it today, but the published pool and the draft
+    then disagree about what is in there.
+    """
+    pool.write_text(json.dumps({
+        "version": 2,
+        "legacy_barriers": {"qq": {"status": "cleared"}},
+        "channel_observations": {
+            "qq": {"napcat": "not-a-dict"},
+            "bili": "also-not-a-dict",
+        },
+        "entities": {"ent_" + "a" * 24: {
+            "entity_id": "ent_" + "a" * 24, "status": "active",
+            "accounts": {"qq:1": {
+                "account_id": "qq:1",
+                "channels_seen": {"napcat": "string-too"},
+            }},
+        }},
+    }), encoding="utf-8")
+    await trust_store.aload_pool()
+    assert trust_store._POOL["channel_observations"] == {}
+    assert _account_record("qq:1")["channels_seen"] == {}
+    result = await trust_store.aapply_trust_mutations([
+        _mutation("qq:1", activity=[("activity_aaaaaaaa", 1)],
+                  channel="napcat"),
+    ])
+    assert result.persisted is True
+    observed = trust_store._POOL["channel_observations"]["qq"]["napcat"]
+    assert isinstance(observed, dict) and observed["accounts"] == 1

@@ -2428,6 +2428,24 @@ def test_persisted_false_is_the_only_value_that_forces_a_retry():
     assert service._trust_persisted({"persisted": False}) is False
 
 
+def test_a_gated_segment_is_logged_but_not_retried():
+    """The barrier window must be visible, not silent — and not a spin.
+
+    During the legacy import the owner's signal is already durable on the fact
+    row while the pool defers it; §4.5 says a gated segment still pops. Forcing
+    a retry instead would re-run the LLM extraction for a bucket whose facts
+    are already committed. Logging is the difference between an accepted
+    bounded cost and an invisible one.
+    """
+    service = _memory_service()
+    assert service._trust_persisted({
+        "persisted": True, "gated": "legacy_import_pending",
+    }) is True
+    assert service.plugin.logger.warning.called
+    message = str(service.plugin.logger.warning.call_args[0][0])
+    assert "legacy_import_pending" in message
+
+
 def test_participant_activity_id_is_keyed_by_the_batch_start_cursor():
     """A grown retry must reuse the id the server already committed.
 

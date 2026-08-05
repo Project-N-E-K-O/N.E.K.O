@@ -533,8 +533,7 @@ def _normalize_pool(data: Any) -> dict[str, Any]:
             if str(entity_id or "").strip() and isinstance(entry, dict):
                 pool["forgotten"][str(entity_id)] = dict(entry)
 
-    for container in ("channel_observations", "channel_collisions",
-                      "platform_identity_scope"):
+    for container in ("channel_collisions", "platform_identity_scope"):
         raw = data.get(container)
         if isinstance(raw, dict):
             pool[container] = {
@@ -542,6 +541,23 @@ def _normalize_pool(data: Any) -> dict[str, Any]:
                 for key, value in raw.items()
                 if isinstance(value, dict)
             }
+    # ``channel_observations`` nests one level deeper than the containers
+    # above, so a shallow copy would leave a hand-edited per-channel value
+    # un-normalized. The copy-on-write draft happens to coerce it today, but
+    # relying on that makes the published pool and the draft disagree about
+    # what is in there — normalize here, at the one place that reads disk.
+    raw_observations = data.get("channel_observations")
+    if isinstance(raw_observations, dict):
+        for platform, entry in raw_observations.items():
+            if not isinstance(entry, dict):
+                continue
+            cleaned = {
+                str(channel): dict(stats)
+                for channel, stats in entry.items()
+                if isinstance(stats, dict)
+            }
+            if cleaned:
+                pool["channel_observations"][str(platform)] = cleaned
     pool["updated_at"] = data.get("updated_at") or _now_iso()
     return pool
 
@@ -1343,12 +1359,24 @@ async def areconcile_from_facts(fact_store, character_names) -> dict:
     """
     scanned: list[dict] = []
     for name in list(character_names or []):
+        rows: list = []
         try:
-            rows = await fact_store.aload_facts(name)
+            rows = list(await fact_store.aload_facts(name) or [])
         except Exception as exc:  # noqa: BLE001 - disaster tool, never fatal
             logger.warning(f"[Trust] reconcile 读取 {name} 失败: {exc}")
             continue
-        for row in rows or []:
+        try:
+            # Archived rows carry signal events too — ``apersist`` updates the
+            # archive as well. Skipping them makes the recovery tool silently
+            # under-restore exactly the OLDEST adjustments, which are the ones
+            # least likely to be re-earned by an owner repeating themselves.
+            rows.extend(
+                await fact_store.aload_archived_speaker_trust_signal_facts(name)
+                or []
+            )
+        except Exception as exc:  # noqa: BLE001 - archive is best-effort here
+            logger.warning(f"[Trust] reconcile 读取 {name} 归档失败: {exc}")
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             for event in row.get("_speaker_trust_signal_events") or []:

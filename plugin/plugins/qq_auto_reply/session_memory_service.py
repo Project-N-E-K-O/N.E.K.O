@@ -1971,16 +1971,28 @@ class QQSessionMemoryService:
         except Exception:
             return False
 
-    @staticmethod
-    def _trust_persisted(trust_block: object) -> bool:
+    def _trust_persisted(self, trust_block: object) -> bool:
         """Read the response's ``trust`` block. Absent/None ⇒ nothing to retry.
 
         ``persisted`` is tri-state: ``true`` (written), ``false`` (RETAIN and
         retry), ``null`` (this segment carried no server-derived trust source,
         so there was nothing to write).
+
+        ``gated`` is reported but does NOT force a retry: during the legacy
+        import barrier the owner's signal is already durable on the fact row
+        while the pool deliberately defers it, and the accepted cost is that it
+        is folded later by an owner repeat or a manual reconcile — not that the
+        whole bucket spins. It IS logged, because a silent deferral is the one
+        thing that would make the window impossible to notice.
         """
         if not isinstance(trust_block, dict):
             return True
+        if trust_block.get("gated"):
+            self.plugin.logger.warning(
+                f"speaker trust 本段被闸门推迟结算："
+                f"{trust_block.get('gated')}（信号已 durable 在 fact 行上，"
+                f"闸门开后需主人复述或手动 reconcile 才折叠）"
+            )
         return trust_block.get("persisted") is not False
 
     @staticmethod
