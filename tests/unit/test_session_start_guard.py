@@ -388,6 +388,54 @@ async def test_same_mode_dedupe_reports_the_live_route_while_the_lease_holds():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_same_mode_dedupe_rechecks_the_lease_after_the_reroute():
+    """Codex P2. The reroute itself awaits a whole provider connect (up to 12s),
+    and a third window can claim the microphone inside THAT window and settle
+    the route to a healthy value. A snapshot taken before the reroute cannot see
+    it, so the superseded requester would be handed a healthy route and open a
+    microphone whose frames the server discards."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _redecide_then_lose_the_lease(*_a, **kwargs):
+        calls.append(("redecide", kwargs))
+        # A third window claims the mic while this connect is in flight, and its
+        # own re-decision settles the route.
+        mgr._voice_lease_connection_id = "socket-c"
+        mgr._asr_route_mode = "independent"
+
+    mgr._start_independent_asr_if_enabled = _redecide_then_lose_the_lease
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    assert calls[1][2]["microphone_route_override"] == "blocked"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_does_not_call_a_fail_closed_revoke_a_takeover():
+    """A reroute that fails closed revokes the lease itself, emptying the
+    identity. That is this request's OWN outcome, not a takeover: the route is
+    blocked anyway, so the ack should report it rather than override it -- the
+    override exists to hide somebody else's healthy route, not our own failure."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _redecide_then_fail_closed(*_a, **kwargs):
+        calls.append(("redecide", kwargs))
+        mgr._voice_lease_connection_id = ""
+
+    mgr._start_independent_asr_if_enabled = _redecide_then_fail_closed
+
+    await _run_dedupe_start(mgr)
+
+    assert [c[0] for c in calls] == ["redecide", "ack"]
+    assert calls[1][2]["microphone_route_override"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_same_mode_dedupe_measures_the_deadline_on_the_wall_clock(
     monkeypatch,
 ):

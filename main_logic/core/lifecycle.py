@@ -940,12 +940,6 @@ class LifecycleMixin:
                 # blocked 占位上且不发任何 status，结果两个窗口都 fail-closed latch
                 # 住、麦克风在本会话内再也打不开。先重跑一次决策再补 ack，让 ack
                 # 带的是本请求方真正成立的路由（详见 _rerun_route_for_deduped_start）。
-                # 麦克风是不是还归本请求方。重跑之前取：重跑若 fail-closed 会
-                # revoke lease 把这个字段清空，那时再判就分不清「被别人抢走」和
-                # 「自己刚放弃」了。
-                _lease_moved = (
-                    getattr(self, "_voice_lease_connection_id", "") != _lease_at_request
-                )
                 await self._rerun_route_for_deduped_start(
                     input_mode,
                     lease_connection_id=_lease_at_request,
@@ -961,6 +955,14 @@ class LifecycleMixin:
                 # 就不在任何一条投递面上了（self.websocket 可能是更新的窗口）。
                 # 那样它会一直等到 15s 超时，而超时发的 end_session 会把刚起来的
                 # 会话撕掉。本请求那把 ws 是已知的，直接定向送一份（Codex P2）。
+                #
+                # 麦克风是不是还归本请求方，要在重跑**之后**判：重跑内部会 await
+                # 整个 provider connect（最长 12s），第三个窗口在那期间抢走麦
+                # 并把路由 settle 成健康值是可能的，重跑前的快照看不到（Codex P2）。
+                # lease 为空不算易主——那是本次 fail-closed 自己 revoke 的，路由
+                # 此刻本就是 blocked，照报即可。
+                _lease_now = getattr(self, "_voice_lease_connection_id", "")
+                _lease_moved = bool(_lease_now) and _lease_now != _lease_at_request
                 #
                 # lease 已易主时，ack 里的路由只能报 blocked。此刻 _asr_route_mode
                 # 是**新持有者**的裁决，可能已经 settle 成 native/independent；
