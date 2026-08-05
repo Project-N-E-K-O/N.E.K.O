@@ -662,7 +662,8 @@
                 setMessage('');
             }
         } catch (_) {
-            if (!config.silent) {
+            const reconciled = !config.keepalive && await reconcileStatus();
+            if (!config.silent && (!reconciled || state.sessionId)) {
                 setMessage(
                     translate(
                         'voiceIdentity.requestFailed',

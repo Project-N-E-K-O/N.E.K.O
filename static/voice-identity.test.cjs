@@ -987,15 +987,49 @@ test('ambiguous profile deletion reconciles the authoritative absent state', asy
     assert.equal(harness.elements.get('voice-identity-message').textContent, '');
 });
 
-test('failed explicit cancellation preserves the session and can be retried', async () => {
+test('ambiguous explicit cancellation reconciles a server-side success', async () => {
+    let statusRequests = 0;
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                return jsonResponse(statusRequests === 1
+                    ? { enrollment: { session_id: 'session-1', stage: 'fixed_1' } }
+                    : { enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                return jsonResponse(
+                    { error: 'response_lost' },
+                    { ok: false, status: 503 },
+                );
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const cancel = harness.elements.get('voice-identity-cancel');
+    await cancel.emit('click');
+
+    assert.equal(statusRequests, 2);
+    assert.equal(cancel.hidden, true);
+    assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+});
+
+test('failed explicit cancellation preserves the confirmed session and can be retried', async () => {
     const firstCancellation = deferred();
     let cancellationAttempts = 0;
+    let statusRequests = 0;
     const harness = createHarness({
         route(url, options) {
             if (url === '/api/config/page_config') {
                 return jsonResponse({ autostart_csrf_token: 'csrf-token' });
             }
             if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
                 return jsonResponse({
                     enrollment: { session_id: 'session-1', stage: 'fixed_1' },
                 });
@@ -1028,6 +1062,7 @@ test('failed explicit cancellation preserves the session and can be retried', as
     assert.equal(firstCall.options.headers.get('X-Voice-Identity-Enrollment'), 'session-1');
     assert.equal(cancel.hidden, false);
     assert.equal(cancel.disabled, false);
+    assert.equal(statusRequests, 2);
     assert.equal(harness.elements.get('voice-identity-message').textContent, 'Request failed.');
 
     await cancel.emit('click');
