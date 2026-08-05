@@ -5,7 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const zlib = require('node:zlib');
 
-const root = path.resolve(__dirname, '..', '..');
+const fileRoot = path.resolve(__dirname, '..', '..');
+const root = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : process.cwd();
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/manifest.json'), 'utf8'));
 const packedSource = fs.readFileSync(path.join(root, manifest.assets[0].src[0]));
 const decodedSource = zlib.gunzipSync(packedSource);
