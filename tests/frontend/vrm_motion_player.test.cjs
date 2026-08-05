@@ -102,6 +102,22 @@ async function waitForLoadStart(predicate, message) {
     assert.equal(previewPlan[0].evidence.assetId, 'official_liked');
     assert.equal(previewPlan[0].scheduleNextRest, false);
 
+    const noRotatePreviewPlayer = new global.NekoMotionPlayer();
+    noRotatePreviewPlayer.select = function () { return { id: 'preview-gesture' }; };
+    noRotatePreviewPlayer._playTransient = async function () { return true; };
+    let resumedWithScheduleNext = null;
+    noRotatePreviewPlayer.enterRest = async function (options) {
+        resumedWithScheduleNext = options.scheduleNext;
+        return true;
+    };
+    assert.equal(await noRotatePreviewPlayer._executeDecision({
+        intent: 'wave',
+        kind: 'social',
+        evidence: {},
+        scheduleNextRest: false
+    }, noRotatePreviewPlayer.queueGeneration, 'preview', true), true);
+    assert.equal(resumedWithScheduleNext, false);
+
     const unlicensed = JSON.parse(JSON.stringify(manifest));
     unlicensed.assets[0].license = '?';
     global.fetch = async function () { return response(unlicensed); };

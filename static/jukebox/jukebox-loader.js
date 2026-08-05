@@ -87,12 +87,12 @@
 
         try {
           facade.stopVMD(true);
-          await window.vrmManager.playVRMAAnimation(vrmaPath, {
+          var played = await window.vrmManager.playVRMAAnimation(vrmaPath, {
             loop: false,
             fadeInDuration: 0.5,
             fadeOutDuration: 0.5
           });
-          if (playRequestId !== state.playRequestId) return;
+          if (played !== true || playRequestId !== state.playRequestId) return;
           state.isVMDPlaying = true;
           state.isPaused = false;
           state.isPlaying = true;

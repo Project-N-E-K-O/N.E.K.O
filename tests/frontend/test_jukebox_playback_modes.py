@@ -277,6 +277,13 @@ def test_jukebox_loader_rejects_stale_idle_restore(mock_page: Page):
     assert result == {"currentBefore": True, "currentAfter": False}
 
 
+def test_jukebox_vrma_false_result_does_not_mark_playback_active():
+    assert "var played = await window.vrmManager.playVRMAAnimation" in JUKEBOX_LOADER_SCRIPT
+    assert "if (played !== true || playRequestId !== state.playRequestId) return;" in JUKEBOX_LOADER_SCRIPT
+    assert "const played = await window.vrmManager.playVRMAAnimation" in JUKEBOX_SCRIPT
+    assert "if (played !== true) return;" in JUKEBOX_SCRIPT
+
+
 @pytest.mark.frontend
 def test_jukebox_transport_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
     setup_jukebox_page(mock_page)

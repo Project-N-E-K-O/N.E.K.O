@@ -3619,11 +3619,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             vrmMotionCatalogPlayer.setSavedRestAnimations(
                 getSelectedIdleAnimations('vrm-idle-animation-multiselect')
             );
+            isLooping = selectedOption.getAttribute('data-playback') === 'loop';
+            if (!isLooping) {
+                isVrmAnimationPlaying = true;
+                updateVRMAnimationPlayButtonIcon();
+            }
             const played = await vrmMotionCatalogPlayer.playAsset(assetId, {
                 scheduleNext: false
             });
             if (played !== true) throw new Error('Motion catalog playback did not start');
-            isLooping = selectedOption.getAttribute('data-playback') === 'loop';
         } else {
             if (vrmMotionCatalogPlayer) {
                 vrmMotionCatalogPlayer.cancel('model_manager_direct_playback', { resume: false });

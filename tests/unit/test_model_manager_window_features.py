@@ -40,6 +40,10 @@ def test_vrm_catalog_preview_preserves_selected_idle_and_stops_preview_rotation(
         r"scheduleNext:\s*false\s*\}\s*\)",
         preview,
     )
+    preview_start = "isVrmAnimationPlaying = true;"
+    preview_play = "const played = await vrmMotionCatalogPlayer.playAsset"
+    assert preview_start in preview
+    assert preview.index(preview_start) < preview.index(preview_play)
 
     idle_switch = source.split("async function _playIdleAnimation", 1)[1].split(
         "async function restoreVrmIdleAnimation",
