@@ -577,11 +577,14 @@ async def dispatch(
             # exclude_task_id 是防御性的。
             explicitly_typed = False
             if isinstance(result.tool_args, dict):
-                explicitly_typed = (
-                    _shared.Modules.openclaw.normalize_magic_command(
-                        result.tool_args.get("original_user_text")
-                    )
-                    == magic_command
+                # ⚠️ 「用户是不是亲手打的」要用**严格**解析：必须 `/` 开头且整条输入
+                # 就是那个命令。宽松那个会把普通英文词 `stop` / `approve` 当成显式命令，
+                # 于是一句英文闲聊就能拿到「显式豁免」，绕过下面整道审批闸。
+                parse_typed = getattr(
+                    _shared.Modules.openclaw, "parse_typed_magic_command", None
+                )
+                explicitly_typed = callable(parse_typed) and (
+                    parse_typed(result.tool_args.get("original_user_text")) == magic_command
                 )
             # ⚠️ 主动搭话轮**没有用户**。task_executor 在 proactive 轮把意图换成猫娘
             # 自己那句最新台词再喂进分类器，所以她随口一句「没问题」就会被判成批准，

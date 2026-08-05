@@ -6824,9 +6824,11 @@ def test_new_and_clear_are_unreachable_from_free_text(text):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("/new", "/new"), ("new", "/new"), ("/clear", "/clear"), ("clear", "/clear"),
-        ("/stop", "/stop"), ("stop", "/stop"),
-        ("/daemon approve", "/daemon approve"), ("approve", "/daemon approve"),
+        ("/new", "/new"), ("/clear", "/clear"),
+        ("/stop", "/stop"), ("/daemon approve", "/daemon approve"),
+        ("/approve", "/daemon approve"),
+        # ⚠️ 不带斜杠的裸词已不再是命令，见
+        # test_a_typed_command_rejects_bare_words_and_anything_extra。
     ],
 )
 def test_the_literal_commands_all_still_resolve(text, expected):
@@ -6875,11 +6877,8 @@ def test_the_two_stop_tiers_are_disjoint_and_cover_the_table():
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("/stop", "/stop"), ("stop", "/stop"),
-        ("/new", "/new"), ("new", "/new"),
-        ("/clear", "/clear"), ("clear", "/clear"),
-        ("/daemon approve", "/daemon approve"), ("approve", "/daemon approve"),
-        ("/approve", "/daemon approve"), ("daemon approve", "/daemon approve"),
+        ("/stop", "/stop"), ("/new", "/new"), ("/clear", "/clear"),
+        ("/daemon approve", "/daemon approve"), ("/approve", "/daemon approve"),
     ],
 )
 def test_a_typed_command_never_depends_on_the_llm(text, expected):
@@ -6937,3 +6936,71 @@ def test_the_free_text_veto_still_holds_when_the_llm_misbehaves(text):
 
     assert result.get("command") is None, text
     assert result.get("source") == "free-text-veto"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/stop", "/stop"), ("/new", "/new"), ("/clear", "/clear"),
+        ("/daemon approve", "/daemon approve"), ("/approve", "/daemon approve"),
+        # 大小写与首尾空白不算「后缀」
+        ("/STOP", "/stop"), (" /stop ", "/stop"), ("/Daemon Approve", "/daemon approve"),
+    ],
+)
+def test_a_typed_command_must_be_slash_prefixed_and_bare(text, expected):
+    """⚠️ 用户打出来的 magic command：必须 `/` 开头，且整条输入就是那个命令。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.parse_typed_magic_command(text) == expected, text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 不带斜杠的裸词 —— 它们是普通英文单词
+        "stop", "new", "clear", "approve", "daemon approve", "Stop", "CLEAR",
+        # 带了别的东西就不是「裸的」
+        "/stop now", "/stop 一下", "/stopp", "/stop!", "/stop.", "请 /stop",
+        "stop/", "/ stop", "//stop", "/openclaw stop", "/qwenpaw stop",
+        "帮我 /stop", "/daemon approve please",
+    ],
+)
+def test_a_typed_command_rejects_bare_words_and_anything_extra(text):
+    """⚠️ 8 个 locale 里残留的 9 条误命中全部来自不带斜杠的 `Stop` / `Clear` 按钮标签。
+
+    Accepting the slashless words meant an English UI string — or an English chat
+    line — counted as a *typed* command, which also handed it the explicit
+    exemption that bypasses the approval gate entirely.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.parse_typed_magic_command(text) is None, text
+    assert OpenClawAdapter.rule_magic_command(text) is None, text
+
+
+def test_no_ui_string_in_any_locale_is_a_magic_command():
+    """⚠️ 8 个 locale 的全部文案：一条命令意图都没有，命中数必须是 0。"""  # noqa: DOCSTRING_CJK
+    import glob
+    import io
+    import json
+
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    def _walk(node, out):
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for value in node.values():
+                _walk(value, out)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value, out)
+
+    strings: list[str] = []
+    for path in sorted(glob.glob("static/locales/*.json")):
+        with io.open(path, encoding="utf-8") as handle:
+            _walk(json.load(handle), strings)
+    assert len(strings) > 30000, "语料没加载到，断言会变成空转"
+
+    hits = [s for s in strings if s.strip() and OpenClawAdapter.rule_magic_command(s.strip())]
+    assert hits == [], f"UI 文案被判成命令：{hits[:8]}"

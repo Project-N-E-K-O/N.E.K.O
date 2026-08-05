@@ -70,6 +70,12 @@ class _FakeOpenClaw:
 
         return OpenClawAdapter.stop_trigger_tier(user_text)
 
+    @staticmethod
+    def parse_typed_magic_command(user_text):
+        from brain.openclaw_adapter import OpenClawAdapter
+
+        return OpenClawAdapter.parse_typed_magic_command(user_text)
+
     async def run_magic_command(self, command, *, sender_id=None, role_name=None):
         self.magic_calls.append((command, sender_id, role_name))
         return {"success": True, "reply": "收到", "command": command}
@@ -561,11 +567,18 @@ def test_an_explicitly_typed_magic_word_is_never_gated(wired):
     fake, emitted = wired
     assert oc._shared.Modules.task_registry == {}
 
-    for typed in ("/daemon approve", "daemon approve", "/approve", "approve"):
+    for typed in ("/daemon approve", "/approve"):
         fake.magic_calls.clear()
         _dispatch("/daemon approve", user_text=typed)
         assert [c[0] for c in fake.magic_calls] == ["/daemon approve"], typed
     assert emitted
+
+    # ⚠️ 不带斜杠的裸词**不算**亲手打的命令，所以拿不到这条豁免——否则一句英文闲聊
+    # 里的 "approve" 就能绕开整道审批闸。
+    for not_typed in ("approve", "daemon approve", "Approve"):
+        fake.magic_calls.clear()
+        _dispatch("/daemon approve", user_text=not_typed)
+        assert fake.magic_calls == [], not_typed
 
 
 def test_another_senders_task_does_not_open_the_gate(wired):
