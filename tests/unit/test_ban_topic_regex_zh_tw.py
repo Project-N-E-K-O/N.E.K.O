@@ -31,6 +31,7 @@ identically on both scripts. Tightening further kills the main use case.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import pathlib
 import re
 import unicodedata
 
@@ -401,11 +402,35 @@ def test_japanese_text_is_not_extracted_by_the_zh_templates(text):
 # 断言写成"当前长什么样"而不是"应该是空"，是为了将来真找到判据时这里现成就是
 # 回归测试——那时把它改成 == set() 即可。
 KNOWN_JAPANESE_RESIDUALS = [
-    ("世代別講座ガイド。", {"座ガイド"}),
-    ("商品別提案プラン。", {"案プラン"}),
-    ("部門別提案リスト", {"案リスト"}),
+    # ⚠️ 只剩**不含假名**的这一条。日文里 ``別`` + 共用动词 + 纯汉字复合词
+    # （別提案書 / 別講座資料）和中文的 ``別提 + 汉字话题``（別提工作）在局部
+    # 完全同形，任何规则都分不开——真去分就会打死 ``別提工作。``（量过）。
     ("地域別提案書。", {"案書"}),
 ]
+# 带假名尾巴的那三条**已经不是残留**了：``〜別 + 复合名词 + 光杆假名名词``
+# 靠「左边不是小句边界」+「term 是一个汉字接假名」两条判据关掉了（codex P2）。
+# ⚠️ 留在这里做回归：它们曾经是残留，退回去要立刻红。
+FIXED_JAPANESE_KANA_TAILS = [
+    "世代別講座ガイド。", "商品別提案プラン。", "部門別提案リスト",
+    "地域別提案スレ", "A別講座スレ", "2別講座メモ", "β別提案スレ",
+    "世代別提案まとめ", "商品別談話スレ",
+]
+
+
+@pytest.mark.parametrize("text", FIXED_JAPANESE_KANA_TAILS)
+def test_kana_tailed_bessu_labels_are_suppressed(text):
+    assert _zh_terms(text) == set(), text
+
+
+def test_the_kana_tail_guard_needs_a_left_label():
+    """⚠️ 串首的 ``別提案スレ`` 仍然漏——如实记着，别当成已经关掉。
+
+    ``〜別`` 是**后缀**，左界这条判据要求它前面挂着标签词。去掉左界这条就能
+    连串首一起关，代价是 ``別提蘭ちゃん。`` 这类「单字汉字 + 假名」的中文话题
+    会被一起打死。这一格选了漏判。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms("別提案スレ") == {"案スレ"}
+    assert "蘭ちゃん" in _zh_terms("別提蘭ちゃん。")
 
 
 @pytest.mark.parametrize(("text", "current"), KNOWN_JAPANESE_RESIDUALS)
@@ -611,12 +636,23 @@ def test_zh_evidence_charclass_is_pinned():
     assert D._ZH_EVIDENCE_CHARS == (
         "别说讲谈讨论关这话题愿懒许为甭說這關沒稱" + D._ZH_ZH_ONLY_FINAL_PARTICLES
     )
-    assert D._ZH_ZH_ONLY_FINAL_PARTICLES == "吧呗啦咧喔嘛呀呢哦唷囉啰喲"
+    assert D._ZH_ZH_ONLY_FINAL_PARTICLES == "啊呀嘛哦呗吧啦呢喔唷齁欸誒咧喲囉啰"
     assert D._ZH_EVIDENCE_WORDS == (
         "叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情",
-        "提了", "說了", "讲了", "講了",
         "称呼我", "稱呼我",
     )
+    # ⚠️ 「动词 + 了」这批是**派生**的，所以断言写成派生关系而不是抄一份字面量
+    # ——抄一份的话，改动词表要顺手改测试，守卫就只是复读代码（同一个坑在
+    # 「派生笛卡尔积」那类测试上栽过）。字面量那份在下面单独钉。
+    assert D._ZH_VERB_LE_EVIDENCE == tuple(
+        v + "了" for v in dict.fromkeys(
+            D._ZH_SAY_COMPOUNDS + D._ZH_SAY_VERBS + D._ZH_PREPOSED_SAY_VERBS
+        )
+    )
+    assert set(D._ZH_VERB_LE_EVIDENCE) == {
+        "讨论了", "討論了", "说了", "說了", "提了", "聊了", "讲了", "講了",
+        "谈了", "談了", "扯了", "提起了", "提及了",
+    }
     # 字类必须是整条正则的第一个分支——上面那条扫描不依赖这点，但 pin 住它能让
     # 「有人往字类前面插了新分支」这件事在 review 里显形。
     first = _split_top_level_alternatives(D._ZH_EVIDENCE_RE.pattern)[0]
@@ -3178,10 +3214,27 @@ def test_every_allowed_final_particle_can_also_be_trimmed():
     反过来不要求（trim 表更大没关系，多出来的会被吃进 term 再剥掉）。但
     正则有、trim 没有＝那个助词永远留在 term 里。
     """  # noqa: DOCSTRING_CJK
-    allowed = D._ZH_FINAL_PARTICLES.rsplit("(?:", 1)[1].split(")")[0].split("|")
+    allowed = set(D._ZH_FINAL_PARTICLES.rsplit("[", 1)[1].split("]")[0])
     assert len(allowed) > 5, allowed
+    # 判据读的是**正则本身**，不是那个常量——不然只是把派生关系复读一遍。这一行
+    # 再把两者钉在一起，改了常量却没改正则（或反过来）同样红。
+    assert allowed == set(D._ZH_FINAL_PARTICLE_CHARS)
     trimmable = set(D._TRIM_TRAIL_TOKENS_BY_LOCALE["zh"])
-    assert set(allowed) <= trimmable, set(allowed) - trimmable
+    assert allowed <= trimmable, allowed - trimmable
+
+
+def test_zh_only_particles_are_derived_from_the_regex_particles():
+    """两处一度是各抄一份的手写清单，正则吃 ``啊 齁 欸 誒``、证据表却没有，繁中
+    整条 0 命中（codex P2）。⚠️ ``了`` 单独排除：它是日文常用汉字（終了 / 了解）。"""  # noqa: DOCSTRING_CJK
+    assert set(D._ZH_ZH_ONLY_FINAL_PARTICLES) == (
+        set(D._ZH_FINAL_PARTICLE_CHARS) - {"了"}
+    ) | {"囉", "啰"}
+    assert "了" not in D._ZH_EVIDENCE_CHARS
+    # 「正则吃得掉、证据却不认」= 那个助词一进来繁中就整条丢——一个都不许有。
+    for char in D._ZH_FINAL_PARTICLE_CHARS:
+        if char == "了":
+            continue
+        assert "君の名は" in _zh_terms(f"別提君の名は{char}。"), char
 
 
 @pytest.mark.parametrize(
@@ -4471,3 +4524,96 @@ def test_ascii_punctuation_inside_a_closed_pair_is_content(opener, closer, mark)
     """  # noqa: DOCSTRING_CJK
     text = f"电影{opener}Who{mark}{closer}别提了。"
     assert _zh_terms(text) == {f"电影{opener}Who{mark}{closer}"}, _zh_terms(text)
+
+
+# ── 51. ASCII 括号跨指令配对 / 助词与证据同步 / 前置触发词证据 /
+#        汉字词干接上被吃掉的动词 ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+@pytest.mark.parametrize("sep", ["。", ".", "，", ",", ";", "；"])
+def test_an_ascii_pair_never_spans_two_directives(opener, closer, sep):
+    """两条互不相干的指令各带一个 ASCII 括号，不许被当成一整段引文。
+
+    放开 ASCII 句读之后 ``别再提价格<预算.别再提收入>目标.`` 被并成一条，
+    第二条指令整个丢掉（codex P2）。判据和对称引号那支一样是 temper 掉否定词
+    ——分隔的标点是开集（句号 / 逗号 / 分号都行），否定词才是病因。
+    """  # noqa: DOCSTRING_CJK
+    text = f"别再提价格{opener}预算{sep}别再提收入{closer}目标."
+    assert _zh_terms(text) == {f"价格{opener}预算", f"收入{closer}目标"}, text
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer"),
+    sorted((lo, hi) for lo, hi in D._ZH_CLOSE_FOR_OPEN.items() if lo.isascii()),
+)
+def test_tempering_the_negation_still_keeps_closed_titles(opener, closer):
+    """反向：体里**没有**否定词的闭合标题照旧完整（上一条判据的代价上界）。"""  # noqa: DOCSTRING_CJK
+    text = f"别再提标题{opener}Who?{closer}。"
+    assert _zh_terms(text) == {f"标题{opener}Who?{closer}"}, text
+    # 不带标点的 ``告别版`` 走单字分支，带否定词也照旧完整。
+    assert _zh_terms(f"别再提{opener}告别版{closer}。") == {"告别版"}
+
+
+@pytest.mark.parametrize("verb", sorted(D._ZH_PREPOSED_SAY_VERBS))
+def test_every_preposed_trigger_form_is_also_chinese_evidence(verb):
+    """前置话题模板放行的每个触发词形式，加上 ``了`` 都必须是中文证据。
+
+    ⚠️ 自动发现，不是手点清单：这里放行、证据表却不认，就意味着话题本身带日文
+    助词时繁中整条 0 命中——``君の名は別提起了。`` 就是这么丢的（codex P2）。
+    """  # noqa: DOCSTRING_CJK
+    assert D._ZH_EVIDENCE_RE.search(verb + "了"), verb
+    assert "君の名は" in _zh_terms(f"君の名は別{verb}了。"), verb
+    assert "君の名は" in _zh_terms(f"君の名は别{verb}了。"), verb
+
+
+def test_the_preposed_trigger_list_is_not_hardcoded_in_the_template():
+    """结构面：模板里不许再写死触发词表——写死过一次，证据那侧就漏了两个形式。"""  # noqa: DOCSTRING_CJK
+    preposed = [
+        raw for raw in _zh_pattern_sources() if "|".join(D._ZH_PREPOSED_SAY_VERBS) in raw
+    ]
+    assert len(preposed) == 1, "前置话题模板应当从 _ZH_PREPOSED_SAY_VERBS 派生"
+    # ⚠️ 判「有没有写死」只能读**源文件**：编译出来的模板串必然长得跟字面量一样，
+    # 拿它去断言等于什么都没测（这条测试第一版就是这么写的，一跑就红）。
+    source = pathlib.Path(D.__file__).read_text(encoding="utf-8")
+    assert "提起|提及" not in source, "触发词表又被写死进模板了"
+    assert source.count("_ZH_PREPOSED_SAY_VERBS") >= 3
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["別討論あり。", "地域別討論なし。", "商品別討論した。", "別討論する。",
+     "カテゴリ別討論して。", "地域別討論か？", "別討論も。", "別談話だ。"],
+)
+def test_a_consumed_compound_verb_still_supplies_the_han_stem(text):
+    """``討論`` 整个进了触发词，term 只剩假名，汉字词干那四条判据全落空。
+
+    ``別討論あり。`` 存下 ``あり``，而结构一样的 ``別提案あり。``（term 是
+    ``案あり``）是拦住的（codex P2）。守卫现在把被吃掉的那个汉字接回去。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("別討論這個吧。", "這個"), ("别再提ありがとう。", "ありがとう"),
+     ("別提おもてなし。", "おもてなし"), ("別提ただ。", "ただ"),
+     ("別提まだ。", "まだ"), ("別提そして。", "そして"),
+     ("別提すいか。", "すいか"), ("別提あした。", "あした")],
+)
+def test_the_reattached_stem_does_not_hurt_kana_initial_topics(text, expected):
+    """反向：接回来的只有**一个**汉字，而四条判据要的都是「汉字紧跟假名」，
+    所以 ``ドラえもん`` 一族（假名前面还是假名）照旧保留。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), text
+
+
+def test_the_stem_is_taken_from_inside_the_match_not_guessed():
+    """结构面：词干取自捕获组左邻的那个字符，且只在它是汉字时才接。"""  # noqa: DOCSTRING_CJK
+    assert not D._is_japanese_sentence_match("別討論あり", "あり", "", stem="")
+    assert D._is_japanese_sentence_match("別討論あり", "あり", "", stem="論")
+    # 拉丁 / 假名不许当词干接进去——接了就等于把判据的左界整个作废。
+    assert not D._HAN_RE.match("A")
+    assert not D._HAN_RE.match("ス")

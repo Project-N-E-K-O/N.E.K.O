@@ -505,6 +505,13 @@ _ZH_SAY_COMPOUNDS = ("讨论", "討論")
 _ZH_SAY_VERBS_JA_SHARED = ("提", "講", "談", "討論")
 # 称呼类：结构是「动词 + 我 + 称呼」，与上面两族都不同
 _ZH_ADDRESS_VERBS = ("管我叫", "称呼我为?", "稱呼我為?", "喊我", "叫我")
+# 前置话题模板（``X 别提了``）自己的触发词表，比通用言说动词**窄**：谈 / 談 / 扯 /
+# 讨论 / 討論 放在这个位置不成话（"工作别扯了" 勉强，"工作别讨论了" 要带宾语）。
+# ⚠️ 单列成常量是因为它一度直接写死在模板里，于是这里能接受、证据表却不认：
+# ``君の名は別提起了。`` / ``君の名は別提及了。`` 整条 0 命中，而同句简体和带 ``再``
+# 的 ``別再提起了`` 都是好的（codex P2）。_ZH_EVIDENCE_WORDS 现在从它派生，
+# test_directive_tables 里有一条守卫钉住「这里能接受的每个形式 + 了 都是中文证据」。
+_ZH_PREPOSED_SAY_VERBS = ("提起", "提及", "说", "說", "提", "聊", "讲", "講")
 
 
 def _zh_verb_alternation(*, with_address: bool) -> str:
@@ -604,8 +611,16 @@ def _zh_bracket_body(lo: str, hi: str) -> str:
         if ascii_pair:
             # ⚠️ 只排**全角**句末标点。ASCII 的 ``? !`` 在闭合的标题 / 代码段里是
             # 内容——``电影(Who?)别提了。`` 整条 0 命中，parent 还留着 ``电影(Who``
-            #（codex P2）。跨句合并那一族用的是全角 ``。``，靠这三个就挡住了。
-            inner_banned += "。！？"
+            #（codex P2）。
+            # ⚠️ 光排全角句读不够，还要 temper 掉 ``别 別``——判据和下面对称引号那支
+            # 是**同一条**：引文里包住一整条指令必然要带否定词。放开 ASCII 句读之后
+            # ``别再提价格<预算.别再提收入>目标.`` 被并成一条 ``价格<预算.别再提收入>目标``，
+            # parent 是分开的两条（codex P2，``{} [] () <>`` 四对都是）。
+            # ⚠️ 按字符 temper 而不是按 ASCII 句读补一格：分隔的标点是开集（同一句
+            # 换成逗号、分号一样合并），而「体里出现否定词」直指病因——两条指令被
+            # 当成一段引文。代价只落在「ASCII 括号里**又**带否定词**又**带标点」的
+            # 标题上，``告别版`` 这类不带标点的照旧走单字分支、完整保留。
+            inner_banned += "。！？别別"
         nested = (
             f"{re.escape(lo)}[^{inner_banned}]{{0,{_TERM_MAX_LEN}}}{re.escape(hi)}"
         )
@@ -853,10 +868,17 @@ def _zh_topic(minimum: int, maximum: int, *, block_guanyu: bool = False) -> str:
 # bug——那样 term 里的助词永远剥不掉。test_directive_tables 里有一条子集守卫钉住。
 # parent 就有的那一批。⚠️ 单列出来是给 _ZH_OBJECTLESS_AHEAD 用的，见那里的注释：
 # 无宾语判据只认这一批，认了本 PR 新加的那批就会把 ``别再提好咧。`` 一起毙掉。
-_ZH_BASE_FINAL_PARTICLES = "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢))"
-_ZH_FINAL_PARTICLES = (
-    "(?:\\s*(?:了|啊|呀|嘛|哦|呗|吧|啦|呢|喔|唷|齁|欸|誒|咧|喲))"
+# ⚠️ 助词本身只写**一份**字符串，正则和「中文独有证据」两处都从它派生。这两处
+# 一度是各抄一份的手写清单，抄着抄着就漂了：正则吃掉 ``啊 齁 欸 誒``、证据表里
+# 却没有，于是 ``別提君の名は啊。`` 整条 0 命中，而 ``吧`` 那个变体是好的
+# （codex P2）。见 _ZH_ZH_ONLY_FINAL_PARTICLES。
+_ZH_BASE_FINAL_PARTICLE_CHARS = "了啊呀嘛哦呗吧啦呢"
+_ZH_EXTRA_FINAL_PARTICLE_CHARS = "喔唷齁欸誒咧喲"
+_ZH_FINAL_PARTICLE_CHARS = (
+    _ZH_BASE_FINAL_PARTICLE_CHARS + _ZH_EXTRA_FINAL_PARTICLE_CHARS
 )
+_ZH_BASE_FINAL_PARTICLES = "(?:\\s*[" + _ZH_BASE_FINAL_PARTICLE_CHARS + "])"
+_ZH_FINAL_PARTICLES = "(?:\\s*[" + _ZH_FINAL_PARTICLE_CHARS + "])"
 
 # 动词和宾语之间的停顿标点：打字和 ASR 都会产生（``别再提，工作。`` / ``别叫我，"笨蛋"。``）。
 # parent 靠 ``.{1,40}?`` 把它吃进话题、再由 _trim_term 剥掉；本 PR 把句读排除出话题
@@ -925,6 +947,9 @@ _ZH_OBJECTLESS_AHEAD = (
 # 只是话题名，丢掉等于把用户明确说过的偏好扔了（codex P2）。
 # 所以要求三个条件同时成立才判为"这是日文句子"：
 _KANA_RE = re.compile(r"[぀-ゟ゠-ヿｦ-ﾟ]")
+# 汉字（含中日共用区）。⚠️ 和 _JA_GRAMMAR_RE 里那几条 ``(?<=[一-鿿])`` 是同一个
+# 区间，只写一份。
+_HAN_RE = re.compile(r"[一-鿿]")
 
 # (2a) 中文的正面证据：这些字形/组合在现代日文里不存在——简体字形、与日文新字体
 # 分道的繁体字形（說/説、這、關/関、沒/没、稱/称）、以及日文不会出现的组合
@@ -1033,6 +1058,11 @@ _ZH_SUBJECT_CHARS = "你妳您咱请們"
 # ⚠️ ``請`` 只在这里放行，**不能**进 _ZH_SUBJECT_CHARS：它是日文汉字，进了那张表
 # 就等于给无 ``再`` 的 ``請別提案をお願いします。`` 开洞。
 _ZH_POLITE_BEFORE_NEG = _ZH_SUBJECT_CHARS + "請"
+# 「``別`` 左边那个字起不了一个小句」——即日文 ``〜別`` 后缀的左界形状。和上面那条
+# lookbehind 用的是**同一张**表，只是取了反、给 Python 侧的守卫用（见
+# _is_japanese_sentence_match 里的 ``〜別 + 复合名词 + 光杆假名`` 那一格）。
+# ⚠️ 不含 _ZH_POLITE_BEFORE_NEG：主语 / 敬语那一格在证据这一步就已经放行返回了。
+_ZH_NON_CLAUSE_START_RE = re.compile(f"[^{_ZH_CLAUSE_START_LEFT}]")
 _ZH_NEG_VERB_EVIDENCE = (
     "(?:"
     + "(?:"
@@ -1097,20 +1127,41 @@ _ZH_SUBJECT_ACROSS_SPACE = re.compile(
 # ``吧``），而话题本身带日文助词时它们是唯一能证明这是中文指令的东西——不收的话
 # 繁中整条 0 命中，同句简体因为 ``别`` 有单字证据而正常（codex P2）。
 # ⚠️ 这几个字日文里根本不用，进字类不会像 ``没`` / ``称`` 那样短路守卫。
-_ZH_ZH_ONLY_FINAL_PARTICLES = "吧呗啦咧喔嘛呀呢哦唷囉啰喲"
+# ⚠️ 从 _ZH_FINAL_PARTICLE_CHARS **派生**，不再手抄。原先是两份手写清单，正则那份
+# 有 ``啊 齁 欸 誒`` 这份没有，于是 ``別提君の名は啊。`` / ``別提君の名は齁。`` 整条
+# 0 命中，同句简体和 ``吧`` 变体却是好的（codex P2）。有相等断言钉着两边同步。
+# ⚠️ ``了`` 单独去掉：它是日文常用汉字（終了 / 了解），进证据字类就等于给
+# ``別提案終了。`` 这类整句日文开洞。``了`` 作为中文证据由 _ZH_EVIDENCE_WORDS 里
+# 的「动词 + 了」负责——那是两个字的组合，日文写不出来。
+# ⚠️ ``囉 啰`` 是**额外**的：它们因为嘍囉 / 喽啰 而不进正则的助词表（见那里的注释），
+# 于是只会落在 term 里面，但作为中文证据同样成立。
+_ZH_ZH_ONLY_FINAL_PARTICLES = "".join(
+    c for c in _ZH_FINAL_PARTICLE_CHARS if c != "了"
+) + "囉啰"
 
 _ZH_EVIDENCE_CHARS = "别说讲谈讨论关这话题愿懒许为甭說這關沒稱" + _ZH_ZH_ONLY_FINAL_PARTICLES
 _ZH_EVIDENCE_WORDS = ("叫我", "喊我", "管我叫", "不想", "懶得", "不願", "没心情",
-    # ``提了`` 两个字连在一起是中文，日文不这么写——``君の名は別提了。`` 靠它。
-    "提了", "說了", "讲了", "講了",
     # ⚠️ 模板 1 也收 _ZH_ADDRESS_VERBS，但只有 叫我 / 喊我 / 管我叫 在上面这批里。
     # ``称`` 是日文标准字形（名称）不能进字类，但 ``称呼我`` 三个字连在一起是中文
     # 独有的。不收的话 ``不要称呼我「君の名は」。`` 整条被吞（codex P2）。
     "称呼我", "稱呼我")
+# 「言说动词 + 了」两个字连在一起是中文，日文写不出来（日文的 ``了`` 只出现在
+# 終了 / 了解 这类汉语词里，不做体标记）。``君の名は別提了。`` 就是靠它活下来的。
+# ⚠️ 从三张动词表**派生**，不再手抄。原先只手写了 ``提了 說了 讲了 講了``，于是
+# 前置话题模板放行的 ``提起 / 提及`` 在证据这一侧不存在——``君の名は別提起了。``
+# 整条 0 命中，同句简体正常（codex P2）。派生之后再往任何一张动词表加词，证据
+# 自动跟上。
+_ZH_VERB_LE_EVIDENCE = tuple(
+    verb + "了"
+    for verb in dict.fromkeys(
+        _ZH_SAY_COMPOUNDS + _ZH_SAY_VERBS + _ZH_PREPOSED_SAY_VERBS
+    )
+)
 _ZH_EVIDENCE_RE = re.compile(
     "|".join(
         (f"[{_ZH_EVIDENCE_CHARS}]",)
         + _ZH_EVIDENCE_WORDS
+        + _ZH_VERB_LE_EVIDENCE
         + (_ZH_NEG_VERB_EVIDENCE, _ZH_MULTI_NEG_EVIDENCE, _ZH_SUBJECT_BEFORE_NEG)
     )
 )
@@ -1184,6 +1235,7 @@ _JA_GRAMMAR_RE = re.compile(
 
 def _is_japanese_sentence_match(
     span: str, term: str, before: str = "", directive: str | None = None,
+    stem: str = "",
 ) -> bool:
     """Is this zh-template hit actually a Japanese sentence caught by shared kanji?
 
@@ -1228,7 +1280,40 @@ def _is_japanese_sentence_match(
     # 每条模板都会走到。
     if not _KANA_RE.search(span):
         return False
-    return bool(_JA_GRAMMAR_RE.search(term))
+    # 日文的 ``〜別 + 复合名词 + 光杆假名名词`` 这一格：``地域別提案スレ`` /
+    # ``A別講座スレ``。触发词吃掉 ``別提``，term 只剩 ``案スレ``——``案`` 是补全日文
+    # ``提案`` 的那半个词，``スレ`` 是个光杆名词，一个语法助词都没有，下面每一条都
+    # 够不着，于是非词被当中文存三天（codex P2）。parent 没有这一格，是本 PR 放行
+    # 繁体 ``別`` 带出来的。
+    #
+    # 判据是**左界 + term 的形状**两条一起：
+    #   · 左边有字且不是小句边界——``〜別`` 是后缀，前面必然挂着标签词（地域 / A /
+    #     カテゴリ）。走到这里已经意味着「否定词有歧义、动词是共用的、整段没有中文
+    #     证据」，所以不必再判动词。
+    #   · term 是**恰好一个汉字**接着假名。日文那一侧的复合名词是开集（提案 / 提出 /
+    #     提供 / 提示 / 提携 / 講座 / 講義…），枚举不干净；而「一个汉字 + 假名」这个
+    #     形状是闭的，指的就是「复合词的后半 + 假名尾巴」。
+    # ⚠️ 代价只落在**单字汉字 + 假名**的标题上（``動漫別提蘭ちゃん。``）。
+    # ``動畫別提ドラえもん。``（term 直接以假名开头）、``遊戲別提初音ミク。`` /
+    # ``別提美少女戰士セーラームーン。``（两个字以上的汉字词头）都照旧保留——这三条
+    # 正是这道守卫从第一轮起就在保的东西。
+    if (
+        before
+        and _ZH_NON_CLAUSE_START_RE.match(before[-1])
+        and _HAN_RE.match(term[:1])
+        and _KANA_RE.match(term[1:2])
+    ):
+        return True
+    # ⚠️ 判据要连上**被触发词吃掉的那个汉字**。``あり|なし`` / ``だ`` / ``する|した``
+    # / 句末终助词这四条都要求左边是汉语词干，而词干正好是动词的最后一个字：
+    # ``別討論あり。`` 里 ``討論`` 整个进了触发词，term 只剩 ``あり``，左界永远落空，
+    # 于是 ``あり`` / ``なし`` / ``した`` 被当中文存三天，而结构完全一样的
+    # ``別提案あり。``（term = ``案あり``）是拦住的（codex P2）。
+    # ⚠️ 只接**一个**汉字，且只在它确实是汉字时接：多接等于把触发词整段塞进判据，
+    # 而上面注释里写过，触发词那一侧是中日共用汉字、看它没有信息量。接一个字不会
+    # 凭空造出假名匹配——四条判据要的都是「汉字紧跟假名」，而 ``別提ドラえもん。``
+    # / ``別提おもてなし。`` 里假名前面还是假名，接完照样不匹配（实测）。
+    return bool(_JA_GRAMMAR_RE.search(stem + term))
 
 _PATTERNS_RAW: List[Tuple[str, str, str]] = [
     # ---------- zh ----------
@@ -1303,12 +1388,15 @@ _PATTERNS_RAW: List[Tuple[str, str, str]] = [
      # ⚠️ 终结符里的空白也只收横向：触发词落在行末时，换行本身会被当成「这条指令
      # 说完了」，于是上一行被绑成话题——``工作正常別提`` 换行 ``下一句。`` 存下
      # ``工作正常``（codex P2）。同一行的空格照旧算终结（``工作别提 然后…``）。
-     r"(?:提了|提起|提及|说|說|提|聊|讲|講)\s*(?:了)?(?:[，。！？；,.!?;]|"
+     # ⚠️ 触发词表见 _ZH_PREPOSED_SAY_VERBS：它和中文证据表是派生关系，别写死在这里。
+     # 复合词必须排在单字前缀之前（提起 / 提及 在 提 之前），常量本身已经是这个顺序。
+     + r"(?:提了|" + "|".join(_ZH_PREPOSED_SAY_VERBS) + r")"
+     + r"\s*(?:了)?(?:[，。！？；,.!?;]|"
      + _ZH_HSPACE_ONE + r"|$)"),
     # 不想/不愿 + 聊/讨论 + X — 同上：terminator 不要 \s，否则多词 NP 被切
     ("zh", "ban_topic",
      r"(?:我)?" + _ZH_HSPACE
-     + r"(?:不想|不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)"
+     + r"(?:不愿意|不願意|不愿|不願|懒得|懶得|没心情|沒心情)"
      + _ZH_HSPACE + r"(?:再)?" + _ZH_HSPACE
      + _ZH_VERBS_PLAIN
      + _ZH_HSPACE
@@ -1546,10 +1634,14 @@ def extract_directives(text: str) -> List[Tuple[str, str, str]]:
             # ⚠️ 只有**证据**看指令部分；假名和日文语法那两条判据仍看完整命中区间。
             # 传挖空后的串进去会把假名一起挖掉，``地域別提案をお願いします。`` 会因为
             # 「没有假名」被判成中文（补这条时踩到的）。
+            # 捕获组**左边紧邻**的那个字符（在命中区间之内，即触发词的末字）。日文的
+            # 汉字词干判据要靠它，见 _is_japanese_sentence_match 结尾。
+            stem = span[payload_lo - 1: payload_lo] if payload_lo else ""
             if zh_family and _is_japanese_sentence_match(
                 span, m.group(1),
                 text[max(0, m.start() - _ZH_SUBJECT_LEFT_MAX): m.start()],
                 directive=directive_only,
+                stem=stem if _HAN_RE.match(stem) else "",
             ):
                 # 从命中**起点之后**重扫，把藏在这段里的真指令捞回来。
                 pos = m.start() + 1
