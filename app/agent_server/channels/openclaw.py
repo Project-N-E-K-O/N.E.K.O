@@ -122,7 +122,12 @@ _APPROVAL_CONSUMED_KEY = "_approval_window_consumed"
 # ⚠️ 判据只认**明确的疑问标记**，不枚举「审批提示长什么样」——后者是开集。代价记在
 # 这里：上游若用不带问号的陈述句征询（英文 "Proceed?" 有问号，但 "Let me know" 没有），
 # 这条会误关窗口，用户得手敲字面命令。方向是 fail-closed。
-_APPROVAL_PROMPT_MARKERS = ("？", "?", "吗", "嗎", "要不要", "是否", "确认", "確認")
+#
+# ⚠️ 曾经还收了 `确认` / `確認` / `是否`，已删——它们在**陈述句**里同样常见，而这里是
+# 子串匹配：`已确认配置无误` / `確認完成` / `已检查是否有重复` 都不是在征询，却会把窗口
+# 顶开，随后一句随口的「同意」就发出去了（Codex P2）。留下的这几个没有这个毛病：`？`
+# `?` 是标点，`吗` `嗎` `要不要` 只出现在真的在问的句子里。
+_APPROVAL_PROMPT_MARKERS = ("？", "?", "吗", "嗎", "要不要")
 
 
 def _iter_approval_window_tasks(
@@ -669,11 +674,26 @@ async def dispatch(
                         tier = tier_fn(result.tool_args.get("original_user_text"))
                     except Exception:
                         logger.debug("[OpenClaw] stop_trigger_tier failed", exc_info=True)
-                if tier == "ambiguous" and not _collect_active_openclaw_task_ids(
+                # ⚠️ 佐证不只是「有任务在跑」，**还站着的审批提示也算**。审批提示出口时
+                # 恰恰没有 queued/running 任务——窗口是 completed 开的，两个状态集合互不
+                # 相交。只看在跑的任务就会在这里提前 return，于是底下那段作废窗口的代码
+                # 根本不执行：用户那句「停下来」是在**拒绝**刚问出口的提示，结果不但被
+                # 静默丢弃，窗口还留着，随后一句随口的「同意」就能把他刚拒绝的动作批了。
+                # 用和作废同一套放宽过滤（不判龄、不按角色、不要求 session）——这里宁可
+                # 多放行一次 /stop，也不能漏掉一次拒绝。
+                corroborated = _collect_active_openclaw_task_ids(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
                     exclude_task_id=result.task_id,
-                ):
+                ) or _iter_approval_window_tasks(
+                    sender_id=nk_sender_id,
+                    lanlan_name=lanlan_name,
+                    exclude_task_id=result.task_id,
+                    age_bounded=False,
+                    match_lanlan=False,
+                    require_session=False,
+                )
+                if tier == "ambiguous" and not corroborated:
                     logger.info(
                         "[OpenClaw] /stop dropped: ambiguous phrasing with no running "
                         "task for sender=%s lanlan=%s",

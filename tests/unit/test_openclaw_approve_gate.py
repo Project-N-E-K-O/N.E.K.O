@@ -989,7 +989,7 @@ def test_a_completion_that_asked_nothing_does_not_open_the_gate(wired):
 
 @pytest.mark.parametrize(
     "reply",
-    ["要删掉吗？", "Proceed?", "确认执行这个动作", "是否继续", "需要我删掉嗎"],
+    ["要删掉吗？", "Proceed?", "需要我删掉嗎", "要不要我继续", "删掉这 3 个?"],
 )
 def test_replies_that_can_carry_a_prompt_open_the_gate(wired, reply):
     """带明确疑问标记的回复才算提示。判据只认标记，不枚举「提示长什么样」。"""  # noqa: DOCSTRING_CJK
@@ -1079,3 +1079,47 @@ def test_the_addressed_tier_is_what_carries_the_addressed_cases(wired):
 
     for text in ("取消这个任务", "停止搜索", "算了别查了", "取消這個搜尋"):
         assert OpenClawAdapter.stop_trigger_tier(text) == "addressed", text
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "已确认配置无误。", "確認完成", "已检查是否有重复文件，没有发现。",
+        "整理完成，共移动 12 个文件。", "确认执行完毕", "是否存在的检查已跑完",
+    ],
+)
+def test_a_declarative_confirmation_is_not_a_prompt(wired, reply):
+    """⚠️ 标记是**子串**匹配，所以只能收在陈述句里不会出现的词。
+
+    ``确认`` / ``確認`` / ``是否`` all read naturally in a completion summary —
+    "已确认配置无误", "已检查是否有重复" — so accepting them as prompt markers
+    reopened the window on replies that asked nothing at all, and the next casual
+    同意 went straight upstream.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed", reply=reply)
+
+    _dispatch("/daemon approve")
+    assert fake.magic_calls == [], reply
+
+
+def test_an_ambiguous_stop_is_corroborated_by_a_standing_approval_window(wired):
+    """⚠️ 审批提示出口时**恰恰没有在跑的任务**——窗口是 completed 开的。
+
+    Requiring only a queued/running task made the guard return before the
+    ``/stop`` block, so a 「停下来」 that *rejects* the prompt was dropped **and**
+    left the window standing for a later inferred 同意 to approve the very thing
+    the user just refused.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-done", status="completed")
+    assert oc._collect_active_openclaw_task_ids() == [], "前提：没有在跑的任务"
+
+    _dispatch("/stop", task_id="magic-stop", user_text="停下来")
+    assert [c[0] for c in fake.magic_calls] == ["/stop"], "拒绝提示的 /stop 必须发出去"
+    assert registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True, "而且要把窗口作废掉"
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="magic-approve")
+    assert fake.magic_calls == [], "被拒绝过的提示不该还能授权"
