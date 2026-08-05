@@ -201,6 +201,7 @@ _REACT_CHAT_ASSET_VERSION_PATHS = (
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app/app-buttons.js",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cat1-chat-angry.gif",
     *sorted(_PROJECT_ROOT.glob("static/assets/avatar-tools/**/*.png")),
     *sorted(_PROJECT_ROOT.glob("static/sounds/avatar-tools/**/*.mp3")),
 )
