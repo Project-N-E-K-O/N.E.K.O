@@ -404,6 +404,8 @@ export default {
     install: {
       safeUpgradeHint: 'Ao importar o mesmo plugin novamente, a versão é verificada e a substituição segura com reversão é feita sem criar cópias com sufixo.',
       planFailed: 'Não foi possível inspecionar o pacote de instalação.',
+      packageRequired: 'Insira primeiro o caminho do pacote.',
+      installFailed: 'Falha na instalação: {error}',
       upgradeTitle: 'Atualizar {plugin}?',
       upgradeBody: 'A versão {current} será substituída por {target}. Um plugin em execução será reiniciado brevemente.',
       upgradeConfirm: 'Atualizar plugin',

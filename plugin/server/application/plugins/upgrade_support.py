@@ -28,6 +28,7 @@ class ReplacePluginError(RuntimeError):
         super().__init__(f"{stage} failed: {cause}")
         self.stage = stage
         self.rollback_status = rollback_status
+        self.cause = cause
 
 
 async def plugin_is_running(plugin_id: str) -> bool:

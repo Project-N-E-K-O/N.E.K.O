@@ -404,6 +404,8 @@ export default {
     install: {
       safeUpgradeHint: '같은 플러그인을 다시 가져오면 버전을 확인하고 롤백 가능한 안전한 교체를 수행하며 접미사가 붙은 복사본을 만들지 않습니다.',
       planFailed: '설치 패키지를 검사할 수 없습니다.',
+      packageRequired: '먼저 패키지 경로를 입력하세요.',
+      installFailed: '설치 실패: {error}',
       upgradeTitle: '{plugin}을(를) 업그레이드할까요?',
       upgradeBody: '버전 {current}이(가) {target}(으)로 교체됩니다. 실행 중인 플러그인은 잠시 재시작됩니다.',
       upgradeConfirm: '플러그인 업그레이드',

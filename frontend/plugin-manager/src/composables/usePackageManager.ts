@@ -1,14 +1,12 @@
 import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   analyzePluginBundle,
   getPluginCliPackages,
   getPluginCliPlugins,
   inspectPluginPackage,
   buildPluginCli,
-  installPluginPackage,
-  planPluginInstall,
   verifyPluginPackage,
   type PluginCliAnalyzeResponse,
   type PluginCliInspectResponse,
@@ -17,7 +15,6 @@ import {
   type PluginCliBuildRequest,
   type PluginCliBuildResponse,
   type PluginCliInstallRequest,
-  type PluginCliInstallPlanResponse,
   type PluginCliPluginRef,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
@@ -29,6 +26,7 @@ import {
 } from '@/composables/usePluginWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { formatHttpError } from '@/utils/request'
+import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
 export type BuildMode = PluginCliBuildMode
@@ -75,7 +73,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const building = ref(false)
   const inspecting = ref(false)
   const verifying = ref(false)
-  const installing = ref(false)
+  const { installing, installPlan, installPackagePath } = usePluginPackageInstaller()
   const analyzing = ref(false)
 
   const resultKind = ref<PackageResultKind>('')
@@ -106,7 +104,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     profiles_root: '',
     on_conflict: 'fail',
   })
-  const installPlan = ref<PluginCliInstallPlanResponse | null>(null)
 
   const analyzeForm = ref({
     plugins: [] as string[],
@@ -738,97 +735,23 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   }
 
   async function handleInstall() {
-    if (!installForm.value.package?.trim()) {
-      ElMessage.warning('请先输入包路径')
+    inspectResult.value = null
+    const response = await installPackagePath(installForm.value.package || '', {
+      pluginsRoot: installForm.value.plugins_root,
+      profilesRoot: installForm.value.profiles_root,
+    })
+    if (!response) {
       return
     }
-    installing.value = true
-    inspectResult.value = null
-    installPlan.value = null
-    try {
-      const packagePath = installForm.value.package.trim()
-      const pluginsRoot = installForm.value.plugins_root?.trim() || undefined
-      const profilesRoot = installForm.value.profiles_root?.trim() || undefined
-      const plan = await planPluginInstall({
-        package: packagePath,
-        plugins_root: pluginsRoot,
-        profiles_root: profilesRoot,
-      })
-      installPlan.value = plan
-
-      if (plan.action === 'blocked') {
-        const blockedKey = plan.reason === 'bundle_conflict'
-          ? 'package.install.blockedBundleConflict'
-          : plan.reason === 'legacy_plugin_present'
-            ? 'package.install.blockedLegacyPlugin'
-            : 'package.install.blockedDirectoryConflict'
-        ElMessage.error(
-          plan.reason === 'legacy_plugin_present'
-            ? t(blockedKey, {
-                plugin: plan.legacy_plugin_ids[0] || plan.plugin_id || plan.directory_name,
-              })
-            : t(blockedKey),
-        )
-        return
-      }
-
-      const request: PluginCliInstallRequest = {
-        package: packagePath,
-        plugins_root: pluginsRoot,
-        profiles_root: profilesRoot,
-        on_conflict: 'fail',
-      }
-      if (plan.action === 'upgrade') {
-        try {
-          await ElMessageBox.confirm(
-            t('package.install.upgradeBody', {
-              current: plan.current_version || '-',
-              target: plan.target_version || '-',
-            }),
-            t('package.install.upgradeTitle', {
-              plugin: plan.plugin_id || plan.directory_name,
-            }),
-            {
-              type: 'warning',
-              confirmButtonText: t('package.install.upgradeConfirm'),
-              cancelButtonText: t('common.cancel'),
-            },
-          )
-        } catch {
-          ElMessage.info(t('package.install.upgradeCancelled'))
-          return
-        }
-        request.confirm_upgrade = true
-        request.confirmation_token = plan.confirmation_token
-      }
-
-      const response = await installPluginPackage(request)
-      setResult('install', response)
-      await refreshPluginSources()
-      if (response.operation === 'upgrade') {
-        ElMessage.success(t('package.install.upgradeSucceeded', {
-          plugin: plan.plugin_id || plan.directory_name,
-        }))
-      } else {
-        ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
-      }
-    } catch (error) {
-      const errorCode = (error as any)?.response?.data?.detail?.code
-        || (error as any)?.response?.data?.code
-      if (errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK') {
-        const rollbackStatus = (error as any)?.response?.data?.detail?.details?.rollback_status
-        ElMessage.error(t(
-          rollbackStatus === 'completed'
-            ? 'package.install.rollbackCompleted'
-            : 'package.install.rollbackIncomplete',
-        ))
-      } else if (!installPlan.value) {
-        ElMessage.error(t('package.install.planFailed'))
-      } else {
-        ElMessage.error(`安装失败：${formatHttpError(error)}`)
-      }
-    } finally {
-      installing.value = false
+    setResult('install', response)
+    await refreshPluginSources()
+    if (response.operation === 'upgrade') {
+      const plan = installPlan.value
+      ElMessage.success(t('package.install.upgradeSucceeded', {
+        plugin: plan?.plugin_id || plan?.directory_name || '',
+      }))
+    } else {
+      ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
     }
   }
 
