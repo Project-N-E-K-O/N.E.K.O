@@ -65,6 +65,41 @@ class QQMessageDispatcher:
             message["_private_permission_level_at_receipt"] = "admin"
             message["_open_platform_admin_promoted_at_receipt"] = True
 
+    @staticmethod
+    def _resolve_open_platform_group_key(
+        message: dict[str, Any],
+    ) -> tuple[str, str]:
+        """告警用的群标识，外加「它是从哪个字段取到的」。
+
+        不能只认 ``message["group_id"]``：``_convert_event`` 只读
+        ``data.get("group_id")``，而开放平台若按 v2 语义下发 ``group_openid``，
+        这个键恒为空串——于是这个告警会在**最可能出问题的那种部署上整个哑
+        掉**，正好是设计文档 §2.15.4.4(a) 点名「比 R11 更早爆」的那一种。
+        一个只负责「让问题可见」的东西，不能在兄弟缺陷兑现时自己先瞎。
+
+        所以回落到原始 payload 里任何一个带 group 的标识字段（按名字找，不
+        枚举，理由同取证插桩）。**刻意只读、绝不回填** ``message["group_id"]``：
+        回填会改变该通道 ``speaker_id`` / subject 的字节，那是 §2.15.4.4(a)
+        自己的事，取证数据回来之前一行都不该动。
+
+        Returns:
+            ``(群标识, 它来自 raw 的哪个键)``。第二项为空串表示走的是正常的
+            ``group_id``；非空本身就是 §2.15.4.4(a) 已兑现的证据。
+        """
+        group_id = str(message.get("group_id") or "").strip()
+        if group_id:
+            return group_id, ""
+        raw = message.get("raw")
+        if not isinstance(raw, dict):
+            return "", ""
+        for key in sorted(str(k) for k in raw):
+            if "group" not in key.lower():
+                continue
+            value = str(raw.get(key) or "").strip()
+            if value:
+                return value, key
+        return "", ""
+
     def _note_open_platform_identity_scope(
         self,
         message: dict[str, Any],
@@ -98,7 +133,9 @@ class QQMessageDispatcher:
             channel = str(message.get("channel") or "").strip().lower()
             if channel != _OPEN_PLATFORM_CHANNEL:
                 return
-            group_id = str(message.get("group_id") or "").strip()
+            group_id, group_key_source = self._resolve_open_platform_group_key(
+                message,
+            )
             sender_id = str(message.get("user_id") or "").strip()
             if not group_id or not sender_id:
                 return
@@ -147,6 +184,14 @@ class QQMessageDispatcher:
                 "只在私聊作用域有效，需要在本群单独把群内 id 加进信任用户。"
                 "本条仅为诊断，不改变任何权限判定。"
             )
+            if group_key_source:
+                # 顺带报的是另一件事，而且比 R11 更早爆：群 id 根本不在
+                # _convert_event 读的那个键上（§2.15.4.4(a)）。
+                text += (
+                    f"（另：本群的群 id 不在 group_id 字段上，实际挂在 "
+                    f"{group_key_source}——这会让群消息在别处被当成「无群」，"
+                    "需要单独修，见设计文档 §2.15.4.4(a)。）"
+                )
             logger = getattr(self.plugin, "logger", None)
             if logger is not None:
                 logger.warning(text)

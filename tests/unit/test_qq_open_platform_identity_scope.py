@@ -636,13 +636,17 @@ def _make_dispatcher(*, roster):
 ADMIN_ROSTER = [{"qq": "OWNER_PRIVATE_OPENID", "level": "admin"}]
 
 
-def _speak(dispatcher, *, sender, level="none", group="GROUP_X", channel="open"):
+def _speak(
+    dispatcher, *, sender, level="none", group="GROUP_X", channel="open", raw=None,
+):
     message = {
         "message_type": "group",
         "channel": channel,
         "group_id": group,
         "user_id": sender,
     }
+    if raw is not None:
+        message["raw"] = raw
     dispatcher._note_open_platform_identity_scope(message, level)
     return message
 
@@ -675,6 +679,97 @@ def test_alarm_fires_once_per_group_and_names_the_group():
     assert "[R11]" in warnings[0] and "GROUP_X" in warnings[0]
     # The same text also reaches the plugin's in-app log page.
     assert dispatcher.plugin._emit_log.call_args.args == ("WARN", warnings[0])
+
+
+def test_alarm_still_works_when_the_group_id_hangs_off_group_openid():
+    # _convert_event only reads data["group_id"], so a v2 payload leaves
+    # message["group_id"] empty.  Bailing on that would blind this alarm in
+    # exactly the deployment the design doc says breaks first.
+    dispatcher = _make_dispatcher(roster=ADMIN_ROSTER)
+    for i in range(QQMessageDispatcher.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS):
+        _speak(
+            dispatcher, sender=f"STRANGER_{i}", group="",
+            raw={"group_openid": "GROUP_OPENID_X", "content": "hi"},
+        )
+
+    warnings = _warnings(dispatcher)
+    assert len(warnings) == 1
+    assert "GROUP_OPENID_X" in warnings[0]
+    # ...and it reports the neighbouring defect it just tripped over.
+    assert "group_openid" in warnings[0]
+    assert "2.15.4.4" in warnings[0]
+
+
+def test_alarm_finds_a_group_key_nobody_anticipated():
+    # The fallback matches by name shape, not by an allowlist -- the whole
+    # reason this instrumentation exists is that the payload's key names are
+    # unverified, so "group_openid" is a guess, not a spec.
+    dispatcher = _make_dispatcher(roster=ADMIN_ROSTER)
+    for i in range(QQMessageDispatcher.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS):
+        _speak(
+            dispatcher, sender=f"STRANGER_{i}", group="",
+            raw={"group_ref_v3": "GROUP_REF_X", "content": "hi"},
+        )
+
+    warnings = _warnings(dispatcher)
+    assert len(warnings) == 1
+    assert "GROUP_REF_X" in warnings[0] and "group_ref_v3" in warnings[0]
+
+
+def test_alarm_keeps_openid_groups_apart():
+    dispatcher = _make_dispatcher(roster=ADMIN_ROSTER)
+    for openid in ("GROUP_OPENID_X", "GROUP_OPENID_Y"):
+        for i in range(QQMessageDispatcher.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS):
+            _speak(
+                dispatcher, sender=f"{openid}_STRANGER_{i}", group="",
+                raw={"group_openid": openid},
+            )
+
+    warnings = _warnings(dispatcher)
+    assert len(warnings) == 2
+    assert any("GROUP_OPENID_X" in w for w in warnings)
+    assert any("GROUP_OPENID_Y" in w for w in warnings)
+
+
+def test_alarm_prefers_the_converted_group_id_over_the_raw_payload():
+    dispatcher = _make_dispatcher(roster=ADMIN_ROSTER)
+    for i in range(QQMessageDispatcher.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS):
+        _speak(
+            dispatcher, sender=f"STRANGER_{i}", group="GROUP_X",
+            raw={"group_openid": "SHOULD_NOT_BE_USED"},
+        )
+
+    warnings = _warnings(dispatcher)
+    assert len(warnings) == 1
+    assert "GROUP_X" in warnings[0]
+    assert "SHOULD_NOT_BE_USED" not in warnings[0]
+    # No group_id defect here, so no note about one.
+    assert "2.15.4.4" not in warnings[0]
+
+
+def test_alarm_never_backfills_the_group_id_it_recovered():
+    # Read-only: writing it back would change this channel's speaker_id and
+    # subject bytes, which is a separate change that must wait for evidence.
+    dispatcher = _make_dispatcher(roster=ADMIN_ROSTER)
+    seen = [
+        _speak(
+            dispatcher, sender=f"STRANGER_{i}", group="",
+            raw={"group_openid": "GROUP_OPENID_X"},
+        )
+        for i in range(QQMessageDispatcher.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS + 2)
+    ]
+
+    assert _warnings(dispatcher)  # the alarm did fire...
+    for message in seen:
+        assert message["group_id"] == ""
+        assert message["raw"] == {"group_openid": "GROUP_OPENID_X"}
+
+
+def test_alarm_stays_quiet_when_no_group_identifier_exists_at_all():
+    dispatcher = _make_dispatcher(roster=ADMIN_ROSTER)
+    for i in range(40):
+        _speak(dispatcher, sender=f"STRANGER_{i}", group="", raw={"content": "hi"})
+    assert _warnings(dispatcher) == []
 
 
 def test_alarm_tracks_groups_independently():
