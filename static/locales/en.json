@@ -2693,9 +2693,9 @@
         "fixedTitle": "Read the fixed phrase",
         "fixedHelp": "Read the text below using your normal conversation volume and pace.",
         "fixedPrompts": [
-            "Today I want to share something interesting with you, and I look forward to hearing your response.",
-            "The light outside is slowly changing, and I will keep talking with you in my natural voice.",
-            "Whether today is busy or relaxed, I hope this conversation feels comfortable."
+            "Today I want to share something interesting with you.",
+            "The light outside changes as we keep talking.",
+            "I hope our conversation feels calm and comfortable."
         ],
         "freeTitle1": "Free speech check 1",
         "freeTitle2": "Free speech check 2",

@@ -2,11 +2,37 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+
+
+def _contrast_ratio(foreground: str, background: str) -> float:
+    def luminance(color: str) -> float:
+        channels = [
+            int(color[index : index + 2], 16) / 255
+            for index in (1, 3, 5)
+        ]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return sum(
+            coefficient * channel
+            for coefficient, channel in zip(
+                (0.2126, 0.7152, 0.0722), linear, strict=True
+            )
+        )
+
+    lighter, darker = sorted(
+        (luminance(foreground), luminance(background)), reverse=True
+    )
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 def _literal_string_set(source: str, assignment_name: str) -> set[str]:
@@ -75,6 +101,16 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert 'aria-labelledby="voice-filter-title"' in template
     assert 'aria-describedby="voice-filter-help"' in template
     assert ".switch input:focus-visible + .switch-track" in stylesheet
+    assert "--voice-blue-dark: #075b80" in stylesheet
+    assert "--voice-danger: #b4233b" in stylesheet
+    assert "--voice-focus: #082f45" in stylesheet
+    assert "--voice-focus: #8edcff" in stylesheet
+    assert "outline: 3px solid var(--voice-focus)" in stylesheet
+    assert "filter: brightness(0) saturate(100%)" in stylesheet
+    assert _contrast_ratio("#075b80", "#f8fcff") >= 4.5
+    assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
+    assert _contrast_ratio("#082f45", "#49d5fd") >= 3
+    assert _contrast_ratio("#082f45", "#159ff5") >= 3
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     header_block = stylesheet[
@@ -165,10 +201,20 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         copy = payload["voiceIdentity"]
         assert required <= set(copy)
         assert len(copy["fixedPrompts"]) == 3
+        if locale in {"en", "ru", "es", "pt"}:
+            assert all(
+                len(prompt.split()) <= 10
+                for prompt in copy["fixedPrompts"]
+            )
+        else:
+            assert all(
+                len(re.sub(r"[^\w]", "", prompt, flags=re.UNICODE)) <= 24
+                for prompt in copy["fixedPrompts"]
+            )
         assert payload["settings"]["menu"]["voiceIdentity"]
 
 
 def test_voice_identity_locale_addition_bumps_locale_cache_key() -> None:
     bootstrap = (ROOT / "static/i18n-i18next.js").read_text(encoding="utf-8")
 
-    assert "LOCALE_VERSION = '2026-08-04-voice-identity'" in bootstrap
+    assert "LOCALE_VERSION = '2026-08-05-voice-identity-a11y'" in bootstrap

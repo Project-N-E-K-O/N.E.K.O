@@ -2,12 +2,13 @@
 
 :root {
     --voice-blue: #24b8f2;
-    --voice-blue-dark: #078ac5;
+    --voice-blue-dark: #075b80;
     --voice-ink: #17354a;
     --voice-muted: #61798a;
     --voice-border: rgba(36, 184, 242, 0.24);
     --voice-panel: rgba(255, 255, 255, 0.94);
-    --voice-danger: #d94b5e;
+    --voice-danger: #b4233b;
+    --voice-focus: #082f45;
 }
 
 [data-theme="dark"] {
@@ -17,6 +18,7 @@
     --voice-border: rgba(91, 215, 255, 0.28);
     --voice-panel: rgba(27, 39, 48, 0.96);
     --voice-danger: #ff8d9b;
+    --voice-focus: #8edcff;
 }
 
 * {
@@ -56,7 +58,7 @@ input {
 
 button:focus-visible,
 input:focus-visible {
-    outline: 3px solid rgba(36, 184, 242, 0.32);
+    outline: 3px solid var(--voice-focus);
     outline-offset: 3px;
 }
 
@@ -116,6 +118,7 @@ input:focus-visible {
 .voice-close img {
     width: 30px;
     height: 30px;
+    filter: brightness(0) saturate(100%);
 }
 
 .voice-identity-content {
@@ -368,7 +371,7 @@ button:disabled {
 }
 
 .switch input:focus-visible + .switch-track {
-    outline: 3px solid rgba(36, 184, 242, 0.32);
+    outline: 3px solid var(--voice-focus);
     outline-offset: 3px;
 }
 

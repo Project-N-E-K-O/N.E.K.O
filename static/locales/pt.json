@@ -2693,9 +2693,9 @@
         "fixedTitle": "Leia o texto fixo",
         "fixedHelp": "Leia o texto abaixo com o volume e o ritmo naturais que você usa em uma conversa.",
         "fixedPrompts": [
-            "Hoje quero compartilhar algo interessante com você e também espero ouvir sua resposta.",
-            "A luz lá fora muda aos poucos e continuarei conversando com você com a minha voz natural.",
-            "Se hoje estiver corrido ou tranquilo, espero que esta conversa seja confortável."
+            "Hoje quero compartilhar algo interessante com você.",
+            "A luz lá fora muda enquanto conversamos.",
+            "Espero que nossa conversa seja calma e agradável."
         ],
         "freeTitle1": "Teste de fala livre 1",
         "freeTitle2": "Teste de fala livre 2",
