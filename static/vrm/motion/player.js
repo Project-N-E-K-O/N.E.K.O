@@ -649,7 +649,7 @@
             return played;
         }
 
-        async _resumeBase(generation, seed) {
+        async _resumeBase(generation, seed, scheduleNext) {
             if (generation !== this.queueGeneration) return false;
             if (this.state.posture !== 'stand' && this.state.poseAsset) {
                 this.state.phase = 'pose';
@@ -675,7 +675,7 @@
                 seed: seed,
                 force: true,
                 reselect: false,
-                scheduleNext: true
+                scheduleNext: scheduleNext !== false
             });
         }
 
@@ -865,7 +865,11 @@
                 // Crossfade immediately from the authored action tail into the
                 // current posture base. Do not freeze the final frame between
                 // actions; _resumeBase never inserts a T-pose.
-                return this._resumeBase(generation, seed + ':post-action');
+                return this._resumeBase(
+                    generation,
+                    seed + ':post-action',
+                    decision.scheduleNextRest !== false
+                );
             }
             return generation === this.queueGeneration;
         }

@@ -509,11 +509,12 @@ Object.assign(window.Jukebox, {
       Jukebox.stopVMD(true); // 停止之前的舞蹈动画
 
       // 使用 VRMManager 播放 VRMA（manager 内部会确保 animation 模块已初始化）
-      await window.vrmManager.playVRMAAnimation(vrmaPath, {
+      const played = await window.vrmManager.playVRMAAnimation(vrmaPath, {
         loop: false,
         fadeInDuration: 0.5,
         fadeOutDuration: 0.5
       });
+      if (played !== true) return;
       Jukebox.State.isVMDPlaying = true;
       console.log('[Jukebox] VRMA 动画已播放:', vrmaPath);
     } catch (error) {
