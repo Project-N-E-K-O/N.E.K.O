@@ -1095,6 +1095,11 @@ def test_folding_a_duplicate_clears_the_losing_entitys_dangling_canonical():
     from memory.subject_identity import canonical_subject
 
     snap = trust_store.trust_snapshot()
+    # Rule out the alternative explanation: `canonical_subject` returns the
+    # identity whenever the pool is unloaded, so without this guard the
+    # assertion below would be green regardless of whether the dangling
+    # pointer was cleared.
+    assert snap.loaded is True
     other = MemorySubject.group_participant("qq", "G", "other")
     # No canonical ⇒ identity. Before the fix this routed to `qq:G:dup`, i.e.
     # into an account belonging to a DIFFERENT entity.

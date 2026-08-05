@@ -584,12 +584,16 @@ async def test_the_same_conversation_id_on_two_platforms_never_folds():
     assert participant_key(qq_side, snap) != participant_key(bili_side, snap)
     groups = fold_participants([qq_side, bili_side], snap)
     assert len(groups) == 2
-    # And each slot only ever authorizes its own platform.
-    for group in groups:
-        platforms = {
-            marker[0].split(":")[1] for marker in group.markers
-        }
-        assert len(platforms) == 1
+    # Each slot authorizes exactly one platform, AND the two slots cover both.
+    # ``marker[0]`` is ``MemorySubject.key`` = "group_participant:<platform>:
+    # <conversation>:<actor>", so index 1 is the platform. Asserting only
+    # "one platform per group" would still pass if BOTH groups came out as qq.
+    per_group = [
+        {marker[0].split(":")[1] for marker in group.markers}
+        for group in groups
+    ]
+    assert all(len(platforms) == 1 for platforms in per_group)
+    assert {next(iter(platforms)) for platforms in per_group} == {"qq", "bili"}
 
 
 async def test_a_merge_that_would_clobber_a_ledger_raises_under_O():
@@ -661,7 +665,19 @@ async def test_forget_fails_closed_when_the_identity_pool_is_unreadable():
     assert len(_forget_targets(A1)) == 2
 
     trust_store._set_load_failed(True)
+    stubs = {
+        "fact_store": object(), "fact_dedup_resolver": object(),
+        "persona_manager": object(), "reflection_engine": object(),
+    }
+    saved = {name: getattr(routes.runtime, name) for name in stubs}
     try:
+        # The endpoint 503s for TWO different reasons, and in a bare unit test
+        # the runtime components are all None — so the "memory_server not fully
+        # initialized" branch fires FIRST and a bare `status_code == 503`
+        # assertion passes whether or not the fail-closed guard exists at all.
+        # Stub the components out and assert on the DETAIL to pin the branch.
+        for name, stub in stubs.items():
+            setattr(routes.runtime, name, stub)
         # Degradation is real: expansion silently narrows to one subject...
         assert expand_subject(A1, _snap()) == (A1,)
         # ...so the endpoint must refuse rather than under-delete quietly.
@@ -671,7 +687,11 @@ async def test_forget_fails_closed_when_the_identity_pool_is_unreadable():
         with pytest.raises(routes.HTTPException) as excinfo:
             await routes.forget_scoped_subject("Neko", request)
         assert excinfo.value.status_code == 503
+        assert "identity pool unreadable" in str(excinfo.value.detail)
+        assert "not fully initialized" not in str(excinfo.value.detail)
     finally:
+        for name, original in saved.items():
+            setattr(routes.runtime, name, original)
         trust_store._set_load_failed(False)
 
 
@@ -798,6 +818,9 @@ async def test_identity_mutations_are_refused_while_the_pool_is_unreadable():
             with pytest.raises(routes.HTTPException) as excinfo:
                 await call
             assert excinfo.value.status_code == 503
+            # Pin the branch: these endpoints have no runtime-component check,
+            # but asserting the detail keeps the test honest if one is added.
+            assert "identity pool unreadable" in str(excinfo.value.detail)
     finally:
         trust_store._set_load_failed(False)
     # Nothing was detached behind the 503.
