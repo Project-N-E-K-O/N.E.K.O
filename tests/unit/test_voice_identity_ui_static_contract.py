@@ -111,6 +111,22 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
     assert _contrast_ratio("#082f45", "#49d5fd") >= 3
     assert _contrast_ratio("#082f45", "#159ff5") >= 3
+    assert "--voice-muted: #61798a" in stylesheet
+    assert _contrast_ratio("#61798a", "#ffffff") >= 4.5
+    eyebrow_block = stylesheet[
+        stylesheet.index(".eyebrow {"):
+        stylesheet.index("}", stylesheet.index(".eyebrow {"))
+    ]
+    assert "opacity:" not in eyebrow_block
+    switch_track_start = stylesheet.index("\n.switch-track {")
+    switch_track_block = stylesheet[
+        switch_track_start:stylesheet.index("}", switch_track_start)
+    ]
+    switch_track_color = re.search(
+        r"background:\s*(#[0-9a-fA-F]{6})", switch_track_block
+    )
+    assert switch_track_color is not None
+    assert _contrast_ratio(switch_track_color.group(1), "#ffffff") >= 3
     assert '[data-theme="dark"]' in stylesheet
     assert "--voice-panel: rgba(27, 39, 48, 0.96)" in stylesheet
     dark_start = stylesheet.index('[data-theme="dark"] {')

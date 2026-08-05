@@ -744,6 +744,120 @@ test('starting enrollment releases the permission-check microphone before the fi
     assert.equal(harness.elements.get('voice-identity-record').hidden, false);
 });
 
+test('a stale CSRF token is refreshed and the mutation is retried once', async () => {
+    let pageConfigRequests = 0;
+    let startRequests = 0;
+    const mutationTokens = [];
+    const harness = createHarness({
+        audio: true,
+        route(url, options) {
+            if (url === '/api/config/page_config') {
+                pageConfigRequests += 1;
+                return jsonResponse({
+                    autostart_csrf_token: pageConfigRequests === 1
+                        ? 'stale-token'
+                        : 'fresh-token',
+                });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
+                mutationTokens.push(options.headers.get('X-CSRF-Token'));
+                if (startRequests === 1) {
+                    return jsonResponse(
+                        { error: 'forbidden', error_code: 'csrf_validation_failed' },
+                        { ok: false, status: 403 },
+                    );
+                }
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(pageConfigRequests, 2);
+    assert.equal(startRequests, 2);
+    assert.deepEqual(mutationTokens, ['stale-token', 'fresh-token']);
+    assert.equal(harness.elements.get('voice-identity-record').hidden, false);
+});
+
+test('a repeated CSRF rejection stops after the single refresh retry', async () => {
+    let pageConfigRequests = 0;
+    let startRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                pageConfigRequests += 1;
+                return jsonResponse({ autostart_csrf_token: `csrf-token-${pageConfigRequests}` });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
+                return jsonResponse(
+                    { error: 'forbidden', error_code: 'csrf_validation_failed' },
+                    { ok: false, status: 403 },
+                );
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(pageConfigRequests, 2);
+    assert.equal(startRequests, 2);
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Request failed.',
+    );
+});
+
+test('a non-CSRF 403 is not refreshed or replayed', async () => {
+    let pageConfigRequests = 0;
+    let startRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                pageConfigRequests += 1;
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
+                return jsonResponse(
+                    { error: 'forbidden', error_code: 'different_failure' },
+                    { ok: false, status: 403 },
+                );
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(pageConfigRequests, 1);
+    assert.equal(startRequests, 1);
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Request failed.',
+    );
+});
+
 test('starting enrollment reports an unavailable microphone', async () => {
     const mediaError = new Error('microphone_locked');
     mediaError.name = 'NotReadableError';

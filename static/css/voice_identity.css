@@ -95,7 +95,6 @@ input:focus-visible {
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.14em;
-    opacity: 0.82;
 }
 
 .neko-window-controls,
@@ -384,7 +383,7 @@ button:disabled {
     width: 54px;
     height: 30px;
     border-radius: 99px;
-    background: #b9cbd5;
+    background: #708999;
     cursor: pointer;
     transition: background 0.2s ease;
 }

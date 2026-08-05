@@ -75,25 +75,42 @@
 
     async function apiRequest(path, options) {
         const config = options || {};
-        const headers = new Headers(config.headers || {});
-        if (config.method && config.method !== 'GET') {
-            headers.set('X-CSRF-Token', state.csrfToken);
+        const method = String(config.method || 'GET').toUpperCase();
+        const isMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+
+        async function sendOnce() {
+            const headers = new Headers(config.headers || {});
+            if (isMutation) {
+                headers.set('X-CSRF-Token', state.csrfToken);
+            }
+            if (state.sessionId) {
+                headers.set(SESSION_HEADER, state.sessionId);
+            }
+            const response = await fetch(`${API_ROOT}${path}`, {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                ...config,
+                headers
+            });
+            let payload = {};
+            try {
+                payload = await response.json();
+            } catch (_) {
+                payload = {};
+            }
+            return { response, payload };
         }
-        if (state.sessionId) {
-            headers.set(SESSION_HEADER, state.sessionId);
+
+        let result = await sendOnce();
+        if (
+            isMutation
+            && result.response.status === 403
+            && result.payload.error_code === 'csrf_validation_failed'
+        ) {
+            await loadCsrfToken();
+            result = await sendOnce();
         }
-        const response = await fetch(`${API_ROOT}${path}`, {
-            credentials: 'same-origin',
-            cache: 'no-store',
-            ...config,
-            headers
-        });
-        let payload = {};
-        try {
-            payload = await response.json();
-        } catch (_) {
-            payload = {};
-        }
+        const { response, payload } = result;
         if (!response.ok) {
             const error = new Error(payload.error || 'request_failed');
             error.status = response.status;
