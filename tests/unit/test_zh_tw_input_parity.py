@@ -6870,3 +6870,70 @@ def test_the_two_stop_tiers_are_disjoint_and_cover_the_table():
 
     assert _STOP_ADDRESSED & _STOP_AMBIGUOUS == frozenset()
     assert _STOP_ADDRESSED | _STOP_AMBIGUOUS == _STOP_CLAUSES
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/stop", "/stop"), ("stop", "/stop"),
+        ("/new", "/new"), ("new", "/new"),
+        ("/clear", "/clear"), ("clear", "/clear"),
+        ("/daemon approve", "/daemon approve"), ("approve", "/daemon approve"),
+        ("/approve", "/daemon approve"), ("daemon approve", "/daemon approve"),
+    ],
+)
+def test_a_typed_command_never_depends_on_the_llm(text, expected):
+    """⚠️⚠️ 打出来的命令必须**保证**到达，不能让小模型有否决权。
+
+    ``classify_magic_intent`` used to await the LLM leg unconditionally, and any
+    dict it returned — including "not a command" — was final, so the rule layer
+    never got a say. A model having an off moment silently swallowed a typed
+    ``/stop`` while the upstream job kept running.
+
+    It also broke the free-text veto added alongside: a typed ``/new`` went out
+    to the LLM, came back, and was killed as if it had been *inferred* from free
+    text. Deciding the literal form before the LLM fixes both and saves a call.
+    """  # noqa: DOCSTRING_CJK
+    import asyncio
+
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter.__new__(OpenClawAdapter)
+    called = []
+
+    async def _hostile_llm(_self, user_text):
+        called.append(user_text)
+        return {"is_magic_intent": False, "command": None}
+
+    original = OpenClawAdapter._classify_magic_intent_with_llm
+    OpenClawAdapter._classify_magic_intent_with_llm = _hostile_llm
+    try:
+        result = asyncio.run(OpenClawAdapter.classify_magic_intent(adapter, text))
+    finally:
+        OpenClawAdapter._classify_magic_intent_with_llm = original
+
+    assert result.get("command") == expected, text
+    assert called == [], "字面命令不该把它送进 LLM"
+
+
+@pytest.mark.parametrize("text", ["换个话题", "忘了刚才的事", "重新开始", "清除聊天记录"])
+def test_the_free_text_veto_still_holds_when_the_llm_misbehaves(text):
+    """提示词管不住模型：LLM 硬返回 /new 也要被毙掉。"""  # noqa: DOCSTRING_CJK
+    import asyncio
+
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter.__new__(OpenClawAdapter)
+
+    async def _rogue_llm(_self, user_text):
+        return {"is_magic_intent": True, "command": "/new"}
+
+    original = OpenClawAdapter._classify_magic_intent_with_llm
+    OpenClawAdapter._classify_magic_intent_with_llm = _rogue_llm
+    try:
+        result = asyncio.run(OpenClawAdapter.classify_magic_intent(adapter, text))
+    finally:
+        OpenClawAdapter._classify_magic_intent_with_llm = original
+
+    assert result.get("command") is None, text
+    assert result.get("source") == "free-text-veto"
