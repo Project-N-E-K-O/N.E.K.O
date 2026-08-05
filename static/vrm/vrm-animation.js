@@ -732,6 +732,10 @@ class VRMAnimation {
     }
 
     stopVRMAAnimation() {
+        // A stop must also cancel a request that is still fetching/parsing and
+        // has not created currentAction yet. Direct callers do not provide the
+        // motion player's shouldApply guard, so generation is the shared gate.
+        this._playRequestGeneration += 1;
         if (this._fadeTimer) {
             clearTimeout(this._fadeTimer);
             this._fadeTimer = null;

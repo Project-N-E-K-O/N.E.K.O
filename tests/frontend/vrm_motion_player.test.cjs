@@ -236,6 +236,50 @@ function response(body, status) {
     assert.deepEqual(expression._resolveMoodWeights('shy', ['custom_blush', 'happy']), {
         custom_blush: 1
     });
+    expression.setMoodMap({ happy: ['model_happy'] });
+    assert.deepEqual(expression._resolveMoodWeights('happy', ['happy', 'model_happy']), {
+        model_happy: 1
+    });
+
+    const savedRestPlayer = new global.NekoMotionPlayer();
+    savedRestPlayer.assets = [];
+    assert.equal(savedRestPlayer.setSavedRestAnimations([
+        '/user_vrm/animation/custom-idle.vrma',
+        '/static/vrm/animation/wait01.vrma'
+    ]), 2);
+    assert.equal(savedRestPlayer.savedRestAssets[1].url, '/static/vrm/animation/wait01.vrma.gz');
+    let savedRestUrl = '';
+    savedRestPlayer._manager = function () {
+        return {
+            async playVRMAAnimation(url) {
+                savedRestUrl = url;
+                return true;
+            }
+        };
+    };
+    await savedRestPlayer.enterRest({
+        assetId: savedRestPlayer.savedRestAssets[0].id,
+        force: true,
+        scheduleNext: false
+    });
+    assert.equal(savedRestUrl, '/user_vrm/animation/custom-idle.vrma');
+
+    const savedCatalogPlayer = new global.NekoMotionPlayer();
+    savedCatalogPlayer.assets = [{
+        id: 'saved-built-in',
+        m: 'idle',
+        f: 'animation/wait02.vrma',
+        compression: 'gzip',
+        card: {}
+    }];
+    assert.equal(savedCatalogPlayer.setSavedRestAnimations([
+        '/static/vrm/animation/wait02.vrma'
+    ]), 1);
+    assert.equal(savedCatalogPlayer.savedRestAssets.length, 0);
+    assert.equal(savedCatalogPlayer.select({
+        intent: 'idle',
+        systemRest: true
+    }, 'saved-built-in', 'stand').id, 'saved-built-in');
 
     const framing = global.NekoVRMSafeFraming;
     assert.equal(framing.calculateFramingRatio({
@@ -278,7 +322,12 @@ function response(body, status) {
     staleAnimation._skinnedMeshes = [];
     staleAnimation._cachedSceneUuid = null;
     staleAnimation._fadeTimer = null;
+    staleAnimation._springBoneRestoreTimer = null;
     staleAnimation.currentAction = null;
+    staleAnimation.vrmaMixer = null;
+    staleAnimation._restorePhysics = function () {
+        staleVrm.humanoid.autoUpdateHumanBones = true;
+    };
     staleAnimation._cleanupOldMixer = function () {};
     staleAnimation._initLoader = async function () { return {}; };
     staleAnimation._loadVRMAGltf = function () {
@@ -295,6 +344,39 @@ function response(body, status) {
     assert.equal(await staleRequest, false);
     assert.equal(staleRequestPlayed, false);
     assert.equal(staleVrm.humanoid.autoUpdateHumanBones, true);
+
+    let finishStoppedLoad;
+    let stoppedRequestPlayed = false;
+    const stoppedAnimation = Object.create(global.VRMAnimation.prototype);
+    const stoppedVrm = {
+        scene: { uuid: 'stopped-scene', traverse() {} },
+        humanoid: { autoUpdateHumanBones: true }
+    };
+    stoppedAnimation.manager = { currentModel: { vrm: stoppedVrm } };
+    stoppedAnimation._playRequestGeneration = 0;
+    stoppedAnimation._skinnedMeshes = [];
+    stoppedAnimation._cachedSceneUuid = null;
+    stoppedAnimation._fadeTimer = null;
+    stoppedAnimation._springBoneRestoreTimer = null;
+    stoppedAnimation.currentAction = null;
+    stoppedAnimation.vrmaMixer = null;
+    stoppedAnimation._cleanupOldMixer = function () {};
+    stoppedAnimation._restorePhysics = function () {
+        stoppedVrm.humanoid.autoUpdateHumanBones = true;
+    };
+    stoppedAnimation._initLoader = async function () { return {}; };
+    stoppedAnimation._loadVRMAGltf = function () {
+        return new Promise(function (resolve) { finishStoppedLoad = resolve; });
+    };
+    stoppedAnimation._playAction = function () { stoppedRequestPlayed = true; };
+    const stoppedRequest = stoppedAnimation.playVRMAAnimation('/stopped-during-load.vrma');
+    await Promise.resolve();
+    await Promise.resolve();
+    stoppedAnimation.stopVRMAAnimation();
+    finishStoppedLoad({ userData: { vrmAnimations: [{}] } });
+    assert.equal(await stoppedRequest, false);
+    assert.equal(stoppedRequestPlayed, false);
+    assert.equal(stoppedVrm.humanoid.autoUpdateHumanBones, true);
 
     console.log('VRM motion player: OK (integrity and low-pose transitions)');
 })().catch(function (error) {

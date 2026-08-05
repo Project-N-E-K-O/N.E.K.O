@@ -78,6 +78,9 @@ assert.equal(runtimeSource.includes("new BroadcastChannel('neko_motion_lifecycle
 assert.match(runtimeSource, /neko:motion-lifecycle-relay/);
 assert.match(runtimeSource, /window\.__nekoMotionOwnsVrmPlayback = false/);
 assert.match(runtimeSource, /releasePlaybackOwnership\(\)/);
+assert.match(runtimeSource, /syncSavedRestAnimations\(\)/);
+assert.match(runtimeSource, /if \(refreshMode\(\) === 'vrm'\) void initialize\(\)/);
+assert.equal(runtimeSource.includes('\n    void initialize();\n'), false);
 assert.match(runtimeSource, /activeTurn === turn/);
 assert.match(runtimeSource, /ignored stale assistant turn end/);
 assert.equal(runtimeSource.includes("window.dispatchEvent(new CustomEvent(message.eventName"), false);

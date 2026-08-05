@@ -99,12 +99,31 @@
 
     function releasePlaybackOwnership() {
         window.__nekoMotionOwnsVrmPlayback = false;
-        const configured = window.lanlan_config || {};
-        const idleAnimations = configured.vrmIdleAnimations || configured.vrm_idle_animations;
+        const idleAnimations = configuredRestAnimations();
         if (vrmReady() && Array.isArray(idleAnimations) && idleAnimations.length
             && typeof window._startVrmIdleRotation === 'function') {
             window._startVrmIdleRotation(idleAnimations);
         }
+    }
+
+    function configuredRestAnimations() {
+        const configured = window.lanlan_config || {};
+        const keys = [
+            'vrmIdleAnimations', 'vrm_idle_animations', 'idleAnimations', 'idle_animation',
+            'vrmIdleAnimation', 'vrm_idle_animation', 'idleAnimation'
+        ];
+        for (const key of keys) {
+            if (!Object.prototype.hasOwnProperty.call(configured, key)) continue;
+            const value = configured[key];
+            if (Array.isArray(value)) return value;
+            if (typeof value === 'string') return value ? [value] : [];
+        }
+        return [];
+    }
+
+    function syncSavedRestAnimations() {
+        if (!player || typeof player.setSavedRestAnimations !== 'function') return 0;
+        return player.setSavedRestAnimations(configuredRestAnimations());
     }
 
     function currentLocale() {
@@ -343,6 +362,7 @@
             core = new window.NekoMotionCore(await response.json());
             player = new window.NekoMotionPlayer();
             await player.load();
+            syncSavedRestAnimations();
             core.registerActionCards(player.assets);
             await resolveCharacterProfile();
             acquirePlaybackOwnership();
@@ -892,6 +912,7 @@
         void initialize().then(function (ready) {
             if (!ready || !vrmReady()) return;
             stopOfficialIdleRotation();
+            syncSavedRestAnimations();
             player.setProfile(characterProfile());
             return player.enterRest({
                 profile: characterProfile(),
@@ -922,8 +943,11 @@
         selectedMode = String(event && event.detail && event.detail.mode || configuredMode()).toLowerCase();
         if (selectedMode !== 'vrm' && player) player.cancel('model_mode_changed');
         if (selectedMode === 'vrm') {
-            if (player && vrmReady()) {
+            if (!player) {
+                void initialize();
+            } else if (vrmReady()) {
                 acquirePlaybackOwnership();
+                syncSavedRestAnimations();
                 player.setProfile(characterProfile());
                 void player.enterRest({
                     profile: characterProfile(),
@@ -943,7 +967,7 @@
         if (activeTurn && !activeTurn.ended) scanTurnText();
     }, POLL_INTERVAL_MS);
     setInterval(maintainPersistentEmotion, 1000);
-    void initialize();
+    if (refreshMode() === 'vrm') void initialize();
 
     window.NekoMotion = Object.freeze({
         analyze: async function (text, options) {
@@ -974,6 +998,7 @@
         },
         rest: async function (options) {
             await initialize();
+            syncSavedRestAnimations();
             return player.enterRest(Object.assign({
                 profile: characterProfile(),
                 seed: 'manual-rest',

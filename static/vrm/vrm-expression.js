@@ -188,22 +188,22 @@ class VRMExpression {
         const weights = {};
         if (mood === 'neutral') return weights;
 
-        const direct = this._findExpression(expressionNames, [mood]);
-        if (direct) {
-            weights[direct] = 1.0;
-            return weights;
-        }
-
         // Model-specific mappings are an explicit user choice and must take
-        // priority over the built-in composite fallback. Without this lookup,
-        // extended moods such as shy/cry/tired ignored a configured expression
-        // whenever the model did not expose a same-named native preset.
+        // priority over native/direct and composite fallbacks. This preserves
+        // the previous moodMap override behavior even when the model also
+        // exposes a same-named expression such as happy.
         if (this.customMoodKeys.has(mood)) {
             const configuredExpression = this._findExpression(expressionNames, this.moodMap[mood] || []);
             if (configuredExpression) {
                 weights[configuredExpression] = 1.0;
                 return weights;
             }
+        }
+
+        const direct = this._findExpression(expressionNames, [mood]);
+        if (direct) {
+            weights[direct] = 1.0;
+            return weights;
         }
 
         const nativeCandidates = this.nativeExtendedMoodMap[mood];

@@ -65,6 +65,8 @@
             this.sequence = 0;
             this.lastByIntent = new Map();
             this.recentRestIds = [];
+            this.savedRestAssets = [];
+            this.savedRestAssetIds = new Set();
             this.profile = { energy: 0.5, restraint: 0.5, warmth: 0.5, key: 'default' };
             this.metrics = {
                 loaded: 0,
@@ -264,6 +266,52 @@
             this.profile = Object.assign({}, this.profile, profile || {});
         }
 
+        setSavedRestAnimations(urls) {
+            const seen = new Set();
+            const normalizedUrls = (Array.isArray(urls) ? urls : [])
+                .map(function (value) { return typeof value === 'string' ? value.trim() : ''; })
+                .map(function (value) {
+                    return value.replace(
+                        /^(\/static\/vrm\/animation\/[^?#]+)\.vrma(?=([?#]|$))/i,
+                        '$1.vrma.gz'
+                    );
+                })
+                .filter(function (value) {
+                    if (!value || seen.has(value)) return false;
+                    seen.add(value);
+                    return true;
+                });
+            this.savedRestAssetIds = new Set();
+            const externalUrls = normalizedUrls.filter((url) => {
+                const catalogAsset = this.assets.find(function (asset) {
+                    const suffix = asset.compression === 'gzip' ? '.gz' : '';
+                    return ASSET_ROOT + asset.f + suffix === url;
+                });
+                if (!catalogAsset) return true;
+                this.savedRestAssetIds.add(catalogAsset.id);
+                return false;
+            });
+            this.savedRestAssets = externalUrls.map(function (url, index) {
+                return {
+                    id: 'saved_rest_' + stableHash(url) + '_' + index,
+                    m: 'idle',
+                    in: 'stand',
+                    out: 'stand',
+                    i: 2,
+                    s: ['saved', 'user'],
+                    mode: 'loop',
+                    url: url,
+                    origin: 'user-config',
+                    card: { systemRestEligible: true }
+                };
+            });
+            if (this.state.restAsset && this.state.restAsset.origin === 'user-config'
+                && !this.savedRestAssets.some((asset) => asset.url === this.state.restAsset.url)) {
+                this.state.restAsset = null;
+            }
+            return normalizedUrls.length;
+        }
+
         select(decision, seed, posture) {
             if (!decision || !decision.intent || DISABLED_INTENTS.has(decision.intent)) return null;
             const reuseProneSleepBody = decision.intent === 'lie' && decision.style === 'prone';
@@ -272,9 +320,13 @@
                     || (reuseProneSleepBody && asset.m === 'sleep');
                 return intentMatches && asset.disabled !== true;
             });
+            if (decision.intent === 'idle' && this.savedRestAssets.length) {
+                candidates = candidates.concat(this.savedRestAssets);
+            }
             if (decision.intent === 'idle' && decision.systemRest === true) {
-                const companionRest = candidates.filter(function (asset) {
-                    return asset.card && asset.card.systemRestEligible === true;
+                const companionRest = candidates.filter((asset) => {
+                    return (asset.card && asset.card.systemRestEligible === true)
+                        || this.savedRestAssetIds.has(asset.id);
                 });
                 if (!companionRest.length) return null;
                 candidates = companionRest;
@@ -392,8 +444,14 @@
                 return false;
             }
             let url = null;
+            let temporaryUrl = false;
             try {
-                url = await this._assetUrl(asset);
+                if (typeof asset.url === 'string' && asset.url) {
+                    url = asset.url;
+                } else {
+                    url = await this._assetUrl(asset);
+                    temporaryUrl = true;
+                }
                 if (!requestIsCurrent()) return false;
                 const played = await manager.playVRMAAnimation(url, {
                     loop: options.loop === true,
@@ -423,7 +481,7 @@
             } finally {
                 // GLTFLoader.loadAsync 已在 playVRMAAnimation 返回前完成读取和解析，
                 // 此时撤销临时 URL 不影响当前 AnimationClip 播放。
-                if (url) URL.revokeObjectURL(url);
+                if (url && temporaryUrl) URL.revokeObjectURL(url);
             }
         }
 
@@ -534,7 +592,7 @@
             }
             if (settings.profile) this.setProfile(settings.profile);
             if (this.state.posture !== 'stand' || this.busy && settings.force !== true) return false;
-            const requestedRest = settings.assetId && this.assets.find(function (asset) {
+            const requestedRest = settings.assetId && this.assets.concat(this.savedRestAssets).find(function (asset) {
                 return asset.id === settings.assetId && asset.m === 'idle';
             });
             if (requestedRest) {
