@@ -549,7 +549,7 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
     )
 
     assert "Group Chat Reply Guidelines" in rendered
-    assert "In group chats, you don't need to reply to every message" in rendered
+    assert "This is a multi-person QQ group" in rendered
     assert "群聊回复意愿" not in rendered
     assert SCENE_KIRA_UNIFIED_GROUP not in rendered
     # 而且不再每轮打一条"缺必需占位符"的 warning。

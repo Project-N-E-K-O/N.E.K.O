@@ -45,6 +45,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

@@ -425,7 +425,7 @@ async def test_a_terminal_notifies_the_host_and_rotates_only_without_server_vad(
     # lanlan.app free is _is_free_proxy and NOT _is_gemini: arbitrated, and
     # response.done is its only rotation point.
     proxy, proxy_done, proxy_rotations = await _build(
-        "wss://lanlan.app/api/v1/realtime"
+        "wss://www.lanlan.app/api/v1/realtime"
     )
     assert proxy._has_server_vad is False
     assert proxy_done == ["done"]
@@ -511,7 +511,7 @@ async def test_a_raising_host_hook_does_not_skip_the_rotation():
         rotations.append("rotate")
 
     client = OmniRealtimeClient(
-        "wss://lanlan.app/api/v1/realtime",
+        "wss://www.lanlan.app/api/v1/realtime",
         "test-key",
         model="free-model",
         api_type="free",

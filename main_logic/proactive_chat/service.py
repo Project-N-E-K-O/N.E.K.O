@@ -273,6 +273,8 @@ def _command_language_candidates(
 def _resolve_proactive_locale(
     data: ProactiveChatCommand | dict,
     mgr,
+    *,
+    fmt: str = "short",
 ) -> str:
     """Resolve the active user locale for proactive chat flows.
 
@@ -280,6 +282,13 @@ def _resolve_proactive_locale(
     truth, and the process-level global language is only a final fallback. This
     keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
     session whenever frontend i18n has already reported the user's language.
+
+    ``fmt="full"`` keeps the script: a short code has no room for one, so ``zh-TW``
+    and ``zh-CN`` both come out ``zh``. That is fine for consumers that only need a
+    language family, but it makes a ``zh-TW`` row in a prompt dict unreachable data.
+    Pass ``fmt="full"`` wherever the result ends up indexing such a dict — the one
+    precedence chain stays shared either way, which is the point of the parameter
+    rather than a second resolver (issue #2500).
     """
     request_lang = next(
         (value for value in _command_language_candidates(data) if value),
@@ -290,14 +299,16 @@ def _resolve_proactive_locale(
     # ``normalize_language_code`` 对未识别值默认回退 ``'en'``——必须先用公共白名单
     # 挡掉，否则 proactive 邀请文案会被静默短路成英文，错过本应命中的 session 真值。
     if request_lang and is_supported_language_code(request_lang):
-        normalized = normalize_language_code(request_lang, format="short")
+        normalized = normalize_language_code(request_lang, format=fmt)
         if normalized:
             return normalized
     session_lang = getattr(mgr, "user_language", None)
     if session_lang:
-        normalized = normalize_language_code(session_lang, format="short")
+        normalized = normalize_language_code(session_lang, format=fmt)
         if normalized:
             return normalized
+    if fmt == "full":
+        return get_global_language_full() or "en"
     return get_global_language() or "en"
 
 
@@ -729,8 +740,14 @@ async def handle_proactive_chat(
         ):
             try:
                 _break_lang = _resolve_proactive_locale(command, mgr)
+                # 邀请按钮 label 走 prompt dict（有 zh-TW 行），必须留住字形；
+                # break reminder 的其余消费点还在短码方案上，保持不动。
+                _break_invite_lang = _resolve_proactive_locale(
+                    command, mgr, fmt="full"
+                )
             except Exception:
                 _break_lang = "zh"
+                _break_invite_lang = "zh"
 
             # Resolve character_prompt up front and prepend it to every
             # break-reminder SystemMessage. Without this the model would
@@ -928,7 +945,7 @@ async def handle_proactive_chat(
                         # 埋点 best-effort，失败不影响邀请投递
                         pass
                     options_payload = _build_mini_game_invite_options_payload(
-                        invite_lang=_break_lang,
+                        invite_lang=_break_invite_lang,
                         game_type=chosen_game_type,
                         session_id=invite_session_id,
                     )
@@ -1125,7 +1142,9 @@ async def handle_proactive_chat(
         # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
         # 不发——无法判断是否在工作状态。
         try:
-            invite_lang = _resolve_proactive_locale(command, mgr)
+            # fmt="full"：邀请文案与三个按钮 label 都走带 zh-TW 行的 prompt dict，
+            # 短码会把 zh-TW 折成 zh，那些行就永远取不到（issue #2500）。
+            invite_lang = _resolve_proactive_locale(command, mgr, fmt="full")
         except Exception:
             invite_lang = "zh"
         # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把

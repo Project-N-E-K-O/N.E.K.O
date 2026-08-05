@@ -24,11 +24,17 @@ import CompactExportHistoryPanel, {
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
+import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
   AVAILABLE_FULL_AVATAR_TOOLS,
+  persistActiveAvatarToolIds,
+  readPersistedActiveAvatarToolIds,
   resolveAvatarToolMenuIconVisual,
+  sanitizeAvatarToolIds,
+  withAvatarToolAssetVersion,
+  type AvatarToolId,
   type AvatarToolItem,
 } from './avatarTools';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
@@ -430,6 +436,7 @@ export default function FullChatSurface({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
@@ -484,6 +491,9 @@ export default function FullChatSurface({
   const [catDraft, setCatDraft] = useState('');
   const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [activeAvatarToolIds, setActiveAvatarToolIds] = useState<AvatarToolId[]>(readPersistedActiveAvatarToolIds);
+  const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
+  const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
   // Collapse the right-side tools into an overflow menu when the composer gets
   // narrow, while preserving the exit and re-entry animations for the tool row.
   type ComposerLayout = 'expanded' | 'collapsing' | 'compact' | 'expanding';
@@ -566,6 +576,7 @@ export default function FullChatSurface({
     onInteraction: onAvatarInteraction,
     onStateChange: onAvatarToolStateChange,
     getToolLabel: getToolItemLabel,
+    avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
@@ -573,6 +584,29 @@ export default function FullChatSurface({
   const effectiveToolVariant = avatarToolRuntime.effectiveVariant;
   const clearAvatarTool = avatarToolRuntime.clearTool;
   const selectAvatarTool = avatarToolRuntime.selectTool;
+  const configuredToolIconItems = useMemo(() => {
+    const availableById = new Map(toolIconItems.map(item => [item.id, item]));
+    return activeAvatarToolIds
+      .map(toolId => availableById.get(toolId))
+      .filter((item): item is AvatarToolItem => !!item);
+  }, [activeAvatarToolIds]);
+
+  const handleAvatarToolManagerSave = useCallback((toolIds: AvatarToolId[]) => {
+    const nextToolIds = sanitizeAvatarToolIds(toolIds);
+    setActiveAvatarToolIds(nextToolIds);
+    persistActiveAvatarToolIds(nextToolIds);
+    setAvatarToolManagerOpen(false);
+    setAvatarToolManagerAnchorRect(null);
+    if (activeAvatarToolId && !nextToolIds.includes(activeAvatarToolId as AvatarToolId)) {
+      clearAvatarTool();
+    }
+  }, [activeAvatarToolId, clearAvatarTool]);
+
+  useEffect(() => {
+    if (!activeAvatarToolId) return;
+    if (activeAvatarToolIds.includes(activeAvatarToolId as AvatarToolId)) return;
+    clearAvatarTool();
+  }, [activeAvatarToolIds, activeAvatarToolId, clearAvatarTool]);
 
   // Rollback draft when host signals a RESPONSE_TOO_LONG error
   // Use _rollbackKey for dedup. It changes on every rollbackLastDraft() call
@@ -1969,10 +2003,19 @@ export default function FullChatSurface({
     if (!catLocalTextOnly) return;
     closeCompactInputToolFan();
     setToolMenuOpen(false);
+    setAvatarToolManagerOpen(false);
+    setAvatarToolManagerAnchorRect(null);
     setOverflowMenuOpen(false);
     setCompactExportPreviewOpen(false);
     clearAvatarTool();
   }, [catLocalTextOnly, clearAvatarTool, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!composerHidden) return;
+    setToolMenuOpen(false);
+    setAvatarToolManagerOpen(false);
+    setAvatarToolManagerAnchorRect(null);
+  }, [composerHidden]);
 
   useEffect(() => {
     if (!catLocalTextOnly) setCatDraft('');
@@ -2353,8 +2396,9 @@ export default function FullChatSurface({
           className="composer-icon-popover"
           role="group"
           aria-label={toolIconsAriaLabel}
+          data-avatar-tool-button-count={configuredToolIconItems.length + 1}
         >
-          {toolIconItems.map(item => {
+          {configuredToolIconItems.map(item => {
             const itemLabel = getToolItemLabel(item);
             const menuVariant = activeAvatarToolId === item.id
               ? effectiveToolVariant
@@ -2365,6 +2409,7 @@ export default function FullChatSurface({
               key={item.id}
               className={`composer-icon-button${activeAvatarToolId === item.id ? ' is-active' : ''}`}
               type="button"
+              data-avatar-tool-id={item.id}
               aria-pressed={activeAvatarToolId === item.id}
               aria-label={itemLabel}
               data-neko-tooltip={itemLabel}
@@ -2386,6 +2431,32 @@ export default function FullChatSurface({
             </button>
             );
           })}
+          <button
+            className="composer-icon-button full-avatar-tool-settings-button"
+            type="button"
+            aria-label={i18n('chat.avatarToolEdit', 'Edit quick tools')}
+            data-neko-tooltip={i18n('chat.avatarToolEdit', 'Edit quick tools')}
+            disabled={composerInteractionsDisabled}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setAvatarToolManagerAnchorRect({
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                width: rect.width,
+                height: rect.height,
+              });
+              setAvatarToolManagerOpen(true);
+            }}
+          >
+            <img
+              className="composer-icon-button-image full-avatar-tool-settings-icon"
+              src={withAvatarToolAssetVersion('/static/assets/avatar-tools/ui/edit.png')}
+              alt=""
+              aria-hidden="true"
+            />
+          </button>
         </div>
       ) : null}
     </div>
@@ -2847,7 +2918,7 @@ export default function FullChatSurface({
           role="group"
           aria-label={toolIconsAriaLabel}
         >
-          {toolIconItems.map(item => {
+          {configuredToolIconItems.map(item => {
             const itemLabel = getToolItemLabel(item);
             const menuVariant = activeAvatarToolId === item.id
               ? effectiveToolVariant
@@ -2858,6 +2929,7 @@ export default function FullChatSurface({
               key={item.id}
               className={`composer-icon-button${activeAvatarToolId === item.id ? ' is-active' : ''}`}
               type="button"
+              data-avatar-tool-id={item.id}
               aria-pressed={activeAvatarToolId === item.id}
               aria-label={itemLabel}
               data-neko-tooltip={itemLabel}
@@ -3093,6 +3165,17 @@ export default function FullChatSurface({
       {compactExportHistoryNode}
       {compactChoiceLayerNode}
       <AvatarToolVisuals model={avatarToolRuntime.visualModel} />
+      <AvatarToolItemManager
+        open={!composerHidden && avatarToolManagerOpen}
+        activeToolIds={activeAvatarToolIds}
+        availableTools={toolIconItems}
+        anchorRect={avatarToolManagerAnchorRect}
+        onSave={handleAvatarToolManagerSave}
+        onCancel={() => {
+          setAvatarToolManagerOpen(false);
+          setAvatarToolManagerAnchorRect(null);
+        }}
+      />
       <section
         className={`chat-window ${surfaceModeClassName}`}
         aria-label={chatWindowAriaLabel}

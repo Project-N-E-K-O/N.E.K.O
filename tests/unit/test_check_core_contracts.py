@@ -1136,3 +1136,842 @@ def test_fail_closed_gate_reports_a_missing_chokepoint(
     assert _chokepoint_codes(contract_checker, core) == [
         "VOICE_FAIL_CLOSED_CHOKEPOINT"
     ]
+
+
+def _write_minimal_voice_identity_layout(root: Path) -> Path:
+    package = root / "main_logic" / "voice_identity"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""identity."""\n', encoding="utf-8")
+    (package / "contracts.py").write_text('"""contracts."""\n', encoding="utf-8")
+    (package / "reference.py").write_text(
+        '"""reference."""\n'
+        "import numpy as np\n"
+        "from .contracts import SpeakerModelIdentity\n",
+        encoding="utf-8",
+    )
+    (package / "profile.py").write_text(
+        '"""profile."""\nfrom .reference import SpeakerReference\n',
+        encoding="utf-8",
+    )
+    return package
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_accepts_in_memory_dependency_direction(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    _write_minimal_voice_identity_layout(tmp_path)
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_fails_closed_when_package_is_missing(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    violations = contract_checker.check_voice_identity_contracts(tmp_path)
+
+    assert any(
+        violation.path == tmp_path / "main_logic" / "voice_identity"
+        and violation.message == "required voice_identity package is missing"
+        for violation in violations
+    )
+    assert sum(
+        violation.message == "required voice_identity domain file is missing"
+        for violation in violations
+    ) == 4
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_unlisted_modules(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    probe = package / "nested" / "store.py"
+    probe.parent.mkdir()
+    probe.write_text("import cryptography\n", encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+        if violation.path == probe
+    ]
+
+    assert "voice_identity module is missing an explicit dependency allowlist" in messages
+    assert "voice_identity domain must not import cryptography" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from . import contracts\n",
+        "from main_logic.voice_identity import contracts\n",
+    ],
+)
+def test_voice_identity_contract_allows_approved_importfrom_package_anchors(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_broad_parent_package_import(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text("import main_logic\n", encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any("found main_logic" in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def persist():\n"
+        "    from numpy import save as write\n"
+        "    write('embedding.npy', [1.0])\n",
+        "def persist():\n"
+        "    import numpy as np\n"
+        "    np.save('embedding.npy', [1.0])\n",
+    ],
+)
+def test_voice_identity_contract_rejects_local_import_aliases(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity imports must be declared at module scope" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rebind",
+    [
+        "import math as np",
+        "np = object()",
+        "np: object = object()",
+        "(np := object())",
+        "def np():\n    pass",
+        "class np:\n    pass",
+        "np, other = object(), object()",
+        "if True:\n    np = object()",
+        "async def np():\n    pass",
+        "values = [(np := value) for value in ()]",
+    ],
+)
+def test_voice_identity_contract_rejects_module_scope_import_rebinding(
+    contract_checker,
+    tmp_path: Path,
+    rebind: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{rebind}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity module-scope import bindings must not be rebound; found np"
+        in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "for math in (np,):\n    pass",
+        "with np.errstate() as math:\n    pass",
+        "try:\n    raise Exception()\nexcept Exception as math:\n    pass",
+        "match np:\n    case math:\n        pass",
+        "math += np",
+        "def holder(value=(math := np)):\n    pass",
+    ],
+)
+def test_voice_identity_contract_rejects_other_module_scope_binding_forms(
+    contract_checker,
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\nimport math\n{binding}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity module-scope import bindings must not be rebound; "
+        "found math"
+        in messages
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_global_rebinding_from_class_body(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "import math\n"
+        "class Rebind:\n"
+        "    global math\n"
+        "    math = np\n"
+        "    math.save('embedding.npy', [1.0])\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity module-scope import bindings must not be rebound; "
+        "found math"
+        in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "local_source",
+    [
+        "def local():\n    np = object()\n    return np",
+        "class Local:\n    np = object()",
+        "values = [np for np in ()]",
+        "np: object",
+    ],
+)
+def test_voice_identity_contract_allows_non_rebinding_name_reuse(
+    contract_checker,
+    tmp_path: Path,
+    local_source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{local_source}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_class_local_import_alias_shadowing(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "class SnapshotFactory:\n"
+        "    def save(self):\n"
+        "        pass\n"
+        "class Snapshot:\n"
+        "    np = SnapshotFactory()\n"
+        "    np.save()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_wildcard_imports(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "from numpy import *\nsave('embedding.npy', [1.0])\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity domain must not use wildcard imports" in messages
+
+
+@pytest.mark.unit
+def test_voice_identity_initializer_must_be_docstring_only(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "__init__.py").write_text(
+        '"""identity."""\nfrom .profile import SpeakerProfile\n',
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity/__init__.py may contain only a package docstring" in messages
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_requires_complete_domain_layout(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "profile.py").unlink()
+
+    violations = contract_checker.check_voice_identity_contracts(tmp_path)
+
+    assert any(
+        violation.code == "VOICE_IDENTITY_LAYERING"
+        and violation.path == package / "profile.py"
+        and "required voice_identity domain file is missing" in violation.message
+        for violation in violations
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "forbidden_import",
+    [
+        "from main_logic.asr_client import runtime",
+        "from main_logic.core import LLMSessionManager",
+        "from main_logic.voice_turn import contracts",
+        "import main_routers",
+        "import app",
+        "import onnxruntime",
+        "import keyring",
+        "import cryptography",
+        "import importlib",
+        "import logging",
+        "import os",
+        "import pathlib",
+        "import pickle",
+        "import sqlite3",
+    ],
+)
+def test_voice_identity_domain_rejects_cross_layer_imports(
+    contract_checker,
+    tmp_path: Path,
+    forbidden_import: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(f"{forbidden_import}\n", encoding="utf-8")
+
+    violations = contract_checker.check_voice_identity_contracts(tmp_path)
+
+    assert any(
+        violation.code == "VOICE_IDENTITY_LAYERING"
+        for violation in violations
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_domain_rejects_dynamic_cross_layer_import(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import importlib\n"
+        "runtime = importlib.import_module('main_logic.asr_client.runtime')\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity domain must not call importlib.import_module"
+        in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "owner_path",
+    [
+        "main_logic/asr_client/probe.py",
+        "main_logic/core/probe.py",
+        "main_logic/voice_turn/probe.py",
+    ],
+)
+def test_voice_identity_contract_allows_outer_layers_to_consume_domain(
+    contract_checker,
+    tmp_path: Path,
+    owner_path: str,
+) -> None:
+    _write_minimal_voice_identity_layout(tmp_path)
+    probe = tmp_path / owner_path
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "from main_logic.voice_identity import profile\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("eval('1 + 1')\n", "must not call eval"),
+        ("exec('value = 1')\n", "must not call exec"),
+        ("__import__('math')\n", "must not call __import__"),
+        ("open('embedding.bin', 'wb')\n", "file I/O via open"),
+        (
+            "import numpy as np\nnp.save('embedding.npy', np.ones(1))\n",
+            "file I/O via numpy.save",
+        ),
+        (
+            "from numpy import load\nload('embedding.npy')\n",
+            "file I/O via numpy.load",
+        ),
+        (
+            "import numpy as np\nnp.savetxt('embedding.txt', np.ones(1))\n",
+            "file I/O via numpy.savetxt",
+        ),
+        (
+            "import numpy as np\nnp.loadtxt('embedding.txt')\n",
+            "file I/O via numpy.loadtxt",
+        ),
+        (
+            "import numpy as np\nnp.genfromtxt('embedding.csv')\n",
+            "file I/O via numpy.genfromtxt",
+        ),
+        (
+            "import numpy as np\nnp.lib.format.open_memmap('embedding.npy')\n",
+            "file I/O via numpy.lib.format.open_memmap",
+        ),
+        (
+            "import numpy as np\nnp.array([1.0]).tofile('embedding.bin')\n",
+            "file I/O via .tofile",
+        ),
+        (
+            "class Holder:\n"
+            "    def persist(self):\n"
+            "        self._embedding.tofile('embedding.bin')\n",
+            "file I/O via self._embedding.tofile",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_direct_dynamic_and_file_io_calls(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "call",
+    [
+        "np.copy([1.0])",
+        "np.zeros(1)",
+        "np.linalg.norm([1.0])",
+    ],
+)
+def test_voice_identity_contract_allows_in_memory_numpy_calls(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{call}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_required_threading_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import threading\nthreading.Lock()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "call",
+    [
+        "threading.Thread(target=lambda: None)",
+        "threading.Timer(1.0, lambda: None)",
+    ],
+)
+def test_voice_identity_contract_rejects_thread_creation(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import threading\n{call}.start()\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(
+        "may only call threading.Lock" in message
+        for message in messages
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_applies_comprehension_targets_in_order(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "values = [x for x in (1,) for np in np.load('embedding.npy')]\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity domain must not perform file I/O via numpy.load" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def invoke(open):\n    open()\n",
+        "def invoke(eval):\n    eval()\n",
+        "def invoke(exec):\n    exec()\n",
+        "def invoke(__import__):\n    __import__()\n",
+        "def open():\n    pass\nopen()\n",
+    ],
+)
+def test_voice_identity_contract_allows_shadowed_protected_builtins(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("call", "resolved"),
+    [
+        ("np.lib.npyio.load('embedding.npy')", "numpy.lib.npyio.load"),
+        ("np.lib.format.read_array(stream)", "numpy.lib.format.read_array"),
+        (
+            "np.lib.format.write_array(stream, np.zeros(1))",
+            "numpy.lib.format.write_array",
+        ),
+        ("np.lib.npyio.DataSource()", "numpy.lib.npyio.DataSource"),
+        ("np.DataSource().open('embedding.npy')", "numpy.DataSource"),
+    ],
+)
+def test_voice_identity_contract_rejects_unapproved_direct_numpy_calls(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+    resolved: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{call}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(
+        "may only call approved in-memory NumPy APIs" in message
+        and resolved in message
+        for message in messages
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_unresolved_dump_method(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "class Snapshot:\n"
+        "    def dump(self):\n"
+        "        return b'snapshot'\n"
+        "\n"
+        "value = Snapshot().dump()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_local_variable_dump_method(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "class Snapshot:\n"
+        "    def dump(self):\n"
+        "        return b'snapshot'\n"
+        "\n"
+        "snapshot = Snapshot()\n"
+        "value = snapshot.dump()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "function_source",
+    [
+        "def use(np):\n    np.save()",
+        "async def use(np):\n    np.save()",
+        "def use():\n    np = Snapshot()\n    np.save()",
+        "use = lambda np: np.save()",
+        "values = [np.save() for np in (Snapshot(),)]",
+        "values = {np.save() for np in (Snapshot(),)}",
+        "values = (np.save() for np in (Snapshot(),))",
+        "values = {np: np.save() for np in (Snapshot(),)}",
+    ],
+)
+def test_voice_identity_contract_respects_local_import_shadowing(
+    contract_checker,
+    tmp_path: Path,
+    function_source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "class Snapshot:\n"
+        "    def save(self):\n"
+        "        return None\n"
+        f"{function_source}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import numpy as np\nnp.array([1.0]).dump('embedding.pkl')\n",
+            "file I/O via numpy.ndarray.dump",
+        ),
+        (
+            "import numpy as np\n"
+            "np.f2py.compile('end', modulename='carrier')\n",
+            "native code via numpy.f2py.compile",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_direct_numpy_boundary_bypasses(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import numpy as np\n"
+            "embedding = np.array([1.0])\n"
+            "embedding.dump('embedding.pkl')\n",
+            "file I/O via embedding.dump",
+        ),
+        (
+            "import numpy as np\n"
+            "embedding = np.array([1.0])\n"
+            "np.ndarray.dump(embedding, 'embedding.pkl')\n",
+            "file I/O via numpy.ndarray.dump",
+        ),
+        (
+            "import numpy as np\n"
+            "def persist():\n"
+            "    embedding = np.array([1.0])\n"
+            "    embedding.dump('embedding.pkl')\n",
+            "file I/O via embedding.dump",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_other_ndarray_dump_forms(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        (
+            "np.recfromtxt('embedding.csv')",
+            "file I/O via numpy.recfromtxt",
+        ),
+        (
+            "np.fromregex('embedding.txt', r'.*', [('value', float)])",
+            "file I/O via numpy.fromregex",
+        ),
+        (
+            "np.ctypeslib.load_library('carrier', '.')",
+            "native library via numpy.ctypeslib.load_library",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_explicitly_dangerous_numpy_calls(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{call}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_does_not_claim_reflection_is_a_sandbox(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "getter = getattr(__builtins__, 'open')\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_model_assets_inside_domain_package(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    model_path = package / "models" / "speaker.onnx"
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"not-a-real-model")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity domain must not contain packaged assets; "
+        "found models/speaker.onnx"
+        in messages
+    )

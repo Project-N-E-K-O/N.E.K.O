@@ -229,6 +229,11 @@ class QQReplyContextNode:
         group_facing: bool = False,
         group_scene_mode: str = "",
         current_message_id: str = "",
+        is_reply_to_bot: bool = False,
+        quoted_message_id: str = "",
+        mentions_other_user: bool = False,
+        mentions_all: bool = False,
+        reply_context: str = "",
         force_reply: bool = False,
         source_kind: str = "",
         member_memory_at_receipt: bool | None = None,
@@ -527,6 +532,10 @@ class QQReplyContextNode:
                 },
             )
         )
+        # 引用上下文仅注入 LLM prompt，不污染会话历史
+        prompt_text = message
+        if reply_context:
+            prompt_text = reply_context + "\n" + prompt_text
         prompt_message = self.plugin._build_prompt_message(
             is_group=is_group,
             group_facing=effective_group_facing,
@@ -534,8 +543,12 @@ class QQReplyContextNode:
             user_title=user_title,
             sender_id=sender_id,
             group_id=group_id,
-            message=message,
+            message=prompt_text,
             current_message_id=current_message_id,
+            is_reply_to_bot=is_reply_to_bot,
+            quoted_message_id=quoted_message_id,
+            mentions_other_user=mentions_other_user,
+            mentions_all=mentions_all,
         )
         traces.append(
             QQPipelineStageTrace(

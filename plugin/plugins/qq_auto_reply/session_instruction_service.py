@@ -76,12 +76,56 @@ class QQSessionInstructionService:
         {"id": "role_card",             "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "cross_group",           "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "blacklist",             "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
+        {"id": "fatigue_tiers",         "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": False},
     ]
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._sticker_catalog_cache: str = ""
         self._emoji_catalog_cache: str = ""
+        # 用户画像缓存：sender_id → (profile_text, expire_at)
+        self._user_profile_cache: dict[str, tuple[str, float]] = {}
+        self._USER_PROFILE_CACHE_TTL: float = 300.0  # 5 分钟
+        self._load_profile_cache_from_disk()
+
+    def _profile_cache_path(self) -> str:
+        import os
+        base = getattr(self.plugin, "data_dir", None) or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "data",
+        )
+        return os.path.join(str(base), "user_profile_cache.json")
+
+    def _load_profile_cache_from_disk(self) -> None:
+        import json, os, time
+        path = self._profile_cache_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.loads(f.read())
+            now = time.time()
+            for sender_id, (text, expire_at) in raw.items():
+                if now < expire_at:
+                    self._user_profile_cache[sender_id] = (text, expire_at)
+        except Exception:
+            pass
+
+    def _save_profile_cache_to_disk(self) -> None:
+        import json, os, time
+        try:
+            now = time.time()
+            live = {
+                k: v for k, v in self._user_profile_cache.items()
+                if isinstance(v, (list, tuple)) and len(v) == 2 and v[1] > now
+            }
+            # 同步清理内存中的过期条目，防止长期运行内存泄漏
+            self._user_profile_cache = live
+            path = self._profile_cache_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(live, f, ensure_ascii=False)
+        except Exception:
+            pass
 
     def _resolve_time_section(self, locale: str) -> str:
         """解析时间层：优先使用动态时间上下文，回退静态模板。"""
@@ -371,12 +415,18 @@ class QQSessionInstructionService:
         used_member_subject = bool(core_used_member)
         if core_memory_text:
             sections.append(core_memory_text)
-        self._append_user_profile_section(
-            sections=sections,
-            sender_id=sender_id,
-            user_title=user_title,
-            permission_level=permission_level,
-        )
+        # 用户画像：合成轮（buffer总结/破冰/回溯）memory_sender_id 为空，
+        # 此时 sender_id 是占位符（如 admin QQ），不应注入画像
+        if core_sender_id:
+            await self._append_user_profile_section(
+                sections=sections,
+                sender_id=core_sender_id,
+                user_title=user_title,
+                permission_level=permission_level,
+                is_group=is_group,
+                group_id=group_id,
+                her_name=her_name,
+            )
         self._append_role_card_section(
             sections=sections,
             character_card_fields=character_card_fields,
@@ -405,6 +455,7 @@ class QQSessionInstructionService:
         )
         self._append_fatigue_section(sections, sender_id, is_group, group_id)
         self._append_attention_context_section(sections, group_id, is_group)
+        self._append_emotion_section(sections, group_id, is_group)
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
         sections.append(self._resolve_static_layer("output_prompt_section", OUTPUT_PROMPT_SECTION, user_language))
 
@@ -552,13 +603,16 @@ class QQSessionInstructionService:
             session_description=session_description,
         )
 
-    def _append_user_profile_section(
+    async def _append_user_profile_section(
         self,
         *,
         sections: list[str],
         sender_id: str,
         user_title: str,
         permission_level: str,
+        is_group: bool = False,
+        group_id: str | None = None,
+        her_name: str = "neko",
     ) -> None:
         custom_nickname = self.plugin.permission_mgr.get_nickname(sender_id) if self.plugin.permission_mgr else None
         relationship = {
@@ -575,7 +629,96 @@ class QQSessionInstructionService:
         ]
         if custom_nickname:
             profile_lines.append(f"- 已保存备注昵称：{custom_nickname}")
+
+        # ── 从长期记忆中查询用户画像事实 ──
+        memory_facts = await self._fetch_user_memory_profile(
+            sender_id=sender_id,
+            is_group=is_group,
+            group_id=group_id,
+            her_name=her_name,
+        )
+        if memory_facts:
+            profile_lines.append(f"- 近期记忆：{memory_facts}")
+
         sections.append(USER_PROFILE_PROMPT_SECTION.format(user_profile="\n".join(profile_lines)))
+
+    async def _fetch_user_memory_profile(
+        self,
+        *,
+        sender_id: str,
+        is_group: bool,
+        group_id: str | None,
+        her_name: str,
+    ) -> str:
+        """从记忆服务器查询用户维度的近期事实，带 5 分钟缓存。"""
+        import time
+
+        # 检查对应的记忆开关（含 receipt-time 快照：接受时未授权则拒绝）
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        if is_group:
+            if not settings.get("group_memory_enabled", False):
+                return ""
+            if not settings.get("group_member_memory_enabled", False):
+                return ""
+        else:
+            if not settings.get("private_participant_memory_enabled", False):
+                return ""
+
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if bridge is None:
+            return ""
+
+        # 构造用户维度的 subject（先于缓存 key 构造，确保 scope 纳入 key）
+        if is_group:
+            if not (group_id and str(group_id).strip()):
+                return ""  # 群聊但无 group_id，拒绝用错私聊 subject
+            subject = bridge.group_participant_subject(group_id, sender_id)
+        else:
+            subject = bridge.participant_subject(sender_id)
+        scope_key = str(subject.get("subject_id") or sender_id)
+
+        cache_key = f"{sender_id}:{scope_key}"
+        now = time.time()
+        cached = self._user_profile_cache.get(cache_key)
+        if cached is not None:
+            text, expire_at = cached
+            if now < expire_at:
+                return text
+            del self._user_profile_cache[cache_key]
+
+        try:
+            # 按时间召回最近事实（不走语义，embedding 服务不可用时也能工作）
+            from datetime import datetime, timezone, timedelta
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=7)
+            time_window = f"{start.strftime('%Y-%m-%dT%H')}/{end.strftime('%Y-%m-%dT%H')}"
+            result = await bridge.query_relevant_memory(
+                her_name,
+                query="",
+                subjects=[subject],
+                time_spec=time_window,
+                timeout=3.0,
+                limit=3,
+            )
+            text = (result.text or "").strip()
+            if text:
+                # 读后复检：异步查询期间 consent 可能已被撤销
+                settings_now = getattr(self.plugin, "_qq_settings", {}) or {}
+                if is_group:
+                    if not settings_now.get("group_memory_enabled") or not settings_now.get("group_member_memory_enabled"):
+                        return ""
+                else:
+                    if not settings_now.get("private_participant_memory_enabled"):
+                        return ""
+                self._user_profile_cache[cache_key] = (text, now + self._USER_PROFILE_CACHE_TTL)
+                await asyncio.to_thread(self._save_profile_cache_to_disk)
+                return text
+        except Exception as exc:
+            logger = getattr(self.plugin, "logger", None)
+            if logger:
+                logger.warning(f"[UserProfile] 记忆查询失败 sender={sender_id} is_group={is_group}: {exc}")
+
+        return ""
 
     async def _build_core_memory_section(
         self,
@@ -812,6 +955,18 @@ class QQSessionInstructionService:
         context = attention.get_attention_context(str(group_id))
         if context:
             sections.append(context)
+
+    def _append_emotion_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
+        """注入当前情绪状态（<feeling> 标签驱动的内部状态）。"""
+        if not is_group or not group_id:
+            return
+        attention = getattr(self.plugin, "attention_service", None)
+        if not attention or not attention._enabled():
+            return
+        state = attention.get_state(str(group_id))
+        emo = getattr(state, "emotion", "calm") or "calm"
+        if emo != "calm":
+            sections.append(f"[内部状态] 你现在的情绪: {emo}。用 <feeling>情绪</feeling> 更新状态（不发给对方），人设自然流露不要直接对用户说\"我很生气\"之类的话。")
 
     def _append_fatigue_section(self, sections: list[str], sender_id: str, is_group: bool, group_id: Optional[str]) -> None:
         """注入疲劳/苏醒状态提示词（KiraAI-style 动态行为约束）。"""

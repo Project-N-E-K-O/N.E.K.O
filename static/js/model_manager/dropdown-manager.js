@@ -25,6 +25,33 @@ window.addEventListener('unhandledrejection', (event) => {
 class DropdownManager {
     static instances = [];
 
+    /**
+     * 占位项 = 只是提示文案、没有真实取值的那一条（"请先加载模型" / "没有动作"）。
+     *
+     * ⚠️ 判据是 `data-placeholder` 标记，不是显示文本。按文本判断只在**简体中文**
+     * 界面下成立：这个项目支持 8 种语言，ja / ko / ru / es / pt 和 zh-TW 全部落空，
+     * 占位项被当成可选项，用户能选中一条"请先加载模型"并触发一次空加载。
+     * 生产侧用 DropdownManager.markAsPlaceholder() 打标记。
+     *
+     * 文本判断作为兜底保留：万一还有没迁过来的生产点，简中下不至于退化。
+     * 但它只是兜底——新代码一律打标记，测试里有护栏扫源码。
+     */
+    static LEGACY_PLACEHOLDER_TEXTS = ['请先加载', '请选择', '没有', '加载中', '选择模型', 'Select'];
+
+    static isPlaceholderOption(option) {
+        if (!option) return false;
+        if (option.dataset && option.dataset.placeholder === 'true') return true;
+        if (option.value !== '') return false;
+        const text = option.textContent || '';
+        return DropdownManager.LEGACY_PLACEHOLDER_TEXTS.some((t) => text.includes(t));
+    }
+
+    /** 建占位 option 时调用；返回同一个 option，方便链式写法。 */
+    static markAsPlaceholder(option) {
+        if (option && option.dataset) option.dataset.placeholder = 'true';
+        return option;
+    }
+
     static getVisualWidth(str) {
         let width = 0;
         for (const char of str) {
@@ -69,16 +96,7 @@ class DropdownManager {
                 }
                 return option.textContent;
             }),
-            shouldSkipOption: config.shouldSkipOption || ((option) => {
-                const value = option.value;
-                const text = option.textContent;
-                return value === '' && (
-                    text.includes('请先加载') ||
-                    text.includes('请选择') ||
-                    text.includes('没有') ||
-                    text.includes('加载中')
-                );
-            }),
+            shouldSkipOption: config.shouldSkipOption || DropdownManager.isPlaceholderOption,
             disabled: config.disabled || false,
             ...config
         };
