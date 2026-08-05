@@ -1696,6 +1696,11 @@
 
     function getConversationLanguageForCurrentCharacter() {
         try {
+            // Once the server preference has been hydrated, it is authoritative for
+            // this session even when a previous localStorage write failed.
+            if (S.conversationLanguageHydrated === true && S.conversationLanguage) {
+                return S.conversationLanguage;
+            }
             if (typeof window.getConversationLanguagePreference === 'function') {
                 return window.getConversationLanguagePreference(getWebSocketLanlanName() || '');
             }
@@ -1725,22 +1730,35 @@
             return response.json();
         }).then(function (payload) {
             if (!payload || payload.success !== true) throw new Error('invalid language preference response');
-            return payload.language || payload.effective_language || fallback;
+            var explicitLanguage = typeof payload.language === 'string'
+                ? payload.language.trim()
+                : '';
+            return {
+                language: explicitLanguage || payload.effective_language || fallback,
+                explicitLanguage: explicitLanguage
+            };
         }).catch(function (error) {
             console.warn('[ConversationLanguage] preference hydration failed, using UI fallback:', error);
-            return fallback;
+            return { language: fallback, explicitLanguage: '' };
         });
 
         return Promise.race([
             request,
-            new Promise(function (resolve) { setTimeout(function () { resolve(fallback); }, 2500); })
-        ]).then(function (language) {
+            new Promise(function (resolve) {
+                setTimeout(function () {
+                    resolve({ language: fallback, explicitLanguage: '' });
+                }, 2500);
+            })
+        ]).then(function (hydrated) {
+            var language = hydrated && hydrated.language ? hydrated.language : fallback;
             if (S._conversationLanguageHydrationId !== hydrationId) return language;
             S.conversationLanguage = language || fallback;
             S.conversationLanguageHydrated = true;
-            if (typeof window.setConversationLanguagePreference === 'function') {
+            // Only mirror an explicit character preference into the local cache.
+            // effective_language is a UI/global fallback and must remain dynamic.
+            if (hydrated.explicitLanguage && typeof window.setConversationLanguagePreference === 'function') {
                 window.setConversationLanguagePreference(
-                    S.conversationLanguage,
+                    hydrated.explicitLanguage,
                     characterName,
                     { dispatch: false, source: 'server' }
                 );

@@ -111,7 +111,11 @@ def test_language_preference_has_accessible_explanatory_tooltip():
     assert "languageTooltip.setAttribute('role', 'tooltip')" in form_source
     assert ".language-preference-help-button:hover + .language-preference-tooltip" in css_source
     assert ".language-preference-help-button:focus-visible + .language-preference-tooltip" in css_source
-    assert "bottom: calc(100% + 9px);" in css_source
+    tooltip_rule = css_source.split(
+        ".catgirl-panel-right .language-preference-tooltip {", 1
+    )[1].split("}", 1)[0]
+    assert "top: auto;" in tooltip_rule
+    assert "bottom:" in tooltip_rule
 
 
 @pytest.mark.unit
@@ -163,6 +167,9 @@ async def test_character_language_change_clears_only_recent_context_and_resets_s
         def set_user_language(self, language):
             calls.append(("set_live_language", language))
 
+        async def send_session_ended_by_server(self):
+            calls.append(("notify_session_ended",))
+
         async def end_session(self, **kwargs):
             calls.append(("end_session", kwargs))
             await kwargs["after_memory_settlement"]()
@@ -186,13 +193,55 @@ async def test_character_language_change_clears_only_recent_context_and_resets_s
     assert result["recent_history_cleared"] is True
     assert result["session_reset"] is True
     assert ("clear_recent", config_manager, "Mimi") in calls
-    assert not any("durable" in str(call).lower() for call in calls)
     assert calls.index(("set_live_language", "ja")) < next(
+        index for index, call in enumerate(calls) if call[0] == "end_session"
+    )
+    assert calls.index(("notify_session_ended",)) < next(
         index for index, call in enumerate(calls) if call[0] == "end_session"
     )
     assert next(
         index for index, call in enumerate(calls) if call[0] == "end_session"
     ) < calls.index(("clear_recent", config_manager, "Mimi"))
+
+
+@pytest.mark.unit
+def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explicit_locale():
+    websocket_source = (
+        PROJECT_ROOT / "static" / "app" / "app-websocket.js"
+    ).read_text(encoding="utf-8")
+    memory_source = (
+        PROJECT_ROOT / "static" / "js" / "memory_browser.js"
+    ).read_text(encoding="utf-8")
+    form_source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+
+    resolver = websocket_source.split(
+        "function getConversationLanguageForCurrentCharacter()", 1
+    )[1].split("function hydrateConversationLanguage", 1)[0]
+    assert resolver.index("S.conversationLanguageHydrated === true") < resolver.index(
+        "window.getConversationLanguagePreference"
+    )
+
+    hydration = websocket_source.split(
+        "function hydrateConversationLanguage(characterName)", 1
+    )[1].split("var SETTINGS_SYNC_GATE_TIMEOUT_MS", 1)[0]
+    assert "explicitLanguage: explicitLanguage" in hydration
+    assert "if (hydrated.explicitLanguage" in hydration
+    assert "hydrated.explicitLanguage," in hydration
+
+    assert "async function getExplicitConversationTemplateLanguage" in memory_source
+    assert "payload.language.trim() || null" in memory_source
+    assert "if (explicitLanguage) payload.language = explicitLanguage;" in memory_source
+    assert "window.getConversationLanguagePreference" not in memory_source.split(
+        "async function getExplicitConversationTemplateLanguage", 1
+    )[1].split("async function buildExternalImportPayload", 1)[0]
+
+    assert (
+        "input, textarea, select:not(.conversation-language-select)"
+        in form_source
+    )
 
 
 @pytest.mark.unit

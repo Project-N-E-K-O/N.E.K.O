@@ -823,7 +823,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             if (saveButton) saveButton.style.display = '';
             if (cancelButton) cancelButton.style.display = '';
         }
-        form.querySelectorAll('input, textarea, select').forEach(input => {
+        form.querySelectorAll('input, textarea, select:not(.conversation-language-select)').forEach(input => {
             input.addEventListener('change', showCatgirlActionButtons);
             if (input.type === 'text' || input.tagName === 'TEXTAREA') {
                 input.addEventListener('input', showCatgirlActionButtons);

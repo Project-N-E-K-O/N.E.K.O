@@ -124,6 +124,27 @@ async def apply_character_language_preference(name: str, language: str) -> dict:
             if getattr(manager, "is_active", False)
             else None
         )
+        if expected_session is not None:
+            notify_session_ended = getattr(
+                manager,
+                "send_session_ended_by_server",
+                None,
+            )
+            if callable(notify_session_ended):
+                try:
+                    await notify_session_ended()
+                except Exception as exc:
+                    logger.warning(
+                        "语言切换前通知前端结束当前会话失败: name=%s err=%s",
+                        name,
+                        exc,
+                        exc_info=True,
+                    )
+                    result.update({
+                        "success": False,
+                        "partial_success": True,
+                        "error": "语言偏好已保存，但前端会话状态可能未完整重置",
+                    })
         try:
             # Even an already-inactive manager may still have old messages queued
             # in cross_server.  end_session's optional barrier therefore runs for
