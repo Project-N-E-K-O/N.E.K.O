@@ -1034,10 +1034,15 @@ class OpenClawAdapter:
         clauses = _split_clauses(text)
         if not clauses:
             return None
-        command_clause = _command_clause(clauses)
-        if _clause_hits(command_clause, _STOP_ADDRESSED):
+        # ⚠️ 明确档扫**所有**子句，不只是末子句：`取消这个任务，停下来` 里那句无歧义的
+        # 取消在前、模糊的收尾在后，只看末子句会判成 ambiguous，然后在「超时/重启/TTL
+        # 过期」这些没有佐证的时刻被丢掉——而它恰恰是最该放行的说法。
+        # 扫全句在这里是安全的：分档**不决定 /stop 发不发**（那由分类器按末子句判据决定），
+        # 只决定「要不要状态佐证」。`我说了停止搜索，然后他就走了` 在分类器那层就是 None，
+        # 根本走不到这里。
+        if any(_clause_hits(clause, _STOP_ADDRESSED) for clause in clauses):
             return "addressed"
-        if _clause_hits(command_clause, _STOP_AMBIGUOUS):
+        if _clause_hits(_command_clause(clauses), _STOP_AMBIGUOUS):
             return "ambiguous"
         return None
 

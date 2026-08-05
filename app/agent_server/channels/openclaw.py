@@ -679,19 +679,26 @@ async def dispatch(
                 # 相交。只看在跑的任务就会在这里提前 return，于是底下那段作废窗口的代码
                 # 根本不执行：用户那句「停下来」是在**拒绝**刚问出口的提示，结果不但被
                 # 静默丢弃，窗口还留着，随后一句随口的「同意」就能把他刚拒绝的动作批了。
-                # 用和作废同一套放宽过滤（不判龄、不按角色、不要求 session）——这里宁可
-                # 多放行一次 /stop，也不能漏掉一次拒绝。
+                #
+                # ⚠️ 但窗口这一侧要用**窄**判据（`_find_approval_window_task`），不是作废
+                # 用的那套放宽过滤。佐证是**开闸**决策，「开闸窄、作废宽」在这里同样成立：
+                # 终态条目在这条路径上可以无限期留着（清理只在 capabilities 那条路上调），
+                # 用宽过滤的话**一条几小时前的、根本没问过问题的完成记录**就能让之后每一句
+                # 「停下来」都放行——分档守卫等于白加（Codex P2）。窄判据不影响上面那个
+                # 拒绝场景：拒绝提示的当下，窗口本来就是新鲜、同角色、同会话、带问号的。
+                #
+                # ⚠️ 在跑的任务这一侧则**不按角色收窄**：上游会话键只认 sender
+                # （`_build_session_key` 第一行 `del role_name`），所以同一个 sender 在另一个
+                # 角色下跑着的活儿，同样是「停下来」的正当指代对象，而那次 /stop POST 打的
+                # 也正是同一个上游会话。
                 corroborated = _collect_active_openclaw_task_ids(
                     sender_id=nk_sender_id,
-                    lanlan_name=lanlan_name,
+                    lanlan_name=None,
                     exclude_task_id=result.task_id,
-                ) or _iter_approval_window_tasks(
+                ) or _find_approval_window_task(
                     sender_id=nk_sender_id,
                     lanlan_name=lanlan_name,
                     exclude_task_id=result.task_id,
-                    age_bounded=False,
-                    match_lanlan=False,
-                    require_session=False,
                 )
                 if tier == "ambiguous" and not corroborated:
                     logger.info(

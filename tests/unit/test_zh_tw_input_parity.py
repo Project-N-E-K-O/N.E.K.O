@@ -7008,3 +7008,40 @@ def test_no_ui_string_in_any_locale_is_a_magic_command():
 
     hits = [s for s in strings if s.strip() and OpenClawAdapter.rule_magic_command(s.strip())]
     assert hits == [], f"UI 文案被判成命令：{hits[:8]}"
+
+
+@pytest.mark.parametrize(
+    ("text", "tier"),
+    [
+        # 明确档在前、模糊收尾在后 —— 整句仍算「明确」
+        ("取消这个任务，停下来", "addressed"),
+        ("停止搜索，别找了", "addressed"),
+        ("算了别查了，停下来吧", "addressed"),
+        ("取消這個搜尋，停下來", "addressed"),
+        # 只有模糊说法
+        ("停下来", "ambiguous"), ("别找了，停下来", "ambiguous"),
+    ],
+)
+def test_an_addressed_phrase_anywhere_makes_the_whole_utterance_addressed(text, tier):
+    """⚠️ 明确档扫**所有**子句，模糊档只看末子句。
+
+    ``取消这个任务，停下来`` puts the unambiguous cancel first and a colloquial
+    closer last; tiering on the trailing clause alone called it ambiguous, so in
+    exactly the timeout/restart/TTL moments where nothing corroborates, the most
+    deserving phrasing got dropped.
+
+    Scanning every clause is safe here because the tier does **not** decide
+    whether ``/stop`` fires — the classifier already did that on the trailing
+    clause. ``我说了停止搜索，然后他就走了`` is None before this is ever reached.
+    """  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.stop_trigger_tier(text) == tier, text
+
+
+@pytest.mark.parametrize("text", ["我说了停止搜索，然后他就走了", "他让我取消这个任务，我没理"])
+def test_a_narrated_addressed_phrase_never_becomes_a_command(text):
+    """分档扫全句不会把叙述变成命令——分类器那层先按末子句判据否掉了。"""  # noqa: DOCSTRING_CJK
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    assert OpenClawAdapter.rule_magic_command(text) is None, text

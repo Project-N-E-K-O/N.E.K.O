@@ -1123,3 +1123,66 @@ def test_an_ambiguous_stop_is_corroborated_by_a_standing_approval_window(wired):
     fake.magic_calls.clear()
     _dispatch("/daemon approve", task_id="magic-approve")
     assert fake.magic_calls == [], "被拒绝过的提示不该还能授权"
+
+
+def test_a_stale_completion_does_not_corroborate_an_ambiguous_stop(wired):
+    """⚠️ 佐证是**开闸**决策，得用窄判据——用作废那套宽过滤会把分档守卫废掉。
+
+    Terminal entries can sit in the registry indefinitely on this path (cleanup
+    only runs from the capabilities route), so a single hours-old, non-prompt
+    completion would otherwise corroborate every later 停下来 forever.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+
+    # 超龄
+    _register(registry, "t-stale", status="completed",
+              ended_seconds_ago=oc.TASK_REGISTRY_CLEANUP_TTL + 60)
+    _dispatch("/stop", task_id="m1", user_text="停下来")
+    assert fake.magic_calls == [], "超龄的完成记录不该给模糊说法当佐证"
+
+    # 没问过问题
+    registry.clear()
+    _register(registry, "t-plain", status="completed", reply="整理完成，共移动 12 个文件。")
+    _dispatch("/stop", task_id="m2", user_text="停下来")
+    assert fake.magic_calls == [], "没问过问题的完成记录同样不算佐证"
+
+    # 已经兑现过
+    registry.clear()
+    _register(registry, "t-used", status="completed")
+    registry["t-used"][oc._APPROVAL_CONSUMED_KEY] = True
+    _dispatch("/stop", task_id="m3", user_text="停下来")
+    assert fake.magic_calls == [], "已兑现的窗口不该复活成佐证"
+
+
+def test_a_running_task_under_another_character_corroborates(wired):
+    """⚠️ 上游会话键只认 sender（`_build_session_key` 第一行 `del role_name`）。
+
+    A job running under another character of the same sender is exactly what a
+    「停下来」 can be referring to, and the `/stop` POST lands on that same shared
+    upstream session anyway.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-other-char",
+        status="running",
+        lanlan="miku",
+        ended_seconds_ago=None,
+    )
+
+    _dispatch("/stop", task_id="m1", user_text="停下来")
+    assert [c[0] for c in fake.magic_calls] == ["/stop"]
+
+    # 但跨 sender 仍然不算
+    fake.magic_calls.clear()
+    oc._shared.Modules.task_registry.clear()
+    _register(
+        oc._shared.Modules.task_registry,
+        "t-other-sender",
+        status="running",
+        sender="USER_B",
+        ended_seconds_ago=None,
+    )
+    _dispatch("/stop", task_id="m2", user_text="停下来")
+    assert fake.magic_calls == [], "别人的在跑任务不能给我的模糊说法当佐证"
