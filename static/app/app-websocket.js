@@ -1004,13 +1004,64 @@
         return 'local-' + S.assistantTurnSeq;
     }
 
-    function emitAssistantLifecycleEvent(eventName, detail) {
-        window.dispatchEvent(new CustomEvent(eventName, {
-            detail: Object.assign({
-                timestamp: Date.now()
-            }, detail || {})
-        }));
+    var motionLifecycleLastClosedText = '';
+    var motionLifecycleLastBroadcastAt = 0;
+
+    function broadcastMotionLifecycle(eventName, detail) {
+        var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (!channel) return;
+        var payload = Object.assign({}, detail || {});
+        payload.lanlan_name = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+        if (typeof payload.text === 'string') payload.text = payload.text.slice(0, 24000);
+        motionLifecycleLastBroadcastAt = Math.max(Date.now(), motionLifecycleLastBroadcastAt + 1);
+        channel.postMessage({
+            action: 'motion_lifecycle',
+            eventName: eventName,
+            detail: payload,
+            timestamp: motionLifecycleLastBroadcastAt
+        });
     }
+
+    function emitAssistantLifecycleEvent(eventName, detail) {
+        if (eventName === 'neko-assistant-turn-start') {
+            motionLifecycleLastClosedText = '';
+        }
+        var payload = Object.assign({
+            timestamp: Date.now()
+        }, detail || {});
+        window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+        if (eventName === 'neko-assistant-turn-end') {
+            payload = Object.assign({}, payload, {
+                text: typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : ''
+            });
+        }
+        broadcastMotionLifecycle(eventName, payload);
+    }
+
+    // The standalone chat and pet/VRM surfaces are different Electron pages.
+    // Only relay when a stage direction has actually closed. Visible prose is
+    // sent once by turn-end above, so the bridge never needs to poll or publish
+    // the growing full reply on every streaming chunk.
+    function relayClosedMotionStage() {
+        var text = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+        if (!text) {
+            motionLifecycleLastClosedText = '';
+            return;
+        }
+        var closedAt = Math.max(text.lastIndexOf(')'), text.lastIndexOf('）'));
+        if (closedAt < 0) return;
+        var closedText = text.slice(0, closedAt + 1);
+        if (closedText === motionLifecycleLastClosedText) return;
+        motionLifecycleLastClosedText = closedText;
+        broadcastMotionLifecycle('neko-assistant-text-update', {
+            turnId: resolveAssistantLifecycleTurnId(),
+            text: closedText
+        });
+    }
+    window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
+    window.addEventListener('pagehide', function () {
+        window.removeEventListener('neko-compact-caption-update', relayClosedMotionStage);
+    }, { once: true });
 
     function getRenderableAssistantChunkText(text) {
         return String(text || '')
@@ -1423,22 +1474,33 @@
                     setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
+                var readyEmotion = 'neutral';
                 if (emotionResult && emotionResult.emotion) {
+                    readyEmotion = emotionResult.emotion;
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
-                    if (assistantTurnId) {
-                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                            turnId: assistantTurnId,
-                            emotion: emotionResult.emotion,
-                            source: 'emotion_analysis'
-                        });
-                    }
+                }
+                if (assistantTurnId) {
+                    emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                        turnId: assistantTurnId,
+                        emotion: readyEmotion,
+                        source: emotionResult && emotionResult.emotion
+                            ? 'emotion_analysis' : 'emotion_analysis_unavailable'
+                    });
                 }
             } catch (emotionError) {
                 if (emotionError.message === '情感分析超时') {
                     console.warn(window.t('console.emotionAnalysisTimeout'));
                 } else {
                     console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
+                }
+                if (assistantTurnId) {
+                    emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                        turnId: assistantTurnId,
+                        emotion: 'neutral',
+                        source: emotionError.message === '情感分析超时'
+                            ? 'emotion_analysis_timeout' : 'emotion_analysis_failed'
+                    });
                 }
             }
         }, 100);
@@ -1497,8 +1559,10 @@
             turnId: S.assistantTurnId,
             requestId: resolveAssistantRequestId(requestId, responseMeta),
             source: source || 'visible_gemini_bubble',
-            meta: responseMeta
+            meta: responseMeta,
+            userText: String(window._nekoMotionPendingUserText || window._lastSubmittedText || '').slice(0, 1000)
         });
+        window._nekoMotionPendingUserText = '';
         logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
             source: source || 'visible_gemini_bubble',
             serverTurnId: normalizeAssistantTurnId(serverTurnId),
@@ -2366,6 +2430,9 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    if (!response.will_retry) {
+                        window._nekoMotionPendingUserText = '';
+                    }
                     if (S.suppressAssistantStreamUntilNextSession) {
                         logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
                             reason: response.reason,
@@ -2590,6 +2657,7 @@
                     removeExternalAsrPreview();
                     var normalizedVoiceTranscript = String(response.text || '').trim();
                     if (normalizedVoiceTranscript) {
+                        window._nekoMotionPendingUserText = normalizedVoiceTranscript.slice(0, 1000);
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),

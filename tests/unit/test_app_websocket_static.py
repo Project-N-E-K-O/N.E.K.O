@@ -5636,6 +5636,11 @@ def test_session_ended_by_server_stops_assistant_text_output():
         1,
     )[0]
     assert "if (S.suppressAssistantStreamUntilNextSession)" in discard_block
+    terminal_discard_block = _block_after(discard_block, "if (!response.will_retry) {")
+    assert "window._nekoMotionPendingUserText = '';" in terminal_discard_block
+    assert discard_block.index("window._nekoMotionPendingUserText = '';") < discard_block.index(
+        "if (S.suppressAssistantStreamUntilNextSession)"
+    )
     assert discard_block.index("if (S.suppressAssistantStreamUntilNextSession)") < discard_block.index(
         "// Fallback: clear trailing gemini bubbles not tracked"
     )
