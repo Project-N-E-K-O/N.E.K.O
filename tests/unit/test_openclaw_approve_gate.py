@@ -399,7 +399,8 @@ def test_the_proactive_block_is_scoped_to_approve(wired, command):
     """A proactive /stop is a designed feature (see _resolve_openclaw_sender_id)."""
     fake, _ = wired
 
-    _dispatch(command, proactive=True)
+    _dispatch(command, proactive=True,
+              user_text="取消这个任务" if command == "/stop" else command)
 
     assert [c[0] for c in fake.magic_calls] == [command]
 
@@ -633,10 +634,14 @@ def test_the_gate_does_not_leak_to_the_other_magic_commands(wired, command):
     /stop, /new and /clear must still dispatch with an empty registry — /stop in
     particular is how a user halts things, and gating it on "a task is running"
     would make it useless exactly when the registry is out of sync.
+
+    ⚠️ /stop goes in with an **addressed** phrasing: that tier is the designed
+    escape hatch and needs no corroboration. The ambiguous tier is covered by
+    test_stop_needs_a_running_task_when_the_phrasing_is_ambiguous.
     """  # noqa: DOCSTRING_CJK
     fake, emitted = wired
 
-    _dispatch(command)
+    _dispatch(command, user_text="取消这个任务" if command == "/stop" else command)
 
     assert [call[0] for call in fake.magic_calls] == [command]
     assert emitted, f"{command} 应该照常产生 task_result"
@@ -659,7 +664,7 @@ def test_stop_retires_a_standing_approval_window(wired):
         ended_seconds_ago=None,
     )
 
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
     assert [c[0] for c in fake.magic_calls] == ["/stop"]
 
     fake.magic_calls.clear()
@@ -677,7 +682,7 @@ def test_stop_retires_the_window_with_nothing_left_to_cancel(wired):
     fake, _ = wired
     _register(oc._shared.Modules.task_registry, "t-done", status="completed")
 
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
     assert fake.stop_calls == [], "前提：这一轮没有在跑的任务可掐"
     assert oc._shared.Modules.task_registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
 
@@ -696,7 +701,7 @@ def test_stop_retires_the_window_even_when_the_upstream_call_fails(wired):
         return {"success": False, "error": "boom", "command": command}
 
     fake.run_magic_command = _fail
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
 
     fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
     fake.magic_calls.clear()
@@ -729,7 +734,7 @@ def test_an_explicitly_typed_approve_survives_stop(wired):
     fake, _ = wired
     _register(oc._shared.Modules.task_registry, "t-done", status="completed")
 
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
     fake.magic_calls.clear()
 
     _dispatch("/daemon approve", task_id="magic-approve", user_text="/daemon approve")
@@ -770,7 +775,7 @@ def test_stop_retires_every_standing_window_not_just_the_first(wired):
     _register(registry, "t-a", status="completed", ended_seconds_ago=3.0)
     _register(registry, "t-b", status="completed", ended_seconds_ago=1.0)
 
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
 
     assert registry["t-a"].get(oc._APPROVAL_CONSUMED_KEY) is True
     assert registry["t-b"].get(oc._APPROVAL_CONSUMED_KEY) is True
@@ -796,7 +801,7 @@ def test_a_proactive_stop_never_retires_the_users_window(wired):
     home = fake.default_sender_id
     _register(oc._shared.Modules.task_registry, "t-done", status="completed", sender=home)
 
-    _dispatch("/stop", task_id="magic-stop", sender=home, proactive=True)
+    _dispatch("/stop", task_id="magic-stop", sender=home, proactive=True, user_text="取消这个任务")
     assert [c[0] for c in fake.magic_calls] == ["/stop"], "主动轮的 /stop 本身照常派发"
     assert oc._APPROVAL_CONSUMED_KEY not in oc._shared.Modules.task_registry["t-done"]
 
@@ -820,7 +825,7 @@ def test_stop_retires_a_window_whose_end_time_is_in_the_future(wired):
     _register(registry, "t-stale", status="completed", ended_seconds_ago=oc.TASK_REGISTRY_CLEANUP_TTL + 30)
     _register(registry, "t-noend", status="completed", ended_seconds_ago=None)
 
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
 
     for task_id in ("t-future", "t-stale", "t-noend"):
         assert registry[task_id].get(oc._APPROVAL_CONSUMED_KEY) is True, task_id
@@ -839,7 +844,7 @@ def test_stop_retires_windows_of_the_senders_other_characters(wired):
     _register(registry, "t-other-char", status="completed", lanlan="miku")
     _register(registry, "t-other-sender", status="completed", sender="USER_B")
 
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
 
     assert registry["t-other-char"].get(oc._APPROVAL_CONSUMED_KEY) is True
     assert registry["t-other-sender"].get(oc._APPROVAL_CONSUMED_KEY) is None, (
@@ -863,7 +868,7 @@ def test_stop_retires_the_window_even_when_the_upstream_call_raises(wired):
         raise RuntimeError("connection reset")
 
     fake.run_magic_command = _boom
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
     assert oc._shared.Modules.task_registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
 
     fake.run_magic_command = _FakeOpenClaw.run_magic_command.__get__(fake)
@@ -933,7 +938,7 @@ def test_stop_still_retires_when_the_session_is_unknown(wired):
         raise RuntimeError("session cache unreadable")
 
     fake.peek_persistent_session_id = _boom
-    _dispatch("/stop", task_id="magic-stop")
+    _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
     assert registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True
 
 
@@ -957,7 +962,7 @@ def test_stop_retires_before_the_cancel_helper_can_raise(wired, monkeypatch):
     # tracker——这个仓库的 pytest 有后台线程/单例泄漏污染后续用例的前科。
     monkeypatch.setattr(oc._task_tracker, "record_completed", _boom)
     with pytest.raises(RuntimeError):
-        _dispatch("/stop", task_id="magic-stop")
+        _dispatch("/stop", task_id="magic-stop", user_text="取消这个任务")
 
     assert registry["t-done"][oc._APPROVAL_CONSUMED_KEY] is True, (
         "取消 helper 抛出之前，窗口就该已经作废掉了"
@@ -989,7 +994,7 @@ def test_a_completion_that_asked_nothing_does_not_open_the_gate(wired):
 
 @pytest.mark.parametrize(
     "reply",
-    ["要删掉吗？", "Proceed?", "需要我删掉嗎", "要不要我继续", "删掉这 3 个?"],
+    ["要删掉吗？", "Proceed?", "需要我删掉嗎", "删掉这 3 个?", "现在删除嗎"],
 )
 def test_replies_that_can_carry_a_prompt_open_the_gate(wired, reply):
     """带明确疑问标记的回复才算提示。判据只认标记，不枚举「提示长什么样」。"""  # noqa: DOCSTRING_CJK
@@ -1041,33 +1046,41 @@ def test_an_addressed_stop_never_needs_corroboration(wired, text):
     assert [c[0] for c in fake.magic_calls] == ["/stop"], text
 
 
-def test_an_unclassified_stop_phrasing_falls_through_to_dispatch(wired):
-    """⚠️ 分不出档的说法走**兜底放行**，这是独立于两档词表的一条判据。
+def test_an_unrecognized_stop_phrasing_still_needs_corroboration(wired):
+    """⚠️ 判据反转：分不出档**不再**免检——那正是 LLM 误判的入口。
 
-    ``stop`` used to sit in the addressed-tier parametrization, where it was
-    green for the wrong reason: it is not a literal command (no slash) and it is
-    in neither tier table, so it rides the ``tier is None`` fallback. Deleting
-    the entire addressed tier would have left that case passing.
+    An earlier revision let ``tier is None`` through as an escape hatch. But
+    ``stop_trigger_tier`` runs on the raw text independently of who classified
+    it, so 停下来 is tiered ambiguous no matter what; None means only "no table
+    knows this phrasing", which is precisely the LLM-misclassification path this
+    guard exists to contain. Leaving it open left a door built specifically to
+    bypass the guard.
 
-    The fallback itself is deliberate — the LLM leg can produce ``/stop`` from
-    phrasings no table knows, and welding those shut would close the escape
-    hatch that exists precisely because the registry lies when it matters most.
+    The escape hatch is the **addressed tier plus the literal command** — both
+    still dispatch with nothing on record.
     """  # noqa: DOCSTRING_CJK
     from brain.openclaw_adapter import OpenClawAdapter
 
     fake, _ = wired
     assert oc._shared.Modules.task_registry == {}
-
-    # 前提：既不是字面命令，也不在任何一档词表里
-    assert OpenClawAdapter.parse_typed_magic_command("stop") is None
-    assert OpenClawAdapter.stop_trigger_tier("stop") is None
     assert OpenClawAdapter.stop_trigger_tier("请把这个停一停") is None
 
-    for text in ("stop", "请把这个停一停"):
-        fake.magic_calls.clear()
-        _dispatch("/stop", user_text=text)
-        assert [c[0] for c in fake.magic_calls] == ["/stop"], text
+    _dispatch("/stop", task_id="m1", user_text="请把这个停一停")
+    assert fake.magic_calls == [], "词表不认识的说法，没有佐证时不该派发"
 
+    # 有佐证就放行
+    _register(oc._shared.Modules.task_registry, "t-live", status="running",
+              ended_seconds_ago=None)
+    _dispatch("/stop", task_id="m2", user_text="请把这个停一停")
+    assert [c[0] for c in fake.magic_calls] == ["/stop"]
+
+    # 明确档与字面命令始终免检
+    fake.magic_calls.clear()
+    oc._shared.Modules.task_registry.clear()
+    for text in ("取消这个任务", "/stop"):
+        fake.magic_calls.clear()
+        _dispatch("/stop", task_id="m3", user_text=text)
+        assert [c[0] for c in fake.magic_calls] == ["/stop"], text
 
 def test_the_addressed_tier_is_what_carries_the_addressed_cases(wired):
     """⚠️ 上面那条兜底会掩盖「明确档被删掉」——所以这里直接打词表。
@@ -1276,3 +1289,47 @@ def test_the_retirement_set_is_always_a_superset_of_the_gate_set(wired):
     # 非 completed 状态两侧都看不见
     for task_id in ("running", "failed", "cancelled"):
         assert task_id not in wide, task_id
+
+
+def test_stop_cancels_the_cross_character_task_it_used_as_corroboration(wired):
+    """⚠️ 因为它放行，就得掐它——否则 UI 继续显示用户刚停掉的工作。
+
+    The upstream `/stop` POST lands on the shared session and stops that job
+    anyway, so leaving the other character's registry entry as ``running`` is the
+    local state telling a lie.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-other-char", status="running", lanlan="miku",
+              ended_seconds_ago=None)
+
+    _dispatch("/stop", task_id="m1", user_text="停下来")
+
+    assert [c[0] for c in fake.magic_calls] == ["/stop"]
+    assert registry["t-other-char"]["status"] == "cancelled", (
+        "拿它当佐证放行了，就必须把它掐掉"
+    )
+
+
+def test_another_senders_running_task_is_never_cancelled(wired):
+    """放宽只到 sender 一层：别人的任务不能被我的 /stop 掐掉。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-mine", status="running", ended_seconds_ago=None)
+    _register(registry, "t-theirs", status="running", sender="USER_B",
+              ended_seconds_ago=None)
+
+    _dispatch("/stop", task_id="m1", user_text="停下来")
+
+    assert registry["t-mine"]["status"] == "cancelled"
+    assert registry["t-theirs"]["status"] == "running", "跨 sender 不该被掐"
+
+
+@pytest.mark.parametrize("reply", ["整理了「要不要删除备份」这个讨论。", "记录了要不要保留的争论"])
+def test_an_embedded_interrogative_phrase_is_not_a_prompt(wired, reply):
+    """⚠️ `要不要` 也会出现在陈述句里——标记是子串匹配，收它同样会顶开窗口。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(oc._shared.Modules.task_registry, "t-done", status="completed", reply=reply)
+
+    _dispatch("/daemon approve")
+    assert fake.magic_calls == [], reply

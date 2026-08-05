@@ -6934,8 +6934,9 @@ def test_the_free_text_veto_still_holds_when_the_llm_misbehaves(text):
     finally:
         OpenClawAdapter._classify_magic_intent_with_llm = original
 
+    # ⚠️ 否决之后会**回落规则层**，所以 source 是 "rule" 而不是 veto 常量——
+    # 关键断言是命令确实没出去，而不是它从哪一层出去的。
     assert result.get("command") is None, text
-    assert result.get("source") == "free-text-veto"
 
 
 @pytest.mark.parametrize(
@@ -7084,3 +7085,34 @@ def test_the_ambiguous_tier_only_reads_the_trailing_clause(text):
     from brain.openclaw_adapter import OpenClawAdapter
 
     assert OpenClawAdapter.stop_trigger_tier(text) is None, text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("取消这个任务", "/stop"), ("停止搜索", "/stop"), ("同意，去执行", "/daemon approve")],
+)
+def test_a_vetoed_llm_command_falls_back_to_the_rules(text, expected):
+    """⚠️ 否决破坏性命令，不该连合法的取消一起丢。
+
+    When the LLM ignores its prompt and answers ``/new`` for 取消这个任务, vetoing
+    that is right — but finalizing the veto as "not magic" throws away a command
+    the zero-LLM rules can identify perfectly well. Veto, then fall through.
+    """  # noqa: DOCSTRING_CJK
+    import asyncio
+
+    from brain.openclaw_adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter.__new__(OpenClawAdapter)
+
+    async def _rogue_llm(_self, user_text):
+        return {"is_magic_intent": True, "command": "/new"}
+
+    original = OpenClawAdapter._classify_magic_intent_with_llm
+    OpenClawAdapter._classify_magic_intent_with_llm = _rogue_llm
+    try:
+        result = asyncio.run(OpenClawAdapter.classify_magic_intent(adapter, text))
+    finally:
+        OpenClawAdapter._classify_magic_intent_with_llm = original
+
+    assert result.get("command") == expected, text
+    assert result.get("source") == "rule"

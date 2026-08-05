@@ -127,7 +127,7 @@ _APPROVAL_CONSUMED_KEY = "_approval_window_consumed"
 # 子串匹配：`已确认配置无误` / `確認完成` / `已检查是否有重复` 都不是在征询，却会把窗口
 # 顶开，随后一句随口的「同意」就发出去了（Codex P2）。留下的这几个没有这个毛病：`？`
 # `?` 是标点，`吗` `嗎` `要不要` 只出现在真的在问的句子里。
-_APPROVAL_PROMPT_MARKERS = ("？", "?", "吗", "嗎", "要不要")
+_APPROVAL_PROMPT_MARKERS = ("？", "?", "吗", "嗎")
 
 
 def _iter_approval_window_tasks(
@@ -714,7 +714,7 @@ async def dispatch(
                     lanlan_name=None,
                     exclude_task_id=result.task_id,
                 )
-                if tier == "ambiguous" and not corroborated:
+                if tier != "addressed" and not corroborated:
                     logger.info(
                         "[OpenClaw] /stop dropped: ambiguous phrasing with no running "
                         "task for sender=%s lanlan=%s",
@@ -760,9 +760,13 @@ async def dispatch(
                         len(retired),
                         ", ".join(retired),
                     )
+                # ⚠️ 取消也不按角色收窄——否则和上面的佐证自相矛盾：我们**因为**
+                # 另一个角色下有活儿在跑才放行这次 /stop，却不去掐它，UI 和 tracker
+                # 会继续显示用户刚停掉的工作。上游那次 POST 打的是共享会话，本来就把
+                # 它一起停了，本地不跟着写状态就是在说谎。
                 cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
                     sender_id=nk_sender_id,
-                    lanlan_name=lanlan_name,
+                    lanlan_name=None,
                     exclude_task_id=result.task_id,
                 )
                 if cancelled_task_ids:

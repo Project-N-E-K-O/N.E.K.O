@@ -456,10 +456,10 @@ def _drop_commands_not_inferable_from_free_text(result: Dict[str, Any]) -> Dict[
     if command in _FREE_TEXT_INFERABLE:
         return result
     logger.info(
-        "[OpenClaw] magic intent %r dropped: not inferable from free text",
+        "[OpenClaw] magic intent %r vetoed: not inferable from free text",
         result.get("command"),
     )
-    return {"is_magic_intent": False, "command": None, "source": "free-text-veto"}
+    return None
 
 
 
@@ -1078,7 +1078,12 @@ class OpenClawAdapter:
 
         llm_result = await self._classify_magic_intent_with_llm(text)
         if isinstance(llm_result, dict):
-            return _drop_commands_not_inferable_from_free_text(llm_result)
+            # ⚠️ 被否决之后要**回落规则层**，不能就地判成「不是命令」。LLM 把
+            # `取消这个任务` 错判成 /new 时，否决掉那个破坏性命令是对的，但用户这句
+            # 本来是零-LLM 规则认得的 /stop——就地终结等于连合法的取消一起丢掉。
+            vetoed = _drop_commands_not_inferable_from_free_text(llm_result)
+            if vetoed is not None:
+                return vetoed
         return self._classify_magic_intent_with_rules(text)
 
     async def stop_running(
