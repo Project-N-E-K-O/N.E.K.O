@@ -196,6 +196,165 @@ async def test_cross_mode_background_start_does_not_restart():
     assert mgr._starting_session_count == 1
 
 
+def _make_deduping_manager(*, route_mode, session_input_mode="audio"):
+    """Manager pre-positioned at the SAME-mode dedupe branch: an in-flight audio
+    start occupies the count, and it has already settled the route to
+    ``route_mode`` for the session whose mode is ``session_input_mode``."""
+    mgr = _make_starting_manager(starting_input_mode="audio")
+    mgr.input_mode = session_input_mode
+    mgr._asr_route_mode = route_mode
+    # Lazy-init only; the route fields under test are set explicitly above.
+    mgr._ensure_asr_runtime_state = lambda: None
+    mgr._independent_asr_handshake_override = None
+    mgr._voice_input_resource_optimization_handshake_override = None
+    return mgr
+
+
+def _record_dedupe_calls(mgr):
+    """Trace the two dedupe-path effects in call order: the route re-decision
+    and the re-ack. Order is the point -- an ack sent before the re-decision
+    would carry the very verdict the re-decision exists to replace."""
+    calls = []
+
+    async def _redecide(*_a, **kwargs):
+        calls.append(("redecide", kwargs))
+
+    async def _ack(input_mode):
+        calls.append(("ack", input_mode))
+
+    mgr._start_independent_asr_if_enabled = _redecide
+    mgr.send_session_started = _ack
+    return calls
+
+
+async def _run_dedupe_start(mgr, *, request_mode="audio", **kwargs):
+    """Drive a same-mode start into the dedupe wait, then let the in-flight
+    start settle."""
+    task = asyncio.create_task(
+        LLMSessionManager.start_session(
+            mgr, mgr.websocket, False, request_mode, user_initiated=True, **kwargs
+        )
+    )
+    await asyncio.sleep(0.1)
+    mgr._starting_session_count = 0
+    await task
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_redecides_a_blocked_route_before_reacking():
+    """#2539. The dedupe path starts nothing of its own, so it used to re-ack
+    with the in-flight start's verdict. Claiming the voice lease (which this
+    requester did, synchronously, before start_session) invalidates the
+    in-flight ASR start; that start exits ASR_START_STALE, leaves the route on
+    its blocked placeholder and emits no status at all. The ack carries the
+    placeholder, both windows latch fail-closed, and the microphone never opens
+    for the session that did start -- nothing re-decides in-session."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert [name for name, _ in calls] == ["redecide", "ack"]
+    assert calls[0][1]["handshake_override"] is None
+    assert calls[1][1] == "audio"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_keeps_a_settled_route():
+    """A native/independent verdict is valid for whoever holds the microphone.
+    Re-deciding would tear down a healthy provider mid-session, so only a
+    blocked route is re-run."""
+    for settled in ("native", "independent"):
+        mgr = _make_deduping_manager(route_mode=settled)
+        calls = _record_dedupe_calls(mgr)
+
+        await _run_dedupe_start(mgr)
+
+        assert [name for name, _ in calls] == ["ack"], settled
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_does_not_redecide_against_a_text_session():
+    """The dedupe branch treats a missing _starting_input_mode as a match, so an
+    audio request can land here against an in-flight TEXT start. A text session
+    pins the route to blocked for its whole life; re-deciding would hand a live
+    microphone to a session with no audio path."""
+    mgr = _make_deduping_manager(route_mode="blocked", session_input_mode="text")
+    mgr._starting_input_mode = None
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert [name for name, _ in calls] == ["ack"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_does_not_redecide_for_a_text_request():
+    """Dual of the case above: a TEXT request can land in the same-mode branch
+    against an in-flight AUDIO start (again via a missing _starting_input_mode).
+    Re-deciding on its behalf would open a microphone route for a requester that
+    asked for the keyboard."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    mgr._starting_input_mode = None
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr, request_mode="text")
+
+    assert [name for name, _ in calls] == ["ack"]
+    assert calls[0][1] == "text"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_redecides_with_this_requests_handshake():
+    """The re-decision belongs to THIS request: it must use the handshake
+    snapshot carried down from its own start_session call, not whatever the
+    shared manager field holds by the time the wait ends (a later request may
+    have overwritten it -- that is why start_session snapshots it at all)."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _overwrite_shared_field_during_wait():
+        await asyncio.sleep(0.05)
+        mgr._independent_asr_handshake_override = False
+        mgr._voice_input_resource_optimization_handshake_override = False
+
+    overwrite = asyncio.create_task(_overwrite_shared_field_during_wait())
+    await _run_dedupe_start(
+        mgr, handshake_override=True, resource_optimization_override=True
+    )
+    await overwrite
+
+    assert calls[0][0] == "redecide"
+    assert calls[0][1]["handshake_override"] is True
+    assert calls[0][1]["resource_optimization_override"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_skips_both_when_inflight_never_settles(monkeypatch):
+    """Timeout exit: the in-flight start never settles, so the session/is_active
+    it would report may belong to the PREVIOUS session. No ack, and therefore no
+    route re-decision either -- re-deciding would tear down the route of a start
+    that is still running."""
+    monkeypatch.setattr(
+        "main_logic.core.lifecycle.FRONTEND_START_SESSION_TIMEOUT_SECONDS", 0.2
+    )
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await LLMSessionManager.start_session(
+        mgr, mgr.websocket, False, "audio", user_initiated=True
+    )
+
+    assert calls == []
+    assert mgr._starting_session_count == 1
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cross_mode_start_skips_restart_when_torn_down_during_wait():

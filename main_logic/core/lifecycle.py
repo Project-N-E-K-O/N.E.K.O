@@ -918,6 +918,18 @@ class LifecycleMixin:
             # 故一律不发。也**不**发 session_failed——in-flight 可能仍在跑/或其
             # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
             if self._starting_session_count == 0 and self.session and self.is_active:
+                # 补发的 ack 带的是 in-flight 那次 start 的路由裁决（见
+                # send_session_started），而这条路径本身从不重跑决策。裁决对本
+                # 请求方可能已经作废：本请求抢 voice lease 会 invalidate in-flight
+                # 的 ASR start，那次 start 于是 ASR_START_STALE 早退、把路由留在
+                # blocked 占位上且不发任何 status，结果两个窗口都 fail-closed latch
+                # 住、麦克风在本会话内再也打不开。先重跑一次决策再补 ack，让 ack
+                # 带的是本请求方真正成立的路由（详见 _rerun_route_for_deduped_start）。
+                await self._rerun_route_for_deduped_start(
+                    input_mode,
+                    handshake_override=handshake_override,
+                    resource_optimization_override=resource_optimization_override,
+                )
                 await self.send_session_started(input_mode)
         elif user_initiated and _allow_cross_mode_restart:
             # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /

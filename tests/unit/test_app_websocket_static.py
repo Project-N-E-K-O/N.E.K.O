@@ -5594,6 +5594,39 @@ def test_blocked_route_latch_blocks_game_exit_microphone_resume():
     assert "S.voiceInputRouteBlocked = false;" not in started_handler
 
 
+def test_session_started_ack_latches_a_blocked_microphone_route():
+    # The one clear of the latch that is NOT tied to a route verdict is user
+    # intent (app-buttons.js, next to _pendingSessionStartMode = 'audio'). What
+    # keeps that from opening the microphone onto a dead route is this branch:
+    # the ack carries the settled route (send_session_started in notify.py), so
+    # a still-blocked route re-latches before the start promise settles.
+    #
+    # It is also the only channel that reaches a window which never got an
+    # ASR_INDEPENDENT_* status at all -- a fenced start emits none, which is the
+    # case the backend's dedupe re-decision (#2539) exists to shrink but cannot
+    # remove.
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    # The clear-on-intent this backstops, in the flow that arms the audio start.
+    assert "S.voiceInputRouteBlocked = false;" in buttons_source
+
+    started_handler = websocket_source.split(
+        "S.isTextSessionActive = response.input_mode === 'text';", 1
+    )[1].split("var _tiaStarted", 1)[0]
+    latch = started_handler.split("if (response.input_mode !== 'text'", 1)[1].split(
+        "}", 1
+    )[0]
+    # Set-only, and only on a blocked verdict: the latch is sticky by design
+    # (tearDownBlockedVoiceRoute relies on it surviving), and an ack that says
+    # native/independent must not clear what a status verdict set.
+    assert "response.microphone_route === 'blocked'" in latch
+    assert "S.voiceInputRouteBlocked = true;" in latch
+    # Guarded on the field being present, so an older backend that omits it
+    # keeps its current behaviour rather than refusing every microphone.
+    assert "response.microphone_route !== 'blocked'" not in started_handler
+
+
 def test_shared_write_metadata_carries_per_key_asr_authority():
     # Codex P2. meta.hydrated is the GLOBAL hydration bit, which any unrelated
     # user edit flips -- so a window whose boot GET never merged could stamp its

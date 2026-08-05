@@ -506,11 +506,13 @@ class NotifyMixin:
         #
         # Qualifying the ack fixes every emitter at once: the ordinary one in
         # _start_session_activate, the in-flight dedupe re-ack in
-        # _start_session_handle_inflight (which re-acks WITHOUT re-running the
-        # route decision), and the stale-start case above that no status-based
-        # fix can reach. Suppressing the ack instead would be worse -- the
-        # dedupe re-ack exists precisely so the requester is not stranded on its
-        # 15s timeout, whose end_session tears down the session that did start.
+        # _start_session_handle_inflight (which re-decides a blocked route
+        # first, via _rerun_route_for_deduped_start, precisely so the route it
+        # reports here is the requester's own), and the stale-start case above
+        # that no status-based fix can reach. Suppressing the ack instead would
+        # be worse -- the dedupe re-ack exists precisely so the requester is not
+        # stranded on its 15s timeout, whose end_session tears down the session
+        # that did start.
         payload = {"type": "session_started", "input_mode": input_mode}
         route_mode = str(getattr(self, "_asr_route_mode", "") or "")
         if route_mode:

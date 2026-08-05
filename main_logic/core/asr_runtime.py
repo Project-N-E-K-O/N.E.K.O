@@ -804,6 +804,57 @@ class AsrRuntimeMixin:
                 operation_generation=operation_generation,
             )
 
+    async def _rerun_route_for_deduped_start(
+        self,
+        input_mode: str,
+        *,
+        handshake_override=...,
+        resource_optimization_override=...,
+    ) -> None:
+        """Re-decide the microphone route for a deduplicated same-mode start.
+
+        A same-mode start that collides with an in-flight one starts nothing of
+        its own and only re-acks, so it inherits the in-flight start's verdict.
+        That verdict can already be void for THIS requester: a second window
+        claims the voice lease (websocket_router does it synchronously before
+        firing start_session), which invalidates the in-flight ASR start. That
+        start then returns ASR_START_STALE and returns early, leaving the route
+        on the "blocked" placeholder its own teardown installed -- and emitting
+        no status at all, since the stale exit is upstream of every emitter.
+        The ack carries that placeholder, so both windows latch fail-closed and
+        the microphone never opens for the session that did start, with nothing
+        on screen to explain it. Nothing re-decides in-session either: the only
+        other entry is the core-change reconcile.
+
+        Runs while the requester holds the lease and no start is in flight
+        (the caller waits for the count to reach 0), so the fence inside
+        ``_start_independent_asr_if_enabled`` sees a settled, self-consistent
+        state -- and the handshake passed down is this request's own snapshot
+        rather than whatever the shared field holds by now.
+
+        Blocked routes only. A settled native/independent verdict is valid for
+        whoever ends up holding the microphone, and re-running would tear down
+        a healthy provider mid-session for nothing.
+        """
+        if input_mode != "audio":
+            return
+        # The in-flight start's OWN mode is the authority, not this request's:
+        # the dedupe branch treats a missing ``_starting_input_mode`` as a match,
+        # so an audio request can land here against an in-flight text start. Its
+        # route is legitimately blocked for the text session's whole life, and
+        # re-deciding would hand a live microphone to a session that has no
+        # audio path at all.
+        if str(getattr(self, "input_mode", "") or "") != "audio":
+            return
+        self._ensure_asr_runtime_state()
+        if self._asr_route_mode != "blocked":
+            return
+        await self._start_independent_asr_if_enabled(
+            input_mode,
+            handshake_override=handshake_override,
+            resource_optimization_override=resource_optimization_override,
+        )
+
     def _abandon_core_voice_turn(
         self,
         turn_id: str | None = None,

@@ -3084,9 +3084,9 @@ async def test_audio_start_ack_carries_the_settled_blocked_route():
     # ack says "started" -- so the microphone opens onto a route that discards
     # every frame, with no status and no recovery path.
     #
-    # Qualifying the ack covers that, and covers the in-flight dedupe re-ack
-    # (_start_session_handle_inflight) which re-acks without re-running the
-    # route decision at all.
+    # Qualifying the ack covers that, and carries the in-flight dedupe re-ack's
+    # verdict too (_start_session_handle_inflight re-decides a blocked route
+    # before re-acking; see test_session_start_guard.py).
     recorder, chat = _fake_socket_pair()
     mgr = _make_routable_audio_manager(True)
     mgr._begin_voice_input_connection("socket-a")
