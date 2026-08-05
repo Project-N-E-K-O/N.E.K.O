@@ -494,6 +494,7 @@
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'
+                || error.name === 'NotReadableError'
             );
             if (!recovered) {
                 setMessage(
@@ -613,6 +614,7 @@
             const microphoneError = error && (
                 error.name === 'NotAllowedError'
                 || error.name === 'NotFoundError'
+                || error.name === 'NotReadableError'
             );
             if (!recovered) {
                 setMessage(

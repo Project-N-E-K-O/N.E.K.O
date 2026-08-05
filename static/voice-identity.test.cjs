@@ -101,6 +101,7 @@ function createHarness({
     audioBlocks = 120,
     audioSample,
     fixedPrompts,
+    mediaError,
     nativeConfirm,
     showConfirm,
     scheduleTimeout,
@@ -143,6 +144,7 @@ function createHarness({
             'voiceIdentity.retry': 'Retry',
             'voiceIdentity.record': 'Record',
             'voiceIdentity.recording': 'Recording...',
+            'voiceIdentity.microphoneDenied': 'Microphone unavailable.',
             'voiceIdentity.requestFailed': 'Request failed.',
         },
         ja: {
@@ -255,6 +257,7 @@ function createHarness({
             mediaDevices: {
                 getUserMedia: async () => {
                     mediaRequests += 1;
+                    if (mediaError) throw mediaError;
                     const track = {
                         stopped: false,
                         stop() {
@@ -667,6 +670,31 @@ test('starting enrollment releases the permission-check microphone before the fi
     assert.equal(harness.elements.get('voice-identity-record').hidden, false);
 });
 
+test('starting enrollment reports an unavailable microphone', async () => {
+    const mediaError = new Error('microphone_locked');
+    mediaError.name = 'NotReadableError';
+    const harness = createHarness({
+        mediaError,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-start').emit('click');
+
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Microphone unavailable.',
+    );
+});
+
 test('ambiguous enrollment start failure reconciles the server session', async () => {
     let statusRequests = 0;
     let startRequests = 0;
@@ -770,6 +798,33 @@ test('underfilled recording times out without uploading a partial segment', asyn
     assert.equal(
         harness.getMediaStreams()[0].getTracks().every(track => track.stopped),
         true,
+    );
+});
+
+test('recording reports a microphone that becomes unavailable', async () => {
+    const mediaError = new Error('microphone_locked');
+    mediaError.name = 'NotReadableError';
+    const harness = createHarness({
+        mediaError,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    await harness.elements.get('voice-identity-record').emit('click');
+
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Microphone unavailable.',
     );
 });
 
