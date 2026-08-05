@@ -101,6 +101,7 @@ function createHarness({
     audioBlocks = 120,
     audioSample,
     fixedPrompts,
+    mediaGate,
     mediaError,
     nativeConfirm,
     showConfirm,
@@ -258,6 +259,7 @@ function createHarness({
             mediaDevices: {
                 getUserMedia: async () => {
                     mediaRequests += 1;
+                    if (mediaGate) await mediaGate;
                     if (mediaError) throw mediaError;
                     const track = {
                         stopped: false,
@@ -1578,6 +1580,44 @@ test('window close starts keepalive cancellation without waiting for the respons
     assert.equal(cancellationCalls[0].options.keepalive, true);
     keepaliveCancellation.resolve(jsonResponse({}));
     await Promise.resolve();
+});
+
+test('direct pagehide blocks a start waiting on microphone permission', async () => {
+    const mediaGate = deferred();
+    let startRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        mediaGate: mediaGate.promise,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
+                return jsonResponse({
+                    enrollment: { session_id: 'late-session', stage: 'fixed_1' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const starting = harness.elements.get('voice-identity-start').emit('click');
+    assert.equal(harness.getMediaRequests(), 1);
+
+    harness.pagehide();
+    mediaGate.resolve();
+    await starting;
+
+    assert.equal(startRequests, 0);
+    assert.equal(
+        harness.getMediaStreams()[0].getTracks().every(track => track.stopped),
+        true,
+    );
 });
 
 test('window close waits for an in-flight start and cancels its late session', async () => {

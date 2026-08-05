@@ -845,11 +845,7 @@
             return true;
         };
         window.addEventListener('pagehide', function () {
-            if (state.sessionId) {
-                cancelEnrollment({ keepalive: true, silent: true });
-            } else {
-                stopMicrophone();
-            }
+            window.nekoBeforeWindowClose().catch(function () {});
         });
     }
 
