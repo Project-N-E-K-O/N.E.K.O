@@ -29,6 +29,7 @@ class VRMAnimation {
         this.currentAction = null;
         this.vrmaIsPlaying = false;
         this._loaderPromise = null;
+        this._playRequestGeneration = 0;
         this._fadeTimer = null;
         this._springBoneRestoreTimer = null;
         // crossfade 时给每个 outgoing action schedule 的 stop 定时器。Set 允许
@@ -227,6 +228,35 @@ class VRMAnimation {
             }
         })();
         return await this._loaderPromise;
+    }
+
+    async _loadVRMAGltf(loader, vrmaPath) {
+        if (!/\.vrma\.gz(?:$|[?#])/i.test(String(vrmaPath || ''))) {
+            return await loader.loadAsync(vrmaPath);
+        }
+
+        const response = await fetch(vrmaPath, { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`压缩动画加载失败: HTTP ${response.status}`);
+        }
+
+        let decoded = await response.arrayBuffer();
+        const bytes = new Uint8Array(decoded);
+        // 某些反向代理会根据 Content-Encoding 自动解压；只有仍带 gzip magic
+        // 的响应才在浏览器中再次解压，避免 double-decompression。
+        if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+            if (typeof DecompressionStream !== 'function') {
+                throw new Error('当前运行环境不支持 gzip 动作解压');
+            }
+            const stream = new Blob([decoded]).stream().pipeThrough(new DecompressionStream('gzip'));
+            decoded = await new Response(stream).arrayBuffer();
+        }
+
+        const pageUrl = typeof document !== 'undefined' && document.baseURI
+            ? document.baseURI
+            : window.location.href;
+        const resourcePath = new URL('.', new URL(vrmaPath, pageUrl)).href;
+        return await loader.parseAsync(decoded, resourcePath);
     }
 
     _cleanupOldMixer(vrm) {
@@ -472,8 +502,6 @@ class VRMAnimation {
 
         if (this.vrmaMixer && existingRoot === mixerRoot) {
             // mixer root 相同 → 复用 mixer，保留 currentAction 供 _playAction crossfade
-            // 只取消旧 clip 的缓存，避免内存泄漏
-            this.vrmaMixer.uncacheClip(clip);
         } else {
             // mixer root 变了或首次创建 → 必须重建 mixer
             if (this.vrmaMixer) {
@@ -506,6 +534,23 @@ class VRMAnimation {
         return newAction;
     }
 
+    _releaseMixerAction(action, mixer = this.vrmaMixer) {
+        if (!action || !mixer) return;
+        const clip = typeof action.getClip === 'function' ? action.getClip() : null;
+        const root = typeof action.getRoot === 'function' ? action.getRoot() : mixer.getRoot();
+        try {
+            action.stop();
+        } catch (e) {
+            // action 可能已随 root 一起清理；释放路径必须保持幂等。
+        }
+        if (!clip) return;
+        try {
+            mixer.uncacheAction(clip, root || undefined);
+        } catch (e) {
+            // mixer 已重建或 dispose 时，旧 root 的 reset() 会负责最终清理。
+        }
+    }
+
     _playAction(newAction, options, vrm) {
         if (!this.vrmaMixer) {
             console.error('[VRM Animation] _playAction: vrmaMixer 未初始化');
@@ -516,7 +561,9 @@ class VRMAnimation {
         const isImmediate = options.immediate === true;
 
         if (isImmediate) {
-            if (this.currentAction) this.currentAction.stop();
+            if (this.currentAction && this.currentAction !== newAction) {
+                this._releaseMixerAction(this.currentAction, this.vrmaMixer);
+            }
             newAction.reset();
             newAction.enabled = true;
             newAction.play();
@@ -535,6 +582,7 @@ class VRMAnimation {
                 // 跟调用方（idle/manual）解耦——任何 VRMA 播放路径都能正确收尾
                 // （Project-N-E-K-O/N.E.K.O#772 Codex P2）。
                 const outgoing = this.currentAction;
+                const outgoingMixer = this.vrmaMixer;
                 outgoing.fadeOut(fadeDuration);
                 const stopDelayMs = Math.ceil(fadeDuration * 1000) + 50;
                 // 定时器登记到 _outgoingStopTimers，reset() 统一清——防止
@@ -547,7 +595,7 @@ class VRMAnimation {
                         // 只有当 outgoing 已经不是当前 action 时才 stop，避免把同一
                         // action 反复切入/切出时误杀正在 fadeIn 的自己。
                         if (this.currentAction !== outgoing) {
-                            outgoing.stop();
+                            this._releaseMixerAction(outgoing, outgoingMixer);
                         }
                     } catch (e) {
                         // action 可能已被 mixer 清理；stop 幂等，忽略异常
@@ -598,6 +646,17 @@ class VRMAnimation {
     }
 
     async playVRMAAnimation(vrmaPath, options = {}) {
+        const requestGeneration = ++this._playRequestGeneration;
+        const shouldApply = typeof options.shouldApply === 'function'
+            ? options.shouldApply : function () { return true; };
+        const requestIsCurrent = () => requestGeneration === this._playRequestGeneration && shouldApply();
+        const abortStaleRequest = () => {
+            if (requestIsCurrent()) return false;
+            if (requestGeneration === this._playRequestGeneration && !this.currentAction) {
+                this._restorePhysics();
+            }
+            return true;
+        };
         const vrm = this.manager.currentModel?.vrm;
         if (!vrm) {
             const error = new Error('没有加载的 VRM 模型');
@@ -611,6 +670,7 @@ class VRMAnimation {
         }
 
         try {
+            if (abortStaleRequest()) return false;
             // 清除上一次 stopVRMAAnimation 的 fadeOut 定时器，防止它在新动画播放后误杀 action
             if (this._fadeTimer) {
                 clearTimeout(this._fadeTimer);
@@ -627,7 +687,9 @@ class VRMAnimation {
 
             this._cleanupOldMixer(vrm);
             const loader = await this._initLoader();
-            const gltf = await loader.loadAsync(vrmaPath);
+            if (abortStaleRequest()) return false;
+            const gltf = await this._loadVRMAGltf(loader, vrmaPath);
+            if (abortStaleRequest()) return false;
             const vrmAnimations = gltf.userData?.vrmAnimations;
             if (!vrmAnimations || vrmAnimations.length === 0) {
                 const error = new Error('动画文件加载成功，但没有找到 VRM 动画数据');
@@ -639,7 +701,9 @@ class VRMAnimation {
             const vrmVersion = this._detectVRMVersion(vrm);
             this._ensureNormalizedRootInScene(vrm, vrmVersion);
             await this._createLookAtProxy(vrm);
+            if (abortStaleRequest()) return false;
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
+            if (abortStaleRequest()) return false;
             this._processTracksForVersion(clip, vrmVersion);
             this._normalizeQuaternionTrackSigns(clip);
             // 跨 clip 同半球对齐：必须在 _normalizeQuaternionTrackSigns 之后、
@@ -652,16 +716,26 @@ class VRMAnimation {
 
             const mixerRoot = this._findBestMixerRoot(vrm, clip);
             const newAction = this._createAndConfigureAction(clip, mixerRoot, options);
+            if (abortStaleRequest()) {
+                this._releaseMixerAction(newAction, this.vrmaMixer);
+                return false;
+            }
             this._playAction(newAction, options, vrm);
+            return true;
 
         } catch (error) {
             console.error('[VRM Animation] 播放失败:', error);
-            this.vrmaIsPlaying = false;
+            this.vrmaIsPlaying = !!this.currentAction;
+            if (!this.currentAction) this._restorePhysics();
             throw error;
         }
     }
 
     stopVRMAAnimation() {
+        // A stop must also cancel a request that is still fetching/parsing and
+        // has not created currentAction yet. Direct callers do not provide the
+        // motion player's shouldApply guard, so generation is the shared gate.
+        this._playRequestGeneration += 1;
         if (this._fadeTimer) {
             clearTimeout(this._fadeTimer);
             this._fadeTimer = null;
@@ -675,9 +749,7 @@ class VRMAnimation {
             // paused action 上 fadeOut 无效（mixer 不 update paused action 的权重），
             // 直接立即清理，避免 500ms 后骨骼硬跳到 rest pose
             if (this.currentAction.paused) {
-                if (this.vrmaMixer) {
-                    this.vrmaMixer.stopAllAction();
-                }
+                this._releaseMixerAction(this.currentAction, this.vrmaMixer);
                 this.currentAction = null;
                 this.vrmaIsPlaying = false;
                 this.isIdleAnimation = false;
@@ -691,9 +763,7 @@ class VRMAnimation {
                     if (this._disposed) return;
                     // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
                     if (this.currentAction === actionAtStop) {
-                        if (this.vrmaMixer) {
-                            this.vrmaMixer.stopAllAction();
-                        }
+                        this._releaseMixerAction(actionAtStop, this.vrmaMixer);
                         this.currentAction = null;
                         this.vrmaIsPlaying = false;
                         this.isIdleAnimation = false;
@@ -714,6 +784,8 @@ class VRMAnimation {
         } else {
             if (this.vrmaMixer) {
                 this.vrmaMixer.stopAllAction();
+                const root = this.vrmaMixer.getRoot();
+                if (root) this.vrmaMixer.uncacheRoot(root);
             }
             this.vrmaIsPlaying = false;
             this.isIdleAnimation = false;

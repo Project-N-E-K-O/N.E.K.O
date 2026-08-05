@@ -112,6 +112,17 @@ Object.assign(window.Jukebox, {
     return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
   },
 
+  resolveJukeboxActionUrl: function(action) {
+    let filePath = String(action?.file || '').trim();
+    const format = String(action?.format || '').toLowerCase();
+    // Built-in jukebox VRMA files are shipped as gzip. Keep old saved indexes
+    // working without rewriting user-uploaded, uncompressed VRMA files.
+    if (action?.isBuiltin === true && format === 'vrma') {
+      filePath = filePath.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+    }
+    return Jukebox.resolveJukeboxFileUrl(filePath);
+  },
+
   renderList: function() {
     const tbody = document.getElementById('jukebox-song-list');
     if (!tbody) {
@@ -389,7 +400,7 @@ Object.assign(window.Jukebox, {
       // 根据模型类型播放对应格式的动画
       const action = Jukebox.getActionForModel(song);
       if (action) {
-        const actionUrl = Jukebox.resolveJukeboxFileUrl(action.file || '');
+        const actionUrl = Jukebox.resolveJukeboxActionUrl(action);
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
@@ -838,12 +849,20 @@ Object.assign(window.Jukebox, {
         var vrmIdleList = window.lanlan_config?.vrmIdleAnimations;
         var vrmIdleUrl = (Array.isArray(vrmIdleList) && vrmIdleList.length > 0) ? vrmIdleList[0] : null;
         if (!vrmIdleUrl) {
-          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma';
+          vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma.gz';
         }
+        if (/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(String(vrmIdleUrl || ''))) {
+          vrmIdleUrl = String(vrmIdleUrl).replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+        }
+        const restoreRequestId = ++Jukebox.State.playRequestId;
         await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
           loop: true,
-          isIdle: true
+          isIdle: true,
+          shouldApply: function() {
+            return restoreRequestId === Jukebox.State.playRequestId;
+          }
         });
+        if (restoreRequestId !== Jukebox.State.playRequestId) return;
         console.log('[Jukebox] VRM 待机动画已恢复');
       } catch (error) {
         console.warn('[Jukebox] VRM 待机动画恢复失败:', error);

@@ -907,6 +907,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateUploadButtonText();
         DropdownManager.updateAllButtonText();
         refreshLocalizedInteractiveTexts();
+        scheduleVrmMotionLocaleRefresh();
     });
 
     // 监听i18next的languageChanged事件（更可靠）
@@ -915,6 +916,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateUploadButtonText();
             DropdownManager.updateAllButtonText();
             refreshLocalizedInteractiveTexts();
+            scheduleVrmMotionLocaleRefresh();
         });
     }
 
@@ -943,6 +945,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentLive3dSubType = ''; // 'vrm' or 'mmd' — 当 currentModelType === 'live3d' 时有效
     let vrmManager = null;
     let vrmAnimations = []; // VRM 动作列表
+    let vrmMotionCatalogPlayer = null; // 动作清单播放器（含压缩动作完整性校验）
+    let vrmMotionCatalogLoadPromise = null;
+    let persistedVrmAnimationValue = null; // 后端可持久化的传统 VRMA 路径
+    let vrmMotionLocaleRefreshTimer = null;
     let animationsLoaded = false; // 标记VRM动作列表是否已加载
     let mmdModels = []; // MMD 模型列表
     let mmdAnimations = []; // MMD 动画列表
@@ -1648,10 +1654,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                     modelData.vrm = vrmPath;
                     if (vrmAnimationSelect) {
+                        const selectedAnimationOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
+                        const isCompressedCatalogPreview = selectedAnimationOption
+                            && selectedAnimationOption.getAttribute('data-system-motion') === 'true'
+                            && selectedAnimationOption.getAttribute('data-compression') === 'gzip';
                         if (vrmAnimationSelect.value === '_no_motion_') {
                             modelData.vrm_animation = '';
+                            persistedVrmAnimationValue = null;
+                        } else if (isCompressedCatalogPreview) {
+                            // 压缩动作由动作系统首次播放时校验并解压；旧版角色字段只接受
+                            // /user_vrm/animation 或未压缩 /static/vrm/animation 路径。
+                            // 设置页选择它仅作精确预览，保存角色时保留原先可持久化值。
+                            if (persistedVrmAnimationValue) {
+                                modelData.vrm_animation = persistedVrmAnimationValue;
+                            }
                         } else if (vrmAnimationSelect.value) {
                             modelData.vrm_animation = vrmAnimationSelect.value;
+                            persistedVrmAnimationValue = vrmAnimationSelect.value;
                         }
                     }
                     const vrmIdleUrls = getSelectedIdleAnimations('vrm-idle-animation-multiselect');
@@ -3322,7 +3341,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
                 await vrmManager.loadModel(modelUrl, {
                     addShadow: false,
-                    idleAnimation: '/static/vrm/animation/wait03.vrma'
+                    idleAnimation: '/static/vrm/animation/wait03.vrma.gz'
                 });
                 // 加载新模型后，重置播放状态
                 isVrmAnimationPlaying = false;
@@ -3380,12 +3399,79 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
 
-    // 加载 VRM 动作列表
+    function currentMotionLocale() {
+        return String(window.i18next?.language || window.i18n?.language
+            || document.documentElement.lang || navigator.language || 'en');
+    }
+
+    async function loadVrmMotionCatalog() {
+        if (typeof window.NekoMotionPlayer !== 'function') return [];
+        if (!vrmMotionCatalogPlayer && !vrmMotionCatalogLoadPromise) {
+            const candidate = new window.NekoMotionPlayer();
+            vrmMotionCatalogLoadPromise = candidate.load().then(() => {
+                vrmMotionCatalogPlayer = candidate;
+                return candidate;
+            }).finally(() => {
+                vrmMotionCatalogLoadPromise = null;
+            });
+        }
+        if (!vrmMotionCatalogPlayer) await vrmMotionCatalogLoadPromise;
+        return vrmMotionCatalogPlayer.catalog(currentMotionLocale());
+    }
+
+    function scheduleVrmMotionLocaleRefresh() {
+        if (!animationsLoaded) return;
+        if (vrmMotionLocaleRefreshTimer) clearTimeout(vrmMotionLocaleRefreshTimer);
+        vrmMotionLocaleRefreshTimer = setTimeout(() => {
+            vrmMotionLocaleRefreshTimer = null;
+            void loadVRMAnimations(false);
+        }, 30);
+    }
+
+    function normalizeBundledVrmAnimationUrl(url, availableValues) {
+        const value = String(url || '');
+        if (!value.endsWith('.vrma') || !value.startsWith('/static/vrm/animation/')) return value;
+        const compressed = value + '.gz';
+        return availableValues && availableValues.has(compressed) ? compressed : value;
+    }
+
+    function mergeVrmAnimationLists(importedAnimations, catalogAnimations) {
+        const result = [];
+        const byPath = new Map();
+        const add = (animation) => {
+            if (!animation) return;
+            const path = String(animation.path || animation.url || '');
+            if (!path) return;
+            const existing = byPath.get(path);
+            if (existing) {
+                Object.assign(existing, animation, { path, url: path });
+                byPath.set(path, existing);
+                return;
+            }
+            const normalized = Object.assign({}, animation, { path, url: path });
+            byPath.set(path, normalized);
+            result.push(normalized);
+        };
+        (Array.isArray(importedAnimations) ? importedAnimations : []).forEach(add);
+        (Array.isArray(catalogAnimations) ? catalogAnimations : []).forEach(add);
+        return result;
+    }
+
+    // 加载 VRM 动作列表：用户导入动作与结构化动作清单共用一个选择器。
     async function loadVRMAnimations(autoPlaySaved = false) {
         try {
             showStatus(t('live2d.vrmAnimation.loading', '正在加载动作列表...'));
             const data = await RequestHelper.fetchJson('/api/model/vrm/animations');
-            vrmAnimations = (data.success && data.animations) ? data.animations : [];
+            let catalogAnimations = [];
+            try {
+                catalogAnimations = await loadVrmMotionCatalog();
+            } catch (catalogError) {
+                console.warn('[VRM] 动作清单不可用，保留用户导入动作列表:', catalogError);
+            }
+            vrmAnimations = mergeVrmAnimationLists(
+                (data.success && data.animations) ? data.animations : [],
+                catalogAnimations
+            );
 
             if (vrmAnimationSelect) {
                 const previousValue = vrmAnimationSelect.value;
@@ -3417,6 +3503,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                         option.value = finalUrl;
                         option.setAttribute('data-path', animPath);
                         option.setAttribute('data-filename', anim.name || anim.filename || finalUrl.split('/').pop());
+                        if (anim.id) option.setAttribute('data-motion-asset-id', anim.id);
+                        if (anim.systemMotion) option.setAttribute('data-system-motion', 'true');
+                        if (anim.compression) option.setAttribute('data-compression', anim.compression);
+                        if (anim.playback) option.setAttribute('data-playback', anim.playback);
                         option.textContent = option.getAttribute('data-filename');
                         vrmAnimationSelect.appendChild(option);
                     });
@@ -3436,17 +3526,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
                     const savedAnimation = await getSavedVrmAnimationUrl();
                     if (savedAnimation) {
+                        const availableValues = new Set(Array.from(vrmAnimationSelect.options)
+                            .map(option => option.value));
+                        const normalizedSavedAnimation = normalizeBundledVrmAnimationUrl(
+                            savedAnimation,
+                            availableValues
+                        );
                         let matched = Array.from(vrmAnimationSelect.options).find(option =>
-                            option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
+                            option.value === normalizedSavedAnimation
+                            || option.getAttribute('data-path') === normalizedSavedAnimation);
                         if (!matched) {
                             // saved 不在当前动作列表（文件被删，或 /api/model/vrm/animations 端点临时遗漏）。
                             // 若就此回落 _no_motion_，下次无关保存会把 vrm_animation 清成 '' 静默丢数据，
                             // 故注入一个选项保留选中态——下拉如实反映已存动作，保存走设值分支原样回传。
-                            let label = savedAnimation.split('/').pop() || savedAnimation;
+                            let label = normalizedSavedAnimation.split('/').pop() || normalizedSavedAnimation;
                             try { label = decodeURIComponent(label); } catch { /* 解码失败则保留原始串 */ }
                             matched = document.createElement('option');
-                            matched.value = savedAnimation;
-                            matched.setAttribute('data-path', savedAnimation);
+                            matched.value = normalizedSavedAnimation;
+                            matched.setAttribute('data-path', normalizedSavedAnimation);
                             matched.setAttribute('data-filename', label);
                             matched.textContent = label;
                             vrmAnimationSelect.appendChild(matched);
@@ -3508,6 +3605,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    async function playSelectedVrmAnimationOption(selectedOption) {
+        if (!selectedOption) throw new Error('No VRM animation selected');
+        const assetId = selectedOption.getAttribute('data-motion-asset-id');
+        const displayName = selectedOption.getAttribute('data-filename') || selectedOption.textContent || '';
+        showStatus(t('live2d.vrmAnimation.playingAnimation', `正在播放: ${displayName}`, { name: displayName }), 2000);
+        if (assetId) {
+            if (!vrmMotionCatalogPlayer) await loadVrmMotionCatalog();
+            if (!vrmMotionCatalogPlayer) throw new Error('Motion catalog player is unavailable');
+            await vrmMotionCatalogPlayer.playAsset(assetId);
+            return selectedOption.getAttribute('data-playback') === 'loop';
+        }
+        if (!vrmManager) throw new Error('VRM manager is unavailable');
+        const originalPath = selectedOption.getAttribute('data-path') || selectedOption.value;
+        const finalAnimationUrl = ModelPathHelper.vrmToUrl(originalPath, 'animation');
+        await vrmManager.playVRMAAnimation(finalAnimationUrl, {
+            loop: true,
+            timeScale: 1.0,
+            isIdle: false
+        });
+        return true;
+    }
+
     // VRM动作选择按钮点击事件已由 DropdownManager 处理
 
     // VRM 动作选择事件 - 首次点击时加载动作列表（保留原有逻辑作为备用）
@@ -3546,6 +3665,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 无动作选项：停止当前播放的 VRM 动作
             if (selectedValue === '_no_motion_') {
                 lastVrmAnimationSelection = '_no_motion_';
+                if (vrmMotionCatalogPlayer) {
+                    vrmMotionCatalogPlayer.cancel('model_manager_stop', { resume: false });
+                }
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -3567,17 +3689,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 自动播放选中的动作
                 if (vrmManager) {
                     const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
-                    const originalPath = selectedOption ? selectedOption.getAttribute('data-path') : animationPath;
-                    const animDisplayName = selectedOption ? selectedOption.getAttribute('data-filename') : '';
-                    const finalAnimationUrl = ModelPathHelper.vrmToUrl(originalPath, 'animation');
                     try {
-                        showStatus(t('live2d.vrmAnimation.playingAnimation', `正在播放: ${animDisplayName}`, { name: animDisplayName }), 2000);
-                        await vrmManager.playVRMAAnimation(finalAnimationUrl, {
-                            loop: true,
-                            timeScale: 1.0,
-                            isIdle: false
-                        });
-                        isVrmAnimationPlaying = true;
+                        isVrmAnimationPlaying = await playSelectedVrmAnimationOption(selectedOption);
                         updateVRMAnimationPlayButtonIcon();
                     } catch (error) {
                         console.error('自动播放 VRM 动作失败:', error);
@@ -3628,6 +3741,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (isVrmAnimationPlaying) {
                 // 当前正在播放，点击后停止，恢复 idle 轮换
+                if (vrmMotionCatalogPlayer) {
+                    vrmMotionCatalogPlayer.cancel('model_manager_pause', { resume: false });
+                }
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -3641,21 +3757,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 当前未播放，暂停 idle 轮换并播放手动动作
                 stopIdleRotation('vrm');
                 const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
-                const originalPath = selectedOption ? selectedOption.getAttribute('data-path') : vrmAnimationSelect.value;
-                const animDisplayName = selectedOption ? selectedOption.getAttribute('data-filename') : '未知动作';
-
-                const finalAnimationUrl = ModelPathHelper.vrmToUrl(originalPath, 'animation');
-                const loop = true;
-                const speed = 1.0;
 
                 try {
-                    showStatus(t('live2d.vrmAnimation.playingAnimation', `正在播放: ${animDisplayName}`, { name: animDisplayName }), 2000);
-                    await vrmManager.playVRMAAnimation(finalAnimationUrl, {
-                        loop: loop,
-                        timeScale: speed,
-                        isIdle: false
-                    });
-                    isVrmAnimationPlaying = true;
+                    isVrmAnimationPlaying = await playSelectedVrmAnimationOption(selectedOption);
                     updateVRMAnimationPlayButtonIcon();
                 } catch (error) {
                     console.error('播放 VRM 动作失败:', error);
@@ -4924,7 +5028,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     function setSelectedIdleAnimations(containerId, urls) {
         const container = document.getElementById(containerId);
         if (!container) return;
-        const urlSet = new Set(Array.isArray(urls) ? urls : (urls ? [urls] : []));
+        const available = new Set(Array.from(
+            container.querySelectorAll('.idle-animation-options input[type="checkbox"]')
+        ).map(cb => cb.value));
+        const urlSet = new Set((Array.isArray(urls) ? urls : (urls ? [urls] : []))
+            .map(url => normalizeBundledVrmAnimationUrl(url, available)));
         container.querySelectorAll('.idle-animation-options input[type="checkbox"]').forEach(cb => {
             cb.checked = urlSet.has(cb.value);
         });
@@ -5513,7 +5621,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
                     const displayName = anim.name || anim.filename || finalUrl.split('/').pop();
                     const fileName = finalUrl.split('/').pop() || '';
-                    const isDefault = /^wait\d*\.vrma$/i.test(fileName) || /\/wait\d*\.vrma$/i.test(animPath);
+                    const isDefault = /^wait\d*\.vrma(?:\.gz)?$/i.test(fileName) || /\/wait\d*\.vrma(?:\.gz)?$/i.test(animPath);
 
                     const item = document.createElement('div');
                     item.className = 'multiselect-item';
@@ -5595,7 +5703,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await RequestHelper.fetchJson('/api/characters');
             const charData = data['猫娘']?.[lanlanName];
             const saved = charData?.vrm_animation;
-            return (typeof saved === 'string' && saved) ? saved : null;
+            persistedVrmAnimationValue = (typeof saved === 'string' && saved) ? saved : null;
+            return persistedVrmAnimationValue;
         } catch (error) {
             console.error('[VRM] 读取已保存动作失败:', error);
             return null;

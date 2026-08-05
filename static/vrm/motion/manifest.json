@@ -1,0 +1,5214 @@
+{
+  "v": 4,
+  "ai": {
+    "required": [],
+    "model": "none",
+    "tokenUsagePerMotion": 0,
+    "decisionSource": "locale to Chinese action frame, then structured action-card retrieval",
+    "intensity": {
+      "1": "轻",
+      "2": "中",
+      "3": "强"
+    },
+    "noMotion": "empty local plan",
+    "authoritativeLanguage": "zh-CN",
+    "fileNaming": "descriptive Chinese filename with stable id"
+  },
+  "policy": {
+    "distribution": "public-release",
+    "localTestEnabled": false,
+    "previewUnrated": false,
+    "unknownLicense": "block-public-distribution",
+    "unknown": "no_motion"
+  },
+  "counts": {
+    "source": 75,
+    "files": 75,
+    "motions": 44,
+    "activeMotions": 43,
+    "disabledMotions": 1,
+    "official": 13
+  },
+  "assets": [
+    {
+      "id": "official_liked",
+      "m": "like",
+      "label": "官方喜欢回应",
+      "f": "animation/liked.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "positive",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.8,
+      "sha": "4431ad4f163befc184e7a62cc76c607a7f88b50a364395af96ecce8acec5d8c6",
+      "src": [
+        "static/vrm/animation/liked.vrma.gz"
+      ],
+      "packedSha": "d98d6bec6f7df06c450f3fa5fe76cb903f482e47c1437b4d40d312698d2e1155",
+      "decodedSha": "4431ad4f163befc184e7a62cc76c607a7f88b50a364395af96ecce8acec5d8c6",
+      "packedBytes": 29220,
+      "decodedBytes": 93908,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "开心地回应喜欢和亲近",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_liked",
+        "intent": "like",
+        "kind": "gesture",
+        "nameZh": "开心地回应喜欢和亲近",
+        "positiveZh": [
+          "回应喜欢",
+          "表达亲近",
+          "有你真好"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "开心地回应喜欢和亲近",
+        "zh-TW": "開心地回應喜歡與親近",
+        "en": "Happily respond with affection",
+        "ja": "嬉しそうに好意を返す",
+        "ko": "기쁘게 호감에 반응하기",
+        "ru": "Радостно ответить на симпатию",
+        "es": "Responder con alegría al cariño",
+        "pt": "Responder com alegria ao carinho"
+      }
+    },
+    {
+      "id": "official_wait_01",
+      "m": "idle",
+      "label": "官方休闲待机 A",
+      "f": "animation/wait01.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "relaxed",
+        "official"
+      ],
+      "i": 1,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 20.5,
+      "sha": "772c05a754050c15de07433774c475f52c7ea0117eeb88c2ecd6d558f72addf4",
+      "src": [
+        "static/vrm/animation/wait01.vrma.gz"
+      ],
+      "packedSha": "0936b488a4ae4f3e5d488a9715d88961776c518982cecddd51644e598308ba41",
+      "decodedSha": "772c05a754050c15de07433774c475f52c7ea0117eeb88c2ecd6d558f72addf4",
+      "packedBytes": 106223,
+      "decodedBytes": 208420,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "放松地站着小幅晃动等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_01",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "放松地站着小幅晃动等待",
+        "positiveZh": [
+          "放松等待",
+          "轻轻晃动",
+          "小幅晃动着站立"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "relaxed",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "放松地站着小幅晃动等待",
+        "zh-TW": "放鬆地站著小幅晃動等待",
+        "en": "Wait with a relaxed gentle sway",
+        "ja": "リラックスして軽く揺れながら待つ",
+        "ko": "편안하게 살짝 흔들며 기다리기",
+        "ru": "Расслабленно ждать, слегка покачиваясь",
+        "es": "Esperar relajadamente con un suave balanceo",
+        "pt": "Esperar relaxadamente com um leve balanço"
+      }
+    },
+    {
+      "id": "official_wait_02",
+      "m": "idle",
+      "label": "官方休闲待机 B",
+      "f": "animation/wait02.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "neutral",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.667,
+      "sha": "1e4c3dd66429177bef7a20fe783eba1db6eee0485545cfa366f6d4dc1572ec71",
+      "src": [
+        "static/vrm/animation/wait02.vrma.gz"
+      ],
+      "packedSha": "cc174a4f7b56fe2fa0a2d1bf0a7c8719777506a2a32f9f2c773c68618fc642bf",
+      "decodedSha": "1e4c3dd66429177bef7a20fe783eba1db6eee0485545cfa366f6d4dc1572ec71",
+      "packedBytes": 55874,
+      "decodedBytes": 152596,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "站着抬动右臂并转动视线等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_02",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "站着抬动右臂并转动视线等待",
+        "positiveZh": [
+          "站着抬动右臂并转动视线等待",
+          "等待时抬起右手转动目光",
+          "站着活动右臂同时改变视线",
+          "右手动作明显地观察着等待",
+          "抬动右臂四处看看再继续等"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "站着抬动右臂并转动视线等待",
+        "zh-TW": "站著抬動右臂並轉動視線等待",
+        "en": "Wait while moving the right arm and gaze",
+        "ja": "右腕と視線を動かしながら立って待つ",
+        "ko": "오른팔과 시선을 움직이며 서서 기다리기",
+        "ru": "Ждать стоя, двигая правой рукой и взглядом",
+        "es": "Esperar de pie moviendo el brazo derecho y la mirada",
+        "pt": "Esperar em pé movendo o braço direito e o olhar"
+      }
+    },
+    {
+      "id": "official_wait_03",
+      "m": "idle",
+      "label": "官方休闲待机 C",
+      "f": "animation/wait03.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "neutral",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 13.667,
+      "sha": "82ec12a3e74875957e92dd332beced52aa946845ce2f55f79aa9ddebc79ec76d",
+      "src": [
+        "static/vrm/animation/wait03.vrma.gz"
+      ],
+      "packedSha": "cc620a034992c05839660a68cdc0d02dc3aab5c12fbc6ffae07da13678baddc1",
+      "decodedSha": "82ec12a3e74875957e92dd332beced52aa946845ce2f55f79aa9ddebc79ec76d",
+      "packedBytes": 74688,
+      "decodedBytes": 166040,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "站着轻动双手手指等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_03",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "站着轻动双手手指等待",
+        "positiveZh": [
+          "站着轻动双手手指等待",
+          "等待时轻轻活动两只手",
+          "站着用细小手指动作打发时间",
+          "双手和手指微微动着等待",
+          "平静站着同时轻动双手"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "站着轻动双手手指等待",
+        "zh-TW": "站著輕動雙手手指等待",
+        "en": "Wait while gently moving both hands",
+        "ja": "両手の指を軽く動かしながら待つ",
+        "ko": "양손 손가락을 가볍게 움직이며 기다리기",
+        "ru": "Ждать, слегка двигая пальцами обеих рук",
+        "es": "Esperar moviendo suavemente los dedos de ambas manos",
+        "pt": "Esperar movendo suavemente os dedos das duas mãos"
+      }
+    },
+    {
+      "id": "official_wait_04",
+      "m": "shy",
+      "label": "官方害羞撩发",
+      "f": "animation/wait04.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "shy",
+        "gentle",
+        "official"
+      ],
+      "i": 1,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 12.1,
+      "sha": "a136a46fb25339f9c64b77e29717b5cc43478015b03ec05ee10a41ddea8ac022",
+      "src": [
+        "static/vrm/animation/wait04.vrma.gz"
+      ],
+      "packedSha": "1163545b845f343fddd8633c08d7cdc3d68a5077eda5d4e2cfa9ee6b83702a55",
+      "decodedSha": "a136a46fb25339f9c64b77e29717b5cc43478015b03ec05ee10a41ddea8ac022",
+      "packedBytes": 61005,
+      "decodedBytes": 155856,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "害羞的撩起头发",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_04",
+        "intent": "shy",
+        "kind": "emotion-body",
+        "nameZh": "害羞的撩起头发",
+        "positiveZh": [
+          "害羞的撩起头发",
+          "害羞地撩头发",
+          "羞涩地撩头发",
+          "把头发撩到耳后",
+          "轻轻撩起头发"
+        ],
+        "negativeZh": [
+          "从容等待",
+          "站着等待"
+        ],
+        "styles": [
+          "shy",
+          "gentle",
+          "official"
+        ],
+        "body": [
+          "头",
+          "手",
+          "头发"
+        ],
+        "emotions": [
+          "shy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "害羞的撩起头发",
+        "zh-TW": "害羞地撩起頭髮",
+        "en": "Shyly brush back the hair",
+        "ja": "恥ずかしそうに髪をかき上げる",
+        "ko": "수줍게 머리카락을 쓸어 넘기기",
+        "ru": "Застенчиво поправить волосы",
+        "es": "Apartarse el cabello con timidez",
+        "pt": "Afastar o cabelo com timidez"
+      }
+    },
+    {
+      "id": "official_wait_05",
+      "m": "idle",
+      "label": "官方休闲待机 E",
+      "f": "animation/wait05.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "lively",
+        "official"
+      ],
+      "i": 3,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 10.833,
+      "sha": "1cdfcc46ca5126612db0e587328daed0d0aa1795fac0f8eb0fbd17cf84d60db9",
+      "src": [
+        "static/vrm/animation/wait05.vrma.gz"
+      ],
+      "packedSha": "87c6feb8e5855a8dedfa96c502c2b85b7e1a0d155c1d6df5d3fa9234f3afdd97",
+      "decodedSha": "1cdfcc46ca5126612db0e587328daed0d0aa1795fac0f8eb0fbd17cf84d60db9",
+      "packedBytes": 63908,
+      "decodedBytes": 148360,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "活泼地站着晃动等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_wait_05",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "活泼地站着晃动等待",
+        "positiveZh": [
+          "活泼等待",
+          "开心晃动",
+          "轻快地晃动身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively",
+          "official"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "活泼地站着晃动等待",
+        "zh-TW": "活潑地站著晃動等待",
+        "en": "Wait with a lively standing sway",
+        "ja": "元気に体を揺らしながら立って待つ",
+        "ko": "활기차게 몸을 흔들며 서서 기다리기",
+        "ru": "Бодро ждать стоя, покачиваясь",
+        "es": "Esperar de pie con un balanceo animado",
+        "pt": "Esperar em pé com um balanço animado"
+      }
+    },
+    {
+      "id": "official_showcase",
+      "m": "showcase",
+      "label": "官方全身展示",
+      "f": "animation/全身展示.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "confident",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.8,
+      "sha": "240ec2add6e192a9fa0fd0317d509d74560f4160705f6db76ebe08ac2a121f9d",
+      "src": [
+        "static/vrm/animation/全身展示.vrma.gz"
+      ],
+      "packedSha": "72c634b5c98744ed95a94d38596243405577fb1e7858d9cafff82a638c2c129b",
+      "decodedSha": "240ec2add6e192a9fa0fd0317d509d74560f4160705f6db76ebe08ac2a121f9d",
+      "packedBytes": 613950,
+      "decodedBytes": 1348756,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "自信地转身展示全身",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_showcase",
+        "intent": "showcase",
+        "kind": "activity",
+        "nameZh": "自信地转身展示全身",
+        "positiveZh": [
+          "展示全身",
+          "自信展示",
+          "转身给人看"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "confident",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "自信地转身展示全身",
+        "zh-TW": "自信地轉身展示全身",
+        "en": "Turn confidently to show the full outfit",
+        "ja": "自信を持って振り向き全身を見せる",
+        "ko": "자신 있게 돌아서 전신을 보여 주기",
+        "ru": "Уверенно повернуться и показать образ целиком",
+        "es": "Girar con confianza para mostrar el conjunto completo",
+        "pt": "Girar com confiança para mostrar o visual completo"
+      }
+    },
+    {
+      "id": "official_shoot",
+      "m": "shoot",
+      "label": "官方射击姿态",
+      "f": "animation/射击姿态.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "firm",
+        "official"
+      ],
+      "i": 3,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.6,
+      "sha": "0629216db5c027e49d36e7877e424fc3b7099d3440e1e9fc2d027ba14ea30cc1",
+      "src": [
+        "static/vrm/animation/射击姿态.vrma.gz"
+      ],
+      "packedSha": "3f1d5a98482f2990160876ad03310688fa8a6befe21c9570bc3ee509f637e2f9",
+      "decodedSha": "0629216db5c027e49d36e7877e424fc3b7099d3440e1e9fc2d027ba14ea30cc1",
+      "packedBytes": 498152,
+      "decodedBytes": 1108916,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "坚定地举手摆出射击姿态",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_shoot",
+        "intent": "shoot",
+        "kind": "activity",
+        "nameZh": "坚定地举手摆出射击姿态",
+        "positiveZh": [
+          "射击姿态",
+          "举手瞄准",
+          "摆出开枪姿势"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "firm",
+          "official"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "坚定地举手摆出射击姿态",
+        "zh-TW": "堅定地舉手擺出射擊姿態",
+        "en": "Raise the hands in a firm shooting pose",
+        "ja": "しっかりと手を上げて射撃姿勢を取る",
+        "ko": "단호하게 손을 들어 사격 자세 취하기",
+        "ru": "Решительно поднять руки в стрелковой позе",
+        "es": "Alzar las manos con firmeza en pose de disparo",
+        "pt": "Erguer as mãos com firmeza em pose de tiro"
+      }
+    },
+    {
+      "id": "official_exercise",
+      "m": "exercise",
+      "label": "站立放松身体",
+      "f": "animation/屈伸运动.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "relaxed",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.517,
+      "sha": "39b6899f6e8f789f3de3d8bf236e9d7abd252593e3af44b2d978fade4d1eb608",
+      "src": [
+        "static/vrm/animation/屈伸运动.vrma.gz"
+      ],
+      "packedSha": "d92833e17e78d2dd66a302a1c450fb44c88aec15f20b924a397567789195aa65",
+      "decodedSha": "39b6899f6e8f789f3de3d8bf236e9d7abd252593e3af44b2d978fade4d1eb608",
+      "packedBytes": 542626,
+      "decodedBytes": 772060,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "站立的放松身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_exercise",
+        "intent": "exercise",
+        "kind": "activity",
+        "nameZh": "站立的放松身体",
+        "aliasesZh": [
+          "放松地伸展四肢和身体",
+          "站立放松身体",
+          "站着放松身体",
+          "站立舒展身体",
+          "放松伸展身体"
+        ],
+        "positiveZh": [
+          "伸展运动",
+          "活动四肢",
+          "舒展身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "relaxed",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "站立的放松身体",
+        "zh-TW": "站立時放鬆身體",
+        "en": "Relax and stretch while standing",
+        "ja": "立ったまま体をほぐす",
+        "ko": "서서 몸을 편안하게 풀기",
+        "ru": "Расслабиться и потянуться стоя",
+        "es": "Relajarse y estirarse de pie",
+        "pt": "Relaxar e alongar o corpo em pé"
+      }
+    },
+    {
+      "id": "official_spin",
+      "m": "spin",
+      "label": "官方旋转",
+      "f": "animation/旋转.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "lively",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.317,
+      "sha": "d36979e6487f357fd575ac000b0680642bc880db872633f6b92f00cb63109851",
+      "src": [
+        "static/vrm/animation/旋转.vrma.gz"
+      ],
+      "packedSha": "0f4a1aa8bf0011006beedd949477660b07620edffec5f6a23c77979697925c20",
+      "decodedSha": "d36979e6487f357fd575ac000b0680642bc880db872633f6b92f00cb63109851",
+      "packedBytes": 438611,
+      "decodedBytes": 632432,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "轻快地原地旋转一圈",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_spin",
+        "intent": "spin",
+        "kind": "activity",
+        "nameZh": "轻快地原地旋转一圈",
+        "positiveZh": [
+          "原地旋转",
+          "转了一圈",
+          "轻快转身"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "轻快地原地旋转一圈",
+        "zh-TW": "輕快地原地旋轉一圈",
+        "en": "Make a light spin in place",
+        "ja": "軽やかにその場で一回転する",
+        "ko": "가볍게 제자리에서 한 바퀴 돌기",
+        "ru": "Легко повернуться на месте",
+        "es": "Dar una vuelta ligera en el sitio",
+        "pt": "Dar uma volta leve no lugar"
+      }
+    },
+    {
+      "id": "official_pose",
+      "m": "pose",
+      "label": "官方模特姿势",
+      "f": "animation/模特姿势.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "confident",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 7.517,
+      "sha": "e63395c481b92895d9fe0260f87be012f5c4bbad956da422a166248dda9e8100",
+      "src": [
+        "static/vrm/animation/模特姿势.vrma.gz"
+      ],
+      "packedSha": "b99b608b949f413a6eda0786201a3b12d40ba1b9098328ced77d49a5d4a70e7b",
+      "decodedSha": "e63395c481b92895d9fe0260f87be012f5c4bbad956da422a166248dda9e8100",
+      "packedBytes": 352217,
+      "decodedBytes": 518476,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "自信地摆出模特姿势",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_pose",
+        "intent": "pose",
+        "kind": "gesture",
+        "nameZh": "自信地摆出模特姿势",
+        "positiveZh": [
+          "模特姿势",
+          "自信摆姿势",
+          "摆好造型"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "confident",
+          "official"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "自信地摆出模特姿势",
+        "zh-TW": "自信地擺出模特兒姿勢",
+        "en": "Strike a confident model pose",
+        "ja": "自信たっぷりにモデルポーズを取る",
+        "ko": "자신 있게 모델 포즈 취하기",
+        "ru": "Уверенно принять модельную позу",
+        "es": "Posar con confianza como modelo",
+        "pt": "Fazer uma pose confiante de modelo"
+      }
+    },
+    {
+      "id": "official_victory",
+      "m": "victory",
+      "label": "官方比 V 手势",
+      "f": "animation/比 V 手势.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "positive",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11.684,
+      "sha": "42403e9c1671d0122264044dbc098805da59cbf8dc5129d62040daa144797461",
+      "src": [
+        "static/vrm/animation/比 V 手势.vrma.gz"
+      ],
+      "packedSha": "fd3f4b22c68154ded36b5bf7266086deb1764a6f80bc8b224f3032477586522c",
+      "decodedSha": "42403e9c1671d0122264044dbc098805da59cbf8dc5129d62040daa144797461",
+      "packedBytes": 592223,
+      "decodedBytes": 1336068,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "开心地抬手比出胜利手势",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_victory",
+        "intent": "victory",
+        "kind": "gesture",
+        "nameZh": "开心地抬手比出胜利手势",
+        "positiveZh": [
+          "比出胜利手势",
+          "比V",
+          "剪刀手"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive",
+          "official"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "开心地抬手比出胜利手势",
+        "zh-TW": "開心地抬手比出勝利手勢",
+        "en": "Happily raise a victory sign",
+        "ja": "嬉しそうに手を上げてピースする",
+        "ko": "기쁘게 손을 들어 브이 포즈 하기",
+        "ru": "Радостно показать жест победы",
+        "es": "Alzar alegremente la mano haciendo la señal de victoria",
+        "pt": "Erguer a mão com alegria fazendo o sinal de vitória"
+      }
+    },
+    {
+      "id": "official_greet",
+      "m": "greet",
+      "label": "官方致意问候",
+      "f": "animation/致意问候.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "formal",
+        "official"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 7.267,
+      "sha": "3c0da428b9614df27647ef792254b7f4db57fc56eab00700dbdc6bf4e4259564",
+      "src": [
+        "static/vrm/animation/致意问候.vrma.gz"
+      ],
+      "packedSha": "a2bad4f96655877a15510e61f46d4ffd10041c48fe679148bd8e972e6fd1e37c",
+      "decodedSha": "3c0da428b9614df27647ef792254b7f4db57fc56eab00700dbdc6bf4e4259564",
+      "packedBytes": 387664,
+      "decodedBytes": 854644,
+      "compression": "gzip",
+      "origin": "Project-N-E-K-O/N.E.K.O",
+      "nameZh": "正式地抬手致意问候",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "official_greet",
+        "intent": "greet",
+        "kind": "gesture",
+        "nameZh": "正式地抬手致意问候",
+        "positiveZh": [
+          "正式问候",
+          "抬手致意",
+          "礼貌打招呼"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "formal",
+          "official"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "正式地抬手致意问候",
+        "zh-TW": "正式地抬手致意問候",
+        "en": "Raise a hand in a formal greeting",
+        "ja": "丁寧に手を上げて挨拶する",
+        "ko": "격식 있게 손을 들어 인사하기",
+        "ru": "Официально поприветствовать поднятой рукой",
+        "es": "Alzar la mano en un saludo formal",
+        "pt": "Erguer a mão em uma saudação formal"
+      }
+    },
+    {
+      "id": "idle_01",
+      "m": "idle",
+      "label": "基础待机",
+      "f": "motion/01_base/无聊地站着轻轻晃动.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "bored"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 10.667,
+      "sha": "d08c4482c65db02445ab2988bdf0c4efe0a46fc50643a7a6b05990fcd5d9d86c",
+      "src": [
+        "static/vrm/motion/01_base/无聊地站着轻轻晃动.vrma.gz"
+      ],
+      "packedSha": "c696f977130c988af2dcfafef831b14a27979000ec3d842f7e6ed0ee4df59872",
+      "decodedSha": "d08c4482c65db02445ab2988bdf0c4efe0a46fc50643a7a6b05990fcd5d9d86c",
+      "packedBytes": 203776,
+      "decodedBytes": 246280,
+      "compression": "gzip",
+      "nameZh": "无聊地站着轻轻晃动",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "idle_01",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "无聊地站着轻轻晃动",
+        "positiveZh": [
+          "无聊",
+          "发呆",
+          "百无聊赖"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "bored"
+        ],
+        "body": [
+          "身体",
+          "肩"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "无聊地站着轻轻晃动",
+        "zh-TW": "無聊地站著輕輕晃動",
+        "en": "Bored gentle standing sway",
+        "ja": "退屈そうに立って軽く揺れる",
+        "ko": "심심하게 서서 가볍게 흔들기",
+        "ru": "Скучающее лёгкое покачивание стоя",
+        "es": "Balanceo suave de pie por aburrimiento",
+        "pt": "Balanço suave em pé por tédio"
+      }
+    },
+    {
+      "id": "idle_02",
+      "m": "idle",
+      "label": "基础待机",
+      "f": "motion/01_base/自然呼吸地安静站着.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "breathing"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.208,
+      "sha": "fa98fe6324d7abf5c919b1dbef9be348247aadc7247e575c6825969d0f8d98c8",
+      "src": [
+        "static/vrm/motion/01_base/自然呼吸地安静站着.vrma.gz"
+      ],
+      "packedSha": "d4fc0013e51c167f2cd4333683968880c61f16c536a7e3ffea085fc389a046e6",
+      "decodedSha": "fa98fe6324d7abf5c919b1dbef9be348247aadc7247e575c6825969d0f8d98c8",
+      "packedBytes": 63873,
+      "decodedBytes": 94396,
+      "compression": "gzip",
+      "nameZh": "自然呼吸地安静站着",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "idle_02",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "自然呼吸地安静站着",
+        "positiveZh": [
+          "呼吸",
+          "安静等待",
+          "静静站着"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "breathing",
+          "neutral"
+        ],
+        "body": [
+          "身体",
+          "胸"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "自然呼吸地安静站着",
+        "zh-TW": "自然呼吸地安靜站著",
+        "en": "Quiet standing with natural breathing",
+        "ja": "自然に呼吸しながら静かに立つ",
+        "ko": "자연스럽게 숨 쉬며 조용히 서기",
+        "ru": "Спокойная стойка с естественным дыханием",
+        "es": "De pie en calma con respiración natural",
+        "pt": "Em pé calmamente com respiração natural"
+      }
+    },
+    {
+      "id": "idle_03",
+      "m": "idle",
+      "label": "基础待机",
+      "f": "motion/01_base/夸张地晃动身体等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "stylized"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 4.417,
+      "sha": "da5f4da5eb673bd3141111e89f725fe02e2be2b71790c0bacb4cab2aaa5879d4",
+      "src": [
+        "static/vrm/motion/01_base/夸张地晃动身体等待.vrma.gz"
+      ],
+      "packedSha": "e8c1097df5af6fd5634ff8953bcdb20878d40754e954a56b887cf8d555893d4c",
+      "decodedSha": "da5f4da5eb673bd3141111e89f725fe02e2be2b71790c0bacb4cab2aaa5879d4",
+      "packedBytes": 79995,
+      "decodedBytes": 119048,
+      "compression": "gzip",
+      "nameZh": "夸张地晃动身体等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "idle_03",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "夸张地晃动身体等待",
+        "positiveZh": [
+          "夸张晃动",
+          "身体大幅左右摆动",
+          "手臂和身体一起夸张晃动",
+          "风格化地大幅摆动",
+          "夸张地扭动身体等待"
+        ],
+        "negativeZh": [
+          "安静",
+          "端庄"
+        ],
+        "styles": [
+          "stylized",
+          "lively"
+        ],
+        "body": [
+          "身体",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "夸张地晃动身体等待",
+        "zh-TW": "誇張地晃動身體等待",
+        "en": "Exaggerated body sway while waiting",
+        "ja": "大きく体を揺らして待つ",
+        "ko": "몸을 크게 흔들며 기다리기",
+        "ru": "Ожидание с широким покачиванием тела",
+        "es": "Esperar balanceando el cuerpo ampliamente",
+        "pt": "Esperar balançando muito o corpo"
+      }
+    },
+    {
+      "id": "idle_04",
+      "m": "idle",
+      "label": "基础待机",
+      "f": "motion/01_base/开心地轻轻晃动等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "positive"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 1.958,
+      "sha": "3d74d3f8cbce91756af26e965d44e300e4021e3af79a63534a42ae58debc4f98",
+      "src": [
+        "static/vrm/motion/01_base/开心地轻轻晃动等待.vrma.gz"
+      ],
+      "packedSha": "b8dcee4f17ef8d04e008946984d2adc97049adfcaf45489a1a0a5c667b307d3c",
+      "decodedSha": "3d74d3f8cbce91756af26e965d44e300e4021e3af79a63534a42ae58debc4f98",
+      "packedBytes": 45453,
+      "decodedBytes": 68900,
+      "compression": "gzip",
+      "nameZh": "开心地轻轻晃动等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "idle_04",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "开心地轻轻晃动等待",
+        "positiveZh": [
+          "开心等待",
+          "高兴地站着",
+          "轻快地等待"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive",
+          "lively"
+        ],
+        "body": [
+          "身体",
+          "肩"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "开心地轻轻晃动等待",
+        "zh-TW": "開心地輕輕晃動等待",
+        "en": "Happy gentle sway while waiting",
+        "ja": "嬉しそうに軽く揺れて待つ",
+        "ko": "기쁘게 살짝 흔들며 기다리기",
+        "ru": "Радостное лёгкое покачивание в ожидании",
+        "es": "Esperar con un balanceo alegre y suave",
+        "pt": "Esperar com um balanço alegre e suave"
+      }
+    },
+    {
+      "id": "look_01",
+      "m": "look",
+      "label": "环顾",
+      "f": "motion/01_base/平静地左右环顾四周.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 12.458,
+      "sha": "33ce40e295fcf0dec7939d7169828d3823ff158548f0f7d8e8bf3deb7695c5d7",
+      "src": [
+        "static/vrm/motion/01_base/平静地左右环顾四周.vrma.gz"
+      ],
+      "packedSha": "06ea1d3b0714033ee1ab94faf2455229c80a95c0f7c8a7484cd4a71c0ea0ccea",
+      "decodedSha": "33ce40e295fcf0dec7939d7169828d3823ff158548f0f7d8e8bf3deb7695c5d7",
+      "packedBytes": 218160,
+      "decodedBytes": 282748,
+      "compression": "gzip",
+      "nameZh": "平静地左右环顾四周",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "look_01",
+        "intent": "look",
+        "kind": "gesture",
+        "nameZh": "平静地左右环顾四周",
+        "positiveZh": [
+          "环顾四周",
+          "左右观察",
+          "四处看看",
+          "警惕地观察四周",
+          "寻找周围目标",
+          "向远处眺望",
+          "抬手搭在眉前向远处眺望"
+        ],
+        "negativeZh": [
+          "紧张",
+          "慌张"
+        ],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "头",
+          "目光"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "平静地左右环顾四周",
+        "zh-TW": "平靜地左右環顧四周",
+        "en": "Calmly look around",
+        "ja": "落ち着いて左右を見回す",
+        "ko": "차분하게 좌우를 둘러보기",
+        "ru": "Спокойно осмотреться по сторонам",
+        "es": "Mirar alrededor con calma",
+        "pt": "Olhar ao redor com calma"
+      }
+    },
+    {
+      "id": "look_02",
+      "m": "look",
+      "label": "局促地查看身体",
+      "f": "motion/01_base/尴尬或局促不安的来回看看身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "awkward",
+        "nervous",
+        "self-conscious"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 6,
+      "sha": "3fac38a75d285369542bcdeb44bf4416c82b796dc8a1559314acdb27e3142bb3",
+      "src": [
+        "static/vrm/motion/01_base/尴尬或局促不安的来回看看身体.vrma.gz"
+      ],
+      "packedSha": "2154457878abf942a368734cd932873560b745e669803679e2480d77e72f7d0b",
+      "decodedSha": "3fac38a75d285369542bcdeb44bf4416c82b796dc8a1559314acdb27e3142bb3",
+      "packedBytes": 102204,
+      "decodedBytes": 148700,
+      "compression": "gzip",
+      "nameZh": "尴尬或局促不安的来回看看身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "look_02",
+        "intent": "look",
+        "kind": "gesture",
+        "nameZh": "尴尬或局促不安的来回看看身体",
+        "positiveZh": [
+          "尴尬地来回看看身体",
+          "局促不安地低头看看自己",
+          "不自在地看看自己的身体",
+          "窘迫地来回打量自己",
+          "紧张地左右看看自己的身体"
+        ],
+        "negativeZh": [
+          "警惕地观察四周",
+          "寻找周围目标",
+          "向远处眺望"
+        ],
+        "styles": [
+          "awkward",
+          "nervous",
+          "self-conscious"
+        ],
+        "body": [
+          "头",
+          "目光",
+          "身体"
+        ],
+        "emotions": [
+          "shy",
+          "fearful"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "尴尬或局促不安的来回看看身体",
+        "zh-TW": "尷尬或侷促不安地來回看看身體",
+        "en": "Awkwardly glance around the body",
+        "ja": "気まずそうに自分の周りを見回す",
+        "ko": "어색하고 불안하게 몸 주변을 살피기",
+        "ru": "Неловко оглядывать себя",
+        "es": "Mirarse alrededor con incomodidad",
+        "pt": "Olhar o próprio corpo com constrangimento"
+      }
+    },
+    {
+      "id": "idle_05",
+      "m": "idle",
+      "label": "基础待机",
+      "f": "motion/01_base/自然地站着等待.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 5.958,
+      "sha": "ce202d6f962759f17716055535c3cf05edabf34b3bb5570bb95551f3e26df153",
+      "src": [
+        "static/vrm/motion/01_base/自然地站着等待.vrma.gz"
+      ],
+      "packedSha": "3188a13702982dfbcb776ce360673cd2f4f82a84098c90ea6ae4fc636dd1f33a",
+      "decodedSha": "ce202d6f962759f17716055535c3cf05edabf34b3bb5570bb95551f3e26df153",
+      "packedBytes": 86167,
+      "decodedBytes": 147896,
+      "compression": "gzip",
+      "nameZh": "自然地站着等待",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "idle_05",
+        "intent": "idle",
+        "kind": "rest",
+        "nameZh": "自然地站着等待",
+        "positiveZh": [
+          "自然站着",
+          "站着等待",
+          "保持站姿"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "systemRestEligible": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "自然地站着等待",
+        "zh-TW": "自然地站著等待",
+        "en": "Stand and wait naturally",
+        "ja": "自然に立って待つ",
+        "ko": "자연스럽게 서서 기다리기",
+        "ru": "Естественно стоять и ждать",
+        "es": "Esperar de pie con naturalidad",
+        "pt": "Esperar em pé naturalmente"
+      }
+    },
+    {
+      "id": "shake_01",
+      "m": "shake",
+      "label": "摇头",
+      "f": "motion/02_talk/生气地用力摇头拒绝.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "annoyed"
+      ],
+      "i": 3,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.417,
+      "sha": "8f2f57fbdfbd5e1e45c63db71b3b8408d90c2222484c494c4549534cd43e2461",
+      "src": [
+        "static/vrm/motion/02_talk/生气地用力摇头拒绝.vrma.gz"
+      ],
+      "packedSha": "1bbc69c018862b0586a3cecd855c03f49a3cff2af6af4435b2ae2619199dac31",
+      "decodedSha": "8f2f57fbdfbd5e1e45c63db71b3b8408d90c2222484c494c4549534cd43e2461",
+      "packedBytes": 39267,
+      "decodedBytes": 78228,
+      "compression": "gzip",
+      "nameZh": "生气地用力摇头拒绝",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "shake_01",
+        "intent": "shake",
+        "kind": "gesture",
+        "nameZh": "生气地用力摇头拒绝",
+        "positiveZh": [
+          "用力摇头",
+          "生气摇头",
+          "恼火地拒绝"
+        ],
+        "negativeZh": [
+          "轻轻",
+          "若有所思"
+        ],
+        "styles": [
+          "annoyed",
+          "firm"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [
+          "angry"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "生气地用力摇头拒绝",
+        "zh-TW": "生氣地用力搖頭拒絕",
+        "en": "Angry forceful head shake",
+        "ja": "怒って強く首を振る",
+        "ko": "화내며 세게 고개 젓기",
+        "ru": "Сердито и резко покачать головой",
+        "es": "Negar con la cabeza enérgicamente y con enfado",
+        "pt": "Negar com a cabeça com força e raiva"
+      }
+    },
+    {
+      "id": "nod_01",
+      "m": "nod",
+      "label": "点头",
+      "f": "motion/02_talk/坚定地用力点头确认.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "firm"
+      ],
+      "i": 3,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 1.625,
+      "sha": "cab7b2feaa9632bfa089611016d9e68cbd519dd31aff4cf3a4a551be353e2976",
+      "src": [
+        "static/vrm/motion/02_talk/坚定地用力点头确认.vrma.gz"
+      ],
+      "packedSha": "96ac5375a71c2e6922773124eb24355cd89aeb05ad85e297625df6dda9ff6f98",
+      "decodedSha": "cab7b2feaa9632bfa089611016d9e68cbd519dd31aff4cf3a4a551be353e2976",
+      "packedBytes": 38912,
+      "decodedBytes": 62092,
+      "compression": "gzip",
+      "nameZh": "坚定地用力点头确认",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "nod_01",
+        "intent": "nod",
+        "kind": "gesture",
+        "nameZh": "坚定地用力点头确认",
+        "positiveZh": [
+          "用力点头",
+          "坚定点头",
+          "郑重点头"
+        ],
+        "negativeZh": [
+          "轻轻",
+          "犹豫"
+        ],
+        "styles": [
+          "firm"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坚定地用力点头确认",
+        "zh-TW": "堅定地用力點頭確認",
+        "en": "Firm forceful nod",
+        "ja": "力強くうなずいて確認する",
+        "ko": "단호하고 세게 끄덕여 확인하기",
+        "ru": "Твёрдо и сильно кивнуть",
+        "es": "Asentir con firmeza y fuerza",
+        "pt": "Acenar com firmeza e força"
+      }
+    },
+    {
+      "id": "nod_02",
+      "m": "nod",
+      "label": "点头",
+      "f": "motion/02_talk/自然地点头表示同意.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.375,
+      "sha": "1092fb2a97e31919a01a790e1f20e4d4b8f1697fcd3da1e13d64658100ed8f76",
+      "src": [
+        "static/vrm/motion/02_talk/自然地点头表示同意.vrma.gz"
+      ],
+      "packedSha": "8adf8ac4efbeab13c5f36d5841efb7bf51661afb2064053318316b9c2925028a",
+      "decodedSha": "1092fb2a97e31919a01a790e1f20e4d4b8f1697fcd3da1e13d64658100ed8f76",
+      "packedBytes": 50321,
+      "decodedBytes": 77360,
+      "compression": "gzip",
+      "nameZh": "自然地点头表示同意",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "nod_02",
+        "intent": "nod",
+        "kind": "gesture",
+        "nameZh": "自然地点头表示同意",
+        "positiveZh": [
+          "自然点头",
+          "点头同意",
+          "点头确认"
+        ],
+        "negativeZh": [
+          "讽刺",
+          "用力"
+        ],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [],
+        "default": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "自然地点头表示同意",
+        "zh-TW": "自然地點頭表示同意",
+        "en": "Natural nod of agreement",
+        "ja": "自然にうなずいて同意する",
+        "ko": "자연스럽게 끄덕여 동의하기",
+        "ru": "Естественно кивнуть в знак согласия",
+        "es": "Asentir naturalmente",
+        "pt": "Acenar naturalmente em concordância"
+      }
+    },
+    {
+      "id": "nod_03",
+      "m": "nod",
+      "label": "点头",
+      "f": "motion/02_talk/带着讽刺缓慢点头.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "sarcastic"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.167,
+      "sha": "304e4829c61443811c3ff60d4c5e87baee14efd4dc077f49f42fa81c2a6fee44",
+      "src": [
+        "static/vrm/motion/02_talk/带着讽刺缓慢点头.vrma.gz"
+      ],
+      "packedSha": "f646a484c4d0642ccb8e74e91ec812596059ed470ec0a759d3975f3cf0e0b42e",
+      "decodedSha": "304e4829c61443811c3ff60d4c5e87baee14efd4dc077f49f42fa81c2a6fee44",
+      "packedBytes": 48909,
+      "decodedBytes": 73140,
+      "compression": "gzip",
+      "nameZh": "带着讽刺缓慢点头",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "nod_03",
+        "intent": "nod",
+        "kind": "gesture",
+        "nameZh": "带着讽刺缓慢点头",
+        "positiveZh": [
+          "讽刺地点头",
+          "敷衍地点头",
+          "意味深长地点头"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "sarcastic"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "带着讽刺缓慢点头",
+        "zh-TW": "帶著諷刺緩慢點頭",
+        "en": "Slow sarcastic nod",
+        "ja": "皮肉っぽくゆっくりうなずく",
+        "ko": "비꼬듯 천천히 끄덕이기",
+        "ru": "Медленно кивнуть с сарказмом",
+        "es": "Asentir lentamente con sarcasmo",
+        "pt": "Acenar lentamente com sarcasmo"
+      }
+    },
+    {
+      "id": "shake_03",
+      "m": "shake",
+      "label": "摇头",
+      "f": "motion/02_talk/自然地摇头表示否定.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": 2,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 1.667,
+      "sha": "57c3d886ff4979f47f5226295ae54e72032ce2579cd60714cfcf1a0dcdb9f76f",
+      "src": [
+        "static/vrm/motion/02_talk/自然地摇头表示否定.vrma.gz"
+      ],
+      "packedSha": "aa6541eb993e19c97d274da16fb079409668496c82e076f97f4c0c2855de678d",
+      "decodedSha": "57c3d886ff4979f47f5226295ae54e72032ce2579cd60714cfcf1a0dcdb9f76f",
+      "packedBytes": 38524,
+      "decodedBytes": 62960,
+      "compression": "gzip",
+      "nameZh": "自然地摇头表示否定",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "shake_03",
+        "intent": "shake",
+        "kind": "gesture",
+        "nameZh": "自然地摇头表示否定",
+        "positiveZh": [
+          "自然摇头",
+          "摇头否定",
+          "摇头拒绝"
+        ],
+        "negativeZh": [
+          "生气",
+          "若有所思"
+        ],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [],
+        "default": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "自然地摇头表示否定",
+        "zh-TW": "自然地搖頭表示否定",
+        "en": "Natural head shake of refusal",
+        "ja": "自然に首を振って否定する",
+        "ko": "자연스럽게 고개 저어 부정하기",
+        "ru": "Естественно покачать головой в знак отказа",
+        "es": "Negar naturalmente con la cabeza",
+        "pt": "Negar naturalmente com a cabeça"
+      }
+    },
+    {
+      "id": "nod_05",
+      "m": "nod",
+      "label": "点头",
+      "f": "motion/02_talk/若有所思地轻轻点头.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "thoughtful"
+      ],
+      "i": 1,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.875,
+      "sha": "90dde99efb35a6e1d35a4c8d9b6514923690edbdfa8fec752cba4b99e8a219b5",
+      "src": [
+        "static/vrm/motion/02_talk/若有所思地轻轻点头.vrma.gz"
+      ],
+      "packedSha": "92be5b1476e699ed52f7af5b140c26a8e797fc8596bd798dedfe5eea53c978a9",
+      "decodedSha": "90dde99efb35a6e1d35a4c8d9b6514923690edbdfa8fec752cba4b99e8a219b5",
+      "packedBytes": 61755,
+      "decodedBytes": 87592,
+      "compression": "gzip",
+      "nameZh": "若有所思地轻轻点头",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "nod_05",
+        "intent": "nod",
+        "kind": "gesture",
+        "nameZh": "若有所思地轻轻点头",
+        "positiveZh": [
+          "若有所思地点头",
+          "轻轻点头",
+          "小幅度点头"
+        ],
+        "negativeZh": [
+          "用力",
+          "讽刺"
+        ],
+        "styles": [
+          "thoughtful",
+          "gentle"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "若有所思地轻轻点头",
+        "zh-TW": "若有所思地輕輕點頭",
+        "en": "Thoughtful gentle nod",
+        "ja": "考えながら軽くうなずく",
+        "ko": "생각에 잠겨 살짝 끄덕이기",
+        "ru": "Задумчиво слегка кивнуть",
+        "es": "Asentir suavemente y pensativo",
+        "pt": "Acenar suavemente pensativo"
+      }
+    },
+    {
+      "id": "shake_02",
+      "m": "shake",
+      "label": "摇头",
+      "f": "motion/02_talk/若有所思地轻轻摇头.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "thoughtful"
+      ],
+      "i": 1,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.042,
+      "sha": "4fc5d8c3427a9be9d7992e9ca536ee14bcafdfd3be3f449daaf5089ef920f937",
+      "src": [
+        "static/vrm/motion/02_talk/若有所思地轻轻摇头.vrma.gz"
+      ],
+      "packedSha": "e5418699e512608e328a8025cd1176665f5b42884cac6419d3a98facc500fcb5",
+      "decodedSha": "4fc5d8c3427a9be9d7992e9ca536ee14bcafdfd3be3f449daaf5089ef920f937",
+      "packedBytes": 64285,
+      "decodedBytes": 91004,
+      "compression": "gzip",
+      "nameZh": "若有所思地轻轻摇头",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "shake_02",
+        "intent": "shake",
+        "kind": "gesture",
+        "nameZh": "若有所思地轻轻摇头",
+        "positiveZh": [
+          "若有所思地摇头",
+          "轻轻摇头",
+          "小幅度摇头"
+        ],
+        "negativeZh": [
+          "用力",
+          "生气"
+        ],
+        "styles": [
+          "thoughtful",
+          "gentle"
+        ],
+        "body": [
+          "头"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "若有所思地轻轻摇头",
+        "zh-TW": "若有所思地輕輕搖頭",
+        "en": "Thoughtful gentle head shake",
+        "ja": "考えながら軽く首を振る",
+        "ko": "생각에 잠겨 살짝 고개 젓기",
+        "ru": "Задумчиво слегка покачать головой",
+        "es": "Negar suavemente y pensativo",
+        "pt": "Balançar a cabeça suavemente pensativo"
+      }
+    },
+    {
+      "id": "talk_01",
+      "m": "talk",
+      "label": "说话手势",
+      "f": "motion/02_talk/坐着双手连续大幅交谈.vrma",
+      "in": "sit",
+      "out": "sit",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 43.583,
+      "sha": "ceba3cf82bad1d1c54b7f09c74d3b881cb3aa9a1adc99e279985320c37db9324",
+      "src": [
+        "static/vrm/motion/02_talk/坐着双手连续大幅交谈.vrma.gz"
+      ],
+      "packedSha": "46faadf8e235dadab715474a906714baebbbe4c9f6f38fe476d9ab5d40aca618",
+      "decodedSha": "ceba3cf82bad1d1c54b7f09c74d3b881cb3aa9a1adc99e279985320c37db9324",
+      "packedBytes": 797782,
+      "decodedBytes": 916332,
+      "compression": "gzip",
+      "nameZh": "坐着双手连续大幅交谈",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "talk_01",
+        "intent": "talk",
+        "kind": "gesture",
+        "nameZh": "坐着双手连续大幅交谈",
+        "positiveZh": [
+          "坐着双手连续大幅交谈",
+          "坐着大幅挥动双手讲述",
+          "坐着用右手带动双手连续比划",
+          "坐着长时间热烈说明",
+          "坐着双手频繁配合说话"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "energetic",
+          "broad",
+          "right-led"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "sit",
+        "resultPose": "sit",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坐着双手连续大幅交谈",
+        "zh-TW": "坐著雙手連續大幅交談",
+        "en": "Seated broad two-handed conversation",
+        "ja": "座って両手を大きく動かして話す",
+        "ko": "앉아서 양손을 크게 움직이며 대화하기",
+        "ru": "Разговор сидя с широкими жестами обеих рук",
+        "es": "Conversar sentado con amplios gestos de ambas manos",
+        "pt": "Conversar sentado com gestos amplos das duas mãos"
+      }
+    },
+    {
+      "id": "talk_02",
+      "m": "talk",
+      "label": "说话手势",
+      "f": "motion/02_talk/坐着双手平稳细致解释.vrma",
+      "in": "sit",
+      "out": "sit",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 44.458,
+      "sha": "9b91d6b654e6f9d4e1676b1f5675bbefaa3758619d915a90b68dcbd4662aa5db",
+      "src": [
+        "static/vrm/motion/02_talk/坐着双手平稳细致解释.vrma.gz"
+      ],
+      "packedSha": "3b86e42eb8ac6a1894f6b0114cc5f8bfad4c21eca13fdf040958ccdbc2bb41c2",
+      "decodedSha": "9b91d6b654e6f9d4e1676b1f5675bbefaa3758619d915a90b68dcbd4662aa5db",
+      "packedBytes": 729024,
+      "decodedBytes": 934140,
+      "compression": "gzip",
+      "nameZh": "坐着双手平稳细致解释",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "talk_02",
+        "intent": "talk",
+        "kind": "gesture",
+        "nameZh": "坐着双手平稳细致解释",
+        "positiveZh": [
+          "坐着双手平稳细致解释",
+          "坐着缓和地用双手说明",
+          "坐着双手均衡地慢慢讲述",
+          "坐着耐心解释很久",
+          "坐着认真而平稳地交谈"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "calm",
+          "balanced",
+          "detailed"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "sit",
+        "resultPose": "sit",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坐着双手平稳细致解释",
+        "zh-TW": "坐著雙手平穩細緻解釋",
+        "en": "Seated calm detailed explanation",
+        "ja": "座って両手で落ち着いて詳しく説明する",
+        "ko": "앉아서 양손으로 차분하고 자세히 설명하기",
+        "ru": "Спокойное подробное объяснение сидя",
+        "es": "Explicar sentado con calma y detalle",
+        "pt": "Explicar sentado com calma e detalhes"
+      }
+    },
+    {
+      "id": "argue_01",
+      "m": "argue",
+      "label": "争辩",
+      "f": "motion/02_talk/右手主导激烈争辩.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "firm"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 20.792,
+      "sha": "ca67d942be06b471c323a2f2fc87b9f11dd8689ca317438b52857cb547ce66a2",
+      "src": [
+        "static/vrm/motion/02_talk/右手主导激烈争辩.vrma.gz"
+      ],
+      "packedSha": "9bc5cb46479de955e37a83d7707f8def7d52b0c75ed6842add1611000e0c1b5b",
+      "decodedSha": "ca67d942be06b471c323a2f2fc87b9f11dd8689ca317438b52857cb547ce66a2",
+      "packedBytes": 377735,
+      "decodedBytes": 452360,
+      "compression": "gzip",
+      "nameZh": "右手主导激烈争辩",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "argue_01",
+        "intent": "argue",
+        "kind": "gesture",
+        "nameZh": "右手主导激烈争辩",
+        "positiveZh": [
+          "右手主导激烈争辩",
+          "用右手大幅挥动着反驳",
+          "偏重右侧用力争论",
+          "激动地用右手据理力争",
+          "右手动作强烈地争辩"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "firm",
+          "annoyed",
+          "right-led",
+          "forceful"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [
+          "angry"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "右手主导激烈争辩",
+        "zh-TW": "右手主導激烈爭辯",
+        "en": "Heated right-hand argument",
+        "ja": "右手を中心に激しく反論する",
+        "ko": "오른손을 주로 써서 격하게 논쟁하기",
+        "ru": "Жаркий спор с активной правой рукой",
+        "es": "Discutir acaloradamente con la mano derecha",
+        "pt": "Discutir intensamente com a mão direita"
+      }
+    },
+    {
+      "id": "argue_02",
+      "m": "argue",
+      "label": "争辩",
+      "f": "motion/02_talk/双手交替强硬反驳.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "firm"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 20.792,
+      "sha": "89291c56286b951e443b3cd1af07cfa0246688cb347b2f905a7910d7e85d183a",
+      "src": [
+        "static/vrm/motion/02_talk/双手交替强硬反驳.vrma.gz"
+      ],
+      "packedSha": "d39c841bb7dc23c32dc54319c9e1b49368825d62e60ac4477be934451bade745",
+      "decodedSha": "89291c56286b951e443b3cd1af07cfa0246688cb347b2f905a7910d7e85d183a",
+      "packedBytes": 394462,
+      "decodedBytes": 452360,
+      "compression": "gzip",
+      "nameZh": "双手交替强硬反驳",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "argue_02",
+        "intent": "argue",
+        "kind": "gesture",
+        "nameZh": "双手交替强硬反驳",
+        "positiveZh": [
+          "双手交替强硬反驳",
+          "左右手轮流用力争论",
+          "双手一起严肃反驳",
+          "两只手配合着强硬解释",
+          "双手动作均衡地据理力争"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "firm",
+          "balanced",
+          "forceful"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [
+          "angry"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "双手交替强硬反驳",
+        "zh-TW": "雙手交替強硬反駁",
+        "en": "Forceful alternating-hand rebuttal",
+        "ja": "両手を交互に使って強く反論する",
+        "ko": "양손을 번갈아 쓰며 강하게 반박하기",
+        "ru": "Резко возражать, чередуя обе руки",
+        "es": "Rebatir con firmeza alternando ambas manos",
+        "pt": "Rebater com firmeza alternando as mãos"
+      }
+    },
+    {
+      "id": "talk_03",
+      "m": "talk",
+      "label": "说话手势",
+      "f": "motion/02_talk/站着左手主导简短说明.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 5.833,
+      "sha": "988d51805b65f2f99c1c10205ea25bca7b8ff1445a482c72ad6876da0f7f321b",
+      "src": [
+        "static/vrm/motion/02_talk/站着左手主导简短说明.vrma.gz"
+      ],
+      "packedSha": "e4ee4dbafb5edb3ff114c4a0b49f226c6c7355041c2f5a040a3cba3963021add",
+      "decodedSha": "988d51805b65f2f99c1c10205ea25bca7b8ff1445a482c72ad6876da0f7f321b",
+      "packedBytes": 102594,
+      "decodedBytes": 147888,
+      "compression": "gzip",
+      "nameZh": "站着左手主导简短说明",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "talk_03",
+        "intent": "talk",
+        "kind": "gesture",
+        "nameZh": "站着左手主导简短说明",
+        "positiveZh": [
+          "站着左手主导简短说明",
+          "主要用左手快速解释",
+          "左手带动双手简短比划",
+          "站着偏重左手说明一下",
+          "左手动作明显地短暂交谈"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "brief",
+          "left-led",
+          "neutral"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着左手主导简短说明",
+        "zh-TW": "站著左手主導簡短說明",
+        "en": "Brief standing explanation with left hand",
+        "ja": "立って左手で短く説明する",
+        "ko": "서서 왼손으로 짧게 설명하기",
+        "ru": "Краткое объяснение стоя левой рукой",
+        "es": "Explicación breve de pie con la mano izquierda",
+        "pt": "Explicação breve em pé com a mão esquerda"
+      }
+    },
+    {
+      "id": "talk_04",
+      "m": "talk",
+      "label": "说话手势",
+      "f": "motion/02_talk/站着右手主导温和解释.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.708,
+      "sha": "3d51561e9623a500cf2973d660a235b27f2fccb8759b30683a6030e7ed594872",
+      "src": [
+        "static/vrm/motion/02_talk/站着右手主导温和解释.vrma.gz"
+      ],
+      "packedSha": "f920d7d632d1ae3427ec6b44de6e053aba636eb981a5377cbfecf6d60ef911b6",
+      "decodedSha": "3d51561e9623a500cf2973d660a235b27f2fccb8759b30683a6030e7ed594872",
+      "packedBytes": 70461,
+      "decodedBytes": 104576,
+      "compression": "gzip",
+      "nameZh": "站着右手主导温和解释",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "talk_04",
+        "intent": "talk",
+        "kind": "gesture",
+        "nameZh": "站着右手主导温和解释",
+        "positiveZh": [
+          "站着右手主导温和解释",
+          "主要用右手轻声说明",
+          "右手抬起温和地解释",
+          "站着用右手简短说明",
+          "右手小心地配合说话"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "brief",
+          "right-led",
+          "gentle"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着右手主导温和解释",
+        "zh-TW": "站著右手主導溫和解釋",
+        "en": "Gentle standing explanation with right hand",
+        "ja": "立って右手で穏やかに説明する",
+        "ko": "서서 오른손으로 부드럽게 설명하기",
+        "ru": "Мягкое объяснение стоя правой рукой",
+        "es": "Explicación amable de pie con la mano derecha",
+        "pt": "Explicação gentil em pé com a mão direita"
+      }
+    },
+    {
+      "id": "talk_05",
+      "m": "talk",
+      "label": "说话手势",
+      "f": "motion/02_talk/站着双手展开认真说明.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.833,
+      "sha": "7ede8eafeddecd32043acb2f78ee5c08979aae5ebf6bd9a808b43fd421932770",
+      "src": [
+        "static/vrm/motion/02_talk/站着双手展开认真说明.vrma.gz"
+      ],
+      "packedSha": "51219c29d3afdc4af2b7d9c6a1c53c55d4734e0f292ed62619d8dfd8c06c0280",
+      "decodedSha": "7ede8eafeddecd32043acb2f78ee5c08979aae5ebf6bd9a808b43fd421932770",
+      "packedBytes": 190643,
+      "decodedBytes": 229316,
+      "compression": "gzip",
+      "nameZh": "站着双手展开认真说明",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "talk_05",
+        "intent": "talk",
+        "kind": "gesture",
+        "nameZh": "站着双手展开认真说明",
+        "positiveZh": [
+          "站着双手展开认真说明",
+          "双手一起展开认真解释",
+          "站着用两只手郑重说明",
+          "双手幅度较大地完整讲述",
+          "两手配合着耐心解释"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "detailed",
+          "balanced",
+          "earnest"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着双手展开认真说明",
+        "zh-TW": "站著雙手展開認真說明",
+        "en": "Earnest standing explanation with open hands",
+        "ja": "立って両手を広げ真剣に説明する",
+        "ko": "서서 양손을 펼쳐 진지하게 설명하기",
+        "ru": "Серьёзное объяснение стоя с раскрытыми руками",
+        "es": "Explicar seriamente de pie con las manos abiertas",
+        "pt": "Explicar seriamente em pé com as mãos abertas"
+      }
+    },
+    {
+      "id": "talk_06",
+      "m": "talk",
+      "label": "说话手势",
+      "f": "motion/02_talk/站着右手小幅补充说明.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "speech",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "neutral"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 5.167,
+      "sha": "a9baf9b58794efe1694b5cc6f18a874d26eed1354d023f1b388a5eaeeb6169b7",
+      "src": [
+        "static/vrm/motion/02_talk/站着右手小幅补充说明.vrma.gz"
+      ],
+      "packedSha": "971601630d85aea63e01350cf1a3b4eccba1d50973e69b8011814e6fd3966bdc",
+      "decodedSha": "a9baf9b58794efe1694b5cc6f18a874d26eed1354d023f1b388a5eaeeb6169b7",
+      "packedBytes": 98032,
+      "decodedBytes": 134316,
+      "compression": "gzip",
+      "nameZh": "站着右手小幅补充说明",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "talk_06",
+        "intent": "talk",
+        "kind": "gesture",
+        "nameZh": "站着右手小幅补充说明",
+        "positiveZh": [
+          "站着右手小幅补充说明",
+          "右手前臂轻轻比划一下",
+          "站着用右手补充一句",
+          "右手小范围辅助表达",
+          "用右手简短地补充说明"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "brief",
+          "right-led",
+          "restrained"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "speech",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着右手小幅补充说明",
+        "zh-TW": "站著右手小幅補充說明",
+        "en": "Small right-hand follow-up explanation",
+        "ja": "立って右手を少し動かし補足する",
+        "ko": "서서 오른손을 작게 움직여 덧붙여 설명하기",
+        "ru": "Короткое дополнение стоя правой рукой",
+        "es": "Añadir una explicación breve con la mano derecha",
+        "pt": "Acrescentar uma explicação breve com a mão direita"
+      }
+    },
+    {
+      "id": "agree_01",
+      "m": "agree",
+      "label": "赞同",
+      "f": "motion/02_talk/快速抬起右手简短认可.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 1.708,
+      "sha": "23042065ea8bdb1054fbd5b3029cb0ddcb71fa69822f1358134dc71969acbeca",
+      "src": [
+        "static/vrm/motion/02_talk/快速抬起右手简短认可.vrma.gz"
+      ],
+      "packedSha": "4f7593dae6c4f8125c18497ff2b6b4b01b0e8f79aec0d435cb553caed7a6a1f2",
+      "decodedSha": "23042065ea8bdb1054fbd5b3029cb0ddcb71fa69822f1358134dc71969acbeca",
+      "packedBytes": 38881,
+      "decodedBytes": 63808,
+      "compression": "gzip",
+      "nameZh": "快速抬起右手简短认可",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "agree_01",
+        "intent": "agree",
+        "kind": "gesture",
+        "nameZh": "快速抬起右手简短认可",
+        "positiveZh": [
+          "快速抬起右手简短认可",
+          "右手轻抬一下表示同意",
+          "用右手快速回应赞同",
+          "短促地抬手认可这个想法",
+          "右手做出小幅同意手势"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "快速抬起右手简短认可",
+        "zh-TW": "快速抬起右手簡短認可",
+        "en": "Quick right-hand acknowledgment",
+        "ja": "右手を素早く上げ短く同意する",
+        "ko": "오른손을 빠르게 들어 짧게 동의하기",
+        "ru": "Быстро поднять правую руку в знак согласия",
+        "es": "Levantar rápido la mano derecha para asentir",
+        "pt": "Levantar rapidamente a mão direita em concordância"
+      }
+    },
+    {
+      "id": "agree_02",
+      "m": "agree",
+      "label": "赞同",
+      "f": "motion/02_talk/双手配合郑重表示赞同.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 4.625,
+      "sha": "842a4767eec9499c3eb7ab711ce6fe62b007111055f354d0fb948f894b1328a9",
+      "src": [
+        "static/vrm/motion/02_talk/双手配合郑重表示赞同.vrma.gz"
+      ],
+      "packedSha": "b232a119070ccd03117ca4b4e61a1c5d1d9d3c3faf186c5be1c9a99bce9c0d78",
+      "decodedSha": "842a4767eec9499c3eb7ab711ce6fe62b007111055f354d0fb948f894b1328a9",
+      "packedBytes": 94570,
+      "decodedBytes": 123264,
+      "compression": "gzip",
+      "nameZh": "双手配合郑重表示赞同",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "agree_02",
+        "intent": "agree",
+        "kind": "gesture",
+        "nameZh": "双手配合郑重表示赞同",
+        "positiveZh": [
+          "双手配合郑重表示赞同",
+          "两只手一起认真回应同意",
+          "用双手完整地表达认可",
+          "身体配合双手郑重同意",
+          "双手展开表示会认真照做"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "双手配合郑重表示赞同",
+        "zh-TW": "雙手配合鄭重表示贊同",
+        "en": "Solemn two-handed agreement",
+        "ja": "両手を使って丁寧に同意する",
+        "ko": "양손으로 진지하게 동의하기",
+        "ru": "Торжественно выразить согласие обеими руками",
+        "es": "Expresar acuerdo solemne con ambas manos",
+        "pt": "Expressar acordo solene com as duas mãos"
+      }
+    },
+    {
+      "id": "dismiss_01",
+      "m": "dismiss",
+      "label": "拒绝",
+      "f": "motion/02_talk/右手连续摆动表示不用.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.25,
+      "sha": "022db95ef1dcafec474d775882a0e7e705bb27b30f7fa69de422af1f8cc319e0",
+      "src": [
+        "static/vrm/motion/02_talk/右手连续摆动表示不用.vrma.gz"
+      ],
+      "packedSha": "04667ee720acb01ce363a9a60ad90c0719002846f9f1b654591bd29468773348",
+      "decodedSha": "022db95ef1dcafec474d775882a0e7e705bb27b30f7fa69de422af1f8cc319e0",
+      "packedBytes": 68204,
+      "decodedBytes": 95220,
+      "compression": "gzip",
+      "nameZh": "右手连续摆动表示不用",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "dismiss_01",
+        "intent": "dismiss",
+        "kind": "gesture",
+        "nameZh": "右手连续摆动表示不用",
+        "positiveZh": [
+          "右手连续摆动表示不用",
+          "用右手来回摆动婉拒",
+          "右手连续挥动表示不用了",
+          "反复摆动右手谢绝好意",
+          "用右手摆几下温和拒绝"
+        ],
+        "negativeZh": [
+          "打招呼",
+          "问候"
+        ],
+        "styles": [
+          "firm"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "右手连续摆动表示不用",
+        "zh-TW": "右手連續擺動表示不用",
+        "en": "Wave right hand to say no need",
+        "ja": "右手を続けて振り不要と示す",
+        "ko": "오른손을 계속 저어 괜찮다고 하기",
+        "ru": "Отмахнуться правой рукой: не нужно",
+        "es": "Agitar la mano derecha para decir que no hace falta",
+        "pt": "Acenar a mão direita dizendo que não precisa"
+      }
+    },
+    {
+      "id": "dismiss_02",
+      "m": "dismiss",
+      "label": "拒绝",
+      "f": "motion/02_talk/迅速抬起右手明确制止.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.042,
+      "sha": "bc171e4b0aca32cb4a999f8c5fab8924550724d0062f405e888ac7f6e60eadfb",
+      "src": [
+        "static/vrm/motion/02_talk/迅速抬起右手明确制止.vrma.gz"
+      ],
+      "packedSha": "18d8bf32286d6540cc0d82eee7bb186ada5ea8c4ab7ecb673077a3134abb5629",
+      "decodedSha": "bc171e4b0aca32cb4a999f8c5fab8924550724d0062f405e888ac7f6e60eadfb",
+      "packedBytes": 45801,
+      "decodedBytes": 70596,
+      "compression": "gzip",
+      "nameZh": "迅速抬起右手明确制止",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "dismiss_02",
+        "intent": "dismiss",
+        "kind": "gesture",
+        "nameZh": "迅速抬起右手明确制止",
+        "positiveZh": [
+          "迅速抬起右手明确制止",
+          "右手猛地抬起让人停下",
+          "用右手做出短促否定手势",
+          "果断抬手制止继续行动",
+          "右手快速一摆明确拒绝"
+        ],
+        "negativeZh": [
+          "打招呼",
+          "问候"
+        ],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "迅速抬起右手明确制止",
+        "zh-TW": "迅速抬起右手明確制止",
+        "en": "Quick clear stop gesture",
+        "ja": "右手を素早く上げ明確に制止する",
+        "ko": "오른손을 빠르게 들어 분명히 제지하기",
+        "ru": "Быстрый и ясный жест остановки",
+        "es": "Gesto rápido y claro de detener",
+        "pt": "Gesto rápido e claro para parar"
+      }
+    },
+    {
+      "id": "point_01",
+      "m": "point",
+      "label": "指向",
+      "f": "motion/02_talk/伸手指向目标.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "f",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.625,
+      "sha": "91a73e0465c50cc28992a21ea99a7a3825e8db22617bfdeb704f2774141351a7",
+      "src": [
+        "static/vrm/motion/02_talk/伸手指向目标.vrma.gz"
+      ],
+      "packedSha": "7bbba3807d112a683464624be57ed78a771d1c41314bc27b1566bc2083826d25",
+      "decodedSha": "91a73e0465c50cc28992a21ea99a7a3825e8db22617bfdeb704f2774141351a7",
+      "packedBytes": 38242,
+      "decodedBytes": 79988,
+      "compression": "gzip",
+      "nameZh": "伸手指向目标",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "point_01",
+        "intent": "point",
+        "kind": "gesture",
+        "nameZh": "伸手指向目标",
+        "positiveZh": [
+          "伸手指向",
+          "指着",
+          "指向目标"
+        ],
+        "negativeZh": [
+          "双手合十",
+          "祈祷",
+          "道歉"
+        ],
+        "styles": [
+          "firm"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "伸手指向目标",
+        "zh-TW": "伸手指向目標",
+        "en": "Point at a target",
+        "ja": "手を伸ばして対象を指す",
+        "ko": "손을 뻗어 대상을 가리키기",
+        "ru": "Указать рукой на цель",
+        "es": "Señalar un objetivo",
+        "pt": "Apontar para um alvo"
+      }
+    },
+    {
+      "id": "plead_01",
+      "m": "plead",
+      "label": "请求",
+      "f": "motion/04_social/双手合十请求或道歉.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.208,
+      "sha": "edb7697a36accf4824473ff5f3e01635a40a23d106b5ed579676a7811ff0d1c9",
+      "src": [
+        "static/vrm/motion/04_social/双手合十请求或道歉.vrma.gz"
+      ],
+      "packedSha": "fc18314841a58b20407f1445f350a91c186d0c0b690de4cd75f45fc0ab9e572b",
+      "decodedSha": "edb7697a36accf4824473ff5f3e01635a40a23d106b5ed579676a7811ff0d1c9",
+      "packedBytes": 24597,
+      "decodedBytes": 88476,
+      "compression": "gzip",
+      "nameZh": "双手合十请求或道歉",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "plead_01",
+        "intent": "plead",
+        "kind": "gesture",
+        "nameZh": "双手合十请求或道歉",
+        "positiveZh": [
+          "双手合十",
+          "合掌",
+          "祈祷",
+          "请求原谅",
+          "认真道歉"
+        ],
+        "negativeZh": [
+          "指向",
+          "指着"
+        ],
+        "styles": [
+          "gentle"
+        ],
+        "body": [
+          "手",
+          "手掌",
+          "手指"
+        ],
+        "emotions": [
+          "sad"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "双手合十请求或道歉",
+        "zh-TW": "雙手合十請求或道歉",
+        "en": "Hands together to plead or apologize",
+        "ja": "両手を合わせてお願いまたは謝る",
+        "ko": "두 손을 모아 부탁하거나 사과하기",
+        "ru": "Сложить руки в просьбе или извинении",
+        "es": "Juntar las manos para pedir o disculparse",
+        "pt": "Juntar as mãos para pedir ou se desculpar"
+      }
+    },
+    {
+      "id": "angry_01",
+      "m": "angry",
+      "label": "生气",
+      "f": "motion/03_emote/生气地绷紧身体和手臂.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 19.125,
+      "sha": "1ed5fafc2be8edf949d04f10d534ebe110374dcb9a09ca893f3088c6dabd7bc6",
+      "src": [
+        "static/vrm/motion/03_emote/生气地绷紧身体和手臂.vrma.gz"
+      ],
+      "packedSha": "bc94be12315160c056fe92d2945a04580e37ee5ea251da861b11c0a7de0c038f",
+      "decodedSha": "1ed5fafc2be8edf949d04f10d534ebe110374dcb9a09ca893f3088c6dabd7bc6",
+      "packedBytes": 267120,
+      "decodedBytes": 418416,
+      "compression": "gzip",
+      "nameZh": "生气地绷紧身体和手臂",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "angry_01",
+        "intent": "angry",
+        "kind": "emotion-body",
+        "nameZh": "生气地绷紧身体和手臂",
+        "positiveZh": [
+          "生气地绷紧",
+          "气得身体僵硬",
+          "愤怒地握紧"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "firm",
+          "annoyed"
+        ],
+        "body": [
+          "身体",
+          "手",
+          "手臂"
+        ],
+        "emotions": [
+          "angry"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "生气地绷紧身体和手臂",
+        "zh-TW": "生氣地繃緊身體和手臂",
+        "en": "Tense body and arms in anger",
+        "ja": "怒って体と腕をこわばらせる",
+        "ko": "화가 나 몸과 팔에 힘주기",
+        "ru": "Сердито напрячь тело и руки",
+        "es": "Tensar el cuerpo y los brazos con enfado",
+        "pt": "Enrijecer o corpo e os braços com raiva"
+      }
+    },
+    {
+      "id": "shy_01",
+      "m": "shy",
+      "label": "害羞",
+      "f": "motion/03_emote/害羞地把双手背在身后.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 11,
+      "sha": "46bd60f0bea8fd0aab0c675e720c0f5071ff517ca442dee11fbb7b76634f1a86",
+      "src": [
+        "static/vrm/motion/03_emote/害羞地把双手背在身后.vrma.gz"
+      ],
+      "packedSha": "0849dbf36742da7ffc2ed46b9a0074385cc2bc90a11f32a65b881c24b15cbbf5",
+      "decodedSha": "46bd60f0bea8fd0aab0c675e720c0f5071ff517ca442dee11fbb7b76634f1a86",
+      "packedBytes": 169939,
+      "decodedBytes": 253040,
+      "compression": "gzip",
+      "nameZh": "害羞地把双手背在身后",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "shy_01",
+        "intent": "shy",
+        "kind": "emotion-body",
+        "nameZh": "害羞地把双手背在身后",
+        "positiveZh": [
+          "害羞",
+          "双手背在身后",
+          "不好意思地躲闪"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "gentle",
+          "cautious"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [
+          "shy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "害羞地把双手背在身后",
+        "zh-TW": "害羞地把雙手背在身後",
+        "en": "Shyly hold both hands behind the back",
+        "ja": "恥ずかしそうに両手を後ろに回す",
+        "ko": "수줍게 두 손을 등 뒤로 모으기",
+        "ru": "Смущённо убрать обе руки за спину",
+        "es": "Poner tímidamente ambas manos detrás",
+        "pt": "Colocar timidamente as duas mãos atrás"
+      }
+    },
+    {
+      "id": "overwhelm_01",
+      "m": "overwhelm",
+      "label": "情绪过载",
+      "f": "motion/03_emote/情绪过载地大幅挥动身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 4.917,
+      "sha": "2ffe402d3dbef64271c2694b166acf151a91a175fd5bc2d65d47de91ad0e3380",
+      "src": [
+        "static/vrm/motion/03_emote/情绪过载地大幅挥动身体.vrma.gz"
+      ],
+      "packedSha": "c7a448e653fe584ec9e25e1859f8a0c4ca339c1f4d88b7b1995bc4460c34f84b",
+      "decodedSha": "2ffe402d3dbef64271c2694b166acf151a91a175fd5bc2d65d47de91ad0e3380",
+      "packedBytes": 91001,
+      "decodedBytes": 129224,
+      "compression": "gzip",
+      "nameZh": "情绪过载地大幅挥动身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "overwhelm_01",
+        "intent": "overwhelm",
+        "kind": "emotion-body",
+        "nameZh": "情绪过载地大幅挥动身体",
+        "positiveZh": [
+          "情绪过载",
+          "抓狂",
+          "混乱地挥动"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively"
+        ],
+        "body": [
+          "身体",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "情绪过载地大幅挥动身体",
+        "zh-TW": "情緒過載地大幅揮動身體",
+        "en": "Overwhelmed full-body flailing",
+        "ja": "感情があふれ大きく体を振る",
+        "ko": "감정이 벅차 몸을 크게 휘젓기",
+        "ru": "Размахивать всем телом от переполнения эмоциями",
+        "es": "Agitar el cuerpo por sobrecarga emocional",
+        "pt": "Agitar o corpo por excesso de emoção"
+      }
+    },
+    {
+      "id": "cry_01",
+      "m": "cry",
+      "label": "哭泣",
+      "f": "motion/03_emote/伤心地捂脸哭泣.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 6.25,
+      "sha": "ad079f217b45e006b6ee47369821ec68ba551493e9724cde10554df4e0f631c5",
+      "src": [
+        "static/vrm/motion/03_emote/伤心地捂脸哭泣.vrma.gz"
+      ],
+      "packedSha": "c1316c9dd109cf5361f19b009185c4380b782ed9097cdd404e8b38103058e434",
+      "decodedSha": "ad079f217b45e006b6ee47369821ec68ba551493e9724cde10554df4e0f631c5",
+      "packedBytes": 107691,
+      "decodedBytes": 156348,
+      "compression": "gzip",
+      "nameZh": "伤心地捂脸哭泣",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "cry_01",
+        "intent": "cry",
+        "kind": "emotion-body",
+        "nameZh": "伤心地捂脸哭泣",
+        "positiveZh": [
+          "捂脸哭",
+          "伤心哭泣",
+          "忍不住流泪"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "sad"
+        ],
+        "body": [
+          "脸",
+          "手",
+          "头"
+        ],
+        "emotions": [
+          "sad"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "伤心地捂脸哭泣",
+        "zh-TW": "傷心地摀臉哭泣",
+        "en": "Sadly cover face and cry",
+        "ja": "悲しそうに顔を覆って泣く",
+        "ko": "슬프게 얼굴을 가리고 울기",
+        "ru": "Печально закрыть лицо и плакать",
+        "es": "Cubrirse la cara y llorar con tristeza",
+        "pt": "Cobrir o rosto e chorar de tristeza"
+      }
+    },
+    {
+      "id": "defeat_01",
+      "m": "defeat",
+      "label": "受挫",
+      "f": "motion/03_emote/受挫地垂下身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 6.083,
+      "sha": "ed0d63e85f280ac4390c6320374490d138aab4c7013bd401ad408aa8aa4ef0f4",
+      "src": [
+        "static/vrm/motion/03_emote/受挫地垂下身体.vrma.gz"
+      ],
+      "packedSha": "47592eceb724feb607a6804abcc7155c1ca74d58f11fc8241e2b3ff379631611",
+      "decodedSha": "ed0d63e85f280ac4390c6320374490d138aab4c7013bd401ad408aa8aa4ef0f4",
+      "packedBytes": 118117,
+      "decodedBytes": 152980,
+      "compression": "gzip",
+      "nameZh": "受挫地垂下身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "defeat_01",
+        "intent": "defeat",
+        "kind": "emotion-body",
+        "nameZh": "受挫地垂下身体",
+        "positiveZh": [
+          "受挫",
+          "彻底泄气",
+          "失败地垂下身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "sad"
+        ],
+        "body": [
+          "身体",
+          "头",
+          "肩"
+        ],
+        "emotions": [
+          "sad"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "受挫地垂下身体",
+        "zh-TW": "受挫地垂下身體",
+        "en": "Droop in defeat",
+        "ja": "挫けて体を落とす",
+        "ko": "좌절해 몸을 축 늘어뜨리기",
+        "ru": "Поникнуть от поражения",
+        "es": "Hundirse abatido",
+        "pt": "Curvar-se derrotado"
+      }
+    },
+    {
+      "id": "disappoint_01",
+      "m": "disappoint",
+      "label": "失望",
+      "f": "motion/03_emote/失望地低头收拢身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.458,
+      "sha": "dea799f85ca489f3f4b61c3a9da6f037f67b5f862d0af8f1a9b2d82031c87116",
+      "src": [
+        "static/vrm/motion/03_emote/失望地低头收拢身体.vrma.gz"
+      ],
+      "packedSha": "b916b21cec309c416566d2c95412410dbfe538ebb1cc95cf1e9aaf894ca6f64d",
+      "decodedSha": "dea799f85ca489f3f4b61c3a9da6f037f67b5f862d0af8f1a9b2d82031c87116",
+      "packedBytes": 68699,
+      "decodedBytes": 99488,
+      "compression": "gzip",
+      "nameZh": "失望地低头收拢身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "disappoint_01",
+        "intent": "disappoint",
+        "kind": "emotion-body",
+        "nameZh": "失望地低头收拢身体",
+        "positiveZh": [
+          "失望地低头",
+          "沮丧地收拢身体",
+          "失落地垂头"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "sad"
+        ],
+        "body": [
+          "头",
+          "肩",
+          "身体"
+        ],
+        "emotions": [
+          "sad"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "失望地低头收拢身体",
+        "zh-TW": "失望地低頭收攏身體",
+        "en": "Lower head and close body in disappointment",
+        "ja": "失望してうつむき体を縮める",
+        "ko": "실망해 고개를 숙이고 몸을 움츠리기",
+        "ru": "Опустить голову и сжаться от разочарования",
+        "es": "Agachar la cabeza y encogerse decepcionado",
+        "pt": "Baixar a cabeça e se fechar em decepção"
+      }
+    },
+    {
+      "id": "excited_01",
+      "m": "excited",
+      "label": "兴奋",
+      "f": "motion/03_emote/兴奋地大幅摆动身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 6.458,
+      "sha": "ee2b7f4d090914fb57792bc6f346c6761b56eee1f1a5699f45de20de4379ff70",
+      "src": [
+        "static/vrm/motion/03_emote/兴奋地大幅摆动身体.vrma.gz"
+      ],
+      "packedSha": "c27822b1089cd53cb8b9e30a99e2ca133b9510384820956df883a7d1b78441fa",
+      "decodedSha": "ee2b7f4d090914fb57792bc6f346c6761b56eee1f1a5699f45de20de4379ff70",
+      "packedBytes": 100756,
+      "decodedBytes": 160612,
+      "compression": "gzip",
+      "nameZh": "兴奋地大幅摆动身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "excited_01",
+        "intent": "excited",
+        "kind": "emotion-body",
+        "nameZh": "兴奋地大幅摆动身体",
+        "positiveZh": [
+          "兴奋",
+          "激动地摆动",
+          "高兴得跳动"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively"
+        ],
+        "body": [
+          "身体",
+          "手臂"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "兴奋地大幅摆动身体",
+        "zh-TW": "興奮地大幅擺動身體",
+        "en": "Excited broad body sway",
+        "ja": "興奮して体を大きく揺らす",
+        "ko": "신나게 몸을 크게 흔들기",
+        "ru": "Возбуждённо широко раскачивать тело",
+        "es": "Balancear ampliamente el cuerpo con emoción",
+        "pt": "Balançar muito o corpo com empolgação"
+      }
+    },
+    {
+      "id": "happy_01",
+      "m": "happy",
+      "label": "开心",
+      "f": "motion/03_emote/开心地舒展身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 10,
+      "sha": "4791134818dcb075491feefb379296847b67e72b58842d9e201ada211309bfe4",
+      "src": [
+        "static/vrm/motion/03_emote/开心地舒展身体.vrma.gz"
+      ],
+      "packedSha": "629cc656551a5e254c46f0cb20eb9ba6c26d2258fb2c05851343cae4601f7f59",
+      "decodedSha": "4791134818dcb075491feefb379296847b67e72b58842d9e201ada211309bfe4",
+      "packedBytes": 178545,
+      "decodedBytes": 232684,
+      "compression": "gzip",
+      "nameZh": "开心地舒展身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "happy_01",
+        "intent": "happy",
+        "kind": "emotion-body",
+        "nameZh": "开心地舒展身体",
+        "positiveZh": [
+          "开心地舒展",
+          "高兴地晃动",
+          "喜悦地张开身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive"
+        ],
+        "body": [
+          "身体",
+          "手臂"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "开心地舒展身体",
+        "zh-TW": "開心地舒展身體",
+        "en": "Happily stretch the body open",
+        "ja": "嬉しそうに体を伸ばす",
+        "ko": "기쁘게 몸을 활짝 펴기",
+        "ru": "Радостно расправить тело",
+        "es": "Estirar el cuerpo con alegría",
+        "pt": "Alongar o corpo com alegria"
+      }
+    },
+    {
+      "id": "laugh_01",
+      "m": "laugh",
+      "label": "大笑",
+      "f": "motion/03_emote/站着开心地大笑.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.708,
+      "sha": "fd354d664d5793f936d2439054f148db7bcdeb9c915df2bf402a5bd4191c2079",
+      "src": [
+        "static/vrm/motion/03_emote/站着开心地大笑.vrma.gz"
+      ],
+      "packedSha": "b3dbcd2e9bee2b874735bb8e41681901aab93a9e1d48e61a7d1c279d557fd17e",
+      "decodedSha": "fd354d664d5793f936d2439054f148db7bcdeb9c915df2bf402a5bd4191c2079",
+      "packedBytes": 180282,
+      "decodedBytes": 226772,
+      "compression": "gzip",
+      "nameZh": "站着开心地大笑",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "laugh_01",
+        "intent": "laugh",
+        "kind": "emotion-body",
+        "nameZh": "站着开心地大笑",
+        "positiveZh": [
+          "站着大笑",
+          "笑得身体晃动",
+          "忍不住笑"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive"
+        ],
+        "body": [
+          "身体",
+          "头"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着开心地大笑",
+        "zh-TW": "站著開心地大笑",
+        "en": "Laugh happily while standing",
+        "ja": "立って楽しそうに大笑いする",
+        "ko": "서서 즐겁게 크게 웃기",
+        "ru": "Весело смеяться стоя",
+        "es": "Reír alegremente de pie",
+        "pt": "Rir alegremente em pé"
+      }
+    },
+    {
+      "id": "sad_01",
+      "m": "sad",
+      "label": "悲伤",
+      "f": "motion/03_emote/沮丧地低着头.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.667,
+      "sha": "e1d6b6eb73e2f761b9244c59efd2c78c22a90b0297b6c951b1bf1264315da459",
+      "src": [
+        "static/vrm/motion/03_emote/沮丧地低着头.vrma.gz"
+      ],
+      "packedSha": "2550ffdd483495111a4b797571e684d81a99a1ab5840393d93f6923f3ad4cd1b",
+      "decodedSha": "e1d6b6eb73e2f761b9244c59efd2c78c22a90b0297b6c951b1bf1264315da459",
+      "packedBytes": 74496,
+      "decodedBytes": 103728,
+      "compression": "gzip",
+      "nameZh": "沮丧地低着头",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "sad_01",
+        "intent": "sad",
+        "kind": "emotion-body",
+        "nameZh": "沮丧地低着头",
+        "positiveZh": [
+          "沮丧地低头",
+          "沮丧地低着头",
+          "沮丧的低着头",
+          "伤心地站着",
+          "垂头丧气"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "sad"
+        ],
+        "body": [
+          "头",
+          "肩",
+          "身体"
+        ],
+        "emotions": [
+          "sad"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "沮丧地低着头",
+        "zh-TW": "沮喪地低著頭",
+        "en": "Hang head dejectedly",
+        "ja": "落ち込んでうつむく",
+        "ko": "풀이 죽어 고개 숙이기",
+        "ru": "Уныло опустить голову",
+        "es": "Agachar la cabeza abatido",
+        "pt": "Baixar a cabeça desanimado"
+      }
+    },
+    {
+      "id": "laugh_02",
+      "m": "laugh",
+      "label": "大笑",
+      "f": "motion/03_emote/坐着开心地大笑.vrma",
+      "in": "sit",
+      "out": "sit",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 8.125,
+      "sha": "1236fa0dd9e88c7912092ca68959d136dcb72550f6c1600c4e9620d9ce9e8614",
+      "src": [
+        "static/vrm/motion/03_emote/坐着开心地大笑.vrma.gz"
+      ],
+      "packedSha": "267f2a8715b8234c2ccb3d35835b2cda72e50704324bf7e3643e4c7be13eedad",
+      "decodedSha": "1236fa0dd9e88c7912092ca68959d136dcb72550f6c1600c4e9620d9ce9e8614",
+      "packedBytes": 149295,
+      "decodedBytes": 194520,
+      "compression": "gzip",
+      "nameZh": "坐着开心地大笑",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "laugh_02",
+        "intent": "laugh",
+        "kind": "emotion-body",
+        "nameZh": "坐着开心地大笑",
+        "positiveZh": [
+          "坐着大笑",
+          "坐着笑起来",
+          "坐着笑得身体晃动"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive"
+        ],
+        "body": [
+          "身体",
+          "头"
+        ],
+        "emotions": [
+          "happy"
+        ],
+        "default": false,
+        "inputPose": "sit",
+        "resultPose": "sit",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坐着开心地大笑",
+        "zh-TW": "坐著開心地大笑",
+        "en": "Laugh happily while seated",
+        "ja": "座って楽しそうに大笑いする",
+        "ko": "앉아서 즐겁게 크게 웃기",
+        "ru": "Весело смеяться сидя",
+        "es": "Reír alegremente sentado",
+        "pt": "Rir alegremente sentado"
+      }
+    },
+    {
+      "id": "surprise_01",
+      "m": "surprise",
+      "label": "惊讶",
+      "f": "motion/03_emote/惊讶地向后缩起身体.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.958,
+      "sha": "fa487e6a65c592588f2e76a5c381b680969e4aac726b13e9ebe4c2f02992743c",
+      "src": [
+        "static/vrm/motion/03_emote/惊讶地向后缩起身体.vrma.gz"
+      ],
+      "packedSha": "609b4bd0929e77a01d55c3bf7c9e766e9ca327a1c2468b7a63a6597621e4d183",
+      "decodedSha": "fa487e6a65c592588f2e76a5c381b680969e4aac726b13e9ebe4c2f02992743c",
+      "packedBytes": 83152,
+      "decodedBytes": 109664,
+      "compression": "gzip",
+      "nameZh": "惊讶地向后缩起身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "surprise_01",
+        "intent": "surprise",
+        "kind": "emotion-body",
+        "nameZh": "惊讶地向后缩起身体",
+        "positiveZh": [
+          "惊讶后缩",
+          "吓得后退",
+          "吃惊地缩起身体"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "nervous"
+        ],
+        "body": [
+          "身体",
+          "头"
+        ],
+        "emotions": [
+          "surprise"
+        ],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "惊讶地向后缩起身体",
+        "zh-TW": "驚訝地向後縮起身體",
+        "en": "Recoil backward in surprise",
+        "ja": "驚いて後ろに身を引く",
+        "ko": "놀라 몸을 뒤로 움츠리기",
+        "ru": "Отшатнуться назад от удивления",
+        "es": "Retroceder sorprendido",
+        "pt": "Recuar o corpo com surpresa"
+      }
+    },
+    {
+      "id": "yawn_01",
+      "m": "yawn",
+      "label": "打哈欠",
+      "f": "motion/03_emote/困倦地抬手打哈欠.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 8.292,
+      "sha": "2ba59286e410e8ec50b426f626bf5abf0619cd226de5d4b8d14d9b501b1be85b",
+      "src": [
+        "static/vrm/motion/03_emote/困倦地抬手打哈欠.vrma.gz"
+      ],
+      "packedSha": "61e94f4851ee24d5349a35e25bb2c43b58bd22401344635d578842d10c52147f",
+      "decodedSha": "2ba59286e410e8ec50b426f626bf5abf0619cd226de5d4b8d14d9b501b1be85b",
+      "packedBytes": 147049,
+      "decodedBytes": 197936,
+      "compression": "gzip",
+      "nameZh": "困倦地抬手打哈欠",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "yawn_01",
+        "intent": "yawn",
+        "kind": "activity",
+        "nameZh": "困倦地抬手打哈欠",
+        "positiveZh": [
+          "打哈欠",
+          "困倦地抬手",
+          "困得睁不开眼"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "tired"
+        ],
+        "body": [
+          "手",
+          "头",
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "困倦地抬手打哈欠",
+        "zh-TW": "睏倦地抬手打哈欠",
+        "en": "Raise hand and yawn sleepily",
+        "ja": "眠そうに手を上げてあくびする",
+        "ko": "졸린 듯 손을 들고 하품하기",
+        "ru": "Сонно поднять руку и зевнуть",
+        "es": "Levantar la mano y bostezar con sueño",
+        "pt": "Levantar a mão e bocejar com sono"
+      }
+    },
+    {
+      "id": "wave_01",
+      "m": "wave",
+      "label": "挥手",
+      "f": "motion/04_social/开心地举起双手挥手.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 3.083,
+      "sha": "dc74096d02e5dc62698451883cbe9b0d24076c7d24414cb30e7a8acb8b426397",
+      "src": [
+        "static/vrm/motion/04_social/开心地举起双手挥手.vrma.gz"
+      ],
+      "packedSha": "017f8697366008819a325a50143f4bb2bcb06409aed7df0b4c28a6fd35650690",
+      "decodedSha": "dc74096d02e5dc62698451883cbe9b0d24076c7d24414cb30e7a8acb8b426397",
+      "packedBytes": 57368,
+      "decodedBytes": 90420,
+      "compression": "gzip",
+      "nameZh": "开心地举起双手挥手",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "wave_01",
+        "intent": "wave",
+        "kind": "gesture",
+        "nameZh": "开心地举起双手挥手",
+        "positiveZh": [
+          "双手挥手",
+          "两只手挥手",
+          "双手打招呼"
+        ],
+        "negativeZh": [
+          "拒绝",
+          "制止"
+        ],
+        "styles": [
+          "positive"
+        ],
+        "body": [
+          "双手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "开心地举起双手挥手",
+        "zh-TW": "開心地舉起雙手揮手",
+        "en": "Happily wave both hands",
+        "ja": "嬉しそうに両手を上げて振る",
+        "ko": "기쁘게 두 손을 들어 흔들기",
+        "ru": "Радостно махать обеими руками",
+        "es": "Saludar alegremente con ambas manos",
+        "pt": "Acenar alegremente com as duas mãos"
+      },
+      "origin": "VSWQH"
+    },
+    {
+      "id": "wave_02",
+      "m": "wave",
+      "label": "挥手",
+      "f": "motion/04_social/自然地举起一只手挥手.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "r",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 0.5,
+      "sha": "a5f194cd3aeeb8f13049b932adc9565264266e9210d4735f926d9eef069d4ffe",
+      "src": [
+        "static/vrm/motion/04_social/自然地举起一只手挥手.vrma.gz"
+      ],
+      "packedSha": "a630645900a9f97391746810e5bde7f552ca6b9ea90e49fb25c2851439ed71e1",
+      "decodedSha": "a5f194cd3aeeb8f13049b932adc9565264266e9210d4735f926d9eef069d4ffe",
+      "packedBytes": 12109,
+      "decodedBytes": 39152,
+      "compression": "gzip",
+      "nameZh": "自然地举起一只手挥手",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "wave_02",
+        "intent": "wave",
+        "kind": "gesture",
+        "nameZh": "自然地举起一只手挥手",
+        "positiveZh": [
+          "单手挥手",
+          "一只手打招呼",
+          "挥手问候"
+        ],
+        "negativeZh": [
+          "拒绝",
+          "制止"
+        ],
+        "styles": [
+          "neutral"
+        ],
+        "body": [
+          "手",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": true,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "names": {
+        "zh-CN": "自然地举起一只手挥手",
+        "zh-TW": "自然地舉起一隻手揮手",
+        "en": "Natural one-hand wave",
+        "ja": "自然に片手を上げて振る",
+        "ko": "자연스럽게 한 손 들어 흔들기",
+        "ru": "Естественно помахать одной рукой",
+        "es": "Saludar naturalmente con una mano",
+        "pt": "Acenar naturalmente com uma mão"
+      },
+      "origin": "VSWQH"
+    },
+    {
+      "id": "cheer_01",
+      "m": "cheer",
+      "label": "欢呼",
+      "f": "motion/04_social/夸张地举起双手欢呼.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.875,
+      "sha": "99de38f5181a639d5f6a3cd952e1d3e7f4408088931784269415b7f7414afac0",
+      "src": [
+        "static/vrm/motion/04_social/夸张地举起双手欢呼.vrma.gz"
+      ],
+      "packedSha": "d3214509bc441764f877c36c9255028f1687d745f3d2fc9e62e010f53c8e08da",
+      "decodedSha": "99de38f5181a639d5f6a3cd952e1d3e7f4408088931784269415b7f7414afac0",
+      "packedBytes": 30308,
+      "decodedBytes": 86240,
+      "compression": "gzip",
+      "disabled": true,
+      "disabledReason": "too exaggerated for companion dialogue",
+      "nameZh": "夸张地举起双手欢呼",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "cheer_01",
+        "intent": "cheer",
+        "kind": "gesture",
+        "nameZh": "夸张地举起双手欢呼",
+        "positiveZh": [
+          "举手欢呼",
+          "大声喝彩",
+          "双手高举庆祝"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "lively"
+        ],
+        "body": [
+          "双手",
+          "手臂",
+          "身体"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "夸张地举起双手欢呼",
+        "zh-TW": "誇張地舉起雙手歡呼",
+        "en": "Exaggerated two-hand cheer",
+        "ja": "両手を大きく上げて歓声を上げる",
+        "ko": "두 손을 크게 들어 환호하기",
+        "ru": "Бурно поднять обе руки в ликовании",
+        "es": "Celebrar exageradamente con ambas manos",
+        "pt": "Comemorar com as duas mãos erguidas"
+      }
+    },
+    {
+      "id": "clap_01",
+      "m": "clap",
+      "label": "鼓掌",
+      "f": "motion/04_social/站着连续拍手鼓掌.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 1.167,
+      "sha": "6537dc5b84fd8dc2e995eba02c59f8ed6bd1b2adda6f02be6205d2434306c01a",
+      "src": [
+        "static/vrm/motion/04_social/站着连续拍手鼓掌.vrma.gz"
+      ],
+      "packedSha": "cdf4b14d93ddf2f309382d3931c7cc43d127390089fc47341a2d0ad48f34ceaa",
+      "decodedSha": "6537dc5b84fd8dc2e995eba02c59f8ed6bd1b2adda6f02be6205d2434306c01a",
+      "packedBytes": 16768,
+      "decodedBytes": 49304,
+      "compression": "gzip",
+      "nameZh": "站着连续拍手鼓掌",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "clap_01",
+        "intent": "clap",
+        "kind": "gesture",
+        "nameZh": "站着连续拍手鼓掌",
+        "positiveZh": [
+          "站着鼓掌",
+          "连续拍手",
+          "拍手称赞"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive"
+        ],
+        "body": [
+          "手",
+          "手掌"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着连续拍手鼓掌",
+        "zh-TW": "站著連續拍手鼓掌",
+        "en": "Clap repeatedly while standing",
+        "ja": "立って続けて拍手する",
+        "ko": "서서 계속 박수치기",
+        "ru": "Продолжительно хлопать стоя",
+        "es": "Aplaudir repetidamente de pie",
+        "pt": "Bater palmas repetidamente em pé"
+      }
+    },
+    {
+      "id": "bow_01",
+      "m": "bow",
+      "label": "鞠躬",
+      "f": "motion/04_social/快速随和地弯腰鞠躬.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "a",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.417,
+      "sha": "a50b7a5ccdf218933add8af79a69ffb8f95edc761a16864fc90416bb63008094",
+      "src": [
+        "static/vrm/motion/04_social/快速随和地弯腰鞠躬.vrma.gz"
+      ],
+      "packedSha": "ed187eb7d0274026ca2d13d46d88c35aa385b9d493a3b3d2b88469b4afc6a06b",
+      "decodedSha": "a50b7a5ccdf218933add8af79a69ffb8f95edc761a16864fc90416bb63008094",
+      "packedBytes": 53230,
+      "decodedBytes": 78228,
+      "compression": "gzip",
+      "nameZh": "快速随和地弯腰鞠躬",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "bow_01",
+        "intent": "bow",
+        "kind": "gesture",
+        "nameZh": "快速随和地弯腰鞠躬",
+        "positiveZh": [
+          "快速鞠躬",
+          "随和地行礼",
+          "弯腰致意"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "gentle"
+        ],
+        "body": [
+          "身体",
+          "腰",
+          "头"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "快速随和地弯腰鞠躬",
+        "zh-TW": "快速隨和地彎腰鞠躬",
+        "en": "Quick casual bow",
+        "ja": "素早く気軽にお辞儀する",
+        "ko": "빠르고 편하게 허리 숙여 인사하기",
+        "ru": "Быстрый непринуждённый поклон",
+        "es": "Reverencia rápida e informal",
+        "pt": "Reverência rápida e casual"
+      }
+    },
+    {
+      "id": "salute_01",
+      "m": "salute",
+      "label": "敬礼",
+      "f": "motion/04_social/正式地抬手敬礼.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "once",
+      "t": "u",
+      "h": "r",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.792,
+      "sha": "00118584b4f794c4e8732feb8b2dc90d77d43257fce1105dc712a20e8413c02a",
+      "src": [
+        "static/vrm/motion/04_social/正式地抬手敬礼.vrma.gz"
+      ],
+      "packedSha": "e4877242320376fa4cdc2f60e10bd333dc4540fe5b1144e4a528e37d8e575d2e",
+      "decodedSha": "00118584b4f794c4e8732feb8b2dc90d77d43257fce1105dc712a20e8413c02a",
+      "packedBytes": 59021,
+      "decodedBytes": 85916,
+      "compression": "gzip",
+      "nameZh": "正式地抬手敬礼",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "salute_01",
+        "intent": "salute",
+        "kind": "gesture",
+        "nameZh": "正式地抬手敬礼",
+        "positiveZh": [
+          "抬手敬礼",
+          "正式敬礼",
+          "行军礼"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "formal"
+        ],
+        "body": [
+          "手",
+          "手臂",
+          "头"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "正式地抬手敬礼",
+        "zh-TW": "正式地抬手敬禮",
+        "en": "Formal hand salute",
+        "ja": "正式に手を上げて敬礼する",
+        "ko": "격식 있게 손 들어 경례하기",
+        "ru": "Формально отдать честь",
+        "es": "Saludo militar formal",
+        "pt": "Continência formal"
+      }
+    },
+    {
+      "id": "clap_02",
+      "m": "clap",
+      "label": "鼓掌",
+      "f": "motion/04_social/坐着连续拍手鼓掌.vrma",
+      "in": "sit",
+      "out": "sit",
+      "mode": "once",
+      "t": "u",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 4.125,
+      "sha": "c88aa731dbdd5f3290ab5ef85cbdb7cba55c8005cc57aaa550b1fb852173bf75",
+      "src": [
+        "static/vrm/motion/04_social/坐着连续拍手鼓掌.vrma.gz"
+      ],
+      "packedSha": "9db4684dd73b705f2d527d1df53e6ce0a29745ac67db853752451ecf205995fe",
+      "decodedSha": "c88aa731dbdd5f3290ab5ef85cbdb7cba55c8005cc57aaa550b1fb852173bf75",
+      "packedBytes": 83706,
+      "decodedBytes": 113088,
+      "compression": "gzip",
+      "nameZh": "坐着连续拍手鼓掌",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "clap_02",
+        "intent": "clap",
+        "kind": "gesture",
+        "nameZh": "坐着连续拍手鼓掌",
+        "positiveZh": [
+          "坐着鼓掌",
+          "坐着拍手",
+          "坐着连续拍掌"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "positive"
+        ],
+        "body": [
+          "手",
+          "手掌"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "sit",
+        "resultPose": "sit",
+        "playback": "once",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坐着连续拍手鼓掌",
+        "zh-TW": "坐著連續拍手鼓掌",
+        "en": "Clap repeatedly while seated",
+        "ja": "座って続けて拍手する",
+        "ko": "앉아서 계속 박수치기",
+        "ru": "Продолжительно хлопать сидя",
+        "es": "Aplaudir repetidamente sentado",
+        "pt": "Bater palmas repetidamente sentado"
+      }
+    },
+    {
+      "id": "lie_01",
+      "m": "lie",
+      "label": "躺下",
+      "f": "motion/05_pose/侧着身子慵懒地躺下.vrma",
+      "in": "any",
+      "out": "lie",
+      "mode": "hold",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "lounge",
+        "side"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 0,
+      "sha": "4b8eb3b14cec38c2298df631edb1644ae5c66b3b12519f391db82755be26d3b2",
+      "src": [
+        "static/vrm/motion/05_pose/侧着身子慵懒地躺下.vrma.gz"
+      ],
+      "packedSha": "7ed8aba01e483529f3c965955921c2979a1a12885938a48543913eebd13bb367",
+      "decodedSha": "4b8eb3b14cec38c2298df631edb1644ae5c66b3b12519f391db82755be26d3b2",
+      "packedBytes": 7525,
+      "decodedBytes": 28560,
+      "compression": "gzip",
+      "nameZh": "侧着身子慵懒地躺下",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "lie_01",
+        "intent": "lie",
+        "kind": "pose",
+        "nameZh": "侧着身子慵懒地躺下",
+        "positiveZh": [
+          "侧躺",
+          "慵懒地躺下",
+          "侧着身子躺着"
+        ],
+        "negativeZh": [
+          "趴着",
+          "盘腿"
+        ],
+        "styles": [
+          "lounge",
+          "side"
+        ],
+        "body": [
+          "身体",
+          "腿"
+        ],
+        "emotions": [],
+        "default": true,
+        "inputPose": "any",
+        "resultPose": "lie",
+        "playback": "hold",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "侧着身子慵懒地躺下",
+        "zh-TW": "側著身子慵懶地躺下",
+        "en": "Lazily lie down on the side",
+        "ja": "横向きに気だるく寝転ぶ",
+        "ko": "옆으로 느긋하게 눕기",
+        "ru": "Лениво лечь на бок",
+        "es": "Tumbarse de lado con pereza",
+        "pt": "Deitar de lado preguiçosamente"
+      }
+    },
+    {
+      "id": "sit_01",
+      "m": "lie",
+      "label": "坐姿",
+      "f": "motion/05_pose/嚣张地斜靠着半躺.vrma",
+      "in": "any",
+      "out": "lie",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "lounge",
+        "reclined"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.708,
+      "sha": "3775aa29182be084b2a2efdf6b8de622b052c6a69b28a4dbf7dd9b968ce071d8",
+      "src": [
+        "static/vrm/motion/05_pose/嚣张地斜靠着半躺.vrma.gz"
+      ],
+      "packedSha": "2a186f738c24f0b5129a40d0c4eb1fb37f90bb6173266c5e8eb7a21d43822610",
+      "decodedSha": "3775aa29182be084b2a2efdf6b8de622b052c6a69b28a4dbf7dd9b968ce071d8",
+      "packedBytes": 163365,
+      "decodedBytes": 226772,
+      "compression": "gzip",
+      "nameZh": "嚣张地斜靠着半躺",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "sit_01",
+        "intent": "lie",
+        "kind": "pose",
+        "nameZh": "嚣张地斜靠着半躺",
+        "positiveZh": [
+          "斜靠着半躺",
+          "嚣张地靠坐",
+          "慵懒地靠着"
+        ],
+        "negativeZh": [
+          "端正",
+          "双脚平放",
+          "盘腿"
+        ],
+        "styles": [
+          "lounge",
+          "reclined"
+        ],
+        "body": [
+          "身体",
+          "腰",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "any",
+        "resultPose": "lie",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "嚣张地斜靠着半躺",
+        "zh-TW": "囂張地斜靠著半躺",
+        "en": "Cocky reclined half-lying pose",
+        "ja": "ふてぶてしく斜めにもたれて半分寝そべる",
+        "ko": "거만하게 비스듬히 기대 반쯤 눕기",
+        "ru": "Дерзко полулежать, откинувшись набок",
+        "es": "Recostarse a medias con aire desafiante",
+        "pt": "Ficar semi-deitado com ar provocador"
+      }
+    },
+    {
+      "id": "sit_02",
+      "m": "sit",
+      "label": "坐姿",
+      "f": "motion/05_pose/休闲地盘着腿坐.vrma",
+      "in": "stand",
+      "out": "sit",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "casual"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 10.667,
+      "sha": "25a70caef60ada1f173e769ad46664def217aaefd5ab986d7cfe46d52ae7d545",
+      "src": [
+        "static/vrm/motion/05_pose/休闲地盘着腿坐.vrma.gz"
+      ],
+      "packedSha": "ffa30ce21d2c048f513b8093cf2a08c856cbf7c57bb7a3994ee06aaff44fa3dc",
+      "decodedSha": "25a70caef60ada1f173e769ad46664def217aaefd5ab986d7cfe46d52ae7d545",
+      "packedBytes": 88304,
+      "decodedBytes": 246280,
+      "compression": "gzip",
+      "nameZh": "休闲地盘着腿坐",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "sit_02",
+        "intent": "sit",
+        "kind": "pose",
+        "nameZh": "休闲地盘着腿坐",
+        "positiveZh": [
+          "盘腿坐",
+          "双腿交叉坐",
+          "休闲盘坐"
+        ],
+        "negativeZh": [
+          "双脚平放",
+          "膝盖九十度"
+        ],
+        "styles": [
+          "cross",
+          "casual"
+        ],
+        "body": [
+          "身体",
+          "腰",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "sit",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "休闲地盘着腿坐",
+        "zh-TW": "休閒地盤著腿坐",
+        "en": "Sit cross-legged casually",
+        "ja": "くつろいであぐらをかく",
+        "ko": "편하게 양반다리로 앉기",
+        "ru": "Непринуждённо сидеть скрестив ноги",
+        "es": "Sentarse relajadamente con las piernas cruzadas",
+        "pt": "Sentar relaxado de pernas cruzadas"
+      }
+    },
+    {
+      "id": "sit_03",
+      "m": "sit",
+      "label": "坐姿",
+      "f": "motion/05_pose/双脚平放端正地坐.vrma",
+      "in": "stand",
+      "out": "sit",
+      "mode": "hold",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "upright",
+        "formal"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.375,
+      "sha": "8d64e30ec9ec0b69ef7a4e295a8d9ad8fc83ad6c751c1a777c36c827fd5b12b0",
+      "src": [
+        "static/vrm/motion/05_pose/双脚平放端正地坐.vrma.gz"
+      ],
+      "packedSha": "41476ed0de0a4d8f92ab264949a747dfbe082bc00d5e680c2d6e18cf43c70acd",
+      "decodedSha": "8d64e30ec9ec0b69ef7a4e295a8d9ad8fc83ad6c751c1a777c36c827fd5b12b0",
+      "packedBytes": 169087,
+      "decodedBytes": 219968,
+      "compression": "gzip",
+      "nameZh": "双脚平放端正地坐",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "sit_03",
+        "intent": "sit",
+        "kind": "pose",
+        "nameZh": "双脚平放端正地坐",
+        "positiveZh": [
+          "端正坐好",
+          "双脚平放",
+          "膝盖九十度",
+          "腰背挺直",
+          "双腿分开平放"
+        ],
+        "negativeZh": [
+          "盘腿",
+          "斜靠",
+          "半躺"
+        ],
+        "styles": [
+          "upright",
+          "formal"
+        ],
+        "body": [
+          "身体",
+          "腰",
+          "腿",
+          "膝"
+        ],
+        "emotions": [],
+        "default": true,
+        "inputPose": "stand",
+        "resultPose": "sit",
+        "playback": "hold",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "双脚平放端正地坐",
+        "zh-TW": "雙腳平放端正地坐",
+        "en": "Sit upright with both feet flat",
+        "ja": "両足を揃えてきちんと座る",
+        "ko": "두 발을 바닥에 두고 단정히 앉기",
+        "ru": "Сидеть прямо, поставив обе ноги на пол",
+        "es": "Sentarse erguido con ambos pies apoyados",
+        "pt": "Sentar ereto com os dois pés apoiados"
+      }
+    },
+    {
+      "id": "sleep_01",
+      "m": "sleep",
+      "label": "睡眠",
+      "f": "motion/05_pose/趴着睡梦中翻动身体.vrma",
+      "in": "any",
+      "out": "sleep",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "prone"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 17.583,
+      "sha": "8d51c92028423f56c8e4d5ac89c367e3e4e509f285095d0ea59003633835377d",
+      "src": [
+        "static/vrm/motion/05_pose/趴着睡梦中翻动身体.vrma.gz"
+      ],
+      "packedSha": "636b84c549b95114727c943b6fc50ea528f83a00cfa964c08f07144c557b78f5",
+      "decodedSha": "8d51c92028423f56c8e4d5ac89c367e3e4e509f285095d0ea59003633835377d",
+      "packedBytes": 277311,
+      "decodedBytes": 387060,
+      "compression": "gzip",
+      "nameZh": "趴着睡梦中翻动身体",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "sleep_01",
+        "intent": "sleep",
+        "kind": "pose",
+        "nameZh": "趴着睡梦中翻动身体",
+        "positiveZh": [
+          "趴着睡梦中翻动身体",
+          "俯卧熟睡时身体轻轻翻动",
+          "趴着睡着后手臂和身体仍在动",
+          "睡梦中趴着不安分地翻动",
+          "趴睡时身体出现较明显动作"
+        ],
+        "negativeZh": [
+          "侧躺",
+          "坐着"
+        ],
+        "styles": [
+          "prone"
+        ],
+        "body": [
+          "身体",
+          "头",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "any",
+        "resultPose": "sleep",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "趴着睡梦中翻动身体",
+        "zh-TW": "趴著睡夢中翻動身體",
+        "en": "Turn over while sleeping face-down",
+        "ja": "うつ伏せで眠りながら寝返りする",
+        "ko": "엎드려 자며 몸 뒤척이기",
+        "ru": "Ворочаться во сне лёжа на животе",
+        "es": "Moverse dormido boca abajo",
+        "pt": "Mexer o corpo dormindo de bruços"
+      }
+    },
+    {
+      "id": "sleep_02",
+      "m": "sleep",
+      "label": "睡眠",
+      "f": "motion/05_pose/趴着安静熟睡轻微呼吸.vrma",
+      "in": "any",
+      "out": "sleep",
+      "mode": "loop",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "prone"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 6.792,
+      "sha": "b88124b0f643bea06bfb6768b5cf13f94241bba2d99b52c0274786738bd97841",
+      "src": [
+        "static/vrm/motion/05_pose/趴着安静熟睡轻微呼吸.vrma.gz"
+      ],
+      "packedSha": "248e7d7f5a2a7c8867feee58172ab808903e19e48343315dbba66bdc616f580f",
+      "decodedSha": "b88124b0f643bea06bfb6768b5cf13f94241bba2d99b52c0274786738bd97841",
+      "packedBytes": 119739,
+      "decodedBytes": 167400,
+      "compression": "gzip",
+      "nameZh": "趴着安静熟睡轻微呼吸",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "sleep_02",
+        "intent": "sleep",
+        "kind": "pose",
+        "nameZh": "趴着安静熟睡轻微呼吸",
+        "positiveZh": [
+          "趴着安静熟睡轻微呼吸",
+          "俯卧着几乎不动地睡着",
+          "趴着安稳休息只有轻微呼吸",
+          "安静趴睡身体没有明显动作",
+          "趴着进入平稳熟睡状态"
+        ],
+        "negativeZh": [
+          "侧躺",
+          "坐着"
+        ],
+        "styles": [
+          "prone"
+        ],
+        "body": [
+          "身体",
+          "头",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "any",
+        "resultPose": "sleep",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "趴着安静熟睡轻微呼吸",
+        "zh-TW": "趴著安靜熟睡輕微呼吸",
+        "en": "Sleep quietly face-down with gentle breathing",
+        "ja": "うつ伏せで静かに眠り軽く呼吸する",
+        "ko": "엎드려 조용히 숙면하며 가볍게 숨 쉬기",
+        "ru": "Тихо спать на животе, слегка дыша",
+        "es": "Dormir tranquilamente boca abajo respirando suave",
+        "pt": "Dormir tranquilamente de bruços respirando suavemente"
+      }
+    },
+    {
+      "id": "guitar_01",
+      "m": "guitar",
+      "label": "弹吉他",
+      "f": "motion/06_activity/站着用双手弹奏吉他.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "o",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 6.208,
+      "sha": "3bace377f02d89d5e6fc84fc5d05209d71cfcadc82933f8204bb15f58127f26c",
+      "src": [
+        "static/vrm/motion/06_activity/站着用双手弹奏吉他.vrma.gz"
+      ],
+      "packedSha": "fa565b6aadadaf6c7185d6498b2e0840c6dd9896e17da082130aa518ef0c5749",
+      "decodedSha": "3bace377f02d89d5e6fc84fc5d05209d71cfcadc82933f8204bb15f58127f26c",
+      "packedBytes": 123296,
+      "decodedBytes": 155524,
+      "compression": "gzip",
+      "nameZh": "站着用双手弹奏吉他",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "guitar_01",
+        "intent": "guitar",
+        "kind": "activity",
+        "nameZh": "站着用双手弹奏吉他",
+        "positiveZh": [
+          "弹吉他",
+          "拨动吉他弦",
+          "抱着吉他演奏"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "performance"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着用双手弹奏吉他",
+        "zh-TW": "站著用雙手彈奏吉他",
+        "en": "Play guitar with both hands while standing",
+        "ja": "立って両手でギターを弾く",
+        "ko": "서서 양손으로 기타 연주하기",
+        "ru": "Играть на гитаре обеими руками стоя",
+        "es": "Tocar la guitarra de pie con ambas manos",
+        "pt": "Tocar violão em pé com as duas mãos"
+      }
+    },
+    {
+      "id": "piano_01",
+      "m": "piano",
+      "label": "弹钢琴",
+      "f": "motion/06_activity/坐着用双手弹奏钢琴.vrma",
+      "in": "sit",
+      "out": "sit",
+      "mode": "loop",
+      "t": "o",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 9.5,
+      "sha": "eed6c035e4e87c642b4371d26b7c075625bd039d7979d7cbd49ce7a7f66e5a89",
+      "src": [
+        "static/vrm/motion/06_activity/坐着用双手弹奏钢琴.vrma.gz"
+      ],
+      "packedSha": "f9fc988ac801313672cc881f031bc9e03b882d1bd87ba2ad50e8d5ef57f2a4ed",
+      "decodedSha": "eed6c035e4e87c642b4371d26b7c075625bd039d7979d7cbd49ce7a7f66e5a89",
+      "packedBytes": 182904,
+      "decodedBytes": 222508,
+      "compression": "gzip",
+      "nameZh": "坐着用双手弹奏钢琴",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "piano_01",
+        "intent": "piano",
+        "kind": "activity",
+        "nameZh": "坐着用双手弹奏钢琴",
+        "positiveZh": [
+          "弹钢琴",
+          "双手按琴键",
+          "坐在钢琴前演奏"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "performance"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "sit",
+        "resultPose": "sit",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坐着用双手弹奏钢琴",
+        "zh-TW": "坐著用雙手彈奏鋼琴",
+        "en": "Play piano with both hands while seated",
+        "ja": "座って両手でピアノを弾く",
+        "ko": "앉아서 양손으로 피아노 연주하기",
+        "ru": "Играть на пианино обеими руками сидя",
+        "es": "Tocar el piano sentado con ambas manos",
+        "pt": "Tocar piano sentado com as duas mãos"
+      }
+    },
+    {
+      "id": "tablet_01",
+      "m": "tablet",
+      "label": "使用平板",
+      "f": "motion/06_activity/站着用手操作平板电脑.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "o",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 33.083,
+      "sha": "afdb9b7ca5044e001923bbcffaaebf271f7d20dbda7c3371b3c6e97e22f74700",
+      "src": [
+        "static/vrm/motion/06_activity/站着用手操作平板电脑.vrma.gz"
+      ],
+      "packedSha": "76721927115d7e19661d1a199054b12a2f47904b29b2c74cb9b5bfa8c50def05",
+      "decodedSha": "afdb9b7ca5044e001923bbcffaaebf271f7d20dbda7c3371b3c6e97e22f74700",
+      "packedBytes": 353135,
+      "decodedBytes": 702576,
+      "compression": "gzip",
+      "nameZh": "站着用手操作平板电脑",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "tablet_01",
+        "intent": "tablet",
+        "kind": "activity",
+        "nameZh": "站着用手操作平板电脑",
+        "positiveZh": [
+          "使用平板",
+          "操作触屏",
+          "手指滑动屏幕"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "activity"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "站着用手操作平板电脑",
+        "zh-TW": "站著用手操作平板電腦",
+        "en": "Use a tablet while standing",
+        "ja": "立ってタブレットを操作する",
+        "ko": "서서 태블릿 조작하기",
+        "ru": "Пользоваться планшетом стоя",
+        "es": "Usar una tableta de pie",
+        "pt": "Usar um tablet em pé"
+      }
+    },
+    {
+      "id": "typing_01",
+      "m": "typing",
+      "label": "打字",
+      "f": "motion/06_activity/坐着用双手敲击键盘.vrma",
+      "in": "sit",
+      "out": "sit",
+      "mode": "loop",
+      "t": "o",
+      "h": "b",
+      "s": [],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 16.458,
+      "sha": "8937029399abb8d189845d4f32008da36cf1fd15ee77165deb5a7cf01730ea31",
+      "src": [
+        "static/vrm/motion/06_activity/坐着用双手敲击键盘.vrma.gz"
+      ],
+      "packedSha": "4f24d86ddc69b6eca42cea63fb2fdba735f69f8c225847bfe375aad63a8c2892",
+      "decodedSha": "8937029399abb8d189845d4f32008da36cf1fd15ee77165deb5a7cf01730ea31",
+      "packedBytes": 301673,
+      "decodedBytes": 357592,
+      "compression": "gzip",
+      "nameZh": "坐着用双手敲击键盘",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "typing_01",
+        "intent": "typing",
+        "kind": "activity",
+        "nameZh": "坐着用双手敲击键盘",
+        "positiveZh": [
+          "敲键盘",
+          "打字",
+          "双手输入文字"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "activity"
+        ],
+        "body": [
+          "手",
+          "手指",
+          "手臂"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "sit",
+        "resultPose": "sit",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "坐着用双手敲击键盘",
+        "zh-TW": "坐著用雙手敲擊鍵盤",
+        "en": "Type with both hands while seated",
+        "ja": "座って両手でキーボードを打つ",
+        "ko": "앉아서 양손으로 키보드 치기",
+        "ru": "Печатать обеими руками сидя",
+        "es": "Escribir con ambas manos sentado",
+        "pt": "Digitar com as duas mãos sentado"
+      }
+    },
+    {
+      "id": "dance_01",
+      "m": "dance",
+      "label": "跳舞",
+      "f": "motion/07_show/短促有力地大幅甩臂跳嘻哈.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "hip_hop"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 5.167,
+      "sha": "119ec27ebf55f5e7bc0f9848cbfd980d868cdc521edb1e59f1bcd31f08dbf4f0",
+      "src": [
+        "static/vrm/motion/07_show/短促有力地大幅甩臂跳嘻哈.vrma.gz"
+      ],
+      "packedSha": "064ae0d4e36503e18a861af0fef64ba791ec7be248d1b3befbab852f3a8a43d6",
+      "decodedSha": "119ec27ebf55f5e7bc0f9848cbfd980d868cdc521edb1e59f1bcd31f08dbf4f0",
+      "packedBytes": 59322,
+      "decodedBytes": 127616,
+      "compression": "gzip",
+      "nameZh": "短促有力地大幅甩臂跳嘻哈",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "dance_01",
+        "intent": "dance",
+        "kind": "activity",
+        "nameZh": "短促有力地大幅甩臂跳嘻哈",
+        "positiveZh": [
+          "短促有力地大幅甩臂跳嘻哈",
+          "快速大幅甩动双臂跳街舞",
+          "踩着强烈节拍爆发式舞动",
+          "手臂动作很大的短段嘻哈舞",
+          "用力挥动双手快速跳舞"
+        ],
+        "negativeZh": [
+          "伦巴",
+          "柔和"
+        ],
+        "styles": [
+          "hip_hop",
+          "firm"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "短促有力地大幅甩臂跳嘻哈",
+        "zh-TW": "短促有力地大幅甩臂跳嘻哈",
+        "en": "Short powerful hip-hop arm swings",
+        "ja": "短く力強く腕を大きく振ってヒップホップを踊る",
+        "ko": "짧고 힘차게 팔을 크게 휘두르며 힙합 추기",
+        "ru": "Короткий энергичный хип-хоп с широкими взмахами рук",
+        "es": "Hip-hop corto y enérgico con amplios brazos",
+        "pt": "Hip-hop curto e forte com grandes movimentos de braço"
+      }
+    },
+    {
+      "id": "dance_02",
+      "m": "dance",
+      "label": "跳舞",
+      "f": "motion/07_show/持续踏步轻摆手臂跳嘻哈.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "hip_hop"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 12.958,
+      "sha": "05f683356b4fd24fe035490e934c7ba1af572adccd4de67c40832df775f48778",
+      "src": [
+        "static/vrm/motion/07_show/持续踏步轻摆手臂跳嘻哈.vrma.gz"
+      ],
+      "packedSha": "7b3d0de5bb162618f8070df76e260d5a2ba5e542206ebf33ece1338edb178192",
+      "decodedSha": "05f683356b4fd24fe035490e934c7ba1af572adccd4de67c40832df775f48778",
+      "packedBytes": 216841,
+      "decodedBytes": 292924,
+      "compression": "gzip",
+      "nameZh": "持续踏步轻摆手臂跳嘻哈",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "dance_02",
+        "intent": "dance",
+        "kind": "activity",
+        "nameZh": "持续踏步轻摆手臂跳嘻哈",
+        "positiveZh": [
+          "持续踏步轻摆手臂跳嘻哈",
+          "跟着节拍连续踏步跳街舞",
+          "长时间小幅摆臂持续舞动",
+          "手臂动作平缓地连续跳嘻哈",
+          "踩着稳定拍子持续跳舞"
+        ],
+        "negativeZh": [
+          "伦巴",
+          "柔和"
+        ],
+        "styles": [
+          "hip_hop",
+          "lively"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "持续踏步轻摆手臂跳嘻哈",
+        "zh-TW": "持續踏步輕擺手臂跳嘻哈",
+        "en": "Continuous stepping hip-hop with light arm swings",
+        "ja": "足踏みを続け腕を軽く振ってヒップホップを踊る",
+        "ko": "계속 스텝을 밟고 팔을 가볍게 흔들며 힙합 추기",
+        "ru": "Хип-хоп с непрерывными шагами и лёгкими взмахами рук",
+        "es": "Hip-hop con pasos continuos y brazos suaves",
+        "pt": "Hip-hop com passos contínuos e braços leves"
+      }
+    },
+    {
+      "id": "dance_03",
+      "m": "dance",
+      "label": "跳舞",
+      "f": "motion/07_show/柔和地跳伦巴舞.vrma",
+      "in": "stand",
+      "out": "stand",
+      "mode": "loop",
+      "t": "u",
+      "h": "a",
+      "s": [
+        "rumba"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 2.333,
+      "sha": "4f3f8e884a2fb4568703c096d15400ee4d5e5842ec3ce1e0c47aee9589d0d4a3",
+      "src": [
+        "static/vrm/motion/07_show/柔和地跳伦巴舞.vrma.gz"
+      ],
+      "packedSha": "1651c87b21a843b49ae085094a50a58e9238d97b44eb55497a8c2a7a28797265",
+      "decodedSha": "4f3f8e884a2fb4568703c096d15400ee4d5e5842ec3ce1e0c47aee9589d0d4a3",
+      "packedBytes": 40758,
+      "decodedBytes": 76532,
+      "compression": "gzip",
+      "nameZh": "柔和地跳伦巴舞",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "dance_03",
+        "intent": "dance",
+        "kind": "activity",
+        "nameZh": "柔和地跳伦巴舞",
+        "positiveZh": [
+          "伦巴舞",
+          "柔和地舞动",
+          "优雅地旋转舞步"
+        ],
+        "negativeZh": [
+          "嘻哈",
+          "街舞"
+        ],
+        "styles": [
+          "rumba",
+          "gentle"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "stand",
+        "resultPose": "stand",
+        "playback": "loop",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "柔和地跳伦巴舞",
+        "zh-TW": "柔和地跳倫巴舞",
+        "en": "Dance a gentle rumba",
+        "ja": "柔らかくルンバを踊る",
+        "ko": "부드럽게 룸바 추기",
+        "ru": "Мягко танцевать румбу",
+        "es": "Bailar una rumba suave",
+        "pt": "Dançar uma rumba suave"
+      }
+    },
+    {
+      "id": "recover_01",
+      "m": "recover",
+      "label": "恢复待机",
+      "f": "motion/08_move/从低姿态撑起身体站好.vrma",
+      "in": "low",
+      "out": "stand",
+      "mode": "move",
+      "t": "-",
+      "h": "a",
+      "s": [
+        "transition",
+        "sit",
+        "lie",
+        "prone"
+      ],
+      "i": null,
+      "ok": true,
+      "license": "Apache-2.0",
+      "model": "VRM humanoid",
+      "sec": 4.167,
+      "sha": "d970e8ec81a9c4651cdc7e8dd2fae09bd9ff54aded84d214669befe0f3a8beb6",
+      "src": [
+        "static/vrm/motion/08_move/从低姿态撑起身体站好.vrma.gz"
+      ],
+      "packedSha": "d889cbf6e1f1bb834bfb96a35b20ffe6cadbfc348dd9142fc44a80be1b8702a2",
+      "decodedSha": "d970e8ec81a9c4651cdc7e8dd2fae09bd9ff54aded84d214669befe0f3a8beb6",
+      "packedBytes": 85743,
+      "decodedBytes": 113960,
+      "compression": "gzip",
+      "nameZh": "从低姿态撑起身体站好",
+      "card": {
+        "schemaVersion": 1,
+        "stableId": "recover_01",
+        "intent": "recover",
+        "kind": "control",
+        "nameZh": "从低姿态撑起身体站好",
+        "positiveZh": [
+          "起身站好",
+          "从地面起来",
+          "撑起身体恢复站姿"
+        ],
+        "negativeZh": [],
+        "styles": [
+          "transition",
+          "sit",
+          "lie",
+          "prone"
+        ],
+        "body": [
+          "身体",
+          "手臂",
+          "腿"
+        ],
+        "emotions": [],
+        "default": false,
+        "inputPose": "low",
+        "resultPose": "stand",
+        "playback": "move",
+        "descriptionStatus": "human-verified"
+      },
+      "origin": "VSWQH",
+      "names": {
+        "zh-CN": "从低姿态撑起身体站好",
+        "zh-TW": "從低姿態撐起身體站好",
+        "en": "Push up from a low pose and stand",
+        "ja": "低い姿勢から体を支えて立ち上がる",
+        "ko": "낮은 자세에서 몸을 짚고 일어서기",
+        "ru": "Подняться из низкой позы и встать",
+        "es": "Incorporarse desde una postura baja",
+        "pt": "Levantar-se de uma postura baixa"
+      }
+    }
+  ],
+  "runtimeIntegrity": {
+    "compression": "per-asset: none or gzip",
+    "packedHash": "sha256",
+    "decodedHash": "sha256",
+    "decodedFormat": "glb-v2",
+    "actionCardSchema": 1,
+    "sourcePolicy": "official assets reuse static/vrm/animation; local test assets stay gzip-compressed under static/vrm/motion"
+  }
+}

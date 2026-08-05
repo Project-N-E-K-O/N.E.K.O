@@ -1,6 +1,12 @@
 (function() {
   'use strict';
 
+  function normalizeBundledVrmIdleUrl(url) {
+    var value = String(url || '');
+    if (!/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(value)) return url;
+    return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+  }
+
   function ensureNativeJukeboxFacade() {
     if (window.Jukebox) return;
 
@@ -131,7 +137,10 @@
             if (!vrmIdleUrl) {
               vrmIdleUrl = window.lanlan_config && window.lanlan_config.vrmIdleAnimation;
             }
-            await window.vrmManager.playVRMAAnimation(vrmIdleUrl || '/static/vrm/animation/wait03.vrma', {
+            vrmIdleUrl = normalizeBundledVrmIdleUrl(
+              vrmIdleUrl || '/static/vrm/animation/wait03.vrma.gz'
+            );
+            await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
               loop: true,
               isIdle: true
             });

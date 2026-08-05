@@ -4014,7 +4014,7 @@
       if (manager.interaction && typeof manager.interaction.enableMouseTracking === 'function') manager.interaction.enableMouseTracking(true);
       if (manager._cursorFollow && typeof manager._cursorFollow.setEnabled === 'function') manager._cursorFollow.setEnabled(true);
       try {
-        await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+        await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {
           loop: true, immediate: true, isIdle: true
         });
       } catch (animErr) {
@@ -5327,7 +5327,7 @@
       }
       if (typeof manager.playVRMAAnimation === 'function') {
         try {
-          await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+          await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {
             loop: true,
             immediate: true,
             isIdle: true

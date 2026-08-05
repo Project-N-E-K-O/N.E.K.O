@@ -10,6 +10,14 @@ const VRM_IDLE_FPS = 30;
 const VRM_INTERACTIVE_FPS_HOLD_MS = 900;
 const VRM_IDLE_FPS_GOVERNOR_INTERVAL_MS = 300;
 
+function normalizeBundledVrmAnimationPath(animationPath) {
+    const value = String(animationPath || '');
+    if (!/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(value)) {
+        return animationPath;
+    }
+    return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+}
+
 class VRMManager {
     constructor() {
         this.scene = null;
@@ -1318,9 +1326,11 @@ class VRMManager {
         if (!this._animationFrameId) this.startAnimateLoop();
 
         // 获取默认循环动画路径：优先从 options 传入，其次从配置读取，最后使用默认值
-        const DEFAULT_LOOP_ANIMATION = options.idleAnimation ||
-            window.lanlan_config?.vrmIdleAnimation ||
-            '/static/vrm/animation/wait03.vrma';
+        const DEFAULT_LOOP_ANIMATION = normalizeBundledVrmAnimationPath(
+            options.idleAnimation ||
+                window.lanlan_config?.vrmIdleAnimation ||
+                '/static/vrm/animation/wait03.vrma.gz'
+        );
 
         // 确保 animation 模块已初始化
         if (!this.animation) {
