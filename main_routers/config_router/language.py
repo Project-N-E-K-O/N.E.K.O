@@ -31,6 +31,43 @@ from utils.preferences import (
 )
 
 
+async def _rollback_ui_language(previous_language: str | None) -> bool:
+    """Best-effort rollback that never hides the original sync failure."""
+    try:
+        return bool(await asave_ui_language_override(previous_language))
+    except Exception:
+        logger.exception("界面语言回滚异常")
+        return False
+
+
+def _ui_language_sync_failure_payload(
+    *,
+    error: str,
+    normalized: str,
+    previous_ui_language: str | None,
+    rollback_succeeded: bool,
+    character_name: str | None = None,
+    conversation_sync: dict | None = None,
+) -> dict:
+    """Describe both persisted sides when UI rollback could not be completed."""
+    payload = {
+        "success": False,
+        "error": error,
+        "language": normalized,
+        "character_name": character_name,
+        "conversation_sync": conversation_sync,
+        "ui_language": previous_ui_language if rollback_succeeded else normalized,
+        "ui_language_rollback_succeeded": rollback_succeeded,
+    }
+    if not rollback_succeeded:
+        payload.update({
+            "partial_success": True,
+            "partial_persistence": True,
+            "error": f"{error}，且界面语言回滚失败",
+        })
+    return payload
+
+
 @router.get("/steam_language")
 async def get_steam_language():
     """Return Steam language and GeoIP hints for frontend locale setup.
@@ -239,16 +276,19 @@ async def set_ui_language_api(request: Request):
                     and conversation_sync.get("language") == normalized
                 )
                 if not locale_was_synced:
-                    await asave_ui_language_override(previous_ui_language)
+                    rollback_succeeded = await _rollback_ui_language(
+                        previous_ui_language,
+                    )
                     return JSONResponse(
-                        {
-                            "success": False,
-                            "error": conversation_sync.get("error")
+                        _ui_language_sync_failure_payload(
+                            error=conversation_sync.get("error")
                             or "同步语言偏好失败",
-                            "language": normalized,
-                            "character_name": current_name,
-                            "conversation_sync": conversation_sync,
-                        },
+                            normalized=normalized,
+                            previous_ui_language=previous_ui_language,
+                            rollback_succeeded=rollback_succeeded,
+                            character_name=current_name,
+                            conversation_sync=conversation_sync,
+                        ),
                         status_code=500,
                     )
 
@@ -262,9 +302,14 @@ async def set_ui_language_api(request: Request):
             "conversation_sync": conversation_sync,
         }
     except Exception:
-        await asave_ui_language_override(previous_ui_language)
+        rollback_succeeded = await _rollback_ui_language(previous_ui_language)
         logger.exception("同步界面语言和语言偏好失败")
         return JSONResponse(
-            {"success": False, "error": "同步语言设置失败"},
+            _ui_language_sync_failure_payload(
+                error="同步语言设置失败",
+                normalized=normalized,
+                previous_ui_language=previous_ui_language,
+                rollback_succeeded=rollback_succeeded,
+            ),
             status_code=503,
         )
