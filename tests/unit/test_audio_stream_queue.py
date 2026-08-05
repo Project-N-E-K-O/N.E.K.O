@@ -3231,25 +3231,58 @@ async def test_addressed_ack_dedupes_against_who_actually_got_it():
     assert len(requester.sent) == 1, "the requester must be acked exactly once"
 
 
-async def test_route_override_reports_blocked_over_a_live_healthy_route():
-    # Codex P2. For a requester that LOST the voice lease while it waited, the
-    # live route belongs to the new holder -- and it may well be healthy by
-    # then. Reporting it opens a microphone on a window whose PCM the server
-    # discards as superseded: another mic that is on and reaching nobody.
-    # Override rather than suppress, or the requester hangs to its own timeout.
-    recorder, _chat = _fake_socket_pair()
+async def test_route_override_reaches_only_the_addressed_requester():
+    # Codex P2, twice over. For a requester that LOST the voice lease while it
+    # waited, the live route belongs to the new holder -- and it may well be
+    # healthy by then. Reporting it opens a microphone on a window whose PCM the
+    # server discards as superseded, so that requester needs a blocked verdict
+    # (override rather than suppress, or it hangs to its own timeout).
+    #
+    # But the verdict is true of the REQUESTER, not of the session: the new
+    # holder is on the very same fan-out, and a window with no start pending
+    # latches any blocked route it sees. Broadcasting the override would
+    # fail-close the microphone of the window that legitimately owns it.
+    requester, new_holder = _fake_socket_pair()
     mgr = _make_routable_audio_manager(True)
-    mgr._begin_voice_input_connection("socket-a")
+    mgr._begin_voice_input_connection("socket-c")
     _authorize_core_lease(mgr)
-    mgr._set_voice_input_websocket("socket-a", recorder)
-    mgr.websocket = recorder
+    mgr._set_voice_input_websocket("socket-c", new_holder)
+    mgr.websocket = new_holder
     mgr._set_microphone_route("independent")
 
     await LLMSessionManager.send_session_started(
-        mgr, "audio", request_id="w4-2", microphone_route_override="blocked"
+        mgr,
+        "audio",
+        request_id="w4-2",
+        also_notify=requester,
+        microphone_route_override="blocked",
     )
 
-    assert json.loads(recorder.sent[0])["microphone_route"] == "blocked"
+    assert json.loads(requester.sent[0])["microphone_route"] == "blocked"
+    assert [json.loads(x)["microphone_route"] for x in new_holder.sent] == [
+        "independent"
+    ], "the live route must stay intact for everyone but the requester"
+
+
+async def test_route_override_travels_when_the_requester_is_the_display_socket():
+    # The requester is simply the newest connection often enough, and then the
+    # display plane is its ONLY copy -- the addressed send would dedupe itself
+    # away. The override has to ride that plane in exactly that case.
+    requester, _other = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr.websocket = requester
+    mgr._voice_lease_connection_id = ""
+    mgr._set_microphone_route("independent")
+
+    await LLMSessionManager.send_session_started(
+        mgr,
+        "audio",
+        request_id="w4-3",
+        also_notify=requester,
+        microphone_route_override="blocked",
+    )
+
+    assert [json.loads(x)["microphone_route"] for x in requester.sent] == ["blocked"]
 
 
 async def test_addressed_ack_is_not_a_second_copy_for_the_same_socket():

@@ -550,9 +550,14 @@ class NotifyMixin:
         # would open a microphone on a window whose PCM the server now discards
         # as superseded. It overrides rather than suppresses so the requester
         # still gets an ack and settles its start instead of hanging.
-        route_mode = str(
-            microphone_route_override or getattr(self, "_asr_route_mode", "") or ""
-        )
+        #
+        # It applies to ``also_notify`` ONLY, never to the fan-out (Codex P2).
+        # "This route is unusable" is true of the superseded requester, not of
+        # the session: the new lease holder is on the very same fan-out, and a
+        # window with no start pending latches any blocked verdict it sees --
+        # so broadcasting the override would fail-close the microphone of the
+        # window that legitimately owns it.
+        route_mode = str(getattr(self, "_asr_route_mode", "") or "")
         if route_mode:
             # Omitted when unknown rather than defaulted: a manager without the
             # ASR mixin should keep today's behaviour, not have every audio
@@ -564,10 +569,27 @@ class NotifyMixin:
         # by the time the addressed send runs, and a socket that already got the
         # payload would then look unserved (CodeRabbit).
         delivered_to = []
+
+        def _addressed(base: dict) -> dict:
+            # The requester's copy, carrying the override when there is one.
+            copy = dict(base)
+            if microphone_route_override:
+                copy["microphone_route"] = microphone_route_override
+            return copy
+
         display_socket = self.websocket
         try:
             if display_socket and hasattr(display_socket, 'client_state') and display_socket.client_state == display_socket.client_state.CONNECTED:
-                data = json.dumps(payload)
+                # The requester can BE the display socket (it is simply the
+                # newest connection), and then this is its only copy -- so the
+                # override has to travel on this plane too when it is the one
+                # carrying it. Every other window on this plane gets the real
+                # route.
+                data = json.dumps(
+                    _addressed(payload)
+                    if also_notify is not None and display_socket is also_notify
+                    else payload
+                )
                 try:
                     await display_socket.send_text(data)
                     delivered_to.append(display_socket)
@@ -635,7 +657,7 @@ class NotifyMixin:
                 # its promise until the 15s timeout, and that timeout's end_session
                 # tears down the session that just started.
                 await self._send_to_socket_if_new(
-                    also_notify, dict(payload), delivered_to
+                    also_notify, _addressed(payload), delivered_to
                 )
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.

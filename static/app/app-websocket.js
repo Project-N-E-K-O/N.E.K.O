@@ -4019,7 +4019,7 @@
                     S.suppressAssistantStreamUntilNextSession = false;
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
-                    S.voiceStartPending = false;
+                    if (_ackAnswersThisWindow) S.voiceStartPending = false;
                     // NOTE: the fail-closed latch is deliberately NOT cleared
                     // here. lifecycle.py runs _start_independent_asr_if_enabled
                     // BEFORE send_session_started, so this ack always arrives

@@ -5680,6 +5680,19 @@ def test_session_started_only_settles_the_start_it_answers():
     assert "_ackAnswersThisWindow && S.sessionStartedResolver" in timeout_clear
     capture = next(l for l in tail.splitlines() if "var _ackedResolver =" in l)
     assert "_ackAnswersThisWindow ?" in capture
+    # voiceStartPending is a start-lifecycle flag, not a session fact:
+    # app-auto-goodbye.js reads it as "a voice start is in flight", so clearing
+    # it on somebody else's ack lets goodbye/idle run through a legitimate mic
+    # start that is still waiting for its own ack (Codex P2).
+    pending_clear = next(
+        l for l in tail.splitlines() if "S.voiceStartPending = false;" in l
+    )
+    assert "_ackAnswersThisWindow" in pending_clear
+    # Session facts stay ungated -- the backend really did start a session.
+    session_facts = next(
+        l for l in tail.splitlines() if "S.voiceChatActive = response.input_mode" in l
+    )
+    assert "_ackAnswersThisWindow" not in session_facts
 
 
 def test_session_started_ack_latches_a_blocked_microphone_route():
