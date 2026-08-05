@@ -153,7 +153,9 @@
         }
 
         catalog(locale) {
-            return this.assets.map(function (asset) {
+            return this.assets.filter(function (asset) {
+                return asset.disabled !== true && !DISABLED_INTENTS.has(asset.m);
+            }).map(function (asset) {
                 const suffix = asset.compression === 'gzip' ? '.gz' : '';
                 return {
                     id: asset.id,
@@ -837,7 +839,8 @@
             return this.enqueuePlan(plan, context);
         }
 
-        cancel(reason) {
+        cancel(reason, options) {
+            const settings = options || {};
             this._clearIdleSwitch();
             this.queueGeneration += 1;
             this._releaseWaiters();
@@ -848,10 +851,12 @@
             // Crossfade back to the already selected base immediately. Stopping
             // the mixer first exposes the model's bind pose, while selecting a
             // new rest clip creates the visible "extra pose" users reported.
-            void this._resumeBase(generation, 'cancel:' + this.sequence).catch((error) => {
-                this.metrics.failures += 1;
-                console.warn('[NekoMotion] cancel recovery failed:', error);
-            });
+            if (settings.resume !== false) {
+                void this._resumeBase(generation, 'cancel:' + this.sequence).catch((error) => {
+                    this.metrics.failures += 1;
+                    console.warn('[NekoMotion] cancel recovery failed:', error);
+                });
+            }
             emit('neko-motion-playback', {
                 status: 'cancelled',
                 reason: String(reason || 'cancel')

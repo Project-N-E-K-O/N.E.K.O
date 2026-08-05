@@ -80,8 +80,7 @@
                         var motionCurrentName = I.getCurrentLanlanName();
                         if (
                             motionDetail.lanlan_name
-                            && motionCurrentName
-                            && motionDetail.lanlan_name !== motionCurrentName
+                            && (!motionCurrentName || motionDetail.lanlan_name !== motionCurrentName)
                         ) break;
                         window.dispatchEvent(new CustomEvent('neko:motion-lifecycle-relay', {
                             detail: event.data

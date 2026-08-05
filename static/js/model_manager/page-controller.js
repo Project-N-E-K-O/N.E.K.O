@@ -994,6 +994,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let vrmManager = null;
     let vrmAnimations = []; // VRM 动作列表
     let vrmMotionCatalogPlayer = null; // 动作清单播放器（含压缩动作完整性校验）
+    let vrmMotionCatalogLoadPromise = null;
     let persistedVrmAnimationValue = null; // 后端可持久化的传统 VRMA 路径
     let vrmMotionLocaleRefreshTimer = null;
     let animationsLoaded = false; // 标记VRM动作列表是否已加载
@@ -3453,10 +3454,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function loadVrmMotionCatalog() {
         if (typeof window.NekoMotionPlayer !== 'function') return [];
-        if (!vrmMotionCatalogPlayer) {
-            vrmMotionCatalogPlayer = new window.NekoMotionPlayer();
-            await vrmMotionCatalogPlayer.load();
+        if (!vrmMotionCatalogPlayer && !vrmMotionCatalogLoadPromise) {
+            const candidate = new window.NekoMotionPlayer();
+            vrmMotionCatalogLoadPromise = candidate.load().then(() => {
+                vrmMotionCatalogPlayer = candidate;
+                return candidate;
+            }).finally(() => {
+                vrmMotionCatalogLoadPromise = null;
+            });
         }
+        if (!vrmMotionCatalogPlayer) await vrmMotionCatalogLoadPromise;
         return vrmMotionCatalogPlayer.catalog(currentMotionLocale());
     }
 
@@ -3469,32 +3476,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, 30);
     }
 
+    function normalizeBundledVrmAnimationUrl(url, availableValues) {
+        const value = String(url || '');
+        if (!value.endsWith('.vrma') || !value.startsWith('/static/vrm/animation/')) return value;
+        const compressed = value + '.gz';
+        return availableValues && availableValues.has(compressed) ? compressed : value;
+    }
+
     function mergeVrmAnimationLists(importedAnimations, catalogAnimations) {
         const result = [];
         const byPath = new Map();
-        const bySourceTitle = new Map();
-        const sourceTitleKey = (animation) => {
-            const raw = String(animation?.filename || animation?.name
-                || animation?.path || animation?.url || '');
-            let leaf = raw.split('/').pop() || raw;
-            try { leaf = decodeURIComponent(leaf); } catch { /* 保留原始标题 */ }
-            return leaf.replace(/\.vrma(?:\.gz)?$/i, '').trim().toLocaleLowerCase('en-US');
-        };
         const add = (animation) => {
             if (!animation) return;
             const path = String(animation.path || animation.url || '');
             if (!path) return;
-            const titleKey = sourceTitleKey(animation);
-            const existing = byPath.get(path) || (titleKey ? bySourceTitle.get(titleKey) : null);
+            const existing = byPath.get(path);
             if (existing) {
                 Object.assign(existing, animation, { path, url: path });
                 byPath.set(path, existing);
-                if (titleKey) bySourceTitle.set(titleKey, existing);
                 return;
             }
             const normalized = Object.assign({}, animation, { path, url: path });
             byPath.set(path, normalized);
-            if (titleKey) bySourceTitle.set(titleKey, normalized);
             result.push(normalized);
         };
         (Array.isArray(importedAnimations) ? importedAnimations : []).forEach(add);
@@ -3571,17 +3574,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // previousValue 是 _no_motion_ sentinel 或空（典型：首次进入页面）→ 回退到已保存动作
                     const savedAnimation = await getSavedVrmAnimationUrl();
                     if (savedAnimation) {
+                        const availableValues = new Set(Array.from(vrmAnimationSelect.options)
+                            .map(option => option.value));
+                        const normalizedSavedAnimation = normalizeBundledVrmAnimationUrl(
+                            savedAnimation,
+                            availableValues
+                        );
                         let matched = Array.from(vrmAnimationSelect.options).find(option =>
-                            option.value === savedAnimation || option.getAttribute('data-path') === savedAnimation);
+                            option.value === normalizedSavedAnimation
+                            || option.getAttribute('data-path') === normalizedSavedAnimation);
                         if (!matched) {
                             // saved 不在当前动作列表（文件被删，或 /api/model/vrm/animations 端点临时遗漏）。
                             // 若就此回落 _no_motion_，下次无关保存会把 vrm_animation 清成 '' 静默丢数据，
                             // 故注入一个选项保留选中态——下拉如实反映已存动作，保存走设值分支原样回传。
-                            let label = savedAnimation.split('/').pop() || savedAnimation;
+                            let label = normalizedSavedAnimation.split('/').pop() || normalizedSavedAnimation;
                             try { label = decodeURIComponent(label); } catch { /* 解码失败则保留原始串 */ }
                             matched = document.createElement('option');
-                            matched.value = savedAnimation;
-                            matched.setAttribute('data-path', savedAnimation);
+                            matched.value = normalizedSavedAnimation;
+                            matched.setAttribute('data-path', normalizedSavedAnimation);
                             matched.setAttribute('data-filename', label);
                             matched.textContent = label;
                             vrmAnimationSelect.appendChild(matched);
@@ -3703,7 +3713,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 无动作选项：停止当前播放的 VRM 动作
             if (selectedValue === '_no_motion_') {
                 lastVrmAnimationSelection = '_no_motion_';
-                if (vrmMotionCatalogPlayer) vrmMotionCatalogPlayer.cancel('model_manager_stop');
+                if (vrmMotionCatalogPlayer) {
+                    vrmMotionCatalogPlayer.cancel('model_manager_stop', { resume: false });
+                }
                 if (vrmManager) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -5062,7 +5074,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     function setSelectedIdleAnimations(containerId, urls) {
         const container = document.getElementById(containerId);
         if (!container) return;
-        const urlSet = new Set(Array.isArray(urls) ? urls : (urls ? [urls] : []));
+        const available = new Set(Array.from(
+            container.querySelectorAll('.idle-animation-options input[type="checkbox"]')
+        ).map(cb => cb.value));
+        const urlSet = new Set((Array.isArray(urls) ? urls : (urls ? [urls] : []))
+            .map(url => normalizeBundledVrmAnimationUrl(url, available)));
         container.querySelectorAll('.idle-animation-options input[type="checkbox"]').forEach(cb => {
             cb.checked = urlSet.has(cb.value);
         });

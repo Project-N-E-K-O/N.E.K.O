@@ -1472,22 +1472,33 @@
                     setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
+                var readyEmotion = 'neutral';
                 if (emotionResult && emotionResult.emotion) {
+                    readyEmotion = emotionResult.emotion;
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
-                    if (assistantTurnId) {
-                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                            turnId: assistantTurnId,
-                            emotion: emotionResult.emotion,
-                            source: 'emotion_analysis'
-                        });
-                    }
+                }
+                if (assistantTurnId) {
+                    emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                        turnId: assistantTurnId,
+                        emotion: readyEmotion,
+                        source: emotionResult && emotionResult.emotion
+                            ? 'emotion_analysis' : 'emotion_analysis_unavailable'
+                    });
                 }
             } catch (emotionError) {
                 if (emotionError.message === '情感分析超时') {
                     console.warn(window.t('console.emotionAnalysisTimeout'));
                 } else {
                     console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
+                }
+                if (assistantTurnId) {
+                    emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                        turnId: assistantTurnId,
+                        emotion: 'neutral',
+                        source: emotionError.message === '情感分析超时'
+                            ? 'emotion_analysis_timeout' : 'emotion_analysis_failed'
+                    });
                 }
             }
         }, 100);

@@ -127,6 +127,8 @@ assert.equal(core.analyzeSpeech('我帮你坐起来。', {
     locale: 'zh-CN', posture: 'lie'
 }).plan.length, 0);
 
+assert.notEqual(intent('Please wait while I check that.', { locale: 'en' }), 'plead');
+
 assert.deepEqual(
     global.NekoMotionText.extractClosedStages('（轻轻点头）好的').map(function (stage) { return stage.raw; }),
     ['轻轻点头']

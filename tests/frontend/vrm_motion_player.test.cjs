@@ -40,6 +40,14 @@ vm.runInThisContext(
     fs.readFileSync(path.join(root, 'static/vrm/vrm-animation.js'), 'utf8'),
     { filename: 'static/vrm/vrm-animation.js' }
 );
+vm.runInThisContext(
+    fs.readFileSync(path.join(root, 'static/vrm/vrm-expression.js'), 'utf8'),
+    { filename: 'static/vrm/vrm-expression.js' }
+);
+vm.runInThisContext(
+    fs.readFileSync(path.join(root, 'static/vrm/vrm-interaction.js'), 'utf8'),
+    { filename: 'static/vrm/vrm-interaction.js' }
+);
 
 function response(body, status) {
     return {
@@ -61,11 +69,12 @@ function response(body, status) {
 
     const zhCatalog = player.catalog('zh-CN');
     const enCatalog = player.catalog('en-US');
-    assert.equal(zhCatalog.length, 75);
+    assert.equal(zhCatalog.length, 74);
     assert.equal(zhCatalog[0].name, '开心地回应喜欢和亲近');
     assert.equal(enCatalog[0].name, 'Happily respond with affection');
     assert.equal(enCatalog[0].path, '/static/vrm/animation/liked.vrma.gz');
     assert.equal(enCatalog[0].systemMotion, true);
+    assert.equal(zhCatalog.some(function (asset) { return asset.id === 'cheer_01'; }), false);
 
     let previewPlan = null;
     player.playPlan = async function (plan) {
@@ -164,6 +173,82 @@ function response(body, status) {
     }, lowPosePlayer.queueGeneration, 'sit-after-prone');
     assert.deepEqual(playedLowPoseIds.slice(-2), ['recover-prone', 'sit']);
     assert.equal(lowPosePlayer.state.posture, 'sit');
+
+    const cancelPlayer = new global.NekoMotionPlayer();
+    let resumedAfterCancel = 0;
+    cancelPlayer._resumeBase = async function () { resumedAfterCancel += 1; return true; };
+    cancelPlayer.cancel('manual-stop', { resume: false });
+    await Promise.resolve();
+    assert.equal(resumedAfterCancel, 0);
+
+    const expression = new global.VRMExpression({});
+    assert.deepEqual(expression._resolveMoodWeights('shy', ['relaxed', 'happy']), {
+        relaxed: 0.55,
+        happy: 0.18
+    });
+    expression.setMoodMap({ shy: ['custom_blush'] });
+    assert.deepEqual(expression._resolveMoodWeights('shy', ['custom_blush', 'happy']), {
+        custom_blush: 1
+    });
+
+    const framing = global.NekoVRMSafeFraming;
+    assert.equal(framing.calculateFramingRatio({
+        minX: 100, maxX: 900, minY: 100, maxY: 900
+    }, 1000, 1000, 50) < 1, true);
+    assert.equal(framing.calculateExpandedFov(30, {
+        minX: -100, maxX: 1100, minY: 0, maxY: 1000
+    }, 1000, 1000, 50, 44) > 30, true);
+
+    const failingAnimation = Object.create(global.VRMAnimation.prototype);
+    const failingVrm = {
+        scene: { uuid: 'failure-scene', traverse() {} },
+        humanoid: { autoUpdateHumanBones: true }
+    };
+    failingAnimation.manager = { currentModel: { vrm: failingVrm } };
+    failingAnimation._playRequestGeneration = 0;
+    failingAnimation._skinnedMeshes = [];
+    failingAnimation._cachedSceneUuid = null;
+    failingAnimation._fadeTimer = null;
+    failingAnimation.currentAction = null;
+    failingAnimation._cleanupOldMixer = function () {};
+    failingAnimation._initLoader = async function () { return {}; };
+    failingAnimation._loadVRMAGltf = async function () { throw new Error('fixture load failure'); };
+    await assert.rejects(
+        failingAnimation.playVRMAAnimation('/broken.vrma'),
+        /fixture load failure/
+    );
+    assert.equal(failingVrm.humanoid.autoUpdateHumanBones, true);
+
+    let finishDelayedLoad;
+    let delayedRequestCurrent = true;
+    let staleRequestPlayed = false;
+    const staleAnimation = Object.create(global.VRMAnimation.prototype);
+    const staleVrm = {
+        scene: { uuid: 'stale-scene', traverse() {} },
+        humanoid: { autoUpdateHumanBones: true }
+    };
+    staleAnimation.manager = { currentModel: { vrm: staleVrm } };
+    staleAnimation._playRequestGeneration = 0;
+    staleAnimation._skinnedMeshes = [];
+    staleAnimation._cachedSceneUuid = null;
+    staleAnimation._fadeTimer = null;
+    staleAnimation.currentAction = null;
+    staleAnimation._cleanupOldMixer = function () {};
+    staleAnimation._initLoader = async function () { return {}; };
+    staleAnimation._loadVRMAGltf = function () {
+        return new Promise(function (resolve) { finishDelayedLoad = resolve; });
+    };
+    staleAnimation._playAction = function () { staleRequestPlayed = true; };
+    const staleRequest = staleAnimation.playVRMAAnimation('/delayed.vrma', {
+        shouldApply() { return delayedRequestCurrent; }
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    delayedRequestCurrent = false;
+    finishDelayedLoad({ userData: { vrmAnimations: [{}] } });
+    assert.equal(await staleRequest, false);
+    assert.equal(staleRequestPlayed, false);
+    assert.equal(staleVrm.humanoid.autoUpdateHumanBones, true);
 
     console.log('VRM motion player: OK (integrity and low-pose transitions)');
 })().catch(function (error) {

@@ -100,6 +100,7 @@ class VRMExpression {
         };
 
         this.currentWeights = {};
+        this.customMoodKeys = new Set();
     }
 
     /**
@@ -131,6 +132,7 @@ class VRMExpression {
                 }
                 // 合并配置，保留默认值作为后备
                 this.moodMap = { ...this.moodMap, ...normalizedConfig };
+                Object.keys(normalizedConfig).forEach(key => this.customMoodKeys.add(key));
                 console.log(`[VRM Expression] 已加载模型 ${modelName} 的情感映射配置`, this.moodMap);
             }
         } catch (error) {
@@ -192,6 +194,18 @@ class VRMExpression {
             return weights;
         }
 
+        // Model-specific mappings are an explicit user choice and must take
+        // priority over the built-in composite fallback. Without this lookup,
+        // extended moods such as shy/cry/tired ignored a configured expression
+        // whenever the model did not expose a same-named native preset.
+        if (this.customMoodKeys.has(mood)) {
+            const configuredExpression = this._findExpression(expressionNames, this.moodMap[mood] || []);
+            if (configuredExpression) {
+                weights[configuredExpression] = 1.0;
+                return weights;
+            }
+        }
+
         const nativeCandidates = this.nativeExtendedMoodMap[mood];
         if (nativeCandidates) {
             const nativeExpression = this._findExpression(expressionNames, nativeCandidates);
@@ -229,6 +243,7 @@ class VRMExpression {
                 }
             }
             this.moodMap = { ...this.moodMap, ...normalizedConfig };
+            Object.keys(normalizedConfig).forEach(key => this.customMoodKeys.add(key));
             console.log('[VRM Expression] 已更新情感映射配置', this.moodMap);
         }
     }

@@ -840,10 +840,15 @@ Object.assign(window.Jukebox, {
         if (!vrmIdleUrl) {
           vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma.gz';
         }
+        const restoreRequestId = ++Jukebox.State.playRequestId;
         await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
           loop: true,
-          isIdle: true
+          isIdle: true,
+          shouldApply: function() {
+            return restoreRequestId === Jukebox.State.playRequestId;
+          }
         });
+        if (restoreRequestId !== Jukebox.State.playRequestId) return;
         console.log('[Jukebox] VRM 待机动画已恢复');
       } catch (error) {
         console.warn('[Jukebox] VRM 待机动画恢复失败:', error);

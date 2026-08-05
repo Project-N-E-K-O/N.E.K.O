@@ -21,6 +21,7 @@ manifest.assets.forEach(function (asset) {
     assert.equal(asset.license, 'Apache-2.0', asset.id);
     assert.equal(asset.compression, 'gzip', asset.id);
     assert.equal(asset.card.descriptionStatus, 'human-verified', asset.id);
+    assert.equal(['a', 'b', 'l', 'r'].includes(asset.h), true, asset.id + ':handedness');
     assert.equal(asset.src[0], 'static/vrm/' + asset.f + '.gz', asset.id);
     requiredLocales.forEach(function (locale) {
         assert.equal(typeof asset.names[locale], 'string', asset.id + ':' + locale);
@@ -72,8 +73,17 @@ assert.equal(websocketSource.includes("new BroadcastChannel('neko_motion_lifecyc
 assert.match(websocketSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(relaySource, /case 'motion_lifecycle'/);
 assert.match(relaySource, /neko:motion-lifecycle-relay/);
+assert.match(relaySource, /!motionCurrentName \|\| motionDetail\.lanlan_name !== motionCurrentName/);
 assert.equal(runtimeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
 assert.match(runtimeSource, /neko:motion-lifecycle-relay/);
+assert.match(runtimeSource, /window\.__nekoMotionOwnsVrmPlayback = false/);
+assert.match(runtimeSource, /releasePlaybackOwnership\(\)/);
+assert.match(runtimeSource, /activeTurn === turn/);
+assert.match(runtimeSource, /ignored stale assistant turn end/);
+assert.equal(runtimeSource.includes("window.dispatchEvent(new CustomEvent(message.eventName"), false);
+assert.match(runtimeSource, /await initialize\(\)/);
+assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
+assert.match(runtimeSource, /casualTalkPending/);
 
 const modelManagerSource = fs.readFileSync(
     path.join(root, 'static/js/model_manager/page-controller.js'),
@@ -84,6 +94,9 @@ assert.match(modelManagerSource, /new window\.NekoMotionPlayer\(\)/);
 assert.match(modelManagerSource, /mergeVrmAnimationLists/);
 assert.match(modelManagerSource, /data-motion-asset-id/);
 assert.match(modelManagerSource, /playSelectedVrmAnimationOption/);
+assert.match(modelManagerSource, /vrmMotionCatalogLoadPromise/);
+assert.match(modelManagerSource, /cancel\('model_manager_stop', \{ resume: false \}\)/);
+assert.match(modelManagerSource, /normalizeBundledVrmAnimationUrl/);
 assert.match(modelManagerTemplate, /static\/vrm\/motion\/player\.js/);
 
 console.log('VRM motion policy and source integrity: OK (75 gzip assets)');

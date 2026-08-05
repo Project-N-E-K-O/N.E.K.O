@@ -29,6 +29,7 @@ class VRMAnimation {
         this.currentAction = null;
         this.vrmaIsPlaying = false;
         this._loaderPromise = null;
+        this._playRequestGeneration = 0;
         this._fadeTimer = null;
         this._springBoneRestoreTimer = null;
         // crossfade 时给每个 outgoing action schedule 的 stop 定时器。Set 允许
@@ -645,6 +646,17 @@ class VRMAnimation {
     }
 
     async playVRMAAnimation(vrmaPath, options = {}) {
+        const requestGeneration = ++this._playRequestGeneration;
+        const shouldApply = typeof options.shouldApply === 'function'
+            ? options.shouldApply : function () { return true; };
+        const requestIsCurrent = () => requestGeneration === this._playRequestGeneration && shouldApply();
+        const abortStaleRequest = () => {
+            if (requestIsCurrent()) return false;
+            if (requestGeneration === this._playRequestGeneration && !this.currentAction) {
+                this._restorePhysics();
+            }
+            return true;
+        };
         const vrm = this.manager.currentModel?.vrm;
         if (!vrm) {
             const error = new Error('没有加载的 VRM 模型');
@@ -658,6 +670,7 @@ class VRMAnimation {
         }
 
         try {
+            if (abortStaleRequest()) return false;
             // 清除上一次 stopVRMAAnimation 的 fadeOut 定时器，防止它在新动画播放后误杀 action
             if (this._fadeTimer) {
                 clearTimeout(this._fadeTimer);
@@ -674,7 +687,9 @@ class VRMAnimation {
 
             this._cleanupOldMixer(vrm);
             const loader = await this._initLoader();
+            if (abortStaleRequest()) return false;
             const gltf = await this._loadVRMAGltf(loader, vrmaPath);
+            if (abortStaleRequest()) return false;
             const vrmAnimations = gltf.userData?.vrmAnimations;
             if (!vrmAnimations || vrmAnimations.length === 0) {
                 const error = new Error('动画文件加载成功，但没有找到 VRM 动画数据');
@@ -686,7 +701,9 @@ class VRMAnimation {
             const vrmVersion = this._detectVRMVersion(vrm);
             this._ensureNormalizedRootInScene(vrm, vrmVersion);
             await this._createLookAtProxy(vrm);
+            if (abortStaleRequest()) return false;
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
+            if (abortStaleRequest()) return false;
             this._processTracksForVersion(clip, vrmVersion);
             this._normalizeQuaternionTrackSigns(clip);
             // 跨 clip 同半球对齐：必须在 _normalizeQuaternionTrackSigns 之后、
@@ -699,11 +716,17 @@ class VRMAnimation {
 
             const mixerRoot = this._findBestMixerRoot(vrm, clip);
             const newAction = this._createAndConfigureAction(clip, mixerRoot, options);
+            if (abortStaleRequest()) {
+                this._releaseMixerAction(newAction, this.vrmaMixer);
+                return false;
+            }
             this._playAction(newAction, options, vrm);
+            return true;
 
         } catch (error) {
             console.error('[VRM Animation] 播放失败:', error);
-            this.vrmaIsPlaying = false;
+            this.vrmaIsPlaying = !!this.currentAction;
+            if (!this.currentAction) this._restorePhysics();
             throw error;
         }
     }

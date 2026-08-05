@@ -801,7 +801,7 @@
                 const wholeClause = {
                     id: 'whole',
                     index: 0,
-                    raw: normalize(text),
+                    raw: normalize(canonicalZh),
                     relation: 'whole',
                     role: 'event'
                 };

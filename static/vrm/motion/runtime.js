@@ -1,10 +1,9 @@
 (function () {
     'use strict';
 
-    // Declare playback ownership before VRM model initialization. The official
-    // multi-idle rotator otherwise injects a new idle at every loop boundary or
-    // after its 20-second fallback timer.
-    window.__nekoMotionOwnsVrmPlayback = true;
+    // Ownership is acquired only after the catalog is ready. A failed startup
+    // must not leave the official idle controller permanently disabled.
+    window.__nekoMotionOwnsVrmPlayback = false;
 
     const SEMANTICS_URL = '/static/vrm/motion/semantics.json';
     const POLL_INTERVAL_MS = 120;
@@ -73,7 +72,7 @@
         bufferRecoveredTurns: 0, conversationalFallbacks: 0,
         bridgeMessages: 0, duplicateStartsIgnored: 0,
         coalescedTurnEnds: 0, casualTalkSkipped: 0,
-        casualTalkSuppressedByEmotion: 0
+        casualTalkSuppressedByEmotion: 0, processingFailures: 0
     };
 
     function configuredMode() {
@@ -91,6 +90,21 @@
             return true;
         }
         return false;
+    }
+
+    function acquirePlaybackOwnership() {
+        window.__nekoMotionOwnsVrmPlayback = true;
+        stopOfficialIdleRotation();
+    }
+
+    function releasePlaybackOwnership() {
+        window.__nekoMotionOwnsVrmPlayback = false;
+        const configured = window.lanlan_config || {};
+        const idleAnimations = configured.vrmIdleAnimations || configured.vrm_idle_animations;
+        if (vrmReady() && Array.isArray(idleAnimations) && idleAnimations.length
+            && typeof window._startVrmIdleRotation === 'function') {
+            window._startVrmIdleRotation(idleAnimations);
+        }
     }
 
     function currentLocale() {
@@ -331,7 +345,7 @@
             await player.load();
             core.registerActionCards(player.assets);
             await resolveCharacterProfile();
-            stopOfficialIdleRotation();
+            acquirePlaybackOwnership();
             if (vrmReady()) {
                 await player.enterRest({
                     profile: characterProfile(),
@@ -344,6 +358,7 @@
             return true;
         })().catch(function (error) {
             console.error('[NekoMotion] initialization failed:', error);
+            releasePlaybackOwnership();
             readyPromise = null;
             return false;
         });
@@ -360,8 +375,25 @@
         if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
     }
 
+    function isCurrentTurn(turn) {
+        return !!turn && activeTurn === turn;
+    }
+
+    function queueTurnTask(turn, label, task) {
+        if (!turn) return Promise.resolve(false);
+        turn.processing = Promise.resolve(turn.processing).catch(function (error) {
+            metrics.processingFailures += 1;
+            console.warn('[NekoMotion] recovered rejected turn task:', label, error);
+        }).then(task).catch(function (error) {
+            metrics.processingFailures += 1;
+            console.warn('[NekoMotion] turn task failed:', label, error);
+            return false;
+        });
+        return turn.processing;
+    }
+
     async function processStage(stage, turn) {
-        if (!core || !player || !vrmReady()) return;
+        if (!core || !player || !vrmReady() || turn && !isCurrentTurn(turn)) return;
         const result = core.analyze(stage.raw, {
             locale: currentLocale(),
             officialEmotion: turn && turn.officialEmotion || '',
@@ -398,6 +430,7 @@
             .find(function (value) { return value && normalizeEmotion(value) !== 'neutral'; });
         if (semanticEmotion) updatePersistentEmotion(semanticEmotion, 'stage_semantic');
         metrics.plans += 1;
+        if (turn && !isCurrentTurn(turn)) return;
         console.info('[NekoMotion] playing', plan.map(function (item) { return item.intent; }).join(','));
         const context = { seed: turn && turn.id + ':' + stage.id };
         if (turn && !turn.playerStarted) {
@@ -408,16 +441,28 @@
         }
     }
 
-    async function processSpeechFallback(turn) {
-        if (!turn || turn.speechProcessed || !core || !player || !vrmReady()) return;
-        turn.speechProcessed = true;
+    async function processSpeechFallback(turn, casualOnly) {
+        casualOnly = casualOnly === true;
+        if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return;
+        if (casualOnly && (!turn.casualTalkPending || turn.casualTalkFinalized)) return;
+        if (!casualOnly && turn.speechProcessed) return;
+        if (!casualOnly) turn.speechProcessed = true;
         // Closed stage directions are handled as soon as their bracket closes;
         // visible prose is still meaningful and is analyzed at turn end. Only an
         // intent already played from brackets is removed, so “(yawns) I will lie
         // down to sleep” can progress from yawn -> sleep without replaying either.
         const text = String(turn.capturedText || '');
         if (!text.trim()) return;
-        const result = core.analyzeSpeech(text, {
+        const result = casualOnly ? {
+            raw: text,
+            locale: currentLocale(),
+            canonicalZh: '',
+            clauses: [],
+            plan: [],
+            tokenUsage: { input: 0, output: 0, cached: 0, total: 0 },
+            modelUsed: false,
+            source: 'assistant:late-conversation-fallback'
+        } : core.analyzeSpeech(text, {
             locale: currentLocale(),
             officialEmotion: turn.officialEmotion || '',
             profilePreset: characterProfile().preset || '',
@@ -430,8 +475,14 @@
         if (!plan.length && turn.explicitPlanCount === 0) {
             const posture = player.stats().posture;
             const officialEmotion = normalizeEmotion(turn.officialEmotion);
-            const talkEmotionAllowed = turn.emotionReady
-                && !['sad', 'cry', 'shy', 'fearful', 'tired', 'surprised', 'disgusted'].includes(officialEmotion);
+            if (!turn.emotionReady) {
+                turn.casualTalkPending = true;
+                return;
+            }
+            turn.casualTalkPending = false;
+            turn.casualTalkFinalized = true;
+            const talkEmotionAllowed = !['sad', 'cry', 'shy', 'fearful', 'tired', 'surprised', 'disgusted']
+                .includes(officialEmotion);
             if (!talkEmotionAllowed) {
                 metrics.casualTalkSuppressedByEmotion += 1;
             } else if (posture === 'stand' || posture === 'sit') {
@@ -488,6 +539,7 @@
             .find(function (value) { return value && normalizeEmotion(value) !== 'neutral'; });
         if (semanticEmotion) updatePersistentEmotion(semanticEmotion, 'speech_semantic');
         metrics.plans += 1;
+        if (!isCurrentTurn(turn)) return;
         console.info('[NekoMotion] playing inferred speech motion', plan.map(function (item) { return item.intent; }).join(','));
         turn.playerStarted = true;
         turn.speechIntents = Array.from(new Set(
@@ -497,7 +549,7 @@
     }
 
     async function processEmotionBodyFallback(turn, update) {
-        if (!turn || !update || !update.changed || !player || !vrmReady()) return;
+        if (!turn || !update || !update.changed || !player || !vrmReady() || !isCurrentTurn(turn)) return;
         const intent = EMOTION_BODY_INTENT[update.emotion];
         if (!intent || turn.explicitPlanCount > 0 || turn.bodyEmotionPlayed === update.emotion) return;
         if (Array.isArray(turn.speechIntents) && turn.speechIntents.includes(intent)) return;
@@ -521,10 +573,36 @@
         else await player.playPlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
     }
 
+    function processUnseenStages(turn) {
+        if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return Promise.resolve(false);
+        const stages = window.NekoMotionText.extractClosedStages(turn.capturedText || '');
+        stages.forEach(function (stage) {
+            if (turn.seen.has(stage.id)) return;
+            turn.seen.add(stage.id);
+            queueTurnTask(turn, 'closed-stage:' + stage.id, function () {
+                return processStage(stage, turn);
+            });
+        });
+        return turn.processing;
+    }
+
+    async function processUnseenStagesDirect(turn) {
+        if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return false;
+        const stages = window.NekoMotionText.extractClosedStages(turn.capturedText || '');
+        for (const stage of stages) {
+            if (turn.seen.has(stage.id)) continue;
+            turn.seen.add(stage.id);
+            await processStage(stage, turn);
+            if (!isCurrentTurn(turn)) return false;
+        }
+        return true;
+    }
+
     function scanTurnText() {
         if (!core || !player || !vrmReady()) return;
         const localText = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
-        const text = bridgedText || localText;
+        const useBridgeText = activeTurn && String(activeTurn.source || '').startsWith('bridge');
+        const text = useBridgeText ? bridgedText : localText;
         if (!text) return;
         if (!activeTurn || activeTurn.ended && text !== activeTurn.capturedText) {
             beginTurn(window._nekoAssistantTurnId || 'buffer-' + Date.now(), 'buffer');
@@ -548,15 +626,7 @@
         activeTurn.lastText = text;
         activeTurn.lastTextAt = Date.now();
         activeTurn.capturedText = text;
-        const stages = window.NekoMotionText.extractClosedStages(text);
-        stages.forEach(function (stage) {
-            if (activeTurn.seen.has(stage.id)) return;
-            activeTurn.seen.add(stage.id);
-            const turn = activeTurn;
-            turn.processing = turn.processing.then(function () {
-                return processStage(stage, turn);
-            });
-        });
+        void processUnseenStages(activeTurn);
     }
 
     function beginTurn(turnId, source, userText) {
@@ -584,6 +654,8 @@
             explicitPlanCount: 0,
             explicitIntents: [],
             speechProcessed: false,
+            casualTalkPending: false,
+            casualTalkFinalized: false,
             speechIntents: [],
             bodyEmotionPlayed: null,
             finishTimer: null,
@@ -610,19 +682,26 @@
         }
         turn.ended = true;
         turn.endSource = source || 'lifecycle';
-        lastFinishedTurn = {
-            id: String(turn.id || ''),
-            text: String(turn.capturedText || ''),
-            at: Date.now()
-        };
-        turn.processing = turn.processing
-            .then(function () { return waitForOfficialEmotion(turn); })
-            .then(function () { return processSpeechFallback(turn); })
-            .then(function () {
-                if (player && typeof player.resumeIdleCountdown === 'function') {
-                    player.resumeIdleCountdown('assistant-turn-finished:' + turn.id);
-                }
-            });
+        if (isCurrentTurn(turn)) {
+            lastFinishedTurn = {
+                id: String(turn.id || ''),
+                text: String(turn.capturedText || ''),
+                at: Date.now()
+            };
+        }
+        queueTurnTask(turn, 'finish-turn:' + turn.id, async function () {
+            const ready = await initialize();
+            if (!ready || !isCurrentTurn(turn)) return false;
+            await processUnseenStagesDirect(turn);
+            await waitForOfficialEmotion(turn);
+            if (!isCurrentTurn(turn)) return false;
+            await processSpeechFallback(turn);
+            if (isCurrentTurn(turn) && player && typeof player.resumeIdleCountdown === 'function') {
+                player.resumeIdleCountdown('assistant-turn-finished:' + turn.id);
+            }
+            if (String(turn.source || '').startsWith('bridge')) bridgedText = '';
+            return true;
+        });
     }
 
     function scheduleFinishTurn(turn, source) {
@@ -638,39 +717,41 @@
     }
 
     function startObservedTurn(event) {
-        const turnId = event && event.detail && event.detail.turnId;
-        const userText = event && event.detail && event.detail.userText;
+        const detail = event && event.detail || {};
+        const turnId = detail.turnId;
+        const userText = detail.userText;
+        const bridgeEvent = detail.via === 'motion-lifecycle-bridge';
+        if (!bridgeEvent) bridgedText = '';
+        const mode = refreshMode();
+        if (mode !== 'vrm') {
+            metrics.nonVrmTurns += 1;
+            console.info('[NekoMotion] ignored assistant turn because avatar mode is', mode);
+            return;
+        }
+        const localText = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+        const candidateText = bridgeEvent ? bridgedText : localText;
+        const duplicateId = turnId && lastFinishedTurn && String(turnId) === lastFinishedTurn.id;
+        const duplicateStaleBuffer = candidateText && lastFinishedTurn
+            && candidateText === lastFinishedTurn.text
+            && Date.now() - lastFinishedTurn.at < 2500;
+        if (activeTurn && activeTurn.ended && (duplicateId || duplicateStaleBuffer)) {
+            metrics.duplicateStartsIgnored += 1;
+            console.info('[NekoMotion] ignored duplicate assistant turn start');
+            return;
+        }
+        if (activeTurn && !activeTurn.ended && activeTurn.capturedText) {
+            if (turnId) activeTurn.id = String(turnId);
+            activeTurn.source = bridgeEvent ? 'bridge' : 'lifecycle';
+            if (userText && !activeTurn.userText) activeTurn.userText = String(userText).slice(0, 1000);
+        } else {
+            beginTurn(turnId, bridgeEvent ? 'bridge' : 'lifecycle', userText);
+        }
+        const turn = activeTurn;
         void initialize().then(function (ready) {
             if (!ready) return;
-            const mode = refreshMode();
-            if (mode !== 'vrm') {
-                metrics.nonVrmTurns += 1;
-                console.info('[NekoMotion] ignored assistant turn because avatar mode is', mode);
-                return;
-            }
-            const candidateText = bridgedText || (typeof window._geminiTurnFullText === 'string'
-                ? window._geminiTurnFullText : '');
-            const duplicateId = turnId && lastFinishedTurn
-                && String(turnId) === lastFinishedTurn.id;
-            const duplicateStaleBuffer = candidateText && lastFinishedTurn
-                && candidateText === lastFinishedTurn.text
-                && Date.now() - lastFinishedTurn.at < 2500;
-            if (activeTurn && activeTurn.ended && (duplicateId || duplicateStaleBuffer)) {
-                metrics.duplicateStartsIgnored += 1;
-                console.info('[NekoMotion] ignored duplicate assistant turn start');
-                return;
-            }
+            if (!isCurrentTurn(turn)) return;
             if (typeof player.noteActivity === 'function') {
                 player.noteActivity('assistant-turn:' + String(turnId || Date.now()));
-            }
-            if (activeTurn && !activeTurn.ended && activeTurn.capturedText) {
-                if (turnId) activeTurn.id = String(turnId);
-                activeTurn.source = 'lifecycle';
-                if (userText && !activeTurn.userText) {
-                    activeTurn.userText = String(userText).slice(0, 1000);
-                }
-            } else {
-                beginTurn(turnId, 'lifecycle', userText);
             }
             maintainPersistentEmotion();
             if (!vrmReady()) {
@@ -678,9 +759,80 @@
                 console.info('[NekoMotion] assistant turn accepted; waiting for VRM model readiness');
                 return;
             }
+            if (turn.ended) return;
             console.info('[NekoMotion] assistant turn accepted in VRM mode');
             scanTurnText();
         });
+    }
+
+    function endObservedTurn(detail, source) {
+        const payload = detail && typeof detail === 'object' ? detail : {};
+        const turnId = payload.turnId;
+        if (turnId && activeTurn && !activeTurn.ended && String(turnId) !== activeTurn.id) {
+            const recoveredBuffer = /^(?:buffer|bridge-buffer)/.test(String(activeTurn.source || ''))
+                && (!payload.text || String(payload.text) === String(activeTurn.capturedText || ''));
+            if (recoveredBuffer) {
+                activeTurn.id = String(turnId);
+                activeTurn.source = source || 'lifecycle';
+            } else {
+                metrics.duplicateStartsIgnored += 1;
+                console.info('[NekoMotion] ignored stale assistant turn end', turnId);
+                return;
+            }
+        }
+        if (activeTurn && activeTurn.ended
+            && (!turnId || String(turnId) === activeTurn.id)) return;
+        if (!activeTurn || activeTurn.ended && (!turnId || String(turnId) !== activeTurn.id)) {
+            beginTurn(turnId, source || 'lifecycle');
+        }
+        const turn = activeTurn;
+        if (typeof payload.text === 'string') {
+            turn.capturedText = payload.text;
+            turn.lastText = payload.text;
+            turn.lastTextAt = Date.now();
+            if (String(source || '').startsWith('bridge')) bridgedText = payload.text;
+        } else {
+            const localText = typeof window._geminiTurnFullText === 'string'
+                ? window._geminiTurnFullText : '';
+            if (localText) {
+                turn.capturedText = localText;
+                turn.lastText = localText;
+                turn.lastTextAt = Date.now();
+            }
+            scanTurnText();
+        }
+        scheduleFinishTurn(turn, source || 'lifecycle');
+    }
+
+    function emotionObserved(detail) {
+        const payload = detail && typeof detail === 'object' ? detail : {};
+        const value = payload.emotion;
+        const turnId = payload.turnId;
+        if (!value) return;
+        if (turnId && activeTurn && String(turnId) !== activeTurn.id) return;
+        latestOfficialEmotion = String(value).toLowerCase();
+        if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
+            activeTurn.officialEmotion = latestOfficialEmotion;
+            activeTurn.emotionReady = true;
+            if (activeTurn.resolveEmotionReady) {
+                activeTurn.resolveEmotionReady();
+                activeTurn.resolveEmotionReady = null;
+            }
+        }
+        const update = updatePersistentEmotion(latestOfficialEmotion, 'official_emotion');
+        if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
+            const turn = activeTurn;
+            queueTurnTask(turn, 'official-emotion:' + latestOfficialEmotion, async function () {
+                await processEmotionBodyFallback(turn, update);
+                if (turn.ended && turn.casualTalkPending && !turn.casualTalkFinalized && isCurrentTurn(turn)) {
+                    await processSpeechFallback(turn, true);
+                }
+            });
+        }
+    }
+
+    function cancelObservedSpeech() {
+        if (player) player.cancel('assistant_speech_cancel');
     }
 
     function handleMotionLifecycleBridge(event) {
@@ -688,7 +840,7 @@
         if (!message || message.action !== 'motion_lifecycle') return;
         const detail = message.detail && typeof message.detail === 'object' ? message.detail : {};
         const currentName = String(window.lanlan_config && window.lanlan_config.lanlan_name || '');
-        if (detail.lanlan_name && currentName && String(detail.lanlan_name) !== currentName) return;
+        if (detail.lanlan_name && (!currentName || String(detail.lanlan_name) !== currentName)) return;
         metrics.bridgeMessages += 1;
         if (message.eventName === 'neko-assistant-text-update') {
             bridgedText = String(detail.text || '');
@@ -702,15 +854,14 @@
         if (message.eventName === 'neko-assistant-turn-end' && typeof detail.text === 'string') {
             bridgedText = detail.text;
         }
-        if ([
-            'neko-assistant-turn-start',
-            'neko-assistant-turn-end',
-            'neko-assistant-emotion-ready',
-            'neko-assistant-speech-cancel'
-        ].includes(message.eventName)) {
-            window.dispatchEvent(new CustomEvent(message.eventName, {
-                detail: Object.assign({}, detail, { via: 'motion-lifecycle-bridge' })
-            }));
+        if (message.eventName === 'neko-assistant-turn-start') {
+            startObservedTurn({ detail: Object.assign({}, detail, { via: 'motion-lifecycle-bridge' }) });
+        } else if (message.eventName === 'neko-assistant-turn-end') {
+            endObservedTurn(detail, 'bridge');
+        } else if (message.eventName === 'neko-assistant-emotion-ready') {
+            emotionObserved(detail);
+        } else if (message.eventName === 'neko-assistant-speech-cancel') {
+            cancelObservedSpeech();
         }
     }
 
@@ -725,35 +876,15 @@
     bindMotionLifecycleBridge();
 
     window.addEventListener('neko-assistant-turn-start', function (event) {
-        if (event && event.detail && event.detail.via === 'motion-lifecycle-bridge') bridgedText = '';
         startObservedTurn(event);
     });
 
-    window.addEventListener('neko-assistant-turn-end', function () {
-        scanTurnText();
-        scheduleFinishTurn(activeTurn, 'lifecycle');
+    window.addEventListener('neko-assistant-turn-end', function (event) {
+        endObservedTurn(event && event.detail, 'lifecycle');
     });
 
     window.addEventListener('neko-assistant-emotion-ready', function (event) {
-        const value = event && event.detail && event.detail.emotion;
-        const turnId = event && event.detail && event.detail.turnId;
-        if (!value) return;
-        latestOfficialEmotion = String(value).toLowerCase();
-        if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
-            activeTurn.officialEmotion = latestOfficialEmotion;
-            activeTurn.emotionReady = true;
-            if (activeTurn.resolveEmotionReady) {
-                activeTurn.resolveEmotionReady();
-                activeTurn.resolveEmotionReady = null;
-            }
-        }
-        const update = updatePersistentEmotion(latestOfficialEmotion, 'official_emotion');
-        if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
-            const turn = activeTurn;
-            turn.processing = turn.processing.then(function () {
-                return processEmotionBodyFallback(turn, update);
-            });
-        }
+        emotionObserved(event && event.detail);
     });
 
     window.addEventListener('vrm-model-loaded', function () {
@@ -783,15 +914,15 @@
     });
 
     window.addEventListener('neko-assistant-speech-cancel', function () {
-        if (player) player.cancel('assistant_speech_cancel');
+        cancelObservedSpeech();
     });
 
     window.addEventListener('neko-model-manager-mode-set', function (event) {
         selectedMode = String(event && event.detail && event.detail.mode || configuredMode()).toLowerCase();
         if (selectedMode !== 'vrm' && player) player.cancel('model_mode_changed');
         if (selectedMode === 'vrm') {
-            stopOfficialIdleRotation();
             if (player && vrmReady()) {
+                acquirePlaybackOwnership();
                 player.setProfile(characterProfile());
                 void player.enterRest({
                     profile: characterProfile(),
