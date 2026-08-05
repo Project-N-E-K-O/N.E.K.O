@@ -25,6 +25,25 @@ from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_vrm_load_normalizes_legacy_bundled_idle_animation_path():
+    source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+    helper = source.split("function normalizeBundledVrmAnimationPath", 1)[1].split(
+        "class VRMManager",
+        1,
+    )[0]
+    load_body = source.split("async _loadModelInternal", 1)[1].split(
+        "async dispose()",
+        1,
+    )[0]
+
+    assert "/static\\/vrm\\/animation\\/" in helper
+    assert ".replace(/\\.vrma(?=[?#]|$)/i, '.vrma.gz')" in helper
+    assert "normalizeBundledVrmAnimationPath(" in load_body
+    assert "window.lanlan_config?.vrmIdleAnimation" in load_body
+
+
 def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     # 设计：token-only「后到者胜」，无串行队列（与 mmd-manager 对偶）。
     # 队列会让新加载 await 一个已被自己取代的旧加载 → 慢/挂死的 GLTF（无超时）
