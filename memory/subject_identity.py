@@ -164,6 +164,18 @@ def _build(
     return None
 
 
+def subject_actor(subject: MemorySubject) -> str | None:
+    """DECODED actor segment of a subject, or ``None`` for kinds without one.
+
+    Public because callers outside this module need it and must not hand-roll
+    the split: ``MemorySubject``'s constructors percent-encode ``:`` and ``%``,
+    so an actor that legitimately contains a colon (``stable_speaker_id``
+    allows it) appears as ``a%3Ab`` in the subject while the account id still
+    reads ``a:b``. Comparing the raw segments silently never matches.
+    """
+    return _split_subject(subject)[2]
+
+
 def participant_key(subject: MemorySubject, snap: Any = None) -> tuple:
     """The identity of the participant this subject belongs to.
 

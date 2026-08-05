@@ -745,3 +745,23 @@ def test_the_locale_resolver_bounds_work_before_canonicalizing():
         oversized[:routes._SCOPED_LOCALE_LOOKUP_LIMIT]
     )
     assert len(resolved) == routes._SCOPED_LOCALE_LOOKUP_LIMIT
+
+
+def test_stranded_row_counting_decodes_the_actor_segment():
+    """An actor containing ``:`` is percent-encoded in the subject, not raw.
+
+    ``stable_speaker_id`` allows a colon inside the actor while
+    ``MemorySubject`` escapes it, so the account id reads ``a:b`` and the
+    subject segment reads ``a%3Ab``. A raw compare silently never matches and
+    reports zero stranded rows — hiding the operator's only remediation signal.
+    """
+    from memory.subject_identity import subject_actor
+
+    colonful = MemorySubject.group_participant("qq", "G", "a:b")
+    assert "%3A" in colonful.subject_id
+    assert colonful.subject_id.split(":")[-1] != "a:b"
+    assert subject_actor(colonful) == "a:b"
+    # Plain actors round-trip unchanged, and kinds without an actor say so.
+    assert subject_actor(A1) == "111"
+    assert subject_actor(P1) == "111"
+    assert subject_actor(GROUP) is None

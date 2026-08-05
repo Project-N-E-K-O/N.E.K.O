@@ -971,8 +971,16 @@ class CorrectionsMixin:
                             # the older stronger score. Mixed/unknown sources
                             # yield an empty fold and clear single-speaker
                             # provenance entirely.
+                            # ``speaker_entity_id`` must be in this clear set,
+                            # not just the fold's output: a merge between two
+                            # different people folds to mixed-only, and leaving
+                            # the old entity id beside the mixed marker lets
+                            # `same_provenance_source` read that row back as
+                            # "same person" via entity equality — which it
+                            # checks BEFORE anything else.
                             for key in (
                                 'speaker_id', 'speaker_trust', 'speaker_label',
+                                'speaker_entity_id',
                             ):
                                 existing.pop(key, None)
                             existing.update(folded_provenance)

@@ -537,6 +537,32 @@ def _normalize_pool(data: Any) -> dict[str, Any]:
             "[Trust] 池里有 %d 个 account 同时挂在两个实体下，已合并账本: %s",
             len(duplicates), sorted(set(duplicates))[:10],
         )
+    # Re-validate canonical pointers AFTER the fold. ``normalize_entity_record``
+    # already drops pointers naming a non-member, but it runs BEFORE the loop
+    # above removes duplicate accounts — so a pointer that was valid then can be
+    # dangling now.
+    #
+    # This is not cosmetic: a dangling pointer makes ``canonical_subject`` route
+    # the losing entity's REMAINING accounts to an account that now belongs to a
+    # DIFFERENT entity, i.e. one person's writes land in another person's
+    # subject pile. Cross-user routing is the worst failure this design can
+    # have, so the check is repeated rather than assumed. Clearing is safe: the
+    # next write re-seals, exactly like the unbind path.
+    for record in pool["entities"].values():
+        canonical = record.get("canonical_accounts")
+        if not isinstance(canonical, dict):
+            continue
+        for platform in [
+            platform for platform, entry in canonical.items()
+            if not isinstance(entry, dict)
+            or entry.get("account_id") not in (record.get("accounts") or {})
+        ]:
+            logger.warning(
+                "[Trust] 实体 %s 的 %s canonical 指针在去重后悬空，已清除"
+                "（下次写入重新封定）",
+                record.get("entity_id"), platform,
+            )
+            canonical.pop(platform, None)
 
     raw_forgotten = data.get("forgotten")
     if isinstance(raw_forgotten, dict):

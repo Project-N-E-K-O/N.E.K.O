@@ -1226,6 +1226,7 @@ async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
     """
     from memory.identity import account_platform, normalize_account_id
     from memory.scopes import subject_from_entry
+    from memory.subject_identity import subject_actor
 
     normalized = normalize_account_id(account_id)
     if normalized is None or runtime.fact_store is None:
@@ -1268,12 +1269,14 @@ async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
             subject = subject_from_entry(row)
             if subject is None:
                 continue
-            parts = subject.subject_id.split(":")
-            # The actor segment is last for both group_participant (3 parts)
-            # and participant (2 parts); group_chat has no actor at all.
-            if len(parts) < 2 or parts[0] != platform:
+            if subject.subject_id.split(":")[0] != platform:
                 continue
-            if parts[-1] == canonical_actor:
+            # Through the DECODING accessor, never a raw segment compare: the
+            # subject constructors percent-encode ``:``, so an actor that
+            # legitimately contains one reads ``a%3Ab`` here while the account
+            # id is ``a:b`` — a raw compare would silently never match and
+            # report zero stranded rows.
+            if subject_actor(subject) == canonical_actor:
                 stranded += 1
     return stranded
 

@@ -1049,3 +1049,53 @@ async def test_folding_a_duplicate_account_keeps_the_legacy_import_sentinel():
     assert _account_record("qq:1")["adjustment"] == pytest.approx(
         before["adjustment"]
     )
+
+
+def test_folding_a_duplicate_clears_the_losing_entitys_dangling_canonical():
+    """A dangling canonical pointer routes ONE person's writes into ANOTHER's.
+
+    ``normalize_entity_record`` drops pointers naming a non-member, but it runs
+    BEFORE the duplicate fold removes accounts — so a pointer valid at that
+    moment can be dangling afterwards. If the losing entity keeps another
+    account, ``canonical_subject`` would then route its writes to an account
+    that now lives in a different entity.
+    """
+    pool = trust_store._normalize_pool({
+        "version": 2,
+        "legacy_barriers": {"qq": {"status": "cleared"}},
+        "entities": {
+            "ent_" + "a" * 24: {
+                "entity_id": "ent_" + "a" * 24, "status": "active",
+                "created_at": "2026-01-01",
+                "accounts": {"qq:dup": {"account_id": "qq:dup"}},
+            },
+            # Loser: `qq:dup` is BOTH the duplicate and this entity's canonical,
+            # and `qq:other` stays behind after the fold.
+            "ent_" + "b" * 24: {
+                "entity_id": "ent_" + "b" * 24, "status": "active",
+                "created_at": "2026-02-01",
+                "accounts": {
+                    "qq:dup": {"account_id": "qq:dup"},
+                    "qq:other": {"account_id": "qq:other"},
+                },
+                "canonical_accounts": {
+                    "qq": {"account_id": "qq:dup", "sealed_at": "2026-02-01"},
+                },
+            },
+        },
+    })
+    loser = pool["entities"]["ent_" + "b" * 24]
+    assert "qq:dup" not in loser["accounts"]
+    assert "qq:other" in loser["accounts"]
+    # The pointer must be gone, not left aimed at another entity's account.
+    assert not (loser.get("canonical_accounts") or {}).get("qq")
+
+    trust_store._rebind_locked(pool)
+    from memory.scopes import MemorySubject
+    from memory.subject_identity import canonical_subject
+
+    snap = trust_store.trust_snapshot()
+    other = MemorySubject.group_participant("qq", "G", "other")
+    # No canonical ⇒ identity. Before the fix this routed to `qq:G:dup`, i.e.
+    # into an account belonging to a DIFFERENT entity.
+    assert canonical_subject(other, snap) == other
