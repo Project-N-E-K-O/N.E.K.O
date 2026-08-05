@@ -5043,6 +5043,8 @@
         var currentName = getWebSocketLanlanName() || '';
         if (!detail.character_name || detail.character_name !== currentName) return;
         if (!detail.language || typeof detail.language !== 'string') return;
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
         S.conversationLanguage = detail.language;
         S.conversationLanguageHydrated = true;
         _syncLanguageToBackend(detail.language);
@@ -5053,6 +5055,8 @@
             ? 'nekoConversationLanguage:' + encodeURIComponent(currentName)
             : '';
         if (!expectedKey || event.key !== expectedKey || !event.newValue) return;
+        S._conversationLanguageHydrationId =
+            (Number(S._conversationLanguageHydrationId) || 0) + 1;
         S.conversationLanguage = event.newValue;
         S.conversationLanguageHydrated = true;
         _syncLanguageToBackend(event.newValue);

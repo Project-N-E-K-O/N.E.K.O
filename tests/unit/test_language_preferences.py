@@ -19,6 +19,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
 HYDRATION_START_ANCHOR = "function hydrateConversationLanguage(characterName)"
 HYDRATION_END_ANCHOR = "// Upper bound for the settings-sync gate below"
+LANGUAGE_LISTENERS_START_ANCHOR = (
+    "window.addEventListener('neko:conversation-language-changed'"
+)
+LANGUAGE_LISTENERS_END_ANCHOR = (
+    "window.addEventListener('neko:new-user-icebreaker-ended'"
+)
+
+
+def _slice_between(source: str, start_anchor: str, end_anchor: str, label: str) -> str:
+    start = source.find(start_anchor)
+    assert start >= 0, f"{label} 起始锚点已失效，请同步更新测试"
+    end = source.find(end_anchor, start + len(start_anchor))
+    assert end > start, f"{label} 结束锚点已失效，请同步更新测试"
+    return source[start:end]
 
 
 @pytest.mark.unit
@@ -189,9 +203,12 @@ def test_proactive_language_omits_dynamic_fallback_without_explicit_preference()
     )
     assert "if (explicitConversationLanguage)" in proactive_source
     assert "requestBody.i18n_language = explicitConversationLanguage;" in proactive_source
-    proactive_language_block = proactive_source.split(
-        "var explicitConversationLanguage = '';", 1
-    )[1].split("var requestBody = {", 1)[0]
+    proactive_language_block = _slice_between(
+        proactive_source,
+        "var explicitConversationLanguage = '';",
+        "var requestBody = {",
+        "主动搭话语言参数",
+    )
     assert "window.getConversationLanguagePreference" not in proactive_language_block
     assert "window.i18next" not in proactive_language_block
     assert "i18nextLng" not in proactive_language_block
@@ -323,18 +340,22 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
         / "card-form-and-actions.js"
     ).read_text(encoding="utf-8")
 
-    resolver = websocket_source.split(
-        "function getConversationLanguageForCurrentCharacter()", 1
-    )[1].split("function hydrateConversationLanguage", 1)[0]
+    resolver = _slice_between(
+        websocket_source,
+        "function getConversationLanguageForCurrentCharacter()",
+        HYDRATION_START_ANCHOR,
+        "对话语言解析函数",
+    )
     assert resolver.index("S.conversationLanguageHydrated === true") < resolver.index(
         "window.getConversationLanguagePreference"
     )
 
-    hydration_start = websocket_source.find(HYDRATION_START_ANCHOR)
-    hydration_end = websocket_source.find(HYDRATION_END_ANCHOR, hydration_start)
-    assert hydration_start >= 0, "语言水合函数签名锚点已失效，请同步更新测试"
-    assert hydration_end > hydration_start, "语言水合结束锚点已失效，请同步更新测试"
-    hydration = websocket_source[hydration_start:hydration_end]
+    hydration = _slice_between(
+        websocket_source,
+        HYDRATION_START_ANCHOR,
+        HYDRATION_END_ANCHOR,
+        "语言水合函数",
+    )
     assert "explicitLanguage: explicitLanguage" in hydration
     assert "if (resolved.explicitLanguage" in hydration
     assert "resolved.explicitLanguage," in hydration
@@ -342,9 +363,13 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
     assert "payload.language.trim() || null" in memory_source
     assert "if (explicitLanguage) payload.language = explicitLanguage;" in memory_source
-    assert "window.getConversationLanguagePreference" not in memory_source.split(
-        "async function getExplicitConversationTemplateLanguage", 1
-    )[1].split("async function buildExternalImportPayload", 1)[0]
+    explicit_memory_language = _slice_between(
+        memory_source,
+        "async function getExplicitConversationTemplateLanguage",
+        "async function buildExternalImportPayload",
+        "外部记忆导入显式语言解析函数",
+    )
+    assert "window.getConversationLanguagePreference" not in explicit_memory_language
 
     assert (
         "input, textarea, select:not(.conversation-language-select)"
@@ -361,11 +386,18 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
     websocket_source = (
         PROJECT_ROOT / "static" / "app" / "app-websocket.js"
     ).read_text(encoding="utf-8")
-    hydration_start = websocket_source.find(HYDRATION_START_ANCHOR)
-    hydration_end = websocket_source.find(HYDRATION_END_ANCHOR, hydration_start)
-    assert hydration_start >= 0, "语言水合函数签名锚点已失效，请同步更新测试"
-    assert hydration_end > hydration_start, "语言水合结束锚点已失效，请同步更新测试"
-    hydration_source = websocket_source[hydration_start:hydration_end]
+    hydration_source = _slice_between(
+        websocket_source,
+        HYDRATION_START_ANCHOR,
+        HYDRATION_END_ANCHOR,
+        "语言水合函数",
+    )
+    language_listeners_source = _slice_between(
+        websocket_source,
+        LANGUAGE_LISTENERS_START_ANCHOR,
+        LANGUAGE_LISTENERS_END_ANCHOR,
+        "语言偏好事件监听器",
+    )
 
     harness = textwrap.dedent(
         """
@@ -380,8 +412,12 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
         const fetches = [];
         const timers = [];
         const events = [];
+        const listeners = {};
 
         const window = {
+          addEventListener(type, callback) {
+            listeners[type] = callback;
+          },
           setConversationLanguagePreference(language, characterName, options) {
             events.push({ type: 'cache', language, characterName, options });
           }
@@ -389,6 +425,10 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
 
         function getConversationLanguageForCurrentCharacter() {
           return fallbackLanguage;
+        }
+
+        function getWebSocketLanlanName() {
+          return 'Mimi';
         }
 
         function fetch(url) {
@@ -421,6 +461,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
         }
 
         __HYDRATION_SOURCE__
+        __LANGUAGE_LISTENERS_SOURCE__
 
         (async () => {
           // A timeout must apply the fallback immediately, then a valid response
@@ -505,13 +546,47 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
             { type: 'greeting' }
           ]);
 
+          // A manual preference change must invalidate a request that settles
+          // after the timeout, so the old server value cannot overwrite it.
+          events.length = 0;
+          fallbackLanguage = 'en';
+          const manualChangeGeneration = hydrateConversationLanguage('Mimi');
+          timers[4].callback();
+          assert.equal(await manualChangeGeneration, 'en');
+          listeners['neko:conversation-language-changed']({
+            detail: { character_name: 'Mimi', language: 'ja' }
+          });
+          const eventsBeforeManualLateResponse = events.length;
+          fetches[4].resolve(response({ success: true, language: 'ru' }));
+          await flushPromises();
+          assert.equal(S.conversationLanguage, 'ja');
+          assert.equal(events.length, eventsBeforeManualLateResponse);
+
+          // The cross-window storage listener has the same generation fence.
+          events.length = 0;
+          const storageChangeGeneration = hydrateConversationLanguage('Mimi');
+          timers[5].callback();
+          assert.equal(await storageChangeGeneration, 'en');
+          listeners.storage({
+            key: 'nekoConversationLanguage:Mimi',
+            newValue: 'ko'
+          });
+          const eventsBeforeStorageLateResponse = events.length;
+          fetches[5].resolve(response({ success: true, language: 'zh-CN' }));
+          await flushPromises();
+          assert.equal(S.conversationLanguage, 'ko');
+          assert.equal(events.length, eventsBeforeStorageLateResponse);
+
           process.stdout.write('ok');
         })().catch((error) => {
           console.error(error && error.stack ? error.stack : error);
           process.exitCode = 1;
         });
         """
-    ).replace("__HYDRATION_SOURCE__", hydration_source)
+    ).replace("__HYDRATION_SOURCE__", hydration_source).replace(
+        "__LANGUAGE_LISTENERS_SOURCE__",
+        language_listeners_source,
+    )
 
     result = run_node_script(
         node_path,
