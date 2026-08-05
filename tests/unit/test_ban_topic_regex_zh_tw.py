@@ -402,6 +402,12 @@ def test_japanese_text_is_not_extracted_by_the_zh_templates(text):
 # 断言写成"当前长什么样"而不是"应该是空"，是为了将来真找到判据时这里现成就是
 # 回归测试——那时把它改成 == set() 即可。
 KNOWN_JAPANESE_RESIDUALS = [
+    # ⚠️ 日文的名词 / 形容动词后缀（済み / 向け / 付き / 込み / っぽい …）：这一维是
+    # **开集**，逐个补就是打地鼠，而且和下面那条 kana-free 的是同一族——``別`` +
+    # 共用动词 + 日文复合词，局部无规则可分。如实挂着，不装作已经关掉（codex P2）。
+    ("別提案済み。", {"案済み"}),
+    ("地域別講座向け。", {"座向け"}),
+    ("別提案っぽい。", {"案っぽい"}),
     # ⚠️ 只剩**不含假名**的这一条。日文里 ``別`` + 共用动词 + 纯汉字复合词
     # （別提案書 / 別講座資料）和中文的 ``別提 + 汉字话题``（別提工作）在局部
     # 完全同形，任何规则都分不开——真去分就会打死 ``別提工作。``（量过）。
@@ -4355,28 +4361,27 @@ def test_a_preposed_topic_does_not_come_from_the_previous_line(text, newline):
     assert _zh_terms(text.format(nl=newline)) == set()
 
 
-def test_no_cross_line_gap_remains_before_any_zh_capture():
-    """结构面：四条模板里**捕获组之前**不许再有跨行空白（自动发现，不是手点清单）。
+def test_no_cross_line_gap_remains_anywhere_in_a_zh_template():
+    """结构面：四条模板里**任何位置**都不许再有跨行空白（自动发现，不是手点清单）。
 
-    捕获**之后**的（句末助词、终结符 ``\s*$``）不在此列——它们拉不进 term。
+    ⚠️ 这条原先只扫捕获组**之前**，注释还写着「捕获之后的拉不进 term」——那句
+    话是错的，被 codex 直接证伪：句末助词那个 ``\s*`` 让触发词齐了之后能跨过换行
+    去够下一行的助词，于是**上一行**被整条存下来（``別再提工作`` 换行 ``吧。``）。
+    捕获之后的空白拉不进 term，但它决定这条匹配能不能**成立**。
+
+    唯一豁免的是锚在 ``$`` 上的那个 ``\s*$``：它后面只有串尾，什么都够不着。
     """  # noqa: DOCSTRING_CJK
     for index, raw in enumerate(_zh_pattern_sources()):
-        cut = None
-        for pos, char in enumerate(raw):
-            if char != "(" or (pos and raw[pos - 1] == chr(92)):
-                continue
-            if raw[pos : pos + 2] == "(?":
-                continue
-            cut = pos
-            break
-        assert cut is not None, index
-        # ⚠️ _ZH_OBJECTLESS_AHEAD 豁免：它是**零宽负前视**，只会「多挡一些」，
-        # 拉不进任何内容。判据管的是会 consume 的那些空白。
         # ⚠️ 顺序要紧：先摘前视，再摘横向空白——反过来的话前视里的常量已经被改过，
         # 就摘不掉了（写这条时踩到的）。
-        head = raw[:cut].replace(D._ZH_OBJECTLESS_AHEAD, "")
-        head = head.replace(D._ZH_HSPACE, "")
-        assert chr(92) + "s" not in head, (index, head[-120:])
+        # ⚠️ _ZH_OBJECTLESS_AHEAD 豁免：它是**零宽负前视**，只会「多挡一些」，
+        # 拉不进任何内容。判据管的是会 consume 的那些空白。
+        body = raw.replace(D._ZH_OBJECTLESS_AHEAD, "")
+        body = body.replace(D._ZH_HSPACE, "")
+        body = body.replace(chr(92) + "s*$", "")
+        # 取反的字符类里出现 ``\s`` 是在**排除**空白，方向相反，不在此列。
+        body = re.sub(r"\[\^(?:\\.|[^\]])*\]", "", body)
+        assert chr(92) + "s" not in body, (index, body[:200])
 
 
 # ── 50. Unicode 行分隔符 / 标点后空格 / 主语间隔 / 日文终助词 /
@@ -4760,3 +4765,108 @@ def test_the_stem_is_never_kana_or_latin_by_construction():
     assert seen, "一条都没扫到，用例或取法不对"
     assert not any(D._KANA_RE.match(c) for c in seen), sorted(seen)
     assert not any(c.isascii() and c.isalnum() for c in seen), sorted(seen)
+
+
+# ── 53. 缩写字母数有界 / 助词与终结符不跨行 / サ変挂终助词 / 句末了当证据 ──
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Prof. X别提了。", "Prof. X"),      # 4 个字母，原先整条 0 命中
+        ("Prof. X別提了。", "Prof. X"),
+        ("Capt. America别提了。", "Capt. America"),
+        ("Assoc. Prof别提了。", "Assoc. Prof"),   # 5 个字母
+        ("Dr. Who别提了。", "Dr. Who"),           # 2，回归守卫
+        ("Mrs. Smith别提了。", "Mrs. Smith"),     # 3
+        ("关于Capt. America就别提了。", "Capt. America"),
+    ],
+)
+def test_longer_abbreviations_keep_their_period(text, expected):
+    """⚠️ 原先是**写死三条**（1~3 个字母），四个字母的 ``Prof.`` 落在外面：
+    ``Prof. X别提了。`` 从 parent 的 ``Prof. X`` 变成**整条 0 命中**（截成 ``X``
+    一个字，撞长度下限被丢弃）——简体也回归（codex P2）。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), (text, _zh_terms(text))
+
+
+def test_the_abbreviation_branches_are_generated_not_hardcoded():
+    """结构面：分支从 _ZH_ABBREV_MAX_LETTERS 生成，别再手抄。"""  # noqa: DOCSTRING_CJK
+    assert D._ZH_ABBREV_PERIOD.count("|(?<![A-Za-z]") == D._ZH_ABBREV_MAX_LETTERS
+    assert D._ZH_ABBREV_PERIOD in D._ZH_IDENT_PUNCT
+    # 真句界照旧要挡住——这是这条判据的**反向**边界，抬上限不能把它抬没了。
+    assert _zh_terms("That was bad. Work别提了。") == {"Work"}
+
+
+@pytest.mark.parametrize("sep", ["\n", "\r\n", "\u2028", "\u0085"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "別再提工作{s}吧。",        # 句末助词那一格（第八格）
+        "别再提工作{s}吧。",
+        "工作正常別提 {s}下一句。",  # 前置话题终结符 + 尾随空格（第九格）
+        "工作正常别提 {s}下一句。",
+        "我不想聊工作{s}了。",       # 模板 5 的 了（第十格，守卫自己抓出来的）
+    ],
+)
+def test_no_zh_template_binds_across_a_line(sep, text):
+    """「一条指令不跨行」的第 8/9/10 格。
+
+    ⚠️ 第十格不是 codex 报的——把结构守卫从「捕获组之前」放宽到**整条模板**之后
+    自己冒出来的。前九格是被一格一格喂过来的，这条守卫才是真正封住这一族的东西。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text.format(s=sep)) == set(), text.format(s=sep)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("別再提工作 吧。", "工作"), ("別再提工作吧。", "工作"),
+     ("别再提工作\u00a0吧。", "工作"), ("工作别提 然后我们聊别的。", "工作"),
+     ("我不想聊工作 了。", "工作")],
+)
+def test_a_same_line_gap_still_works(text, expected):
+    """反向：同一行里的空白（含 NBSP）照旧放行——收窄的只是换行那一维。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["別提案してね。", "今回は、別講座してね。", "別提案するな。", "別提案したね。",
+     "別提案しろよ。", "別提案してか。", "別提案するかも。"],
+)
+def test_sahen_predicates_may_carry_a_trailing_particle(text):
+    """サ変词尾后面还能再挂一个终助词：``別提案してね。`` 存下 ``案して``（codex P2）。
+
+    判据是**闭集 × 闭集**——サ変词尾那批 × 已经收好的句末终助词那批，两处从同一个
+    常量取，不是往表里再塞几个词。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("別提そしてね。", "そして"), ("別提そして。", "そして"),
+     ("別提ドラえもん。", "ドラえもん"), ("別提すいか。", "すいか")],
+)
+def test_the_sahen_branch_still_needs_a_han_stem(text, expected):
+    """反向：``そして`` 的 ``し`` 前面是假名，左界不成立，照旧保留。"""  # noqa: DOCSTRING_CJK
+    assert expected in _zh_terms(text), text
+
+
+def test_a_sentence_final_le_is_chinese_evidence():
+    """``別提君の名は了。`` 靠句末的 ``了`` 才活下来，同句简体有 ``别`` 一直是好的。"""  # noqa: DOCSTRING_CJK
+    assert "君の名は" in _zh_terms("別提君の名は了。")
+    assert "君の名は" in _zh_terms("别提君の名は了。")
+
+
+@pytest.mark.parametrize(
+    "text", ["地域別提案は終了。", "別提案の受付は終了。", "世代別講座は終了。",
+             "地域別講座について終了。"],
+)
+def test_the_le_evidence_needs_a_non_han_on_its_left(text):
+    """⚠️ 只锚右边（句末）会捅出一个比它救回来的大得多的洞。
+
+    ``終了 / 完了 / 修了`` 里的 ``了`` 是词的一部分。先做的正是只锚右边那版，量下来
+    8 条日文里错 7 条（``地域別提案は終了。`` 存下非词 ``案は終``），换回来的只有
+    1 条中文，撤了重做。
+    """  # noqa: DOCSTRING_CJK
+    assert _zh_terms(text) == set(), text
