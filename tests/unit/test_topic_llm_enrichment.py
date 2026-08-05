@@ -27,18 +27,23 @@ def test_select_lang_template_falls_back_zh_family_to_zh():
 async def test_call_open_threads_keeps_the_traditional_template_for_zh_tw(
     monkeypatch, lang, marker, forbidden,
 ):
-    """繁中 open-thread 检测必须拿到繁体模板，不是简体。
+    """Traditional open-thread detection must get the Traditional template.
 
-    这条路是 config/prompts 里少数**今天就走全码**的管线：
-    service.py 的 _resolve_topic_hook_locale 用 format="full" 产出 'zh-TW'，
-    _normalize_lang 刻意保留它，_select_lang_template 命中就直接返回。
-    OPEN_THREADS_PROMPTS 在 issue #2500 补齐之前是这条管线上唯一缺 zh-TW 的表，
-    于是繁中用户一直吃 zh-* → zh 的兜底、拿到简体。补上之后这里就是真繁体，
-    姊妹表 TOPIC_CANDIDATE_PROMPTS 早就有对应的 zh-TW 断言（见下方
-    test_call_topic_candidates_uses_localized_prompt_for_supported_languages）。
+    This is one of the few pipelines under config/prompts/ that already carries
+    the FULL locale today: service.py's _resolve_topic_hook_locale resolves with
+    format="full", _normalize_lang deliberately preserves 'zh-TW', and
+    _select_lang_template returns the row outright when it is present.
 
-    同时钉住反向：zh-CN 不能反过来吃到繁体。只断言"含繁体标记"而不断言
-    "不含简体标记"的话，一个把两行写成同一份的回归照样能过。
+    OPEN_THREADS_PROMPTS was the only table on that pipeline still missing a
+    'zh-TW' row before the issue #2500 backfill, so Traditional users kept
+    landing on the zh-* -> zh fallback and reading Simplified. Its sibling
+    TOPIC_CANDIDATE_PROMPTS has carried the equivalent assertion for a while --
+    see test_call_topic_candidates_uses_localized_prompt_for_supported_languages
+    below.
+
+    The reverse direction is pinned too: zh-CN must not start reading the
+    Traditional row. Asserting only "contains the Traditional marker" would let
+    a regression that collapses both rows into one copy pass unnoticed.
     """
     from main_logic.activity import llm_enrichment
 
