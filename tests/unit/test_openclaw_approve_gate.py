@@ -1222,3 +1222,55 @@ def test_cross_sender_prompts_never_corroborate(wired):
 
     _dispatch("/stop", task_id="m1", user_text="停下来")
     assert fake.magic_calls == []
+
+
+def test_the_retirement_set_is_always_a_superset_of_the_gate_set(wired):
+    """⚠️⚠️ 这是这套过滤器的**总不变量**：作废 ⊇ 开闸，逐维成立。
+
+    Open the gate and you authorize an upstream action; retire and you only mark
+    a record spent. So every dimension the gate narrows on — age, session,
+    character, prompt marker — must be *wider or equal* on the retirement side.
+    Anything the gate can still see but retirement cannot is a window nobody can
+    ever close, which is exactly the shape of the last four defects here.
+
+    A property check rather than a checklist: the registry below spans every
+    dimension at once, so a new filter added to one side and not the other turns
+    this red without anyone remembering to extend a list.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+
+    _register(registry, "fresh", status="completed")
+    _register(registry, "stale", status="completed",
+              ended_seconds_ago=TASK_REGISTRY_CLEANUP_TTL + 60)
+    _register(registry, "future", status="completed", ended_seconds_ago=-30.0)
+    _register(registry, "no-end", status="completed", ended_seconds_ago=None)
+    _register(registry, "other-char", status="completed", lanlan="miku")
+    _register(registry, "other-session", status="completed", session_id="sess-old")
+    _register(registry, "no-prompt", status="completed", reply="整理完成。")
+    _register(registry, "running", status="running", ended_seconds_ago=None)
+    _register(registry, "failed", status="failed")
+    _register(registry, "cancelled", status="cancelled")
+
+    def _gate(**kw):
+        return set(oc._iter_approval_window_tasks(
+            sender_id="USER_A", exclude_task_id=None, **kw
+        ))
+
+    narrow = _gate(lanlan_name="lan")                      # approve 准入
+    narrow_any_role = _gate(lanlan_name=None)              # /stop 佐证
+    wide = _gate(lanlan_name=None, age_bounded=False,
+                 match_lanlan=False, require_session=False)  # 作废
+
+    assert narrow <= narrow_any_role <= wide, (
+        f"作废必须 ⊇ 开闸：narrow={sorted(narrow)} "
+        f"any_role={sorted(narrow_any_role)} wide={sorted(wide)}"
+    )
+    # 每一维都得真的被某一侧区分开，否则上面的包含关系是空转
+    assert "stale" not in narrow and "stale" in wide, "判龄这一维没起作用"
+    assert "other-session" not in narrow and "other-session" in wide, "session 维没起作用"
+    assert "other-char" not in narrow and "other-char" in narrow_any_role, "角色维没起作用"
+    assert "no-prompt" not in narrow and "no-prompt" in wide, "疑问标记维没起作用"
+    # 非 completed 状态两侧都看不见
+    for task_id in ("running", "failed", "cancelled"):
+        assert task_id not in wide, task_id

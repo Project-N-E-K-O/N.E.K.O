@@ -231,7 +231,16 @@ def _iter_approval_window_tasks(
             reply = str((raw or {}).get("reply") or "") if isinstance(raw, dict) else ""
             if not any(marker in reply for marker in _APPROVAL_PROMPT_MARKERS):
                 continue
-        if current_session and str(info.get("session_id") or "").strip() != current_session:
+        # ⚠️ `require_session` 关掉的是**整条 session 判据**，不只是「问不出会话时
+        # fail-closed」那一半。写成 `if current_session and ...` 时这个开关名不副实：
+        # 作废侧照样按 session 匹配，于是别的会话里那条窗口谁也作废不掉。虽然轮换后的
+        # 旧 session 再也不会变回当前值（所以那条窗口也开不了闸），但「作废 ⊇ 开闸」
+        # 这条总不变量一旦在某一维上不成立，下一个人就会在这里再踩一次。
+        if (
+            require_session
+            and current_session
+            and str(info.get("session_id") or "").strip() != current_session
+        ):
             continue
         # ⚠️ 作废时不判龄（age_bounded=False），因为判龄的结果**会随时间翻转**：
         #   · 下界：时钟被回拨时 age 为负，条目此刻不算窗口，作废看不见它；等时钟追
