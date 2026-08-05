@@ -34,6 +34,21 @@ _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 
 def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple[str, str]]:
     issues: list[tuple[str, str]] = []
+    config_example_path = plugin_dir / "config.example.toml"
+    config_example: dict[str, object] | None = None
+    if config_example_path.is_file():
+        try:
+            config_example = load_toml(config_example_path)
+        except Exception as exc:
+            issues.append(
+                (
+                    "error",
+                    "config.example.toml could not be read / "
+                    "无法读取 config.example.toml / "
+                    f"config.example.toml を読み取れません: {exc}",
+                )
+            )
+            return issues
     try:
         source = load_plugin_source(plugin_dir)
     except Exception:
@@ -50,6 +65,18 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
+    if config_example is not None:
+        _check_config_example_schema(config_example, issues)
+    elif "plugin_runtime" in source.plugin_toml or source.plugin_id in source.plugin_toml:
+        issues.append(
+            (
+                "warning",
+                "legacy runtime configuration in plugin.toml is supported; "
+                "move mutable defaults to config.example.toml / "
+                "仍兼容 plugin.toml 中的旧运行配置；请将可变默认值移到 config.example.toml / "
+                "plugin.toml の従来の実行設定は互換対応です。可変の既定値を config.example.toml に移してください",
+            )
+        )
 
     if source.plugin_id != plugin_dir.name and plugin_dir.name != _market_repo_name(source.plugin_id):
         issues.append(("warning", f"plugin.id '{source.plugin_id}' does not match directory name '{plugin_dir.name}'"))
@@ -80,6 +107,22 @@ def validate_plugin_dir(plugin_dir: Path, *, strict: bool = False) -> list[tuple
     _check_python_decorators(plugin_dir, issues)
 
     return issues
+
+
+def _check_config_example_schema(
+    config: dict[str, object],
+    issues: list[tuple[str, str]],
+) -> None:
+    if "plugin" in config:
+        issues.append(
+            (
+                "error",
+                "config.example.toml must not contain [plugin] / "
+                "config.example.toml 不能包含 [plugin] / "
+                "config.example.toml に [plugin] を含めることはできません",
+            )
+        )
+    _check_runtime_table(config.get("plugin_runtime"), issues)
 
 
 def _market_repo_name(plugin_id: str) -> str:

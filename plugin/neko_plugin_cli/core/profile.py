@@ -19,7 +19,7 @@ def write_default_profile(source: PluginSource, profiles_dir: Path) -> list[Path
         "enabled = true",
     ]
 
-    plugin_runtime = source.plugin_toml.get("plugin_runtime")
+    plugin_runtime = source.runtime_config_defaults.get("plugin_runtime")
     if isinstance(plugin_runtime, dict):
         auto_start = plugin_runtime.get("auto_start")
         if isinstance(auto_start, bool):
@@ -60,7 +60,7 @@ def write_bundle_profile(sources: list[PluginSource], profiles_dir: Path) -> lis
             ]
         )
 
-        plugin_runtime = source.plugin_toml.get("plugin_runtime")
+        plugin_runtime = source.runtime_config_defaults.get("plugin_runtime")
         if isinstance(plugin_runtime, dict):
             auto_start = plugin_runtime.get("auto_start")
             if isinstance(auto_start, bool):

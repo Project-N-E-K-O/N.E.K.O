@@ -39,19 +39,28 @@ def load_plugin_source(plugin_dir: str | Path) -> PluginSource:
         pyproject_toml = load_toml(pyproject_toml_path)
         resolved_pyproject_path = pyproject_toml_path
 
+    config_example_path = plugin_dir / "config.example.toml"
+    config_example_toml: dict[str, object] | None = None
+    resolved_config_example_path: Path | None = None
+    if config_example_path.is_file():
+        config_example_toml = load_toml(config_example_path)
+        resolved_config_example_path = config_example_path
+
     return PluginSource(
         plugin_dir=plugin_dir,
         plugin_toml_path=plugin_toml_path,
         pyproject_toml_path=resolved_pyproject_path,
+        config_example_path=resolved_config_example_path,
         plugin_id=plugin_id,
         name=name,
         version=version,
         package_type=package_type,
         plugin_toml=plugin_toml,
         pyproject_toml=pyproject_toml,
+        config_example_toml=config_example_toml,
     )
 
 
 def extract_runtime_config(source: PluginSource) -> dict[str, object]:
-    value = source.plugin_toml.get(source.plugin_id)
+    value = source.runtime_config_defaults.get(source.plugin_id)
     return value if isinstance(value, dict) else {}
