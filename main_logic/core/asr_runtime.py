@@ -18,6 +18,7 @@ from websockets import exceptions as web_exceptions
 
 from main_logic.asr_client import get_asr_core_capabilities
 from main_logic.asr_client.runtime import (
+    ASR_CONNECT_TOTAL_BUDGET_SECONDS,
     AsrRuntimeCallbacks,
     AsrStartStatus,
     IndependentAsrRuntime,
@@ -808,6 +809,8 @@ class AsrRuntimeMixin:
         self,
         input_mode: str,
         *,
+        lease_connection_id: str,
+        remaining_deadline_seconds: float,
         handshake_override=...,
         resource_optimization_override=...,
     ) -> None:
@@ -826,17 +829,48 @@ class AsrRuntimeMixin:
         on screen to explain it. Nothing re-decides in-session either: the only
         other entry is the core-change reconcile.
 
-        Runs while the requester holds the lease and no start is in flight
-        (the caller waits for the count to reach 0), so the fence inside
-        ``_start_independent_asr_if_enabled`` sees a settled, self-consistent
-        state -- and the handshake passed down is this request's own snapshot
-        rather than whatever the shared field holds by now.
+        Runs while no start is in flight (the caller waits for the count to
+        reach 0), so the fence inside ``_start_independent_asr_if_enabled`` sees
+        a settled, self-consistent state -- and the handshake passed down is
+        this request's own snapshot rather than whatever the shared field holds
+        by now.
 
         Blocked routes only. A settled native/independent verdict is valid for
         whoever ends up holding the microphone, and re-running would tear down
         a healthy provider mid-session for nothing.
+
+        ``lease_connection_id`` is the caller's pre-wait snapshot: the wait is
+        seconds long, and a THIRD audio start claiming the microphone during it
+        would otherwise get its route configured from this superseded window's
+        handshake (Codex P2). The new holder runs this same path with a snapshot
+        that does match, so skipping here loses nothing.
+
+        ``remaining_deadline_seconds`` is what is left of the frontend's start
+        deadline. A re-decision runs a whole connect-and-retry phase whose
+        ceiling is ASR_CONNECT_TOTAL_BUDGET_SECONDS, so starting one without
+        room for it would push the re-ack past the point where the client gives
+        up -- and its timeout fires end_session, tearing down the session that
+        did start (Codex P2). Out of budget, the caller's bare re-ack is the
+        better trade: it is the pre-existing behaviour, and it still reaches the
+        requester in time.
         """
         if input_mode != "audio":
+            return
+        self._ensure_asr_runtime_state()
+        if remaining_deadline_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS:
+            logger.info(
+                "[%s] dedupe reroute skipped: %.2fs left of the start deadline,"
+                " under the %.1fs connect budget",
+                self.lanlan_name,
+                remaining_deadline_seconds,
+                ASR_CONNECT_TOTAL_BUDGET_SECONDS,
+            )
+            return
+        if self._voice_lease_connection_id != lease_connection_id:
+            logger.info(
+                "[%s] dedupe reroute skipped: voice lease moved on during the wait",
+                self.lanlan_name,
+            )
             return
         # The in-flight start's OWN mode is the authority, not this request's:
         # the dedupe branch treats a missing ``_starting_input_mode`` as a match,
@@ -846,7 +880,6 @@ class AsrRuntimeMixin:
         # audio path at all.
         if str(getattr(self, "input_mode", "") or "") != "audio":
             return
-        self._ensure_asr_runtime_state()
         if self._asr_route_mode != "blocked":
             return
         await self._start_independent_asr_if_enabled(

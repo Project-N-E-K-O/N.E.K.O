@@ -203,6 +203,8 @@ def _make_deduping_manager(*, route_mode, session_input_mode="audio"):
     mgr = _make_starting_manager(starting_input_mode="audio")
     mgr.input_mode = session_input_mode
     mgr._asr_route_mode = route_mode
+    mgr._voice_lease_connection_id = "socket-b"
+    mgr.lanlan_name = "test"
     # Lazy-init only; the route fields under test are set explicitly above.
     mgr._ensure_asr_runtime_state = lambda: None
     mgr._independent_asr_handshake_override = None
@@ -332,6 +334,50 @@ async def test_same_mode_dedupe_redecides_with_this_requests_handshake():
     assert calls[0][0] == "redecide"
     assert calls[0][1]["handshake_override"] is True
     assert calls[0][1]["resource_optimization_override"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_skips_reroute_when_the_lease_moved_on():
+    """Codex P2. The wait is seconds long, and a THIRD audio start can claim the
+    microphone inside it. Re-deciding then would configure the NEW holder's
+    route from this superseded window's handshake. The new holder walks the same
+    path with a snapshot that matches, so skipping loses nothing -- but the ack
+    still goes out, or this requester hangs to its own timeout."""
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    async def _third_window_claims_the_microphone():
+        await asyncio.sleep(0.05)
+        mgr._voice_lease_connection_id = "socket-c"
+
+    claim = asyncio.create_task(_third_window_claims_the_microphone())
+    await _run_dedupe_start(mgr)
+    await claim
+
+    assert [name for name, _ in calls] == ["ack"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_same_mode_dedupe_skips_reroute_without_room_in_the_deadline(
+    monkeypatch,
+):
+    """Codex P2. The re-decision runs a whole connect-and-retry phase on top of a
+    wait that has already spent part of the frontend's 15s deadline. Starting one
+    without room for it pushes the re-ack past the point where the client gives
+    up -- and the client's timeout fires end_session, tearing down the session
+    that did start. Out of budget, the bare re-ack (the pre-existing behaviour)
+    is the better trade."""
+    monkeypatch.setattr(
+        "main_logic.core.asr_runtime.ASR_CONNECT_TOTAL_BUDGET_SECONDS", 100.0
+    )
+    mgr = _make_deduping_manager(route_mode="blocked")
+    calls = _record_dedupe_calls(mgr)
+
+    await _run_dedupe_start(mgr)
+
+    assert [name for name, _ in calls] == ["ack"]
 
 
 @pytest.mark.unit

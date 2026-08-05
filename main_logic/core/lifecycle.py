@@ -906,6 +906,12 @@ class LifecycleMixin:
             # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
             # 等待上限绑前端的 start_session 超时：超过它再补发 ack 已无意义
             # （前端早已 reject + end_session），故以它为窗口上界兼防挂安全阀。
+            #
+            # 快照本请求进入时的 voice lease 身份：等待可能长达十几秒，期间第三个
+            # audio start 抢走麦克风是可能的，那时替它重跑路由会用**本请求**（已经
+            # 被顶掉的那个窗口）的 handshake 去配新持有者的路由。新持有者自己也会
+            # 走这条路径、且它的快照对得上，所以这里跳过不丢东西（Codex P2）。
+            _lease_at_request = getattr(self, "_voice_lease_connection_id", "")
             _waited = 0.0
             while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
                 await asyncio.sleep(0.05)
@@ -927,6 +933,10 @@ class LifecycleMixin:
                 # 带的是本请求方真正成立的路由（详见 _rerun_route_for_deduped_start）。
                 await self._rerun_route_for_deduped_start(
                     input_mode,
+                    lease_connection_id=_lease_at_request,
+                    remaining_deadline_seconds=(
+                        FRONTEND_START_SESSION_TIMEOUT_SECONDS - _waited
+                    ),
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
                 )
