@@ -1739,17 +1739,10 @@
             };
         }).catch(function (error) {
             console.warn('[ConversationLanguage] preference hydration failed, using UI fallback:', error);
-            return { language: fallback, explicitLanguage: '' };
+            return { language: fallback, explicitLanguage: '', requestFailed: true };
         });
 
-        return Promise.race([
-            request,
-            new Promise(function (resolve) {
-                setTimeout(function () {
-                    resolve({ language: fallback, explicitLanguage: '' });
-                }, 2500);
-            })
-        ]).then(function (hydrated) {
+        function applyHydratedConversationLanguage(hydrated) {
             var language = hydrated && hydrated.language ? hydrated.language : fallback;
             if (S._conversationLanguageHydrationId !== hydrationId) return language;
             S.conversationLanguage = language || fallback;
@@ -1766,6 +1759,27 @@
             _syncLanguageToBackend(S.conversationLanguage);
             _sendGreetingCheckIfReady();
             return S.conversationLanguage;
+        }
+
+        return Promise.race([
+            request,
+            new Promise(function (resolve) {
+                setTimeout(function () {
+                    resolve({ language: fallback, explicitLanguage: '', timedOut: true });
+                }, 2500);
+            })
+        ]).then(function (hydrated) {
+            var language = applyHydratedConversationLanguage(hydrated);
+            if (hydrated.timedOut) {
+                // The timeout keeps startup responsive, but it must not discard a
+                // valid server preference that arrives later for the same character.
+                void request.then(function (lateHydrated) {
+                    if (!lateHydrated.requestFailed) {
+                        applyHydratedConversationLanguage(lateHydrated);
+                    }
+                });
+            }
+            return language;
         });
     }
 

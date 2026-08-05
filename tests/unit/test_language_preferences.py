@@ -230,6 +230,11 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
     assert "explicitLanguage: explicitLanguage" in hydration
     assert "if (hydrated.explicitLanguage" in hydration
     assert "hydrated.explicitLanguage," in hydration
+    assert "requestFailed: true" in hydration
+    assert "timedOut: true" in hydration
+    assert "if (hydrated.timedOut)" in hydration
+    assert "request.then(function (lateHydrated)" in hydration
+    assert "applyHydratedConversationLanguage(lateHydrated)" in hydration
 
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
     assert "payload.language.trim() || null" in memory_source
