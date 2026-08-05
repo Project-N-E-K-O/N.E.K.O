@@ -51,6 +51,22 @@ def test_vrm_load_normalizes_legacy_bundled_idle_animation_path():
     assert "normalizeBundledVrmAnimationPath(url)" in public_playback
 
 
+def test_model_manager_starts_saved_idle_rotation_with_normalized_urls():
+    source = (PROJECT_ROOT / "static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    restore_body = source.split("let vrmIdleAnims =", 1)[1].split(
+        "// 加载MMD待机动作选项",
+        1,
+    )[0]
+
+    normalization = "vrmIdleAnims = vrmIdleAnims.map(url =>"
+    start = "startIdleRotation('vrm', vrmIdleAnims);"
+    assert normalization in restore_body
+    assert "normalizeBundledVrmAnimationUrl(url, availableIdleAnimationValues)" in restore_body
+    assert restore_body.index(normalization) < restore_body.index(start)
+
+
 def test_vrm_reset_uses_the_same_desktop_framing_ratio_as_initial_load():
     manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
         encoding="utf-8"

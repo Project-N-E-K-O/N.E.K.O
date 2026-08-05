@@ -112,17 +112,6 @@ Object.assign(window.Jukebox, {
     return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
   },
 
-  resolveJukeboxActionUrl: function(action) {
-    let filePath = String(action?.file || '').trim();
-    const format = String(action?.format || '').toLowerCase();
-    // Built-in jukebox VRMA files are shipped as gzip. Keep old saved indexes
-    // working without rewriting user-uploaded, uncompressed VRMA files.
-    if (action?.isBuiltin === true && format === 'vrma') {
-      filePath = filePath.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
-    }
-    return Jukebox.resolveJukeboxFileUrl(filePath);
-  },
-
   renderList: function() {
     const tbody = document.getElementById('jukebox-song-list');
     if (!tbody) {
@@ -400,7 +389,7 @@ Object.assign(window.Jukebox, {
       // 根据模型类型播放对应格式的动画
       const action = Jukebox.getActionForModel(song);
       if (action) {
-        const actionUrl = Jukebox.resolveJukeboxActionUrl(action);
+        const actionUrl = Jukebox.resolveJukeboxFileUrl(action.file || '');
         console.log('[Jukebox] 播放动画:', action.name, '格式:', action.format || 'vmd', '路径:', actionUrl);
 
         const modelType = Jukebox.getModelType();
