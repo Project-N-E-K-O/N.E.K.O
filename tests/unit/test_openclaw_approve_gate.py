@@ -1186,3 +1186,39 @@ def test_a_running_task_under_another_character_corroborates(wired):
     )
     _dispatch("/stop", task_id="m2", user_text="停下来")
     assert fake.magic_calls == [], "别人的在跑任务不能给我的模糊说法当佐证"
+
+
+def test_a_cross_character_prompt_window_corroborates_an_ambiguous_stop(wired):
+    """⚠️ 佐证的三条路径必须在「角色」这一维上一致，否则留下的口子最难看。
+
+    Active tasks and retirement both treat one sender's characters as a single
+    upstream session (`_build_session_key` opens with ``del role_name``). Leaving
+    only the prompt-window side role-scoped means a prompt raised under character
+    A, rejected with 「停下来」 after switching to B, returns before the ``/stop``
+    block — the stop is dropped *and* A's window survives for a later inferred
+    approval.
+    """  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    registry = oc._shared.Modules.task_registry
+    _register(registry, "t-other-char", status="completed", lanlan="miku")
+    assert oc._collect_active_openclaw_task_ids() == [], "前提：没有在跑的任务"
+
+    _dispatch("/stop", task_id="m1", user_text="停下来")
+    assert [c[0] for c in fake.magic_calls] == ["/stop"], "跨角色的提示也算佐证"
+    assert registry["t-other-char"][oc._APPROVAL_CONSUMED_KEY] is True
+
+    fake.magic_calls.clear()
+    _dispatch("/daemon approve", task_id="m2")
+    assert fake.magic_calls == [], "被拒绝过的跨角色提示不该还能授权"
+
+
+def test_cross_sender_prompts_never_corroborate(wired):
+    """放宽只到 sender 一层：别人的待批准提示不能给我的模糊说法当佐证。"""  # noqa: DOCSTRING_CJK
+    fake, _ = wired
+    _register(
+        oc._shared.Modules.task_registry, "t-other-sender",
+        status="completed", sender="USER_B",
+    )
+
+    _dispatch("/stop", task_id="m1", user_text="停下来")
+    assert fake.magic_calls == []

@@ -696,8 +696,13 @@ async def dispatch(
                     lanlan_name=None,
                     exclude_task_id=result.task_id,
                 ) or _find_approval_window_task(
+                    # ⚠️ 窗口这侧同样**不按角色收窄**——理由和上面那行一样，而且不放宽就
+                    # 内部不一致：作废本来就是角色无关的，在跑任务的佐证上一轮也放宽了，
+                    # 唯独这里还按角色匹配的话，「角色 A 下收到提示 → 切到角色 B 说停下来」
+                    # 会在这里提前 return，作废那段执行不到，A 的窗口留着给下一句「同意」。
+                    # 收窄的那几维（新鲜 / 同会话 / 带疑问标记 / 未兑现）一条没动。
                     sender_id=nk_sender_id,
-                    lanlan_name=lanlan_name,
+                    lanlan_name=None,
                     exclude_task_id=result.task_id,
                 )
                 if tier == "ambiguous" and not corroborated:
