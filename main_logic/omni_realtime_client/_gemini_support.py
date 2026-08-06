@@ -225,6 +225,7 @@ class _GeminiMixin:
 
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
+            self._rearm_teardown_ownership()
             self._fatal_error_occurred = False
             self._gemini_user_transcript = ""
             self._gemini_user_transcript_after_interrupt = False

@@ -158,6 +158,45 @@ async def test_connect_rearms_close_ownership_for_the_new_socket():
     second.close.assert_awaited_once_with()
 
 
+@pytest.mark.asyncio
+async def test_close_inside_the_connect_window_does_not_latch_the_new_socket_shut():
+    """Rearming at the top of connect() would leave the replacement socket
+    behind a finished teardown: a close landing in the connect await window
+    runs to completion against no socket, and every later close() just
+    re-awaits that finished task."""
+    client = _make_client()
+
+    async def _shutdown(reason):
+        return None
+
+    client._response_arbiter.shutdown = _shutdown
+
+    attached = AsyncMock()
+    connecting = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def _slow_connect(*args, **kwargs):
+        connecting.set()
+        await resume.wait()
+        return attached
+
+    with patch("websockets.connect", new=_slow_connect):
+        connect_task = asyncio.create_task(
+            client.connect(instructions="hi", native_audio=True)
+        )
+        await asyncio.wait_for(connecting.wait(), timeout=5)
+        # An end_session racing the reconnect: nothing is attached yet, so this
+        # close has no socket of its own to close.
+        await asyncio.wait_for(client.close(), timeout=5)
+
+        resume.set()
+        await asyncio.wait_for(connect_task, timeout=5)
+
+    assert client.ws is attached
+    await asyncio.wait_for(client.close(), timeout=5)
+    attached.close.assert_awaited_once_with()
+
+
 # ── Gemini SDK context exit ──────────────────────────────────────────
 
 

@@ -146,15 +146,6 @@ class _TransportMixin:
         # because 'connection-scoped' should be true by construction.
         self._idless_quarantine = False
 
-        # Same lifetime, for a different reason: a close task closes the socket
-        # it detached, so it is finished with THIS connection's socket the
-        # moment the next one is established. Keeping the finished (or even
-        # still-running) task would make the new connection's close a no-op.
-        # An unfinished predecessor is unaffected — it already owns the old
-        # socket outright and nothing here cancels it.
-        self._close_task = None
-        self._failed_transport_close_task = None
-
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
         if self._audio_processor is None:
@@ -191,6 +182,7 @@ class _TransportMixin:
         # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
         # 超时后 websockets 内部会 transport.abort() 强制关闭。
         self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        self._rearm_teardown_ownership()
         # Do not reopen the arbiter until the replacement transport exists.
         # A failed reconnect must leave the prior shutdown state intact.
         self._response_arbiter.reset_connection_state()
@@ -2052,6 +2044,26 @@ class _TransportMixin:
             )
             logger.error(f"Error in message handling: {str(e)}")
             raise
+
+    def _rearm_teardown_ownership(self) -> None:
+        """Hand the teardown latches to the connection that just attached.
+
+        A close task closes the socket it detached, so it is finished with the
+        previous connection's socket the moment a replacement is installed —
+        and a latched finished task would make the new connection's close a
+        no-op. Rearming has to happen where the socket is assigned, not at the
+        top of connect(): a close landing in the connect await window would
+        otherwise run to completion against no socket at all, and the
+        replacement would attach behind an already-finished latch that every
+        later close() just re-awaits. No await between the assignment and this
+        call, so no third party can observe the pair half-applied.
+
+        An unfinished predecessor is unaffected — it already owns the old
+        socket outright and nothing here cancels it.
+        """
+
+        self._close_task = None
+        self._failed_transport_close_task = None
 
     async def _own_teardown(self, slot: str, factory):
         """Await a teardown that this client owns, not the caller.
