@@ -118,7 +118,13 @@ assert.match(bridgeSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(bridgeSource, /function relayClosedStage\(event\)/);
 assert.match(bridgeSource, /function peekUserText\(requestIdValue\)/);
 assert.match(bridgeSource, /relay\('neko-assistant-turn-end', detail\);\s*finishUserText\(event\);/);
-assert.match(bridgeSource, /if \(detail\.source !== 'response_discarded'\) clearPendingContext\(event\)/);
+assert.match(bridgeSource, /function relaySpeechCancel\(event\)/);
+assert.match(bridgeSource, /\^user_activity\(\?:_delayed\)\?\$[\s\S]*dropConsumedContexts\(\)/);
+assert.equal(
+    bridgeSource.includes("relayDetail('neko-assistant-speech-cancel')"),
+    false,
+    'a user-activity interrupt must clear the consumed user text, not only relay the cancel'
+);
 assert.match(bridgeSource, /event\.detail\.text/);
 assert.match(bridgeSource, /detail\.structured = detail\.structured === true \|\| window\._turnIsStructured === true/);
 assert.match(bridgeSource, /text: closedText,\s*structured: window\._turnIsStructured === true/);
@@ -158,6 +164,20 @@ assert.match(runtimeSource, /player\.cancel\('assistant_speech_cancel', \{ resum
 assert.match(runtimeSource, /activeTurn = null;\s*bridgedText = ''/);
 assert.match(runtimeSource, /pendingStages: new Set\(\)/);
 assert.match(runtimeSource, /structured: !String\(source \|\| ''\)\.startsWith\('bridge'\)/);
+assert.match(
+    runtimeSource,
+    /if \(!isBridgedTurn\(activeTurn\) && window\._turnIsStructured === true\) \{\s*activeTurn\.structured = true;/
+);
+assert.equal(
+    ((runtimeSource.replace(/^\s*\/\/.*$/gm, '')).match(/window\._turnIsStructured/g) || []).length,
+    2,
+    'every local structured-flag read must be gated on a non-bridged turn'
+);
+assert.match(
+    runtimeSource,
+    /beginTurn\(\s*window\._nekoAssistantTurnId \|\| 'buffer-' \+ Date\.now\(\),\s*useBridgeText \? 'bridge-buffer' : 'buffer'/,
+    'a turn recovered from bridged text must stay bridge-sourced'
+);
 assert.match(runtimeSource, /turn\.pendingStages\.has\(stage\.id\)/);
 assert.match(runtimeSource, /if \(await processStage\(stage, turn\)\) turn\.seen\.add\(stage\.id\)/);
 assert.match(runtimeSource, /turn\.pendingStages\.delete\(stage\.id\)/);
@@ -221,6 +241,13 @@ const waitForEmotionBlock = runtimeSource.split('function waitForOfficialEmotion
 assert.match(waitForEmotionBlock, /Promise\.resolve\(true\)/);
 assert.match(waitForEmotionBlock, /resolve\(false\)/);
 assert.match(runtimeSource, /function settleMissingEmotion\(turn, emotionReceived\)/);
+// 每一条等待官方情绪事件的路径都必须自己处理超时，否则 emotionReady 永远是
+// false，processSpeechFallback 只挂起 casualTalkPending 就返回，再没有事件来重试。
+assert.equal(
+    (runtimeSource.match(/await waitForOfficialEmotion\(turn\)/g) || []).length,
+    (runtimeSource.match(/settleMissingEmotion\(turn, emotionReceived\);/g) || []).length,
+    'every waitForOfficialEmotion() call site must settle the timeout'
+);
 const finishTurnBlock = runtimeSource.split('function finishTurn(turn, source)', 2)[1]
     .split('function scheduleFinishTurn', 1)[0];
 assert.match(finishTurnBlock, /const emotionReceived = await waitForOfficialEmotion\(turn\)/);

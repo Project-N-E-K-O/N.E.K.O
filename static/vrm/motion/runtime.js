@@ -707,11 +707,17 @@
         const text = useBridgeText ? bridgedText : localText;
         if (!text) return;
         if (!activeTurn || activeTurn.ended && text !== activeTurn.capturedText) {
-            beginTurn(window._nekoAssistantTurnId || 'buffer-' + Date.now(), 'buffer');
+            beginTurn(
+                window._nekoAssistantTurnId || 'buffer-' + Date.now(),
+                useBridgeText ? 'bridge-buffer' : 'buffer'
+            );
             metrics.bufferRecoveredTurns += 1;
             console.info('[NekoMotion] recovered assistant turn from reply buffer');
         }
-        if (window._turnIsStructured === true) activeTurn.structured = true;
+        // 同 beginTurn：本页的 window._turnIsStructured 不能替桥接回合作数。
+        if (!isBridgedTurn(activeTurn) && window._turnIsStructured === true) {
+            activeTurn.structured = true;
+        }
         if (activeTurn.structured) return;
         if (text === activeTurn.lastText) {
             if (activeTurn.source === 'buffer'
@@ -731,6 +737,10 @@
         activeTurn.lastTextAt = Date.now();
         activeTurn.capturedText = text;
         void processUnseenStages(activeTurn);
+    }
+
+    function isBridgedTurn(turn) {
+        return !!turn && String(turn.source || '').startsWith('bridge');
     }
 
     function beginTurn(turnId, source, userText) {

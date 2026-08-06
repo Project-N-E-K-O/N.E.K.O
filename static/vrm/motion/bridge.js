@@ -40,21 +40,35 @@
         prunePendingContexts();
     }
 
+    function consumed(entry) {
+        if (!entry) return '';
+        entry.consumed = true;
+        return entry.text;
+    }
+
     function peekUserText(requestIdValue) {
         prunePendingContexts();
         const requestId = normalizedRequestId(requestIdValue);
         if (requestId) {
-            const entry = pendingByRequest.get(requestId);
-            return entry ? entry.text : '';
+            return consumed(pendingByRequest.get(requestId));
         }
         if (pendingWithoutRequest) {
-            return pendingWithoutRequest.text;
+            return consumed(pendingWithoutRequest);
         }
         if (pendingByRequest.size === 1) {
             const only = pendingByRequest.entries().next().value;
-            return only[1].text;
+            return consumed(only[1]);
         }
         return '';
+    }
+
+    function dropConsumedContexts() {
+        pendingByRequest.forEach(function (entry, requestId) {
+            if (!entry || entry.consumed) pendingByRequest.delete(requestId);
+        });
+        if (pendingWithoutRequest && pendingWithoutRequest.consumed) {
+            pendingWithoutRequest = null;
+        }
     }
 
     function finishUserText(event) {
@@ -153,7 +167,17 @@
     function relaySpeechCancel(event) {
         const detail = event && event.detail || {};
         relay('neko-assistant-speech-cancel', detail);
-        if (detail.source !== 'response_discarded') clearPendingContext(event);
+        // 用户打断（user_activity / user_activity_delayed）这一轮就是没了，后端不会
+        // 用同一个 request 再跑，而 app-websocket 这条路径只发 speech-cancel、不发
+        // neko:assistant-response-cancelled，于是已被取用的用户文本会在 TTL 内继续
+        // 挂着，被下一条不带 requestId 的主动回复捡走 —— 一句“好的”就能把上一轮被
+        // 打断的指令重放出来。只丢已经被 turn-start 取用过的那部分：speech-cancel
+        // 不带 requestId，整表清会连刚发出、还没等到回复的那条一起抹掉（打断本身
+        // 通常就是新消息触发的），下一轮反而拿不到用户文本。
+        // 其余来源（response_discarded 可能 will_retry，重试轮的 turn-start 还要用
+        // 原文；socket_close / character_switch 另有清空入口）一律保持原样。
+        if (!/^user_activity(?:_delayed)?$/.test(String(detail.source || ''))) return;
+        dropConsumedContexts();
     }
 
     window.addEventListener('neko:user-content-sent', rememberUserText);

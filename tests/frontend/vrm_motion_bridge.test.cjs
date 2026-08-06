@@ -153,6 +153,38 @@ emit('neko-assistant-speech-cancel', {
 emit('neko-assistant-turn-start', { turnId: 'after-interrupted-turn' });
 assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
 
+// 打断通常正是新消息触发的：还没被任何 turn-start 取用的用户文本不能被顺手抹掉，
+// 否则本该由它驱动的下一轮回复反而拿不到用户指令。
+emit('neko:user-content-sent', {
+    requestId: 'fresh-request',
+    text: 'nod',
+    source: 'text'
+});
+emit('neko-assistant-speech-cancel', {
+    turnId: 'interrupted-turn',
+    source: 'user_activity_delayed'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'fresh-turn',
+    requestId: 'fresh-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, 'nod');
+
+// 已经取用过、但来源是可能重试的 response_discarded，重试轮还要拿到原文。
+emit('neko-assistant-speech-cancel', {
+    turnId: 'fresh-turn',
+    source: 'response_discarded'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'fresh-turn-retry',
+    requestId: 'fresh-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, 'nod');
+emit('neko-assistant-turn-end', {
+    turnId: 'fresh-turn-retry',
+    requestId: 'fresh-request'
+});
+
 windowLike._geminiTurnFullText = '(old wave)';
 emit('neko-compact-caption-update', { text: '（鼓掌）' });
 assert.equal(latest('neko-assistant-text-update').detail.text, '（鼓掌）');

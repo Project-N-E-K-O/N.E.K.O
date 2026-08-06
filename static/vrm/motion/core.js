@@ -6,6 +6,10 @@
     const PARALLEL_MARKERS = /^(?:同时|与此同时|一边|并且|and|while)$/iu;
     const CLAUSE_BOUNDARY = /([，,。.!?！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|ずに|ないで|then|next|afterward|however|\bbut\b|\band\b|while)/giu;
     const CHINESE_HISTORICAL = /^(?:(?:我|人家|本喵|咱|俺|本人)\s*)?(?:刚才|之前|方才|上次|先前|曾经|早些时候).{0,24}(?:过|了|曾)/u;
+    // 只收显式的过去/习惯标记，用于把过去语气传到同句并列子句；刻意不含裸的
+    // was/were/had，否则“That was fun, so I clap”这种前句系动词会误挡后句动作。
+    const HISTORICAL_CLAUSE_MARKERS = /\b(?:used\s+to|previously|formerly|earlier|yesterday|last\s+(?:time|night|week|month|year))\b|\bdid\b|\bwould\s+(?:often|usually|always)\b/iu;
+    const PRESENT_TIME_RESET = /^(?:现在|如今|今天|这次|这回|此刻|now|today|currently|this\s+time)/iu;
     const BODY_TERMS = Object.freeze([
         '头', '脑袋', '脸', '眼', '目光', '耳', '猫耳', '耳尖', '耳根', '尾巴', '尾尖', '肩', '手', '掌', '指', '臂', '胸', '腰', '身体', '身子', '腿', '膝', '脚',
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
@@ -536,17 +540,37 @@
         });
     }
 
+    function clauseIsHistorical(raw) {
+        return CHINESE_HISTORICAL.test(raw) || HISTORICAL_CLAUSE_MARKERS.test(raw);
+    }
+
     function actionHistorical(text, sourceIndex) {
         const source = folded(text);
-        const current = splitClauses(source).find(function (clause) {
+        const clauses = splitClauses(source);
+        const index = clauses.findIndex(function (clause) {
             return sourceIndex >= clause.start && sourceIndex < clause.end;
         });
-        if (!current) return false;
+        if (index < 0) return false;
+        const current = clauses[index];
         const prefix = source.slice(current.start, sourceIndex);
-        return CHINESE_HISTORICAL.test(current.raw)
+        if (CHINESE_HISTORICAL.test(current.raw)
             || /\b(?:used\s+to|previously|formerly|earlier|yesterday|last\s+(?:time|night|week|month|year))\b/iu.test(current.raw)
             || /\b(?:was|were|had|did)\b[^.!?;]*$/iu.test(prefix)
-            || /\bwould\s+(?:(?:often|usually|always)\s+)?$/iu.test(prefix);
+            || /\bwould\s+(?:(?:often|usually|always)\s+)?$/iu.test(prefix)) {
+            return true;
+        }
+        // 同一句里并列/顺承的后续动作仍属于同一段过去陈述：“I used to clap and
+        // wave”“我之前点头了然后挥手了”都在讲过去，只有第一个动作被挡住会让后半
+        // 句照样播。转折（但是/but，都是 continuation 关系）和显式的现在时标记才复位。
+        for (let cursor = index; cursor > 0; cursor -= 1) {
+            const clause = clauses[cursor];
+            const previous = clauses[cursor - 1];
+            if (previous.sentence !== clause.sentence) break;
+            if (clause.relation !== 'parallel' && clause.relation !== 'sequence') break;
+            if (PRESENT_TIME_RESET.test(clause.raw)) break;
+            if (clauseIsHistorical(previous.raw)) return true;
+        }
+        return false;
     }
 
     function actionOnlyHistorical(text, anchor) {
@@ -1129,6 +1153,24 @@
         }
 
         _frameAcrossClauses(rule, clauses, locale, officialEmotion, profilePreset, speechMode) {
+            // 顺承子句（“挥手然后不要鼓掌”）说的是另一个独立动作，它的词不能给前一
+            // 个动作当跨子句完形证据：否则第二段的否定词“不要”会和第一段的“挥手”拼
+            // 成 dismiss 的完形，把本该播的 wave 顶掉。按顺承边界切段，逐段求完形。
+            const segments = [];
+            clauses.forEach(function (clause) {
+                if (!segments.length || clause.relation === 'sequence') segments.push([]);
+                segments[segments.length - 1].push(clause);
+            });
+            return segments.reduce((best, segment) => {
+                const candidate = this._frameForClauses(
+                    rule, segment, locale, officialEmotion, profilePreset, speechMode
+                );
+                if (!candidate) return best;
+                return !best || candidate.score > best.score ? candidate : best;
+            }, null);
+        }
+
+        _frameForClauses(rule, clauses, locale, officialEmotion, profilePreset, speechMode) {
             const primary = clauses.filter(function (clause) {
                 return clause.role === 'event' || clause.role === 'modifier';
             });

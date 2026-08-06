@@ -174,6 +174,28 @@ assert.equal(core.analyzeSpeech('My close friend from school claps.', { locale: 
 ['I make her clap.', 'I help him wave goodbye.', 'I ask them to nod.'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
 });
+// 同句并列/顺承的后续动作仍属于同一段过去陈述，过去标记只挡住第一个动作会让
+// 后半句照样播；转折和显式现在时标记必须复位。
+['I used to clap and wave', 'I did clap and wave', '我之前鼓掌了然后挥手了'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('I used to clap, but I wave', { locale: 'en' }).plan[0].intent, 'wave');
+assert.equal(core.analyzeSpeech('I used to clap and now I wave', { locale: 'en' }).plan[0].intent, 'wave');
+assert.equal(core.analyzeSpeech('That was fun, so I clap', { locale: 'en' }).plan[0].intent, 'clap');
+// 顺承子句是另一个独立动作：它的否定词不能和前一段拼成别的完形。
+assert.deepEqual(
+    core.analyze('挥手然后不要鼓掌', { locale: 'zh-CN' }).plan.map(function (item) {
+        return item.intent;
+    }),
+    ['wave']
+);
+assert.deepEqual(
+    core.analyze('挥手然后鼓掌', { locale: 'zh-CN' }).plan.map(function (item) {
+        return item.intent;
+    }),
+    ['wave', 'clap']
+);
+assert.equal(core.analyze('摆手拒绝，掌心朝前', { locale: 'zh-CN' }).plan[0].intent, 'dismiss');
 assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'a young girl clap'
 }).plan.length, 0);
