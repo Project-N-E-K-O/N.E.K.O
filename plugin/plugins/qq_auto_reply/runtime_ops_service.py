@@ -52,11 +52,6 @@ class QQRuntimeOpsService:
         try:
             self.plugin._emit_log("INFO", f"正在连接 {'NapCat' if is_napcat else 'QQ 开放平台'}...")
             await self.plugin.qq_client.connect()
-            # 连上了才登记这个通道的标识符语义：登记的是「现在跑着的 wire
-            # format」，而改配置到重连之间可能隔着任意长的时间。模式在这里
-            # 定死传进去（`expected` 就是本次实际用来建连接的那个），不让
-            # 协程自己回头再读一次配置。
-            self.plugin.settings_service.ensure_identity_scope_declared(expected)
             if self.plugin.attention_service and self.plugin.qq_client.needs_attention:
                 await self.plugin.attention_service.start_decay_loop()
             self.plugin._emit_log("INFO", "已连接，启动消息处理循环")
@@ -65,6 +60,20 @@ class QQRuntimeOpsService:
             self.plugin._startup_error = None
             self.plugin._running = True
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())
+            # 连上了才登记这个通道的标识符语义：登记的是「现在跑着的 wire
+            # format」，而改配置到重连之间可能隔着任意长的时间。模式在这里
+            # 定死传进去（`expected` 就是本次实际用来建连接的那个），不让
+            # 协程自己回头再读一次配置。
+            #
+            # 必须在 `_running = True` 之后、且自带 try：它是一次登记，本身
+            # 带退避重试，任何情况下都不该把一次**已经连上**的启动打进
+            # except 分支——那会让插件报「启动失败」而连接其实还在。
+            try:
+                self.plugin.settings_service.ensure_identity_scope_declared(
+                    expected,
+                )
+            except Exception:
+                self.plugin.logger.warning("身份作用域登记未能启动", exc_info=True)
             if needs_housekeeping:
                 self.plugin._session_housekeeping_task = asyncio.create_task(
                     self.plugin._session_housekeeping_loop()

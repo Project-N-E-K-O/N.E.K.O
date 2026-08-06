@@ -822,6 +822,65 @@ async def test_a_write_that_did_not_persist_is_reported_as_a_failure(operation):
 # -- which transport the scope describes ------------------------------------
 
 
+async def test_a_failing_scope_declaration_never_fails_an_established_start():
+    """It is one registration with its own backoff -- not a startup dependency.
+
+    Letting it raise inside ``start_auto_reply`` sends an ALREADY CONNECTED
+    start into the except branch: the plugin reports a startup failure while
+    the socket is up, and the housekeeping task never gets created.
+    """
+    from plugin.plugins.qq_auto_reply.runtime_ops_service import (
+        QQRuntimeOpsService,
+    )
+
+    settings = {"qq_connection_mode": "open_platform"}
+
+    async def _connect_then_someone_saves_another_mode():
+        # The window codex pointed at: ``connect()`` is an await, and another
+        # dashboard session can save a different mode across it. The channel
+        # that actually connected is the open platform one; re-reading the
+        # settings afterwards would register napcat's semantics for it.
+        settings["qq_connection_mode"] = "napcat"
+
+    plugin = SimpleNamespace(
+        _session_housekeeping_task=None,
+        _session_housekeeping_loop=AsyncMock(),
+        _running=False,
+        _message_task=None,
+        _process_messages=AsyncMock(),
+        _qq_settings=settings,
+        _ensure_qq_client_initialized=lambda: None,
+        qq_client=SimpleNamespace(
+            needs_attention=False,
+            connect=AsyncMock(side_effect=_connect_then_someone_saves_another_mode),
+            onebot_url="",
+        ),
+        attention_service=None,
+        attention_gate_service=None,
+        napcat_service=SimpleNamespace(get_startup_error=lambda: ""),
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+        _startup_error=None,
+        settings_service=SimpleNamespace(
+            ensure_identity_scope_declared=MagicMock(
+                side_effect=RuntimeError("memory_server unreachable"),
+            ),
+        ),
+    )
+
+    result = await QQRuntimeOpsService(plugin).start_auto_reply()
+
+    assert plugin._running is True
+    assert plugin._startup_error is None
+    assert result.value["status"] == "started"
+    declared = plugin.settings_service.ensure_identity_scope_declared
+    # The mode is pinned at the moment the connection was built, not re-read.
+    assert declared.call_args.args == ("open_platform",)
+    if plugin._message_task:
+        plugin._message_task.cancel()
+
+
 async def test_the_scope_follows_the_running_transport_not_the_saved_config():
     """Saving a mode does not switch the live client; the save says so itself.
 
