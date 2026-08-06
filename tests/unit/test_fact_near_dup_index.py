@@ -118,9 +118,10 @@ def test_identity_ignores_only_lossless_differences():
 
 
 def test_identity_refuses_the_lossy_script_fold():
-    """The fold is many-to-one, so it must not gate the hard drop: 鍾 and 鐘
-    are different surnames that both fold to 钟. Retrieval still folds — the
-    pair reaches overlap 1.0 and goes to arbitration instead."""
+    """The fold is many-to-one, so it must not gate the hard drop: the two
+    surnames below are different and fold to the same character. Retrieval
+    still folds — the pair reaches overlap 1.0 and goes to arbitration
+    instead of being dropped."""
     a, b = "鍾先生住在台北", "鐘先生住在台北"
     assert token_overlap(fts_tokens(a), fts_tokens(b)) == 1.0
     assert normalized_identity(a) != normalized_identity(b)
