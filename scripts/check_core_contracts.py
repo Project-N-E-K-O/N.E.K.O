@@ -1258,7 +1258,10 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         # and the ``asyncio.Lock()`` spelling intact while the manager builds
         # an arbitrary primitive. Same family as the reflective writes above —
         # the swap happens where the checker was only reading spelling.
-        for node in ast.walk(tree):
+        # Reflective writes count the same as direct ones, for the same reason
+        # they do on the lock attribute itself: catching one spelling and not
+        # the other is not a gate, it is a speed bump.
+        def replaces_asyncio_lock(node: ast.AST) -> bool:
             targets: list[ast.expr] = []
             if isinstance(node, ast.Assign):
                 targets = list(node.targets)
@@ -1266,13 +1269,34 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
                 targets = [node.target]
             for target in targets:
                 if dotted_node_path(target) == "asyncio.Lock":
-                    violations.append(Violation(
-                        path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
-                        "asyncio.Lock is reassigned — the primitive check validates the "
-                        "spelling 'asyncio.Lock()' and that 'asyncio' means the standard "
-                        "library, but neither survives the attribute itself being "
-                        "replaced; the manager would then build an arbitrary lock whose "
-                        "acquire may suspend (#2619)"))
+                    return True
+                # ``asyncio.__dict__["Lock"] = X``
+                if (
+                    isinstance(target, ast.Subscript)
+                    and dotted_node_path(target.value) == "asyncio.__dict__"
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "Lock"
+                ):
+                    return True
+            # ``setattr(asyncio, "Lock", X)`` / ``object.__setattr__(...)``
+            return (
+                isinstance(node, ast.Call)
+                and dotted_node_path(node.func) in {"setattr", "object.__setattr__"}
+                and len(node.args) >= 2
+                and dotted_node_path(node.args[0]) == "asyncio"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "Lock"
+            )
+
+        for node in ast.walk(tree):
+            if replaces_asyncio_lock(node):
+                violations.append(Violation(
+                    path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                    "asyncio.Lock is replaced — the primitive check validates the "
+                    "spelling 'asyncio.Lock()' and that 'asyncio' means the standard "
+                    "library, but neither survives the attribute itself being "
+                    "replaced; the manager would then build an arbitrary lock whose "
+                    "acquire may suspend (#2619)"))
         # manager.py binds the attribute; that assignment target is the only
         # non-``async with`` mention the package is allowed to carry. Every
         # binding is collected — not just the first — because the primitive

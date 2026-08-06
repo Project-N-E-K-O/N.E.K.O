@@ -2181,26 +2181,38 @@ def test_lock_gate_still_flags_eager_comprehensions(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "swap",
+    [
+        pytest.param("asyncio.Lock = OtherLock", id="direct"),
+        pytest.param('setattr(asyncio, "Lock", OtherLock)', id="setattr"),
+        pytest.param('object.__setattr__(asyncio, "Lock", OtherLock)', id="object-setattr"),
+        pytest.param('asyncio.__dict__["Lock"] = OtherLock', id="dunder-dict"),
+    ],
+)
 def test_lock_gate_rejects_replacing_asyncio_lock_itself(
     contract_checker,
     tmp_path: Path,
+    swap: str,
 ) -> None:
     """The module can stay stdlib while its ``Lock`` attribute is swapped.
 
-    Both the name check and the ``asyncio.Lock()`` spelling survive that,
-    so neither notices the manager building an arbitrary primitive.
+    Both the name check and the ``asyncio.Lock()`` spelling survive that, so
+    neither notices the manager building an arbitrary primitive. Direct and
+    reflective spellings alike — catching one and not the other is a speed
+    bump, not a gate.
     """
 
     source = _CLEAN_PROBE + (
         "\n"
         "    def swap(self):\n"
-        "        asyncio.Lock = OtherLock\n"
+        f"        {swap}\n"
     )
 
     violations = _lock_violations(contract_checker, tmp_path, source)
 
     assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
-    assert "asyncio.Lock is reassigned" in violations[0].message
+    assert "asyncio.Lock is replaced" in violations[0].message
 
 
 @pytest.mark.unit
