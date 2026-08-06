@@ -735,10 +735,7 @@
         const emotionReadyPromise = new Promise(function (resolve) {
             resolveEmotionReady = resolve;
         });
-        const pendingUserText = String(
-            userText || window._nekoMotionPendingUserText || window._lastSubmittedText || ''
-        ).slice(0, 1000);
-        window._nekoMotionPendingUserText = '';
+        const pendingUserText = String(userText || '').slice(0, 1000);
         activeTurn = {
             id: String(turnId || 'local-' + Date.now()),
             source: source || 'lifecycle',
@@ -832,7 +829,6 @@
         if (!bridgeEvent) bridgedText = '';
         const mode = refreshMode();
         if (mode !== 'vrm') {
-            window._nekoMotionPendingUserText = '';
             metrics.nonVrmTurns += 1;
             console.info('[NekoMotion] ignored assistant turn because avatar mode is', mode);
             return;
@@ -1019,18 +1015,6 @@
 
     bindMotionLifecycleBridge();
 
-    window.addEventListener('neko-assistant-turn-start', function (event) {
-        startObservedTurn(event);
-    });
-
-    window.addEventListener('neko-assistant-turn-end', function (event) {
-        endObservedTurn(event && event.detail, 'lifecycle');
-    });
-
-    window.addEventListener('neko-assistant-emotion-ready', function (event) {
-        emotionObserved(event && event.detail);
-    });
-
     async function handleVrmModelLoaded() {
         const loadedModel = window.vrmManager && window.vrmManager.currentModel;
         resetCharacterMotionState();
@@ -1090,10 +1074,6 @@
             if (!player || !vrmReady()) return;
             player.setProfile(profile);
         });
-    });
-
-    window.addEventListener('neko-assistant-speech-cancel', function () {
-        cancelObservedSpeech();
     });
 
     window.addEventListener('neko-model-manager-mode-set', function (event) {

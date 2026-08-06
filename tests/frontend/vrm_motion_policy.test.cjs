@@ -57,6 +57,7 @@ const relativeFiles = walk(motionRoot).map(function (filename) {
 }).sort();
 
 assert.deepEqual(relativeFiles.filter(function (name) { return !name.endsWith('.vrma.gz'); }), [
+    'bridge.js',
     'core.js',
     'manifest.json',
     'player.js',
@@ -70,21 +71,27 @@ assert.equal(allVrmFiles.filter(function (name) { return name.endsWith('.vrma.gz
 assert.equal(allVrmFiles.some(function (name) { return name.endsWith('.vrma'); }), false);
 
 const websocketSource = fs.readFileSync(path.join(root, 'static/app/app-websocket.js'), 'utf8');
+const buttonsSource = fs.readFileSync(path.join(root, 'static/app/app-buttons.js'), 'utf8');
+const bridgeSource = fs.readFileSync(path.join(motionRoot, 'bridge.js'), 'utf8');
 const relaySource = fs.readFileSync(
     path.join(root, 'static/app/app-interpage/guide-message-relay.js'),
     'utf8'
 );
 const runtimeSource = fs.readFileSync(path.join(motionRoot, 'runtime.js'), 'utf8');
-assert.equal(websocketSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
-assert.match(websocketSource, /appInterpage\.nekoBroadcastChannel/);
-assert.match(websocketSource, /function relayClosedMotionStage\(event\)/);
-assert.match(websocketSource, /event\.detail\.text/);
-assert.match(websocketSource, /payload\.structured = payload\.structured === true \|\| window\._turnIsStructured === true/);
-assert.match(websocketSource, /text: closedText,\s*structured: window\._turnIsStructured === true/);
+assert.equal(websocketSource.includes('_nekoMotionPendingUserText'), false);
+assert.equal(buttonsSource.includes('_nekoMotionPendingUserText'), false);
+assert.match(buttonsSource, /requestId: requestId,\s*text: text\.slice\(0, 1000\),\s*source:/);
 assert.match(
     websocketSource,
-    /window\.addEventListener\('pageshow',[\s\S]*window\.addEventListener\('neko-compact-caption-update', relayClosedMotionStage\)/
+    /requestId: resolveAssistantRequestId\(response\.request_id, response\.meta\),\s*text: normalizedVoiceTranscript\.slice\(0, 1000\),\s*source: 'voice'/
 );
+assert.equal(bridgeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
+assert.match(bridgeSource, /appInterpage\.nekoBroadcastChannel/);
+assert.match(bridgeSource, /function relayClosedStage\(event\)/);
+assert.match(bridgeSource, /event\.detail\.text/);
+assert.match(bridgeSource, /detail\.structured = detail\.structured === true \|\| window\._turnIsStructured === true/);
+assert.match(bridgeSource, /text: closedText,\s*structured: window\._turnIsStructured === true/);
+assert.equal(bridgeSource.includes('_lastSubmittedText'), false);
 assert.match(relaySource, /case 'motion_lifecycle'/);
 assert.match(relaySource, /neko:motion-lifecycle-relay/);
 assert.match(relaySource, /!motionCurrentName \|\| motionDetail\.lanlan_name !== motionCurrentName/);
@@ -162,9 +169,10 @@ assert.ok(
 const nonVrmMarker = "if (mode !== 'vrm') {";
 const nonVrmParts = runtimeSource.split(nonVrmMarker);
 assert.equal(nonVrmParts.length, 2, 'non-VRM turn guard must remain unique');
-const nonVrmTurnBlock = nonVrmParts[1].split('}')[0];
-assert.match(nonVrmTurnBlock, /window\._nekoMotionPendingUserText = ''/);
-assert.ok(nonVrmTurnBlock.indexOf("window._nekoMotionPendingUserText = ''") < nonVrmTurnBlock.indexOf('return;'));
+assert.equal(runtimeSource.includes('_nekoMotionPendingUserText'), false);
+assert.equal(runtimeSource.includes('_lastSubmittedText'), false);
+assert.equal(runtimeSource.includes("window.addEventListener('neko-assistant-turn-start'"), false);
+assert.equal(runtimeSource.includes("window.addEventListener('neko-assistant-turn-end'"), false);
 const modeSetMarker = "window.addEventListener('neko-model-manager-mode-set'";
 const modeSetParts = runtimeSource.split(modeSetMarker);
 assert.equal(modeSetParts.length, 2, 'mode-set listener must remain unique');
@@ -185,6 +193,22 @@ assert.match(runtimeSource, /bindMotionLifecycleBridge\(\);\s*startMaintenanceTi
 const modelManagerSource = fs.readFileSync(
     path.join(root, 'static/js/model_manager/page-controller.js'),
     'utf8'
+);
+const indexTemplate = fs.readFileSync(path.join(root, 'templates/index.html'), 'utf8');
+const chatTemplate = fs.readFileSync(path.join(root, 'templates/chat.html'), 'utf8');
+assert.match(indexTemplate, /static\/vrm\/motion\/bridge\.js/);
+assert.match(chatTemplate, /static\/vrm\/motion\/bridge\.js/);
+assert.ok(
+    indexTemplate.indexOf('/static/app/app-websocket.js')
+        < indexTemplate.indexOf('/static/vrm/motion/bridge.js')
+        && indexTemplate.indexOf('/static/vrm/motion/bridge.js')
+        < indexTemplate.indexOf('/static/vrm/motion/runtime.js')
+);
+assert.ok(
+    chatTemplate.indexOf('/static/app/app-websocket.js')
+        < chatTemplate.indexOf('/static/vrm/motion/bridge.js')
+        && chatTemplate.indexOf('/static/vrm/motion/bridge.js')
+        < chatTemplate.indexOf('/static/app/app-buttons.js')
 );
 const modelManagerTemplate = fs.readFileSync(path.join(root, 'templates/model_manager.html'), 'utf8');
 assert.match(modelManagerSource, /new window\.NekoMotionPlayer\(\)/);

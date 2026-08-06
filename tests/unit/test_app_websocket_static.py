@@ -377,35 +377,6 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
-def test_compact_caption_prefers_event_text_over_gemini_buffer():
-    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-    relay_block = source.split("function relayClosedMotionStage(event) {", 1)[1].split(
-        "window.addEventListener('neko-compact-caption-update'",
-        1,
-    )[0]
-
-    assert "var hasEventText = !!(event && event.detail" in relay_block
-    assert "var text = hasEventText ? event.detail.text" in relay_block
-    assert relay_block.index("var hasEventText") < relay_block.index("window._geminiTurnFullText")
-
-
-def test_response_discarded_resolves_meta_request_id_before_rollback():
-    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-    response_discarded_block = source.split("// -------- response_discarded --------", 1)[1].split(
-        "// -------- user_transcript --------",
-        1,
-    )[0]
-
-    assert (
-        "var discardedRequestId = resolveAssistantRequestId(response.request_id, response.meta);"
-        in response_discarded_block
-    )
-    assert "rollbackLastDraft(discardedRequestId);" in response_discarded_block
-    assert "pendingTextForRequest('_lastSubmittedTextByRequest', discardedRequestId);" in response_discarded_block
-    assert "clearPendingRollbackForRequest(discardedRequestId, true);" in response_discarded_block
-    assert "clearPendingRollbackForRequest(response.request_id" not in response_discarded_block
-
-
 def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
@@ -5665,11 +5636,6 @@ def test_session_ended_by_server_stops_assistant_text_output():
         1,
     )[0]
     assert "if (S.suppressAssistantStreamUntilNextSession)" in discard_block
-    terminal_discard_block = _block_after(discard_block, "if (!response.will_retry) {")
-    assert "window._nekoMotionPendingUserText = '';" in terminal_discard_block
-    assert discard_block.index("window._nekoMotionPendingUserText = '';") < discard_block.index(
-        "if (S.suppressAssistantStreamUntilNextSession)"
-    )
     assert discard_block.index("if (S.suppressAssistantStreamUntilNextSession)") < discard_block.index(
         "// Fallback: clear trailing gemini bubbles not tracked"
     )
@@ -5677,11 +5643,6 @@ def test_session_ended_by_server_stops_assistant_text_output():
         "emitAssistantSpeechCancel('response_discarded');",
         1,
     )[0]
-    suppressed_discard = discard_block.split(
-        "if (S.suppressAssistantStreamUntilNextSession)", 1
-    )[1].split("return;", 1)[0]
-    assert "clearPendingRollbackForRequest(" in suppressed_discard
-    assert "clearPendingRollbackForRequest(discardedRequestId);" in suppressed_discard
 
     session_started_block = source.split("// -------- session_started --------", 1)[1].split(
         "// -------- session_failed --------",
@@ -5697,20 +5658,7 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert agent_callback_turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < agent_callback_turn_end_block.index(
         "flushRealisticBufferOnTurnEnd();"
     )
-    resolved_request = "resolveAssistantRequestId(response.request_id, response.meta)"
-    suppressed_agent_callback = agent_callback_turn_end_block.split(
-        "if (S.suppressAssistantStreamUntilNextSession)",
-        1,
-    )[1].split("return;", 1)[0]
-    assert "clearPendingRollbackForRequest(" in suppressed_agent_callback
-    assert resolved_request in suppressed_agent_callback
-    normal_agent_callback_end = agent_callback_turn_end_block.split(
-        "console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');",
-        1,
-    )[1]
-    agent_cleanup_index = normal_agent_callback_end.index("clearPendingRollbackForRequest(")
-    assert normal_agent_callback_end.index("ensureAssistantTurnStarted(") < agent_cleanup_index
-    assert normal_agent_callback_end.index(resolved_request, agent_cleanup_index) < normal_agent_callback_end.index(
+    assert agent_callback_turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < agent_callback_turn_end_block.index(
         "clearPendingAssistantTurnStart();"
     )
 
@@ -5722,49 +5670,9 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < turn_end_block.index(
         "flushRealisticBufferOnTurnEnd();"
     )
-    suppressed_turn_end = turn_end_block.split(
-        "if (S.suppressAssistantStreamUntilNextSession)",
-        1,
-    )[1].split("return;", 1)[0]
-    assert "clearPendingRollbackForRequest(" in suppressed_turn_end
-    assert resolved_request in suppressed_turn_end
-    normal_turn_end = turn_end_block.split("console.log(window.t('console.turnEndReceived'));", 1)[1]
-    turn_cleanup_index = normal_turn_end.index("clearPendingRollbackForRequest(")
-    assert normal_turn_end.index("ensureAssistantTurnStarted(") < turn_cleanup_index
-    assert normal_turn_end.index(resolved_request, turn_cleanup_index) < normal_turn_end.index(
+    assert turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < turn_end_block.index(
         "clearPendingAssistantTurnStart();"
     )
-
-
-def test_text_request_context_is_recorded_only_after_successful_send():
-    buttons_source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
-    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-
-    send_block = _block_after(
-        buttons_source,
-        "async function sendTextPayloadInternal(rawText, options) {",
-    )
-    text_branch = _block_after(send_block, "if (text) {")
-    assert text_branch.index("S.socket.send(JSON.stringify(textMessage));") < text_branch.index(
-        "rememberSentTextRequest();"
-    )
-    assert "ensureRequestTextStore('_nekoMotionPendingUserTextByRequest')[requestId]" in send_block
-    assert "ensureRequestTextStore('_lastSubmittedTextByRequest')[requestId]" in send_block
-    assert "clearPendingTextRequest();" in send_block
-
-    turn_start_block = _block_after(
-        websocket_source,
-        "function ensureAssistantTurnStarted(source, serverTurnId, responseMeta, requestId) {",
-    )
-    assert "pendingTextForRequest('_nekoMotionPendingUserTextByRequest', resolvedRequestId)" in turn_start_block
-    assert "window._nekoMotionPendingUserTextRequestId === resolvedRequestId" in turn_start_block
-
-    rollback_helper = _block_after(
-        websocket_source,
-        "function clearPendingRollbackForRequest(requestId) {",
-    )
-    assert "delete window._lastSubmittedTextByRequest[requestId];" in rollback_helper
-    assert "delete window._nekoMotionPendingUserTextByRequest[requestId];" in rollback_helper
 
 
 def test_ws_open_resyncs_goodbye_state_and_defers_regular_greeting_until_release():

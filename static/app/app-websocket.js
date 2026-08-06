@@ -1004,73 +1004,13 @@
         return 'local-' + S.assistantTurnSeq;
     }
 
-    var motionLifecycleLastClosedText = '';
-    var motionLifecycleLastBroadcastAt = 0;
-
-    function broadcastMotionLifecycle(eventName, detail) {
-        var channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-        if (!channel) return;
-        var payload = Object.assign({}, detail || {});
-        payload.lanlan_name = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-        if (typeof payload.text === 'string') payload.text = payload.text.slice(0, 24000);
-        motionLifecycleLastBroadcastAt = Math.max(Date.now(), motionLifecycleLastBroadcastAt + 1);
-        channel.postMessage({
-            action: 'motion_lifecycle',
-            eventName: eventName,
-            detail: payload,
-            timestamp: motionLifecycleLastBroadcastAt
-        });
-    }
-
     function emitAssistantLifecycleEvent(eventName, detail) {
-        if (eventName === 'neko-assistant-turn-start') {
-            motionLifecycleLastClosedText = '';
-        }
-        var payload = Object.assign({
-            timestamp: Date.now()
-        }, detail || {});
-        if (eventName === 'neko-assistant-turn-end') {
-            payload.structured = payload.structured === true || window._turnIsStructured === true;
-        }
-        window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
-        if (eventName === 'neko-assistant-turn-end') {
-            payload = Object.assign({}, payload, {
-                text: typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : ''
-            });
-        }
-        broadcastMotionLifecycle(eventName, payload);
+        window.dispatchEvent(new CustomEvent(eventName, {
+            detail: Object.assign({
+                timestamp: Date.now()
+            }, detail || {})
+        }));
     }
-
-    // The standalone chat and pet/VRM surfaces are different Electron pages.
-    // Only relay when a stage direction has actually closed. Visible prose is
-    // sent once by turn-end above, so the bridge never needs to poll or publish
-    // the growing full reply on every streaming chunk.
-    function relayClosedMotionStage(event) {
-        var hasEventText = !!(event && event.detail && typeof event.detail.text === 'string');
-        var text = hasEventText ? event.detail.text
-            : (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '');
-        if (!text) {
-            motionLifecycleLastClosedText = '';
-            return;
-        }
-        var closedAt = Math.max(text.lastIndexOf(')'), text.lastIndexOf('）'));
-        if (closedAt < 0) return;
-        var closedText = text.slice(0, closedAt + 1);
-        if (closedText === motionLifecycleLastClosedText) return;
-        motionLifecycleLastClosedText = closedText;
-        broadcastMotionLifecycle('neko-assistant-text-update', {
-            turnId: resolveAssistantLifecycleTurnId(),
-            text: closedText,
-            structured: window._turnIsStructured === true
-        });
-    }
-    window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
-    window.addEventListener('pagehide', function () {
-        window.removeEventListener('neko-compact-caption-update', relayClosedMotionStage);
-    });
-    window.addEventListener('pageshow', function () {
-        window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
-    });
 
     function getRenderableAssistantChunkText(text) {
         return String(text || '')
@@ -1312,32 +1252,13 @@
     }
 
     function clearPendingRollbackForRequest(requestId) {
-        var preserveReactDraft = arguments[1] === true;
-        if (!preserveReactDraft && window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
             window.reactChatWindowHost.clearPendingRollbackDraft(requestId);
-        }
-        if (requestId && window._lastSubmittedTextByRequest) {
-            delete window._lastSubmittedTextByRequest[requestId];
-        }
-        if (requestId && window._nekoMotionPendingUserTextByRequest) {
-            delete window._nekoMotionPendingUserTextByRequest[requestId];
-        }
-        if (requestId && window._nekoMotionPendingUserTextRequestId === requestId) {
-            window._nekoMotionPendingUserText = '';
-            window._nekoMotionPendingUserTextRequestId = '';
         }
         if (requestId && window._lastSubmittedRequestId === requestId) {
             window._lastSubmittedText = '';
             window._lastSubmittedRequestId = '';
         }
-    }
-
-    function pendingTextForRequest(storeName, requestId) {
-        if (!requestId) return '';
-        var store = window[storeName];
-        if (!store || typeof store !== 'object'
-                || !Object.prototype.hasOwnProperty.call(store, requestId)) return '';
-        return String(store[requestId] || '');
     }
 
     function isNewUserIcebreakerMirrorTurnEnd(response) {
@@ -1502,33 +1423,22 @@
                     setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
                 });
                 var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
-                var readyEmotion = 'neutral';
                 if (emotionResult && emotionResult.emotion) {
-                    readyEmotion = emotionResult.emotion;
                     console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
                     if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
-                }
-                if (assistantTurnId) {
-                    emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                        turnId: assistantTurnId,
-                        emotion: readyEmotion,
-                        source: emotionResult && emotionResult.emotion
-                            ? 'emotion_analysis' : 'emotion_analysis_unavailable'
-                    });
+                    if (assistantTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                            turnId: assistantTurnId,
+                            emotion: emotionResult.emotion,
+                            source: 'emotion_analysis'
+                        });
+                    }
                 }
             } catch (emotionError) {
                 if (emotionError.message === '情感分析超时') {
                     console.warn(window.t('console.emotionAnalysisTimeout'));
                 } else {
                     console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
-                }
-                if (assistantTurnId) {
-                    emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                        turnId: assistantTurnId,
-                        emotion: 'neutral',
-                        source: emotionError.message === '情感分析超时'
-                            ? 'emotion_analysis_timeout' : 'emotion_analysis_failed'
-                    });
                 }
             }
         }, 100);
@@ -1577,16 +1487,6 @@
             return null;
         }
 
-        var resolvedRequestId = resolveAssistantRequestId(requestId, responseMeta);
-        var motionUserText = pendingTextForRequest('_nekoMotionPendingUserTextByRequest', resolvedRequestId);
-        if (!motionUserText && (!resolvedRequestId
-                || window._nekoMotionPendingUserTextRequestId === resolvedRequestId)) {
-            motionUserText = String(window._nekoMotionPendingUserText || '');
-        }
-        if (!motionUserText && (!resolvedRequestId
-                || window._lastSubmittedRequestId === resolvedRequestId)) {
-            motionUserText = String(window._lastSubmittedText || '');
-        }
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
@@ -1595,15 +1495,10 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
-            requestId: resolvedRequestId,
+            requestId: resolveAssistantRequestId(requestId, responseMeta),
             source: source || 'visible_gemini_bubble',
-            meta: responseMeta,
-            userText: motionUserText.slice(0, 1000)
+            meta: responseMeta
         });
-        if (!resolvedRequestId || window._nekoMotionPendingUserTextRequestId === resolvedRequestId) {
-            window._nekoMotionPendingUserText = '';
-            window._nekoMotionPendingUserTextRequestId = '';
-        }
         logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
             source: source || 'visible_gemini_bubble',
             serverTurnId: normalizeAssistantTurnId(serverTurnId),
@@ -2471,12 +2366,7 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
-                    var discardedRequestId = resolveAssistantRequestId(response.request_id, response.meta);
-                    if (!response.will_retry) {
-                        window._nekoMotionPendingUserText = '';
-                    }
                     if (S.suppressAssistantStreamUntilNextSession) {
-                        clearPendingRollbackForRequest(discardedRequestId);
                         logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
                             reason: response.reason,
                             willRetry: !!response.will_retry
@@ -2488,7 +2378,7 @@
                             window.dispatchEvent(new CustomEvent('neko:assistant-response-cancelled', {
                                 detail: {
                                     reason: response.reason || 'response-discarded',
-                                    requestId: discardedRequestId
+                                    requestId: resolveAssistantRequestId(response.request_id, response.meta)
                                 }
                             }));
                         } catch (_) {}
@@ -2617,25 +2507,35 @@
                         // Suppress toast — backend sends cute text via gemini_response
                         // Only rollback user input here
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.rollbackLastDraft === 'function') {
-                            window.reactChatWindowHost.rollbackLastDraft(discardedRequestId);
+                            window.reactChatWindowHost.rollbackLastDraft(response.request_id);
                         }
                         var legacyInput = document.getElementById('textInputBox');
-                        var rollbackText = pendingTextForRequest('_lastSubmittedTextByRequest', discardedRequestId);
-                        if (!rollbackText && discardedRequestId && window._lastSubmittedRequestId === discardedRequestId) {
-                            rollbackText = String(window._lastSubmittedText || '');
-                        }
                         if (legacyInput && !legacyInput.value &&
-                            discardedRequestId && rollbackText) {
-                            legacyInput.value = rollbackText;
+                            response.request_id && window._lastSubmittedRequestId === response.request_id &&
+                            window._lastSubmittedText) {
+                            legacyInput.value = window._lastSubmittedText;
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
                         }
-                        clearPendingRollbackForRequest(discardedRequestId, true);
                     } else if (_isLengthTruncated) {
                         // Suppress toast / error bubble. Keep the user's input cleared
                         // (truncated answer is a valid completion, no retry needed).
-                        clearPendingRollbackForRequest(discardedRequestId);
+                        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                            window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                        }
+                        if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                            window._lastSubmittedText = '';
+                            window._lastSubmittedRequestId = '';
+                        }
                     } else {
                         if (!response.will_retry) {
-                            clearPendingRollbackForRequest(discardedRequestId);
+                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.clearPendingRollbackDraft === 'function') {
+                                window.reactChatWindowHost.clearPendingRollbackDraft(response.request_id);
+                            }
+                            if (response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                                window._lastSubmittedText = '';
+                                window._lastSubmittedRequestId = '';
+                            }
                         }
                         var retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
                         var failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
@@ -2690,19 +2590,10 @@
                     removeExternalAsrPreview();
                     var normalizedVoiceTranscript = String(response.text || '').trim();
                     if (normalizedVoiceTranscript) {
-                        var voiceRequestId = resolveAssistantRequestId(response.request_id, response.meta);
-                        window._nekoMotionPendingUserText = normalizedVoiceTranscript.slice(0, 1000);
-                        window._nekoMotionPendingUserTextRequestId = voiceRequestId || '';
-                        if (voiceRequestId) {
-                            if (!window._nekoMotionPendingUserTextByRequest
-                                    || typeof window._nekoMotionPendingUserTextByRequest !== 'object') {
-                                window._nekoMotionPendingUserTextByRequest = Object.create(null);
-                            }
-                            window._nekoMotionPendingUserTextByRequest[voiceRequestId] = normalizedVoiceTranscript.slice(0, 1000);
-                        }
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
-                                requestId: voiceRequestId,
+                                requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                text: normalizedVoiceTranscript.slice(0, 1000),
                                 source: 'voice'
                             }
                         }));
@@ -3920,12 +3811,11 @@
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant turn_end after session ended by server');
-                        clearPendingRollbackForRequest(
-                            resolveAssistantRequestId(response.request_id, response.meta)
-                        );
+                        clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();
                         return;
                     }
+                    clearPendingRollbackForRequest(response.request_id);
                     console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
@@ -3941,9 +3831,6 @@
                             response.request_id
                         );
                     }
-                    clearPendingRollbackForRequest(
-                        resolveAssistantRequestId(response.request_id, response.meta)
-                    );
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
                         logAssistantLifecycle('ws:turn_end_agent_callback:emit', {
@@ -3970,12 +3857,11 @@
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant turn_end after session ended by server');
-                        clearPendingRollbackForRequest(
-                            resolveAssistantRequestId(response.request_id, response.meta)
-                        );
+                        clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();
                         return;
                     }
+                    clearPendingRollbackForRequest(response.request_id);
                     console.log(window.t('console.turnEndReceived'));
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
@@ -3992,9 +3878,6 @@
                             response.request_id
                         );
                     }
-                    clearPendingRollbackForRequest(
-                        resolveAssistantRequestId(response.request_id, response.meta)
-                    );
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
                         logAssistantLifecycle('ws:turn_end:emit', {

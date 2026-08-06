@@ -9,6 +9,7 @@ from tests.node_harness import run_node_script
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_PATH = PROJECT_ROOT / "static" / "vrm" / "motion" / "runtime.js"
 FRONTEND_TESTS = (
+    "vrm_motion_bridge.test.cjs",
     "vrm_motion_semantics.test.cjs",
     "vrm_motion_policy.test.cjs",
     "vrm_motion_player.test.cjs",
