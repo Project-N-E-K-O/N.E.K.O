@@ -438,9 +438,10 @@ async def test_handle_output_transcript_contextvar_mismatch_drops():
 
 
 def _publish_blocks_until(mgr, gate: asyncio.Event) -> None:
-    """让 send_lanlan_response 像挂死的前端 socket 那样停住。
+    """Make send_lanlan_response hang the way a dead frontend socket does.
 
-    这正是 #2612 的复现手法：publish 在 WS 上挂起，用户在这期间开新一轮。
+    That is how #2612 reproduces: the publish suspends on the WebSocket and
+    the user starts a new turn while it is suspended.
     """
 
     async def _hangs_on_the_frontend(*_args, **_kwargs):
@@ -473,7 +474,7 @@ async def test_output_transcript_dropped_when_a_user_turn_starts_mid_publish():
     # handle_new_message 在另一个 task 里给用户新轮次发了 sid。
     mgr.current_speech_id = "s_user_new_turn"
     released.set()
-    await chunk
+    await asyncio.wait_for(chunk, timeout=1)
 
     mgr._enqueue_tts_text_chunk.assert_not_called()
     assert mgr.tts_pending_chunks == [], (
@@ -482,7 +483,8 @@ async def test_output_transcript_dropped_when_a_user_turn_starts_mid_publish():
 
 
 async def test_output_transcript_cached_under_the_turn_it_started_in():
-    """TTS 未就绪的缓存分支与直发分支同源，不能只钉住其中一个。"""
+    """The not-ready cache branch shares a source with the direct one;
+    pinning only one of them is pinning neither."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s_ai_turn"
     mgr.tts_ready = False
@@ -494,13 +496,14 @@ async def test_output_transcript_cached_under_the_turn_it_started_in():
     )
     await asyncio.sleep(0)
     released.set()
-    await chunk
+    await asyncio.wait_for(chunk, timeout=1)
 
     assert mgr.tts_pending_chunks == [("s_ai_turn", "正文")]
 
 
 async def test_output_transcript_proactive_preempted_mid_publish_drops():
-    """入口那次 contextvar 比对拦不住 publish 期间才发生的抢占。"""
+    """The entry contextvar check cannot see a preemption that happens
+    during the publish."""
     mgr = _make_mgr()
     mgr.current_speech_id = "s_proactive"
     released = asyncio.Event()
@@ -514,7 +517,7 @@ async def test_output_transcript_proactive_preempted_mid_publish_drops():
         await asyncio.sleep(0)
         mgr.current_speech_id = "s_user_new_turn"
         released.set()
-        await chunk
+        await asyncio.wait_for(chunk, timeout=1)
     finally:
         _proactive_expected_sid.reset(token)
 
