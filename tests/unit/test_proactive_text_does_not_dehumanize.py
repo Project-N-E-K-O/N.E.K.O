@@ -361,7 +361,10 @@ def test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_englis
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'fr-FR') == english
     zh = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh')
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-CN') == zh
-    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW') == zh
+    # 自 #2500 C2 起繁中走自己那一行，不再折成简体。
+    traditional = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW')
+    assert traditional != zh
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-Hant') == traditional
 
 
 def test_cat_greeting_episode_scene_is_not_labeled_as_optional_background() -> None:

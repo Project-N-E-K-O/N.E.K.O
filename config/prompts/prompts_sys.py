@@ -56,6 +56,23 @@ def _loc(d: dict, lang: str) -> str:
     return d["en"]
 
 
+def normalize_sys_prompt_locale(lang: str | None) -> str:
+    """Normalize a locale to a key of this module's prompt dicts.
+
+    Public on purpose, same reason as ``prompts_proactive.normalize_mini_game_invite_locale``:
+    callers in ``main_logic`` resolve a locale long before they reach ``_loc``, and
+    ``_loc`` cannot repair what arrived broken — it only *reports* an unexpected key
+    and then falls back, so a short code (``zh``) and a full locale (``zh-CN``) both
+    render Simplified without an error. This returns the scheme the tables here
+    actually use: ``zh`` / ``zh-TW``.
+    """
+    from config.prompts._locale import normalize_prompt_locale
+
+    return normalize_prompt_locale(
+        lang, default="en", simplified="zh", keep_traditional=True
+    )
+
+
 
 # ---------- Agent 结果解析器 i18n ----------
 

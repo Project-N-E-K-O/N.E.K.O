@@ -27,7 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
 from utils.logger_config import get_module_logger
 
 
@@ -180,7 +180,11 @@ def _load_locale_messages(locale_code: str) -> dict:
 
 
 def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
-    raw_lang = language or get_global_language()
+    # ⚠️ 兜底必须取 full。下面的 format='full' 只能保住已有的字形，救不回
+    # 已经丢掉的：get_global_language() 返回短码，繁中在进这个函数之前就成了
+    # zh，format='full' 再把它扩成 zh-CN，static/locales/zh-TW.json 永远读不到
+    # （issue #2500）。显式传进来的 language 照旧优先。
+    raw_lang = language or get_global_language_full()
     try:
         lang_full = normalize_language_code(raw_lang, format='full')
     except Exception:
