@@ -956,6 +956,13 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
 def _statements_in_critical_section(body: list[ast.stmt]):
     """Yield every node a critical section actually executes.
 
+    A generator expression is deferred the same way, with one eager part:
+    measured, ``(await work(x) async for x in src())`` evaluates NOTHING at
+    creation, while ``(x for x in await get())`` does evaluate the outermost
+    iterable there. So only ``generators[0].iter`` is walked for those. List,
+    set and dict comprehensions are NOT deferred — measured, they run their
+    element expression immediately — and stay fully walked.
+
     A nested ``def`` / ``async def`` / ``lambda`` splits into two halves that
     run at different times, and only the body is deferred:
 
@@ -976,6 +983,12 @@ def _statements_in_critical_section(body: list[ast.stmt]):
     while stack:
         node = stack.pop()
         yield node
+        if isinstance(node, ast.GeneratorExp):
+            # Everything but the outermost iterable runs at consumption time,
+            # which is necessarily after the block has exited.
+            if node.generators:
+                stack.append(node.generators[0].iter)
+            continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             # ``Lambda.body`` is one expression; the others hold a statement
             # list. Compare by identity — AST nodes have no ``__eq__``, and
@@ -1240,6 +1253,26 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             for item in node.items
             if is_session_lock(item)
         }
+        # The module can stay the real stdlib one while its ``Lock`` attribute
+        # is replaced: ``asyncio.Lock = OtherLock`` leaves both the name check
+        # and the ``asyncio.Lock()`` spelling intact while the manager builds
+        # an arbitrary primitive. Same family as the reflective writes above —
+        # the swap happens where the checker was only reading spelling.
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets = [node.target]
+            for target in targets:
+                if dotted_node_path(target) == "asyncio.Lock":
+                    violations.append(Violation(
+                        path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                        "asyncio.Lock is reassigned — the primitive check validates the "
+                        "spelling 'asyncio.Lock()' and that 'asyncio' means the standard "
+                        "library, but neither survives the attribute itself being "
+                        "replaced; the manager would then build an arbitrary lock whose "
+                        "acquire may suspend (#2619)"))
         # manager.py binds the attribute; that assignment target is the only
         # non-``async with`` mention the package is allowed to carry. Every
         # binding is collected — not just the first — because the primitive

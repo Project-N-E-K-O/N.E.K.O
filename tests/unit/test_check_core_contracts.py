@@ -2101,6 +2101,109 @@ def test_lock_gate_reports_one_violation_per_block_not_per_suspension(
 
 
 @pytest.mark.unit
+def test_lock_gate_ignores_a_generator_expression_body_under_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A generator expression body runs at consumption, not at creation.
+
+    Measured: ``(await work(x) async for x in src())`` evaluates nothing when
+    it is built, so the block never suspends and flagging it is a false
+    positive — and a gate that rejects harmless code teaches people to route
+    around it.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            self._pending = (await self.work(x) async for x in self.src())\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_still_sees_the_eager_outermost_iterable(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The one part of a generator expression that IS evaluated at creation.
+
+    Measured: ``(x for x in await get())`` runs ``await get()`` immediately,
+    so skipping the whole node would hide a real suspension.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            self._pending = (x for x in await self.get())\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "comprehension",
+    [
+        pytest.param("[await self.one(x) for x in self.batch]", id="list"),
+        pytest.param("{await self.one(x) for x in self.batch}", id="set"),
+        pytest.param("{x: await self.one(x) for x in self.batch}", id="dict"),
+    ],
+)
+def test_lock_gate_still_flags_eager_comprehensions(
+    contract_checker,
+    tmp_path: Path,
+    comprehension: str,
+) -> None:
+    """Only GENERATOR expressions are deferred; the other three run now."""
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        f"            self._rows = {comprehension}\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_replacing_asyncio_lock_itself(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The module can stay stdlib while its ``Lock`` attribute is swapped.
+
+    Both the name check and the ``asyncio.Lock()`` spelling survive that,
+    so neither notices the manager building an arbitrary primitive.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    def swap(self):\n"
+        "        asyncio.Lock = OtherLock\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "asyncio.Lock is reassigned" in violations[0].message
+
+
+@pytest.mark.unit
 def test_lock_gate_ignores_awaits_in_closures_defined_inside_the_block(
     contract_checker,
     tmp_path: Path,
