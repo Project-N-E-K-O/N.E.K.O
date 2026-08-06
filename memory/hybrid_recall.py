@@ -70,6 +70,18 @@ Chinese — using jieba would silently degrade Japanese / Korean recall.
 The 2/3-gram approach is consistent with ``memory.anti_repeat`` and
 covers all seven supported languages (zh/zh-TW/en/ja/ko/ru/es/pt)
 without per-language router complexity.
+
+The one thing character n-grams do *not* survive is zh / zh-TW, because
+the two scripts share a language but almost no characters: a fact stored
+as 他对机器学习很感兴趣 and the query 他對機器學習很感興趣 overlap in a
+single token, and a query written in the script the fact was not stored
+in scores several times lower — or drops out at ``score > 0`` entirely.
+Fact text follows the *conversation* language by design, so any user who
+switched input methods has both scripts sitting in ``facts.json``.
+``_tokenize`` therefore folds Traditional onto Simplified on both the
+query and the document side before splitting (#2584, see
+``memory.script_fold``). Word choice (用户 / 使用者) is a separate axis the
+fold does not address — that one is the embedding path's job.
 """
 from __future__ import annotations
 
@@ -90,6 +102,7 @@ from config import (
     HYBRID_RECALL_RRF_K,
     HYBRID_RECALL_TIME_BUDGET,
 )
+from memory.script_fold import fold_script
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Memory")
@@ -127,6 +140,13 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
 
     stop_names: strip master/catgirl names from the text before tokenizing,
     keeping high-frequency entity names from polluting BM25 IDF.
+
+    Traditional Chinese is folded onto Simplified first (#2584). Both the
+    query and the documents come through here, so the fold is symmetric and
+    never has to guess which script the user "meant" — it only has to make
+    the two agree. It runs *before* stop-name stripping, and the stop names
+    are folded with it, so a name configured in one script still strips out
+    of text written in the other.
     """  # noqa: DOCSTRING_CJK
     # Lazy import: 跟着 _extract_keywords 一起借 _SPLIT_RE 和 strip_stop_names，
     # 不要硬依赖 import-time —— persona 在某些 entrypoint（memory-only test）
@@ -139,17 +159,23 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
             exc,
         )
         # str() coerce 防 malformed entry 里 text 是 int / list 等 truthy
-        # non-string（codex review #1 之前那条）。
-        return [t for t in str(text or "").split() if len(t) >= 2]
+        # non-string（codex review #1 之前那条）。fold 也要跟上——降级路径
+        # 同样服务繁简两侧的 query/doc，漏了就是降级时静默退回 #2584。
+        return [t for t in fold_script(str(text or "")).split() if len(t) >= 2]
 
     # str() coerce 同 fallback 路径——malformed memory entry 里 text 可能
     # 是 list / int 等 truthy non-string，传给 _SPLIT_RE.split 会 TypeError
     # 把整条 hybrid_recall abort（应该只 skip 这一行，不该带挂全 query）。
     # codex review (3rd round): normal path 之前漏 coerce，只在 fallback 做。
-    raw_text = str(text or "")
+    # 折叠放在 strip 之前，且 stop_names 一起折：两边都落到简体空间，繁体
+    # fact 里的简体配置名（或反之）才strip得掉。fold 是 1:1 定长映射，不动
+    # 标点，所以下面 _SPLIT_RE 的切分位置不受影响。
+    raw_text = fold_script(str(text or ""))
     if stop_names:
         try:
-            raw_text = strip_stop_names(raw_text, stop_names)
+            raw_text = strip_stop_names(
+                raw_text, [fold_script(str(n)) for n in stop_names],
+            )
         except Exception:
             # strip_stop_names 内部就是字符串替换，理论上不会挂；保险起见
             # 不挂 BM25 主流程。
