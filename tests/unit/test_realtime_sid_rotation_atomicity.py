@@ -45,11 +45,23 @@ pytestmark = pytest.mark.unit
 
 
 class _FakeQueue:
+    """Records puts, and signals the moment ``__interrupt__`` is enqueued.
+
+    That signal is what the interrupt-window tests synchronise on. Sleeping
+    for a fraction of the 20ms wait would be a wall-clock bet: under CI load
+    the wake-up can land after the clear has already finished, and cancelling
+    a completed task is a no-op, so the test would fail for a scheduling
+    reason rather than a real one.
+    """
+
     def __init__(self):
         self.messages = []
+        self.interrupt_enqueued = asyncio.Event()
 
     def put(self, item):
         self.messages.append(item)
+        if item == ("__interrupt__", None):
+            self.interrupt_enqueued.set()
 
     def empty(self):
         return True
@@ -241,12 +253,16 @@ async def test_pipeline_clear_resets_the_done_ledger_with_the_interrupt():
 
 
 async def _cancel_inside_the_interrupt_sleep(mgr):
-    """Start the clear, cancel it during the 20ms wait, assert it got that far."""
+    """Start the clear, cancel it during the 20ms wait, assert it got that far.
+
+    Synchronised on the interrupt being enqueued, not on the clock: the put
+    and the ``await asyncio.sleep(0.02)`` that follows it are one synchronous
+    run, so a waiter woken by that event necessarily resumes while the clear
+    is parked in the sleep — on any machine, under any load.
+    """
 
     task = asyncio.create_task(_clear_pipeline(mgr))
-    # Long enough to get past the interrupt and into the sleep, short enough
-    # to stay inside its 20ms.
-    await asyncio.sleep(0.005)
+    await mgr.tts_request_queue.interrupt_enqueued.wait()
     task.cancel()
     assert isinstance(
         (await asyncio.gather(task, return_exceptions=True))[0],
@@ -296,8 +312,9 @@ async def test_a_done_request_during_the_interrupt_window_cannot_own_the_ledger(
     mgr.tts_thread = _FakeAliveThread()
 
     async def concurrent_done_request():
-        # Land inside the sleep, after the flag was cleared.
-        await asyncio.sleep(0.005)
+        # Land inside the sleep, after the flag was cleared — waited for
+        # deterministically rather than timed.
+        await mgr.tts_request_queue.interrupt_enqueued.wait()
         assert mgr._tts_done_queued_for_turn is False, (
             "test must observe the cleared flag, or it is not reproducing the race"
         )

@@ -1369,7 +1369,12 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
                 break  # one report per block; the first suspension is the defect
     if not blocks_seen:
         violations.append(Violation(
-            core_dir / "turn.py", 1, 0, "CORE_LOCK_NO_AWAIT",
+            # Anchored on the package initializer, not on whichever module
+            # happens to hold a rotation today: this violation fires exactly
+            # when the package changed shape, so naming a module that may
+            # itself have been renamed or deleted would render as a bare
+            # absolute path. ``run()`` hard-fails if this file is missing.
+            core_dir / "__init__.py", 1, 0, "CORE_LOCK_NO_AWAIT",
             "no 'async with self.lock' block left in main_logic/core — either the session "
             "lock moved or the rotations stopped taking it; this gate is now vacuous, so "
             "update it instead of letting it go dark"))

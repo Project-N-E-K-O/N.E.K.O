@@ -2822,9 +2822,12 @@ def test_lock_gate_fails_loudly_when_no_lock_block_is_left(
         "        self.current_speech_id = new_id()\n"
     )
 
-    messages = [v.message for v in _lock_violations(contract_checker, tmp_path, source)]
+    violations = _lock_violations(contract_checker, tmp_path, source)
 
-    assert any("vacuous" in m for m in messages)
+    assert any("vacuous" in v.message for v in violations)
+    # This violation fires exactly when the package changed shape, so it must
+    # not point at a module that may have been renamed away with it.
+    assert all(v.path.exists() for v in violations), [str(v.path) for v in violations]
 
 
 @pytest.mark.unit
