@@ -3224,7 +3224,7 @@ def get_proactive_format_sections(
         [MEME]  = attach a meme image (triggers sending an image)
         [PASS]  = skip this proactive chat
     """
-    lang = _normalize_prompt_language(lang)
+    lang_key = _normalize_prompt_language(lang)
 
     # ── i18n 素材片段 ──────────────────────────────────────────────
     _material_labels = {
@@ -3312,7 +3312,7 @@ def get_proactive_format_sections(
     }
 
     # ── 动态拼接 source_instruction ────────────────────────────────
-    labels = _material_labels.get(lang, _material_labels["en"])
+    labels = _material_labels.get(lang_key, _material_labels["en"])
     available = []
     if has_screen:
         available.append(labels["screen"])
@@ -3334,14 +3334,14 @@ def get_proactive_format_sections(
             "ru": ", ",
             "es": ", ",
             "pt": ", ",
-        }.get(lang, ", ")
+        }.get(lang_key, ", ")
         mat_str = joiner.join(available)
         source_instruction = _combine_template.get(
-            lang, _combine_template["en"]
+            lang_key, _combine_template["en"]
         ).format(materials=mat_str)
-        source_instruction += _skip_if_boring.get(lang, _skip_if_boring["en"])
+        source_instruction += _skip_if_boring.get(lang_key, _skip_if_boring["en"])
     else:
-        source_instruction = _none_instruction.get(lang, _none_instruction["en"])
+        source_instruction = _none_instruction.get(lang_key, _none_instruction["en"])
 
     # ── 动态拼接 output_format_section ─────────────────────────────
     #
@@ -3483,15 +3483,15 @@ def get_proactive_format_sections(
 
     if effect_tags:
         # 有副作用 tag 时：[CHAT] + 各有副作用 tag + [PASS]
-        td = _tag_desc.get(lang, _tag_desc["en"])
-        header = _of_header.get(lang, _of_header["en"])
+        td = _tag_desc.get(lang_key, _tag_desc["en"])
+        header = _of_header.get(lang_key, _of_header["en"])
         tag_lines = [f"  {td['CHAT']}"]
         for t in effect_tags:
             tag_lines.append(f"  {td[t]}")
 
         # 选一个有副作用的 tag 作为示例（优先 MEME > MUSIC > WEB，后添加的优先）
         example_tag = effect_tags[-1]
-        examples = _of_example.get(lang, _of_example["en"])
+        examples = _of_example.get(lang_key, _of_example["en"])
         example_text = examples.get(example_tag, examples["CHAT"])
 
         output_format_section = (
@@ -3499,7 +3499,7 @@ def get_proactive_format_sections(
         )
     else:
         # 完全没有副作用 tag：不需要标签系统
-        output_format_section = _of_none.get(lang, _of_none["en"])
+        output_format_section = _of_none.get(lang_key, _of_none["en"])
 
     return source_instruction, output_format_section
 
@@ -3728,14 +3728,21 @@ MEME_TOPIC_NO_KEYWORD = {
 
 
 def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> str:
-    """Assemble the meme topic line; includes the keyword when non-empty (describing the meme content), otherwise falls back to generic wording."""
+    """Assemble the meme topic line; includes the keyword when non-empty (describing the meme content), otherwise falls back to generic wording.
+
+    ``lang`` goes through ``_normalize_prompt_language`` like every other template
+    lookup in this module. It was the last pair reaching ``_loc`` with the caller's
+    raw value, which made the module's locale handling depend on which function you
+    happened to land in -- see the module note above ``_normalize_prompt_language``.
+    """
+    lang_key = _normalize_prompt_language(lang)
     # 先归一化空白：纯空白关键词（"   "）应视为无关键词，否则会误走带关键词模板。
     normalized_keyword = " ".join((keyword or "").split())
     if normalized_keyword:
-        return _loc(MEME_TOPIC_WITH_KEYWORD, lang).format(
+        return _loc(MEME_TOPIC_WITH_KEYWORD, lang_key).format(
             keyword=normalized_keyword, title=title, source=source
         )
-    return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
+    return _loc(MEME_TOPIC_NO_KEYWORD, lang_key).format(title=title, source=source)
 
 # ---------- Realtime 语音模式主动搭话文本触发（无视觉） ----------
 REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS = {
