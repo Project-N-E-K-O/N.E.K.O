@@ -2645,10 +2645,28 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         f'{compact_surface_prefix} [data-compact-geometry-owner="surface"],\n'
         f'{compact_surface_prefix} [data-compact-geometry-owner="surface"] *,\n'
         f'{compact_surface_prefix} #reactChatWindowMinimizeButton,\n'
-        f'{compact_surface_prefix} #reactChatWindowMinimizeButton *,\n'
-        f'{compact_surface_prefix} .compact-input-tool-fan[data-compact-input-tool-fan-open="true"],\n'
-        f'{compact_surface_prefix} .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] * {{\n'
+        f'{compact_surface_prefix} #reactChatWindowMinimizeButton * {{\n'
         "    pointer-events: auto;\n"
+        "}"
+    )
+    tool_fan_passthrough_rule = (
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {{\n'
+        "    pointer-events: none !important;\n"
+        "}"
+    )
+    visible_tool_fan_interactive_rule = (
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region,\n'
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item:not([data-compact-tool-wheel-slot="hidden"]):not([data-compact-tool-wheel-slot="hidden-forward"]):not([data-compact-tool-wheel-slot="hidden-backward"]),\n'
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .avatar-tool-quickbar,\n'
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .avatar-tool-quickbar * {{\n'
+        "    pointer-events: auto !important;\n"
+        "}"
+    )
+    hidden_tool_fan_slots_rule = (
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],\n'
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"],\n'
+        f'{compact_surface_prefix} #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {{\n'
+        "    pointer-events: none !important;\n"
         "}"
     )
     compact_music_interactive_rule = (
@@ -2696,6 +2714,9 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     )
 
     assert broad_surface_rule in styles
+    assert tool_fan_passthrough_rule in styles
+    assert visible_tool_fan_interactive_rule in styles
+    assert hidden_tool_fan_slots_rule in styles
     assert compact_music_interactive_rule in styles
     assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
@@ -2708,6 +2729,9 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     assert styles.index(history_passthrough_rule) < styles.index(meme_passthrough_rule)
     assert styles.index(meme_passthrough_rule) < styles.index(meme_close_interactive_rule)
     assert styles.index(meme_close_interactive_rule) < styles.index(history_interactive_rule)
+    assert styles.index(broad_surface_rule) < styles.index(tool_fan_passthrough_rule)
+    assert styles.index(tool_fan_passthrough_rule) < styles.index(visible_tool_fan_interactive_rule)
+    assert styles.index(visible_tool_fan_interactive_rule) < styles.index(hidden_tool_fan_slots_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 
 
