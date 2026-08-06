@@ -322,7 +322,7 @@ async def _confirm_cloud_forge_debit(
     try:
         payload = response.json()
     except (ValueError, TypeError):
-        payload = {}
+        payload = None
     if not 200 <= response.status_code < 300 or not isinstance(payload, dict):
         detail = payload.get("detail") if isinstance(payload, dict) else None
         return {

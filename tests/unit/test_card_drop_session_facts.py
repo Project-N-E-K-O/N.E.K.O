@@ -345,7 +345,7 @@ async def test_confirm_cloud_forge_debit_omits_proof_for_local_http(monkeypatch)
         card_id="card-id",
     )
 
-    assert result == {"confirmed": False}
+    assert result == {"confirmed": False, "detail": "http_204"}
     assert captured["json"] == {
         "client_id": "client-id",
         "credit_id": "credit-id",
