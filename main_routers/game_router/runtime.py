@@ -2078,7 +2078,18 @@ async def _route_external_transcript_to_game(
         },
     })
     llm_started_at = time.time()
-    result = await _run_game_chat(game_type, session_id, event)
+    route_prompt_locale = str(state.get("user_language") or "").strip()
+    game_chat_kwargs = (
+        {"prompt_locale": route_prompt_locale}
+        if route_prompt_locale
+        else {}
+    )
+    result = await _run_game_chat(
+        game_type,
+        session_id,
+        event,
+        **game_chat_kwargs,
+    )
     result_ts = time.time()
     _append_game_dialog(state, {
         "type": "assistant",

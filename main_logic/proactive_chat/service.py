@@ -334,6 +334,11 @@ def _resolve_topic_hook_locale(
     declared = _resolve_declared_topic_hook_locale(data, mgr)
     if declared:
         return declared
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = normalize_language_code(render_lang, format="full")
+        if normalized:
+            return normalized
     global_lang = normalize_language_code(get_global_language_full(), format="full")
     if global_lang:
         return global_lang

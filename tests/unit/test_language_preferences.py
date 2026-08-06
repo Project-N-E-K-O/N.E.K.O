@@ -45,6 +45,7 @@ def test_language_preference_copy_exists_in_all_supported_locales():
         "languagePreference",
         "languagePreferenceDescription",
         "languagePreferenceSaved",
+        "languagePreferencePartiallySaved",
         "languagePreferenceSaveFailed",
         "languagePreferenceLoadFailed",
     }
@@ -205,6 +206,161 @@ def test_character_language_control_keeps_failed_or_fallback_state_non_durable()
     assert "const durableSave = response.ok" in form_source
     assert "if (durableSave && payload.language === language)" in form_source
     assert "select.dataset.languageSaveId !== saveId || select.value !== language" in form_source
+
+
+@pytest.mark.unit
+def test_explicit_language_preference_survives_unavailable_local_storage():
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the browser language preference harness")
+
+    source = (PROJECT_ROOT / "static" / "i18n-i18next.js").read_text(encoding="utf-8")
+    preference_source = _slice_between(
+        source,
+        "function normalizeSupportedLanguageCode(rawLanguage)",
+        "// 获取浏览器语言（同步，作为 fallback）",
+        "浏览器语言偏好缓存",
+    )
+    harness = textwrap.dedent(
+        r"""
+        const assert = require('node:assert/strict');
+        const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
+        const window = {};
+        const localStorage = {
+          getItem() { throw new Error('storage unavailable'); },
+          setItem() { throw new Error('storage unavailable'); }
+        };
+        class CustomEvent {
+          constructor(type, options) { this.type = type; this.detail = options.detail; }
+        }
+        window.dispatchEvent = () => {};
+
+        __PREFERENCE_SOURCE__
+
+        assert.equal(
+          window.setConversationLanguagePreference('zh-TW', 'Mimi', { dispatch: false }),
+          true
+        );
+        assert.equal(window.getExplicitConversationLanguagePreference('Mimi'), 'zh-TW');
+        assert.equal(window.getExplicitConversationLanguagePreference('Other'), '');
+        process.stdout.write('ok');
+        """
+    ).replace("__PREFERENCE_SOURCE__", preference_source)
+
+    result = run_node_script(
+        node_path,
+        harness,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ok"
+
+
+@pytest.mark.unit
+def test_partial_language_preference_save_warns_without_rollback_or_failure_alert():
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the character language save harness")
+
+    source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+    save_source = _slice_between(
+        source,
+        "async function _saveCharacterLanguagePreference(name, select, selectUi)",
+        "function buildCatgirlDetailForm(name, rawData, isNew, container)",
+        "角色语言偏好保存",
+    )
+    harness = textwrap.dedent(
+        r"""
+        const assert = require('node:assert/strict');
+        const messages = [];
+        const alerts = [];
+        const cached = [];
+        const responses = [
+          {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              success: false,
+              partial_success: true,
+              language: 'ja',
+              error: 'recent context cleanup failed'
+            })
+          },
+          {
+            ok: false,
+            status: 500,
+            json: async () => ({
+              success: false,
+              partial_success: true,
+              language: 'en',
+              error: 'server failure'
+            })
+          }
+        ];
+        const fetch = async () => responses.shift();
+        const _cacheCharacterLanguagePreference = (...args) => cached.push(args);
+        const _characterLanguageT = (key) => key;
+        const showMessage = (...args) => messages.push(args);
+        const showAlert = async (message) => alerts.push(message);
+        console.error = () => {};
+
+        __SAVE_SOURCE__
+
+        (async () => {
+          const select = {
+            value: 'ja',
+            dataset: { previousValue: 'en' },
+            disabled: false
+          };
+          const selectUi = {
+            disabled: false,
+            refreshCount: 0,
+            setDisabled(value) { this.disabled = value; },
+            refresh() { this.refreshCount += 1; }
+          };
+
+          await _saveCharacterLanguagePreference('Mimi', select, selectUi);
+          assert.equal(select.value, 'ja');
+          assert.equal(select.dataset.previousValue, 'ja');
+          assert.deepEqual(cached, [['Mimi', 'ja', 'character-card-manager']]);
+          assert.deepEqual(messages, [[
+            'character.languagePreferencePartiallySaved',
+            'warning'
+          ]]);
+          assert.deepEqual(alerts, []);
+          assert.equal(selectUi.disabled, false);
+
+          select.value = 'en';
+          await _saveCharacterLanguagePreference('Mimi', select, selectUi);
+          assert.equal(select.value, 'ja');
+          assert.equal(alerts.length, 1);
+          assert.match(alerts[0], /character\.languagePreferenceSaveFailed/);
+          process.stdout.write('ok');
+        })().catch((error) => {
+          console.error(error && error.stack ? error.stack : error);
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__SAVE_SOURCE__", save_source)
+
+    result = run_node_script(
+        node_path,
+        harness,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ok"
 
 
 @pytest.mark.unit

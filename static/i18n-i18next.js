@@ -31,7 +31,7 @@
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 修改原因：合并社区入口、社交解锁、界面语言与角色语言偏好文案；递增版本让
     // Electron、Docker 等长期缓存重新拉取包含完整新 key 的语言包。
-    const LOCALE_VERSION = '2026-08-06-language-preferences-v5';
+    const LOCALE_VERSION = '2026-08-06-language-preferences-v6';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
@@ -118,6 +118,7 @@
     }
 
     const CONVERSATION_LANGUAGE_STORAGE_PREFIX = 'nekoConversationLanguage:';
+    const conversationLanguageMemory = new Map();
     const NATIVE_LANGUAGE_OPTIONS = Object.freeze([
         Object.freeze({ code: 'zh-CN', label: '简体中文' }),
         Object.freeze({ code: 'zh-TW', label: '繁體中文' }),
@@ -152,13 +153,17 @@
 
     window.NEKO_NATIVE_LANGUAGE_OPTIONS = NATIVE_LANGUAGE_OPTIONS;
     window.getExplicitConversationLanguagePreference = function (characterName) {
+        const storageKey = conversationLanguageStorageKey(characterName);
+        if (!storageKey) return '';
         try {
-            const storageKey = conversationLanguageStorageKey(characterName);
-            const stored = storageKey ? localStorage.getItem(storageKey) : '';
+            const stored = localStorage.getItem(storageKey);
             const normalizedStored = normalizeSupportedLanguageCode(stored);
-            if (normalizedStored) return normalizedStored;
-        } catch (_) { /* treat unavailable storage as no explicit preference */ }
-        return '';
+            if (normalizedStored) {
+                conversationLanguageMemory.set(storageKey, normalizedStored);
+                return normalizedStored;
+            }
+        } catch (_) { /* fall back to the live per-page preference below */ }
+        return normalizeSupportedLanguageCode(conversationLanguageMemory.get(storageKey));
     };
     window.getConversationLanguagePreference = function (characterName) {
         const explicitLanguage = window.getExplicitConversationLanguagePreference(characterName);
@@ -176,6 +181,7 @@
         if (!normalized) return false;
         const name = resolveConversationLanguageCharacterName(characterName);
         const storageKey = conversationLanguageStorageKey(name);
+        if (storageKey) conversationLanguageMemory.set(storageKey, normalized);
         try {
             if (storageKey) localStorage.setItem(storageKey, normalized);
         } catch (_) { /* keep the live event usable without storage */ }

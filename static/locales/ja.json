@@ -2126,6 +2126,7 @@
         "languagePreference": "言語の好み",
         "languagePreferenceDescription": "この設定は強制ではありません。キャラクター設定や現在の会話で使われる言語によって、実際の応答言語が変わることがあります。",
         "languagePreferenceSaved": "言語の好みを更新しました",
+        "languagePreferencePartiallySaved": "言語の好みは保存されましたが、現在のセッションとの同期は完了していません",
         "languagePreferenceSaveFailed": "言語の好みを保存できませんでした",
         "languagePreferenceLoadFailed": "言語の好みを読み込めませんでした",
         "personalityUseDefault": "キャラクターカードのデフォルト性格に従う",

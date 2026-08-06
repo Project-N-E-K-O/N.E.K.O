@@ -2126,6 +2126,7 @@
         "languagePreference": "Language Preference",
         "languagePreferenceDescription": "This preference is not enforced. Character settings and the language used in the current conversation may still influence the actual response.",
         "languagePreferenceSaved": "Language preference updated",
+        "languagePreferencePartiallySaved": "Language preference saved, but the current session was not fully synchronized",
         "languagePreferenceSaveFailed": "Failed to save language preference",
         "languagePreferenceLoadFailed": "Failed to load language preference",
         "personalityUseDefault": "Follow the character card default personality",

@@ -4134,10 +4134,13 @@ async def test_route_external_text_to_game_llm_defers_voice_to_frontend_arbiter(
         "difficulty": "lv2",
         "score": {"player": 1, "ai": 4},
     }
+    state["user_language"] = "zh-TW"
+    state["user_language_source"] = "render"
 
-    async def fake_run_game_chat(game_type, session_id, event):
+    async def fake_run_game_chat(game_type, session_id, event, *, prompt_locale=None):
         assert game_type == "soccer"
         assert session_id == "match_1"
+        assert prompt_locale == "zh-TW"
         assert event["kind"] == "user-text"
         assert event["userText"] == "你是不是在放水？"
         assert event["scoreDiff"] == 3

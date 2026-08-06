@@ -2126,6 +2126,7 @@
         "languagePreference": "語言偏好",
         "languagePreferenceDescription": "此偏好並非強制限制，角色設定以及目前對話中使用的語言仍可能影響實際回覆。",
         "languagePreferenceSaved": "語言偏好已更新",
+        "languagePreferencePartiallySaved": "語言偏好已儲存，但目前對話同步未完全完成",
         "languagePreferenceSaveFailed": "語言偏好儲存失敗",
         "languagePreferenceLoadFailed": "語言偏好載入失敗",
         "personalityUseDefault": "跟隨角色卡預設設定",

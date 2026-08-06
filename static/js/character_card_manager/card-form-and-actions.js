@@ -93,6 +93,7 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
         // A cross-window event or a newer local request may have superseded this
         // response while it was in flight. Never roll back or cache stale data.
         if (select.dataset.languageSaveId !== saveId || select.value !== language) return;
+        const partialSave = response.ok && payload.partial_success === true;
         const durableSave = response.ok && (
             payload.success === true || payload.partial_success === true
         );
@@ -100,12 +101,20 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
             select.dataset.previousValue = language;
             _cacheCharacterLanguagePreference(name, language, 'character-card-manager');
         }
+        if (partialSave) {
+            showMessage(
+                _characterLanguageT(
+                    'character.languagePreferencePartiallySaved',
+                    '语言偏好已保存，但当前会话同步未完全完成'
+                ),
+                'warning'
+            );
+            return;
+        }
         if (!response.ok || payload.success !== true) {
-            if (!payload.partial_success) {
-                select.value = previous;
-                rolledBack = true;
-                if (selectUi) selectUi.refresh();
-            }
+            select.value = previous;
+            rolledBack = true;
+            if (selectUi) selectUi.refresh();
             throw new Error(payload.error || ('HTTP ' + response.status));
         }
         showMessage(
