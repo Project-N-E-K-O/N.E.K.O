@@ -724,4 +724,47 @@ assert.equal(core.analyze('I wave.', {
     stageDirection: true
 }).plan[0].intent, 'wave');
 
+assert.deepEqual(core.analyzeSpeech('Okay.', {
+    locale: 'en',
+    userText: 'wave then clap'
+}).plan.map(function (item) { return item.intent; }), ['wave', 'clap']);
+assert.deepEqual(core.analyzeSpeech('Okay.', {
+    locale: 'en',
+    userText: 'wave then wave'
+}).plan.map(function (item) { return item.intent; }), ['wave']);
+
+['\u624b\u3092\u632f\u308b', '\u624b\u3092\u632f\u308a\u307e\u3059', '\u79c1\u306f\u624b\u3092\u632f\u308a\u307e\u3059', '\u624b\u3092\u632f\u3063\u3066'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'ja' }).plan[0].intent, 'wave', text);
+});
+assert.equal(core.analyzeSpeech('\u3046\u306a\u305a\u3051\u3070\u62cd\u624b\u3057\u307e\u3059', {
+    locale: 'ja'
+}).plan.length, 0);
+assert.equal(core.analyzeSpeech('\u62cd\u624b\u3057\u307e\u3059', {
+    locale: 'ja'
+}).plan[0].intent, 'clap');
+
+assert.equal(core.analyzeSpeech('I wait for you, then wave', {
+    locale: 'en'
+}).plan[0].intent, 'wave');
+assert.equal(core.analyzeSpeech('I wait for you to clap', {
+    locale: 'en'
+}).plan.length, 0);
+
+[
+    ['No solo aplaudo.', 'es'],
+    ['N\u00e3o s\u00f3 aplaudo.', 'pt']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyzeSpeech(text, { locale: locale }).plan[0].intent, 'clap', text);
+});
+assert.equal(core.analyze('\u043d\u0435 \u0442\u043e\u043b\u044c\u043a\u043e \u0445\u043b\u043e\u043f\u0430\u0435\u0442 \u0432 \u043b\u0430\u0434\u043e\u0448\u0438', {
+    locale: 'ru'
+}).plan[0].intent, 'clap');
+[
+    ['No aplaudo.', 'es'],
+    ['N\u00e3o aplaudo.', 'pt'],
+    ['\u043d\u0435 \u0445\u043b\u043e\u043f\u0430\u0435\u0442 \u0432 \u043b\u0430\u0434\u043e\u0448\u0438', 'ru']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyzeSpeech(text, { locale: locale }).plan.length, 0, text);
+});
+
 console.log('VRM motion semantics: OK (' + cases.length + ' realistic cases, 8 locales)');

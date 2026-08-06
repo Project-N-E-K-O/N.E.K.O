@@ -211,12 +211,15 @@
             // 「別揮手」，因此只在复合名词中移除这个假阳性。
             return String(text || '').replace(/告別/gu, '');
         }
-        return text;
+        return kind === 'negation' ? negationEvidenceText(text) : text;
     }
 
     function negationEvidenceText(text) {
         return String(text || '')
             .replace(/\bnot\s+only\b/giu, '')
+            .replace(/(^|[\s([{])no\s+solo(?=$|[\s,.;:!?)}\]])/giu, '$1')
+            .replace(/(^|[\s([{])não\s+(?:só|somente)(?=$|[\s,.;:!?)}\]])/giu, '$1')
+            .replace(/(^|[\s([{])не\s+только(?=$|[\s,.;:!?)}\]])/giu, '$1')
             .replace(/\bwithout\s+(?:hesitation|delay|pausing|pause|doubt|fear|question)\b/giu, '')
             .replace(/\bno\s+(?:hesitation|delay|doubt|question|wonder)\b/giu, '')
             .replace(/\bstop(?:ped|ping)?\s+(?=(?:and|then|to)\b)/giu, '')
@@ -487,11 +490,27 @@
         return /^[ぁ-ん]{0,4}(?:ば|たら|だら|なら)/u.test(suffix);
     }
 
+    function actionFollowsJapaneseConditional(text, sourceIndex) {
+        const source = folded(text);
+        const sentenceStart = Math.max(
+            source.lastIndexOf('。', sourceIndex - 1),
+            source.lastIndexOf('！', sourceIndex - 1),
+            source.lastIndexOf('？', sourceIndex - 1),
+            source.lastIndexOf('.', sourceIndex - 1),
+            source.lastIndexOf('!', sourceIndex - 1),
+            source.lastIndexOf('?', sourceIndex - 1)
+        ) + 1;
+        return /(?:[けげせてねべめれえ]ば|(?:っ|い|ん|し)たら)[^。！？.!?]*$/u.test(
+            source.slice(sentenceStart, sourceIndex)
+        );
+    }
+
     function actionOnlyConditional(text, anchor) {
         const needle = folded(anchor);
         const positions = termPositions(text, anchor);
         return !!positions.length && positions.every(function (sourceIndex) {
-            return actionHasConditionalSuffix(text, sourceIndex + needle.length);
+            return actionHasConditionalSuffix(text, sourceIndex + needle.length)
+                || actionFollowsJapaneseConditional(text, sourceIndex);
         });
     }
 
@@ -571,8 +590,10 @@
             return clause.sentence === currentClause.sentence;
         });
         const metaPrefix = source.slice(sentenceStart && sentenceStart.start || 0, anchorIndex);
+        const clausePrefix = source.slice(currentClause && currentClause.start || 0, anchorIndex);
         if (includesAny(metaPrefix, metaTerms || [])
-            || /(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(metaPrefix)) {
+            || /(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|if|when|means|describe|example|talk about)/iu.test(metaPrefix)
+            || /(?:等着|等待)|\bwait(?:ing|s)?\s+for\b/iu.test(clausePrefix)) {
             return false;
         }
         const actorPrefix = metaPrefix
@@ -903,6 +924,7 @@
                             candidate.sourceIndex,
                             guardHypotheticalTerms
                         ) || actionHasConditionalSuffix(matchSource, candidate.sourceEnd)
+                            || actionFollowsJapaneseConditional(matchSource, candidate.sourceIndex)
                             || actionHistorical(matchSource, candidate.sourceIndex);
                         const actorBlocked = settings.speechMode
                             && !speechActorAllowed(
@@ -1480,6 +1502,7 @@
                     assistantNegationTerms
                 );
             let decision = null;
+            let confirmedPlan = [];
             let directResult = null;
 
             const exactCard = this.actionCardsByName.get(actionNameKey(userText));
@@ -1552,24 +1575,42 @@
                         match,
                         localizedForLocales(command.weakTerms, userLocales)
                     );
-                    return match ? { command: command, match: match, weak: weak } : null;
+                    return match ? {
+                        command: command,
+                        match: match,
+                        weak: weak,
+                        sourceIndex: folded(userText).indexOf(folded(match))
+                    } : null;
                 }).filter(Boolean).sort(function (a, b) {
-                    return Number(a.weak) - Number(b.weak)
+                    return a.sourceIndex - b.sourceIndex
+                        || Number(a.weak) - Number(b.weak)
                         || normalize(b.match).length - normalize(a.match).length
                         || Number(b.command.priority || 0) - Number(a.command.priority || 0);
                 });
                 if (commandCandidates.length) {
-                    const selected = commandCandidates[0];
-                    decision = this._speechDecision(
-                        selected.command.id,
-                        userText,
-                        locale,
-                        'user-confirmed:' + selected.match
-                    );
+                    const seenIntents = new Set();
+                    confirmedPlan = commandCandidates.filter(function (selected) {
+                        if (seenIntents.has(selected.command.id)) return false;
+                        seenIntents.add(selected.command.id);
+                        return true;
+                    }).map((selected, index) => {
+                        const item = this._speechDecision(
+                            selected.command.id,
+                            userText,
+                            locale,
+                            'user-confirmed:' + selected.match
+                        );
+                        if (item && index > 0) {
+                            item.relation = 'sequence';
+                            item.clause.relation = 'sequence';
+                        }
+                        return item;
+                    }).filter(Boolean);
                 }
             }
 
-            !questioned && !decision && (!directResult || !directResult.plan.length) && replies.filter(function (reply) {
+            !questioned && !decision && !confirmedPlan.length
+                && (!directResult || !directResult.plan.length) && replies.filter(function (reply) {
                 return !POSTURE_SPEECH_INTENTS.has(reply.id);
             }).some((reply) => {
                 const match = matchingTerms(
@@ -1586,12 +1627,15 @@
                 return true;
             });
 
-            const plan = decision ? [decision] : directResult && directResult.plan || [];
+            const plan = decision ? [decision]
+                : confirmedPlan.length ? confirmedPlan
+                : directResult && directResult.plan || [];
 
             return {
                 raw: assistantText,
                 locale: locale,
                 canonicalZh: decision && decision.evidence.canonicalZh
+                    || confirmedPlan[0] && confirmedPlan[0].evidence.canonicalZh
                     || directResult && directResult.canonicalZh
                     || this.toChineseFrame(assistantText, locale, { speechMode: true }),
                 clauses: assistantText ? splitClauses(assistantText) : [],
@@ -1600,6 +1644,7 @@
                 tokenUsage: { input: 0, output: 0, cached: 0, total: 0 },
                 modelUsed: false,
                 source: decision && decision.evidence.source
+                    || confirmedPlan[0] && confirmedPlan[0].evidence.source
                     || plan.length && 'assistant:semantic'
                     || 'none',
                 authority: this.pack.contract.authoritative

@@ -2507,6 +2507,11 @@
           "waving hello",
           "waving goodbye",
           "waving at you"
+        ],
+        "ja": [
+          "手を振る",
+          "手を振ります",
+          "手を振って"
         ]
       },
       "frames": {

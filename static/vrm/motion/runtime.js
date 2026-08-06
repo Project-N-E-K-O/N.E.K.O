@@ -844,6 +844,7 @@
             console.info('[NekoMotion] ignored duplicate assistant turn start');
             return;
         }
+        if (bridgeEvent) bridgedText = '';
         if (activeTurn && !activeTurn.ended && activeTurn.capturedText) {
             if (turnId) activeTurn.id = String(turnId);
             activeTurn.source = bridgeEvent ? 'bridge' : 'lifecycle';
