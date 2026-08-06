@@ -1536,17 +1536,31 @@ proactive_generate_ru = """Ваша роль:
 def _normalize_prompt_language(lang: str) -> str:
     """Normalize a language code for the module's general prompt dictionaries.
 
-    Traditional Chinese still collapses to ``zh`` here, but no longer for lack of
-    templates — issue #2500 step 1 backfilled a ``'zh-TW'`` row into every
-    dictionary in this module. What is missing is step 2: the callers reaching
-    these tables still pass a SHORT code, so Traditional is already gone by the
-    time it arrives. Flipping ``keep_traditional`` belongs with that call-site
-    migration, not before it.
+    Traditional Chinese now survives as ``zh-TW``: issue #2500 step 1 backfilled a
+    ``'zh-TW'`` row into every dictionary in this module, and step 2 migrated the
+    callers off short codes, so the script is still present by the time it arrives
+    here. The three normalizers below are therefore identical today; they stay
+    separate so that a table which later diverges can be retuned on its own.
 
-    ``_normalize_startup_greeting_language`` and ``normalize_mini_game_invite_locale``
-    stay separate because their callers *do* hand over a full locale today.
+    ``normalize_proactive_prompt_locale`` is the public face of this function, for
+    consumers that index this module's tables directly instead of going through a
+    getter.
     """
-    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=False)
+    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
+
+
+def normalize_proactive_prompt_locale(lang: str) -> str:
+    """Normalize a locale to a key of this module's prompt dicts.
+
+    Public on purpose, same reason as ``normalize_mini_game_invite_locale``: several
+    consumers in ``main_logic`` resolve a locale long before they reach a getter,
+    and a few index the tables (``MUSIC_SEARCH_RESULT_TEXTS``,
+    ``RECENT_PROACTIVE_TIME_LABELS``, ...) with a plain ``dict.get``. Those lookups
+    need the key scheme this module actually uses — ``zh`` / ``zh-TW`` — which is
+    neither a short code (``zh`` loses the script) nor a full locale (``zh-CN`` is
+    not a key here and would silently fall through to English).
+    """
+    return _normalize_prompt_language(lang)
 
 
 def _normalize_startup_greeting_language(lang: str) -> str:
