@@ -1561,7 +1561,7 @@ def _merge_entities_locked(
 
 def _bind_locked(
     draft: _Draft, account_id: str, entity_id: str, *,
-    now: str, bound_by: str | None,
+    now: str, bound_by: str | None, require_unbound: bool = False,
 ) -> tuple[bool, dict]:
     target = draft.resolve_entity(entity_id)
     if target is None:
@@ -1569,6 +1569,17 @@ def _bind_locked(
     current = draft.entity_of(account_id)
     if current == target:
         return False, {"entity_id": target, "changed": False}
+    if current is not None and require_unbound:
+        # The caller only meant "attach this loose account". Reaching the merge
+        # branch instead would fuse two OTHER entities -- two different people
+        # -- and unbinding this account afterwards does not separate them
+        # again. A preflight check in the caller cannot cover this: two
+        # concurrent binds of the same loose source both see "unbound" and the
+        # second one merges. Refusing here, inside the one critical section,
+        # is the only place the answer cannot go stale.
+        raise TrustIdentityError(
+            "account is already bound; unbind it first", status_code=409,
+        )
     if current is not None:
         # The account already belongs to another entity: binding is then
         # exactly a merge, and the ledger follows automatically.
@@ -1703,7 +1714,17 @@ def _forget_entity_locked(
 
 async def abind_account(
     account_id: Any, entity_id: Any, *, bound_by: str | None = None,
+    require_unbound: bool = False,
 ) -> dict:
+    """Link one account to an entity.
+
+    ``require_unbound`` refuses instead of merging when the account already
+    belongs to somewhere. Callers whose UI means "attach this loose account"
+    must pass it: without it, a second bind of the same source silently
+    becomes a merge of the two TARGETS, which unbind cannot undo. Default is
+    off so the existing merge-on-rebind behaviour is unchanged for callers
+    that want it.
+    """
     normalized = normalize_account_id(account_id)
     if normalized is None:
         raise TrustIdentityError("invalid account_id")
@@ -1714,6 +1735,7 @@ async def abind_account(
     def _mutator(draft: _Draft) -> tuple[bool, Any]:
         return _bind_locked(
             draft, normalized, target, now=_now_iso(), bound_by=bound_by,
+            require_unbound=require_unbound,
         )
 
     persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)

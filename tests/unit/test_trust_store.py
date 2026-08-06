@@ -840,6 +840,57 @@ async def test_binding_into_a_roster_account_with_no_ledger_needs_a_seed_first(p
     assert snap.same_entity(member, owner)
 
 
+async def test_require_unbound_refuses_instead_of_merging_two_targets(pool):
+    """The guard that a caller-side preflight cannot provide.
+
+    A second bind of the same source is not "retarget" -- ``_bind_locked``
+    merges the two TARGET entities, i.e. two different people, and unbinding
+    the source afterwards does not separate them again. Two concurrent binds
+    both pass any check made outside the critical section, so the refusal has
+    to live inside it.
+    """
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    first = await trust_store.aensure_account("qq:OWNER_A")
+    second = await trust_store.aensure_account("qq:OWNER_B")
+    await trust_store.abind_account(source, first, require_unbound=True)
+
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.abind_account(source, second, require_unbound=True)
+
+    snap = trust_store.trust_snapshot()
+    assert snap.entity_of(source) == first
+    # The decisive assertion: the two targets stayed separate people.
+    assert not snap.same_entity("qq:OWNER_A", "qq:OWNER_B")
+
+
+async def test_require_unbound_is_off_by_default(pool):
+    """Existing callers keep the merge-on-rebind behaviour they were written for."""
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    first = await trust_store.aensure_account("qq:OWNER_A")
+    second = await trust_store.aensure_account("qq:OWNER_B")
+    await trust_store.abind_account(source, first)
+
+    await trust_store.abind_account(source, second)
+
+    assert trust_store.trust_snapshot().same_entity("qq:OWNER_A", "qq:OWNER_B")
+
+
+async def test_require_unbound_still_allows_a_redundant_rebind_to_the_same_entity(pool):
+    """Same target twice is a no-op, not a conflict -- double-click must not 409."""
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    target = await trust_store.aensure_account("qq:OWNER_A")
+    await trust_store.abind_account(source, target, require_unbound=True)
+
+    result = await trust_store.abind_account(
+        source, target, require_unbound=True,
+    )
+
+    assert result["changed"] is False
+
+
 async def test_seeding_an_account_records_no_channel_observation(pool):
     """``channels_seen`` is an observation of traffic; a seed is not traffic."""
     await _open_gate()

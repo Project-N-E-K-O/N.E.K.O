@@ -56,6 +56,7 @@
   "errors.identity_unbind_failed": "Falha ao desfazer a mesclagem: {error}",
   "errors.identity_already_bound": "Este ID já está mesclado. Para apontá-lo para outra pessoa, desfaça primeiro a mesclagem atual.",
   "errors.identity_not_persisted": "A gravação em disco falhou e nada mudou; tente novamente",
+  "errors.identity_target_not_in_roster": "O destino da mesclagem não está mais na lista de usuários confiáveis; atualize e tente novamente",
   "errors.group_permission_manager_not_initialized": "O gerenciador de permissões de grupo não foi inicializado",
   "errors.qq_client_not_initialized": "O cliente do QQ não foi inicializado",
   "errors.user_not_found": "O usuário {qq_number} não está na lista de confiança",

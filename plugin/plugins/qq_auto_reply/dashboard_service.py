@@ -411,24 +411,38 @@ class QQDashboardService:
             "conversation_scope": conversation_scope,
         }
 
-    async def _identity_is_bound(self, bridge, account_id: str) -> bool:
-        """这个账号现在是不是**和别人绑在一起**。
+    async def _identity_is_attached(self, bridge, account_id: str) -> bool:
+        """这个账号现在**是不是已经有归属**了（bind 的前置判据）。
 
-        两个判据取并集：entity 下不止它一个账号，或者它带着人工绑定的
-        ``bound_by`` 落款。前者认得出「已经并进某个身份」，后者认得出「并
-        进去之后对方又被拆走」——只看其一都会漏。
+        并集：entity 下不止它一个账号，或者它带着 ``bound_by`` 落款。前者
+        认得出「已经并进某个身份」，后者认得出「并进去之后对方又被拆走、
+        只剩落款」——对 bind 来说两种都不能再绑，只看其一会漏。
 
-        查不到就抛，让调用方 fail-closed。这两个判断的误判代价是不可逆的：
-        误判「未绑定」会让 bind 走进 `_bind_locked` 的 merge 分支，把两个
-        **候选身份**并成一个（而 unbind 只拆得回源账号，那两个候选仍然合
-        着）；误判也会让 unbind 把一个本来独立的账号搬进新 entity。宁可挡
-        住操作，不猜。
+        这只是**前置**判据，真正的把关在服务端临界区里（``require_unbound``）：
+        两个页签并发绑同一个源时，两次前置检查可以都答「没绑」。这里先问一
+        次是为了给出人话错误，不是为了保证正确性。
         """
         profile = await bridge.fetch_speaker_profile(
             account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
         )
         accounts = list(profile.get("entity_accounts") or [])
         return len(accounts) > 1 or bool(profile.get("bound_by"))
+
+    async def _identity_has_bind_provenance(self, bridge, account_id: str) -> bool:
+        """这个账号是不是**我方 bind 出来的那一侧**（unbind 的前置判据）。
+
+        和上面那个判据**必须分开**，虽然看着像。落款只落在被绑的那一侧：
+        把 B 并进 A 之后，A 的 entity 下有两个账号但没有 ``bound_by``。用
+        「entity 下不止一个」去判 A 可 unbind，拆掉的是**原目标 A**而不是
+        B——A 的账本被搬走，按旧 entity 解析过的行留在原地。而合并入口现在
+        也挂在名册行上，A 就在那儿，点得到。
+
+        所以回滚的合法对象只有带落款的那一侧。
+        """
+        profile = await bridge.fetch_speaker_profile(
+            account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
+        )
+        return bool(profile.get("bound_by"))
 
     def _identity_bridge(self):
         """记忆桥，缺席时返回 ``(None, Err)``。"""
@@ -483,6 +497,22 @@ class QQDashboardService:
                     default="不能把一个 ID 合并到它自己",
                 )
             ))
+        # 目标必须此刻仍在名册里。UI 给的候选就是名册，但页签可能是旧的
+        # （另一个页签刚把那个人移除），而这个 entry 也能被通用表单直接调、
+        # 手输一个错字。`ensure_speaker_account` 对任何字符串都会建 entity，
+        # 于是源账本会被搬进一个凭空捏出来的身份，且成功返回。
+        permission_mgr = self.plugin.permission_mgr
+        if (
+            permission_mgr is None
+            or permission_mgr.get_permission_level(target_actor) == "none"
+        ):
+            return Err(SdkError(
+                "UNKNOWN_TARGET: "
+                + self.plugin.i18n.t(
+                    "errors.identity_target_not_in_roster",
+                    default="合并目标不在信任用户名册里，请刷新后重试",
+                )
+            ))
         # 平台前缀只在 memory_bridge 里拼一次，调用侧（含前端）不许自己拼。
         source_account = bridge.speaker_account_id(actor)
         target_account = bridge.speaker_account_id(target_actor)
@@ -491,7 +521,7 @@ class QQDashboardService:
             # `_bind_locked` 在源账号已有归属时走的是 merge，把**第一个目标
             # 和第二个目标**并成一个身份——两个不同的真人。而 unbind 只拆得
             # 回源账号，那两个目标仍然合着，操作者没有任何办法退回去。
-            if await self._identity_is_bound(bridge, source_account):
+            if await self._identity_is_attached(bridge, source_account):
                 return Err(SdkError(
                     "ALREADY_BOUND: "
                     + self.plugin.i18n.t(
@@ -512,6 +542,10 @@ class QQDashboardService:
                 account_id=source_account,
                 entity_id=entity_id,
                 bound_by="qq_auto_reply.dashboard",
+                # 真正的把关：上面那次预检会被并发绕过（两个页签同时绑同一
+                # 个源，两次预检都答「没绑」，第二次就走进 merge 分支融合
+                # 两个候选）。只有临界区里的这一次判断不会失效。
+                require_unbound=True,
             )
         except Exception as exc:
             return Err(SdkError(
@@ -541,12 +575,17 @@ class QQDashboardService:
         起，操作者选错一项就需要当场能退回来，而不是去翻文档找一个内部端
         点。
 
-        **先确认它真的绑过再动手。** ``aunbind_account`` 对一个「有账本但
-        从没合并过」的独立账号并不是无操作：``_unbind_locked`` 认得的是
-        「这个账号已注册」，于是照样把它搬进一个 generation+1 的新 entity
-        ——已经按旧 entity 解析过的行会被留在原地，而反复按就反复造新
+        **先确认它真的是被绑的那一侧再动手。** ``aunbind_account`` 对一个
+        「有账本但从没合并过」的独立账号并不是无操作：``_unbind_locked``
+        认得的是「这个账号已注册」，于是照样把它搬进一个 generation+1 的新
+        entity——已经按旧 entity 解析过的行会被留在原地，而反复按就反复造新
         entity。所以判据在这一层挡，服务端那句 ``changed=false`` 只覆盖
         「完全没注册过」这一种。
+
+        判据只看 ``bound_by``，**不看 entity 下有几个账号**：落款只落在被
+        绑的那一侧，所以「B 并进 A」之后 A 也满足「entity 下不止一个」。用
+        那个判据会让操作者在 A 的名册行上点撤销、拆走**原目标 A**——而合并
+        入口现在正挂在名册行上，A 就在那儿。
 
         ``ledger_delta`` 与 ``effective_delta`` 通常是两个不同的数字，这不
         是 bug：夹紧的聚合下「这个账号带走了多少」没有唯一答案。两个都原样
@@ -566,7 +605,7 @@ class QQDashboardService:
             ))
         account_id = bridge.speaker_account_id(actor)
         try:
-            if not await self._identity_is_bound(bridge, account_id):
+            if not await self._identity_has_bind_provenance(bridge, account_id):
                 return Ok({"unbind": {"changed": False, "reason": "not_bound"}})
             result = await bridge.unbind_speaker_account(account_id=account_id)
         except Exception as exc:

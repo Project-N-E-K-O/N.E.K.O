@@ -2756,6 +2756,7 @@ class IdentityBindRequest(BaseModel):
     account_id: str
     entity_id: str
     bound_by: str | None = None
+    require_unbound: bool = False
 
 
 class IdentityAccountRequest(BaseModel):
@@ -2962,6 +2963,7 @@ async def bind_identity_account(req: IdentityBindRequest):
     try:
         return await trust_store.abind_account(
             req.account_id, req.entity_id, bound_by=req.bound_by,
+            require_unbound=bool(req.require_unbound),
         )
     except trust_store.TrustIdentityError as exc:
         raise _identity_error(exc) from exc

@@ -53,8 +53,10 @@ class QQRuntimeOpsService:
             self.plugin._emit_log("INFO", f"正在连接 {'NapCat' if is_napcat else 'QQ 开放平台'}...")
             await self.plugin.qq_client.connect()
             # 连上了才登记这个通道的标识符语义：登记的是「现在跑着的 wire
-            # format」，而改配置到重连之间可能隔着任意长的时间。
-            self.plugin.settings_service.ensure_identity_scope_declared()
+            # format」，而改配置到重连之间可能隔着任意长的时间。模式在这里
+            # 定死传进去（`expected` 就是本次实际用来建连接的那个），不让
+            # 协程自己回头再读一次配置。
+            self.plugin.settings_service.ensure_identity_scope_declared(expected)
             if self.plugin.attention_service and self.plugin.qq_client.needs_attention:
                 await self.plugin.attention_service.start_decay_loop()
             self.plugin._emit_log("INFO", "已连接，启动消息处理循环")

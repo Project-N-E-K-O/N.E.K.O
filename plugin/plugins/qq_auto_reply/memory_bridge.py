@@ -443,6 +443,7 @@ class QQMemoryBridge:
         account_id: str,
         entity_id: str,
         bound_by: str,
+        require_unbound: bool = False,
         timeout: float = 10.0,
     ) -> dict[str, Any]:
         """把一个 account 并入已有 entity。**只能由人触发**。
@@ -459,6 +460,7 @@ class QQMemoryBridge:
                 "account_id": account_id,
                 "entity_id": entity_id,
                 "bound_by": bound_by,
+                "require_unbound": bool(require_unbound),
             },
             timeout=timeout,
         )

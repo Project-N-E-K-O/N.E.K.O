@@ -561,7 +561,11 @@ async def test_binding_seeds_the_target_entity_before_linking():
     merge into -- has none, and ``bind`` 404s on an unknown entity. Taking a
     target ACCOUNT and seeding it first is what keeps that case selectable.
     """
-    service = _dashboard(roster=[], profiles={})
+    service = _dashboard(
+        roster=[{"qq": "OWNER_PRIVATE_OPENID", "level": "admin",
+                 "nickname": ""}],
+        profiles={},
+    )
 
     await service.bind_identity_account(
         user_id="MEMBER_IN_X", target_user_id="OWNER_PRIVATE_OPENID",
@@ -653,15 +657,18 @@ async def test_unbinding_a_standalone_account_with_a_ledger_is_not_attempted():
       "bound_by": "qq_auto_reply.dashboard"},
      "carries bind provenance after the co-tenant was detached"),
 ])
-async def test_either_signal_alone_counts_as_bound(profile, why):
-    """Both halves of the predicate are load-bearing, so test them apart.
+async def test_either_signal_alone_blocks_a_rebind(profile, why):
+    """Both halves of the BIND predicate are load-bearing, so test them apart.
 
     A co-tenant with no provenance happens when the ledger merged accounts by
     another route; provenance with no co-tenant is what a bind leaves behind
     once the OTHER side is unbound. Checking only one lets a rebind through in
     the case the other one covers -- and a rebind fuses two candidates.
     """
-    service = _dashboard(roster=[], profiles={"qq:MEMBER_IN_X": profile})
+    service = _dashboard(
+        roster=[{"qq": "SOMEONE_ELSE", "level": "trusted", "nickname": ""}],
+        profiles={"qq:MEMBER_IN_X": profile},
+    )
 
     result = await service.bind_identity_account(
         user_id="MEMBER_IN_X", target_user_id="SOMEONE_ELSE",
@@ -674,9 +681,10 @@ async def test_either_signal_alone_counts_as_bound(profile, why):
 async def test_a_fresh_unmerged_account_is_not_treated_as_bound():
     """The predicate must not block the ordinary first bind."""
     service = _dashboard(
-        roster=[],
+        roster=[{"qq": "OWNER", "level": "admin", "nickname": ""}],
         profiles={"qq:MEMBER_IN_X": {"entity_accounts": ["qq:MEMBER_IN_X"],
-                                     "bound_by": None}},
+                                     "bound_by": None},
+                  "qq:OWNER": {}},
     )
 
     result = await service.bind_identity_account(
@@ -685,6 +693,68 @@ async def test_a_fresh_unmerged_account_is_not_treated_as_bound():
 
     assert result.__class__.__name__ == "Ok"
     service.plugin.memory_bridge.bind_speaker_account.assert_awaited_once()
+
+
+async def test_the_bind_delegates_the_real_guard_to_the_critical_section():
+    """The preflight check races; only the trust-store one cannot go stale.
+
+    Two tabs binding the same loose source concurrently both see "unbound",
+    and the second bind then takes the merge branch and fuses two candidate
+    entities irreversibly. The preflight exists for the error message.
+    """
+    service = _dashboard(
+        roster=[{"qq": "OWNER", "level": "admin", "nickname": ""}],
+        profiles={"qq:MEMBER_IN_X": {"entity_accounts": [], "bound_by": None},
+                  "qq:OWNER": {}},
+    )
+
+    await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="OWNER",
+    )
+
+    kwargs = service.plugin.memory_bridge.bind_speaker_account.await_args.kwargs
+    assert kwargs["require_unbound"] is True
+
+
+async def test_the_merge_target_must_still_be_on_the_roster():
+    """A stale tab -- or a typo in the generic entry form -- must not invent one.
+
+    ``ensure_speaker_account`` happily mints an entity for any string, and the
+    bind then succeeds, moving the source's ledger into an identity that
+    corresponds to nobody.
+    """
+    service = _dashboard(
+        roster=[{"qq": "OWNER", "level": "admin", "nickname": ""}],
+        profiles={"qq:MEMBER_IN_X": {"entity_accounts": [], "bound_by": None}},
+    )
+
+    result = await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="REMOVED_OR_TYPOD",
+    )
+
+    assert result.__class__.__name__ == "Err"
+    service.plugin.memory_bridge.ensure_speaker_account.assert_not_awaited()
+    service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
+
+
+async def test_the_merge_TARGET_is_not_a_valid_unbind_subject():
+    """Provenance lands on the bound side only -- and the target is clickable.
+
+    After B is merged into A, A's entity holds two accounts but carries no
+    ``bound_by``. The merge control now sits on roster rows too, so A is right
+    there to be pressed; judging it by co-tenancy would detach the ORIGINAL
+    TARGET, moving A's ledger and stranding rows resolved under the old id.
+    """
+    service = _dashboard(
+        roster=[],
+        profiles={"qq:OWNER": {"entity_accounts": ["qq:OWNER", "qq:MEMBER_IN_X"],
+                               "bound_by": None}},
+    )
+
+    result = await service.unbind_identity_account(user_id="OWNER")
+
+    assert result.value["unbind"]["changed"] is False
+    service.plugin.memory_bridge.unbind_speaker_account.assert_not_awaited()
 
 
 async def test_unbinding_a_genuinely_bound_account_goes_through():

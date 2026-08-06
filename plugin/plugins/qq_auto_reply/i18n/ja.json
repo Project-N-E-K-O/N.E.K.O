@@ -56,6 +56,7 @@
   "errors.identity_unbind_failed": "統合の取り消しに失敗しました: {error}",
   "errors.identity_already_bound": "この ID はすでに統合されています。別の相手に付け替えるには、先に現在の統合を取り消してください。",
   "errors.identity_not_persisted": "書き込みに失敗し、身元は変更されていません。もう一度お試しください",
+  "errors.identity_target_not_in_roster": "統合先が信頼ユーザー名簿にありません。更新してからもう一度お試しください",
   "errors.group_permission_manager_not_initialized": "グループ権限マネージャーが初期化されていません",
   "errors.qq_client_not_initialized": "QQ クライアントが初期化されていません",
   "errors.user_not_found": "ユーザー {qq_number} は信頼リストにいません",

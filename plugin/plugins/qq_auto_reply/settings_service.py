@@ -809,21 +809,21 @@ class QQSettingsService:
     #: 与 legacy trust push 同族的退避，理由也相同：memory_server 可能还没起。
     _IDENTITY_SCOPE_BACKOFF = (0, 5, 30, 120, 600)
 
-    async def declare_identity_scope_forever(self) -> None:
-        """把当前连接模式的标识符语义登记到服务端，失败就退避重试。
+    async def declare_identity_scope_forever(self, mode: str) -> None:
+        """把**指定**连接模式的标识符语义登记到服务端，失败就退避重试。
 
-        每次启动都跑，且每次切换连接模式后重跑：登记的是「现在这个模式的
-        wire format 是什么」，而模式是可以改的。服务端对同一组值幂等，重复
-        声明不写盘。
+        每次连上都跑：登记的是「现在跑着的这个通道的 wire format」，而模式
+        是可以改的。服务端对同一组值幂等，重复声明不写盘。
+
+        ``mode`` 是**传进来的**而不是在这里读配置：调用方（连接建立那一刻）
+        才知道实际连上的是哪个通道，而这个协程可能在退避里活很久，期间另
+        一个页签完全可以把配置改掉。重读配置会把一个还没生效的模式登记成
+        既成事实。
 
         **不看任何消息。**取值只来自 ``IDENTITY_SCOPE_BY_MODE`` 这张协议表；
         「观察到两个 id 不一样所以是 per_conversation」那条路是被硬约束否决
         的，不要在这里补上。
         """
-        mode = str(
-            (self.plugin._qq_settings or {}).get("qq_connection_mode")
-            or "napcat"
-        ).strip()
         entry = self.IDENTITY_SCOPE_BY_MODE.get(mode)
         if entry is None:
             # 未知模式不猜。留 unknown 比写一个编出来的值诚实。
@@ -850,13 +850,17 @@ class QQSettingsService:
                 return
             await asyncio.sleep(delays.pop(0) if delays else 1800)
 
-    def ensure_identity_scope_declared(self) -> None:
-        """（重新）启动登记任务。切换连接模式后必须调用。"""
+    def ensure_identity_scope_declared(self, mode: str) -> None:
+        """（重新）启动登记任务。只在连接真正建立之后调用。
+
+        ``mode`` 由调用方在**连上的那一刻**定下来并原样带进协程，见
+        ``declare_identity_scope_forever``。
+        """
         task = getattr(self.plugin, "_identity_scope_task", None)
         if task is not None and not task.done():
             task.cancel()
         self.plugin._identity_scope_task = asyncio.create_task(
-            self.declare_identity_scope_forever()
+            self.declare_identity_scope_forever(mode)
         )
 
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
