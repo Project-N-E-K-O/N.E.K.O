@@ -4,7 +4,7 @@
     const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt']);
     const SEQUENCE_MARKERS = /^(?:随后|然后|接着|紧接着|随即|接下来|而后|then|next|afterward)$/iu;
     const PARALLEL_MARKERS = /^(?:同时|与此同时|一边|并且|and|while)$/iu;
-    const CLAUSE_BOUNDARY = /([，,。.!！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|then|next|afterward|while)/giu;
+    const CLAUSE_BOUNDARY = /([，,。.!！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|then|next|afterward|however|\bbut\b|while)/giu;
     const BODY_TERMS = Object.freeze([
         '头', '脑袋', '脸', '眼', '目光', '耳', '猫耳', '耳尖', '耳根', '尾巴', '尾尖', '肩', '手', '掌', '指', '臂', '胸', '腰', '身体', '身子', '腿', '膝', '脚',
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
@@ -294,13 +294,16 @@
         const punctuationReset = Math.max.apply(null, ['，', ',', '。', '.', '！', '!', '？', '?', '；', ';', '\n']
             .map(function (marker) { return prefix.lastIndexOf(marker); }));
         if (punctuationReset >= 0) prefix = prefix.slice(punctuationReset + 1);
-        ['但是', '而是', '随后', '然后', '接着', '却', '但', 'but', 'then'].forEach(function (marker) {
+        ['但是', '不过', '而是', '随后', '然后', '接着', '却', '但', 'but', 'then'].forEach(function (marker) {
             const reset = prefix.lastIndexOf(marker);
             if (reset >= 0) prefix = prefix.slice(reset + marker.length);
         });
         const nonNegatingPrefixes = '\u7279\u544a\u9053\u9001\u79bb\u96e2\u4e45\u5206\u533a\u5340\u7ea7\u7d1a\u7c7b\u985e\u6027\u4e2a\u500b';
         return (terms || []).some(function (term) {
             const candidate = folded(term);
+            if (candidate === '\u4e0d') {
+                return prefix.replace(/不过|不由得|不得不|不禁/gu, '').includes(candidate);
+            }
             if (candidate !== '\u522b' && candidate !== '\u5225') {
                 return candidate && prefix.includes(candidate);
             }
@@ -328,7 +331,31 @@
         const boundary = boundaries.reduce(function (latest, marker) {
             return Math.max(latest, prefix.lastIndexOf(marker));
         }, -1);
-        return includesAny(prefix.slice(boundary + 1), terms);
+        return containsNegation(prefix.slice(boundary + 1), terms);
+    }
+
+    function containsNegation(text, terms) {
+        const source = folded(text);
+        return (terms || []).some(function (term) {
+            const candidate = folded(term);
+            if (candidate === '\u4e0d') {
+                return source.replace(/不过|不由得|不得不|不禁/gu, '').includes(candidate);
+            }
+            return matchesTerm(source, candidate);
+        });
+    }
+
+    function clauseStartIndex(text, sourceIndex) {
+        const source = normalize(text);
+        const boundaries = new RegExp(CLAUSE_BOUNDARY.source, CLAUSE_BOUNDARY.flags);
+        let start = 0;
+        let match;
+        while ((match = boundaries.exec(source)) !== null) {
+            const boundaryEnd = match.index + match[0].length;
+            if (boundaryEnd <= sourceIndex) start = boundaryEnd;
+            else break;
+        }
+        return start;
     }
 
     function actionEvidenceScope(text, sourceIndex, sourceEnd) {
@@ -355,7 +382,7 @@
         const anchorIndex = Number.isInteger(occurrenceIndex)
             ? occurrenceIndex : source.indexOf(needle);
         if (anchorIndex < 0) return true;
-        const prefix = source.slice(Math.max(0, anchorIndex - 18), anchorIndex);
+        const prefix = source.slice(clauseStartIndex(source, anchorIndex), anchorIndex);
         if (/(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(prefix)) {
             return false;
         }
@@ -375,7 +402,7 @@
         const needle = folded(anchor);
         const anchorIndex = source.indexOf(needle);
         if (anchorIndex < 0) return true;
-        const prefix = source.slice(Math.max(0, anchorIndex - 14), anchorIndex);
+        const prefix = source.slice(clauseStartIndex(source, anchorIndex), anchorIndex);
         const suffix = source.slice(anchorIndex + needle.length, anchorIndex + needle.length + 8);
         const describesCurrentState = /(?:还|仍|依然|正在|本来|已经|刚刚|刚才|现在还是)\s*$/u.test(prefix);
         const explicitContinuation = /(?:吧|好吗|可以吗|一会|一下|别动|就行)/u.test(suffix);
@@ -566,7 +593,7 @@
                 ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN'] : [locale]
                 : semanticLocales(source, locale);
 
-            ['negation', 'hypothetical', 'background'].forEach(function (kind) {
+            ['hypothetical', 'background'].forEach(function (kind) {
                 if (locales.some((candidateLocale) => {
                     const common = this._common(candidateLocale);
                     const evidenceSource = candidateLocale === 'zh-CN'
@@ -660,13 +687,11 @@
                             candidate.sourceIndex,
                             candidate.sourceEnd
                         );
-                        const blocked = scopedBeforeIndex(
-                            matchSource,
-                            candidate.sourceIndex,
-                            common.negation,
-                            9
+                        const blocked = containsNegation(
+                            commonEvidenceText(localEvidence, candidateLocale, 'negation'),
+                            common.negation
                         ) || includesAny(
-                            commonEvidenceText(localEvidence, candidateLocale, 'hypothetical'),
+                            commonEvidenceText(matchSource, candidateLocale, 'hypothetical'),
                             common.hypothetical
                         );
                         const actorBlocked = settings.speechMode
@@ -946,6 +971,10 @@
                 speechMode: settings.speechMode === true
             });
             const locale = 'zh-CN';
+            const globallyHypothetical = includesAny(
+                commonEvidenceText(canonicalZh, locale, 'hypothetical'),
+                this._common(locale).hypothetical
+            );
             const clauses = splitClauses(canonicalZh).map(function (clause) {
                 clause.role = discourseRole(clause);
                 return clause;
@@ -956,6 +985,7 @@
             this.metrics.analyzed += 1;
 
             clauses.forEach((clause) => {
+                if (globallyHypothetical) return;
                 const candidates = this._rank(
                     clause,
                     locale,
@@ -1064,7 +1094,7 @@
             const hasMetaClause = clauses.some(function (clause) {
                 return clause.role === 'meta';
             });
-            const frameCandidates = hasMetaClause ? [] : this.pack.rules
+            const frameCandidates = hasMetaClause || globallyHypothetical ? [] : this.pack.rules
                 .map((rule) => this._frameAcrossClauses(
                     rule,
                     clauses,

@@ -154,6 +154,8 @@ assert.equal(core.analyzeSpeech('This user claps.', { locale: 'en' }).plan.lengt
 assert.equal(core.analyzeSpeech('Someone nods.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('My friend claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('A young girl claps.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('A young girl in a red dress claps.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('My close friend from school claps.', { locale: 'en' }).plan.length, 0);
 ['I make her clap.', 'I help him wave goodbye.', 'I ask them to nod.'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
 });
@@ -167,6 +169,11 @@ assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'you clap'
 }).plan[0].intent, 'clap');
 ['make her clap', 'make him clap', 'make them clap'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en', userText: userText
+    }).plan.length, 0, userText);
+});
+['ask my close friend from school to clap', 'tell the person in the back to clap'].forEach(function (userText) {
     assert.equal(core.analyzeSpeech('Okay.', {
         locale: 'en', userText: userText
     }).plan.length, 0, userText);
@@ -187,6 +194,22 @@ assert.equal(core.analyzeSpeech("I can't clap", { locale: 'en' }).plan.some(func
 assert.equal(core.analyzeSpeech("I won't wave goodbye", { locale: 'en' }).plan.some(function (item) {
     return item.intent === 'wave';
 }), false);
+['do not want to clap', 'I am not going to wave'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'en' }).plan.length, 0, text);
+});
+
+assert.equal(core.analyze('不点头', { locale: 'zh-CN' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('好的', {
+    locale: 'zh-CN', userText: '不能摇头'
+}).plan.length, 0);
+assert.deepEqual(core.analyze('not clap but wave', { locale: 'en' }).plan.map(function (item) {
+    return item.intent;
+}), ['wave']);
+['挥手', '我挥手', '鼓掌', '我鼓掌', '点头', '摇头'].forEach(function (text) {
+    assert.ok(core.analyzeSpeech(text, { locale: 'zh-CN' }).plan.length, text);
+});
+assert.equal(core.analyze('不过我点头', { locale: 'zh-CN' }).plan[0].intent, 'nod');
+assert.equal(core.analyze('不由得点头', { locale: 'zh-CN' }).plan[0].intent, 'nod');
 
 assert.equal(core.analyzeSpeech('（生怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.length, 0);

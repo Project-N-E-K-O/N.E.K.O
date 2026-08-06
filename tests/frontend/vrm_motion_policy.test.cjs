@@ -151,7 +151,14 @@ const modeSetMarker = "window.addEventListener('neko-model-manager-mode-set'";
 const modeSetParts = runtimeSource.split(modeSetMarker);
 assert.equal(modeSetParts.length, 2, 'mode-set listener must remain unique');
 const modeSetBlock = modeSetParts[1].slice(0, 1800);
-assert.match(modeSetBlock, /else \{\s*releasePlaybackOwnership\(\)/);
+assert.match(modeSetBlock, /else \{\s*discardActiveTurn\(\);\s*releasePlaybackOwnership\(\)/);
+const initializeBlock = runtimeSource.split('async function initialize()', 2)[1]
+    .split('function remember', 1)[0];
+assert.ok(
+    initializeBlock.indexOf("if (refreshMode() !== 'vrm')")
+        < initializeBlock.indexOf('acquirePlaybackOwnership()'),
+    'initialization must recheck the selected mode before acquiring playback ownership'
+);
 assert.match(runtimeSource, /function stopMaintenanceTimers\(\)/);
 assert.match(runtimeSource, /window\.addEventListener\('pagehide'/);
 assert.match(runtimeSource, /window\.addEventListener\('pageshow'/);

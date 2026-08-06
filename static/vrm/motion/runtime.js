@@ -392,6 +392,10 @@
             syncSavedRestAnimations();
             core.registerActionCards(player.assets);
             await resolveCharacterProfile();
+            if (refreshMode() !== 'vrm') {
+                releasePlaybackOwnership();
+                return true;
+            }
             acquirePlaybackOwnership();
             if (vrmReady()) {
                 await player.enterRest({
@@ -904,8 +908,7 @@
         }
     }
 
-    function cancelObservedSpeech() {
-        if (player) player.cancel('assistant_speech_cancel', { resume: refreshMode() === 'vrm' });
+    function discardActiveTurn() {
         const turn = activeTurn;
         if (turn) {
             if (turn.finishTimer) clearTimeout(turn.finishTimer);
@@ -918,6 +921,11 @@
         }
         activeTurn = null;
         bridgedText = '';
+    }
+
+    function cancelObservedSpeech() {
+        if (player) player.cancel('assistant_speech_cancel', { resume: refreshMode() === 'vrm' });
+        discardActiveTurn();
     }
 
     function handleMotionLifecycleBridge(event) {
@@ -1062,6 +1070,7 @@
             scanTurnText();
             maintainPersistentEmotion();
         } else {
+            discardActiveTurn();
             releasePlaybackOwnership();
             releaseExpressionControl(false);
         }
