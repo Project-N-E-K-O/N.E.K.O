@@ -3379,6 +3379,12 @@ class FactStore:
         expected_subject_generation: int | None = None,
         reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
+        # 近重复配对在锁内只收集，出锁之后才投递：投递要拿
+        # FactDedupResolver 的 per-character 锁，而 aresolve 是反着来的——
+        # 它持 resolver 锁调 aarchive_arbitrated_facts，那个方法要拿这里
+        # 这把 _persist_alock。两边在同一个 loop 上互等就是死锁，之后这个
+        # 角色的写入和去重裁决都再也走不动。
+        near_dup_pairs: list[tuple[dict, dict, float]] = []
         async with self._get_persist_alock(lanlan_name):
             memory_subject = coerce_subject(subject)
             if (
@@ -3401,7 +3407,7 @@ class FactStore:
                     f"{memory_subject.scope})"
                 )
                 return []
-            return await self._apersist_new_facts_locked(
+            created = await self._apersist_new_facts_locked(
                 lanlan_name,
                 extracted,
                 default_source=default_source,
@@ -3409,7 +3415,11 @@ class FactStore:
                 subject=subject,
                 speaker_provenance=speaker_provenance,
                 reconciled_facts=reconciled_facts,
+                near_dup_pairs_out=near_dup_pairs,
             )
+        if near_dup_pairs:
+            await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
+        return created
 
     async def apersist_scoped_facts(
         self,
@@ -3444,6 +3454,7 @@ class FactStore:
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
+        near_dup_pairs_out: list | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3480,10 +3491,14 @@ class FactStore:
         memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
-        # Stage-2 捞到的 (新 fact, 既存 fact, 文字重叠度)：落盘成功之后才入
-        # 仲裁队列——队列是 ids-only，指向一条还没写进 facts.json 的 fact 就
-        # 是悬空引用，回滚后更是永久指向不存在的 id。
-        near_dup_pairs: list[tuple[dict, dict, float]] = []
+        # Stage-2 捞到的 (新 fact, 既存 fact, 文字重叠度)。这里只往调用方给的
+        # 篮子里放，**不投递**：投递要拿 resolver 的锁，而本方法整个跑在
+        # _persist_alock 里，两把锁的获取顺序跟 aresolve 是反的（见调用方的
+        # 注释）。落盘成功之后、出锁之后才真正入队——队列是 ids-only，指向
+        # 一条还没写进 facts.json 的 fact 就是悬空引用。
+        near_dup_pairs: list[tuple[dict, dict, float]] = (
+            near_dup_pairs_out if near_dup_pairs_out is not None else []
+        )
         upgraded_count = 0
         provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
@@ -3998,8 +4013,6 @@ class FactStore:
                     upgraded_snapshots, provenance_snapshots,
                 )
                 raise
-        if near_dup_pairs:
-            await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
         if new_facts:
             logger.info(
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"

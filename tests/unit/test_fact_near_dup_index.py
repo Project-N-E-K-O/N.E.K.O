@@ -526,6 +526,29 @@ async def test_no_resolver_still_writes_both_facts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pairs_are_queued_outside_the_persistence_lock(tmp_path):
+    """Lock-order deadlock: enqueueing takes the resolver's per-character
+    lock, while ``aresolve`` holds that lock and calls back into
+    ``aarchive_arbitrated_facts``, which takes this persistence lock. Both
+    sides then wait forever and the character stops accepting facts."""
+    harness = _harness(tmp_path, [("existing", 0.87)])
+    _seed(harness, "用户最近养了一只猫")
+    held: list[bool] = []
+
+    async def _record(name, _pairs):
+        held.append(harness._get_persist_alock(name).locked())
+        return 1
+
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(side_effect=_record)
+    harness.attach_dedup_resolver(resolver)
+
+    await _persist(harness, "用户最近养了一只狗")
+
+    assert held == [False]
+
+
+@pytest.mark.asyncio
 async def test_pair_is_queued_only_after_the_save_succeeds(tmp_path):
     """The queue is ids-only, so a pair naming a fact that never reached
     facts.json is a dangling reference."""
