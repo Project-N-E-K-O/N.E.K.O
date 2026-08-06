@@ -197,6 +197,10 @@ assert.equal(core.analyzeSpeech("I won't wave goodbye", { locale: 'en' }).plan.s
 ['do not want to clap', 'I am not going to wave'].forEach(function (text) {
     assert.equal(core.analyze(text, { locale: 'en' }).plan.length, 0, text);
 });
+['no clapping', 'no waving', 'without clapping', 'not clapping', 'stop clapping', 'stop waving']
+    .forEach(function (text) {
+        assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+    });
 
 assert.equal(core.analyze('不点头', { locale: 'zh-CN' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('好的', {
@@ -210,6 +214,14 @@ assert.deepEqual(core.analyze('not clap but wave', { locale: 'en' }).plan.map(fu
 });
 assert.equal(core.analyze('不过我点头', { locale: 'zh-CN' }).plan[0].intent, 'nod');
 assert.equal(core.analyze('不由得点头', { locale: 'zh-CN' }).plan[0].intent, 'nod');
+['没点头', '没摇头'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'zh-CN' }).plan.length, 0, text);
+});
+['沒點頭', '沒搖頭'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'zh-TW' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('没准我点头', { locale: 'zh-CN' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('沉没之后我点头', { locale: 'zh-CN' }).plan[0].intent, 'nod');
 
 assert.equal(core.analyzeSpeech('（生怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
@@ -238,6 +250,12 @@ assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.
 });
 ['Should I clap?', 'Can I wave?', 'May I play piano?'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+['Can I wave? Let me know.', 'Should I clap'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+['I shake my head', 'shake my head', 'shaking my head'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, 'shake', text);
 });
 
 assert.equal(core.analyzeSpeech('I clap', { locale: 'en' }).plan[0].intensity, 2);

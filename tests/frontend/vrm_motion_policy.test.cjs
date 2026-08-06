@@ -80,6 +80,7 @@ assert.match(websocketSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(websocketSource, /function relayClosedMotionStage\(event\)/);
 assert.match(websocketSource, /event\.detail\.text/);
 assert.match(websocketSource, /payload\.structured = payload\.structured === true \|\| window\._turnIsStructured === true/);
+assert.match(websocketSource, /text: closedText,\s*structured: window\._turnIsStructured === true/);
 assert.match(
     websocketSource,
     /window\.addEventListener\('pageshow',[\s\S]*window\.addEventListener\('neko-compact-caption-update', relayClosedMotionStage\)/
@@ -108,7 +109,11 @@ assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /turn\.cancelled = true/);
 assert.match(runtimeSource, /played = await player\.playPlan\(plan, context\)/);
 assert.match(runtimeSource, /if \(!played\) \{[\s\S]*turn\.deferredUntilVrmReady = true;[\s\S]*return false;/);
+assert.match(runtimeSource, /const played = await player\.playPlan\(plan, \{ seed: turn\.id \+ ':speech' \}\)/);
+assert.match(runtimeSource, /turn\.speechProcessed = false;\s*turn\.casualTalkFinalized = false;\s*turn\.deferredUntilVrmReady = true/);
 assert.match(runtimeSource, /if \(turn\.structured\) \{[\s\S]*turn\.speechProcessed = true;/);
+assert.match(runtimeSource, /if \(!turn \|\| turn\.structured \|\| !core \|\| !player/);
+assert.match(runtimeSource, /activeTurn\.structured = activeTurn\.structured \|\| detail\.structured === true/);
 assert.match(runtimeSource, /if \(!vrmReady\(\)\) \{\s*turn\.deferredUntilVrmReady = true;\s*return;/);
 assert.match(runtimeSource, /player\.cancel\('assistant_speech_cancel', \{ resume: refreshMode\(\) === 'vrm' \}\)/);
 assert.match(runtimeSource, /activeTurn = null;\s*bridgedText = ''/);

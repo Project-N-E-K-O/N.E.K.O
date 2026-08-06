@@ -150,6 +150,12 @@
         return container[locale] || container.en || [];
     }
 
+    function localizedStrict(container, locale) {
+        if (Array.isArray(container)) return container;
+        if (!container || typeof container !== 'object') return [];
+        return container[locale] || [];
+    }
+
     function semanticLocales(text, inputLocale) {
         const source = String(text || '');
         const locales = [localeKey(inputLocale)];
@@ -304,6 +310,10 @@
             if (candidate === '\u4e0d') {
                 return prefix.replace(/不过|不由得|不得不|不禁/gu, '').includes(candidate);
             }
+            if (candidate === '\u6ca1' || candidate === '\u6c92') {
+                return prefix.replace(/沉[没沒]|淹[没沒]|埋[没沒]|[没沒]收|出[没沒]|吞[没沒]|覆[没沒]|[没沒]准|[沒没]準/gu, '')
+                    .includes(candidate);
+            }
             if (candidate !== '\u522b' && candidate !== '\u5225') {
                 return candidate && prefix.includes(candidate);
             }
@@ -341,7 +351,17 @@
             if (candidate === '\u4e0d') {
                 return source.replace(/不过|不由得|不得不|不禁/gu, '').includes(candidate);
             }
+            if (candidate === '\u6ca1' || candidate === '\u6c92') {
+                return source.replace(/沉[没沒]|淹[没沒]|埋[没沒]|[没沒]收|出[没沒]|吞[没沒]|覆[没沒]|[没沒]准|[沒没]準/gu, '')
+                    .includes(candidate);
+            }
             return matchesTerm(source, candidate);
+        });
+    }
+
+    function asksPermissionQuestion(text) {
+        return splitClauses(text).some(function (clause) {
+            return /^(?:can|could|may|should|would)\s+(?:i|we)\b/iu.test(clause.raw);
         });
     }
 
@@ -620,16 +640,16 @@
                 const exactLocale = locales.find(function (candidateLocale) {
                     const candidateSource = candidateLocale === 'zh-CN'
                         ? simplifiedSource : source;
-                    return localized(rule.phrases, candidateLocale)
-                        .concat(localized(rule.aliases, candidateLocale))
+                    return localizedStrict(rule.phrases, candidateLocale)
+                        .concat(localizedStrict(rule.aliases, candidateLocale))
                         .some(function (phrase) {
                             return folded(phrase) === folded(candidateSource);
                         });
                 });
                 if (!exactLocale) return null;
                 const exactSource = exactLocale === 'zh-CN' ? simplifiedSource : source;
-                const anchor = localized(rule.phrases, exactLocale)
-                    .concat(localized(rule.aliases, exactLocale))
+                const anchor = localizedStrict(rule.phrases, exactLocale)
+                    .concat(localizedStrict(rule.aliases, exactLocale))
                     .find(function (phrase) { return folded(phrase) === folded(exactSource); });
                 return {
                     rule: rule,
@@ -667,8 +687,8 @@
                     const common = this._common(candidateLocale);
                     const matchSource = candidateLocale === 'zh-CN'
                         ? simplifiedSource : source;
-                    const localizedEvidence = localized(rule.phrases, candidateLocale)
-                        .concat(localized(rule.aliases, candidateLocale));
+                    const localizedEvidence = localizedStrict(rule.phrases, candidateLocale)
+                        .concat(localizedStrict(rule.aliases, candidateLocale));
                     const phraseMatches = [];
                     localizedEvidence.forEach(function (phrase) {
                         termPositions(matchSource, phrase).forEach(function (sourceIndex) {
@@ -681,7 +701,7 @@
                     });
                     const frame = frameEvidence(
                         matchSource,
-                        localized(rule.frames, candidateLocale),
+                        localizedStrict(rule.frames, candidateLocale),
                         common.negation
                     );
                     const candidates = phraseMatches.length ? phraseMatches : frame.length
@@ -1222,7 +1242,8 @@
             const metaTerms = this._speechTerms(speech.meta, locale);
             const refused = !!assistantText
                 && includesAny(assistantText, this._speechTerms(speech.refusals, locale));
-            const questioned = /[?？]\s*$/u.test(assistantText);
+            const questioned = /[?？]\s*$/u.test(assistantText)
+                || asksPermissionQuestion(assistantText);
             const acknowledged = !!assistantText
                 && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))
                 && !refused;

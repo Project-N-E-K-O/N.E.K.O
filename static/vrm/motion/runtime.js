@@ -444,7 +444,7 @@
     }
 
     async function processStage(stage, turn) {
-        if (!core || !player || turn && !isCurrentTurn(turn)) return false;
+        if (!core || !player || turn && (turn.structured || !isCurrentTurn(turn))) return false;
         if (!vrmReady()) {
             if (turn && isCurrentTurn(turn)) turn.deferredUntilVrmReady = true;
             return false;
@@ -611,11 +611,18 @@
         metrics.plans += 1;
         if (!isCurrentTurn(turn)) return;
         console.info('[NekoMotion] playing inferred speech motion', plan.map(function (item) { return item.intent; }).join(','));
+        const previouslyStarted = turn.playerStarted;
         turn.playerStarted = true;
         turn.speechIntents = Array.from(new Set(
             (turn.explicitIntents || []).concat(plan.map(function (item) { return item.intent; }))
         ));
-        await player.playPlan(plan, { seed: turn.id + ':speech' });
+        const played = await player.playPlan(plan, { seed: turn.id + ':speech' });
+        if (!played && isCurrentTurn(turn)) {
+            turn.playerStarted = previouslyStarted;
+            turn.speechProcessed = false;
+            turn.casualTalkFinalized = false;
+            turn.deferredUntilVrmReady = true;
+        }
     }
 
     async function processEmotionBodyFallback(turn, update) {
@@ -639,12 +646,20 @@
         turn.bodyEmotionPlayed = update.emotion;
         metrics.plans += 1;
         console.info('[NekoMotion] playing body emotion change', update.emotion, 'as', intent);
-        if (alreadyPlaying) await player.enqueuePlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
-        else await player.playPlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
+        const played = alreadyPlaying
+            ? await player.enqueuePlan(plan, { seed: turn.id + ':emotion:' + update.emotion })
+            : await player.playPlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
+        if (!played && isCurrentTurn(turn)) {
+            turn.playerStarted = alreadyPlaying;
+            turn.bodyEmotionPlayed = null;
+            turn.deferredUntilVrmReady = true;
+        }
     }
 
     function processUnseenStages(turn) {
-        if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return Promise.resolve(false);
+        if (!turn || turn.structured || !core || !player || !vrmReady() || !isCurrentTurn(turn)) {
+            return Promise.resolve(false);
+        }
         const stages = window.NekoMotionText.extractClosedStages(turn.capturedText || '');
         stages.forEach(function (stage) {
             if (turn.seen.has(stage.id) || turn.pendingStages.has(stage.id)) return;
@@ -661,7 +676,7 @@
     }
 
     async function processUnseenStagesDirect(turn) {
-        if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return false;
+        if (!turn || turn.structured || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return false;
         const stages = window.NekoMotionText.extractClosedStages(turn.capturedText || '');
         for (const stage of stages) {
             if (turn.seen.has(stage.id) || turn.pendingStages.has(stage.id)) continue;
@@ -687,6 +702,8 @@
             metrics.bufferRecoveredTurns += 1;
             console.info('[NekoMotion] recovered assistant turn from reply buffer');
         }
+        if (window._turnIsStructured === true) activeTurn.structured = true;
+        if (activeTurn.structured) return;
         if (text === activeTurn.lastText) {
             if (activeTurn.source === 'buffer'
                 && window._geminiTurnEndSealed === true
@@ -735,7 +752,7 @@
             speechProcessed: false,
             casualTalkPending: false,
             casualTalkFinalized: false,
-            structured: false,
+            structured: window._turnIsStructured === true,
             speechIntents: [],
             bodyEmotionPlayed: null,
             deferredUntilVrmReady: false,
@@ -962,6 +979,7 @@
             if (!activeTurn || activeTurn.ended && bridgedText !== activeTurn.capturedText) {
                 beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer');
             }
+            activeTurn.structured = activeTurn.structured || detail.structured === true;
             scanTurnText();
             return;
         }
@@ -1028,6 +1046,12 @@
                     if (!isCurrentTurn(turn)
                         || window.vrmManager.currentModel !== loadedModel) return;
                     await waitForOfficialEmotion(turn);
+                    if (!isCurrentTurn(turn)
+                        || window.vrmManager.currentModel !== loadedModel) return;
+                    await processEmotionBodyFallback(turn, {
+                        changed: true,
+                        emotion: normalizeEmotion(turn.officialEmotion)
+                    });
                     if (!isCurrentTurn(turn)
                         || window.vrmManager.currentModel !== loadedModel) return;
                     await processSpeechFallback(turn);

@@ -1061,7 +1061,8 @@
         motionLifecycleLastClosedText = closedText;
         broadcastMotionLifecycle('neko-assistant-text-update', {
             turnId: resolveAssistantLifecycleTurnId(),
-            text: closedText
+            text: closedText,
+            structured: window._turnIsStructured === true
         });
     }
     window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
