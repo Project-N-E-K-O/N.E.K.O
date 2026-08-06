@@ -2472,13 +2472,12 @@
                 } else if (response.type === 'response_discarded') {
                     clearPendingUserActivityCancel();
                     window.invalidatePendingMusicSearch();
+                    var discardedRequestId = resolveAssistantRequestId(response.request_id, response.meta);
                     if (!response.will_retry) {
                         window._nekoMotionPendingUserText = '';
                     }
                     if (S.suppressAssistantStreamUntilNextSession) {
-                        clearPendingRollbackForRequest(
-                            resolveAssistantRequestId(response.request_id, response.meta)
-                        );
+                        clearPendingRollbackForRequest(discardedRequestId);
                         logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
                             reason: response.reason,
                             willRetry: !!response.will_retry
@@ -2490,7 +2489,7 @@
                             window.dispatchEvent(new CustomEvent('neko:assistant-response-cancelled', {
                                 detail: {
                                     reason: response.reason || 'response-discarded',
-                                    requestId: resolveAssistantRequestId(response.request_id, response.meta)
+                                    requestId: discardedRequestId
                                 }
                             }));
                         } catch (_) {}
@@ -2619,25 +2618,25 @@
                         // Suppress toast — backend sends cute text via gemini_response
                         // Only rollback user input here
                         if (window.reactChatWindowHost && typeof window.reactChatWindowHost.rollbackLastDraft === 'function') {
-                            window.reactChatWindowHost.rollbackLastDraft(response.request_id);
+                            window.reactChatWindowHost.rollbackLastDraft(discardedRequestId);
                         }
                         var legacyInput = document.getElementById('textInputBox');
-                        var rollbackText = pendingTextForRequest('_lastSubmittedTextByRequest', response.request_id);
-                        if (!rollbackText && response.request_id && window._lastSubmittedRequestId === response.request_id) {
+                        var rollbackText = pendingTextForRequest('_lastSubmittedTextByRequest', discardedRequestId);
+                        if (!rollbackText && discardedRequestId && window._lastSubmittedRequestId === discardedRequestId) {
                             rollbackText = String(window._lastSubmittedText || '');
                         }
                         if (legacyInput && !legacyInput.value &&
-                            response.request_id && rollbackText) {
+                            discardedRequestId && rollbackText) {
                             legacyInput.value = rollbackText;
                         }
-                        clearPendingRollbackForRequest(response.request_id, true);
+                        clearPendingRollbackForRequest(discardedRequestId, true);
                     } else if (_isLengthTruncated) {
                         // Suppress toast / error bubble. Keep the user's input cleared
                         // (truncated answer is a valid completion, no retry needed).
-                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingRollbackForRequest(discardedRequestId);
                     } else {
                         if (!response.will_retry) {
-                            clearPendingRollbackForRequest(response.request_id);
+                            clearPendingRollbackForRequest(discardedRequestId);
                         }
                         var retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
                         var failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';

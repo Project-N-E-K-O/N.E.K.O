@@ -377,6 +377,23 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
+def test_response_discarded_resolves_meta_request_id_before_rollback():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    response_discarded_block = source.split("// -------- response_discarded --------", 1)[1].split(
+        "// -------- user_transcript --------",
+        1,
+    )[0]
+
+    assert (
+        "var discardedRequestId = resolveAssistantRequestId(response.request_id, response.meta);"
+        in response_discarded_block
+    )
+    assert "rollbackLastDraft(discardedRequestId);" in response_discarded_block
+    assert "pendingTextForRequest('_lastSubmittedTextByRequest', discardedRequestId);" in response_discarded_block
+    assert "clearPendingRollbackForRequest(discardedRequestId, true);" in response_discarded_block
+    assert "clearPendingRollbackForRequest(response.request_id" not in response_discarded_block
+
+
 def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
@@ -5652,7 +5669,7 @@ def test_session_ended_by_server_stops_assistant_text_output():
         "if (S.suppressAssistantStreamUntilNextSession)", 1
     )[1].split("return;", 1)[0]
     assert "clearPendingRollbackForRequest(" in suppressed_discard
-    assert "resolveAssistantRequestId(response.request_id, response.meta)" in suppressed_discard
+    assert "clearPendingRollbackForRequest(discardedRequestId);" in suppressed_discard
 
     session_started_block = source.split("// -------- session_started --------", 1)[1].split(
         "// -------- session_failed --------",

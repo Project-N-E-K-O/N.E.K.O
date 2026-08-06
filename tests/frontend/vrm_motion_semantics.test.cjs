@@ -592,4 +592,41 @@ assert.deepEqual(
 );
 assert.deepEqual(global.NekoMotionText.extractClosedStages('（还没有说完'), []);
 
+[
+    ['Okay?', 'en', 'wave goodbye'],
+    ['\u53ef\u4ee5\u5417\uff1f', 'zh-CN', '\u6325\u624b'],
+    ['Okay, not now.', 'en', 'clap'],
+    ['\u597d\u7684\uff0c\u4e0d\u8fc7\u73b0\u5728\u4e0d\u8981\u3002', 'zh-CN', '\u9f13\u638c']
+].forEach(function ([assistantText, locale, userText]) {
+    assert.equal(core.analyzeSpeech(assistantText, {
+        locale: locale,
+        userText: userText
+    }).plan.length, 0, assistantText);
+});
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'en',
+    userText: 'clap'
+}).plan[0].intent, 'clap');
+
+[
+    ['\u6211\u4e0d\u4f46\u9f13\u638c\u8fd8\u6325\u624b', ['clap', 'wave']],
+    ['\u6211\u4e0d\u4ec5\u9f13\u638c\uff0c\u8fd8\u6325\u624b', ['clap', 'wave']],
+    ['\u5fcd\u4e0d\u4f4f\u9f13\u638c', ['clap']],
+    ['\u4e0d\u7531\u81ea\u4e3b\u5730\u70b9\u5934', ['nod']]
+].forEach(function ([text, expected]) {
+    assert.deepEqual(
+        core.analyzeSpeech(text, { locale: 'zh-CN' }).plan.map(function (item) { return item.intent; }),
+        expected,
+        text
+    );
+});
+[
+    '\u6211\u4e0d\u9f13\u638c',
+    '\u4e0d\u8981\u6325\u624b',
+    '\u6211\u4e0d\u80fd\u70b9\u5934',
+    '\u6211\u4e0d\u4f46\u4e0d\u9f13\u638c\uff0c\u8fd8\u4e0d\u6325\u624b'
+].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'zh-CN' }).plan.length, 0, text);
+});
+
 console.log('VRM motion semantics: OK (' + cases.length + ' realistic cases, 8 locales)');

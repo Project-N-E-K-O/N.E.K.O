@@ -219,7 +219,8 @@
             .replace(/\bnot\s+only\b/giu, '')
             .replace(/\bwithout\s+(?:hesitation|delay|pausing|pause|doubt|fear|question)\b/giu, '')
             .replace(/\bno\s+(?:hesitation|delay|doubt|question|wonder)\b/giu, '')
-            .replace(/\bstop(?:ped|ping)?\s+(?=(?:and|then|to)\b)/giu, '');
+            .replace(/\bstop(?:ped|ping)?\s+(?=(?:and|then|to)\b)/giu, '')
+            .replace(/(?:不过|不過|不由得|不得不|不禁|不但|不仅|不僅|忍不住|不由自主(?:地)?)/gu, '');
     }
 
     function extractClosedStages(text) {
@@ -362,7 +363,7 @@
         return (terms || []).some(function (term) {
             const candidate = folded(term);
             if (candidate === '\u4e0d') {
-                return prefix.replace(/不过|不由得|不得不|不禁/gu, '').includes(candidate);
+                return prefix.includes(candidate);
             }
             if (candidate === '\u6ca1' || candidate === '\u6c92') {
                 return prefix.replace(/沉[没沒]|淹[没沒]|埋[没沒]|[没沒]收|出[没沒]|吞[没沒]|覆[没沒]|[没沒]准|[沒没]準/gu, '')
@@ -403,7 +404,7 @@
         return (terms || []).some(function (term) {
             const candidate = folded(term);
             if (candidate === '\u4e0d') {
-                return source.replace(/不过|不由得|不得不|不禁/gu, '').includes(candidate);
+                return source.includes(candidate);
             }
             if (candidate === '\u6ca1' || candidate === '\u6c92') {
                 return source.replace(/沉[没沒]|淹[没沒]|埋[没沒]|[没沒]收|出[没沒]|吞[没沒]|覆[没沒]|[没沒]准|[沒没]準/gu, '')
@@ -1435,7 +1436,9 @@
                 || asksPermissionQuestion(assistantText);
             const acknowledged = !!assistantText
                 && includesAny(assistantText, localizedForLocales(speech.acknowledgements, assistantLocales))
-                && !refused;
+                && !refused
+                && !questioned
+                && !containsNegation(assistantText, assistantNegationTerms);
             let decision = null;
             let directResult = null;
 
