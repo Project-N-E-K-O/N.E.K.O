@@ -1206,6 +1206,39 @@ class _TransportMixin:
         # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
         self._interrupted = False
 
+    def _read_host_turn_id(self) -> str | None:
+        """Sample the host's live speech id, or None for "no answer".
+
+        No answer covers both an unwired client and a host that raised, and
+        ``_host_turn_is_still_ours`` treats it as "still ours" either way —
+        which restores the pre-#2612 behaviour rather than inverting it.
+        """
+
+        if self.get_host_turn_id is None:
+            return None
+        try:
+            return self.get_host_turn_id()
+        except Exception as exc:
+            logger.warning("host turn id unreadable (%s); turn guard is off", exc)
+            return None
+
+    def _host_turn_is_still_ours(self) -> bool:
+        """Has the host started a turn of its own since this one began?
+
+        Both "no answer" cases resolve to yes, and for the same reason in each
+        direction: withholding the end of a turn is the worse failure, so a
+        host that cannot be read disables the guard rather than the hooks.
+        Unreadable is NOT "a different turn" — reading it as one would make an
+        unwired or mid-teardown host silently stop ending turns at all.
+        """
+
+        if self._current_turn_host_id is None:
+            return True
+        live = self._read_host_turn_id()
+        if live is None:
+            return True
+        return live == self._current_turn_host_id
+
     async def _notify_turn_finished(
         self,
         *,
@@ -1263,12 +1296,42 @@ class _TransportMixin:
 
         Each hook is awaited independently so a host that raises while closing
         the turn cannot skip the rotation that follows it.
+
+        The host-side turn check (#2612) is a SEPARATE condition from
+        ``still_ours``, and unlike it, is re-read before each hook. Two reasons
+        the pair-once rule does not apply to it:
+
+        - It is the only condition that sees a turn the host started on its
+          own. ``still_ours`` compares turn epochs, and the epoch only counts
+          turn starts this transport observes; a text input or an independent
+          ASR utterance goes straight to ``handle_new_message``, which takes a
+          fresh speech id without this side ever hearing about it. On a
+          provider without server VAD that is the whole failure: the host hangs
+          in ``on_response_done``, the user starts a turn during the hang, and
+          ``on_sid_rotate`` then throws away the speech id that turn is
+          speaking under — after which TTS upstream drops every later turn's
+          text for the life of the connection.
+        - Splitting the pair is what the pair-once rule protects against —
+          "old sid closed, no new one issued". This condition cannot produce
+          that state: it is true precisely BECAUSE the host issued a new speech
+          id, and every writer of it also resets the per-turn TTS flags. So
+          standing down here leaves the successor whole, while proceeding
+          closes the successor's own sid (``on_response_done`` requests the
+          TTS-done sentinel against whatever sid is live) and then rotates it
+          out from under itself.
         """
 
         if still_ours is not None and not still_ours():
             logger.info(
                 "a new turn started before this one could be ended; leaving "
                 "both end-of-turn hooks to it"
+            )
+            return
+        if not self._host_turn_is_still_ours():
+            logger.info(
+                "the host is already on a new turn (%s); leaving both "
+                "end-of-turn hooks to it",
+                self._current_turn_host_id,
             )
             return
         if self.on_response_done:
@@ -1296,6 +1359,14 @@ class _TransportMixin:
                 )
             except Exception as exc:
                 logger.warning("turn-finished notification failed: %s", exc)
+        if not self._host_turn_is_still_ours():
+            # Re-read, because the hook above is exactly where the host hangs.
+            logger.info(
+                "the host started a new turn while this one was being closed "
+                "(%s); leaving its speech id alone",
+                self._current_turn_host_id,
+            )
+            return
         if not self._has_server_vad and self.on_sid_rotate:
             try:
                 await self.on_sid_rotate()
@@ -1860,6 +1931,7 @@ class _TransportMixin:
                     self._is_responding = True
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
+                    self._current_turn_host_id = self._read_host_turn_id()
                     self._interrupted = False  # Clear interruption flag on new response
                     # Closes the id-less quarantine a fail-open release opened.
                     # Safe as the sole exit: a release only happens when the

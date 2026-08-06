@@ -229,6 +229,9 @@ def _begin_response(client, response_id="resp-1"):
     client._is_responding = True
     client._turn_epoch += 1
     client._current_turn_epoch = client._turn_epoch
+    # None on these fixtures — they wire no host accessor — but sampled here
+    # anyway so the fixture keeps matching the handler it stands in for.
+    client._current_turn_host_id = client._read_host_turn_id()
     client._is_first_text_chunk = client._is_first_transcript_chunk = True
 
 
@@ -1623,7 +1626,7 @@ def test_every_turn_start_advances_the_epoch():
             if not re.match(r"^\s*self\._is_responding\s*=\s*True\s*$", line):
                 continue
             starts += 1
-            window = "\n".join(lines[index : index + 4])
+            window = "\n".join(lines[index : index + 5])
             if "self._turn_epoch += 1" not in window:
                 offenders.append(f"{path.name}:{index + 1} (no epoch bump)")
             elif "self._current_turn_epoch = self._turn_epoch" not in window:
@@ -1631,6 +1634,12 @@ def test_every_turn_start_advances_the_epoch():
                 # Without that, a release compares the live epoch against
                 # itself and its guard is vacuous — the exact defect this pins.
                 offenders.append(f"{path.name}:{index + 1} (epoch not recorded)")
+            elif "self._current_turn_host_id = self._read_host_turn_id()" not in window:
+                # And WHICH host turn it began under (#2612). The epoch only
+                # counts turn starts this transport observes; the host starts
+                # turns of its own that never reach here, and the end-of-turn
+                # hooks land on those unless the id was sampled here.
+                offenders.append(f"{path.name}:{index + 1} (host turn not sampled)")
     assert starts >= 2, (
         "expected to find the turn-start sites; the search stopped matching, "
         f"which makes this guard vacuous (found {starts})"

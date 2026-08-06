@@ -83,6 +83,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         extra_event_handlers (Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]):
             Additional event handlers.
             Is a mapping of event names to functions that process the event payload.
+        get_host_turn_id (Callable[[], str | None]):
+            Reads the host's own notion of "which turn is live" — its speech id.
+            Read-only and synchronous: ownership of the turn stays with the
+            host, this side only samples it at a turn start and compares at the
+            end (see ``_notify_turn_finished``). Left unset, the end-of-turn
+            hooks behave exactly as they did before it existed.
     """
 
     def __init__(
@@ -104,6 +110,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_silence_timeout: Optional[Callable[[], Awaitable[None]]] = None,
         on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
         on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
+        get_host_turn_id: Optional[Callable[[], "str | None"]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         api_type: Optional[str] = None,
         on_tool_call: Optional[OnToolCallCallback] = None,
@@ -131,6 +138,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.on_silence_timeout = on_silence_timeout
         self.on_status_message = on_status_message
         self.on_repetition_detected = on_repetition_detected
+        self.get_host_turn_id = get_host_turn_id
         self.extra_event_handlers = extra_event_handlers or {}
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
 
@@ -154,6 +162,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # successor's epoch as its own baseline and find itself trivially
         # current.
         self._current_turn_epoch = 0
+        # The host's speech id as it was when this turn began, sampled at the
+        # same points that record the epoch. The epoch counts turn starts this
+        # transport OBSERVES; the host starts turns of its own that never reach
+        # here (``handle_new_message`` off a text input or independent ASR), so
+        # on those the epoch is unchanged and only the speech id moves. #2612.
+        self._current_turn_host_id: str | None = None
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,

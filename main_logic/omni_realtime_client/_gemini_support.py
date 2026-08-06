@@ -562,7 +562,12 @@ class _GeminiMixin:
                     # invariant is "every turn start advances the epoch", not
                     # "every turn start something currently reads": once a turn
                     # start stops advancing it, a release that DOES run cannot
-                    # tell that turn from its successor.
+                    # tell that turn from its successor. The host-turn sample
+                    # (#2612) is maintained here for the same reason and is
+                    # equally unread today — this path ends its turn by calling
+                    # ``on_response_done`` directly rather than through
+                    # ``_notify_turn_finished``, which is where the comparison
+                    # lives. Tracked with the rest of that divergence.
                     #
                     # Kept above the assignment, not between it and the bump:
                     # ``test_every_turn_start_advances_the_epoch`` discovers
@@ -571,6 +576,7 @@ class _GeminiMixin:
                     self._is_responding = True
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
+                    self._current_turn_host_id = self._read_host_turn_id()
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

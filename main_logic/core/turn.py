@@ -88,6 +88,21 @@ class TurnMixin:
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
 
+    def read_current_speech_id(self) -> str | None:
+        """Hand the realtime client the host's notion of "which turn is live".
+
+        Passed to ``OmniRealtimeClient`` as ``get_host_turn_id``. The speech id
+        already IS the host's turn token — every writer that starts a turn
+        assigns a fresh one — so the client needs no token of its own, only a
+        way to sample this one at a turn start and compare at the end (#2612).
+
+        Deliberately not locked. The callers sample and compare a single
+        immutable string; taking ``self.lock`` here would put a host lock in
+        the realtime receive loop's path, and reading one instant staler only
+        shifts the guard's boundary, never inverts its answer.
+        """
+        return self.current_speech_id
+
     async def rotate_speech_id_for_response_done(self):
         """Lightweight sid rotation for realtime providers without server VAD.
 
