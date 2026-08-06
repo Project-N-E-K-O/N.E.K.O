@@ -2072,6 +2072,21 @@ class _TransportMixin:
         self._failed_transport_close_task = None
         self._gemini_close_task = None
 
+    def _still_owns_connection(self, generation) -> bool:
+        """Whether the connection a teardown seized is still the client's.
+
+        The rule this expresses has to hold at EVERY await boundary inside a
+        teardown, not just the first: the teardown outlives its caller by
+        design, so a replacement can attach during any one of them, and from
+        that moment the client's shared state (the arbiter, the fatal flag, the
+        silence scalars, the audio processor, the Gemini session) is the
+        replacement's. What the teardown seized up front stays its own to
+        release; everything else it must leave alone. Any await added below is
+        a new place to ask this.
+        """
+
+        return self._connection_generation == generation
+
     async def _own_teardown(self, slot: str, detach):
         """Await a teardown that this client owns, not the caller.
 
@@ -2119,24 +2134,34 @@ class _TransportMixin:
         )
 
     def _detach_for_failed_transport(self, reason: str):
+        generation = self._connection_generation
         ws, self.ws = self.ws, None
-        return self._close_failed_transport_impl(reason, ws)
+        return self._close_failed_transport_impl(reason, generation, ws)
 
-    async def _close_failed_transport_impl(self, reason: str, ws) -> None:
-        self._fatal_error_occurred = True
-        response_arbiter = getattr(self, "_response_arbiter", None)
-        if response_arbiter is not None:
-            await response_arbiter.shutdown(reason)
-        await self._abort_failed_transport(reason, ws)
+    async def _close_failed_transport_impl(self, reason: str, generation, ws) -> None:
+        # The fatal flag is the retired connection's, and the wrapper has
+        # already set it. Re-asserting it here would re-condemn a replacement
+        # that attached in between — connect() clears the flag on purpose, and
+        # a live connection marked fatal rejects every later send.
+        if self._still_owns_connection(generation):
+            response_arbiter = getattr(self, "_response_arbiter", None)
+            if response_arbiter is not None:
+                # Shared across connections, and connect() has already reopened
+                # it for the replacement. Shutting it down now would fail the
+                # new connection's tickets over a socket that is fine.
+                await response_arbiter.shutdown(reason)
+        await self._abort_failed_transport(reason, ws, generation)
 
     async def _abort_failed_transport(
         self,
         reason: str,
         ws=_ATTACHED_TRANSPORT,
+        generation=None,
     ) -> None:
         """Detach, when needed, and physically close a failed raw WebSocket."""
 
-        self._fatal_error_occurred = True
+        if generation is None or self._still_owns_connection(generation):
+            self._fatal_error_occurred = True
         if ws is _ATTACHED_TRANSPORT:
             ws, self.ws = self.ws, None
         if ws is not None:
@@ -2184,7 +2209,12 @@ class _TransportMixin:
         gemini_close_task,
     ) -> None:
         response_arbiter = getattr(self, "_response_arbiter", None)
-        if response_arbiter is not None:
+        if response_arbiter is not None and self._still_owns_connection(generation):
+            # The arbiter is shared across connections, not owned by one. If a
+            # replacement attached between the caller's seizure and this task's
+            # first line, connect() has already reopened it — shutting it down
+            # here would fail the live connection's tickets while its socket
+            # stays perfectly healthy.
             await response_arbiter.shutdown("realtime client closed")
 
         # 取消静默检测任务
@@ -2197,7 +2227,7 @@ class _TransportMixin:
             except Exception as e:
                 logger.error(f"Error cancelling silence check task: {e}")
 
-        if self._connection_generation != generation:
+        if not self._still_owns_connection(generation):
             # A replacement attached while this teardown ran. Everything below
             # is client-wide — the silence scalars connect() has just primed,
             # the audio processor the new connection is already feeding, the
@@ -2225,6 +2255,17 @@ class _TransportMixin:
         # Wait for any executor-owned chunk to finish before releasing the
         # session's RNNoise native state and soxr streaming buffers.
         await self._close_audio_processor(generation)
+
+        if not self._still_owns_connection(generation):
+            # Waiting for the audio lock is an await like any other, and this
+            # is the last one before the release below reads the client again:
+            # ``_close_gemini()`` would exit the replacement's context — the
+            # session a successful reconnect just installed.
+            logger.info(
+                "Realtime close: a replacement connection attached; releasing only the retired connection"
+            )
+            await self._release_retired_connection(ws, gemini_context, gemini_close_task)
+            return
 
         # Gemini uses different cleanup
         if self._is_gemini:

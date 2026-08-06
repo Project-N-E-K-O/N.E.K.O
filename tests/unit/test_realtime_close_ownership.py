@@ -316,6 +316,66 @@ async def test_audio_processor_is_not_released_after_a_replacement_adopts_it():
     assert client._audio_processor is processor
 
 
+@pytest.mark.asyncio
+async def test_retired_teardown_does_not_shut_the_replacements_arbiter_down():
+    """The arbiter is shared across connections, and connect() reopens it. A
+    teardown scheduled just before the reconnect attached must not shut it down
+    again — the replacement's socket would stay healthy while every ticket on
+    it fails."""
+    client = _make_client()
+    retired_ws = _FakeWs()
+    client.ws = retired_ws
+    shutdown_calls = []
+
+    async def _shutdown(reason):
+        shutdown_calls.append(reason)
+
+    client._response_arbiter.shutdown = _shutdown
+
+    closing = asyncio.create_task(client.close())
+    # One step: close() seizes the retired socket and schedules its teardown,
+    # which has not run a single line yet.
+    await asyncio.sleep(0)
+    assert client.ws is None, "fixture check: the seizure must have happened"
+
+    # The reconnect wins that gap: it attaches and reopens the arbiter.
+    client.ws = AsyncMock()
+    client._on_connection_attached()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert shutdown_calls == []
+    assert retired_ws.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retired_failed_transport_does_not_recondemn_the_replacement():
+    """connect() clears the fatal flag on purpose. A retired fatal teardown
+    re-asserting it would make the live connection reject every later send."""
+    client = _make_client()
+    retired_ws = _FakeWs()
+    client.ws = retired_ws
+    shutdown_calls = []
+
+    async def _shutdown(reason):
+        shutdown_calls.append(reason)
+
+    client._response_arbiter.shutdown = _shutdown
+
+    failing = asyncio.create_task(client._close_failed_transport("transport failed"))
+    await asyncio.sleep(0)
+    assert client.ws is None, "fixture check: the seizure must have happened"
+
+    # The reconnect attaches and clears the fatal flag, as connect() does.
+    client.ws = AsyncMock()
+    client._fatal_error_occurred = False
+    client._on_connection_attached()
+    await asyncio.wait_for(failing, timeout=5)
+
+    assert client._fatal_error_occurred is False
+    assert shutdown_calls == []
+    assert retired_ws.close_calls == 1
+
+
 # ── Gemini SDK context exit ──────────────────────────────────────────
 
 
@@ -431,6 +491,46 @@ async def test_retired_gemini_context_is_exited_even_after_a_reconnect():
     assert replacement_context.exit_calls == 0
     assert client._gemini_context_manager is replacement_context
     assert client._gemini_session is replacement_session
+    assert client.ws is replacement_session
+
+
+@pytest.mark.asyncio
+async def test_replacement_attaching_during_the_audio_lock_keeps_its_gemini_session():
+    """The audio lock is the last await before the release reads the client
+    again, so a replacement attaching there must not have its freshly installed
+    session exited."""
+    client = _make_client()
+    client._is_gemini = True
+    retired_context = _GatedGeminiContext()
+    retired_session = object()
+    client._gemini_context_manager = retired_context
+    client._gemini_session = retired_session
+    client.ws = retired_session
+    client._audio_processor = MagicMock()
+
+    async def _shutdown(reason):
+        return None
+
+    client._response_arbiter.shutdown = _shutdown
+
+    await client._audio_processing_lock.acquire()
+    closing = asyncio.create_task(client.close())
+    await _settle()
+
+    replacement_context = _GatedGeminiContext()
+    replacement_session = object()
+    client._gemini_context_manager = replacement_context
+    client._gemini_session = replacement_session
+    client.ws = replacement_session
+    client._on_connection_attached()
+    client._audio_processing_lock.release()
+
+    retired_context.release.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert replacement_context.exit_calls == 0
+    assert retired_context.exit_calls == 1
+    assert client._gemini_context_manager is replacement_context
     assert client.ws is replacement_session
 
 

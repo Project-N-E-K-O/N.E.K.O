@@ -114,7 +114,7 @@ class _AudioMixin:
         Callers outside a connection teardown pass nothing and are unaffected.
         """
         async with self._audio_processing_lock:
-            if generation is not None and self._connection_generation != generation:
+            if generation is not None and not self._still_owns_connection(generation):
                 logger.info(
                     "Audio processor close: a replacement connection adopted it; leaving it alone"
                 )
