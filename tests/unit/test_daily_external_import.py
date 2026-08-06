@@ -201,12 +201,12 @@ async def test_daily_new_day_count_over_cap_raises_too_large():
 
 
 class _FakeTimeIndexed:
-    """asearch_facts returns preconfigured hits; index is a no-op."""
+    """asearch_similar_facts returns preconfigured hits; index is a no-op."""
 
     def __init__(self, hits):
-        self._hits = hits  # list[(fact_id, score)]
+        self._hits = hits  # list[(fact_id, overlap)]
 
-    async def asearch_facts(self, lanlan_name, text, limit):
+    async def asearch_similar_facts(self, lanlan_name, text, limit):
         return self._hits
 
     async def aindex_fact(self, lanlan_name, fact_id, text):
@@ -277,7 +277,7 @@ async def test_fts_dedup_exempts_cross_date_daily_hits():
         semantic_dedup=False,
     )
     existing_id = harness._mem[0]["id"]
-    harness._time_indexed = _FakeTimeIndexed([(existing_id, -10.0)])
+    harness._time_indexed = _FakeTimeIndexed([(existing_id, 1.0)])
 
     cross_date = await harness._apersist_new_facts(
         "Neko", [_daily_fact("workout at the gym in the morning", "2026-07-13")],

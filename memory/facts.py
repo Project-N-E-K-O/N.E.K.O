@@ -57,6 +57,10 @@ from config.prompts.prompts_memory import (
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
+from memory.timeindex import (
+    FACT_NEAR_DUP_ARBITRATE_OVERLAP,
+    FACT_NEAR_DUP_IDENTICAL_OVERLAP,
+)
 from memory.scopes import (
     MemorySubject,
     coerce_subject,
@@ -319,6 +323,21 @@ class FactStore:
     # 几轮，而模块单例会在 pytest 用例之间串状态。
     _recheck_attempts_mem: dict | None = None
     _recheck_mem_guard: threading.Lock | None = None
+
+    # 本进程已确认 FTS 近重复索引可用的角色。同上，class 级默认 + 惰性创建：
+    # `FactStore.__new__(FactStore)` 造出来的实例也要能走 Stage-2。
+    _fts_backfilled: set | None = None
+    # fact_dedup 的 LLM 仲裁队列。Stage-2 只捞候选、由它裁决，所以这里拿不到
+    # resolver 时 Stage-2 的命中就只能记日志（见 _aenqueue_near_dup_pairs）。
+    _dedup_resolver = None
+
+    def attach_dedup_resolver(self, resolver) -> None:
+        """Wire the arbitration queue that Stage-2 near-dup hits feed into.
+
+        Set by the memory runtime after both objects exist (the resolver
+        takes the store in its constructor, so the store cannot build it).
+        """
+        self._dedup_resolver = resolver
 
     def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
@@ -3460,6 +3479,10 @@ class FactStore:
         memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
+        # Stage-2 捞到的 (新 fact, 既存 fact, 文字重叠度)：落盘成功之后才入
+        # 仲裁队列——队列是 ids-only，指向一条还没写进 facts.json 的 fact 就
+        # 是悬空引用，回滚后更是永久指向不存在的 id。
+        near_dup_pairs: list[tuple[dict, dict, float]] = []
         upgraded_count = 0
         provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
@@ -3695,8 +3718,19 @@ class FactStore:
                 )
                 continue
 
-            # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
+            # Stage 2: FTS5 近重复检索（轻量，无 LLM）。
+            #
+            # 这道闸**不再自己判定重复**（#2703）：文字重叠度高和「说的是同
+            # 一件事」不是一回事——「养了一只猫」和「养了一只狗」的 2/3-gram
+            # 重叠 0.87，是全场最高分，而它们必须各留一条。所以除了折叠归一
+            # 后 token 集完全相同（overlap 1.0，等价于 Stage-1 hash 的
+            # 繁简/停用名变体）之外，命中一律照常写入，只把 (新, 旧) 配对丢
+            # 给 fact_dedup 的 LLM 仲裁去裁 merge / replace / keep_both。
+            arbitration_hit: tuple[dict, float] | None = None
             if semantic_dedup and self._time_indexed is not None:
+                await self._aensure_fact_index_backfilled(
+                    lanlan_name, existing_facts,
+                )
                 # FTS5 is still character-wide, so fetch a wider window and
                 # keep the historical "top-3 candidates" semantics *inside*
                 # the subject boundary: cross-subject rows neither count as
@@ -3744,11 +3778,11 @@ class FactStore:
                     return archived_by_id
 
                 while True:
-                    similar = await self._time_indexed.asearch_facts(
+                    similar = await self._time_indexed.asearch_similar_facts(
                         lanlan_name, text, raw_limit,
                     )
                     same_subject_seen = 0
-                    for fid, score in similar:
+                    for fid, overlap in similar:
                         hit = facts_by_id.get(fid)
                         if hit is None:
                             hit = (await _aarchived_by_id()).get(fid)
@@ -3767,7 +3801,7 @@ class FactStore:
                         same_subject_seen += 1
                         if same_subject_seen > 3:
                             break
-                        if score >= -5:
+                        if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
                             continue
                         if daily_event_date:
                             # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
@@ -3781,11 +3815,20 @@ class FactStore:
                             )
                             if hit_date and hit_date != daily_event_date:
                                 continue
-                        is_dup = True
-                        duplicate_hit = hit
-                        break
+                        if overlap >= FACT_NEAR_DUP_IDENTICAL_OVERLAP:
+                            # 折叠 + 去停用名后 token 集完全一致：与 Stage-1
+                            # 的精确重复只差繁简 / 停用名 / 标点，照旧直接挡。
+                            is_dup = True
+                            duplicate_hit = hit
+                            break
+                        if arbitration_hit is None and not hit.get('absorbed'):
+                            # absorbed 行已折进反思：把新文本并进去会把它从
+                            # 归档路径复活，比留着重复更糟（对齐向量侧
+                            # detect_candidates 的同一条判断）。
+                            arbitration_hit = (hit, overlap)
                     if (
                         is_dup
+                        or arbitration_hit is not None
                         or same_subject_seen >= 3
                         or len(similar) < raw_limit
                         or raw_limit >= 200
@@ -3887,6 +3930,10 @@ class FactStore:
             # 静默丢弃 (Codex P2 round-10 on PR #1408)。
             hash_to_existing[content_hash] = fact_entry
             new_facts.append(fact_entry)
+            if arbitration_hit is not None:
+                near_dup_pairs.append(
+                    (fact_entry, arbitration_hit[0], arbitration_hit[1]),
+                )
 
             if self._time_indexed is not None:
                 try:
@@ -3922,6 +3969,8 @@ class FactStore:
                     upgraded_snapshots, provenance_snapshots,
                 )
                 raise
+        if near_dup_pairs:
+            await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
         if new_facts:
             logger.info(
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"
@@ -3958,6 +4007,137 @@ class FactStore:
                 reconciled_facts.extend(reconciled_by_identity.values())
 
         return new_facts
+
+    async def _aensure_fact_index_backfilled(
+        self, lanlan_name: str, active_facts: list[dict],
+    ) -> None:
+        """Populate the near-dup index once per character per process.
+
+        The index was rebuilt from scratch for #2703 (the old one indexed
+        raw text under a tokenizer that could not retrieve Chinese), and
+        ``index_fact`` only ever runs for a fact being written *now* — so
+        without this, every fact that predates the upgrade stays invisible
+        to Stage-2 and the check silently covers only new arrivals.
+
+        Archived rows go in too: they still block duplicates (an absorbed
+        row that stopped blocking would let its own text back in as a new
+        fact), and dropping them from the index would change that.
+
+        Best-effort by construction: a read-only or maintenance-mode
+        store just doesn't get the backfill this round, and the marker
+        stays unset so the next write retries.
+        """
+        if self._time_indexed is None:
+            return
+        done = self._fts_backfilled
+        if done is None:
+            done = self._fts_backfilled = set()
+        if lanlan_name in done:
+            return
+        try:
+            needs = await asyncio.to_thread(
+                self._time_indexed.fts_index_needs_backfill, lanlan_name,
+            )
+            if needs:
+                rows: list[tuple[str, str]] = [
+                    (str(f.get('id')), str(f.get('text') or ''))
+                    for f in active_facts
+                    if isinstance(f, dict) and f.get('id')
+                ]
+
+                def _read_archive() -> list[tuple[str, str]]:
+                    path = self._facts_archive_path(lanlan_name)
+                    if not os.path.exists(path):
+                        return []
+                    try:
+                        with open(path, encoding='utf-8') as fh:
+                            data = json.load(fh)
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                        return []
+                    if not isinstance(data, list):
+                        return []
+                    return [
+                        (str(r.get('id')), str(r.get('text') or ''))
+                        for r in data
+                        if isinstance(r, dict) and r.get('id')
+                    ]
+
+                rows.extend(await asyncio.to_thread(_read_archive))
+                indexed = await self._time_indexed.abackfill_fact_index(
+                    lanlan_name, rows,
+                )
+                if indexed is None:
+                    # 回填没跑成：别记「已完成」，否则这个进程剩下的时间里
+                    # 全部历史 fact 都不在索引里，而 Stage-2 看上去在工作。
+                    return
+                if indexed:
+                    logger.info(
+                        f"[FactStore] {lanlan_name}: 回填 {indexed} 条 fact 到近重复索引"
+                    )
+            done.add(lanlan_name)
+        except Exception as e:
+            logger.debug(
+                f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
+            )
+
+    async def _aenqueue_near_dup_pairs(
+        self, lanlan_name: str,
+        pairs: list[tuple[dict, dict, float]],
+    ) -> None:
+        """Hand Stage-2's near-dup hits to the LLM arbitration queue.
+
+        Stage-2 knows two facts read alike; it does not know whether they
+        say the same thing. That question already has an owner —
+        ``FactDedupResolver`` batches (candidate, existing) pairs into one
+        LLM call classifying merge / replace / keep_both — and the vector
+        path feeds the very same queue, so a pair both paths find is
+        deduped by id inside ``aenqueue_candidates`` rather than arbitrated
+        twice.
+
+        Without a resolver attached (an embedded/legacy FactStore, or a
+        bootstrap that failed) the hits are logged and dropped: writing
+        both facts and saying so beats dropping one on textual overlap
+        alone.
+        """
+        from memory.fact_dedup import _fact_dedup_domain
+
+        resolver = self._dedup_resolver
+        if resolver is None:
+            logger.debug(
+                f"[FactStore] {lanlan_name}: {len(pairs)} 对近重复命中无仲裁队列可投递"
+            )
+            return
+        payload: list[dict] = []
+        for candidate, existing, overlap in pairs:
+            domain = _fact_dedup_domain(existing)
+            if domain is None:
+                continue
+            payload.append({
+                'candidate_id': candidate.get('id'),
+                'existing_id': existing.get('id'),
+                'candidate_subject_kind': candidate.get('subject_kind'),
+                'candidate_subject_id': candidate.get('subject_id'),
+                'candidate_scope': candidate.get('scope'),
+                'existing_subject_kind': existing.get('subject_kind'),
+                'existing_subject_id': existing.get('subject_id'),
+                'existing_scope': existing.get('scope'),
+                'entity': existing.get('entity') or 'master',
+                'subject_key': domain[0],
+                'scope': domain[1],
+                # 不塞 cosine（入队时按缺省落 0.0）：这两个数不是一回事，
+                # 而队列里的 cosine 会原样进仲裁 prompt，冒名顶替等于对模型
+                # 谎报证据强度。文字重叠单独一栏，detector 标明来路。
+                'text_overlap': overlap,
+                'detector': 'fts_near_dup',
+            })
+        if not payload:
+            return
+        try:
+            await resolver.aenqueue_candidates(lanlan_name, payload)
+        except Exception as e:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: 近重复候选入队失败: {e}"
+            )
 
     async def _aload_signal_targets(
         self, lanlan_name: str,

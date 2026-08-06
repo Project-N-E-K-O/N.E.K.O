@@ -27,6 +27,19 @@ import os
 
 logger = get_module_logger(__name__, "Memory")
 
+# ``token_overlap`` 上的两条线（消费点：memory/facts.py 的 Stage-2）。
+#
+# 1.0 = 折叠 + 去停用名之后 token 集完全相同。够得着这条线的，实际只有繁简、
+# 停用名、标点这几种「同一句话的不同写法」——Stage-1 的 SHA-256 差一个字节
+# 就漏，这条线接住它们，也只接住它们。它是唯一允许直接丢弃新 fact 的判据。
+FACT_NEAR_DUP_IDENTICAL_OVERLAP = 1.0
+# 0.25 = 值得请 LLM 看一眼的下限，**不是**「判定为重复」的线。实测这个量本身
+# 分不开语义：「养了一只猫」vs「养了一只狗」0.87（必须各留一条），而
+# 「用户是一名程序员」vs「用户的职业是程序员」只有 0.29（该合并）。所以它按
+# 召回定：宁可多送几对无关的进仲裁（每条新 fact 至多送一对，裁掉即止），也
+# 不要把该合的挡在闸外——真正的裁决权在 fact_dedup 的 LLM 那里。
+FACT_NEAR_DUP_ARBITRATE_OVERLAP = 0.25
+
 
 def _next_readonly_batch(
     stream: Generator[list[tuple[object, object, object]], None, None],
@@ -36,6 +49,63 @@ def _next_readonly_batch(
         return False, next(stream)
     except StopIteration:
         return True, None
+
+
+def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
+    """Tokens actually stored in / queried against the facts FTS index.
+
+    Both sides of the near-duplicate check run through here, so index
+    and query can never disagree about what a token is.
+
+    Three things happen, in order:
+
+    * Traditional characters fold to Simplified. Two renderings of the
+      same sentence otherwise share almost no characters at all, which
+      makes every character-level overlap score read them as unrelated.
+    * Stop-names (master / catgirl and their nicknames) are stripped.
+      They appear in nearly every fact; leaving them in lets two facts
+      about entirely different things score as similar.
+    * The text is split with the *same* rules as
+      ``memory.hybrid_recall._tokenize`` — CJK runs become 2/3-grams,
+      Latin runs stay whole. Sharing the rules keeps the dedup side and
+      the recall side talking about the same units.
+
+    Double quotes are dropped up front: a token carrying one would break
+    the quoting of the FTS5 query built from it, and dropping it on both
+    sides keeps the two in step.
+    """
+    from utils.cjk_fold import fold_cjk
+
+    raw = fold_cjk(str(content or "")).replace('"', ' ')
+    folded_stop_names = [fold_cjk(n) for n in (stop_names or [])] or None
+    try:
+        # 懒 import：hybrid_recall 会拉起 persona，import-time 硬依赖在
+        # memory-only 的 entrypoint 上不成立（同 hybrid_recall 自己的做法）。
+        from memory.hybrid_recall import _tokenize
+    except Exception as exc:
+        logger.warning(f"[TimeIndexedMemory] tokenize 回退到空白切分: {exc}")
+        if folded_stop_names:
+            raw = strip_stop_names(raw, folded_stop_names)
+        return [t for t in raw.split() if len(t) >= 2]
+    return _tokenize(raw, folded_stop_names)
+
+
+def token_overlap(left: list[str], right: list[str]) -> float:
+    """Dice coefficient over two token sets — 0.0 (disjoint) .. 1.0 (same set).
+
+    Deliberately not BM25: the caller needs a number it can put a fixed
+    threshold on, and BM25 magnitudes move with corpus size and term
+    rarity, so a threshold calibrated on one character's history means
+    something else on another's. BM25 still does what it is good at —
+    ranking the candidate window — it just doesn't get to decide.
+
+    Set semantics, not multiset: a repeated n-gram says the phrase
+    recurs inside one fact, which is not evidence about the other fact.
+    """
+    left_set, right_set = set(left), set(right)
+    if not left_set or not right_set:
+        return 0.0
+    return 2 * len(left_set & right_set) / (len(left_set) + len(right_set))
 
 
 class TimeIndexedMemory:
@@ -694,10 +764,24 @@ class TimeIndexedMemory:
 
     # ── FTS5 事实索引 ─────────────────────────────────────────────
 
-    FACTS_FTS_TABLE = "facts_fts"
+    FACTS_FTS_TABLE = "facts_fts_v2"
+    FACTS_FTS_META_TABLE = "facts_fts_meta"
+    # v1（``facts_fts``）存的是原文 + unicode61，对中文整段只产出一个 token，
+    # 近重复检索永远打不中（#2703）。v2 换成「Python 端折叠 + n-gram」后两侧
+    # 口径都变了，旧表的行一条也不能复用——建 v2 时直接 DROP，不是省空间，是
+    # 隐私擦除必须只有一份索引：留着 v1 就等于 delete_fact_from_index 之后
+    # 原文还躺在另一张表里。
+    _LEGACY_FACTS_FTS_TABLES = ("facts_fts",)
 
     def _ensure_fts_table(self, lanlan_name: str, readonly: bool = False) -> bool:
-        """Ensure the FTS5 virtual table exists. The unicode61 tokenizer indexes Chinese character-by-character, zero dependencies."""
+        """Ensure the FTS5 virtual table exists.
+
+        The table stores **pre-tokenized** content (see ``fts_tokens``),
+        not raw fact text: unicode61 treats a whole run of CJK as one
+        token, so raw Chinese is only ever retrievable by an exact
+        full-string match. Feeding it space-separated n-grams puts the
+        tokenization under our control and keeps the dependency at zero.
+        """
         if not self._ensure_engine_exists(lanlan_name, readonly=readonly):
             return False
         if readonly:
@@ -717,10 +801,18 @@ class TimeIndexedMemory:
         self._assert_timeindex_writable(lanlan_name)
         try:
             with self.engines[lanlan_name].connect() as conn:
+                # fact_id 必须 UNINDEXED：它进 FTS 词表的话，OR 查询里的拉丁
+                # token（"fact"）会命中每一行的 id 列，候选集直接退化成全表。
                 conn.execute(text(
                     f"CREATE VIRTUAL TABLE IF NOT EXISTS {self.FACTS_FTS_TABLE} "
-                    f"USING fts5(fact_id, content, tokenize='unicode61')"
+                    f"USING fts5(fact_id UNINDEXED, content, tokenize='unicode61')"
                 ))
+                conn.execute(text(
+                    f"CREATE TABLE IF NOT EXISTS {self.FACTS_FTS_META_TABLE} "
+                    f"(key TEXT PRIMARY KEY, value TEXT)"
+                ))
+                for legacy in self._LEGACY_FACTS_FTS_TABLES:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {legacy}"))
                 conn.commit()
             return True
         except Exception as e:
@@ -733,20 +825,18 @@ class TimeIndexedMemory:
     def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         """Insert a fact into the FTS5 index.
 
-        master/lanlan + their nicknames are stripped before indexing: these
-        tokens appear in nearly every fact, and although BM25 IDF automatically
-        down-weights them, leaving them in still lets them noise up dedup
-        scores ("主人喜欢猫" vs "主人讨厌狗" would still get nonzero similarity
-        through the shared "主人"). Only stripping on both the index side and
-        the query side lets BM25 score entirely around substantive content.
-        """  # noqa: DOCSTRING_CJK
+        What lands in the ``content`` column is the token list from
+        ``fts_tokens``, space-joined — never the raw fact text. Nothing
+        reads this column back as prose (search returns ids), so the
+        stored form is free to be whatever makes matching work.
+        """
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
             return
         if not self._ensure_fts_table(lanlan_name):
             return
         stop_names = collect_stop_names(get_config_manager(), lanlan_name)
-        indexed_content = strip_stop_names(content, stop_names)
+        indexed_content = " ".join(fts_tokens(content, stop_names))
         try:
             with self.engines[lanlan_name].connect() as conn:
                 # 先检查是否已存在
@@ -767,14 +857,132 @@ class TimeIndexedMemory:
     async def aindex_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
         await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content)
 
-    def search_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
-        """Search facts via FTS5 BM25. Returns [(fact_id, bm25_score), ...].
+    # ── v1 → v2 索引回填 ──────────────────────────────────────────
 
-        FTS5 bm25() scores are usually negative; the smaller (more negative),
-        the more relevant. master/lanlan + their nicknames are stripped before
-        querying: symmetric with ``index_fact`` — only with both the index side
-        and the query side rid of these stop-names can BM25 truly
-        differentiate similarity around substantive content.
+    _FTS_BACKFILL_META_KEY = "backfilled_at"
+
+    def fts_index_needs_backfill(self, lanlan_name: str) -> bool:
+        """True while the v2 index has never been populated from facts.json.
+
+        The v2 table is created empty (v1's rows are unusable — different
+        tokenization on both sides), so without a backfill every fact
+        written before the upgrade is invisible to the near-duplicate
+        check. An empty table is *not* the signal: a character with no
+        facts yet is also empty, and re-scanning it on every write would
+        never stop. The marker row is.
+        """
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                # 连只读都打不开（db 文件还不存在，或这一刻不可读）——当作
+                # 「要回填」：写路径会顺手建库、建表、盖标记，一次就收敛。
+                # 反过来当作「不用回填」的话，一个还没有 db 的角色会永久
+                # 错过回填，而这条路径正是全新角色的常态。
+                return True
+            with self.engines[lanlan_name].connect() as conn:
+                exists = conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name = :table_name"
+                    ),
+                    {"table_name": self.FACTS_FTS_META_TABLE},
+                ).fetchone()
+                if exists is None:
+                    return True
+                row = conn.execute(
+                    text(
+                        f"SELECT value FROM {self.FACTS_FTS_META_TABLE} "
+                        f"WHERE key = :key"
+                    ),
+                    {"key": self._FTS_BACKFILL_META_KEY},
+                ).fetchone()
+                return row is None
+        except MaintenanceModeError:
+            raise
+        except Exception as e:
+            logger.debug(f"[TimeIndexedMemory] 检查 FTS 回填标记失败: {e}")
+            return False
+
+    def backfill_fact_index(
+        self, lanlan_name: str, rows: list[tuple[str, str]],
+    ) -> int | None:
+        """Bulk-index ``(fact_id, content)`` pairs, then mark the backfill done.
+
+        Returns the number of rows indexed, or ``None`` if the backfill
+        could not run — the caller must not record "done" on a ``None``,
+        or a single failed attempt would leave the whole history out of
+        the index until the next process start.
+
+        Rows already present are skipped, so a partial previous run (or
+        a crash between the inserts and the marker) costs a rescan, not
+        duplicate index entries.
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            return None
+        if not self._ensure_fts_table(lanlan_name):
+            return None
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                indexed = {
+                    r[0] for r in conn.execute(
+                        text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE}")
+                    ).fetchall()
+                }
+                payload = [
+                    {
+                        "fid": fact_id,
+                        "content": " ".join(fts_tokens(content, stop_names)),
+                    }
+                    for fact_id, content in rows
+                    if fact_id and fact_id not in indexed
+                ]
+                if payload:
+                    conn.execute(
+                        text(
+                            f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) "
+                            f"VALUES(:fid, :content)"
+                        ),
+                        payload,
+                    )
+                conn.execute(
+                    text(
+                        f"INSERT OR REPLACE INTO {self.FACTS_FTS_META_TABLE}"
+                        f"(key, value) VALUES(:key, :value)"
+                    ),
+                    {
+                        "key": self._FTS_BACKFILL_META_KEY,
+                        "value": datetime.now().isoformat(),
+                    },
+                )
+                conn.commit()
+                return len(payload)
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 回填 FTS 索引失败: {e}")
+            return None
+
+    async def abackfill_fact_index(
+        self, lanlan_name: str, rows: list[tuple[str, str]],
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self.backfill_fact_index, lanlan_name, rows,
+        )
+
+    def search_similar_facts(
+        self, lanlan_name: str, query: str, limit: int = 10,
+    ) -> list[tuple[str, float]]:
+        """Find textually near-duplicate facts. Returns [(fact_id, overlap), ...].
+
+        ``overlap`` is the ``token_overlap`` Dice score in 0.0..1.0,
+        sorted descending — the *higher*, the more alike. (The predecessor
+        ``search_facts`` returned raw bm25(), which runs the other way and
+        has no fixed scale; the rename is there so no caller can keep the
+        old comparison and silently invert its meaning.)
+
+        FTS5 does the retrieval: an OR over the query's tokens, ranked by
+        bm25 and cut at ``limit``, so a large history doesn't have to be
+        scored row by row in Python. The returned score is then computed
+        from the stored token lists, which is what the caller thresholds.
         """
         try:
             if not self._ensure_engine_exists(lanlan_name, readonly=True):
@@ -785,52 +993,47 @@ class TimeIndexedMemory:
             logger.debug(f"[TimeIndexedMemory] 维护态跳过搜索 {lanlan_name} 的 FTS 索引初始化: {exc}")
             return []
         stop_names = collect_stop_names(get_config_manager(), lanlan_name)
-        normalized_query = strip_stop_names(query, stop_names)
-        if not normalized_query.strip():
-            # Stripping 后什么都没剩——多半是纯名字查询，不让 FTS5 在空
-            # query 上抛 syntax error。
+        query_tokens = fts_tokens(query, stop_names)
+        if not query_tokens:
+            # 折叠 + stripping 后什么都没剩——多半是纯名字查询，不让 FTS5
+            # 在空 query 上抛 syntax error。
             return []
         try:
-            # Sanitize FTS5 special syntax characters to prevent
-            # OperationalError. With the unicode61 tokenizer (CJK characters
-            # indexed individually), unquoted queries get token-level AND
-            # semantics — the desired behavior for similar-fact matching
-            # in facts.py. Phrase wrapping would require ordered adjacency
-            # and cause recall regression.
-            safe_query = (
-                normalized_query
-                .replace('"', ' ')
-                .replace('*', ' ')
-                .replace('(', ' ')
-                .replace(')', ' ')
-                .replace('-', ' ')
-                .replace(':', ' ')
+            # 每个 token 单独加引号：FTS5 的布尔关键字（AND / OR / NOT）在
+            # 裸 term 位置会被当运算符，而拉丁 token 恰好可能就是这几个词。
+            # token 里不可能再出现 `"`（fts_tokens 已经先剔掉），所以引号
+            # 不会被自身内容截断；OR 连接是 issue #2703 的正题——AND 语义
+            # 要求改写后的句子含有原句**全部** token，差一个词就归零，
+            # 「近重复」这层闸因此对任何改写都不成立。
+            fts_query = ' OR '.join(
+                f'"{t}"' for t in dict.fromkeys(query_tokens)
             )
-            # Wrap each token in double quotes so FTS5 boolean keywords
-            # (AND, OR, NOT) are treated as literal search terms instead
-            # of operators. With unicode61, single-character CJK tokens
-            # behave identically quoted or unquoted.
-            tokens = [f'"{t}"' for t in safe_query.split() if t.strip()]
-            if not tokens:
-                return []
-            fts_query = ' '.join(tokens)
             with self.engines[lanlan_name].connect() as conn:
                 result = conn.execute(
                     text(
-                        f"SELECT fact_id, bm25({self.FACTS_FTS_TABLE}) as score "
+                        f"SELECT fact_id, content, bm25({self.FACTS_FTS_TABLE}) as score "
                         f"FROM {self.FACTS_FTS_TABLE} "
                         f'WHERE {self.FACTS_FTS_TABLE} MATCH :query '
                         f"ORDER BY score LIMIT :limit"
                     ),
                     {"query": fts_query, "limit": limit}
                 )
-                return [(row[0], row[1]) for row in result.fetchall()]
+                scored = [
+                    (row[0], token_overlap(query_tokens, str(row[1] or '').split()))
+                    for row in result.fetchall()
+                ]
+            scored.sort(key=lambda item: item[1], reverse=True)
+            return scored
         except Exception as e:
             logger.debug(f"[TimeIndexedMemory] FTS5 搜索失败（可能是查询为空或语法）: {e}")
             return []
 
-    async def asearch_facts(self, lanlan_name: str, query: str, limit: int = 10) -> list[tuple[str, float]]:
-        return await asyncio.to_thread(self.search_facts, lanlan_name, query, limit)
+    async def asearch_similar_facts(
+        self, lanlan_name: str, query: str, limit: int = 10,
+    ) -> list[tuple[str, float]]:
+        return await asyncio.to_thread(
+            self.search_similar_facts, lanlan_name, query, limit,
+        )
 
     def delete_fact_from_index(
         self, lanlan_name: str, fact_id: str, *, strict: bool = False,

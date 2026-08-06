@@ -41,7 +41,7 @@ class _FakeTimeIndexed:
     def __init__(self):
         self.hits: list[tuple[str, float]] = []
 
-    async def asearch_facts(self, lanlan_name, text, limit):
+    async def asearch_similar_facts(self, lanlan_name, text, limit):
         return list(self.hits)[:limit]
 
     async def aindex_fact(self, lanlan_name, fact_id, text):
@@ -176,7 +176,7 @@ async def test_fts_semantic_hit_from_another_group_does_not_dedup():
     first = await harness._apersist_new_facts(
         "Neko", [_fact("周五晚上八点一起玩")], subject=group_a, semantic_dedup=False,
     )
-    index.hits = [(first[0]["id"], -10.0)]
+    index.hits = [(first[0]["id"], 1.0)]
     created = await harness._apersist_new_facts(
         "Neko", [_fact("周五晚八点开黑")], subject=group_b, semantic_dedup=True,
     )
@@ -913,7 +913,7 @@ async def test_fts_dedup_reconciles_request_sources_conservatively():
         semantic_dedup=False,
         speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
     )
-    index.hits = [(first[0]["id"], -10.0)]
+    index.hits = [(first[0]["id"], 1.0)]
     reconciled = []
     duplicate = await harness._apersist_new_facts(
         "Neko", [_fact("Alice really likes cats")], subject=subject,
@@ -2030,8 +2030,8 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
         "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
     )
     scoped_ids = [fact["id"] for fact in harness._mem[:3]]
-    index.hits = [(fid, -10.0) for fid in scoped_ids] + [
-        (legacy_first[0]["id"], -10.0),
+    index.hits = [(fid, 1.0) for fid in scoped_ids] + [
+        (legacy_first[0]["id"], 1.0),
     ]
 
     duplicate = await harness._apersist_new_facts(
@@ -2058,7 +2058,7 @@ async def test_fts_dedup_sees_archived_rows(tmp_path):
     arch_path.write_text(
         _json.dumps(archived, ensure_ascii=False), encoding="utf-8",
     )
-    index.hits = [("arch1", -10.0)]
+    index.hits = [("arch1", 1.0)]
 
     with patch.object(
         harness, "_facts_archive_path", return_value=str(arch_path),
@@ -2089,8 +2089,8 @@ async def test_fts_dedup_escalates_past_crowded_first_window():
         "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
     )
     scoped_ids = [fact["id"] for fact in harness._mem[:10]]
-    index.hits = [(fid, -10.0) for fid in scoped_ids] + [
-        (legacy_first[0]["id"], -10.0),
+    index.hits = [(fid, 1.0) for fid in scoped_ids] + [
+        (legacy_first[0]["id"], 1.0),
     ]
 
     duplicate = await harness._apersist_new_facts(
@@ -2345,7 +2345,7 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         fs._time_indexed = SimpleNamespace(
             aindex_fact=AsyncMock(side_effect=RuntimeError("maintenance")),
             adelete_fact_from_index=AsyncMock(),
-            asearch_facts=AsyncMock(return_value=[]),
+            asearch_similar_facts=AsyncMock(return_value=[]),
         )
         with pytest.raises(RuntimeError):
             await fs.extract_facts([msg], "Neko", fail_closed=True)

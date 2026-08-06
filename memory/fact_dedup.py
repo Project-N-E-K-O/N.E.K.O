@@ -46,16 +46,26 @@ Why an LLM is in the loop:
     "主人讨厌猫" (the user hates cats).
     Both surface forms vary by 1 token but ride opposite poles.
   * Hash-based dedup remains the first line of defence (catches exact
-    repeats, no LLM cost) and the FTS5 lightweight near-dup check
-    handles strong textual overlap.  This module addresses the
-    *paraphrase* class — "对猫咪很感兴趣" / "最近养了只猫" ("very
-    interested in cats" / "recently got a cat") — that legacy dedup
-    misses entirely.
+    repeats, no LLM cost). Everything past that arrives here as a
+    *candidate*, from either of two detectors:
 
-When the EmbeddingService is disabled, no candidates are ever
-enqueued, so ``aresolve`` always sees an empty queue and the legacy
-hash + FTS5 dedup path is the entire dedup pipeline — exactly the
-behaviour pre-P2.
+      - the embedding sweep above (cosine), and
+      - the FTS5 near-duplicate check in ``memory/facts.py`` (character
+        n-gram overlap), which enqueues its hits instead of dropping the
+        new fact — "养了一只猫" / "养了一只狗" ("got a cat" / "got a
+        dog") is the highest textual overlap two facts can plausibly
+        have and must still end in keep_both.
+
+    The two detectors overlap on purpose and rarely agree at the edges;
+    ``aenqueue_candidates`` dedups by id pair, so a pair both find is
+    arbitrated once.
+
+The FTS detector needs no vectors, so a character with the
+EmbeddingService disabled still gets paraphrase consolidation here —
+what it loses is the *paraphrase* class the embedding sweep is for
+("对猫咪很感兴趣" / "最近养了只猫", "very interested in cats" /
+"recently got a cat"), which shares almost no surface text and only a
+vector can reach.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
@@ -499,6 +509,10 @@ class FactDedupResolver:
                     'candidate_subject_kind', 'candidate_subject_id',
                     'candidate_scope', 'existing_subject_kind',
                     'existing_subject_id', 'existing_scope',
+                    # FTS 近重复通道（#2703）带来的证据：文字重叠度不是
+                    # cosine，两者不能互相冒名——分开存，prompt 侧按 detector
+                    # 决定报哪一个。
+                    'text_overlap', 'detector',
                 ):
                     if p.get(field) is not None:
                         queued[field] = p[field]
@@ -985,10 +999,22 @@ class FactDedupResolver:
                         selected_locale = None
                     if selected_locale:
                         prompt_ui_language = selected_locale
+        def _evidence(item: dict) -> str:
+            """Name the metric that actually produced this pair.
+
+            An FTS pair has no cosine (vectors may not even be enabled);
+            printing its text overlap under the ``cosine=`` label would
+            hand the model a number that means something else.
+            """
+            overlap = item.get('text_overlap')
+            if overlap is not None:
+                return f"text_overlap={float(overlap):.3f}"
+            return f"cosine={float(item.get('cosine', 0.0)):.3f}"
+
         pairs_text = "\n".join(
             f"[{i}] candidate: {cand_text}"
             f" | existing: {exist_text}"
-            f" | cosine={item.get('cosine', 0.0):.3f}"
+            f" | {_evidence(item)}"
             for i, (item, (cand_text, exist_text)) in enumerate(
                 zip(batch, batch_texts)
             )

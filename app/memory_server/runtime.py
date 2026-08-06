@@ -318,6 +318,10 @@ async def reload_memory_components(
                     new_fact_dedup_resolver = fact_dedup_resolver
                 else:
                     new_fact_dedup_resolver = FactDedupResolver(new_facts)
+                # 反向引用：Stage-2 的 FTS 近重复命中要投进同一个仲裁队列。
+                # rebind 只改了 resolver→store 一个方向，新 FactStore 这边
+                # 是全新对象，不接就等于 reload 之后近重复候选静默丢弃。
+                new_facts.attach_dedup_resolver(new_fact_dedup_resolver)
             except Exception as e:
                 logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
                 new_fact_dedup_resolver = None
@@ -655,6 +659,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         # running or when that best-effort bootstrap fails.
         from memory.fact_dedup import FactDedupResolver
         fact_dedup_resolver = FactDedupResolver(fact_store)
+        # 反向引用：FactStore 的 Stage-2 近重复命中投进这个队列等 LLM 裁决。
+        fact_store.attach_dedup_resolver(fact_dedup_resolver)
         event_log = EventLog()
         persona_manager = PersonaManager(event_log=event_log)
         reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
