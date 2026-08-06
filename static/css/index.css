@@ -1849,6 +1849,23 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     z-index: 100003 !important;
 }
 
+/* 轮盘容器本身是透明的；保留按钮和圆形旋转区的交互，其余区域（特别是与紧凑播放器
+   重叠的左上控制带）必须点击穿透。这里覆盖上面的宿主通用 pointer-events 规则。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .avatar-tool-quickbar,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .avatar-tool-quickbar * {
+    pointer-events: auto !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell:has(> #music-player-mount.compact-music-player-mount:not(:empty)) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 96px, 160px 96px, 160px 0);
+}
+
 #react-chat-window-root {
     width: 100%;
     height: 100%;

@@ -4778,11 +4778,22 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
   visibility: visible;
-  pointer-events: auto;
+  /* 容器本身没有可见内容，不应形成 232px 方形的透明点击层。实际轮盘事件
+     从命中圆/道具按钮冒泡到该容器；未命中的区域自然穿透给下面的界面。 */
+  pointer-events: none;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
   pointer-events: auto;
+}
+
+/* 播放器位于轮盘中心左上方，其控制区会和圆形旋转命中区相交。播放器显示时，
+   从命中圆左上挖出固定的控制带，让播放/暂停、音量与静音点击穿透到下层；
+   道具按钮保持各自的 pointer-events:auto，不受影响。 */
+.app-shell:has(> #music-player-mount.compact-music-player-mount:not(:empty))
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]
+  .compact-input-tool-fan-hit-region {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 96px, 160px 96px, 160px 0);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-wheel-selection-pointer {
