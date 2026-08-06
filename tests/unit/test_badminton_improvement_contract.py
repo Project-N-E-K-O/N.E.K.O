@@ -1458,9 +1458,10 @@ def test_badminton_duel_difficulty_addendum_is_localized_per_full_locale():
 
     Asserted on the getter, which is the layer that has to keep zh-CN and zh-TW
     apart. ``_normalize_prompt_lang`` (the short-locale scheme the rest of this
-    module's tables use) collapses every Chinese variant to ``zh``; routing this
-    table through it would leave the zh-TW entry unreachable while still reading
-    as compliant to the static ``check_prompt_zh_tw`` gate.
+    module's tables use) spells Simplified Chinese ``zh``, so routing this table
+    through it would miss its ``zh-CN`` row. Until issue #2500 step 2 it also
+    collapsed zh-TW, which would have left that entry unreachable while still
+    reading as compliant to the static ``check_prompt_zh_tw`` gate.
     """
     get = prompts_badminton.get_badminton_duel_difficulty_control_prompt
 

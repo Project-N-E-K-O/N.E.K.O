@@ -40,13 +40,16 @@ Three axes cover every prompt module's needs:
 
     Every prompt dict under config/prompts/ now carries a ``'zh-TW'`` template
     (issue #2500 step 1), so template coverage is no longer what gates the flag.
-    The two template-selecting ``False`` callers — ``prompts_minigame_common``
-    and ``prompts_proactive._normalize_prompt_language`` — are waiting on issue
-    #2500 step 2 instead: their call sites still pass a SHORT language code,
-    which collapses Traditional before it ever reaches this function. Flip a
-    module to ``True`` in the same change that switches its callers to the full
-    locale — flipping earlier is a no-op, and switching the callers first without
-    flipping hands Traditional users a resolver that silently drops the script.
+    ``prompts_minigame_common`` flipped to ``True`` in issue #2500 step 2, in the
+    same change that moved its game-route call sites to the full locale. That
+    pairing is the rule: flipping earlier is a no-op, because the callers' SHORT
+    code has already collapsed the script before it reaches this function, and
+    switching the callers first without flipping hands Traditional users a
+    resolver that silently drops it.
+
+    ``prompts_proactive._normalize_prompt_language`` is the one template-selecting
+    ``False`` left, waiting on its own call-site flip in
+    ``main_logic/proactive_chat/service.py``.
 
     ``prompts_directives._trim_term`` passes ``False`` for an
     unrelated reason and stays that way: it is picking a *particle table family*,

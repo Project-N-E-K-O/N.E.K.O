@@ -35,11 +35,12 @@ BADMINTON_QUICK_LINE_KEYS = frozenset({
 def normalize_badminton_prompt_locale(language: Any) -> str:
     """Normalize a language code to a FULL badminton quick-lines key.
 
-    Keeps ``zh-CN`` and ``zh-TW`` apart, unlike
-    ``prompts_minigame_common._normalize_prompt_lang``, which collapses every
-    Chinese variant to ``zh``. Both schemes stay separate on purpose: this
-    module's quick-lines tables are keyed by full locale, and collapsing them
-    would regress the Traditional Chinese fallbacks that PR #2000 added.
+    Spells Simplified Chinese ``zh-CN``, where
+    ``prompts_minigame_common._normalize_prompt_lang`` spells it ``zh``. Both keep
+    ``zh-TW`` as its own key since issue #2500 step 2, so that is now the only
+    difference. The two schemes stay separate because this module's quick-lines
+    tables are keyed by full locale and the other module's are not — respelling
+    either one would just break its own tables.
 
     See docs/contributing/developer-notes.md #7 and PR #2000.
     """
@@ -839,10 +840,11 @@ Regras:
 - Se não precisar de controle, não escreva JSON.
 """
 
-# SHORT-locale table: keyed by zh (short-locale scheme via _localized_template
-# / _normalize_prompt_lang). Contrast with BADMINTON_QUICK_LINES_PROMPTS above,
-# which keeps zh-CN / zh-TW apart. See docs/contributing/developer-notes.md #7
-# and PR #2000 before unifying the two schemes.
+# SHORT-locale table: Simplified Chinese keyed as zh (short-locale scheme via
+# _localized_template / _normalize_prompt_lang). Contrast with
+# BADMINTON_QUICK_LINES_PROMPTS above, which keys it zh-CN. Both schemes keep
+# zh-TW. See docs/contributing/developer-notes.md #7 and PR #2000 before
+# unifying the two schemes.
 BADMINTON_SYSTEM_PROMPTS = {
     "zh": BADMINTON_SYSTEM_PROMPT,
     "zh-TW": _BADMINTON_SYSTEM_PROMPT_ZH_TW,
@@ -1335,9 +1337,11 @@ def get_badminton_duel_difficulty_control_prompt(lang: str | None = None) -> str
     """Return the duel-only difficulty-control addendum for the badminton prompt.
 
     Uses ``normalize_badminton_prompt_locale`` (the FULL-locale scheme) rather
-    than ``_normalize_prompt_lang``: the latter collapses every Chinese variant
-    to ``zh``, which would make the ``zh-TW`` entry unreachable data while still
-    reading as compliant to the static ``check_prompt_zh_tw`` gate.
+    than ``_normalize_prompt_lang`` because this table keys Simplified Chinese as
+    ``zh-CN``. Both normalizers keep ``zh-TW`` since issue #2500 step 2; before
+    that, ``_normalize_prompt_lang`` collapsed it and would have left the
+    ``zh-TW`` entry unreachable data while still reading as compliant to the
+    static ``check_prompt_zh_tw`` gate.
     """
     prompt_lang = normalize_badminton_prompt_locale(lang)
     return (

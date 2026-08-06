@@ -56,9 +56,15 @@ from .char_info import (
     _get_current_character_info,
     _get_game_route_summary_llm_info,
     _resolve_game_prompt_language,
+    _resolve_game_prompt_locale,
 )
 from .game_context import (
     _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT,
+    # 被 ``_run_soccer_passive_guard_ai`` 用着，但拆 runtime.py 上帝文件（#2270）时
+    # 漏在了这条 import 外面。端点那层的 ``except Exception`` 把 NameError 吞成
+    # ``{"ok": false, "reason": "exception"}``，所以 soccer 被动守卫一直静默退化成
+    # observe_more，没人看见。
+    _build_game_context_prompt_payload,
     _game_context_recent_dialogues,
 )
 from .memory_policy import (
@@ -950,7 +956,11 @@ def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str)
 async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -> Dict[str, Any]:
     route_state = _find_game_route_state_for_session("soccer", str(data.get("session_id") or ""), lanlan_name)
     char_info = _get_game_route_summary_llm_info(lanlan_name)
-    language = _absorb_request_language(data, lanlan_name) or char_info.get("user_language")
+    # 全码：短码会把 zh-TW 塌成 zh，让 soccer prompt 的繁体模板变成够不到的死数据
+    # （#2500 第 2 步）。``_resolve_game_prompt_locale`` 是 ``_absorb_request_language``
+    # 那条优先级链的全码孪生——请求体 > mgr.user_language > 全局缓存，并且同样在请求体
+    # 带 i18n 真值时回写 mgr.user_language。
+    language = _resolve_game_prompt_locale(lanlan_name, data) or char_info.get("user_language_full")
     stage = data.get("stage")
     prompt_type = str(data.get("promptType") or "surrender").strip()
 
