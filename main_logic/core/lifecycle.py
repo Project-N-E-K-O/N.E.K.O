@@ -694,6 +694,7 @@ class LifecycleMixin:
         _allow_cross_mode_restart=True,
         handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
         resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
+        request_id=None,
     ):
         # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
         # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
@@ -741,6 +742,7 @@ class LifecycleMixin:
             websocket, new, input_mode,
             user_initiated=user_initiated,
             _allow_cross_mode_restart=_allow_cross_mode_restart,
+            request_id=request_id,
             handshake_override=session_handshake_override,
             resource_optimization_override=(
                 session_resource_optimization_handshake_override
@@ -834,6 +836,7 @@ class LifecycleMixin:
                     input_mode,
                     llm_result,
                     _diag_start,
+                    request_id=request_id,
                     handshake_override=session_handshake_override,
                     resource_optimization_override=(
                         session_resource_optimization_handshake_override
@@ -874,6 +877,7 @@ class LifecycleMixin:
         *,
         user_initiated,
         _allow_cross_mode_restart,
+        request_id,
         handshake_override,
         resource_optimization_override,
     ):
@@ -906,6 +910,17 @@ class LifecycleMixin:
             # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
             # 等待上限绑前端的 start_session 超时：超过它再补发 ack 已无意义
             # （前端早已 reject + end_session），故以它为窗口上界兼防挂安全阀。
+            #
+            # 快照本请求进入时的 voice lease 身份：等待可能长达十几秒，期间第三个
+            # audio start 抢走麦克风是可能的，那时替它重跑路由会用**本请求**（已经
+            # 被顶掉的那个窗口）的 handshake 去配新持有者的路由。新持有者自己也会
+            # 走这条路径、且它的快照对得上，所以这里跳过不丢东西（Codex P2）。
+            _lease_at_request = getattr(self, "_voice_lease_connection_id", "")
+            # 墙钟基准，供下面算「前端 deadline 还剩多少」。不能拿 _waited
+            # 当依据：它按标称 50ms 累加，事件循环一卡（或 sleep 超发）真实
+            # 时间会甩开它好几秒，于是预算被高估、放行一次最长 12s 的 ASR
+            # connect，补发的 ack 仍然赶在前端超时之后（Codex P2）。
+            _wait_started = time.monotonic()
             _waited = 0.0
             while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
                 await asyncio.sleep(0.05)
@@ -918,7 +933,49 @@ class LifecycleMixin:
             # 故一律不发。也**不**发 session_failed——in-flight 可能仍在跑/或其
             # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
             if self._starting_session_count == 0 and self.session and self.is_active:
-                await self.send_session_started(input_mode)
+                # 补发的 ack 带的是 in-flight 那次 start 的路由裁决（见
+                # send_session_started），而这条路径本身从不重跑决策。裁决对本
+                # 请求方可能已经作废：本请求抢 voice lease 会 invalidate in-flight
+                # 的 ASR start，那次 start 于是 ASR_START_STALE 早退、把路由留在
+                # blocked 占位上且不发任何 status，结果两个窗口都 fail-closed latch
+                # 住、麦克风在本会话内再也打不开。先重跑一次决策再补 ack，让 ack
+                # 带的是本请求方真正成立的路由（详见 _rerun_route_for_deduped_start）。
+                await self._rerun_route_for_deduped_start(
+                    input_mode,
+                    lease_connection_id=_lease_at_request,
+                    remaining_deadline_seconds=(
+                        FRONTEND_START_SESSION_TIMEOUT_SECONDS
+                        - (time.monotonic() - _wait_started)
+                    ),
+                    handshake_override=handshake_override,
+                    resource_optimization_override=resource_optimization_override,
+                )
+                # ``also_notify``：重跑若 fail-closed 会 revoke lease，把
+                # _voice_lease_connection_id 和 voice socket 一起清掉，本请求方
+                # 就不在任何一条投递面上了（self.websocket 可能是更新的窗口）。
+                # 那样它会一直等到 15s 超时，而超时发的 end_session 会把刚起来的
+                # 会话撕掉。本请求那把 ws 是已知的，直接定向送一份（Codex P2）。
+                #
+                # 麦克风是不是还归本请求方，要在重跑**之后**判：重跑内部会 await
+                # 整个 provider connect（最长 12s），第三个窗口在那期间抢走麦
+                # 并把路由 settle 成健康值是可能的，重跑前的快照看不到（Codex P2）。
+                # lease 为空不算易主——那是本次 fail-closed 自己 revoke 的，路由
+                # 此刻本就是 blocked，照报即可。
+                _lease_now = getattr(self, "_voice_lease_connection_id", "")
+                _lease_moved = bool(_lease_now) and _lease_now != _lease_at_request
+                #
+                # lease 已易主时，ack 里的路由只能报 blocked。此刻 _asr_route_mode
+                # 是**新持有者**的裁决，可能已经 settle 成 native/independent；
+                # 照报会让本请求方（已经被顶掉的那个窗口）看到一条健康路由、
+                # 开麦，而服务端的 voice identity 归新持有者，它之后的每一帧
+                # PCM 都会被当 stale 丢掉——又一个"开着麦说给空气听"（Codex P2）。
+                # 报 blocked 让它 fail-closed 收口：UI 干净、可重试。
+                await self.send_session_started(
+                    input_mode,
+                    request_id=request_id,
+                    also_notify=websocket,
+                    microphone_route_override="blocked" if _lease_moved else None,
+                )
         elif user_initiated and _allow_cross_mode_restart:
             # 跨模式撞车，且这是用户显式启动：典型是 proactive（主动搭话 /
             # greeting）自起的 text 会话还在飞，而用户此刻点了"开始语音对话"
@@ -982,6 +1039,7 @@ class LifecycleMixin:
                     input_mode,
                     user_initiated=True,
                     _allow_cross_mode_restart=False,
+                    request_id=request_id,
                     handshake_override=handshake_override,
                     resource_optimization_override=resource_optimization_override,
                 )
@@ -1570,6 +1628,7 @@ class LifecycleMixin:
         next_context_count,
         diag_start,
         *,
+        request_id=None,
         handshake_override=...,
         resource_optimization_override=...,
     ):
@@ -1608,8 +1667,10 @@ class LifecycleMixin:
             self.set_goodbye_silent(False)
 
         logger.info(f"[语音会话诊断] 即将通知前端 session_started (start_session 总耗时: {time.time() - diag_start:.2f}秒)")
-        # 通知前端 session 已成功启动
-        await self.send_session_started(input_mode)
+        # 通知前端 session 已成功启动。带上本次 start 的 request_id：别的窗口
+        # 若也有 start 在等，它据此认出这条不是回应自己的，从而不会用一条属于
+        # 别人的 ack 收口自己的 promise（详见 send_session_started）。
+        await self.send_session_started(input_mode, request_id=request_id)
 
         # 在 queued context 写入 session 前保持输入闸门关闭；否则第一条
         # 缓存/并发用户输入可能抢在上下文前面进入模型。

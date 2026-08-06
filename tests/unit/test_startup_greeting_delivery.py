@@ -224,7 +224,9 @@ async def test_startup_greeting_preserves_traditional_chinese_prompt_locale(
     assert len(session.instructions) == 1
     assert "距離你和Master上次有記錄的對話" in session.instructions[0]
     assert "請結合已經載入的近期對話" in session.instructions[0]
-    assert "======以上为啟動問候約束======" in session.instructions[0]
+    # The frame is the cross-locale watermark, identical in every row; the
+    # Traditional prose above is what proves the zh-TW template was reached.
+    assert "======以上为启动问候约束======" in session.instructions[0]
 
 
 @pytest.mark.asyncio

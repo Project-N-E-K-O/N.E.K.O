@@ -862,11 +862,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         message.get("voice_input_resource_optimization_enabled")
                     )
                 input_type = message.get("input_type", "audio")
+                # 前端每次 start_session 自带的请求标识，原样回带进
+                # session_started。多窗口下 ack 会经 voice-lease fan-out 到达
+                # 不是本请求方的窗口，标识就是接收方判断「这条是不是回应我」
+                # 的唯一依据（详见 core/notify.py send_session_started）。
+                request_id = message.get("request_id")
+                if isinstance(request_id, str):
+                    request_id = request_id.strip()[:128] or None
+                else:
+                    request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
-                            _fire_task(session_manager[lanlan_name].send_session_started("text"))
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_started(
+                                    "text", request_id=request_id
+                                )
+                            )
                             continue
                         if input_type == "audio":
                             logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
@@ -880,6 +893,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                     message.get("new_session", False),
                                     "audio",
                                     user_initiated=True,
+                                    request_id=request_id,
                                     handshake_override=request_handshake_override,
                                     resource_optimization_override=(
                                         request_optimization_override
@@ -929,6 +943,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             message.get("new_session", False),
                             mode,
                             user_initiated=True,
+                            request_id=request_id,
                             handshake_override=request_handshake_override,
                             resource_optimization_override=(
                                 request_optimization_override

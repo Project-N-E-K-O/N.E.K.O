@@ -15,8 +15,93 @@ from .qq_connection import QQConnectionBase
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
+# ==========================================
+# R11 身份作用域取证
+# （docs/design/speaker-trust-entity-semantics.md §2.15.4）
+# ==========================================
+#
+# 开放平台在群消息里下发的 author.id 与在私聊里下发的 author.id 是不是同一个
+# 作用域（全局 user_openid 还是 app×群×人 的 member_openid），**离线无法判定**：
+# 零 fixture、零 vendored SDK、零文档样例。判定只能靠真机跑一遍、读日志。
+#
+# 下面这组常量与函数就是为了让那次取证可做。它们不参与任何判定、不改变任何
+# 行为；取证结论回来之前，权限逻辑一行都不该动。
+_IDENTITY_PROBE_TAG = "[R11]"
+_IDENTITY_PROBE_EVENTS = ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE")
+#: 单次连接最多记录多少条。取证只需要三条（群 X、群 Y、私聊各一），上限
+#: 存在的意义是「开关忘了关」时日志不会无限长，而不是限制取证。
+_IDENTITY_PROBE_MAX_LINES = 200
+#: 单个字段值的字符上限，防御异常长的 payload 把日志撑爆。
+_IDENTITY_PROBE_VALUE_MAX_CHARS = 128
+
+
+def _is_identifier_key(name: str) -> bool:
+    """按**形状**判断一个字段名是不是标识符字段。
+
+    刻意不写成枚举 ``{"id", "member_openid", ...}``：取证要回答的问题之一
+    正是「author 下还有没有别的 openid 兄弟键」，枚举会把没预料到的那个键
+    的值挡在日志外面，取证就白做了。
+    """
+    lowered = str(name).lower()
+    return lowered == "id" or lowered.endswith("_id") or "openid" in lowered
+
+
+def _probe_identifier_values(mapping: Any) -> str:
+    """挑出标识符字段的**值**，其余字段一律不取值。"""
+    if not isinstance(mapping, dict):
+        return "{}"
+    picked: dict[str, str] = {}
+    for raw_key, raw_value in mapping.items():
+        key = str(raw_key)
+        if not _is_identifier_key(key):
+            continue
+        value = str(raw_value)
+        if len(value) > _IDENTITY_PROBE_VALUE_MAX_CHARS:
+            value = value[:_IDENTITY_PROBE_VALUE_MAX_CHARS] + "…"
+        picked[key] = value
+    return json.dumps(picked, ensure_ascii=False, sort_keys=True)
+
+
+def _probe_key_names(mapping: Any) -> str:
+    """只取字段**名**。字段名不含用户内容，可以整份打出来。"""
+    if not isinstance(mapping, dict):
+        return "[]"
+    return json.dumps(sorted(str(k) for k in mapping), ensure_ascii=False)
+
+
+def build_identity_probe_line(event_type: str, data: Any) -> str:
+    """拼一条取证日志。纯函数，无副作用。
+
+    输出四项，恰好对应 §2.15.4.2 表里的四个判据：
+
+    - ``author.ids``  —— ① author.id 本身；② member_openid / user_openid /
+      union_openid 这类兄弟键的值（哪一个跨群相等，靠比对这里）；
+    - ``author.keys`` —— ② 兄弟键的**全量键名**（含没预料到的那些）；
+    - ``group.ids``   —— ③ 群标识挂在哪个键上、值是多少；
+    - ``data.keys``   —— ③ 的兜底：万一群 id 的键名连 "group" 都不含。
+
+    **只打标识符字段的值。** 正文、附件 URL、@ 列表一律不进日志——这条日志
+    落的是持久文件（我的文档/N.E.K.O/logs/，重启留存，取证正需要它持久），
+    取证结束后插桩可以关掉，但已经落盘的行不会跟着回滚。
+    """
+    payload = data if isinstance(data, dict) else {}
+    author = payload.get("author")
+    group_fields = {
+        str(k): v for k, v in payload.items() if "group" in str(k).lower()
+    }
+    return (
+        f"{_IDENTITY_PROBE_TAG} event={event_type} "
+        f"author.ids={_probe_identifier_values(author)} "
+        f"author.keys={_probe_key_names(author)} "
+        f"group.ids={_probe_identifier_values(group_fields)} "
+        f"data.keys={_probe_key_names(payload)}"
+    )
+
 
 class QQOpenPlatformConnection(QQConnectionBase):
+    #: Observed transport (see QQClient.CHANNEL). Never a key.
+    CHANNEL: str = "open"
+
     """QQ 开放平台官方 Bot API 连接
 
     WebSocket 事件 → 内部统一消息格式 → 上层管道
@@ -33,7 +118,16 @@ class QQOpenPlatformConnection(QQConnectionBase):
         client_secret: str,
         logger: Any = None,
         message_queue_size: int = 100,
+        identity_probe: Any = None,
+        emit_log: Any = None,
     ):
+        #: 零参回调，返回真时才记录 R11 取证日志（见模块顶部）。做成回调而不是
+        #: 布尔值，是为了让开关改完立刻生效，不必重连。
+        self._identity_probe = identity_probe
+        #: 插件的内存日志环（UI「运行日志」页读的就是它）。缺省无操作，与
+        #: QQClient 同惯例。
+        self._emit_log = emit_log or (lambda level, msg: None)
+        self._identity_probe_emitted = 0
         self._app_id = str(app_id or "").strip()
         self._client_secret = str(client_secret or "").strip()
         self.token = ""
@@ -170,6 +264,57 @@ class QQOpenPlatformConnection(QQConnectionBase):
     # 消息接收
     # ==========================================
 
+    def _identity_probe_enabled(self) -> bool:
+        probe = getattr(self, "_identity_probe", None)
+        return bool(probe()) if callable(probe) else False
+
+    def _write_identity_probe(self, text: str) -> None:
+        """一条取证行同时进两个池子，缺一不可。
+
+        - ``self.logger``：文件日志（我的文档/N.E.K.O/logs/），**重启留存**，
+          这份才是能整个发给开发者的东西；
+        - ``self._emit_log``：插件的 500 条内存环，也就是 UI 上「运行日志」页
+          读的那个池子。少了它，用户勾完开关去日志页什么都看不到——而隔壁
+          「信任用户」页的现有文案刚教完他「ID…可在日志中查看」。
+          （``get_recent_logs`` 只在内存环为空时才回退读文件，而环从启动那刻
+          起就恒非空，所以只写文件 = 在 UI 上彻底隐身。）
+        """
+        # 单参数调用：行里带的是平台下发的原始 id，可能含 %，
+        # 交给 logging 做 %-格式化会炸。
+        self.logger.info(text)
+        self._emit_log("INFO", text)
+
+    def _log_identity_probe(self, event_type: str, data: Any) -> None:
+        """记录一条 R11 取证日志（见模块顶部）。
+
+        **异常绝不外泄**：``_receive_loop`` 的兜底 ``except Exception`` 会把
+        任何异常当成断连去重连，一条取证日志没有资格触发一次重连。
+        """
+        try:
+            if event_type not in _IDENTITY_PROBE_EVENTS:
+                return
+            if not self.logger or not self._identity_probe_enabled():
+                return
+            emitted = getattr(self, "_identity_probe_emitted", 0)
+            if emitted > _IDENTITY_PROBE_MAX_LINES:
+                return
+            self._identity_probe_emitted = emitted + 1
+            if emitted == _IDENTITY_PROBE_MAX_LINES:
+                # 计数器挂在本连接对象上，而 qq_client 只有在**切换连接模式**
+                # 时才会被置 None 重建（runtime_ops_service.py:44-48）——侧栏
+                # 的「停止 → 启动」根本不重建它。所以这里只能说重启应用，
+                # 说「重启自动回复」是假的。
+                self._write_identity_probe(
+                    f"{_IDENTITY_PROBE_TAG} 已记录 {_IDENTITY_PROBE_MAX_LINES} "
+                    "条，达到上限，后续不再记录；重启应用后重新计数。"
+                )
+                return
+            self._write_identity_probe(build_identity_probe_line(event_type, data))
+        except Exception:
+            # 故意全吞：往上抛会被 _receive_loop 的兜底 except 当成断连，
+            # 一条诊断日志失败不该让 bot 掉线重连一次。
+            pass
+
     async def _receive_loop(self) -> None:
         while not self._closing:
             if not self._ws:
@@ -182,6 +327,11 @@ class QQOpenPlatformConnection(QQConnectionBase):
                 if op == 0:  # Dispatch
                     self._last_seq = payload.get("s", self._last_seq)
                     event_type = payload.get("t", "")
+                    # R11 取证插桩必须落在这里，而不是 _convert_event 里面：
+                    # 一是绕开群 id 键名的不确定性（_convert_event 只读
+                    # group_id，若平台下发 group_openid 就什么都看不见），
+                    # 二是早于信任群白名单闸，未配置的群也能取到证。
+                    self._log_identity_probe(event_type, payload.get("d"))
                     if event_type in ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"):
                         msg = self._convert_event(event_type, payload["d"])
                         if msg:
@@ -645,6 +795,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if event_type == "C2C_MESSAGE_CREATE":
             return {
                 "message_type": "private",
+                "channel": self.CHANNEL,
                 "user_id": user_id,
                 "user_nickname": user_nickname,
                 "content": str(data.get("content") or ""),
@@ -663,7 +814,12 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             content = str(data.get("content") or "")
-            group_id = str(data.get("group_id") or "")
+            # 该通道的群标识本就是 openid（见 display_name_service 的说明），
+            # 平台按 v2 语义可能挂在 group_openid 而不是 group_id。顺序不能反：
+            # group_id 有值时必须继续用它，否则群 subject_id 会整体换键，而
+            # memory/scopes.py 是字节相等匹配、无别名，存量 scoped 群记忆会一次
+            # 性失联。只在原键为空时兜底，才能既零行为变化又挡住全量丢消息。
+            group_id = str(data.get("group_id") or data.get("group_openid") or "")
             mentioned_ids: list[str] = []
             mentions_all = False
             # 检查 @ 目标（content 中 <@!id> 格式）
@@ -681,6 +837,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
 
             return {
                 "message_type": "group",
+                "channel": self.CHANNEL,
                 "user_id": user_id,
                 "user_nickname": user_nickname,
                 "content": clean_content,

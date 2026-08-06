@@ -115,6 +115,20 @@ _APPROVAL_WINDOW_STATUSES = frozenset({"completed"})
 # 批到同一个上游会话里更晚出现的另一个挂起动作上（Codex P1）。
 _APPROVAL_CONSUMED_KEY = "_approval_window_consumed"
 
+# ⚠️ 窗口还要求那条回复**真的问过问题**。原来只判「5 分钟内有任务跑完过」，于是任何一次
+# 成功的任务（哪怕回的是「整理完成，共移动 12 个文件」）都会给随后一句随口的「同意」开闸。
+# 上游那句 reply 就存在 registry 条目的 result 里，拿来判一下几乎不要钱。
+#
+# ⚠️ 判据只认**明确的疑问标记**，不枚举「审批提示长什么样」——后者是开集。代价记在
+# 这里：上游若用不带问号的陈述句征询（英文 "Proceed?" 有问号，但 "Let me know" 没有），
+# 这条会误关窗口，用户得手敲字面命令。方向是 fail-closed。
+#
+# ⚠️ 曾经还收了 `确认` / `確認` / `是否`，已删——它们在**陈述句**里同样常见，而这里是
+# 子串匹配：`已确认配置无误` / `確認完成` / `已检查是否有重复` 都不是在征询，却会把窗口
+# 顶开，随后一句随口的「同意」就发出去了（Codex P2）。留下的这几个没有这个毛病：`？`
+# `?` 是标点，`吗` `嗎` `要不要` 只出现在真的在问的句子里。
+_APPROVAL_PROMPT_MARKERS = ("？", "?", "吗", "嗎")
+
 
 def _iter_approval_window_tasks(
     *,
@@ -210,7 +224,23 @@ def _iter_approval_window_tasks(
         # ⚠️ 已经兑现过一次推断批准的条目不再算数：一次审批提示只授权一次。
         if info.get(_APPROVAL_CONSUMED_KEY):
             continue
-        if current_session and str(info.get("session_id") or "").strip() != current_session:
+        # ⚠️ 只有**问过问题**的那条回复才可能是审批提示。作废侧（require_session=False
+        # 那一路）不判这个：宁可多作废，不可漏作废。
+        if require_session:
+            raw = info.get("result")
+            reply = str((raw or {}).get("reply") or "") if isinstance(raw, dict) else ""
+            if not any(marker in reply for marker in _APPROVAL_PROMPT_MARKERS):
+                continue
+        # ⚠️ `require_session` 关掉的是**整条 session 判据**，不只是「问不出会话时
+        # fail-closed」那一半。写成 `if current_session and ...` 时这个开关名不副实：
+        # 作废侧照样按 session 匹配，于是别的会话里那条窗口谁也作废不掉。虽然轮换后的
+        # 旧 session 再也不会变回当前值（所以那条窗口也开不了闸），但「作废 ⊇ 开闸」
+        # 这条总不变量一旦在某一维上不成立，下一个人就会在这里再踩一次。
+        if (
+            require_session
+            and current_session
+            and str(info.get("session_id") or "").strip() != current_session
+        ):
             continue
         # ⚠️ 作废时不判龄（age_bounded=False），因为判龄的结果**会随时间翻转**：
         #   · 下界：时钟被回拨时 age 为负，条目此刻不算窗口，作废看不见它；等时钟追
@@ -561,11 +591,14 @@ async def dispatch(
             # exclude_task_id 是防御性的。
             explicitly_typed = False
             if isinstance(result.tool_args, dict):
-                explicitly_typed = (
-                    _shared.Modules.openclaw.normalize_magic_command(
-                        result.tool_args.get("original_user_text")
-                    )
-                    == magic_command
+                # ⚠️ 「用户是不是亲手打的」要用**严格**解析：必须 `/` 开头且整条输入
+                # 就是那个命令。宽松那个会把普通英文词 `stop` / `approve` 当成显式命令，
+                # 于是一句英文闲聊就能拿到「显式豁免」，绕过下面整道审批闸。
+                parse_typed = getattr(
+                    _shared.Modules.openclaw, "parse_typed_magic_command", None
+                )
+                explicitly_typed = callable(parse_typed) and (
+                    parse_typed(result.tool_args.get("original_user_text")) == magic_command
                 )
             # ⚠️ 主动搭话轮**没有用户**。task_executor 在 proactive 轮把意图换成猫娘
             # 自己那句最新台词再喂进分类器，所以她随口一句「没问题」就会被判成批准，
@@ -632,6 +665,63 @@ async def dispatch(
                     len(consumed),
                     ", ".join(consumed),
                 )
+            if magic_command == "/stop" and not explicitly_typed:
+                # ⚠️ 「停下来」「别找了」这类祈使句在日常对话里字面完全相同——用户可能是
+                # 对**猫娘本人**说的（角色扮演里尤其常见），不是要掐后台任务。整子句判据
+                # 挡得掉叙述（`雨停下来了` 不命中），挡不掉这一类。
+                # 所以这一档额外要求**确实有在跑的 openclaw 任务**佐证。
+                #
+                # ⚠️ 明确指向 agent 的说法（取消这个任务 / 停止搜索 …）**不受此限**，
+                # 字面命令也不受限。这是有意的：registry 恰恰在最需要 /stop 的时刻说谎
+                # ——请求超时后状态被写成 failed、进程重启后 registry 全空、条目过 TTL
+                # 被删，而这些时刻上游那个活儿可能还在跑。唯一能让上游停手的通道就是
+                # 这次 POST，把它整个门在 registry 上等于把逃生阀焊死。
+                tier = None
+                tier_fn = getattr(_shared.Modules.openclaw, "stop_trigger_tier", None)
+                if callable(tier_fn) and isinstance(result.tool_args, dict):
+                    try:
+                        tier = tier_fn(result.tool_args.get("original_user_text"))
+                    except Exception:
+                        logger.debug("[OpenClaw] stop_trigger_tier failed", exc_info=True)
+                # ⚠️ 佐证不只是「有任务在跑」，**还站着的审批提示也算**。审批提示出口时
+                # 恰恰没有 queued/running 任务——窗口是 completed 开的，两个状态集合互不
+                # 相交。只看在跑的任务就会在这里提前 return，于是底下那段作废窗口的代码
+                # 根本不执行：用户那句「停下来」是在**拒绝**刚问出口的提示，结果不但被
+                # 静默丢弃，窗口还留着，随后一句随口的「同意」就能把他刚拒绝的动作批了。
+                #
+                # ⚠️ 但窗口这一侧要用**窄**判据（`_find_approval_window_task`），不是作废
+                # 用的那套放宽过滤。佐证是**开闸**决策，「开闸窄、作废宽」在这里同样成立：
+                # 终态条目在这条路径上可以无限期留着（清理只在 capabilities 那条路上调），
+                # 用宽过滤的话**一条几小时前的、根本没问过问题的完成记录**就能让之后每一句
+                # 「停下来」都放行——分档守卫等于白加（Codex P2）。窄判据不影响上面那个
+                # 拒绝场景：拒绝提示的当下，窗口本来就是新鲜、同角色、同会话、带问号的。
+                #
+                # ⚠️ 在跑的任务这一侧则**不按角色收窄**：上游会话键只认 sender
+                # （`_build_session_key` 第一行 `del role_name`），所以同一个 sender 在另一个
+                # 角色下跑着的活儿，同样是「停下来」的正当指代对象，而那次 /stop POST 打的
+                # 也正是同一个上游会话。
+                corroborated = _collect_active_openclaw_task_ids(
+                    sender_id=nk_sender_id,
+                    lanlan_name=None,
+                    exclude_task_id=result.task_id,
+                ) or _find_approval_window_task(
+                    # ⚠️ 窗口这侧同样**不按角色收窄**——理由和上面那行一样，而且不放宽就
+                    # 内部不一致：作废本来就是角色无关的，在跑任务的佐证上一轮也放宽了，
+                    # 唯独这里还按角色匹配的话，「角色 A 下收到提示 → 切到角色 B 说停下来」
+                    # 会在这里提前 return，作废那段执行不到，A 的窗口留着给下一句「同意」。
+                    # 收窄的那几维（新鲜 / 同会话 / 带疑问标记 / 未兑现）一条没动。
+                    sender_id=nk_sender_id,
+                    lanlan_name=None,
+                    exclude_task_id=result.task_id,
+                )
+                if tier != "addressed" and not corroborated:
+                    logger.info(
+                        "[OpenClaw] /stop dropped: ambiguous phrasing with no running "
+                        "task for sender=%s lanlan=%s",
+                        nk_sender_id,
+                        lanlan_name,
+                    )
+                    return
             if magic_command == "/stop":
                 # ⚠️ 作废排在取消 helper **之前**。那个 helper 里有 `await` 和一处没包
                 # try 的 `_task_tracker.record_completed`，一旦抛出就把后面的作废整个
@@ -670,9 +760,13 @@ async def dispatch(
                         len(retired),
                         ", ".join(retired),
                     )
+                # ⚠️ 取消也不按角色收窄——否则和上面的佐证自相矛盾：我们**因为**
+                # 另一个角色下有活儿在跑才放行这次 /stop，却不去掐它，UI 和 tracker
+                # 会继续显示用户刚停掉的工作。上游那次 POST 打的是共享会话，本来就把
+                # 它一起停了，本地不跟着写状态就是在说谎。
                 cancelled_task_ids = await _cancel_openclaw_tasks_for_stop(
                     sender_id=nk_sender_id,
-                    lanlan_name=lanlan_name,
+                    lanlan_name=None,
                     exclude_task_id=result.task_id,
                 )
                 if cancelled_task_ids:

@@ -6,8 +6,20 @@ from typing import Any, Optional
 from .feedback_classifier import QQFeedbackClassifier
 from .pipeline_models import QQReplyRequest
 
+#: 开放平台通道的观测值。真相在 ``QQOpenPlatformConnection.CHANNEL``，这里抄一
+#: 份而不是 import，是为了不把 websockets / httpx 拖进本模块的导入链；两者相
+#: 等由测试钉死。
+_OPEN_PLATFORM_CHANNEL = "open"
+
 
 class QQMessageDispatcher:
+    #: 一个群里连续出现多少个**互不相同**的说话人、且无一对得上名册，才认为
+    #: 「这个群从来认不出任何已登记用户」值得报一条。1 个陌生人本来就该认不
+    #: 出，那是正常的；一连几个都认不出、而名册里明明有管理员，才是信号。
+    OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS = 3
+    #: 最多跟踪多少个群的告警状态，避免长期运行时无界增长。
+    OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS = 128
+
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._open_platform_bootstrap_lock = asyncio.Lock()
@@ -52,6 +64,143 @@ class QQMessageDispatcher:
             self._open_platform_bootstrap_admin_id = sender_id
             message["_private_permission_level_at_receipt"] = "admin"
             message["_open_platform_admin_promoted_at_receipt"] = True
+
+    @staticmethod
+    def _resolve_open_platform_group_key(
+        message: dict[str, Any],
+    ) -> tuple[str, str]:
+        """告警用的群标识，外加「它是从哪个字段取到的」。
+
+        不能只认 ``message["group_id"]``：``_convert_event`` 只读
+        ``data.get("group_id")``，而开放平台若按 v2 语义下发 ``group_openid``，
+        这个键恒为空串——于是这个告警会在**最可能出问题的那种部署上整个哑
+        掉**，正好是设计文档 §2.15.4.4(a) 点名「比 R11 更早爆」的那一种。
+        一个只负责「让问题可见」的东西，不能在兄弟缺陷兑现时自己先瞎。
+
+        所以回落到原始 payload 里任何一个带 group 的标识字段（按名字找，不
+        枚举，理由同取证插桩）。**刻意只读、绝不回填** ``message["group_id"]``：
+        回填会改变该通道 ``speaker_id`` / subject 的字节，那是 §2.15.4.4(a)
+        自己的事，取证数据回来之前一行都不该动。
+
+        Returns:
+            ``(群标识, 它来自 raw 的哪个键)``。第二项为空串表示走的是正常的
+            ``group_id``；非空本身就是 §2.15.4.4(a) 已兑现的证据。
+        """
+        group_id = str(message.get("group_id") or "").strip()
+        if group_id:
+            return group_id, ""
+        raw = message.get("raw")
+        if not isinstance(raw, dict):
+            return "", ""
+        for key in sorted(str(k) for k in raw):
+            if "group" not in key.lower():
+                continue
+            value = str(raw.get(key) or "").strip()
+            if value:
+                return value, key
+        return "", ""
+
+    def _note_open_platform_identity_scope(
+        self,
+        message: dict[str, Any],
+        permission_level: Any,
+    ) -> None:
+        """开放平台身份作用域的**纯观测**告警（R11）。
+
+        设计出处：``docs/design/speaker-trust-entity-semantics.md`` §2.15.4。
+
+        怀疑的是：开放平台在私聊里下发的 author.id 与在群里下发的可能不是同
+        一个作用域（``user_openid`` vs ``member_openid``）。若真如此，
+        ``_maybe_reserve_open_platform_admin`` 通过**第一条私聊**授权的主人，
+        在**所有群**里都匹配不上名册——档位解析成 ``none``、
+        ``speaker_is_owner`` 恒假、信赖度的 confirmation/correction 来源直接
+        断供。
+
+        这个怀疑**尚未取证**（取证插桩见 ``qq_open_plat.py`` 顶部的 R11 一
+        节）。所以这里只报，不修：
+
+        - 不改任何权限判定，不写名册，不碰 message 的任何既有键；
+        - 若 id 本来就同作用域（R11 不成立），本方法永远走不到告警那一步，
+          是彻底的 no-op。
+
+        **不要**顺手把 ``_maybe_reserve_open_platform_admin`` 里那句全局
+        ``if permission_mgr.list_users(): return`` 改成「按当前通道过滤后判
+        空」。那不是疏漏，是让通道切换 fail-closed 的门：按通道过滤在刚切到
+        open_platform 时恒为空，等于让切换后第一个私聊 bot 的陌生人自动拿到
+        admin。
+        """
+        try:
+            channel = str(message.get("channel") or "").strip().lower()
+            if channel != _OPEN_PLATFORM_CHANNEL:
+                return
+            group_id, group_key_source = self._resolve_open_platform_group_key(
+                message,
+            )
+            sender_id = str(message.get("user_id") or "").strip()
+            if not group_id or not sender_id:
+                return
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            if permission_mgr is None:
+                return
+            roster = permission_mgr.list_users() or []
+            admins = [
+                user for user in roster
+                if str((user or {}).get("level") or "") == "admin"
+            ]
+            # 名册里没有管理员 ⇒ 群里认不出人是理所当然的，不是信号。
+            if not admins:
+                return
+
+            states = getattr(self, "_open_platform_scope_alarm_state", None)
+            if states is None:
+                states = {}
+                self._open_platform_scope_alarm_state = states
+            state = states.get(group_id)
+            if state is None:
+                if len(states) >= self.OPEN_PLATFORM_SCOPE_ALARM_MAX_GROUPS:
+                    return
+                state = {"unmatched": set(), "matched": False, "warned": False}
+                states[group_id] = state
+            # 这个群里但凡有过一个人对上名册，就证明群侧 id 与名册同作用域，
+            # 此后永久闭嘴。
+            if state["matched"]:
+                return
+            if str(permission_level or "none") != "none":
+                state["matched"] = True
+                state["unmatched"].clear()
+                return
+            if state["warned"]:
+                return
+            state["unmatched"].add(sender_id)
+            if len(state["unmatched"]) < self.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS:
+                return
+            state["warned"] = True
+            state["unmatched"].clear()
+            text = (
+                f"[R11] 开放平台身份作用域告警: 群 {group_id} 已出现 "
+                f"{self.OPEN_PLATFORM_SCOPE_ALARM_SPEAKERS} 个不同说话人，"
+                f"无一匹配已登记用户（名册中有 {len(admins)} 个管理员）。"
+                "若主人是靠「第一条私聊自动授权」拿到的管理员，那个 id 可能"
+                "只在私聊作用域有效，需要在本群单独把群内 id 加进信任用户。"
+                "本条仅为诊断，不改变任何权限判定。"
+            )
+            if group_key_source:
+                # 顺带报的是另一件事，而且比 R11 更早爆：群 id 根本不在
+                # _convert_event 读的那个键上（§2.15.4.4(a)）。
+                text += (
+                    f"（另：本群的群 id 不在 group_id 字段上，实际挂在 "
+                    f"{group_key_source}——这会让群消息在别处被当成「无群」，"
+                    "需要单独修，见设计文档 §2.15.4.4(a)。）"
+                )
+            logger = getattr(self.plugin, "logger", None)
+            if logger is not None:
+                logger.warning(text)
+            emit_log = getattr(self.plugin, "_emit_log", None)
+            if callable(emit_log):
+                emit_log("WARN", text)
+        except Exception:
+            # 观测绝不允许把消息管线带下去。
+            pass
 
     def _resolve_poke_nickname(self, user_id: str, raw_msg: dict[str, Any]) -> str:
         """从戳一戳事件中获取用户昵称"""
@@ -168,6 +317,12 @@ class QQMessageDispatcher:
                                 "private_participant_memory_enabled", False,
                             )
                         )
+                        # 通道观测的接收边界快照（对偶上面几枚）：会话缓冲
+                        # 可能跨越一次模式切换，flush 时读实时配置会把旧通道
+                        # 的消息记成新通道。纯诊断字段，不参与任何判定。
+                        message["_speaker_channel_at_receipt"] = str(
+                            message.get("channel") or ""
+                        ).strip().lower() or None
                         if message.get("message_type") == "group":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""
@@ -185,6 +340,11 @@ class QQMessageDispatcher:
                             message[
                                 "_group_speaker_permission_level_at_receipt"
                             ] = permission_at_receipt
+                            # 纯观测，挂在刚算出的那个档位后面：告警读的必须
+                            # 是管线真正用的那个值，不能自己再查一次。
+                            self._note_open_platform_identity_scope(
+                                message, permission_at_receipt,
+                            )
                         if message.get("message_type") == "private":
                             sender_at_receipt = str(
                                 message.get("user_id") or ""
@@ -442,6 +602,10 @@ class QQMessageDispatcher:
                     )
                     if isinstance(message, dict) else None
                 ),
+                speaker_channel_at_receipt=(
+                    message.get("_speaker_channel_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
                 synthetic_source=(
                     str(message.get("_synthetic_source") or "")
                     if isinstance(message, dict) else ""
@@ -549,6 +713,7 @@ class QQMessageDispatcher:
         group_memory_at_receipt: bool | None = None,
         member_memory_at_receipt: bool | None = None,
         group_speaker_permission_level_at_receipt: str | None = None,
+        speaker_channel_at_receipt: str | None = None,
         synthetic_source: str = "",
     ):
         # 群记忆政策快照优先取消息接收边界（process_messages 在 task 创建
@@ -641,6 +806,7 @@ class QQMessageDispatcher:
             group_speaker_permission_level_at_receipt=(
                 group_speaker_permission_level_at_receipt
             ),
+            speaker_channel_at_receipt=speaker_channel_at_receipt,
         )
         if synthetic_source:
             # 合成控制轮（入群欢迎等）：prompt 行不是任何参与者的发言，

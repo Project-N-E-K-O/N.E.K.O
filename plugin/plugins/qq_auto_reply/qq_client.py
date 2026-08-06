@@ -20,6 +20,14 @@ from .qq_connection import QQConnectionBase
 
 
 class QQClient(QQConnectionBase):
+    #: Observed transport for this connection. Stamped at INGEST, never read
+    #: from live config at flush time: a session buffer can span a transport
+    #: switch (the switch is immediate and does not clear buffers), so a
+    #: flush-time read would attribute old messages to the new transport.
+    #: Purely an observed attribute — it is never a key and never affects a
+    #: score. See the kill list in ``memory/trust_store.py``.
+    CHANNEL: str = "napcat"
+
     """OneBot 协议客户端（反向 WebSocket 服务器）"""
 
     def __init__(self, *, onebot_url: str, token: str = "", logger: Any = None,
@@ -787,6 +795,7 @@ class QQClient(QQConnectionBase):
             if raw_msg.get("post_type") == "notice":
                 return {
                     "message_type": "notice",
+                    "channel": self.CHANNEL,
                     "notice_type": raw_msg.get("sub_type", ""),
                     "user_id": str(raw_msg.get("user_id") or ""),
                     "group_id": str(raw_msg.get("group_id") or ""),
@@ -813,6 +822,7 @@ class QQClient(QQConnectionBase):
 
             result = {
                 "message_type": msg_type,
+                "channel": self.CHANNEL,
                 "user_id": str(raw_msg.get("user_id")),
                 "user_nickname": user_nickname,
                 "content": content,

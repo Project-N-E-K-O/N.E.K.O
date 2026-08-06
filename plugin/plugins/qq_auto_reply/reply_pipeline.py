@@ -177,6 +177,9 @@ class QQReplyPipelineRunner:
             group_speaker_permission_level_at_receipt=getattr(
                 request, "group_speaker_permission_level_at_receipt", None,
             ),
+            speaker_channel_at_receipt=getattr(
+                request, "speaker_channel_at_receipt", None,
+            ),
             participant_memory_at_receipt=getattr(
                 request, "participant_memory_at_receipt", None,
             ),

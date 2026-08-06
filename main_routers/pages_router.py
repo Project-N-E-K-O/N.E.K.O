@@ -27,7 +27,9 @@ etc. See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import re
 import time
+import urllib.parse
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -55,6 +57,28 @@ _MODEL_MANAGER_JS_PATHS = tuple(sorted(
 _YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
 ))
+_STATIC_ASSET_VERSION_TEMPLATE_PATTERN = re.compile(
+    r"/static/([^\"'\s?]+)\?v=\{\{\s*static_asset_version\b"
+)
+
+
+def _template_static_asset_version_paths() -> tuple[Path, ...]:
+    """Collect literal static files that templates serve with the version query."""
+    static_root = (_PROJECT_ROOT / "static").resolve()
+    paths: set[Path] = set()
+    for template_path in (_PROJECT_ROOT / "templates").glob("*.html"):
+        try:
+            template_source = template_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in _STATIC_ASSET_VERSION_TEMPLATE_PATTERN.finditer(template_source):
+            asset_path = (static_root / urllib.parse.unquote(match.group(1))).resolve()
+            if asset_path.is_relative_to(static_root) and asset_path.is_file():
+                paths.add(asset_path)
+    return tuple(sorted(paths))
+
+
+_TEMPLATE_STATIC_ASSET_VERSION_PATHS = _template_static_asset_version_paths()
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/tutorial-styles.css",
@@ -90,7 +114,9 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/live2d/live2d-ui-buttons.js",
     *sorted(_PROJECT_ROOT.glob("static/vrm/*.js")),
     _PROJECT_ROOT / "static/mmd/mmd-ui-buttons.js",
+    _PROJECT_ROOT / "static/mmd/mmd-init.js",
     _PROJECT_ROOT / "static/pngtuber-core.js",
+    _PROJECT_ROOT / "static/social-embed.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app/app-widget-mode.js",
@@ -153,10 +179,19 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",
     _PROJECT_ROOT / "static/js/card_maker.js",
+    _PROJECT_ROOT / "static/js/card_maker_embed_bootstrap.js",
+    _PROJECT_ROOT / "static/libs/live2dcubismcore.min.js",
+    _PROJECT_ROOT / "static/libs/live2d.min.js",
+    _PROJECT_ROOT / "static/libs/pixi.min.js",
+    _PROJECT_ROOT / "static/libs/index.min.js",
+    _PROJECT_ROOT / "static/live2d/live2d-core.js",
+    _PROJECT_ROOT / "static/live2d/live2d-emotion.js",
+    _PROJECT_ROOT / "static/live2d/live2d-model.js",
     _PROJECT_ROOT / "static/js/voice_clone.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
+    *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
@@ -166,6 +201,7 @@ _REACT_CHAT_ASSET_VERSION_PATHS = (
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app/app-buttons.js",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cat1-chat-angry.gif",
     *sorted(_PROJECT_ROOT.glob("static/assets/avatar-tools/**/*.png")),
     *sorted(_PROJECT_ROOT.glob("static/sounds/avatar-tools/**/*.mp3")),
 )

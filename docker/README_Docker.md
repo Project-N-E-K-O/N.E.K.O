@@ -173,33 +173,24 @@ docker run -d \
   -e XDG_DATA_HOME="/home/neko/.local/share" \
   -e NEKO_STORAGE_SELECTED_ROOT="/home/neko/.local/share/N.E.K.O" \
   -e NEKO_STORAGE_ANCHOR_ROOT="/home/neko/.local/share/N.E.K.O" \
-  -v $(pwd)/N.E.K.O:/home/neko/.local/share/N.E.K.O \
-  -v $(pwd)/openfang:/home/neko/.openfang \
-  -v $(pwd)/neko-home:/home/neko/.neko \
+  -v $(pwd)/neko-home:/home/neko \
   -v $(pwd)/logs:/app/logs \
-  -v $(pwd)/ssl:/home/neko/ssl \
   neko:latest
 ```
 
 ## 📂 数据持久化
 
-建议挂载以下目录到宿主机：
+建议将完整的用户主目录挂载到宿主机：
 
-- `/home/neko/.local/share/N.E.K.O` - 配置、记忆、角色、用户插件及插件数据
-- `/home/neko/.openfang` - OpenFang 配置和状态
-- `/home/neko/.neko` - 插件市场 OAuth 登录状态
-- `/app/logs` - 源码模式的调试日志回退（常规日志位于数据目录的 `logs/`）
-- `/home/neko/ssl` - TLS 证书和私钥
+- `/home/neko` - 配置、记忆、角色、用户插件及插件数据、插件市场 OAuth 登录状态、OpenFang 状态和 TLS 证书/私钥
+- `/app/logs` - 日志
 
 示例：
 
 ```yaml
 volumes:
-  - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
-  - ./openfang:/home/neko/.openfang
-  - ./neko-home:/home/neko/.neko
+  - ./neko-home:/home/neko
   - ./logs:/app/logs
-  - ./ssl:/home/neko/ssl
 ```
 
 ## 🔍 配置优先级

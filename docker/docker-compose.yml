@@ -48,22 +48,15 @@ services:
       - "48912:443"
 
     # 卷挂载配置
+    # ⚠️ 旧版本用 ./N.E.K.O + ./ssl 两个挂载，现已合并为 ./neko-home 一个。
+    #    从旧版升级必须先迁移数据（见 README「从旧版本升级」一节），
+    #    否则容器会对着一个空目录启动，表现为"数据全没了"。
     volumes:
-      # 1. 持久化配置目录（XDG_DATA_HOME 规范路径）
-      - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
+      # 1. neko 用户主目录（用户数据、SSL 证书与私钥、OpenFang 运行状态）
+      - ./neko-home:/home/neko
 
-      # 2. OpenFang 的配置和运行状态
-      - ./openfang:/home/neko/.openfang
-
-      # 3. 插件市场 OAuth 登录状态及其他用户级凭据
-      - ./neko-home:/home/neko/.neko
-
-      # 4. 源码模式的调试日志回退目录；常规服务日志在 ./N.E.K.O/logs
+      # 2. 源码模式的调试日志回退目录
       - ./logs:/app/logs
-
-      # 5. SSL证书目录
-      - ./ssl:/home/neko/ssl
-
     # 环境变量
     environment:
       # 统一容器内的本地时间；可在 docker/.env 中改为其他 IANA 时区

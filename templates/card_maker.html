@@ -1,3 +1,4 @@
+{% set card_maker_embed = request.query_params.get('mode') == 'embed' %}
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -8,14 +9,20 @@
     <!-- VRM 光照默认值 -->
     <!-- 模型预览/编辑页豁免 avatar 空闲节流：用户在此手动播放任意动画（含无参
          playAnimation 的舞蹈 VMD），期望满帧预览，不应被空闲地板压到 30fps -->
-    <script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
+    <script>
+        if (new URLSearchParams(window.location.search).get('mode') !== 'embed') {
+            window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;
+        }
+    </script>
     <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
     <script>
         const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');
         window.VRM_DEFAULT_LIGHTING = Object.freeze(JSON.parse(vrmDefaultLightingData?.textContent || '{}'));
     </script>
+    {% if not card_maker_embed %}
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
+    {% endif %}
     <script>
         if (new URLSearchParams(window.location.search).get('mode') === 'embed') {
             document.documentElement.classList.add('card-maker-embed');
@@ -23,10 +30,12 @@
     </script>
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/card_maker.css?v={{ static_asset_version | default('0') }}">
+    {% if not card_maker_embed %}
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
     <script src="/static/js/window_controls.js" defer></script>
+    {% endif %}
 </head>
 <body>
     <!-- 页面标题栏 - 支持拖动窗口 -->
@@ -189,9 +198,11 @@
 
     <script>
         window._cardExportPage = true;
-        window.renderQuality = 'high';
+        window.__NEKO_CARD_MAKER_EMBED__ = {{ card_maker_embed | tojson }};
+        window.renderQuality = window.__NEKO_CARD_MAKER_EMBED__ ? 'medium' : 'high';
     </script>
 
+    {% if not card_maker_embed %}
     <!-- Live2D SDK -->
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <script src="/static/libs/live2d.min.js"></script>
@@ -218,6 +229,7 @@
     <script src="/static/live2d/live2d-ui-buttons.js"></script>
     <script src="/static/avatar/avatar-ui-drag.js"></script>
     <script src="/static/live2d/live2d-init.js"></script>
+    {% endif %}
 
     <!-- Three.js -->
     <script type="importmap">
@@ -233,6 +245,9 @@
         }
     }
     </script>
+    {% if card_maker_embed %}
+    <script src="/static/js/card_maker_embed_bootstrap.js?v={{ static_asset_version | default('0') }}"></script>
+    {% else %}
     <script type="module">
         import * as THREE from 'three';
         window.THREE = THREE;
@@ -244,5 +259,6 @@
     <script src="/static/mmd/mmd-init.js"></script>
     <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/card_maker.js?v={{ static_asset_version | default('0') }}"></script>
+    {% endif %}
 </body>
 </html>

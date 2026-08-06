@@ -33,13 +33,27 @@ Three axes cover every prompt module's needs:
     the full ``"zh-CN"``.
 
 ``keep_traditional``
-    Whether ``zh-TW`` survives as its own key. Pass ``False`` for prompt
-    modules whose dicts have no ``'zh-TW'`` templates yet — collapsing to
-    Simplified there keeps the module's intended locale key explicit. The
-    shared ``_loc`` resolver independently uses Simplified Chinese as its
-    safety fallback when a Chinese variant key is absent.
-    Flip a module to ``True`` in the same change that adds its ``'zh-TW'``
-    templates, never before. See issue #2500.
+    Whether ``zh-TW`` survives as its own key. The shared ``_loc`` resolver
+    independently uses Simplified Chinese as its safety fallback when a Chinese
+    variant key is absent, so ``False`` is never a correctness hazard — it just
+    keeps the module's intended locale key explicit.
+
+    Every prompt dict under config/prompts/ now carries a ``'zh-TW'`` template
+    (issue #2500 step 1), so template coverage is no longer what gates the flag.
+    ``prompts_minigame_common`` flipped to ``True`` in issue #2500 step 2, in the
+    same change that moved its game-route call sites to the full locale. That
+    pairing is the rule: flipping earlier is a no-op, because the callers' SHORT
+    code has already collapsed the script before it reaches this function, and
+    switching the callers first without flipping hands Traditional users a
+    resolver that silently drops it.
+
+    ``prompts_proactive._normalize_prompt_language`` is the one template-selecting
+    ``False`` left, waiting on its own call-site flip in
+    ``main_logic/proactive_chat/service.py``.
+
+    ``prompts_directives._trim_term`` passes ``False`` for an
+    unrelated reason and stays that way: it is picking a *particle table family*,
+    and Traditional and Simplified Chinese share one. See issue #2500.
 
 Unlike ``config._runtime.normalize_language_code``, this normalizer is
 self-contained: it never routes through the runtime-injected forwarder, so a

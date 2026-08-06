@@ -27,6 +27,8 @@ const EXPECTED_METHOD_NAMES = [
     'createButtonElement',
     'createMicMuteButton',
     'createReturnButton',
+    'createScreenShareQuickButton',
+    'createVoiceSessionQuickControls',
     'getDefaultButtonConfigs',
     'resetAllButtons',
     'setButtonActive',

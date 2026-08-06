@@ -162,6 +162,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._message_task: Optional[asyncio.Task] = None
         self._session_housekeeping_task: Optional[asyncio.Task] = None
         self._group_digest_task: Optional[asyncio.Task] = None
+        self._trust_migration_task: Optional[asyncio.Task] = None
+        # 只有在存量 trust 池成功推给 memory_server 之后才开始上报
+        # speaker_tier / speaker_activity_events。纵深防御第一层，服务端的
+        # legacy_barriers 是第二层。
+        self.trust_ready: asyncio.Event = asyncio.Event()
         self._handler_tasks: set[asyncio.Task] = set()
         self._user_sessions: dict[str, dict[str, Any]] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -205,6 +210,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 app_id=str((self._qq_settings or {}).get("qq_open_app_id") or "").strip(),
                 client_secret=str((self._qq_settings or {}).get("qq_open_client_secret") or "").strip(),
                 logger=self.logger,
+                # 每条事件现读，开关改完立刻生效，不必重连。
+                identity_probe=lambda: bool(
+                    (self._qq_settings or {}).get("qq_open_identity_probe_enabled", False)
+                ),
+                # 取证行要同时进 UI 的「运行日志」页，不能只落文件。
+                emit_log=self._emit_log,
             )
         return QQClient(
             onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://0.0.0.0:6199"),
@@ -493,6 +504,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "open_in": "new_tab",
             }
         ])
+        # 后台推送存量 trust 池，**不阻塞 startup**：memory_server 可能还没
+        # 起来，而在 startup 里 await 一个带退避的重试循环既拖慢插件启动、
+        # 又是在赌另一个进程的就绪顺序。
+        if (
+            self._trust_migration_task is None
+            or self._trust_migration_task.done()
+        ):
+            self._trust_migration_task = asyncio.create_task(
+                self.settings_service.push_legacy_speaker_trust_forever()
+            )
         if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
         # 定期清理已审核超过24h的旧消息
@@ -589,6 +610,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         await self._flush_all_memory_sessions(reason="shutdown")
         if self.attention_gate_service:
             await self.attention_gate_service.shutdown()
+        if (
+            self._trust_migration_task
+            and not self._trust_migration_task.done()
+        ):
+            self._trust_migration_task.cancel()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
         if getattr(self, "_purge_task", None) and not self._purge_task.done():
@@ -1010,7 +1036,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -1048,6 +1074,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        qq_open_identity_probe_enabled: Optional[bool] = None,
         local_stt_url: Optional[str] = None,
         **_,
     ):
@@ -1087,6 +1114,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             qq_connection_mode=qq_connection_mode,
             qq_open_app_id=qq_open_app_id,
             qq_open_client_secret=qq_open_client_secret,
+            qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
             local_stt_url=local_stt_url,
         )
 

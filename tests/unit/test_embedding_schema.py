@@ -1096,3 +1096,90 @@ def test_apply_character_card_sync_invalidates_embedding_on_text_change():
     assert entry["embedding"] is None
     assert entry["embedding_text_sha256"] is None
     assert entry["embedding_model_id"] is None
+
+
+# ── decode_valid_cached_embedding (#2550) ───────────────────────────
+#
+# `_cosine_rank` used to call `is_cached_embedding_valid` (which decodes the
+# vector to check its dimension, then discards it) and immediately decode the
+# same base64 again. `decode_valid_cached_embedding` returns the vector it had
+# to decode anyway. These tests pin the two functions to the *same* verdict on
+# every rejection branch, so the pair can never drift into "valid says yes,
+# decode says no".
+
+
+def _stamped(text: str, dim: int = 4, model_id: str = "local-text-retrieval-v1-4d-int8"):
+    import numpy as np
+
+    from memory._embeddings.schema import stamp_embedding_fields
+
+    entry = {"text": text}
+    stamp_embedding_fields(entry, np.arange(dim, dtype=np.float32), text, model_id)
+    return entry, model_id
+
+
+@pytest.mark.parametrize(
+    "mutate, why",
+    [
+        (lambda e: e.update(embedding=None), "no vector"),
+        (lambda e: e.update(embedding=""), "empty vector"),
+        (lambda e: e.update(embedding="!!!not-base64!!!"), "corrupt base64"),
+        (lambda e: e.update(embedding_model_id="other-model-4d-int8"), "model changed"),
+        (lambda e: e.update(embedding_text_sha256="0" * 64), "text changed"),
+        (lambda e: e.update(text="完全不同的文本"), "text rewritten under the hash"),
+    ],
+)
+def test_decode_valid_agrees_with_is_valid_on_every_rejection(mutate, why):
+    from memory._embeddings.schema import (
+        decode_valid_cached_embedding,
+        is_cached_embedding_valid,
+    )
+
+    entry, model_id = _stamped("主人喜欢猫")
+    mutate(entry)
+    valid = is_cached_embedding_valid(entry, entry["text"], model_id)
+    vector = decode_valid_cached_embedding(entry, entry["text"], model_id)
+    assert valid is False, why
+    assert vector is None, why
+
+
+def test_decode_valid_returns_the_vector_when_fingerprints_match():
+    from memory._embeddings.schema import (
+        decode_valid_cached_embedding,
+        is_cached_embedding_valid,
+    )
+
+    entry, model_id = _stamped("主人喜欢猫")
+    assert is_cached_embedding_valid(entry, entry["text"], model_id) is True
+    vector = decode_valid_cached_embedding(entry, entry["text"], model_id)
+    assert vector is not None
+    assert vector.size == 4
+    assert [round(float(x)) for x in vector] == [0, 1, 2, 3]
+
+
+def test_decode_valid_rejects_dimension_mismatch_like_is_valid():
+    """model_id declares 8d, the stored vector is 4d — both must reject."""
+    from memory._embeddings.schema import (
+        decode_valid_cached_embedding,
+        is_cached_embedding_valid,
+    )
+
+    entry, _ = _stamped("主人喜欢猫", dim=4)
+    entry["embedding_model_id"] = "local-text-retrieval-v1-8d-int8"
+    other = "local-text-retrieval-v1-8d-int8"
+    assert is_cached_embedding_valid(entry, entry["text"], other) is False
+    assert decode_valid_cached_embedding(entry, entry["text"], other) is None
+
+
+def test_decode_valid_allows_unparseable_model_id_like_is_valid():
+    """No dim in the model id → the dimension check is skipped, both accept.
+    (`_cosine_rank` then falls back to comparing against the query's own dim.)"""
+    from memory._embeddings.schema import (
+        decode_valid_cached_embedding,
+        is_cached_embedding_valid,
+    )
+
+    entry, _ = _stamped("主人喜欢猫", dim=4, model_id="mystery-model")
+    assert is_cached_embedding_valid(entry, entry["text"], "mystery-model") is True
+    vector = decode_valid_cached_embedding(entry, entry["text"], "mystery-model")
+    assert vector is not None and vector.size == 4

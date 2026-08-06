@@ -443,6 +443,8 @@
   "ui.openplat.config.appid_placeholder": "QQ オープンプラットフォームから取得",
   "ui.openplat.config.secret_label": "ClientSecret（秘密鍵）",
   "ui.openplat.config.hint": "QQ オープンプラットフォームでボットを作成した後に取得してね。追加プロセス不要で、純粋な API 接続よ。",
+  "ui.openplat.config.identity_probe": "メッセージごとに ID を記録（グループであなたが管理者と認識されないとき用）",
+  "ui.openplat.config.identity_probe_hint": "オンにしたらグループで私を @ してみて。「動作ログ」に ID の行がいくつか出てくるから、開発者に送れば原因を調べてもらえるわ。その行にチャットの内容は入らないの。用が済んだら切ってね。",
   "ui.openplat.config.accounts_hint": "最初にプライベートチャットしたユーザーが自動的に管理者になるわ。ID は暗号化された openid（QQ番号ではない）で、ログで確認できるの。",
   "ui.openplat.guide.step_openplat": "QQ オープンプラットフォーム",
   "ui.openplat.guide.step_openplat_hint": "AppID と ClientSecret を設定",

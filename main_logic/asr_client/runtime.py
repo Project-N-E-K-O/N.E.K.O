@@ -76,6 +76,12 @@ _FRONTEND_START_DEADLINE_SECONDS = 15.0
 # BEFORE the client gives up rather than a second after.
 _CONNECT_TOTAL_BUDGET_SECONDS = 12.0
 
+# Public alias. The dedupe reroute in core/lifecycle.py runs a whole extra
+# connect phase AFTER already spending part of the frontend deadline waiting,
+# so it has to know this ceiling to tell whether its verdict can still land
+# before the client gives up.
+ASR_CONNECT_TOTAL_BUDGET_SECONDS = _CONNECT_TOTAL_BUDGET_SECONDS
+
 
 def _uses_smart_turn_endpointing(provider_policy: Any) -> bool:
     """Honor the endpoint authority independently of transport shape."""

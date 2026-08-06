@@ -8,6 +8,7 @@ import contextvars
 import asyncio
 import base64
 import copy
+import queue
 import time
 try:
     import tomllib
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
     from plugin.core.bus.conversations import ConversationClient
+    from plugin.sdk.shared.core.types import PushMessageResult
     # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
 
@@ -62,6 +64,14 @@ if TYPE_CHECKING:
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
+
+
+def _is_submission_backpressure(error: BaseException) -> bool:
+    """Return whether a non-blocking local submission path was full."""
+    if isinstance(error, (asyncio.QueueFull, queue.Full)):
+        return True
+    again_type = getattr(zmq, "Again", None) if zmq is not None else None
+    return isinstance(again_type, type) and isinstance(error, again_type)
 
 
 def _synthesize_legacy_message_type(canonical: Dict[str, Any]) -> str:
@@ -869,7 +879,7 @@ class PluginContext:
         mime: Optional[str] = None,
         delivery: Any = None,
         reply: Optional[bool] = None,
-    ) -> None:
+    ) -> "PushMessageResult":
         """Push a message from a plugin to the host.
 
         The v2 (canonical) parameters are ``visibility`` (list of
@@ -884,6 +894,11 @@ class PluginContext:
         ``unsafe``, ``fast_mode``) are deprecated.  They still work for the
         deprecation window but emit ``DeprecationWarning`` and are scheduled
         for removal in v0.9 (see ``docs/changelog``).
+
+        The returned ``submitted`` flag only reports whether the SDK's
+        authoritative local submission path accepted responsibility for the
+        payload.  It does not acknowledge host consumption, model generation,
+        or playback.
         """
         from plugin.sdk.shared.core.push_message_schema import (
             translate_push_message,
@@ -982,8 +997,8 @@ class PluginContext:
         def _build_wire_payload(*, message_id: str, ts: Any) -> Dict[str, Any]:
             """Construct the message_plane envelope (v2 + legacy compat fields).
 
-            Used by all three send paths (fast batcher / slow per-call / fallback
-            queue).  Keeps the wire shape identical regardless of transport.
+            Used by both message-plane send paths and the legacy control-plane
+            cache.  Keeps the wire shape identical regardless of transport.
             """
             return {
                 "type": "MESSAGE_PUSH",
@@ -1017,6 +1032,7 @@ class PluginContext:
 
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
+        primary_failure_reason: Optional[str] = None
         if zmq is not None:
             try:
                 from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
@@ -1109,9 +1125,11 @@ class PluginContext:
                                 try:
                                     if canonical.get("ai_behavior") != "read":
                                         self.logger.error(
-                                            "[PluginContext] message_plane DROP (fast batcher): plugin_id={} source={} ai_behavior={} priority={} — important cue lost to backpressure",
-                                            self.plugin_id, canonical.get("source"),
-                                            canonical.get("ai_behavior"), canonical.get("priority"),
+                                            "[PluginContext] message_plane DROP (fast batcher): "
+                                            "plugin_id={} ai_behavior={} priority={} reason=backpressure",
+                                            self.plugin_id,
+                                            canonical.get("ai_behavior"),
+                                            canonical.get("priority"),
                                         )
                                 except Exception:
                                     # This is a best-effort diagnostic on the hot
@@ -1153,15 +1171,23 @@ class PluginContext:
                                         )
                                     except Exception:
                                         pass
-                                return
+                                return {
+                                    "ok": False,
+                                    "submitted": False,
+                                    "reason": "backpressure",
+                                }
                             if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                                 try:
                                     self.logger.debug(
-                                        f"Plugin {self.plugin_id} pushed message (message_plane.fast): {source} - {description}"
+                                        "Plugin {} submitted message (message_plane.fast): "
+                                        "ai_behavior={} priority={}",
+                                        self.plugin_id,
+                                        canonical.get("ai_behavior"),
+                                        canonical.get("priority"),
                                     )
                                 except Exception:
                                     pass
-                            return
+                            return {"submitted": True}
 
                     tls = getattr(self, "_message_plane_ingest_tls", None)
                     if tls is None:
@@ -1213,33 +1239,47 @@ class PluginContext:
                     # Blocking send: rely on ZMQ HWM for backpressure.
                     if ormsgpack is None:
                         raise RuntimeError("ormsgpack is required for message_plane push")
-                    sock.send(ormsgpack.packb(msg), flags=0)
+                    encoded = ormsgpack.packb(msg)
+                    sock.send(encoded, flags=0)
                     if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                         try:
-                            self.logger.debug(f"Plugin {self.plugin_id} pushed message (message_plane): {source} - {description}")
+                            self.logger.debug(
+                                "Plugin {} submitted message (message_plane): "
+                                "ai_behavior={} priority={}",
+                                self.plugin_id,
+                                canonical.get("ai_behavior"),
+                                canonical.get("priority"),
+                            )
                         except Exception:
                             pass
-                    return
+                    return {"submitted": True}
             except Exception as e:
-                # Catch all ZMQ/Batcher errors to prevent plugin crash
-                # [ISSUE4-DIAG] Enrich so we can tell WHAT got dropped on
-                # backpressure. ai_behavior!="read" → an important proactive cue
-                # (respond completion / keep-going self-prompt / alert) was
-                # silently dropped — that's the "猫娘 goes silent" mechanism.
+                again_type = getattr(zmq, "Again", None)
+                if isinstance(again_type, type) and isinstance(e, again_type):
+                    primary_failure_reason = "backpressure"
+                else:
+                    primary_failure_reason = "transport_error"
+                # Exceptions can only escape before or from the blocking send;
+                # logging after a successful send is isolated above.  The
+                # legacy host queue below remains a distinct local submission
+                # path and may drive bus-backed consumers.
                 try:
-                    _beh = canonical.get("ai_behavior")
-                    _lvl = self.logger.error if _beh != "read" else self.logger.warning
-                    _lvl(
-                        "[PluginContext] message_plane DROP (slow PUSH): plugin_id={} source={} ai_behavior={} priority={} err={}: {}",
-                        self.plugin_id, canonical.get("source"), _beh,
-                        canonical.get("priority"), type(e).__name__, e,
+                    self.logger.warning(
+                        "[PluginContext] message_plane submission failed; trying legacy host queue: "
+                        "plugin_id={} ai_behavior={} priority={} reason={} err_type={}",
+                        self.plugin_id,
+                        canonical.get("ai_behavior"),
+                        canonical.get("priority"),
+                        primary_failure_reason,
+                        type(e).__name__,
                     )
                 except Exception:
                     pass
-                # Do not fall back to control-plane: it can amplify overload
-                return
 
-        # message_plane 不可用时，尝试回退到 message_queue（如果可用）
+        # The legacy control-plane queue is still a valid local host submission
+        # path: host-side message records emit bus changes consumed by fallback
+        # watchers.  A successful enqueue therefore accepts responsibility even
+        # though it does not acknowledge later host consumption.
         if self.message_queue is not None:
             try:
                 payload = _build_wire_payload(
@@ -1249,15 +1289,33 @@ class PluginContext:
                 self.message_queue.put_nowait(payload)
                 if PLUGIN_LOG_CTX_MESSAGE_PUSH:
                     try:
-                        self.logger.debug(f"Plugin {self.plugin_id} pushed message (fallback queue): {source} - {description}")
+                        self.logger.debug(
+                            "Plugin {} submitted message (legacy host queue): "
+                            "ai_behavior={} priority={}",
+                            self.plugin_id,
+                            canonical.get("ai_behavior"),
+                            canonical.get("priority"),
+                        )
                     except Exception:
                         pass
-                return
+                return {"submitted": True}
             except Exception as e:
                 try:
-                    self.logger.warning(f"[PluginContext] fallback message_queue push failed: {e}")
+                    self.logger.warning(
+                        "[PluginContext] fallback message_queue push failed (%s)",
+                        type(e).__name__,
+                    )
                 except Exception:
                     pass
+                return {
+                    "ok": False,
+                    "submitted": False,
+                    "reason": (
+                        "backpressure"
+                        if _is_submission_backpressure(e)
+                        else primary_failure_reason or "transport_error"
+                    ),
+                }
         
         # 所有方式都不可用时，记录警告而非抛错（避免插件崩溃）
         try:
@@ -1270,13 +1328,19 @@ class PluginContext:
         except Exception:
             pass
 
-    async def push_message_async(self, *args: Any, **kwargs: Any) -> None:
+        return {
+            "ok": False,
+            "submitted": False,
+            "reason": primary_failure_reason or "transport_unavailable",
+        }
+
+    async def push_message_async(self, *args: Any, **kwargs: Any) -> "PushMessageResult":
         """异步版本的 push_message，使用 asyncio.to_thread 包装同步调用。
 
         Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。新签名见
         :meth:`push_message`。本方法仅做参数透传，不在此处做兼容翻译。
         """
-        await asyncio.to_thread(self.push_message, *args, **kwargs)
+        return await asyncio.to_thread(self.push_message, *args, **kwargs)
 
     def _send_request_and_wait(
         self,

@@ -686,6 +686,16 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
         await gates._aload_maint_state()
 
+        # Speaker-trust pool. Must come after the cloudsave bootstrap and
+        # ``ensure_memory_directory`` above, because ``pool_path()`` reads
+        # ``memory_dir``. It is a MODULE-LEVEL singleton in ``memory.trust_store``
+        # and deliberately not hung off the runtime globals, so
+        # ``reload_memory_components()`` does not touch it and no
+        # ``_share_trust_write_state`` shim is needed (contrast
+        # ``_share_fact_store_write_state``).
+        from memory import trust_store
+        await trust_store.aload_pool()
+
         catgirl_names: list[str] = []
         try:
             character_data = await _config_manager.aload_characters()

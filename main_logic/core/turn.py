@@ -1077,6 +1077,9 @@ class TurnMixin:
                 ack_timeout_s=0.8,
                 retries=1,
                 conversation_id=uuid4().hex,
+                # Session locale (full code) so the agent process prompts in the
+                # UI language instead of its own Steam/system locale.
+                language=getattr(self, "user_language", None),
             )
         except Exception as exc:
             logger.warning("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)

@@ -443,6 +443,8 @@
   "ui.openplat.config.appid_placeholder": "從 QQ 開放平台取得",
   "ui.openplat.config.secret_label": "ClientSecret（金鑰）",
   "ui.openplat.config.hint": "在 QQ 開放平台 建立機器人後取得。不需要額外程序，純 API 接入。",
+  "ui.openplat.config.identity_probe": "記錄每則訊息中的 ID（群裡認不出你是管理員時才開啟）",
+  "ui.openplat.config.identity_probe_hint": "勾選後在群裡 @ 一下貓娘，「執行日誌」就會多出幾行 ID 資訊，可以傳給開發者幫你排查。這幾行不含聊天內容。用完請關掉。",
   "ui.openplat.config.accounts_hint": "第一個私聊的使用者自動成為管理員。ID 為加密 openid（非 QQ 號），可在日誌中查看。",
   "ui.openplat.guide.step_openplat": "QQ 開放平台",
   "ui.openplat.guide.step_openplat_hint": "配置 AppID 和 ClientSecret",

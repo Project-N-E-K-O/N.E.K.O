@@ -75,7 +75,7 @@ class _Ctx:
 
     def push_message(self, **kwargs: object) -> dict[str, object]:
         self.pushed_messages.append(dict(kwargs))
-        return {"ok": True}
+        return {"submitted": True}
 
 
 @dataclass(slots=True)
@@ -446,7 +446,7 @@ async def test_plugin_base_runtime_shortcuts_delegate_to_ctx() -> None:
     assert export_result == {"ok": True}
     assert ctx.exports[0]["export_type"] == "text"
     assert ctx.exports[0]["text"] == "hello"
-    assert push_result == {"ok": True}
+    assert push_result == {"submitted": True}
     assert ctx.pushed_messages[0]["source"] == "demo"
     assert finish_result["success"] is True
     assert finish_result["message"] == "done"
@@ -584,6 +584,7 @@ def test_plugin_init_all_contains_expected_symbols(plugin_api_module) -> None:
         "Plugins",
         "PluginRouter",
         "Result",
+        "PushMessageResult",
         "Ok",
         "Err",
     }

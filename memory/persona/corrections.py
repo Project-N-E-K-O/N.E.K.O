@@ -223,9 +223,14 @@ class CorrectionsMixin:
                         continue
                     mixed_key = f'{prefix}_speaker_provenance_mixed'
                     if provenance.get('speaker_provenance_mixed') is True:
+                        # ``speaker_entity_id`` belongs in this residual set:
+                        # ``same_provenance_source`` compares entity equality
+                        # BEFORE anything else, so a stale id left beside the
+                        # mixed marker reads the item back as "same person".
                         for residual_key in (
                             f'{prefix}_speaker_id',
                             f'{prefix}_speaker_trust',
+                            f'{prefix}_speaker_entity_id',
                         ):
                             if residual_key in existing:
                                 existing.pop(residual_key)
@@ -246,12 +251,29 @@ class CorrectionsMixin:
                     current_trust = _normalized_correction_trust(
                         raw_current_trust
                     )
+                    queued_entity = str(
+                        provenance.get('speaker_entity_id') or ''
+                    ).strip()
+                    if (
+                        queued_entity
+                        and not existing.get(f'{prefix}_speaker_entity_id')
+                    ):
+                        # Backfill on a repeat hit: a queue row outlives many
+                        # retries, and without this an item first queued before
+                        # the account was registered never gains the offline
+                        # same-person evidence.
+                        existing[f'{prefix}_speaker_entity_id'] = queued_entity
+                        changed = True
                     if current_id is None:
                         existing[f'{prefix}_speaker_id'] = speaker_id
                         changed = True
                     elif stable_speaker_id(current_id) != speaker_id:
+                        # Same rule as the branch above — clearing two of the
+                        # three provenance keys is what leaves the stale
+                        # entity id behind.
                         existing.pop(f'{prefix}_speaker_id', None)
                         existing.pop(f'{prefix}_speaker_trust', None)
+                        existing.pop(f'{prefix}_speaker_entity_id', None)
                         existing[mixed_key] = True
                         changed = True
                         continue
@@ -289,6 +311,17 @@ class CorrectionsMixin:
             speaker_id = stable_speaker_id(provenance.get('speaker_id'))
             if speaker_id is not None:
                 item[f'{prefix}_speaker_id'] = speaker_id
+                # Carried so the same-person guard below still works when the
+                # pool cannot answer (unreadable file), where a live lookup
+                # returns "unknown" and would let one person's two accounts
+                # arbitrate against each other. NOT part of
+                # `_LEGACY_CORRECTION_IDENTITY_FIELDS`, so queue-row identity
+                # and dedup are unchanged.
+                entity_id = str(
+                    provenance.get('speaker_entity_id') or ''
+                ).strip()
+                if entity_id:
+                    item[f'{prefix}_speaker_entity_id'] = entity_id
                 raw_trust = provenance.get('speaker_trust')
                 trust = _normalized_correction_trust(raw_trust)
                 if trust is not None:
@@ -722,6 +755,7 @@ class CorrectionsMixin:
             from memory.speaker_trust import (
                 deterministic_relation,
                 preferred_by_trust,
+                same_provenance_source,
                 stable_speaker_id,
             )
             old_speaker_id = item.get('old_speaker_id')
@@ -735,6 +769,18 @@ class CorrectionsMixin:
                 stable_old_speaker_id is not None
                 and stable_new_speaker_id is not None
                 and stable_old_speaker_id != stable_new_speaker_id
+                # Same discipline as fact_dedup / scoped_refine: one person's
+                # two accounts must not arbitrate against each other.
+                and same_provenance_source(
+                    {
+                        'speaker_id': stable_old_speaker_id,
+                        'speaker_entity_id': item.get('old_speaker_entity_id'),
+                    },
+                    {
+                        'speaker_id': stable_new_speaker_id,
+                        'speaker_entity_id': item.get('new_speaker_entity_id'),
+                    },
+                ) is not True
                 and item.get('old_speaker_provenance_mixed') is not True
                 and item.get('new_speaker_provenance_mixed') is not True
                 and isinstance(old_trust, (int, float))
@@ -844,6 +890,17 @@ class CorrectionsMixin:
                     new_entry['speaker_provenance_mixed'] = True
                 elif item.get('new_speaker_id'):
                     new_entry['speaker_id'] = item['new_speaker_id']
+                    # Carry the entity evidence onto the DURABLE row too: the
+                    # queue item is deleted once resolved, and this field is the
+                    # only same-person evidence that survives a pool the process
+                    # cannot read. Losing it here would let refine/dedup
+                    # arbitrate one person's two accounts against each other —
+                    # exactly what queueing it was for.
+                    entity_id = str(
+                        item.get('new_speaker_entity_id') or ''
+                    ).strip()
+                    if entity_id:
+                        new_entry['speaker_entity_id'] = entity_id
                     trust = _normalized_correction_trust(
                         item.get('new_speaker_trust')
                     )
@@ -902,6 +959,14 @@ class CorrectionsMixin:
                                 'speaker_id': new_speaker_id,
                                 'speaker_trust': item.get('new_speaker_trust'),
                             }
+                            # Same reason as the fresh-entry path above: the
+                            # queue row is about to disappear, so the folded
+                            # provenance has to inherit its entity evidence.
+                            _queued_entity = str(
+                                item.get('new_speaker_entity_id') or ''
+                            ).strip()
+                            if _queued_entity:
+                                new_source['speaker_entity_id'] = _queued_entity
                             if item.get(
                                 'new_speaker_provenance_mixed'
                             ) is True:
@@ -928,8 +993,16 @@ class CorrectionsMixin:
                             # the older stronger score. Mixed/unknown sources
                             # yield an empty fold and clear single-speaker
                             # provenance entirely.
+                            # ``speaker_entity_id`` must be in this clear set,
+                            # not just the fold's output: a merge between two
+                            # different people folds to mixed-only, and leaving
+                            # the old entity id beside the mixed marker lets
+                            # `same_provenance_source` read that row back as
+                            # "same person" via entity equality — which it
+                            # checks BEFORE anything else.
                             for key in (
                                 'speaker_id', 'speaker_trust', 'speaker_label',
+                                'speaker_entity_id',
                             ):
                                 existing.pop(key, None)
                             existing.update(folded_provenance)

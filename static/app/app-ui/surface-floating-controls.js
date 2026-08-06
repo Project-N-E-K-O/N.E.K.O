@@ -205,12 +205,15 @@
             }, SOCIAL_OPEN_RELEASE_DELAY_MS);
         }
 
-        // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
+        // 喵宇宙（社交平台）按钮：占用原 screen 槽位。
         // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份。
         // Electron：window.open → setWindowOpenHandler 识别 social feed，以带 OS chrome 的内置
         // framed 子窗口打开（见 NEKO-PC pet-window-lifecycle）。浏览器：预开 about:blank 保手势。
         // Desktop OAuth 仍走系统浏览器（loopback 回调 + 文案提示在浏览器完成登录）。
         window.addEventListener('live2d-social-click', async () => {
+            if (window.nekoSocialUnlock && window.nekoSocialUnlock.isLocked()) {
+                return;
+            }
             if (shouldIgnoreSocialOpenRequest()) {
                 return;
             }

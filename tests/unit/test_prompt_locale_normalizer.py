@@ -44,6 +44,11 @@ PROMPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts"
 # The six module normalizers collapse to four distinct behaviors. chara, memory
 # and avatar_interaction share one column: same default, same simplified key,
 # both keeping zh-TW.
+#
+# Since issue #2500 step 2 the minigame column keeps zh-TW too, so it now differs
+# from traditional_aware only in its empty-input default ('zh' vs 'en'). proactive
+# is the one column still collapsing Traditional, waiting on its own call-site
+# flip in main_logic/proactive_chat/service.py.
 COLUMNS = ("proactive", "minigame", "traditional_aware", "badminton")
 
 MODULE_NORMALIZERS = {
@@ -72,21 +77,21 @@ EXPECTED = {
     "ja": ("ja", "ja", "ja", "ja"),
     "ko": ("ko", "ko", "ko", "ko"),
     "zh-CN": ("zh", "zh", "zh", "zh-CN"),
-    "zh-TW": ("zh", "zh", "zh-TW", "zh-TW"),
+    "zh-TW": ("zh", "zh-TW", "zh-TW", "zh-TW"),
     "ru": ("ru", "ru", "ru", "ru"),
     "pt": ("pt", "pt", "pt", "pt"),
     "es": ("es", "es", "es", "es"),
     # Short Chinese and its spellings.
     "zh": ("zh", "zh", "zh", "zh-CN"),
-    "zh-Hant": ("zh", "zh", "zh-TW", "zh-TW"),
+    "zh-Hant": ("zh", "zh-TW", "zh-TW", "zh-TW"),
     "zh-Hans": ("zh", "zh", "zh", "zh-CN"),
-    "zh-HK": ("zh", "zh", "zh-TW", "zh-TW"),
-    "zh-hant-TW": ("zh", "zh", "zh-TW", "zh-TW"),
+    "zh-HK": ("zh", "zh-TW", "zh-TW", "zh-TW"),
+    "zh-hant-TW": ("zh", "zh-TW", "zh-TW", "zh-TW"),
     # Case, underscore and surrounding whitespace must not change the answer.
-    "ZH-TW": ("zh", "zh", "zh-TW", "zh-TW"),
-    "zh_TW": ("zh", "zh", "zh-TW", "zh-TW"),
-    "  zh-TW  ": ("zh", "zh", "zh-TW", "zh-TW"),
-    "zh-tw": ("zh", "zh", "zh-TW", "zh-TW"),
+    "ZH-TW": ("zh", "zh-TW", "zh-TW", "zh-TW"),
+    "zh_TW": ("zh", "zh-TW", "zh-TW", "zh-TW"),
+    "  zh-TW  ": ("zh", "zh-TW", "zh-TW", "zh-TW"),
+    "zh-tw": ("zh", "zh-TW", "zh-TW", "zh-TW"),
     # Region subtags.
     "en-US": ("en", "en", "en", "en"),
     "ja-JP": ("ja", "ja", "ja", "ja"),
@@ -98,7 +103,7 @@ EXPECTED = {
     # Steam store language codes. Every module resolves these now; before the
     # collapse only minigame and badminton did, and the rest fell to English.
     "schinese": ("zh", "zh", "zh", "zh-CN"),
-    "tchinese": ("zh", "zh", "zh-TW", "zh-TW"),
+    "tchinese": ("zh", "zh-TW", "zh-TW", "zh-TW"),
     "english": ("en", "en", "en", "en"),
     "japanese": ("ja", "ja", "ja", "ja"),
     "koreana": ("ko", "ko", "ko", "ko"),
@@ -108,7 +113,7 @@ EXPECTED = {
     "latam": ("es", "es", "es", "es"),
     "portuguese": ("pt", "pt", "pt", "pt"),
     "brazilian": ("pt", "pt", "pt", "pt"),
-    "TChinese": ("zh", "zh", "zh-TW", "zh-TW"),
+    "TChinese": ("zh", "zh-TW", "zh-TW", "zh-TW"),
     # Empty input takes the per-module default; the minigame and badminton
     # modules intentionally default to Chinese rather than English.
     "": ("en", "zh", "en", "zh-CN"),

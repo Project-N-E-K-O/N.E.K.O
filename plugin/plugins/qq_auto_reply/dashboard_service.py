@@ -50,6 +50,9 @@ class QQDashboardService:
                 "token": str(settings.get("token") or ""),
                 "qq_open_app_id": str(settings.get("qq_open_app_id") or ""),
                 "qq_open_client_secret": str(settings.get("qq_open_client_secret") or ""),
+                "qq_open_identity_probe_enabled": bool(
+                    settings.get("qq_open_identity_probe_enabled", False)
+                ),
                 "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
                 "napcat_directory": str(napcat_dir),
@@ -201,6 +204,7 @@ class QQDashboardService:
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        qq_open_identity_probe_enabled: Optional[bool] = None,
         local_stt_url: Optional[str] = None,
     ):
         try:
@@ -240,6 +244,7 @@ class QQDashboardService:
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
                 local_stt_url=local_stt_url,
             )
         except ValueError as exc:

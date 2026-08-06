@@ -89,6 +89,11 @@
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
         independentAsrEnabled: true,
+        // Current Core capability loaded from /api/config/core_api. Keep this
+        // tri-state: only an explicit false may disable the effective UI;
+        // null means unknown and leaves the user's persisted preference alone.
+        coreApiProvider: '',
+        coreApiSupportsIndependentAsr: null,
         voiceInputResourceOptimizationEnabled: true,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
         // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
@@ -153,6 +158,12 @@
         // 不一致（典型是 proactive/greeting 并发自起的 text 会话发来的 ack）时
         // 忽略，避免错误模式的 ack 收口用户的启动 promise / 翻转会话状态。
         _pendingSessionStartMode: null,
+        // 本次 claim 的请求标识，随 start_session 发给后端、由 session_started
+        // 原样带回。多窗口下 ack 会经 voice-lease fan-out 到达不是请求方的窗口
+        // （抢麦的窗口会把 voice socket 换成自己的），标识就是「这条 ack 是不是
+        // 在回应我」的唯一依据——没有它，一条为别人发出的 ack 会收口本窗口的
+        // 启动 promise，而本窗口真正的 ack 到达时它已经放弃了。
+        _pendingSessionStartRequestId: null,
         // 上一次 claim 的模式，释放后依然保留（_pendingSessionStartMode 会被清空）。
         // 用于判断"抢走槽位的那个启动是不是语音启动"——它可能已经 ack 完并释放，
         // 但仍然活着且正在驱动语音 UI，见 supersededByAudioStart。
@@ -313,6 +324,12 @@
     // audio start is very much alive and holding the state the global unwind
     // destroys.
     var lastAudioClaimSeq = 0;
+    // 每次 claim 一个新标识；按 owner 存，发送点只会读到自己那一个——被顶掉的
+    // flow 即使还走到发送，也带的是它自己的标识，后端回的 ack 因此对不上当前
+    // pending，不会误收口。窗口段随机，避免两个窗口的序号撞车。
+    var startRequestIdSeq = 0;
+    var startRequestIdWindowTag = Math.random().toString(36).slice(2, 10);
+    var startRequestIdByOwner = new WeakMap();
 
     window.claimSessionStart = function (mode, resolve, reject) {
         // Whoever we are about to displace can no longer be settled by anything
@@ -333,6 +350,10 @@
         S._pendingSessionStartMode = mode;
         startClaimSeq += 1;
         startClaimSeqByOwner.set(resolve, startClaimSeq);
+        startRequestIdSeq += 1;
+        var requestId = startRequestIdWindowTag + '-' + startRequestIdSeq;
+        startRequestIdByOwner.set(resolve, requestId);
+        S._pendingSessionStartRequestId = requestId;
         if (mode === 'audio') lastAudioClaimSeq = startClaimSeq;
         // After the slot is ours, so anything the displaced flow does on its way
         // out already sees the new owner and stands down against it.
@@ -355,7 +376,18 @@
         S.sessionStartedResolver = null;
         S.sessionStartedRejecter = null;
         S._pendingSessionStartMode = null;
+        S._pendingSessionStartRequestId = null;
         return true;
+    };
+
+    /**
+     * The request id minted for ``owner``'s claim, for the send site to put on
+     * the wire. Read it with your OWN owner token rather than off the shared
+     * state: a flow displaced during its reconnect await would otherwise stamp
+     * the newer start's id onto its own stale start_session.
+     */
+    window.sessionStartRequestId = function (owner) {
+        return (owner && startRequestIdByOwner.get(owner)) || null;
     };
 
     /**
@@ -474,6 +506,7 @@
         S.sessionStartedResolver = null;
         S.sessionStartedRejecter = null;
         S._pendingSessionStartMode = null;
+        S._pendingSessionStartRequestId = null;
     };
 
     // ======================== 工具函数 ========================
