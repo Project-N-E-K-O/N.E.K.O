@@ -766,11 +766,11 @@
     }
 
     function waitForOfficialEmotion(turn) {
-        if (!turn || turn.emotionReady) return Promise.resolve();
+        if (!turn || turn.emotionReady) return Promise.resolve(true);
         return Promise.race([
-            turn.emotionReadyPromise,
+            turn.emotionReadyPromise.then(function () { return true; }),
             new Promise(function (resolve) {
-                setTimeout(resolve, EMOTION_READY_WAIT_MS);
+                setTimeout(function () { resolve(false); }, EMOTION_READY_WAIT_MS);
             })
         ]);
     }
@@ -798,8 +798,18 @@
                 return false;
             }
             await processUnseenStagesDirect(turn);
-            await waitForOfficialEmotion(turn);
+            const emotionReceived = await waitForOfficialEmotion(turn);
             if (!isCurrentTurn(turn)) return false;
+            if (!emotionReceived && !turn.emotionReady) {
+                // The official event is best-effort. A missing event must not
+                // strand the ordinary conversational fallback indefinitely.
+                turn.emotionReady = true;
+                turn.officialEmotion = turn.officialEmotion || 'neutral';
+                if (turn.resolveEmotionReady) {
+                    turn.resolveEmotionReady();
+                    turn.resolveEmotionReady = null;
+                }
+            }
             await processSpeechFallback(turn);
             if (isCurrentTurn(turn) && player && typeof player.resumeIdleCountdown === 'function') {
                 player.resumeIdleCountdown('assistant-turn-finished:' + turn.id);
@@ -845,11 +855,15 @@
             return;
         }
         if (bridgeEvent) bridgedText = '';
-        if (activeTurn && !activeTurn.ended && activeTurn.capturedText) {
+        const canReuseActiveTurn = activeTurn && !activeTurn.ended && activeTurn.capturedText
+            && (!turnId || String(turnId) === activeTurn.id
+                || /^(?:buffer|bridge-buffer)$/.test(String(activeTurn.source || '')));
+        if (canReuseActiveTurn) {
             if (turnId) activeTurn.id = String(turnId);
             activeTurn.source = bridgeEvent ? 'bridge' : 'lifecycle';
             if (userText && !activeTurn.userText) activeTurn.userText = String(userText).slice(0, 1000);
         } else {
+            if (activeTurn && !activeTurn.ended) discardActiveTurn();
             beginTurn(turnId, bridgeEvent ? 'bridge' : 'lifecycle', userText);
         }
         const turn = activeTurn;

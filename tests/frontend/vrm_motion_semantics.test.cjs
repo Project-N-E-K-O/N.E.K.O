@@ -407,6 +407,11 @@ assert.equal(core.analyzeSpeech('\u3046\u306a\u305a\u304d\u307e\u3059', {
         locale: 'en', userText: userText
     }).plan[0].intent, expected, userText);
 });
+const confirmedPiano = core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'play piano'
+});
+assert.equal(confirmedPiano.plan[0].evidence.assetId, 'piano_01');
+assert.equal(confirmedPiano.plan[0].evidence.assetExplicit, false);
 ['do not wave goodbye', 'ask the audience to play piano'].forEach(function (userText) {
     assert.equal(core.analyzeSpeech('Okay.', {
         locale: 'en', userText: userText
@@ -516,6 +521,9 @@ const exactCardWithAssistantMotion = core.analyzeSpeech('好的，我先挥手�
 assert.deepEqual(exactCardWithAssistantMotion.plan.map(function (item) {
     return item.intent;
 }), ['wave']);
+assert.deepEqual(core.analyzeSpeech('Okay, I nod.', {
+    locale: 'en', userText: 'wave goodbye'
+}).plan.map(function (item) { return item.intent; }), ['nod']);
 assert.equal(exactCardWithAssistantMotion.plan[0].evidence.assetId === 'clap_01', false);
 const exactCardRefused = core.analyzeSpeech('抱歉，我不能这么做。', {
     locale: 'zh-CN', userText: '站着连续拍手鼓掌'
@@ -663,6 +671,12 @@ function closedStageIntents(text) {
 ].forEach(function ([text, expected]) {
     assert.deepEqual(closedStageIntents(text), expected, text);
 });
+assert.deepEqual(core.analyze('\u8acb wave goodbye', {
+    locale: 'zh-TW'
+}).plan.map(function (item) { return item.intent; }), ['wave']);
+assert.deepEqual(core.analyze('\u8acb\u63ee\u624b and clap', {
+    locale: 'zh-TW'
+}).plan.map(function (item) { return item.intent; }), ['wave', 'clap']);
 assert.equal(
     core.toChineseFrame('\u8bf7\u6325\u624b VRM', 'zh-CN'),
     '\u8bf7\u6325\u624b VRM',

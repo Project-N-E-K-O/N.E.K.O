@@ -137,7 +137,15 @@ assert.ok(
     startObservedTurn.indexOf("if (activeTurn && activeTurn.ended && (duplicateId || duplicateStaleBuffer))")
         < startObservedTurn.indexOf("if (bridgeEvent) bridgedText = ''")
         && startObservedTurn.indexOf("if (bridgeEvent) bridgedText = ''")
-        < startObservedTurn.indexOf('if (activeTurn && !activeTurn.ended && activeTurn.capturedText)')
+        < startObservedTurn.indexOf('const canReuseActiveTurn =')
+);
+assert.match(
+    startObservedTurn,
+    /String\(turnId\) === activeTurn\.id[\s\S]*\^\(\?:buffer\|bridge-buffer\)\$[\s\S]*if \(canReuseActiveTurn\)/
+);
+assert.match(
+    startObservedTurn,
+    /else \{\s*if \(activeTurn && !activeTurn\.ended\) discardActiveTurn\(\);\s*beginTurn\(/
 );
 const bridgeTextUpdate = runtimeSource.split("if (message.eventName === 'neko-assistant-text-update')", 2)[1]
     .split("if (message.eventName === 'neko-assistant-turn-end'", 1)[0];
@@ -167,6 +175,17 @@ assert.match(runtimeSource, /turn\.deferredUntilVrmReady = true/);
 assert.match(runtimeSource, /turn && isCurrentTurn\(turn\) && turn\.deferredUntilVrmReady/);
 assert.match(runtimeSource, /window\.vrmManager\.currentModel !== loadedModel/);
 assert.match(runtimeSource, /casualTalkPending/);
+const waitForEmotionBlock = runtimeSource.split('function waitForOfficialEmotion(turn)', 2)[1]
+    .split('function finishTurn', 1)[0];
+assert.match(waitForEmotionBlock, /Promise\.resolve\(true\)/);
+assert.match(waitForEmotionBlock, /resolve\(false\)/);
+const finishTurnBlock = runtimeSource.split('function finishTurn(turn, source)', 2)[1]
+    .split('function scheduleFinishTurn', 1)[0];
+assert.match(finishTurnBlock, /const emotionReceived = await waitForOfficialEmotion\(turn\)/);
+assert.match(
+    finishTurnBlock,
+    /if \(!emotionReceived && !turn\.emotionReady\) \{[\s\S]*turn\.emotionReady = true;[\s\S]*turn\.officialEmotion = turn\.officialEmotion \|\| 'neutral';[\s\S]*await processSpeechFallback\(turn\)/
+);
 const modelLoadedBlock = runtimeSource.split('async function handleVrmModelLoaded()', 2)[1]
     .split("window.addEventListener('vrm-model-loaded'", 1)[0];
 assert.ok(

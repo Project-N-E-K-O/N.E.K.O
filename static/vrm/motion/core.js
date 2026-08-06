@@ -10,7 +10,6 @@
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
     ]);
     const POSTURE_SPEECH_INTENTS = new Set(['sit', 'lie', 'sleep', 'recover']);
-    const ACKNOWLEDGEMENT_INTENTS = new Set(['nod', 'agree']);
     const SELF_ACTOR_TERMS = Object.freeze([
         '我', '人家', '本喵', '咱', '俺', '本人', 'i', "i'm", "i'll", 'my', 'myself',
         '私', '僕', 'わたし', '나', '내가', '저', '제가', 'я', 'yo', 'eu'
@@ -809,7 +808,10 @@
                 && !['ja', 'ko'].includes(locale) && !settings.speechMode
                 && !needsMixedNormalization) return source;
             const locales = hasChineseText
-                ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN']
+                ? needsTraditionalNormalization
+                    ? unique(['zh-TW', 'zh-CN'].concat(
+                        needsMixedNormalization ? detectedLocales : []
+                    ))
                     : settings.speechMode || needsMixedNormalization
                         ? detectedLocales : [locale]
                 : detectedLocales;
@@ -1540,9 +1542,10 @@
                     return true;
                 });
 
-            const directHasExplicitMotion = !!(directResult && directResult.plan.some(function (item) {
-                return !ACKNOWLEDGEMENT_INTENTS.has(item.intent);
-            }));
+            // Direct semantic plans come only from explicit action phrases. The
+            // acknowledgement-only reply table is evaluated later, so an
+            // assistant-authored nod here must own the reply like any other motion.
+            const directHasExplicitMotion = !!(directResult && directResult.plan.length);
             // A complete action-card name stays exact after a short acknowledgement,
             // but an explicit assistant-authored motion owns the reply body.
             if (exactCard && acknowledged && !directHasExplicitMotion) {
@@ -1608,6 +1611,18 @@
                             locale,
                             'user-confirmed:' + selected.match
                         );
+                        const routedCard = item && this._routeActionCard(
+                            item,
+                            selected.evidenceText
+                        ) || item && this._routeActionCard(
+                            item,
+                            item.evidence.canonicalZh
+                        );
+                        if (routedCard) {
+                            item.evidence.assetId = routedCard.stableId;
+                            item.evidence.assetNameZh = routedCard.nameZh;
+                            item.evidence.assetExplicit = false;
+                        }
                         if (item && index > 0) {
                             item.relation = 'sequence';
                             item.clause.relation = 'sequence';
