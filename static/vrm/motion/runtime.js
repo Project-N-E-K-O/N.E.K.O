@@ -928,6 +928,10 @@
         if (detail.lanlan_name && (!currentName || String(detail.lanlan_name) !== currentName)) return;
         metrics.bridgeMessages += 1;
         if (message.eventName === 'neko-assistant-text-update') {
+            if (refreshMode() !== 'vrm') {
+                bridgedText = '';
+                return;
+            }
             bridgedText = String(detail.text || '');
             if (!bridgedText) return;
             if (!activeTurn || activeTurn.ended && bridgedText !== activeTurn.capturedText) {

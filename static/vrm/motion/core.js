@@ -655,16 +655,19 @@
                             };
                         }) : [];
                     ruleMatches = candidates.filter(function (candidate) {
+                        const localEvidence = actionEvidenceScope(
+                            matchSource,
+                            candidate.sourceIndex,
+                            candidate.sourceEnd
+                        );
                         const blocked = scopedBeforeIndex(
                             matchSource,
                             candidate.sourceIndex,
                             common.negation,
                             9
-                        ) || scopedBeforeIndex(
-                            matchSource,
-                            candidate.sourceIndex,
-                            common.hypothetical,
-                            24
+                        ) || includesAny(
+                            commonEvidenceText(localEvidence, candidateLocale, 'hypothetical'),
+                            common.hypothetical
                         );
                         const actorBlocked = settings.speechMode
                             && !speechActorAllowed(
@@ -1175,9 +1178,11 @@
             const userText = normalize(settings.userText);
             const speech = this.pack.speech || {};
             const metaTerms = this._speechTerms(speech.meta, locale);
+            const refused = !!assistantText
+                && includesAny(assistantText, this._speechTerms(speech.refusals, locale));
             const acknowledged = !!assistantText
                 && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))
-                && !includesAny(assistantText, this._speechTerms(speech.refusals, locale));
+                && !refused;
             let decision = null;
             let directResult = null;
 
@@ -1200,7 +1205,8 @@
                 }
             }
 
-            if (!decision && assistantText && !includesAny(assistantText, metaTerms)) {
+            if (!decision && assistantText && !refused
+                && !includesAny(assistantText, metaTerms)) {
                 directResult = this.analyze(assistantText, {
                     locale: locale,
                     officialEmotion: settings.officialEmotion,

@@ -113,6 +113,13 @@ assert.match(runtimeSource, /if \(await processStage\(stage, turn\)\) turn\.seen
 assert.match(runtimeSource, /turn\.pendingStages\.delete\(stage\.id\)/);
 assert.match(runtimeSource, /if \(turn && isCurrentTurn\(turn\)\) turn\.deferredUntilVrmReady = true/);
 assert.match(runtimeSource, /const duplicateStaleBuffer = \(!turnId \|\| duplicateId\)/);
+const bridgeTextUpdate = runtimeSource.split("if (message.eventName === 'neko-assistant-text-update')", 2)[1]
+    .split("if (message.eventName === 'neko-assistant-turn-end'", 1)[0];
+assert.match(bridgeTextUpdate, /if \(refreshMode\(\) !== 'vrm'\)/);
+assert.ok(
+    bridgeTextUpdate.indexOf("if (refreshMode() !== 'vrm')")
+        < bridgeTextUpdate.indexOf("beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer')")
+);
 const turnEndSource = runtimeSource.split('function endObservedTurn', 2)[1]
     .split('function emotionObserved', 1)[0];
 assert.match(turnEndSource, /if \(refreshMode\(\) !== 'vrm'\)/);

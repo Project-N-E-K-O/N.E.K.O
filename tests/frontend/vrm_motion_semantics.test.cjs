@@ -142,6 +142,10 @@ assert.notEqual(intent('Please wait while I check that.', { locale: 'en' }), 'pl
 assert.equal(core.analyze('if she waves goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyze('when she waves goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyze('whenever she waves goodbye', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyze('I will wave if she claps', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyze('wave when she claps', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('I will wave if she claps', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('wave when she claps', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyze('do not wave goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('The user claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
@@ -177,6 +181,12 @@ assert.equal(core.analyzeSpeech('Okay.', {
         locale: 'en', userText: userText
     }).plan.length, 0, userText);
 });
+assert.equal(core.analyzeSpeech("I can't clap", { locale: 'en' }).plan.some(function (item) {
+    return item.intent === 'clap';
+}), false);
+assert.equal(core.analyzeSpeech("I won't wave goodbye", { locale: 'en' }).plan.some(function (item) {
+    return item.intent === 'wave';
+}), false);
 
 assert.equal(core.analyzeSpeech('（生怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
