@@ -14,6 +14,10 @@
     const IDLE_SWITCH_MIN_MS = 22000;
     const IDLE_SWITCH_MAX_MS = 34000;
     const IDLE_SWITCH_FADE_SECONDS = 0.55;
+    const COMPRESSED_BUNDLED_REST_NAMES = new Set([
+        'liked', 'wait01', 'wait02', 'wait03', 'wait04', 'wait05',
+        '全身展示', '射击姿态', '屈伸运动', '旋转', '模特姿势', '比 V 手势', '致意问候'
+    ]);
 
     function stableHash(value) {
         let result = 2166136261;
@@ -281,13 +285,26 @@
 
         setSavedRestAnimations(urls) {
             const seen = new Set();
+            const compressedAssetUrls = new Set(this.assets.map(function (asset) {
+                return assetUrl(asset).split(/[?#]/u)[0];
+            }).filter(function (url) { return /\.vrma\.gz$/iu.test(url); }));
             const normalizedUrls = (Array.isArray(urls) ? urls : [])
                 .map(function (value) { return typeof value === 'string' ? value.trim() : ''; })
                 .map(function (value) {
-                    return value.replace(
-                        /^(\/static\/vrm\/[^?#]+)\.vrma(?=([?#]|$))/i,
+                    const match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/iu);
+                    let bundledName = match && match[1];
+                    try {
+                        if (bundledName) bundledName = decodeURIComponent(bundledName);
+                    } catch (_) {
+                        // Keep the original segment when it is not valid URI encoding.
+                    }
+                    const compressed = value.replace(
+                        /^(\/static\/vrm\/[^?#]+)\.vrma(?=([?#]|$))/iu,
                         '$1.vrma.gz'
                     );
+                    const compressedPath = compressed.split(/[?#]/u)[0];
+                    return COMPRESSED_BUNDLED_REST_NAMES.has(bundledName)
+                        || compressedAssetUrls.has(compressedPath) ? compressed : value;
                 })
                 .filter(function (value) {
                     if (!value || seen.has(value)) return false;

@@ -356,9 +356,11 @@ async function waitForLoadStart(predicate, message) {
     savedRestPlayer.assets = [];
     assert.equal(savedRestPlayer.setSavedRestAnimations([
         '/user_vrm/animation/custom-idle.vrma',
+        '/static/vrm/animation/custom-idle.vrma',
         '/static/vrm/animation/wait01.vrma'
-    ]), 2);
-    assert.equal(savedRestPlayer.savedRestAssets[1].url, '/static/vrm/animation/wait01.vrma.gz');
+    ]), 3);
+    assert.equal(savedRestPlayer.savedRestAssets[1].url, '/static/vrm/animation/custom-idle.vrma');
+    assert.equal(savedRestPlayer.savedRestAssets[2].url, '/static/vrm/animation/wait01.vrma.gz');
     savedRestPlayer.state.restAsset = savedRestPlayer.savedRestAssets[0];
     assert.equal(savedRestPlayer.setSavedRestAnimations([]), 0);
     assert.equal(savedRestPlayer.state.restAsset, null);
