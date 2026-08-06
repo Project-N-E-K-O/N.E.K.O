@@ -12,11 +12,11 @@ docker compose up -d
 
 打开 `http://127.0.0.1:48911`。需要可复现时固定 `NEKO_IMAGE` 或 `NEKO_IMAGE_VERSION`。`latest` 为 standard 别名，`latest-full` 为 full。
 
-入口脚本只在 `/app/config/core_config.json` 不存在或设置 `NEKO_FORCE_ENV_UPDATE` 时生成初始配置。API 环境变量不是实时通用覆盖，启动后请在 Web UI 确认。
+入口脚本只在 `/home/neko/.local/share/N.E.K.O/config/core_config.json` 不存在时生成初始配置。API 环境变量不是实时通用覆盖；设置 `NEKO_FORCE_ENV_UPDATE` 会显式重新生成并覆盖该持久化初始配置，务必先备份。启动后请在 Web UI 确认。
 
 | 宿主 | 容器 | 用途 |
 | --- | --- | --- |
-| `./neko-home` | `/home/neko` | 配置、角色、记忆、功能数据、TLS 证书与私钥、OpenFang 运行状态 |
+| `./neko-home` | `/home/neko` | 配置、角色、记忆、用户插件及其状态、功能数据、TLS 证书与私钥、OpenFang 运行状态 |
 | `./logs` | `/app/logs` | 日志 |
 
 `TZ` 默认是 `Asia/Shanghai`，可在 `.env` 改为任意 IANA 时区（例如 `Etc/UTC`）。升级前备份 `neko-home` 和 `logs`；严禁公开数据或私钥目录。不要用 `PLUGIN_CONFIG_ROOT`、`PLUGIN_PACKAGES_ROOT` 或 `PACKAGE_PROFILES_ROOT` 指向 `neko-home` 之外的路径，否则对应用户插件数据不会随容器持久化。
@@ -36,20 +36,24 @@ mkdir -p neko-home/.local/share/N.E.K.O neko-home/ssl neko-home/.openfang
 # 判据用「容器实际挂了什么」，而不是「宿主目录里有没有东西」：旧版 README 把
 # ./N.E.K.O 挂到了 /root/Documents/N.E.K.O，那是服务从不写入的路径，所以那个宿主
 # 目录里可能有你自己放的文件，而真数据仍然只在容器可写层里。
-MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null)
+if ! MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null); then
+  echo "无法检查容器 neko；请停止迁移，切勿删除容器。" >&2
+  exit 1
+fi
 
 # 第 4 步要用：真数据是从容器里捞出来的，就不能再被宿主机上那个旧目录覆盖
 EXPORTED_APP_DATA=""
 
-if [ -z "$MOUNTS" ]; then
-  echo "容器 neko 不在（可能已经删过），跳过导出"
-elif printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
+if printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "容器已按新布局挂载，没有待导出的内容"
 else
   # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
   # 容器可写层。
   if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
-    docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/
+    if ! docker cp neko:/home/neko/.local/share/N.E.K.O/. ./neko-home/.local/share/N.E.K.O/; then
+      echo "应用数据导出失败；请停止迁移，切勿删除容器。" >&2
+      exit 1
+    fi
     EXPORTED_APP_DATA=1
   fi
   # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
@@ -66,8 +70,8 @@ fi
 #    已经存在（还带一张新生成的自签证书），直接 mv 会把旧目录套进去多一层。
 #    同名文件以旧数据为准。
 docker compose down
-# 容器内的 neko 固定为 uid/gid 1000，和绝大多数发行版第一个普通用户一致，属主
-# 通常已经对上。只有宿主账号不是 1000 时才需要这一步。
+# 合并迁移文件时使用当前宿主用户；新容器启动后会将运行时状态恢复为 uid/gid 1000，
+# 因此宿主账号不是 1000 时，之后备份或编辑可能需要 sudo（或配置匹配的组权限）。
 [ "$(id -u)" = 1000 ] || sudo chown -R "$(id -u):$(id -g)" neko-home
 # 宿主机上那份只有在「第 1 步没从容器里救数据」时才是权威：旧版 README 把该目录
 # 挂到了服务从不写入的路径，里面的东西会覆盖掉唯一正确的那份。
@@ -82,7 +86,7 @@ fi
 docker compose up -d
 ```
 
-`./logs` 不受影响。容器内的应用用户固定为 uid/gid **1000**（绝大多数 Linux 发行版第一个普通用户的号），因此 `neko-home/` 在宿主机上的属主就是你自己，备份和编辑都不需要 `sudo`。
+`./logs` 不受影响。容器内的应用用户固定为 uid/gid **1000**；宿主账号也是 1000 时通常可直接管理 `neko-home/`，其他账号在容器启动后可能需要 `sudo` 或配置合适的组/ACL。
 :::
 
 当前 Compose 没有 `build:`，旧的 `docker compose build` 说法无效。本地构建应在仓库根目录执行：

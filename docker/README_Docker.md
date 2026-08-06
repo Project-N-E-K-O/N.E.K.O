@@ -9,7 +9,7 @@ docker/
 ├── Dockerfile              # Docker 镜像构建文件
 ├── docker-compose.yml      # Docker Compose 配置
 ├── .env.example           # 环境变量模板
-└── config/                # 配置文件目录（挂载用）
+└── config/                # 配置示例（运行时不挂载此目录）
     ├── core_config.json.example
     ├── characters.json.example
     └── api_providers.json
@@ -19,7 +19,7 @@ docker/
 
 ### 方式一：环境变量配置（推荐）
 
-环境变量用于首次启动时生成初始配置。首次迁移后，持久化运行时配置是唯一的配置来源；修改环境变量不会覆盖它。
+环境变量用于首次启动时生成持久化初始配置。之后以 `/home/neko/.local/share/N.E.K.O/config` 中的运行时配置为准；只有显式设置 `NEKO_FORCE_ENV_UPDATE` 才会用环境变量重新生成并覆盖该初始配置。
 
 #### 核心 API 配置
 
@@ -55,7 +55,7 @@ docker/
 
 ### 方式二：配置文件（高级用户）
 
-运行时配置位于容器的 `/home/neko/.local/share/N.E.K.O/config`，应通过数据根挂载持久化。
+运行时配置位于容器的 `/home/neko/.local/share/N.E.K.O/config`。挂载 `./neko-home:/home/neko` 即可持久化；不要再挂载镜像内的 `/app/config`。
 
 #### core_config.json
 
@@ -198,7 +198,7 @@ volumes:
 配置加载优先级（从高到低）：
 
 1. **持久化运行时配置** - `/home/neko/.local/share/N.E.K.O/config/*.json`
-2. **首次启动输入** - Compose / `docker run` 传入的 `NEKO_*` 环境变量
+2. **初始化输入** - 首次启动时由 Compose / `docker run` 传入的 `NEKO_*` 环境变量生成；设置 `NEKO_FORCE_ENV_UPDATE` 会显式重新生成该配置
 3. **内置默认值** - 代码中定义的默认值
 
 ## 📝 完整配置参考
@@ -273,7 +273,7 @@ tail -f /app/logs/*.log
 A: 环境变量仅用于首次生成初始配置。已有持久化配置时，请在 Web UI 修改配置；不要期待重新启动后由环境变量覆盖。
 
 **Q: 配置文件被覆盖？**
-A: 已有持久化配置不会被环境变量覆盖。`NEKO_FORCE_ENV_UPDATE` 只会重新生成容器内的启动模板，不会替换已持久化的运行时配置；如需重置，请先备份并通过 Web UI 或明确编辑持久化配置处理。
+A: 正常重启不会覆盖已有持久化配置。`NEKO_FORCE_ENV_UPDATE` 会用当前环境变量重新生成并覆盖持久化的 `core_config.json`；使用前请先备份，日常修改请通过 Web UI 或明确编辑持久化配置。
 
 **Q: 如何查看所有配置项？**
 A: 运行 `docker exec neko python -c "from utils.config_manager import get_config_manager; import json; print(json.dumps(get_config_manager().get_core_config(), indent=2, ensure_ascii=False))"`

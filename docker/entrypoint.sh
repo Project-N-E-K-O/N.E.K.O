@@ -901,7 +901,11 @@ start_nginx_reloader() {
 # 5. 配置管理优化
 setup_configuration() {
     echo "📝 Setting up configuration..."
-    local CONFIG_DIR="/app/config"
+    # Keep the bootstrap file in the same runtime root selected by
+    # ConfigManager.  /app/config belongs to the image layer and would be lost
+    # whenever the container is recreated.
+    local CONFIG_ROOT="${NEKO_STORAGE_SELECTED_ROOT:-${XDG_DATA_HOME:-/home/neko/.local/share}/N.E.K.O}"
+    local CONFIG_DIR="$CONFIG_ROOT/config"
     local CORE_CONFIG_FILE="$CONFIG_DIR/core_config.json"
     
     mkdir -p "$CONFIG_DIR"
