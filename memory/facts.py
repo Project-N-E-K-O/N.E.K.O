@@ -4073,10 +4073,15 @@ class FactStore:
                 # 而 FTS5 的 `WHERE fact_id = :fid` 是类型敏感的——把 int 1
                 # 写成文本 "1"，隐私擦除按 int 1 删就删不掉，Stage-2 也用
                 # facts_by_id 反查不到。
+                # _readable_fact_id：facts.json 是用户/旧版本编辑过的普通
+                # 文件，id 位置可能是 list/dict。它们在别处一律当「不可用」
+                # 跳过，这里也必须——一行畸形 id 让整轮回填抛异常的话，标记
+                # 永远落不下，这个角色的近重复检索就此报废。
                 rows: list[tuple[object, str]] = [
-                    (f.get('id'), str(f.get('text') or ''))
+                    (fid, str(f.get('text') or ''))
                     for f in active_facts
-                    if isinstance(f, dict) and f.get('id') is not None
+                    if isinstance(f, dict)
+                    and (fid := _readable_fact_id(f)) is not None
                 ]
 
                 # 返回 None = 读失败，区别于「文件不存在」（合法的 0 行）。
@@ -4095,9 +4100,10 @@ class FactStore:
                     if not isinstance(data, list):
                         return None
                     return [
-                        (r.get('id'), str(r.get('text') or ''))
+                        (fid, str(r.get('text') or ''))
                         for r in data
-                        if isinstance(r, dict) and r.get('id') is not None
+                        if isinstance(r, dict)
+                        and (fid := _readable_fact_id(r)) is not None
                     ]
 
                 archived_rows = await asyncio.to_thread(_read_archive)

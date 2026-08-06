@@ -72,6 +72,13 @@ def test_stop_names_are_stripped_after_folding():
     assert fts_tokens("蘭蘭喜歡貓", ["兰兰"]) == fts_tokens("喜欢猫")
 
 
+def test_stop_names_go_through_the_same_normalization_as_content():
+    """A configured name is matched literally, so any normalization applied
+    to the text must reach the name too or it can never be stripped."""
+    assert fts_tokens("José sings", ["José"]) == fts_tokens("sings")
+    assert fts_tokens("Jose sings", ["José"]) == fts_tokens("sings")
+
+
 # ── 2/3. retrieval + scoring ─────────────────────────────────────────
 
 
@@ -106,11 +113,23 @@ def test_clause_swap_shares_a_token_set_but_not_an_identity():
 def test_identity_ignores_only_lossless_differences():
     """Case and the tokenizer's separators cannot tell two facts apart, so
     folding them is safe for a key that drops data."""
-    assert normalized_identity("用户养了猫，很开心") == normalized_identity(
-        "用户养了猫。很开心",
-    )
     assert normalized_identity("User Likes Cats") == normalized_identity(
         "user likes cats",
+    )
+    assert normalized_identity("用户  养猫") == normalized_identity("用户 养猫")
+
+
+def test_identity_keeps_characters_that_change_the_claim():
+    """The tokenizer's separator class contains meaningful characters, so it
+    cannot be reused for a key that authorizes an irreversible drop."""
+    assert normalized_identity("balance is -10 dollars") != normalized_identity(
+        "balance is 10 dollars",
+    )
+    assert normalized_identity("体重 1.5 公斤") != normalized_identity("体重 15 公斤")
+    assert normalized_identity("a > b") != normalized_identity("a b")
+    # 空白折成一个空格而不是删掉——删掉会把这两句并成一条。
+    assert normalized_identity("an ice cream") != normalized_identity(
+        "a nice cream",
     )
 
 
@@ -360,7 +379,7 @@ async def test_a_lossless_variant_still_drops_the_new_fact(tmp_path):
     resolver.aenqueue_candidates = AsyncMock(return_value=1)
     harness.attach_dedup_resolver(resolver)
 
-    created = await _persist(harness, "用户最近养了一只猫。")
+    created = await _persist(harness, "用户最近养了一只猫")
 
     assert created == []
     resolver.aenqueue_candidates.assert_not_awaited()
@@ -552,8 +571,11 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         first = await _write("用户最近养了一只猫")
         assert len(first) == 1
 
-        # 只差一个句号：Stage-1 的 hash 挡不住，归一后逐字相同挡住。
-        assert await _write("用户最近养了一只猫。") == []
+        # 只差大小写：Stage-1 的 hash 挡不住，归一后逐字相同挡住。
+        cased = await _write("the user adopted a cat")
+        assert len(cased) == 1
+        resolver.aenqueue_candidates.reset_mock()
+        assert await _write("The User Adopted A Cat") == []
         resolver.aenqueue_candidates.assert_not_awaited()
 
         # 繁体重述：召回够得着（折叠），但折叠有损，不许据此直接丢——进仲裁。
@@ -729,6 +751,48 @@ def test_backfill_keeps_the_id_type_the_rest_of_the_store_uses(index):
             "SELECT fact_id, typeof(fact_id) FROM facts_fts_v2"
         )).fetchall()
     assert [(r[0], r[1]) for r in rows] == [("1", "text")]
+
+
+def test_backfill_survives_a_malformed_id(index):
+    """facts.json is a plain file users and older versions edited: an id can
+    arrive as a list. One such row must not abort the whole backfill — the
+    marker would never land and every later write would retry the same scan."""
+    assert index.backfill_fact_index("小天", [
+        (["not", "an", "id"], "畸形行"),
+        ("f1", "用户最近养了一只猫"),
+    ]) == 1
+    assert index.fts_index_needs_backfill("小天") is False
+    assert dict(index.search_similar_facts("小天", "用户前几天养了只猫"))
+
+
+def test_malformed_ids_are_filtered_before_the_backfill(tmp_path):
+    """The same guard on the FactStore side, using the store's own
+    _readable_fact_id notion of an unusable id."""
+    import asyncio
+
+    cm = _cm(str(tmp_path))
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        harness = _PersistHarness(_FakeIndex())
+    harness._config_manager = cm
+
+    captured: list[list] = []
+
+    class _CapturingIndex(_FakeIndex):
+        def fts_index_needs_backfill(self, _name):
+            return True
+
+        async def abackfill_fact_index(self, _name, rows):
+            captured.append(rows)
+            return len(rows)
+
+    harness._time_indexed = _CapturingIndex()
+    with patch.object(harness, "_facts_archive_path", return_value=""):
+        asyncio.run(harness._aensure_fact_index_backfilled("小天", [
+            {"id": ["bad"], "text": "畸形行"},
+            {"id": "act1", "text": "用户最近养了一只猫"},
+        ]))
+
+    assert captured == [[("act1", "用户最近养了一只猫")]]
 
 
 def test_a_failed_backfill_is_retried(tmp_path):

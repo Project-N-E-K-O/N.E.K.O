@@ -118,10 +118,11 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     from memory.persona import _SPLIT_RE  # noqa: F401
 
     raw = _strip_marks(fold_script(str(content or "")).replace('"', ' ').lower())
-    # stop-name 也一起折 + 转小写：strip_stop_names 是逐字面替换/词边界
-    # 匹配，两侧不同形就永远撞不上。
+    # stop-name 要走**完全相同**的一串归一（折叠 + 小写 + 剥组合符）：
+    # strip_stop_names 是逐字面替换 / 词边界匹配，两侧形态差一点就永远撞不
+    # 上——配置里写 `José`、正文已经归一成 `jose`，这个名字就再也剥不掉了。
     folded_stop_names = [
-        fold_script(n).lower() for n in (stop_names or [])
+        _strip_marks(fold_script(n).lower()) for n in (stop_names or [])
     ] or None
     return _tokenize(raw, folded_stop_names)
 
@@ -149,14 +150,18 @@ def normalized_identity(content: str) -> str:
       strips them: the list holds both the master's and the catgirl's
       names, so ``主人喜欢猫`` and ``兰兰喜欢猫`` — two facts about two
       different people — would normalize to the same key.
+    * Punctuation is **not** dropped. The tokenizer's separator class
+      contains characters that carry meaning: ``-10`` and ``10`` are
+      opposite balances, ``1.5`` and ``15`` are different weights,
+      ``a > b`` and ``a b`` are different claims.
 
-    What remains — case, and the separators the tokenizer splits on —
-    is losing nothing that could distinguish two facts.
+    So the only things folded here are case and runs of whitespace —
+    normalized to one space rather than removed, since removing it
+    would merge ``an ice cream`` with ``a nice cream``. Every other
+    difference keeps the two facts apart and sends the pair to
+    arbitration instead.
     """  # noqa: DOCSTRING_CJK
-    from memory.persona import _SPLIT_RE
-
-    raw = str(content or "").lower()
-    return "".join(seg for seg in _SPLIT_RE.split(raw) if seg)
+    return " ".join(str(content or "").lower().split())
 
 
 def token_overlap(left: list[str], right: list[str]) -> float:
@@ -1013,8 +1018,15 @@ class TimeIndexedMemory:
                 seen: set[tuple[str, object]] = set()
                 payload = []
                 for fact_id, content in rows:
-                    key = (type(fact_id).__name__, fact_id)
-                    if fact_id is None or fact_id in indexed or key in seen:
+                    try:
+                        key = (type(fact_id).__name__, fact_id)
+                        skip = fact_id is None or fact_id in indexed or key in seen
+                    except TypeError:
+                        # 不可哈希的 id（list / dict）：调用方按 _readable_fact_id
+                        # 已经滤过一道，这里是第二道——一行畸形数据不该让整轮
+                        # 回填抛异常、把标记永远拦在门外。
+                        continue
+                    if skip:
                         continue
                     seen.add(key)
                     payload.append({

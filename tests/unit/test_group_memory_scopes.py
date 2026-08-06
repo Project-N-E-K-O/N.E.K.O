@@ -2027,7 +2027,7 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
             subject=group, semantic_dedup=False,
         )
     legacy_first = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=False,
     )
     scoped_ids = [fact["id"] for fact in harness._mem[:3]]
     index.hits = [(fid, 1.0) for fid in scoped_ids] + [
@@ -2035,7 +2035,7 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚上八点想开黑。")], semantic_dedup=True,
+        "Neko", [_fact("MASTER WANTS TO GAME ON FRIDAY NIGHT")], semantic_dedup=True,
     )
     assert duplicate == []
 
@@ -2065,7 +2065,7 @@ async def test_fts_dedup_sees_archived_rows(tmp_path):
     ):
         duplicate = await harness._apersist_new_facts(
             "Neko",
-            [{"text": "群规是不剧透。", "importance": 7, "entity": "group_chat"}],
+            [{"text": "群规是不剧透", "importance": 7, "entity": "group_chat"}],
             subject=group, semantic_dedup=True,
         )
     assert duplicate == []
@@ -2086,7 +2086,7 @@ async def test_fts_dedup_escalates_past_crowded_first_window():
             subject=group, semantic_dedup=False,
         )
     legacy_first = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=False,
     )
     scoped_ids = [fact["id"] for fact in harness._mem[:10]]
     index.hits = [(fid, 1.0) for fid in scoped_ids] + [
@@ -2094,7 +2094,7 @@ async def test_fts_dedup_escalates_past_crowded_first_window():
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚上八点想开黑。")], semantic_dedup=True,
+        "Neko", [_fact("MASTER WANTS TO GAME ON FRIDAY NIGHT")], semantic_dedup=True,
     )
     assert duplicate == []
 
