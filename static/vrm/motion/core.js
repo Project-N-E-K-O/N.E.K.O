@@ -4,7 +4,7 @@
     const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt']);
     const SEQUENCE_MARKERS = /^(?:随后|然后|接着|紧接着|随即|接下来|而后|then|next|afterward)$/iu;
     const PARALLEL_MARKERS = /^(?:同时|与此同时|一边|并且|and|while)$/iu;
-    const CLAUSE_BOUNDARY = /([，,。.!！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|then|next|afterward|however|\bbut\b|while)/giu;
+    const CLAUSE_BOUNDARY = /([，,。.!?！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|then|next|afterward|however|\bbut\b|while)/giu;
     const BODY_TERMS = Object.freeze([
         '头', '脑袋', '脸', '眼', '目光', '耳', '猫耳', '耳尖', '耳根', '尾巴', '尾尖', '肩', '手', '掌', '指', '臂', '胸', '腰', '身体', '身子', '腿', '膝', '脚',
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
@@ -156,6 +156,12 @@
         return container[locale] || [];
     }
 
+    function localizedForLocales(container, locales) {
+        return unique((locales || []).reduce(function (terms, locale) {
+            return terms.concat(localizedStrict(container, locale));
+        }, []));
+    }
+
     function semanticLocales(text, inputLocale) {
         const source = String(text || '');
         const locales = [localeKey(inputLocale)];
@@ -177,6 +183,14 @@
             return String(text || '').replace(/告別/gu, '');
         }
         return text;
+    }
+
+    function negationEvidenceText(text) {
+        return String(text || '')
+            .replace(/\bnot\s+only\b/giu, '')
+            .replace(/\bwithout\s+(?:hesitation|delay|pausing|pause|doubt|fear|question)\b/giu, '')
+            .replace(/\bno\s+(?:hesitation|delay|doubt|question|wonder)\b/giu, '')
+            .replace(/\bstop(?:ped|ping)?\s+(?=(?:and|then|to)\b)/giu, '');
     }
 
     function extractClosedStages(text) {
@@ -314,6 +328,7 @@
             const reset = prefix.lastIndexOf(marker);
             if (reset >= 0) prefix = prefix.slice(reset + marker.length);
         });
+        prefix = negationEvidenceText(prefix);
         const nonNegatingPrefixes = '\u7279\u544a\u9053\u9001\u79bb\u96e2\u4e45\u5206\u533a\u5340\u7ea7\u7d1a\u7c7b\u985e\u6027\u4e2a\u500b';
         return (terms || []).some(function (term) {
             const candidate = folded(term);
@@ -355,7 +370,7 @@
     }
 
     function containsNegation(text, terms) {
-        const source = folded(text);
+        const source = folded(negationEvidenceText(text));
         return (terms || []).some(function (term) {
             const candidate = folded(term);
             if (candidate === '\u4e0d') {
@@ -380,18 +395,28 @@
         });
     }
 
+    function permissionQuestionClause(clause) {
+        const source = clause && clause.raw || '';
+        const hasQuestionMark = /[?？]/u.test(clause && clause.boundaryAfter || '');
+        return /^(?:can|could|may|should|would)\s+(?:i|we)\b/iu.test(source)
+            || /(?:可以|可不可以|能否|能不能|要不要|是否).{0,32}(?:吗|嗎|么|麼|呢)$/u.test(source)
+            || /(?:しても(?:いい|よい|よろしい)|していい).{0,12}か$/u.test(source)
+            || /(?:해도\s*(?:돼|될까|될까요)|할까요)$/u.test(source)
+            || (hasQuestionMark && /^(?:могу\s+ли\s+я|можно\s+ли\s+мне|стоит\s+ли\s+мне)\b/iu.test(source))
+            || (hasQuestionMark && /^(?:¿\s*)?(?:puedo|podría|debo)\b/iu.test(source))
+            || (hasQuestionMark && /^(?:posso|poderia|devo)\b/iu.test(source));
+    }
+
     function asksPermissionQuestion(text) {
-        return splitClauses(text).some(function (clause) {
-            const source = clause.raw;
-            const hasQuestionMark = /[?？]/u.test(clause.boundaryAfter || '');
-            return /^(?:can|could|may|should|would)\s+(?:i|we)\b/iu.test(source)
-                || /(?:可以|可不可以|能否|能不能|要不要|是否).{0,32}(?:吗|嗎|么|麼|呢)$/u.test(source)
-                || /(?:しても(?:いい|よい|よろしい)|していい).{0,12}か$/u.test(source)
-                || /(?:해도\s*(?:돼|될까|될까요)|할까요)$/u.test(source)
-                || (hasQuestionMark && /^(?:могу\s+ли\s+я|можно\s+ли\s+мне|стоит\s+ли\s+мне)\b/iu.test(source))
-                || (hasQuestionMark && /^(?:¿\s*)?(?:puedo|podría|debo)\b/iu.test(source))
-                || (hasQuestionMark && /^(?:posso|poderia|devo)\b/iu.test(source));
+        return splitClauses(text).some(permissionQuestionClause);
+    }
+
+    function actionQuestioned(text, sourceIndex) {
+        const current = splitClauses(text).find(function (clause) {
+            return sourceIndex >= clause.start && sourceIndex < clause.end;
         });
+        return !!(current && (/[?？]/u.test(current.boundaryAfter || '')
+            || permissionQuestionClause(current)));
     }
 
     function actionHypothetical(text, sourceIndex, terms) {
@@ -449,23 +474,36 @@
         );
     }
 
-    function speechActorAllowed(text, anchor, occurrenceIndex) {
+    function speechActorAllowed(text, anchor, occurrenceIndex, metaTerms) {
         const source = folded(text);
         const needle = folded(anchor);
         const anchorIndex = Number.isInteger(occurrenceIndex)
             ? occurrenceIndex : source.indexOf(needle);
         if (anchorIndex < 0) return true;
+        if (actionQuestioned(source, anchorIndex)) return false;
+        const clauses = splitClauses(source);
+        const currentClause = clauses.find(function (clause) {
+            return anchorIndex >= clause.start && anchorIndex < clause.end;
+        });
+        const sentenceStart = currentClause && clauses.find(function (clause) {
+            return clause.sentence === currentClause.sentence;
+        });
         const prefix = source.slice(clauseStartIndex(source, anchorIndex), anchorIndex);
-        if (/(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(prefix)) {
+        const metaPrefix = source.slice(sentenceStart && sentenceStart.start || 0, anchorIndex);
+        if (includesAny(metaPrefix, metaTerms || [])
+            || /(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(metaPrefix)) {
             return false;
         }
+        const actorPrefix = prefix
+            .replace(/\b(?:at|to|toward|towards|with|for|beside|near|around)\s+(?:you|him|her|them|the\s+audience|the\s+viewers|everyone|everybody)\b/giu, '')
+            .replace(/(?:向|朝|朝着|對|对|對著|对着|看着|看著|陪着|陪著)\s*(?:你|您|他|她|他们|她们|觀眾|观众|大家)/gu, '');
         const selfActor = /(?:我|人家|本喵|咱|俺|\bi\b|\bi['’]m\b|\bi['’]ll\b|私|僕|わたし|나|내가|я|yo|eu)/giu;
         const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|观众|觀眾|大家|所有人|直播间|聊天室|\b(?:you|he|she|him|her|they|them|user|player|person|someone|somebody|friend|girl|boy|man|woman|audience|viewers?|everyone|everybody|crowd|chat)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
         let selfIndex = -1;
         let otherIndex = -1;
         let match;
-        while ((match = selfActor.exec(prefix)) !== null) selfIndex = match.index;
-        while ((match = otherActor.exec(prefix)) !== null) otherIndex = match.index;
+        while ((match = selfActor.exec(actorPrefix)) !== null) selfIndex = match.index;
+        while ((match = otherActor.exec(actorPrefix)) !== null) otherIndex = match.index;
         if (selfIndex >= 0 || otherIndex >= 0) return selfIndex > otherIndex;
         return true;
     }
@@ -515,7 +553,7 @@
             if (!Array.isArray(frame) || !frame.length) return;
             const evidence = frame.map(function (group) {
                 return matchingTerms(text, group).find(function (term) {
-                    return !scopedBefore(text, term, negationTerms || [], 9);
+                    return !commandNegated(text, term, negationTerms || []);
                 }) || null;
             });
             if (evidence.every(Boolean) && evidence.length > best.length) best = evidence;
@@ -651,6 +689,7 @@
          */
         toChineseFrame(text, inputLocale, options) {
             const settings = options || {};
+            const speechMeta = this.pack.speech && this.pack.speech.meta || {};
             const locale = localeKey(inputLocale);
             const source = normalize(text);
             if (!source) return '';
@@ -663,9 +702,10 @@
             // 简体中文已经是权威动作语言，直接保留原句才能保住分句、先后
             // 关系和修饰范围。只有繁中或非中文脚本才需要进入规范化映射。
             if (hasChineseText && !needsTraditionalNormalization
-                && !['ja', 'ko'].includes(locale)) return source;
+                && !['ja', 'ko'].includes(locale) && !settings.speechMode) return source;
             const locales = hasChineseText
-                ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN'] : [locale]
+                ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN']
+                    : settings.speechMode ? semanticLocales(source, locale) : [locale]
                 : semanticLocales(source, locale);
 
             ['background'].forEach(function (kind) {
@@ -705,7 +745,12 @@
                 return Number(right.rule.priority || 0) - Number(left.rule.priority || 0);
             })[0];
             if (exactRule && (!settings.speechMode
-                || speechActorAllowed(exactRule.matchSource, exactRule.anchor))) {
+                || speechActorAllowed(
+                    exactRule.matchSource,
+                    exactRule.anchor,
+                    undefined,
+                    localizedStrict(speechMeta, exactRule.locale)
+                ))) {
                 const exactDegree = intensity(
                     exactRule.matchSource,
                     this._common(exactRule.locale)
@@ -774,7 +819,8 @@
                             && !speechActorAllowed(
                                 matchSource,
                                 candidate.anchor,
-                                candidate.sourceIndex
+                                candidate.sourceIndex,
+                                localizedStrict(speechMeta, candidateLocale)
                             );
                         return !blocked && !actorBlocked;
                     }).map(function (candidate) {
@@ -882,7 +928,12 @@
             const anchor = phrases.slice().sort(function (a, b) { return b.length - a.length; })[0] || frame[frame.length - 1];
             if (commandNegated(clause.raw, anchor, common.negation)) return null;
             if (scopedBefore(clause.raw, anchor, common.hypothetical, 12)) return null;
-            if (speechMode && !speechActorAllowed(clause.raw, anchor)) return null;
+            if (speechMode && !speechActorAllowed(
+                clause.raw,
+                anchor,
+                undefined,
+                localizedStrict((this.pack.speech || {}).meta, locale)
+            )) return null;
             if (rule.kind === 'pose' && includesAny(clause.raw, common.background)) return null;
 
             const degree = intensity(clause.raw, common);
@@ -945,7 +996,12 @@
             if (!frame.length || includesAny(combined, localized(rule.blocks, locale))) return null;
             const anchor = frame[frame.length - 1];
             if (commandNegated(combined, anchor, common.negation)) return null;
-            if (speechMode && !speechActorAllowed(combined, anchor)) return null;
+            if (speechMode && !speechActorAllowed(
+                combined,
+                anchor,
+                undefined,
+                localizedStrict((this.pack.speech || {}).meta, locale)
+            )) return null;
             const degree = intensity(combined, common);
             const style = styleFor(combined, rule.styles, locale);
             let score = 10 + frame.length * 1.25 + Number(rule.priority || 0) / 100;
@@ -1049,10 +1105,6 @@
                 speechMode: settings.speechMode === true
             });
             const locale = 'zh-CN';
-            const hasHypotheticalClause = includesAny(
-                commonEvidenceText(canonicalZh, locale, 'hypothetical'),
-                this._common(locale).hypothetical
-            );
             let hypotheticalSentence = -1;
             const clauses = splitClauses(canonicalZh).map(function (clause) {
                 if (includesAny(
@@ -1176,10 +1228,7 @@
                 }
             }
 
-            const hasMetaClause = clauses.some(function (clause) {
-                return clause.role === 'meta';
-            });
-            const frameCandidates = hasMetaClause || hasHypotheticalClause ? [] : this.pack.rules
+            const frameCandidates = this.pack.rules
                 .map((rule) => this._frameAcrossClauses(
                     rule,
                     clauses,
@@ -1256,6 +1305,19 @@
                 .concat(localized(rule.aliases, locale)));
         }
 
+        _intentSpeechTermsForLocales(entry, locales) {
+            const rule = entry && this.pack.rules.find(function (candidate) {
+                return candidate.id === entry.id;
+            });
+            return unique((locales || []).reduce(function (terms, locale) {
+                const ownTerms = entry && entry.terms && Array.isArray(entry.terms[locale])
+                    ? entry.terms[locale] : [];
+                return terms.concat(ownTerms)
+                    .concat(rule ? localizedStrict(rule.phrases, locale) : [])
+                    .concat(rule ? localizedStrict(rule.aliases, locale) : []);
+            }, []));
+        }
+
         _speechDecision(intent, evidenceText, locale, source) {
             const rule = this.pack.rules.find(function (candidate) { return candidate.id === intent; });
             if (!rule) return null;
@@ -1292,16 +1354,24 @@
             const assistantText = withoutStageDirections(text);
             const userText = normalize(settings.userText);
             const speech = this.pack.speech || {};
-            const common = this._common(locale);
-            const metaTerms = unique(semanticLocales(assistantText, locale).reduce(function (terms, candidateLocale) {
-                return terms.concat(localizedStrict(speech.meta, candidateLocale));
-            }, []));
+            const assistantLocales = semanticLocales(assistantText, locale);
+            const userLocales = semanticLocales(userText, locale);
+            const assistantMetaTerms = localizedForLocales(speech.meta, assistantLocales);
+            const assistantNegationTerms = unique(assistantLocales.reduce(function (terms, candidateLocale) {
+                return terms.concat(this._common(candidateLocale).negation || []);
+            }.bind(this), []));
+            const userNegationTerms = unique(userLocales.reduce(function (terms, candidateLocale) {
+                return terms.concat(this._common(candidateLocale).negation || []);
+            }.bind(this), []));
             const refused = !!assistantText
-                && includesAny(assistantText, this._speechTerms(speech.refusals, locale));
+                && includesAny(
+                    negationEvidenceText(assistantText),
+                    localizedForLocales(speech.refusals, assistantLocales)
+                );
             const questioned = /[?？]\s*$/u.test(assistantText)
                 || asksPermissionQuestion(assistantText);
             const acknowledged = !!assistantText
-                && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))
+                && includesAny(assistantText, localizedForLocales(speech.acknowledgements, assistantLocales))
                 && !refused;
             let decision = null;
             let directResult = null;
@@ -1325,8 +1395,7 @@
                 }
             }
 
-            if (!decision && assistantText && !refused && !questioned
-                && !includesAny(assistantText, metaTerms)) {
+            if (!decision && assistantText && !refused) {
                 directResult = this.analyze(assistantText, {
                     locale: locale,
                     officialEmotion: settings.officialEmotion,
@@ -1345,10 +1414,10 @@
                 }).some((reply) => {
                     const match = matchingTerms(
                         assistantText,
-                        this._intentSpeechTerms(reply, locale)
+                        this._intentSpeechTermsForLocales(reply, assistantLocales)
                     ).find(function (term) {
-                        return !actionNegated(assistantText, term, common.negation)
-                            && speechActorAllowed(assistantText, term);
+                        return !actionNegated(assistantText, term, assistantNegationTerms)
+                            && speechActorAllowed(assistantText, term, undefined, assistantMetaTerms);
                     });
                     if (!match) return false;
                     decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);
@@ -1360,16 +1429,19 @@
             }));
             if (!decision && !directHasExplicitMotion && userText && acknowledged) {
                 const commandCandidates = (speech.commands || []).map((command) => {
-                    const match = matchingTerms(userText, this._intentSpeechTerms(command, locale))
+                    const match = matchingTerms(
+                        userText,
+                        this._intentSpeechTermsForLocales(command, userLocales)
+                    )
                         .filter(function (term) {
-                            return !commandNegated(userText, term, common.negation)
-                                && !actionNegated(userText, term, common.negation)
+                            return !commandNegated(userText, term, userNegationTerms)
+                                && !actionNegated(userText, term, userNegationTerms)
                                 && userCommandActorAllowed(userText, term);
                         })
                         .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];
                     const weak = match && includesAny(
                         match,
-                        this._speechTerms(command.weakTerms, locale)
+                        localizedForLocales(command.weakTerms, userLocales)
                     );
                     return match ? { command: command, match: match, weak: weak } : null;
                 }).filter(Boolean).sort(function (a, b) {
@@ -1393,10 +1465,10 @@
             }).some((reply) => {
                 const match = matchingTerms(
                     assistantText,
-                    this._intentSpeechTerms(reply, locale)
+                    this._intentSpeechTermsForLocales(reply, assistantLocales)
                 ).find(function (term) {
-                    return !actionNegated(assistantText, term, common.negation)
-                        && speechActorAllowed(assistantText, term);
+                    return !actionNegated(assistantText, term, assistantNegationTerms)
+                        && speechActorAllowed(assistantText, term, undefined, assistantMetaTerms);
                 });
                 if (!match) return false;
                 decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);

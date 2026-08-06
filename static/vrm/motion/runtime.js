@@ -497,8 +497,13 @@
             played = await player.enqueuePlan(plan, context);
         }
         if (!played) {
-            if (turn && isCurrentTurn(turn)) turn.deferredUntilVrmReady = true;
-            return false;
+            if (turn && !isCurrentTurn(turn)) return false;
+            if (!vrmReady()) {
+                if (turn) turn.deferredUntilVrmReady = true;
+                return false;
+            }
+            console.info('[NekoMotion] supported stage was intentionally skipped for the current posture');
+            return true;
         }
         return true;
     }
@@ -617,7 +622,7 @@
             (turn.explicitIntents || []).concat(plan.map(function (item) { return item.intent; }))
         ));
         const played = await player.playPlan(plan, { seed: turn.id + ':speech' });
-        if (!played && isCurrentTurn(turn)) {
+        if (!played && isCurrentTurn(turn) && !vrmReady()) {
             turn.playerStarted = previouslyStarted;
             turn.speechProcessed = false;
             turn.casualTalkFinalized = false;
@@ -649,7 +654,7 @@
         const played = alreadyPlaying
             ? await player.enqueuePlan(plan, { seed: turn.id + ':emotion:' + update.emotion })
             : await player.playPlan(plan, { seed: turn.id + ':emotion:' + update.emotion });
-        if (!played && isCurrentTurn(turn)) {
+        if (!played && isCurrentTurn(turn) && !vrmReady()) {
             turn.playerStarted = alreadyPlaying;
             turn.bodyEmotionPlayed = null;
             turn.deferredUntilVrmReady = true;

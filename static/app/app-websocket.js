@@ -3922,7 +3922,9 @@
                 } else if (response.type === 'system' && response.data === 'turn end agent_callback') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant turn_end after session ended by server');
-                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingRollbackForRequest(
+                            resolveAssistantRequestId(response.request_id, response.meta)
+                        );
                         clearPendingAssistantTurnStart();
                         return;
                     }
@@ -3941,7 +3943,9 @@
                             response.request_id
                         );
                     }
-                    clearPendingRollbackForRequest(response.request_id);
+                    clearPendingRollbackForRequest(
+                        resolveAssistantRequestId(response.request_id, response.meta)
+                    );
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
                         logAssistantLifecycle('ws:turn_end_agent_callback:emit', {
@@ -3968,7 +3972,9 @@
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     if (S.suppressAssistantStreamUntilNextSession) {
                         console.log('[App] discard assistant turn_end after session ended by server');
-                        clearPendingRollbackForRequest(response.request_id);
+                        clearPendingRollbackForRequest(
+                            resolveAssistantRequestId(response.request_id, response.meta)
+                        );
                         clearPendingAssistantTurnStart();
                         return;
                     }
@@ -3988,7 +3994,9 @@
                             response.request_id
                         );
                     }
-                    clearPendingRollbackForRequest(response.request_id);
+                    clearPendingRollbackForRequest(
+                        resolveAssistantRequestId(response.request_id, response.meta)
+                    );
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
                         logAssistantLifecycle('ws:turn_end:emit', {

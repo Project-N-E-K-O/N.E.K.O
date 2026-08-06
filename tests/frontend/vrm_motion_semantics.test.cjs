@@ -272,6 +272,42 @@ assert.equal(core.analyzeSpeech('我可以挥手了。告诉你一声。', {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, 'shake', text);
 });
 
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'zh-CN', userText: 'wave goodbye'
+}).plan[0].intent, 'wave');
+assert.equal(core.analyzeSpeech('\u597d\u7684\u3002', {
+    locale: 'en', userText: '\u6325\u624b\u544a\u522b'
+}).plan[0].intent, 'wave');
+assert.equal(core.analyzeSpeech("I can't.", {
+    locale: 'zh-CN', userText: 'wave goodbye'
+}).plan.length, 0);
+
+[
+    ['Can I help? I wave goodbye.', 'wave'],
+    ['Should I continue? I clap now.', 'clap'],
+    ['I look at you and wave.', 'wave'],
+    ['I smile at you and clap.', 'clap'],
+    ['I turn to you and nod.', 'nod']
+].forEach(function ([text, expected]) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, expected, text);
+});
+['Can I wave? Let me know.', 'You look at me and wave.', 'I ask you to clap.'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+
+[
+    ['without hesitation I clap', ['clap']],
+    ['I stop and clap', ['clap']],
+    ['I will not only clap but wave', ['clap', 'wave']]
+].forEach(function ([text, expected]) {
+    assert.deepEqual(core.analyzeSpeech(text, { locale: 'en' }).plan.map(function (item) {
+        return item.intent;
+    }), expected, text);
+});
+['without clapping', 'stop clapping', 'not clapping'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+
 [
     ['wave goodbye', 'wave'],
     ['play piano', 'piano']
@@ -309,6 +345,18 @@ assert.deepEqual(core.analyze(
     { locale: 'en' }
 ).plan.map(function (item) { return item.intent; }), ['wave']);
 assert.equal(core.analyze('If she claps, nod later', { locale: 'en' }).plan.length, 0);
+assert.deepEqual(core.analyze(
+    '\u5982\u679c\u5979\u9f13\u638c\u3002\u624b\u642d\u5728\u7709\u524d\uff0c\u773a\u671b\u8fdc\u65b9',
+    { locale: 'zh-CN' }
+).plan.map(function (item) { return item.intent; }), ['look']);
+assert.equal(core.analyze(
+    '\u5982\u679c\u5979\u9f13\u638c\uff0c\u624b\u642d\u5728\u7709\u524d\uff0c\u773a\u671b\u8fdc\u65b9',
+    { locale: 'zh-CN' }
+).plan.length, 0);
+assert.equal(core.analyze(
+    '\u6ca1\u6709\u628a\u624b\u642d\u5728\u7709\u524d\uff0c\u53ea\u662f\u5f80\u8fdc\u5904\u770b\u7740\uff0c\u4e5f\u5e76\u6ca1\u6709\u771f\u7684\u773a\u671b\u8fdc\u65b9',
+    { locale: 'zh-CN' }
+).plan.length, 0);
 assert.deepEqual(core.analyze(
     '挥手。如果她鼓掌，就点头',
     { locale: 'zh-CN' }

@@ -5668,15 +5668,21 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert agent_callback_turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < agent_callback_turn_end_block.index(
         "flushRealisticBufferOnTurnEnd();"
     )
-    assert agent_callback_turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < agent_callback_turn_end_block.index(
-        "clearPendingAssistantTurnStart();"
-    )
+    resolved_request = "resolveAssistantRequestId(response.request_id, response.meta)"
+    suppressed_agent_callback = agent_callback_turn_end_block.split(
+        "if (S.suppressAssistantStreamUntilNextSession)",
+        1,
+    )[1].split("return;", 1)[0]
+    assert "clearPendingRollbackForRequest(" in suppressed_agent_callback
+    assert resolved_request in suppressed_agent_callback
     normal_agent_callback_end = agent_callback_turn_end_block.split(
         "console.log('[WS] turn end (agent_callback) - skipping proactive chat schedule');",
         1,
     )[1]
-    assert normal_agent_callback_end.index("ensureAssistantTurnStarted(") < normal_agent_callback_end.index(
-        "clearPendingRollbackForRequest(response.request_id);"
+    agent_cleanup_index = normal_agent_callback_end.index("clearPendingRollbackForRequest(")
+    assert normal_agent_callback_end.index("ensureAssistantTurnStarted(") < agent_cleanup_index
+    assert normal_agent_callback_end.index(resolved_request, agent_cleanup_index) < normal_agent_callback_end.index(
+        "clearPendingAssistantTurnStart();"
     )
 
     turn_end_block = source.split("// -------- system turn end --------", 1)[1].split(
@@ -5687,12 +5693,17 @@ def test_session_ended_by_server_stops_assistant_text_output():
     assert turn_end_block.index("if (S.suppressAssistantStreamUntilNextSession)") < turn_end_block.index(
         "flushRealisticBufferOnTurnEnd();"
     )
-    assert turn_end_block.index("clearPendingRollbackForRequest(response.request_id);") < turn_end_block.index(
-        "clearPendingAssistantTurnStart();"
-    )
+    suppressed_turn_end = turn_end_block.split(
+        "if (S.suppressAssistantStreamUntilNextSession)",
+        1,
+    )[1].split("return;", 1)[0]
+    assert "clearPendingRollbackForRequest(" in suppressed_turn_end
+    assert resolved_request in suppressed_turn_end
     normal_turn_end = turn_end_block.split("console.log(window.t('console.turnEndReceived'));", 1)[1]
-    assert normal_turn_end.index("ensureAssistantTurnStarted(") < normal_turn_end.index(
-        "clearPendingRollbackForRequest(response.request_id);"
+    turn_cleanup_index = normal_turn_end.index("clearPendingRollbackForRequest(")
+    assert normal_turn_end.index("ensureAssistantTurnStarted(") < turn_cleanup_index
+    assert normal_turn_end.index(resolved_request, turn_cleanup_index) < normal_turn_end.index(
+        "clearPendingAssistantTurnStart();"
     )
 
 
