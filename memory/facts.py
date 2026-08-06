@@ -324,9 +324,6 @@ class FactStore:
     _recheck_attempts_mem: dict | None = None
     _recheck_mem_guard: threading.Lock | None = None
 
-    # 本进程已确认 FTS 近重复索引可用的角色。同上，class 级默认 + 惰性创建：
-    # `FactStore.__new__(FactStore)` 造出来的实例也要能走 Stage-2。
-    _fts_backfilled: set | None = None
     # fact_dedup 的 LLM 仲裁队列。Stage-2 只捞候选、由它裁决，所以这里拿不到
     # resolver 时 Stage-2 的命中就只能记日志（见 _aenqueue_near_dup_pairs）。
     _dedup_resolver = None
@@ -3639,6 +3636,12 @@ class FactStore:
         # event_date 决定是否豁免（跨日期重复事件不算 dup，CodeRabbit）。
         facts_by_id = {f.get('id'): f for f in existing_facts if f.get('id')}
 
+        if semantic_dedup and self._time_indexed is not None:
+            # 每批查一次（不是每条 fact），出了循环也就不需要进程内缓存。
+            await self._aensure_fact_index_backfilled(
+                lanlan_name, existing_facts,
+            )
+
         for fact in extracted:
             if not isinstance(fact, dict):
                 continue
@@ -3745,19 +3748,11 @@ class FactStore:
             # 给 fact_dedup 的 LLM 仲裁去裁 merge / replace / keep_both。
             arbitration_hit: tuple[dict, float] | None = None
             if semantic_dedup and self._time_indexed is not None:
-                await self._aensure_fact_index_backfilled(
-                    lanlan_name, existing_facts,
-                )
-                # FTS5 is still character-wide, so fetch a wider window and
-                # keep the historical "top-3 candidates" semantics *inside*
-                # the subject boundary: cross-subject rows neither count as
-                # duplicates nor consume the 3-candidate budget (a busy
-                # group would otherwise crowd legacy candidates out of a
-                # top-3 fetch and let legacy near-duplicates slip through).
                 # 扇出场景（同一事件按 subject 存 N 份、BM25 并列）可能把
                 # 首窗 10 条全部占满——此时本 subject 的候选在 rank 11 之后，
                 # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
-                # 文本本身是退化的口水句，去重已无意义）。
+                # 文本本身是退化的口水句，去重已无意义）。跨 subject / 跨
+                # entity / absorbed 的命中都只是被跳过，不影响扫描继续。
                 is_dup = False
                 duplicate_hit: dict | None = None
                 raw_limit = 10
@@ -3798,7 +3793,6 @@ class FactStore:
                     similar = await self._time_indexed.asearch_similar_facts(
                         lanlan_name, text, raw_limit,
                     )
-                    same_subject_seen = 0
                     # 每一趟都重扫全窗口并重挑：dice 是在 SQL 的 LIMIT
                     # **之后**才算的，首窗里按 bm25 排在前面的行未必是
                     # 重叠度最高的，扩窗后要以更大的窗口重新定夺。
@@ -3866,15 +3860,11 @@ class FactStore:
                             # 同样不含 entity，跨 entity 的同一句话本来就
                             # 只留一条；absorbed 行挡重复是既有行为。
                             continue
-                        # 预算放在**所有**准入过滤之后才扣：放在前面的话，
-                        # 四条同 subject 同 entity 但重叠度不够线的行就能把
-                        # 三个名额吃光并触发 break，扩窗到 200 的条件
-                        # （same_subject_seen < 3）随之失效——OR 检索完全
-                        # 可能把「只共享一个稀有 token」的行排在真近重复
-                        # 前面，那条排在第 11 位的就永远看不到了。
-                        same_subject_seen += 1
-                        if same_subject_seen > 3:
-                            break
+                        # 不再有「候选预算」：只取第一条（结果按 overlap
+                        # 降序，第一条就是最强的），所以数名额没有意义，而
+                        # 它带来的 break 会让扫描停在逐字相同那一行之前——
+                        # 几条 token 集相同但词序不同的行（overlap 都是
+                        # 1.0）排在前面，就能让真正的同文行永远没被看到。
                         if arbitration_hit is None:
                             arbitration_hit = (hit, overlap)
                     if (
@@ -4080,13 +4070,16 @@ class FactStore:
         Best-effort by construction: a read-only or maintenance-mode
         store just doesn't get the backfill this round, and the marker
         stays unset so the next write retries.
+
+        Deliberately keeps **no** process-local "already done" set: that
+        cache would skip ``fts_index_needs_backfill`` entirely, so a
+        table dropped or replaced underneath a running process would
+        never be noticed (``index_fact`` would then rebuild an empty v2
+        while the persistent marker survives, losing the history even
+        across a restart). The check is one small query against
+        sqlite_master, run once per write batch rather than per fact.
         """
         if self._time_indexed is None:
-            return
-        done = self._fts_backfilled
-        if done is None:
-            done = self._fts_backfilled = set()
-        if lanlan_name in done:
             return
         try:
             needs = await asyncio.to_thread(
@@ -4154,19 +4147,25 @@ class FactStore:
                 indexed = await self._time_indexed.abackfill_fact_index(
                     lanlan_name, rows,
                 )
-                if indexed is None:
-                    # 回填没跑成：别记「已完成」，否则这个进程剩下的时间里
-                    # 全部历史 fact 都不在索引里，而 Stage-2 看上去在工作。
-                    return
+                # 回填没跑成（indexed is None）不需要额外处理：标记只在
+                # backfill_fact_index 内部成功时才落，下一次写入自然重试。
                 if indexed:
                     logger.info(
                         f"[FactStore] {lanlan_name}: 回填 {indexed} 条 fact 到近重复索引"
                     )
-            done.add(lanlan_name)
         except Exception as e:
             logger.debug(
                 f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
             )
+
+    @staticmethod
+    def _log_background_enqueue_result(task) -> None:
+        """Surface a background enqueue's outcome; nothing awaits it."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"[FactStore] 后台投递近重复候选失败: {exc}")
 
     async def _aenqueue_near_dup_pairs(
         self, lanlan_name: str,
@@ -4221,20 +4220,29 @@ class FactStore:
         if not payload:
             return
         try:
-            # 有界等待：resolver 的 per-character 锁会被 aresolve 攥着跑完
-            # 整个 LLM 调用（超时 60s）。scoped-history 之类的路由是直接
+            # 有界**等待**：resolver 的 per-character 锁会被 aresolve 攥着
+            # 跑完整个 LLM 调用（超时 60s）。scoped-history 之类的路由是直接
             # await 到 _apersist_new_facts 的，fact 早就提交完了，不该让请求
-            # 再为一次无关的后台仲裁干等一分钟。等不到就放掉这对候选——它是
-            # 尽力而为的旁路，向量通道和后续写入都还有机会重新发现它。
+            # 再为一次无关的后台仲裁干等一分钟。
+            #
+            # ⚠️ shield 是必需的，不能直接 wait_for 那个协程：超时若正好落在
+            # 它已经拿到队列锁、进了 _asave_pending 之后，取消会放掉锁而
+            # atomic_write_json_async 的线程还在写——另一个写者同时做读改写，
+            # 两次原子替换后完成的那次会把先完成的整段更新盖掉。shield 之后
+            # 我们只是不再等，队列那边照常把自己写完。
+            enqueue = asyncio.ensure_future(
+                resolver.aenqueue_candidates(lanlan_name, payload)
+            )
             appended = await asyncio.wait_for(
-                resolver.aenqueue_candidates(lanlan_name, payload),
+                asyncio.shield(enqueue),
                 timeout=FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             logger.info(
-                f"[FactStore] {lanlan_name}: 仲裁队列忙，放弃投递 "
-                f"{len(payload)} 对近重复候选"
+                f"[FactStore] {lanlan_name}: 仲裁队列忙，{len(payload)} 对近重复"
+                f"候选改在后台投递"
             )
+            enqueue.add_done_callback(self._log_background_enqueue_result)
             return
         except Exception as e:
             logger.warning(

@@ -481,7 +481,10 @@ async def test_a_busy_arbitration_queue_does_not_stall_the_write(tmp_path):
     harness = _harness(tmp_path, [("existing", 0.87)])
     _seed(harness, "用户最近养了一只猫")
 
+    started: list = []
+
     async def _never_returns(*_a, **_k):
+        started.append(_asyncio.current_task())
         await _asyncio.sleep(3600)
 
     resolver = MagicMock()
@@ -494,6 +497,38 @@ async def test_a_busy_arbitration_queue_does_not_stall_the_write(tmp_path):
         )
 
     assert len(created) == 1
+    # 只是不再等它，**不**取消：取消会放掉队列锁而底层的原子写还在跑，另一
+    # 个写者的读改写就会盖掉它。
+    assert not started[0].cancelled()
+    started[0].cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_background_enqueue_failure_is_logged(tmp_path):
+    """Nothing awaits the shielded task, so its exception has to be surfaced
+    by the done-callback or it disappears."""
+    import asyncio as _asyncio
+
+    from memory.facts import logger as facts_logger
+
+    harness = _harness(tmp_path, [("existing", 0.87)])
+    _seed(harness, "用户最近养了一只猫")
+
+    async def _slow_boom(*_a, **_k):
+        await _asyncio.sleep(0.05)
+        raise RuntimeError("queue unwritable")
+
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(side_effect=_slow_boom)
+    harness.attach_dedup_resolver(resolver)
+
+    with patch("memory.facts.FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS", 0.01),             patch.object(facts_logger, "warning") as warning:
+        await _persist(harness, "用户最近养了一只狗")
+        await _asyncio.sleep(0.1)
+
+    assert any(
+        "后台投递" in str(call.args[0]) for call in warning.call_args_list
+    )
 
 
 def test_a_missing_index_table_reopens_the_backfill(index):
@@ -510,6 +545,18 @@ def test_a_missing_index_table_reopens_the_backfill(index):
         conn.commit()
 
     assert index.fts_index_needs_backfill("小天") is True
+
+
+def test_tokens_are_cut_where_sqlite_would_cut_them():
+    """Dice is scored over these tokens while retrieval runs over whatever
+    unicode61 made of them. _SPLIT_RE keeps `/`, so `foo/bar` used to be one
+    token here and two there: the row was retrieved and then scored 0."""
+    assert fts_tokens("foo/bar") == ["foo", "bar"]
+    assert token_overlap(fts_tokens("foo/bar"), fts_tokens("foo bar")) == 1.0
+    # 纯标点的 token 整个消失，顺带避免往 FTS 查询里塞一个空引号项。
+    assert fts_tokens("--- ///") == []
+    # CJK n-gram 不受影响（里面每个字都是 alnum）。
+    assert "了一只" in fts_tokens("用户最近养了一只猫")
 
 
 def test_a_single_character_fact_still_gets_a_token():
@@ -755,8 +802,10 @@ def test_backfill_reads_archive_rows_too(tmp_path):
     captured: list[list[tuple[str, str]]] = []
 
     class _CapturingIndex(_FakeIndex):
+        needs = True
+
         def fts_index_needs_backfill(self, _name):
-            return True
+            return self.needs
 
         async def abackfill_fact_index(self, _name, rows):
             captured.append(rows)
@@ -779,7 +828,9 @@ def test_backfill_reads_archive_rows_too(tmp_path):
     }
     # id 原样带走：str() 强转会让隐私擦除按原 id 删不掉这一行。
     assert [type(fid) for fid, _ in captured[0]] == [str, int, str]
-    # 第二次不再重扫。
+    # 标记落下之后就不再重扫（靠持久标记，不靠进程内缓存）。
+    index_obj = harness._time_indexed
+    index_obj.needs = False
     asyncio.run(harness._aensure_fact_index_backfilled("小天", []))
     assert len(captured) == 1
 
@@ -929,8 +980,9 @@ def test_malformed_ids_are_filtered_before_the_backfill(tmp_path):
 
 
 def test_a_failed_backfill_is_retried(tmp_path):
-    """Recording "done" on a failure would leave the entire history out of
-    the index for the rest of the process while Stage-2 looks like it works."""
+    """A failed backfill must not leave a marker behind — the next write has
+    to try again. (There is no process-local "done" cache either: it would
+    hide a table dropped underneath a running process.)"""
     import asyncio
 
     cm = _cm(str(tmp_path))
@@ -953,9 +1005,7 @@ def test_a_failed_backfill_is_retried(tmp_path):
     with patch.object(harness, "_facts_archive_path", return_value=""):
         asyncio.run(harness._aensure_fact_index_backfilled("小天", rows))
         assert attempts == [1]
-        asyncio.run(harness._aensure_fact_index_backfilled("小天", rows))
-        assert attempts == [1, 1]
-        # 成功之后才停。
+        # 失败之后照样重试（标记没落下，也没有进程内缓存兜着）。
         asyncio.run(harness._aensure_fact_index_backfilled("小天", rows))
         assert attempts == [1, 1]
 

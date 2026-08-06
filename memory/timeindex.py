@@ -52,6 +52,34 @@ def _next_readonly_batch(
         return True, None
 
 
+def _alnum_runs(tokens: list[str]) -> list[str]:
+    """Cut tokens at the boundaries unicode61 would cut them at.
+
+    A token has to survive SQLite unchanged, because the Dice score is
+    computed over these tokens while the *retrieval* runs over whatever
+    unicode61 made of them. ``_SPLIT_RE`` keeps characters unicode61
+    treats as separators (``/``, ``_``, ``'``), so ``foo/bar`` is stored
+    as one token here and indexed as ``foo`` + ``bar`` there: a query for
+    ``foo bar`` retrieves the row and then scores 0 against it.
+
+    CJK n-grams are unaffected — every character in them is alphanumeric.
+    Tokens made only of punctuation disappear, which also keeps an empty
+    quoted term out of the FTS query.
+    """
+    out: list[str] = []
+    for token in tokens:
+        run = ""
+        for ch in token:
+            if ch.isalnum():
+                run += ch
+            elif run:
+                out.append(run)
+                run = ""
+        if run:
+            out.append(run)
+    return out
+
+
 def _strip_marks(text: str) -> str:
     """Drop combining marks, keeping everything else composed.
 
@@ -130,7 +158,7 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     folded_stop_names = [
         _strip_marks(fold_script(n).lower()) for n in (stop_names or [])
     ] or None
-    tokens = _tokenize(raw, folded_stop_names)
+    tokens = _alnum_runs(_tokenize(raw, folded_stop_names))
     if tokens:
         return tokens
     # _tokenize 的 CJK 段从 2-gram 起步、拉丁段要求长度 >= 2，所以归一后只
@@ -144,7 +172,7 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
         strip_stop_names(raw, folded_stop_names)
         if folded_stop_names else raw
     )
-    residue = [seg for seg in residue_source.split() if seg]
+    residue = _alnum_runs(residue_source.split())
     return residue[:1] if residue else []
 
 
