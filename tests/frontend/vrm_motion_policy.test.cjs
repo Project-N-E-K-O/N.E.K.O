@@ -151,6 +151,13 @@ assert.match(runtimeSource, /turn\.deferredUntilVrmReady = true/);
 assert.match(runtimeSource, /turn && isCurrentTurn\(turn\) && turn\.deferredUntilVrmReady/);
 assert.match(runtimeSource, /window\.vrmManager\.currentModel !== loadedModel/);
 assert.match(runtimeSource, /casualTalkPending/);
+const modelLoadedBlock = runtimeSource.split('async function handleVrmModelLoaded()', 2)[1]
+    .split("window.addEventListener('vrm-model-loaded'", 1)[0];
+assert.ok(
+    modelLoadedBlock.indexOf('acquirePlaybackOwnership()')
+        < modelLoadedBlock.indexOf('player.enterRest('),
+    'a deferred VRM model load must acquire playback ownership before semantic rest'
+);
 const nonVrmMarker = "if (mode !== 'vrm') {";
 const nonVrmParts = runtimeSource.split(nonVrmMarker);
 assert.equal(nonVrmParts.length, 2, 'non-VRM turn guard must remain unique');

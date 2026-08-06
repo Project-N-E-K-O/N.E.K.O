@@ -222,6 +222,10 @@ assert.equal(core.analyze('不由得点头', { locale: 'zh-CN' }).plan[0].intent
 });
 assert.equal(core.analyzeSpeech('没准我点头', { locale: 'zh-CN' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('沉没之后我点头', { locale: 'zh-CN' }).plan[0].intent, 'nod');
+assert.equal(core.analyze(
+    '不想在今天这个非常非常漫长的直播环节最后点头',
+    { locale: 'zh-CN' }
+).plan.length, 0);
 
 assert.equal(core.analyzeSpeech('（生怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
@@ -254,9 +258,48 @@ assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.
 ['Can I wave? Let me know.', 'Should I clap'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
 });
+[
+    ['我可以挥手吗？告诉我。', 'zh-CN'],
+    ['我可以揮手嗎？告訴我。', 'zh-TW'],
+    ['拍手してもいいですか？教えてください。', 'ja']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyzeSpeech(text, { locale: locale }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('我可以挥手了。告诉你一声。', {
+    locale: 'zh-CN'
+}).plan[0].intent, 'wave');
 ['I shake my head', 'shake my head', 'shaking my head'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, 'shake', text);
 });
+
+assert.deepEqual(core.analyze(
+    'wave now. If she claps, nod later',
+    { locale: 'en' }
+).plan.map(function (item) { return item.intent; }), ['wave']);
+assert.deepEqual(core.analyze(
+    'I will wave, and if she claps I will nod',
+    { locale: 'en' }
+).plan.map(function (item) { return item.intent; }), ['wave']);
+assert.equal(core.analyze('If she claps, nod later', { locale: 'en' }).plan.length, 0);
+assert.deepEqual(core.analyze(
+    '挥手。如果她鼓掌，就点头',
+    { locale: 'zh-CN' }
+).plan.map(function (item) { return item.intent; }), ['wave']);
+
+assert.equal(core.actionCards.some(function (card) {
+    return card.stableId === 'cheer_01';
+}), false);
+assert.equal(core.analyze('举手欢呼', { locale: 'zh-CN' }).plan.length, 0);
+
+['The audience claps.', 'The viewers nod.', 'Everyone waves.'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('I will.', {
+    locale: 'en', userText: 'ask the audience to clap'
+}).plan.length, 0);
+assert.equal(core.analyzeSpeech('I wave to the audience.', {
+    locale: 'en'
+}).plan[0].intent, 'wave');
 
 assert.equal(core.analyzeSpeech('I clap', { locale: 'en' }).plan[0].intensity, 2);
 assert.equal(core.analyzeSpeech('I gently clap', { locale: 'en' }).plan[0].intensity, 1);

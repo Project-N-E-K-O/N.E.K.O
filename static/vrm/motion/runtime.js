@@ -1034,6 +1034,7 @@
                 || window.vrmManager.currentModel !== loadedModel) return;
             const profile = await resolveCharacterProfile();
             if (!vrmReady() || window.vrmManager.currentModel !== loadedModel) return;
+            acquirePlaybackOwnership();
             stopOfficialIdleRotation();
             syncSavedRestAnimations();
             player.setProfile(profile);

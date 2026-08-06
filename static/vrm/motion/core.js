@@ -223,6 +223,7 @@
         const clauses = [];
         let cursor = 0;
         let relation = 'start';
+        let sentence = 0;
         let match;
         CLAUSE_BOUNDARY.lastIndex = 0;
         while ((match = CLAUSE_BOUNDARY.exec(source)) !== null) {
@@ -232,13 +233,18 @@
                     id: 'clause:' + clauses.length,
                     index: clauses.length,
                     raw: raw,
-                    relation: relation
+                    relation: relation,
+                    start: cursor,
+                    end: match.index,
+                    sentence: sentence,
+                    boundaryAfter: match[0]
                 });
             }
             const marker = normalize(match[0]);
             if (SEQUENCE_MARKERS.test(marker)) relation = 'sequence';
             else if (PARALLEL_MARKERS.test(marker)) relation = 'parallel';
             else relation = 'continuation';
+            if (/[。.!！？；;\n]/u.test(match[0])) sentence += 1;
             cursor = match.index + match[0].length;
         }
         const trailing = normalize(source.slice(cursor));
@@ -247,7 +253,11 @@
                 id: 'clause:' + clauses.length,
                 index: clauses.length,
                 raw: trailing,
-                relation: relation
+                relation: relation,
+                start: cursor,
+                end: source.length,
+                sentence: sentence,
+                boundaryAfter: ''
             });
         }
         return clauses;
@@ -355,13 +365,45 @@
                 return source.replace(/沉[没沒]|淹[没沒]|埋[没沒]|[没沒]收|出[没沒]|吞[没沒]|覆[没沒]|[没沒]准|[沒没]準/gu, '')
                     .includes(candidate);
             }
+            if (candidate === '\u522b' || candidate === '\u5225') {
+                const nonNegatingPrefixes = '\u7279\u544a\u9053\u9001\u79bb\u96e2\u4e45\u5206\u533a\u5340\u7ea7\u7d1a\u7c7b\u985e\u6027\u4e2a\u500b';
+                let index = source.indexOf(candidate);
+                while (index >= 0) {
+                    if (index === 0 || !nonNegatingPrefixes.includes(source.charAt(index - 1))) {
+                        return true;
+                    }
+                    index = source.indexOf(candidate, index + candidate.length);
+                }
+                return false;
+            }
             return matchesTerm(source, candidate);
         });
     }
 
     function asksPermissionQuestion(text) {
         return splitClauses(text).some(function (clause) {
-            return /^(?:can|could|may|should|would)\s+(?:i|we)\b/iu.test(clause.raw);
+            const source = clause.raw;
+            const hasQuestionMark = /[?？]/u.test(clause.boundaryAfter || '');
+            return /^(?:can|could|may|should|would)\s+(?:i|we)\b/iu.test(source)
+                || /(?:可以|可不可以|能否|能不能|要不要|是否).{0,32}(?:吗|嗎|么|麼|呢)$/u.test(source)
+                || /(?:しても(?:いい|よい|よろしい)|していい).{0,12}か$/u.test(source)
+                || /(?:해도\s*(?:돼|될까|될까요)|할까요)$/u.test(source)
+                || (hasQuestionMark && /^(?:могу\s+ли\s+я|можно\s+ли\s+мне|стоит\s+ли\s+мне)\b/iu.test(source))
+                || (hasQuestionMark && /^(?:¿\s*)?(?:puedo|podría|debo)\b/iu.test(source))
+                || (hasQuestionMark && /^(?:posso|poderia|devo)\b/iu.test(source));
+        });
+    }
+
+    function actionHypothetical(text, sourceIndex, terms) {
+        const clauses = splitClauses(text);
+        const current = clauses.find(function (clause) {
+            return sourceIndex >= clause.start && sourceIndex < clause.end;
+        });
+        if (!current) return false;
+        return clauses.some(function (clause) {
+            return clause.sentence === current.sentence
+                && clause.index <= current.index
+                && includesAny(clause.raw, terms);
         });
     }
 
@@ -418,7 +460,7 @@
             return false;
         }
         const selfActor = /(?:我|人家|本喵|咱|俺|\bi\b|\bi['’]m\b|\bi['’]ll\b|私|僕|わたし|나|내가|я|yo|eu)/giu;
-        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|\b(?:you|he|she|him|her|they|them|user|player|person|someone|somebody|friend|girl|boy|man|woman)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
+        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|观众|觀眾|大家|所有人|直播间|聊天室|\b(?:you|he|she|him|her|they|them|user|player|person|someone|somebody|friend|girl|boy|man|woman|audience|viewers?|everyone|everybody|crowd|chat)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
         let selfIndex = -1;
         let otherIndex = -1;
         let match;
@@ -440,6 +482,7 @@
         if (describesCurrentState && !explicitContinuation) return false;
         const thirdPartyActors = [
             '用户', '玩家', '某人', '别人', '朋友', '女孩', '男孩',
+            '观众', '觀眾', '大家', '所有人', '直播间', '聊天室',
             '他们', '她们', '彼', '彼女', '그', '그녀',
             'он', 'она', 'él', 'ella'
         ];
@@ -453,7 +496,7 @@
         if (lastIndex(thirdPartyActors) >= 0
             || /(?:让|叫|请|要求)\s*(?:他们|她们|他|她)/u.test(prefix)
             || /(?:^|[\s，,。！？])(?:他|她)(?=$|[\s，,。！？]|正在|要|会|应该)/u.test(prefix)
-            || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they|him|her|them)\b/iu.test(prefix)) {
+            || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they|him|her|them|audience|viewers?|everyone|everybody|crowd|chat)\b/iu.test(prefix)) {
             return false;
         }
         let selfIndex = lastIndex(selfActors);
@@ -505,6 +548,7 @@
         registerActionCards(assets) {
             const rows = Array.isArray(assets) ? assets : [];
             rows.forEach((asset) => {
+                if (!asset || asset.disabled === true) return;
                 const card = asset && asset.card;
                 if (!asset || !asset.m || !card || card.stableId !== asset.id) return;
                 if (this.actionCards.some(function (existing) {
@@ -624,7 +668,7 @@
                 ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN'] : [locale]
                 : semanticLocales(source, locale);
 
-            ['hypothetical', 'background'].forEach(function (kind) {
+            ['background'].forEach(function (kind) {
                 if (locales.some((candidateLocale) => {
                     const common = this._common(candidateLocale);
                     const evidenceSource = candidateLocale === 'zh-CN'
@@ -721,8 +765,9 @@
                         const blocked = containsNegation(
                             commonEvidenceText(localEvidence, candidateLocale, 'negation'),
                             common.negation
-                        ) || includesAny(
+                        ) || actionHypothetical(
                             commonEvidenceText(matchSource, candidateLocale, 'hypothetical'),
+                            candidate.sourceIndex,
                             common.hypothetical
                         );
                         const actorBlocked = settings.speechMode
@@ -835,7 +880,7 @@
             const blocks = localized(rule.blocks, locale);
             if (includesAny(clause.raw, blocks)) return null;
             const anchor = phrases.slice().sort(function (a, b) { return b.length - a.length; })[0] || frame[frame.length - 1];
-            if (scopedBefore(clause.raw, anchor, common.negation, 9)) return null;
+            if (commandNegated(clause.raw, anchor, common.negation)) return null;
             if (scopedBefore(clause.raw, anchor, common.hypothetical, 12)) return null;
             if (speechMode && !speechActorAllowed(clause.raw, anchor)) return null;
             if (rule.kind === 'pose' && includesAny(clause.raw, common.background)) return null;
@@ -898,7 +943,9 @@
             const personaFrame = frameEvidence(combined, localized(personaRule.frames, locale), common.negation);
             const frame = frameEvidence(combined, this._frames(rule, locale, profilePreset), common.negation);
             if (!frame.length || includesAny(combined, localized(rule.blocks, locale))) return null;
-            if (speechMode && !speechActorAllowed(combined, frame[frame.length - 1])) return null;
+            const anchor = frame[frame.length - 1];
+            if (commandNegated(combined, anchor, common.negation)) return null;
+            if (speechMode && !speechActorAllowed(combined, anchor)) return null;
             const degree = intensity(combined, common);
             const style = styleFor(combined, rule.styles, locale);
             let score = 10 + frame.length * 1.25 + Number(rule.priority || 0) / 100;
@@ -1002,21 +1049,28 @@
                 speechMode: settings.speechMode === true
             });
             const locale = 'zh-CN';
-            const globallyHypothetical = includesAny(
+            const hasHypotheticalClause = includesAny(
                 commonEvidenceText(canonicalZh, locale, 'hypothetical'),
                 this._common(locale).hypothetical
             );
+            let hypotheticalSentence = -1;
             const clauses = splitClauses(canonicalZh).map(function (clause) {
-                clause.role = discourseRole(clause);
+                if (includesAny(
+                    commonEvidenceText(clause.raw, locale, 'hypothetical'),
+                    this._common(locale).hypothetical
+                )) {
+                    hypotheticalSentence = clause.sentence;
+                }
+                clause.hypothetical = clause.sentence === hypotheticalSentence;
+                clause.role = clause.hypothetical ? 'meta' : discourseRole(clause);
                 return clause;
-            });
+            }, this);
             const decisions = [];
             const trace = [];
             const pendingModifiers = [];
             this.metrics.analyzed += 1;
 
             clauses.forEach((clause) => {
-                if (globallyHypothetical) return;
                 const candidates = this._rank(
                     clause,
                     locale,
@@ -1125,7 +1179,7 @@
             const hasMetaClause = clauses.some(function (clause) {
                 return clause.role === 'meta';
             });
-            const frameCandidates = hasMetaClause || globallyHypothetical ? [] : this.pack.rules
+            const frameCandidates = hasMetaClause || hasHypotheticalClause ? [] : this.pack.rules
                 .map((rule) => this._frameAcrossClauses(
                     rule,
                     clauses,
