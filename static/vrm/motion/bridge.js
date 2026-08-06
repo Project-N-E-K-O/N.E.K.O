@@ -40,25 +40,33 @@
         prunePendingContexts();
     }
 
-    function takeUserText(requestIdValue) {
+    function peekUserText(requestIdValue) {
         prunePendingContexts();
         const requestId = normalizedRequestId(requestIdValue);
         if (requestId) {
             const entry = pendingByRequest.get(requestId);
-            pendingByRequest.delete(requestId);
             return entry ? entry.text : '';
         }
         if (pendingWithoutRequest) {
-            const text = pendingWithoutRequest.text;
-            pendingWithoutRequest = null;
-            return text;
+            return pendingWithoutRequest.text;
         }
         if (pendingByRequest.size === 1) {
             const only = pendingByRequest.entries().next().value;
-            pendingByRequest.delete(only[0]);
             return only[1].text;
         }
         return '';
+    }
+
+    function finishUserText(event) {
+        const detail = event && event.detail || {};
+        const requestId = normalizedRequestId(detail.requestId);
+        if (requestId) {
+            pendingByRequest.delete(requestId);
+        } else if (pendingWithoutRequest) {
+            pendingWithoutRequest = null;
+        } else if (pendingByRequest.size === 1) {
+            pendingByRequest.delete(pendingByRequest.keys().next().value);
+        }
     }
 
     function clearPendingContext(event) {
@@ -102,7 +110,7 @@
     function relayTurnStart(event) {
         lastClosedStageText = '';
         const detail = Object.assign({}, event && event.detail || {});
-        const userText = takeUserText(detail.requestId);
+        const userText = peekUserText(detail.requestId);
         if (userText) detail.userText = userText;
         relay('neko-assistant-turn-start', detail);
     }
@@ -113,6 +121,7 @@
         detail.text = typeof window._geminiTurnFullText === 'string'
             ? window._geminiTurnFullText : '';
         relay('neko-assistant-turn-end', detail);
+        finishUserText(event);
     }
 
     function relayClosedStage(event) {

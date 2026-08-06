@@ -2220,13 +2220,13 @@
       "license": "Apache-2.0",
       "model": "VRM humanoid",
       "sec": 5.833,
-      "sha": "988d51805b65f2f99c1c10205ea25bca7b8ff1445a482c72ad6876da0f7f321b",
+      "sha": "c5718b04d408fe4b1cf28f3fbab0b4e2e0e271858a66afa98766b411ad4a3b1f",
       "src": [
         "static/vrm/motion/02_talk/站着左手主导简短说明.vrma.gz"
       ],
-      "packedSha": "e4ee4dbafb5edb3ff114c4a0b49f226c6c7355041c2f5a040a3cba3963021add",
-      "decodedSha": "988d51805b65f2f99c1c10205ea25bca7b8ff1445a482c72ad6876da0f7f321b",
-      "packedBytes": 102594,
+      "packedSha": "350438f702311c980aaba21560937d371a1e9db41182c8cfe54414d1b01ee6fc",
+      "decodedSha": "c5718b04d408fe4b1cf28f3fbab0b4e2e0e271858a66afa98766b411ad4a3b1f",
+      "packedBytes": 105289,
       "decodedBytes": 147888,
       "compression": "gzip",
       "nameZh": "站着左手主导简短说明",

@@ -11,6 +11,7 @@
     const TURN_END_GRACE_MS = 240;
     const EMOTION_READY_WAIT_MS = 900;
     const HISTORY_LIMIT = 80;
+    const FINISHED_TURN_LIMIT = 32;
     const EMOTION_CONTEXT_WINDOW_MS = 45000;
     const EMOTION_EVIDENCE_DEBOUNCE_MS = 700;
     const EMOTION_PULSE_BASE_MS = 3000;
@@ -43,6 +44,8 @@
     let player = null;
     let activeTurn = null;
     let lastFinishedTurn = null;
+    const finishedTurnIds = new Set();
+    const finishedTurnOrder = [];
     let bridgedText = '';
     let latestOfficialEmotion = '';
     let casualRepliesSinceTalk = 0;
@@ -765,6 +768,16 @@
         metrics.turns += 1;
     }
 
+    function rememberFinishedTurnId(turnId) {
+        const id = turnId === undefined || turnId === null ? '' : String(turnId);
+        if (!id || finishedTurnIds.has(id)) return;
+        finishedTurnIds.add(id);
+        finishedTurnOrder.push(id);
+        while (finishedTurnOrder.length > FINISHED_TURN_LIMIT) {
+            finishedTurnIds.delete(finishedTurnOrder.shift());
+        }
+    }
+
     function waitForOfficialEmotion(turn) {
         if (!turn || turn.emotionReady) return Promise.resolve(true);
         return Promise.race([
@@ -784,6 +797,7 @@
         turn.ended = true;
         turn.endSource = source || 'lifecycle';
         if (isCurrentTurn(turn)) {
+            rememberFinishedTurnId(turn.id);
             lastFinishedTurn = {
                 id: String(turn.id || ''),
                 text: String(turn.capturedText || ''),
@@ -855,9 +869,10 @@
             return;
         }
         if (bridgeEvent) bridgedText = '';
-        const canReuseActiveTurn = activeTurn && !activeTurn.ended && activeTurn.capturedText
-            && (!turnId || String(turnId) === activeTurn.id
-                || /^(?:buffer|bridge-buffer)$/.test(String(activeTurn.source || '')));
+        const canReuseActiveTurn = activeTurn && !activeTurn.ended
+            && (turnId && String(turnId) === activeTurn.id
+                || activeTurn.capturedText && (!turnId
+                    || /^(?:buffer|bridge-buffer)$/.test(String(activeTurn.source || ''))));
         if (canReuseActiveTurn) {
             if (turnId) activeTurn.id = String(turnId);
             activeTurn.source = bridgeEvent ? 'bridge' : 'lifecycle';
@@ -890,6 +905,11 @@
     function endObservedTurn(detail, source) {
         const payload = detail && typeof detail === 'object' ? detail : {};
         const turnId = payload.turnId;
+        if (turnId && finishedTurnIds.has(String(turnId))) {
+            metrics.duplicateStartsIgnored += 1;
+            console.info('[NekoMotion] ignored stale assistant turn end', turnId);
+            return;
+        }
         if (turnId && activeTurn && !activeTurn.ended && String(turnId) !== activeTurn.id) {
             const recoveredBuffer = /^(?:buffer|bridge-buffer)/.test(String(activeTurn.source || ''))
                 && (!payload.text || String(payload.text) === String(activeTurn.capturedText || ''));
@@ -993,6 +1013,14 @@
                 bridgedText = '';
                 return;
             }
+            const updateTurnId = detail.turnId === undefined || detail.turnId === null
+                ? '' : String(detail.turnId);
+            if (updateTurnId && (finishedTurnIds.has(updateTurnId)
+                || activeTurn && !activeTurn.ended && updateTurnId !== activeTurn.id)) {
+                metrics.duplicateStartsIgnored += 1;
+                console.info('[NekoMotion] ignored stale assistant text update', updateTurnId);
+                return;
+            }
             bridgedText = String(detail.text || '');
             if (!bridgedText) return;
             if (!activeTurn || activeTurn.ended && bridgedText !== activeTurn.capturedText) {
@@ -1039,6 +1067,7 @@
             const ready = await initialize();
             if (!ready || !vrmReady()
                 || window.vrmManager.currentModel !== loadedModel) return;
+            player.cancel('vrm_model_loaded', { resume: false });
             const profile = await resolveCharacterProfile();
             if (!vrmReady() || window.vrmManager.currentModel !== loadedModel) return;
             acquirePlaybackOwnership();

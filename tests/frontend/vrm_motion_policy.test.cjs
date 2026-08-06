@@ -45,6 +45,34 @@ manifest.assets.forEach(function (asset) {
     assert.equal(decodedDigest, asset.decodedSha, asset.id);
 });
 
+const talkAsset = manifest.assets.find(function (asset) { return asset.id === 'talk_03'; });
+const talkGlb = zlib.gunzipSync(fs.readFileSync(path.join(root, talkAsset.src[0])));
+const talkJsonLength = talkGlb.readUInt32LE(12);
+const talkJson = JSON.parse(talkGlb.subarray(20, 20 + talkJsonLength).toString('utf8'));
+const talkBinOffset = 20 + talkJsonLength + 8;
+const hipsIndex = talkJson.nodes.findIndex(function (node) { return node.name === 'mixamorig:Hips'; });
+const hipsRotationChannel = talkJson.animations[0].channels.find(function (channel) {
+    return channel.target.node === hipsIndex && channel.target.path === 'rotation';
+});
+const hipsRotationAccessor = talkJson.accessors[
+    talkJson.animations[0].samplers[hipsRotationChannel.sampler].output
+];
+const hipsRotationView = talkJson.bufferViews[hipsRotationAccessor.bufferView];
+const hipsRotationOffset = talkBinOffset + (hipsRotationView.byteOffset || 0)
+    + (hipsRotationAccessor.byteOffset || 0);
+const hipsRotationStride = hipsRotationView.byteStride || 16;
+let maxTalkYaw = 0;
+for (let index = 0; index < hipsRotationAccessor.count; index += 1) {
+    const offset = hipsRotationOffset + index * hipsRotationStride;
+    const x = talkGlb.readFloatLE(offset);
+    const y = talkGlb.readFloatLE(offset + 4);
+    const z = talkGlb.readFloatLE(offset + 8);
+    const w = talkGlb.readFloatLE(offset + 12);
+    const yaw = Math.atan2(2 * (w * y + x * z), 1 - 2 * (y * y + z * z));
+    maxTalkYaw = Math.max(maxTalkYaw, Math.abs(yaw));
+}
+assert.ok(maxTalkYaw < 5 * Math.PI / 180, 'talk_03 must remain front-facing');
+
 function walk(directory) {
     return fs.readdirSync(directory, { withFileTypes: true }).flatMap(function (entry) {
         const fullPath = path.join(directory, entry.name);
@@ -88,6 +116,8 @@ assert.match(
 assert.equal(bridgeSource.includes("new BroadcastChannel('neko_motion_lifecycle')"), false);
 assert.match(bridgeSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(bridgeSource, /function relayClosedStage\(event\)/);
+assert.match(bridgeSource, /function peekUserText\(requestIdValue\)/);
+assert.match(bridgeSource, /relay\('neko-assistant-turn-end', detail\);\s*finishUserText\(event\);/);
 assert.match(bridgeSource, /event\.detail\.text/);
 assert.match(bridgeSource, /detail\.structured = detail\.structured === true \|\| window\._turnIsStructured === true/);
 assert.match(bridgeSource, /text: closedText,\s*structured: window\._turnIsStructured === true/);
@@ -141,7 +171,7 @@ assert.ok(
 );
 assert.match(
     startObservedTurn,
-    /String\(turnId\) === activeTurn\.id[\s\S]*\^\(\?:buffer\|bridge-buffer\)\$[\s\S]*if \(canReuseActiveTurn\)/
+    /turnId && String\(turnId\) === activeTurn\.id[\s\S]*activeTurn\.capturedText[\s\S]*\^\(\?:buffer\|bridge-buffer\)\$[\s\S]*if \(canReuseActiveTurn\)/
 );
 assert.match(
     startObservedTurn,
@@ -152,6 +182,10 @@ const bridgeTextUpdate = runtimeSource.split("if (message.eventName === 'neko-as
 assert.match(bridgeTextUpdate, /if \(refreshMode\(\) !== 'vrm'\)/);
 assert.ok(
     bridgeTextUpdate.indexOf("if (refreshMode() !== 'vrm')")
+        < bridgeTextUpdate.indexOf('finishedTurnIds.has(updateTurnId)')
+        && bridgeTextUpdate.indexOf('finishedTurnIds.has(updateTurnId)')
+        < bridgeTextUpdate.indexOf('bridgedText = String(detail.text')
+        && bridgeTextUpdate.indexOf('bridgedText = String(detail.text')
         < bridgeTextUpdate.indexOf("beginTurn(detail.turnId || 'bridge-' + Date.now(), 'bridge-buffer')")
 );
 const turnEndSource = runtimeSource.split('function endObservedTurn', 2)[1]
@@ -161,6 +195,11 @@ assert.ok(
     turnEndSource.indexOf("if (refreshMode() !== 'vrm')")
         < turnEndSource.indexOf("beginTurn(turnId, source || 'lifecycle')"),
     'a turn end outside VRM mode must not create a deferred motion turn'
+);
+assert.ok(
+    turnEndSource.indexOf('finishedTurnIds.has(String(turnId))')
+        < turnEndSource.indexOf("beginTurn(turnId, source || 'lifecycle')"),
+    'a stale completed turn end must not replace the current turn'
 );
 const emotionSource = runtimeSource.split('function emotionObserved', 2)[1]
     .split('function cancelObservedSpeech', 1)[0];
@@ -195,6 +234,11 @@ assert.match(
 assert.match(runtimeSource, /neko-assistant-speech-cancel'[\s\S]*cancelObservedSpeech\(detail\)/);
 const modelLoadedBlock = runtimeSource.split('async function handleVrmModelLoaded()', 2)[1]
     .split("window.addEventListener('vrm-model-loaded'", 1)[0];
+assert.ok(
+    modelLoadedBlock.indexOf("player.cancel('vrm_model_loaded', { resume: false })")
+        < modelLoadedBlock.indexOf('resolveCharacterProfile()'),
+    'a newly loaded model must reset stale player posture and queue state first'
+);
 assert.ok(
     modelLoadedBlock.indexOf('acquirePlaybackOwnership()')
         < modelLoadedBlock.indexOf('player.enterRest('),

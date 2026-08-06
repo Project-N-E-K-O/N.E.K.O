@@ -111,6 +111,32 @@ emit('neko-assistant-turn-start', {
 });
 assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
 
+emit('neko:user-content-sent', {
+    requestId: 'retry-request',
+    text: 'clap',
+    source: 'text'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'retry-turn-1',
+    requestId: 'retry-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, 'clap');
+emit('neko-assistant-speech-cancel', { turnId: 'retry-turn-1', source: 'will_retry' });
+emit('neko-assistant-turn-start', {
+    turnId: 'retry-turn-2',
+    requestId: 'retry-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, 'clap');
+emit('neko-assistant-turn-end', {
+    turnId: 'retry-turn-2',
+    requestId: 'retry-request'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'retry-turn-after-end',
+    requestId: 'retry-request'
+});
+assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
+
 windowLike._geminiTurnFullText = '(old wave)';
 emit('neko-compact-caption-update', { text: '（鼓掌）' });
 assert.equal(latest('neko-assistant-text-update').detail.text, '（鼓掌）');
@@ -158,5 +184,7 @@ assert.equal(broadcastMessages.every(function (message) {
 }), true);
 assert.equal(source.includes('_lastSubmittedText'), false);
 assert.equal(source.includes('_nekoMotionPendingUserText'), false);
+assert.match(source, /function peekUserText\(requestIdValue\)/);
+assert.match(source, /relay\('neko-assistant-turn-end', detail\);\s*finishUserText\(event\);/);
 
 console.log('VRM motion lifecycle bridge: OK');
