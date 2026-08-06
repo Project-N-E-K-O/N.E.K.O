@@ -2188,6 +2188,114 @@ def test_lock_gate_rejects_taking_the_lock_outside_a_context_manager(
 
 
 @pytest.mark.unit
+def test_lock_gate_rejects_a_context_manager_entered_after_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``async with self.lock, other:`` suspends twice with the lock held.
+
+    ``other.__aenter__`` runs after the lock is taken, and its ``__aexit__``
+    runs before the lock is released — neither is in the block body, so the
+    body scan alone never sees them.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock, self.tts_cache_lock:\n"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "entered after self.lock" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_allows_a_context_manager_entered_before_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The other order is genuinely safe, so it must not be rejected.
+
+    On the way in the lock is not held yet; on the way out it is released
+    first (``__aexit__`` runs in reverse). Nothing suspends under it.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.tts_cache_lock, self.lock:\n"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_second_binding_that_swaps_the_primitive(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A rebind must not hide behind an earlier, valid-looking binding.
+
+    Checking that SOME binding is ``asyncio.Lock()`` lets a later
+    ``self.lock = OtherLock()`` through: the first line still satisfies the
+    primitive check while the object the code actually takes is the second.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self, reentrant=False):\n"
+            "        self.lock = asyncio.Lock()\n"
+            "        if reentrant:\n"
+            "            self.lock = OtherLock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "exactly once" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_an_annotated_rebind_too(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``self.lock: X = Y`` is an AnnAssign, a different node than Assign."""
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+            "        self.lock: object = OtherLock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "exactly once" in violations[0].message
+
+
+@pytest.mark.unit
 def test_lock_gate_allows_the_one_binding_assignment_in_manager(
     contract_checker,
     tmp_path: Path,

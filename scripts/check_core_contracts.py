@@ -1030,8 +1030,17 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             and expr.value.id == "self"
         )
 
+    def is_self_lock_attr(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "lock"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        )
+
     violations: list[Violation] = []
     blocks_seen = 0
+    manager_bindings: list[tuple[ast.AST, ast.expr | None]] = []
     for path in sorted(core_dir.glob("*.py")):
         if path.name == "__init__.py":
             continue
@@ -1051,23 +1060,23 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             for item in node.items
             if is_session_lock(item)
         }
-        # manager.py binds the attribute once; that assignment target is the
-        # only non-``async with`` mention the package is allowed to carry.
-        bind_targets: set[int] = {
-            id(target)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            for target in node.targets
-            if isinstance(target, ast.Attribute) and target.attr == "lock"
-            and isinstance(target.value, ast.Name) and target.value.id == "self"
-        } if path == manager_path else set()
+        # manager.py binds the attribute; that assignment target is the only
+        # non-``async with`` mention the package is allowed to carry. Every
+        # binding is collected — not just the first — because the primitive
+        # check below has to see a rebind that a later statement performs.
+        if path == manager_path:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    manager_bindings.extend(
+                        (target, node.value)
+                        for target in node.targets
+                        if is_self_lock_attr(target)
+                    )
+                elif isinstance(node, ast.AnnAssign) and is_self_lock_attr(node.target):
+                    manager_bindings.append((node.target, node.value))
+        bind_targets = {id(target) for target, _ in manager_bindings}
         for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Attribute)
-                and node.attr == "lock"
-                and isinstance(node.value, ast.Name)
-                and node.value.id == "self"
-            ):
+            if not is_self_lock_attr(node):
                 continue
             if id(node) in sanctioned or id(node) in bind_targets:
                 continue
@@ -1084,6 +1093,25 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             if not any(is_session_lock(item) for item in block.items):
                 continue
             blocks_seen += 1
+            # ``async with self.lock, other:`` enters ``other`` while the
+            # session lock is already held, and on the way out awaits its
+            # ``__aexit__`` before the lock is released — two suspensions the
+            # body scan below never sees, because neither is in the body. So
+            # the session lock has to be the LAST item. An item BEFORE it is
+            # fine: the lock is not yet held on the way in, and is already
+            # released on the way out.
+            lock_index = next(
+                i for i, item in enumerate(block.items) if is_session_lock(item)
+            )
+            for trailing in block.items[lock_index + 1:]:
+                violations.append(Violation(
+                    path, trailing.context_expr.lineno, trailing.context_expr.col_offset,
+                    "CORE_LOCK_NO_AWAIT",
+                    "context manager entered after self.lock in the same 'async with' — "
+                    "its __aenter__ (and its __aexit__ on the way out) run while the "
+                    "session lock is held, which is a suspension the lock must never "
+                    "span (#2619). Put it in its own block before the lock, or make "
+                    "self.lock the last item"))
             for node in _statements_in_critical_section(block.body):
                 kind = suspension_kind(node)
                 if kind is None:
@@ -1109,25 +1137,36 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             "update it instead of letting it go dark"))
     # The no-suspension argument assumes a plain asyncio.Lock: a reentrant or
     # threading primitive would make 'never observed held' false for reasons
-    # this AST cannot see.
-    manager_tree = parse(manager_path)
-    declares_asyncio_lock = any(
-        isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Attribute) and t.attr == "lock"
-            and isinstance(t.value, ast.Name) and t.value.id == "self"
-            for t in node.targets
-        )
-        and isinstance(node.value, ast.Call)
-        and dotted_node_path(node.value.func) == "asyncio.Lock"
-        for node in ast.walk(manager_tree)
-    )
-    if not declares_asyncio_lock:
+    # this AST cannot see. Checking that SOME binding is asyncio.Lock() is not
+    # enough — a later ``self.lock = OtherLock()`` would leave the first
+    # binding intact for the check to find while the attribute the code
+    # actually takes is the second. So exactly one binding is required, and
+    # that one is the one validated.
+    if len(manager_bindings) != 1:
+        found = ", ".join(
+            f"line {getattr(target, 'lineno', '?')}" for target, _ in manager_bindings
+        ) or "none"
         violations.append(Violation(
-            manager_path, 1, 0, "CORE_LOCK_NO_AWAIT",
-            "self.lock is no longer bound to asyncio.Lock() in manager.py — the atomicity "
-            "this gate protects rests on the uncontended-acquire fast path of that exact "
-            "primitive; re-derive the contract before swapping it"))
+            manager_path,
+            getattr(manager_bindings[0][0], "lineno", 1) if manager_bindings else 1, 0,
+            "CORE_LOCK_NO_AWAIT",
+            f"self.lock must be bound exactly once in manager.py, found "
+            f"{len(manager_bindings)} ({found}) — with more than one binding the "
+            f"primitive check cannot tell which object the package actually takes, and "
+            f"a rebind to a suspending lock would pass while an earlier asyncio.Lock() "
+            f"line satisfies the check"))
+    else:
+        value = manager_bindings[0][1]
+        if not (
+            isinstance(value, ast.Call)
+            and dotted_node_path(value.func) == "asyncio.Lock"
+        ):
+            violations.append(Violation(
+                manager_path, getattr(manager_bindings[0][0], "lineno", 1), 0,
+                "CORE_LOCK_NO_AWAIT",
+                "self.lock is no longer bound to asyncio.Lock() in manager.py — the "
+                "atomicity this gate protects rests on the uncontended-acquire fast path "
+                "of that exact primitive; re-derive the contract before swapping it"))
     return violations
 
 
