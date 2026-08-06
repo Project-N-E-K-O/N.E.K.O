@@ -1559,6 +1559,25 @@ def _merge_entities_locked(
     return survivor["entity_id"]
 
 
+def _is_bound_locked(
+    draft: _Draft, entity_id: str, account_id: str,
+) -> bool:
+    """Is this account linked to somebody else, as opposed to merely known?
+
+    Two signals, union: the entity holds more than this one account, or the
+    account carries ``bound_by`` provenance. The second catches an account
+    whose co-tenant was later detached -- the link happened, and rebinding it
+    would still take the merge branch.
+
+    A singleton entity with no provenance is NOT bound: that is just an
+    account with a ledger of its own.
+    """
+    entity = (draft.pool["entities"] or {}).get(entity_id) or {}
+    accounts = entity.get("accounts") or {}
+    record = accounts.get(account_id) or {}
+    return len(accounts) > 1 or bool(record.get("bound_by"))
+
+
 def _bind_locked(
     draft: _Draft, account_id: str, entity_id: str, *,
     now: str, bound_by: str | None, require_unbound: bool = False,
@@ -1569,14 +1588,23 @@ def _bind_locked(
     current = draft.entity_of(account_id)
     if current == target:
         return False, {"entity_id": target, "changed": False}
-    if current is not None and require_unbound:
-        # The caller only meant "attach this loose account". Reaching the merge
-        # branch instead would fuse two OTHER entities -- two different people
-        # -- and unbinding this account afterwards does not separate them
-        # again. A preflight check in the caller cannot cover this: two
-        # concurrent binds of the same loose source both see "unbound" and the
-        # second one merges. Refusing here, inside the one critical section,
-        # is the only place the answer cannot go stale.
+    if current is not None and require_unbound and _is_bound_locked(
+        draft, current, account_id,
+    ):
+        # The caller only meant "attach this account that belongs to nobody
+        # else". Reaching the merge branch instead would fuse two OTHER
+        # entities -- two different people -- and unbinding this account
+        # afterwards does not separate them again. A preflight check in the
+        # caller cannot cover this: two concurrent binds of the same loose
+        # source both see "unbound" and the second one merges. Refusing here,
+        # inside the one critical section, is the only place the answer cannot
+        # go stale.
+        #
+        # "Belongs to nobody else" is NOT "has no entity": any account that has
+        # ever accrued trust or activity sits in its own singleton entity, and
+        # those are exactly the accounts whose ledger someone wants to
+        # consolidate. Rejecting them would leave only never-seen accounts
+        # bindable.
         raise TrustIdentityError(
             "account is already bound; unbind it first", status_code=409,
         )
@@ -1613,6 +1641,7 @@ def _bind_locked(
 
 def _unbind_locked(
     draft: _Draft, account_id: str, *, now: str,
+    require_provenance: bool = False,
 ) -> tuple[bool, dict]:
     """Move one account out into a fresh entity. Ledger loss is exactly zero.
 
@@ -1633,6 +1662,15 @@ def _unbind_locked(
     record = entity["accounts"].get(account_id)
     if record is None:
         return False, {"entity_id": entity_id, "changed": False}
+    if require_provenance and not record.get("bound_by"):
+        # Rollback is only defined for the side a bind actually attached.
+        # Without this, a second click (or a second tab) that read the same
+        # pre-unbind profile detaches the now-standalone account AGAIN,
+        # minting yet another entity and stranding rows resolved under the
+        # first fresh one. A caller-side check cannot see the first click.
+        return False, {
+            "entity_id": entity_id, "changed": False, "reason": "not_bound",
+        }
     before_adjustment = sum(
         float((row or {}).get("adjustment", 0.0) or 0.0)
         for row in (entity.get("accounts") or {}).values()
@@ -1745,13 +1783,26 @@ async def abind_account(
     return result
 
 
-async def aunbind_account(account_id: Any) -> dict:
+async def aunbind_account(
+    account_id: Any, *, require_provenance: bool = False,
+) -> dict:
+    """Detach one account into a fresh entity.
+
+    ``require_provenance`` makes it a no-op unless the account carries
+    ``bound_by``, i.e. unless a bind actually put it where it is. Callers
+    exposing an "undo" button must pass it: without it a second press keeps
+    minting entities for an account that is already standalone. Default off so
+    the endpoint's existing unconditional behaviour is unchanged.
+    """
     normalized = normalize_account_id(account_id)
     if normalized is None:
         raise TrustIdentityError("invalid account_id")
 
     def _mutator(draft: _Draft) -> tuple[bool, Any]:
-        return _unbind_locked(draft, normalized, now=_now_iso())
+        return _unbind_locked(
+            draft, normalized, now=_now_iso(),
+            require_provenance=require_provenance,
+        )
 
     persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
     result = dict(value or {})
@@ -1871,14 +1922,23 @@ async def adeclare_platform_identity_scope(
     return result
 
 
-async def aensure_account(account_id: Any, *, channel: Any = None) -> str | None:
-    """Register one account if unseen (used by the identity endpoints)."""
+async def aensure_account(
+    account_id: Any, *, channel: Any = None, report_persisted: bool = False,
+) -> Any:
+    """Register one account if unseen (used by the identity endpoints).
+
+    ``report_persisted`` returns ``(entity_id, persisted)`` instead of just the
+    id. Callers that go on to bind want it: a discarded draft leaves no entity,
+    and the bind then 404s with "unknown entity" -- which sends the operator
+    looking at the identity graph instead of at the failed disk write.
+    """
     normalized = normalize_account_id(account_id)
     if normalized is None:
-        return None
+        return (None, False) if report_persisted else None
     snap = trust_snapshot()
-    if snap.entity_of(normalized) is not None:
-        return snap.entity_of(normalized)
+    existing = snap.entity_of(normalized)
+    if existing is not None:
+        return (existing, True) if report_persisted else existing
 
     def _mutator(draft: _Draft) -> tuple[bool, Any]:
         now = _now_iso()
@@ -1888,5 +1948,5 @@ async def aensure_account(account_id: Any, *, channel: Any = None) -> str | None
         )
         return True, draft.entity_of(normalized)
 
-    _, value = await asyncio.to_thread(_with_pool_write, _mutator)
-    return value
+    persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
+    return (value, bool(persisted)) if report_persisted else value

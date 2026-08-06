@@ -864,6 +864,82 @@ async def test_require_unbound_refuses_instead_of_merging_two_targets(pool):
     assert not snap.same_entity("qq:OWNER_A", "qq:OWNER_B")
 
 
+async def test_require_unbound_still_admits_a_standalone_account_with_a_ledger(pool):
+    """"Bound" is not "known" -- and the difference is the main use case.
+
+    Any account that ever accrued trust or activity already sits in its own
+    singleton entity. Those are precisely the accounts whose ledger somebody
+    wants to consolidate; rejecting them would leave only never-seen accounts
+    bindable, which is the opposite of the point.
+    """
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    await trust_store.aapply_trust_mutations([
+        _mutation(source, activity=[("activity_b0000001", 1)], channel="open"),
+    ])
+    target = await trust_store.aensure_account("qq:OWNER_A")
+
+    result = await trust_store.abind_account(
+        source, target, bound_by="dashboard", require_unbound=True,
+    )
+
+    # It goes through the merge path, so which id survives is the merge rule's
+    # business -- what matters is that the two are now one person and the
+    # source's existing ledger came along.
+    assert result["changed"] is True
+    assert trust_store.trust_snapshot().same_entity(source, "qq:OWNER_A")
+
+
+async def test_unbind_provenance_is_enforced_inside_the_critical_section(pool):
+    """A second press must not detach an already-standalone account again.
+
+    Two tabs can both read a profile that still has ``bound_by``; the first
+    unbind clears it, and a caller-side check cannot see that. Pressing again
+    would mint yet another entity and strand rows resolved under the first.
+    """
+    await _open_gate()
+    source = "qq:MEMBER_IN_GROUP_X"
+    target = await trust_store.aensure_account("qq:OWNER_A")
+    await trust_store.abind_account(source, target, bound_by="dashboard")
+
+    first = await trust_store.aunbind_account(source, require_provenance=True)
+    entity_after_first = trust_store.trust_snapshot().entity_of(source)
+    second = await trust_store.aunbind_account(source, require_provenance=True)
+
+    assert first["changed"] is True
+    assert second["changed"] is False
+    assert second.get("reason") == "not_bound"
+    # The decisive assertion: no second fresh entity was minted.
+    assert trust_store.trust_snapshot().entity_of(source) == entity_after_first
+
+
+async def test_unbind_provenance_is_off_by_default(pool):
+    """The endpoint's existing unconditional behaviour is unchanged."""
+    await _open_gate()
+    await trust_store.aapply_trust_mutations([
+        _mutation("qq:SOLO", activity=[("activity_c0000001", 1)],
+                  channel="open"),
+    ])
+
+    result = await trust_store.aunbind_account("qq:SOLO")
+
+    assert result["changed"] is True
+
+
+async def test_ensure_reports_whether_the_seed_reached_disk(pool):
+    entity_id, persisted = await trust_store.aensure_account(
+        "qq:OWNER_A", report_persisted=True,
+    )
+
+    assert entity_id
+    assert persisted is True
+    # Re-ensuring an account that already exists is still a truthful "yes".
+    again, persisted_again = await trust_store.aensure_account(
+        "qq:OWNER_A", report_persisted=True,
+    )
+    assert (again, persisted_again) == (entity_id, True)
+
+
 async def test_require_unbound_is_off_by_default(pool):
     """Existing callers keep the merge-on-rebind behaviour they were written for."""
     await _open_gate()

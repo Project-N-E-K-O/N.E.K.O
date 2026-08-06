@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "O gerenciador de permissões não foi inicializado",
   "errors.memory_bridge_not_initialized": "ponte de memória não inicializada",
   "errors.identity_bind_missing_args": "user_id e target_user_id são ambos obrigatórios",
+  "errors.identity_unbind_missing_args": "user_id é obrigatório",
   "errors.identity_bind_failed": "Falha ao mesclar a identidade: {error}",
   "errors.identity_bind_same_account": "não é possível mesclar um ID consigo mesmo",
   "errors.identity_unbind_failed": "Falha ao desfazer a mesclagem: {error}",

@@ -71,6 +71,7 @@
   "errors.permission_manager_not_initialized": "权限管理器未初始化",
   "errors.memory_bridge_not_initialized": "记忆桥未初始化",
   "errors.identity_bind_missing_args": "user_id 与 target_user_id 都不能为空",
+  "errors.identity_unbind_missing_args": "user_id 不能为空",
   "errors.identity_bind_failed": "合并身份失败: {error}",
   "errors.identity_bind_same_account": "不能把一个 ID 合并到它自己",
   "errors.identity_unbind_failed": "撤销合并失败: {error}",

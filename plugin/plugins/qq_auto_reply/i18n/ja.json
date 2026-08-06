@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "権限マネージャーが初期化されていません",
   "errors.memory_bridge_not_initialized": "メモリブリッジが初期化されていません",
   "errors.identity_bind_missing_args": "user_id と target_user_id は両方とも必須です",
+  "errors.identity_unbind_missing_args": "user_id は必須です",
   "errors.identity_bind_failed": "身元の統合に失敗しました: {error}",
   "errors.identity_bind_same_account": "同じ ID 同士は統合できません",
   "errors.identity_unbind_failed": "統合の取り消しに失敗しました: {error}",

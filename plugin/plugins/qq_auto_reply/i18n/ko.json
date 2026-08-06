@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "권한 관리자가 초기화되지 않았습니다",
   "errors.memory_bridge_not_initialized": "메모리 브리지가 초기화되지 않았습니다",
   "errors.identity_bind_missing_args": "user_id와 target_user_id는 모두 필수입니다",
+  "errors.identity_unbind_missing_args": "user_id는 필수입니다",
   "errors.identity_bind_failed": "신원 병합 실패: {error}",
   "errors.identity_bind_same_account": "ID를 자기 자신에게 병합할 수 없습니다",
   "errors.identity_unbind_failed": "병합 취소 실패: {error}",

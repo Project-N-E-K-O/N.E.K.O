@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "權限管理器尚未初始化",
   "errors.memory_bridge_not_initialized": "記憶橋未初始化",
   "errors.identity_bind_missing_args": "user_id 與 target_user_id 都不能為空",
+  "errors.identity_unbind_missing_args": "user_id 不能為空",
   "errors.identity_bind_failed": "合併身分失敗: {error}",
   "errors.identity_bind_same_account": "不能把一個 ID 合併到它自己",
   "errors.identity_unbind_failed": "撤銷合併失敗: {error}",

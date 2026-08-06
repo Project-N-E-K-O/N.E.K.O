@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "El gestor de permisos no está inicializado",
   "errors.memory_bridge_not_initialized": "el puente de memoria no está inicializado",
   "errors.identity_bind_missing_args": "user_id y target_user_id son ambos obligatorios",
+  "errors.identity_unbind_missing_args": "user_id es obligatorio",
   "errors.identity_bind_failed": "Error al fusionar la identidad: {error}",
   "errors.identity_bind_same_account": "no se puede fusionar un ID consigo mismo",
   "errors.identity_unbind_failed": "Error al deshacer la fusión: {error}",

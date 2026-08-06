@@ -486,16 +486,22 @@ class QQMemoryBridge:
         return response.json()
 
     async def unbind_speaker_account(
-        self, *, account_id: str, timeout: float = 10.0,
+        self, *, account_id: str, require_provenance: bool = False,
+        timeout: float = 10.0,
     ) -> dict[str, Any]:
         """把一个 account 拆回独立 entity。**误绑的唯一回滚**。
 
-        对本来就没绑过的 account 是无害的（服务端返回 ``changed=false``）。
+        ``require_provenance`` 让服务端在临界区里确认「这个账号确实是被绑
+        过来的」，否则原样返回 ``changed=false``。UI 的撤销按钮必须带上：
+        没有它，连点两下会把一个已经独立的账号反复搬进新 entity。
         """
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/identity/accounts/unbind",
-            json={"account_id": account_id},
+            json={
+                "account_id": account_id,
+                "require_provenance": bool(require_provenance),
+            },
             timeout=timeout,
         )
         response.raise_for_status()

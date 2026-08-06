@@ -166,7 +166,14 @@ class QQMessageDispatcher:
                 bucket[sender_id] = entry
             entry["last_seen"] = now
             entry["count"] = int(entry.get("count", 0)) + 1
-            nickname = str(message.get("user_nickname") or "").strip()
+            # 昵称是别人随手打的，且这里是**唯一**不经过 PermissionManager
+            # 那道清洗就直达界面的入口（名册那条路会拒掉带控制字符的昵称）。
+            # 剥掉控制字符再截断：它们在表格里看不见，在内联 handler 里却能
+            # 把那段 JS 截断。
+            nickname = "".join(
+                char for char in str(message.get("user_nickname") or "")
+                if char.isprintable()
+            ).strip()
             if nickname:
                 entry["nickname"] = nickname[:64]
         except Exception:

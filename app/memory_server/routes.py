@@ -2761,6 +2761,7 @@ class IdentityBindRequest(BaseModel):
 
 class IdentityAccountRequest(BaseModel):
     account_id: str
+    require_provenance: bool = False
 
 
 class IdentityMergeRequest(BaseModel):
@@ -2934,10 +2935,20 @@ async def ensure_identity_account(req: IdentityAccountRequest):
     from memory import trust_store
 
     _require_loaded_identity_pool()
-    entity_id = await trust_store.aensure_account(req.account_id)
+    entity_id, persisted = await trust_store.aensure_account(
+        req.account_id, report_persisted=True,
+    )
     if entity_id is None:
         raise HTTPException(status_code=422, detail="invalid account_id")
-    return {"account_id": req.account_id, "entity_id": entity_id}
+    # Pass ``persisted`` through like bind/unbind do. Without it a failed disk
+    # write is invisible here and only surfaces one step later as the bind's
+    # 404 on an unknown entity -- the operator is then told "merge failed"
+    # instead of "the write failed", which points at the wrong thing.
+    return {
+        "account_id": req.account_id,
+        "entity_id": entity_id,
+        "persisted": persisted,
+    }
 
 
 @app.post("/internal/identity/accounts/bind")
@@ -2990,7 +3001,10 @@ async def unbind_identity_account(req: IdentityAccountRequest):
     _require_loaded_identity_pool()
     snapshot_before = trust_store.trust_snapshot()
     try:
-        result = await trust_store.aunbind_account(req.account_id)
+        result = await trust_store.aunbind_account(
+            req.account_id,
+            require_provenance=bool(req.require_provenance),
+        )
     except trust_store.TrustIdentityError as exc:
         raise _identity_error(exc) from exc
     result["stranded_rows"] = await _count_stranded_rows(

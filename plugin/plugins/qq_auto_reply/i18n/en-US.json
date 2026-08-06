@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "Permission manager isn't ready yet",
   "errors.memory_bridge_not_initialized": "memory bridge not initialized",
   "errors.identity_bind_missing_args": "user_id and target_user_id are both required",
+  "errors.identity_unbind_missing_args": "user_id is required",
   "errors.identity_bind_failed": "Failed to merge identity: {error}",
   "errors.identity_bind_same_account": "cannot merge an ID into itself",
   "errors.identity_unbind_failed": "Failed to undo the merge: {error}",

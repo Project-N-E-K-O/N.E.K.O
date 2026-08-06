@@ -382,12 +382,19 @@ class QQDashboardService:
         以**运行中的连接**为准而不是配置：改了 `qq_connection_mode` 之后旧
         连接还在跑（save 的响应自己会报 ``reconnect_required``），这段时间
         里按配置显示，等于在开放平台消息还在进来的时候把认领 UI 藏起来。
-        没有连接时才回落到配置——那时配置就是下次连上的样子。
+        没有在跑时才回落到配置——那时配置就是下次连上的样子。
+
+        「在跑」看的是 ``_running`` 而不是 ``qq_client`` 是否为 None：
+        ``stop_runtime`` 只断开连接、把对象留在原地，而 ``CHANNEL`` 是类属
+        性，光看对象会把一个已经停掉的通道当成活的。
         """
         settings = self.plugin._qq_settings or {}
         mode = str(settings.get("qq_connection_mode") or "napcat").strip()
         table = self.plugin.settings_service.IDENTITY_SCOPE_BY_MODE
-        client = getattr(self.plugin, "qq_client", None)
+        client = (
+            getattr(self.plugin, "qq_client", None)
+            if getattr(self.plugin, "_running", False) else None
+        )
         live_channel = str(getattr(client, "CHANNEL", "") or "").strip()
         if live_channel:
             mode = next(
@@ -538,6 +545,17 @@ class QQDashboardService:
             entity_id = str(ensured.get("entity_id") or "")
             if not entity_id:
                 raise RuntimeError("ensure returned no entity_id")
+            if ensured.get("persisted") is False:
+                # 种子 entity 的 draft 被丢弃了 ⇒ 它并不存在，随后的 bind 会
+                # 以「unknown entity」404 收场，把操作者指向身份图而不是那次
+                # 失败的写盘。
+                return Err(SdkError(
+                    "NOT_PERSISTED: "
+                    + self.plugin.i18n.t(
+                        "errors.identity_not_persisted",
+                        default="写盘失败，身份没有改动，请重试",
+                    )
+                ))
             result = await bridge.bind_speaker_account(
                 account_id=source_account,
                 entity_id=entity_id,
@@ -596,18 +614,28 @@ class QQDashboardService:
             return error
         actor = str(user_id or "").strip()
         if not actor:
+            # 这个接口只收 user_id，不能借用 bind 那条文案——它会报一个本
+            # 接口根本没有的字段名，操作者会去界面上找一个不存在的东西。
             return Err(SdkError(
                 "INVALID_ARGUMENT: "
                 + self.plugin.i18n.t(
-                    "errors.identity_bind_missing_args",
-                    default="user_id 与 target_user_id 都不能为空",
+                    "errors.identity_unbind_missing_args",
+                    default="user_id 不能为空",
                 )
             ))
         account_id = bridge.speaker_account_id(actor)
         try:
             if not await self._identity_has_bind_provenance(bridge, account_id):
                 return Ok({"unbind": {"changed": False, "reason": "not_bound"}})
-            result = await bridge.unbind_speaker_account(account_id=account_id)
+            result = await bridge.unbind_speaker_account(
+                account_id=account_id,
+                # 真正的把关在临界区里：上面那次预检读到的 `bound_by` 会被
+                # 并发的第一次撤销清掉，第二次就把一个**已经独立**的账号又
+                # 搬进一个新 entity。
+                require_provenance=True,
+            )
+            if result.get("changed") is False:
+                return Ok({"unbind": result})
         except Exception as exc:
             return Err(SdkError(
                 "UNBIND_FAILED: "

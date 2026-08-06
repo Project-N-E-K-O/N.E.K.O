@@ -51,6 +51,7 @@
   "errors.permission_manager_not_initialized": "Менеджер прав не инициализирован",
   "errors.memory_bridge_not_initialized": "мост памяти не инициализирован",
   "errors.identity_bind_missing_args": "user_id и target_user_id обязательны оба",
+  "errors.identity_unbind_missing_args": "user_id обязателен",
   "errors.identity_bind_failed": "Не удалось объединить личность: {error}",
   "errors.identity_bind_same_account": "нельзя объединить ID сам с собой",
   "errors.identity_unbind_failed": "Не удалось отменить объединение: {error}",

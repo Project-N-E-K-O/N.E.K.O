@@ -360,6 +360,7 @@ def _dashboard(*, roster, profiles, claims=(), mode="open_platform"):
             side_effect=lambda account_id, **kw: {
                 "account_id": account_id,
                 "entity_id": f"entity_for_{account_id}",
+                "persisted": True,
             },
         ),
         bind_speaker_account=AsyncMock(
@@ -737,6 +738,64 @@ async def test_the_merge_target_must_still_be_on_the_roster():
     service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
 
 
+async def test_both_mutations_delegate_their_real_guard_to_the_critical_section():
+    """Preflight is for the message; the trust store is for the truth.
+
+    Two tabs racing on the same account both read a stale profile -- one pair
+    of concurrent binds fuses two candidates, one pair of concurrent unbinds
+    mints a second fresh entity. Neither is visible to a check made outside
+    the write lock.
+    """
+    service = _dashboard(
+        roster=[{"qq": "OWNER", "level": "admin", "nickname": ""}],
+        profiles={"qq:MEMBER_IN_X": _BOUND, "qq:OWNER": {}},
+    )
+
+    await service.unbind_identity_account(user_id="MEMBER_IN_X")
+
+    unbind = service.plugin.memory_bridge.unbind_speaker_account.await_args.kwargs
+    assert unbind["require_provenance"] is True
+
+
+async def test_a_seed_that_did_not_persist_stops_the_bind():
+    """Otherwise the bind 404s on an entity that was never written.
+
+    The operator is then shown "unknown entity", which points at the identity
+    graph rather than at the disk write that actually failed.
+    """
+    service = _dashboard(
+        roster=[{"qq": "OWNER", "level": "admin", "nickname": ""}],
+        profiles={"qq:MEMBER_IN_X": {"entity_accounts": [], "bound_by": None}},
+    )
+    service.plugin.memory_bridge.ensure_speaker_account = AsyncMock(
+        return_value={"entity_id": "entity_owner", "persisted": False},
+    )
+
+    result = await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="OWNER",
+    )
+
+    assert result.__class__.__name__ == "Err"
+    service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
+
+
+async def test_a_stopped_client_does_not_count_as_the_running_transport():
+    """``stop_runtime`` disconnects but leaves the object installed.
+
+    ``CHANNEL`` is a class attribute, so judging by the object alone keeps a
+    stopped channel looking live -- and the claim UI then stays shown (or
+    stays hidden) against the saved configuration the docstring promises.
+    """
+    service = _dashboard(roster=[], profiles={}, mode="napcat")
+    service.plugin.qq_client = SimpleNamespace(CHANNEL="open")
+    service.plugin._running = False
+
+    assert service._identity_scope_payload()["actor_scope"] == "global"
+
+    service.plugin._running = True
+    assert service._identity_scope_payload()["actor_scope"] == "per_conversation"
+
+
 async def test_the_merge_TARGET_is_not_a_valid_unbind_subject():
     """Provenance lands on the bound side only -- and the target is clickable.
 
@@ -889,6 +948,7 @@ async def test_the_scope_follows_the_running_transport_not_the_saved_config():
     """
     service = _dashboard(roster=[], profiles={}, mode="napcat")
     service.plugin.qq_client = SimpleNamespace(CHANNEL="open")
+    service.plugin._running = True
 
     assert service._identity_scope_payload()["actor_scope"] == "per_conversation"
 
@@ -919,3 +979,22 @@ def test_an_unknown_connection_mode_says_unknown_rather_than_guessing():
 
     assert scope["actor_scope"] == "unknown"
     assert scope["conversation_scope"] == "unknown"
+
+
+async def test_a_nickname_with_control_characters_cannot_reach_the_page():
+    """This pool is the one path a raw nickname takes straight to the UI.
+
+    The roster path runs nicknames through ``PermissionManager``, which
+    rejects control characters outright. A bare newline inside an inline
+    handler truncates that JavaScript into a syntax error and the button stops
+    responding -- and claim rows put the nickname there.
+    """
+    dispatcher = _dispatcher()
+
+    _speak(dispatcher, sender="MEMBER_X",
+           nickname="evil\n');alert(1);//\r\u0000name")
+
+    nickname = dispatcher.list_open_platform_pending_claims()[0]["nickname"]
+    assert "\n" not in nickname
+    assert "\r" not in nickname
+    assert "\u0000" not in nickname
