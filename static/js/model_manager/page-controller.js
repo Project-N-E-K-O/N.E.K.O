@@ -3446,6 +3446,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function loadVrmModelWithCatalogReset(catalogPlayer, manager, modelUrl, options) {
+        vrmAnimationPlaybackRequestId += 1;
         if (catalogPlayer) {
             catalogPlayer.cancel('model_manager_model_load', { resume: false });
         }
@@ -7990,7 +7991,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
 
                         // 临时加载模型
-                        await window.vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
+                        await loadVrmModelWithCatalogReset(
+                            vrmMotionCatalogPlayer,
+                            window.vrmManager,
+                            modelUrl,
+                            { autoPlay: false, addShadow: false }
+                        );
 
                         // 等待几帧，确保模型完全加载、骨骼位置计算完成
                         for (let i = 0; i < 3; i++) {

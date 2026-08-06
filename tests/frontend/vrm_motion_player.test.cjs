@@ -146,6 +146,10 @@ async function waitForLoadStart(predicate, message) {
     Object.defineProperty(global, 'crypto', { configurable: true, value: undefined });
     global.fetch = async function () { return response(sourceBuffer); };
     assert.match(await player._assetUrl(player.assets[0]), /^blob:test-/);
+    global.fetch = async function () {
+        return response(corrupted.buffer.slice(corrupted.byteOffset, corrupted.byteOffset + corrupted.byteLength));
+    };
+    await assert.rejects(player._assetUrl(player.assets[0]), /packed SHA-256 mismatch/);
     Object.defineProperty(global, 'crypto', secureCryptoDescriptor);
 
     const packed = zlib.gzipSync(decodedSource);
