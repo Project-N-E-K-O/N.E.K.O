@@ -1194,16 +1194,16 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         claimed to be covered.
         """
 
-        REFLECTIVE = {
-            "getattr", "setattr",
-            "object.__getattribute__", "object.__setattr__",
-        }
+        return is_lock_read(node) or is_lock_write(node)
+
+    def is_lock_read(node: ast.AST) -> bool:
+        """A reach for the attribute that yields the lock object."""
 
         if isinstance(node, ast.Attribute):
             return node.attr == "lock"
         if (
             isinstance(node, ast.Call)
-            and dotted_node_path(node.func) in REFLECTIVE
+            and dotted_node_path(node.func) in {"getattr", "object.__getattribute__"}
             and len(node.args) >= 2
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value == "lock"
@@ -1217,8 +1217,30 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             and node.slice.value == "lock"
         )
 
+    def is_lock_write(node: ast.AST) -> bool:
+        """A reflective call that REPLACES the attribute."""
+
+        return (
+            isinstance(node, ast.Call)
+            and dotted_node_path(node.func) in {"setattr", "object.__setattr__"}
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "lock"
+        )
+
     def is_session_lock(item: ast.withitem) -> bool:
-        return is_lock_attr(item.context_expr)
+        """Reads only — a write is never an acquisition.
+
+        Both spellings have to be recognised by the form check, but only a
+        READ can be the thing an ``async with`` acquires. Letting a write
+        qualify here sanctioned the setter itself: ``async with setattr(self,
+        "lock", OtherLock()): pass`` was recorded as a lock acquisition and
+        reported nothing, even though the swap already happened by the time
+        entering ``None`` raises TypeError — which the surrounding code is
+        free to catch.
+        """
+
+        return is_lock_read(item.context_expr)
 
     def is_self_lock_attr(node: ast.AST) -> bool:
         return (

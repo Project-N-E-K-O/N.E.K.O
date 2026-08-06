@@ -2652,6 +2652,45 @@ def test_lock_gate_sees_the_lock_replaced_reflectively(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param('setattr(self, "lock", OtherLock())', id="setattr"),
+        pytest.param('object.__setattr__(self, "lock", OtherLock())', id="object-setattr"),
+    ],
+)
+def test_lock_gate_never_sanctions_a_write_as_an_acquisition(
+    contract_checker,
+    tmp_path: Path,
+    write: str,
+) -> None:
+    """A setter in context-expression position is still a swap, not a take.
+
+    Recognising both spellings for the form check is right; treating a WRITE
+    as the thing an ``async with`` acquires is not — it recorded the setter
+    as a sanctioned acquisition and reported nothing. Entering ``None`` does
+    raise TypeError, but the swap has already happened by then and the
+    surrounding code is free to catch it.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def sneaky(self):\n"
+        "        try:\n"
+        f"            async with {write}:\n"
+        "                pass\n"
+        "        except TypeError:\n"
+        "            pass\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("outside an 'async with' block" in v.message for v in violations)
+
+
+@pytest.mark.unit
 def test_lock_gate_sees_the_lock_taken_through_an_alias_of_self(
     contract_checker,
     tmp_path: Path,
