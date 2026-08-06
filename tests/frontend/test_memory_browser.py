@@ -2483,7 +2483,9 @@ def test_external_import_refreshes_open_memory_after_persisting(
     expect(mock_page.locator("#external-memory-files")).to_be_enabled()
     expect(mock_page.locator("#external-memory-format")).to_be_enabled()
     assert mock_page.evaluate("window._memoryImportInProgress") is False
-    assert commit_payloads[0]["language"] == "zh-TW"
+    # The page locale is only an effective fallback. External import must not
+    # submit it as an explicit per-character prompt locale.
+    assert "language" not in commit_payloads[0]
     if refresh_failure:
         assert request_counts["recent_files"] == 1
     else:

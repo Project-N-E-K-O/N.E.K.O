@@ -270,6 +270,13 @@ def _command_language_candidates(
     )
 
 
+def _command_render_language(command_or_data: ProactiveChatCommand | dict) -> Any:
+    """Read a request-only template locale that must never become durable state."""
+    if isinstance(command_or_data, ProactiveChatCommand):
+        return command_or_data.render_language
+    return command_or_data.get("render_language")
+
+
 def _resolve_proactive_locale(
     data: ProactiveChatCommand | dict,
     mgr,
@@ -278,10 +285,10 @@ def _resolve_proactive_locale(
 ) -> str:
     """Resolve the active user locale for proactive chat flows.
 
-    Request data wins first, websocket session language is the second source of
-    truth, and the process-level global language is only a final fallback. This
-    keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
-    session whenever frontend i18n has already reported the user's language.
+    An explicit request preference wins first. A request-only render locale is
+    next, followed by the websocket session and process-level global fallback.
+    The render locale aligns this response with the live UI without entering the
+    declared-language path that may persist a per-character preference.
 
     ``fmt="full"`` keeps the script: a short code has no room for one, so ``zh-TW``
     and ``zh-CN`` both come out ``zh``. That is fine for consumers that only need a
@@ -300,6 +307,11 @@ def _resolve_proactive_locale(
     # 挡掉，否则 proactive 邀请文案会被静默短路成英文，错过本应命中的 session 真值。
     if request_lang and is_supported_language_code(request_lang):
         normalized = normalize_language_code(request_lang, format=fmt)
+        if normalized:
+            return normalized
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = normalize_language_code(render_lang, format=fmt)
         if normalized:
             return normalized
     session_lang = getattr(mgr, "user_language", None)
@@ -322,6 +334,11 @@ def _resolve_topic_hook_locale(
     declared = _resolve_declared_topic_hook_locale(data, mgr)
     if declared:
         return declared
+    render_lang = _command_render_language(data)
+    if render_lang and is_supported_language_code(render_lang):
+        normalized = normalize_language_code(render_lang, format="full")
+        if normalized:
+            return normalized
     global_lang = normalize_language_code(get_global_language_full(), format="full")
     if global_lang:
         return global_lang

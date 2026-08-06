@@ -269,7 +269,13 @@ def _prompt_lang_from_data(data: dict[str, Any]) -> str:
     request body value (``i18n_language`` / ``language``), with no upstream
     normalize/whitelist gate, so it must tolerate arbitrary strings.
     """
-    raw = str(data.get("i18n_language") or data.get("language") or "zh-CN")
+    raw = str(
+        data.get("i18n_language")
+        or data.get("language")
+        or data.get("lang")
+        or data.get("render_language")
+        or "zh-CN"
+    )
     return normalize_prompt_locale(
         raw, default="zh", simplified="zh", keep_traditional=True
     )

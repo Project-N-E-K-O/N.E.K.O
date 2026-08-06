@@ -120,6 +120,12 @@ def test_ui_language_override_uses_raw_global_preference_only(tmp_path):
     with patch.object(preferences, "_config_manager", cm):
         assert preferences.load_ui_language_override() == "zh-TW"
         assert "uiLanguage" not in preferences.load_global_conversation_settings()
+        assert preferences.save_ui_language_override("ja") is True
+        assert preferences.load_ui_language_override() == "ja"
+        assert preferences.load_global_conversation_settings()["userLanguage"] == "en"
+        assert preferences.save_ui_language_override(None) is True
+        assert preferences.load_ui_language_override() is None
+        assert preferences.load_global_conversation_settings()["userLanguage"] == "en"
 
 
 @pytest.mark.unit

@@ -51,10 +51,13 @@ def test_review_locale_evidence_prefers_user_turns():
     assert locale_text == "這很好"
 
 
-def test_greeting_preserves_full_locale_for_holiday_selection():
+def test_greeting_preserves_full_locale_for_holiday_selection(monkeypatch):
+    from main_logic.core import greeting
     from main_logic.core.greeting import GreetingMixin
 
     assert GreetingMixin._greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
+    monkeypatch.setattr(greeting, "get_global_language_full", lambda: "zh-TW")
+    assert GreetingMixin._greeting_locale_keys(None) == ("zh", "zh-TW")
 
 
 def test_traditional_holiday_prompt_uses_its_own_templates():
@@ -527,14 +530,44 @@ async def test_new_dialog_request_omits_seeded_fallback_locale(monkeypatch):
     assert "params" not in calls[0]
 
 
+@pytest.mark.asyncio
+async def test_new_dialog_request_forwards_render_only_locale(monkeypatch):
+    from main_logic.core.lifecycle import LifecycleMixin
+    from utils import internal_http_client
+
+    calls: list[dict] = []
+
+    class Response:
+        is_success = True
+        text = "ok"
+
+    class Client:
+        async def get(self, _url, **kwargs):
+            calls.append(kwargs)
+            return Response()
+
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
+    manager = object.__new__(LifecycleMixin)
+    manager.user_language = "ja"
+    manager._user_language_explicit = False
+    manager._conversation_render_language = "ja"
+
+    assert await manager._start_session_fetch_new_dialog("Neko", 48912) == "ok"
+    assert calls[0]["params"] == {"render_language": "ja"}
+
+
 def test_hot_swap_new_dialog_request_reuses_explicit_locale_guard():
     from main_logic.core.lifecycle import LifecycleMixin
 
     manager = object.__new__(LifecycleMixin)
     manager.user_language = "en"
     manager._user_language_explicit = False
+    manager._conversation_render_language = "ja"
 
-    assert manager._new_dialog_request_kwargs() == {"timeout": 5.0}
+    assert manager._new_dialog_request_kwargs() == {
+        "timeout": 5.0,
+        "params": {"render_language": "ja"},
+    }
     manager.user_language = "zh-TW"
     manager._user_language_explicit = True
     assert manager._new_dialog_request_kwargs() == {
@@ -1120,9 +1153,56 @@ async def test_new_dialog_without_language_restores_durable_locale(monkeypatch):
     monkeypatch.setattr(routes, "_activate_request_language", activate)
 
     with pytest.raises(StopAfterLocale):
-        await routes._new_dialog("Neko", None)
+        await routes._new_dialog("Neko", None, "ja")
 
     assert observed == ["zh-TW"]
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_render_locale_is_request_only_fallback(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import locale_state, routes, runtime
+
+    class StopAfterLocale(RuntimeError):
+        pass
+
+    class Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"猫娘": {"Neko": {}}}
+
+        async def aget_character_data(self):
+            return ("Master", None, None, None, {}, None, None, None, None)
+
+    observed = []
+
+    def activate(language):
+        observed.append(language)
+        raise StopAfterLocale
+
+    write_locale = AsyncMock()
+    monkeypatch.setattr(runtime, "_config_manager", ConfigManager())
+    monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: Lock())
+    monkeypatch.setattr(
+        locale_state,
+        "get_character_prompt_locale",
+        lambda _name: None,
+    )
+    monkeypatch.setattr(routes, "_write_new_dialog_locale", write_locale)
+    monkeypatch.setattr(routes, "_activate_request_language", activate)
+
+    with pytest.raises(StopAfterLocale):
+        await routes._new_dialog("Neko", None, "ja")
+
+    assert observed == ["ja"]
+    write_locale.assert_not_awaited()
 
 
 @pytest.mark.asyncio
