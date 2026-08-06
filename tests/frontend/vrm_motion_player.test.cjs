@@ -240,9 +240,30 @@ async function waitForLoadStart(predicate, message) {
     const cancelPlayer = new global.NekoMotionPlayer();
     let resumedAfterCancel = 0;
     cancelPlayer._resumeBase = async function () { resumedAfterCancel += 1; return true; };
+    cancelPlayer.state.posture = 'lie';
+    cancelPlayer.state.phase = 'pose';
+    cancelPlayer.state.currentAsset = { id: 'held-pose' };
+    cancelPlayer.state.restAsset = { id: 'old-rest' };
+    cancelPlayer.state.poseAsset = { id: 'held-pose' };
+    cancelPlayer.state.poseStyle = 'side';
     cancelPlayer.cancel('manual-stop', { resume: false });
     await Promise.resolve();
     assert.equal(resumedAfterCancel, 0);
+    assert.deepEqual({
+        posture: cancelPlayer.state.posture,
+        phase: cancelPlayer.state.phase,
+        currentAsset: cancelPlayer.state.currentAsset,
+        restAsset: cancelPlayer.state.restAsset,
+        poseAsset: cancelPlayer.state.poseAsset,
+        poseStyle: cancelPlayer.state.poseStyle
+    }, {
+        posture: 'stand',
+        phase: 'boot',
+        currentAsset: null,
+        restAsset: null,
+        poseAsset: null,
+        poseStyle: null
+    });
 
     const staleCatalogPlayer = new global.NekoMotionPlayer();
     const staleCatalogAsset = { id: 'stale-catalog', m: 'wave', i: 2 };
@@ -354,17 +375,28 @@ async function waitForLoadStart(predicate, message) {
     assert.equal(savedRestUrl, '/user_vrm/animation/custom-idle.vrma');
 
     const savedCatalogPlayer = new global.NekoMotionPlayer();
-    savedCatalogPlayer.assets = [{
-        id: 'saved-built-in',
-        m: 'idle',
-        f: 'animation/wait02.vrma',
-        compression: 'gzip',
-        card: {}
-    }];
+    savedCatalogPlayer.assets = [
+        {
+            id: 'saved-built-in',
+            m: 'idle',
+            f: 'animation/wait02.vrma',
+            compression: 'gzip',
+            card: {}
+        },
+        {
+            id: 'unselected-system-rest',
+            m: 'idle',
+            f: 'animation/wait03.vrma',
+            compression: 'gzip',
+            card: { systemRestEligible: true }
+        }
+    ];
+    savedCatalogPlayer.state.restAsset = savedCatalogPlayer.assets[1];
     assert.equal(savedCatalogPlayer.setSavedRestAnimations([
         '/static/vrm/animation/wait02.vrma'
     ]), 1);
     assert.equal(savedCatalogPlayer.savedRestAssets.length, 0);
+    assert.equal(savedCatalogPlayer.state.restAsset, null);
     assert.equal(savedCatalogPlayer.select({
         intent: 'idle',
         systemRest: true
