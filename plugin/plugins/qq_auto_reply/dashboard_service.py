@@ -402,7 +402,11 @@ class QQDashboardService:
                     key for key, entry in table.items()
                     if entry[0] == live_channel
                 ),
-                mode,
+                # 跑着一个表外的新通道时，配置里那个模式描述的不是它。回落配置
+                # 会让页面照着一份不属于当前连接的语义显示，正好和上面那句
+                # 「以运行中的连接为准」相反。给一个查不到的键，让它落到下面的
+                # unknown 分支去。
+                live_channel,
             )
         entry = table.get(mode)
         if entry is None:

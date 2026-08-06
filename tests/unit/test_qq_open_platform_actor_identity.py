@@ -953,6 +953,24 @@ async def test_the_scope_follows_the_running_transport_not_the_saved_config():
     assert service._identity_scope_payload()["actor_scope"] == "per_conversation"
 
 
+async def test_an_unrecognised_live_channel_says_unknown_rather_than_the_config():
+    """A transport outside the table is not described by the saved mode.
+
+    Falling back to the configuration there would show a scope that belongs to
+    some other channel, which is the opposite of what "follow the running
+    transport" promises. Unreachable today (both channels are in the table);
+    it is the third one that would silently get a wrong answer.
+    """
+    service = _dashboard(roster=[], profiles={}, mode="open_platform")
+    service.plugin.qq_client = SimpleNamespace(CHANNEL="some_new_transport")
+    service.plugin._running = True
+
+    scope = service._identity_scope_payload()
+
+    assert scope["actor_scope"] == "unknown"
+    assert scope["conversation_scope"] == "unknown"
+
+
 async def test_the_scope_falls_back_to_config_when_nothing_is_connected():
     service = _dashboard(roster=[], profiles={}, mode="open_platform")
     service.plugin.qq_client = None
