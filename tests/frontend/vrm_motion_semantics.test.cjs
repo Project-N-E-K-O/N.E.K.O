@@ -142,6 +142,12 @@ assert.equal(core.analyze('if she waves goodbye', { locale: 'en' }).plan.length,
 assert.equal(core.analyze('do not wave goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('The user claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('A player claps.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('This user claps.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('Someone nods.', { locale: 'en' }).plan.length, 0);
+assert.equal(intent('特别用力点头'), 'nod');
+assert.equal(intent('告别时挥手'), 'wave');
+assert.equal(core.analyze('别点头', { locale: 'zh-CN' }).plan.length, 0);
 
 const boundedFrame = core.toChineseFrame('nod, shake head, wave, clap and dance', 'en');
 assert.ok(

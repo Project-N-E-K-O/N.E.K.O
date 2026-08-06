@@ -266,7 +266,21 @@
             const reset = prefix.lastIndexOf(marker);
             if (reset >= 0) prefix = prefix.slice(reset + marker.length);
         });
-        return includesAny(prefix, terms);
+        const nonNegatingPrefixes = '\u7279\u544a\u9053\u9001\u79bb\u96e2\u4e45\u5206\u533a\u5340\u7ea7\u7d1a\u7c7b\u985e\u6027\u4e2a\u500b';
+        return (terms || []).some(function (term) {
+            const candidate = folded(term);
+            if (candidate !== '\u522b' && candidate !== '\u5225') {
+                return candidate && prefix.includes(candidate);
+            }
+            let index = prefix.indexOf(candidate);
+            while (index >= 0) {
+                if (index === 0 || !nonNegatingPrefixes.includes(prefix.charAt(index - 1))) {
+                    return true;
+                }
+                index = prefix.indexOf(candidate, index + candidate.length);
+            }
+            return false;
+        });
     }
 
     function speechActorAllowed(text, anchor) {
@@ -278,8 +292,8 @@
         if (/(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(prefix)) {
             return false;
         }
-        const selfActor = /(?:我|人家|本喵|咱|俺|i|i'm|i’ll|i'll|me|my|私|僕|わたし|나|내가|я|yo|eu)/giu;
-        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|you|he|she|they|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
+        const selfActor = /(?:我|人家|本喵|咱|俺|\bi\b|\bi['’]m\b|\bi['’]ll\b|私|僕|わたし|나|내가|я|yo|eu)/giu;
+        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|\b(?:you|he|she|they|user|player|person|someone|somebody)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
         let selfIndex = -1;
         let otherIndex = -1;
         let match;

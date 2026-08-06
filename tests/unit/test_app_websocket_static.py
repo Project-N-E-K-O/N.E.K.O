@@ -5648,6 +5648,11 @@ def test_session_ended_by_server_stops_assistant_text_output():
         "emitAssistantSpeechCancel('response_discarded');",
         1,
     )[0]
+    suppressed_discard = discard_block.split(
+        "if (S.suppressAssistantStreamUntilNextSession)", 1
+    )[1].split("return;", 1)[0]
+    assert "clearPendingRollbackForRequest(" in suppressed_discard
+    assert "resolveAssistantRequestId(response.request_id, response.meta)" in suppressed_discard
 
     session_started_block = source.split("// -------- session_started --------", 1)[1].split(
         "// -------- session_failed --------",

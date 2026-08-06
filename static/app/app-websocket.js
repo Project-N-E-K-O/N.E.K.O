@@ -2469,6 +2469,9 @@
                         window._nekoMotionPendingUserText = '';
                     }
                     if (S.suppressAssistantStreamUntilNextSession) {
+                        clearPendingRollbackForRequest(
+                            resolveAssistantRequestId(response.request_id, response.meta)
+                        );
                         logAssistantLifecycle('response_discarded_suppressed_after_session_end', {
                             reason: response.reason,
                             willRetry: !!response.will_retry
