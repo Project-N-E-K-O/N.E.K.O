@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -237,6 +238,119 @@ def test_card_drop_client_id_fails_closed_when_fresh_default_cannot_be_saved(
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: FakeConfigManager())
 
     assert C._get_client_id() is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_cloud_forge_debit_rejects_redirect_response(monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+    monkeypatch.setattr(
+        C,
+        "_get_client_credentials",
+        lambda: ("client-id", "client-proof"),
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json):
+            return httpx.Response(
+                302,
+                json={
+                    "confirmed": True,
+                    "operation_id": "operation-id",
+                    "credit_id": "credit-id",
+                    "card_id": "card-id",
+                    "confirmed_at": "now",
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await C._confirm_cloud_forge_debit(
+        operation_id="operation-id",
+        credit_id="credit-id",
+        card_id="card-id",
+    )
+
+    assert result == {"confirmed": False, "detail": "http_302"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cloud_base_url",
+    [
+        "http://community.example",
+        "ftp://community.example",
+        "https:///missing-host",
+        "https://[::1",
+    ],
+)
+async def test_confirm_cloud_forge_debit_rejects_unsafe_cloud_base_url(
+    monkeypatch, cloud_base_url,
+):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", cloud_base_url)
+    monkeypatch.setattr(
+        C,
+        "_get_client_credentials",
+        lambda: ("client-id", "client-proof"),
+    )
+
+    result = await C._confirm_cloud_forge_debit(
+        operation_id="operation-id",
+        credit_id="credit-id",
+        card_id="card-id",
+    )
+
+    assert result == {"confirmed": False, "detail": "invalid_cloud_base_url"}
+
+
+@pytest.mark.asyncio
+async def test_confirm_cloud_forge_debit_omits_proof_for_local_http(monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://localhost:48911")
+    monkeypatch.setattr(
+        C,
+        "_get_client_credentials",
+        lambda: ("client-id", "client-proof"),
+    )
+    captured = {}
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json):
+            captured["url"] = url
+            captured["json"] = json
+            return httpx.Response(204, json=None, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await C._confirm_cloud_forge_debit(
+        operation_id="operation-id",
+        credit_id="credit-id",
+        card_id="card-id",
+    )
+
+    assert result == {"confirmed": False, "detail": "http_204"}
+    assert captured["json"] == {
+        "client_id": "client-id",
+        "credit_id": "credit-id",
+        "card_id": "card-id",
+    }
 
 
 def test_packaged_facts_module_exposes_shared_entrypoints():
@@ -967,6 +1081,13 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
     from main_logic import forge_credit_ledger
 
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
+    confirmation_calls = []
+
+    async def confirm_cloud_debit(**_kwargs):
+        confirmation_calls.append(_kwargs)
+        return {"confirmed": True}
+
+    monkeypatch.setattr(C, "_confirm_cloud_forge_debit", confirm_cloud_debit)
     _write_v2_desktop_session(
         tmp_path,
         monkeypatch,
@@ -1033,6 +1154,20 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
     assert committed.status_code == commit_replay.status_code == 200
     assert committed.json()["committed"] is True
     assert commit_replay.json()["committed"] is True
+    assert committed.json()["debit_confirmed"] is True
+    assert commit_replay.json()["debit_confirmed"] is True
+    assert confirmation_calls == [
+        {
+            "operation_id": operation_id,
+            "credit_id": credit_id,
+            "card_id": card_id,
+        },
+        {
+            "operation_id": operation_id,
+            "credit_id": credit_id,
+            "card_id": card_id,
+        },
+    ]
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):

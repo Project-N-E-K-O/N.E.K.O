@@ -188,8 +188,11 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/live2d/live2d-emotion.js",
     _PROJECT_ROOT / "static/live2d/live2d-model.js",
     _PROJECT_ROOT / "static/js/voice_clone.js",
+    _PROJECT_ROOT / "static/js/voice_identity.js",
+    _PROJECT_ROOT / "static/css/voice_identity.css",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
+    _PROJECT_ROOT / "static/vrm/motion/player.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
     *_TEMPLATE_STATIC_ASSET_VERSION_PATHS,
 )
@@ -365,6 +368,16 @@ async def api_key_settings(request: Request):
     """API key settings page."""
     templates = get_templates()
     return templates.TemplateResponse("templates/api_key_settings.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/voice_identity", response_class=HTMLResponse)
+async def voice_identity_settings(request: Request):
+    """Owner voice identity enrollment page."""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/voice_identity.html", {
         "request": request,
         **_static_assets_ctx(),
     })

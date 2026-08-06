@@ -36,7 +36,7 @@ from main_logic.proactive_delivery import (
     resolve_callback_delivery_ack,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_sid
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
@@ -721,7 +721,9 @@ class ProactiveMixin:
                     )
                     return False
 
-                _lang = normalize_language_code(self.user_language, format='short')
+                # ⚠️ 不能砍成短码：_build_callback_instruction 的模板有 zh-TW 行，
+                # 短码在这里就把字形丢了，归一化器再也救不回来（issue #2500）。
+                _lang = normalize_language_code(self.user_language, format='full')
                 voice_snapshot = [
                     cb for cb in proactive_cbs
                     if not cb.get(DELIVERY_RETRACTED_KEY)
@@ -1330,7 +1332,8 @@ class ProactiveMixin:
             for _cb in active_callbacks:
                 if isinstance(_cb, dict):
                     _proactive_images.extend(_cb.get("media_images") or [])
-            _lang = normalize_language_code(self.user_language, format='short')
+            # 同 trigger_agent_callbacks：字形要留到 _build_callback_instruction。
+            _lang = normalize_language_code(self.user_language, format='full')
             instruction = _build_callback_instruction(
                 active_callbacks,
                 lang=_lang,
@@ -2546,7 +2549,10 @@ class ProactiveMixin:
         )
         delivered_to_prompt = False
         try:
-            _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+            # 同上；user_language 为空时才回落全局语言（此前回落的是短码）。
+            _lang = normalize_language_code(
+                getattr(self, 'user_language', '') or get_global_language_full(), format='full'
+            )
             rendered = _build_callback_instruction(
                 callbacks_snapshot,
                 lang=_lang,

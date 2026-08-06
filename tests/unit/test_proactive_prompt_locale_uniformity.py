@@ -207,14 +207,17 @@ def test_every_locale_gets_distinct_format_sections():
 def test_the_whole_module_answers_one_script_for_a_traditional_locale():
     """The point of the refactor: no function disagrees with the others.
 
-    ``keep_traditional`` is still ``False``, so the whole module answers Simplified
-    for ``zh-TW`` -- deliberately, and as one unit. Before, ``get_meme_topic_line``
-    was the single function answering Traditional, which is exactly the mixed-script
-    turn a later flip has to avoid.
+    C2 flipped ``keep_traditional`` to ``True`` together with every call site, so
+    the whole module now answers Traditional for ``zh-TW`` -- and, still, as one
+    unit. That uniformity is the invariant, not the script: before the collapse
+    ``get_meme_topic_line`` was the single function answering Traditional while the
+    rest answered Simplified, which is exactly the mixed-script turn this pins shut.
     """
     meme_line = P.get_meme_topic_line("zh-TW", keyword="", title="T", source="S")
-    assert meme_line == P.get_meme_topic_line("zh", keyword="", title="T", source="S")
-    assert meme_line == P._loc(P.MEME_TOPIC_NO_KEYWORD, "zh").format(title="T", source="S")
+    assert meme_line != P.get_meme_topic_line("zh", keyword="", title="T", source="S")
+    assert meme_line == P._loc(P.MEME_TOPIC_NO_KEYWORD, "zh-TW").format(
+        title="T", source="S"
+    )
 
     source_instruction, _ = P.get_proactive_format_sections(
         has_screen=True, has_web=False, has_music=False, has_meme=False, lang="zh-TW"
@@ -222,22 +225,24 @@ def test_the_whole_module_answers_one_script_for_a_traditional_locale():
     simplified, _ = P.get_proactive_format_sections(
         has_screen=True, has_web=False, has_music=False, has_meme=False, lang="zh"
     )
-    assert source_instruction == simplified
-    # 单靠上面那条相等断言是空的：归一化器把 'zh-TW' 和 'zh' 映到同一个键，两边
-    # 本来就是同一次调用，任何确定性实现都能过 —— 包括"所有人都拿英文"。所以还要
-    # 钉住内容确实是简体那一行，且不是繁体、不是英文。
-    assert _MATERIAL_LABEL_MARKERS["zh"] in source_instruction      # 屏幕内容
-    assert "螢幕內容" not in source_instruction                      # 繁体写法
+    assert source_instruction != simplified
+    # 钉住内容确实是繁体那一行，且不是简体、不是英文——单看"两边不等"是空的，
+    # "所有人都拿英文"也能让它不等。
+    assert "螢幕內容" in source_instruction                          # 繁体写法
+    assert _MATERIAL_LABEL_MARKERS["zh"] not in source_instruction  # 屏幕内容
     assert _MATERIAL_LABEL_MARKERS["en"] not in source_instruction  # screen content
 
 
-@pytest.mark.parametrize("full_locale, short_key", [("zh-CN", "zh"), ("zh-TW", "zh")])
-def test_full_locales_resolve_without_falling_through_loc(full_locale, short_key, capsys):
+@pytest.mark.parametrize(
+    "full_locale, expected_key", [("zh-CN", "zh"), ("zh-TW", "zh-TW")]
+)
+def test_full_locales_resolve_without_falling_through_loc(full_locale, expected_key, capsys):
     """After step 2's caller flip, Simplified arrives as ``zh-CN``, not ``zh``.
 
     ``_loc`` would answer that with a missing-key warning and a fallback. Going
-    through the normalizer first means the key is always one the dicts carry.
+    through the normalizer first means the key is always one the dicts carry —
+    and, since C2, ``zh-TW`` resolves to its own row rather than the Simplified one.
     """
     line = P.get_meme_topic_line(full_locale, keyword="", title="T", source="S")
-    assert line == P.get_meme_topic_line(short_key, keyword="", title="T", source="S")
+    assert line == P.get_meme_topic_line(expected_key, keyword="", title="T", source="S")
     assert "Unexpected lang code" not in capsys.readouterr().out

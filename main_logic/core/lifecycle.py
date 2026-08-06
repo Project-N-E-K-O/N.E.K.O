@@ -2098,7 +2098,8 @@ class LifecycleMixin:
             selected = selected_all[len(_extras):]
             if not selected:
                 return [], ""
-            _lang = normalize_language_code(self.user_language, format='short')
+            # 与 proactive 三条投递路径同口径：字形留到渲染函数再归一化。
+            _lang = normalize_language_code(self.user_language, format='full')
             rendered = _build_callback_instruction(
                 selected,
                 lang=_lang,

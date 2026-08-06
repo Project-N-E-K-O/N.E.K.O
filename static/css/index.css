@@ -1713,9 +1713,7 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) [data-compact-geometry-owner="surface"],
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) [data-compact-geometry-owner="surface"] *,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton *,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"],
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] * {
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton * {
     pointer-events: auto;
 }
 
@@ -1847,6 +1845,29 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     overflow: visible !important;
     clip-path: none !important;
     z-index: 100003 !important;
+}
+
+/* 轮盘容器本身是透明的；保留按钮和圆形旋转区的交互，其余区域（特别是与紧凑播放器
+   重叠的左上控制带）必须点击穿透。这里覆盖上面的宿主通用 pointer-events 规则。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item:not([data-compact-tool-wheel-slot="hidden"]):not([data-compact-tool-wheel-slot="hidden-forward"]):not([data-compact-tool-wheel-slot="hidden-backward"]),
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .avatar-tool-quickbar,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .avatar-tool-quickbar * {
+    pointer-events: auto !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden])) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0);
 }
 
 #react-chat-window-root {

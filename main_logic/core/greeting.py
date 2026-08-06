@@ -46,7 +46,7 @@ from config.prompts.prompts_avatar_interaction import (
     _sanitize_avatar_interaction_text_context,
 )
 from utils.config_manager import get_config_manager
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
     logger,
@@ -767,12 +767,17 @@ class GreetingMixin:
         # tier → 行为：cat1=清醒 / cat2=打盹 / cat3=熟睡。
         behavior = {"cat1": "awake", "cat2": "nap", "cat3": "sleep"}.get(str(tier or "").strip().lower(), "awake")
 
-        _lang = normalize_language_code(self.user_language, format='short')
         from config.prompts.prompts_proactive import (
             CAT_GREETING_SILENT_BELOW_SECONDS,
             get_cat_greeting_episode_prompt, get_cat_greeting_episode_scene,
             get_cat_greeting_prompt,
             get_cat_greeting_reason_hint,
+            normalize_proactive_prompt_locale,
+        )
+        # 猫咪问候的四张表都在 prompts_proactive（有 zh-TW 行）；短码会把 zh-TW
+        # 折成 zh，那些行永远取不到（issue #2500）。
+        _lang = normalize_proactive_prompt_locale(
+            self.user_language or get_global_language_full()
         )
         from utils.time_format import format_elapsed as _format_elapsed
         episode_scene = get_cat_greeting_episode_scene(episode, _lang)
@@ -899,7 +904,10 @@ class GreetingMixin:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
     async def trigger_new_character_greeting(self) -> None:
-        from config.prompts.prompts_proactive import get_new_character_greeting_prompt
+        from config.prompts.prompts_proactive import (
+            get_new_character_greeting_prompt,
+            normalize_proactive_prompt_locale,
+        )
         from utils.new_character_greeting_state import has_pending, remove_pending
 
         config_manager = get_config_manager()
@@ -915,7 +923,11 @@ class GreetingMixin:
             logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
-        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+        # 同 trigger_cat_greeting：破冰问候模板也在 prompts_proactive，要 prompt
+        # key 才留得住 zh-TW。空 user_language 才回落全局语言（issue #2500）。
+        _lang = normalize_proactive_prompt_locale(
+            getattr(self, 'user_language', '') or get_global_language_full()
+        )
         template = get_new_character_greeting_prompt(_lang)
 
         if self._is_voice_session_active_or_starting():

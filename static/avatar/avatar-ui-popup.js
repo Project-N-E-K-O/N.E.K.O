@@ -20,6 +20,7 @@ function isAvatarFramedSettingsWindowUrl(finalUrl) {
             finalUrl.startsWith('/character_card_manager')
             || finalUrl.startsWith('/chara_manager')
             || finalUrl.startsWith('/api_key')
+            || finalUrl.startsWith('/voice_identity')
             || finalUrl.startsWith('/memory_browser')
         );
 }
@@ -1009,6 +1010,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                         windowName = 'neko_chara_manager';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
                         windowName = 'neko_api_key';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/voice_identity')) {
+                        windowName = 'neko_voice_identity';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                         windowName = 'neko_memory_browser';
                     }
@@ -2724,6 +2727,8 @@ const AvatarPopupMixin = {
         ManagerProto._createMenuItem = function (item, isSubmenuItem = false) {
             const menuItem = document.createElement('div');
             menuItem.className = `${prefix}-settings-menu-item`;
+            menuItem.setAttribute('role', 'button');
+            menuItem.tabIndex = 0;
             markAvatarPopupActionElement(menuItem, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
             setAvatarPopupActionDebugMetadata(menuItem, item, isSubmenuItem ? 'settings-submenu' : 'settings-menu');
             var itemAnchorId = createMenuAnchorId(prefix, item && item.id);
@@ -2744,7 +2749,8 @@ const AvatarPopupMixin = {
             if (item.icon) {
                 const iconImg = document.createElement('img');
                 iconImg.src = item.icon;
-                iconImg.alt = item.label;
+                iconImg.alt = '';
+                iconImg.setAttribute('aria-hidden', 'true');
                 Object.assign(iconImg.style, {
                     width: isSubmenuItem ? '18px' : '24px',
                     height: isSubmenuItem ? '18px' : '24px',
@@ -2769,9 +2775,6 @@ const AvatarPopupMixin = {
                 menuItem._updateLabelText = () => {
                     if (window.t) {
                         labelText.textContent = window.t(item.labelKey);
-                        if (item.icon && menuItem.querySelector('img')) {
-                            menuItem.querySelector('img').alt = window.t(item.labelKey);
-                        }
                     }
                 };
             }
@@ -2780,6 +2783,12 @@ const AvatarPopupMixin = {
             menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
             let isOpening = false;
+
+            menuItem.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                menuItem.click();
+            });
 
             menuItem.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -2823,6 +2832,8 @@ const AvatarPopupMixin = {
                                 windowName = 'neko_chara_manager';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
                                 windowName = 'neko_api_key';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/voice_identity')) {
+                                windowName = 'neko_voice_identity';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                                 windowName = 'neko_memory_browser';
                             }
@@ -3060,6 +3071,7 @@ const AvatarPopupMixin = {
 
             const settingsItems = [
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
+                { id: 'voice-identity', label: window.t ? window.t('settings.menu.voiceIdentity') : '声纹身份', labelKey: 'settings.menu.voiceIdentity', icon: '/static/icons/mic_icon_off.png', action: 'navigate', url: '/voice_identity' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
             ];
 

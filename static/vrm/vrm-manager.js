@@ -10,6 +10,38 @@ const VRM_IDLE_FPS = 30;
 const VRM_INTERACTIVE_FPS_HOLD_MS = 900;
 const VRM_IDLE_FPS_GOVERNOR_INTERVAL_MS = 300;
 
+const COMPRESSED_BUNDLED_VRMA_NAMES = new Set([
+    'liked',
+    'wait01',
+    'wait02',
+    'wait03',
+    'wait04',
+    'wait05',
+    '全身展示',
+    '射击姿态',
+    '屈伸运动',
+    '旋转',
+    '模特姿势',
+    '比 V 手势',
+    '致意问候'
+]);
+
+function normalizeBundledVrmAnimationPath(animationPath) {
+    const value = String(animationPath || '');
+    const match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+    if (!match) {
+        return animationPath;
+    }
+    let assetName = match[1];
+    try {
+        assetName = decodeURIComponent(assetName);
+    } catch (_) {
+        // Keep the original path segment when it is not valid URI encoding.
+    }
+    if (!COMPRESSED_BUNDLED_VRMA_NAMES.has(assetName)) return animationPath;
+    return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+}
+
 class VRMManager {
     constructor() {
         this.scene = null;
@@ -1090,7 +1122,7 @@ class VRMManager {
                     targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
                 } else if (unscaledHeight > 0 && Number.isFinite(unscaledHeight) && this.camera && this.camera.fov) {
                     // 使用固定参考距离（而非 camera.position.z，因相机可能已被 orbit 偏移）
-                    const targetScreenHeight = screenHeight * 0.45;
+                    const targetScreenHeight = screenHeight * 0.40;
                     const fov = this.camera.fov * (Math.PI / 180);
                     // 5 = vrm-core.js 首次加载计算缩放时所用的默认相机距离
                     //（见 vrm-core.js 里 `camera.position?.z || 5` 的 fallback）
@@ -1122,7 +1154,7 @@ class VRMManager {
                 const isMobileDevice = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
 
                 const scaledModelHeight = size.y > 0 ? size.y : 1.5;
-                const targetScreenHeight = screenHeight * 0.45;
+                const targetScreenHeight = screenHeight * 0.40;
                 const fov = this.camera.fov * (Math.PI / 180);
                 const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 
@@ -1325,9 +1357,11 @@ class VRMManager {
         if (!this._animationFrameId) this.startAnimateLoop();
 
         // 获取默认循环动画路径：优先从 options 传入，其次从配置读取，最后使用默认值
-        const DEFAULT_LOOP_ANIMATION = options.idleAnimation ||
-            window.lanlan_config?.vrmIdleAnimation ||
-            '/static/vrm/animation/wait03.vrma';
+        const DEFAULT_LOOP_ANIMATION = normalizeBundledVrmAnimationPath(
+            options.idleAnimation ||
+                window.lanlan_config?.vrmIdleAnimation ||
+                '/static/vrm/animation/wait03.vrma.gz'
+        );
 
         // 确保 animation 模块已初始化
         if (!this.animation) {
@@ -1570,7 +1604,10 @@ class VRMManager {
 
     async playVRMAAnimation(url, opts) {
         if (!this.animation) this._initModules();
-        if (this.animation) return this.animation.playVRMAAnimation(url, opts);
+        if (this.animation) {
+            return this.animation.playVRMAAnimation(normalizeBundledVrmAnimationPath(url), opts);
+        }
+        return false;
     }
 
     seekVRMAAnimation(timeSeconds, options) {

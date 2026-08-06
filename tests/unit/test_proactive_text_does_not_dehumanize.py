@@ -361,7 +361,13 @@ def test_cat_greeting_episode_scene_rejects_invalid_combinations_and_uses_englis
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'fr-FR') == english
     zh = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh')
     assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-CN') == zh
-    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW') == zh
+    # 自 #2500 C2 起繁中走自己那一行，不再折成简体。
+    traditional = get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-TW')
+    # 空断言陷阱：查不到 kind 时函数返回 ''，那样 '' != zh 与 '' == '' 两条都成立，
+    # 繁中用户拿到空文案而测试全绿。必须先钉住它非空。
+    assert traditional, 'zh-TW 缺少 rested 场景行，繁中会拿到空文案'
+    assert traditional != zh
+    assert get_cat_greeting_episode_scene({'kind': 'rested'}, 'zh-Hant') == traditional
 
 
 def test_cat_greeting_episode_scene_is_not_labeled_as_optional_background() -> None:

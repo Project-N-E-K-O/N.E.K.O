@@ -2328,7 +2328,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "if (!senseiProbe.ok) throw new Error('Sensei VRM model missing: ' + SENSEI_VRM_PATH);" in html
     assert "loader.load(SENSEI_VRM_PATH, resolve, null, reject);" in html
     assert "manager.currentModel = { vrm: vrm, gltf: gltf, scene: vrm.scene, url: SENSEI_VRM_PATH };" in html
-    assert "await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {" in html
+    assert html.count("await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {") == 2
     assert "isIdle: true" in html
     assert "playIdleAnimation" not in html
     assert "SENSEI_LIVE2D_PATH" not in html

@@ -25,6 +25,60 @@ from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_vrm_load_normalizes_legacy_bundled_idle_animation_path():
+    source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+    helper = source.split("function normalizeBundledVrmAnimationPath", 1)[1].split(
+        "class VRMManager",
+        1,
+    )[0]
+    load_body = source.split("async _loadModelInternal", 1)[1].split(
+        "async dispose()",
+        1,
+    )[0]
+
+    assert "COMPRESSED_BUNDLED_VRMA_NAMES.has(assetName)" in helper
+    assert "decodeURIComponent(assetName)" in helper
+    assert ".replace(/\\.vrma(?=[?#]|$)/i, '.vrma.gz')" in helper
+    assert "normalizeBundledVrmAnimationPath(" in load_body
+    assert "window.lanlan_config?.vrmIdleAnimation" in load_body
+    public_playback = source.split("async playVRMAAnimation", 1)[1].split(
+        "seekVRMAAnimation",
+        1,
+    )[0]
+    assert "normalizeBundledVrmAnimationPath(url)" in public_playback
+
+
+def test_model_manager_starts_saved_idle_rotation_with_normalized_urls():
+    source = (PROJECT_ROOT / "static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    restore_body = source.split("let vrmIdleAnims =", 1)[1].split(
+        "// 加载MMD待机动作选项",
+        1,
+    )[0]
+
+    normalization = "vrmIdleAnims = vrmIdleAnims.map(url =>"
+    start = "startIdleRotation('vrm', vrmIdleAnims);"
+    assert normalization in restore_body
+    assert "normalizeBundledVrmAnimationUrl(url, availableIdleAnimationValues)" in restore_body
+    assert restore_body.index(normalization) < restore_body.index(start)
+
+
+def test_vrm_reset_uses_the_same_desktop_framing_ratio_as_initial_load():
+    manager_source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(
+        encoding="utf-8"
+    )
+    reset_body = manager_source.split("resetModelPosition()", 1)[1].split(
+        "resetModelScale()",
+        1,
+    )[0]
+
+    assert reset_body.count("screenHeight * 0.40") == 2
+    assert "screenHeight * 0.45" not in reset_body
+
+
 def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     # 设计：token-only「后到者胜」，无串行队列（与 mmd-manager 对偶）。
     # 队列会让新加载 await 一个已被自己取代的旧加载 → 慢/挂死的 GLTF（无超时）

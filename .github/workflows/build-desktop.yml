@@ -1,6 +1,43 @@
 name: Build Desktop App (Cross-Platform)
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0-beta.1)'
+        required: false
+        default: ''
+        type: string
+      electron_repo:
+        description: 'Electron frontend repo (owner/repo)'
+        required: false
+        default: 'Project-N-E-K-O/N.E.K.O.-PC'
+        type: string
+      electron_ref:
+        description: 'Electron repo branch/tag/commit'
+        required: false
+        default: 'main'
+        type: string
+      skip_signing:
+        description: 'Skip code signing'
+        required: false
+        default: 'true'
+        type: string
+      windows_only:
+        description: 'Build only the Windows backend and desktop app'
+        required: false
+        default: false
+        type: boolean
+      previous_portable_release:
+        description: 'Release tag used as the Portable delta baseline'
+        required: false
+        default: ''
+        type: string
+      allow_fork_build:
+        description: 'Allow this workflow to run outside the upstream repository'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '0 0 * * *'   # Daily at 8 AM Beijing time (00:00 UTC)
   workflow_dispatch:
@@ -25,6 +62,19 @@ on:
         options:
           - 'true'
           - 'false'
+      previous_portable_release:
+        description: 'Release tag used as the Portable delta baseline'
+        required: false
+        default: ''
+      allow_fork_build:
+        description: 'Allow this workflow to run outside the upstream repository'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: build-desktop-nightly-release
+  cancel-in-progress: false
 
 env:
   PYTHON_VERSION: '3.11'
@@ -41,7 +91,7 @@ jobs:
   # Step 0: Calculate version
   # ──────────────────────────────────────────────
   version:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.calc.outputs.VERSION }}
@@ -52,11 +102,13 @@ jobs:
 
       - name: Calculate version
         id: calc
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
@@ -69,29 +121,12 @@ jobs:
   # Step 1: Build Python backend with Nuitka
   # ──────────────────────────────────────────────
   build-python:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build
     needs: version
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            platform: win
-            artifact_name: python-backend-win
-            output_binary: projectneko_server.exe
-          - os: macos-15
-            platform: mac-x64
-            python_arch: x64
-            artifact_name: python-backend-mac-x64
-            output_binary: projectneko_server
-          - os: macos-latest
-            platform: mac-arm64
-            artifact_name: python-backend-mac-arm64
-            output_binary: projectneko_server
-          - os: ubuntu-latest
-            platform: linux
-            artifact_name: python-backend-linux
-            output_binary: projectneko_server
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe"}]' || '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe"},{"os":"macos-15","platform":"mac-x64","python_arch":"x64","artifact_name":"python-backend-mac-x64","output_binary":"projectneko_server"},{"os":"macos-latest","platform":"mac-arm64","artifact_name":"python-backend-mac-arm64","output_binary":"projectneko_server"},{"os":"ubuntu-latest","platform":"linux","artifact_name":"python-backend-linux","output_binary":"projectneko_server"}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 300
@@ -719,32 +754,12 @@ jobs:
   # Step 2: Build Electron desktop app
   # ──────────────────────────────────────────────
   build-electron:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build
     needs: [version, build-python]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            platform: win
-            python_artifact: python-backend-win
-            electron_args: '--win'
-            artifact_name: desktop-win-x64
-          - os: macos-15
-            platform: mac-x64
-            python_artifact: python-backend-mac-x64
-            electron_args: '--mac --x64'
-            artifact_name: desktop-mac-x64
-          - os: macos-latest
-            platform: mac-arm64
-            python_artifact: python-backend-mac-arm64
-            electron_args: '--mac --arm64'
-            artifact_name: desktop-mac-arm64
-          - os: ubuntu-latest
-            platform: linux
-            python_artifact: python-backend-linux
-            electron_args: '--linux'
-            artifact_name: desktop-linux-x64
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"}]' || '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"},{"os":"macos-15","platform":"mac-x64","portable_key":"mac_x64","builder_platform":"macos","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/mac/N.E.K.O.app","python_artifact":"python-backend-mac-x64","electron_args":"--mac --x64","artifact_name":"desktop-mac-x64"},{"os":"macos-latest","platform":"mac-arm64","portable_key":"mac_arm64","builder_platform":"macos","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/mac-arm64/N.E.K.O.app","python_artifact":"python-backend-mac-arm64","electron_args":"--mac --arm64","artifact_name":"desktop-mac-arm64"},{"os":"ubuntu-latest","platform":"linux","portable_key":"linux_x64","builder_platform":"linux","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/linux-unpacked","python_artifact":"python-backend-linux","electron_args":"--linux","artifact_name":"desktop-linux-x64"}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -752,8 +767,8 @@ jobs:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
-          ref: ${{ github.event.inputs.electron_ref || 'main' }}
+          repository: ${{ inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
+          ref: ${{ inputs.electron_ref || 'main' }}
           token: ${{ secrets.ELECTRON_REPO_TOKEN || secrets.GITHUB_TOKEN }}
           path: electron-app
 
@@ -797,11 +812,13 @@ jobs:
 
       - name: Update version in package.json
         working-directory: electron-app
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '${{ needs.version.outputs.version }}'.replace(/^[^0-9]*/, '');
+            pkg.version = process.env.RELEASE_VERSION.replace(/^[^0-9]*/, '');
             if (!/^\d+\.\d+\.\d+/.test(pkg.version)) {
               pkg.version = '0.0.0-' + pkg.version;
             }
@@ -821,7 +838,7 @@ jobs:
       # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
       # which all require a valid signing identity; disable them all for CI builds
       - name: Disable macOS code signing
-        if: runner.os == 'macOS' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'))
+        if: runner.os == 'macOS' && (github.event_name == 'schedule' || inputs.skip_signing == 'true')
         working-directory: electron-app
         run: |
           node -e "
@@ -854,13 +871,33 @@ jobs:
             console.log('Set Linux deb maintainer');
           "
 
-      # --- Build Electron app ---
-      - name: Build Electron app
+      # Windows Portable is a ZIP containing the complete unpacked Electron
+      # directory. Building --dir gives the updater stable file boundaries.
+      - name: Build Electron app (Windows ZIP Portable directory, unsigned)
+        if: runner.os == 'Windows' && (github.event_name == 'schedule' || inputs.skip_signing == 'true')
         working-directory: electron-app
-        run: npx electron-builder ${{ matrix.electron_args }} --publish never
+        run: node scripts/build-electron-distribution.js windows --dir --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build Electron app (Windows ZIP Portable directory, signed)
+        if: runner.os == 'Windows' && github.event_name != 'schedule' && inputs.skip_signing != 'true'
+        working-directory: electron-app
+        run: node scripts/build-electron-distribution.js windows --dir --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Build Electron app (macOS/Linux)
+        if: runner.os != 'Windows'
+        working-directory: electron-app
+        run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} ${{ matrix.portable_arch_args }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || inputs.skip_signing == 'true') && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -868,6 +905,125 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # Build a separate marked unpacked tree for the self-managed Portable
+      # channel. On macOS the marker is added by afterPack before signing.
+      - name: Build Electron app (macOS/Linux Portable directory)
+        if: runner.os != 'Windows'
+        working-directory: electron-app
+        run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} --dir ${{ matrix.portable_arch_args }} --publish never -c.directories.output=dist/portable-stage
+        env:
+          NEKO_PORTABLE_BUILD: '1'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || inputs.skip_signing == 'true') && 'false' || 'true' }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Download previous Portable manifests
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.previous_portable_release != ''
+        working-directory: electron-app
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PORTABLE_KEY: ${{ matrix.portable_key }}
+          PREVIOUS_RELEASE_TAG: ${{ inputs.previous_portable_release }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous-portable
+          if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
+            PREVIOUS_RELEASE_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '[.[] | select(.draft | not) | select(.prerelease | not) | select(.tag_name != env.GITHUB_REF_NAME)][0].tag_name // empty' \
+              2>/dev/null || true)"
+          fi
+          if [[ -z "$PREVIOUS_RELEASE_TAG" ]]; then
+            echo "No preceding stable release found; this release will contain a full package only"
+            exit 0
+          fi
+          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${PREVIOUS_RELEASE_TAG}"
+          PREVIOUS_URL="$(gh api "$RELEASE_ENDPOINT" \
+            --jq "[.assets[] | select(.name | endswith(\"_${PORTABLE_KEY}_manifest.json\"))][0].browser_download_url // empty" \
+            2>/dev/null || true)"
+          if [[ -n "$PREVIOUS_URL" ]]; then
+            curl --fail --location --retry 3 "$PREVIOUS_URL" \
+              --output "previous-portable/previous-${PORTABLE_KEY}-manifest.json"
+            echo "Downloaded previous ${PORTABLE_KEY} Portable manifest from release ${PREVIOUS_RELEASE_TAG}"
+          else
+            echo "No previous ${PORTABLE_KEY} Portable manifest found in release ${PREVIOUS_RELEASE_TAG}; this release will contain a full package only"
+          fi
+          if [[ "$PORTABLE_KEY" == "linux_x64" ]]; then
+            APPIMAGE_URL="$(gh api "$RELEASE_ENDPOINT" \
+              --jq '[.assets[] | select(.name | endswith("_linux_x64_appimage_manifest.json"))][0].browser_download_url // empty' \
+              2>/dev/null || true)"
+            if [[ -n "$APPIMAGE_URL" ]]; then
+              curl --fail --location --retry 3 "$APPIMAGE_URL" \
+                --output previous-portable/previous-linux_x64_appimage-manifest.json
+            fi
+          fi
+
+      - name: Create Windows Portable full and differential update assets
+        if: runner.os == 'Windows'
+        working-directory: electron-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIOUS_ARGS=()
+          if [[ -f previous-portable/previous-win-manifest.json ]]; then
+            PREVIOUS_ARGS=(--previous previous-portable/previous-win-manifest.json)
+          fi
+          PORTABLE_VERSION="$(node -p "require('./package.json').version")"
+          node scripts/create-portable-update.js \
+            --dir dist/win-unpacked \
+            --version "$PORTABLE_VERSION" \
+            --out dist/portable-update \
+            "${PREVIOUS_ARGS[@]}"
+
+      - name: Create macOS/Linux Portable directory update assets
+        if: runner.os != 'Windows'
+        working-directory: electron-app
+        shell: bash
+        env:
+          PORTABLE_KEY: ${{ matrix.portable_key }}
+          PORTABLE_DIR: ${{ matrix.portable_dir }}
+        run: |
+          set -euo pipefail
+          PREVIOUS_ARGS=()
+          PREVIOUS="previous-portable/previous-${PORTABLE_KEY}-manifest.json"
+          if [[ -f "$PREVIOUS" ]]; then PREVIOUS_ARGS=(--previous "$PREVIOUS"); fi
+          PORTABLE_VERSION="$(node -p "require('./package.json').version")"
+          PLATFORM=linux
+          ARCH=x64
+          [[ "$PORTABLE_KEY" == mac_* ]] && PLATFORM=darwin
+          [[ "$PORTABLE_KEY" == "mac_arm64" ]] && ARCH=arm64
+          node scripts/create-portable-update.js \
+            --dir "$PORTABLE_DIR" \
+            --platform "$PLATFORM" \
+            --arch "$ARCH" \
+            --version "$PORTABLE_VERSION" \
+            --out dist/portable-update \
+            "${PREVIOUS_ARGS[@]}"
+
+      - name: Create Linux AppImage full and differential update assets
+        if: runner.os == 'Linux'
+        working-directory: electron-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          APPIMAGES=(dist/*.AppImage)
+          [[ ${#APPIMAGES[@]} -eq 1 ]] || { echo "Expected exactly one AppImage"; exit 1; }
+          PREVIOUS_ARGS=()
+          PREVIOUS=previous-portable/previous-linux_x64_appimage-manifest.json
+          if [[ -f "$PREVIOUS" ]]; then PREVIOUS_ARGS=(--previous "$PREVIOUS"); fi
+          PORTABLE_VERSION="$(node -p "require('./package.json').version")"
+          node scripts/create-portable-update.js \
+            --appimage "${APPIMAGES[0]}" \
+            --arch x64 \
+            --version "$PORTABLE_VERSION" \
+            --out dist/portable-update \
+            "${PREVIOUS_ARGS[@]}"
 
       - name: List build output
         working-directory: electron-app/dist
@@ -889,6 +1045,7 @@ jobs:
             electron-app/dist/*.tar.gz
             electron-app/dist/*.blockmap
             electron-app/dist/latest*.yml
+            electron-app/dist/portable-update/*
           if-no-files-found: warn
           retention-days: 14
 
@@ -896,7 +1053,7 @@ jobs:
   # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
   nightly:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
+    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || inputs.allow_fork_build) && github.event_name != 'push' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
@@ -910,9 +1067,11 @@ jobs:
           path: artifacts
 
       - name: Organize release files
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p release
-          VERSION="${{ needs.version.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
 
           # Zip Python backend artifacts per platform
           for dir in artifacts/python-backend-*; do
@@ -924,26 +1083,64 @@ jobs:
 
           # Collect Electron desktop artifacts
           find artifacts/desktop-* -type f \( \
-            -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
+            -name "*.dmg" -o -name "*.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
-            -o -name "latest*.yml" \
+            -o -name "latest*.yml" -o -name "*_manifest.json" -o -name "*_delta.bin" \
           \) -exec cp {} release/ \; 2>/dev/null || true
 
           echo "=== Nightly release files ==="
           ls -lah release/
 
+      - name: Sign Portable manifests
+        env:
+          PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY: ${{ secrets.PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY }}
+          PORTABLE_MANIFEST_SIGNING_KEY_ID: portable-manifest-2026-07
+        run: |
+          set -euo pipefail
+          if [[ -z "${PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY:-}" ]]; then
+            echo "::error::PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY is required to publish Portable updates"
+            exit 1
+          fi
+          umask 077
+          key_path="$(mktemp "${RUNNER_TEMP}/portable-manifest-key.XXXXXX")"
+          trap 'rm -f "$key_path"' EXIT
+          printf '%s' "$PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY" > "$key_path"
+          shopt -s nullglob
+          manifests=(release/*_manifest.json)
+          if (( ${#manifests[@]} == 0 )); then
+            echo "::error::No Portable manifests found to sign"
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            raw_signature="${manifest}.rawsig"
+            openssl pkeyutl -sign -rawin -inkey "$key_path" -in "$manifest" -out "$raw_signature"
+            signature="$(base64 < "$raw_signature" | tr -d '\r\n')"
+            rm -f "$raw_signature"
+            jq -n --arg key_id "$PORTABLE_MANIFEST_SIGNING_KEY_ID" --arg signature "$signature" \
+              '{schemaVersion: 1, keyId: $key_id, signature: $signature}' > "${manifest}.sig"
+          done
+
       - name: Delete old nightly release
+        if: ${{ !inputs.windows_only }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create nightly release
+        if: ${{ !inputs.windows_only }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          REQUESTED_SKIP_SIGNING: ${{ inputs.skip_signing }}
         run: |
-          VERSION="${{ needs.version.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
           DATE=$(date +%Y-%m-%d)
+          if [[ "$REQUESTED_SKIP_SIGNING" == "true" || "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            SIGNING_NOTE="unsigned"
+          else
+            SIGNING_NOTE="signed"
+          fi
 
           gh release create nightly release/* \
             --title "Nightly Build ${DATE}" \
@@ -952,7 +1149,7 @@ jobs:
             --notes "$(cat <<NOTES
           ## Nightly Build ${DATE} (${VERSION})
 
-          > ⚠️ This is an **unsigned** nightly build for testing purposes.
+          > ⚠️ This is a **${SIGNING_NOTE}** nightly build for testing purposes.
           >
           > 🍎 **macOS users:** If you see *"N.E.K.O is damaged and can't be opened"*, run this in Terminal:
           > \`\`\`bash
@@ -962,7 +1159,7 @@ jobs:
           ### Desktop App (Electron + Python backend)
           | Platform | File |
           |----------|------|
-          | Windows x64 | \`N.E.K.O.exe\` (Portable) |
+          | Windows x64 | \`N.E.K.O_*_win.zip\` (Portable) |
           | macOS Intel | \`N.E.K.O-*.dmg\` / \`.zip\` |
           | macOS Apple Silicon | \`N.E.K.O-*-arm64.dmg\` / \`.zip\` |
           | Linux x64 | \`N.E.K.O-*.AppImage\` / \`.deb\` / \`.tar.gz\` |
@@ -979,3 +1176,35 @@ jobs:
           Built from [\`${VERSION}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
           NOTES
           )"
+
+      - name: Create or update Windows nightly release
+        if: ${{ inputs.windows_only }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          REQUESTED_SKIP_SIGNING: ${{ inputs.skip_signing }}
+        run: |
+          set -euo pipefail
+          VERSION="$RELEASE_VERSION"
+          DATE=$(date +%Y-%m-%d)
+          if [[ "$REQUESTED_SKIP_SIGNING" == "true" ]]; then
+            SIGNING_NOTE="Unsigned"
+          else
+            SIGNING_NOTE="Signed"
+          fi
+          if gh release view nightly >/dev/null 2>&1; then
+            while IFS= read -r asset; do
+              case "$asset" in
+                python-backend-win-*.zip|N.E.K.O_*_win.zip|N.E.K.O_*_win_delta.zip|N.E.K.O_*_win_delta.bin|N.E.K.O_*_win_manifest.json|N.E.K.O_*_win_manifest.json.sig)
+                  gh release delete-asset nightly "$asset" --yes
+                  ;;
+              esac
+            done < <(gh release view nightly --json assets --jq '.assets[].name')
+            gh release upload nightly release/* --clobber
+          else
+            gh release create nightly release/* \
+              --title "Nightly Build ${DATE}" \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              --notes "${SIGNING_NOTE} Windows-only nightly build (${VERSION})."
+          fi

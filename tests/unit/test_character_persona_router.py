@@ -88,11 +88,8 @@ def test_reload_page_notice_code_distinguishes_character_settings():
 
 
 @pytest.mark.unit
-def test_get_character_data_uses_persona_override_in_runtime_view(monkeypatch):
-    # Pin the runtime language to JA so we can prove the late-binding language branch
-    # in get_persona_prompt_guidance actually fires (CodeRabbit nitpick on PR #1086):
-    # the always-English IMPORTANT tail alone would pass even if the L10N lookup were broken.
-    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+def test_get_character_data_uses_persona_override_in_runtime_view():
+    # Removed preset IDs must keep working from the profile and prompt stored on disk.
 
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
@@ -121,18 +118,13 @@ def test_get_character_data_uses_persona_override_in_runtime_view(monkeypatch):
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert character_data[current_name]["一句话台词"] == "今天也让我陪着你吧。"
-        # Late-binding: stored prompt_guidance string is ignored; the live preset template
-        # is re-resolved by preset_id. "sunny cat girl" is the always-English IMPORTANT tail —
-        # presence proves the persona template was injected at all.
-        assert "sunny cat girl" in prompt_map[current_name]
-        # JA-only marker — proves the language branch resolved to "ja" instead of falling back.
-        assert "決まり文句は台詞集" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+        assert "sunny cat girl" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
-def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_override_exists(monkeypatch):
-    # Pin runtime language to JA to actually exercise the L10N branch (see PR #1086 review).
-    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_override_exists():
+    # A removed preset falls back to its landed prompt while still replacing stale blocks.
 
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
@@ -168,18 +160,15 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         _, _, _, character_data, _, prompt_map, _, _, _ = config_manager.get_character_data()
 
         assert character_data[current_name]["性格原型"] == "优雅全能管家"
-        # English IMPORTANT tail (language-agnostic) — proves persona template was injected.
-        assert "butler-cat girl" in prompt_map[current_name]
-        # JA-only marker — proves the late-binding language branch resolved to "ja".
-        assert "定型的な敬語" in prompt_map[current_name]
+        assert "elegant, steady, professional composure" in prompt_map[current_name]
+        assert "butler-cat girl" not in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
-def test_get_character_data_keeps_custom_system_prompt_when_override_exists(monkeypatch):
-    # Pin runtime language to JA to actually exercise the L10N branch (see PR #1086 review).
-    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
+def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
+    # Custom text and a removed preset's landed prompt both remain effective.
 
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
@@ -211,17 +200,12 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists(monk
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert "reserved fox spirit" in prompt_map[current_name]
-        # English IMPORTANT tail (language-agnostic) — template was injected.
-        assert "sunny cat girl" in prompt_map[current_name]
-        # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
-        assert "決まり文句は台詞集" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+        assert "sunny cat girl" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
-def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_prompt(monkeypatch):
-    # Pin runtime language to JA to actually exercise the L10N branch (see PR #1086 review).
-    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "ja")
-
+def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_prompt():
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(config_manager)
@@ -262,10 +246,8 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         assert "moonlight" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
-        # English IMPORTANT tail (language-agnostic) — template was injected.
-        assert "sunny cat girl" in prompt_map[current_name]
-        # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
-        assert "決まり文句は台詞集" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" in prompt_map[current_name]
+        assert "sunny cat girl" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -323,22 +305,23 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
             presets_body = _parse_json_response(presets_response)
             assert presets_body["success"] is True
             assert [preset["preset_id"] for preset in presets_body["presets"]] == [
-                "classic_genki",
-                "tsundere_helper",
-                "elegant_butler",
+                "frail_younger_sister",
+                "empathetic_older_sister",
+                "sharp_tongued_junior",
+                "chaotic_online_friend",
             ]
 
             ja_presets_response = await router_module.list_persona_presets_route(
                 _DummyRequest({}, query_params={"language": "ja-JP"}),
             )
             ja_presets_body = _parse_json_response(ja_presets_response)
-            assert "決まり文句は台詞集" in ja_presets_body["presets"][0]["prompt_guidance"]
+            assert "陪伴を求める言葉は台詞集" in ja_presets_body["presets"][0]["prompt_guidance"]
 
             ja_header_presets_response = await router_module.list_persona_presets_route(
                 _DummyRequest({}, headers={"Accept-Language": "ja-JP"}),
             )
             ja_header_presets_body = _parse_json_response(ja_header_presets_response)
-            assert "決まり文句は台詞集" in ja_header_presets_body["presets"][0]["prompt_guidance"]
+            assert "陪伴を求める言葉は台詞集" in ja_header_presets_body["presets"][0]["prompt_guidance"]
 
             invalid_query_with_header_response = await router_module.list_persona_presets_route(
                 _DummyRequest(
@@ -348,13 +331,13 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 ),
             )
             invalid_query_with_header_body = _parse_json_response(invalid_query_with_header_response)
-            assert "決まり文句は台詞集" in invalid_query_with_header_body["presets"][0]["prompt_guidance"]
+            assert "陪伴を求める言葉は台詞集" in invalid_query_with_header_body["presets"][0]["prompt_guidance"]
 
             current_name = config_manager.load_characters()["当前猫娘"]
             save_result = await router_module.update_character_persona_selection(
                 current_name,
                 _DummyRequest({
-                    "preset_id": "classic_genki",
+                    "preset_id": "frail_younger_sister",
                     "source": "onboarding",
                     "i18n_language": "zh-CN",
                 }),
@@ -364,25 +347,25 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
 
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
-            assert override["preset_id"] == "classic_genki"
-            assert "固定口头禅不是台词清单" in override["prompt_guidance"]
+            assert override["preset_id"] == "frail_younger_sister"
+            assert "索要陪伴不是固定台词" in override["prompt_guidance"]
 
             header_save_result = await router_module.update_character_persona_selection(
                 current_name,
                 _DummyRequest(
-                    {"preset_id": "classic_genki", "source": "manual_reselect"},
+                    {"preset_id": "frail_younger_sister", "source": "manual_reselect"},
                     headers={"Accept-Language": "ja-JP"},
                 ),
             )
             assert header_save_result["success"] is True
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
-            assert "決まり文句は台詞集" in override["prompt_guidance"]
+            assert "陪伴を求める言葉は台詞集" in override["prompt_guidance"]
 
             selection_response = await router_module.get_character_persona_selection(current_name)
             selection_body = _parse_json_response(selection_response)
             assert selection_body["success"] is True
-            assert selection_body["selection"]["preset_id"] == "classic_genki"
+            assert selection_body["selection"]["preset_id"] == "frail_younger_sister"
 
             clear_result = await router_module.clear_character_persona_selection(current_name)
             assert clear_result["success"] is True
@@ -453,7 +436,7 @@ async def test_character_persona_selection_change_clears_stale_recent_history():
 
             save_result = await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "classic_genki", "source": "onboarding"}),
+                _DummyRequest({"preset_id": "frail_younger_sister", "source": "onboarding"}),
             )
             assert save_result["success"] is True
             assert json.loads(recent_path.read_text(encoding="utf-8")) == []
@@ -515,7 +498,7 @@ async def test_update_character_persona_selection_restarts_active_current_sessio
             with patch.object(router_module, "send_reload_page_notice", AsyncMock(return_value=True)) as reload_notice, patch.object(crud_module, "send_reload_page_notice", reload_notice):
                 save_result = await router_module.update_character_persona_selection(
                     current_name,
-                    _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                    _DummyRequest({"preset_id": "frail_younger_sister", "source": "manual_reselect"}),
                 )
 
         assert save_result["success"] is True
@@ -582,7 +565,7 @@ async def test_update_character_persona_selection_closes_original_session_when_r
             ) as reload_notice:
                 save_result = await router_module.update_character_persona_selection(
                     current_name,
-                    _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                    _DummyRequest({"preset_id": "frail_younger_sister", "source": "manual_reselect"}),
                 )
 
         assert save_result["success"] is True
@@ -634,7 +617,7 @@ async def test_clear_character_persona_selection_restarts_active_current_session
             crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                _DummyRequest({"preset_id": "frail_younger_sister", "source": "manual_reselect"}),
             )
 
             current_session.end_session.reset_mock()
@@ -702,7 +685,7 @@ async def test_clear_character_persona_selection_closes_original_session_when_re
             crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
             await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                _DummyRequest({"preset_id": "frail_younger_sister", "source": "manual_reselect"}),
             )
 
             current_session.end_session.reset_mock()
@@ -1064,7 +1047,7 @@ async def test_update_character_persona_selection_finalizes_onboarding_and_manua
 
             onboarding_result = await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "classic_genki", "source": "onboarding"}),
+                _DummyRequest({"preset_id": "frail_younger_sister", "source": "onboarding"}),
             )
             assert onboarding_result["success"] is True
 
@@ -1078,7 +1061,7 @@ async def test_update_character_persona_selection_finalizes_onboarding_and_manua
 
             manual_reselect_result = await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "elegant_butler", "source": "manual_reselect"}),
+                _DummyRequest({"preset_id": "empathetic_older_sister", "source": "manual_reselect"}),
             )
             assert manual_reselect_result["success"] is True
 
@@ -1124,7 +1107,7 @@ async def test_character_persona_selection_routes_remove_stale_generated_system_
 
             save_result = await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "elegant_butler", "source": "manual_reselect"}),
+                _DummyRequest({"preset_id": "empathetic_older_sister", "source": "manual_reselect"}),
             )
             assert save_result["success"] is True
             saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
@@ -1184,7 +1167,7 @@ async def test_character_persona_selection_routes_preserve_custom_system_prompt_
 
             save_result = await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "elegant_butler", "source": "manual_reselect"}),
+                _DummyRequest({"preset_id": "empathetic_older_sister", "source": "manual_reselect"}),
             )
             assert save_result["success"] is True
             saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
@@ -1275,6 +1258,17 @@ async def test_character_persona_routes_reject_invalid_json_and_normalize_non_ob
                 "error": "无效的人格预设",
             }
 
+            removed_preset_selection = await router_module.update_character_persona_selection(
+                current_name,
+                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+            )
+            removed_preset_body = _parse_json_response(removed_preset_selection)
+            assert removed_preset_selection.status_code == 400
+            assert removed_preset_body == {
+                "success": False,
+                "error": "无效的人格预设",
+            }
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -1309,7 +1303,7 @@ async def test_update_character_persona_selection_rolls_back_if_recent_clear_fai
                 with pytest.raises(RuntimeError, match="recent clear failed"):
                     await router_module.update_character_persona_selection(
                         current_name,
-                        _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                        _DummyRequest({"preset_id": "frail_younger_sister", "source": "manual_reselect"}),
                     )
 
             saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
@@ -1344,7 +1338,7 @@ async def test_clear_character_persona_selection_rolls_back_if_recent_clear_fail
 
             await router_module.update_character_persona_selection(
                 current_name,
-                _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
+                _DummyRequest({"preset_id": "frail_younger_sister", "source": "manual_reselect"}),
             )
 
             async def _boom(*args, **kwargs):
@@ -1355,4 +1349,4 @@ async def test_clear_character_persona_selection_rolls_back_if_recent_clear_fail
                     await router_module.clear_character_persona_selection(current_name)
 
             saved_reserved = config_manager.load_characters()["猫娘"][current_name].get("_reserved", {})
-            assert saved_reserved["persona_override"]["preset_id"] == "classic_genki"
+            assert saved_reserved["persona_override"]["preset_id"] == "frail_younger_sister"
