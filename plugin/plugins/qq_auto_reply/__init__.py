@@ -1301,9 +1301,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         frontend_mode = str(mode or "").strip()
         stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
         mode = frontend_mode if frontend_mode in ("napcat", "open_platform") else stored_mode
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         frontend_locale = str(locale or "").strip()
-        locale = frontend_locale if frontend_locale else get_global_language()
+        # #2500 第 2 步：兜底也用全码。这个 locale 有两个身份——查 i18n bundle 的
+        # 键，以及回传给前端、被 save_prompt_override 原样当作覆盖的存储键。短码
+        # 'zh' 会让繁中用户在编辑器里看到（并覆盖）简体那份。
+        # ⚠️ 必须和 session_instruction_service._resolve_static_layer 的兜底同时
+        # 翻：写侧用 'zh-TW' 存、读侧还按 'zh' 的候选链找，覆盖会静默失效。
+        locale = frontend_locale if frontend_locale else get_global_language_full()
         strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
         is_napcat = mode == "napcat"
         overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
