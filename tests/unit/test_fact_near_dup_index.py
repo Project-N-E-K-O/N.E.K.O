@@ -969,3 +969,76 @@ async def test_restoring_an_arbitration_loser_reindexes_it(tmp_path):
 
     assert await store.arestore_arbitrated_fact("小天", "loser1") is True
     assert indexed == [("小天", "loser1", "用户最近养了一只猫")]
+
+
+@pytest.mark.asyncio
+async def test_restoring_keeps_the_rows_own_id_type(tmp_path):
+    """The restore path normalizes its argument to str; indexing must use the
+    row's real id or an integer-id row lands in FTS as text — unresolvable
+    through facts_by_id and undeletable by privacy erasure."""
+    import json
+
+    cm = _cm(str(tmp_path))
+    indexed: list[tuple] = []
+
+    class _RecordingIndex(_FakeIndex):
+        async def aindex_fact(self, name, fact_id, text):
+            indexed.append((fact_id, type(fact_id).__name__))
+
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        store = FactStore(time_indexed_memory=_RecordingIndex())
+    store._config_manager = cm
+
+    char_dir = os.path.join(str(tmp_path), "小天")
+    os.makedirs(char_dir, exist_ok=True)
+    with open(os.path.join(char_dir, "facts.json"), "w", encoding="utf-8") as fh:
+        json.dump([], fh)
+    with open(
+        os.path.join(char_dir, "facts_archive.json"), "w", encoding="utf-8",
+    ) as fh:
+        json.dump([{
+            "id": 1, "text": "旧的整数 id 行", "entity": "master",
+            "arbitration_archived_at": "2026-07-01T00:00:00",
+        }], fh)
+
+    assert await store.arestore_arbitrated_fact("小天", 1) is True
+    assert indexed == [(1, "int")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reindex_invalidates_the_backfill_marker(tmp_path):
+    """The marker is persistent, so swallowing the failure would leave the
+    restored row invisible to Stage-2 until some unrelated rebuild."""
+    import json
+
+    cm = _cm(str(tmp_path))
+    cleared: list[str] = []
+
+    class _FailingIndex(_FakeIndex):
+        async def aindex_fact(self, *_a, **_k):
+            raise RuntimeError("db locked")
+
+        def clear_fts_backfill_marker(self, name):
+            cleared.append(name)
+
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        store = FactStore(time_indexed_memory=_FailingIndex())
+    store._config_manager = cm
+    store._fts_backfilled = {"小天"}
+
+    char_dir = os.path.join(str(tmp_path), "小天")
+    os.makedirs(char_dir, exist_ok=True)
+    with open(os.path.join(char_dir, "facts.json"), "w", encoding="utf-8") as fh:
+        json.dump([], fh)
+    with open(
+        os.path.join(char_dir, "facts_archive.json"), "w", encoding="utf-8",
+    ) as fh:
+        json.dump([{
+            "id": "loser1", "text": "用户最近养了一只猫", "entity": "master",
+            "arbitration_archived_at": "2026-07-01T00:00:00",
+        }], fh)
+
+    # 复活本身已经落盘，不因为索引失败而回滚。
+    assert await store.arestore_arbitrated_fact("小天", "loser1") is True
+    assert cleared == ["小天"]
+    assert "小天" not in store._fts_backfilled

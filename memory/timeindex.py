@@ -992,6 +992,30 @@ class TimeIndexedMemory:
             logger.debug(f"[TimeIndexedMemory] 检查 FTS 回填标记失败: {e}")
             return True
 
+    def clear_fts_backfill_marker(self, lanlan_name: str) -> None:
+        """Drop the completion marker so the next write rebuilds the index.
+
+        Used when a row that should be in the index provably isn't (a
+        restore whose reindex failed). The marker is persistent, so
+        without this the row stays invisible to the near-dup check for
+        good.
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            return
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(
+                    text(
+                        f"DELETE FROM {self.FACTS_FTS_META_TABLE} "
+                        f"WHERE key = :key"
+                    ),
+                    {"key": self._FTS_BACKFILL_META_KEY},
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 作废 FTS 回填标记失败: {e}")
+
     def backfill_fact_index(
         self, lanlan_name: str, rows: list[tuple[object, str]],
     ) -> int | None:

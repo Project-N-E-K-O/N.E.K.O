@@ -4174,21 +4174,50 @@ class FactStore:
             return
         try:
             rows = await self.aload_facts(name)
-            text = next(
+            # 索引要用**行自己的** id，不是调用方那个 str() 归一过的
+            # target_id：legacy 行的 id 可以是 int 1，而 FTS5 的
+            # `WHERE fact_id = :fid` 类型敏感——写成文本 "1" 的话，
+            # facts_by_id 反查不到，隐私擦除按 int 1 删也删不掉。
+            restored = next(
                 (
-                    str(row.get('text') or '')
-                    for row in rows
+                    row for row in rows
                     if isinstance(row, dict)
-                    and str(_readable_fact_id(row) or '') == str(fact_id)
+                    and (rid := _readable_fact_id(row)) is not None
+                    and str(rid) == str(fact_id)
                 ),
                 None,
             )
+            if restored is None:
+                return
+            text = str(restored.get('text') or '')
             if not text:
                 return
-            await self._time_indexed.aindex_fact(name, fact_id, text)
+            await self._time_indexed.aindex_fact(
+                name, _readable_fact_id(restored), text,
+            )
         except Exception as e:
+            # 索引没补成：清掉回填标记，让下一次写入重跑一遍全量回填。
+            # 不清的话这条复活的 fact 会一直对 Stage-2 不可见——标记是持久
+            # 的，没有别的东西会再扫它。复活本身已经落盘，不回滚。
             logger.warning(
-                f"[FactStore] {name}: 复活行重新索引失败 fact={fact_id}: {e}"
+                f"[FactStore] {name}: 复活行重新索引失败 fact={fact_id}，"
+                f"已作废回填标记等下次重建: {e}"
+            )
+            await self._ainvalidate_fts_backfill(name)
+
+    async def _ainvalidate_fts_backfill(self, name: str) -> None:
+        """Force the next write to rebuild the near-dup index for ``name``."""
+        try:
+            done = self._fts_backfilled
+            if done is not None:
+                done.discard(name)
+            if self._time_indexed is not None:
+                await asyncio.to_thread(
+                    self._time_indexed.clear_fts_backfill_marker, name,
+                )
+        except Exception as exc:
+            logger.debug(
+                f"[FactStore] {name}: 作废回填标记失败: {exc}"
             )
 
     async def _aenqueue_near_dup_pairs(
