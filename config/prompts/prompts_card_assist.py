@@ -35,7 +35,26 @@ router strips fences + matching quote pairs before returning.
 
 from __future__ import annotations
 
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc
+
+
+def normalize_card_assist_locale(lang: str | None) -> str:
+    """Normalize a locale to a key of this module's prompt dicts.
+
+    Public on purpose, same reason as ``prompts_proactive.normalize_mini_game_invite_locale``:
+    the consumer is ``main_routers.card_assist_router`` and the tables live here, so
+    "which key scheme do these dicts use" stays answerable next to the dicts.
+
+    This module's dicts carry only ``zh`` / ``zh-TW`` / ``en`` -- the assistant's
+    prompt is authored in Chinese and English, and the other locales get the English
+    prompt plus an explicit output-language directive appended by the router
+    (``_output_language_directive``). So anything that is not a Chinese variant
+    resolves to ``en`` here rather than to its own short code, which would only reach
+    ``_loc``'s missing-key warning and land on ``en`` anyway.
+    """
+    key = normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
+    return key if key in ("zh", "zh-TW") else "en"
 
 
 # Canonical catgirl card field keys (Chinese keys are what's stored in
@@ -383,6 +402,15 @@ CARD_ASSIST_CHAT_ADVICE_ONLY_DIRECTIVE = {
 }
 
 
+# 兜底文案：LLM 既没回话也没给动作时，聊天框不能空着。跟本模块其余 dict 一样只写
+# zh / zh-TW / en —— 其它 locale 的助手回复本来就是英文。
+CARD_ASSIST_CHAT_EMPTY_REPLY_FALLBACK = {
+    "zh": "（嗯…我没想好怎么回，能再说一遍喵？）",
+    "zh-TW": "（嗯…我沒想好怎麼回，可以再說一次喵？）",
+    "en": "(Hmm... I'm not sure how to reply — could you say that again?)",
+}
+
+
 def get_card_assist_clarify_prompt(lang: str = "zh") -> str:
     return _loc(CARD_ASSIST_CLARIFY_PROMPT, lang)
 
@@ -401,3 +429,7 @@ def get_card_assist_chat_system_prompt(lang: str = "zh") -> str:
 
 def get_card_assist_chat_advice_only_directive(lang: str = "zh") -> str:
     return _loc(CARD_ASSIST_CHAT_ADVICE_ONLY_DIRECTIVE, lang)
+
+
+def get_card_assist_chat_empty_reply_fallback(lang: str = "zh") -> str:
+    return _loc(CARD_ASSIST_CHAT_EMPTY_REPLY_FALLBACK, lang)

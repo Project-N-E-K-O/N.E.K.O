@@ -24,7 +24,21 @@ It localizes directly through prompts_sys._loc instead.
 """
 from __future__ import annotations
 
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc
+
+
+def normalize_galgame_locale(lang: str | None) -> str:
+    """Normalize a locale to a key of this module's prompt dicts, which include zh-TW.
+
+    Public on purpose, same reason as ``prompts_proactive.normalize_mini_game_invite_locale``:
+    the consumer is ``main_routers.galgame_router`` and the tables live here.
+
+    Every dict below carries all eight NEKO_CORE_LOCALES with Simplified Chinese
+    keyed as ``zh``, so this is the plain full-locale scheme -- ``keep_traditional``
+    stays on and nothing is filtered out.
+    """
+    return normalize_prompt_locale(lang, default='en', simplified='zh', keep_traditional=True)
 
 
 # {lanlan_name} = catgirl display name; {master_name} = chat partner display name.

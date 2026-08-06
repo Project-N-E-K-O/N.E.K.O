@@ -247,7 +247,8 @@ class _StreamingMixin:
         the main model in the persona's voice, so the small model only needs to keep
         the existing tone and shorten the tail, not re-enact the persona. Language is
         detected from ``tail`` (the prefix may be very short; the tail is more
-        informative).
+        informative), with the session locale breaking the Simplified / Traditional
+        tie the detector cannot see.
         """
         if not (tail and tail.strip()):
             return None
@@ -273,9 +274,16 @@ class _StreamingMixin:
             return None
 
         try:
-            from utils.language_utils import detect_language, normalize_language_code
-            detected = detect_language(tail) or 'zh'
-            lang = normalize_language_code(detected, format='short') or 'zh'
+            from utils.language_utils import detect_prompt_language
+            # detect_language alone reports script families, so a Traditional tail
+            # comes back as 'zh' and the zh-TW row of LONG_RESPONSE_TAIL_SUMMARY_PROMPT
+            # is unreachable. detect_prompt_language refines that with the session's
+            # own locale, which is the only signal separating the two (issue #2500 step 2).
+            ui_language = None
+            provider = getattr(self, "_user_language_provider", None)
+            if provider:
+                ui_language = provider()
+            lang = detect_prompt_language(tail, default='zh', ui_language=ui_language) or 'zh'
         except Exception:
             lang = 'zh'
 

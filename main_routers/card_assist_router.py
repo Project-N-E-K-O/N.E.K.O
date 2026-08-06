@@ -43,12 +43,14 @@ from fastapi.responses import JSONResponse
 from config import CHARACTER_RESERVED_FIELDS
 from config.prompts.prompts_card_assist import (
     get_card_assist_chat_advice_only_directive,
+    get_card_assist_chat_empty_reply_fallback,
     get_card_assist_chat_system_prompt,
     get_card_assist_clarify_prompt,
     get_card_assist_generate_prompt,
     get_card_assist_refine_field_prompt,
+    normalize_card_assist_locale,
 )
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language_full
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_config_manager
@@ -88,22 +90,27 @@ _LLM_TIMEOUT_SECONDS = 60.0
 _ACTION_RECOVERY_SPLIT_MAX_FIELDS = 32
 
 def _resolve_language(payload_locale: str | None) -> str:
-    """Map a frontend locale (e.g. 'zh-CN', 'en-US') to the short prompt
-    language code ('zh' / 'en'). Falls back to the global language setting.
+    """Map a frontend locale (e.g. 'zh-CN', 'en-US') to a card-assist prompt
+    language key ('zh' / 'zh-TW' / 'en'). Falls back to the global language setting.
 
-    Prompt is currently only authored in zh & en; ja/ko/ru/pt/es get the en
+    Prompt is currently authored in zh, zh-TW & en; ja/ko/ru/pt/es get the en
     prompt (target field keys still pull the locale's own template — see
-    `_resolve_locale_code` + `_load_template_keys_for_locale`)."""
+    `_resolve_locale_code` + `_load_template_keys_for_locale`).
+
+    The global fallback reads `get_global_language_full()`, not the short getter:
+    the short one collapses Traditional to 'zh', which would leave every 'zh-TW'
+    template in `prompts_card_assist` unreachable for a Traditional user who did
+    not send a locale in the payload (issue #2500 step 2)."""
     if payload_locale:
         code = payload_locale.strip().lower()
         if code.startswith("zh"):
-            return "zh"
+            return normalize_card_assist_locale(code)
         if code.startswith("en"):
             return "en"
     try:
-        glob = (get_global_language() or "").strip().lower()
+        glob = (get_global_language_full() or "").strip().lower()
         if glob.startswith("zh"):
-            return "zh"
+            return normalize_card_assist_locale(glob)
     except Exception:
         pass
     return "en"
@@ -126,6 +133,11 @@ _SUPPORTED_LOCALE_FILES = {
 def _resolve_locale_code(payload_locale: str | None) -> str:
     """Pick the closest matching `config/characters/<x>.json` filename for
     the payload locale. Falls back to the global language setting, then `en`.
+
+    Like `_resolve_language`, the global fallback has to be the full code: the
+    short getter answers 'zh' for a Traditional user, which maps to the
+    Simplified `zh-CN.json` template and skips the `zh-TW` output-language
+    directive below (issue #2500 step 2).
     """
     if payload_locale:
         code = payload_locale.strip().lower()
@@ -136,7 +148,7 @@ def _resolve_locale_code(payload_locale: str | None) -> str:
         if primary in _SUPPORTED_LOCALE_FILES:
             return _SUPPORTED_LOCALE_FILES[primary]
     try:
-        glob = (get_global_language() or "").strip().lower()
+        glob = (get_global_language_full() or "").strip().lower()
         if glob in _SUPPORTED_LOCALE_FILES:
             return _SUPPORTED_LOCALE_FILES[glob]
         primary = glob.split("-", 1)[0]
@@ -147,11 +159,12 @@ def _resolve_locale_code(payload_locale: str | None) -> str:
     return "en"
 
 
-# `_resolve_locale_code` 的输出（角色卡模板文件名）→ (英文名, 本地名)。prompt 目前只写了
-# zh / en 两版（见 _resolve_language），ja/ko/ru/pt/es 会落到 en、zh-TW 会落到简中。这些
-# locale 如果不显式要求输出语言，助手就会用英文 / 简中提问、并把字段值也填成英文 / 简中
-# （Codex #3331696257）。所以对这些 locale 追加一条输出语言指示。en / zh-CN 与基础 prompt
-# 语言一致，不在表里（返回空指示）。
+# `_resolve_locale_code` 的输出（角色卡模板文件名）→ (英文名, 本地名)。prompt 目前写了
+# zh / zh-TW / en 三版（见 _resolve_language），ja/ko/ru/pt/es 会落到 en。这些 locale
+# 如果不显式要求输出语言，助手就会用英文提问、并把字段值也填成英文（Codex #3331696257）。
+# 所以对这些 locale 追加一条输出语言指示。en / zh-CN 与基础 prompt 语言一致，不在表里
+# （返回空指示）。zh-TW 现在虽然有了自己的 prompt 版本，仍留在表里：基础 prompt 只约束
+# 助手怎么想，这条指示约束它把字段值写成什么字，两者不互相取代。
 _LOCALE_OUTPUT_LANGUAGE: dict[str, tuple[str, str]] = {
     "zh-TW": ("Traditional Chinese", "繁體中文"),
     "ja": ("Japanese", "日本語"),
@@ -1709,8 +1722,12 @@ def _build_action_recovery_prompt(
     This is intentionally not a replacement for the companion persona prompt:
     the original reply stays visible to the user. This pass only recovers the
     structured actions the UI protocol needs.
+
+    Traditional Chinese shares the Simplified branch: this prompt is machinery
+    the user never sees, and the reply's own language is pinned separately by
+    ``_output_language_directive`` off ``locale_code``, which does keep zh-TW.
     """
-    if lang == "zh":
+    if lang.startswith("zh"):
         prompt = f"""你是角色卡动作恢复器，不要扮演角色，不要回复用户。
 
 用户原话：
@@ -2061,8 +2078,7 @@ async def chat(request: Request):
 
     if not reply and not actions:
         # LLM 既没回话也没动作 —— 给前端一个兜底文案，不然聊天框就僵住了。
-        reply = ("（嗯…我没想好怎么回，能再说一遍喵？）" if lang == "zh"
-                 else "(Hmm... I'm not sure how to reply — could you say that again?)")
+        reply = get_card_assist_chat_empty_reply_fallback(lang)
 
     response_payload = {
         "success": True,
