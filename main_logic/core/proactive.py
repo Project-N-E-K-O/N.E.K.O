@@ -36,7 +36,7 @@ from main_logic.proactive_delivery import (
     resolve_callback_delivery_ack,
 )
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
-from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
+from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_sid
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget

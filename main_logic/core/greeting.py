@@ -46,7 +46,7 @@ from config.prompts.prompts_avatar_interaction import (
     _sanitize_avatar_interaction_text_context,
 )
 from utils.config_manager import get_config_manager
-from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
+from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
     logger,

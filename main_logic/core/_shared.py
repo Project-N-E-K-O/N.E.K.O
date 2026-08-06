@@ -27,7 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from utils.language_utils import normalize_language_code, get_global_language, get_global_language_full
+from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.logger_config import get_module_logger
 
 
