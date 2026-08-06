@@ -967,6 +967,13 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
     from main_logic import forge_credit_ledger
 
     monkeypatch.setenv("NEKO_USER_DATA_DIR", str(tmp_path))
+    confirmation_calls = []
+
+    async def confirm_cloud_debit(**_kwargs):
+        confirmation_calls.append(_kwargs)
+        return {"confirmed": True}
+
+    monkeypatch.setattr(C, "_confirm_cloud_forge_debit", confirm_cloud_debit)
     _write_v2_desktop_session(
         tmp_path,
         monkeypatch,
@@ -1033,6 +1040,20 @@ def test_refreshed_desktop_bearer_keeps_same_owner_reservation(
     assert committed.status_code == commit_replay.status_code == 200
     assert committed.json()["committed"] is True
     assert commit_replay.json()["committed"] is True
+    assert committed.json()["debit_confirmed"] is True
+    assert commit_replay.json()["debit_confirmed"] is True
+    assert confirmation_calls == [
+        {
+            "operation_id": operation_id,
+            "credit_id": credit_id,
+            "card_id": card_id,
+        },
+        {
+            "operation_id": operation_id,
+            "credit_id": credit_id,
+            "card_id": card_id,
+        },
+    ]
 
 
 def test_card_drop_capabilities_are_exact_origin_and_no_store(client):
