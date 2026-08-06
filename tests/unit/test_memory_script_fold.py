@@ -40,7 +40,7 @@ def test_the_fold_map_is_not_truncated():
     """⚠️ 下面的等价性用例是拿这张表**派生**出繁体样本的。表要是被截短成
     几十条，那些用例照样全绿——绿在没折到的字根本没进语料。
     """  # noqa: DOCSTRING_CJK
-    assert len(sf._TRAD_FOLD_SOURCE) > 3000
+    assert len(sf._TRAD_FOLD_SOURCE) > 2500
 
 
 def test_no_character_is_both_a_fold_source_and_a_fold_target():
@@ -52,6 +52,36 @@ def test_no_character_is_both_a_fold_source_and_a_fold_target():
     """  # noqa: DOCSTRING_CJK
     both = set(sf._TRAD_FOLD_SOURCE) & set(sf._SIMP_FOLD_TARGET)
     assert both == set(), f'fold sources that are also targets: {sorted(both)}'
+
+
+def test_folding_never_moves_a_character_out_of_the_tokenizer_cjk_range():
+    """⚠️ `_tokenize` 的 CJK 占比判定只数 U+4E00-9FFF。
+
+    OpenCC 有 710 对是把 URO 里的字折到 Ext-A/Ext-B 上的（`俓` → `𠇹`、
+    `倲` → `㑈`）。收进表就等于：那段文本折完之后判定翻成「拉丁」，整段吐
+    一个 token 而不是 2/3-gram——**折叠反而把 substring 召回关掉了**，比不折
+    还糟。生成脚本筛掉了这类，这里钉住它别回来。
+
+    另一条路（放宽 `_tokenize` 的 CJK 判定）没走：那个判定被文档写明与
+    `persona._extract_keywords` 严格一致，单边放宽就是把两处规则拆散。
+    """  # noqa: DOCSTRING_CJK
+    for ch in sf._TRAD_FOLD_SOURCE + sf._SIMP_FOLD_TARGET:
+        assert '一' <= ch <= '鿿', (
+            f'{ch!r} (U+{ord(ch):04X}) is outside the tokenizer CJK range'
+        )
+
+
+def test_a_folded_cjk_segment_still_tokenizes_as_ngrams():
+    """上一条的行为面：折完仍要走 n-gram 分支，而不是退化成整段一个 token。
+
+    只断言表里的码位范围会漏掉「判定逻辑本身被改坏」这一路，所以这里直接
+    看 `_tokenize` 的产物。`俓倲偑` 是筛掉的那 710 对里的字（曾折成
+    `𠇹㑈㐽`），拿它当样本：表要是把这类收回去，这条立刻退化成单 token。
+    """  # noqa: DOCSTRING_CJK
+    for text in ('俓倲偑', '這臺機器'):
+        tokens = _tokenize(text, None)
+        assert len(tokens) > 1, f'{text}: degraded to one token: {tokens}'
+        assert all(2 <= len(t) <= 3 for t in tokens), tokens
 
 
 def test_folding_is_idempotent_and_length_preserving():

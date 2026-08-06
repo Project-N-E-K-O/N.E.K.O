@@ -65,8 +65,21 @@ def build_map() -> dict[str, str]:
         folded = fixpoint(t2s, ch)
         # len != 1 would break str.maketrans' two-string form (and the
         # length-preserving property _tokenize relies on).
-        if len(folded) == 1 and folded != ch:
-            mapping[ch] = folded
+        if len(folded) != 1 or folded == ch:
+            continue
+        # The target must stay inside URO too. 710 pairs fold a URO
+        # character onto an Ext-A/Ext-B ideograph (俓 -> 𠇹, 倲 -> 㑈), and
+        # ``_tokenize``'s CJK predicate only counts U+4E00-9FFF: a segment
+        # that folds out of that range flips from "CJK, emit 2/3-grams" to
+        # "Latin, emit one whole-segment token", which *disables* substring
+        # recall for exactly the text the fold was supposed to help.
+        # Widening the predicate instead would diverge from
+        # ``persona._extract_keywords``, which it is documented to mirror.
+        # Both sides of these pairs are rare enough that dropping them just
+        # leaves the pre-fold behaviour in place.
+        if ord(folded) not in _URO:
+            continue
+        mapping[ch] = folded
     return mapping
 
 
