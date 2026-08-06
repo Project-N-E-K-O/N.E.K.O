@@ -324,6 +324,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userModelList = document.getElementById('user-model-list');
     const playVrmAnimationBtn = document.getElementById('play-vrm-animation-btn');
     let isVrmAnimationPlaying = false; // 跟踪VRM动作播放状态
+    let vrmAnimationPlaybackRequestId = 0;
     let lastVrmAnimationSelection = '_no_motion_';
     let isVrmExpressionPlaying = false; // 跟踪VRM表情播放状态
     let isMmdAnimationPlaying = false; // 跟踪MMD手动预览动画播放状态
@@ -3668,6 +3669,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         vrmAnimationSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
+            const playbackRequestId = ++vrmAnimationPlaybackRequestId;
 
             // 如果选择的是"添加动作"入口，触发文件选择器
             if (selectedValue === '') {
@@ -3712,9 +3714,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (vrmManager) {
                     const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
                     try {
-                        isVrmAnimationPlaying = await playSelectedVrmAnimationOption(selectedOption);
+                        const playbackStarted = await playSelectedVrmAnimationOption(selectedOption);
+                        if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;
+                        isVrmAnimationPlaying = playbackStarted;
                         updateVRMAnimationPlayButtonIcon();
                     } catch (error) {
+                        if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;
                         console.error('自动播放 VRM 动作失败:', error);
                         isVrmAnimationPlaying = false;
                         updateVRMAnimationPlayButtonIcon();
@@ -3760,6 +3765,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showStatus(t('live2d.vrmAnimation.selectAnimationFirst', '请先选择动作'), 2000);
                 return;
             }
+            const playbackRequestId = ++vrmAnimationPlaybackRequestId;
 
             if (isVrmAnimationPlaying) {
                 // 当前正在播放，点击后停止，恢复 idle 轮换
@@ -3781,9 +3787,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
 
                 try {
-                    isVrmAnimationPlaying = await playSelectedVrmAnimationOption(selectedOption);
+                    const playbackStarted = await playSelectedVrmAnimationOption(selectedOption);
+                    if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;
+                    isVrmAnimationPlaying = playbackStarted;
                     updateVRMAnimationPlayButtonIcon();
                 } catch (error) {
+                    if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;
                     console.error('播放 VRM 动作失败:', error);
                     const errMsg = (error && typeof error.message === 'string') ? error.message : String(error ?? 'Unknown error');
                     showStatus(t('live2d.vrmAnimation.animationPlayFailed', `播放动作失败: ${errMsg}`, { error: errMsg }));

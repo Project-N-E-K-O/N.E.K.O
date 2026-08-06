@@ -277,11 +277,72 @@ def test_jukebox_loader_rejects_stale_idle_restore(mock_page: Page):
     assert result == {"currentBefore": True, "currentAfter": False}
 
 
-def test_jukebox_vrma_false_result_does_not_mark_playback_active():
-    assert "var played = await window.vrmManager.playVRMAAnimation" in JUKEBOX_LOADER_SCRIPT
-    assert "if (played !== true || playRequestId !== state.playRequestId) return;" in JUKEBOX_LOADER_SCRIPT
-    assert "const played = await window.vrmManager.playVRMAAnimation" in JUKEBOX_SCRIPT
-    assert "if (played !== true) return;" in JUKEBOX_SCRIPT
+@pytest.mark.frontend
+def test_jukebox_vrma_false_or_stale_result_does_not_mark_playback_active(mock_page: Page):
+    mock_page.set_content(
+        """
+        <script>
+          window.t = (key, fallback) => fallback || key;
+          window.__nekoJukeboxToggle = function() {};
+        </script>
+        """
+    )
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    loader_result = mock_page.evaluate(
+        """
+        async () => {
+          let finishStalePlay;
+          window.vrmManager = {
+            playVRMAAnimation: (url) => url === '/false.vrma'
+              ? Promise.resolve(false)
+              : new Promise((resolve) => { finishStalePlay = resolve; })
+          };
+          await window.Jukebox.playVRMA('/false.vrma');
+          const afterFalse = { ...window.Jukebox.State };
+          const stalePlay = window.Jukebox.playVRMA('/stale.vrma');
+          window.Jukebox.State.playRequestId += 1;
+          finishStalePlay(true);
+          await stalePlay;
+          return {
+            afterFalse: {
+              isPlaying: afterFalse.isPlaying,
+              isVMDPlaying: afterFalse.isVMDPlaying,
+              isPaused: afterFalse.isPaused
+            },
+            afterStale: {
+              isPlaying: window.Jukebox.State.isPlaying,
+              isVMDPlaying: window.Jukebox.State.isVMDPlaying,
+              isPaused: window.Jukebox.State.isPaused
+            }
+          };
+        }
+        """
+    )
+    assert loader_result == {
+        "afterFalse": {"isPlaying": False, "isVMDPlaying": False, "isPaused": False},
+        "afterStale": {"isPlaying": False, "isVMDPlaying": False, "isPaused": False},
+    }
+
+    setup_jukebox_page(mock_page)
+    transport_result = mock_page.evaluate(
+        """
+        async () => {
+          window.vrmManager = { playVRMAAnimation: async () => false };
+          await window.Jukebox.playVRMA('/false.vrma');
+          return {
+            isPlaying: window.Jukebox.State.isPlaying,
+            isVMDPlaying: window.Jukebox.State.isVMDPlaying,
+            isPaused: window.Jukebox.State.isPaused
+          };
+        }
+        """
+    )
+    assert transport_result == {
+        "isPlaying": False,
+        "isVMDPlaying": False,
+        "isPaused": False,
+    }
 
 
 @pytest.mark.frontend
