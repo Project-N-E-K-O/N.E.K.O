@@ -410,11 +410,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
         # 一步完成：分析 + 执行
+        #
+        # lang 必须显式传：analyzer 的全部频道描述和系统提示都走 _loc(..., lang)
+        # （task_executor 里的 _assess_unified_channels / _assess_user_plugin /
+        # _stage1_llm_coarse_screen），漏传会落到 analyze_and_execute 的默认值
+        # "en"，让日/韩/俄/西/葡/中文用户全都拿到英文 prompt。
+        # 语言来源跟 agent_server 其他 i18n 消费者（channels/*.py 的结果播报）一致：
+        # _rp_lang(None) → get_global_language()，返回短码 zh/en/ja/ko/ru/es/pt。
         result = await Modules.task_executor.analyze_and_execute(
             messages=enriched_messages,
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id,
+            lang=_rp_lang(None),
             external_intent=external_intent,
             proactive=proactive,
         )
