@@ -891,6 +891,36 @@ def test_only_the_entry_point_labels_recall_entries():
     )
 
 
+def test_the_entry_point_has_no_runtime_switch():
+    """No env lookup inside the renderer.
+
+    This is the one shape the behavioural tests structurally cannot catch:
+    a budget that only runs when a flag says so passes every measurement
+    here (the tests take the default path) and is off in production —
+    measured at 6.4x over budget (issue #2588, B3). Tests cannot enumerate
+    the environments they were not run in, so the rule is that the render
+    path has no environments: same input, same output, budget always on.
+
+    Narrow on purpose, and NOT a general reachability check — that is the
+    inference this whole file stopped making. It pins one property of one
+    module: nothing here reads the environment. A flag threaded in from a
+    caller would still get through; what this stops is the cheap version.
+    """
+    tree = ast.parse((_REPO_ROOT / _ENTRY_POINT).read_text(encoding="utf-8"))
+    env_reads = sorted({
+        node.attr if isinstance(node, ast.Attribute) else node.id
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"})
+        or (isinstance(node, ast.Name) and node.id in {"environ", "getenv"})
+    })
+
+    assert env_reads == [], (
+        f"{_ENTRY_POINT} 读了环境变量 {env_reads}：召回渲染必须是同样输入同样"
+        f"输出、预算恒定生效的纯函数。挂在开关后面的预算，测试跑的是默认路径，"
+        f"量不出生产环境关掉之后的结果"
+    )
+
+
 # Every module that talks to the structured recall endpoint. The memory
 # server's own route file defines it rather than calling it.
 _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
