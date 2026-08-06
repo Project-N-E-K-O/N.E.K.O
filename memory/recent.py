@@ -1622,7 +1622,7 @@ class CompressedRecentHistoryManager:
                 return ('failed', None)
 
         if not snapshot:
-            print(f"{lanlan_name} 的历史记录为空，无需审阅")
+            _safe_print(f"{lanlan_name} 的历史记录为空，无需审阅")
             return ('failed', None)
 
         # 将 snapshot 转为可读文本格式（喂 LLM）
@@ -1704,7 +1704,7 @@ class CompressedRecentHistoryManager:
                     _safe_print(f"❌ 审阅响应格式错误：{response_content}")
                     return ('failed', None)
 
-                print(f"记忆整理结果：{review_result['explanation']}")
+                _safe_print(f"记忆整理结果：{review_result['explanation']}")
 
                 # 将修正后的对话转换回消息格式。SystemMessage 类型由 compress
                 # 产生（summary 备忘录），review 不应该输出，丢弃以保护压缩边界。
