@@ -82,7 +82,7 @@ switched input methods has both scripts sitting in ``facts.json``.
 query and the document side before splitting (#2584, see
 ``memory.script_fold``). Word choice (用户 / 使用者) is a separate axis the
 fold does not address — that one is the embedding path's job.
-"""
+"""  # noqa: DOCSTRING_CJK  # the zh/zh-TW examples above are the point
 from __future__ import annotations
 
 import asyncio

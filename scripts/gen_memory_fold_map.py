@@ -41,7 +41,7 @@ def fixpoint(t2s, ch: str) -> str:
     ``苧`` on *different* Simplified characters -- the exact cross-script
     mismatch this map exists to remove. Folding to the fixpoint here also
     keeps sources and targets disjoint, which the guard test asserts.
-    """
+    """  # noqa: DOCSTRING_CJK  # the chain example needs the actual characters
     seen = {ch}
     cur = ch
     for _ in range(8):
