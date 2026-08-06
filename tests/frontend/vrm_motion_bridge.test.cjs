@@ -121,7 +121,7 @@ emit('neko-assistant-turn-start', {
     requestId: 'retry-request'
 });
 assert.equal(latest('neko-assistant-turn-start').detail.userText, 'clap');
-emit('neko-assistant-speech-cancel', { turnId: 'retry-turn-1', source: 'will_retry' });
+emit('neko-assistant-speech-cancel', { turnId: 'retry-turn-1', source: 'response_discarded' });
 emit('neko-assistant-turn-start', {
     turnId: 'retry-turn-2',
     requestId: 'retry-request'
@@ -135,6 +135,22 @@ emit('neko-assistant-turn-start', {
     turnId: 'retry-turn-after-end',
     requestId: 'retry-request'
 });
+assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
+
+emit('neko:user-content-sent', {
+    requestId: 'interrupted-request',
+    text: 'wave',
+    source: 'text'
+});
+emit('neko-assistant-turn-start', {
+    turnId: 'interrupted-turn',
+    requestId: 'interrupted-request'
+});
+emit('neko-assistant-speech-cancel', {
+    turnId: 'interrupted-turn',
+    source: 'user_activity'
+});
+emit('neko-assistant-turn-start', { turnId: 'after-interrupted-turn' });
 assert.equal(latest('neko-assistant-turn-start').detail.userText, undefined);
 
 windowLike._geminiTurnFullText = '(old wave)';

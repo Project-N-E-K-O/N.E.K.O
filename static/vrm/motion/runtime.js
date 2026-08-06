@@ -758,7 +758,8 @@
             speechProcessed: false,
             casualTalkPending: false,
             casualTalkFinalized: false,
-            structured: window._turnIsStructured === true,
+            structured: !String(source || '').startsWith('bridge')
+                && window._turnIsStructured === true,
             speechIntents: [],
             bodyEmotionPlayed: null,
             deferredUntilVrmReady: false,
@@ -788,6 +789,14 @@
         ]);
     }
 
+    function settleMissingEmotion(turn, emotionReceived) {
+        if (!turn || emotionReceived || turn.emotionReady) return;
+        turn.emotionReady = true;
+        turn.officialEmotion = turn.officialEmotion || 'neutral';
+        if (turn.resolveEmotionReady) turn.resolveEmotionReady();
+        turn.resolveEmotionReady = null;
+    }
+
     function finishTurn(turn, source) {
         if (!turn || turn.ended) return;
         if (turn.finishTimer) {
@@ -814,16 +823,9 @@
             await processUnseenStagesDirect(turn);
             const emotionReceived = await waitForOfficialEmotion(turn);
             if (!isCurrentTurn(turn)) return false;
-            if (!emotionReceived && !turn.emotionReady) {
-                // The official event is best-effort. A missing event must not
-                // strand the ordinary conversational fallback indefinitely.
-                turn.emotionReady = true;
-                turn.officialEmotion = turn.officialEmotion || 'neutral';
-                if (turn.resolveEmotionReady) {
-                    turn.resolveEmotionReady();
-                    turn.resolveEmotionReady = null;
-                }
-            }
+            // The official event is best-effort. A missing event must not
+            // strand the ordinary conversational fallback indefinitely.
+            settleMissingEmotion(turn, emotionReceived);
             await processSpeechFallback(turn);
             if (isCurrentTurn(turn) && player && typeof player.resumeIdleCountdown === 'function') {
                 player.resumeIdleCountdown('assistant-turn-finished:' + turn.id);
@@ -1082,9 +1084,10 @@
                     await processUnseenStagesDirect(turn);
                     if (!isCurrentTurn(turn)
                         || window.vrmManager.currentModel !== loadedModel) return;
-                    await waitForOfficialEmotion(turn);
+                    const emotionReceived = await waitForOfficialEmotion(turn);
                     if (!isCurrentTurn(turn)
                         || window.vrmManager.currentModel !== loadedModel) return;
+                    settleMissingEmotion(turn, emotionReceived);
                     await processEmotionBodyFallback(turn, {
                         changed: true,
                         emotion: normalizeEmotion(turn.officialEmotion)

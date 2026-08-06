@@ -150,6 +150,12 @@
         };
     }
 
+    function relaySpeechCancel(event) {
+        const detail = event && event.detail || {};
+        relay('neko-assistant-speech-cancel', detail);
+        if (detail.source !== 'response_discarded') clearPendingContext(event);
+    }
+
     window.addEventListener('neko:user-content-sent', rememberUserText);
     window.addEventListener('neko:user-voice-content-received', rememberUserText);
     window.addEventListener('neko:assistant-response-cancelled', clearPendingContext);
@@ -158,7 +164,7 @@
     window.addEventListener('neko-assistant-turn-start', relayTurnStart);
     window.addEventListener('neko-assistant-turn-end', relayTurnEnd);
     window.addEventListener('neko-assistant-emotion-ready', relayDetail('neko-assistant-emotion-ready'));
-    window.addEventListener('neko-assistant-speech-cancel', relayDetail('neko-assistant-speech-cancel'));
+    window.addEventListener('neko-assistant-speech-cancel', relaySpeechCancel);
     window.addEventListener('neko-compact-caption-update', relayClosedStage);
 
     window.NekoMotionBridge = Object.freeze({

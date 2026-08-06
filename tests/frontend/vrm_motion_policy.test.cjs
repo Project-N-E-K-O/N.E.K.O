@@ -118,6 +118,7 @@ assert.match(bridgeSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(bridgeSource, /function relayClosedStage\(event\)/);
 assert.match(bridgeSource, /function peekUserText\(requestIdValue\)/);
 assert.match(bridgeSource, /relay\('neko-assistant-turn-end', detail\);\s*finishUserText\(event\);/);
+assert.match(bridgeSource, /if \(detail\.source !== 'response_discarded'\) clearPendingContext\(event\)/);
 assert.match(bridgeSource, /event\.detail\.text/);
 assert.match(bridgeSource, /detail\.structured = detail\.structured === true \|\| window\._turnIsStructured === true/);
 assert.match(bridgeSource, /text: closedText,\s*structured: window\._turnIsStructured === true/);
@@ -156,6 +157,7 @@ assert.match(runtimeSource, /if \(!vrmReady\(\)\) \{\s*turn\.deferredUntilVrmRea
 assert.match(runtimeSource, /player\.cancel\('assistant_speech_cancel', \{ resume: refreshMode\(\) === 'vrm' \}\)/);
 assert.match(runtimeSource, /activeTurn = null;\s*bridgedText = ''/);
 assert.match(runtimeSource, /pendingStages: new Set\(\)/);
+assert.match(runtimeSource, /structured: !String\(source \|\| ''\)\.startsWith\('bridge'\)/);
 assert.match(runtimeSource, /turn\.pendingStages\.has\(stage\.id\)/);
 assert.match(runtimeSource, /if \(await processStage\(stage, turn\)\) turn\.seen\.add\(stage\.id\)/);
 assert.match(runtimeSource, /turn\.pendingStages\.delete\(stage\.id\)/);
@@ -218,12 +220,13 @@ const waitForEmotionBlock = runtimeSource.split('function waitForOfficialEmotion
     .split('function finishTurn', 1)[0];
 assert.match(waitForEmotionBlock, /Promise\.resolve\(true\)/);
 assert.match(waitForEmotionBlock, /resolve\(false\)/);
+assert.match(runtimeSource, /function settleMissingEmotion\(turn, emotionReceived\)/);
 const finishTurnBlock = runtimeSource.split('function finishTurn(turn, source)', 2)[1]
     .split('function scheduleFinishTurn', 1)[0];
 assert.match(finishTurnBlock, /const emotionReceived = await waitForOfficialEmotion\(turn\)/);
 assert.match(
     finishTurnBlock,
-    /if \(!emotionReceived && !turn\.emotionReady\) \{[\s\S]*turn\.emotionReady = true;[\s\S]*turn\.officialEmotion = turn\.officialEmotion \|\| 'neutral';[\s\S]*await processSpeechFallback\(turn\)/
+    /settleMissingEmotion\(turn, emotionReceived\);[\s\S]*await processSpeechFallback\(turn\)/
 );
 const cancelObservedSpeechBlock = runtimeSource.split('function cancelObservedSpeech(detail)', 2)[1]
     .split('function handleMotionLifecycleBridge', 1)[0];
@@ -234,6 +237,10 @@ assert.match(
 assert.match(runtimeSource, /neko-assistant-speech-cancel'[\s\S]*cancelObservedSpeech\(detail\)/);
 const modelLoadedBlock = runtimeSource.split('async function handleVrmModelLoaded()', 2)[1]
     .split("window.addEventListener('vrm-model-loaded'", 1)[0];
+assert.match(
+    modelLoadedBlock,
+    /const emotionReceived = await waitForOfficialEmotion\(turn\)[\s\S]*settleMissingEmotion\(turn, emotionReceived\)/
+);
 assert.ok(
     modelLoadedBlock.indexOf("player.cancel('vrm_model_loaded', { resume: false })")
         < modelLoadedBlock.indexOf('resolveCharacterProfile()'),
