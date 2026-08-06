@@ -42,8 +42,8 @@ NORMALIZER_NAMES = frozenset({
 RAW_LANGUAGE_PARAMS = frozenset({"lang", "language"})
 
 
-def _module_tree():
-    return ast.parse(inspect.getsource(P))
+def _module_tree(source: str | None = None):
+    return ast.parse(source if source is not None else inspect.getsource(P))
 
 
 def _lookup_key_nodes(node):
@@ -58,7 +58,7 @@ def _lookup_key_nodes(node):
             yield node.args[1]
 
 
-def _raw_language_lookups():
+def _raw_language_lookups(source: str | None = None):
     """Every place a raw language parameter is used directly as a lookup key.
 
     A parameter stops counting as raw once the function reassigns that same name
@@ -66,7 +66,7 @@ def _raw_language_lookups():
     shape the module used before this change.
     """
     offenders = []
-    for fn in (n for n in ast.walk(_module_tree()) if isinstance(n, ast.FunctionDef)):
+    for fn in (n for n in ast.walk(_module_tree(source)) if isinstance(n, ast.FunctionDef)):
         params = {a.arg for a in fn.args.args + fn.args.kwonlyargs} & RAW_LANGUAGE_PARAMS
         if not params:
             continue
@@ -99,21 +99,24 @@ def test_no_template_lookup_uses_a_raw_language_parameter():
 def test_the_guard_can_actually_fail():
     """The AST guard is worth nothing if its shapes do not match real code.
 
-    Runs the same detector over a snippet written in the shape the module used
-    before this change, and requires it to be flagged.
+    Calls ``_raw_language_lookups`` itself. The first version re-implemented the
+    inner walk inline, so it validated a COPY of the detector rather than the
+    detector -- an empty sweep from the real one would still have read green.
     """
-    tree = ast.parse(
-        "def f(lang):\n"
-        "    return _loc(D, lang)\n"
+    before = "def get_meme_topic_line(lang):\n    return _loc(D, lang)\n"
+    assert _raw_language_lookups(before), "detector missed the pre-change shape"
+
+    # 归一化之后必须不再报，否则这条守卫会把修好的代码也判红。
+    after = (
+        "def get_meme_topic_line(lang):\n"
+        "    lang_key = _normalize_prompt_language(lang)\n"
+        "    return _loc(D, lang_key)\n"
     )
-    fn = tree.body[0]
-    keys = [
-        key.id
-        for node in ast.walk(fn)
-        for key in _lookup_key_nodes(node)
-        if isinstance(key, ast.Name)
-    ]
-    assert "lang" in keys
+    assert _raw_language_lookups(after) == []
+
+    # 另外两种查表形状也要认得，否则改写成 .get / [] 就能绕过守卫。
+    assert _raw_language_lookups("def f(lang):\n    return D.get(lang, D['en'])\n")
+    assert _raw_language_lookups("def f(language):\n    return D[language]\n")
 
 
 # ── 行为面：今天零变化，C2 之后才会动 ────────────────────────────────────────
@@ -136,14 +139,69 @@ def test_meme_topic_line_is_unchanged_for_every_locale_callers_can_pass(lang, ke
     )
 
 
+# 每个 locale 在 source_instruction 里独有的字面片段。手写而不是从模块里取：
+# 这些片段住在 get_proactive_format_sections 的函数体内部（局部 dict），拿不到，
+# 而"从被测对象自己推导期望值"恰恰是下面这条测试要避开的东西。
+_SOURCE_INSTRUCTION_MARKERS = {
+    "zh": "你可以结合",
+    "en": "You may combine",
+    "ja": "組み合わせて",
+    "ko": "결합하여",
+    "ru": "комбинировать",
+    "es": "Puedes combinar",
+    "pt": "Você pode combinar",
+}
+
+# 素材名走的是另一张表（_material_labels），必须单独钉：只钉上面那张的话，把
+# 素材名表整个换成英文仍然全绿 —— 这是变异跑出来的，不是推理出来的。
+_MATERIAL_LABEL_MARKERS = {
+    "zh": "屏幕内容",
+    "en": "screen content",
+    "ja": "画面の内容",
+    "ko": "화면 내용",
+    "ru": "содержимое экрана",
+    "es": "contenido de pantalla",
+    "pt": "conteúdo da tela",
+}
+
+
 @pytest.mark.parametrize("lang", CALLER_REACHABLE_LOCALES)
-def test_format_sections_are_unchanged_for_every_locale_callers_can_pass(lang):
+def test_format_sections_select_that_locales_own_text(lang):
+    """An independent oracle, not the function compared against itself.
+
+    The first version asserted ``f(lang) == f(_normalize_prompt_language(lang))``.
+    Since the sibling test pins the normalizer as the identity on exactly these
+    seven codes, that was ``f(x) == f(x)`` -- green even if the function returned
+    a constant, or English for everyone. Assert the locale's own wording instead.
+    """
+    marker = _SOURCE_INSTRUCTION_MARKERS[lang]
+    seen = set()
     for flags in itertools.product([False, True], repeat=4):
         kwargs = dict(zip(("has_screen", "has_web", "has_music", "has_meme"), flags))
-        assert (
-            P.get_proactive_format_sections(lang=lang, **kwargs)
-            == P.get_proactive_format_sections(lang=P._normalize_prompt_language(lang), **kwargs)
+        source_instruction, output_format_section = P.get_proactive_format_sections(lang=lang, **kwargs)
+        assert source_instruction and output_format_section
+        if any(flags):
+            assert marker in source_instruction, (
+                f"{lang} did not select its own source_instruction wording"
+            )
+        if kwargs["has_screen"]:
+            assert _MATERIAL_LABEL_MARKERS[lang] in source_instruction, (
+                f"{lang} did not select its own material label"
+            )
+        seen.add((source_instruction, output_format_section))
+    # 16 种素材组合不能全塌成同一段文案，否则 has_* 分支根本没起作用。
+    assert len(seen) > 1
+
+
+def test_every_locale_gets_distinct_format_sections():
+    """No locale silently rides another's text -- the failure a self-comparison hides."""
+    rendered = {
+        lang: P.get_proactive_format_sections(
+            has_screen=True, has_web=True, has_music=False, has_meme=False, lang=lang
         )
+        for lang in CALLER_REACHABLE_LOCALES
+    }
+    assert len(set(rendered.values())) == len(rendered), "有 locale 拿到了别人的文案"
 
 
 def test_the_whole_module_answers_one_script_for_a_traditional_locale():
@@ -165,6 +223,12 @@ def test_the_whole_module_answers_one_script_for_a_traditional_locale():
         has_screen=True, has_web=False, has_music=False, has_meme=False, lang="zh"
     )
     assert source_instruction == simplified
+    # 单靠上面那条相等断言是空的：归一化器把 'zh-TW' 和 'zh' 映到同一个键，两边
+    # 本来就是同一次调用，任何确定性实现都能过 —— 包括"所有人都拿英文"。所以还要
+    # 钉住内容确实是简体那一行，且不是繁体、不是英文。
+    assert _MATERIAL_LABEL_MARKERS["zh"] in source_instruction      # 屏幕内容
+    assert "螢幕內容" not in source_instruction                      # 繁体写法
+    assert _MATERIAL_LABEL_MARKERS["en"] not in source_instruction  # screen content
 
 
 @pytest.mark.parametrize("full_locale, short_key", [("zh-CN", "zh"), ("zh-TW", "zh")])

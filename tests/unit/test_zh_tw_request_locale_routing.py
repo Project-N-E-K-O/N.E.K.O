@@ -17,6 +17,7 @@ land on the Simplified row rather than following Traditional through the new bra
 from __future__ import annotations
 
 import asyncio
+import pathlib
 
 import pytest
 
@@ -96,6 +97,37 @@ def test_card_assist_empty_reply_fallback_has_a_traditional_line():
     assert traditional != simplified
     assert traditional != english
     assert "喵" in traditional
+
+    # 光测 accessor 不够：上面三条在 router 仍写 `lang == "zh"` 时也全绿，因为它们
+    # 根本没碰 router。先把 resolver→accessor 那一段链钉住：
+    with language_context("zh-TW"):
+        lang = card_assist_router._resolve_language(None)
+    assert get_card_assist_chat_empty_reply_fallback(lang) == traditional
+    with language_context("zh-CN"):
+        lang = card_assist_router._resolve_language(None)
+    assert get_card_assist_chat_empty_reply_fallback(lang) == simplified
+
+
+def test_chat_endpoint_picks_the_fallback_through_the_locale_table():
+    """The last link: ``chat()`` must select that line via the table, not a ternary.
+
+    STRUCTURAL on purpose, and the limit is worth stating. Driving ``chat()`` end
+    to end needs the CSRF guard, a Request, and an LLM stub, and the branch under
+    test is one assignment deep inside it. The behavioural half above pins
+    resolver -> accessor; this half pins that the router actually reaches for the
+    accessor. Verified by mutation: restoring the ``lang == "zh"`` ternary passed
+    every behavioural assertion in this file and is caught only here.
+    """
+    src = (
+        pathlib.Path(card_assist_router.__file__).read_text(encoding="utf-8")
+    )
+    assert "get_card_assist_chat_empty_reply_fallback(lang)" in src, (
+        "chat() no longer takes the empty-reply line from the locale table"
+    )
+    assert 'if lang == "zh"' not in src, (
+        "a `lang == \"zh\"` equality test drops 'zh-TW' into the non-Chinese branch; "
+        "compare the script family or go through the locale table"
+    )
 
 
 def test_card_assist_action_recovery_prompt_stays_chinese_for_traditional():

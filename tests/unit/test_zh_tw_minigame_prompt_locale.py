@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import pathlib
 from types import SimpleNamespace
 
 import pytest
@@ -28,13 +29,29 @@ from config.prompts.prompts_minigame_common import _normalize_prompt_lang
 from main_routers.game_router import char_info as gr_char_info
 from main_routers.game_router import runtime as gr_runtime
 
-# 走 _normalize_prompt_lang 的四个模块。
-MINIGAME_PROMPT_MODULES = (
-    "config.prompts.prompts_soccer",
-    "config.prompts.prompts_badminton",
-    "config.prompts.prompts_minigame_route",
-    "config.prompts.prompts_minigame_common",
-)
+PROMPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts"
+
+
+def _minigame_prompt_modules() -> tuple[str, ...]:
+    """Every config/prompts module on ``_normalize_prompt_lang``, found via imports.
+
+    This was a hardcoded 4-tuple while the docstring below claimed discovery --
+    exactly the checklist-gap failure it warns about. A fifth module importing the
+    helper would be skipped silently by the coverage guard, and a missing zh-TW row
+    there costs a Traditional user ENGLISH, not Simplified (the three
+    ``.get(k) or table["en"]`` consumers).
+    """
+    found = ["config.prompts.prompts_minigame_common"]
+    for path in sorted(PROMPTS_DIR.glob("prompts_*.py")):
+        if path.stem == "prompts_minigame_common":
+            continue
+        src = path.read_text(encoding="utf-8")
+        if "prompts_minigame_common import" in src or "from config.prompts.prompts_minigame_common" in src:
+            found.append(f"config.prompts.{path.stem}")
+    return tuple(found)
+
+
+MINIGAME_PROMPT_MODULES = _minigame_prompt_modules()
 
 
 @pytest.mark.parametrize(
@@ -88,6 +105,20 @@ def test_every_minigame_table_carries_a_traditional_row(module_name, attr, table
 def test_the_coverage_check_actually_found_tables():
     """A zero-table sweep would make the parametrized test vacuously green."""
     assert len(_chinese_tables()) >= 20
+
+
+def test_the_module_discovery_finds_every_minigame_consumer():
+    """The module list is discovered from imports, so a fifth module cannot slip past.
+
+    Pinned by name as well as by count: discovery returning a short list is the
+    same silent-hole failure as the hand-written tuple this replaced.
+    """
+    assert set(MINIGAME_PROMPT_MODULES) == {
+        "config.prompts.prompts_minigame_common",
+        "config.prompts.prompts_soccer",
+        "config.prompts.prompts_badminton",
+        "config.prompts.prompts_minigame_route",
+    }
 
 
 def test_soccer_prompts_differ_by_script():
