@@ -412,6 +412,13 @@ const confirmedPiano = core.analyzeSpeech('Okay.', {
 });
 assert.equal(confirmedPiano.plan[0].evidence.assetId, 'piano_01');
 assert.equal(confirmedPiano.plan[0].evidence.assetExplicit, false);
+['\u5f48\u594f\u92fc\u7434', '\u96d9\u624b\u6572\u64ca\u9375\u76e4'].forEach(function (userText) {
+    const result = core.analyzeSpeech('\u597d\u7684\u3002', {
+        locale: 'zh-TW', userText: userText
+    });
+    assert.equal(result.plan[0].intent, 'piano', userText);
+    assert.equal(result.plan[0].evidence.assetId, 'piano_01', userText);
+});
 ['do not wave goodbye', 'ask the audience to play piano'].forEach(function (userText) {
     assert.equal(core.analyzeSpeech('Okay.', {
         locale: 'en', userText: userText
@@ -423,6 +430,12 @@ assert.deepEqual(core.analyzeSpeech('Okay.', {
 assert.deepEqual(core.analyzeSpeech('\u597d\u7684\u3002', {
     locale: 'zh-CN', userText: '\u4e0d\u8981\u6325\u624b\u7136\u540e\u9f13\u638c'
 }).plan.map(function (item) { return item.intent; }), ['clap']);
+assert.deepEqual(core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'do not wave then wave'
+}).plan.map(function (item) { return item.intent; }), ['wave']);
+assert.deepEqual(core.analyzeSpeech('\u597d\u7684\u3002', {
+    locale: 'zh-CN', userText: '\u4e0d\u8981\u6325\u624b\u7136\u540e\u6325\u624b'
+}).plan.map(function (item) { return item.intent; }), ['wave']);
 
 const acknowledgedModifiers = core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'gently wave twice then vigorously clap three times'
@@ -677,6 +690,12 @@ assert.deepEqual(core.analyze('\u8acb wave goodbye', {
 assert.deepEqual(core.analyze('\u8acb\u63ee\u624b and clap', {
     locale: 'zh-TW'
 }).plan.map(function (item) { return item.intent; }), ['wave', 'clap']);
+['do not \u63ee\u624b', 'if \u63ee\u624b'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'zh-TW' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('Okay, do not \u63ee\u624b', {
+    locale: 'zh-TW', userText: '\u63ee\u624b'
+}).plan.length, 0);
 assert.equal(
     core.toChineseFrame('\u8bf7\u6325\u624b VRM', 'zh-CN'),
     '\u8bf7\u6325\u624b VRM',
@@ -692,6 +711,14 @@ assert.equal(
     assert.equal(core.analyzeSpeech(assistantText, {
         locale: locale,
         userText: userText
+    }).plan.length, 0, assistantText);
+});
+[
+    ['I will think about it.', 'en', 'clap'],
+    ['\u6211\u4f1a\u8003\u8651\u4e00\u4e0b\u3002', 'zh-CN', '\u9f13\u638c']
+].forEach(function ([assistantText, locale, userText]) {
+    assert.equal(core.analyzeSpeech(assistantText, {
+        locale: locale, userText: userText
     }).plan.length, 0, assistantText);
 });
 assert.equal(core.analyzeSpeech('Okay.', {

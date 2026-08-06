@@ -974,7 +974,9 @@
         bridgedText = '';
     }
 
-    function cancelObservedSpeech() {
+    function cancelObservedSpeech(detail) {
+        const turnId = detail && detail.turnId;
+        if (turnId && (!activeTurn || String(turnId) !== activeTurn.id)) return;
         if (player) player.cancel('assistant_speech_cancel', { resume: refreshMode() === 'vrm' });
         discardActiveTurn();
     }
@@ -1010,7 +1012,7 @@
         } else if (message.eventName === 'neko-assistant-emotion-ready') {
             emotionObserved(detail);
         } else if (message.eventName === 'neko-assistant-speech-cancel') {
-            cancelObservedSpeech();
+            cancelObservedSpeech(detail);
         }
     }
 

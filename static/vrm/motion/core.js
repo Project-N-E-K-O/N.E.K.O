@@ -235,6 +235,17 @@
         }).map(function (clause) { return clause.raw; }).join(' ');
     }
 
+    function acknowledgementOnly(text, terms) {
+        const clauses = splitClauses(text).filter(function (clause) {
+            return folded(clause.raw);
+        });
+        return !!clauses.length && clauses.every(function (clause) {
+            return (terms || []).some(function (term) {
+                return folded(clause.raw) === folded(term);
+            });
+        });
+    }
+
     function extractClosedStages(text) {
         const source = String(text || '');
         const stack = [];
@@ -565,10 +576,11 @@
         return source.slice(start, end);
     }
 
-    function actionNegated(text, anchor, terms) {
+    function actionNegated(text, anchor, terms, occurrenceIndex) {
         const source = folded(text);
         const needle = folded(anchor);
-        const anchorIndex = source.indexOf(needle);
+        const anchorIndex = Number.isInteger(occurrenceIndex)
+            ? occurrenceIndex : source.indexOf(needle);
         if (anchorIndex < 0) return false;
         return containsNegation(
             actionEvidenceScope(source, anchorIndex, anchorIndex + needle.length),
@@ -609,10 +621,11 @@
         return true;
     }
 
-    function userCommandActorAllowed(text, anchor) {
+    function userCommandActorAllowed(text, anchor, occurrenceIndex) {
         const source = folded(text);
         const needle = folded(anchor);
-        const anchorIndex = source.indexOf(needle);
+        const anchorIndex = Number.isInteger(occurrenceIndex)
+            ? occurrenceIndex : source.indexOf(needle);
         if (anchorIndex < 0) return true;
         const prefix = source.slice(clauseStartIndex(source, anchorIndex), anchorIndex);
         const suffix = source.slice(anchorIndex + needle.length, anchorIndex + needle.length + 8);
@@ -800,8 +813,16 @@
                         );
                     });
                 });
+            const hasNonHanGuard = hasNonHanScript && detectedLocales.some((candidateLocale) => {
+                if (candidateLocale === 'zh-CN' || candidateLocale === 'zh-TW') return false;
+                const common = this._common(candidateLocale);
+                return includesAny(
+                    commonEvidenceText(source, candidateLocale, 'negation'),
+                    common.negation
+                ) || includesAny(source, common.hypothetical);
+            });
             const needsMixedNormalization = hasNonHanScript
-                && (!hasCanonicalChineseMotion || hasNonHanMotion);
+                && (!hasCanonicalChineseMotion || hasNonHanMotion || hasNonHanGuard);
             // 简体中文已经是权威动作语言，直接保留原句才能保住分句、先后
             // 关系和修饰范围。只有繁中或非中文脚本才需要进入规范化映射。
             if (hasChineseText && !needsTraditionalNormalization
@@ -1475,6 +1496,8 @@
             const locale = localeKey(settings.locale);
             const assistantText = withoutStageDirections(text);
             const userText = normalize(settings.userText);
+            const commandText = TRADITIONAL_HINT.test(userText)
+                ? this._simplifyTraditional(userText) : userText;
             const speech = this.pack.speech || {};
             const assistantLocales = semanticLocales(assistantText, locale);
             const userLocales = semanticLocales(userText, locale);
@@ -1498,7 +1521,7 @@
                 assistantLocales
             );
             const acknowledged = !!assistantText
-                && includesAny(assistantText, acknowledgementTerms)
+                && acknowledgementOnly(assistantText, acknowledgementTerms)
                 && !refused
                 && !questioned
                 && !containsNegation(
@@ -1563,36 +1586,28 @@
                 }
             }
             if (!decision && !directHasExplicitMotion && userText && acknowledged) {
-                const commandCandidates = (speech.commands || []).map((command) => {
-                    const match = matchingTerms(
-                        userText,
-                        this._intentSpeechTermsForLocales(command, userLocales)
-                    )
-                        .filter(function (term) {
-                            return !actionNegated(userText, term, userNegationTerms)
-                                && !actionOnlyConditional(userText, term)
-                                && !actionOnlyHistorical(userText, term)
-                                && userCommandActorAllowed(userText, term);
-                        })
-                        .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];
-                    const weak = match && includesAny(
-                        match,
-                        localizedForLocales(command.weakTerms, userLocales)
-                    );
-                    if (!match) return null;
-                    const sourceIndex = folded(userText).indexOf(folded(match));
-                    return {
-                        command: command,
-                        match: match,
-                        weak: weak,
-                        sourceIndex: sourceIndex,
-                        evidenceText: actionEvidenceScope(
-                            userText,
-                            sourceIndex,
-                            sourceIndex + normalize(match).length
-                        )
-                    };
-                }).filter(Boolean).sort(function (a, b) {
+                const commandCandidates = (speech.commands || []).reduce((candidates, command) => {
+                    const weakTerms = localizedForLocales(command.weakTerms, userLocales);
+                    this._intentSpeechTermsForLocales(command, userLocales).forEach(function (match) {
+                        const matchLength = folded(match).length;
+                        termPositions(commandText, match).forEach(function (sourceIndex) {
+                            const sourceEnd = sourceIndex + matchLength;
+                            if (actionNegated(commandText, match, userNegationTerms, sourceIndex)
+                                || actionHasConditionalSuffix(commandText, sourceEnd)
+                                || actionFollowsJapaneseConditional(commandText, sourceIndex)
+                                || actionHistorical(commandText, sourceIndex)
+                                || !userCommandActorAllowed(commandText, match, sourceIndex)) return;
+                            candidates.push({
+                                command: command,
+                                match: match,
+                                weak: includesAny(match, weakTerms),
+                                sourceIndex: sourceIndex,
+                                evidenceText: actionEvidenceScope(commandText, sourceIndex, sourceEnd)
+                            });
+                        });
+                    });
+                    return candidates;
+                }, []).sort(function (a, b) {
                     return a.sourceIndex - b.sourceIndex
                         || Number(a.weak) - Number(b.weak)
                         || normalize(b.match).length - normalize(a.match).length

@@ -186,6 +186,13 @@ assert.match(
     finishTurnBlock,
     /if \(!emotionReceived && !turn\.emotionReady\) \{[\s\S]*turn\.emotionReady = true;[\s\S]*turn\.officialEmotion = turn\.officialEmotion \|\| 'neutral';[\s\S]*await processSpeechFallback\(turn\)/
 );
+const cancelObservedSpeechBlock = runtimeSource.split('function cancelObservedSpeech(detail)', 2)[1]
+    .split('function handleMotionLifecycleBridge', 1)[0];
+assert.match(
+    cancelObservedSpeechBlock,
+    /const turnId = detail && detail\.turnId;[\s\S]*if \(turnId && \(!activeTurn \|\| String\(turnId\) !== activeTurn\.id\)\) return;/
+);
+assert.match(runtimeSource, /neko-assistant-speech-cancel'[\s\S]*cancelObservedSpeech\(detail\)/);
 const modelLoadedBlock = runtimeSource.split('async function handleVrmModelLoaded()', 2)[1]
     .split("window.addEventListener('vrm-model-loaded'", 1)[0];
 assert.ok(
