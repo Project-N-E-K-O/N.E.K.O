@@ -153,6 +153,20 @@ def test_callback_instruction_leaves_other_locales_alone(spelling):
 CALLBACK_MODULES = ("main_logic.core.proactive", "main_logic.core.lifecycle")
 
 
+def _callee_name(node: ast.Call) -> str:
+    """调用名，属性式与裸名一视同仁。
+
+    ⚠️ 只认 ``ast.Name`` 会漏 ``callback_render._build_callback_instruction(...)``
+    这种属性式调用——那是个纯粹合法的重构，却会让守卫看不见那个调用点。
+    """  # noqa: DOCSTRING_CJK
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
 def _tree(module_name: str) -> ast.Module:
     import importlib
 
@@ -173,8 +187,7 @@ def _functions_rendering_callbacks(tree: ast.Module) -> list:
             continue
         if any(
             isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "_build_callback_instruction"
+            and _callee_name(call) == "_build_callback_instruction"
             for call in ast.walk(node)
         ):
             out.append(node)
@@ -187,8 +200,7 @@ def _lang_arg_names(tree: ast.Module) -> set[str]:
     for node in ast.walk(tree):
         if not (
             isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "_build_callback_instruction"
+            and _callee_name(node) == "_build_callback_instruction"
         ):
             continue
         for kw in node.keywords:
@@ -210,8 +222,7 @@ def _short_format_assignments(tree: ast.Module) -> list[int]:
             for call in ast.walk(node.value):
                 if not (
                     isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == "normalize_language_code"
+                    and _callee_name(call) == "normalize_language_code"
                 ):
                     continue
                 if any(
@@ -237,8 +248,7 @@ def test_all_four_callback_call_sites_are_accounted_for():
                 node
                 for node in ast.walk(_tree(m))
                 if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "_build_callback_instruction"
+                and _callee_name(node) == "_build_callback_instruction"
             ]
         )
         for m in CALLBACK_MODULES

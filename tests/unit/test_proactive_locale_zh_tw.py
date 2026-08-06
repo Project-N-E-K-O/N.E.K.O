@@ -263,6 +263,21 @@ def test_full_format_would_have_broken_simplified():
 # ⚠️ 上面全部是"归一化器和表各自没问题"。真正让 zh-TW 到达用户的是调用点：
 # 把 ``fmt="prompt"`` 删掉，第 1/3/4 节里很多条还是绿的（表本身没变）。所以这里
 # walk 一遍 service.py 的 AST，检查**每一个**调用点都显式给了 fmt。
+def _callee_name(node: ast.Call) -> str:
+    """调用名，属性式与裸名一视同仁。
+
+    ⚠️ 只认 ``ast.Name`` 会漏：``service._resolve_proactive_locale(...)`` /
+    ``prompts_proactive.normalize_proactive_prompt_locale(...)`` 都是 ``ast.Attribute``，
+    一个纯粹合法的重构会让守卫误红（或者更糟，漏掉一个真调用点）。
+    """  # noqa: DOCSTRING_CJK
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
 def _service_tree() -> ast.Module:
     path = pathlib.Path(inspect.getsourcefile(service))
     return ast.parse(path.read_text(encoding="utf-8"))
@@ -273,8 +288,7 @@ def _resolver_calls() -> list[ast.Call]:
         node
         for node in ast.walk(_service_tree())
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_resolve_proactive_locale"
+        and _callee_name(node) == "_resolve_proactive_locale"
     ]
 
 
@@ -297,16 +311,50 @@ def test_no_call_site_relies_on_the_short_default():
 GREETING_ENTRYPOINTS = ("trigger_cat_greeting", "trigger_new_character_greeting")
 
 
-def _greeting_function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+def _greeting_tree() -> ast.Module:
     from main_logic.core import greeting as greeting_mod
 
-    tree = ast.parse(
+    return ast.parse(
         pathlib.Path(inspect.getsourcefile(greeting_mod)).read_text(encoding="utf-8")
     )
+
+
+def _named_function(tree: ast.Module, name: str):
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
-    raise AssertionError(f"greeting.py 里找不到 {name}——入口改名了，这条守卫已失效")
+    return None
+
+
+def _greeting_scope(name: str) -> list:
+    """入口函数，**外加**它在本模块里调到的辅助函数（追一层）。
+
+    ⚠️ 只 walk 入口函数体是有缝的：把 locale 解析挪进一个私有 helper
+    （``_resolve_greeting_lang()``），短码就藏到守卫看不见的地方了。追一层把这条缝
+    堵上——同时也让「必须调归一化器」那条不会因为纯粹的抽取重构而误红。
+    """  # noqa: DOCSTRING_CJK
+    tree = _greeting_tree()
+    entry = _named_function(tree, name)
+    assert entry is not None, f"greeting.py 里找不到 {name}——入口改名了，这条守卫已失效"
+
+    scope = [entry]
+    for node in ast.walk(entry):
+        if not isinstance(node, ast.Call):
+            continue
+        helper = _named_function(tree, _callee_name(node))
+        if helper is not None and helper is not entry:
+            scope.append(helper)
+    return scope
+
+
+def _calls_in(scope: list) -> list[ast.Call]:
+    return [node for func in scope for node in ast.walk(func) if isinstance(node, ast.Call)]
+
+
+@pytest.mark.parametrize("name", GREETING_ENTRYPOINTS)
+def test_the_greeting_scope_walk_finds_something(name):
+    """空断言陷阱：作用域解析写错时，下面两条会 vacuously 通过。"""  # noqa: DOCSTRING_CJK
+    assert _calls_in(_greeting_scope(name)), f"{name} 作用域里一个调用都没扫到"
 
 
 @pytest.mark.parametrize("name", GREETING_ENTRYPOINTS)
@@ -315,10 +363,8 @@ def test_greeting_entrypoints_do_not_shorten_the_locale(name):
     把 greeting.py 改回 ``format='short'``，那两条照样绿。这里盯调用点。"""  # noqa: DOCSTRING_CJK
     offenders = [
         node.lineno
-        for node in ast.walk(_greeting_function(name))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "normalize_language_code"
+        for node in _calls_in(_greeting_scope(name))
+        if _callee_name(node) == "normalize_language_code"
         and any(
             kw.arg == "format" and getattr(kw.value, "value", None) == "short"
             for kw in node.keywords
@@ -329,11 +375,7 @@ def test_greeting_entrypoints_do_not_shorten_the_locale(name):
 
 @pytest.mark.parametrize("name", GREETING_ENTRYPOINTS)
 def test_greeting_entrypoints_normalize_through_the_prompt_normalizer(name):
-    callees = {
-        node.func.id
-        for node in ast.walk(_greeting_function(name))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
+    callees = {_callee_name(node) for node in _calls_in(_greeting_scope(name))}
     assert "normalize_proactive_prompt_locale" in callees, (
         f"{name} 没走 prompt key 归一化器，zh-TW 行取不到"
     )
@@ -347,7 +389,7 @@ def test_prompt_dict_consumers_ask_for_the_prompt_format():
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
             continue
         call = node.value
-        if not (isinstance(call.func, ast.Name) and call.func.id == "_resolve_proactive_locale"):
+        if _callee_name(call) != "_resolve_proactive_locale":
             continue
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id in wanted:
