@@ -174,6 +174,11 @@ assert.deepEqual(
         .plan.map(function (item) { return item.intent; }),
     ['bow', 'clap']
 );
+assert.deepEqual(
+    core.analyze('waves hello then sits down then waves goodbye', { locale: 'en' })
+        .plan.map(function (item) { return item.intent; }),
+    ['wave', 'sit', 'wave']
+);
 assert.equal(core.analyze('nods three times', { locale: 'en' }).plan[0].count, 3);
 assert.equal(core.analyze('claps twice', { locale: 'en' }).plan[0].count, 2);
 assert.equal(core.analyze('waves hello 3 times', { locale: 'en' }).plan[0].count, 3);

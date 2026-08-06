@@ -87,6 +87,33 @@
         return (terms || []).filter(function (term) { return matchesTerm(source, term); });
     }
 
+    function termPositions(text, term) {
+        const source = folded(text);
+        const needle = folded(term);
+        if (!needle) return [];
+        if (/^[A-Za-zÀ-žЀ-ӿ ]+$/u.test(needle)) {
+            const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const boundary = new RegExp(
+                '(^|[^\\p{L}\\p{N}_])(' + escaped + ')(?=$|[^\\p{L}\\p{N}_])',
+                'giu'
+            );
+            const positions = [];
+            let match;
+            while ((match = boundary.exec(source)) !== null) {
+                positions.push(match.index + match[1].length);
+                if (!match[0].length) boundary.lastIndex += 1;
+            }
+            return positions;
+        }
+        const positions = [];
+        let index = source.indexOf(needle);
+        while (index >= 0) {
+            positions.push(index);
+            index = source.indexOf(needle, index + Math.max(1, needle.length));
+        }
+        return positions;
+    }
+
     function unique(values) {
         return Array.from(new Set((values || []).filter(Boolean)));
     }
@@ -253,10 +280,8 @@
         return { name: null, evidence: [] };
     }
 
-    function scopedBefore(text, anchor, terms, width) {
+    function scopedBeforeIndex(text, anchorIndex, terms, width) {
         const source = folded(text);
-        const needle = folded(anchor);
-        const anchorIndex = source.indexOf(needle);
         if (anchorIndex < 0) return false;
         let prefix = source.slice(Math.max(0, anchorIndex - width), anchorIndex);
         const punctuationReset = Math.max.apply(null, ['，', ',', '。', '.', '！', '!', '？', '?', '；', ';', '\n']
@@ -283,10 +308,15 @@
         });
     }
 
-    function speechActorAllowed(text, anchor) {
+    function scopedBefore(text, anchor, terms, width) {
+        return scopedBeforeIndex(text, folded(text).indexOf(folded(anchor)), terms, width);
+    }
+
+    function speechActorAllowed(text, anchor, occurrenceIndex) {
         const source = folded(text);
         const needle = folded(anchor);
-        const anchorIndex = source.indexOf(needle);
+        const anchorIndex = Number.isInteger(occurrenceIndex)
+            ? occurrenceIndex : source.indexOf(needle);
         if (anchorIndex < 0) return true;
         const prefix = source.slice(Math.max(0, anchorIndex - 18), anchorIndex);
         if (/(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(prefix)) {
@@ -531,40 +561,74 @@
 
             const matchedRules = [];
             this.pack.rules.forEach((rule) => {
-                let matchedLocale = null;
-                let matchedIndex = -1;
+                let ruleMatches = [];
                 for (const candidateLocale of locales) {
                     const common = this._common(candidateLocale);
                     const localizedEvidence = localized(rule.phrases, candidateLocale)
                         .concat(localized(rule.aliases, candidateLocale));
-                    const phrase = matchingTerms(source, localizedEvidence)
-                        .sort(function (a, b) { return b.length - a.length; })[0];
+                    const phraseMatches = [];
+                    localizedEvidence.forEach(function (phrase) {
+                        termPositions(source, phrase).forEach(function (sourceIndex) {
+                            phraseMatches.push({
+                                anchor: phrase,
+                                sourceIndex: sourceIndex,
+                                sourceEnd: sourceIndex + folded(phrase).length
+                            });
+                        });
+                    });
                     const frame = frameEvidence(
                         source,
                         localized(rule.frames, candidateLocale),
                         common.negation
                     );
-                    const anchor = phrase || frame[frame.length - 1];
-                    const blocked = anchor && (
-                        scopedBefore(source, anchor, common.negation, 9)
-                        || scopedBefore(source, anchor, common.hypothetical, 12)
-                    );
-                    const actorBlocked = settings.speechMode && anchor
-                        && !speechActorAllowed(source, anchor);
-                    if ((phrase || frame.length) && !blocked && !actorBlocked) {
-                        matchedLocale = candidateLocale;
-                        const positions = (phrase ? [phrase] : frame).map(function (term) {
-                            return folded(source).indexOf(folded(term));
-                        }).filter(function (index) { return index >= 0; });
-                        matchedIndex = positions.length ? Math.min.apply(null, positions) : source.length;
+                    const candidates = phraseMatches.length ? phraseMatches : frame.length
+                        ? termPositions(source, frame[frame.length - 1]).map(function (sourceIndex) {
+                            return {
+                                anchor: frame[frame.length - 1],
+                                sourceIndex: sourceIndex,
+                                sourceEnd: sourceIndex + folded(frame[frame.length - 1]).length
+                            };
+                        }) : [];
+                    ruleMatches = candidates.filter(function (candidate) {
+                        const blocked = scopedBeforeIndex(
+                            source,
+                            candidate.sourceIndex,
+                            common.negation,
+                            9
+                        ) || scopedBeforeIndex(
+                            source,
+                            candidate.sourceIndex,
+                            common.hypothetical,
+                            12
+                        );
+                        const actorBlocked = settings.speechMode
+                            && !speechActorAllowed(source, candidate.anchor, candidate.sourceIndex);
+                        return !blocked && !actorBlocked;
+                    }).map(function (candidate) {
+                        return Object.assign({ locale: candidateLocale }, candidate);
+                    });
+                    if (ruleMatches.length) {
+                        ruleMatches.sort(function (left, right) {
+                            return left.sourceIndex - right.sourceIndex
+                                || (right.sourceEnd - right.sourceIndex)
+                                    - (left.sourceEnd - left.sourceIndex);
+                        });
+                        ruleMatches = ruleMatches.filter(function (candidate, index, rows) {
+                            return !rows.slice(0, index).some(function (earlier) {
+                                return earlier.sourceIndex <= candidate.sourceIndex
+                                    && earlier.sourceEnd >= candidate.sourceEnd;
+                            });
+                        });
                         break;
                     }
                 }
-                if (!matchedLocale) return;
-                matchedRules.push({
-                    rule: rule,
-                    locale: matchedLocale,
-                    sourceIndex: matchedIndex
+                ruleMatches.forEach(function (match) {
+                    matchedRules.push({
+                        rule: rule,
+                        locale: match.locale,
+                        sourceIndex: match.sourceIndex,
+                        sourceEnd: match.sourceEnd
+                    });
                 });
             });
             const maxRules = Number(this.pack.contract && this.pack.contract.maxPlanItems) || 3;
