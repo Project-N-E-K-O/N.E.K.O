@@ -1064,7 +1064,7 @@
     window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
     window.addEventListener('pagehide', function () {
         window.removeEventListener('neko-compact-caption-update', relayClosedMotionStage);
-    }, { once: true });
+    });
     window.addEventListener('pageshow', function () {
         window.addEventListener('neko-compact-caption-update', relayClosedMotionStage);
     });

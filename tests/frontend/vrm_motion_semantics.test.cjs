@@ -159,13 +159,14 @@ assert.equal(core.analyzeSpeech('Okay.', {
         locale: 'en', userText: userText
     }).plan.length, 0, userText);
 });
-['让她鼓掌', '叫他鼓掌'].forEach(function (userText) {
+['让她鼓掌', '叫他鼓掌', '让她开心地鼓掌', '请他们轻轻挥手'].forEach(function (userText) {
     assert.equal(core.analyzeSpeech('好的', {
         locale: 'zh-CN', userText: userText
     }).plan.length, 0, userText);
 });
 
 [
+    ['I wave', 'wave'],
     ['I wave goodbye', 'wave'],
     ['I clap', 'clap'],
     ['I nod', 'nod'],

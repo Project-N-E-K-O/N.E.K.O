@@ -357,7 +357,7 @@
             }, -1);
         };
         if (lastIndex(thirdPartyActors) >= 0
-            || /(?:让|叫|请|要求)\s*(?:他|她|他们|她们)\s*$/u.test(prefix)
+            || /(?:让|叫|请|要求)\s*(?:他们|她们|他|她)/u.test(prefix)
             || /(?:^|[\s，,。！？])(?:他|她)(?=$|[\s，,。！？]|正在|要|会|应该)/u.test(prefix)
             || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they|him|her|them)\b/iu.test(prefix)) {
             return false;
