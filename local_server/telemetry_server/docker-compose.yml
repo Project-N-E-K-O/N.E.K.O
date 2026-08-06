@@ -8,8 +8,8 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      # IANA 时区；可在 .env 或宿主环境中覆盖。
-      - TZ=${TZ:-Asia/Shanghai}
+      # 存储中的业务时间戳固定为 +08:00，容器时区同样固定为 Asia/Shanghai。
+      - TZ=Asia/Shanghai
       # ★ Must override: admin auth token (used for dashboard / export / queries).
       # Set TELEMETRY_ADMIN_TOKEN in your .env file (or shell environment) before
       # running docker-compose; otherwise the container falls back to a clearly

@@ -81,14 +81,16 @@ configure_timezone() {
     local timezone="${TZ:-Asia/Shanghai}"
     local zoneinfo="/usr/share/zoneinfo/$timezone"
 
-    if [ -f "$zoneinfo" ]; then
-        ln -snf "$zoneinfo" /etc/localtime
-        printf '%s\n' "$timezone" > /etc/timezone
-        export TZ="$timezone"
-        echo "🕒 Container timezone: $timezone"
-    else
-        echo "⚠️ Invalid TZ '$timezone'; keeping existing timezone"
+    if [ ! -f "$zoneinfo" ]; then
+        echo "⚠️ Invalid TZ '$timezone'; falling back to Asia/Shanghai"
+        timezone="Asia/Shanghai"
+        zoneinfo="/usr/share/zoneinfo/$timezone"
     fi
+
+    ln -snf "$zoneinfo" /etc/localtime
+    printf '%s\n' "$timezone" > /etc/timezone
+    export TZ="$timezone"
+    echo "🕒 Container timezone: $timezone"
 }
 
 # 输出详细的SSL证书信息（这个就是为了图一乐，不给关！）

@@ -19,7 +19,7 @@ docker/
 
 ### 方式一：环境变量配置（推荐）
 
-所有配置都可以通过环境变量设置。环境变量会覆盖配置文件中的值。
+环境变量用于首次启动时生成初始配置。首次迁移后，持久化运行时配置是唯一的配置来源；修改环境变量不会覆盖它。
 
 #### 核心 API 配置
 
@@ -55,7 +55,7 @@ docker/
 
 ### 方式二：配置文件（高级用户）
 
-挂载配置文件到容器的 `/app/config` 目录。
+运行时配置位于容器的 `/home/neko/.local/share/N.E.K.O/config`，应通过数据根挂载持久化。
 
 #### core_config.json
 
@@ -266,8 +266,8 @@ NEKO_MCP_ROUTER_URL=http://localhost:3283
 # 进入容器
 docker exec -it neko bash
 
-# 检查配置文件
-cat /app/config/core_config.json
+# 检查生效的持久化配置文件
+cat /home/neko/.local/share/N.E.K.O/config/core_config.json
 
 # 检查环境变量
 env | grep NEKO_
@@ -279,10 +279,10 @@ tail -f /app/logs/*.log
 ### 常见问题
 
 **Q: 环境变量不生效？**
-A: 确保环境变量名以 `NEKO_` 开头，并且已在启动时传入。
+A: 环境变量仅用于首次生成初始配置。已有持久化配置时，请在 Web UI 修改配置；不要期待重新启动后由环境变量覆盖。
 
 **Q: 配置文件被覆盖？**
-A: 环境变量优先级高于配置文件。如果想使用配置文件，不要设置对应的环境变量。
+A: 已有持久化配置不会被环境变量覆盖。`NEKO_FORCE_ENV_UPDATE` 只会重新生成容器内的启动模板，不会替换已持久化的运行时配置；如需重置，请先备份并通过 Web UI 或明确编辑持久化配置处理。
 
 **Q: 如何查看所有配置项？**
 A: 运行 `docker exec neko python -c "from utils.config_manager import get_config_manager; import json; print(json.dumps(get_config_manager().get_core_config(), indent=2, ensure_ascii=False))"`

@@ -10,8 +10,8 @@ services:
       # bind mount ./data 会被 root 拥有的宿主目录覆盖，非 root 容器写不进 SQLite。
       - survey-data:/app/data
     environment:
-      # IANA 时区；需要管理端 token 时，在此段继续添加 SURVEY_* 变量。
-      - TZ=${TZ:-Asia/Shanghai}
+      # 存储中的业务时间戳固定为 +08:00，容器时区同样固定为 Asia/Shanghai。
+      - TZ=Asia/Shanghai
     # 默认不设环境变量：require_admin 在 token 为空时返回 503，admin API 全程禁用，
     # 避免「忘了改 changeme 就把含 device_id/steam_user_id 的接口暴露出去」。
     # 启用管理端 / docs 时，在上方 environment: 中追加并改成强随机 token：
