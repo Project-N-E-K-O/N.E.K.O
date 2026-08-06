@@ -729,7 +729,7 @@
                 : semanticLocales(source, locale);
             const guardNegationTerms = unique(locales.reduce((terms, candidateLocale) => {
                 return terms.concat(this._common(candidateLocale).negation || []);
-            }, []));
+            }, []).concat(settings.additionalNegationTerms || []));
             const guardHypotheticalTerms = unique(locales.reduce((terms, candidateLocale) => {
                 return terms.concat(this._common(candidateLocale).hypothetical || []);
             }, []));
@@ -1127,7 +1127,8 @@
             const settings = options || {};
             const inputLocale = localeKey(settings.locale);
             const canonicalZh = this.toChineseFrame(text, inputLocale, {
-                speechMode: settings.speechMode === true
+                speechMode: settings.speechMode === true,
+                additionalNegationTerms: settings.additionalNegationTerms
             });
             const locale = 'zh-CN';
             let hypotheticalSentence = -1;
@@ -1388,16 +1389,17 @@
             const assistantLocales = semanticLocales(assistantText, locale);
             const userLocales = semanticLocales(userText, locale);
             const assistantMetaTerms = localizedForLocales(speech.meta, assistantLocales);
+            const assistantRefusalTerms = localizedForLocales(speech.refusals, assistantLocales);
             const assistantNegationTerms = unique(assistantLocales.reduce(function (terms, candidateLocale) {
                 return terms.concat(this._common(candidateLocale).negation || []);
-            }.bind(this), []));
+            }.bind(this), []).concat(assistantRefusalTerms));
             const userNegationTerms = unique(userLocales.reduce(function (terms, candidateLocale) {
                 return terms.concat(this._common(candidateLocale).negation || []);
             }.bind(this), []));
             const refused = !!assistantText
                 && includesAny(
                     negationEvidenceText(assistantText),
-                    localizedForLocales(speech.refusals, assistantLocales)
+                    assistantRefusalTerms
                 );
             const questioned = /[?？]\s*$/u.test(assistantText)
                 || asksPermissionQuestion(assistantText);
@@ -1407,31 +1409,14 @@
             let decision = null;
             let directResult = null;
 
-            // A complete action-card name is an explicit local command. Resolve it
-            // after the assistant accepts the command so refusal prose cannot trigger
-            // the requested asset, while a short acknowledgement still keeps it exact.
             const exactCard = this.actionCardsByName.get(actionNameKey(userText));
-            if (exactCard && acknowledged) {
-                decision = this._speechDecision(
-                    exactCard.intent,
-                    userText,
-                    locale,
-                    'user-exact-action-card:' + exactCard.stableId
-                );
-                if (decision) {
-                    decision.evidence.canonicalZh = exactCard.nameZh;
-                    decision.evidence.assetId = exactCard.stableId;
-                    decision.evidence.assetNameZh = exactCard.nameZh;
-                    decision.evidence.assetExplicit = true;
-                }
-            }
-
-            if (!decision && assistantText && !refused) {
+            if (assistantText) {
                 directResult = this.analyze(assistantText, {
                     locale: locale,
                     officialEmotion: settings.officialEmotion,
                     profilePreset: settings.profilePreset,
-                    speechMode: true
+                    speechMode: true,
+                    additionalNegationTerms: assistantRefusalTerms
                 });
                 directResult.plan.forEach(function (item) {
                     item.evidence.source = 'assistant:semantic';
@@ -1459,6 +1444,22 @@
             const directHasExplicitMotion = !!(directResult && directResult.plan.some(function (item) {
                 return !ACKNOWLEDGEMENT_INTENTS.has(item.intent);
             }));
+            // A complete action-card name stays exact after a short acknowledgement,
+            // but an explicit assistant-authored motion owns the reply body.
+            if (exactCard && acknowledged && !directHasExplicitMotion) {
+                decision = this._speechDecision(
+                    exactCard.intent,
+                    userText,
+                    locale,
+                    'user-exact-action-card:' + exactCard.stableId
+                );
+                if (decision) {
+                    decision.evidence.canonicalZh = exactCard.nameZh;
+                    decision.evidence.assetId = exactCard.stableId;
+                    decision.evidence.assetNameZh = exactCard.nameZh;
+                    decision.evidence.assetExplicit = true;
+                }
+            }
             if (!decision && !directHasExplicitMotion && userText && acknowledged) {
                 const commandCandidates = (speech.commands || []).map((command) => {
                     const match = matchingTerms(

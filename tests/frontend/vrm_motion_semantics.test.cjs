@@ -454,6 +454,13 @@ const exactCardAccepted = core.analyzeSpeech('好的。', {
 });
 assert.equal(exactCardAccepted.plan[0].intent, 'clap');
 assert.equal(exactCardAccepted.plan[0].evidence.assetId, 'clap_01');
+const exactCardWithAssistantMotion = core.analyzeSpeech('好的，我先挥手。', {
+    locale: 'zh-CN', userText: '站着连续拍手鼓掌'
+});
+assert.deepEqual(exactCardWithAssistantMotion.plan.map(function (item) {
+    return item.intent;
+}), ['wave']);
+assert.equal(exactCardWithAssistantMotion.plan[0].evidence.assetId === 'clap_01', false);
 const exactCardRefused = core.analyzeSpeech('抱歉，我不能这么做。', {
     locale: 'zh-CN', userText: '站着连续拍手鼓掌'
 });
@@ -463,6 +470,17 @@ assert.equal(exactCardRefused.plan.some(function (item) {
 assert.equal(core.analyzeSpeech('好的，但我不能这么做。', {
     locale: 'zh-CN', userText: '站着连续拍手鼓掌'
 }).plan.length, 0);
+
+[
+    ["I won't clap, but I will wave", 'en'],
+    ["I can't do that, but I will wave", 'en'],
+    ['\u6211\u4e0d\u80fd\u9f13\u638c\uff0c\u4f46\u662f\u6325\u624b', 'zh-CN']
+].forEach(function ([text, locale]) {
+    assert.deepEqual(core.analyzeSpeech(text, { locale: locale }).plan.map(function (item) {
+        return item.intent;
+    }), ['wave'], text);
+});
+assert.equal(core.analyzeSpeech("I won't clap", { locale: 'en' }).plan.length, 0);
 
 requiredLocales.forEach(function (locale) {
     assert.ok(semantics.speech.refusals[locale].length > 0, locale + ' refusal terms');
