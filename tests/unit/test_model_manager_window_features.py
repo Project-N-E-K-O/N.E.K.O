@@ -1,7 +1,8 @@
 import json
 import re
-import subprocess
 from pathlib import Path
+
+from tests.node_harness import run_node_script
 
 
 MODEL_MANAGER_PART_NAMES = (
@@ -175,7 +176,7 @@ assert.equal(
   '/static/vrm/animation/custom-idle.vrma?keep=1'
 );
 """
-    subprocess.run(["node", "-e", script], check=True)
+    run_node_script("node", script, check=True)
 
 
 def test_vrm_catalog_player_resets_before_loading_a_new_model():
@@ -215,7 +216,7 @@ vm.runInNewContext({json.dumps(function_source)}, context);
   assert.deepEqual(calls[1], ['load', '/user_vrm/model.vrm']);
 }})().catch(function (error) {{ console.error(error); process.exit(1); }});
 """
-    subprocess.run(["node", "-e", script], check=True)
+    run_node_script("node", script, check=True)
 
 
 def test_vrm_preview_ignores_stale_playback_completions():
