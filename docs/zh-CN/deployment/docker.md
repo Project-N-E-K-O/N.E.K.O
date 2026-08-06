@@ -41,12 +41,29 @@ if ! MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destinat
   exit 1
 fi
 
-# 第 4 步要用：真数据是从容器里捞出来的，就不能再被宿主机上那个旧目录覆盖
+# 第 2 步要用：真数据是从容器里捞出来的，就不能再被宿主机上那个旧目录覆盖
 EXPORTED_APP_DATA=""
 
 if printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "容器已按新布局挂载，没有待导出的内容"
 else
+  # 旧入口脚本把初始配置写到 /app/config；即使应用数据本身已挂载，API 配置
+  # 仍可能只在容器可写层。删容器前先用它覆盖新生成的默认配置。
+  if ! LEGACY_CORE_CONFIG_STATE=$(docker exec neko sh -c 'if [ -f /app/config/core_config.json ]; then printf present; elif [ -e /app/config/core_config.json ]; then printf invalid; else printf missing; fi'); then
+    echo "无法检查旧的初始配置；请停止迁移。" >&2
+    exit 1
+  fi
+  case "$LEGACY_CORE_CONFIG_STATE" in
+    present)
+      if ! docker cp neko:/app/config/core_config.json ./neko-home/.local/share/N.E.K.O/config/core_config.json; then
+        echo "旧初始配置导出失败；请停止迁移，切勿删除容器。" >&2
+        exit 1
+      fi
+      ;;
+    missing) echo "（容器内没有旧的 /app/config/core_config.json）" ;;
+    *) echo "旧初始配置不是普通文件；请停止迁移。" >&2; exit 1 ;;
+  esac
+
   # 应用数据先导，这部分丢了找不回来。容器没把数据目录挂出去，就说明它只存在于
   # 容器可写层。
   if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
@@ -56,10 +73,21 @@ else
     fi
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang 状态其次，且不致命：从没初始化过的话容器里就没这个目录，而 docker cp
-  # 对不存在的 SRC_PATH 是报错退出的 —— 不能让它挡住上面已经完成的关键导出。
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
-    || echo "（容器里没有 .openfang，或导出失败；不影响上面的应用数据）"
+  # 只有源目录确实不存在时，OpenFang 状态才可忽略；检查或复制失败都可能导致状态丢失。
+  if ! OPENFANG_STATE=$(docker exec neko sh -c 'if [ -d /home/neko/.openfang ]; then printf present; elif [ -e /home/neko/.openfang ]; then printf invalid; else printf missing; fi'); then
+    echo "无法检查 OpenFang 状态；请停止迁移。" >&2
+    exit 1
+  fi
+  case "$OPENFANG_STATE" in
+    present)
+      if ! docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/; then
+        echo "OpenFang 状态导出失败；请停止迁移，切勿删除容器。" >&2
+        exit 1
+      fi
+      ;;
+    missing) echo "（容器内没有 .openfang）" ;;
+    *) echo "OpenFang 状态不是目录；请停止迁移。" >&2; exit 1 ;;
+  esac
 fi
 ```
 

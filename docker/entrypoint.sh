@@ -899,6 +899,26 @@ start_nginx_reloader() {
 }
 
 # 5. 配置管理优化
+migrate_legacy_bootstrap_config() {
+    # Older images generated this file below /app, which is normally a
+    # container-writable layer rather than a persistent mount.  When it is
+    # still available (for example an operator retains an old /app/config
+    # mount), seed the new runtime root before setup_configuration decides
+    # whether a bootstrap file exists.  An explicit force update intentionally
+    # wins over this compatibility path.
+    local LEGACY_CONFIG_FILE="/app/config/core_config.json"
+    local CONFIG_ROOT="${NEKO_STORAGE_SELECTED_ROOT:-${XDG_DATA_HOME:-/home/neko/.local/share}/N.E.K.O}"
+    local RUNTIME_CONFIG_FILE="$CONFIG_ROOT/config/core_config.json"
+
+    if [ -n "${NEKO_FORCE_ENV_UPDATE:-}" ] || [ -f "$RUNTIME_CONFIG_FILE" ] || [ ! -f "$LEGACY_CONFIG_FILE" ]; then
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$RUNTIME_CONFIG_FILE")"
+    cp "$LEGACY_CONFIG_FILE" "$RUNTIME_CONFIG_FILE"
+    echo "📦 Migrated legacy /app/config/core_config.json into the persistent runtime root"
+}
+
 setup_configuration() {
     echo "📝 Setting up configuration..."
     # Keep the bootstrap file in the same runtime root selected by
@@ -1198,8 +1218,8 @@ start_nginx_proxy() {
 # ── 旧版挂载布局检测 ──────────────────────────────────────────
 # 数据挂载从 ./N.E.K.O + ./ssl 两条合并成了 ./neko-home 一条。被落下的旧目录在
 # 宿主机上，根本没挂进容器，所以这里无法自动迁移；能做的只是在认出「这是一次升级」
-# 时把话说清楚，免得用户把一个空数据目录当成正常的全新安装 —— core_config.json
-# 会从环境变量重新生成，容器看起来一切正常，最容易让人误判。
+# 时把话说清楚，免得用户把一个空数据目录当成正常的全新安装。仍可访问的旧
+# /app/config/core_config.json 会被迁移；已经随旧容器删除的那份则无法自动恢复。
 # 快照必须在本脚本自己往 /home/neko 和 /app/logs 写东西之前取。
 LEGACY_LAYOUT_HINT=""
 
@@ -1290,6 +1310,7 @@ main() {
     setup_signal_handlers
     check_dependencies
     configure_timezone
+    migrate_legacy_bootstrap_config
     setup_configuration
     setup_dependencies
     setup_nginx_proxy

@@ -49,12 +49,30 @@ if ! MOUNTS=$(docker inspect neko --format '{{range .Mounts}}{{println .Destinat
   exit 1
 fi
 
-# Needed in step 4: data recovered from the container must not be overwritten by the host copy.
+# Needed in step 2: data recovered from the container must not be overwritten by the host copy.
 EXPORTED_APP_DATA=""
 
 if printf '%s\n' "$MOUNTS" | grep -qx /home/neko; then
   echo "Container already uses the new layout — nothing to export."
 else
+  # The old entrypoint generated its bootstrap config in /app/config. It may be
+  # the only copy of API settings even when the application data itself was
+  # mounted. Copy it over the newly generated defaults before removing neko.
+  if ! LEGACY_CORE_CONFIG_STATE=$(docker exec neko sh -c 'if [ -f /app/config/core_config.json ]; then printf present; elif [ -e /app/config/core_config.json ]; then printf invalid; else printf missing; fi'); then
+    echo "Cannot inspect legacy bootstrap configuration; stop the migration." >&2
+    exit 1
+  fi
+  case "$LEGACY_CORE_CONFIG_STATE" in
+    present)
+      if ! docker cp neko:/app/config/core_config.json ./neko-home/.local/share/N.E.K.O/config/core_config.json; then
+        echo "Legacy bootstrap-config export failed; stop the migration before removing the container." >&2
+        exit 1
+      fi
+      ;;
+    missing) echo "(no legacy /app/config/core_config.json to export)" ;;
+    *) echo "Legacy bootstrap configuration is not a regular file; stop the migration." >&2; exit 1 ;;
+  esac
+
   # Application data first; this is the part that cannot be recovered later. If the
   # container does not mount the data directory, that data exists nowhere else.
   if ! printf '%s\n' "$MOUNTS" | grep -qx /home/neko/.local/share/N.E.K.O; then
@@ -64,11 +82,22 @@ else
     fi
     EXPORTED_APP_DATA=1
   fi
-  # OpenFang state second, and non-fatal: a container that never initialised it has
-  # no such directory, and `docker cp` fails on a missing SRC_PATH — that must not
-  # abort the run after the application data above already succeeded.
-  docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/ \
-    || echo "(no .openfang in the container, or its export failed — application data above is unaffected)"
+  # OpenFang is optional only when its source directory is genuinely absent.
+  # Other inspection or copy failures can lose state and must stop the migration.
+  if ! OPENFANG_STATE=$(docker exec neko sh -c 'if [ -d /home/neko/.openfang ]; then printf present; elif [ -e /home/neko/.openfang ]; then printf invalid; else printf missing; fi'); then
+    echo "Cannot inspect OpenFang state; stop the migration." >&2
+    exit 1
+  fi
+  case "$OPENFANG_STATE" in
+    present)
+      if ! docker cp neko:/home/neko/.openfang/. ./neko-home/.openfang/; then
+        echo "OpenFang-state export failed; stop the migration before removing the container." >&2
+        exit 1
+      fi
+      ;;
+    missing) echo "(no .openfang in the container)" ;;
+    *) echo "OpenFang state is not a directory; stop the migration." >&2; exit 1 ;;
+  esac
 fi
 ```
 
