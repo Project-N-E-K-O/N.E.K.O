@@ -764,7 +764,7 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
         "界面语言渲染同步",
     )
     assert "render_language: lng" in render_sync
-    assert re.search(r"(?m)^\s*language:\s*lng", render_sync) is None
+    assert re.search(r'''(?m)^\s*["']?language["']?\s*:''', render_sync) is None
     assert "window.i18next.on('languageChanged', _syncRenderLanguageToBackend)" in render_sync
 
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
