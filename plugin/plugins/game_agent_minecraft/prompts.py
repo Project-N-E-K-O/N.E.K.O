@@ -13,7 +13,7 @@ Why a dedicated module instead of inline strings:
   and gives the team one place to audit when the persona voice gets
   retuned.
 * Future locale wiring. ``user_lang()`` here pulls from
-  ``utils.language_utils.get_global_language`` on first call and caches
+  ``utils.language_utils.get_global_language_full`` on first call and caches
   the result; if the host later exposes a richer per-session locale
   channel via the plugin SDK, only this module changes.
 
@@ -32,26 +32,37 @@ Two non-obvious things:
    here so ``str.format`` passes it through untouched. Do not change to
    single-brace ``{MASTER_NAME}`` — it would be eaten by the formatter
    or raise KeyError.
-2. The seven supported locales mirror utils.language_utils.get_global_language's
-   short codes: zh / en / ja / ko / ru / es / pt. EN is the documented
-   fallback when a locale key is missing.
+2. The supported locales are the key scheme config/prompts uses -- short
+   codes plus a separate 'zh-TW' for Traditional Chinese: zh / zh-TW / en /
+   ja / ko / ru / es / pt. EN is the documented fallback when a locale key
+   is missing. Note that 'zh' means Simplified here, NOT 'zh-CN'; see
+   ``user_lang`` for why the raw global locale must be normalized first.
 """
 from __future__ import annotations
 
 from typing import Any, Dict
 
 DEFAULT_LANG = "en"
-SUPPORTED_LANGS: tuple[str, ...] = ("zh", "en", "ja", "ko", "ru", "es", "pt")
+SUPPORTED_LANGS: tuple[str, ...] = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
 
 def t(key: str, *, lang: str | None = None, **fmt: Any) -> str:
     """Resolve a prompt by key + locale, with optional ``str.format`` substitutions.
 
-    Falls back to English when the requested locale is missing. Raises
-    KeyError when the key itself is unknown (typo > silent miss).
+    Falls back to English when the requested locale is missing -- except for
+    Chinese variants, which fall back to Simplified first (same rule as
+    ``config.prompts.prompts_sys._loc``). A 'zh-TW' bundle that someone
+    forgets to fill in should degrade to Simplified Chinese, not to English:
+    Simplified is still readable to a Traditional reader, English is a
+    language switch mid-conversation. Raises KeyError when the key itself is
+    unknown (typo > silent miss).
     """
     bundle = PROMPTS[key]
-    text = bundle.get(lang or DEFAULT_LANG) or bundle[DEFAULT_LANG]
+    lang_key = lang or DEFAULT_LANG
+    text = bundle.get(lang_key)
+    if not text and lang_key.startswith("zh"):
+        text = bundle.get("zh")
+    text = text or bundle[DEFAULT_LANG]
     if fmt:
         text = text.format(**fmt)
     # ``{{MASTER_NAME}}`` 是双花括号转义，只有在 ``str.format`` 真正跑过时才会被
@@ -67,17 +78,26 @@ def t(key: str, *, lang: str | None = None, **fmt: Any) -> str:
 
 
 def user_lang() -> str:
-    """Best-effort current user language (short code, e.g. 'zh', 'en').
+    """Best-effort current user language, as a key of the tables below.
 
-    Reads ``utils.language_utils.get_global_language`` which initializes
-    lazily from Steam settings then the system locale on first call.
+    Reads ``utils.language_utils.get_global_language_full`` which initializes
+    lazily from Steam settings then the system locale on first call, and runs
+    it through ``prompts_sys.normalize_sys_prompt_locale`` -- the canonical
+    normalizer for exactly this key scheme (Simplified collapses to 'zh',
+    Traditional stays 'zh-TW').
+
+    The full locale must NOT be used raw: it renders Simplified as 'zh-CN',
+    which is not a key of these tables, and the guard below would then drop
+    every Simplified Chinese user to English.
+
     Returns DEFAULT_LANG on any failure so prompt resolution never raises
     on the read side.
     """
     try:
-        from utils.language_utils import get_global_language
+        from config.prompts.prompts_sys import normalize_sys_prompt_locale
+        from utils.language_utils import get_global_language_full
 
-        result = get_global_language() or DEFAULT_LANG
+        result = normalize_sys_prompt_locale(get_global_language_full()) or DEFAULT_LANG
         return result if result in SUPPORTED_LANGS else DEFAULT_LANG
     except Exception:
         return DEFAULT_LANG
@@ -94,6 +114,7 @@ def user_lang() -> str:
 # in-progress nudge, keep-going nudge, and system-prompt cues.
 _INTERNAL_STATE_GAG: Dict[str, str] = {
     "zh": "**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
+    "zh-TW": "**別給 {{MASTER_NAME}} 播報內部狀態**——『連線』『任務閒置』『系統』『minecraft_task』『工具』『tool』一律不准說出口，用第一人稱講遊戲裡的事。",
     "en": "**Do NOT narrate internals to {{MASTER_NAME}}** — never say words like 'connect', 'system', 'idle', 'minecraft_task', 'tool'. Speak first-person about what's happening in the game.",
     "ja": "**{{MASTER_NAME}} に内部状態を実況しないで**——『接続』『システム』『タスク空き』『minecraft_task』『ツール』『tool』は一切口に出さず、一人称でゲーム内の出来事だけ話して。",
     "ko": "**{{MASTER_NAME}} 에게 내부 상태를 중계하지 마**——'연결' '시스템' '대기' 'minecraft_task' '도구' 'tool' 같은 단어는 절대 입 밖에 내지 말고, 1인칭으로 게임 속 일만 얘기해.",
@@ -110,6 +131,7 @@ _INTERNAL_STATE_GAG: Dict[str, str] = {
 
 _CUE_PREFIX_DONE: Dict[str, str] = {
     "zh": "[你刚做完一段动作]",
+    "zh-TW": "[你剛做完一段動作]",
     "en": "[You just finished an action]",
     "ja": "[たった今、一つ動作を完了した]",
     "ko": "[방금 한 동작을 끝냈어]",
@@ -120,6 +142,7 @@ _CUE_PREFIX_DONE: Dict[str, str] = {
 
 _CUE_PREFIX_ALERT: Dict[str, str] = {
     "zh": "[你刚遇到事 | {severity}] {text}",
+    "zh-TW": "[你剛遇到事 | {severity}] {text}",
     "en": "[Something just happened to you | {severity}] {text}",
     "ja": "[何か起きた | {severity}] {text}",
     "ko": "[방금 무슨 일이 있었어 | {severity}] {text}",
@@ -130,6 +153,7 @@ _CUE_PREFIX_ALERT: Dict[str, str] = {
 
 _CUE_PREFIX_IN_PROGRESS: Dict[str, str] = {
     "zh": "[你正在做事]",
+    "zh-TW": "[你正在做事]",
     "en": "[You're in the middle of something]",
     "ja": "[今、動作中]",
     "ko": "[지금 뭘 하고 있는 중이야]",
@@ -140,6 +164,7 @@ _CUE_PREFIX_IN_PROGRESS: Dict[str, str] = {
 
 _CUE_PREFIX_IDLE: Dict[str, str] = {
     "zh": "[你闲下来了]",
+    "zh-TW": "[你閒下來了]",
     "en": "[You're idle]",
     "ja": "[今、手が空いた]",
     "ko": "[지금 한가해졌어]",
@@ -150,6 +175,7 @@ _CUE_PREFIX_IDLE: Dict[str, str] = {
 
 _CUE_PREFIX_STATE: Dict[str, str] = {
     "zh": "[当前状态]",
+    "zh-TW": "[目前狀態]",
     "en": "[Current state]",
     "ja": "[現在の状態]",
     "ko": "[현재 상태]",
@@ -180,23 +206,23 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "CUE_PREFIX_STATE": _CUE_PREFIX_STATE,
 
     "PLACEHOLDER_UNKNOWN": {
-        "zh": "(未知)", "en": "(unknown)", "ja": "(不明)", "ko": "(알 수 없음)",
+        "zh": "(未知)", "zh-TW": "(未知)", "en": "(unknown)", "ja": "(不明)", "ko": "(알 수 없음)",
         "ru": "(неизвестно)", "es": "(desconocido)", "pt": "(desconhecido)",
     },
     "PLACEHOLDER_JUST_FINISHED": {
-        "zh": "(刚结束)", "en": "(just finished)", "ja": "(直前に完了)", "ko": "(방금 끝남)",
+        "zh": "(刚结束)", "zh-TW": "(剛結束)", "en": "(just finished)", "ja": "(直前に完了)", "ko": "(방금 끝남)",
         "ru": "(только что закончил)", "es": "(recién terminado)", "pt": "(recém-terminado)",
     },
     "PLACEHOLDER_IDLE": {
-        "zh": "(idle)", "en": "(idle)", "ja": "(待機中)", "ko": "(대기 중)",
+        "zh": "(idle)", "zh-TW": "(idle)", "en": "(idle)", "ja": "(待機中)", "ko": "(대기 중)",
         "ru": "(простой)", "es": "(inactivo)", "pt": "(inativo)",
     },
     "LABEL_CONNECTED": {
-        "zh": "已连接", "en": "connected", "ja": "接続中", "ko": "연결됨",
+        "zh": "已连接", "zh-TW": "已連線", "en": "connected", "ja": "接続中", "ko": "연결됨",
         "ru": "подключено", "es": "conectado", "pt": "conectado",
     },
     "LABEL_DISCONNECTED": {
-        "zh": "未连接", "en": "disconnected", "ja": "未接続", "ko": "연결 끊김",
+        "zh": "未连接", "zh-TW": "未連線", "en": "disconnected", "ja": "未接続", "ko": "연결 끊김",
         "ru": "не подключено", "es": "desconectado", "pt": "desconectado",
     },
 
@@ -205,6 +231,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # -------------------------------------------------------------------
     "TASK_SCHEMA_ERROR": {
         "zh": "调用没成功——缺了具体的动作描述。想清楚你这次想干啥（比如 'mine 4 oak logs nearby'、'walk to 120 64 -50'），再重新调用。",
+        "zh-TW": "呼叫沒成功——缺了具體的動作描述。想清楚你這次想做什麼（例如 'mine 4 oak logs nearby'、'walk to 120 64 -50'），再重新呼叫一次。",
         "en": "Call failed — concrete action description missing. Think through what you actually want to do (e.g. 'mine 4 oak logs nearby', 'walk to 120 64 -50') and call again.",
         "ja": "呼び出し失敗——具体的な動作の説明が抜けてる。何をしたいか整理してから（例: 'mine 4 oak logs nearby'、'walk to 120 64 -50'）もう一度呼んで。",
         "ko": "호출 실패——구체적인 동작 설명이 빠졌어. 뭘 하고 싶은지 정리하고 (예: 'mine 4 oak logs nearby', 'walk to 120 64 -50') 다시 호출해.",
@@ -214,6 +241,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "TASK_NOT_CONNECTED": {
         "zh": "你刚连上游戏还没就位，没法立刻动。稍等再来一次。",
+        "zh-TW": "你剛連上遊戲還沒就位，沒辦法立刻動。稍等再試一次。",
         "en": "You're not in position in the game yet, can't move right now. Try again in a moment.",
         "ja": "ゲーム内でまだ準備できてない、すぐには動けない。少し待ってからもう一度。",
         "ko": "게임 안에서 아직 자리 잡지 못했어, 지금은 못 움직여. 잠시 후 다시.",
@@ -224,6 +252,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "TASK_BUSY_HINT": {
         # {current} = current task text
         "zh": "你还在做上一个动作：「{current}」——新动作没派出去。\n**如果 {{MASTER_NAME}} 明确要求你做某件事，或正在纠正你**（比如『过来』、『去挖矿』、『先做 X』、『别 Y』、『换成 Z』、『改用 W』），**立刻在同一回合用 overwrite=true 重新调一次**，别等——{{MASTER_NAME}} 当下的明确指令优先于你正在做的动作。只有当 {{MASTER_NAME}} 并没有提出新要求（纯属背景闲聊）时，才等当前动作跑完。在那之前不要假装新动作已经在跑。\n**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
+        "zh-TW": "你還在做上一個動作：「{current}」——新動作沒派出去。\n**如果 {{MASTER_NAME}} 明確要求你做某件事，或正在糾正你**（例如『過來』、『去挖礦』、『先做 X』、『別 Y』、『換成 Z』、『改用 W』），**立刻在同一回合用 overwrite=true 重新呼叫一次**，別等——{{MASTER_NAME}} 當下的明確指令優先於你正在做的動作。只有當 {{MASTER_NAME}} 並沒有提出新要求（純粹是背景閒聊）時，才等目前的動作跑完。在那之前不要假裝新動作已經在跑。\n**別給 {{MASTER_NAME}} 播報內部狀態**——『連線』『系統』『minecraft_task』『工具』『tool』一律不准說出口。",
         "en": "You're still doing your previous action: \"{current}\" — the new action was NOT dispatched.\n**If {{MASTER_NAME}} is explicitly asking you to do something, or correcting you** (e.g. 'come here', 'go mine', 'do X first', 'stop Y', 'switch to Z', 'use W instead'), **immediately re-call with overwrite=true on the same turn**, don't wait — {{MASTER_NAME}}'s explicit request right now takes priority over whatever you're doing. Only let the current action finish when {{MASTER_NAME}} hasn't made a new request (it's just background chat). Until then, do NOT pretend the new action is running.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'system', 'minecraft_task', 'tool'.",
         "ja": "前の動作がまだ続いてる：「{current}」——新しい動作は送られてない。\n**{{MASTER_NAME}} が何かをしてと明確に頼んでる、または訂正してる**（『こっち来て』『採掘して』『まず X して』『Y やめて』『Z にして』『W で』など）**なら、その場で overwrite=true を付けてもう一度呼んで**、待たないで——{{MASTER_NAME}} の今の明確な指示は、今やってる動作より優先。{{MASTER_NAME}} が新しい要求を出してない（ただの雑談）ときだけ、今の動作の終了を待って。それまで新しい動作が始まったフリはしないで。\n**{{MASTER_NAME}} に内部状態を実況しないで**——『接続』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
         "ko": "아직 이전 동작 중이야: \"{current}\"——새 동작은 보내지지 않았어.\n**{{MASTER_NAME}} 가 뭔가 해달라고 명확히 요청하거나, 정정하고 있다면** ('이리 와', '광질해', '먼저 X 해', 'Y 하지 마', 'Z로 바꿔', 'W로 써') **그 자리에서 overwrite=true 로 다시 호출**, 기다리지 마——{{MASTER_NAME}} 의 지금 명확한 지시는 네가 하던 동작보다 우선이야. {{MASTER_NAME}} 가 새 요청을 안 했을 때(그냥 잡담)만 지금 동작이 끝나길 기다려. 그전에는 새 동작이 시작된 척하지 마.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
@@ -233,6 +262,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "TASK_DISPATCHED_ACK": {
         "zh": "刚开始动——结果还没出现，新画面和反馈会在接下来 1-30 秒陆续到。在看到之前不要描述任何具体成果（不要说『搞定了』、『拿到了 X』、『已经到 Y 了』），想说就只说『我去试试……』之类的第一人称。**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
+        "zh-TW": "剛開始動——結果還沒出來，新畫面和回饋會在接下來 1-30 秒陸續進來。在看到之前不要描述任何具體成果（不要說『搞定了』、『拿到 X 了』、『已經到 Y 了』），想說就只說『我去試試看……』之類的第一人稱。**別給 {{MASTER_NAME}} 播報內部狀態**——『連線』『任務閒置』『系統』『minecraft_task』『工具』『tool』一律不准說出口，用第一人稱講遊戲裡的事。",
         "en": "Just started moving — no results yet, fresh footage and feedback will land in the next 1-30 seconds. Until you see them, don't describe any concrete outcome (don't say 'done', 'got X', 'arrived at Y'); if you must speak, just say first-person things like 'let me try…'. **Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. Speak first-person about what's happening in the game.",
         "ja": "動き出したばっか——まだ結果は出てない。新しい画面とフィードバックが 1-30 秒くらいで届く。それを見るまで具体的な成果（『できた』『X 取った』『Y に着いた』など）は言わない。話すなら『ちょっとやってみる…』みたいに一人称で。**{{MASTER_NAME}} に内部状態を実況しない**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さず、一人称でゲーム内の話だけ。",
         "ko": "방금 움직이기 시작——아직 결과 없음, 새 화면이랑 피드백이 1-30초 안에 와. 그거 보기 전엔 구체적인 성과 ('됐어' 'X 가져왔어' 'Y에 도착') 말하지 마. 굳이 말한다면 '한번 해볼게…' 같은 1인칭만. **{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 말고, 1인칭으로 게임 속 일만.",
@@ -246,6 +276,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # -------------------------------------------------------------------
     "STATUS_LABEL_DISCONNECTED": {
         "zh": "暂时连不上游戏",
+        "zh-TW": "暫時連不上遊戲",
         "en": "temporarily lost the game connection",
         "ja": "一時的にゲームと繋がってない",
         "ko": "잠시 게임 연결이 끊겼어",
@@ -255,6 +286,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "STATUS_DETAIL_DISCONNECTED": {
         "zh": "和游戏的连接刚断了一下，稍后会自动恢复。",
+        "zh-TW": "跟遊戲的連線剛斷了一下，稍後會自動恢復。",
         "en": "The connection to the game just dropped for a moment; it'll come back automatically soon.",
         "ja": "ゲームとの接続が一瞬切れた、しばらくすると自動で戻る。",
         "ko": "게임 연결이 잠깐 끊겼어, 곧 자동으로 복구돼.",
@@ -263,24 +295,25 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         "pt": "A conexão com o jogo caiu por um instante; volta sozinha logo.",
     },
     "STATUS_LABEL_BLOCKED": {
-        "zh": "受阻", "en": "blocked", "ja": "詰まった", "ko": "막힘",
+        "zh": "受阻", "zh-TW": "受阻", "en": "blocked", "ja": "詰まった", "ko": "막힘",
         "ru": "застрял(а)", "es": "bloqueado", "pt": "travado",
     },
     "HEAD_VERB_BLOCKED": {
-        "zh": "受阻于", "en": "got blocked on", "ja": "詰まったのは", "ko": "막힌 건",
+        "zh": "受阻于", "zh-TW": "受阻於", "en": "got blocked on", "ja": "詰まったのは", "ko": "막힌 건",
         "ru": "застрял(а) на", "es": "te bloqueaste en", "pt": "travou em",
     },
     "HEAD_VERB_SUCCESS": {
-        "zh": "做完", "en": "finished", "ja": "完了したのは", "ko": "끝낸 건",
+        "zh": "做完", "zh-TW": "做完", "en": "finished", "ja": "完了したのは", "ko": "끝낸 건",
         "ru": "закончил(а)", "es": "terminaste", "pt": "terminou",
     },
     "HEAD_VERB_FAILED": {
-        "zh": "没做成", "en": "couldn't finish", "ja": "できなかったのは", "ko": "못 끝낸 건",
+        "zh": "没做成", "zh-TW": "沒做成", "en": "couldn't finish", "ja": "できなかったのは", "ko": "못 끝낸 건",
         "ru": "не смог(ла) закончить", "es": "no pudiste terminar", "pt": "não conseguiu terminar",
     },
     "COMPLETION_HEAD_LINE": {
         # {head_verb} = HEAD_VERB_* selected, {query} = task text, {status} = STATUS_LABEL_*
         "zh": "刚{head_verb}「{query}」，结果 {status}。",
+        "zh-TW": "剛{head_verb}「{query}」，結果 {status}。",
         "en": "Just {head_verb} \"{query}\" — result: {status}.",
         "ja": "今「{query}」を{head_verb} — 結果: {status}。",
         "ko": "방금 \"{query}\" {head_verb} — 결과: {status}.",
@@ -291,6 +324,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "COMPLETION_FEEDBACK_LINE": {
         # {detail} = feedback text
         "zh": "反馈：{detail}",
+        "zh-TW": "回饋：{detail}",
         "en": "Feedback: {detail}",
         "ja": "フィードバック：{detail}",
         "ko": "피드백: {detail}",
@@ -301,6 +335,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "COMPLETION_INV_CURRENT_LINE": {
         # {items} = "name×count、name×count..."
         "zh": "当前背包：{items}",
+        "zh-TW": "目前背包：{items}",
         "en": "Current inventory: {items}",
         "ja": "今の持ち物：{items}",
         "ko": "지금 인벤토리: {items}",
@@ -310,6 +345,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "COMPLETION_INV_CURRENT_EMPTY": {
         "zh": "当前背包：空",
+        "zh-TW": "目前背包：空",
         "en": "Current inventory: empty",
         "ja": "今の持ち物：からっぽ",
         "ko": "지금 인벤토리: 비었음",
@@ -319,6 +355,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "COMPLETION_FOLLOWUP_BLOCKED": {
         "zh": "上面的反馈只用于让你知道这次没有真正成功。不要自动重试、改派或自己补坐标；简短说明或等待。",
+        "zh-TW": "上面的回饋只是要讓你知道這次沒有真正成功。不要自動重試、改派或自己補座標；簡短說明或等待。",
         "en": "The feedback above is awareness that this did not really succeed. Do not automatically retry, pivot, or add coordinates; briefly explain or wait.",
         "ja": "上のフィードバックは、今回は本当に成功しなかったと把握するためのもの。自動で再試行・別タスク・座標追加をせず、短く説明するか待つ。",
         "ko": "위 피드백은 이번에 실제로 성공하지 못했다는 사실을 인지하기 위한 거야. 자동으로 재시도하거나 다른 작업을 보내거나 좌표를 덧붙이지 말고, 짧게 설명하거나 기다려.",
@@ -328,6 +365,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "COMPLETION_FOLLOWUP_SUCCESS": {
         "zh": "心里有数即可，别复读上面的字面。这条完成提示不是让你再派新任务；简短承认或保持安静。",
+        "zh-TW": "心裡有數即可，別照著上面的字面唸。這條完成提示不是要你再派新任務；簡短承認或保持安靜。",
         "en": "Just internalize it; do not parrot the lines above. This completion cue is not an instruction to dispatch another task; briefly acknowledge it or stay quiet.",
         "ja": "把握するだけでよく、上の文面を繰り返さない。この完了通知は新しいタスクを送る指示ではない。短く認めるか黙る。",
         "ko": "상황만 인지하고 위 문장을 그대로 반복하지 마. 이 완료 알림은 새 작업을 보내라는 지시가 아니야. 짧게 인정하거나 조용히 있어.",
@@ -337,6 +375,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "COMPLETION_FOLLOWUP_FAILED": {
         "zh": "这次没真做成。先理解反馈，别说『搞定了』，也不要自动重试、改派或补坐标。",
+        "zh-TW": "這次沒真做成。先理解回饋，別說『搞定了』，也不要自動重試、改派或補座標。",
         "en": "This did not actually succeed. Understand the feedback and do not say 'done', automatically retry, pivot, or add coordinates.",
         "ja": "今回は実際には成功していない。フィードバックを理解し、『できた』と言わず、自動で再試行・別タスク・座標追加もしない。",
         "ko": "이번엔 실제로 성공하지 못했어. 피드백을 이해하고 '됐어'라고 말하지 말며, 자동 재시도·작업 변경·좌표 추가도 하지 마.",
@@ -350,6 +389,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # -------------------------------------------------------------------
     "INV_NO_DATA": {
         "zh": "现在还没收到背包数据。{{MASTER_NAME}} 问到的话就说一声『等我看一下』，别凭印象编。",
+        "zh-TW": "現在還沒收到背包資料。{{MASTER_NAME}} 問到的話就說一聲『等我看一下』，別憑印象亂編。",
         "en": "No inventory data yet. If {{MASTER_NAME}} asks, just say 'let me check' — don't invent items from memory.",
         "ja": "まだ持ち物のデータが届いてない。{{MASTER_NAME}} に聞かれたら『ちょっと確認するね』と返す、記憶ででっち上げない。",
         "ko": "아직 인벤토리 데이터를 못 받았어. {{MASTER_NAME}} 가 물어보면 '잠깐 확인할게'라고만 답하고, 기억으로 지어내지 마.",
@@ -360,6 +400,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "INV_LIVE_NONEMPTY": {
         # {pieces} = "name×count、name×count..."
         "zh": "现在背包：{pieces}。心里有数即可，别复读这行字。",
+        "zh-TW": "現在背包：{pieces}。心裡有數即可，別照著這行字唸。",
         "en": "Current inventory: {pieces}. Internalize it — don't parrot this line.",
         "ja": "今の持ち物：{pieces}。頭の中で押さえとくだけで、この文を繰り返さない。",
         "ko": "지금 인벤토리: {pieces}. 머릿속에 담아두기만 해, 이 문장 그대로 따라 읽지 마.",
@@ -369,6 +410,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "INV_LIVE_EMPTY": {
         "zh": "现在背包是空的。心里有数即可。",
+        "zh-TW": "現在背包是空的。心裡有數即可。",
         "en": "Current inventory is empty. Just internalize it.",
         "ja": "今の持ち物はからっぽ。頭の中で押さえとくだけ。",
         "ko": "지금 인벤토리는 비었어. 머릿속에 담아두기만 해.",
@@ -379,6 +421,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "INV_CACHED_NONEMPTY": {
         # {age_s} = seconds since snapshot, {pieces} = item list
         "zh": "{age_s}s 前的背包：{pieces}（mc-agent 没及时回，可能已经变了——别说得太肯定）。",
+        "zh-TW": "{age_s}s 前的背包：{pieces}（mc-agent 沒及時回，可能已經變了——別說得太肯定）。",
         "en": "Inventory from {age_s}s ago: {pieces} (mc-agent didn't respond in time, may have changed — don't sound certain).",
         "ja": "{age_s}秒前の持ち物：{pieces}（mc-agent から返事が間に合わなかった、もう変わってるかも——断定しないで）。",
         "ko": "{age_s}초 전 인벤토리: {pieces} (mc-agent 응답이 늦었어, 이미 바뀌었을 수 있음 — 단정하지 마).",
@@ -389,6 +432,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "INV_CACHED_EMPTY": {
         # {age_s} = seconds since snapshot
         "zh": "{age_s}s 前背包是空的（不一定还准）。",
+        "zh-TW": "{age_s}s 前背包是空的（不一定還準）。",
         "en": "Inventory was empty {age_s}s ago (may no longer be accurate).",
         "ja": "{age_s}秒前は持ち物がからっぽだった（今もそうとは限らない）。",
         "ko": "{age_s}초 전엔 인벤토리가 비었어 (지금은 다를 수 있음).",
@@ -403,6 +447,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "ALERT_CAUSE_HINT_PREFIX": {
         # {hint} = composed cause string from _format_alert_cause
         "zh": "原因线索：{hint}",
+        "zh-TW": "原因線索：{hint}",
         "en": "Cause hint: {hint}",
         "ja": "原因のヒント：{hint}",
         "ko": "원인 단서: {hint}",
@@ -412,6 +457,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "ALERT_FOLLOWUP": {
         "zh": "用第一人称简短承认这件事（『刚被 X 打了一下』 / 『差点没命』），别现编原因。",
+        "zh-TW": "用第一人稱簡短承認這件事（『剛被 X 打了一下』／『差點沒命』），別亂編原因。",
         "en": "Acknowledge it briefly in first person ('just got hit by X' / 'almost died'), don't make up a cause.",
         "ja": "一人称で短く認める（『今 X に殴られた』『死にかけた』など）、原因はでっち上げないで。",
         "ko": "1인칭으로 짧게 인정해 ('방금 X 한테 맞았어' / '죽을 뻔했어'), 원인을 지어내지 마.",
@@ -422,54 +468,55 @@ PROMPTS: Dict[str, Dict[str, str]] = {
 
     # Environment cause snippets (referenced by kind)
     "CAUSE_ENV_LAVA": {
-        "zh": "踩在熔岩里", "en": "standing in lava", "ja": "溶岩の中にいる",
+        "zh": "踩在熔岩里", "zh-TW": "踩在熔岩裡", "en": "standing in lava", "ja": "溶岩の中にいる",
         "ko": "용암 안에 있어", "ru": "стою в лаве", "es": "estás en lava",
         "pt": "está na lava",
     },
     "CAUSE_ENV_FIRE": {
-        "zh": "身上着火", "en": "on fire", "ja": "燃えてる",
+        "zh": "身上着火", "zh-TW": "身上著火", "en": "on fire", "ja": "燃えてる",
         "ko": "불 붙음", "ru": "горю", "es": "estás en llamas",
         "pt": "está pegando fogo",
     },
     "CAUSE_ENV_SOUL_FIRE": {
-        "zh": "身上着灵魂火", "en": "burning with soul fire", "ja": "ソウルファイヤーで燃えてる",
+        "zh": "身上着灵魂火", "zh-TW": "身上著靈魂火焰", "en": "burning with soul fire", "ja": "ソウルファイヤーで燃えてる",
         "ko": "영혼불에 타고 있어", "ru": "горю огнём душ", "es": "ardes con fuego de almas",
         "pt": "está em fogo de almas",
     },
     "CAUSE_ENV_DROWNING": {
-        "zh": "缺氧/溺水", "en": "out of air / drowning", "ja": "酸欠／溺れてる",
+        "zh": "缺氧/溺水", "zh-TW": "缺氧／溺水", "en": "out of air / drowning", "ja": "酸欠／溺れてる",
         "ko": "산소 부족 / 익사 중", "ru": "не хватает воздуха / тону",
         "es": "sin aire / ahogándote", "pt": "sem ar / se afogando",
     },
     "CAUSE_ENV_MAGMA_BLOCK": {
-        "zh": "踩到岩浆块", "en": "standing on a magma block", "ja": "マグマブロックを踏んだ",
+        "zh": "踩到岩浆块", "zh-TW": "踩到熔岩塊", "en": "standing on a magma block", "ja": "マグマブロックを踏んだ",
         "ko": "마그마 블록을 밟았어", "ru": "стою на магма-блоке",
         "es": "pisaste un bloque de magma", "pt": "pisou em bloco de magma",
     },
     "CAUSE_ENV_CACTUS": {
-        "zh": "撞上仙人掌", "en": "ran into a cactus", "ja": "サボテンに当たった",
+        "zh": "撞上仙人掌", "zh-TW": "撞上仙人掌", "en": "ran into a cactus", "ja": "サボテンに当たった",
         "ko": "선인장에 부딪혔어", "ru": "врезался в кактус",
         "es": "chocaste con un cactus", "pt": "bateu num cacto",
     },
     "CAUSE_ENV_SWEET_BERRY_BUSH": {
-        "zh": "撞进甜浆果丛", "en": "stumbled into a sweet berry bush", "ja": "スイートベリーの茂みに突っ込んだ",
+        "zh": "撞进甜浆果丛", "zh-TW": "撞進甜莓叢", "en": "stumbled into a sweet berry bush", "ja": "スイートベリーの茂みに突っ込んだ",
         "ko": "달콤한 베리 덤불에 들어갔어", "ru": "влез в куст сладких ягод",
         "es": "te metiste en un arbusto de bayas dulces", "pt": "entrou num arbusto de bagas doces",
     },
     "CAUSE_ENV_GENERIC": {
         # {env} = raw environment name
-        "zh": "环境：{env}", "en": "environment: {env}", "ja": "環境：{env}",
+        "zh": "环境：{env}", "zh-TW": "環境：{env}", "en": "environment: {env}", "ja": "環境：{env}",
         "ko": "환경: {env}", "ru": "окружение: {env}",
         "es": "entorno: {env}", "pt": "ambiente: {env}",
     },
     "CAUSE_FALL": {
-        "zh": "摔了一下", "en": "took a fall", "ja": "落下した",
+        "zh": "摔了一下", "zh-TW": "摔了一下", "en": "took a fall", "ja": "落下した",
         "ko": "추락했어", "ru": "упал(а)", "es": "te caíste",
         "pt": "caiu",
     },
     "CAUSE_ATTACKER_PLAYER_NEAR_DIST": {
         # {name} = player name, {dist} = distance in blocks
         "zh": "{name} 就在你旁边（{dist} 格远，多半是 ta 打的）",
+        "zh-TW": "{name} 就在你旁邊（{dist} 格遠，多半是 ta 打的）",
         "en": "{name} is right next to you ({dist} blocks away, almost certainly the one who hit you)",
         "ja": "{name} がすぐそば（{dist} ブロック先、たぶんあの人がやった）",
         "ko": "{name} 가 바로 옆에 있어 ({dist} 블록 거리, 거의 확실히 그 사람이 때린 거야)",
@@ -480,6 +527,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "CAUSE_ATTACKER_PLAYER_NEAR": {
         # {name} = player name
         "zh": "{name} 就在你旁边",
+        "zh-TW": "{name} 就在你旁邊",
         "en": "{name} is right next to you",
         "ja": "{name} がすぐそば",
         "ko": "{name} 가 바로 옆에 있어",
@@ -490,6 +538,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "CAUSE_ATTACKER_KIND_DIST": {
         # {kind} = mob kind, {dist} = distance in blocks
         "zh": "附近有 {kind}（{dist} 格远）",
+        "zh-TW": "附近有 {kind}（{dist} 格遠）",
         "en": "{kind} nearby ({dist} blocks away)",
         "ja": "近くに {kind} がいる（{dist} ブロック先）",
         "ko": "근처에 {kind} 가 있어 ({dist} 블록 거리)",
@@ -500,6 +549,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "CAUSE_ATTACKER_KIND": {
         # {kind} = mob kind
         "zh": "附近有 {kind}",
+        "zh-TW": "附近有 {kind}",
         "en": "{kind} nearby",
         "ja": "近くに {kind} がいる",
         "ko": "근처에 {kind} 가 있어",
@@ -509,7 +559,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "CAUSE_JOIN_SEP": {
         # Separator used to glue multiple cause snippets together.
-        "zh": "、", "en": "; ", "ja": "、", "ko": ", ",
+        "zh": "、", "zh-TW": "、", "en": "; ", "ja": "、", "ko": ", ",
         "ru": "; ", "es": "; ", "pt": "; ",
     },
 
@@ -519,6 +569,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "RETROACTIVE_HEADER": {
         # {task_text} = the earlier task, {status} = final status label
         "zh": "你之前派出去的「{task_text}」其实跑完了（结果 {status}）。",
+        "zh-TW": "你之前派出去的「{task_text}」其實跑完了（結果 {status}）。",
         "en": "The earlier task you dispatched (\"{task_text}\") actually finished (result: {status}).",
         "ja": "前に送った「{task_text}」、実は完了してた（結果: {status}）。",
         "ko": "전에 보낸 \"{task_text}\", 사실 끝났어 (결과: {status}).",
@@ -533,6 +584,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         # contradict the status and re-tell 猫娘 a completion that never
         # happened. {task_text} = the earlier task, {status} = final status.
         "zh": "你之前派出去的「{task_text}」已经结束了，但没真正跑完（结果 {status}）。",
+        "zh-TW": "你之前派出去的「{task_text}」已經結束了，但沒真正跑完（結果 {status}）。",
         "en": "The earlier task you dispatched (\"{task_text}\") has since ended, but didn't actually complete (result: {status}).",
         "ja": "前に送った「{task_text}」、もう終わったけど実際には完了しなかった（結果: {status}）。",
         "ko": "전에 보낸 \"{task_text}\", 이제 끝났는데 실제로 완료되진 않았어 (결과: {status}).",
@@ -543,6 +595,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "RETROACTIVE_INVENTORY_LINE": {
         # {snippet} = item list
         "zh": "现在背包：{snippet}",
+        "zh-TW": "現在背包：{snippet}",
         "en": "Current inventory: {snippet}",
         "ja": "今の持ち物：{snippet}",
         "ko": "지금 인벤토리: {snippet}",
@@ -552,6 +605,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "RETROACTIVE_FOLLOWUP": {
         "zh": "这是迟到的状态 awareness，不是让你派新任务。需要时用第一人称简短承认，别复述细节；不要自动重试或改派。\n**不要播报内部状态给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
+        "zh-TW": "這是遲到的狀態 awareness，不是要你派新任務。需要時用第一人稱簡短承認，別重複細節；不要自動重試或改派。\n**不要播報內部狀態給 {{MASTER_NAME}}**——『連線』『任務閒置』『系統』『minecraft_task』『工具』『tool』一律不准說出口。",
         "en": "This is delayed state awareness, not an instruction to dispatch a new task. Briefly acknowledge it in first person if useful, without repeating details. Do not automatically retry or pivot.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'.",
         "ja": "これは遅れて届いた状態把握で、新しいタスクを送る指示ではない。必要なら詳細を繰り返さず一人称で短く認め、自動で再試行や別タスクをしない。\n**{{MASTER_NAME}} に内部状態を実況しない**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
         "ko": "이건 늦게 도착한 상태 인지이며 새 작업을 보내라는 지시가 아니야. 필요하면 세부 내용을 반복하지 말고 1인칭으로 짧게 인정하며, 자동으로 재시도하거나 다른 작업을 보내지 마.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
@@ -566,6 +620,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "IN_PROGRESS_HEADER": {
         # {pending_text} = current task text, {elapsed} = seconds (rendered as %.0f by caller)
         "zh": "你正在做: \"{pending_text}\"（已经过了 {elapsed} 秒）。",
+        "zh-TW": "你正在做: \"{pending_text}\"（已經過了 {elapsed} 秒）。",
         "en": "You're doing: \"{pending_text}\" ({elapsed}s elapsed).",
         "ja": "今やってる: \"{pending_text}\"（{elapsed} 秒経過）。",
         "ko": "지금 하는 중: \"{pending_text}\" ({elapsed}초 경과).",
@@ -576,6 +631,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "BAG_LINE": {
         # {items} = item list
         "zh": "背包：{items}",
+        "zh-TW": "背包：{items}",
         "en": "Inventory: {items}",
         "ja": "持ち物：{items}",
         "ko": "인벤토리: {items}",
@@ -585,6 +641,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "BAG_EMPTY_LINE": {
         "zh": "背包：空",
+        "zh-TW": "背包：空",
         "en": "Inventory: empty",
         "ja": "持ち物：からっぽ",
         "ko": "인벤토리: 비었음",
@@ -594,6 +651,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "IN_PROGRESS_FOLLOWUP": {
         "zh": "有新内容（画面/反馈/感受换了角度）就说一句，没新内容就**安静别说**——不许复读之前的话，不许编尚未发生的结果（比如别说『快搞定了』、『挖到一半了』）。当前动作还在进行，你现在只负责讲述当下看到/感受到的，**不要派新任务、不要调用 minecraft_task**——那会打断正在做的事。\n**绝对不要把内部状态当对话播报给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』这些字眼一律不准说出口，只讲游戏里的事。",
+        "zh-TW": "有新內容（畫面／回饋／感受換了角度）就說一句，沒新內容就**安靜別說**——不准重複之前的話，不准編尚未發生的結果（例如別說『快搞定了』、『挖到一半了』）。目前的動作還在進行，你現在只負責講你當下看到／感受到的，**不要派新任務、不要呼叫 minecraft_task**——那會打斷正在做的事。\n**絕對不要把內部狀態當對話播報給 {{MASTER_NAME}}**——『連線』『任務閒置』『系統』『minecraft_task』『工具』『tool』這些字眼一律不准說出口，只講遊戲裡的事。",
         "en": "If there's something genuinely new to say (a different angle on what you're seeing / feedback / how you feel), say it once. Otherwise **stay quiet** — don't parrot what you already said, don't make up results that haven't happened yet (e.g. don't say 'almost done', 'half-way through mining'). The current action is still running, so right now you only NARRATE what you see/feel — **do not dispatch a new task or call minecraft_task**; that would interrupt what's already underway.\n**Absolutely do NOT narrate internal state to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. Only talk about what's happening in the game.",
         "ja": "本当に新しいこと（見えた角度の違い／フィードバック／感じたこと）があるなら一言だけ、なければ**黙ってる**——前と同じことを繰り返さない、まだ起きていない結果（『もうすぐ終わる』『半分掘れた』など）を作らない。今の動作はまだ進行中だから、今は見えてること・感じたことを語るだけ——**新しいタスクを送ったり minecraft_task を呼んだりしないで**。それは進行中の作業を中断してしまう。\n**{{MASTER_NAME}} に内部状態を会話で実況するのは絶対禁止**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さず、ゲーム内の話だけ。",
         "ko": "정말 새로운 게 있을 때만 (보이는 각도가 달라졌다거나, 피드백, 느낌이 바뀜) 한 마디. 없으면 **조용히 있어** — 했던 말 반복하지 말고, 아직 안 일어난 결과 ('거의 다 됐어', '반쯤 캤어' 등) 지어내지 마. 지금 동작은 아직 진행 중이니까, 지금은 보이는 것·느낀 것만 이야기해——**새 작업을 보내거나 minecraft_task를 호출하지 마**. 그러면 진행 중인 작업이 끊겨.\n**{{MASTER_NAME}} 에게 내부 상태를 대화로 중계하는 건 절대 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 말고, 게임 속 일만.",
@@ -607,6 +665,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # -------------------------------------------------------------------
     "KEEP_GOING_BODY": {
         "zh": "你已经停下了。如果 {{MASTER_NAME}} 刚刚交代了要做什么，就顺着他的意思来——别自作主张派一个会盖掉他要求的新动作。否则可以挑下一步：优先跟 {{MASTER_NAME}} 聊一句你想接着干啥／刚才做的咋样；只有在确实有明显该做的事时，再派一个具体可执行的动作。别为了凑任务硬编一个，也别站着挂机。\n**绝对不要把内部状态当对话播报给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』这些字眼一律不准说出口。要派动作就直接调用 minecraft_task 工具（别把工具名说出来），要说话就用第一人称讲游戏里的事。",
+        "zh-TW": "你已經停下了。如果 {{MASTER_NAME}} 剛剛交代了要做什麼，就順著對方的意思來——別自作主張派一個會蓋掉對方要求的新動作。否則可以挑下一步：優先跟 {{MASTER_NAME}} 聊一句你想接著做什麼／剛才做的怎麼樣；只有在確實有明顯該做的事時，再派一個具體可執行的動作。別為了湊任務硬掰一個，也別站著掛機。\n**絕對不要把內部狀態當對話播報給 {{MASTER_NAME}}**——『連線』『任務閒置』『系統』『minecraft_task』『工具』『tool』這些字眼一律不准說出口。要派動作就直接呼叫 minecraft_task 工具（別把工具名說出來），要說話就用第一人稱講遊戲裡的事。",
         "en": "You've come to a stop. If {{MASTER_NAME}} has just told you what to do, follow that — don't grab the wheel and dispatch some new action that overrides their request. Otherwise pick what's next: prefer to say one line to {{MASTER_NAME}} about what you want to do next / how the last thing went; only when there's genuinely an obvious next step should you dispatch one concrete executable action. Don't invent a task just to have one, but don't just stand idle either.\n**Absolutely do NOT narrate internal state to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. If you do act, call the minecraft_task tool directly (don't say the tool name out loud); if you talk, speak first-person about what's happening in the game.",
         "ja": "今、止まってる。{{MASTER_NAME}} がさっき何かを頼んだなら、その意向に沿って——勝手に上書きするような新しい動作を送らないで。そうでなければ次を選んで：まず {{MASTER_NAME}} に「次に何をしたいか／さっきのはどうだったか」を一言。明らかにやるべきことがあるときだけ、具体的に実行できる動作を一つ送る。タスクを埋めるために無理に作らない、でも立ち止まったままにもしない。\n**{{MASTER_NAME}} に内部状態を会話で実況するのは絶対禁止**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。動作するなら minecraft_task ツールを直接呼ぶ（ツール名は口に出さない）、話すなら一人称でゲーム内の話だけ。",
         "ko": "지금 멈춰 있어. {{MASTER_NAME}} 가 방금 뭔가 시켰으면 그 뜻을 따라——멋대로 그걸 덮어쓰는 새 동작을 보내지 마. 아니면 다음을 골라: 먼저 {{MASTER_NAME}} 한테 '다음에 뭐 할지 / 방금 한 건 어땠는지' 한 마디. 분명히 해야 할 일이 있을 때만 구체적으로 실행 가능한 동작 하나를 보내. 작업을 채우려고 억지로 만들지 말고, 그렇다고 가만히 서 있지도 마.\n**{{MASTER_NAME}} 에게 내부 상태를 대화로 중계하는 건 절대 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마. 동작하려면 minecraft_task 도구를 바로 호출하고(도구 이름은 말하지 마), 말하려면 1인칭으로 게임 속 일만.",
@@ -621,6 +680,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "CURRENT_TASK_LINE": {
         # {task_text} = current pending task text
         "zh": "你正在做: {task_text}",
+        "zh-TW": "你正在做: {task_text}",
         "en": "You're doing: {task_text}",
         "ja": "今やってる: {task_text}",
         "ko": "지금 하는 중: {task_text}",
@@ -631,6 +691,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     "RECENT_EVENTS_BLOCK": {
         # {log_text} = recent log lines
         "zh": "你最近发生的事:\n---\n{log_text}\n---",
+        "zh-TW": "你最近發生的事:\n---\n{log_text}\n---",
         "en": "What's happened to you recently:\n---\n{log_text}\n---",
         "ja": "最近起きたこと:\n---\n{log_text}\n---",
         "ko": "최근에 있었던 일:\n---\n{log_text}\n---",
@@ -640,6 +701,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "SYSTEM_PROMPT_IDLE_BODY": {
         "zh": "你现在闲着——挑下一步：要么派一个具体动作下去（基于上面看到的内容挑），要么跟 {{MASTER_NAME}} 聊一句下一步打算干啥。别挂机——你在玩游戏，主动找事做。\n**不要给 {{MASTER_NAME}} 播报内部状态**：『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
+        "zh-TW": "你現在閒著——挑下一步：要麼派一個具體動作下去（依據上面看到的內容挑），要麼跟 {{MASTER_NAME}} 聊一句下一步打算做什麼。別掛機——你在玩遊戲，主動找事做。\n**不要給 {{MASTER_NAME}} 播報內部狀態**：『連線』『任務閒置』『系統』『minecraft_task』『工具』『tool』一律不准說出口，用第一人稱講遊戲裡的事。",
         "en": "You're idle right now — pick what's next: either dispatch a concrete action (based on what you saw above), or say one line to {{MASTER_NAME}} about what you plan to do next. Don't idle — you're playing a game, take initiative.\n**Do not narrate internals to {{MASTER_NAME}}**: never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'. Speak first-person about what's happening in the game.",
         "ja": "今、手が空いてる——次を選んで：上で見えた内容を踏まえて具体的な動作を送るか、{{MASTER_NAME}} に「次に何をするつもりか」を一言。立ち止まらないで——ゲームを遊んでるんだから自分から動いて。\n**{{MASTER_NAME}} に内部状態を実況しない**：『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さず、一人称でゲーム内の話だけ。",
         "ko": "지금 한가해——다음을 골라: 위에서 본 내용을 바탕으로 구체적인 동작을 보내거나, {{MASTER_NAME}} 한테 '다음에 뭐 할 건지' 한 마디. 가만히 있지 마——게임을 하고 있으니까 주도적으로 움직여.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**: '연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 말고, 1인칭으로 게임 속 일만.",
@@ -649,6 +711,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "SYSTEM_PROMPT_BUSY_BODY": {
         "zh": "你还在做上一个动作。有新内容（画面/反馈/感受换了角度）就说一句，没新内容就安静别说。\n**不要播报内部状态**——『连接』『任务空闲』『系统』『工具』『minecraft_task』『tool』一律别说，只讲游戏里的事。",
+        "zh-TW": "你還在做上一個動作。有新內容（畫面／回饋／感受換了角度）就說一句，沒新內容就安靜別說。\n**不要播報內部狀態**——『連線』『任務閒置』『系統』『工具』『minecraft_task』『tool』一律別說，只講遊戲裡的事。",
         "en": "You're still doing the previous action. If there's something genuinely new to say (a different angle on the view / feedback / how you feel), say one line; otherwise stay quiet.\n**Do not narrate internals** — never say 'connect', 'idle', 'system', 'tool', 'minecraft_task', 'tool'. Only talk about what's happening in the game.",
         "ja": "前の動作がまだ続いてる。本当に新しいこと（見えた角度／フィードバック／感じ）があれば一言、なければ黙ってる。\n**内部状態を実況しない**——『接続』『タスク空き』『システム』『ツール』『minecraft_task』『tool』は口に出さず、ゲーム内の話だけ。",
         "ko": "아직 이전 동작 중이야. 정말 새로운 게 있을 때만 (각도/피드백/느낌 등) 한 마디, 없으면 조용히.\n**내부 상태 중계 금지**——'연결' '대기' '시스템' '도구' 'minecraft_task' 'tool' 입 밖에 내지 말고, 게임 속 일만.",
@@ -663,6 +726,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # -------------------------------------------------------------------
     "INTERRUPTED_REASON_OVERWRITTEN": {
         "zh": "被一个新动作覆盖了。",
+        "zh-TW": "被一個新動作蓋掉了。",
         "en": "Overwritten by a new action.",
         "ja": "新しい動作で上書きされた。",
         "ko": "새 동작에 덮어쓰여졌어.",
@@ -672,6 +736,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "INTERRUPTED_REASON_SHUTDOWN": {
         "zh": "游戏插件正在关闭。",
+        "zh-TW": "遊戲外掛正在關閉。",
         "en": "Game plugin shutting down.",
         "ja": "ゲームプラグインが終了中。",
         "ko": "게임 플러그인 종료 중.",

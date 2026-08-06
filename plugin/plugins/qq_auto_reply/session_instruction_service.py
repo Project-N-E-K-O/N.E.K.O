@@ -8,9 +8,10 @@ from typing import Any, Optional
 from config.prompts.prompts_sys import (
     SESSION_INIT_PROMPT,
     get_context_summary_ready,
+    normalize_sys_prompt_locale,
 )
 from main_logic.core import apply_role_placeholders
-from utils.language_utils import get_global_language, get_global_language_full
+from utils.language_utils import get_global_language_full
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
@@ -36,6 +37,36 @@ from .scene_prompt_templates import (
     SCENE_PRIVATE_CHAT,
     SCENE_SHARED_GROUP,
 )
+
+
+def resolve_prompt_override(
+    overrides: Any, locale: str, i18n_key: str,
+) -> tuple[str, str] | None:
+    """定位「运行时真正会用的」那个提示词覆盖桶。
+
+    返回 ``(桶的 locale, 覆盖文本)``，没有覆盖时返回 ``None``。
+
+    ⚠️ 单一实现，三个消费方（运行时 ``_resolve_static_layer``、编辑器
+    ``get_prompt_editor_state``、重置 ``reset_prompt_override``）必须都走这里。
+    覆盖按 locale 分桶存，而读取是 ``locale_candidates`` 的逐级回退：一旦哪个
+    消费方改用精确匹配，就会出现「运行时在用、编辑器看不见、也重置不掉」的
+    覆盖——存量用户的桶键未必等于今天解析出来的 locale（例如 #2500 之前繁中
+    用户的编辑器兜底是短码 ``zh``）。
+
+    空串覆盖（``save_prompt_override`` 对空输入的存法）视为「没设」，继续往下
+    一个候选找，与运行时原有行为一致。
+    """
+    if not isinstance(overrides, dict):
+        return None
+    from plugin.sdk.shared.i18n import locale_candidates
+    for candidate in locale_candidates(locale, "zh-CN"):
+        locale_map = overrides.get(candidate)
+        if not isinstance(locale_map, dict) or i18n_key not in locale_map:
+            continue
+        value = locale_map[i18n_key]
+        if isinstance(value, str) and value.strip():
+            return candidate, value
+    return None
 
 
 class QQSessionInstructionService:
@@ -137,20 +168,25 @@ class QQSessionInstructionService:
     def _resolve_static_layer(self, i18n_key: str, default_template: str, locale: str = "", **format_kwargs) -> str:
         """解析静态提示词层：先查 prompt_overrides，再回退 i18n/默认模板。"""
         if not locale:
-            locale = get_global_language()
+            # #2500 第 2 步：用全码。这个 locale 只喂 ``locale_candidates``（覆盖
+            # 查找 + i18n bundle 查找），两者都是「先精确再逐级回退」，所以给全码
+            # 严格更准：提示词编辑器按前端 locale 存覆盖（可能就是 'zh-TW'），而
+            # 短码 'zh' 的候选链是 zh → zh-CN → en，够不到那份繁体覆盖。
+            locale = get_global_language_full()
         # 初始值：i18n bundle 优先，否则用 Python 默认常量
-        base_text = self.plugin.i18n.t(i18n_key, default=default_template)
+        # ⚠️ locale 必须传进去。``PluginI18n.default_locale`` 是 plugin.toml 里写
+        # 死的 "zh-CN"，不跟用户语言走，所以不传等于永远查简体那本。今天这些
+        # 提示词层的 key 一个 bundle 都没有（一律落到 default_template），这行是
+        # 空操作；但 ``get_prompt_editor_state`` 已经传了 locale，两边不一致的话，
+        # 谁往 bundle 里补一条翻译，编辑器显示的和运行时用的就会是两份文本。
+        base_text = self.plugin.i18n.t(
+            i18n_key, locale=locale, default=default_template,
+        )
         # 检查用户覆盖
         overrides = (self.plugin._qq_settings or {}).get("prompt_overrides") or {}
-        if isinstance(overrides, dict):
-            from plugin.sdk.shared.i18n import locale_candidates
-            for candidate in locale_candidates(locale, "zh-CN"):
-                locale_map = overrides.get(candidate)
-                if isinstance(locale_map, dict) and i18n_key in locale_map:
-                    override_val = locale_map[i18n_key]
-                    if isinstance(override_val, str) and override_val.strip():
-                        base_text = override_val
-                        break
+        found = resolve_prompt_override(overrides, locale, i18n_key)
+        if found is not None:
+            base_text = found[1]
         # 必需占位符护栏：身份边界等安全层的 required_placeholders 在
         # _PROMPT_LAYERS 里声明；覆盖文本（bundle 或用户）缺任一占位符
         # 说明它丢掉了模板承载的身份/场景约束（例如 shared_session 的
@@ -182,19 +218,16 @@ class QQSessionInstructionService:
 
     def _resolve_init_template(self, locale: str) -> str:
         """初始化模板来自 SESSION_INIT_PROMPT 多语言 map，与普通 i18n 不同。"""
-        short_lang = locale.split("-")[0] if "-" in locale else locale
-        template = SESSION_INIT_PROMPT.get(locale, SESSION_INIT_PROMPT.get(short_lang, SESSION_INIT_PROMPT["zh"]))
+        # 这张表的键是 zh / zh-TW / en …，既不是全码也不是纯短码，所以走
+        # prompts_sys 自己的归一器，别用 ``locale.split("-")[0]`` 手搓（那样
+        # 'zh-CN' 落 'zh' 是巧合，'pt-BR' 之类就要各自碰运气了）。
+        template = SESSION_INIT_PROMPT.get(
+            normalize_sys_prompt_locale(locale), SESSION_INIT_PROMPT["zh"],
+        )
         # 检查覆盖
         overrides = (self.plugin._qq_settings or {}).get("prompt_overrides") or {}
-        if isinstance(overrides, dict):
-            from plugin.sdk.shared.i18n import locale_candidates
-            for candidate in locale_candidates(locale, "zh-CN"):
-                locale_map = overrides.get(candidate)
-                if isinstance(locale_map, dict) and "init" in locale_map:
-                    override_val = locale_map["init"]
-                    if isinstance(override_val, str) and override_val.strip():
-                        return override_val
-        return template
+        found = resolve_prompt_override(overrides, locale, "init")
+        return found[1] if found is not None else template
 
     def _discard_all_sessions_for_prompt_change(self) -> None:
         """提示词覆盖变更后，清空所有现有 session，下次回复生效。"""
@@ -296,25 +329,20 @@ class QQSessionInstructionService:
         login_self_id: str | None = None,
         login_nickname: str | None = None,
     ) -> QQInstructionBundle:
-        try:
-            from utils.i18n_utils import normalize_language_code
-        except Exception:
-            normalize_language_code = None
-
         user_language = get_global_language_full()
-        short_language = (
-            normalize_language_code(user_language, format="short")
-            if normalize_language_code else user_language
-        )
+        # #2500 第 2 步：prompts_sys 那套表用 zh / zh-TW 做键，既不是全码也不是
+        # 纯短码，所以经它自己的归一器换算。原先那次 format="short" 的短码化是顺
+        # 手做的——它把 zh-TW 塌成 zh，繁中用户拿简体收尾语。⚠️ 也不能拿全码裸
+        # 查：简中的全码是 'zh-CN'，这张表的简体键是 'zh'。
+        sys_prompt_locale = normalize_sys_prompt_locale(user_language)
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
-            short_language,
-            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
+            sys_prompt_locale, SESSION_INIT_PROMPT["zh"],
         )
         # QQ 永远是文字；群里没有那个固定的一对一对象，群变体连
         # {master} 槽都没有（否则等于把私聊对象的名字写进群 prompt）。
         context_ready_template = get_context_summary_ready(
-            short_language, input_mode="text", is_group=is_group,
+            sys_prompt_locale, input_mode="text", is_group=is_group,
         )
 
         master_title = master_name if master_name else self.plugin.i18n.t("prompts.default_master", default="主人")

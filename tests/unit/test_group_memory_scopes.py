@@ -8949,7 +8949,7 @@ def test_static_layer_falls_back_when_required_placeholders_missing():
     )
 
     weak = "## 场景：群聊共享上下文\n请自然地参考正在进行的讨论。"
-    i18n = SimpleNamespace(t=lambda key, default="": weak)
+    i18n = SimpleNamespace(t=lambda key, default="", **kw: weak)
     plugin = SimpleNamespace(i18n=i18n, _qq_settings={}, logger=MagicMock())
     service = QQSessionInstructionService(plugin)
 
@@ -13224,7 +13224,6 @@ async def test_session_instructions_forward_full_locale_to_memory(
 ):
     from plugin.plugins.qq_auto_reply import session_instruction_service as module
 
-    monkeypatch.setattr(module, "get_global_language", lambda: "zh")
     monkeypatch.setattr(module, "get_global_language_full", lambda: "zh-TW")
     plugin = SimpleNamespace(
         logger=MagicMock(),

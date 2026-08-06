@@ -1119,24 +1119,20 @@ class BiliDMPlugin(NekoPluginBase):
         user_title: str,
     ) -> str:
         """构建 AI 会话系统提示词"""
-        from config.prompts.prompts_sys import SESSION_INIT_PROMPT
-        from utils.language_utils import get_global_language
-
-        try:
-            from utils.i18n_utils import normalize_language_code
-        except Exception:
-            normalize_language_code = None
-
-        user_language = get_global_language()
-        short_language = (
-            normalize_language_code(user_language, format="short")
-            if normalize_language_code
-            else user_language
+        from config.prompts.prompts_sys import (
+            SESSION_INIT_PROMPT,
+            normalize_sys_prompt_locale,
         )
+        from utils.language_utils import get_global_language_full
+
+        # #2500 第 2 步：取全码再经 prompts_sys 归一。原先那次 format="short" 的
+        # 短码化是顺手做的、不是有意的——它把 zh-TW 塌成 zh，繁中用户拿简体模板，
+        # 下面那级 ``.get(user_language)`` 兜底永远够不到。⚠️ 也不能拿全码裸查：
+        # 简中的全码是 'zh-CN'，而 prompts_sys 这套表的简体键是 'zh'。
+        short_language = normalize_sys_prompt_locale(get_global_language_full())
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
-            short_language,
-            SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["en"]),
+            short_language, SESSION_INIT_PROMPT["en"],
         )
 
         system_prompt_parts = [

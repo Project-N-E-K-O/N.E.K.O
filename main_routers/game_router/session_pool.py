@@ -132,6 +132,9 @@ def _build_game_prompt(
     # 未来其他游戏在这里扩展
     # 这里的 language 会被当成人读的语言名塞进英文句子，所以短码化后再插——
     # 上游改传 user_language_full 之后不这么做的话，繁中会话会看到字面 "zh-TW"。
+    # ⚠️ #2500 第 2 步复核确认：这处的短码化是有意的、要保留。它不是查表用的
+    # locale，而是拼进英文兜底 prompt 的语言名；繁简两种中文在这句里要的是同
+    # 一个词（"zh"），细分到 zh-TW 只会让模型读到一个不像语言名的字符串。
     # ⚠️ 只在 language 非空时才归一：normalize_language_code(None) 返回 'en'，
     # 直接套上去会把下面那两级兜底（全局语言 → "en"）整个吃掉。
     short_language = normalize_language_code(language, format="short") if language else None

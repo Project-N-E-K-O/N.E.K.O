@@ -738,9 +738,12 @@ class BiliDanmakuPlugin(NekoPluginBase):
         constraints: str,
     ) -> str:
         try:
-            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
+            from config.prompts.prompts_sys import (
+                SESSION_INIT_PROMPT,
+                normalize_sys_prompt_locale,
+            )
             from utils.config_manager import get_config_manager
-            from utils.language_utils import get_global_language
+            from utils.language_utils import get_global_language_full
         except Exception as e:
             raise RuntimeError(f"加载 NEKO 对话配置失败: {e}") from e
 
@@ -748,7 +751,10 @@ class BiliDanmakuPlugin(NekoPluginBase):
         master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
         if self._target_lanlan:
             her_name = self._target_lanlan
-        user_language = get_global_language()
+        # #2500 第 2 步：取全码再经 prompts_sys 归一，繁中才能命中 SESSION_INIT_PROMPT
+        # 的 'zh-TW' 键。⚠️ 不能拿 get_global_language_full() 直接当键：简中的全码是
+        # 'zh-CN'，而这张表的简体键是 'zh'，裸查会一路掉到英文。
+        user_language = normalize_sys_prompt_locale(get_global_language_full())
         init_prompt = SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT.get('en', 'You are {name}.'))
         character_prompt = lanlan_prompt_map.get(her_name, "你是一个友好的AI助手")
         current_character = catgirl_data.get(her_name, {})
