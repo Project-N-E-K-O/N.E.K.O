@@ -837,6 +837,11 @@
         if (activeTurn && activeTurn.ended
             && (!turnId || String(turnId) === activeTurn.id)) return;
         if (!activeTurn || activeTurn.ended && (!turnId || String(turnId) !== activeTurn.id)) {
+            if (refreshMode() !== 'vrm') {
+                metrics.nonVrmTurns += 1;
+                console.info('[NekoMotion] ignored assistant turn end outside VRM mode');
+                return;
+            }
             beginTurn(turnId, source || 'lifecycle');
         }
         const turn = activeTurn;
@@ -863,7 +868,7 @@
         const value = payload.emotion;
         const turnId = payload.turnId;
         if (!value) return;
-        if (turnId && activeTurn && String(turnId) !== activeTurn.id) return;
+        if (turnId && (!activeTurn || String(turnId) !== activeTurn.id)) return;
         latestOfficialEmotion = String(value).toLowerCase();
         if (activeTurn && (!turnId || String(turnId) === activeTurn.id)) {
             activeTurn.officialEmotion = latestOfficialEmotion;

@@ -101,6 +101,20 @@ assert.match(runtimeSource, /await initialize\(\)/);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /turn\.cancelled = true/);
 assert.match(runtimeSource, /activeTurn = null;\s*bridgedText = ''/);
+const turnEndSource = runtimeSource.split('function endObservedTurn', 2)[1]
+    .split('function emotionObserved', 1)[0];
+assert.match(turnEndSource, /if \(refreshMode\(\) !== 'vrm'\)/);
+assert.ok(
+    turnEndSource.indexOf("if (refreshMode() !== 'vrm')")
+        < turnEndSource.indexOf("beginTurn(turnId, source || 'lifecycle')"),
+    'a turn end outside VRM mode must not create a deferred motion turn'
+);
+const emotionSource = runtimeSource.split('function emotionObserved', 2)[1]
+    .split('function cancelObservedSpeech', 1)[0];
+assert.match(
+    emotionSource,
+    /if \(turnId && \(!activeTurn \|\| String\(turnId\) !== activeTurn\.id\)\) return;/
+);
 assert.match(runtimeSource, /async function handleVrmModelLoaded\(\)/);
 assert.match(runtimeSource, /await processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /function resetCharacterMotionState\(\)/);

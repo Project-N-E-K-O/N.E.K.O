@@ -145,9 +145,38 @@ assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('A player claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('This user claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('Someone nods.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'a young girl clap'
+}).plan.length, 0);
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'the user clap'
+}).plan.length, 0);
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'you clap'
+}).plan[0].intent, 'clap');
 assert.equal(intent('特别用力点头'), 'nod');
 assert.equal(intent('告别时挥手'), 'wave');
 assert.equal(core.analyze('别点头', { locale: 'zh-CN' }).plan.length, 0);
+assert.equal(core.analyze('如果，手，挥手，告别', {
+    locale: 'zh-CN'
+}).plan.length, 0);
+
+const piano = core.analyze('plays piano', { locale: 'en' });
+assert.equal(piano.plan[0].intent, 'piano');
+assert.equal(piano.plan[0].evidence.assetId, 'piano_01');
+assert.deepEqual(
+    core.analyze('waves hello then sits down', { locale: 'en' })
+        .plan.map(function (item) { return item.intent; }),
+    ['wave', 'sit']
+);
+assert.deepEqual(
+    core.analyze('bows then claps', { locale: 'en' })
+        .plan.map(function (item) { return item.intent; }),
+    ['bow', 'clap']
+);
+assert.equal(core.analyze('nods three times', { locale: 'en' }).plan[0].count, 3);
+assert.equal(core.analyze('claps twice', { locale: 'en' }).plan[0].count, 2);
+assert.equal(core.analyze('waves hello 3 times', { locale: 'en' }).plan[0].count, 3);
 
 const boundedFrame = core.toChineseFrame('nod, shake head, wave, clap and dance', 'en');
 assert.ok(

@@ -313,15 +313,30 @@
         const describesCurrentState = /(?:还|仍|依然|正在|本来|已经|刚刚|刚才|现在还是)\s*$/u.test(prefix);
         const explicitContinuation = /(?:吧|好吗|可以吗|一会|一下|别动|就行)/u.test(suffix);
         if (describesCurrentState && !explicitContinuation) return false;
-        const selfActors = ['我', '本人', '咱', '俺', 'i ', "i'm", 'myself', '私', '僕', '내가', 'я ', 'yo ', 'eu '];
-        const targetActors = ['你', '您', '角色', 'neko', 'yui', 'you', 'あなた', '너', 'ты', 'você'];
+        const thirdPartyActors = [
+            '用户', '玩家', '某人', '别人', '朋友', '女孩', '男孩',
+            '他们', '她们', '彼', '彼女', '그', '그녀',
+            'он', 'она', 'él', 'ella'
+        ];
+        const selfActors = ['我', '本人', '咱', '俺', '私', '僕', '내가', 'я ', 'yo ', 'eu '];
+        const targetActors = ['你', '您', '角色', 'neko', 'yui', 'あなた', '너', 'ты', 'você'];
         const lastIndex = function (terms) {
             return terms.reduce(function (best, term) {
                 return Math.max(best, prefix.lastIndexOf(term));
             }, -1);
         };
-        const selfIndex = lastIndex(selfActors);
-        const targetIndex = lastIndex(targetActors);
+        if (lastIndex(thirdPartyActors) >= 0
+            || /(?:^|[\s，,。！？])(?:他|她)(?=$|[\s，,。！？]|正在|要|会|应该)/u.test(prefix)
+            || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they)\b/iu.test(prefix)) {
+            return false;
+        }
+        let selfIndex = lastIndex(selfActors);
+        let targetIndex = lastIndex(targetActors);
+        const englishSelf = /\b(?:i|me|myself)\b/giu;
+        const englishTarget = /\byou\b/giu;
+        let match;
+        while ((match = englishSelf.exec(prefix)) !== null) selfIndex = Math.max(selfIndex, match.index);
+        while ((match = englishTarget.exec(prefix)) !== null) targetIndex = Math.max(targetIndex, match.index);
         return selfIndex < 0 || targetIndex > selfIndex;
     }
 
@@ -517,6 +532,7 @@
             const matchedRules = [];
             this.pack.rules.forEach((rule) => {
                 let matchedLocale = null;
+                let matchedIndex = -1;
                 for (const candidateLocale of locales) {
                     const common = this._common(candidateLocale);
                     const localizedEvidence = localized(rule.phrases, candidateLocale)
@@ -537,22 +553,47 @@
                         && !speechActorAllowed(source, anchor);
                     if ((phrase || frame.length) && !blocked && !actorBlocked) {
                         matchedLocale = candidateLocale;
+                        const positions = (phrase ? [phrase] : frame).map(function (term) {
+                            return folded(source).indexOf(folded(term));
+                        }).filter(function (index) { return index >= 0; });
+                        matchedIndex = positions.length ? Math.min.apply(null, positions) : source.length;
                         break;
                     }
                 }
                 if (!matchedLocale) return;
-                matchedRules.push({ rule: rule, locale: matchedLocale });
+                matchedRules.push({
+                    rule: rule,
+                    locale: matchedLocale,
+                    sourceIndex: matchedIndex
+                });
             });
             const maxRules = Number(this.pack.contract && this.pack.contract.maxPlanItems) || 3;
             matchedRules.sort(function (left, right) {
-                return Number(right.rule.priority || 0) - Number(left.rule.priority || 0);
-            }).slice(0, maxRules).forEach(function (entry) {
-                // nameZh 是给人看的动作卡名称，不保证本身属于语义短语。
-                output.push(localized(entry.rule.phrases, 'zh-CN')[0]
-                    || entry.rule.nameZh || entry.rule.id);
-                const style = styleFor(source, entry.rule.styles, entry.locale);
-                if (style.name && STYLE_ZH[style.name]) output.push(STYLE_ZH[style.name]);
+                return left.sourceIndex - right.sourceIndex
+                    || Number(right.rule.priority || 0) - Number(left.rule.priority || 0);
             });
+            const selectedRules = matchedRules.filter(function (entry, index, rows) {
+                return !rows.slice(0, index).some(function (earlier) {
+                    return earlier.sourceIndex === entry.sourceIndex;
+                });
+            }).slice(0, maxRules);
+            const actionClauses = [];
+            selectedRules.forEach(function (entry, index) {
+                // nameZh 是给人看的动作卡名称，不保证本身属于语义短语。
+                let actionText = localized(entry.rule.phrases, 'zh-CN')[0]
+                    || entry.rule.nameZh || entry.rule.id;
+                const style = styleFor(source, entry.rule.styles, entry.locale);
+                if (style.name && STYLE_ZH[style.name]) {
+                    actionText = STYLE_ZH[style.name] + actionText;
+                }
+                const nextIndex = selectedRules[index + 1]
+                    ? selectedRules[index + 1].sourceIndex : source.length;
+                const repeats = count(source.slice(entry.sourceIndex, nextIndex));
+                if (repeats === 2) actionText += '两下';
+                else if (repeats >= 3) actionText += '三下';
+                actionClauses.push(actionText);
+            });
+            if (actionClauses.length) output.push(actionClauses.join('，然后'));
 
             return unique(output).join('，');
         }
@@ -857,14 +898,17 @@
                     && wholeTop.score - wholeSecond.score < 0.7
                     && !wholeExact && wholeTopLength < wholeSecondLength + 2);
                 trace.push({ clause: wholeClause, candidates: wholeCandidates.slice(0, 4), ambiguous: wholeAmbiguous });
-                if (wholeTop && !wholeAmbiguous) {
+                if (wholeTop && !wholeAmbiguous && wholeExact) {
                     wholeTop.discourse = { clauses: ['whole'], modifiers: [] };
                     decisions.push(wholeTop);
                     this.metrics.clauseEvents += 1;
                 }
             }
 
-            const frameCandidates = this.pack.rules
+            const hasMetaClause = clauses.some(function (clause) {
+                return clause.role === 'meta';
+            });
+            const frameCandidates = hasMetaClause ? [] : this.pack.rules
                 .map((rule) => this._frameAcrossClauses(
                     rule,
                     clauses,
