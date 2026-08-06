@@ -2035,7 +2035,7 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("主人週五晚上八點想開黑")], semantic_dedup=True,
+        "Neko", [_fact("主人周五晚上八点想开黑。")], semantic_dedup=True,
     )
     assert duplicate == []
 
@@ -2065,7 +2065,7 @@ async def test_fts_dedup_sees_archived_rows(tmp_path):
     ):
         duplicate = await harness._apersist_new_facts(
             "Neko",
-            [{"text": "群規是不劇透", "importance": 7, "entity": "group_chat"}],
+            [{"text": "群规是不剧透。", "importance": 7, "entity": "group_chat"}],
             subject=group, semantic_dedup=True,
         )
     assert duplicate == []
@@ -2094,7 +2094,7 @@ async def test_fts_dedup_escalates_past_crowded_first_window():
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("主人週五晚上八點想開黑")], semantic_dedup=True,
+        "Neko", [_fact("主人周五晚上八点想开黑。")], semantic_dedup=True,
     )
     assert duplicate == []
 

@@ -773,7 +773,7 @@ async def test_fts_dedup_lets_revived_subject_restate_archived_fact(tmp_path):
     fs._time_indexed = _FTSStub2()
     created2 = await fs.apersist_scoped_facts(
         "小天",
-        [{"text": "小紅喜歡喝咖啡", "importance": 6}],
+        [{"text": "小红喜欢喝咖啡。", "importance": 6}],
         subject=SUBJ_ACTIVE,
     )
     assert created2 == []  # absorbed 归档行照旧参与近似去重

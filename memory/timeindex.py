@@ -24,14 +24,16 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import asyncio
 import os
+import unicodedata
 
 logger = get_module_logger(__name__, "Memory")
 
 # ``token_overlap`` 上的两条线（消费点：memory/facts.py 的 Stage-2）。
 #
-# 1.0 = 折叠 + 去停用名之后 token 集完全相同。够得着这条线的，实际只有繁简、
-# 停用名、标点这几种「同一句话的不同写法」——Stage-1 的 SHA-256 差一个字节
-# 就漏，这条线接住它们，也只接住它们。它是唯一允许直接丢弃新 fact 的判据。
+# 1.0 = token 集完全相同。它只是硬挡的**前置筛**，不是判据：n-gram 集合丢掉
+# 顺序，「喜欢猫，不喜欢狗」和「喜欢狗，不喜欢猫」的集合一模一样。真正拍板的
+# 是 `normalized_identity()` 逐字相同（归一相同 ⇒ token 集相同，反之不成立，
+# 所以拿它先筛一道是安全的）。
 FACT_NEAR_DUP_IDENTICAL_OVERLAP = 1.0
 # 0.25 = 值得请 LLM 看一眼的下限，**不是**「判定为重复」的线。实测这个量本身
 # 分不开语义：「养了一只猫」vs「养了一只狗」0.87（必须各留一条），而
@@ -49,6 +51,19 @@ def _next_readonly_batch(
         return False, next(stream)
     except StopIteration:
         return True, None
+
+
+def _strip_marks(text: str) -> str:
+    """Drop combining marks, keeping everything else composed.
+
+    NFD decomposes Hangul syllables into jamo, so the result is
+    re-composed with NFC — otherwise Korean text would tokenize into
+    jamo sequences instead of syllables.
+    """
+    decomposed = unicodedata.normalize("NFD", text)
+    return unicodedata.normalize("NFC", "".join(
+        ch for ch in decomposed if not unicodedata.combining(ch)
+    ))
 
 
 def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
@@ -79,6 +94,10 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     the quoting of the FTS5 query built from it, and dropping it on both
     sides keeps the two in step.
 
+    Combining marks are stripped for the same reason as the case fold:
+    unicode61 matches Latin diacritic-insensitively, so ``José`` is
+    retrieved for ``Jose`` and would then score 0 against it.
+
     Raises if the shared tokenizer cannot be imported. There is
     deliberately no fallback splitter: whatever this returns gets
     *persisted*, and a fallback that tokenizes differently would write
@@ -90,9 +109,15 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
 
     # 懒 import：hybrid_recall 会拉起 persona，import-time 硬依赖在
     # memory-only 的 entrypoint 上不成立（同 hybrid_recall 自己的做法）。
+    #
+    # persona 单独 import 一次不是多余：_tokenize **自己**对 persona 的
+    # import 失败留了一条空白切分兜底，那条兜底同样会把整句中文当一个
+    # token 写进索引。在这里先把它拉起来，失败就直接抛——去掉 fts_tokens
+    # 自己的兜底而放任下游那条，等于什么都没防住。
     from memory.hybrid_recall import _tokenize
+    from memory.persona import _SPLIT_RE  # noqa: F401
 
-    raw = fold_script(str(content or "")).replace('"', ' ').lower()
+    raw = _strip_marks(fold_script(str(content or "")).replace('"', ' ').lower())
     # stop-name 也一起折 + 转小写：strip_stop_names 是逐字面替换/词边界
     # 匹配，两侧不同形就永远撞不上。
     folded_stop_names = [
@@ -104,25 +129,32 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
 def normalized_identity(content: str, stop_names: list[str] | None = None) -> str:
     """Order-preserving normal form used to decide "this is the same sentence".
 
-    Same normalization as ``fts_tokens`` (fold, lower-case, stop-names)
-    but the result keeps character order and drops only the separators
-    the tokenizer splits on. Two texts with the same value here differ
-    at most in script, case, stop-names and punctuation.
+    This is the only key allowed to drop a fact outright, so every
+    normalization step in it has to be one that cannot merge two things
+    that were actually different:
 
-    Token-set equality can NOT stand in for this: n-gram sets discard
-    order, so ``喜欢猫，不喜欢狗`` and ``喜欢狗，不喜欢猫`` — opposite
-    statements — produce the identical set and would read as the same
-    sentence.
+    * Order is preserved. n-gram *sets* discard it, so ``喜欢猫，不喜欢狗``
+      and ``喜欢狗，不喜欢猫`` — opposite statements — share one set and
+      would read as the same sentence.
+    * The script fold is **not** applied, even though ``fts_tokens`` uses
+      it for retrieval. That fold is many-to-one by nature (``鍾`` and
+      ``鐘`` both become ``钟``; ``乾`` and ``幹`` both become ``干``), so
+      two facts about different people would collapse into one key and
+      the later one would be discarded without anyone seeing it. A
+      Traditional/Simplified pair of the same sentence still reaches
+      overlap 1.0 and goes to arbitration — it just doesn't get dropped
+      on a lossy equality.
+    * Diacritics are kept, for the same reason.
+
+    What remains — case, the separators the tokenizer splits on, and
+    stop-names — is losing nothing that distinguishes two facts.
     """  # noqa: DOCSTRING_CJK
     from memory.persona import _SPLIT_RE
-    from memory.script_fold import fold_script
 
-    raw = fold_script(str(content or "")).lower()
-    folded_stop_names = [
-        fold_script(n).lower() for n in (stop_names or [])
-    ]
-    if folded_stop_names:
-        raw = strip_stop_names(raw, folded_stop_names)
+    raw = str(content or "").lower()
+    lowered_stop_names = [n.lower() for n in (stop_names or [])]
+    if lowered_stop_names:
+        raw = strip_stop_names(raw, lowered_stop_names)
     return "".join(seg for seg in _SPLIT_RE.split(raw) if seg)
 
 

@@ -15,9 +15,10 @@ Contracts under test:
      and low for unrelated text — but it does NOT separate meaning
      ("got a cat" / "got a dog" is the highest score two facts can
      plausibly have), which is why it may not decide alone.
-  4. Stage-2 policy: only token-set identity (fold + stop-name variants)
-     drops a fact outright. Everything else is written AND handed to the
-     LLM arbitration queue.
+  4. Stage-2 policy: only a *lossless* normal form (case, punctuation,
+     stop-names — no script fold, no diacritic strip) drops a fact
+     outright. Everything else is written AND handed to the LLM
+     arbitration queue.
   5. Backfill: facts written before the index was rebuilt get indexed
      once, and the marker stops it from rescanning on every write.
 """
@@ -102,10 +103,9 @@ def test_clause_swap_shares_a_token_set_but_not_an_identity():
     assert normalized_identity(a) != normalized_identity(b)
 
 
-def test_identity_ignores_script_case_punctuation_and_stop_names():
-    assert normalized_identity("用戶最近養了一隻貓") == normalized_identity(
-        "用户最近养了一只猫",
-    )
+def test_identity_ignores_only_lossless_differences():
+    """Case, tokenizer separators and stop-names cannot tell two facts
+    apart, so folding them is safe for a key that drops data."""
     assert normalized_identity("用户养了猫，很开心") == normalized_identity(
         "用户养了猫。很开心",
     )
@@ -113,8 +113,22 @@ def test_identity_ignores_script_case_punctuation_and_stop_names():
         "user likes cats",
     )
     assert normalized_identity("兰兰喜欢猫", ["兰兰"]) == normalized_identity(
-        "喜歡貓", ["蘭蘭"],
+        "喜欢猫",
     )
+
+
+def test_identity_refuses_the_lossy_script_fold():
+    """The fold is many-to-one, so it must not gate the hard drop: 鍾 and 鐘
+    are different surnames that both fold to 钟. Retrieval still folds — the
+    pair reaches overlap 1.0 and goes to arbitration instead."""
+    a, b = "鍾先生住在台北", "鐘先生住在台北"
+    assert token_overlap(fts_tokens(a), fts_tokens(b)) == 1.0
+    assert normalized_identity(a) != normalized_identity(b)
+
+    # 同一句话的繁简两写同理：召回够得着，但不许在有损等价上直接丢。
+    trad, simp = "用戶最近養了一隻貓", "用户最近养了一只猫"
+    assert token_overlap(fts_tokens(trad), fts_tokens(simp)) == 1.0
+    assert normalized_identity(trad) != normalized_identity(simp)
 
 
 def test_latin_case_does_not_destroy_the_overlap_score():
@@ -123,6 +137,19 @@ def test_latin_case_does_not_destroy_the_overlap_score():
     assert token_overlap(
         fts_tokens("USER LIKES CATS"), fts_tokens("user likes cats"),
     ) == 1.0
+
+
+def test_latin_diacritics_do_not_destroy_the_overlap_score():
+    """Same argument as case: unicode61 strips diacritics when matching."""
+    assert token_overlap(
+        fts_tokens("José habló portugués"), fts_tokens("Jose hablo portugues"),
+    ) == 1.0
+
+
+def test_hangul_survives_the_diacritic_strip():
+    """NFD decomposes Hangul into jamo; without the NFC recomposition Korean
+    would tokenize into jamo runs instead of syllables."""
+    assert "고양이" in fts_tokens("사용자는 고양이를")
 
 
 def test_tokenize_refuses_to_fall_back_to_a_different_splitter(monkeypatch):
@@ -134,7 +161,27 @@ def test_tokenize_refuses_to_fall_back_to_a_different_splitter(monkeypatch):
     real_import = builtins.__import__
 
     def _boom(name, *args, **kwargs):
-        if name == "memory.hybrid_recall":
+        # persona 是 _tokenize **自己**那条空白切分兜底的触发条件：只挡
+        # hybrid_recall 的话，下游那条兜底照样能把整句中文写进索引。
+        if name in ("memory.hybrid_recall", "memory.persona"):
+            raise ImportError("simulated")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _boom)
+    with pytest.raises(ImportError):
+        fts_tokens("用户最近养了一只猫")
+
+
+def test_tokenize_fails_closed_when_only_persona_is_missing(monkeypatch):
+    """hybrid_recall imports fine but its own persona import fails: _tokenize
+    silently returns a whitespace split, which for unspaced Chinese is one
+    whole-sentence token — the exact shape #2703 is about, now persisted."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _boom(name, *args, **kwargs):
+        if name == "memory.persona":
             raise ImportError("simulated")
         return real_import(name, *args, **kwargs)
 
@@ -296,7 +343,23 @@ async def _persist(harness, text):
 
 
 @pytest.mark.asyncio
-async def test_identical_token_set_still_drops_the_new_fact(tmp_path):
+async def test_a_lossless_variant_still_drops_the_new_fact(tmp_path):
+    harness = _harness(tmp_path, [("existing", FACT_NEAR_DUP_IDENTICAL_OVERLAP)])
+    _seed(harness, "用户最近养了一只猫")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户最近养了一只猫。")
+
+    assert created == []
+    resolver.aenqueue_candidates.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_traditional_rewrite_is_arbitrated_not_dropped(tmp_path):
+    """The fold that makes the pair *findable* is lossy, so it may not also
+    make the pair droppable."""
     harness = _harness(tmp_path, [("existing", FACT_NEAR_DUP_IDENTICAL_OVERLAP)])
     _seed(harness, "用户最近养了一只猫")
     resolver = MagicMock()
@@ -305,8 +368,8 @@ async def test_identical_token_set_still_drops_the_new_fact(tmp_path):
 
     created = await _persist(harness, "用戶最近養了一隻貓")
 
-    assert created == []
-    resolver.aenqueue_candidates.assert_not_awaited()
+    assert len(created) == 1
+    resolver.aenqueue_candidates.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -453,9 +516,15 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         first = await _write("用户最近养了一只猫")
         assert len(first) == 1
 
-        # 繁体重述：Stage-1 的 hash 差得远，靠折叠后的 token 集全同挡住。
-        assert await _write("用戶最近養了一隻貓") == []
+        # 只差一个句号：Stage-1 的 hash 挡不住，归一后逐字相同挡住。
+        assert await _write("用户最近养了一只猫。") == []
         resolver.aenqueue_candidates.assert_not_awaited()
+
+        # 繁体重述：召回够得着（折叠），但折叠有损，不许据此直接丢——进仲裁。
+        trad = await _write("用戶最近養了一隻貓")
+        assert len(trad) == 1
+        resolver.aenqueue_candidates.assert_awaited_once()
+        resolver.aenqueue_candidates.reset_mock()
 
         # 一字之差的另一件事：写入 + 进仲裁队列，不能被闸门吃掉。
         dog = await _write("用户最近养了一只狗")
