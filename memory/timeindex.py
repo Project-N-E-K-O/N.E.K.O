@@ -41,6 +41,10 @@ FACT_NEAR_DUP_IDENTICAL_OVERLAP = 1.0
 # 召回定：宁可多送几对无关的进仲裁（每条新 fact 至多送一对，裁掉即止），也
 # 不要把该合的挡在闸外——真正的裁决权在 fact_dedup 的 LLM 那里。
 FACT_NEAR_DUP_ARBITRATE_OVERLAP = 0.25
+# 投递候选时最多等 resolver 的锁多久。它会被 aresolve 攥着跑完整个 LLM 调用
+# （那边超时 60s），而投递发生在**已经提交完** fact 之后的请求路径上——为一
+# 次无关的后台仲裁把请求拖住一分钟不值得。等不到就放掉：这是尽力而为的旁路。
+FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS = 5.0
 
 
 def _next_readonly_batch(
@@ -131,7 +135,24 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     folded_stop_names = [
         _strip_marks(fold_script(n).lower()) for n in (stop_names or [])
     ] or None
-    return _tokenize(raw, folded_stop_names)
+    tokens = _tokenize(raw, folded_stop_names)
+    if tokens:
+        return tokens
+    # _tokenize 的 CJK 段从 2-gram 起步、拉丁段要求长度 >= 2，所以归一后只
+    # 剩一个字的事实（`猫`，或去掉停用名后只剩一个字）会得到空 token 列表
+    # ——存进去是一行空 content，查询侧也会提前返回，这条 fact 就整个绕过了
+    # Stage-2。两侧同样回落到单字，至少让它参与检索。
+    #
+    # ⚠️ 回落也必须先剥停用名：直接拿 raw 切的话，`兰兰猫` 会原样存成一个
+    # token，停用名白剥了，还会跟别的含这个名字的事实互相命中。
+    residue_source = raw
+    if folded_stop_names:
+        try:
+            residue_source = strip_stop_names(raw, folded_stop_names)
+        except Exception:
+            pass
+    residue = [seg for seg in residue_source.split() if seg]
+    return residue[:1] if residue else []
 
 
 def normalized_identity(content: str) -> str:
@@ -964,14 +985,26 @@ class TimeIndexedMemory:
                 # 错过回填，而这条路径正是全新角色的常态。
                 return True
             with self.engines[lanlan_name].connect() as conn:
-                exists = conn.execute(
-                    text(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type='table' AND name = :table_name"
-                    ),
-                    {"table_name": self.FACTS_FTS_META_TABLE},
-                ).fetchone()
-                if exists is None:
+                present = {
+                    row[0] for row in conn.execute(
+                        text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='table' AND name IN "
+                            "(:meta_table, :fts_table)"
+                        ),
+                        {
+                            "meta_table": self.FACTS_FTS_META_TABLE,
+                            "fts_table": self.FACTS_FTS_TABLE,
+                        },
+                    ).fetchall()
+                }
+                # 标记表在、索引表不在（局部修库 / 手工恢复），说明标记在说
+                # 谎：认它的话历史行永远补不回来，下一次 index_fact 只会建
+                # 一张空表再塞进当前这一条。
+                if (
+                    self.FACTS_FTS_META_TABLE not in present
+                    or self.FACTS_FTS_TABLE not in present
+                ):
                     return True
                 row = conn.execute(
                     text(

@@ -59,6 +59,7 @@ from config.prompts.prompts_memory import (
 from memory.evidence import evidence_score
 from memory.timeindex import (
     FACT_NEAR_DUP_ARBITRATE_OVERLAP,
+    FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
     FACT_NEAR_DUP_IDENTICAL_OVERLAP,
     normalized_identity,
 )
@@ -3877,14 +3878,16 @@ class FactStore:
                             arbitration_hit = (hit, overlap)
                     if (
                         is_dup
-                        or same_subject_seen >= 3
                         or len(similar) < raw_limit
                         or raw_limit >= 200
                     ):
-                        # 刻意**不**因为「已经挑到一条够线的」就收手：首窗
-                        # 里一条 0.26 的命中不该挡住窗外那条 0.87 的真重复
-                        # （它当时根本没被打分）。首窗没坐满就说明外面没东
-                        # 西了，那才是收手的理由。
+                        # 收手的理由只有一个：首窗没坐满（外面没东西了）。
+                        #
+                        # 刻意**不**因为「已经挑到候选」或「候选预算用完」
+                        # 就停：dice 是在 SQL 的 LIMIT 之后才算的，首窗里
+                        # 三条 0.26 的命中不该挡住窗外那条 0.9 的真重复
+                        # （它当时根本没被打分）。3 条预算只管「一趟里看
+                        # 几个候选」，不该当成「不用扩窗了」的信号。
                         break
                     raw_limit = 200
                 if is_dup:
@@ -4217,7 +4220,21 @@ class FactStore:
         if not payload:
             return
         try:
-            appended = await resolver.aenqueue_candidates(lanlan_name, payload)
+            # 有界等待：resolver 的 per-character 锁会被 aresolve 攥着跑完
+            # 整个 LLM 调用（超时 60s）。scoped-history 之类的路由是直接
+            # await 到 _apersist_new_facts 的，fact 早就提交完了，不该让请求
+            # 再为一次无关的后台仲裁干等一分钟。等不到就放掉这对候选——它是
+            # 尽力而为的旁路，向量通道和后续写入都还有机会重新发现它。
+            appended = await asyncio.wait_for(
+                resolver.aenqueue_candidates(lanlan_name, payload),
+                timeout=FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.info(
+                f"[FactStore] {lanlan_name}: 仲裁队列忙，放弃投递 "
+                f"{len(payload)} 对近重复候选"
+            )
+            return
         except Exception as e:
             logger.warning(
                 f"[FactStore] {lanlan_name}: 近重复候选入队失败: {e}"

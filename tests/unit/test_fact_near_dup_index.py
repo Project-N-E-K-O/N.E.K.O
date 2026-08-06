@@ -489,6 +489,82 @@ async def test_widening_still_happens_after_a_merely_eligible_hit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_widening_survives_a_full_budget_of_weak_hits(tmp_path):
+    """The 3-candidate budget bounds one pass; it must not double as "no need
+    to widen". Three 0.26 hits in the first window would otherwise hide a 0.9
+    match at rank 11."""
+    weak = [(f"weak{i}", 0.26) for i in range(3)]
+    pad = [(f"pad{i}", 0.0) for i in range(7)]
+    harness = _harness(tmp_path, weak + pad + [("existing", 0.9)])
+    for fid, _ in weak:
+        harness._mem.append({
+            "id": fid, "text": f"用户{fid}偶尔提到猫", "importance": 7,
+            "entity": "master", "hash": fid,
+        })
+    _seed(harness, "用户最近养了一只狗")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户最近养了一只猫")
+
+    assert len(created) == 1
+    _, pairs = resolver.aenqueue_candidates.await_args.args
+    assert pairs[0]["existing_id"] == "existing"
+
+
+@pytest.mark.asyncio
+async def test_a_busy_arbitration_queue_does_not_stall_the_write(tmp_path):
+    """The resolver holds its per-character lock across a 60s LLM call, and
+    callers await _apersist_new_facts directly — the fact is already
+    committed, so the request must not wait on unrelated background work."""
+    import asyncio as _asyncio
+
+    harness = _harness(tmp_path, [("existing", 0.87)])
+    _seed(harness, "用户最近养了一只猫")
+
+    async def _never_returns(*_a, **_k):
+        await _asyncio.sleep(3600)
+
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(side_effect=_never_returns)
+    harness.attach_dedup_resolver(resolver)
+
+    with patch("memory.facts.FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS", 0.01):
+        created = await _asyncio.wait_for(
+            _persist(harness, "用户最近养了一只狗"), timeout=5,
+        )
+
+    assert len(created) == 1
+
+
+def test_a_missing_index_table_reopens_the_backfill(index):
+    """A marker without the table it describes is a lie: trusting it means the
+    history is never rebuilt, and the next index_fact just makes an empty
+    table plus the row being written."""
+    from sqlalchemy import text as sql_text
+
+    index.backfill_fact_index("小天", [("f1", "用户最近养了一只猫")])
+    assert index.fts_index_needs_backfill("小天") is False
+
+    with index.engines["小天"].connect() as conn:
+        conn.execute(sql_text("DROP TABLE facts_fts_v2"))
+        conn.commit()
+
+    assert index.fts_index_needs_backfill("小天") is True
+
+
+def test_a_single_character_fact_still_gets_a_token():
+    """_tokenize starts CJK at 2-grams, so a one-character residue would store
+    an empty row and skip Stage-2 entirely."""
+    assert fts_tokens("猫") == ["猫"]
+    assert token_overlap(fts_tokens("猫"), fts_tokens("貓")) == 1.0
+    # 回落同样要剥停用名，否则名字会原样变成 token。
+    assert fts_tokens("兰兰猫", ["兰兰"]) == fts_tokens("猫")
+    assert fts_tokens("") == []
+
+
+@pytest.mark.asyncio
 async def test_other_entities_do_not_eat_the_candidate_budget(tmp_path):
     """Legacy facts all share one subject boundary, so three higher-ranked
     hits of another entity would exhaust the 3-candidate budget and hide the
