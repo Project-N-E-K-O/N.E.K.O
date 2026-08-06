@@ -1808,6 +1808,9 @@ class FactStore:
         target_id = str(fact_id if fact_id is not None else '').strip()
         if not target_id:
             return False
+        # _restore 在线程里跑，用列表当出参把选中的那一行带出来（索引要
+        # 用行本身，见下面 _areindex_restored_fact 的调用点）。
+        restored_row: list[dict] = []
         target_subject = coerce_subject(subject)
         target_scope = (
             (
@@ -1937,6 +1940,7 @@ class FactStore:
                         archive_path, remaining, indent=2, ensure_ascii=False,
                     )
                     facts[:] = active
+                    restored_row.append(restored)
                     logger.info(
                         f'[FactStore] {name}: 仲裁恢复 fact={target_id}'
                     )
@@ -1944,13 +1948,14 @@ class FactStore:
 
             try:
                 restored_ok = await asyncio.to_thread(_restore)
-                if restored_ok:
+                if restored_ok and restored_row:
                     # 复活的行必须重新进近重复索引：回填刻意跳过仲裁败者
                     # （它们在归档里永远不会被检索到），而回填标记是持久的
                     # ——不在这里补索引，这条复活的 fact 就永远对 Stage-2
-                    # 不可见。best-effort：索引失败不该把已经落盘的复活
-                    # 回滚掉，下一次全量重建会补上。
-                    await self._areindex_restored_fact(name, target_id)
+                    # 不可见。传行本身而不是 id：按 id 反查要处理「活跃集
+                    # 里已有一个字符串形态相同的标量 id」这类歧义，而这里
+                    # 本来就握着那一行。
+                    await self._areindex_restored_fact(name, restored_row[0])
                 return restored_ok
             except BaseException:
                 def _invalidate() -> None:
@@ -3807,6 +3812,10 @@ class FactStore:
                         lanlan_name, text, raw_limit,
                     )
                     same_subject_seen = 0
+                    # 每一趟都重扫全窗口并重挑：dice 是在 SQL 的 LIMIT
+                    # **之后**才算的，首窗里按 bm25 排在前面的行未必是
+                    # 重叠度最高的，扩窗后要以更大的窗口重新定夺。
+                    arbitration_hit = None
                     for fid, overlap in similar:
                         hit = facts_by_id.get(fid)
                         if hit is None:
@@ -3879,11 +3888,14 @@ class FactStore:
                             arbitration_hit = (hit, overlap)
                     if (
                         is_dup
-                        or arbitration_hit is not None
                         or same_subject_seen >= 3
                         or len(similar) < raw_limit
                         or raw_limit >= 200
                     ):
+                        # 刻意**不**因为「已经挑到一条够线的」就收手：首窗
+                        # 里一条 0.26 的命中不该挡住窗外那条 0.87 的真重复
+                        # （它当时根本没被打分）。首窗没坐满就说明外面没东
+                        # 西了，那才是收手的理由。
                         break
                     raw_limit = 200
                 if is_dup:
@@ -4161,7 +4173,7 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
             )
 
-    async def _areindex_restored_fact(self, name: str, fact_id: object) -> None:
+    async def _areindex_restored_fact(self, name: str, row: dict) -> None:
         """Put a just-restored row back into the near-dup index.
 
         Arbitration losers are deliberately left out of the backfill —
@@ -4169,32 +4181,21 @@ class FactStore:
         back out of the archive has to be indexed explicitly. The
         backfill marker is persistent, so nothing else will ever pick
         it up.
+
+        Takes the row, not an id: the caller already holds it, and
+        looking it back up would have to disambiguate scalar ids whose
+        string forms collide (an active ``"1"`` next to a restored
+        ``1``) — while ``fact_id`` has to keep its original type, since
+        FTS5 compares it type-sensitively.
         """
         if self._time_indexed is None:
             return
+        fact_id = _readable_fact_id(row) if isinstance(row, dict) else None
+        text = str(row.get('text') or '') if isinstance(row, dict) else ''
+        if fact_id is None or not text:
+            return
         try:
-            rows = await self.aload_facts(name)
-            # 索引要用**行自己的** id，不是调用方那个 str() 归一过的
-            # target_id：legacy 行的 id 可以是 int 1，而 FTS5 的
-            # `WHERE fact_id = :fid` 类型敏感——写成文本 "1" 的话，
-            # facts_by_id 反查不到，隐私擦除按 int 1 删也删不掉。
-            restored = next(
-                (
-                    row for row in rows
-                    if isinstance(row, dict)
-                    and (rid := _readable_fact_id(row)) is not None
-                    and str(rid) == str(fact_id)
-                ),
-                None,
-            )
-            if restored is None:
-                return
-            text = str(restored.get('text') or '')
-            if not text:
-                return
-            await self._time_indexed.aindex_fact(
-                name, _readable_fact_id(restored), text,
-            )
+            await self._time_indexed.aindex_fact(name, fact_id, text)
         except Exception as e:
             # 索引没补成：清掉回填标记，让下一次写入重跑一遍全量回填。
             # 不清的话这条复活的 fact 会一直对 Stage-2 不可见——标记是持久

@@ -327,7 +327,9 @@ class _FakeIndex:
         self.hits = list(hits)
 
     async def asearch_similar_facts(self, _name, _text, limit):
-        return self.hits[:limit]
+        # 与真实实现同构：SQL 先按 bm25 截窗（这里用给定顺序当 bm25 序），
+        # dice 排序发生在**截窗之后**。
+        return sorted(self.hits[:limit], key=lambda h: h[1], reverse=True)
 
     async def aindex_fact(self, *_a, **_k):
         return None
@@ -459,6 +461,29 @@ async def test_below_threshold_hits_do_not_eat_the_candidate_budget(tmp_path):
 
     assert len(created) == 1
     resolver.aenqueue_candidates.assert_awaited_once()
+    _, pairs = resolver.aenqueue_candidates.await_args.args
+    assert pairs[0]["existing_id"] == "existing"
+
+
+@pytest.mark.asyncio
+async def test_widening_still_happens_after_a_merely_eligible_hit(tmp_path):
+    """Dice is computed after the SQL LIMIT, so the first window's best by
+    bm25 is not its best by overlap. Stopping at a 0.26 hit inside the first
+    window leaves the 0.87 duplicate just outside it unarbitrated forever."""
+    weak = [("weak", 0.26)] + [(f"pad{i}", 0.0) for i in range(9)]
+    harness = _harness(tmp_path, weak + [("existing", 0.87)])
+    harness._mem.append({
+        "id": "weak", "text": "用户偶尔提到猫", "importance": 7,
+        "entity": "master", "hash": "weak",
+    })
+    _seed(harness, "用户最近养了一只狗")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户最近养了一只猫")
+
+    assert len(created) == 1
     _, pairs = resolver.aenqueue_candidates.await_args.args
     assert pairs[0]["existing_id"] == "existing"
 
