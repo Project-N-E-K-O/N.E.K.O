@@ -155,13 +155,17 @@ def normalized_identity(content: str) -> str:
       opposite balances, ``1.5`` and ``15`` are different weights,
       ``a > b`` and ``a b`` are different claims.
 
-    So the only things folded here are case and runs of whitespace —
-    normalized to one space rather than removed, since removing it
-    would merge ``an ice cream`` with ``a nice cream``. Every other
-    difference keeps the two facts apart and sends the pair to
-    arbitration instead.
+    * Case is **not** folded. ``the variable is X`` / ``the variable is
+      x`` and ``/Foo`` / ``/foo`` are different values, and a fact is
+      free to quote one.
+
+    What is left is runs of whitespace, collapsed to one space rather
+    than removed — removing it would merge ``an ice cream`` with ``a
+    nice cream``. Nothing else, because nothing else can be shown
+    incapable of telling two facts apart. Every other difference sends
+    the pair to arbitration instead of dropping it.
     """  # noqa: DOCSTRING_CJK
-    return " ".join(str(content or "").lower().split())
+    return " ".join(str(content or "").split())
 
 
 def token_overlap(left: list[str], right: list[str]) -> float:

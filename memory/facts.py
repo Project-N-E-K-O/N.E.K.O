@@ -3815,19 +3815,6 @@ class FactStore:
                             or not entry_matches_subject(hit, memory_subject)
                         ):
                             continue
-                        # 只有「能进仲裁」的命中才吃候选预算。legacy 行的
-                        # subject 边界是同一个，三条排在前面的 neko /
-                        # relationship 命中会把预算耗光，让紧随其后的同
-                        # entity 近重复一眼都没被看到；absorbed 行同理
-                        # （它能挡硬重复，但永远进不了仲裁）。
-                        arbitrable = (
-                            (hit.get('entity') or 'master') == entity
-                            and not hit.get('absorbed')
-                        )
-                        if arbitrable:
-                            same_subject_seen += 1
-                            if same_subject_seen > 3:
-                                break
                         if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
                             continue
                         if daily_event_date:
@@ -3858,7 +3845,10 @@ class FactStore:
                             is_dup = True
                             duplicate_hit = hit
                             break
-                        if not arbitrable:
+                        if (
+                            (hit.get('entity') or 'master') != entity
+                            or hit.get('absorbed')
+                        ):
                             # 跨 entity：仲裁队列按 entity 分桶（向量侧
                             # detect_candidates 同款边界），master / neko /
                             # relationship 的事实撞在一起没有可比性，交给
@@ -3868,6 +3858,15 @@ class FactStore:
                             # 同样不含 entity，跨 entity 的同一句话本来就
                             # 只留一条；absorbed 行挡重复是既有行为。
                             continue
+                        # 预算放在**所有**准入过滤之后才扣：放在前面的话，
+                        # 四条同 subject 同 entity 但重叠度不够线的行就能把
+                        # 三个名额吃光并触发 break，扩窗到 200 的条件
+                        # （same_subject_seen < 3）随之失效——OR 检索完全
+                        # 可能把「只共享一个稀有 token」的行排在真近重复
+                        # 前面，那条排在第 11 位的就永远看不到了。
+                        same_subject_seen += 1
+                        if same_subject_seen > 3:
+                            break
                         if arbitration_hit is None:
                             arbitration_hit = (hit, overlap)
                     if (

@@ -111,12 +111,12 @@ def test_clause_swap_shares_a_token_set_but_not_an_identity():
 
 
 def test_identity_ignores_only_lossless_differences():
-    """Case and the tokenizer's separators cannot tell two facts apart, so
-    folding them is safe for a key that drops data."""
-    assert normalized_identity("User Likes Cats") == normalized_identity(
-        "user likes cats",
-    )
+    """Whitespace runs are the only thing folded — the sole difference that
+    provably cannot tell two facts apart."""
     assert normalized_identity("用户  养猫") == normalized_identity("用户 养猫")
+    assert normalized_identity("the user  adopted a cat") == normalized_identity(
+        "the user adopted a cat",
+    )
 
 
 def test_identity_keeps_characters_that_change_the_claim():
@@ -127,6 +127,10 @@ def test_identity_keeps_characters_that_change_the_claim():
     )
     assert normalized_identity("体重 1.5 公斤") != normalized_identity("体重 15 公斤")
     assert normalized_identity("a > b") != normalized_identity("a b")
+    # 大小写同样保留：`/Foo` 和 `/foo` 在 Linux 上是两个路径。
+    assert normalized_identity("the variable is X") != normalized_identity(
+        "the variable is x",
+    )
     # 空白折成一个空格而不是删掉——删掉会把这两句并成一条。
     assert normalized_identity("an ice cream") != normalized_identity(
         "a nice cream",
@@ -433,6 +437,32 @@ async def test_a_different_entity_is_never_arbitrated(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_below_threshold_hits_do_not_eat_the_candidate_budget(tmp_path):
+    """OR retrieval can rank a row sharing one rare token above a genuine
+    near-duplicate. If those rows consume the 3-candidate budget, the loop
+    stops instead of widening to 200 and the real match at rank 11 is never
+    examined."""
+    low = [(f"low{i}", FACT_NEAR_DUP_ARBITRATE_OVERLAP - 0.01) for i in range(10)]
+    harness = _harness(tmp_path, low + [("existing", 0.87)])
+    for fid, _ in low:
+        harness._mem.append({
+            "id": fid, "text": f"用户{fid}偶尔提到猫", "importance": 7,
+            "entity": "master", "hash": fid,
+        })
+    _seed(harness, "用户最近养了一只狗")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户最近养了一只猫")
+
+    assert len(created) == 1
+    resolver.aenqueue_candidates.assert_awaited_once()
+    _, pairs = resolver.aenqueue_candidates.await_args.args
+    assert pairs[0]["existing_id"] == "existing"
+
+
+@pytest.mark.asyncio
 async def test_other_entities_do_not_eat_the_candidate_budget(tmp_path):
     """Legacy facts all share one subject boundary, so three higher-ranked
     hits of another entity would exhaust the 3-candidate budget and hide the
@@ -594,11 +624,11 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         first = await _write("用户最近养了一只猫")
         assert len(first) == 1
 
-        # 只差大小写：Stage-1 的 hash 挡不住，归一后逐字相同挡住。
-        cased = await _write("the user adopted a cat")
-        assert len(cased) == 1
+        # 只差一个空格：Stage-1 的 hash 挡不住，归一后逐字相同挡住。
+        spaced = await _write("the user adopted a cat")
+        assert len(spaced) == 1
         resolver.aenqueue_candidates.reset_mock()
-        assert await _write("The User Adopted A Cat") == []
+        assert await _write("the user  adopted a cat") == []
         resolver.aenqueue_candidates.assert_not_awaited()
 
         # 繁体重述：召回够得着（折叠），但折叠有损，不许据此直接丢——进仲裁。
