@@ -15,10 +15,10 @@ Contracts under test:
      and low for unrelated text — but it does NOT separate meaning
      ("got a cat" / "got a dog" is the highest score two facts can
      plausibly have), which is why it may not decide alone.
-  4. Stage-2 policy: only a *lossless* normal form (case, punctuation,
-     stop-names — no script fold, no diacritic strip) drops a fact
-     outright. Everything else is written AND handed to the LLM
-     arbitration queue.
+  4. Stage-2 policy: only a *lossless* normal form (case + the
+     tokenizer's separators — no script fold, no diacritic strip, no
+     stop-name removal) drops a fact outright. Everything else is
+     written AND handed to the LLM arbitration queue.
   5. Backfill: facts written before the index was rebuilt get indexed
      once, and the marker stops it from rescanning on every write.
 """
@@ -104,17 +104,26 @@ def test_clause_swap_shares_a_token_set_but_not_an_identity():
 
 
 def test_identity_ignores_only_lossless_differences():
-    """Case, tokenizer separators and stop-names cannot tell two facts
-    apart, so folding them is safe for a key that drops data."""
+    """Case and the tokenizer's separators cannot tell two facts apart, so
+    folding them is safe for a key that drops data."""
     assert normalized_identity("用户养了猫，很开心") == normalized_identity(
         "用户养了猫。很开心",
     )
     assert normalized_identity("User Likes Cats") == normalized_identity(
         "user likes cats",
     )
-    assert normalized_identity("兰兰喜欢猫", ["兰兰"]) == normalized_identity(
-        "喜欢猫",
-    )
+
+
+def test_identity_keeps_the_names_that_stop_name_stripping_removes():
+    """The stop-name list holds the master's AND the catgirl's names, so
+    stripping them merges two facts about two different people into one key.
+    Retrieval still strips — the pair reaches overlap 1.0 and is arbitrated."""
+    master, catgirl = "主人喜欢猫", "兰兰喜欢猫"
+    stop_names = ["主人", "兰兰"]
+    assert token_overlap(
+        fts_tokens(master, stop_names), fts_tokens(catgirl, stop_names),
+    ) == 1.0
+    assert normalized_identity(master) != normalized_identity(catgirl)
 
 
 def test_identity_refuses_the_lossy_script_fold():
@@ -405,6 +414,32 @@ async def test_a_different_entity_is_never_arbitrated(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_other_entities_do_not_eat_the_candidate_budget(tmp_path):
+    """Legacy facts all share one subject boundary, so three higher-ranked
+    hits of another entity would exhaust the 3-candidate budget and hide the
+    same-entity near-duplicate ranked right behind them."""
+    harness = _harness(tmp_path, [
+        ("neko1", 0.9), ("neko2", 0.9), ("neko3", 0.9), ("existing", 0.87),
+    ])
+    for fid in ("neko1", "neko2", "neko3"):
+        harness._mem.append({
+            "id": fid, "text": f"兰兰{fid}也养了一只狗", "importance": 7,
+            "entity": "neko", "hash": fid,
+        })
+    _seed(harness, "用户最近养了一只狗")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户最近养了一只猫")
+
+    assert len(created) == 1
+    resolver.aenqueue_candidates.assert_awaited_once()
+    _, pairs = resolver.aenqueue_candidates.await_args.args
+    assert pairs[0]["existing_id"] == "existing"
+
+
+@pytest.mark.asyncio
 async def test_strong_overlap_writes_the_fact_and_queues_arbitration(tmp_path):
     """The cat/dog case: highest textual overlap, must stay two facts."""
     harness = _harness(tmp_path, [("existing", 0.87)])
@@ -578,12 +613,17 @@ def test_backfill_reads_archive_rows_too(tmp_path):
     ):
         import asyncio
         asyncio.run(harness._aensure_fact_index_backfilled(
-            "小天", [{"id": "act1", "text": "用户最近养了一只猫"}],
+            "小天", [
+                {"id": "act1", "text": "用户最近养了一只猫"},
+                {"id": 7, "text": "旧的整数 id 行"},
+            ],
         ))
 
     assert captured and dict(captured[0]) == {
-        "act1": "用户最近养了一只猫", "arch1": "群规是不剧透",
+        "act1": "用户最近养了一只猫", 7: "旧的整数 id 行", "arch1": "群规是不剧透",
     }
+    # id 原样带走：str() 强转会让隐私擦除按原 id 删不掉这一行。
+    assert [type(fid) for fid, _ in captured[0]] == [str, int, str]
     # 第二次不再重扫。
     asyncio.run(harness._aensure_fact_index_backfilled("小天", []))
     assert len(captured) == 1
@@ -669,6 +709,26 @@ def test_backfill_drops_duplicate_ids(index):
             "SELECT count(*) FROM facts_fts_v2 WHERE fact_id = 'f1'"
         )).fetchone()
     assert rows[0] == 1
+
+
+def test_backfill_keeps_the_id_type_the_rest_of_the_store_uses(index):
+    """This repo deliberately distinguishes a fact id of 1 from "1" (see
+    _speaker_trust_fact_id), and FTS5's `WHERE fact_id = :fid` is
+    type-sensitive: stringifying on the way in means privacy erasure binding
+    the original integer never matches, and the row survives the delete."""
+    assert index.backfill_fact_index("小天", [
+        (1, "用户最近养了一只猫"),
+        ("1", "用户喜欢喝咖啡"),
+    ]) == 2
+
+    index.delete_fact_from_index("小天", 1)
+
+    from sqlalchemy import text as sql_text
+    with index.engines["小天"].connect() as conn:
+        rows = conn.execute(sql_text(
+            "SELECT fact_id, typeof(fact_id) FROM facts_fts_v2"
+        )).fetchall()
+    assert [(r[0], r[1]) for r in rows] == [("1", "text")]
 
 
 def test_a_failed_backfill_is_retried(tmp_path):

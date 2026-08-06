@@ -126,7 +126,7 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     return _tokenize(raw, folded_stop_names)
 
 
-def normalized_identity(content: str, stop_names: list[str] | None = None) -> str:
+def normalized_identity(content: str) -> str:
     """Order-preserving normal form used to decide "this is the same sentence".
 
     This is the only key allowed to drop a fact outright, so every
@@ -145,16 +145,17 @@ def normalized_identity(content: str, stop_names: list[str] | None = None) -> st
       overlap 1.0 and goes to arbitration — it just doesn't get dropped
       on a lossy equality.
     * Diacritics are kept, for the same reason.
+    * Stop-names are **not** stripped either, even though ``fts_tokens``
+      strips them: the list holds both the master's and the catgirl's
+      names, so ``主人喜欢猫`` and ``兰兰喜欢猫`` — two facts about two
+      different people — would normalize to the same key.
 
-    What remains — case, the separators the tokenizer splits on, and
-    stop-names — is losing nothing that distinguishes two facts.
+    What remains — case, and the separators the tokenizer splits on —
+    is losing nothing that could distinguish two facts.
     """  # noqa: DOCSTRING_CJK
     from memory.persona import _SPLIT_RE
 
     raw = str(content or "").lower()
-    lowered_stop_names = [n.lower() for n in (stop_names or [])]
-    if lowered_stop_names:
-        raw = strip_stop_names(raw, lowered_stop_names)
     return "".join(seg for seg in _SPLIT_RE.split(raw) if seg)
 
 
@@ -976,7 +977,7 @@ class TimeIndexedMemory:
             return True
 
     def backfill_fact_index(
-        self, lanlan_name: str, rows: list[tuple[str, str]],
+        self, lanlan_name: str, rows: list[tuple[object, str]],
     ) -> int | None:
         """Bulk-index ``(fact_id, content)`` pairs, then mark the backfill done.
 
@@ -1006,12 +1007,16 @@ class TimeIndexedMemory:
                 # 归档提交被打断时同一个 id 可以同时躺在 facts.json 和
                 # facts_archive.json 里，而 FTS 表没有唯一约束，两份都插进去
                 # 会各占一个候选名额，把真正的近重复挤出窗口。
-                seen: set[str] = set()
+                # 去重键带上类型：id 1 和 "1" 是本仓库刻意区分的两行
+                # （_speaker_trust_fact_id 同样按类型标注），合并掉等于把
+                # 其中一行永久排除在近重复检索之外。
+                seen: set[tuple[str, object]] = set()
                 payload = []
                 for fact_id, content in rows:
-                    if not fact_id or fact_id in indexed or fact_id in seen:
+                    key = (type(fact_id).__name__, fact_id)
+                    if fact_id is None or fact_id in indexed or key in seen:
                         continue
-                    seen.add(fact_id)
+                    seen.add(key)
                     payload.append({
                         "fid": fact_id,
                         "content": " ".join(fts_tokens(content, stop_names)),
@@ -1041,7 +1046,7 @@ class TimeIndexedMemory:
             return None
 
     async def abackfill_fact_index(
-        self, lanlan_name: str, rows: list[tuple[str, str]],
+        self, lanlan_name: str, rows: list[tuple[object, str]],
     ) -> int | None:
         return await asyncio.to_thread(
             self.backfill_fact_index, lanlan_name, rows,

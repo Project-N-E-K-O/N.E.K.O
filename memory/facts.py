@@ -3484,8 +3484,6 @@ class FactStore:
         # 仲裁队列——队列是 ids-only，指向一条还没写进 facts.json 的 fact 就
         # 是悬空引用，回滚后更是永久指向不存在的 id。
         near_dup_pairs: list[tuple[dict, dict, float]] = []
-        # 每次调用只取一次停用名（identity 归一两侧都要用它）。
-        near_dup_stop_names: list[str] | None = None
         upgraded_count = 0
         provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
@@ -3734,17 +3732,7 @@ class FactStore:
                 await self._aensure_fact_index_backfilled(
                     lanlan_name, existing_facts,
                 )
-                if near_dup_stop_names is None:
-                    from memory.stop_names import acollect_stop_names
-                    try:
-                        near_dup_stop_names = await acollect_stop_names(
-                            self._config_manager, lanlan_name,
-                        )
-                    except Exception:
-                        near_dup_stop_names = []
-                candidate_identity = normalized_identity(
-                    text, near_dup_stop_names,
-                )
+                candidate_identity = normalized_identity(text)
                 # FTS5 is still character-wide, so fetch a wider window and
                 # keep the historical "top-3 candidates" semantics *inside*
                 # the subject boundary: cross-subject rows neither count as
@@ -3812,9 +3800,19 @@ class FactStore:
                             or not entry_matches_subject(hit, memory_subject)
                         ):
                             continue
-                        same_subject_seen += 1
-                        if same_subject_seen > 3:
-                            break
+                        # 只有「能进仲裁」的命中才吃候选预算。legacy 行的
+                        # subject 边界是同一个，三条排在前面的 neko /
+                        # relationship 命中会把预算耗光，让紧随其后的同
+                        # entity 近重复一眼都没被看到；absorbed 行同理
+                        # （它能挡硬重复，但永远进不了仲裁）。
+                        arbitrable = (
+                            (hit.get('entity') or 'master') == entity
+                            and not hit.get('absorbed')
+                        )
+                        if arbitrable:
+                            same_subject_seen += 1
+                            if same_subject_seen > 3:
+                                break
                         if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
                             continue
                         if daily_event_date:
@@ -3832,7 +3830,7 @@ class FactStore:
                         if (
                             overlap >= FACT_NEAR_DUP_IDENTICAL_OVERLAP
                             and normalized_identity(
-                                hit.get('text') or '', near_dup_stop_names,
+                                hit.get('text') or '',
                             ) == candidate_identity
                         ):
                             # 归一后逐字相同：与 Stage-1 的精确重复只差繁简 /
@@ -3845,17 +3843,17 @@ class FactStore:
                             is_dup = True
                             duplicate_hit = hit
                             break
-                        if (hit.get('entity') or 'master') != entity:
-                            # 仲裁队列按 entity 分桶（向量侧 detect_candidates
-                            # 同款边界）：master / neko / relationship 的事实
-                            # 撞在一起没有可比性，交给 LLM 只会诱发误合并。
-                            # 上面的硬挡不受此限——Stage-1 的 hash 同样不含
-                            # entity，跨 entity 的同一句话本来就只留一条。
+                        if not arbitrable:
+                            # 跨 entity：仲裁队列按 entity 分桶（向量侧
+                            # detect_candidates 同款边界），master / neko /
+                            # relationship 的事实撞在一起没有可比性，交给
+                            # LLM 只会诱发误合并。absorbed：已折进反思，把
+                            # 新文本并进去会把它从归档路径复活，比留着重复
+                            # 更糟。上面的硬挡都不受此限——Stage-1 的 hash
+                            # 同样不含 entity，跨 entity 的同一句话本来就
+                            # 只留一条；absorbed 行挡重复是既有行为。
                             continue
-                        if arbitration_hit is None and not hit.get('absorbed'):
-                            # absorbed 行已折进反思：把新文本并进去会把它从
-                            # 归档路径复活，比留着重复更糟（对齐向量侧
-                            # detect_candidates 的同一条判断）。
+                        if arbitration_hit is None:
                             arbitration_hit = (hit, overlap)
                     if (
                         is_dup
@@ -4070,17 +4068,22 @@ class FactStore:
                 self._time_indexed.fts_index_needs_backfill, lanlan_name,
             )
             if needs:
-                rows: list[tuple[str, str]] = [
-                    (str(f.get('id')), str(f.get('text') or ''))
+                # id 一律**原样**带走，不要 str() 强转：本仓库允许 legacy 行
+                # 带非字符串标量 id（见 _speaker_trust_fact_id 的类型标注），
+                # 而 FTS5 的 `WHERE fact_id = :fid` 是类型敏感的——把 int 1
+                # 写成文本 "1"，隐私擦除按 int 1 删就删不掉，Stage-2 也用
+                # facts_by_id 反查不到。
+                rows: list[tuple[object, str]] = [
+                    (f.get('id'), str(f.get('text') or ''))
                     for f in active_facts
-                    if isinstance(f, dict) and f.get('id')
+                    if isinstance(f, dict) and f.get('id') is not None
                 ]
 
                 # 返回 None = 读失败，区别于「文件不存在」（合法的 0 行）。
                 # 把读失败当空归档的话，本轮回填会照常落下完成标记，而标记是
                 # 持久的——归档修好、进程重启都不会再回填，那些行从此挡不住
                 # 重复，与本方法 docstring 承诺的正相反。
-                def _read_archive() -> list[tuple[str, str]] | None:
+                def _read_archive() -> list[tuple[object, str]] | None:
                     path = self._facts_archive_path(lanlan_name)
                     if not os.path.exists(path):
                         return []
@@ -4092,9 +4095,9 @@ class FactStore:
                     if not isinstance(data, list):
                         return None
                     return [
-                        (str(r.get('id')), str(r.get('text') or ''))
+                        (r.get('id'), str(r.get('text') or ''))
                         for r in data
-                        if isinstance(r, dict) and r.get('id')
+                        if isinstance(r, dict) and r.get('id') is not None
                     ]
 
                 archived_rows = await asyncio.to_thread(_read_archive)
