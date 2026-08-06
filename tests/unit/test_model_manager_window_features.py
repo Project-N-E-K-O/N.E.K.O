@@ -1,4 +1,6 @@
+import json
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -134,12 +136,46 @@ def test_vrm_saved_legacy_url_normalization_ignores_query_and_hash_suffixes():
         encoding="utf-8"
     )
     helper = source.split("function normalizeBundledVrmAnimationUrl", 1)[1].split(
-        "function mergeVrmAnimationLists", 1
+        "async function loadVrmModelWithCatalogReset", 1
     )[0]
 
     assert "\\.vrma(?:[?#]|$)" in helper
     assert "decodeURIComponent(assetName)" in helper
     assert "'/static/vrm/animation/' + assetName + '.vrma.gz'" in helper
+
+    function_source = "function normalizeBundledVrmAnimationUrl" + helper
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = {{}};
+vm.runInNewContext({json.dumps(function_source)}, context);
+const available = new Set([
+  '/static/vrm/animation/比 V 手势.vrma.gz',
+  '/static/vrm/animation/wait03.vrma.gz'
+]);
+assert.equal(
+  context.normalizeBundledVrmAnimationUrl(
+    '/static/vrm/animation/%E6%AF%94%20V%20%E6%89%8B%E5%8A%BF.vrma?legacy=1',
+    available
+  ),
+  '/static/vrm/animation/比 V 手势.vrma.gz'
+);
+assert.equal(
+  context.normalizeBundledVrmAnimationUrl(
+    '/static/vrm/animation/wait03.vrma#saved',
+    available
+  ),
+  '/static/vrm/animation/wait03.vrma.gz'
+);
+assert.equal(
+  context.normalizeBundledVrmAnimationUrl(
+    '/static/vrm/animation/custom-idle.vrma?keep=1',
+    available
+  ),
+  '/static/vrm/animation/custom-idle.vrma?keep=1'
+);
+"""
+    subprocess.run(["node", "-e", script], check=True)
 
 
 def test_vrm_catalog_player_resets_before_loading_a_new_model():
@@ -149,10 +185,37 @@ def test_vrm_catalog_player_resets_before_loading_a_new_model():
     load_block = source.split("// 在加载新模型前，显式停止之前的动作并清理", 1)[1].split(
         "// 加载新模型后，重置播放状态", 1
     )[0]
+    assert "await loadVrmModelWithCatalogReset(" in load_block
 
-    cancel = "vrmMotionCatalogPlayer.cancel('model_manager_model_load', { resume: false });"
-    assert cancel in load_block
-    assert load_block.index(cancel) < load_block.index("await vrmManager.loadModel(modelUrl")
+    start = source.index("async function loadVrmModelWithCatalogReset")
+    end = source.index("\n    function mergeVrmAnimationLists", start)
+    function_source = source[start:end]
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = {{}};
+vm.runInNewContext({json.dumps(function_source)}, context);
+(async function () {{
+  const calls = [];
+  const catalogPlayer = {{
+    cancel(reason, options) {{ calls.push(['cancel', reason, options.resume]); }}
+  }};
+  const manager = {{
+    async loadModel(url) {{ calls.push(['load', url]); return 'loaded'; }}
+  }};
+  const result = await context.loadVrmModelWithCatalogReset(
+    catalogPlayer,
+    manager,
+    '/user_vrm/model.vrm',
+    {{ addShadow: false }}
+  );
+  assert.equal(result, 'loaded');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], ['cancel', 'model_manager_model_load', false]);
+  assert.deepEqual(calls[1], ['load', '/user_vrm/model.vrm']);
+}})().catch(function (error) {{ console.error(error); process.exit(1); }});
+"""
+    subprocess.run(["node", "-e", script], check=True)
 
 
 def test_vrm_preview_ignores_stale_playback_completions():
