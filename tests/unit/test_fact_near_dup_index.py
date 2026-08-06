@@ -562,6 +562,26 @@ def test_an_unreadable_archive_aborts_the_backfill(tmp_path):
         assert calls == [2]
 
 
+def test_an_unreadable_marker_asks_for_a_backfill(index):
+    """Reporting "no backfill needed" when the marker can't be read would let
+    the caller record this character as done for the rest of the process —
+    history stays out of the index while Stage-2 looks like it works."""
+    from sqlalchemy import text as sql_text
+
+    index.backfill_fact_index("小天", [("f1", "用户最近养了一只猫")])
+    assert index.fts_index_needs_backfill("小天") is False
+
+    with index.engines["小天"].connect() as conn:
+        conn.execute(sql_text("DROP TABLE facts_fts_meta"))
+        conn.commit()
+    assert index.fts_index_needs_backfill("小天") is True
+
+    with patch.object(
+        index, "_ensure_engine_exists", side_effect=RuntimeError("db locked"),
+    ):
+        assert index.fts_index_needs_backfill("小天") is True
+
+
 def test_backfill_drops_duplicate_ids(index):
     """An interrupted archive commit can leave one id in both facts.json and
     facts_archive.json; the FTS table has no uniqueness constraint, so two

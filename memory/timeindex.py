@@ -935,8 +935,13 @@ class TimeIndexedMemory:
         except MaintenanceModeError:
             raise
         except Exception as e:
+            # 读不出标记时报「要回填」，与上面打不开只读引擎同一个道理：
+            # 报「不用回填」会让调用方把本进程记成已完成，历史 fact 在这个
+            # 进程剩下的时间里都不在索引里，而 Stage-2 看上去在工作。报要
+            # 回填最多让写路径白跑一次（它自己失败会返回 None，同样不落
+            # 标记），下次写入再试。
             logger.debug(f"[TimeIndexedMemory] 检查 FTS 回填标记失败: {e}")
-            return False
+            return True
 
     def backfill_fact_index(
         self, lanlan_name: str, rows: list[tuple[str, str]],
