@@ -328,20 +328,36 @@ def test_jukebox_vrma_false_or_stale_result_does_not_mark_playback_active(mock_p
     transport_result = mock_page.evaluate(
         """
         async () => {
-          window.vrmManager = { playVRMAAnimation: async () => false };
+          let finishStalePlay;
+          window.vrmManager = {
+            playVRMAAnimation: (url) => url === '/false.vrma'
+              ? Promise.resolve(false)
+              : new Promise((resolve) => { finishStalePlay = resolve; })
+          };
           await window.Jukebox.playVRMA('/false.vrma');
+          const afterFalse = { ...window.Jukebox.State };
+          const stalePlay = window.Jukebox.playVRMA('/stale.vrma');
+          window.Jukebox.State.playRequestId += 1;
+          finishStalePlay(true);
+          await stalePlay;
           return {
-            isPlaying: window.Jukebox.State.isPlaying,
-            isVMDPlaying: window.Jukebox.State.isVMDPlaying,
-            isPaused: window.Jukebox.State.isPaused
+            afterFalse: {
+              isPlaying: afterFalse.isPlaying,
+              isVMDPlaying: afterFalse.isVMDPlaying,
+              isPaused: afterFalse.isPaused
+            },
+            afterStale: {
+              isPlaying: window.Jukebox.State.isPlaying,
+              isVMDPlaying: window.Jukebox.State.isVMDPlaying,
+              isPaused: window.Jukebox.State.isPaused
+            }
           };
         }
         """
     )
     assert transport_result == {
-        "isPlaying": False,
-        "isVMDPlaying": False,
-        "isPaused": False,
+        "afterFalse": {"isPlaying": False, "isVMDPlaying": False, "isPaused": False},
+        "afterStale": {"isPlaying": False, "isVMDPlaying": False, "isPaused": False},
     }
 
 

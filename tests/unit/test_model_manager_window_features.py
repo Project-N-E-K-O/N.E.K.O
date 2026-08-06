@@ -53,6 +53,21 @@ def test_vrm_catalog_preview_preserves_selected_idle_and_stops_preview_rotation(
     assert "if (idlePlaybackStarted !== true) return;" in idle_switch
 
 
+def test_main_vrm_idle_rotation_ignores_cancelled_playback_completion():
+    source = Path("static/vrm/vrm-init.js").read_text(encoding="utf-8")
+    idle_rotation = source.split("function _startVrmIdleRotation", 1)[1].split(
+        "function _stopVrmIdleRotation", 1
+    )[0]
+
+    playback = "const played = await mgr.playVRMAAnimation"
+    stale_guard = "if (played !== true) return;"
+    state_update = "_vrmIdleLastUrl = url;"
+    assert playback in idle_rotation
+    assert stale_guard in idle_rotation
+    assert idle_rotation.index(playback) < idle_rotation.index(stale_guard)
+    assert idle_rotation.index(stale_guard) < idle_rotation.index(state_update)
+
+
 def test_vrm_catalog_preview_pause_does_not_resume_catalog_base_motion():
     source = Path("static/js/model_manager/page-controller.js").read_text(
         encoding="utf-8"
