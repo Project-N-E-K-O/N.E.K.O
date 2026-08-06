@@ -427,6 +427,102 @@ async def test_handle_output_transcript_contextvar_mismatch_drops():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# handle_output_transcript 跨 await 的轮次身份（#2612 的第二个面）
+#
+# 可证伪的契约，逐条写在用例名里：
+#   1. 这段文本属于它进函数那一刻在跑的那一轮 —— 不是 publish 返回时凑巧
+#      在跑的那一轮。普通语音路径没有 proactive contextvar，但它一样有轮次。
+#   2. 轮次在 publish 期间被换掉 → 整段丢弃，而不是改挂到新 sid 上。
+#   3. 前端拿到的 turn_id 同样是这一轮的。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _publish_blocks_until(mgr, gate: asyncio.Event) -> None:
+    """让 send_lanlan_response 像挂死的前端 socket 那样停住。
+
+    这正是 #2612 的复现手法：publish 在 WS 上挂起，用户在这期间开新一轮。
+    """
+
+    async def _hangs_on_the_frontend(*_args, **_kwargs):
+        await gate.wait()
+        return True
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=_hangs_on_the_frontend)
+
+
+async def test_output_transcript_queues_under_the_turn_it_started_in():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_ai_turn"
+
+    await LLMSessionManager.handle_output_transcript(mgr, "正文", is_first_chunk=False)
+
+    mgr._enqueue_tts_text_chunk.assert_called_once_with("s_ai_turn", "正文")
+    assert mgr.send_lanlan_response.call_args.kwargs["turn_id"] == "s_ai_turn"
+
+
+async def test_output_transcript_dropped_when_a_user_turn_starts_mid_publish():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_ai_turn"
+    released = asyncio.Event()
+    _publish_blocks_until(mgr, released)
+
+    chunk = asyncio.create_task(
+        LLMSessionManager.handle_output_transcript(mgr, "尾巴", is_first_chunk=False)
+    )
+    await asyncio.sleep(0)
+    # handle_new_message 在另一个 task 里给用户新轮次发了 sid。
+    mgr.current_speech_id = "s_user_new_turn"
+    released.set()
+    await chunk
+
+    mgr._enqueue_tts_text_chunk.assert_not_called()
+    assert mgr.tts_pending_chunks == [], (
+        "死掉那一轮的尾巴不能进新轮次的 TTS，缓存分支也一样"
+    )
+
+
+async def test_output_transcript_cached_under_the_turn_it_started_in():
+    """TTS 未就绪的缓存分支与直发分支同源，不能只钉住其中一个。"""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_ai_turn"
+    mgr.tts_ready = False
+    released = asyncio.Event()
+    _publish_blocks_until(mgr, released)
+
+    chunk = asyncio.create_task(
+        LLMSessionManager.handle_output_transcript(mgr, "正文", is_first_chunk=False)
+    )
+    await asyncio.sleep(0)
+    released.set()
+    await chunk
+
+    assert mgr.tts_pending_chunks == [("s_ai_turn", "正文")]
+
+
+async def test_output_transcript_proactive_preempted_mid_publish_drops():
+    """入口那次 contextvar 比对拦不住 publish 期间才发生的抢占。"""
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    released = asyncio.Event()
+    _publish_blocks_until(mgr, released)
+
+    token = _proactive_expected_sid.set("s_proactive")
+    try:
+        chunk = asyncio.create_task(
+            LLMSessionManager.handle_output_transcript(mgr, "搭话", is_first_chunk=False)
+        )
+        await asyncio.sleep(0)
+        mgr.current_speech_id = "s_user_new_turn"
+        released.set()
+        await chunk
+    finally:
+        _proactive_expected_sid.reset(token)
+
+    mgr._enqueue_tts_text_chunk.assert_not_called()
+    assert mgr.tts_pending_chunks == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # finish_proactive_delivery 的 expected_speech_id
 # ─────────────────────────────────────────────────────────────────────────────
 

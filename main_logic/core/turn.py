@@ -1270,7 +1270,20 @@ class TurnMixin:
         return bool(record_transcript_text)
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
-        """Output transcription callback: handles text display and TTS (for voice mode)"""
+        """Output transcription callback: handles text display and TTS (for voice mode).
+
+        The turn this chunk belongs to is read ONCE, before the first await,
+        and carried from there — never re-read afterwards. ``send_lanlan_response``
+        suspends on the frontend WebSocket, and a user turn starting during that
+        suspension takes ``current_speech_id`` with it (#2612): re-reading the
+        field on the way out would queue a dead turn's tail under the successor's
+        speech id and speak it as part of the new turn.
+
+        Same shape ``handle_text_data`` already uses for the proactive
+        contextvar. What differs here is that the identity matters even when
+        that contextvar is unset — the ordinary voice path has no expected sid,
+        but it still has a turn, and that is the path #2612 was filed against.
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime output transcript len=%d", self.lanlan_name, len(text or ""))
             return
@@ -1284,26 +1297,46 @@ class TurnMixin:
                 expected_sid, self.current_speech_id, len(text),
             )
             return
+        # 本 chunk 的轮次身份：proactive 路径就是调用方钉住的那个 sid，普通语音
+        # 路径则是此刻在跑的那一轮。两者都在第一个 await 之前读、之后用。
+        turn_sid = expected_sid if expected_sid is not None else self.current_speech_id
         # 无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(
+        publish_result = await self.send_lanlan_response(
             text,
             is_first_chunk,
+            turn_id=turn_sid,
             remember_voice_echo=not self.use_tts,
+            expected_speech_id=expected_sid,
         )
-        
+        # ``None`` means the guarded send lost ownership at its internal queue-write
+        # boundary. Do not leak the same stale chunk into TTS. (handle_text_data
+        # 同款。仅对 proactive 有意义：普通轮次不传 expected_speech_id，永不返回 None。)
+        if expected_sid is not None and publish_result is None:
+            return
+
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
             async with self.tts_cache_lock:
+                # send_lanlan_response 会在前端 WebSocket 上挂起。写 TTS 之前重新
+                # 确认这一轮还是自己的：期间用户开了新一轮的话，下面这段文本属于
+                # 已经死掉的那轮，排进新 sid 会被当成新一轮的话念出来。
+                if self.current_speech_id != turn_sid:
+                    logger.debug(
+                        "handle_output_transcript drop after publish: "
+                        "turn_sid=%s current_sid=%s len=%d",
+                        turn_sid, self.current_speech_id, len(text),
+                    )
+                    return
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
-                        self._enqueue_tts_text_chunk(self.current_speech_id, text)
+                        self._enqueue_tts_text_chunk(turn_sid, text)
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
                     # TTS未就绪，先缓存（规范化延迟到 _flush_tts_pending_chunks）
-                    self.tts_pending_chunks.append((self.current_speech_id, text))
+                    self.tts_pending_chunks.append((turn_sid, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试
