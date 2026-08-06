@@ -364,6 +364,72 @@ def test_partial_language_preference_save_warns_without_rollback_or_failure_aler
 
 
 @pytest.mark.unit
+def test_language_dropdown_restores_only_focus_owned_before_async_save():
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the language dropdown focus harness")
+
+    source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+    disabled_source = _slice_between(
+        source,
+        "let restoreFocusAfterEnable = false;",
+        "function selectOptionValue(value)",
+        "语言下拉框禁用焦点恢复",
+    )
+    harness = textwrap.dedent(
+        r"""
+        const assert = require('node:assert/strict');
+        const option = {};
+        const outside = {};
+        const document = { activeElement: option };
+        let focusCount = 0;
+        const selectEl = { disabled: false };
+        const header = {
+          disabled: false,
+          isConnected: true,
+          setAttribute() {},
+          focus() { focusCount += 1; document.activeElement = header; }
+        };
+        const container = {
+          contains(element) { return element === option || element === header; },
+          classList: { toggle() {} }
+        };
+        const closeDropdown = () => {};
+
+        __DISABLED_SOURCE__
+
+        setDisabled(true);
+        document.activeElement = outside;
+        setDisabled(false);
+        assert.equal(focusCount, 1);
+        assert.equal(document.activeElement, header);
+
+        document.activeElement = outside;
+        setDisabled(true);
+        setDisabled(false);
+        assert.equal(focusCount, 1);
+        assert.equal(document.activeElement, outside);
+        process.stdout.write('ok');
+        """
+    ).replace("__DISABLED_SOURCE__", disabled_source)
+
+    result = run_node_script(
+        node_path,
+        harness,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ok"
+
+
+@pytest.mark.unit
 def test_proactive_language_keeps_dynamic_fallback_render_only():
     proactive_source = (
         PROJECT_ROOT / "static" / "app" / "app-proactive.js"

@@ -51,10 +51,13 @@ def test_review_locale_evidence_prefers_user_turns():
     assert locale_text == "這很好"
 
 
-def test_greeting_preserves_full_locale_for_holiday_selection():
+def test_greeting_preserves_full_locale_for_holiday_selection(monkeypatch):
+    from main_logic.core import greeting
     from main_logic.core.greeting import GreetingMixin
 
     assert GreetingMixin._greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
+    monkeypatch.setattr(greeting, "get_global_language_full", lambda: "zh-TW")
+    assert GreetingMixin._greeting_locale_keys(None) == ("zh", "zh-TW")
 
 
 def test_traditional_holiday_prompt_uses_its_own_templates():

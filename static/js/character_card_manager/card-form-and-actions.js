@@ -1288,6 +1288,8 @@ function _panelCreateVoiceSelectUi(selectEl) {
         });
     }
 
+    let restoreFocusAfterEnable = false;
+
     function syncDisabledState() {
         const disabled = !!selectEl.disabled;
         header.disabled = disabled;
@@ -1297,8 +1299,20 @@ function _panelCreateVoiceSelectUi(selectEl) {
     }
 
     function setDisabled(disabled) {
-        selectEl.disabled = !!disabled;
+        const nextDisabled = !!disabled;
+        const wasDisabled = !!selectEl.disabled;
+        if (nextDisabled && !wasDisabled) {
+            const activeElement = document.activeElement;
+            restoreFocusAfterEnable = activeElement === header
+                || !!(activeElement && container.contains(activeElement));
+        }
+        selectEl.disabled = nextDisabled;
         syncDisabledState();
+        if (!nextDisabled && wasDisabled) {
+            const shouldRestoreFocus = restoreFocusAfterEnable;
+            restoreFocusAfterEnable = false;
+            if (shouldRestoreFocus && header.isConnected) header.focus();
+        }
     }
 
     function selectOptionValue(value) {
