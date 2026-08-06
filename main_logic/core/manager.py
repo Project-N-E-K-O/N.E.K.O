@@ -166,6 +166,12 @@ class LLMSessionManager(
         self._session_turn_count = 0  # 当前 session 的用户输入轮次计数
         self.pending_connector = None
         self.pending_session = None
+        # Closing a detached pending session is owned here, not by whoever
+        # happened to ask for it: that caller is a background prep task the
+        # reset path cancels — twice, once on entry and again when its 2s wait
+        # expires — and the second cancel used to land inside the close.
+        # Holding the task also keeps it from being garbage collected.
+        self._pending_session_close_tasks: set = set()
         self.pending_use_tts = None
         self.is_hot_swap_imminent = False
         self.tts_handler_task = None

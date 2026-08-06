@@ -403,31 +403,41 @@ class _GeminiMixin:
         if self._gemini_context_manager:
             try:
                 await self._gemini_context_manager.__aexit__(None, None, None)
+            except asyncio.CancelledError:
+                # The SDK context exit did NOT run to completion. Clearing the
+                # references here — as an unconditional ``finally`` did — is
+                # what makes it unrecoverable: the next _close_gemini() sees
+                # ``_gemini_context_manager`` already None, skips the exit
+                # entirely, and the SDK session is left with no owner. Keep
+                # them so a retry can finish the exit.
+                raise
             except Exception as e:
                 logger.error(f"Error closing Gemini session: {e}")
-            finally:
-                self._gemini_session = None
-                self._gemini_context_manager = None
-                self.ws = None
+            # A raised (non-cancel) exit is still an exit that ran to its own
+            # conclusion; the SDK has no second attempt to offer, so its
+            # references are dropped exactly as before.
+            self._gemini_session = None
+            self._gemini_context_manager = None
+            self.ws = None
 
-                # 重置静默超时相关状态（与普通close()保持一致）
-                self._silence_timeout_triggered = False
-                self._last_speech_time = None
-                self._silence_reset_pending = False
-                self._last_silence_clear_speech_time = 0.0
-                self._last_local_loud_time = 0.0
-                self._client_vad_active = False
-                self._client_vad_last_speech_time = 0.0
-                self._speech_detect_start = 0.0
-                self._rnnoise_vad_active = False
-                self._user_recent_activity_time = 0.0
-                self._ai_recent_activity_time = 0.0
+            # 重置静默超时相关状态（与普通close()保持一致）
+            self._silence_timeout_triggered = False
+            self._last_speech_time = None
+            self._silence_reset_pending = False
+            self._last_silence_clear_speech_time = 0.0
+            self._last_local_loud_time = 0.0
+            self._client_vad_active = False
+            self._client_vad_last_speech_time = 0.0
+            self._speech_detect_start = 0.0
+            self._rnnoise_vad_active = False
+            self._user_recent_activity_time = 0.0
+            self._ai_recent_activity_time = 0.0
 
-                # 重置音频处理器状态
-                if self._audio_processor is not None:
-                    self._audio_processor.reset()
+            # 重置音频处理器状态
+            if self._audio_processor is not None:
+                self._audio_processor.reset()
 
-                logger.info("Gemini Live API session closed")
+            logger.info("Gemini Live API session closed")
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""

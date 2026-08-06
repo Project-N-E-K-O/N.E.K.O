@@ -84,6 +84,9 @@ def _make_swap_manager():
     mgr.session = None
     mgr.message_handler_task = None
     mgr.pending_session = None
+    # Production sets this in __init__; the pending-session close is a task the
+    # manager owns so a cancelled caller cannot strand an open socket.
+    mgr._pending_session_close_tasks = set()
     mgr.background_preparation_task = None
     mgr.final_swap_task = None
     mgr.pending_session_warmed_up_event = None

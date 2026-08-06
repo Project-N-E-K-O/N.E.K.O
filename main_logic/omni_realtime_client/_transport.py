@@ -146,6 +146,15 @@ class _TransportMixin:
         # because 'connection-scoped' should be true by construction.
         self._idless_quarantine = False
 
+        # Same lifetime, for a different reason: a close task closes the socket
+        # it detached, so it is finished with THIS connection's socket the
+        # moment the next one is established. Keeping the finished (or even
+        # still-running) task would make the new connection's close a no-op.
+        # An unfinished predecessor is unaffected — it already owns the old
+        # socket outright and nothing here cancels it.
+        self._close_task = None
+        self._failed_transport_close_task = None
+
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
         if self._audio_processor is None:
@@ -2044,9 +2053,43 @@ class _TransportMixin:
             logger.error(f"Error in message handling: {str(e)}")
             raise
 
+    async def _own_teardown(self, slot: str, factory):
+        """Await a teardown that this client owns, not the caller.
+
+        Both close paths detach ``self.ws`` first and only then await the
+        arbiter shutdown — deliberately, so no ticket can outlive the socket.
+        That ordering also means a cancel landing in the middle takes the only
+        reference to a still-open socket with it: ``self.ws`` is already None,
+        so a retry closes nothing and reports success. Every real canceller is
+        internal (a hot-swap final task cancelled by a concurrent
+        start/end_session), so this is reachable without anyone injecting one.
+
+        Running the teardown as a task the client holds, and awaiting it
+        through ``shield``, separates the two: the caller's cancel stops the
+        waiting, the closing continues, and a later caller awaits the same
+        task rather than a fresh one against an emptied field.
+        """
+
+        task = getattr(self, slot, None)
+        if task is None:
+            task = asyncio.create_task(factory())
+            setattr(self, slot, task)
+        await asyncio.shield(task)
+
     async def _close_failed_transport(self, reason: str) -> None:
         """Fail response tickets and atomically detach the failed socket."""
 
+        # Latched before the task starts: callers check this flag to stop
+        # sending on a socket that is on its way out, and a scheduling gap
+        # before the task's first line must not be a window where they still
+        # think the transport is healthy.
+        self._fatal_error_occurred = True
+        await self._own_teardown(
+            "_failed_transport_close_task",
+            lambda: self._close_failed_transport_impl(reason),
+        )
+
+    async def _close_failed_transport_impl(self, reason: str) -> None:
         self._fatal_error_occurred = True
         ws, self.ws = self.ws, None
         response_arbiter = getattr(self, "_response_arbiter", None)
@@ -2076,6 +2119,9 @@ class _TransportMixin:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        await self._own_teardown("_close_task", self._close_impl)
+
+    async def _close_impl(self) -> None:
         ws, self.ws = self.ws, None
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
