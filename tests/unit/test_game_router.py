@@ -141,6 +141,36 @@ def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
 
 
 @pytest.mark.unit
+def test_game_render_language_selects_template_without_marking_session_explicit(monkeypatch):
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+        set_user_language=MagicMock(),
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    payload = {"render_language": "ja"}
+    assert gr_char_info._resolve_game_prompt_locale("Lan", payload) == "ja"
+    assert gr_char_info._resolve_game_prompt_language("Lan", payload) == "ja"
+    assert gr_char_info._absorb_request_language(payload, "Lan") is None
+    manager.set_user_language.assert_not_called()
+
+
+@pytest.mark.unit
+def test_game_archive_does_not_persist_render_only_language():
+    archive = {
+        "lanlan_name": "Lan",
+        "user_language": "ja",
+        "user_language_source": "render",
+    }
+    assert gr_archive._archive_memory_language(archive) is None
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})

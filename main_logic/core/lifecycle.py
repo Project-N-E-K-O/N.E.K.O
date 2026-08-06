@@ -2862,15 +2862,15 @@ class LifecycleMixin:
         _post_init_inactive = False
         async with self.lock:
             # Re-check after await: another task may have deactivated or swapped session.
+            if expected_session is not None and expected_session is not self.session:
+                logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
+                return
             if not self.is_active:
                 self._audio_stream_epoch += 1
                 self._clear_audio_stream_queue("end_session_post_init_inactive")
                 self._cancel_audio_stream_worker("end_session_post_init_inactive")
                 self._reset_voice_echo_suppression_cache()
                 _post_init_inactive = True
-            elif expected_session is not None and expected_session is not self.session:
-                logger.info("⏭️ end_session: expected_session stale (post-init), skipping")
-                return
             else:
                 self.is_active = False
                 # 重置 _starting_session_count：如果 start_session 正在执行中（比如卡在预热），

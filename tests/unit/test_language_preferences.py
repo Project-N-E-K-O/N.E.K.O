@@ -115,7 +115,7 @@ def test_character_language_control_reuses_voice_dropdown_and_hot_refreshes():
     assert "language-preference-custom-select" in form_source
     assert "window.addEventListener('localechange', form._localeChangeHandler)" in form_source
     assert "const voicesLoadPromise = refreshVoiceCatalog" in form_source
-    assert "void refreshVoiceCatalog(voiceSelect.value);" in form_source
+    assert "form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);" in form_source
     assert "form._voiceLocaleRefreshSequence !== refreshSequence" in form_source
 
     locale_handler = "function updateLocaleDependent()"
@@ -185,10 +185,30 @@ def test_language_preference_events_are_strictly_character_scoped():
         "if (!detail.character_name || detail.character_name !== currentName) return;"
         in websocket_source
     )
+    form_source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+    assert "if (!detail.character_name || detail.character_name !== name) return;" in form_source
 
 
 @pytest.mark.unit
-def test_proactive_language_omits_dynamic_fallback_without_explicit_preference():
+def test_character_language_control_keeps_failed_or_fallback_state_non_durable():
+    form_source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+
+    assert "CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS = 2500" in form_source
+    assert "signal: controller ? controller.signal : undefined" in form_source
+    assert "if (payload.language)" in form_source
+    assert "const durableSave = response.ok" in form_source
+    assert "if (durableSave && payload.language === language)" in form_source
+    assert "select.dataset.languageSaveId !== saveId || select.value !== language" in form_source
+
+
+@pytest.mark.unit
+def test_proactive_language_keeps_dynamic_fallback_render_only():
     proactive_source = (
         PROJECT_ROOT / "static" / "app" / "app-proactive.js"
     ).read_text(encoding="utf-8")
@@ -203,16 +223,37 @@ def test_proactive_language_omits_dynamic_fallback_without_explicit_preference()
     )
     assert "if (explicitConversationLanguage)" in proactive_source
     assert "requestBody.i18n_language = explicitConversationLanguage;" in proactive_source
+    assert "window.getConversationLanguagePreference(lanlanName)" in proactive_source
+    assert "requestBody.render_language = renderConversationLanguage;" in proactive_source
     proactive_language_block = _slice_between(
         proactive_source,
         "var explicitConversationLanguage = '';",
         "var requestBody = {",
         "主动搭话语言参数",
     )
-    assert "window.getConversationLanguagePreference" not in proactive_language_block
+    assert "window.getConversationLanguagePreference" in proactive_language_block
     assert "window.i18next" not in proactive_language_block
     assert "i18nextLng" not in proactive_language_block
     assert "navigator.language" not in proactive_language_block
+
+
+@pytest.mark.unit
+def test_tutorial_and_soccer_keep_render_locale_separate_from_explicit_preference():
+    icebreaker_source = (
+        PROJECT_ROOT / "static" / "tutorial" / "icebreaker"
+        / "new-user-icebreaker.js"
+    ).read_text(encoding="utf-8")
+    soccer_source = (
+        PROJECT_ROOT / "static" / "game" / "games" / "soccer"
+        / "soccer-demo.js"
+    ).read_text(encoding="utf-8")
+
+    assert "window.getExplicitConversationLanguagePreference" in icebreaker_source
+    assert "payload.i18n_language = explicitLanguage;" in icebreaker_source
+    assert "payload.render_language = renderLanguage;" in icebreaker_source
+    assert "window.SoccerExplicitConversationLang" in soccer_source
+    assert "payload.i18n_language = explicitLanguage;" in soccer_source
+    assert "payload.render_language = renderLanguage;" in soccer_source
 
 
 @pytest.mark.unit
@@ -269,7 +310,7 @@ async def test_character_language_change_clears_only_recent_context_and_resets_s
     assert result["language"] == "ja"
     assert result["recent_history_cleared"] is True
     assert result["session_reset"] is True
-    assert ("clear_recent", config_manager, "Mimi") in calls
+    assert calls.count(("clear_recent", config_manager, "Mimi")) == 1
     assert calls.index(("set_live_language", "ja")) < next(
         index for index, call in enumerate(calls) if call[0] == "end_session"
     )
@@ -325,6 +366,50 @@ async def test_unchanged_language_preference_does_not_reset_context_or_session(m
         ("load", "Mimi"),
         ("persist", "PUT", "Mimi", "ja"),
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_language_changes_are_serialized_through_side_effects(monkeypatch):
+    entered = []
+    release_first = asyncio.Event()
+
+    async def apply_serialized(name, language, _config_manager):
+        entered.append((name, language))
+        if language == "ja":
+            await release_first.wait()
+        return {"success": True, "language": language}
+
+    monkeypatch.setattr(
+        preference_router,
+        "_apply_character_language_preference_serialized",
+        apply_serialized,
+    )
+    monkeypatch.setattr(
+        preference_router,
+        "_load_existing_character",
+        lambda _name: asyncio.sleep(0, result=(object(), {})),
+    )
+    preference_router._character_language_preference_locks.pop("ConcurrentMimi", None)
+    try:
+        first = asyncio.create_task(
+            preference_router.apply_character_language_preference("ConcurrentMimi", "ja")
+        )
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            preference_router.apply_character_language_preference("ConcurrentMimi", "en")
+        )
+        await asyncio.sleep(0)
+
+        assert entered == [("ConcurrentMimi", "ja")]
+        release_first.set()
+        await asyncio.gather(first, second)
+        assert entered == [
+            ("ConcurrentMimi", "ja"),
+            ("ConcurrentMimi", "en"),
+        ]
+    finally:
+        preference_router._character_language_preference_locks.pop("ConcurrentMimi", None)
 
 
 @pytest.mark.unit
@@ -556,6 +641,10 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           listeners['neko:conversation-language-changed']({
             detail: { character_name: 'Mimi', language: 'ja' }
           });
+          assert.deepEqual(events.slice(-2), [
+            { type: 'sync', language: 'ja' },
+            { type: 'greeting' }
+          ]);
           const eventsBeforeManualLateResponse = events.length;
           fetches[4].resolve(response({ success: true, language: 'ru' }));
           await flushPromises();
@@ -571,6 +660,10 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
             key: 'nekoConversationLanguage:Mimi',
             newValue: 'ko'
           });
+          assert.deepEqual(events.slice(-2), [
+            { type: 'sync', language: 'ko' },
+            { type: 'greeting' }
+          ]);
           const eventsBeforeStorageLateResponse = events.length;
           fetches[5].resolve(response({ success: true, language: 'zh-CN' }));
           await flushPromises();
@@ -688,6 +781,61 @@ async def test_post_init_inactive_memory_barrier_waits_outside_session_lock():
     )
 
     assert lock_states == [False]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_post_init_stale_session_does_not_clear_replacement_context():
+    effects = []
+    old_session = object()
+    replacement_session = object()
+
+    class SessionManager(LifecycleMixin):
+        def __init__(self):
+            self.lock = asyncio.Lock()
+            self.is_active = True
+            self.session = old_session
+            self._user_session_abandon_epoch = 0
+            self._audio_stream_epoch = 0
+
+        def _reset_tts_retry_state(self):
+            pass
+
+        def _reset_proactive_gate(self):
+            pass
+
+        async def _close_independent_asr(self, **_kwargs):
+            pass
+
+        async def _init_renew_status(self):
+            self.session = replacement_session
+            self.is_active = False
+
+        def _clear_audio_stream_queue(self, reason):
+            effects.append(("clear_audio", reason))
+
+        def _cancel_audio_stream_worker(self, reason):
+            effects.append(("cancel_audio", reason))
+
+        def _reset_voice_echo_suppression_cache(self):
+            effects.append(("reset_echo",))
+
+        def _queue_session_end_memory_barrier(self, _callback):
+            effects.append(("queue_barrier",))
+            return object()
+
+    async def clear_recent():
+        effects.append(("clear_recent",))
+
+    manager = SessionManager()
+    await manager.end_session(
+        by_server=True,
+        expected_session=old_session,
+        after_memory_settlement=clear_recent,
+    )
+
+    assert manager.session is replacement_session
+    assert effects == []
 
 
 @pytest.mark.unit

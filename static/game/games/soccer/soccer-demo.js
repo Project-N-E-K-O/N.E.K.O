@@ -859,7 +859,24 @@
         } catch (_) { /* swallow: fetch payload tolerates empty */ }
         return '';
       };
+      window.SoccerExplicitConversationLang = function () {
+        try {
+          if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+            return window.getExplicitConversationLanguagePreference() || '';
+          }
+        } catch (_) { /* omit unavailable explicit preference */ }
+        return '';
+      };
       const _currentI18nLang = window.SoccerCurrentI18nLang;
+      const _explicitConversationLang = window.SoccerExplicitConversationLang;
+      const _conversationLanguagePayload = () => {
+        const payload = {};
+        const explicitLanguage = _explicitConversationLang();
+        const renderLanguage = _currentI18nLang();
+        if (explicitLanguage) payload.i18n_language = explicitLanguage;
+        if (renderLanguage) payload.render_language = renderLanguage;
+        return payload;
+      };
       const canvas = document.getElementById('game');
       const ctx = canvas.getContext('2d');
       const debugCanvas = document.getElementById('debug');
@@ -2481,14 +2498,12 @@
 
       async function loadGeneratedQuickLines() {
         try {
-          // quick-lines 在 _startGameRoute 之前就开炮，是整个 soccer 流程里第一个会
-          // 命中 LLM 的端点；得自带 i18n_language 让后端 _absorb_request_language
-          // 在 mgr.user_language 还是错的全局缓存值时就把它纠正过来，否则首批 quick
-          // lines 会落英文。
+          // quick-lines 在 _startGameRoute 之前就命中 LLM；同时发送显式偏好和
+          // render-only 兜底，让首批台词选对模板又不把 UI 语言持久化成角色偏好。
           const resp = await fetch('/api/game/soccer/quick-lines', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ i18n_language: _currentI18nLang() }),
+            body: JSON.stringify(_conversationLanguagePayload()),
           });
           if (!resp.ok) {
             _recordFallbackDiagnostic('快路径台词生成', {
@@ -3778,7 +3793,7 @@
               session_id: _llm.sessionId,
               ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
               ..._soccerGameMemoryPolicyPayload(),
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 ...eventPayload,
                 ..._soccerGameMemoryPolicyPayload(),
@@ -3932,7 +3947,7 @@
         const body = {
           session_id: requestSessionId,
           ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-          i18n_language: _currentI18nLang(),
+          ..._conversationLanguagePayload(),
           currentState: SoccerDemo._snapshot(),
           preGameContext: _llm.preGameContext || null,
           passiveGuardState: _currentPassiveSnapshot(),
@@ -4590,10 +4605,9 @@
           gameStartedElapsedMs,
           game_started_elapsed_ms: gameStartedElapsedMs,
           gameStartedAtEpochMs: Math.round(Number(_llm.gameStartedAtEpochMs || 0)),
-          // 见 _currentI18nLang 注释：把前端 i18n 真值随 route/heartbeat/start/end/
-          // voice-transcript 一起捎给后端，后端 _absorb_request_language 自愈
-          // mgr.user_language。
-          i18n_language: _currentI18nLang(),
+          // 显式角色偏好与 render-only 兜底分开发送；后端只允许前者更新
+          // mgr.user_language，后者仅用于当前请求的模板选择。
+          ..._conversationLanguagePayload(),
           ...extra,
         });
       }
@@ -5124,7 +5138,7 @@
             ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
             state: stateNow,
             pendingItems: safeItems,
-            i18n_language: _currentI18nLang(),
+            ..._conversationLanguagePayload(),
           });
           const postWithHeaders = (headers) => fetch('/api/game/soccer/realtime-context', {
             method: 'POST',
@@ -5167,7 +5181,7 @@
               turn_id: `game-mirror-${requestId}`,
               finalize_turn: shouldFinalizeTurn,
               line: clean,
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 kind: meta.kind || 'mailbox',
                 round: meta.round,
@@ -5235,7 +5249,7 @@
               voice_arbiter_reason: voiceArbiterReason,
               line,
               state: stateNow,
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 kind: meta.kind || 'mailbox',
                 round: meta.round,
@@ -5799,7 +5813,7 @@
               session_id: _llm.sessionId,
               ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
               ..._soccerGameMemoryPolicyPayload(),
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
               event: {
                 ...eventPayload,
                 ..._soccerGameMemoryPolicyPayload(),
@@ -6018,7 +6032,7 @@
             body: JSON.stringify({
               session_id: _llm.sessionId,
               ...(_llm.routeLanlanName ? { lanlan_name: _llm.routeLanlanName } : {}),
-              i18n_language: _currentI18nLang(),
+              ..._conversationLanguagePayload(),
             }),
           });
           if (!resp.ok) return;

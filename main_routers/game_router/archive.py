@@ -198,7 +198,8 @@ def _current_route_prompt_language_with_source(state: dict) -> tuple[str, str]:
             logger.debug("赛后归档实时语言解析失败，使用路由状态语言", exc_info=True)
     language = str(state.get("user_language") or "").strip()
     if language:
-        return normalize_language_code(language, format="full") or language, "route"
+        source = str(state.get("user_language_source") or "route").strip()
+        return normalize_language_code(language, format="full") or language, source
     return get_global_language_full(), "global"
 
 
@@ -208,7 +209,7 @@ def _current_route_prompt_language(state: dict) -> str:
 
 
 def _archive_memory_language(archive: dict) -> str | None:
-    if archive.get("user_language_source") == "global":
+    if archive.get("user_language_source") in {"global", "render"}:
         return None
     language = str(archive.get("user_language") or "").strip()
     if language:

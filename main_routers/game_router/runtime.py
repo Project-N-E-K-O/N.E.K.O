@@ -52,9 +52,11 @@ from .balance import (
 from .char_info import (
     _absorb_request_language,
     _extract_request_language_full,
+    _extract_request_prompt_language_full,
     _get_character_info,
     _get_current_character_info,
     _get_game_route_summary_llm_info,
+    _resolve_game_prompt_locale,
     _resolve_game_prompt_language,
 )
 from .game_context import (
@@ -552,6 +554,7 @@ async def _run_game_chat(
     allow_postgame: bool = False,
     postgame_snapshot: Optional[dict] = None,
     postgame_meta_out: Optional[Dict[str, Any]] = None,
+    prompt_locale: str | None = None,
 ) -> Dict[str, Any]:
     """Run A-layer game LLM for both HTTP game events and hijacked external text.
 
@@ -632,6 +635,7 @@ async def _run_game_chat(
         entry = await _get_or_create_session(
             game_type, chat_session_id, lanlan_name,
             postgame_snapshot=postgame_snapshot if allow_postgame else None,
+            prompt_locale=prompt_locale,
         )
     except Exception as e:
         logger.error("🎮 创建游戏 session 失败: %s", e)
@@ -715,6 +719,7 @@ async def _run_game_chat(
                 await _refresh_game_session_instructions(
                     entry, game_type, chat_session_id, lanlan_name,
                     postgame_snapshot=postgame_snapshot if allow_postgame else None,
+                    prompt_locale=prompt_locale,
                 )
             except Exception as e:
                 logger.error("🎮 更新游戏 session 指令失败: %s", e)
@@ -950,7 +955,7 @@ def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str)
 async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -> Dict[str, Any]:
     route_state = _find_game_route_state_for_session("soccer", str(data.get("session_id") or ""), lanlan_name)
     char_info = _get_game_route_summary_llm_info(lanlan_name)
-    language = _absorb_request_language(data, lanlan_name) or char_info.get("user_language")
+    language = _resolve_game_prompt_language(lanlan_name, data=data)
     stage = data.get("stage")
     prompt_type = str(data.get("promptType") or "surrender").strip()
 
@@ -1044,6 +1049,7 @@ async def game_chat(game_type: str, request: Request):
     # → _get_character_info 链上 _resolve_game_prompt_language 拿到的 user_language
     # 与前端 i18n 保持一致，而不是被早期 start_session 覆盖回去的全局缓存值。
     _absorb_request_language(data, lanlan_name)
+    prompt_locale = _resolve_game_prompt_locale(lanlan_name, data=data)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     if state and state.get("session_id") == session_id:
         _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
@@ -1078,7 +1084,12 @@ async def game_chat(game_type: str, request: Request):
     if isinstance(event, dict) and lanlan_name:
         event = dict(event)
         event.setdefault("lanlan_name", lanlan_name)
-    result = await _run_game_chat(game_type, session_id, event)
+    result = await _run_game_chat(
+        game_type,
+        session_id,
+        event,
+        prompt_locale=prompt_locale,
+    )
 
     if state and state.get("session_id") == session_id and isinstance(event, dict):
         current_state = event.get("currentState")
@@ -1158,6 +1169,7 @@ async def game_route_start(game_type: str, request: Request):
     # 把请求体里的 i18n 真值同步进 mgr.user_language（详见 _absorb_request_language
     # 文档）：route/start 是 game-route 整段生命周期的入口，越早 heal 越多下游受益。
     request_language_full = _extract_request_language_full(data)
+    request_prompt_language_full = _extract_request_prompt_language_full(data)
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
@@ -1240,8 +1252,11 @@ async def game_route_start(game_type: str, request: Request):
                 lanlan_name,
                 data.get("game_last_full_dialogue_count"),
             )
-            if request_language_full:
-                state["user_language"] = request_language_full
+            if request_prompt_language_full:
+                state["user_language"] = request_prompt_language_full
+                state["user_language_source"] = (
+                    "request" if request_language_full else "render"
+                )
             # Take over the SessionManager: ordinary chat LLM output handlers must
             # stay silent during the game, and any voice transcript that reaches
             # the SessionManager must be redirected into route_external_voice_transcript.
@@ -1307,7 +1322,7 @@ async def game_route_start(game_type: str, request: Request):
                     lanlan_name=lanlan_name,
                     neko_initiated=neko_initiated,
                     neko_invite_text=neko_invite_text,
-                    prompt_locale=request_language_full,
+                    prompt_locale=request_prompt_language_full,
                 )
             else:
                 context, source, error = await _build_badminton_pregame_context(
@@ -1317,7 +1332,7 @@ async def game_route_start(game_type: str, request: Request):
                     neko_initiated=neko_initiated,
                     neko_invite_text=neko_invite_text,
                     mode=str(state.get("mode") or data.get("mode") or "spectator"),
-                    prompt_locale=request_language_full,
+                    prompt_locale=request_prompt_language_full,
                 )
         except Exception as exc:
             logger.warning("🎮 开局上下文构建异常，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
@@ -2696,11 +2711,10 @@ async def game_quick_lines(game_type: str, request: Request):
         except Exception:
             current_name = ""
         requested_name = _resolve_lanlan_name(data.get("lanlan_name") or current_name)
-        # quick-lines 是 soccer 流程里第一个 LLM 端点：接住 _absorb_request_language
-        # 的返回值，避免在 SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
-        # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。
-        request_language = _absorb_request_language(data, requested_name)
-        request_language_full = _extract_request_language_full(data) if _is_badminton_game_type(game_type) else None
+        # quick-lines 是 soccer 流程里第一个 LLM 端点：显式偏好可同步到 session，
+        # render-only 兜底则只选择本次模板，避免首批台词落到旧缓存语言。
+        request_language = _resolve_game_prompt_language(requested_name, data=data)
+        request_language_full = _resolve_game_prompt_locale(requested_name, data=data) if _is_badminton_game_type(game_type) else None
         char_info = _get_character_info(requested_name)
         language = request_language_full or request_language or char_info.get("user_language")
         fallback_language = language

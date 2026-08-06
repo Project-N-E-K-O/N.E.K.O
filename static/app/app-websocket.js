@@ -5048,6 +5048,7 @@
         S.conversationLanguage = detail.language;
         S.conversationLanguageHydrated = true;
         _syncLanguageToBackend(detail.language);
+        _sendGreetingCheckIfReady();
     });
     window.addEventListener('storage', function (event) {
         var currentName = getWebSocketLanlanName() || '';
@@ -5060,6 +5061,7 @@
         S.conversationLanguage = event.newValue;
         S.conversationLanguageHydrated = true;
         _syncLanguageToBackend(event.newValue);
+        _sendGreetingCheckIfReady();
     });
 
     window.addEventListener('neko:new-user-icebreaker-ended', function () {

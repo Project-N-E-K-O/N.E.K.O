@@ -31,6 +31,18 @@ from ._shared import _read_json_object_or_400, _validate_existing_character_path
 from .crud import _clear_character_recent_history
 
 
+_character_language_preference_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_character_language_preference_lock(name: str) -> asyncio.Lock:
+    """Serialize persistence and live-session side effects per character."""
+    lock = _character_language_preference_locks.get(name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _character_language_preference_locks[name] = lock
+    return lock
+
+
 async def _request_memory_prompt_locale(
     method: str,
     name: str,
@@ -74,7 +86,19 @@ async def apply_character_language_preference(name: str, language: str) -> dict:
         raise ValueError("不支持的语言")
     normalized = normalize_language_code(language, format="full")
     config_manager, _characters = await _load_existing_character(name)
+    async with _get_character_language_preference_lock(name):
+        return await _apply_character_language_preference_serialized(
+            name,
+            normalized,
+            config_manager,
+        )
 
+
+async def _apply_character_language_preference_serialized(
+    name: str,
+    normalized: str,
+    config_manager: object,
+) -> dict:
     memory_result = await _request_memory_prompt_locale(
         "PUT",
         name,

@@ -10,6 +10,7 @@ const CHARACTER_LANGUAGE_OPTIONS = Object.freeze([
     { code: 'es', label: 'Español' },
     { code: 'pt', label: 'Português' }
 ]);
+const CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS = 2500;
 
 function _characterLanguageT(key, fallback) {
     if (typeof window.t !== 'function') return fallback;
@@ -26,10 +27,17 @@ function _cacheCharacterLanguagePreference(name, language, source) {
 }
 
 async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timeoutId = controller
+        ? setTimeout(() => controller.abort(), CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS)
+        : null;
     try {
         const response = await fetch(
             '/api/characters/character/' + encodeURIComponent(name) + '/language-preference',
-            { cache: 'no-store' }
+            {
+                cache: 'no-store',
+                signal: controller ? controller.signal : undefined
+            }
         );
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload.success !== true) {
@@ -38,21 +46,28 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
         const language = payload.language || payload.effective_language;
         if (CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === language)) {
             select.value = language;
-            _cacheCharacterLanguagePreference(name, language, 'server-hydration');
+            // Only a durable per-character value belongs in the explicit local
+            // cache. effective_language is a live UI/global fallback.
+            if (payload.language) {
+                _cacheCharacterLanguagePreference(name, language, 'server-hydration');
+            }
         }
         select.dataset.previousValue = select.value;
         if (selectUi) selectUi.setDisabled(false);
         else select.disabled = false;
     } catch (error) {
         console.warn('[ConversationLanguage] load failed:', error);
-        if (selectUi) selectUi.setDisabled(true);
-        else select.disabled = true;
+        // Keep the control usable: its current value is the local/UI fallback,
+        // and a subsequent selection can still be persisted with PUT.
+        if (selectUi) selectUi.setDisabled(false);
+        else select.disabled = false;
         delete select.dataset.i18nTitle;
         select.title = _characterLanguageT(
             'character.languagePreferenceLoadFailed',
             '语言偏好加载失败'
         );
     } finally {
+        if (timeoutId !== null) clearTimeout(timeoutId);
         if (selectUi) selectUi.refresh();
     }
 }
@@ -60,6 +75,9 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
 async function _saveCharacterLanguagePreference(name, select, selectUi) {
     const previous = select.dataset.previousValue || select.value;
     const language = select.value;
+    const saveId = String((Number(select.dataset.languageSaveId) || 0) + 1);
+    let rolledBack = false;
+    select.dataset.languageSaveId = saveId;
     if (selectUi) selectUi.setDisabled(true);
     else select.disabled = true;
     try {
@@ -72,13 +90,20 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
             }
         );
         const payload = await response.json().catch(() => ({}));
-        if (payload.language === language) {
+        // A cross-window event or a newer local request may have superseded this
+        // response while it was in flight. Never roll back or cache stale data.
+        if (select.dataset.languageSaveId !== saveId || select.value !== language) return;
+        const durableSave = response.ok && (
+            payload.success === true || payload.partial_success === true
+        );
+        if (durableSave && payload.language === language) {
             select.dataset.previousValue = language;
             _cacheCharacterLanguagePreference(name, language, 'character-card-manager');
         }
         if (!response.ok || payload.success !== true) {
             if (!payload.partial_success) {
                 select.value = previous;
+                rolledBack = true;
                 if (selectUi) selectUi.refresh();
             }
             throw new Error(payload.error || ('HTTP ' + response.status));
@@ -88,6 +113,10 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
             'success'
         );
     } catch (error) {
+        if (
+            select.dataset.languageSaveId !== saveId
+            || (!rolledBack && select.value !== language)
+        ) return;
         console.error('[ConversationLanguage] save failed:', error);
         if (typeof showAlert === 'function') {
             await showAlert(
@@ -96,8 +125,10 @@ async function _saveCharacterLanguagePreference(name, select, selectUi) {
             );
         }
     } finally {
-        if (selectUi) selectUi.setDisabled(false);
-        else select.disabled = false;
+        if (select.dataset.languageSaveId === saveId) {
+            if (selectUi) selectUi.setDisabled(false);
+            else select.disabled = false;
+        }
     }
 }
 
@@ -313,7 +344,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         form._conversationLanguageUpdateHandler = function (event) {
             const detail = event && event.detail ? event.detail : {};
-            if (detail.character_name && detail.character_name !== name) return;
+            if (!detail.character_name || detail.character_name !== name) return;
             if (!CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === detail.language)) return;
             languageSelect.value = detail.language;
             languageSelect.dataset.previousValue = detail.language;
@@ -879,7 +910,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 : '跟随角色卡默认设定';
         }
 
-        void refreshVoiceCatalog(voiceSelect.value);
+        form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);
     };
     window.addEventListener('localechange', form._localeChangeHandler);
 

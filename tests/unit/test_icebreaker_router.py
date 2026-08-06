@@ -140,6 +140,34 @@ def test_icebreaker_request_marks_matching_seeded_locale_explicit(monkeypatch):
     assert manager._user_language_explicit is True
 
 
+def test_icebreaker_render_language_selects_template_without_marking_session_explicit(monkeypatch):
+    manager = _FakeAppendContextManager()
+    manager.user_language = "en"
+    manager._user_language_explicit = False
+    monkeypatch.setattr(
+        icebreaker_router,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    payload = {"render_language": "ja"}
+    assert icebreaker_router._absorb_request_language(payload, "Lan") is None
+    assert manager.language_updates == []
+    render_prompts = build_icebreaker_free_text_prompts(
+        payload,
+        [{"id": "yes", "label": "はい"}],
+        recent_turns=[],
+        derail_streak=0,
+    )
+    explicit_prompts = build_icebreaker_free_text_prompts(
+        {"i18n_language": "ja"},
+        [{"id": "yes", "label": "はい"}],
+        recent_turns=[],
+        derail_streak=0,
+    )
+    assert render_prompts == explicit_prompts
+
+
 async def _fake_cache_memory(**kwargs):
     return True, ""
 

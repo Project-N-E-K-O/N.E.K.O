@@ -1148,15 +1148,20 @@
             console.log('主动搭话：启用模式 [' + availableModes.join(', ') + ']，将并行获取所有信息源');
 
             var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-            // Only forward a stored per-character preference. If no explicit
-            // preference exists, the backend must keep resolving its UI fallback
-            // dynamically instead of persisting today's UI locale as a preference.
+            // Keep the durable character preference separate from the locale used
+            // only to render this request. The latter must never be persisted.
             var explicitConversationLanguage = '';
+            var renderConversationLanguage = '';
             try {
                 if (typeof window.getExplicitConversationLanguagePreference === 'function') {
                     explicitConversationLanguage = window.getExplicitConversationLanguagePreference(lanlanName);
                 }
             } catch (_) { explicitConversationLanguage = ''; }
+            try {
+                if (typeof window.getConversationLanguagePreference === 'function') {
+                    renderConversationLanguage = window.getConversationLanguagePreference(lanlanName);
+                }
+            } catch (_) { renderConversationLanguage = ''; }
             var requestBody = {
                 lanlan_name: lanlanName,
                 enabled_modes: availableModes,
@@ -1174,6 +1179,9 @@
             };
             if (explicitConversationLanguage) {
                 requestBody.i18n_language = explicitConversationLanguage;
+            }
+            if (renderConversationLanguage) {
+                requestBody.render_language = renderConversationLanguage;
             }
 
             // 独立计时器：确保 vision/window 模式的屏幕感知间隔不低于 proactiveVisionInterval
