@@ -2148,21 +2148,30 @@ def test_lock_gate_ignores_other_locks(
     assert _lock_violations(contract_checker, tmp_path, source) == []
 
 
+# The three rewrites that hold the lock across an await while presenting no
+# ``async with self.lock`` block for a shape-only scan to inspect. Kept as
+# named constants rather than inline list entries: adjacent string literals
+# inside a list are how a missing comma silently merges two cases into one.
+_MANUAL_ACQUIRE_RELEASE = (
+    "        await self.lock.acquire()\n"
+    "        await self.flush()\n"
+    "        self.lock.release()\n"
+)
+_ALIASED_THEN_ENTERED = (
+    "        held = self.lock\n"
+    "        async with held:\n"
+    "            await self.flush()\n"
+)
+_HANDED_TO_A_HELPER = "        await self._helper_that_awaits(self.lock)\n"
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "manual",
     [
-        # The rewrite that holds the lock across an await while presenting no
-        # AsyncWith node at all — a shape-only gate walks straight past it.
-        "        await self.lock.acquire()\n"
-        "        await self.flush()\n"
-        "        self.lock.release()\n",
-        # Same escape, one indirection further out.
-        "        held = self.lock\n"
-        "        async with held:\n"
-        "            await self.flush()\n",
-        # Handing it to something that may await under it.
-        "        await self._helper_that_awaits(self.lock)\n",
+        pytest.param(_MANUAL_ACQUIRE_RELEASE, id="manual-acquire-release"),
+        pytest.param(_ALIASED_THEN_ENTERED, id="aliased-then-entered"),
+        pytest.param(_HANDED_TO_A_HELPER, id="handed-to-a-helper"),
     ],
 )
 def test_lock_gate_rejects_taking_the_lock_outside_a_context_manager(
