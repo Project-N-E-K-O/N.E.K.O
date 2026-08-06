@@ -490,6 +490,132 @@ def test_qq_session_instructions_locale(ui_locale, check):
     assert handed_down != get_context_summary_ready("en", input_mode="text")
 
 
+def test_qq_blank_override_is_treated_as_unset():
+    """``save_prompt_override`` stores an empty string when the editor box is
+    cleared, so a blank value means "not set" — the resolver has to keep
+    walking the candidate chain rather than serve the blank.
+
+    Without this the cleared layer would render as nothing at all, and a
+    legacy bucket further down the chain would be masked by the blank.
+    """
+    masked = _qq_service({
+        "prompt_overrides": {
+            "zh-TW": {"output_prompt_section": "   "},
+            "zh": {"output_prompt_section": "舊的繁中覆蓋"},
+        },
+    })
+    with language_context("zh-TW"):
+        assert masked._resolve_static_layer(
+            "output_prompt_section", "默认模板",
+        ) == "舊的繁中覆蓋"
+
+    only_blank = _qq_service({
+        "prompt_overrides": {"zh-TW": {"output_prompt_section": ""}},
+    })
+    with language_context("zh-TW"):
+        assert only_blank._resolve_static_layer(
+            "output_prompt_section", "默认模板",
+        ) == "默认模板"
+
+
+def _prompt_editor_facade(settings):
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    facade = object.__new__(QQAutoReplyPlugin)
+    facade._qq_settings = settings
+    facade._strategy_mode = "neko_dynamic"
+    facade.session_instruction_service = QQSessionInstructionService(facade)
+    facade.fatigue_service = None
+    facade.attention_gate_service = None
+    facade.i18n = SimpleNamespace(t=lambda key, **kw: kw.get("default", ""))
+    facade._emit_log = lambda *a, **k: None
+    facade.logger = MagicMock()
+    return facade
+
+
+def _layer_state(payload, layer_id):
+    return next(
+        layer for layer in payload["layers"] if layer["id"] == layer_id
+    )
+
+
+def test_qq_editor_sees_legacy_short_locale_override():
+    """A Traditional user whose override predates #2500 has it stored under
+    the old short code ``zh``.
+
+    The runtime resolves overrides through ``locale_candidates``, so that
+    bucket is still live. If the editor matched the locale key exactly it
+    would report the layer as unmodified while the override kept applying —
+    visible nowhere, resettable nowhere.
+    """
+    settings = {
+        "qq_connection_mode": "napcat",
+        "prompt_overrides": {"zh": {"output_prompt_section": "舊的繁中覆蓋"}},
+    }
+    facade = _prompt_editor_facade(settings)
+
+    with language_context("zh-TW"):
+        payload = getattr(
+            asyncio.run(facade.get_prompt_editor_state()), "value", None,
+        )
+        # What the runtime actually serves, for comparison.
+        runtime_text = facade.session_instruction_service._resolve_static_layer(
+            "output_prompt_section", "默认模板",
+        )
+
+    layer = _layer_state(payload, "output")
+    assert layer["has_override"] is True
+    assert layer["effective_text"] == "舊的繁中覆蓋"
+    assert runtime_text == layer["effective_text"]
+
+
+@pytest.mark.asyncio
+async def test_qq_reset_clears_the_bucket_the_runtime_actually_uses():
+    """Reset must land on the same bucket the resolver reads.
+
+    Keyed strictly by the current locale, resetting a legacy ``zh`` override
+    returned ``no_override_found`` and left it applying forever.
+    """
+    from unittest.mock import AsyncMock
+
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    settings = {
+        "qq_connection_mode": "napcat",
+        "prompt_overrides": {"zh": {"output_prompt_section": "舊的繁中覆蓋"}},
+    }
+    facade = _prompt_editor_facade(settings)
+    facade.session_instruction_service._discard_all_sessions_for_prompt_change = (
+        lambda: None
+    )
+
+    async def _mutate(_self, fn):
+        return fn(settings)
+
+    facade._mutate_business_config = AsyncMock(side_effect=None)
+
+    with language_context("zh-TW"):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                QQAutoReplyPlugin, "_mutate_business_config", _mutate,
+            )
+            result = await facade.reset_prompt_override(
+                locale="zh-TW", layer_id="output",
+            )
+
+    payload = getattr(result, "value", result)
+    assert payload.get("reason") != "no_override_found"
+    assert settings["prompt_overrides"] == {}
+
+    with language_context("zh-TW"):
+        assert facade.session_instruction_service._resolve_static_layer(
+            "output_prompt_section", "默认模板",
+        ) == "默认模板"
+
+
 @pytest.mark.parametrize(
     ("ui_locale", "expected"), [("zh-TW", "zh-TW"), ("zh-CN", "zh-CN")],
 )

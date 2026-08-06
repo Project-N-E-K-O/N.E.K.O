@@ -39,6 +39,36 @@ from .scene_prompt_templates import (
 )
 
 
+def resolve_prompt_override(
+    overrides: Any, locale: str, i18n_key: str,
+) -> tuple[str, str] | None:
+    """定位「运行时真正会用的」那个提示词覆盖桶。
+
+    返回 ``(桶的 locale, 覆盖文本)``，没有覆盖时返回 ``None``。
+
+    ⚠️ 单一实现，三个消费方（运行时 ``_resolve_static_layer``、编辑器
+    ``get_prompt_editor_state``、重置 ``reset_prompt_override``）必须都走这里。
+    覆盖按 locale 分桶存，而读取是 ``locale_candidates`` 的逐级回退：一旦哪个
+    消费方改用精确匹配，就会出现「运行时在用、编辑器看不见、也重置不掉」的
+    覆盖——存量用户的桶键未必等于今天解析出来的 locale（例如 #2500 之前繁中
+    用户的编辑器兜底是短码 ``zh``）。
+
+    空串覆盖（``save_prompt_override`` 对空输入的存法）视为「没设」，继续往下
+    一个候选找，与运行时原有行为一致。
+    """
+    if not isinstance(overrides, dict):
+        return None
+    from plugin.sdk.shared.i18n import locale_candidates
+    for candidate in locale_candidates(locale, "zh-CN"):
+        locale_map = overrides.get(candidate)
+        if not isinstance(locale_map, dict) or i18n_key not in locale_map:
+            continue
+        value = locale_map[i18n_key]
+        if isinstance(value, str) and value.strip():
+            return candidate, value
+    return None
+
+
 class QQSessionInstructionService:
     # 提示词层定义（供编辑器 + 运行时覆盖解析使用）
     _PROMPT_LAYERS: list[dict[str, Any]] = [
@@ -154,15 +184,9 @@ class QQSessionInstructionService:
         )
         # 检查用户覆盖
         overrides = (self.plugin._qq_settings or {}).get("prompt_overrides") or {}
-        if isinstance(overrides, dict):
-            from plugin.sdk.shared.i18n import locale_candidates
-            for candidate in locale_candidates(locale, "zh-CN"):
-                locale_map = overrides.get(candidate)
-                if isinstance(locale_map, dict) and i18n_key in locale_map:
-                    override_val = locale_map[i18n_key]
-                    if isinstance(override_val, str) and override_val.strip():
-                        base_text = override_val
-                        break
+        found = resolve_prompt_override(overrides, locale, i18n_key)
+        if found is not None:
+            base_text = found[1]
         # 必需占位符护栏：身份边界等安全层的 required_placeholders 在
         # _PROMPT_LAYERS 里声明；覆盖文本（bundle 或用户）缺任一占位符
         # 说明它丢掉了模板承载的身份/场景约束（例如 shared_session 的
@@ -202,15 +226,8 @@ class QQSessionInstructionService:
         )
         # 检查覆盖
         overrides = (self.plugin._qq_settings or {}).get("prompt_overrides") or {}
-        if isinstance(overrides, dict):
-            from plugin.sdk.shared.i18n import locale_candidates
-            for candidate in locale_candidates(locale, "zh-CN"):
-                locale_map = overrides.get(candidate)
-                if isinstance(locale_map, dict) and "init" in locale_map:
-                    override_val = locale_map["init"]
-                    if isinstance(override_val, str) and override_val.strip():
-                        return override_val
-        return template
+        found = resolve_prompt_override(overrides, locale, "init")
+        return found[1] if found is not None else template
 
     def _discard_all_sessions_for_prompt_change(self) -> None:
         """提示词覆盖变更后，清空所有现有 session，下次回复生效。"""

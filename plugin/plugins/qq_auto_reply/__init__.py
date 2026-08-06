@@ -80,7 +80,10 @@ from .runtime_ops_service import QQProactiveMessageService, QQRuntimeOpsService
 from .runtime_service import QQRuntimeService
 from .session import QQAutoReplySessionMixin
 from .session_bootstrap_service import QQSessionBootstrapService
-from .session_instruction_service import QQSessionInstructionService
+from .session_instruction_service import (
+    QQSessionInstructionService,
+    resolve_prompt_override,
+)
 from .session_memory_service import QQSessionMemoryService
 from .session_runtime_service import QQSessionRuntimeService
 from .settings_service import QQSettingsService
@@ -1372,9 +1375,14 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             has_override = False
             effective_text = ""
             if not is_runtime:
-                if isinstance(overrides.get(locale), dict) and i18n_key in overrides[locale]:
+                # ⚠️ 走候选链而不是精确匹配 ``overrides[locale]``：覆盖桶的键是
+                # 存的时候那次的 locale，未必等于现在解析出来的（#2500 之前繁中
+                # 用户的兜底是短码 'zh'）。运行时按候选链读，编辑器精确匹配的
+                # 话，那份覆盖照样生效、编辑器却报「未修改」。
+                found = resolve_prompt_override(overrides, locale, i18n_key)
+                if found is not None:
                     has_override = True
-                    effective_text = str(overrides[locale][i18n_key] or "")
+                    effective_text = str(found[1] or "")
                 else:
                     effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
             if lid == "time" and self.fatigue_service:
@@ -1489,18 +1497,27 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             overrides = (
                 dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
             )
-            locale_overrides = overrides.get(locale)
-            if not isinstance(locale_overrides, dict):
-                return False
+            target = locale
+            locale_overrides = overrides.get(target)
+            if not (isinstance(locale_overrides, dict)
+                    and layer_def["i18n_key"] in locale_overrides):
+                # 精确桶里没有，就删掉运行时实际在用的那个桶（存量用户可能存
+                # 在旧短码 'zh' 下）。不这么做，「恢复默认」会返回
+                # no_override_found，而那份覆盖继续生效——用户既看不见也删不掉。
+                found = resolve_prompt_override(
+                    overrides, locale, layer_def["i18n_key"],
+                )
+                if found is None:
+                    return False
+                target = found[0]
+                locale_overrides = overrides.get(target)
             locale_overrides = dict(locale_overrides)
-            if layer_def["i18n_key"] not in locale_overrides:
-                return False
             override_found = True
             locale_overrides.pop(layer_def["i18n_key"])
             if locale_overrides:
-                overrides[locale] = locale_overrides
+                overrides[target] = locale_overrides
             else:
-                overrides.pop(locale, None)
+                overrides.pop(target, None)
             settings["prompt_overrides"] = overrides
             return True
 
