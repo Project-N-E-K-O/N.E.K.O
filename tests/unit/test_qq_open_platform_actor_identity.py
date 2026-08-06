@@ -332,6 +332,17 @@ def test_observation_never_propagates_an_exception(message):
 # ==========================================================================
 
 
+_BOUND = {"entity_id": "entity_owner",
+          "entity_accounts": ["qq:MEMBER_IN_X", "qq:OWNER_PRIVATE_OPENID"],
+          "bound_by": "qq_auto_reply.dashboard",
+          "adjustment_sum": 0.0, "account_message_count": 0}
+_STANDALONE_WITH_LEDGER = {"entity_id": "entity_solo",
+                           "entity_accounts": ["qq:MEMBER_IN_X"],
+                           "bound_by": None,
+                           "adjustment_sum": 0.3,
+                           "account_message_count": 40}
+
+
 def _dashboard(*, roster, profiles, claims=(), mode="open_platform"):
     service = QQDashboardService.__new__(QQDashboardService)
     dispatcher = _dispatcher()
@@ -341,7 +352,9 @@ def _dashboard(*, roster, profiles, claims=(), mode="open_platform"):
     bridge = SimpleNamespace(
         speaker_account_id=lambda actor: f"qq:{str(actor or '').strip()}",
         fetch_speaker_profile=AsyncMock(
-            side_effect=lambda account_id, **kw: dict(profiles[account_id]),
+            side_effect=lambda account_id, **kw: dict(
+                profiles.get(account_id, {}),
+            ),
         ),
         ensure_speaker_account=AsyncMock(
             side_effect=lambda account_id, **kw: {
@@ -570,7 +583,7 @@ async def test_unbinding_is_reachable_and_targets_the_in_group_id():
     sit next to it rather than in an internal endpoint the operator would
     have to discover.
     """
-    service = _dashboard(roster=[], profiles={})
+    service = _dashboard(roster=[], profiles={"qq:MEMBER_IN_X": _BOUND})
 
     result = await service.unbind_identity_account(user_id="MEMBER_IN_X")
 
@@ -590,6 +603,172 @@ async def test_unbinding_refuses_a_blank_id():
 
     assert result.__class__.__name__ == "Err"
     service.plugin.memory_bridge.unbind_speaker_account.assert_not_awaited()
+
+
+# -- rebinding, and the two ways a "harmless" call is not harmless ----------
+
+async def test_rebinding_an_already_bound_id_is_refused():
+    """Rebinding is not "pick a different target" -- it MERGES the two targets.
+
+    ``_bind_locked`` takes the merge branch when the source already belongs to
+    an entity, so a second bind fuses candidate A's identity with candidate
+    B's: two different people, one identity. Unbind only detaches the source,
+    so those two stay fused with no way back. The operator must undo first.
+    """
+    service = _dashboard(
+        roster=[], profiles={"qq:MEMBER_IN_X": _BOUND},
+    )
+
+    result = await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="SOMEONE_ELSE",
+    )
+
+    assert result.__class__.__name__ == "Err"
+    service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
+    service.plugin.memory_bridge.ensure_speaker_account.assert_not_awaited()
+
+
+async def test_unbinding_a_standalone_account_with_a_ledger_is_not_attempted():
+    """``changed=false`` only covers the never-registered case.
+
+    ``_unbind_locked`` calls any REGISTERED account changed and moves it into
+    a generation+1 entity, stranding rows already resolved under the old one
+    and minting a fresh entity on every press. The UI tells operators this
+    button is safe on an unmerged ID, so the guard has to be real.
+    """
+    service = _dashboard(
+        roster=[], profiles={"qq:MEMBER_IN_X": _STANDALONE_WITH_LEDGER},
+    )
+
+    result = await service.unbind_identity_account(user_id="MEMBER_IN_X")
+
+    assert result.value["unbind"]["changed"] is False
+    service.plugin.memory_bridge.unbind_speaker_account.assert_not_awaited()
+
+
+@pytest.mark.parametrize("profile,why", [
+    ({"entity_accounts": ["qq:MEMBER_IN_X", "qq:OWNER"], "bound_by": None},
+     "shares its entity with another account"),
+    ({"entity_accounts": ["qq:MEMBER_IN_X"],
+      "bound_by": "qq_auto_reply.dashboard"},
+     "carries bind provenance after the co-tenant was detached"),
+])
+async def test_either_signal_alone_counts_as_bound(profile, why):
+    """Both halves of the predicate are load-bearing, so test them apart.
+
+    A co-tenant with no provenance happens when the ledger merged accounts by
+    another route; provenance with no co-tenant is what a bind leaves behind
+    once the OTHER side is unbound. Checking only one lets a rebind through in
+    the case the other one covers -- and a rebind fuses two candidates.
+    """
+    service = _dashboard(roster=[], profiles={"qq:MEMBER_IN_X": profile})
+
+    result = await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="SOMEONE_ELSE",
+    )
+
+    assert result.__class__.__name__ == "Err", why
+    service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
+
+
+async def test_a_fresh_unmerged_account_is_not_treated_as_bound():
+    """The predicate must not block the ordinary first bind."""
+    service = _dashboard(
+        roster=[],
+        profiles={"qq:MEMBER_IN_X": {"entity_accounts": ["qq:MEMBER_IN_X"],
+                                     "bound_by": None}},
+    )
+
+    result = await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="OWNER",
+    )
+
+    assert result.__class__.__name__ == "Ok"
+    service.plugin.memory_bridge.bind_speaker_account.assert_awaited_once()
+
+
+async def test_unbinding_a_genuinely_bound_account_goes_through():
+    service = _dashboard(roster=[], profiles={"qq:MEMBER_IN_X": _BOUND})
+
+    result = await service.unbind_identity_account(user_id="MEMBER_IN_X")
+
+    assert result.value["unbind"]["changed"] is True
+    service.plugin.memory_bridge.unbind_speaker_account.assert_awaited_once()
+
+
+async def test_an_unreadable_profile_blocks_both_mutations():
+    """Fail closed: both misjudgements are irreversible.
+
+    Guessing "not bound" lets a bind fuse two candidate identities; guessing
+    it for unbind moves a standalone account into a new entity. Neither is
+    recoverable, so an unreachable server must stop the operation.
+    """
+    service = _dashboard(roster=[], profiles={})
+    service.plugin.memory_bridge.fetch_speaker_profile = AsyncMock(
+        side_effect=RuntimeError("connection refused"),
+    )
+
+    bind = await service.bind_identity_account(
+        user_id="MEMBER_IN_X", target_user_id="OWNER",
+    )
+    unbind = await service.unbind_identity_account(user_id="MEMBER_IN_X")
+
+    assert bind.__class__.__name__ == "Err"
+    assert unbind.__class__.__name__ == "Err"
+    service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
+    service.plugin.memory_bridge.unbind_speaker_account.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", ["bind", "unbind"])
+async def test_a_write_that_did_not_persist_is_reported_as_a_failure(operation):
+    """``persisted: false`` means the draft was discarded -- nothing changed.
+
+    Reporting success there sends the operator off to verify a merge that does
+    not exist, and for unbind it would also quote deltas computed from a draft
+    that was thrown away.
+    """
+    service = _dashboard(roster=[], profiles={"qq:MEMBER_IN_X": _BOUND})
+    service.plugin.memory_bridge.bind_speaker_account = AsyncMock(
+        return_value={"entity_id": "e1", "persisted": False},
+    )
+    service.plugin.memory_bridge.unbind_speaker_account = AsyncMock(
+        return_value={"changed": True, "ledger_delta": -0.1,
+                      "effective_delta": 0.3, "persisted": False},
+    )
+
+    if operation == "bind":
+        service.plugin.memory_bridge.fetch_speaker_profile = AsyncMock(
+            return_value={"entity_id": None, "entity_accounts": []},
+        )
+        result = await service.bind_identity_account(
+            user_id="MEMBER_IN_X", target_user_id="OWNER",
+        )
+    else:
+        result = await service.unbind_identity_account(user_id="MEMBER_IN_X")
+
+    assert result.__class__.__name__ == "Err"
+
+
+# -- which transport the scope describes ------------------------------------
+
+
+async def test_the_scope_follows_the_running_transport_not_the_saved_config():
+    """Saving a mode does not switch the live client; the save says so itself.
+
+    Describing the new mode during that gap hides the claim UI while open
+    platform messages are still arriving.
+    """
+    service = _dashboard(roster=[], profiles={}, mode="napcat")
+    service.plugin.qq_client = SimpleNamespace(CHANNEL="open")
+
+    assert service._identity_scope_payload()["actor_scope"] == "per_conversation"
+
+
+async def test_the_scope_falls_back_to_config_when_nothing_is_connected():
+    service = _dashboard(roster=[], profiles={}, mode="open_platform")
+    service.plugin.qq_client = None
+
+    assert service._identity_scope_payload()["actor_scope"] == "per_conversation"
 
 
 def test_the_dashboard_reports_the_degradation_only_on_the_open_platform():

@@ -897,9 +897,10 @@ class QQSettingsService:
         if qq_connection_mode is not None:
             self.plugin._qq_settings["qq_connection_mode"] = str(qq_connection_mode or "napcat").strip()
             self.plugin._emit_log("INFO", f"连接模式已切换: {self.plugin._qq_settings['qq_connection_mode']}")
-            # 换模式就是换 wire format：napcat 的裸 QQ 号与开放平台的
-            # member_openid 不是同一种东西，登记必须跟着翻。
-            self.ensure_identity_scope_declared()
+            # 这里**不**登记新模式：保存只改配置，旧连接还在跑（本方法的响应
+            # 自己会报 reconnect_required）。登记发生在连接真正建立之后，见
+            # runtime_ops_service 的 start_auto_reply——否则在那段可能无限长
+            # 的间隔里，池和 dashboard 描述的是一个还没生效的通道。
         if qq_open_app_id is not None:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:

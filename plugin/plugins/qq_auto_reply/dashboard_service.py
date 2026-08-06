@@ -374,14 +374,29 @@ class QQDashboardService:
         })
 
     def _identity_scope_payload(self) -> dict[str, Any]:
-        """当前连接模式下标识符的协议语义，给 UI 显示降级提示用。
+        """当前**在跑的**通道下标识符的协议语义，给 UI 显示降级提示用。
 
         读的是本地那张协议表而不是服务端已登记的值：提示要不要显示只取决于
-        现在跑的是哪个模式，不该因为 memory_server 还没起来就少提示一句。
+        跑的是哪个通道，不该因为 memory_server 还没起来就少提示一句。
+
+        以**运行中的连接**为准而不是配置：改了 `qq_connection_mode` 之后旧
+        连接还在跑（save 的响应自己会报 ``reconnect_required``），这段时间
+        里按配置显示，等于在开放平台消息还在进来的时候把认领 UI 藏起来。
+        没有连接时才回落到配置——那时配置就是下次连上的样子。
         """
         settings = self.plugin._qq_settings or {}
         mode = str(settings.get("qq_connection_mode") or "napcat").strip()
         table = self.plugin.settings_service.IDENTITY_SCOPE_BY_MODE
+        client = getattr(self.plugin, "qq_client", None)
+        live_channel = str(getattr(client, "CHANNEL", "") or "").strip()
+        if live_channel:
+            mode = next(
+                (
+                    key for key, entry in table.items()
+                    if entry[0] == live_channel
+                ),
+                mode,
+            )
         entry = table.get(mode)
         if entry is None:
             return {
@@ -395,6 +410,25 @@ class QQDashboardService:
             "actor_scope": actor_scope,
             "conversation_scope": conversation_scope,
         }
+
+    async def _identity_is_bound(self, bridge, account_id: str) -> bool:
+        """这个账号现在是不是**和别人绑在一起**。
+
+        两个判据取并集：entity 下不止它一个账号，或者它带着人工绑定的
+        ``bound_by`` 落款。前者认得出「已经并进某个身份」，后者认得出「并
+        进去之后对方又被拆走」——只看其一都会漏。
+
+        查不到就抛，让调用方 fail-closed。这两个判断的误判代价是不可逆的：
+        误判「未绑定」会让 bind 走进 `_bind_locked` 的 merge 分支，把两个
+        **候选身份**并成一个（而 unbind 只拆得回源账号，那两个候选仍然合
+        着）；误判也会让 unbind 把一个本来独立的账号搬进新 entity。宁可挡
+        住操作，不猜。
+        """
+        profile = await bridge.fetch_speaker_profile(
+            account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
+        )
+        accounts = list(profile.get("entity_accounts") or [])
+        return len(accounts) > 1 or bool(profile.get("bound_by"))
 
     def _identity_bridge(self):
         """记忆桥，缺席时返回 ``(None, Err)``。"""
@@ -453,6 +487,21 @@ class QQDashboardService:
         source_account = bridge.speaker_account_id(actor)
         target_account = bridge.speaker_account_id(target_actor)
         try:
+            # 已经绑过的必须先撤销才能改绑。直接改绑不是「换个目标」：
+            # `_bind_locked` 在源账号已有归属时走的是 merge，把**第一个目标
+            # 和第二个目标**并成一个身份——两个不同的真人。而 unbind 只拆得
+            # 回源账号，那两个目标仍然合着，操作者没有任何办法退回去。
+            if await self._identity_is_bound(bridge, source_account):
+                return Err(SdkError(
+                    "ALREADY_BOUND: "
+                    + self.plugin.i18n.t(
+                        "errors.identity_already_bound",
+                        default=(
+                            "这个 ID 已经合并过了。要改绑到别人，"
+                            "请先撤销当前的合并。"
+                        ),
+                    )
+                ))
             ensured = await bridge.ensure_speaker_account(
                 account_id=target_account,
             )
@@ -472,6 +521,17 @@ class QQDashboardService:
                     default="合并身份失败: {error}", error=str(exc),
                 )
             ))
+        if result.get("persisted") is False:
+            # 写盘失败时 `_with_pool_write` 丢弃整份 draft，什么都没变。
+            # 这时弹「已合并」会让操作者以为做完了，然后去检查一个根本不
+            # 存在的合并。
+            return Err(SdkError(
+                "NOT_PERSISTED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_not_persisted",
+                    default="写盘失败，身份没有改动，请重试",
+                )
+            ))
         return Ok({"bind": result})
 
     async def unbind_identity_account(self, *, user_id: str):
@@ -479,7 +539,14 @@ class QQDashboardService:
 
         必须和 bind 出现在同一个界面上：bind 立刻把两个账号的信赖度合到一
         起，操作者选错一项就需要当场能退回来，而不是去翻文档找一个内部端
-        点。对本来就没绑过的 ID 是无害的（服务端返回 ``changed=false``）。
+        点。
+
+        **先确认它真的绑过再动手。** ``aunbind_account`` 对一个「有账本但
+        从没合并过」的独立账号并不是无操作：``_unbind_locked`` 认得的是
+        「这个账号已注册」，于是照样把它搬进一个 generation+1 的新 entity
+        ——已经按旧 entity 解析过的行会被留在原地，而反复按就反复造新
+        entity。所以判据在这一层挡，服务端那句 ``changed=false`` 只覆盖
+        「完全没注册过」这一种。
 
         ``ledger_delta`` 与 ``effective_delta`` 通常是两个不同的数字，这不
         是 bug：夹紧的聚合下「这个账号带走了多少」没有唯一答案。两个都原样
@@ -497,16 +564,25 @@ class QQDashboardService:
                     default="user_id 与 target_user_id 都不能为空",
                 )
             ))
+        account_id = bridge.speaker_account_id(actor)
         try:
-            result = await bridge.unbind_speaker_account(
-                account_id=bridge.speaker_account_id(actor),
-            )
+            if not await self._identity_is_bound(bridge, account_id):
+                return Ok({"unbind": {"changed": False, "reason": "not_bound"}})
+            result = await bridge.unbind_speaker_account(account_id=account_id)
         except Exception as exc:
             return Err(SdkError(
                 "UNBIND_FAILED: "
                 + self.plugin.i18n.t(
                     "errors.identity_unbind_failed",
                     default="撤销合并失败: {error}", error=str(exc),
+                )
+            ))
+        if result.get("persisted") is False:
+            return Err(SdkError(
+                "NOT_PERSISTED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_not_persisted",
+                    default="写盘失败，身份没有改动，请重试",
                 )
             ))
         return Ok({"unbind": result})

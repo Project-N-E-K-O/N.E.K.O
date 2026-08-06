@@ -74,6 +74,8 @@
   "errors.identity_bind_failed": "合并身份失败: {error}",
   "errors.identity_bind_same_account": "不能把一个 ID 合并到它自己",
   "errors.identity_unbind_failed": "撤销合并失败: {error}",
+  "errors.identity_already_bound": "这个 ID 已经合并过了。要改绑到别人，请先撤销当前的合并。",
+  "errors.identity_not_persisted": "写盘失败，身份没有改动，请重试",
   "errors.group_permission_manager_not_initialized": "群聊权限管理器未初始化",
   "errors.qq_client_not_initialized": "QQ 客户端未初始化",
   "errors.user_not_found": "用户 {qq_number} 不在信任列表中",

@@ -54,6 +54,8 @@
   "errors.identity_bind_failed": "Failed to merge identity: {error}",
   "errors.identity_bind_same_account": "cannot merge an ID into itself",
   "errors.identity_unbind_failed": "Failed to undo the merge: {error}",
+  "errors.identity_already_bound": "This ID is already merged. To point it at someone else, undo the current merge first.",
+  "errors.identity_not_persisted": "The write to disk failed and nothing changed; please retry",
   "errors.group_permission_manager_not_initialized": "Group permission manager isn't ready yet",
   "errors.qq_client_not_initialized": "QQ client isn't ready yet",
   "errors.user_not_found": "User {qq_number} isn't in the trusted list",

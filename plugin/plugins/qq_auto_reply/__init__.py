@@ -515,8 +515,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._trust_migration_task = asyncio.create_task(
                 self.settings_service.push_legacy_speaker_trust_forever()
             )
-        # 同理不阻塞：登记当前连接模式的标识符语义（见 §2.15.4）。
-        self.settings_service.ensure_identity_scope_declared()
+        # 标识符语义的登记**不在这里**：它描述的是「现在跑着的 wire
+        # format」，而 startup 时还没有连接。登记发生在连接真正建立之后
+        # （runtime_ops_service 的 start_auto_reply，见 §2.15.4）。
         if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
         # 定期清理已审核超过24h的旧消息

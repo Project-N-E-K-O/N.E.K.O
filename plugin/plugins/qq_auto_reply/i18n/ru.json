@@ -54,6 +54,8 @@
   "errors.identity_bind_failed": "Не удалось объединить личность: {error}",
   "errors.identity_bind_same_account": "нельзя объединить ID сам с собой",
   "errors.identity_unbind_failed": "Не удалось отменить объединение: {error}",
+  "errors.identity_already_bound": "Этот ID уже объединён. Чтобы привязать его к другому человеку, сначала отмените текущее объединение.",
+  "errors.identity_not_persisted": "Запись на диск не удалась, личность не изменилась; попробуйте ещё раз",
   "errors.group_permission_manager_not_initialized": "Менеджер прав групп не инициализирован",
   "errors.qq_client_not_initialized": "QQ-клиент не инициализирован",
   "errors.user_not_found": "Пользователь {qq_number} отсутствует в доверенном списке",

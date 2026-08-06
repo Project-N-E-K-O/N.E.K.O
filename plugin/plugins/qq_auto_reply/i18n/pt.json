@@ -54,6 +54,8 @@
   "errors.identity_bind_failed": "Falha ao mesclar a identidade: {error}",
   "errors.identity_bind_same_account": "não é possível mesclar um ID consigo mesmo",
   "errors.identity_unbind_failed": "Falha ao desfazer a mesclagem: {error}",
+  "errors.identity_already_bound": "Este ID já está mesclado. Para apontá-lo para outra pessoa, desfaça primeiro a mesclagem atual.",
+  "errors.identity_not_persisted": "A gravação em disco falhou e nada mudou; tente novamente",
   "errors.group_permission_manager_not_initialized": "O gerenciador de permissões de grupo não foi inicializado",
   "errors.qq_client_not_initialized": "O cliente do QQ não foi inicializado",
   "errors.user_not_found": "O usuário {qq_number} não está na lista de confiança",

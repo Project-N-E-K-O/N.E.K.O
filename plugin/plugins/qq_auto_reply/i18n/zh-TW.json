@@ -54,6 +54,8 @@
   "errors.identity_bind_failed": "合併身分失敗: {error}",
   "errors.identity_bind_same_account": "不能把一個 ID 合併到它自己",
   "errors.identity_unbind_failed": "撤銷合併失敗: {error}",
+  "errors.identity_already_bound": "這個 ID 已經合併過了。要改綁到別人，請先撤銷目前的合併。",
+  "errors.identity_not_persisted": "寫入磁碟失敗，身分沒有改動，請重試",
   "errors.group_permission_manager_not_initialized": "群聊權限管理器尚未初始化",
   "errors.qq_client_not_initialized": "QQ 用戶端尚未初始化",
   "errors.user_not_found": "使用者 {qq_number} 不在信任清單中",

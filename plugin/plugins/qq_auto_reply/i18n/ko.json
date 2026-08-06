@@ -54,6 +54,8 @@
   "errors.identity_bind_failed": "신원 병합 실패: {error}",
   "errors.identity_bind_same_account": "ID를 자기 자신에게 병합할 수 없습니다",
   "errors.identity_unbind_failed": "병합 취소 실패: {error}",
+  "errors.identity_already_bound": "이 ID는 이미 병합되어 있습니다. 다른 대상으로 바꾸려면 먼저 현재 병합을 취소하세요.",
+  "errors.identity_not_persisted": "디스크 쓰기에 실패해 신원이 바뀌지 않았습니다. 다시 시도하세요",
   "errors.group_permission_manager_not_initialized": "그룹 권한 관리자가 초기화되지 않았습니다",
   "errors.qq_client_not_initialized": "QQ 클라이언트가 초기화되지 않았습니다",
   "errors.user_not_found": "사용자 {qq_number} 가 신뢰 목록에 없습니다",

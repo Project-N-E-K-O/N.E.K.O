@@ -54,6 +54,8 @@
   "errors.identity_bind_failed": "Error al fusionar la identidad: {error}",
   "errors.identity_bind_same_account": "no se puede fusionar un ID consigo mismo",
   "errors.identity_unbind_failed": "Error al deshacer la fusión: {error}",
+  "errors.identity_already_bound": "Este ID ya está fusionado. Para apuntarlo a otra persona, deshaz primero la fusión actual.",
+  "errors.identity_not_persisted": "Falló la escritura en disco y no cambió nada; inténtalo de nuevo",
   "errors.group_permission_manager_not_initialized": "El gestor de permisos de grupos no está inicializado",
   "errors.qq_client_not_initialized": "El cliente de QQ no está inicializado",
   "errors.user_not_found": "El usuario {qq_number} no está en la lista de confianza",
