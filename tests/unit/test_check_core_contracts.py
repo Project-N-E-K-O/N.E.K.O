@@ -2467,6 +2467,39 @@ def test_lock_gate_rejects_an_annotated_rebind_too(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "acquisition",
+    [
+        pytest.param('getattr(self, "lock")', id="getattr"),
+        pytest.param('self.__dict__["lock"]', id="dunder-dict"),
+    ],
+)
+def test_lock_gate_sees_the_lock_reached_reflectively(
+    contract_checker,
+    tmp_path: Path,
+    acquisition: str,
+) -> None:
+    """These carry no ``Attribute`` named ``lock`` for a syntax match to see.
+
+    Same standard the fail-closed chokepoint gate in this script already
+    holds itself to: a gate a one-line rewrite defeats is not a gate.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def sneaky(self):\n"
+        f"        async with {acquisition}:\n"
+        "            await self.flush()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("must never be held across a suspension" in v.message for v in violations)
+
+
+@pytest.mark.unit
 def test_lock_gate_sees_the_lock_taken_through_an_alias_of_self(
     contract_checker,
     tmp_path: Path,

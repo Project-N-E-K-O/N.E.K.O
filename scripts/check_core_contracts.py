@@ -1145,7 +1145,7 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         return None
 
     def is_lock_attr(node: ast.AST) -> bool:
-        """Any ``<expr>.lock``, whatever the receiver.
+        """Any reach for the ``lock`` attribute, however it is spelled.
 
         Deliberately NOT pinned to a literal ``self`` receiver: ``owner =
         self`` followed by ``async with owner.lock:`` acquires the same
@@ -1154,9 +1154,34 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         direction — and measured, it costs nothing: the package contains no
         ``.lock`` acquisition with any other receiver, and manager.py's
         binding is the only non-``async with`` mention at all.
+
+        The literal reflective spellings count too — ``getattr(x, "lock")``
+        and ``x.__dict__["lock"]`` reach the same object while carrying no
+        ``Attribute`` node named ``lock`` for a syntax-only match to see.
+        Same reasoning as ``check_fail_closed_chokepoint``'s ``called_name``
+        in this file: a gate a one-line rewrite defeats is not a gate. A
+        computed name (``getattr(x, name)``) is out of reach of any AST check
+        and is not claimed to be covered.
         """
 
-        return isinstance(node, ast.Attribute) and node.attr == "lock"
+        if isinstance(node, ast.Attribute):
+            return node.attr == "lock"
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "lock"
+        ):
+            return True
+        return (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "__dict__"
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == "lock"
+        )
 
     def is_session_lock(item: ast.withitem) -> bool:
         return is_lock_attr(item.context_expr)
