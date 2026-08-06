@@ -376,6 +376,17 @@
         return source.slice(start, end);
     }
 
+    function actionNegated(text, anchor, terms) {
+        const source = folded(text);
+        const needle = folded(anchor);
+        const anchorIndex = source.indexOf(needle);
+        if (anchorIndex < 0) return false;
+        return containsNegation(
+            actionEvidenceScope(source, anchorIndex, anchorIndex + needle.length),
+            terms
+        );
+    }
+
     function speechActorAllowed(text, anchor, occurrenceIndex) {
         const source = folded(text);
         const needle = folded(anchor);
@@ -1207,9 +1218,11 @@
             const assistantText = withoutStageDirections(text);
             const userText = normalize(settings.userText);
             const speech = this.pack.speech || {};
+            const common = this._common(locale);
             const metaTerms = this._speechTerms(speech.meta, locale);
             const refused = !!assistantText
                 && includesAny(assistantText, this._speechTerms(speech.refusals, locale));
+            const questioned = /[?？]\s*$/u.test(assistantText);
             const acknowledged = !!assistantText
                 && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))
                 && !refused;
@@ -1235,7 +1248,7 @@
                 }
             }
 
-            if (!decision && assistantText && !refused
+            if (!decision && assistantText && !refused && !questioned
                 && !includesAny(assistantText, metaTerms)) {
                 directResult = this.analyze(assistantText, {
                     locale: locale,
@@ -1249,7 +1262,7 @@
             }
 
             const replies = speech.replies || [];
-            !decision && (!directResult || !directResult.plan.length)
+            !questioned && !decision && (!directResult || !directResult.plan.length)
                 && replies.filter(function (reply) {
                     return POSTURE_SPEECH_INTENTS.has(reply.id);
                 }).some((reply) => {
@@ -1257,7 +1270,8 @@
                         assistantText,
                         this._intentSpeechTerms(reply, locale)
                     ).find(function (term) {
-                        return speechActorAllowed(assistantText, term);
+                        return !actionNegated(assistantText, term, common.negation)
+                            && speechActorAllowed(assistantText, term);
                     });
                     if (!match) return false;
                     decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);
@@ -1268,11 +1282,11 @@
                 return !ACKNOWLEDGEMENT_INTENTS.has(item.intent);
             }));
             if (!decision && !directHasExplicitMotion && userText && acknowledged) {
-                const common = this._common(locale);
                 const commandCandidates = (speech.commands || []).map((command) => {
                     const match = matchingTerms(userText, this._intentSpeechTerms(command, locale))
                         .filter(function (term) {
                             return !commandNegated(userText, term, common.negation)
+                                && !actionNegated(userText, term, common.negation)
                                 && userCommandActorAllowed(userText, term);
                         })
                         .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];
@@ -1297,14 +1311,15 @@
                 }
             }
 
-            !decision && (!directResult || !directResult.plan.length) && replies.filter(function (reply) {
+            !questioned && !decision && (!directResult || !directResult.plan.length) && replies.filter(function (reply) {
                 return !POSTURE_SPEECH_INTENTS.has(reply.id);
             }).some((reply) => {
                 const match = matchingTerms(
                     assistantText,
                     this._intentSpeechTerms(reply, locale)
                 ).find(function (term) {
-                    return speechActorAllowed(assistantText, term);
+                    return !actionNegated(assistantText, term, common.negation)
+                        && speechActorAllowed(assistantText, term);
                 });
                 if (!match) return false;
                 decision = this._speechDecision(reply.id, assistantText, locale, 'assistant:' + match);

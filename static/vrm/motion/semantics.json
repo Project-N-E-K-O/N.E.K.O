@@ -599,6 +599,8 @@
       "negation": [
         "しない",
         "しなかった",
+        "ない",
+        "ません",
         "やめる",
         "止める"
       ],
@@ -2012,6 +2014,10 @@
         "zh-TW": [
           "腦袋一下接一下不停點",
           "腦袋上下點動"
+        ],
+        "en": [
+          "nodding",
+          "nodding my head"
         ]
       },
       "frames": {
@@ -2406,6 +2412,12 @@
       "aliases": {
         "zh-CN": [
           "挥手"
+        ],
+        "en": [
+          "waving",
+          "waving hello",
+          "waving goodbye",
+          "waving at you"
         ]
       },
       "frames": {
@@ -2495,6 +2507,10 @@
         "zh-CN": [
           "鼓掌",
           "拍手"
+        ],
+        "en": [
+          "clapping",
+          "applauding"
         ]
       },
       "frames": {
@@ -5023,7 +5039,12 @@
           "toca piano"
         ]
       },
-      "aliases": {},
+      "aliases": {
+        "en": [
+          "playing piano",
+          "playing the piano"
+        ]
+      },
       "frames": {
         "zh-CN": [
           [

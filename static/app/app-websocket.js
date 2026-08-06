@@ -1029,6 +1029,9 @@
         var payload = Object.assign({
             timestamp: Date.now()
         }, detail || {});
+        if (eventName === 'neko-assistant-turn-end') {
+            payload.structured = payload.structured === true || window._turnIsStructured === true;
+        }
         window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
         if (eventName === 'neko-assistant-turn-end') {
             payload = Object.assign({}, payload, {

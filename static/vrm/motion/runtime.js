@@ -488,18 +488,33 @@
         if (turn && !isCurrentTurn(turn)) return false;
         console.info('[NekoMotion] playing', plan.map(function (item) { return item.intent; }).join(','));
         const context = { seed: turn && turn.id + ':' + stage.id };
+        let played;
         if (turn && !turn.playerStarted) {
             turn.playerStarted = true;
-            await player.playPlan(plan, context);
+            played = await player.playPlan(plan, context);
+            if (!played) turn.playerStarted = false;
         } else {
-            await player.enqueuePlan(plan, context);
+            played = await player.enqueuePlan(plan, context);
+        }
+        if (!played) {
+            if (turn && isCurrentTurn(turn)) turn.deferredUntilVrmReady = true;
+            return false;
         }
         return true;
     }
 
     async function processSpeechFallback(turn, casualOnly) {
         casualOnly = casualOnly === true;
-        if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return;
+        if (!turn || !core || !player || !isCurrentTurn(turn)) return;
+        if (turn.structured) {
+            turn.speechProcessed = true;
+            turn.casualTalkPending = false;
+            return;
+        }
+        if (!vrmReady()) {
+            turn.deferredUntilVrmReady = true;
+            return;
+        }
         if (casualOnly && (!turn.casualTalkPending || turn.casualTalkFinalized)) return;
         if (!casualOnly && turn.speechProcessed) return;
         if (!casualOnly) turn.speechProcessed = true;
@@ -720,6 +735,7 @@
             speechProcessed: false,
             casualTalkPending: false,
             casualTalkFinalized: false,
+            structured: false,
             speechIntents: [],
             bodyEmotionPlayed: null,
             deferredUntilVrmReady: false,
@@ -863,6 +879,7 @@
             beginTurn(turnId, source || 'lifecycle');
         }
         const turn = activeTurn;
+        turn.structured = turn.structured || payload.structured === true;
         if (typeof payload.text === 'string') {
             turn.capturedText = payload.text;
             turn.lastText = payload.text;

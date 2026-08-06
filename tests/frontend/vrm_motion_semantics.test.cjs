@@ -224,6 +224,22 @@ assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, expected, text);
 });
 
+[
+    ['waving goodbye', 'wave'],
+    ['clapping', 'clap'],
+    ['nodding', 'nod'],
+    ['playing piano', 'piano']
+].forEach(function ([text, expected]) {
+    assert.equal(core.analyze(text, { locale: 'en' }).plan[0].intent, expected, text);
+    assert.equal(core.analyzeSpeech('I am ' + text, { locale: 'en' }).plan[0].intent, expected, text);
+});
+['うなずかない', 'うなずきません'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'ja' }).plan.length, 0, text);
+});
+['Should I clap?', 'Can I wave?', 'May I play piano?'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+
 assert.equal(core.analyzeSpeech('I clap', { locale: 'en' }).plan[0].intensity, 2);
 assert.equal(core.analyzeSpeech('I gently clap', { locale: 'en' }).plan[0].intensity, 1);
 assert.equal(core.analyzeSpeech('I vigorously clap', { locale: 'en' }).plan[0].intensity, 3);
