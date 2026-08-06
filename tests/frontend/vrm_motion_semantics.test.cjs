@@ -309,6 +309,61 @@ assert.equal(core.analyzeSpeech("I can't.", {
 });
 
 [
+    ['\u89c2\u4f17\u9f13\u638c\u3002', 'zh-CN'],
+    ['\u89c0\u773e\u9f13\u638c\u3002', 'zh-TW'],
+    ['El p\u00fablico aplaude.', 'es'],
+    ['\u89b3\u5ba2\u304c\u62cd\u624b\u3057\u307e\u3059\u3002', 'ja'],
+    ['\uad00\uac1d\uc774 \ubc15\uc218\ub97c \uce69\ub2c8\ub2e4\u3002', 'ko'],
+    ['\u041e\u043d\u0430 \u0445\u043b\u043e\u043f\u0430\u0435\u0442 \u0432 \u043b\u0430\u0434\u043e\u0448\u0438.', 'ru'],
+    ['O p\u00fablico bate palmas.', 'pt']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyzeSpeech(text, { locale: locale }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('De acuerdo.', {
+    locale: 'es', userText: 'El p\u00fablico aplaude.'
+}).plan.length, 0);
+assert.equal(core.analyzeSpeech('\u79c1\u306f\u62cd\u624b\u3057\u307e\u3059\u3002', {
+    locale: 'ja'
+}).plan[0].intent, 'clap');
+assert.equal(core.analyzeSpeech('Yo saludo al p\u00fablico y aplaude.', {
+    locale: 'es'
+}).plan.some(function (item) { return item.intent === 'clap'; }), true);
+assert.equal(core.analyzeSpeech('\u89b3\u5ba2\u306b\u624b\u3092\u632f\u3063\u3066\u62cd\u624b\u3057\u307e\u3059\u3002', {
+    locale: 'ja'
+}).plan.some(function (item) { return item.intent === 'clap'; }), true);
+
+assert.equal(core.analyze('n\u00e3o aplaude', { locale: 'pt' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('n\u00e3o aplaude', { locale: 'pt' }).plan.length, 0);
+assert.equal(core.analyze('aplaude', { locale: 'pt' }).plan[0].intent, 'clap');
+
+assert.deepEqual(core.analyzeSpeech(
+    'gently wave and vigorously clap',
+    { locale: 'en' }
+).plan.map(function (item) {
+    return [item.intent, item.intensity];
+}), [['wave', 1], ['clap', 3]]);
+
+assert.equal(core.analyze(
+    '\uace0\uac1c\ub97c \ub044\ub355\uc774\uc9c0 \uc54a\uc544\uc694',
+    { locale: 'ko' }
+).plan.length, 0);
+assert.equal(core.analyzeSpeech(
+    '\uace0\uac1c\ub97c \ub044\ub355\uc774\uc9c0 \uc54a\uc544\uc694',
+    { locale: 'ko' }
+).plan.length, 0);
+assert.equal(core.analyzeSpeech('\uace0\uac1c\ub97c \ub044\ub355\uc5ec\uc694', {
+    locale: 'ko'
+}).plan[0].intent, 'nod');
+
+['\u3046\u306a\u305a\u3051\u3070', '\u3046\u306a\u305a\u3044\u305f\u3089', '\u62cd\u624b\u3057\u305f\u3089'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'ja' }).plan.length, 0, text);
+    assert.equal(core.analyzeSpeech(text, { locale: 'ja' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('\u3046\u306a\u305a\u304d\u307e\u3059', {
+    locale: 'ja'
+}).plan[0].intent, 'nod');
+
+[
     ['wave goodbye', 'wave'],
     ['play piano', 'piano']
 ].forEach(function ([userText, expected]) {
@@ -357,6 +412,10 @@ assert.equal(core.analyze(
     '\u6ca1\u6709\u628a\u624b\u642d\u5728\u7709\u524d\uff0c\u53ea\u662f\u5f80\u8fdc\u5904\u770b\u7740\uff0c\u4e5f\u5e76\u6ca1\u6709\u771f\u7684\u773a\u671b\u8fdc\u65b9',
     { locale: 'zh-CN' }
 ).plan.length, 0);
+assert.deepEqual(core.analyze(
+    '\u4e0d\u8981\u70b9\u5934\u3002\u6325\u624b',
+    { locale: 'zh-CN' }
+).plan.map(function (item) { return item.intent; }), ['wave']);
 assert.deepEqual(core.analyze(
     '挥手。如果她鼓掌，就点头',
     { locale: 'zh-CN' }

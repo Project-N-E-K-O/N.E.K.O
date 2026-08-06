@@ -4,13 +4,34 @@
     const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt']);
     const SEQUENCE_MARKERS = /^(?:随后|然后|接着|紧接着|随即|接下来|而后|then|next|afterward)$/iu;
     const PARALLEL_MARKERS = /^(?:同时|与此同时|一边|并且|and|while)$/iu;
-    const CLAUSE_BOUNDARY = /([，,。.!?！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|then|next|afterward|however|\bbut\b|while)/giu;
+    const CLAUSE_BOUNDARY = /([，,。.!?！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|then|next|afterward|however|\bbut\b|\band\b|while)/giu;
     const BODY_TERMS = Object.freeze([
         '头', '脑袋', '脸', '眼', '目光', '耳', '猫耳', '耳尖', '耳根', '尾巴', '尾尖', '肩', '手', '掌', '指', '臂', '胸', '腰', '身体', '身子', '腿', '膝', '脚',
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
     ]);
     const POSTURE_SPEECH_INTENTS = new Set(['sit', 'lie', 'sleep', 'recover']);
     const ACKNOWLEDGEMENT_INTENTS = new Set(['nod', 'agree']);
+    const SELF_ACTOR_TERMS = Object.freeze([
+        '我', '人家', '本喵', '咱', '俺', '本人', 'i', "i'm", "i'll", 'myself',
+        '私', '僕', 'わたし', '나', '내가', '저', '제가', 'я', 'yo', 'eu'
+    ]);
+    const THIRD_PARTY_ACTOR_TERMS = Object.freeze([
+        '他', '她', '它', '他们', '她们', '对方', '用户', '玩家', '某人', '别人', '朋友',
+        '女孩', '男孩', '男人', '女人', '主人', '观众', '觀眾', '大家', '所有人', '直播间', '聊天室',
+        'he', 'she', 'they', 'him', 'her', 'them', 'user', 'player', 'person', 'someone',
+        'somebody', 'friend', 'girl', 'boy', 'man', 'woman', 'audience', 'viewer', 'viewers',
+        'everyone', 'everybody', 'crowd', 'chat',
+        '彼', '彼女', '観客', '視聴者', 'みんな', '全員', 'ユーザー', 'プレイヤー',
+        '그', '그녀', '그들', '관객', '시청자', '모두', '모든 사람', '사용자', '플레이어',
+        'он', 'она', 'они', 'зритель', 'зрители', 'аудитория', 'все', 'пользователь', 'игрок',
+        'él', 'ella', 'ellos', 'ellas', 'público', 'audiencia', 'espectador', 'espectadores',
+        'todos', 'todas', 'usuario', 'jugador',
+        'ele', 'ela', 'eles', 'elas', 'audiência', 'usuário', 'utilizador', 'jogador'
+    ]);
+    const TARGET_ACTOR_TERMS = Object.freeze([
+        '你', '您', '角色', 'neko', 'yui', 'you', 'あなた', '君', '너', '당신',
+        'ты', 'вы', 'tú', 'usted', 'ustedes', 'você', 'vocês'
+    ]);
     const COUNT_PATTERNS = Object.freeze([
         [/(?:一下接一下|一下一下|连续|连连|接连|反复|不停|repeatedly|again and again)/iu, 3],
         [/(?:两下|二下|twice|2 times)/iu, 2],
@@ -118,6 +139,14 @@
             index = source.indexOf(needle, index + Math.max(1, needle.length));
         }
         return positions;
+    }
+
+    function lastTermIndex(text, terms) {
+        return (terms || []).reduce(function (best, term) {
+            return termPositions(text, term).reduce(function (latest, index) {
+                return Math.max(latest, index);
+            }, best);
+        }, -1);
     }
 
     function unique(values) {
@@ -432,6 +461,19 @@
         });
     }
 
+    function actionHasConditionalSuffix(text, sourceEnd) {
+        const suffix = folded(text).slice(sourceEnd, sourceEnd + 8);
+        return /^[ぁ-ん]{0,4}(?:ば|たら|だら|なら)/u.test(suffix);
+    }
+
+    function actionOnlyConditional(text, anchor) {
+        const needle = folded(anchor);
+        const positions = termPositions(text, anchor);
+        return !!positions.length && positions.every(function (sourceIndex) {
+            return actionHasConditionalSuffix(text, sourceIndex + needle.length);
+        });
+    }
+
     function clauseStartIndex(text, sourceIndex) {
         const source = normalize(text);
         const boundaries = new RegExp(CLAUSE_BOUNDARY.source, CLAUSE_BOUNDARY.flags);
@@ -488,22 +530,19 @@
         const sentenceStart = currentClause && clauses.find(function (clause) {
             return clause.sentence === currentClause.sentence;
         });
-        const prefix = source.slice(clauseStartIndex(source, anchorIndex), anchorIndex);
         const metaPrefix = source.slice(sentenceStart && sentenceStart.start || 0, anchorIndex);
         if (includesAny(metaPrefix, metaTerms || [])
             || /(?:如果|假如|要是|讨论|描述|举例|意思是|动作是|应该|可以理解为|说到|说起|提到|谈到|聊到|关于|等着|等待|if|when|means|describe|example|talk about|wait for)/iu.test(metaPrefix)) {
             return false;
         }
-        const actorPrefix = prefix
+        const actorPrefix = metaPrefix
             .replace(/\b(?:at|to|toward|towards|with|for|beside|near|around)\s+(?:you|him|her|them|the\s+audience|the\s+viewers|everyone|everybody)\b/giu, '')
-            .replace(/(?:向|朝|朝着|對|对|對著|对着|看着|看著|陪着|陪著)\s*(?:你|您|他|她|他们|她们|觀眾|观众|大家)/gu, '');
-        const selfActor = /(?:我|人家|本喵|咱|俺|\bi\b|\bi['’]m\b|\bi['’]ll\b|私|僕|わたし|나|내가|я|yo|eu)/giu;
-        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|观众|觀眾|大家|所有人|直播间|聊天室|\b(?:you|he|she|him|her|they|them|user|player|person|someone|somebody|friend|girl|boy|man|woman|audience|viewers?|everyone|everybody|crowd|chat)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
-        let selfIndex = -1;
-        let otherIndex = -1;
-        let match;
-        while ((match = selfActor.exec(actorPrefix)) !== null) selfIndex = match.index;
-        while ((match = otherActor.exec(actorPrefix)) !== null) otherIndex = match.index;
+            .replace(/(?:向|朝|朝着|對|对|對著|对着|看着|看著|陪着|陪著)\s*(?:你|您|他|她|他们|她们|觀眾|观众|大家)/gu, '')
+            .replace(/\b(?:a|al|hacia|con|para|ao|à|com)\s+(?:ti|él|ella|ellos|ellas|ele|ela|eles|elas|público|audiencia|audiência)\b/giu, '')
+            .replace(/(?:観客|視聴者|彼|彼女|みんな|全員)(?:に|へ|を)/gu, '')
+            .replace(/(?:관객|시청자|그|그녀|모두)(?:에게|한테|을|를)/gu, '');
+        const selfIndex = lastTermIndex(actorPrefix, SELF_ACTOR_TERMS);
+        const otherIndex = lastTermIndex(actorPrefix, THIRD_PARTY_ACTOR_TERMS.concat(TARGET_ACTOR_TERMS));
         if (selfIndex >= 0 || otherIndex >= 0) return selfIndex > otherIndex;
         return true;
     }
@@ -518,32 +557,13 @@
         const describesCurrentState = /(?:还|仍|依然|正在|本来|已经|刚刚|刚才|现在还是)\s*$/u.test(prefix);
         const explicitContinuation = /(?:吧|好吗|可以吗|一会|一下|别动|就行)/u.test(suffix);
         if (describesCurrentState && !explicitContinuation) return false;
-        const thirdPartyActors = [
-            '用户', '玩家', '某人', '别人', '朋友', '女孩', '男孩',
-            '观众', '觀眾', '大家', '所有人', '直播间', '聊天室',
-            '他们', '她们', '彼', '彼女', '그', '그녀',
-            'он', 'она', 'él', 'ella'
-        ];
-        const selfActors = ['我', '本人', '咱', '俺', '私', '僕', '내가', 'я ', 'yo ', 'eu '];
-        const targetActors = ['你', '您', '角色', 'neko', 'yui', 'あなた', '너', 'ты', 'você'];
-        const lastIndex = function (terms) {
-            return terms.reduce(function (best, term) {
-                return Math.max(best, prefix.lastIndexOf(term));
-            }, -1);
-        };
-        if (lastIndex(thirdPartyActors) >= 0
+        if (lastTermIndex(prefix, THIRD_PARTY_ACTOR_TERMS) >= 0
             || /(?:让|叫|请|要求)\s*(?:他们|她们|他|她)/u.test(prefix)
-            || /(?:^|[\s，,。！？])(?:他|她)(?=$|[\s，,。！？]|正在|要|会|应该)/u.test(prefix)
-            || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they|him|her|them|audience|viewers?|everyone|everybody|crowd|chat)\b/iu.test(prefix)) {
+            || /(?:^|[\s，,。！？])(?:他|她)(?=$|[\s，,。！？]|正在|要|会|应该)/u.test(prefix)) {
             return false;
         }
-        let selfIndex = lastIndex(selfActors);
-        let targetIndex = lastIndex(targetActors);
-        const englishSelf = /\b(?:i|me|myself)\b/giu;
-        const englishTarget = /\byou\b/giu;
-        let match;
-        while ((match = englishSelf.exec(prefix)) !== null) selfIndex = Math.max(selfIndex, match.index);
-        while ((match = englishTarget.exec(prefix)) !== null) targetIndex = Math.max(targetIndex, match.index);
+        const selfIndex = lastTermIndex(prefix, SELF_ACTOR_TERMS.concat(['me']));
+        const targetIndex = lastTermIndex(prefix, TARGET_ACTOR_TERMS);
         return selfIndex < 0 || targetIndex > selfIndex;
     }
 
@@ -707,6 +727,12 @@
                 ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN']
                     : settings.speechMode ? semanticLocales(source, locale) : [locale]
                 : semanticLocales(source, locale);
+            const guardNegationTerms = unique(locales.reduce((terms, candidateLocale) => {
+                return terms.concat(this._common(candidateLocale).negation || []);
+            }, []));
+            const guardHypotheticalTerms = unique(locales.reduce((terms, candidateLocale) => {
+                return terms.concat(this._common(candidateLocale).hypothetical || []);
+            }, []));
 
             ['background'].forEach(function (kind) {
                 if (locales.some((candidateLocale) => {
@@ -773,7 +799,6 @@
             this.pack.rules.forEach((rule) => {
                 let ruleMatches = [];
                 for (const candidateLocale of locales) {
-                    const common = this._common(candidateLocale);
                     const matchSource = candidateLocale === 'zh-CN'
                         ? simplifiedSource : source;
                     const localizedEvidence = localizedStrict(rule.phrases, candidateLocale)
@@ -791,7 +816,7 @@
                     const frame = frameEvidence(
                         matchSource,
                         localizedStrict(rule.frames, candidateLocale),
-                        common.negation
+                        guardNegationTerms
                     );
                     const candidates = phraseMatches.length ? phraseMatches : frame.length
                         ? termPositions(matchSource, frame[frame.length - 1]).map(function (sourceIndex) {
@@ -809,12 +834,12 @@
                         );
                         const blocked = containsNegation(
                             commonEvidenceText(localEvidence, candidateLocale, 'negation'),
-                            common.negation
+                            guardNegationTerms
                         ) || actionHypothetical(
                             commonEvidenceText(matchSource, candidateLocale, 'hypothetical'),
                             candidate.sourceIndex,
-                            common.hypothetical
-                        );
+                            guardHypotheticalTerms
+                        ) || actionHasConditionalSuffix(matchSource, candidate.sourceEnd);
                         const actorBlocked = settings.speechMode
                             && !speechActorAllowed(
                                 matchSource,
@@ -1228,15 +1253,21 @@
                 }
             }
 
-            const frameCandidates = this.pack.rules
-                .map((rule) => this._frameAcrossClauses(
-                    rule,
-                    clauses,
-                    locale,
-                    settings.officialEmotion,
-                    settings.profilePreset,
-                    settings.speechMode === true
-                ))
+            const frameSentences = Array.from(new Set(clauses.map(function (clause) {
+                return clause.sentence;
+            })));
+            const frameCandidates = this.pack.rules.reduce((candidates, rule) => {
+                return candidates.concat(frameSentences.map((sentence) => {
+                    return this._frameAcrossClauses(
+                        rule,
+                        clauses.filter(function (clause) { return clause.sentence === sentence; }),
+                        locale,
+                        settings.officialEmotion,
+                        settings.profilePreset,
+                        settings.speechMode === true
+                    );
+                }));
+            }, [])
                 .filter(Boolean)
                 .sort(function (a, b) { return b.score - a.score; });
             if (frameCandidates.length) {
@@ -1417,6 +1448,7 @@
                         this._intentSpeechTermsForLocales(reply, assistantLocales)
                     ).find(function (term) {
                         return !actionNegated(assistantText, term, assistantNegationTerms)
+                            && !actionOnlyConditional(assistantText, term)
                             && speechActorAllowed(assistantText, term, undefined, assistantMetaTerms);
                     });
                     if (!match) return false;
@@ -1436,6 +1468,7 @@
                         .filter(function (term) {
                             return !commandNegated(userText, term, userNegationTerms)
                                 && !actionNegated(userText, term, userNegationTerms)
+                                && !actionOnlyConditional(userText, term)
                                 && userCommandActorAllowed(userText, term);
                         })
                         .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];
@@ -1468,6 +1501,7 @@
                     this._intentSpeechTermsForLocales(reply, assistantLocales)
                 ).find(function (term) {
                     return !actionNegated(assistantText, term, assistantNegationTerms)
+                        && !actionOnlyConditional(assistantText, term)
                         && speechActorAllowed(assistantText, term, undefined, assistantMetaTerms);
                 });
                 if (!match) return false;
