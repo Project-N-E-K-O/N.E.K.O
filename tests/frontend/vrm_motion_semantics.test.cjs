@@ -328,6 +328,16 @@ assert.equal(core.analyzeSpeech('\u79c1\u306f\u62cd\u624b\u3057\u307e\u3059\u300
 assert.equal(core.analyzeSpeech('Yo saludo al p\u00fablico y aplaude.', {
     locale: 'es'
 }).plan.some(function (item) { return item.intent === 'clap'; }), true);
+['Yo aplaudo.', 'Aplaudo.', 'Estoy aplaudiendo.'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'es' }).plan[0].intent, 'clap', text);
+});
+['aplaudo', 'estoy aplaudiendo'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'es' }).plan[0].intent, 'clap', text);
+});
+['No aplaudo.', 'No estoy aplaudiendo.'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'es' }).plan.length, 0, text);
+    assert.equal(core.analyzeSpeech(text, { locale: 'es' }).plan.length, 0, text);
+});
 assert.equal(core.analyzeSpeech('\u89b3\u5ba2\u306b\u624b\u3092\u632f\u3063\u3066\u62cd\u624b\u3057\u307e\u3059\u3002', {
     locale: 'ja'
 }).plan.some(function (item) { return item.intent === 'clap'; }), true);
@@ -649,5 +659,69 @@ assert.equal(core.analyzeSpeech('Okay.', {
 ].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'zh-CN' }).plan.length, 0, text);
 });
+
+[
+    ['I wave, okay?', 'en'],
+    ['I clap, is that okay?', 'en'],
+    ['\u6211\u9f13\u638c\uff0c\u597d\u5417\uff1f', 'zh-CN']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyzeSpeech(text, { locale: locale }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('I wave, okay.', { locale: 'en' }).plan[0].intent, 'wave');
+
+[
+    ['No problem.', 'en', 'wave goodbye', 'wave'],
+    ['\u6ca1\u95ee\u9898', 'zh-CN', '\u6325\u624b', 'wave'],
+    ['\u6c92\u554f\u984c', 'zh-TW', '\u63ee\u624b', 'wave']
+].forEach(function ([assistantText, locale, userText, expected]) {
+    assert.equal(core.analyzeSpeech(assistantText, {
+        locale: locale,
+        userText: userText
+    }).plan[0].intent, expected, assistantText);
+});
+[
+    ['No problem, not now.', 'en', 'wave goodbye'],
+    ['\u6ca1\u95ee\u9898\uff0c\u4e0d\u8fc7\u73b0\u5728\u4e0d\u8981\u3002', 'zh-CN', '\u6325\u624b']
+].forEach(function ([assistantText, locale, userText]) {
+    assert.equal(core.analyzeSpeech(assistantText, {
+        locale: locale,
+        userText: userText
+    }).plan.length, 0, assistantText);
+});
+assert.equal(core.analyzeSpeech('There is no problem with clapping.', {
+    locale: 'en'
+}).plan.length, 0);
+
+['His hands clap.', 'Their hands clap.', 'Your hands clap.'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+['his hands clap', 'their hands clap'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en',
+        userText: userText
+    }).plan.length, 0, userText);
+});
+assert.equal(core.analyzeSpeech('My hands clap.', { locale: 'en' }).plan[0].intent, 'clap');
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'en',
+    userText: 'your hands clap'
+}).plan[0].intent, 'clap');
+
+[
+    ['Can I wave?', 'en'],
+    ['Should I clap?', 'en'],
+    ['\u53ef\u4ee5\u6325\u624b\u5417\uff1f', 'zh-CN']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyze(text, {
+        locale: locale,
+        speechMode: true,
+        stageDirection: true
+    }).plan.length, 0, text);
+});
+assert.equal(core.analyze('I wave.', {
+    locale: 'en',
+    speechMode: true,
+    stageDirection: true
+}).plan[0].intent, 'wave');
 
 console.log('VRM motion semantics: OK (' + cases.length + ' realistic cases, 8 locales)');

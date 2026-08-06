@@ -453,6 +453,7 @@
             locale: currentLocale(),
             officialEmotion: turn && turn.officialEmotion || '',
             profilePreset: characterProfile().preset || '',
+            speechMode: true,
             stageDirection: true
         });
         const plan = decoratePlan(result.plan);

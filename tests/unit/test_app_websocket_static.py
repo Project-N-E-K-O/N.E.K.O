@@ -377,6 +377,18 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
+def test_compact_caption_prefers_event_text_over_gemini_buffer():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    relay_block = source.split("function relayClosedMotionStage(event) {", 1)[1].split(
+        "window.addEventListener('neko-compact-caption-update'",
+        1,
+    )[0]
+
+    assert "var hasEventText = !!(event && event.detail" in relay_block
+    assert "var text = hasEventText ? event.detail.text" in relay_block
+    assert relay_block.index("var hasEventText") < relay_block.index("window._geminiTurnFullText")
+
+
 def test_response_discarded_resolves_meta_request_id_before_rollback():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     response_discarded_block = source.split("// -------- response_discarded --------", 1)[1].split(

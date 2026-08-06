@@ -1046,10 +1046,9 @@
     // sent once by turn-end above, so the bridge never needs to poll or publish
     // the growing full reply on every streaming chunk.
     function relayClosedMotionStage(event) {
-        var text = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
-        if (!text && event && event.detail && typeof event.detail.text === 'string') {
-            text = event.detail.text;
-        }
+        var hasEventText = !!(event && event.detail && typeof event.detail.text === 'string');
+        var text = hasEventText ? event.detail.text
+            : (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '');
         if (!text) {
             motionLifecycleLastClosedText = '';
             return;

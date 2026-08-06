@@ -12,13 +12,13 @@
     const POSTURE_SPEECH_INTENTS = new Set(['sit', 'lie', 'sleep', 'recover']);
     const ACKNOWLEDGEMENT_INTENTS = new Set(['nod', 'agree']);
     const SELF_ACTOR_TERMS = Object.freeze([
-        '我', '人家', '本喵', '咱', '俺', '本人', 'i', "i'm", "i'll", 'myself',
+        '我', '人家', '本喵', '咱', '俺', '本人', 'i', "i'm", "i'll", 'my', 'myself',
         '私', '僕', 'わたし', '나', '내가', '저', '제가', 'я', 'yo', 'eu'
     ]);
     const THIRD_PARTY_ACTOR_TERMS = Object.freeze([
         '他', '她', '它', '他们', '她们', '对方', '用户', '玩家', '某人', '别人', '朋友',
         '女孩', '男孩', '男人', '女人', '主人', '观众', '觀眾', '大家', '所有人', '直播间', '聊天室',
-        'he', 'she', 'they', 'him', 'her', 'them', 'user', 'player', 'person', 'someone',
+        'he', 'she', 'they', 'him', 'her', 'them', 'his', 'their', 'its', 'user', 'player', 'person', 'someone',
         'somebody', 'friend', 'girl', 'boy', 'man', 'woman', 'audience', 'viewer', 'viewers',
         'everyone', 'everybody', 'crowd', 'chat',
         '彼', '彼女', '観客', '視聴者', 'みんな', '全員', 'ユーザー', 'プレイヤー',
@@ -29,7 +29,7 @@
         'ele', 'ela', 'eles', 'elas', 'audiência', 'usuário', 'utilizador', 'jogador'
     ]);
     const TARGET_ACTOR_TERMS = Object.freeze([
-        '你', '您', '角色', 'neko', 'yui', 'you', 'あなた', '君', '너', '당신',
+        '你', '您', '角色', 'neko', 'yui', 'you', 'your', 'あなた', '君', '너', '당신',
         'ты', 'вы', 'tú', 'usted', 'ustedes', 'você', 'vocês'
     ]);
     const COUNT_PATTERNS = Object.freeze([
@@ -221,6 +221,14 @@
             .replace(/\bno\s+(?:hesitation|delay|doubt|question|wonder)\b/giu, '')
             .replace(/\bstop(?:ped|ping)?\s+(?=(?:and|then|to)\b)/giu, '')
             .replace(/(?:不过|不過|不由得|不得不|不禁|不但|不仅|不僅|忍不住|不由自主(?:地)?)/gu, '');
+    }
+
+    function withoutStandaloneAcknowledgements(text, terms) {
+        return splitClauses(text).filter(function (clause) {
+            return !(terms || []).some(function (term) {
+                return folded(clause.raw) === folded(term);
+            });
+        }).map(function (clause) { return clause.raw; }).join(' ');
     }
 
     function extractClosedStages(text) {
@@ -425,6 +433,12 @@
         });
     }
 
+    function tagPermissionQuestionClause(clause) {
+        const source = normalize(clause && clause.raw || '');
+        const hasQuestionMark = /[?？]/u.test(clause && clause.boundaryAfter || '');
+        return hasQuestionMark && /^(?:ok(?:ay)?|is\s+that\s+(?:ok(?:ay)?|all\s+right)|all\s+right|right|好(?:吗|嗎)|可以(?:吗|嗎)|行(?:吗|嗎)|いい(?:です)?か|大丈夫(?:です)?か|괜찮(?:아|아요|습니까)|돼요|хорошо|ладно|(?:¿\s*)?(?:está\s+bien|de\s+acuerdo)|está\s+bem|tudo\s+bem)$/iu.test(source);
+    }
+
     function permissionQuestionClause(clause) {
         const source = clause && clause.raw || '';
         const hasQuestionMark = /[?？]/u.test(clause && clause.boundaryAfter || '');
@@ -434,7 +448,8 @@
             || /(?:해도\s*(?:돼|될까|될까요)|할까요)$/u.test(source)
             || (hasQuestionMark && /^(?:могу\s+ли\s+я|можно\s+ли\s+мне|стоит\s+ли\s+мне)\b/iu.test(source))
             || (hasQuestionMark && /^(?:¿\s*)?(?:puedo|podría|debo)\b/iu.test(source))
-            || (hasQuestionMark && /^(?:posso|poderia|devo)\b/iu.test(source));
+            || (hasQuestionMark && /^(?:posso|poderia|devo)\b/iu.test(source))
+            || tagPermissionQuestionClause(clause);
     }
 
     function asksPermissionQuestion(text) {
@@ -442,11 +457,16 @@
     }
 
     function actionQuestioned(text, sourceIndex) {
-        const current = splitClauses(text).find(function (clause) {
+        const clauses = splitClauses(text);
+        const current = clauses.find(function (clause) {
             return sourceIndex >= clause.start && sourceIndex < clause.end;
         });
-        return !!(current && (/[?？]/u.test(current.boundaryAfter || '')
-            || permissionQuestionClause(current)));
+        if (!current) return false;
+        const next = clauses[current.index + 1];
+        return /[?？]/u.test(current.boundaryAfter || '')
+            || permissionQuestionClause(current)
+            || !!(next && next.sentence === current.sentence
+                && tagPermissionQuestionClause(next));
     }
 
     function actionHypothetical(text, sourceIndex, terms) {
@@ -1447,11 +1467,18 @@
                 );
             const questioned = /[?？]\s*$/u.test(assistantText)
                 || asksPermissionQuestion(assistantText);
+            const acknowledgementTerms = localizedForLocales(
+                speech.acknowledgements,
+                assistantLocales
+            );
             const acknowledged = !!assistantText
-                && includesAny(assistantText, localizedForLocales(speech.acknowledgements, assistantLocales))
+                && includesAny(assistantText, acknowledgementTerms)
                 && !refused
                 && !questioned
-                && !containsNegation(assistantText, assistantNegationTerms);
+                && !containsNegation(
+                    withoutStandaloneAcknowledgements(assistantText, acknowledgementTerms),
+                    assistantNegationTerms
+                );
             let decision = null;
             let directResult = null;
 
