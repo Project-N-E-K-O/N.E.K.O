@@ -994,6 +994,69 @@ def _statements_in_critical_section(body: list[ast.stmt]):
         stack.extend(ast.iter_child_nodes(node))
 
 
+def _name_binding_sites(tree: ast.AST, name: str) -> list[ast.AST]:
+    """Return every node that binds ``name``, in any scope, by any syntax.
+
+    Written as an enumeration of BINDINGS rather than of ways-to-rebind: the
+    latter is open-ended (import-as, assignment, parameter, loop target,
+    ``with ... as``, ``except ... as``, comprehension, walrus, ``match``
+    capture, a def or class of that name …) and a checker built by listing
+    them stays one form behind whoever is looking. Scope is deliberately
+    ignored — any binding of the name anywhere in the module is enough to
+    make a spelling-based check on it unsound.
+
+    Models ordinary binding syntax only, not reflective mutation through
+    ``globals()`` / ``exec`` / attribute writes on the module object.
+    """
+
+    sites: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            sites.extend(
+                node for alias in node.names
+                if (alias.asname or alias.name.split(".")[0]) == name
+            )
+        elif isinstance(node, ast.ImportFrom):
+            sites.extend(
+                node for alias in node.names
+                if (alias.asname or alias.name) == name
+            )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                sites.append(node)
+        elif isinstance(node, ast.arg):
+            if node.arg == name:
+                sites.append(node)
+        elif isinstance(node, ast.Assign):
+            if any(
+                name in _assignment_target_names(target) for target in node.targets
+            ):
+                sites.append(node)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            if name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            if name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            if any(
+                item.optional_vars is not None
+                and name in _assignment_target_names(item.optional_vars)
+                for item in node.items
+            ):
+                sites.append(node)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name == name:
+                sites.append(node)
+        elif isinstance(node, ast.comprehension):
+            if name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, ast.match_case):
+            if name in _match_pattern_binding_names(node.pattern):
+                sites.append(node)
+    return sites
+
+
 def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Violation]:
     """CORE_LOCK_NO_AWAIT — the session lock is never held across a suspension.
 
@@ -1205,44 +1268,46 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
                 "atomicity this gate protects rests on the uncontended-acquire fast path "
                 "of that exact primitive; re-derive the contract before swapping it"))
         else:
-            # ``asyncio.Lock`` is matched by spelling, so the name has to mean
-            # the standard library. ``import custom_locks as asyncio`` or a
-            # plain ``asyncio = custom_locks`` would satisfy the spelling
-            # while binding an entirely different primitive.
+            # ``asyncio.Lock`` is matched by SPELLING, so the name has to mean
+            # the standard library. Rather than enumerate the ways it could
+            # mean something else (``import custom_locks as asyncio``, a plain
+            # ``asyncio = custom_locks``, a parameter named ``asyncio``, a
+            # loop target, a ``with ... as`` …), require the name to have
+            # exactly one binding in manager.py and require that binding to be
+            # a plain ``import asyncio``. That is closed under binding syntax
+            # instead of chasing forms one at a time.
             manager_tree = parse(manager_path)
-            for node in ast.walk(manager_tree):
-                rebind_line = None
-                if isinstance(node, ast.Import):
-                    rebind_line = next(
-                        (node.lineno for a in node.names
-                         if (a.asname or a.name) == "asyncio" and a.name != "asyncio"),
-                        None,
-                    )
-                elif isinstance(node, ast.ImportFrom):
-                    rebind_line = next(
-                        (node.lineno for a in node.names
-                         if (a.asname or a.name) == "asyncio"),
-                        None,
-                    )
-                elif isinstance(node, ast.Assign):
-                    rebind_line = next(
-                        (node.lineno for t in node.targets
-                         if isinstance(t, ast.Name) and t.id == "asyncio"),
-                        None,
-                    )
-                elif (
-                    isinstance(node, (ast.AnnAssign, ast.AugAssign))
-                    and isinstance(node.target, ast.Name)
-                    and node.target.id == "asyncio"
-                ):
-                    rebind_line = node.lineno
-                if rebind_line is not None:
-                    violations.append(Violation(
-                        manager_path, rebind_line, 0, "CORE_LOCK_NO_AWAIT",
-                        "the name 'asyncio' is rebound in manager.py — the primitive "
-                        "check matches the spelling 'asyncio.Lock()', so aliasing or "
-                        "shadowing the module lets a lock with different suspension "
-                        "semantics pass as the standard-library one (#2619)"))
+            bindings = _name_binding_sites(manager_tree, "asyncio")
+
+            def binds_the_stdlib_package(node: ast.AST) -> bool:
+                # ``import asyncio`` and ``import asyncio.subprocess`` both
+                # bind the top-level name to the same stdlib package, so both
+                # are the guarantee this check wants; anything with an
+                # ``asname`` or any other syntax is not.
+                return isinstance(node, ast.Import) and any(
+                    alias.asname is None
+                    and (alias.name == "asyncio" or alias.name.startswith("asyncio."))
+                    for alias in node.names
+                )
+
+            plain_import = bool(bindings) and all(
+                binds_the_stdlib_package(node) for node in bindings
+            )
+            if not plain_import:
+                where = ", ".join(
+                    f"line {getattr(b, 'lineno', '?')}" for b in bindings
+                ) or "nowhere"
+                violations.append(Violation(
+                    manager_path,
+                    getattr(bindings[0], "lineno", 1) if bindings else 1, 0,
+                    "CORE_LOCK_NO_AWAIT",
+                    f"the name 'asyncio' must be bound in manager.py only by a plain "
+                    f"'import asyncio' — found {len(bindings)} binding(s) "
+                    f"({where}). The primitive check matches the spelling "
+                    f"'asyncio.Lock()', so any other binding of that name (alias import, "
+                    f"assignment, parameter, loop target, with/except capture …) lets a "
+                    f"lock with different suspension semantics pass as the "
+                    f"standard-library one (#2619)"))
     return violations
 
 

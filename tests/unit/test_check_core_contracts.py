@@ -2210,19 +2210,28 @@ def test_lock_gate_rejects_a_chained_binding_that_aliases_the_lock(
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "rebind",
+    ("preamble", "signature"),
     [
-        pytest.param("import custom_locks as asyncio\n", id="import-as"),
-        pytest.param("from vendor import locks as asyncio\n", id="from-import-as"),
-        pytest.param("import asyncio\nasyncio = custom_locks\n", id="plain-rebind"),
+        pytest.param("import custom_locks as asyncio\n", "self", id="import-as"),
+        pytest.param("from vendor import locks as asyncio\n", "self", id="from-import-as"),
+        pytest.param("import asyncio\nasyncio = custom_locks\n", "self", id="plain-rebind"),
+        # Not an import at all: the caller supplies the module.
+        pytest.param("import asyncio\n", "self, asyncio", id="parameter"),
+        pytest.param("import asyncio\n", "self, *, asyncio=custom_locks", id="kwonly-parameter"),
     ],
 )
 def test_lock_gate_rejects_shadowing_the_asyncio_name(
     contract_checker,
     tmp_path: Path,
-    rebind: str,
+    preamble: str,
+    signature: str,
 ) -> None:
-    """The primitive is matched by spelling, so the name must mean stdlib."""
+    """The primitive is matched by spelling, so the name must mean stdlib.
+
+    Checked as "exactly one binding, and it is a plain ``import asyncio``"
+    rather than as a list of rebinding forms — the list of ways to bind a
+    name is open-ended, so a checker built from it stays one form behind.
+    """
 
     violations = _lock_violations(
         contract_checker,
@@ -2230,16 +2239,50 @@ def test_lock_gate_rejects_shadowing_the_asyncio_name(
         _CLEAN_PROBE,
         manager_source=(
             '"""m."""\n\n'
-            f"{rebind}\n\n"
+            f"{preamble}\n\n"
             "class LLMSessionManager:\n"
             '    """m."""\n\n'
-            "    def __init__(self):\n"
+            f"    def __init__({signature}):\n"
             "        self.lock = asyncio.Lock()\n"
         ),
     )
 
     assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
-    assert "rebound" in violations[0].message
+    assert "only by a plain 'import asyncio'" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "imports",
+    [
+        pytest.param("import asyncio\n", id="plain"),
+        pytest.param("import asyncio\nimport os\n", id="alongside-others"),
+        # A submodule import still binds the top-level name to the same stdlib
+        # package, so it is the same guarantee; rejecting it would be a false
+        # positive that pushes people to work around the gate.
+        pytest.param("import asyncio\nimport asyncio.subprocess\n", id="submodule"),
+    ],
+)
+def test_lock_gate_accepts_the_plain_asyncio_import(
+    contract_checker,
+    tmp_path: Path,
+    imports: str,
+) -> None:
+    """The sanctioned shape must stay accepted."""
+
+    assert _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            f"{imports}\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    ) == []
 
 
 @pytest.mark.unit
