@@ -4076,11 +4076,11 @@ class FactStore:
                     if isinstance(f, dict) and f.get('id')
                 ]
 
+                # 返回 None = 读失败，区别于「文件不存在」（合法的 0 行）。
+                # 把读失败当空归档的话，本轮回填会照常落下完成标记，而标记是
+                # 持久的——归档修好、进程重启都不会再回填，那些行从此挡不住
+                # 重复，与本方法 docstring 承诺的正相反。
                 def _read_archive() -> list[tuple[str, str]] | None:
-                    """None = 读失败。区别于「文件不存在」（合法的 0 行）：
-                    把读失败当空归档的话，本轮回填会照常落下完成标记，而标记
-                    是持久的——归档修好、进程重启都不会再回填，那些行从此挡
-                    不住重复，与本方法 docstring 承诺的正相反。"""
                     path = self._facts_archive_path(lanlan_name)
                     if not os.path.exists(path):
                         return []
