@@ -261,10 +261,12 @@ class _PersistHarness(FactStore):
         super().__init__(time_indexed_memory=time_indexed)
         self._mem: list[dict] = []
 
-    async def aload_facts(self, _name):
+    async def aload_facts(self, name):
         return self._mem
 
-    async def asave_facts(self, _name):
+    # 签名跟着基类走：基类的内部调用点会传 _fact_lock_held=True，
+    # 收窄成位置参数的话，某条走到那里的用例会 TypeError 而不是断言失败。
+    async def asave_facts(self, name, *, _fact_lock_held: bool = False):
         return None
 
 
