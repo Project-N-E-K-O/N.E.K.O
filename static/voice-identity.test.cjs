@@ -199,6 +199,7 @@ function createHarness({
     }
 
     const document = {
+        activeElement: null,
         getElementById(id) {
             return elements.get(id);
         },
@@ -209,6 +210,11 @@ function createHarness({
             documentListeners.set(type, listener);
         },
     };
+    elements.forEach(element => {
+        element.focus = () => {
+            document.activeElement = element;
+        };
+    });
     const window = {
         t: translate,
         i18next: {
@@ -313,6 +319,9 @@ function createHarness({
         },
         getMediaStreams() {
             return mediaStreams;
+        },
+        getActiveElement() {
+            return document.activeElement;
         },
         beforeClose() {
             return window.nekoBeforeWindowClose();
@@ -803,6 +812,39 @@ test('automatic commit clears the recording indicator before the save request se
         profile: { available: true, state: 'active' },
     }));
     await saving;
+});
+
+test('successful final commit moves focus from the hidden record control', async () => {
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'ready_to_commit' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/commit') {
+                return jsonResponse({
+                    enrollment: { stage: 'idle' },
+                    profile: { available: true, state: 'active' },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const record = harness.elements.get('voice-identity-record');
+    record.focus();
+    await record.emit('click');
+
+    assert.equal(record.hidden, true);
+    assert.equal(
+        harness.getActiveElement(),
+        harness.elements.get('voice-identity-step-title'),
+    );
 });
 
 test('ordinary upload clears the recording indicator before the request settles', async () => {
@@ -1535,6 +1577,36 @@ test('ambiguous explicit cancellation reconciles a server-side success', async (
     assert.equal(statusRequests, 2);
     assert.equal(cancel.hidden, true);
     assert.equal(harness.elements.get('voice-identity-message').textContent, '');
+});
+
+test('successful cancellation moves focus from the hidden cancel control', async () => {
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({
+                    enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                });
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const cancel = harness.elements.get('voice-identity-cancel');
+    cancel.focus();
+    await cancel.emit('click');
+
+    assert.equal(cancel.hidden, true);
+    assert.equal(
+        harness.getActiveElement(),
+        harness.elements.get('voice-identity-step-title'),
+    );
 });
 
 test('failed explicit cancellation preserves the confirmed session and can be retried', async () => {

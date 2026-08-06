@@ -168,6 +168,18 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert "similarity" not in template.lower()
 
 
+def test_voice_identity_idle_focus_target_is_programmatically_focusable() -> None:
+    template = (ROOT / "templates/voice_identity.html").read_text(
+        encoding="utf-8"
+    )
+    stylesheet = (ROOT / "static/css/voice_identity.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="voice-identity-step-title" tabindex="-1"' in template
+    assert "#voice-identity-step-title:focus-visible" in stylesheet
+
+
 def test_browser_capture_is_fixed_pcm16_and_cancels_on_close() -> None:
     script = (ROOT / "static/js/voice_identity.js").read_text(encoding="utf-8")
 

@@ -242,6 +242,10 @@
         const isFixed = state.stage.startsWith('fixed_');
         const isFree = state.stage.startsWith('free_verify_');
         const isReadyToCommit = state.stage === 'ready_to_commit';
+        const shouldMoveWizardFocus = isIdle && (
+            document.activeElement === elements.record
+            || document.activeElement === elements.cancel
+        );
         elements.start.hidden = !isIdle;
         elements.record.hidden = !(isFixed || isFree || isReadyToCommit);
         elements.cancel.hidden = isIdle;
@@ -278,6 +282,7 @@
                 'voiceIdentity.privacyBody',
                 '声纹仅在本机处理和保存，不会发送给 ASR Provider。'
             );
+            if (shouldMoveWizardFocus) elements.stepTitle.focus();
             return;
         }
         if (isFixed) {
