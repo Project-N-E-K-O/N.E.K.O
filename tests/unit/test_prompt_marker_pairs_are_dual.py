@@ -75,24 +75,32 @@ _CLOSERS = sorted(
 # Simplified string, on purpose: #2376 ("embed watermark in prompt templates")
 # replaced the per-locale closers with it so the marker the model must not emit
 # is byte-identical everywhere. That asymmetry is the design, not drift, and
-# test_proactive_text_does_not_dehumanize.py pins it. The zh row still has to
-# open with 以下为 so at least that locale reads as a pair, which is why the
-# exemption is on the closer rather than on the whole table.
-_WATERMARK_CLOSERS = frozenset({"以上为环境提示"})
+# test_proactive_text_does_not_dehumanize.py pins it.
+#
+# The exemption is narrow: a foreign-language opener against such a closer is
+# accepted, but a *Chinese* opener is still checked, because there the two ends
+# do read as a pair and 以下是 against 以上为 is exactly the drift this module
+# exists to catch. Script may differ (the zh-TW row opens Traditional against
+# the Simplified watermark); the wording may not.
+_CHINESE_OPENERS = frozenset({"以下为", "以下是", "以下為"})
+_WATERMARK_CLOSERS = {
+    # closer body -> Chinese openers that still count as paired with it
+    "以上为环境提示": frozenset({"以下为", "以下為"}),
+}
 
 
-def _classify(body: str) -> tuple[str, int] | None:
-    """('open'|'close', family index) for a marker body, or None if neither.
+def _classify(body: str) -> tuple[str, int, str] | None:
+    """('open'|'close', family index, prefix) for a marker, or None if neither.
 
     Plain section labels ("Reply Format" and friends) open nothing and close
     nothing, so they drop out here rather than being paired with anything.
     """
     for prefix, family in _OPENERS:
         if body.startswith(prefix):
-            return "open", family
+            return "open", family, prefix
     for prefix, family in _CLOSERS:
         if body.startswith(prefix):
-            return "close", family
+            return "close", family, prefix
     return None
 
 
@@ -103,18 +111,21 @@ def _pairs_in(text: str):
     then screen content yields both pairs. A closer with no opener in the same
     string belongs to a header/footer dict split and is skipped.
     """
-    stack: list[tuple[str, int]] = []
+    stack: list[tuple[str, int, str]] = []
     for match in _MARKER.finditer(text):
         body = match.group(1).strip()
         kind = _classify(body)
         if kind is None:
             continue
-        role, family = kind
+        role, family, prefix = kind
         if role == "open":
-            stack.append((body, family))
+            stack.append((body, family, prefix))
         elif stack:
-            opener_body, opener_family = stack.pop()
-            if body in _WATERMARK_CLOSERS:
+            opener_body, opener_family, opener_prefix = stack.pop()
+            allowed = _WATERMARK_CLOSERS.get(body)
+            if allowed is not None:
+                if opener_prefix in _CHINESE_OPENERS:
+                    yield opener_body, body, opener_prefix in allowed
                 continue
             yield opener_body, body, opener_family == family
 
