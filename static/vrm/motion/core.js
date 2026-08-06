@@ -4,7 +4,8 @@
     const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt']);
     const SEQUENCE_MARKERS = /^(?:随后|然后|接着|紧接着|随即|接下来|而后|then|next|afterward)$/iu;
     const PARALLEL_MARKERS = /^(?:同时|与此同时|一边|并且|and|while)$/iu;
-    const CLAUSE_BOUNDARY = /([，,。.!?！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|then|next|afterward|however|\bbut\b|\band\b|while)/giu;
+    const CLAUSE_BOUNDARY = /([，,。.!?！？；;、\n]+|随后|然后|接着|紧接着|随即|接下来|而后|与此同时|同时|并且|一边|但是|不过|而是|ずに|ないで|then|next|afterward|however|\bbut\b|\band\b|while)/giu;
+    const CHINESE_HISTORICAL = /^(?:(?:我|人家|本喵|咱|俺|本人)\s*)?(?:刚才|之前|方才|上次|先前|曾经|早些时候).{0,24}(?:过|了|曾)/u;
     const BODY_TERMS = Object.freeze([
         '头', '脑袋', '脸', '眼', '目光', '耳', '猫耳', '耳尖', '耳根', '尾巴', '尾尖', '肩', '手', '掌', '指', '臂', '胸', '腰', '身体', '身子', '腿', '膝', '脚',
         'head', 'face', 'eye', 'gaze', 'ear', 'ears', 'tail', 'shoulder', 'hand', 'palm', 'finger', 'arm', 'chest', 'waist', 'body', 'leg', 'knee', 'foot'
@@ -276,10 +277,12 @@
         return stages;
     }
 
-    function withoutStageDirections(value) {
+    function withoutStageDirections(value, negationTerms) {
         let source = String(value || '');
         extractClosedStages(source).sort(function (a, b) { return b.start - a.start; }).forEach(function (stage) {
-            source = source.slice(0, stage.start) + ' ' + source.slice(stage.end);
+            const replacement = containsNegation(stage.raw, negationTerms || [])
+                ? ' ' + stage.raw + ' ' : ' ';
+            source = source.slice(0, stage.start) + replacement + source.slice(stage.end);
         });
         return normalize(source);
     }
@@ -337,7 +340,7 @@
             return 'comparison';
         }
         if (/^(?:生怕|唯恐|怕会|怕再|担心|因为|由于|为了|免得|以免|好像是怕)/u.test(text)) return 'cause';
-        if (/^(?:刚才|之前|方才|上次|先前|曾经|早些时候).{0,24}(?:过|了|曾)/u.test(text)) return 'historical';
+        if (CHINESE_HISTORICAL.test(text)) return 'historical';
         if (/^(?:看起来|听起来|说的是|意思是|描述|讨论|举例|比如|如果|假如|要是)/u.test(text)) return 'meta';
         if (/^(?:动作|幅度|速度|力度|姿势|这次|显得|看上去).{0,16}(?:小心|谨慎|轻|慢|快|用力|自然|僵硬|温柔)/u.test(text)) {
             return 'modifier';
@@ -458,8 +461,10 @@
         const source = clause && clause.raw || '';
         const hasQuestionMark = /[?？]/u.test(clause && clause.boundaryAfter || '');
         return /^(?:can|could|may|should|would)\s+(?:i|we)\b/iu.test(source)
+            || /^(?:(?:我|我们|我們)\s*)?(?:能否|是否|可否|能不能|可不可以|要不要)/u.test(source)
+            || /(?:吗|嗎|么|麼)$/u.test(source)
             || /(?:可以|可不可以|能否|能不能|要不要|是否).{0,32}(?:吗|嗎|么|麼|呢)$/u.test(source)
-            || /(?:しても(?:いい|よい|よろしい)|していい).{0,12}か$/u.test(source)
+            || /か$/u.test(source)
             || /(?:해도\s*(?:돼|될까|될까요)|할까요)$/u.test(source)
             || (hasQuestionMark && /^(?:могу\s+ли\s+я|можно\s+ли\s+мне|стоит\s+ли\s+мне)\b/iu.test(source))
             || (hasQuestionMark && /^(?:¿\s*)?(?:puedo|podría|debo)\b/iu.test(source))
@@ -502,6 +507,11 @@
         return /^[ぁ-ん]{0,4}(?:ば|たら|だら|なら)/u.test(suffix);
     }
 
+    function actionHasJapaneseNegativeSuffix(text, sourceEnd) {
+        const suffix = folded(text).slice(sourceEnd, sourceEnd + 8);
+        return /^[ぁ-ん]{0,4}(?:ずに|ないで)/u.test(suffix);
+    }
+
     function actionFollowsJapaneseConditional(text, sourceIndex) {
         const source = folded(text);
         const sentenceStart = Math.max(
@@ -533,7 +543,8 @@
         });
         if (!current) return false;
         const prefix = source.slice(current.start, sourceIndex);
-        return /\b(?:used\s+to|previously|formerly|earlier|yesterday|last\s+(?:time|night|week|month|year))\b/iu.test(current.raw)
+        return CHINESE_HISTORICAL.test(current.raw)
+            || /\b(?:used\s+to|previously|formerly|earlier|yesterday|last\s+(?:time|night|week|month|year))\b/iu.test(current.raw)
             || /\b(?:was|were|had|did)\b[^.!?;]*$/iu.test(prefix)
             || /\bwould\s+(?:(?:often|usually|always)\s+)?$/iu.test(prefix);
     }
@@ -585,7 +596,7 @@
         return containsNegation(
             actionEvidenceScope(source, anchorIndex, anchorIndex + needle.length),
             terms
-        );
+        ) || actionHasJapaneseNegativeSuffix(source, anchorIndex + needle.length);
     }
 
     function speechActorAllowed(text, anchor, occurrenceIndex, metaTerms) {
@@ -944,7 +955,8 @@
                         const blocked = containsNegation(
                             commonEvidenceText(localEvidence, candidateLocale, 'negation'),
                             guardNegationTerms
-                        ) || actionHypothetical(
+                        ) || actionHasJapaneseNegativeSuffix(matchSource, candidate.sourceEnd)
+                            || actionHypothetical(
                             commonEvidenceText(matchSource, candidateLocale, 'hypothetical'),
                             candidate.sourceIndex,
                             guardHypotheticalTerms
@@ -1494,11 +1506,19 @@
         analyzeSpeech(text, options) {
             const settings = options || {};
             const locale = localeKey(settings.locale);
-            const assistantText = withoutStageDirections(text);
+            const speech = this.pack.speech || {};
+            const rawAssistantLocales = semanticLocales(text, locale);
+            const rawAssistantRefusalTerms = localizedForLocales(
+                speech.refusals,
+                rawAssistantLocales
+            );
+            const rawAssistantNegationTerms = unique(rawAssistantLocales.reduce(function (terms, candidateLocale) {
+                return terms.concat(this._common(candidateLocale).negation || []);
+            }.bind(this), []).concat(rawAssistantRefusalTerms));
+            const assistantText = withoutStageDirections(text, rawAssistantNegationTerms);
             const userText = normalize(settings.userText);
             const commandText = TRADITIONAL_HINT.test(userText)
                 ? this._simplifyTraditional(userText) : userText;
-            const speech = this.pack.speech || {};
             const assistantLocales = semanticLocales(assistantText, locale);
             const userLocales = semanticLocales(userText, locale);
             const assistantMetaTerms = localizedForLocales(speech.meta, assistantLocales);

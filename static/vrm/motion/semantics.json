@@ -2630,6 +2630,12 @@
         "es": [
           "aplaudo",
           "estoy aplaudiendo"
+        ],
+        "ko": [
+          "박수를 쳐"
+        ],
+        "ru": [
+          "хлопаю в ладоши"
         ]
       },
       "frames": {
