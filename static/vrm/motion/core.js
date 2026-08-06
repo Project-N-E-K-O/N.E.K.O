@@ -244,6 +244,7 @@
 
     function discourseRole(clause) {
         const text = clause.raw;
+        if (text === COMMON_ZH.light || text === COMMON_ZH.strong) return 'modifier';
         if (/(?:动作|幅度|速度|力度|姿势|这次).{0,10}(?:比|相比|更|更加)|(?:比|相比)(?:刚才|之前|方才|上次|先前)/u.test(text)) {
             return 'comparison';
         }
@@ -324,7 +325,7 @@
             return false;
         }
         const selfActor = /(?:我|人家|本喵|咱|俺|\bi\b|\bi['’]m\b|\bi['’]ll\b|私|僕|わたし|나|내가|я|yo|eu)/giu;
-        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|\b(?:you|he|she|they|user|player|person|someone|somebody)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
+        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|\b(?:you|he|she|they|user|player|person|someone|somebody|friend|girl|boy|man|woman)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
         let selfIndex = -1;
         let otherIndex = -1;
         let match;
@@ -672,10 +673,14 @@
                 });
             }).slice(0, maxRules);
             const actionClauses = [];
+            const canonicalCommon = this._common('zh-CN');
             selectedRules.forEach(function (entry, index) {
                 // nameZh 是给人看的动作卡名称，不保证本身属于语义短语。
-                let actionText = localized(entry.rule.phrases, 'zh-CN')[0]
-                    || entry.rule.nameZh || entry.rule.id;
+                const canonicalPhrases = localized(entry.rule.phrases, 'zh-CN');
+                let actionText = canonicalPhrases.find(function (phrase) {
+                    return !includesAny(phrase, canonicalCommon.light)
+                        && !includesAny(phrase, canonicalCommon.strong);
+                }) || canonicalPhrases[0] || entry.rule.nameZh || entry.rule.id;
                 const style = styleFor(entry.matchSource, entry.rule.styles, entry.locale);
                 if (style.name && STYLE_ZH[style.name]) {
                     actionText = STYLE_ZH[style.name] + actionText;
@@ -771,10 +776,13 @@
         }
 
         _frameAcrossClauses(rule, clauses, locale, officialEmotion, profilePreset, speechMode) {
+            const primary = clauses.filter(function (clause) {
+                return clause.role === 'event' || clause.role === 'modifier';
+            });
+            if (!primary.length) return null;
             const eligible = clauses.filter(function (clause) {
                 return clause.role === 'event' || clause.role === 'modifier' || clause.role === 'cause';
             });
-            if (!eligible.length) return null;
             const combined = eligible.map(function (clause) { return clause.raw; }).join('，');
             const common = this._common(locale);
             const personaRule = this._personaRule(rule, profilePreset);
@@ -1116,14 +1124,17 @@
             const userText = normalize(settings.userText);
             const speech = this.pack.speech || {};
             const metaTerms = this._speechTerms(speech.meta, locale);
+            const acknowledged = !!assistantText
+                && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))
+                && !includesAny(assistantText, this._speechTerms(speech.refusals, locale));
             let decision = null;
             let directResult = null;
 
             // A complete action-card name is an explicit local command. Resolve it
-            // before assistant prose so a short acknowledgement cannot replace the
-            // requested action with a generic nod or speaking gesture.
+            // after the assistant accepts the command so refusal prose cannot trigger
+            // the requested asset, while a short acknowledgement still keeps it exact.
             const exactCard = this.actionCardsByName.get(actionNameKey(userText));
-            if (exactCard) {
+            if (exactCard && acknowledged) {
                 decision = this._speechDecision(
                     exactCard.intent,
                     userText,
@@ -1169,8 +1180,7 @@
             const directHasExplicitMotion = !!(directResult && directResult.plan.some(function (item) {
                 return !ACKNOWLEDGEMENT_INTENTS.has(item.intent);
             }));
-            if (!decision && !directHasExplicitMotion && userText
-                && includesAny(assistantText, this._speechTerms(speech.acknowledgements, locale))) {
+            if (!decision && !directHasExplicitMotion && userText && acknowledged) {
                 const common = this._common(locale);
                 const commandCandidates = (speech.commands || []).map((command) => {
                     const match = matchingTerms(userText, this._intentSpeechTerms(command, locale))

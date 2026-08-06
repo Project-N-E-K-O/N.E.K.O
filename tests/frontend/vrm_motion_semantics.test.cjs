@@ -16,6 +16,7 @@ vm.runInThisContext(
 
 const semantics = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/semantics.json'), 'utf8'));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'static/vrm/motion/manifest.json'), 'utf8'));
+const requiredLocales = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 const core = new global.NekoMotionCore(semantics).registerActionCards(manifest.assets);
 const registeredCardCount = core.actionCards.length;
 const registeredRuleCount = core.pack.rules.length;
@@ -145,6 +146,8 @@ assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('A player claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('This user claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('Someone nods.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('My friend claps.', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('A young girl claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'a young girl clap'
 }).plan.length, 0);
@@ -165,6 +168,9 @@ assert.equal(core.analyzeSpeech('Okay.', {
     }).plan.length, 0, userText);
 });
 
+assert.equal(core.analyzeSpeech('（生怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('（怕会点头）', { locale: 'zh-CN' }).plan.length, 0);
+
 [
     ['I wave', 'wave'],
     ['I wave goodbye', 'wave'],
@@ -173,6 +179,30 @@ assert.equal(core.analyzeSpeech('Okay.', {
     ['I play piano', 'piano']
 ].forEach(function ([text, expected]) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, expected, text);
+});
+
+assert.equal(core.analyzeSpeech('I clap', { locale: 'en' }).plan[0].intensity, 2);
+assert.equal(core.analyzeSpeech('I gently clap', { locale: 'en' }).plan[0].intensity, 1);
+assert.equal(core.analyzeSpeech('I vigorously clap', { locale: 'en' }).plan[0].intensity, 3);
+assert.equal(core.analyzeSpeech('I firmly nod', { locale: 'en' }).plan[0].intensity, 3);
+
+const exactCardAccepted = core.analyzeSpeech('好的。', {
+    locale: 'zh-CN', userText: '站着连续拍手鼓掌'
+});
+assert.equal(exactCardAccepted.plan[0].intent, 'clap');
+assert.equal(exactCardAccepted.plan[0].evidence.assetId, 'clap_01');
+const exactCardRefused = core.analyzeSpeech('抱歉，我不能这么做。', {
+    locale: 'zh-CN', userText: '站着连续拍手鼓掌'
+});
+assert.equal(exactCardRefused.plan.some(function (item) {
+    return item.intent === 'clap' || item.evidence.assetId === 'clap_01';
+}), false);
+assert.equal(core.analyzeSpeech('好的，但我不能这么做。', {
+    locale: 'zh-CN', userText: '站着连续拍手鼓掌'
+}).plan.length, 0);
+
+requiredLocales.forEach(function (locale) {
+    assert.ok(semantics.speech.refusals[locale].length > 0, locale + ' refusal terms');
 });
 
 const traditionalCases = [

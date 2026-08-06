@@ -440,7 +440,11 @@
     }
 
     async function processStage(stage, turn) {
-        if (!core || !player || !vrmReady() || turn && !isCurrentTurn(turn)) return;
+        if (!core || !player || turn && !isCurrentTurn(turn)) return false;
+        if (!vrmReady()) {
+            if (turn && isCurrentTurn(turn)) turn.deferredUntilVrmReady = true;
+            return false;
+        }
         const result = core.analyze(stage.raw, {
             locale: currentLocale(),
             officialEmotion: turn && turn.officialEmotion || '',
@@ -471,13 +475,13 @@
         if (!plan.length) {
             metrics.noMotion += 1;
             console.info('[NekoMotion] closed stage produced no supported motion');
-            return;
+            return true;
         }
         const semanticEmotion = plan.map(function (item) { return item.emotion; })
             .find(function (value) { return value && normalizeEmotion(value) !== 'neutral'; });
         if (semanticEmotion) updatePersistentEmotion(semanticEmotion, 'stage_semantic');
         metrics.plans += 1;
-        if (turn && !isCurrentTurn(turn)) return;
+        if (turn && !isCurrentTurn(turn)) return false;
         console.info('[NekoMotion] playing', plan.map(function (item) { return item.intent; }).join(','));
         const context = { seed: turn && turn.id + ':' + stage.id };
         if (turn && !turn.playerStarted) {
@@ -486,6 +490,7 @@
         } else {
             await player.enqueuePlan(plan, context);
         }
+        return true;
     }
 
     async function processSpeechFallback(turn, casualOnly) {
@@ -623,10 +628,14 @@
         if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return Promise.resolve(false);
         const stages = window.NekoMotionText.extractClosedStages(turn.capturedText || '');
         stages.forEach(function (stage) {
-            if (turn.seen.has(stage.id)) return;
-            turn.seen.add(stage.id);
-            queueTurnTask(turn, 'closed-stage:' + stage.id, function () {
-                return processStage(stage, turn);
+            if (turn.seen.has(stage.id) || turn.pendingStages.has(stage.id)) return;
+            turn.pendingStages.add(stage.id);
+            queueTurnTask(turn, 'closed-stage:' + stage.id, async function () {
+                try {
+                    if (await processStage(stage, turn)) turn.seen.add(stage.id);
+                } finally {
+                    turn.pendingStages.delete(stage.id);
+                }
             });
         });
         return turn.processing;
@@ -636,9 +645,13 @@
         if (!turn || !core || !player || !vrmReady() || !isCurrentTurn(turn)) return false;
         const stages = window.NekoMotionText.extractClosedStages(turn.capturedText || '');
         for (const stage of stages) {
-            if (turn.seen.has(stage.id)) continue;
-            turn.seen.add(stage.id);
-            await processStage(stage, turn);
+            if (turn.seen.has(stage.id) || turn.pendingStages.has(stage.id)) continue;
+            turn.pendingStages.add(stage.id);
+            try {
+                if (await processStage(stage, turn)) turn.seen.add(stage.id);
+            } finally {
+                turn.pendingStages.delete(stage.id);
+            }
             if (!isCurrentTurn(turn)) return false;
         }
         return true;
@@ -688,6 +701,7 @@
             id: String(turnId || 'local-' + Date.now()),
             source: source || 'lifecycle',
             seen: new Set(),
+            pendingStages: new Set(),
             lastText: '',
             lastTextAt: 0,
             capturedText: '',
@@ -783,7 +797,7 @@
         const localText = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
         const candidateText = bridgeEvent ? bridgedText : localText;
         const duplicateId = turnId && lastFinishedTurn && String(turnId) === lastFinishedTurn.id;
-        const duplicateStaleBuffer = candidateText && lastFinishedTurn
+        const duplicateStaleBuffer = (!turnId || duplicateId) && candidateText && lastFinishedTurn
             && candidateText === lastFinishedTurn.text
             && Date.now() - lastFinishedTurn.at < 2500;
         if (activeTurn && activeTurn.ended && (duplicateId || duplicateStaleBuffer)) {
@@ -891,7 +905,7 @@
     }
 
     function cancelObservedSpeech() {
-        if (player) player.cancel('assistant_speech_cancel');
+        if (player) player.cancel('assistant_speech_cancel', { resume: refreshMode() === 'vrm' });
         const turn = activeTurn;
         if (turn) {
             if (turn.finishTimer) clearTimeout(turn.finishTimer);
@@ -990,7 +1004,7 @@
                     await processSpeechFallback(turn);
                 } else {
                     scanTurnText();
-                    await turn.processing;
+                    await processUnseenStages(turn);
                 }
                 if (!isCurrentTurn(turn) || turn.playerStarted) return;
             }

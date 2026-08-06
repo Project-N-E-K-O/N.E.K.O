@@ -105,7 +105,14 @@ assert.equal(runtimeSource.includes("window.dispatchEvent(new CustomEvent(messag
 assert.match(runtimeSource, /await initialize\(\)/);
 assert.match(runtimeSource, /processUnseenStagesDirect\(turn\)/);
 assert.match(runtimeSource, /turn\.cancelled = true/);
+assert.match(runtimeSource, /player\.cancel\('assistant_speech_cancel', \{ resume: refreshMode\(\) === 'vrm' \}\)/);
 assert.match(runtimeSource, /activeTurn = null;\s*bridgedText = ''/);
+assert.match(runtimeSource, /pendingStages: new Set\(\)/);
+assert.match(runtimeSource, /turn\.pendingStages\.has\(stage\.id\)/);
+assert.match(runtimeSource, /if \(await processStage\(stage, turn\)\) turn\.seen\.add\(stage\.id\)/);
+assert.match(runtimeSource, /turn\.pendingStages\.delete\(stage\.id\)/);
+assert.match(runtimeSource, /if \(turn && isCurrentTurn\(turn\)\) turn\.deferredUntilVrmReady = true/);
+assert.match(runtimeSource, /const duplicateStaleBuffer = \(!turnId \|\| duplicateId\)/);
 const turnEndSource = runtimeSource.split('function endObservedTurn', 2)[1]
     .split('function emotionObserved', 1)[0];
 assert.match(turnEndSource, /if \(refreshMode\(\) !== 'vrm'\)/);
