@@ -2218,6 +2218,9 @@ def test_lock_gate_rejects_a_chained_binding_that_aliases_the_lock(
         # Not an import at all: the caller supplies the module.
         pytest.param("import asyncio\n", "self, asyncio", id="parameter"),
         pytest.param("import asyncio\n", "self, *, asyncio=custom_locks", id="kwonly-parameter"),
+        # A star import can bind any name the other module exports, and
+        # nothing in the AST says which — unknown, so not the sanctioned one.
+        pytest.param("import asyncio\nfrom vendor_locks import *\n", "self", id="wildcard-import"),
     ],
 )
 def test_lock_gate_rejects_shadowing_the_asyncio_name(

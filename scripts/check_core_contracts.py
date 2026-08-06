@@ -1023,7 +1023,11 @@ def _name_binding_sites(tree: ast.AST, name: str) -> list[ast.AST]:
         elif isinstance(node, ast.ImportFrom):
             sites.extend(
                 alias for alias in node.names
-                if (alias.asname or alias.name) == name
+                # ``from x import *`` can bind ANY name the module exports,
+                # including this one, and nothing in the AST says which. It
+                # counts as a binding of every name — unknown, so not the
+                # sanctioned one.
+                if alias.name == "*" or (alias.asname or alias.name) == name
             )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name == name:
@@ -1363,9 +1367,9 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
                     f"'import asyncio' — found {len(bindings)} binding(s) "
                     f"({where}). The primitive check matches the spelling "
                     f"'asyncio.Lock()', so any other binding of that name (alias import, "
-                    f"assignment, parameter, loop target, with/except capture …) lets a "
-                    f"lock with different suspension semantics pass as the "
-                    f"standard-library one (#2619)"))
+                    f"wildcard import, assignment, parameter, loop target, with/except "
+                    f"capture …) lets a lock with different suspension semantics pass as "
+                    f"the standard-library one (#2619)"))
     return violations
 
 
