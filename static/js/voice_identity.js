@@ -242,9 +242,17 @@
         const isFixed = state.stage.startsWith('fixed_');
         const isFree = state.stage.startsWith('free_verify_');
         const isReadyToCommit = state.stage === 'ready_to_commit';
-        const shouldMoveWizardFocus = isIdle && (
-            document.activeElement === elements.record
-            || document.activeElement === elements.cancel
+        const activeElement = document.activeElement;
+        const shouldMoveWizardFocus = (
+            isIdle && (
+                activeElement === elements.record
+                || activeElement === elements.cancel
+            )
+        ) || (
+            (isFixed || isFree || isReadyToCommit) && (
+                activeElement === elements.start
+                || activeElement === elements.reenroll
+            )
         );
         elements.start.hidden = !isIdle;
         elements.record.hidden = !(isFixed || isFree || isReadyToCommit);
@@ -297,6 +305,7 @@
             );
             elements.prompt.textContent = fixedPrompts()[index];
             elements.prompt.hidden = false;
+            if (shouldMoveWizardFocus) elements.stepTitle.focus();
             return;
         }
         if (isFree) {
@@ -311,6 +320,7 @@
                     ? '请自由说几句话，内容不限，像平时聊天一样即可。'
                     : '请再自由说几句话，内容可以和上一次不同。'
             );
+            if (shouldMoveWizardFocus) elements.stepTitle.focus();
             return;
         }
         elements.stepTitle.textContent = translate(
@@ -318,6 +328,7 @@
             '正在保存并激活…'
         );
         elements.stepBody.textContent = '';
+        if (shouldMoveWizardFocus) elements.stepTitle.focus();
     }
 
     function render() {
@@ -848,8 +859,17 @@
         window.addEventListener('pagehide', function () {
             window.nekoBeforeWindowClose().catch(function () {});
         });
-        window.addEventListener('pageshow', function (event) {
-            if (event.persisted) state.closeStarted = false;
+        window.addEventListener('pageshow', async function (event) {
+            if (!event.persisted) return;
+            state.closeStarted = false;
+            state.busy = true;
+            render();
+            try {
+                await reconcileStatus();
+            } finally {
+                state.busy = false;
+                render();
+            }
         });
     }
 

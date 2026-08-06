@@ -84,6 +84,21 @@ def test_voice_identity_page_is_routed_and_available_in_settings_window() -> Non
     assert api_index < identity_index < memory_index
 
 
+def test_settings_menu_icons_are_decorative_for_button_names() -> None:
+    popup = (ROOT / "static/avatar/avatar-ui-popup.js").read_text(
+        encoding="utf-8"
+    )
+    menu_item = popup[
+        popup.index("ManagerProto._createMenuItem = function"):
+        popup.index("ManagerProto._createSettingsMenuItems = function")
+    ]
+
+    assert "iconImg.alt = '';" in menu_item
+    assert "iconImg.setAttribute('aria-hidden', 'true')" in menu_item
+    assert "iconImg.alt = item.label;" not in menu_item
+    assert "menuItem.querySelector('img').alt" not in menu_item
+
+
 def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     template = (ROOT / "templates/voice_identity.html").read_text(
         encoding="utf-8"

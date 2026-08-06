@@ -2749,7 +2749,8 @@ const AvatarPopupMixin = {
             if (item.icon) {
                 const iconImg = document.createElement('img');
                 iconImg.src = item.icon;
-                iconImg.alt = item.label;
+                iconImg.alt = '';
+                iconImg.setAttribute('aria-hidden', 'true');
                 Object.assign(iconImg.style, {
                     width: isSubmenuItem ? '18px' : '24px',
                     height: isSubmenuItem ? '18px' : '24px',
@@ -2774,9 +2775,6 @@ const AvatarPopupMixin = {
                 menuItem._updateLabelText = () => {
                     if (window.t) {
                         labelText.textContent = window.t(item.labelKey);
-                        if (item.icon && menuItem.querySelector('img')) {
-                            menuItem.querySelector('img').alt = window.t(item.labelKey);
-                        }
                     }
                 };
             }

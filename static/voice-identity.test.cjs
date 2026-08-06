@@ -364,6 +364,49 @@ test('mutation controls stay disabled until CSRF and initial status both resolve
     assert.equal(reenroll.disabled, false);
 });
 
+test('successful start moves focus into the active wizard after the response', async () => {
+    const startRequested = deferred();
+    const startResponse = deferred();
+    let startRequests = 0;
+    const harness = createHarness({
+        audio: true,
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                return jsonResponse({ enrollment: { stage: 'idle' } });
+            }
+            if (url === '/api/voice-identity/enrollment/start') {
+                startRequests += 1;
+                startRequested.resolve();
+                return startResponse.promise;
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    const start = harness.elements.get('voice-identity-start');
+    start.focus();
+    const starting = start.emit('click');
+    await startRequested.promise;
+
+    assert.equal(startRequests, 1);
+    assert.equal(harness.getActiveElement(), start);
+
+    startResponse.resolve(jsonResponse({
+        enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+    }));
+    await starting;
+
+    assert.equal(start.hidden, true);
+    assert.equal(
+        harness.getActiveElement(),
+        harness.elements.get('voice-identity-step-title'),
+    );
+});
+
 test('active enrollment disables profile mutations between recording steps', async () => {
     const harness = createHarness({
         route(url) {
@@ -815,6 +858,8 @@ test('automatic commit clears the recording indicator before the save request se
 });
 
 test('successful final commit moves focus from the hidden record control', async () => {
+    const commitResponse = deferred();
+    let commitRequests = 0;
     const harness = createHarness({
         route(url) {
             if (url === '/api/config/page_config') {
@@ -826,10 +871,8 @@ test('successful final commit moves focus from the hidden record control', async
                 });
             }
             if (url === '/api/voice-identity/enrollment/commit') {
-                return jsonResponse({
-                    enrollment: { stage: 'idle' },
-                    profile: { available: true, state: 'active' },
-                });
+                commitRequests += 1;
+                return commitResponse.promise;
             }
             throw new Error(`Unexpected request: ${url}`);
         },
@@ -838,7 +881,17 @@ test('successful final commit moves focus from the hidden record control', async
     await harness.initialize();
     const record = harness.elements.get('voice-identity-record');
     record.focus();
-    await record.emit('click');
+    const committing = record.emit('click');
+    await Promise.resolve();
+
+    assert.equal(commitRequests, 1);
+    assert.equal(harness.getActiveElement(), record);
+
+    commitResponse.resolve(jsonResponse({
+        enrollment: { stage: 'idle' },
+        profile: { available: true, state: 'active' },
+    }));
+    await committing;
 
     assert.equal(record.hidden, true);
     assert.equal(
@@ -1580,6 +1633,8 @@ test('ambiguous explicit cancellation reconciles a server-side success', async (
 });
 
 test('successful cancellation moves focus from the hidden cancel control', async () => {
+    const cancelResponse = deferred();
+    let cancelRequests = 0;
     const harness = createHarness({
         route(url) {
             if (url === '/api/config/page_config') {
@@ -1591,7 +1646,8 @@ test('successful cancellation moves focus from the hidden cancel control', async
                 });
             }
             if (url === '/api/voice-identity/enrollment/cancel') {
-                return jsonResponse({ enrollment: { stage: 'idle' } });
+                cancelRequests += 1;
+                return cancelResponse.promise;
             }
             throw new Error(`Unexpected request: ${url}`);
         },
@@ -1600,7 +1656,14 @@ test('successful cancellation moves focus from the hidden cancel control', async
     await harness.initialize();
     const cancel = harness.elements.get('voice-identity-cancel');
     cancel.focus();
-    await cancel.emit('click');
+    const cancelling = cancel.emit('click');
+    await Promise.resolve();
+
+    assert.equal(cancelRequests, 1);
+    assert.equal(harness.getActiveElement(), cancel);
+
+    cancelResponse.resolve(jsonResponse({ enrollment: { stage: 'idle' } }));
+    await cancelling;
 
     assert.equal(cancel.hidden, true);
     assert.equal(
@@ -1754,10 +1817,47 @@ test('bfcache restore clears close state so enrollment can start again', async (
 
     await harness.initialize();
     harness.pagehide();
-    harness.pageshow();
+    await harness.pageshow();
     await harness.elements.get('voice-identity-start').emit('click');
 
     assert.equal(startRequests, 1);
+});
+
+test('bfcache restore reconciles an active server session before controls re-enable', async () => {
+    const restoredStatus = deferred();
+    let statusRequests = 0;
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                if (statusRequests === 1) {
+                    return jsonResponse({ enrollment: { stage: 'idle' } });
+                }
+                return restoredStatus.promise;
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    harness.pagehide();
+    const restoring = harness.pageshow();
+    await Promise.resolve();
+
+    assert.equal(statusRequests, 2);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+
+    restoredStatus.resolve(jsonResponse({
+        enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+    }));
+    await restoring;
+
+    assert.equal(harness.elements.get('voice-identity-start').hidden, true);
+    assert.equal(harness.elements.get('voice-identity-record').hidden, false);
+    assert.equal(harness.elements.get('voice-identity-record').disabled, false);
 });
 
 test('window close waits for an in-flight start and cancels its late session', async () => {
