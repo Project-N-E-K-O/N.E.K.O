@@ -18,8 +18,10 @@
     const THIRD_PARTY_ACTOR_TERMS = Object.freeze([
         '他', '她', '它', '他们', '她们', '对方', '用户', '玩家', '某人', '别人', '朋友',
         '女孩', '男孩', '男人', '女人', '主人', '观众', '觀眾', '大家', '所有人', '直播间', '聊天室',
-        'he', 'she', 'they', 'him', 'her', 'them', 'his', 'their', 'its', 'user', 'player', 'person', 'someone',
-        'somebody', 'friend', 'girl', 'boy', 'man', 'woman', 'audience', 'viewer', 'viewers',
+        'he', 'she', 'they', 'him', 'her', 'them', 'his', 'their', 'its',
+        'user', 'users', 'player', 'players', 'person', 'people', 'someone', 'somebody',
+        'friend', 'friends', 'girl', 'girls', 'boy', 'boys', 'man', 'men', 'woman', 'women',
+        'audience', 'viewer', 'viewers',
         'everyone', 'everybody', 'crowd', 'chat',
         '彼', '彼女', '観客', '視聴者', 'みんな', '全員', 'ユーザー', 'プレイヤー',
         '그', '그녀', '그들', '관객', '시청자', '모두', '모든 사람', '사용자', '플레이어',
@@ -1564,8 +1566,7 @@
                         this._intentSpeechTermsForLocales(command, userLocales)
                     )
                         .filter(function (term) {
-                            return !commandNegated(userText, term, userNegationTerms)
-                                && !actionNegated(userText, term, userNegationTerms)
+                            return !actionNegated(userText, term, userNegationTerms)
                                 && !actionOnlyConditional(userText, term)
                                 && !actionOnlyHistorical(userText, term)
                                 && userCommandActorAllowed(userText, term);
@@ -1575,12 +1576,19 @@
                         match,
                         localizedForLocales(command.weakTerms, userLocales)
                     );
-                    return match ? {
+                    if (!match) return null;
+                    const sourceIndex = folded(userText).indexOf(folded(match));
+                    return {
                         command: command,
                         match: match,
                         weak: weak,
-                        sourceIndex: folded(userText).indexOf(folded(match))
-                    } : null;
+                        sourceIndex: sourceIndex,
+                        evidenceText: actionEvidenceScope(
+                            userText,
+                            sourceIndex,
+                            sourceIndex + normalize(match).length
+                        )
+                    };
                 }).filter(Boolean).sort(function (a, b) {
                     return a.sourceIndex - b.sourceIndex
                         || Number(a.weak) - Number(b.weak)
@@ -1596,7 +1604,7 @@
                     }).map((selected, index) => {
                         const item = this._speechDecision(
                             selected.command.id,
-                            userText,
+                            selected.evidenceText,
                             locale,
                             'user-confirmed:' + selected.match
                         );
@@ -1605,7 +1613,10 @@
                             item.clause.relation = 'sequence';
                         }
                         return item;
-                    }).filter(Boolean);
+                    }).filter(Boolean).slice(
+                        0,
+                        Number(this.pack.contract && this.pack.contract.maxPlanItems) || 3
+                    );
                 }
             }
 

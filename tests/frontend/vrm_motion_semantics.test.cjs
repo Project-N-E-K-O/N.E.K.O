@@ -146,6 +146,13 @@ assert.equal(core.analyze('I will wave if she claps', { locale: 'en' }).plan.len
 assert.equal(core.analyze('wave when she claps', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('I will wave if she claps', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('wave when she claps', { locale: 'en' }).plan.length, 0);
+['I plan to clap', 'I am planning to clap', 'I planned to clap'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+['cuando aplaudo', 'Cuando aplaudo'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'es' }).plan.length, 0, text);
+    assert.equal(core.analyzeSpeech(text, { locale: 'es' }).plan.length, 0, text);
+});
 assert.equal(core.analyze('do not wave goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('The user claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
@@ -156,6 +163,9 @@ assert.equal(core.analyzeSpeech('My friend claps.', { locale: 'en' }).plan.lengt
 assert.equal(core.analyzeSpeech('A young girl claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('A young girl in a red dress claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('My close friend from school claps.', { locale: 'en' }).plan.length, 0);
+['The users clap.', 'The players clap.', 'My friends clap.', 'The people clap.'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
 ['I make her clap.', 'I help him wave goodbye.', 'I ask them to nod.'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
 });
@@ -165,6 +175,11 @@ assert.equal(core.analyzeSpeech('Okay.', {
 assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'the user clap'
 }).plan.length, 0);
+['the users clap', 'the players clap', 'my friends clap'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en', userText: userText
+    }).plan.length, 0, userText);
+});
 assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'you clap'
 }).plan[0].intent, 'clap');
@@ -331,6 +346,17 @@ assert.equal(core.analyzeSpeech('Yo saludo al p\u00fablico y aplaude.', {
 ['Yo aplaudo.', 'Aplaudo.', 'Estoy aplaudiendo.'].forEach(function (text) {
     assert.equal(core.analyzeSpeech(text, { locale: 'es' }).plan[0].intent, 'clap', text);
 });
+[
+    ['es', 'Yo saludo con la mano'],
+    ['es', 'Estoy saludando con la mano'],
+    ['pt', 'Eu aceno com a m\u00e3o'],
+    ['pt', 'Estou acenando com a m\u00e3o'],
+    ['ru', '\u042f \u043c\u0430\u0448\u0443 \u0440\u0443\u043a\u043e\u0439'],
+    ['ko', '\uc190\uc744 \ud754\ub4e4\uc5b4\uc694']
+].forEach(function ([locale, text]) {
+    assert.equal(core.analyze(text, { locale: locale }).plan[0].intent, 'wave', text);
+    assert.equal(core.analyzeSpeech(text, { locale: locale }).plan[0].intent, 'wave', text);
+});
 ['aplaudo', 'estoy aplaudiendo'].forEach(function (text) {
     assert.equal(core.analyze(text, { locale: 'es' }).plan[0].intent, 'clap', text);
 });
@@ -386,6 +412,26 @@ assert.equal(core.analyzeSpeech('\u3046\u306a\u305a\u304d\u307e\u3059', {
         locale: 'en', userText: userText
     }).plan.length, 0, userText);
 });
+assert.deepEqual(core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'do not wave then clap'
+}).plan.map(function (item) { return item.intent; }), ['clap']);
+assert.deepEqual(core.analyzeSpeech('\u597d\u7684\u3002', {
+    locale: 'zh-CN', userText: '\u4e0d\u8981\u6325\u624b\u7136\u540e\u9f13\u638c'
+}).plan.map(function (item) { return item.intent; }), ['clap']);
+
+const acknowledgedModifiers = core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'gently wave twice then vigorously clap three times'
+});
+assert.deepEqual(acknowledgedModifiers.plan.map(function (item) {
+    return [item.intent, item.count, item.intensity];
+}), [['wave', 2, 1], ['clap', 3, 3]]);
+
+const boundedAcknowledgedPlan = core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: 'wave then clap then nod then sit down then stand up'
+});
+assert.deepEqual(boundedAcknowledgedPlan.plan.map(function (item) {
+    return item.intent;
+}), ['wave', 'clap', 'nod']);
 
 [
     ['sit down', 'sit'],

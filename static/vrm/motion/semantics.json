@@ -585,7 +585,10 @@
         "as if",
         "imagines",
         "almost",
+        "plan to",
+        "planning to",
         "plans to",
+        "planned to",
         "about to"
       ],
       "background": [
@@ -718,6 +721,7 @@
       ],
       "hypothetical": [
         "si ",
+        "cuando",
         "como si",
         "a punto de",
         "casi"
@@ -2512,6 +2516,23 @@
           "手を振る",
           "手を振ります",
           "手を振って"
+        ],
+        "ko": [
+          "손을 흔들어요",
+          "손을 흔들고 있어요",
+          "손을 흔들어"
+        ],
+        "ru": [
+          "машу рукой",
+          "машу"
+        ],
+        "es": [
+          "saludo con la mano",
+          "estoy saludando con la mano"
+        ],
+        "pt": [
+          "aceno com a mão",
+          "estou acenando com a mão"
         ]
       },
       "frames": {
