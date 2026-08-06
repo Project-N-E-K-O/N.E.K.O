@@ -229,6 +229,7 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
         # Write a fake facts_archive.json — _aload_archive_facts reads it
         # directly via fact_store._facts_archive_path().
         self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
@@ -454,6 +455,7 @@ class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
         self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
         with open(self.archive_path, "w", encoding="utf-8") as f:
             json.dump([], f)
@@ -537,6 +539,7 @@ class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
         self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
 
     def _write_archive(self, rows):
