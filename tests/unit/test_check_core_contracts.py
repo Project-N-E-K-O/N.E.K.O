@@ -2127,6 +2127,122 @@ def test_lock_gate_ignores_awaits_in_closures_defined_inside_the_block(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("definition", "why"),
+    [
+        pytest.param(
+            "            async def later(x=await self.flush()):\n"
+            "                return x\n",
+            "default values are evaluated at def time",
+            id="awaited-default",
+        ),
+        pytest.param(
+            "            @self.deco(await self.flush())\n"
+            "            def later():\n"
+            "                pass\n",
+            "decorator expressions are evaluated at def time",
+            id="awaited-decorator",
+        ),
+        pytest.param(
+            "            self._f = lambda x=await self.flush(): x\n",
+            "a lambda default is evaluated at def time too",
+            id="awaited-lambda-default",
+        ),
+    ],
+)
+def test_lock_gate_still_sees_definition_time_awaits_in_nested_defs(
+    contract_checker,
+    tmp_path: Path,
+    definition: str,
+    why: str,
+) -> None:
+    """Only the deferred BODY of a nested def is exempt, not its setup.
+
+    Measured: ``async def later(x=await flush())`` parses, and the default
+    runs at definition time — i.e. right here, with the lock held. Skipping
+    the whole node would let that through.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        f"{definition}"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"], why
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_chained_binding_that_aliases_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """One object, two names — and the second name is not gate-checked.
+
+    Other lock attributes are intentionally allowed to be held across awaits,
+    so an alias of the session lock under another name is a way to suspend
+    while holding it.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.other_lock = self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "exactly one target" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rebind",
+    [
+        pytest.param("import custom_locks as asyncio\n", id="import-as"),
+        pytest.param("from vendor import locks as asyncio\n", id="from-import-as"),
+        pytest.param("import asyncio\nasyncio = custom_locks\n", id="plain-rebind"),
+    ],
+)
+def test_lock_gate_rejects_shadowing_the_asyncio_name(
+    contract_checker,
+    tmp_path: Path,
+    rebind: str,
+) -> None:
+    """The primitive is matched by spelling, so the name must mean stdlib."""
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            f"{rebind}\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "rebound" in violations[0].message
+
+
+@pytest.mark.unit
 def test_lock_gate_ignores_other_locks(
     contract_checker,
     tmp_path: Path,

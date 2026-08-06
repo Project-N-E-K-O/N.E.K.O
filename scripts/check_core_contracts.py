@@ -956,11 +956,20 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
 def _statements_in_critical_section(body: list[ast.stmt]):
     """Yield every node a critical section actually executes.
 
-    Nested ``def`` / ``async def`` / ``lambda`` bodies are skipped: code
-    defined inside the block runs when the closure is called, not while the
-    lock is held, so an ``await`` in there is not a suspension of this
-    critical section. Descending into them would make the gate fire on
-    something that is fine.
+    A nested ``def`` / ``async def`` / ``lambda`` splits into two halves that
+    run at different times, and only the body is deferred:
+
+    * the BODY runs when the closure is called, which is necessarily after
+      the block has exited, so an ``await`` in there is not a suspension of
+      this critical section and flagging it would be a false positive;
+    * the DEFINITION-TIME parts — decorators, default values, annotations —
+      are evaluated right here, while the lock is held. ``async def
+      later(x=await self.flush())`` parses, and the default is evaluated at
+      def time (measured), so skipping the whole node would let a real
+      suspension through.
+
+    So the body is skipped and everything else about the definition is still
+    walked.
     """
 
     stack: list[ast.AST] = list(body)
@@ -968,6 +977,19 @@ def _statements_in_critical_section(body: list[ast.stmt]):
         node = stack.pop()
         yield node
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # ``Lambda.body`` is one expression; the others hold a statement
+            # list. Compare by identity — AST nodes have no ``__eq__``, and
+            # two structurally identical children must not collapse.
+            deferred = (
+                {id(node.body)}
+                if isinstance(node, ast.Lambda)
+                else {id(stmt) for stmt in node.body}
+            )
+            stack.extend(
+                child
+                for child in ast.iter_child_nodes(node)
+                if id(child) not in deferred
+            )
             continue
         stack.extend(ast.iter_child_nodes(node))
 
@@ -1067,6 +1089,21 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         if path == manager_path:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Assign):
+                    if not any(is_self_lock_attr(t) for t in node.targets):
+                        continue
+                    # ``self.other_lock = self.lock = asyncio.Lock()`` binds
+                    # ONE object to two names. The gate deliberately ignores
+                    # non-session locks, so the second name would then be a
+                    # sanctioned handle on the session lock that may be held
+                    # across awaits. One target only.
+                    if len(node.targets) != 1:
+                        violations.append(Violation(
+                            path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                            "the self.lock binding must have exactly one target — a "
+                            "chained assignment aliases the same lock object under "
+                            "another name, and every other lock name is allowed to be "
+                            "held across awaits, so the alias becomes a way to suspend "
+                            "while holding the session lock (#2619)"))
                     manager_bindings.extend(
                         (target, node.value)
                         for target in node.targets
@@ -1156,17 +1193,56 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             f"a rebind to a suspending lock would pass while an earlier asyncio.Lock() "
             f"line satisfies the check"))
     else:
-        value = manager_bindings[0][1]
+        target, value = manager_bindings[0]
+        line = getattr(target, "lineno", 1)
         if not (
             isinstance(value, ast.Call)
             and dotted_node_path(value.func) == "asyncio.Lock"
         ):
             violations.append(Violation(
-                manager_path, getattr(manager_bindings[0][0], "lineno", 1), 0,
-                "CORE_LOCK_NO_AWAIT",
+                manager_path, line, 0, "CORE_LOCK_NO_AWAIT",
                 "self.lock is no longer bound to asyncio.Lock() in manager.py — the "
                 "atomicity this gate protects rests on the uncontended-acquire fast path "
                 "of that exact primitive; re-derive the contract before swapping it"))
+        else:
+            # ``asyncio.Lock`` is matched by spelling, so the name has to mean
+            # the standard library. ``import custom_locks as asyncio`` or a
+            # plain ``asyncio = custom_locks`` would satisfy the spelling
+            # while binding an entirely different primitive.
+            manager_tree = parse(manager_path)
+            for node in ast.walk(manager_tree):
+                rebind_line = None
+                if isinstance(node, ast.Import):
+                    rebind_line = next(
+                        (node.lineno for a in node.names
+                         if (a.asname or a.name) == "asyncio" and a.name != "asyncio"),
+                        None,
+                    )
+                elif isinstance(node, ast.ImportFrom):
+                    rebind_line = next(
+                        (node.lineno for a in node.names
+                         if (a.asname or a.name) == "asyncio"),
+                        None,
+                    )
+                elif isinstance(node, ast.Assign):
+                    rebind_line = next(
+                        (node.lineno for t in node.targets
+                         if isinstance(t, ast.Name) and t.id == "asyncio"),
+                        None,
+                    )
+                elif (
+                    isinstance(node, (ast.AnnAssign, ast.AugAssign))
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == "asyncio"
+                ):
+                    rebind_line = node.lineno
+                if rebind_line is not None:
+                    violations.append(Violation(
+                        manager_path, rebind_line, 0, "CORE_LOCK_NO_AWAIT",
+                        "the name 'asyncio' is rebound in manager.py — the primitive "
+                        "check matches the spelling 'asyncio.Lock()', so aliasing or "
+                        "shadowing the module lets a lock with different suspension "
+                        "semantics pass as the standard-library one (#2619)"))
     return violations
 
 
