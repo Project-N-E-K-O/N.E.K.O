@@ -4301,13 +4301,47 @@ body.chat-export-modal-open {
 /* ---------- Footer actions ---------- */
 
 .chat-export-preview-footer {
+    position: relative;
     display: flex;
+    align-items: center;
     gap: 10px;
     justify-content: flex-end;
     padding: 14px 22px;
     border-top: 1px solid rgba(148, 163, 184, 0.2);
     flex-shrink: 0;
     flex-wrap: wrap;
+}
+
+.chat-export-preview-download-status {
+    position: absolute;
+    z-index: 2;
+    right: 22px;
+    bottom: calc(100% + 8px);
+    left: 22px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: rgba(148, 163, 184, 0.12);
+    color: #475569;
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.35;
+    text-align: center;
+    pointer-events: none;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+
+.chat-export-preview-download-status[hidden] {
+    display: none;
+}
+
+.chat-export-preview-download-status[data-tone="success"] {
+    background: rgba(34, 197, 94, 0.12);
+    color: #15803d;
+}
+
+.chat-export-preview-download-status[data-tone="error"] {
+    background: rgba(239, 68, 68, 0.12);
+    color: #b91c1c;
 }
 
 .chat-export-preview-action {

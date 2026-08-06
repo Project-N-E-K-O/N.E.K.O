@@ -317,6 +317,35 @@
         window.showStatusToast(String(message || ''), duration || 3000);
     }
 
+    function showPreviewDownloadStatus(key, fallback, tone) {
+        var modal = state.previewModal;
+        if (!modal || !modal.downloadStatus) return;
+        modal.downloadStatus.textContent = translateLabel(key, fallback);
+        modal.downloadStatus.dataset.tone = tone || 'neutral';
+        modal.downloadStatus.hidden = false;
+    }
+
+    function clearPreviewDownloadStatus() {
+        var modal = state.previewModal;
+        if (!modal || !modal.downloadStatus) return;
+        modal.downloadStatus.hidden = true;
+        modal.downloadStatus.textContent = '';
+        delete modal.downloadStatus.dataset.tone;
+    }
+
+    function showPreviewSaveResult(result) {
+        var status = result && result.status;
+        if (status === 'saved') {
+            showPreviewDownloadStatus('chat.exportSuccess', 'Conversation exported successfully', 'success');
+            return;
+        }
+        if (status === 'cancelled') {
+            showPreviewDownloadStatus('chat.exportCancelled', 'Export cancelled.', 'neutral');
+            return;
+        }
+        clearPreviewDownloadStatus();
+    }
+
     function logExportError(scope, error) {
         console.error('[app-chat-export] ' + scope + ':', error);
     }
@@ -2368,8 +2397,8 @@
 
     // ======================== Dispatcher ========================
 
-    async function buildExportDocument(entries, formatId) {
-        var now = new Date();
+    async function buildExportDocument(entries, formatId, exportDate) {
+        var now = exportDate || new Date();
         if (formatId === 'markdown') {
             return buildMarkdownExportDocument(entries, now);
         }
@@ -2377,6 +2406,165 @@
     }
 
     // ======================== Download + copy ========================
+
+    function resolveDownloadHostWindow(preferredHostWindow) {
+        var hostWindow = preferredHostWindow || window;
+        if (!preferredHostWindow) {
+            try {
+                if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                    hostWindow = state.previewWindow;
+                }
+            } catch (_) {
+                hostWindow = window;
+            }
+        }
+        return hostWindow;
+    }
+
+    function getExportSaveSuggestion(formatId, now) {
+        var normalizedFormat = normalizeExportFormatId(formatId);
+        if (normalizedFormat === 'markdown') {
+            return {
+                fileName: getExportBaseFileName(now || new Date()) + '.md',
+                contentType: 'text/markdown;charset=utf-8',
+                extension: 'md'
+            };
+        }
+        var style = getCurrentImageExportStyle();
+        var format = getCurrentImageExportFormat();
+        return {
+            fileName: getExportBaseFileName(now || new Date()) + '-' + style.id + '.' + format.extension,
+            contentType: format.mimeType,
+            extension: format.extension
+        };
+    }
+
+    function isDesktopDownloadResultAvailable(hostWindow) {
+        try {
+            return !!(hostWindow
+                && hostWindow.nekoDownloadBridge
+                && hostWindow.nekoDownloadBridge.isDesktop === true);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function prepareExportSave(suggestion, preferredHostWindow) {
+        var hostWindow = resolveDownloadHostWindow(preferredHostWindow);
+        if (isDesktopDownloadResultAvailable(hostWindow)) {
+            return Promise.resolve({ method: 'desktop', hostWindow: hostWindow });
+        }
+
+        var picker = null;
+        try {
+            picker = hostWindow && hostWindow.showSaveFilePicker;
+        } catch (_) {}
+        if (typeof picker !== 'function') {
+            return Promise.resolve({ method: 'download', hostWindow: hostWindow });
+        }
+
+        var mimeType = String(suggestion.contentType || 'application/octet-stream').split(';')[0];
+        var extension = String(suggestion.extension || '').replace(/^\./, '');
+        var pickerOptions = {
+            suggestedName: suggestion.fileName
+        };
+        if (extension) {
+            var accept = {};
+            accept[mimeType] = ['.' + extension];
+            pickerOptions.types = [{
+                description: translateLabel('chat.exportAction', 'Export'),
+                accept: accept
+            }];
+        }
+
+        try {
+            // This call must happen synchronously in the click task. Awaiting
+            // preview generation first consumes the browser's user activation.
+            return Promise.resolve(picker.call(hostWindow, pickerOptions)).then(function (handle) {
+                return { method: 'picker', handle: handle, hostWindow: hostWindow };
+            }, function (error) {
+                if (error && error.name === 'AbortError') {
+                    return { method: 'cancelled', hostWindow: hostWindow };
+                }
+                console.warn('[ChatExport] save picker unavailable; falling back to browser download.', error);
+                return { method: 'download', hostWindow: hostWindow };
+            });
+        } catch (error) {
+            if (error && error.name === 'AbortError') {
+                return Promise.resolve({ method: 'cancelled', hostWindow: hostWindow });
+            }
+            console.warn('[ChatExport] save picker unavailable; falling back to browser download.', error);
+            return Promise.resolve({ method: 'download', hostWindow: hostWindow });
+        }
+    }
+
+    function waitForDesktopDownloadResult(hostWindow, fileName, startDownload) {
+        return new Promise(function (resolve, reject) {
+            var settled = false;
+
+            function cleanup() {
+                try {
+                    hostWindow.removeEventListener('neko:file-download-result', handleResult);
+                } catch (_) {}
+            }
+
+            function finish(result) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(result);
+            }
+
+            function handleResult(event) {
+                var detail = event && event.detail && typeof event.detail === 'object'
+                    ? event.detail
+                    : {};
+                if (String(detail.fileName || '') !== String(fileName || '')) return;
+                if (detail.status === 'saved' || detail.status === 'cancelled') {
+                    finish({ status: detail.status });
+                    return;
+                }
+                cleanup();
+                if (settled) return;
+                settled = true;
+                reject(new Error(String(detail.error || 'Download failed')));
+            }
+
+            hostWindow.addEventListener('neko:file-download-result', handleResult);
+            try {
+                startDownload();
+            } catch (error) {
+                cleanup();
+                settled = true;
+                reject(error);
+            }
+        });
+    }
+
+    async function deliverExportFile(preparedSavePromise, data) {
+        var prepared = await preparedSavePromise;
+        if (!prepared || prepared.method === 'cancelled') {
+            return { status: 'cancelled' };
+        }
+
+        var blob = data.content instanceof Blob
+            ? data.content
+            : new Blob([data.content], { type: data.contentType });
+        if (prepared.method === 'picker') {
+            var writable = await prepared.handle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            return { status: 'saved' };
+        }
+        if (prepared.method === 'desktop') {
+            return waitForDesktopDownloadResult(prepared.hostWindow, data.fileName, function () {
+                downloadExportFile(data.fileName, blob, data.contentType, prepared.hostWindow);
+            });
+        }
+
+        downloadExportFile(data.fileName, blob, data.contentType, prepared.hostWindow);
+        return { status: 'started' };
+    }
 
     function downloadExportFile(fileName, content, contentType, preferredHostWindow) {
         var blob = content instanceof Blob
@@ -2388,16 +2576,7 @@
         // silently drop for image-sized blobs (markdown sometimes slips
         // through). Place the anchor in the popup's realm so the download
         // inherits the same user-activation context as the tap.
-        var hostWindow = preferredHostWindow || window;
-        if (!preferredHostWindow) {
-            try {
-                if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
-                    hostWindow = state.previewWindow;
-                }
-            } catch (_) {
-                hostWindow = window;
-            }
-        }
+        var hostWindow = resolveDownloadHostWindow(preferredHostWindow);
         var hostDoc = hostWindow.document;
         var hostURL = hostWindow.URL || hostWindow.webkitURL || URL;
         var url = hostURL.createObjectURL(blob);
@@ -2712,6 +2891,12 @@
         var footer = doc.createElement('div');
         footer.className = 'chat-export-preview-footer';
 
+        var downloadStatus = doc.createElement('div');
+        downloadStatus.className = 'chat-export-preview-download-status';
+        downloadStatus.setAttribute('role', 'status');
+        downloadStatus.setAttribute('aria-live', 'polite');
+        downloadStatus.hidden = true;
+
         var copyButton = doc.createElement('button');
         copyButton.type = 'button';
         copyButton.className = 'chat-export-preview-action chat-export-preview-action-copy';
@@ -2729,6 +2914,7 @@
             format: translateLabel('chat.exportFormatImage', 'Image')
         });
 
+        footer.appendChild(downloadStatus);
         footer.appendChild(copyButton);
         footer.appendChild(openWindowButton);
         footer.appendChild(downloadButton);
@@ -2764,6 +2950,7 @@
             previewImageWrap: previewImageWrap,
             previewImage: previewImage,
             placeholder: placeholder,
+            downloadStatus: downloadStatus,
             copyButton: copyButton,
             openWindowButton: openWindowButton,
             downloadButton: downloadButton
@@ -3415,7 +3602,7 @@
                 showToast('chat.exportSelectionEmpty', 'Select at least one message to export.');
                 return;
             }
-            await action(entries);
+            return await action(entries);
         } finally {
             restoreCompactInlineExportState(previous);
         }
@@ -3456,14 +3643,18 @@
         if (state.isExporting) return;
         state.isExporting = true;
         try {
-            await runCompactInlineExportAction(options, async function (entries) {
-                var data = await buildExportDocument(entries, state.exportFormat);
-                downloadExportFile(data.fileName, data.content, data.contentType, window);
-                showToast('chat.exportSuccess', 'Conversation exported successfully');
+            return await runCompactInlineExportAction(options, async function (entries) {
+                var exportDate = new Date();
+                var preparedSave = prepareExportSave(
+                    getExportSaveSuggestion(state.exportFormat, exportDate),
+                    window
+                );
+                var data = await buildExportDocument(entries, state.exportFormat, exportDate);
+                return deliverExportFile(preparedSave, data);
             });
         } catch (error) {
             logExportError('downloadCompactInlineSelection', error);
-            showToastMessage(getErrorMessage(error), 4000);
+            throw error;
         } finally {
             state.isExporting = false;
         }
@@ -3480,15 +3671,27 @@
         }
         state.isExporting = true;
         var modal = state.previewModal;
+        var exportDate = new Date();
+        var preparedSave = prepareExportSave(
+            getExportSaveSuggestion(state.exportFormat, exportDate),
+            modal && modal.panel && modal.panel.ownerDocument
+                ? modal.panel.ownerDocument.defaultView
+                : null
+        );
+        showPreviewDownloadStatus('chat.exportInProgress', 'Exporting...', 'neutral');
         if (modal) modal.downloadButton.disabled = true;
         try {
             var payload = await getOrBuildPreviewPayload(entries, state.exportFormat);
             var data = payload.exportData;
-            downloadExportFile(data.fileName, data.content, data.contentType);
-            showToast('chat.exportSuccess', 'Conversation exported successfully');
+            var result = await deliverExportFile(preparedSave, data);
+            showPreviewSaveResult(result);
         } catch (error) {
             logExportError('handleDownloadClick', error);
-            showToastMessage(getErrorMessage(error), 4000);
+            showPreviewDownloadStatus(
+                'chat.exportActionFailed',
+                'Export failed. Please try again.',
+                'error'
+            );
         } finally {
             state.isExporting = false;
             if (modal) modal.downloadButton.disabled = false;

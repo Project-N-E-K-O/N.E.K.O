@@ -2751,7 +2751,9 @@ def test_compact_inline_export_uses_windowless_app_chat_export_api():
     assert "copyImageToClipboard(imgBlob)" in compact_api_block
     assert "buildExportDocument(entries, 'markdown')" in compact_api_block
     assert "copyTextToClipboard(markdownData.content)" in compact_api_block
-    assert "downloadExportFile(data.fileName, data.content, data.contentType, window)" in compact_api_block
+    assert "prepareExportSave(" in compact_api_block
+    assert "deliverExportFile(preparedSave, data)" in compact_api_block
+    assert "return await runCompactInlineExportAction" in compact_api_block
     assert "handleCopyClick" not in compact_api_block
     assert "handleDownloadClick" not in compact_api_block
     assert "openExportPreviewWindow" not in compact_api_block

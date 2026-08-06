@@ -20,6 +20,7 @@ import CompactExportHistoryPanel, {
   isCompactExportMessageSelectable,
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
+  type CompactExportSaveResult,
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
@@ -82,7 +83,9 @@ type ChatWindowProps = ChatWindowSchemaProps & {
 type CompactInlineExportBridge = {
   buildCompactInlinePreview?: (request: CompactExportActionRequest) => Promise<CompactExportPreviewResult> | CompactExportPreviewResult;
   copyCompactInlineSelection?: (request: CompactExportActionRequest) => Promise<void> | void;
-  downloadCompactInlineSelection?: (request: CompactExportActionRequest) => Promise<void> | void;
+  downloadCompactInlineSelection?: (
+    request: CompactExportActionRequest,
+  ) => Promise<CompactExportSaveResult | void> | CompactExportSaveResult | void;
 };
 
 type CompactHistoryDesktopDropTargetDetail = {
@@ -841,11 +844,11 @@ export default function FullChatSurface({
         .showStatusToast?.(i18n('chat.exportPreviewFailed', 'Failed to build the preview.'), 3000);
       return;
     }
-    await method(request);
+    return method(request);
   }, []);
-  const handleCompactInlineCopyExport = useCallback((request: CompactExportActionRequest) => (
-    handleCompactInlineExportAction(request, 'copy')
-  ), [handleCompactInlineExportAction]);
+  const handleCompactInlineCopyExport = useCallback(async (request: CompactExportActionRequest) => {
+    await handleCompactInlineExportAction(request, 'copy');
+  }, [handleCompactInlineExportAction]);
   const handleCompactInlineDownloadExport = useCallback((request: CompactExportActionRequest) => (
     handleCompactInlineExportAction(request, 'download')
   ), [handleCompactInlineExportAction]);

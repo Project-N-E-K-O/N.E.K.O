@@ -2078,7 +2078,7 @@ describe('App', () => {
       previewDocument: '<!doctype html><html><body>Export this compact selection.</body></html>',
     });
     const copyCompactInlineSelection = vi.fn().mockResolvedValue(undefined);
-    const downloadCompactInlineSelection = vi.fn().mockResolvedValue(undefined);
+    const downloadCompactInlineSelection = vi.fn().mockResolvedValue({ status: 'saved' });
     exportWindow.appChatExport = {
       buildCompactInlinePreview,
       copyCompactInlineSelection,
@@ -2136,6 +2136,15 @@ describe('App', () => {
           imageStyle: 'poster',
           imageFormat: 'webp',
         });
+      });
+      expect(container.querySelector('.compact-export-preview-feedback')).toHaveTextContent(
+        'Conversation exported successfully',
+      );
+
+      downloadCompactInlineSelection.mockResolvedValueOnce({ status: 'cancelled' });
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-preview-action-primary')!);
+      await waitFor(() => {
+        expect(container.querySelector('.compact-export-preview-feedback')).toHaveTextContent('Export cancelled.');
       });
     } finally {
       exportWindow.appChatExport = previousBridge;

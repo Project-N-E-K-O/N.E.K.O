@@ -2530,6 +2530,21 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
   box-shadow: 0 6px 18px rgba(2, 132, 199, 0.5);
 }
 
+[data-theme="dark"] .chat-export-preview-download-status {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .chat-export-preview-download-status[data-tone="success"] {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+[data-theme="dark"] .chat-export-preview-download-status[data-tone="error"] {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+}
+
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */
 
 /* ============================================================ */

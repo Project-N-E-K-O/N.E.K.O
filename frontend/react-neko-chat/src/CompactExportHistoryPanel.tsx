@@ -56,6 +56,10 @@ export type CompactExportPreviewResult =
   | { previewKind: 'document'; previewDocument: string }
   | { previewKind: 'image'; previewUrl: string };
 
+export type CompactExportSaveResult = {
+  status: 'saved' | 'cancelled' | 'started';
+};
+
 type CompactExportPreviewState =
   | { status: 'idle' }
   | { status: 'loading' }
@@ -83,7 +87,9 @@ type CompactExportHistoryPanelProps = {
   onClosePreview: () => void;
   onBuildPreview: (request: CompactExportActionRequest) => Promise<CompactExportPreviewResult> | CompactExportPreviewResult;
   onCopyExport: (request: CompactExportActionRequest) => Promise<void> | void;
-  onDownloadExport: (request: CompactExportActionRequest) => Promise<void> | void;
+  onDownloadExport: (
+    request: CompactExportActionRequest,
+  ) => Promise<CompactExportSaveResult | void> | CompactExportSaveResult | void;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
   historyResizeActive?: boolean;
   historyResizeContentLocked?: boolean;
@@ -270,7 +276,10 @@ export default function CompactExportHistoryPanel({
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
   const [pendingAction, setPendingAction] = useState<'copy' | 'download' | null>(null);
-  const [exportActionError, setExportActionError] = useState<string | null>(null);
+  const [exportActionFeedback, setExportActionFeedback] = useState<{
+    tone: 'success' | 'neutral' | 'error';
+    message: string;
+  } | null>(null);
   const [previewState, setPreviewState] = useState<CompactExportPreviewState>({ status: 'idle' });
   const [scrollbarVisible, setScrollbarVisible] = useState(false);
   const [scrollbarThumbState, setScrollbarThumbState] = useState<CompactHistoryScrollbarThumbState>({
@@ -542,7 +551,7 @@ export default function CompactExportHistoryPanel({
   useEffect(() => {
     if (!previewOpen) {
       revokeCompactPreviewObjectUrl();
-      setExportActionError(null);
+      setExportActionFeedback(null);
       setPreviewState({ status: 'idle' });
       return;
     }
@@ -649,17 +658,37 @@ export default function CompactExportHistoryPanel({
   async function runExportAction(kind: 'copy' | 'download') {
     if (exportActionsDisabled) return;
     setPendingAction(kind);
-    setExportActionError(null);
+    setExportActionFeedback(null);
     try {
       const request = buildExportActionRequest();
       if (kind === 'copy') {
         await onCopyExport(request);
       } else {
-        await onDownloadExport(request);
+        setExportActionFeedback({
+          tone: 'neutral',
+          message: i18n('chat.exportInProgress', 'Exporting...'),
+        });
+        const result = await onDownloadExport(request);
+        if (result?.status === 'saved') {
+          setExportActionFeedback({
+            tone: 'success',
+            message: i18n('chat.exportSuccess', 'Conversation exported successfully'),
+          });
+        } else if (result?.status === 'cancelled') {
+          setExportActionFeedback({
+            tone: 'neutral',
+            message: i18n('chat.exportCancelled', 'Export cancelled.'),
+          });
+        } else if (result?.status === 'started') {
+          setExportActionFeedback(null);
+        }
       }
     } catch (error) {
       console.error('[CompactExportHistoryPanel] export action failed', error);
-      setExportActionError(i18n('chat.exportActionFailed', 'Export failed. Please try again.'));
+      setExportActionFeedback({
+        tone: 'error',
+        message: i18n('chat.exportActionFailed', 'Export failed. Please try again.'),
+      });
     } finally {
       setPendingAction(null);
     }
@@ -887,9 +916,13 @@ export default function CompactExportHistoryPanel({
           {i18n('chat.exportAction', 'Export')}
         </button>
       </div>
-      {exportActionError ? (
-        <div className="compact-export-preview-error" role="status" aria-live="polite">
-          {exportActionError}
+      {exportActionFeedback ? (
+        <div
+          className={clsx('compact-export-preview-feedback', `is-${exportActionFeedback.tone}`)}
+          role="status"
+          aria-live="polite"
+        >
+          {exportActionFeedback.message}
         </div>
       ) : null}
     </div>

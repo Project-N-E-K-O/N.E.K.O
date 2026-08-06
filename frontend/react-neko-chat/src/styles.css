@@ -3969,6 +3969,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-preview-region {
+  position: relative;
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
@@ -4087,6 +4088,34 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-export-preview-action:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.compact-export-preview-feedback {
+  position: absolute;
+  z-index: 2;
+  right: 9px;
+  bottom: 43px;
+  left: 9px;
+  padding: 5px 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.45);
+  color: #5d7797;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 5px 14px rgba(22, 48, 84, 0.12);
+}
+
+.compact-export-preview-feedback.is-success {
+  background: rgba(220, 252, 231, 0.68);
+  color: #15803d;
+}
+
+.compact-export-preview-feedback.is-error {
+  background: rgba(254, 226, 226, 0.72);
+  color: #b91c1c;
 }
 
 .compact-export-preview-empty {
@@ -6661,6 +6690,21 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 [data-theme="dark"] .compact-export-preview-stage {
   background: rgba(26, 48, 70, 0.72);
   color: #cfe5ff;
+}
+
+[data-theme="dark"] .compact-export-preview-feedback {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+[data-theme="dark"] .compact-export-preview-feedback.is-success {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+[data-theme="dark"] .compact-export-preview-feedback.is-error {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
 }
 
 [data-theme="dark"] .compact-export-preview-stage {
