@@ -26,7 +26,30 @@ function _cacheCharacterLanguagePreference(name, language, source) {
     }
 }
 
+function _nextCharacterLanguageHydrationId(select) {
+    const hydrationId = String((Number(select.dataset.languageHydrationId) || 0) + 1);
+    select.dataset.languageHydrationId = hydrationId;
+    return hydrationId;
+}
+
+function _isCharacterLanguageHydrationCurrent(select, hydrationId) {
+    return select.dataset.languageHydrationId === hydrationId;
+}
+
+function _applyCharacterLanguagePreferenceEvent(select, selectUi, language) {
+    _nextCharacterLanguageHydrationId(select);
+    select.value = language;
+    select.dataset.previousValue = language;
+    if (selectUi) {
+        selectUi.setDisabled(false);
+        selectUi.refresh();
+    } else {
+        select.disabled = false;
+    }
+}
+
 async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
+    const hydrationId = _nextCharacterLanguageHydrationId(select);
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const timeoutId = controller
         ? setTimeout(() => controller.abort(), CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS)
@@ -43,6 +66,7 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
         if (!response.ok || payload.success !== true) {
             throw new Error(payload.error || ('HTTP ' + response.status));
         }
+        if (!_isCharacterLanguageHydrationCurrent(select, hydrationId)) return;
         const language = payload.language || payload.effective_language;
         if (CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === language)) {
             select.value = language;
@@ -56,6 +80,7 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
         if (selectUi) selectUi.setDisabled(false);
         else select.disabled = false;
     } catch (error) {
+        if (!_isCharacterLanguageHydrationCurrent(select, hydrationId)) return;
         console.warn('[ConversationLanguage] load failed:', error);
         // Keep the control usable: its current value is the local/UI fallback,
         // and a subsequent selection can still be persisted with PUT.
@@ -68,7 +93,10 @@ async function _hydrateCharacterLanguagePreference(name, select, selectUi) {
         );
     } finally {
         if (timeoutId !== null) clearTimeout(timeoutId);
-        if (selectUi) selectUi.refresh();
+        if (
+            selectUi
+            && _isCharacterLanguageHydrationCurrent(select, hydrationId)
+        ) selectUi.refresh();
     }
 }
 
@@ -355,9 +383,11 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             const detail = event && event.detail ? event.detail : {};
             if (!detail.character_name || detail.character_name !== name) return;
             if (!CHARACTER_LANGUAGE_OPTIONS.some(option => option.code === detail.language)) return;
-            languageSelect.value = detail.language;
-            languageSelect.dataset.previousValue = detail.language;
-            languageSelectUi.refresh();
+            _applyCharacterLanguagePreferenceEvent(
+                languageSelect,
+                languageSelectUi,
+                detail.language
+            );
         };
         window.addEventListener(
             'neko:conversation-language-changed',

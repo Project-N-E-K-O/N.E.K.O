@@ -209,6 +209,87 @@ def test_character_language_control_keeps_failed_or_fallback_state_non_durable()
 
 
 @pytest.mark.unit
+def test_character_language_event_invalidates_inflight_form_hydration():
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node is required for the character language hydration harness")
+
+    source = (
+        PROJECT_ROOT / "static" / "js" / "character_card_manager"
+        / "card-form-and-actions.js"
+    ).read_text(encoding="utf-8")
+    hydration_source = _slice_between(
+        source,
+        "function _nextCharacterLanguageHydrationId(select)",
+        "async function _saveCharacterLanguagePreference(name, select, selectUi)",
+        "角色语言偏好表单水合",
+    )
+    harness = textwrap.dedent(
+        r"""
+        const assert = require('node:assert/strict');
+        const CHARACTER_LANGUAGE_OPTIONS = [
+          { code: 'zh-CN' }, { code: 'zh-TW' }, { code: 'en' }, { code: 'ja' },
+          { code: 'ko' }, { code: 'ru' }, { code: 'es' }, { code: 'pt' }
+        ];
+        const CHARACTER_LANGUAGE_HYDRATION_TIMEOUT_MS = 2500;
+        const cached = [];
+        const _cacheCharacterLanguagePreference = (...args) => cached.push(args);
+        const _characterLanguageT = (key) => key;
+        let resolveFetch;
+        const fetch = () => new Promise((resolve) => { resolveFetch = resolve; });
+
+        __HYDRATION_SOURCE__
+
+        (async () => {
+          const select = {
+            value: 'en',
+            disabled: true,
+            dataset: { previousValue: 'en' },
+            title: ''
+          };
+          const selectUi = {
+            disabled: true,
+            refreshCount: 0,
+            setDisabled(value) { this.disabled = value; },
+            refresh() { this.refreshCount += 1; }
+          };
+
+          const hydration = _hydrateCharacterLanguagePreference('Mimi', select, selectUi);
+          _applyCharacterLanguagePreferenceEvent(select, selectUi, 'ja');
+          resolveFetch({
+            ok: true,
+            status: 200,
+            json: async () => ({ success: true, language: 'zh-TW' })
+          });
+          await hydration;
+
+          assert.equal(select.value, 'ja');
+          assert.equal(select.dataset.previousValue, 'ja');
+          assert.equal(selectUi.disabled, false);
+          assert.equal(selectUi.refreshCount, 1);
+          assert.deepEqual(cached, []);
+          process.stdout.write('ok');
+        })().catch((error) => {
+          console.error(error && error.stack ? error.stack : error);
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__HYDRATION_SOURCE__", hydration_source)
+
+    result = run_node_script(
+        node_path,
+        harness,
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == "ok"
+
+
+@pytest.mark.unit
 def test_explicit_language_preference_survives_unavailable_local_storage():
     node_path = shutil.which("node")
     if not node_path:
