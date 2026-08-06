@@ -4112,10 +4112,21 @@ class FactStore:
                         return None
                     if not isinstance(data, list):
                         return None
+                    # 仲裁败者（arbitration_archived_at）不进索引：Stage-2
+                    # 检索到它们一律跳过，而 arestore_scoped_subject 的
+                    # to_restore 明确把它们排除在外、只留在归档里——也就是
+                    # 说它们永远不会再变成活跃行，索引里留着纯粹是占候选
+                    # 窗口，能把真正的活跃近重复挤出那 200 行。
+                    #
+                    # subject 归档行相反，必须留：subject 复活会把它们写回
+                    # active，而复活路径不碰 FTS 索引，这时候剔掉就等于让
+                    # 复活后的事实永久检索不到。absorbed 行同理（它们照旧
+                    # 参与硬重复拦截）。
                     return [
                         (fid, str(r.get('text') or ''))
                         for r in data
                         if isinstance(r, dict)
+                        and not r.get('arbitration_archived_at')
                         and (fid := _readable_fact_id(r)) is not None
                     ]
 

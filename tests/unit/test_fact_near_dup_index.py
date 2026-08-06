@@ -640,7 +640,16 @@ def test_backfill_reads_archive_rows_too(tmp_path):
 
     archive_path = os.path.join(str(tmp_path), "facts_archive.json")
     with open(archive_path, "w", encoding="utf-8") as fh:
-        json.dump([{"id": "arch1", "text": "群规是不剧透"}], fh)
+        json.dump([
+            {"id": "arch1", "text": "群规是不剧透"},
+            # 仲裁败者：Stage-2 检索到一律跳过，而 restore 明确把它们排除在
+            # 外（只留在归档里），所以它们永远不会再变成活跃行——索引里留着
+            # 纯占候选窗口。
+            {
+                "id": "loser1", "text": "群规是不能剧透",
+                "arbitration_archived_at": "2026-07-01T00:00:00",
+            },
+        ], fh)
 
     captured: list[list[tuple[str, str]]] = []
 
