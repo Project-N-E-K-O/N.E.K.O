@@ -15,10 +15,10 @@ Contracts under test:
      and low for unrelated text — but it does NOT separate meaning
      ("got a cat" / "got a dog" is the highest score two facts can
      plausibly have), which is why it may not decide alone.
-  4. Stage-2 policy: only a *lossless* normal form (case + the
-     tokenizer's separators — no script fold, no diacritic strip, no
-     stop-name removal) drops a fact outright. Everything else is
-     written AND handed to the LLM arbitration queue.
+  4. Stage-2 policy: only a *byte-identical* text drops a fact
+     outright — every normalization tried on this key turned out to
+     have a counterexample. Everything else is written AND handed to
+     the LLM arbitration queue.
   5. Backfill: facts written before the index was rebuilt get indexed
      once, and the marker stops it from rescanning on every write.
 """
@@ -32,10 +32,8 @@ import pytest
 from memory.facts import FactStore
 from memory.timeindex import (
     FACT_NEAR_DUP_ARBITRATE_OVERLAP,
-    FACT_NEAR_DUP_IDENTICAL_OVERLAP,
     TimeIndexedMemory,
     fts_tokens,
-    normalized_identity,
     token_overlap,
 )
 from memory.script_fold import fold_script
@@ -101,67 +99,9 @@ def test_overlap_does_not_separate_meaning():
     assert token_overlap(rephrase, same) >= FACT_NEAR_DUP_ARBITRATE_OVERLAP
 
 
-def test_clause_swap_shares_a_token_set_but_not_an_identity():
-    """Codex P1: n-gram sets discard order, so two opposite statements can
-    reach overlap 1.0. Only the order-preserving normal form may gate the
-    hard drop."""
-    a, b = "喜欢猫，不喜欢狗", "喜欢狗，不喜欢猫"
-    assert token_overlap(fts_tokens(a), fts_tokens(b)) == 1.0
-    assert normalized_identity(a) != normalized_identity(b)
 
 
-def test_identity_ignores_only_lossless_differences():
-    """Whitespace runs are the only thing folded — the sole difference that
-    provably cannot tell two facts apart."""
-    assert normalized_identity("用户  养猫") == normalized_identity("用户 养猫")
-    assert normalized_identity("the user  adopted a cat") == normalized_identity(
-        "the user adopted a cat",
-    )
 
-
-def test_identity_keeps_characters_that_change_the_claim():
-    """The tokenizer's separator class contains meaningful characters, so it
-    cannot be reused for a key that authorizes an irreversible drop."""
-    assert normalized_identity("balance is -10 dollars") != normalized_identity(
-        "balance is 10 dollars",
-    )
-    assert normalized_identity("体重 1.5 公斤") != normalized_identity("体重 15 公斤")
-    assert normalized_identity("a > b") != normalized_identity("a b")
-    # 大小写同样保留：`/Foo` 和 `/foo` 在 Linux 上是两个路径。
-    assert normalized_identity("the variable is X") != normalized_identity(
-        "the variable is x",
-    )
-    # 空白折成一个空格而不是删掉——删掉会把这两句并成一条。
-    assert normalized_identity("an ice cream") != normalized_identity(
-        "a nice cream",
-    )
-
-
-def test_identity_keeps_the_names_that_stop_name_stripping_removes():
-    """The stop-name list holds the master's AND the catgirl's names, so
-    stripping them merges two facts about two different people into one key.
-    Retrieval still strips — the pair reaches overlap 1.0 and is arbitrated."""
-    master, catgirl = "主人喜欢猫", "兰兰喜欢猫"
-    stop_names = ["主人", "兰兰"]
-    assert token_overlap(
-        fts_tokens(master, stop_names), fts_tokens(catgirl, stop_names),
-    ) == 1.0
-    assert normalized_identity(master) != normalized_identity(catgirl)
-
-
-def test_identity_refuses_the_lossy_script_fold():
-    """The fold is many-to-one, so it must not gate the hard drop: the two
-    surnames below are different and fold to the same character. Retrieval
-    still folds — the pair reaches overlap 1.0 and goes to arbitration
-    instead of being dropped."""
-    a, b = "鍾先生住在台北", "鐘先生住在台北"
-    assert token_overlap(fts_tokens(a), fts_tokens(b)) == 1.0
-    assert normalized_identity(a) != normalized_identity(b)
-
-    # 同一句话的繁简两写同理：召回够得着，但不许在有损等价上直接丢。
-    trad, simp = "用戶最近養了一隻貓", "用户最近养了一只猫"
-    assert token_overlap(fts_tokens(trad), fts_tokens(simp)) == 1.0
-    assert normalized_identity(trad) != normalized_identity(simp)
 
 
 def test_latin_case_does_not_destroy_the_overlap_score():
@@ -255,7 +195,7 @@ def test_reworded_chinese_fact_retrieves_the_original(index):
 def test_traditional_query_retrieves_simplified_fact(index):
     index.index_fact("小天", "f1", "用户最近养了一只猫")
     hits = dict(index.search_similar_facts("小天", "用戶最近養了一隻貓"))
-    assert hits["f1"] == FACT_NEAR_DUP_IDENTICAL_OVERLAP
+    assert hits["f1"] == 1.0
 
 
 def test_results_are_sorted_by_overlap_descending(index):
@@ -378,25 +318,43 @@ async def _persist(harness, text):
 
 
 @pytest.mark.asyncio
-async def test_a_lossless_variant_still_drops_the_new_fact(tmp_path):
-    harness = _harness(tmp_path, [("existing", FACT_NEAR_DUP_IDENTICAL_OVERLAP)])
-    _seed(harness, "用户 最近养了一只猫")
+async def test_an_identical_text_still_drops_the_new_fact(tmp_path):
+    """The one case left for the hard drop: same text as a row Stage-1's hash
+    set doesn't cover (an archived one). Anything else goes to arbitration."""
+    harness = _harness(tmp_path, [("existing", 1.0)])
+    _seed(harness, "用户最近养了一只猫")
     resolver = MagicMock()
     resolver.aenqueue_candidates = AsyncMock(return_value=1)
     harness.attach_dedup_resolver(resolver)
 
-    # 必须是**变体**而不是同一个字符串：同文的话，归一化整个删掉这条也照样绿。
-    created = await _persist(harness, "用户  最近养了一只猫")
+    created = await _persist(harness, "用户最近养了一只猫")
 
     assert created == []
     resolver.aenqueue_candidates.assert_not_awaited()
 
 
 @pytest.mark.asyncio
+async def test_a_whitespace_variant_is_arbitrated_not_dropped(tmp_path):
+    """Even collapsing whitespace runs is lossy — `echo 'a  b'` and
+    `echo 'a b'` are different commands. The hard drop takes byte equality
+    and nothing looser."""
+    harness = _harness(tmp_path, [("existing", 1.0)])
+    _seed(harness, "用户说 echo 'a  b' 是他常用的命令")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户说 echo 'a b' 是他常用的命令")
+
+    assert len(created) == 1
+    resolver.aenqueue_candidates.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_traditional_rewrite_is_arbitrated_not_dropped(tmp_path):
     """The fold that makes the pair *findable* is lossy, so it may not also
     make the pair droppable."""
-    harness = _harness(tmp_path, [("existing", FACT_NEAR_DUP_IDENTICAL_OVERLAP)])
+    harness = _harness(tmp_path, [("existing", 1.0)])
     _seed(harness, "用户最近养了一只猫")
     resolver = MagicMock()
     resolver.aenqueue_candidates = AsyncMock(return_value=1)
@@ -748,12 +706,6 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         first = await _write("用户最近养了一只猫")
         assert len(first) == 1
 
-        # 只差一个空格：Stage-1 的 hash 挡不住，归一后逐字相同挡住。
-        spaced = await _write("the user adopted a cat")
-        assert len(spaced) == 1
-        resolver.aenqueue_candidates.reset_mock()
-        assert await _write("the user  adopted a cat") == []
-        resolver.aenqueue_candidates.assert_not_awaited()
 
         # 繁体重述：召回够得着（折叠），但折叠有损，不许据此直接丢——进仲裁。
         trad = await _write("用戶最近養了一隻貓")

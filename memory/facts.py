@@ -60,8 +60,6 @@ from memory.evidence import evidence_score
 from memory.timeindex import (
     FACT_NEAR_DUP_ARBITRATE_OVERLAP,
     FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
-    FACT_NEAR_DUP_IDENTICAL_OVERLAP,
-    normalized_identity,
 )
 from memory.scopes import (
     MemorySubject,
@@ -3750,7 +3748,6 @@ class FactStore:
                 await self._aensure_fact_index_backfilled(
                     lanlan_name, existing_facts,
                 )
-                candidate_identity = normalized_identity(text)
                 # FTS5 is still character-wide, so fetch a wider window and
                 # keep the historical "top-3 candidates" semantics *inside*
                 # the subject boundary: cross-subject rows neither count as
@@ -3836,19 +3833,23 @@ class FactStore:
                             )
                             if hit_date and hit_date != daily_event_date:
                                 continue
-                        if (
-                            overlap >= FACT_NEAR_DUP_IDENTICAL_OVERLAP
-                            and normalized_identity(
-                                hit.get('text') or '',
-                            ) == candidate_identity
-                        ):
-                            # 归一后逐字相同：与 Stage-1 的精确重复只差繁简 /
-                            # 大小写 / 停用名 / 标点，照旧直接挡。
+                        if (hit.get('text') or '') == text:
+                            # 唯一允许直接丢弃新 fact 的判据：与命中行**逐字
+                            # 相同**。
                             #
-                            # overlap == 1.0 只是先筛一道（归一相同必然 token
-                            # 集相同，反过来不成立），**不能**单独当判据：
-                            # n-gram 集丢掉了顺序，「喜欢猫，不喜欢狗」和
-                            # 「喜欢狗，不喜欢猫」是同一个集合却是相反的话。
+                            # 这里一度做过各种归一（token 集 / 繁简折叠 / 去
+                            # 停用名 / 去标点 / 大小写 / 折空白），每一种都被
+                            # 找出反例：n-gram 集丢顺序（「喜欢猫，不喜欢狗」
+                            # 对「喜欢狗，不喜欢猫」）、繁简一对多（`鍾`/`鐘`
+                            # 都成 `钟`）、停用名表同时含双方名字（`主人喜欢
+                            # 猫`/`兰兰喜欢猫`）、标点带语义（`-10`/`10`）、
+                            # 大小写带语义（`/Foo`/`/foo`）、空白带语义
+                            # （`echo 'a  b'`/`echo 'a b'`）。结论是这条路上
+                            # 没有安全的归一——不可逆的丢弃只配得上逐字相等。
+                            #
+                            # 它仍然有活干：Stage-1 的 hash 集只含**活跃**行，
+                            # 所以「与某条归档行原文相同」这一类只有这里挡得
+                            # 住（归档行照旧参与拦截，是 main 上就有的行为）。
                             is_dup = True
                             duplicate_hit = hit
                             break

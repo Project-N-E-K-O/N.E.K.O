@@ -30,11 +30,6 @@ logger = get_module_logger(__name__, "Memory")
 
 # ``token_overlap`` 上的两条线（消费点：memory/facts.py 的 Stage-2）。
 #
-# 1.0 = token 集完全相同。它只是硬挡的**前置筛**，不是判据：n-gram 集合丢掉
-# 顺序，「喜欢猫，不喜欢狗」和「喜欢狗，不喜欢猫」的集合一模一样。真正拍板的
-# 是 `normalized_identity()` 逐字相同（归一相同 ⇒ token 集相同，反之不成立，
-# 所以拿它先筛一道是安全的）。
-FACT_NEAR_DUP_IDENTICAL_OVERLAP = 1.0
 # 0.25 = 值得请 LLM 看一眼的下限，**不是**「判定为重复」的线。实测这个量本身
 # 分不开语义：「养了一只猫」vs「养了一只狗」0.87（必须各留一条），而
 # 「用户是一名程序员」vs「用户的职业是程序员」只有 0.29（该合并）。所以它按
@@ -151,47 +146,6 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     )
     residue = [seg for seg in residue_source.split() if seg]
     return residue[:1] if residue else []
-
-
-def normalized_identity(content: str) -> str:
-    """Order-preserving normal form used to decide "this is the same sentence".
-
-    This is the only key allowed to drop a fact outright, so every
-    normalization step in it has to be one that cannot merge two things
-    that were actually different:
-
-    * Order is preserved. n-gram *sets* discard it, so ``喜欢猫，不喜欢狗``
-      and ``喜欢狗，不喜欢猫`` — opposite statements — share one set and
-      would read as the same sentence.
-    * The script fold is **not** applied, even though ``fts_tokens`` uses
-      it for retrieval. That fold is many-to-one by nature (``鍾`` and
-      ``鐘`` both become ``钟``; ``乾`` and ``幹`` both become ``干``), so
-      two facts about different people would collapse into one key and
-      the later one would be discarded without anyone seeing it. A
-      Traditional/Simplified pair of the same sentence still reaches
-      overlap 1.0 and goes to arbitration — it just doesn't get dropped
-      on a lossy equality.
-    * Diacritics are kept, for the same reason.
-    * Stop-names are **not** stripped either, even though ``fts_tokens``
-      strips them: the list holds both the master's and the catgirl's
-      names, so ``主人喜欢猫`` and ``兰兰喜欢猫`` — two facts about two
-      different people — would normalize to the same key.
-    * Punctuation is **not** dropped. The tokenizer's separator class
-      contains characters that carry meaning: ``-10`` and ``10`` are
-      opposite balances, ``1.5`` and ``15`` are different weights,
-      ``a > b`` and ``a b`` are different claims.
-
-    * Case is **not** folded. ``the variable is X`` / ``the variable is
-      x`` and ``/Foo`` / ``/foo`` are different values, and a fact is
-      free to quote one.
-
-    What is left is runs of whitespace, collapsed to one space rather
-    than removed — removing it would merge ``an ice cream`` with ``a
-    nice cream``. Nothing else, because nothing else can be shown
-    incapable of telling two facts apart. Every other difference sends
-    the pair to arbitration instead of dropping it.
-    """  # noqa: DOCSTRING_CJK
-    return " ".join(str(content or "").split())
 
 
 def token_overlap(left: list[str], right: list[str]) -> float:

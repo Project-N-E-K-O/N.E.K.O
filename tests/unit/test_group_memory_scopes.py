@@ -913,10 +913,11 @@ async def test_fts_dedup_reconciles_request_sources_conservatively():
         semantic_dedup=False,
         speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
     )
+    first[0].pop("hash", None)
     index.hits = [(first[0]["id"], 1.0)]
     reconciled = []
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("Alice likes  cats")], subject=subject,
+        "Neko", [_fact("Alice likes cats")], subject=subject,
         semantic_dedup=True,
         speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.9},
         reconciled_facts=reconciled,
@@ -2029,13 +2030,14 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
     legacy_first = await harness._apersist_new_facts(
         "Neko", [_fact("master wants to game on friday night")], semantic_dedup=False,
     )
+    legacy_first[0].pop("hash", None)
     scoped_ids = [fact["id"] for fact in harness._mem[:3]]
     index.hits = [(fid, 1.0) for fid in scoped_ids] + [
         (legacy_first[0]["id"], 1.0),
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("master wants to  game on friday night")], semantic_dedup=True,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=True,
     )
     assert duplicate == []
 
@@ -2088,13 +2090,14 @@ async def test_fts_dedup_escalates_past_crowded_first_window():
     legacy_first = await harness._apersist_new_facts(
         "Neko", [_fact("master wants to game on friday night")], semantic_dedup=False,
     )
+    legacy_first[0].pop("hash", None)
     scoped_ids = [fact["id"] for fact in harness._mem[:10]]
     index.hits = [(fid, 1.0) for fid in scoped_ids] + [
         (legacy_first[0]["id"], 1.0),
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("master wants to  game on friday night")], semantic_dedup=True,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=True,
     )
     assert duplicate == []
 
