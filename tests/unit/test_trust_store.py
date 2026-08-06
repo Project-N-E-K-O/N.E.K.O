@@ -812,6 +812,54 @@ async def test_an_unattributed_declaration_is_refused(pool):
     assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
 
 
+async def test_binding_into_a_roster_account_with_no_ledger_needs_a_seed_first(pool):
+    """Pins why the dashboard binds to an ACCOUNT, not to an entity id.
+
+    Entities are born from ledger activity. A trusted user who has never
+    accrued a trust event has none -- on a fresh install that describes the
+    private-chat admin, the very account every in-group openid must merge
+    into. Binding straight to it raises; seeding it first is what makes the
+    main use case reachable at all.
+    """
+    await _open_gate()
+    owner = "qq:OWNER_PRIVATE_OPENID"
+    member = "qq:MEMBER_IN_GROUP_X"
+
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.abind_account(member, owner)
+
+    entity_id = await trust_store.aensure_account(owner)
+    assert entity_id
+    result = await trust_store.abind_account(
+        member, entity_id, bound_by="qq_auto_reply.dashboard",
+    )
+
+    assert result["entity_id"] == entity_id
+    snap = trust_store.trust_snapshot()
+    assert snap.entity_of(member) == entity_id
+    assert snap.same_entity(member, owner)
+
+
+async def test_seeding_an_account_records_no_channel_observation(pool):
+    """``channels_seen`` is an observation of traffic; a seed is not traffic."""
+    await _open_gate()
+
+    await trust_store.aensure_account("qq:OWNER_PRIVATE_OPENID")
+
+    assert trust_store.trust_snapshot().channels_seen(
+        "qq:OWNER_PRIVATE_OPENID",
+    ) == ()
+
+
+async def test_unbinding_an_account_that_was_never_bound_is_a_no_op(pool):
+    """The dashboard offers undo unconditionally; it must be safe to press."""
+    await _open_gate()
+
+    result = await trust_store.aunbind_account("qq:NEVER_SEEN")
+
+    assert result["changed"] is False
+
+
 async def test_the_declaration_signature_admits_nothing_derived_from_traffic():
     """The argument list is the guardrail; keep it unable to express an inference.
 

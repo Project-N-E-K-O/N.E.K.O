@@ -465,6 +465,40 @@ class QQMemoryBridge:
         response.raise_for_status()
         return response.json()
 
+    async def ensure_speaker_account(
+        self, *, account_id: str, timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """确保一个 account 在身份池里有 entity，返回它。
+
+        合并目标必须先有 entity 才能被 bind（服务端对未知 entity 直接
+        404），而 entity 只从账本活动里诞生——新装机器上主人的私聊 account
+        往往一个都没有，恰恰是所有群内 ID 要并进去的那一个。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/accounts/ensure",
+            json={"account_id": account_id},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def unbind_speaker_account(
+        self, *, account_id: str, timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """把一个 account 拆回独立 entity。**误绑的唯一回滚**。
+
+        对本来就没绑过的 account 是无害的（服务端返回 ``changed=false``）。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/accounts/unbind",
+            json={"account_id": account_id},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def fetch_speaker_profile(
         self, account_id: str, *, timeout: float = 10.0,
     ) -> dict[str, Any]:

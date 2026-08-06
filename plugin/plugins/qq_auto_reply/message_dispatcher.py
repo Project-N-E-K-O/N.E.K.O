@@ -187,10 +187,31 @@ class QQMessageDispatcher:
             return
         pool.pop(min(pool, key=_group_last_seen), None)
 
-    def list_open_platform_pending_claims(self) -> list[dict[str, Any]]:
-        """待认领清单，最近出现的排前面。只读快照。"""
-        rows: list[dict[str, Any]] = []
+    def list_open_platform_pending_claims(
+        self, *, is_claimed: Any = None,
+    ) -> list[dict[str, Any]]:
+        """待认领清单，最近出现的排前面。
+
+        ``is_claimed`` 是一个 ``(actor) -> bool`` 的谓词，为真的当场出清单
+        并从池里删掉。没有它的话，一个刚被加进名册的人要等**再发一次言**
+        才会消失（移除只发生在 `_note_open_platform_pending_claim`），而操
+        作者认领完最可能的下一步就是刷新页面——看见同一行还在，于是重复
+        点一次。
+        """
         pool = getattr(self, "_open_platform_pending_claims", None) or {}
+        if callable(is_claimed):
+            for group_id in list(pool):
+                bucket = pool.get(group_id) or {}
+                for sender_id in list(bucket):
+                    try:
+                        claimed = bool(is_claimed(sender_id))
+                    except Exception:
+                        claimed = False
+                    if claimed:
+                        bucket.pop(sender_id, None)
+                if not bucket:
+                    pool.pop(group_id, None)
+        rows: list[dict[str, Any]] = []
         for group_id, bucket in pool.items():
             for sender_id, entry in bucket.items():
                 rows.append({

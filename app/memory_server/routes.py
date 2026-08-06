@@ -2915,6 +2915,30 @@ async def declare_identity_scope(req: IdentityScopeDeclareRequest):
         raise _identity_error(exc) from exc
 
 
+@app.post("/internal/identity/accounts/ensure")
+async def ensure_identity_account(req: IdentityAccountRequest):
+    """Register one account so it has an entity to be bound to.
+
+    ``bind`` takes an entity id and 404s on an unknown one, but an entity is
+    only born from ledger activity -- so a roster account that has never
+    accrued a trust event has none, and on a fresh install that describes the
+    very account everything else needs to merge INTO (the owner authorised in
+    DMs). This is the seam that lets the dashboard offer it as a merge target.
+
+    Creating the seed entity is not an edge and asserts nothing about who the
+    person is: it links the account to itself. The human assertion is the bind
+    that follows. No channel is recorded either -- ``channels_seen`` is an
+    observation of traffic, and this call is not traffic.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    entity_id = await trust_store.aensure_account(req.account_id)
+    if entity_id is None:
+        raise HTTPException(status_code=422, detail="invalid account_id")
+    return {"account_id": req.account_id, "entity_id": entity_id}
+
+
 @app.post("/internal/identity/accounts/bind")
 async def bind_identity_account(req: IdentityBindRequest):
     """Link one account to an entity. HUMAN-TRIGGERED ONLY.

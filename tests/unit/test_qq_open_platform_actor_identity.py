@@ -34,6 +34,7 @@ See ``docs/design/speaker-trust-entity-semantics.md`` section 2.15.4.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -336,16 +337,33 @@ def _dashboard(*, roster, profiles, claims=(), mode="open_platform"):
     dispatcher = _dispatcher()
     for row in claims:
         _speak(dispatcher, sender=row[0], group=row[1], nickname=row[2])
+    levels = {str(user.get("qq")): str(user.get("level")) for user in roster}
     bridge = SimpleNamespace(
         speaker_account_id=lambda actor: f"qq:{str(actor or '').strip()}",
         fetch_speaker_profile=AsyncMock(
-            side_effect=lambda account_id: dict(profiles[account_id]),
+            side_effect=lambda account_id, **kw: dict(profiles[account_id]),
+        ),
+        ensure_speaker_account=AsyncMock(
+            side_effect=lambda account_id, **kw: {
+                "account_id": account_id,
+                "entity_id": f"entity_for_{account_id}",
+            },
+        ),
+        bind_speaker_account=AsyncMock(
+            return_value={"entity_id": "entity_x", "persisted": True},
+        ),
+        unbind_speaker_account=AsyncMock(
+            return_value={"changed": True, "ledger_delta": -0.1,
+                          "effective_delta": 0.3, "persisted": True},
         ),
     )
     service.plugin = SimpleNamespace(
         message_dispatcher=dispatcher,
         memory_bridge=bridge,
-        permission_mgr=SimpleNamespace(list_users=lambda: list(roster)),
+        permission_mgr=SimpleNamespace(
+            list_users=lambda: list(roster),
+            get_permission_level=lambda actor: levels.get(str(actor), "none"),
+        ),
         settings_service=QQSettingsService,
         _qq_settings={"qq_connection_mode": mode},
         i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
@@ -434,30 +452,144 @@ async def test_the_roster_still_lists_when_the_server_is_unreachable():
     assert payload["candidates"][0]["entity_id"] is None
 
 
+async def test_weights_are_fetched_concurrently_with_a_short_timeout():
+    """Serial fetches would blow the frontend's fixed 20s ``call()`` deadline.
+
+    A roster of N behind a stalled connection takes N x timeout serially, and
+    the page then reports a load failure instead of degrading to an unordered
+    roster -- which defeats the fallback above. Both halves matter: the
+    concurrency AND a per-request timeout well under the page deadline.
+    """
+    roster = [
+        {"qq": f"USER_{index}", "level": "trusted", "nickname": ""}
+        for index in range(8)
+    ]
+    service = _dashboard(roster=roster, profiles={})
+    in_flight = 0
+    peak = 0
+
+    async def _slow(account_id, **kwargs):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0)
+            return {"entity_id": None, "adjustment_sum": 0.0,
+                    "account_message_count": 0}
+        finally:
+            in_flight -= 1
+
+    service.plugin.memory_bridge.fetch_speaker_profile = AsyncMock(
+        side_effect=_slow,
+    )
+
+    await service.list_identity_claims()
+
+    assert peak > 1, "profile fetches ran one after another"
+    timeouts = {
+        call.kwargs.get("timeout")
+        for call in service.plugin.memory_bridge.fetch_speaker_profile.await_args_list
+    }
+    assert timeouts == {QQDashboardService.IDENTITY_CANDIDATE_TIMEOUT}
+    # 20s is the page's own deadline (open_platform.html's ``call()``).
+    assert QQDashboardService.IDENTITY_CANDIDATE_TIMEOUT < 20
+
+
+async def test_a_claimed_id_leaves_the_list_without_waiting_for_another_message():
+    """Otherwise the operator refreshes, sees the same row, and claims twice.
+
+    Removal on the message path alone only fires when that person speaks
+    again, which may be never.
+    """
+    service = _dashboard(
+        roster=[{"qq": "MEMBER_IN_X", "level": "trusted", "nickname": ""}],
+        profiles={"qq:MEMBER_IN_X": {"entity_id": "e1", "adjustment_sum": 0.0,
+                                     "account_message_count": 0}},
+        claims=[("MEMBER_IN_X", "GROUP_X", ""),
+                ("STRANGER", "GROUP_X", "")],
+    )
+
+    payload = (await service.list_identity_claims()).value
+
+    assert [row["user_id"] for row in payload["claims"]] == ["STRANGER"]
+    # And it is gone from the pool, not merely filtered out of one response.
+    assert [
+        row["user_id"] for row in
+        service.plugin.message_dispatcher.list_open_platform_pending_claims()
+    ] == ["STRANGER"]
+
+
 async def test_binding_refuses_a_blank_side():
     service = _dashboard(roster=[], profiles={})
 
-    for args in ({"user_id": "", "entity_id": "e1"},
-                 {"user_id": "MEMBER_X", "entity_id": " "}):
+    for args in ({"user_id": "", "target_user_id": "OWNER"},
+                 {"user_id": "MEMBER_X", "target_user_id": " "}):
         result = await service.bind_identity_account(**args)
         assert result.__class__.__name__ == "Err"
 
 
-async def test_binding_composes_the_account_id_through_the_bridge():
-    """The platform prefix lives in exactly one place; callers never spell it."""
+async def test_binding_refuses_to_merge_an_id_into_itself():
     service = _dashboard(roster=[], profiles={})
-    service.plugin.memory_bridge.bind_speaker_account = AsyncMock(
-        return_value={"entity_id": "entity_owner", "persisted": True},
+
+    result = await service.bind_identity_account(
+        user_id="MEMBER_X", target_user_id="MEMBER_X",
     )
+
+    assert result.__class__.__name__ == "Err"
+    service.plugin.memory_bridge.bind_speaker_account.assert_not_awaited()
+
+
+async def test_binding_seeds_the_target_entity_before_linking():
+    """The owner authorised in DMs usually has NO entity yet.
+
+    Entities are born from ledger activity; ``add_trusted_user`` only touches
+    the permission roster. On a fresh install, or with the memory opt-ins off,
+    the private-chat admin -- the very account every in-group openid needs to
+    merge into -- has none, and ``bind`` 404s on an unknown entity. Taking a
+    target ACCOUNT and seeding it first is what keeps that case selectable.
+    """
+    service = _dashboard(roster=[], profiles={})
 
     await service.bind_identity_account(
-        user_id="MEMBER_IN_X", entity_id="entity_owner",
+        user_id="MEMBER_IN_X", target_user_id="OWNER_PRIVATE_OPENID",
     )
 
-    kwargs = service.plugin.memory_bridge.bind_speaker_account.await_args.kwargs
+    ensured = service.plugin.memory_bridge.ensure_speaker_account.await_args.kwargs
+    assert ensured["account_id"] == "qq:OWNER_PRIVATE_OPENID"
+    bound = service.plugin.memory_bridge.bind_speaker_account.await_args.kwargs
+    # The platform prefix lives in exactly one place; callers never spell it.
+    assert bound["account_id"] == "qq:MEMBER_IN_X"
+    assert bound["entity_id"] == "entity_for_qq:OWNER_PRIVATE_OPENID"
+    assert bound["bound_by"]
+
+
+async def test_unbinding_is_reachable_and_targets_the_in_group_id():
+    """A bind that cannot be undone in the same surface is a trap.
+
+    Binding combines both accounts' trust immediately, so the rollback has to
+    sit next to it rather than in an internal endpoint the operator would
+    have to discover.
+    """
+    service = _dashboard(roster=[], profiles={})
+
+    result = await service.unbind_identity_account(user_id="MEMBER_IN_X")
+
+    kwargs = service.plugin.memory_bridge.unbind_speaker_account.await_args.kwargs
     assert kwargs["account_id"] == "qq:MEMBER_IN_X"
-    assert kwargs["entity_id"] == "entity_owner"
-    assert kwargs["bound_by"]
+    # Both deltas are passed through untouched: under a clamped aggregate they
+    # are legitimately different numbers, and an operator handed only one of
+    # them cannot reconcile it with the score.
+    assert result.value["unbind"]["ledger_delta"] == -0.1
+    assert result.value["unbind"]["effective_delta"] == 0.3
+
+
+async def test_unbinding_refuses_a_blank_id():
+    service = _dashboard(roster=[], profiles={})
+
+    result = await service.unbind_identity_account(user_id="  ")
+
+    assert result.__class__.__name__ == "Err"
+    service.plugin.memory_bridge.unbind_speaker_account.assert_not_awaited()
 
 
 def test_the_dashboard_reports_the_degradation_only_on_the_open_platform():

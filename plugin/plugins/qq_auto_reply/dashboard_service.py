@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from plugin.sdk.plugin import Err, Ok, SdkError
@@ -127,6 +128,7 @@ class QQDashboardService:
                 {"id": "add_trusted_user", "entry_id": "add_trusted_user"},
                 {"id": "list_identity_claims", "entry_id": "list_identity_claims"},
                 {"id": "bind_identity_account", "entry_id": "bind_identity_account"},
+                {"id": "unbind_identity_account", "entry_id": "unbind_identity_account"},
                 {"id": "remove_trusted_user", "entry_id": "remove_trusted_user"},
                 {"id": "set_user_nickname", "entry_id": "set_user_nickname"},
                 {"id": "add_trusted_group", "entry_id": "add_trusted_group"},
@@ -296,6 +298,10 @@ class QQDashboardService:
     #: 查多少个名册用户的账本权重就停。名册通常只有几个人，这个上限存在的
     #: 意义是别让一个被塞了几百人的名册在每次打开页面时发几百个请求。
     IDENTITY_CANDIDATE_MAX = 50
+    #: 单个权重查询的超时。刻意远小于 bridge 的默认 10s：前端 ``call()`` 的
+    #: 死线是固定 20s，而权重只用来排序——为了排序把整个页面拖到超时，等于
+    #: 用一个装饰性字段换掉了唯一的修复入口。
+    IDENTITY_CANDIDATE_TIMEOUT = 3.0
 
     async def list_identity_claims(self):
         """待认领的群内 ID + 合并候选（设计文档 §2.15.4.3 第 1 级）。
@@ -305,23 +311,45 @@ class QQDashboardService:
         被硬约束否决的启发式（自动身份合并）塞给用户当默认答案，而合错两个
         人会污染账本且不可回退。排序规则要改，先去改设计文档。
         """
+        permission_mgr = self.plugin.permission_mgr
+        bridge = getattr(self.plugin, "memory_bridge", None)
         dispatcher = getattr(self.plugin, "message_dispatcher", None)
+        # 已经加进名册的 ID 当场出清单。只靠 `_note_open_platform_pending_claim`
+        # 移除的话，得等那个人**再发一次言**才消失——而他刚被认领，最可能的
+        # 下一步就是操作者刷新页面，看见同一行还在、于是重复点一次。
         claims = (
-            dispatcher.list_open_platform_pending_claims()
+            dispatcher.list_open_platform_pending_claims(
+                is_claimed=(
+                    (lambda actor:
+                     permission_mgr.get_permission_level(actor) != "none")
+                    if permission_mgr is not None else None
+                ),
+            )
             if dispatcher is not None else []
         )
         candidates: list[dict[str, Any]] = []
-        permission_mgr = self.plugin.permission_mgr
-        bridge = getattr(self.plugin, "memory_bridge", None)
         if permission_mgr is not None and bridge is not None:
-            for user in permission_mgr.list_users()[:self.IDENTITY_CANDIDATE_MAX]:
-                account_id = bridge.speaker_account_id(user.get("qq"))
+            roster = permission_mgr.list_users()[:self.IDENTITY_CANDIDATE_MAX]
+
+            async def _weight(account_id: str) -> dict[str, Any]:
                 try:
-                    profile = await bridge.fetch_speaker_profile(account_id)
+                    return await bridge.fetch_speaker_profile(
+                        account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
+                    )
                 except Exception:
                     # 服务端没起来时照样要能列出名册；权重缺失只影响排序，
                     # 不影响用户认得出「这是我私聊授权的那个自己」。
-                    profile = {}
+                    return {}
+
+            account_ids = [
+                bridge.speaker_account_id(user.get("qq")) for user in roster
+            ]
+            # 并发而不是串行：串行时最坏情况是 N × 超时，轻易越过前端 20s 的
+            # 死线，于是上面那个「服务端不可达也要能列出」的兜底反而失效。
+            profiles = await asyncio.gather(
+                *(_weight(account_id) for account_id in account_ids)
+            )
+            for user, account_id, profile in zip(roster, account_ids, profiles):
                 candidates.append({
                     "account_id": account_id,
                     "qq": str(user.get("qq") or ""),
@@ -368,41 +396,72 @@ class QQDashboardService:
             "conversation_scope": conversation_scope,
         }
 
+    def _identity_bridge(self):
+        """记忆桥，缺席时返回 ``(None, Err)``。"""
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if bridge is not None:
+            return bridge, None
+        return None, Err(SdkError(
+            "NOT_INITIALIZED: "
+            + self.plugin.i18n.t(
+                "errors.memory_bridge_not_initialized",
+                default="记忆桥未初始化",
+            )
+        ))
+
     async def bind_identity_account(
-        self, *, user_id: str, entity_id: str,
+        self, *, user_id: str, target_user_id: str,
     ):
-        """把一个群内 ID 并入已有身份。**只能由人在 UI 上触发。**
+        """把一个群内 ID 并入某个**名册用户**的身份。只能由人在 UI 上触发。
+
+        参数是目标**账号**而不是目标 entity，因为 entity 只从账本活动里
+        诞生：新装机器上、或记忆开关关着时，靠第一条私聊自动授权的那个主人
+        一个 entity 都没有——而他恰恰是所有群内 ID 要并进去的那一个。按
+        entity 收参会让这个主用例在 UI 上根本选不中。所以这里先 ensure 出
+        目标的种子 entity，再 bind。
+
+        ensure 出来的种子 entity 不是一条边（它把账号连到自己），真正的人身
+        断言是随后那次 bind。
 
         合并的是**信赖度账本**（entity←account），不是权限名册：名册按裸
         actor id 索引，所以「让主人在这个群里也算主人」仍然要单独把这个 ID
         加进信任用户。两件事分开做是对的——把 bind 顺手当成提权会让信赖度
         这一层变成权限升级的通道。
         """
-        bridge = getattr(self.plugin, "memory_bridge", None)
-        if bridge is None:
-            return Err(SdkError(
-                "NOT_INITIALIZED: "
-                + self.plugin.i18n.t(
-                    "errors.memory_bridge_not_initialized",
-                    default="记忆桥未初始化",
-                )
-            ))
+        bridge, error = self._identity_bridge()
+        if error is not None:
+            return error
         actor = str(user_id or "").strip()
-        target_entity = str(entity_id or "").strip()
-        if not actor or not target_entity:
+        target_actor = str(target_user_id or "").strip()
+        if not actor or not target_actor:
             return Err(SdkError(
                 "INVALID_ARGUMENT: "
                 + self.plugin.i18n.t(
                     "errors.identity_bind_missing_args",
-                    default="user_id 与 entity_id 都不能为空",
+                    default="user_id 与 target_user_id 都不能为空",
+                )
+            ))
+        if actor == target_actor:
+            return Err(SdkError(
+                "INVALID_ARGUMENT: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_same_account",
+                    default="不能把一个 ID 合并到它自己",
                 )
             ))
         # 平台前缀只在 memory_bridge 里拼一次，调用侧（含前端）不许自己拼。
-        target_account = bridge.speaker_account_id(actor)
+        source_account = bridge.speaker_account_id(actor)
+        target_account = bridge.speaker_account_id(target_actor)
         try:
-            result = await bridge.bind_speaker_account(
+            ensured = await bridge.ensure_speaker_account(
                 account_id=target_account,
-                entity_id=target_entity,
+            )
+            entity_id = str(ensured.get("entity_id") or "")
+            if not entity_id:
+                raise RuntimeError("ensure returned no entity_id")
+            result = await bridge.bind_speaker_account(
+                account_id=source_account,
+                entity_id=entity_id,
                 bound_by="qq_auto_reply.dashboard",
             )
         except Exception as exc:
@@ -414,6 +473,43 @@ class QQDashboardService:
                 )
             ))
         return Ok({"bind": result})
+
+    async def unbind_identity_account(self, *, user_id: str):
+        """把一个群内 ID 拆回独立身份。**误绑的唯一回滚。**
+
+        必须和 bind 出现在同一个界面上：bind 立刻把两个账号的信赖度合到一
+        起，操作者选错一项就需要当场能退回来，而不是去翻文档找一个内部端
+        点。对本来就没绑过的 ID 是无害的（服务端返回 ``changed=false``）。
+
+        ``ledger_delta`` 与 ``effective_delta`` 通常是两个不同的数字，这不
+        是 bug：夹紧的聚合下「这个账号带走了多少」没有唯一答案。两个都原样
+        透传给 UI。
+        """
+        bridge, error = self._identity_bridge()
+        if error is not None:
+            return error
+        actor = str(user_id or "").strip()
+        if not actor:
+            return Err(SdkError(
+                "INVALID_ARGUMENT: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_missing_args",
+                    default="user_id 与 target_user_id 都不能为空",
+                )
+            ))
+        try:
+            result = await bridge.unbind_speaker_account(
+                account_id=bridge.speaker_account_id(actor),
+            )
+        except Exception as exc:
+            return Err(SdkError(
+                "UNBIND_FAILED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_unbind_failed",
+                    default="撤销合并失败: {error}", error=str(exc),
+                )
+            ))
+        return Ok({"unbind": result})
 
     async def remove_trusted_user(self, *, qq_number: str):
         if not self.plugin.permission_mgr:

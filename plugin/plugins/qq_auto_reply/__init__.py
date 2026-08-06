@@ -1142,10 +1142,17 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return await self.dashboard_service.list_identity_claims()
 
     @ui.action(id="bind_identity_account", label=tr("entries.bind_identity_account.name", default="合并到已有身份"), refresh_context=True)
-    @plugin_entry(id="bind_identity_account", name=tr("entries.bind_identity_account.name", default="合并到已有身份"), description=tr("entries.bind_identity_account.description", default="把一个群内 ID 的信赖度账本并入已有身份。只能由人触发，系统不会自动合并任何身份。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}, "entity_id": {"type": "string"}}, "required": ["user_id", "entity_id"], "additionalProperties": False})
-    async def bind_identity_account(self, user_id: str, entity_id: str, **_):
+    @plugin_entry(id="bind_identity_account", name=tr("entries.bind_identity_account.name", default="合并到已有身份"), description=tr("entries.bind_identity_account.description", default="把一个群内 ID 的信赖度账本并入已有身份。只能由人触发，系统不会自动合并任何身份。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}, "target_user_id": {"type": "string"}}, "required": ["user_id", "target_user_id"], "additionalProperties": False})
+    async def bind_identity_account(self, user_id: str, target_user_id: str, **_):
         return await self.dashboard_service.bind_identity_account(
-            user_id=user_id, entity_id=entity_id,
+            user_id=user_id, target_user_id=target_user_id,
+        )
+
+    @ui.action(id="unbind_identity_account", label=tr("entries.unbind_identity_account.name", default="撤销合并"), refresh_context=True)
+    @plugin_entry(id="unbind_identity_account", name=tr("entries.unbind_identity_account.name", default="撤销合并"), description=tr("entries.unbind_identity_account.description", default="把一个群内 ID 从它被合并进的身份里拆回独立身份。误合并的唯一回滚方式。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"], "additionalProperties": False})
+    async def unbind_identity_account(self, user_id: str, **_):
+        return await self.dashboard_service.unbind_identity_account(
+            user_id=user_id,
         )
 
     @ui.action(id="remove_trusted_user", label=tr("entries.remove_trusted_user.name", default="移除信任用户"), refresh_context=True)
