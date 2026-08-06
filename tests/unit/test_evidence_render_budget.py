@@ -15,11 +15,13 @@ Covers:
 from __future__ import annotations
 
 import logging
+import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from config import PERSONA_RENDER_ENCODING
 from utils.tokenize import count_tokens
 
 
@@ -138,6 +140,134 @@ def test_heuristic_floor_for_short_non_empty_text(monkeypatch):
     assert count_tokens("ok") >= 1
     assert count_tokens("") == 0
     _reset_fallback_warned_for_tests()
+
+
+# ── 降级计数是上界，不是估算（#2574） ────────────────────────────────
+#
+# #2574 报的是老启发式（非 CJK 约 0.25 token/char）在打包形态下系统性
+# 低估：URL / base64 / 代码片段这类高熵文本实测真实 token 能到预算的
+# 2.5–2.7 倍，而且整条链路没有任何告警。修法是把权重换成 UTF-8 字节
+# 长度（#2626）——BPE 的每个 token 至少映射 1 字节，merge 只会让 token
+# 更少，所以字节数是真实 token 数的**严格上界**。
+#
+# 这条上界性质是整个修复的立论基础，但此前没有测试直接钉住它：现有用
+# 例只覆盖了 warning 一次性、空串和短串下限。下面三条按「计数 → 单条
+# 截断 → 整段预算」把这条不变量在每一层各钉一遍，用的就是 issue 点名
+# 的那几类高熵样本。
+
+# issue 点名的三类高熵文本，加上 CJK / 混合 / 组合字符等边界形态。
+_HIGH_ENTROPY_SAMPLES = [
+    # URL：老启发式最惨的一类，标点和路径段几乎每个字符都自成 token
+    "https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/tokenize.py#L112",
+    # base64：没有任何可 merge 的自然语言词块
+    "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgcGFkZGluZyBkYXRhIQ==",
+    # 代码片段
+    "def _heuristic_char_weight(c): return float(len(c.encode('utf-8')))",
+    # 纯 CJK：字节权重在这里最保守（3 字节/字 vs 真实约 1 token/字）
+    "主人今天心情不错，说想吃辣条",
+    # 中英混排 + URL
+    "主人发了个链接 https://example.com/a?b=1&c=2 说让我看看",
+    # emoji（4 字节）与组合字符
+    "辣条好吃🌶️🔥 café é",
+    # 短串：max(1, ...) 下限的那一头
+    "ok",
+    "a",
+]
+
+
+def _real_encoder():
+    """真实 tiktoken encoder；数据文件取不到就跳过——这几条断言的参照系
+    就是它，没有它测的就不是同一件事。必须在打 fallback 补丁**之前**调，
+    否则 `import tiktoken` 拿到的是 MagicMock。"""
+    try:
+        import tiktoken
+        return tiktoken.get_encoding(PERSONA_RENDER_ENCODING)
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"tiktoken encoding data unavailable: {e}")
+
+
+@pytest.fixture
+def force_heuristic(monkeypatch):
+    """让 `_get_encoder` 必然失败，把 utils.tokenize 整个模块压到降级分支，
+    并把打补丁前抓到的真实 encoder yield 出来做参照系。
+
+    退出时清 `_ENCODERS`：该缓存把失败也缓存下来（正是它让降级不会每次
+    重试磁盘 IO），不清的话同进程后续用例全被钉死在降级形态。"""
+    real_enc = _real_encoder()
+
+    from utils.tokenize import _reset_fallback_warned_for_tests
+
+    fake_tiktoken = MagicMock()
+    fake_tiktoken.get_encoding.side_effect = RuntimeError(
+        "encoding file missing — packaging bug simulation"
+    )
+    monkeypatch.setitem(sys.modules, 'tiktoken', fake_tiktoken)
+    _reset_fallback_warned_for_tests()
+    yield real_enc
+    _reset_fallback_warned_for_tests()
+
+
+@pytest.mark.parametrize("text", _HIGH_ENTROPY_SAMPLES)
+def test_heuristic_never_undercounts_real_tokens(text):
+    """降级计数必须 ≥ 真实 tiktoken 计数——#2574 的核心不变量。
+
+    直接调 `_count_tokens_heuristic`，不需要打 fallback 补丁，所以同一个
+    用例里两边都能拿到真值。反过来（高估多少）不设上限：字节权重对 CJK
+    约 3 倍、对英文约 4 倍，那是降级形态下**少渲染**，是有意选择的方向
+    （见 utils/tokenize.py 模块 docstring），不是回归。
+    """
+    from utils.tokenize import _count_tokens_heuristic
+
+    enc = _real_encoder()
+    real = len(enc.encode(text, disallowed_special=()))
+    heuristic = _count_tokens_heuristic(text)
+    assert heuristic >= real, (
+        f"降级计数低估了真实 token：{text!r} 启发式 {heuristic} < 真实 "
+        f"{real}——#2574 的预算突破就是这么来的"
+    )
+
+
+@pytest.mark.parametrize("text", _HIGH_ENTROPY_SAMPLES)
+@pytest.mark.parametrize("budget", [1, 5, 20])
+def test_heuristic_truncate_output_fits_real_budget(force_heuristic, text, budget):
+    """降级形态下 `truncate_to_tokens` 的输出，用真实 tokenizer 量也必须
+    在预算内。单条召回（L21 每条 400）靠的就是这一层。"""
+    from utils.tokenize import truncate_to_tokens
+
+    enc = force_heuristic
+    out = truncate_to_tokens(text, budget)
+    real = len(enc.encode(out, disallowed_special=())) if out else 0
+    assert real <= budget, (
+        f"降级截断的输出超预算：{text!r} → {out!r} 真实 {real} > {budget}"
+    )
+
+
+@pytest.mark.parametrize("budget", [40, 120, 2200])
+def test_heuristic_line_budget_holds_against_real_tokenizer(force_heuristic, budget):
+    """降级形态下 `take_lines_within_token_budget` 的产物（含 join 用的
+    分隔符），用真实 tokenizer 量也必须在预算内。
+
+    2200 是 #2563 给 L21 召回整段定的预算，issue 实测在旧启发式下真实
+    token 能到它的 2.5–2.7 倍；40 / 120 是让裁剪真的发生的紧预算。
+
+    唯一豁免是「首行必留」——调用方按相关性排过序，宁可超一点也要出一
+    条，见 `take_lines_within_token_budget` 的 docstring。"""
+    from utils.tokenize import take_lines_within_token_budget
+
+    enc = force_heuristic
+    separator = "\n"
+    kept, dropped = take_lines_within_token_budget(
+        _HIGH_ENTROPY_SAMPLES, budget, separator=separator,
+    )
+    assert kept, "非零预算下至少要留一行"
+    assert dropped == len(_HIGH_ENTROPY_SAMPLES) - len(kept)
+
+    real = len(enc.encode(separator.join(kept), disallowed_special=()))
+    if len(kept) == 1:
+        return  # 首行必留，本来就允许单条超预算
+    assert real <= budget, (
+        f"降级整段预算被突破：留了 {len(kept)} 行，真实 {real} > {budget}"
+    )
 
 
 # ── PersonaManager._score_trim_entries ─────────────────────────────
