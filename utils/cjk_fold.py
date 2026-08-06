@@ -41,7 +41,7 @@ Two properties this fold does NOT have, and callers must not assume:
 
 Regenerate with ``scripts/gen_cjk_fold_map.py`` after an OpenCC upgrade;
 ``tests/unit/test_fact_near_dup_index.py`` pins the behaviour that matters.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
