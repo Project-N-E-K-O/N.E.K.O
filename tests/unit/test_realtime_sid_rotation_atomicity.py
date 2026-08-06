@@ -277,6 +277,41 @@ async def test_cancelling_the_pipeline_clear_cannot_strand_the_done_ledger():
 
 
 @pytest.mark.asyncio
+async def test_a_done_request_during_the_interrupt_window_cannot_own_the_ledger():
+    """A concurrent done request must not consume the NEXT turn's entry.
+
+    The 20ms interrupt wait is a window in which another task — proactive
+    delivery finishing, say — can see the freshly cleared flag, enqueue its
+    own sentinel behind ``__interrupt__``, and set the flag back to True.
+    That sentinel is already void (the interrupt precedes it), but a True
+    ledger makes the retry's own done request short-circuit on "already", so
+    the retried utterance never gets a sentinel after its text.
+
+    ``handle_new_message`` and friends survive this because they re-clear
+    after the call returns; the discard and takeover paths do not, which is
+    why the clear now owns that reset itself.
+    """
+
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+
+    async def concurrent_done_request():
+        # Land inside the sleep, after the flag was cleared.
+        await asyncio.sleep(0.005)
+        assert mgr._tts_done_queued_for_turn is False, (
+            "test must observe the cleared flag, or it is not reproducing the race"
+        )
+        mgr.tts_request_queue.put((None, None))
+        mgr._tts_done_queued_for_turn = True
+
+    await asyncio.gather(_clear_pipeline(mgr), concurrent_done_request())
+
+    assert mgr._tts_done_queued_for_turn is False, (
+        "the clear must re-take the ledger after its interrupt window"
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancelling_the_pipeline_clear_keeps_deferred_done_with_its_chunks():
     """The other flag must NOT be hoisted alongside — it is paired elsewhere.
 

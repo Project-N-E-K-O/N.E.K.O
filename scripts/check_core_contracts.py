@@ -1037,8 +1037,19 @@ def _name_binding_sites(tree: ast.AST, name: str) -> list[ast.AST]:
             ):
                 sites.append(node)
         elif isinstance(node, ast.AnnAssign):
-            # A bare ``x: T`` declares a type and binds nothing.
-            if node.value is not None and name in _assignment_target_names(node.target):
+            if name not in _assignment_target_names(node.target):
+                pass
+            elif node.value is not None:
+                sites.append(node)
+            elif isinstance(node.target, ast.Name):
+                # A valueless annotation binds no VALUE but does affect scope:
+                # ``asyncio: object`` anywhere in a function makes the name
+                # local for that whole function, so a later ``asyncio.Lock()``
+                # raises UnboundLocalError rather than reaching the module.
+                # Either way the name no longer means the import, so it counts.
+                # (An ATTRIBUTE annotation — ``self.lock: asyncio.Lock`` — has
+                # no such effect and is handled where lock bindings are
+                # collected, not here.)
                 sites.append(node)
         elif isinstance(node, (ast.AugAssign, ast.NamedExpr)):
             if name in _assignment_target_names(node.target):
@@ -1158,9 +1169,11 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
     blocks_seen = 0
     manager_bindings: list[tuple[ast.AST, ast.expr | None]] = []
     annotation_only: list[ast.AST] = []
-    for path in sorted(core_dir.glob("*.py")):
-        if path.name == "__init__.py":
-            continue
+    # rglob, and no ``__init__.py`` exemption: a holder in the facade or in a
+    # subpackage is inside the package whose invariant this enforces. The flat
+    # layout is enforced separately by CORE_MIXIN_SHAPE, but this gate must not
+    # depend on that one still being there to be complete.
+    for path in sorted(p for p in core_dir.rglob("*.py") if "__pycache__" not in p.parts):
         tree = parse(path)
         # Every sanctioned mention of the lock is the context expression of an
         # ``async with``. Manual ``await self.lock.acquire()`` ... ``release()``

@@ -365,6 +365,14 @@ class TtsRuntimeMixin:
                     break
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
+            # 再清一次 queued：上面那 20ms 里并发路径（finish_proactive_delivery
+            # 等）可能看到 False、排了自己的 sentinel 并把它置回 True。那个
+            # sentinel 排在 __interrupt__ 之后、本轮后续文本之前，本来就已作废；
+            # 而记账留 True 会让后续文本的 done 请求 early-return "already"，
+            # 重试那一轮因此发不出句尾 sentinel。handle_new_message 一族靠调用方
+            # 返回后的重复清零兜住了这一点，丢弃/takeover 两条路径没有，所以兜底
+            # 收进这里，让五个调用方拿到同一个保证。
+            self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             self._reset_tts_replay_state()
             # Drop only queued-but-unconfirmed TTS text. Already-confirmed

@@ -2524,6 +2524,76 @@ def test_lock_gate_rejects_a_compound_import_whose_last_alias_shadows(
 
 
 @pytest.mark.unit
+def test_lock_gate_counts_a_bare_local_annotation_of_the_module_name(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``asyncio: object`` in a function makes the NAME local for that scope.
+
+    Unlike an attribute annotation, this one changes what the later
+    ``asyncio.Lock()`` resolves to — measured, it raises UnboundLocalError
+    rather than reaching the module — so the name no longer means the import
+    and the primitive claim no longer holds.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        asyncio: object\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "only by a plain 'import asyncio'" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "relative",
+    [
+        pytest.param("__init__.py", id="facade-initializer"),
+        pytest.param("helpers/session.py", id="subpackage-module"),
+    ],
+)
+def test_lock_gate_scans_every_module_in_the_package(
+    contract_checker,
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    """A holder in the facade or a subpackage is still inside the package.
+
+    ``glob('*.py')`` is non-recursive and the initializer used to be skipped
+    outright, so a holder in either place was never parsed.
+    """
+
+    core, manager = _lock_core_dir(tmp_path, _CLEAN_PROBE)
+    holder = core / relative
+    holder.parent.mkdir(parents=True, exist_ok=True)
+    holder.write_text(
+        '"""m."""\n\n'
+        "class SneakyMixin:\n"
+        '    """m."""\n\n'
+        "    async def hold(self):\n"
+        "        async with self.lock:\n"
+        "            await self.work()\n",
+        encoding="utf-8",
+    )
+
+    violations = contract_checker.check_session_lock_atomicity(core, manager)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "must never be held across a suspension" in violations[0].message
+
+
+@pytest.mark.unit
 def test_lock_gate_does_not_count_a_valueless_annotation_as_a_binding(
     contract_checker,
     tmp_path: Path,
