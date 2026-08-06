@@ -22,9 +22,16 @@ argument, so the default silently won and Japanese / Korean / Russian /
 Spanish / Portuguese / Chinese users all got English prompts — the localized
 templates in ``config/prompts/prompts_agent.py`` were never reachable.
 
-These tests are pinned at the **call site**: a test that only exercises
-``analyze_and_execute`` with an explicit ``lang`` cannot catch a caller that
-forgets to pass it.
+Where the language comes from matters as much as passing it.  agent_server is a
+separate process talking to main_server over ZeroMQ, so its own
+``get_global_language()`` only derives NEKO_LANGUAGE / Steam / system locale — it
+cannot see the frontend i18n truth the session holds in ``user_language``.  The
+analyze_request event therefore carries the session locale, and
+``_resolve_analyze_lang`` prefers it, falling back to the process global.
+
+These tests are pinned at the **call site** at every hop (event → handler →
+executor): a test that only exercises ``analyze_and_execute`` with an explicit
+``lang`` cannot catch a caller that forgets to pass it.
 """
 
 from __future__ import annotations
@@ -70,9 +77,7 @@ class _CapturingExecutor:
         return None
 
 
-def _run_analyze(monkeypatch: pytest.MonkeyPatch, executor: Any, ui_language: str) -> None:
-    """Drive ``_do_analyze_and_plan`` once with ``ui_language`` selected."""
-    from app.agent_server import api_runtime
+def _install_agent_modules(monkeypatch: pytest.MonkeyPatch, executor: Any) -> None:
     from app.agent_server._shared import Modules
 
     monkeypatch.setattr(Modules, "task_executor", executor, raising=False)
@@ -90,9 +95,30 @@ def _run_analyze(monkeypatch: pytest.MonkeyPatch, executor: Any, ui_language: st
         raising=False,
     )
 
+
+def _run_analyze(
+    monkeypatch: pytest.MonkeyPatch,
+    executor: Any,
+    ui_language: str,
+    session_language: Optional[str] = None,
+) -> None:
+    """Drive ``_do_analyze_and_plan`` once.
+
+    ``ui_language`` is what this process's global language resolves to;
+    ``session_language`` is what rode the analyze_request event from main_server
+    (``None`` = the event carried none, so the global is the only source).
+    """
+    from app.agent_server import api_runtime
+
+    _install_agent_modules(monkeypatch, executor)
+
     messages = [{"role": "user", "content": "帮我打开浏览器搜索一下天气"}]
     with language_context(ui_language):
-        asyncio.run(api_runtime._do_analyze_and_plan(messages, "喵喵"))
+        asyncio.run(
+            api_runtime._do_analyze_and_plan(
+                messages, "喵喵", session_language=session_language,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -255,3 +281,217 @@ def test_short_codes_resolve_to_distinct_localized_templates():
     for short in ("zh", "ja", "ko", "ru", "es", "pt"):
         assert _loc(UNIFIED_CHANNEL_SYSTEM_PROMPT, short) != english
         assert _loc(CHANNEL_DESC_BROWSER_USE, short) != _loc(CHANNEL_DESC_BROWSER_USE, "en")
+
+
+# ---------------------------------------------------------------------------
+# 4. Session locale beats the agent process's own locale
+# ---------------------------------------------------------------------------
+
+
+def test_session_language_wins_over_process_global(monkeypatch: pytest.MonkeyPatch):
+    """The frontend UI language is the truth; the machine's locale is the fallback.
+
+    A user on a Chinese Windows / Steam who runs the UI in English must get English
+    analyzer prompts — the process global would say ``zh``.
+    """
+    executor = _CapturingExecutor()
+    _run_analyze(monkeypatch, executor, ui_language="zh-CN", session_language="en")
+
+    assert executor.kwargs["lang"] == "en"
+
+
+def test_session_language_wins_in_the_other_direction(monkeypatch: pytest.MonkeyPatch):
+    """Symmetric case: English machine, Japanese UI → Japanese prompts."""
+    executor = _PromptCapturingExecutor()
+    _run_analyze(monkeypatch, executor, ui_language="en", session_language="ja")
+
+    assert executor.lang == "ja"
+    assert executor.system_prompt == _expected_unified_prompt("ja")
+    assert _SCRIPT_PROBES["ja"].search(executor.system_prompt)
+
+
+def test_session_language_is_short_normalized(monkeypatch: pytest.MonkeyPatch):
+    """The event carries a full code; the prompt lookup needs the short one.
+
+    ``prompts_agent.py`` has no ``zh-CN`` key, so forwarding the full code
+    verbatim would take ``_loc``'s fallback path and log a warning on every turn.
+    """
+    executor = _CapturingExecutor()
+    _run_analyze(monkeypatch, executor, ui_language="en", session_language="zh-CN")
+    assert executor.kwargs["lang"] == "zh"
+
+    executor = _CapturingExecutor()
+    # Same short-code decision as the global path: zh-TW folds to 'zh' until the
+    # #2500 migration switches the agent prompts to full codes.
+    _run_analyze(monkeypatch, executor, ui_language="en", session_language="zh-TW")
+    assert executor.kwargs["lang"] == "zh"
+
+
+@pytest.mark.parametrize("garbage", ["undefined", "null", "estonian", "", "  ", "xx-YY"])
+def test_garbage_session_language_falls_back_to_the_global(
+    monkeypatch: pytest.MonkeyPatch, garbage: str
+):
+    """``normalize_language_code`` maps anything unrecognized to 'en'.
+
+    Without an upfront validity fence, a corrupted ``localStorage`` value would
+    look like a deliberate English choice and beat the correct global fallback.
+    """
+    executor = _CapturingExecutor()
+    _run_analyze(monkeypatch, executor, ui_language="ja", session_language=garbage)
+
+    assert executor.kwargs["lang"] == "ja"
+
+
+def test_missing_session_language_falls_back_to_the_global(monkeypatch: pytest.MonkeyPatch):
+    """Events published before this field existed (or with no session truth yet)."""
+    executor = _CapturingExecutor()
+    _run_analyze(monkeypatch, executor, ui_language="ru", session_language=None)
+
+    assert executor.kwargs["lang"] == "ru"
+
+
+# ---------------------------------------------------------------------------
+# 5. The event → handler hop: the language must survive it
+# ---------------------------------------------------------------------------
+
+
+def _drive_session_event(monkeypatch: pytest.MonkeyPatch, event: dict[str, Any]) -> dict[str, Any]:
+    """Feed one analyze_request into ``_on_session_event``, capture the plan kwargs."""
+    from app.agent_server import api_runtime
+    from app.agent_server._shared import Modules
+
+    _install_agent_modules(monkeypatch, _CapturingExecutor())
+    # A fresh fingerprint table, or the dedupe drops the event.
+    monkeypatch.setattr(Modules, "last_user_turn_fingerprint", {}, raising=False)
+    monkeypatch.setattr(Modules, "last_proactive_assistant_fingerprint", {}, raising=False)
+    monkeypatch.setattr(Modules, "proactive_analyze_count", {}, raising=False)
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_plan(messages, lanlan_name, **kwargs):
+        captured.update(kwargs)
+        captured["called"] = True
+
+    monkeypatch.setattr(api_runtime, "_background_analyze_and_plan", _fake_plan)
+
+    async def _go():
+        await api_runtime._on_session_event(event)
+        # _create_tracked_task schedules; give it one loop turn to run.
+        await asyncio.sleep(0)
+
+    asyncio.run(_go())
+    return captured
+
+
+def test_event_language_reaches_the_analyze_plan(monkeypatch: pytest.MonkeyPatch):
+    captured = _drive_session_event(
+        monkeypatch,
+        {
+            "event_type": "analyze_request",
+            "lanlan_name": "喵喵",
+            "trigger": "turn_end",
+            "language": "ja",
+            "messages": [{"role": "user", "content": "打开浏览器"}],
+        },
+    )
+
+    assert captured.get("called"), "_background_analyze_and_plan was never scheduled"
+    assert captured.get("session_language") == "ja"
+
+
+def test_event_language_reaches_the_proactive_path(monkeypatch: pytest.MonkeyPatch):
+    """The proactive branch returns early — it needs the same wiring, separately."""
+    captured = _drive_session_event(
+        monkeypatch,
+        {
+            "event_type": "analyze_request",
+            "lanlan_name": "喵喵",
+            "trigger": "turn_end",
+            "proactive": True,
+            "language": "ru",
+            "messages": [
+                {"role": "user", "content": "早"},
+                {"role": "assistant", "content": "我刚看到一条新闻"},
+            ],
+        },
+    )
+
+    assert captured.get("called"), "proactive analyze was never scheduled"
+    assert captured.get("session_language") == "ru"
+
+
+# ---------------------------------------------------------------------------
+# 6. The publisher side: every call site must hand the session locale over
+# ---------------------------------------------------------------------------
+
+
+def test_publisher_puts_the_language_on_the_event(monkeypatch: pytest.MonkeyPatch):
+    from main_logic import agent_event_bus as bus
+
+    published: list[dict[str, Any]] = []
+
+    class _Bridge:
+        owner_loop = None
+        owner_thread_id = None
+
+        async def publish_analyze_request(self, event):
+            published.append(event)
+            return False  # stop after the first attempt; we only inspect the payload
+
+    async def _go(language):
+        published.clear()
+        monkeypatch.setattr(bus, "_main_bridge_ref", _Bridge(), raising=False)
+        import threading
+
+        _Bridge.owner_loop = asyncio.get_running_loop()
+        _Bridge.owner_thread_id = threading.get_ident()
+        await bus.publish_analyze_request_reliably(
+            lanlan_name="喵喵",
+            trigger="turn_end",
+            messages=[{"role": "user", "content": "x"}],
+            retries=0,
+            language=language,
+        )
+        return published[0] if published else None
+
+    with_lang = asyncio.run(_go("zh-TW"))
+    assert with_lang is not None and with_lang.get("language") == "zh-TW"
+
+    # Omitted when unknown, like conversation_id / external_intent / proactive —
+    # the agent then keeps its process-global fallback.
+    without = asyncio.run(_go(None))
+    assert without is not None and "language" not in without
+
+
+def test_every_analyze_publish_call_site_passes_a_language():
+    """Auto-discovered: a new publish site that forgets ``language`` fails here.
+
+    This is the same defect class the PR fixes — a caller silently falling back to
+    a default — so the guard discovers call sites instead of listing them.
+    """
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    targets = {
+        "publish_analyze_request_reliably",
+        "_publish_analyze_request_with_fallback",
+    }
+    checked = 0
+    offenders: list[str] = []
+
+    for path in sorted((repo_root / "main_logic").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name not in targets:
+                continue
+            checked += 1
+            if not any(kw.arg == "language" for kw in node.keywords):
+                offenders.append(f"{path.relative_to(repo_root).as_posix()}:{node.lineno}")
+
+    assert checked >= 3, f"found only {checked} publish call sites — did the API get renamed?"
+    assert not offenders, f"analyze publish call sites missing language=: {offenders}"
