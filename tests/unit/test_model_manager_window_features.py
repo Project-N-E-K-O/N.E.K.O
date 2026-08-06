@@ -114,6 +114,13 @@ def test_vrm_animation_picker_separates_catalog_and_direct_playback():
 
     assert "if (assetId && isCatalogMotion)" in playback
     assert "if (played !== true)" in playback
+    catalog_branch = playback.split("if (assetId && isCatalogMotion)", 1)[1].split(
+        "} else {", 1
+    )[0]
+    assert "stopIdleRotation('vrm');" in catalog_branch
+    assert catalog_branch.index("stopIdleRotation('vrm');") < catalog_branch.index(
+        "vrmManager.stopVRMAAnimation();"
+    )
     assert "model_manager_direct_playback" in playback
     assert playback.index("model_manager_direct_playback") < playback.index(
         "vrmManager.playVRMAAnimation"

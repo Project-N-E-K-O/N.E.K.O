@@ -18,6 +18,7 @@
         'liked', 'wait01', 'wait02', 'wait03', 'wait04', 'wait05',
         '全身展示', '射击姿态', '屈伸运动', '旋转', '模特姿势', '比 V 手势', '致意问候'
     ]);
+    let warnedIntegrityUnavailable = false;
 
     function stableHash(value) {
         let result = 2166136261;
@@ -41,7 +42,11 @@
     async function sha256(buffer) {
         if (typeof crypto === 'undefined' || !crypto.subtle
             || typeof crypto.subtle.digest !== 'function') {
-            throw new Error('SHA-256 integrity verification requires a secure browser context');
+            if (!warnedIntegrityUnavailable) {
+                warnedIntegrityUnavailable = true;
+                console.warn('[NekoMotion] SHA-256 unavailable; continuing without digest verification');
+            }
+            return null;
         }
         const digest = await crypto.subtle.digest('SHA-256', buffer);
         return Array.from(new Uint8Array(digest)).map(function (byte) {
@@ -455,16 +460,21 @@
                 && packedBytes[1] === 0x8b;
             let decoded = packed;
             if (asset.compression === 'gzip' && isGzipPayload) {
-                if (await sha256(packed) !== asset.packedSha) {
+                const packedDigest = await sha256(packed);
+                if (packedDigest && packedDigest !== asset.packedSha) {
                     this.metrics.integrityFailures += 1;
                     throw new Error(asset.id + ' packed SHA-256 mismatch');
                 }
                 decoded = await gunzip(packed);
-            } else if (asset.compression !== 'gzip' && await sha256(packed) !== asset.packedSha) {
-                this.metrics.integrityFailures += 1;
-                throw new Error(asset.id + ' packed SHA-256 mismatch');
+            } else if (asset.compression !== 'gzip') {
+                const packedDigest = await sha256(packed);
+                if (packedDigest && packedDigest !== asset.packedSha) {
+                    this.metrics.integrityFailures += 1;
+                    throw new Error(asset.id + ' packed SHA-256 mismatch');
+                }
             }
-            if (await sha256(decoded) !== asset.decodedSha) {
+            const decodedDigest = await sha256(decoded);
+            if (decodedDigest && decodedDigest !== asset.decodedSha) {
                 this.metrics.integrityFailures += 1;
                 throw new Error(asset.id + ' decoded SHA-256 mismatch');
             }
