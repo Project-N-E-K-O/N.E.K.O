@@ -124,12 +124,15 @@ async function waitForLoadStart(predicate, message) {
     await assert.rejects(new global.NekoMotionPlayer().load(), /unapproved or unlicensed/);
 
     let requested = '';
-    global.fetch = async function (url) {
+    let requestedOptions = null;
+    global.fetch = async function (url, options) {
         requested = String(url);
+        requestedOptions = options;
         return response(sourceBuffer);
     };
     assert.match(await player._assetUrl(player.assets[0]), /^blob:test-/);
     assert.equal(requested, '/static/vrm/' + player.assets[0].f + '.gz');
+    assert.deepEqual(requestedOptions, { cache: 'no-cache' });
 
     const corrupted = Buffer.from(packedSource);
     corrupted[2] ^= 0xff;
@@ -355,6 +358,13 @@ async function waitForLoadStart(predicate, message) {
         '/static/vrm/animation/wait01.vrma'
     ]), 2);
     assert.equal(savedRestPlayer.savedRestAssets[1].url, '/static/vrm/animation/wait01.vrma.gz');
+    savedRestPlayer.state.restAsset = savedRestPlayer.savedRestAssets[0];
+    assert.equal(savedRestPlayer.setSavedRestAnimations([]), 0);
+    assert.equal(savedRestPlayer.state.restAsset, null);
+    savedRestPlayer.setSavedRestAnimations([
+        '/user_vrm/animation/custom-idle.vrma',
+        '/static/vrm/animation/wait01.vrma'
+    ]);
     let savedRestUrl = '';
     savedRestPlayer._manager = function () {
         return {

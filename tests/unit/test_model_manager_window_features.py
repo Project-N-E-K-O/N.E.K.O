@@ -152,6 +152,9 @@ def test_vrm_preview_ignores_stale_playback_completions():
     )[1].split("// VRM动作选择按钮点击事件", 1)[0]
     assert "const requestIsCurrent = () =>" in playback
     assert "if (!requestIsCurrent()) return false;" in playback
+    assert playback.index("vrmManager.stopVRMAAnimation()") < playback.index(
+        "await loadVrmMotionCatalog()"
+    )
     assert playback.index("await loadVrmMotionCatalog()") < playback.index(
         "if (!requestIsCurrent()) return false;"
     )
