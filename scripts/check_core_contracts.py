@@ -1011,14 +1011,18 @@ def _name_binding_sites(tree: ast.AST, name: str) -> list[ast.AST]:
 
     sites: list[ast.AST] = []
     for node in ast.walk(tree):
+        # The ``ast.alias`` is returned, not the containing import: one
+        # statement can carry several, and ``import asyncio, vendor as
+        # asyncio`` must not be judged by whichever alias happens to look
+        # right — Python leaves the name bound to the LAST one.
         if isinstance(node, ast.Import):
             sites.extend(
-                node for alias in node.names
+                alias for alias in node.names
                 if (alias.asname or alias.name.split(".")[0]) == name
             )
         elif isinstance(node, ast.ImportFrom):
             sites.extend(
-                node for alias in node.names
+                alias for alias in node.names
                 if (alias.asname or alias.name) == name
             )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -1032,7 +1036,11 @@ def _name_binding_sites(tree: ast.AST, name: str) -> list[ast.AST]:
                 name in _assignment_target_names(target) for target in node.targets
             ):
                 sites.append(node)
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+        elif isinstance(node, ast.AnnAssign):
+            # A bare ``x: T`` declares a type and binds nothing.
+            if node.value is not None and name in _assignment_target_names(node.target):
+                sites.append(node)
+        elif isinstance(node, (ast.AugAssign, ast.NamedExpr)):
             if name in _assignment_target_names(node.target):
                 sites.append(node)
         elif isinstance(node, (ast.For, ast.AsyncFor)):
@@ -1087,6 +1095,21 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
     The check is deliberately package-wide rather than pinned to the rotation
     sites: the property is a property of the lock, and one careless holder
     anywhere is enough to lose it everywhere.
+
+    Known boundary: the scan covers ``main_logic/core`` only. A holder
+    OUTSIDE the package — ``async with manager.lock: await ...`` somewhere
+    that was handed a manager — would make the lock contendable just the
+    same, and this gate would not see it. That gap is not closed here
+    because the cheap closure is not sound: matching ``.lock`` repo-wide
+    collides with unrelated locks that legitimately suspend under
+    themselves (measured: ``plugin/plugins/neko_live/core/pipeline_session.py``
+    holds a per-uid ``entry.lock`` by design), and demanding an allowlist
+    entry from unrelated code makes the gate about the wrong thing. What IS
+    closed is the leak path: core cannot hand the lock out, because every
+    ``.lock`` mention there must be an ``async with`` context expression, so
+    an external holder can only arise from new code reaching into the
+    attribute directly. Measured today: no production module outside the
+    package references a manager's ``.lock`` at all.
     """
 
     def suspension_kind(node: ast.AST) -> str | None:
@@ -1106,14 +1129,22 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
             return "async comprehension"
         return None
 
+    def is_lock_attr(node: ast.AST) -> bool:
+        """Any ``<expr>.lock``, whatever the receiver.
+
+        Deliberately NOT pinned to a literal ``self`` receiver: ``owner =
+        self`` followed by ``async with owner.lock:`` acquires the same
+        object, and resolving aliases properly is dataflow analysis. Matching
+        the attribute name alone over-approximates instead, which is the safe
+        direction — and measured, it costs nothing: the package contains no
+        ``.lock`` acquisition with any other receiver, and manager.py's
+        binding is the only non-``async with`` mention at all.
+        """
+
+        return isinstance(node, ast.Attribute) and node.attr == "lock"
+
     def is_session_lock(item: ast.withitem) -> bool:
-        expr = item.context_expr
-        return (
-            isinstance(expr, ast.Attribute)
-            and expr.attr == "lock"
-            and isinstance(expr.value, ast.Name)
-            and expr.value.id == "self"
-        )
+        return is_lock_attr(item.context_expr)
 
     def is_self_lock_attr(node: ast.AST) -> bool:
         return (
@@ -1126,6 +1157,7 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
     violations: list[Violation] = []
     blocks_seen = 0
     manager_bindings: list[tuple[ast.AST, ast.expr | None]] = []
+    annotation_only: list[ast.AST] = []
     for path in sorted(core_dir.glob("*.py")):
         if path.name == "__init__.py":
             continue
@@ -1173,17 +1205,27 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
                         if is_self_lock_attr(target)
                     )
                 elif isinstance(node, ast.AnnAssign) and is_self_lock_attr(node.target):
-                    manager_bindings.append((node.target, node.value))
+                    if node.value is None:
+                        # ``self.lock: asyncio.Lock`` with no value is a type
+                        # declaration; it neither assigns nor replaces the
+                        # attribute, so it is exempt from the form check
+                        # without counting as a binding.
+                        annotation_only.append(node.target)
+                    else:
+                        manager_bindings.append((node.target, node.value))
         bind_targets = {id(target) for target, _ in manager_bindings}
+        bind_targets.update(id(target) for target in annotation_only)
         for node in ast.walk(tree):
-            if not is_self_lock_attr(node):
+            if not is_lock_attr(node):
                 continue
             if id(node) in sanctioned or id(node) in bind_targets:
                 continue
             violations.append(Violation(
                 path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
-                "self.lock referenced outside an 'async with self.lock' block — the "
-                "session lock may only be taken as a context manager. Manual "
+                "a '.lock' attribute is referenced outside an 'async with' block — the "
+                "session lock may only be taken as a context manager, and the receiver "
+                "is not required to be literally 'self' because an alias reaches the "
+                "same object. Manual "
                 "acquire()/release() (or passing the lock elsewhere) can hold it across "
                 "an await without presenting a block for this gate to check, which makes "
                 "the lock contendable and reopens the torn sid/TTS-flag state (#2619)"))
@@ -1283,11 +1325,14 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
                 # ``import asyncio`` and ``import asyncio.subprocess`` both
                 # bind the top-level name to the same stdlib package, so both
                 # are the guarantee this check wants; anything with an
-                # ``asname`` or any other syntax is not.
-                return isinstance(node, ast.Import) and any(
-                    alias.asname is None
-                    and (alias.name == "asyncio" or alias.name.startswith("asyncio."))
-                    for alias in node.names
+                # ``asname`` or any other syntax is not. Judged per ALIAS —
+                # judging the containing statement let ``import asyncio,
+                # vendor as asyncio`` pass on the strength of its first alias
+                # while Python bound the name to the second.
+                return (
+                    isinstance(node, ast.alias)
+                    and node.asname is None
+                    and (node.name == "asyncio" or node.name.startswith("asyncio."))
                 )
 
             plain_import = bool(bindings) and all(

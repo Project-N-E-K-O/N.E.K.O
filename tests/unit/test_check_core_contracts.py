@@ -2351,7 +2351,7 @@ def test_lock_gate_rejects_taking_the_lock_outside_a_context_manager(
     assert violations, "the manual form must not walk past the gate"
     assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
     assert all(
-        "outside an 'async with self.lock' block" in v.message for v in violations
+        "outside an 'async with' block" in v.message for v in violations
     )
 
 
@@ -2461,6 +2461,94 @@ def test_lock_gate_rejects_an_annotated_rebind_too(
 
     assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
     assert "exactly once" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_sees_the_lock_taken_through_an_alias_of_self(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``owner = self`` then ``async with owner.lock:`` is the same object.
+
+    Resolving aliases properly is dataflow analysis; matching the attribute
+    name whatever the receiver over-approximates instead, which is the safe
+    direction. Measured, it costs nothing on the real package: it holds no
+    ``.lock`` acquisition with any receiver other than ``self``.
+    """
+
+    # Built on the clean probe so the package still holds a real
+    # ``async with self.lock`` block: without one the non-vacuity guard fires
+    # and the test would pass for the wrong reason.
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def sneaky(self):\n"
+        "        owner = self\n"
+        "        async with owner.lock:\n"
+        "            await self.flush()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("must never be held across a suspension" in v.message for v in violations)
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_compound_import_whose_last_alias_shadows(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """One import statement, two aliases — Python keeps the last one.
+
+    Judging the containing statement let this pass on the strength of its
+    first alias while the name was actually bound to the second.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio, custom_locks as asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "only by a plain 'import asyncio'" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_does_not_count_a_valueless_annotation_as_a_binding(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``self.lock: asyncio.Lock`` declares a type and assigns nothing.
+
+    It cannot change the runtime primitive, so counting it as a second
+    binding would fail the contract on a harmless type declaration — and a
+    gate that rejects harmless code teaches people to route around it.
+    """
+
+    assert _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock: asyncio.Lock\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    ) == []
 
 
 @pytest.mark.unit
