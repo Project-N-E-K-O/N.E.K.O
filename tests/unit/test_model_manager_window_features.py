@@ -126,6 +126,19 @@ def test_vrm_saved_legacy_url_normalization_ignores_query_and_hash_suffixes():
     assert ".replace(/\\.vrma(?:[?#].*)?$/i, '.vrma.gz')" in helper
 
 
+def test_vrm_preview_ignores_stale_playback_completions():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    assert "let vrmAnimationPlaybackRequestId = 0;" in source
+    assert source.count("if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;") >= 4
+
+
+def test_static_asset_version_tracks_vrm_motion_player():
+    source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
+    assert '_PROJECT_ROOT / "static/vrm/motion/player.js"' in source
+
+
 def test_avatar_model_manager_popup_opens_fullscreen():
     source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 
