@@ -1808,9 +1808,6 @@ class FactStore:
         target_id = str(fact_id if fact_id is not None else '').strip()
         if not target_id:
             return False
-        # _restore 在线程里跑，用列表当出参把选中的那一行带出来（索引要
-        # 用行本身，见下面 _areindex_restored_fact 的调用点）。
-        restored_row: list[dict] = []
         target_subject = coerce_subject(subject)
         target_scope = (
             (
@@ -1940,7 +1937,6 @@ class FactStore:
                         archive_path, remaining, indent=2, ensure_ascii=False,
                     )
                     facts[:] = active
-                    restored_row.append(restored)
                     logger.info(
                         f'[FactStore] {name}: 仲裁恢复 fact={target_id}'
                     )
@@ -1948,14 +1944,17 @@ class FactStore:
 
             try:
                 restored_ok = await asyncio.to_thread(_restore)
-                if restored_ok and restored_row:
-                    # 复活的行必须重新进近重复索引：回填刻意跳过仲裁败者
-                    # （它们在归档里永远不会被检索到），而回填标记是持久的
-                    # ——不在这里补索引，这条复活的 fact 就永远对 Stage-2
-                    # 不可见。传行本身而不是 id：按 id 反查要处理「活跃集
-                    # 里已有一个字符串形态相同的标量 id」这类歧义，而这里
-                    # 本来就握着那一行。
-                    await self._areindex_restored_fact(name, restored_row[0])
+                if restored_ok:
+                    # 复活的行必须回到近重复索引里：回填刻意跳过仲裁败者
+                    # （归档期间它们永远不会被检索到），而回填标记是持久
+                    # 的——什么都不做的话这条 fact 就永远对 Stage-2 不可见。
+                    #
+                    # 这里**不**自己调 index_fact：那条路径自己吞异常、成功
+                    # 与失败的返回值无法区分，补一层「失败就作废标记」的判
+                    # 断实际上永远不会触发（这段代码为此连挂四轮 review）。
+                    # 改成只作废标记，让下一次写入重跑一遍全量回填——那时
+                    # 这一行已经在 active 里，自然会被索引到。
+                    await self._ainvalidate_fts_backfill(name)
                 return restored_ok
             except BaseException:
                 def _invalidate() -> None:
@@ -4173,39 +4172,6 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
             )
 
-    async def _areindex_restored_fact(self, name: str, row: dict) -> None:
-        """Put a just-restored row back into the near-dup index.
-
-        Arbitration losers are deliberately left out of the backfill —
-        they can never be a live hit while archived — so a row coming
-        back out of the archive has to be indexed explicitly. The
-        backfill marker is persistent, so nothing else will ever pick
-        it up.
-
-        Takes the row, not an id: the caller already holds it, and
-        looking it back up would have to disambiguate scalar ids whose
-        string forms collide (an active ``"1"`` next to a restored
-        ``1``) — while ``fact_id`` has to keep its original type, since
-        FTS5 compares it type-sensitively.
-        """
-        if self._time_indexed is None:
-            return
-        fact_id = _readable_fact_id(row) if isinstance(row, dict) else None
-        text = str(row.get('text') or '') if isinstance(row, dict) else ''
-        if fact_id is None or not text:
-            return
-        try:
-            await self._time_indexed.aindex_fact(name, fact_id, text)
-        except Exception as e:
-            # 索引没补成：清掉回填标记，让下一次写入重跑一遍全量回填。
-            # 不清的话这条复活的 fact 会一直对 Stage-2 不可见——标记是持久
-            # 的，没有别的东西会再扫它。复活本身已经落盘，不回滚。
-            logger.warning(
-                f"[FactStore] {name}: 复活行重新索引失败 fact={fact_id}，"
-                f"已作废回填标记等下次重建: {e}"
-            )
-            await self._ainvalidate_fts_backfill(name)
-
     async def _ainvalidate_fts_backfill(self, name: str) -> None:
         """Force the next write to rebuild the near-dup index for ``name``."""
         try:
@@ -4217,8 +4183,10 @@ class FactStore:
                     self._time_indexed.clear_fts_backfill_marker, name,
                 )
         except Exception as exc:
-            logger.debug(
-                f"[FactStore] {name}: 作废回填标记失败: {exc}"
+            # 作废失败 = 我们知道索引缺了一行、却没能记下来，下次也不会重建。
+            # 比一次普通的索引失败更值得看见。
+            logger.warning(
+                f"[FactStore] {name}: 作废回填标记失败，近重复索引可能缺行: {exc}"
             )
 
     async def _aenqueue_near_dup_pairs(
