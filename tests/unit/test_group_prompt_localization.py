@@ -464,7 +464,10 @@ def test_qq_recall_render_has_no_internal_enum_left():
     assert "[印象/群成员]" in rendered
     assert "fact" not in rendered and "group_chat" not in rendered
     assert "reflection" not in rendered and "group_participant" not in rendered
-    assert "(2026-05-01)" in rendered
+    # 日期后面还跟一个本地化的相对时间标签（"3 月前"）：QQ 侧此前自己用
+    # anchor[:10] 裁日期、没有这个标签，#2588 收口到 memory.recall_render
+    # 之后与本体侧同格式。断言写成前缀，免得跟"今天/几月前"的措辞绑死。
+    assert "(2026-05-01, " in rendered
 
 
 @pytest.mark.asyncio
