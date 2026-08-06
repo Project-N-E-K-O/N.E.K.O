@@ -100,6 +100,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -136,6 +137,12 @@ _config_manager = get_config_manager()
 POOL_VERSION = 2
 
 _ENTITY_RESOLVE_MAX_DEPTH = 8
+
+#: The only values ``platform_identity_scope`` may hold. A closed set is the
+#: point: an open string field would let a caller smuggle in a hedge like
+#: "probably_global", and every consumer would then have to guess what that
+#: licenses. ``unknown`` is a first-class answer, not a missing one.
+IDENTITY_SCOPE_VALUES = frozenset({"global", "per_conversation", "unknown"})
 
 
 class TrustIdentityError(Exception):
@@ -1761,6 +1768,84 @@ async def aforget_entity(entity_id: Any) -> dict:
     persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
     result = dict(value or {})
     result["persisted"] = bool(persisted)
+    return result
+
+
+async def adeclare_platform_identity_scope(
+    platform: Any,
+    *,
+    channel: Any,
+    actor_scope: Any,
+    conversation_scope: Any,
+    asserted_by: Any,
+) -> dict:
+    """Record what a platform's identifiers MEAN. Declared, never inferred.
+
+    The distinction this function exists to keep sharp:
+
+    - **Inferring** a scope would mean watching traffic and concluding "these
+      two ids differ, so they must be per-conversation". That path stays
+      closed. No mutation path writes this container, and
+      ``test_platform_identity_scope_is_never_inferred_by_code`` pins it.
+    - **Declaring** a scope means transcribing a protocol contract that the
+      platform vendor already published. QQ's official docs state that a
+      ``member_openid`` differs for the same person in each group, so the open
+      channel is ``per_conversation`` — that is a fact about the wire format,
+      knowable before a single message arrives, and not a function of any
+      observed value.
+
+    Hence the argument list admits nothing derived from traffic: a platform, a
+    channel, two enum values, and who says so. There is no account id, no
+    sample, no counter. A caller that wanted to infer could not express it
+    here.
+
+    Idempotent: re-declaring the same tuple is a no-op and does not touch disk,
+    so a connector may declare on every startup.
+    """
+    key = str(platform or "").strip().lower()
+    if not key or not re.fullmatch(r"[a-z0-9_.-]+", key):
+        raise TrustIdentityError("invalid platform")
+    channel_key = normalize_channel(channel)
+    if not channel_key:
+        raise TrustIdentityError("channel is required")
+    actor = str(actor_scope or "").strip().lower()
+    conversation = str(conversation_scope or "").strip().lower()
+    for value in (actor, conversation):
+        if value not in IDENTITY_SCOPE_VALUES:
+            raise TrustIdentityError(
+                f"scope must be one of {sorted(IDENTITY_SCOPE_VALUES)}",
+            )
+    asserter = str(asserted_by or "").strip()
+    if not asserter:
+        # An unattributed declaration is indistinguishable from an inference
+        # once it is on disk, and this container's whole value is that a reader
+        # can tell those apart.
+        raise TrustIdentityError("asserted_by is required")
+
+    def _mutator(draft: _Draft) -> tuple[bool, Any]:
+        current = draft.pool["platform_identity_scope"].get(key) or {}
+        entry = {
+            "channel": channel_key,
+            "actor_scope": actor,
+            "conversation_scope": conversation,
+            "asserted_at": current.get("asserted_at"),
+            "asserted_by": asserter,
+        }
+        unchanged = all(
+            current.get(field) == entry[field]
+            for field in ("channel", "actor_scope",
+                          "conversation_scope", "asserted_by")
+        )
+        if unchanged and current.get("asserted_at"):
+            return False, dict(current)
+        entry["asserted_at"] = _now_iso()
+        draft.pool["platform_identity_scope"][key] = entry
+        return True, dict(entry)
+
+    persisted, value = await asyncio.to_thread(_with_pool_write, _mutator)
+    result = dict(value or {})
+    result["persisted"] = bool(persisted)
+    result["platform"] = key
     return result
 
 

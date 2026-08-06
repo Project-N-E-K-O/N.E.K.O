@@ -163,6 +163,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._session_housekeeping_task: Optional[asyncio.Task] = None
         self._group_digest_task: Optional[asyncio.Task] = None
         self._trust_migration_task: Optional[asyncio.Task] = None
+        self._identity_scope_task: Optional[asyncio.Task] = None
         # 只有在存量 trust 池成功推给 memory_server 之后才开始上报
         # speaker_tier / speaker_activity_events。纵深防御第一层，服务端的
         # legacy_barriers 是第二层。
@@ -514,6 +515,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             self._trust_migration_task = asyncio.create_task(
                 self.settings_service.push_legacy_speaker_trust_forever()
             )
+        # 同理不阻塞：登记当前连接模式的标识符语义（见 §2.15.4）。
+        self.settings_service.ensure_identity_scope_declared()
         if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
         # 定期清理已审核超过24h的旧消息
@@ -615,6 +618,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             and not self._trust_migration_task.done()
         ):
             self._trust_migration_task.cancel()
+        if (
+            self._identity_scope_task
+            and not self._identity_scope_task.done()
+        ):
+            self._identity_scope_task.cancel()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
         if getattr(self, "_purge_task", None) and not self._purge_task.done():
@@ -1126,6 +1134,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             level=level,
             nickname=nickname,
             normal_relay_probability=normal_relay_probability,
+        )
+
+    @ui.action(id="list_identity_claims", label=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), refresh_context=False)
+    @plugin_entry(id="list_identity_claims", name=tr("entries.list_identity_claims.name", default="列出未认领的群内 ID"), description=tr("entries.list_identity_claims.description", default="列出开放平台上出现过、但还不在信任用户名册里的群内 ID，以及可供人工合并的已有身份候选。"), input_schema={"type": "object", "properties": {}, "additionalProperties": False})
+    async def list_identity_claims(self, **_):
+        return await self.dashboard_service.list_identity_claims()
+
+    @ui.action(id="bind_identity_account", label=tr("entries.bind_identity_account.name", default="合并到已有身份"), refresh_context=True)
+    @plugin_entry(id="bind_identity_account", name=tr("entries.bind_identity_account.name", default="合并到已有身份"), description=tr("entries.bind_identity_account.description", default="把一个群内 ID 的信赖度账本并入已有身份。只能由人触发，系统不会自动合并任何身份。"), input_schema={"type": "object", "properties": {"user_id": {"type": "string"}, "entity_id": {"type": "string"}}, "required": ["user_id", "entity_id"], "additionalProperties": False})
+    async def bind_identity_account(self, user_id: str, entity_id: str, **_):
+        return await self.dashboard_service.bind_identity_account(
+            user_id=user_id, entity_id=entity_id,
         )
 
     @ui.action(id="remove_trusted_user", label=tr("entries.remove_trusted_user.name", default="移除信任用户"), refresh_context=True)

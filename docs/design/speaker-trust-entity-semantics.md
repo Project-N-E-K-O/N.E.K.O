@@ -47,7 +47,7 @@
 - **I-S1-3** `speaker_is_owner=True` 的 wire 校验仍硬绑 `tier=='admin'`；构造「entity 内另一 account 是 admin」的场景，断言本 account 的 `speaker_is_owner` 仍为 False。
 - **I-S1-4** 跨群不可读：entity `E` 在群 `G₁`、`G₂` 均有语料，从 `G₁` 的任意 subject 出发的展开集合中，不存在任何 `subject_id` 第二段为 `G₂` 的 marker。
 
-**R11 兑现时的降级**：S1.a 在开放平台通道上**只在操作者逐个断言的范围内成立**，范围外为假，且必须**显式可见**（§2.15.4.3），不得写成「近似满足」。
+**R11 兑现时的降级**：S1.a 在开放平台通道上**只在操作者逐个断言的范围内成立**，范围外为假，且必须**显式可见**（§2.15.4.3），不得写成「近似满足」。**R11 已判定为兑现（§2.15.4），所以开放平台通道上这就是现实形态，不是假设分支。**
 
 ---
 
@@ -513,7 +513,23 @@ canonical 路由把同实体两条行放进同一 subject、同一 `_fact_dedup_
 
 ---
 
-## 2.15.4 问题 B：R11（开放平台 `author.id` 的作用域）
+## 2.15.4 问题 B：R11（开放平台 `author.id` 的作用域）—— **已判定**
+
+> **结论（2026-08，PR #2731）：R11 兑现，且比原假设更靠前一格——开放平台的群/私聊事件里 `author` 下根本没有 `id` 这个键。**
+>
+> 依据是腾讯的两份一手材料，互相印证：
+>
+> - 官方文档 `tencent-connect/bot-docs` 的 `develop/api-v2/server-inter/message/send-receive/event.md`：`C2C_MESSAGE_CREATE` 的 author 字段表与示例 JSON 只有 `user_openid`；`GROUP_AT_MESSAGE_CREATE` 只有 `member_openid`，群标识是 `group_openid`；
+> - 官方 SDK `tencent-connect/botpy` 的 `botpy/message.py`：`C2CMessage._User` 只读 `user_openid`、`GroupMessage._User` 只读 `member_openid`；只有**频道**体系的 `Message._User` 才有 `id`，而本连接器不处理频道事件。
+> - 官方文档「唯一身份机制」（`dev-prepare/unique-id.md`）原文：*相同 bot 在不同的群，获取到同一个用户在群内的唯一识别号 openid 不一样，称为 member_openid*。
+>
+> 所以 §2.15.4.2 表里的四项判据是：① 不等、② 无任何兄弟键跨群相等、③ 挂在 `group_openid`、④ 不等。**①②③④ 全部落在最坏的那一支。**
+>
+> **实际形态比「按群碎片化」更糟一档**：`qq_open_plat.py` 取的 `author.get("id")` 在两条路径上恒为空串 ⇒ 所有说话人塌成同一个空身份、`_maybe_reserve_open_platform_admin` 因 `not sender_id` 从未触发过、私聊回复 POST 到 `/v2/users//messages`。这个键是从 napcat/OneBot 的 `sender.user_id` 抄来的（`<@!(\d+)>` 纯数字正则是同一次抄写的产物）。
+>
+> **已落地**：取值源改为 `member_openid` / `user_openid`（`id` 留作末位回落）；`platform_identity_scope.qq.actor_scope` 由连接器按连接模式**声明**为 `per_conversation`（见下方「声明而非推断」）；§2.15.4.3 第 1 级的人工断言 UI 落在信任用户页。第 2 级（挑战-应答）未做。
+>
+> **「声明而非推断」**：`adeclare_platform_identity_scope` 的入参只有平台、通道、两个枚举值和断言来源——没有 account id、没有样本、没有计数器。查表来源是 `QQSettingsService.IDENTITY_SCOPE_BY_MODE`，值的依据是厂商公开契约，在收到第一条消息之前就已知。「观察到两个 id 不一样所以是 per_conversation」那条路仍然是关的，`test_platform_identity_scope_is_never_inferred_by_code` 钉住。
 
 ### 2.15.4.1 三种状态下设计如何表现
 
@@ -527,7 +543,13 @@ canonical 路由把同实体两条行放进同一 subject、同一 `_fact_dedup_
 
 ### 2.15.4.2 取证步骤（精确到操作、文件、字段）
 
+> **本小节已降级为「确认」而不是「判定」。** 判定已由厂商一手材料完成（见 §2.15.4 开头）；取证插桩保留，是因为官方文档的字段表不保证穷尽实际 payload——留着可以在真机上确认有没有未文档化的兄弟键（例如 `union_openid`）。下面的原始论证保留原样，作为「当时为什么判定不了」的记录。
+>
+> 那句「零测试覆盖」现在不成立了：`_convert_event` 的取值源由 `tests/unit/test_qq_open_platform_actor_identity.py` 用官方示例 payload 钉住，群 id 回落由 `tests/unit/test_qq_open_plat_convert_event.py` 钉住。
+
 R11 **无法离线判定**：零 fixture、零 vendored SDK、零文档样例、零 git 删除痕迹、本机 `%LOCALAPPDATA%\N.E.K.O\plugins\` 为空目录、两份远程副本 `qq:` 零命中。`GROUP_AT_MESSAGE_CREATE` / `C2C_MESSAGE_CREATE` 全仓只命中生产方 `qq_open_plat.py` 与设计文档自身；`_convert_event` 零测试覆盖。唯一沾边的代码假设是 `qq_open_plat.py:610` 的 `<@!(\d+)>` 纯数字正则——它是从 napcat 转换器抄写的、零测试覆盖，不构成证据。
+
+> **这条论证漏了一格，值得记下来。** 「仓库里没有」被当成了「拿不到」——而厂商的文档源码与官方 SDK 都在公开仓库里，一次 `gh api` 就能取到，且两者互相印证。取证插桩本身没有白做（它现在是确认未文档化字段的唯一手段），但它不该是**第一**步。下次遇到「协议行为未知」，先去读厂商的一手材料，再考虑上真机。
 
 > **修订文档 §2.14.2 宣称的「backlog 零成本取证」对群路径失效，必须改为读日志。** 原因：`qq_open_plat.py:605` 只读 `data.get("group_id")`，而 `group_openid` **全仓零命中**；若平台按 v2 语义下发 `group_openid`，`group_id` 恒为空串 ⇒ `backlog_service.py:88-90` 的 `if not group_id: return` 让群消息**根本不落 `backlog_state.json`**。
 
@@ -578,10 +600,16 @@ R11 **无法离线判定**：零 fixture、零 vendored SDK、零文档样例、
 
 **D. 判定**
 
+> **实际落点（已定）：①②③④ 全部落在最坏的一支，且比这四条预设的还差一格——`author.id` 这个键本身不存在。** 下面四条保留为判定框架。
+
 - **① 相等** ⇒ R11 解除，S1 在 account 层成立，本体无需改动。把 `actor_scope` 人工写成 `"global"`。
 - **① 不等、② 中某兄弟键跨群相等** ⇒ **提取器缺陷而非本体缺陷**，改 `qq_open_plat.py:581` 的取值即可。注意这会改变该通道 `speaker_id` 的字节——但取证已确认本机与该通道**均无存量语料**（本机记忆目录 `grep -c "qq:"` 为 0），代价只落在已发行部署上，需单独确认。
 - **①② 皆不成立** ⇒ R11 真兑现。把 `actor_scope` 人工写成 `"per_conversation"`，按 §2.15.4.3 执行。
 - **④ 不等** ⇒ §2.15.4.4 的 admin bootstrap 缺陷**已兑现**，且应**先于** R11 修。
+
+**实际执行的是第二条与第三条的并集**，两件事一次做完（PR #2731）：取值源换成 `member_openid` / `user_openid`（提取器缺陷），同时 `actor_scope` 声明为 `per_conversation`（本体缺陷）。
+
+关于「改字节会冲掉存量语料」这条 ⚠️：**没有迁移负担**。当前该通道写进 subject / trust 池的 speaker 段恒为空串，等于该通道从来没有产生过有效的分人语料——已发行部署也一样，因为空 id 是代码里的常量行为而不是环境相关。空 speaker 段留下的那些行会以 `qq:` 前缀孤悬，它们本来就没有归属任何一个真人。
 
 **E. 完全不改代码的弱化回退**：群 X 发一条 @bot、截图插件「运行日志」页（`message_dispatcher.py:305` 的 `收到消息: type=... from=<author.id> ...`，该行早于所有群闸），群 Y 再发再截，比对两个 `from=`。局限：不打印 group_id（只能靠发送顺序归因）、缓冲仅 500 条不落盘、对 ② ③ 零信息。
 
@@ -591,9 +619,15 @@ R11 **无法离线判定**：零 fixture、零 vendored SDK、零文档样例、
 
 **最接近的可达点，三级降级：**
 
-**第 1 级 —— 操作者人工断言（对被断言的实体精确成立）。**
+**第 1 级 —— 操作者人工断言（对被断言的实体精确成立）。已落地（PR #2731）。**
 把 dashboard 的「替换 ID（保留信赖度）」扩成「合并到已有实体」，走 `POST /internal/identity/accounts/bind`。规模 O(操作者关心的人数 × 群数)。**主人是最重要的那一个，而且他必然会去做**——切通道后 `trusted_users` 那一行必须手填新 id（`permission.py:68-70` 只 strip、按裸 actor 索引），这次编辑本身就是一个显式人身断言。
 排序规则**必须写死**：候选旧账号列表**只能按账本权重排序**（`|adjustment|` + `message_count`），**绝不能按昵称相似度排序、绝不预选**。把相似度放进 UI 排序 = 把被否决的启发式塞给用户当默认答案。
+
+落地形态补了原设计没写的一环：**那串 openid 在界面上原本无处可看**，只能去翻日志，于是「人工断言」在操作上根本走不通。所以信任用户页多了一份**待认领清单**——开放平台通道上、群里发过言、又不在名册里的 ID，按群列出，每行两个动作：「加入名册」（走既有的 `add_trusted_user`，管权限）与「合并到已有身份」（走 bind，管信赖度）。
+
+两个动作**刻意不合并成一个**：名册按裸 actor id 索引，bind 只动 entity←account 的账本。把 bind 顺手做成提权，等于让信赖度层变成权限升级通道——而 bind 的候选列表是系统给出的建议，提权必须由人在权限那一栏单独点。
+
+清单本身是**纯观测、只进内存、不落盘**（有界 64 群 × 32 人，按最久未见淘汰）：它是「现在还没认领的人」这份待办，重启后由新消息自然重建；落盘等于把一份 openid 名单永久化，而这些 id 正是敏感的那类。**同一个人在两个群出现两条，不去重**——它们确实是两个不同的 id，按昵称把它们并成一行就是被否决的那个自动合并，只是换了个地方做。
 
 **第 2 级 —— 挑战-应答**（修订 §2.9.5）：旧通道/旧群发一次性码、新通道/新群回码；码单次消费、不可猜、短 TTL、原子消费。代价必须说清：`qq_auto_reply` 全仓没有任何聊天指令解析，这是**新增能力**；而且它**仍然需要人配合一次**，同样不叫自动。O(群 × 人) 的操作量意味着它只对少数几个人现实。
 
@@ -608,11 +642,23 @@ R11 **无法离线判定**：零 fixture、零 vendored SDK、零文档样例、
 }
 ```
 
-默认 `"unknown"`，**只能由取证结果人工写入，代码永不推断**。`GET /internal/trust/profile` 暴露它；`actor_scope == "per_conversation"` 时 dashboard 显式提示「该通道的信赖度不跨群累计；主人档位只在配置过的那个群生效」。
+默认 `"unknown"`，**代码永不推断**。`GET /internal/trust/profile` 暴露它；`actor_scope == "per_conversation"` 时 dashboard 显式提示「该通道的信赖度不跨群累计；主人档位只在配置过的那个群生效」。
+
+**「人工写入」在落地时放宽成了「声明」，边界写清楚**（`POST /internal/identity/scope` → `adeclare_platform_identity_scope`）：
+
+- **允许**：转录厂商已公开的协议契约。它是连接模式的常量，在收到第一条消息之前就已知，所以连接器每次启动都声明一遍是安全的（同值幂等、不写盘），切换 `qq_connection_mode` 时重新声明。`asserted_by` 必填且写协议名（`protocol:qq-open-v2` / `protocol:onebot-v11`），读的人要能一眼看出依据是文档而不是本机观测。
+- **禁止**：从流量里得出这个值。入参里没有 account id、没有样本、没有计数器——想推断的调用方**没有参数可填**。`test_platform_identity_scope_is_never_inferred_by_code` 喂进两个「明显不同」的 open 通道 id，断言容器仍然是空的。
+
+取值一律来自枚举闭集 `{global, per_conversation, unknown}`：开放的字符串字段会让人塞进 `"probably_global"` 这类对冲值，而下游是**当作事实显示给操作者的**。
 
 **群侧是可以救的（本章相对两份文档的净增量）。** 一个关键非对称：**`group_openid` 是「每群一个」，不是「每群每人一个」**。所以 conversation 本体的人工绑定规模是 **O(群数)**（十几个），现实可做；而 R11 下 `member_openid` 的绑定规模是 **O(群 × 人)**，不可做。⇒ **S2 的群侧可以真正实现；人侧在 R11 兑现时只能到第 1/2 级。** 这个非对称必须写进文档，否则读者会以为两侧同等困难。
 
-### 2.15.4.4 两件优先级高于 R11、必须先做的事
+### 2.15.4.4 两件优先级高于 R11、必须先做的事 —— **两件都已兑现，且都已修**
+
+> **(a) 已兑现**：官方 v2 的群标识确实叫 `group_openid`，`group_id` 这个键根本不存在 ⇒ 实际生效的一直是 #2710 那条回落。回落已在仓库里，顺序不动。
+> **(b) 已兑现且更严重**：不是「私聊 id 与群 id 作用域不同」，而是**两边都取不到值**。修法是换取值源（PR #2731），换完 `sender_id` 非空、bootstrap 才第一次真正能跑；而私聊的 `user_openid` 与群里的 `member_openid` 依然不是同一个值，所以「私聊授权的主人在群里不被认作主人」这件事**仍然成立**，由 §2.15.4.3 第 1 级的待认领清单兜。
+>
+> 修完之后那句禁令**一个字不改**：`if permission_mgr.list_users(): return` 仍然是全局判空。它挡的是通道切换时的 fail-open，与取值源对不对无关；取值修好反而让它更要紧了——现在第一条私聊真的能把人写成 admin 了。
 
 **(a) 群字段键名比 R11 更早爆。** `qq_open_plat.py:605` 只读 `data.get("group_id")`，`group_openid` 全仓零命中；仓库自己已经知道该通道群 id 是 openid（`display_name_service.py:19` 逐字写着）。若平台下发 `group_openid`：`group_id` 恒空 ⇒ `backlog_service.py:88-90` **静默丢掉所有群消息**（连 backlog 都不落）⇒ 群 subject 退化成 `qq::` 被 `scopes.py:88-96` 直接拒 ⇒ 发送路径 POST 到 `/v2/groups//messages`。
 
@@ -641,6 +687,12 @@ R11 **无法离线判定**：零 fixture、零 vendored SDK、零文档样例、
 1. **R11 不阻塞本设计**（PR 可以照排）。
 2. **R11 阻塞 `qq_connection_mode = open_platform` 的上线**。
 3. **(a)(b) 两件事优先级高于 R11。**
+
+**判定回来之后，这三条的状态：**
+
+1. 仍然成立，且已兑现成第 3 级形态：关系稀疏 ⇒ 展开层恒等退化，逐位等于今天。
+2. **解除。** 阻塞的原因是「不知道」，不是「per_conversation」——现在知道了，降级路径明确、可见、可操作，`open_platform` 可以上线。上线后主人要做一件事：在每个想被认出来的群里，把自己那个群的 ID 加进信任用户（信任用户页的待认领清单会把它列出来）。
+3. 两件都已修（见 §2.15.4.4 开头）。
 
 ---
 
@@ -674,7 +726,7 @@ QQ 发来的是一串 id、B 站发来的另一串 id。没有任何一条消息
 
 | PR | 内容 | 前置 | 开关 |
 |---|---|---|---|
-| **PR-E0** | R11 + (a)(b) 取证插桩与结论回填 `platform_identity_scope` | — | 临时插桩，取证后回滚 |
+| **PR-E0** | R11 + (a)(b) 取证插桩与结论回填 `platform_identity_scope` | — | **已完成**（#2710 群 id 回落 / #2711 插桩 / #2731 取值源 + scope 声明 + 第 1 级认领 UI）。插桩保留，默认关，用于确认未文档化字段 |
 | **PR-E1** | 值层 `ParticipantGroup` + 解析层 `subject_identity.py` + **读侧**折叠/展开（`scoped_context` / `query_memory` / `scoped_mentions`）+ locale 读侧同键 + 渲染一人一槽 + 归档合并 | PR1（identity/trust_store 落地） | `IDENTITY_READ_EXPANSION_ENABLED`，默认 off |
 | **PR-E2** | provenance 三态（`same_provenance_source` + `speaker_entity_id` 字段）+ 三处 D 类点同实体弃权 | PR-E1 | 随 PR-E3 的开关生效；`None` ⇒ 弃权分支**无条件生效** |
 | **PR-E3** | **写侧** canonical 路由 + 封定规则 + locale 写侧顺序 | **PR-E2 与 PR-E4 均已合入** | `IDENTITY_WRITE_ROUTING_ENABLED`，默认 off，per-platform |
@@ -762,8 +814,10 @@ QQ 发来的是一串 id、B 站发来的另一串 id。没有任何一条消息
 
 | 既有表述 | 出处 | 本章结论 |
 |---|---|---|
-| 「backlog 零成本取证」 | 修订 §2.14.2 | **对群路径失效**（`group_id` 键名未验证 ⇒ 群消息可能根本不落 backlog）。改为读日志，方案见 §2.15.4.2。 |
-| R11 的后果是「trust 按群碎成 N 份、攒不到 cap」 | 修订 §2.14.1 | **低估一个量级**：base、adjustment 来源、owner 授权三条轴同时归零（§2.15.4.4）。 |
+| 「backlog 零成本取证」 | 修订 §2.14.2 | **对群路径失效**（`group_id` 键名未验证 ⇒ 群消息可能根本不落 backlog）。改为读日志，方案见 §2.15.4.2。**已判定**：群 id 确实只在 `group_openid` 上，#2710 的回落是实际生效的那一支。 |
+| R11 的后果是「trust 按群碎成 N 份、攒不到 cap」 | 修订 §2.14.1 | **低估一个量级**：base、adjustment 来源、owner 授权三条轴同时归零（§2.15.4.4）。**判定后再低估一档**：`author.id` 不存在 ⇒ 说话人 id 恒空、全体塌成一个身份，连碎片化都还没轮到。 |
+| 「R11 无法离线判定」 | 本章 §2.15.4.2 | **判定错误**。厂商文档源码（`tencent-connect/bot-docs`）与官方 SDK（`botpy`）都是公开仓库，互相印证即可定论。「仓库里没有」≠「拿不到」。 |
+| `platform_identity_scope` 只能人工写入 | 本章 §2.15.4.3 / 拟议 R14 | 放宽为**声明**：转录厂商已公开的协议契约允许（入参无 account id / 无样本 / 无计数器，且 `asserted_by` 必填协议名）；从流量推断仍然禁止，守卫测试钉住（§2.15.4.3）。 |
 | D 类 11 处等值比较不实体化（理由：放宽的失败方向是 mixed） | 主设计 §1.2(1) | 该理由的**前提是 account ≡ 人**。canonical 路由作废这个前提，方向反转为「不放宽 ⇒ mixed」。本章在 provenance 三处 + 仲裁三处放宽，且全部以**弃权**（而非合并）为放宽形式，失败方向不落 mixed。 |
 | `speaker_base_trust` 的 0.8 上界「封死 guard_level → owner 级仲裁权」 | 主设计 §4.1 / `:438` | 只夹 base 时该断言为假（0.8+0.30+0.02=1.0）。clamp 上移到本段最终分（§2.15.3.4）。 |
 | `§4.7` 的 cap no-op 写放大优化 | 主设计 §4.7 | 饱和判据必须上移到**实体和**，否则对多账号实体失效（§2.15.3.3 A-3）。 |

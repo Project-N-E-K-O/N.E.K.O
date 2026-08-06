@@ -2767,6 +2767,14 @@ class IdentityMergeRequest(BaseModel):
     other_entity_id: str
 
 
+class IdentityScopeDeclareRequest(BaseModel):
+    platform: str
+    channel: str
+    actor_scope: str
+    conversation_scope: str
+    asserted_by: str
+
+
 class IdentityEntityRequest(BaseModel):
     entity_id: str
 
@@ -2874,6 +2882,37 @@ async def reconcile_trust_from_facts(req: TrustReconcileRequest):
     return await trust_store.areconcile_from_facts(
         runtime.fact_store, [validate_lanlan_name(name) for name in names],
     )
+
+
+@app.post("/internal/identity/scope")
+async def declare_identity_scope(req: IdentityScopeDeclareRequest):
+    """Record what a platform's identifiers mean on the wire.
+
+    A connector may call this on every startup: the declaration is a transcript
+    of the vendor's published protocol, so it is a constant of the connection
+    mode rather than something learned from traffic. Re-declaring the same
+    tuple writes nothing.
+
+    This is emphatically NOT a place to report an observation. The request body
+    carries no account id and no sample precisely so that "we saw two different
+    ids, so it must be per_conversation" cannot be expressed — see the kill list
+    in ``memory.trust_store``. Deriving a scope from traffic and posting it here
+    would launder an inference into an assertion, and downstream consumers show
+    this value to the operator as ground truth.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    try:
+        return await trust_store.adeclare_platform_identity_scope(
+            req.platform,
+            channel=req.channel,
+            actor_scope=req.actor_scope,
+            conversation_scope=req.conversation_scope,
+            asserted_by=req.asserted_by,
+        )
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
 
 
 @app.post("/internal/identity/accounts/bind")

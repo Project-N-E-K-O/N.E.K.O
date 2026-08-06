@@ -782,6 +782,83 @@ class QQSettingsService:
                 return
             await asyncio.sleep(delays.pop(0) if delays else 1800)
 
+    #: 每个连接模式下标识符的**协议语义**：``(通道, actor_scope,
+    #: conversation_scope)``。
+    #:
+    #: 这是一张**查表**，不是推断的结果——两行的依据都是各自协议的公开契约，
+    #: 在收到第一条消息之前就已知：
+    #:
+    #: - ``napcat`` 走 OneBot，``user_id`` 是真实 QQ 号、``group_id`` 是真实群
+    #:   号，跨群跨会话都是同一个值 ⇒ 两轴都 ``global``；
+    #: - ``open_platform`` 走官方 v2：同一个人在每个群是一个不同的
+    #:   ``member_openid``（腾讯「唯一身份机制」原文），私聊里又换成
+    #:   ``user_openid`` ⇒ actor 轴 ``per_conversation``；而 ``group_openid``
+    #:   是「每群一个」而不是「每群每人一个」，对本 app 稳定 ⇒ 会话轴仍
+    #:   ``global``。这个非对称正是设计文档 §2.15.4.3 说「群侧可以救、人侧不
+    #:   行」的原因。
+    IDENTITY_SCOPE_BY_MODE: dict[str, tuple[str, str, str]] = {
+        "napcat": ("napcat", "global", "global"),
+        "open_platform": ("open", "per_conversation", "global"),
+    }
+    #: 断言来源。写协议名而不是 "code"：读的人要能一眼看出这条记录的依据是
+    #: 厂商文档，而不是本机跑出来的观测。
+    IDENTITY_SCOPE_ASSERTED_BY: dict[str, str] = {
+        "napcat": "protocol:onebot-v11",
+        "open_platform": "protocol:qq-open-v2",
+    }
+    #: 与 legacy trust push 同族的退避，理由也相同：memory_server 可能还没起。
+    _IDENTITY_SCOPE_BACKOFF = (0, 5, 30, 120, 600)
+
+    async def declare_identity_scope_forever(self) -> None:
+        """把当前连接模式的标识符语义登记到服务端，失败就退避重试。
+
+        每次启动都跑，且每次切换连接模式后重跑：登记的是「现在这个模式的
+        wire format 是什么」，而模式是可以改的。服务端对同一组值幂等，重复
+        声明不写盘。
+
+        **不看任何消息。**取值只来自 ``IDENTITY_SCOPE_BY_MODE`` 这张协议表；
+        「观察到两个 id 不一样所以是 per_conversation」那条路是被硬约束否决
+        的，不要在这里补上。
+        """
+        mode = str(
+            (self.plugin._qq_settings or {}).get("qq_connection_mode")
+            or "napcat"
+        ).strip()
+        entry = self.IDENTITY_SCOPE_BY_MODE.get(mode)
+        if entry is None:
+            # 未知模式不猜。留 unknown 比写一个编出来的值诚实。
+            return
+        channel, actor_scope, conversation_scope = entry
+        delays = list(self._IDENTITY_SCOPE_BACKOFF)
+        while True:
+            try:
+                result = await self.plugin.memory_bridge.declare_identity_scope(
+                    channel=channel,
+                    actor_scope=actor_scope,
+                    conversation_scope=conversation_scope,
+                    asserted_by=self.IDENTITY_SCOPE_ASSERTED_BY[mode],
+                )
+                if result.get("persisted") is False:
+                    # 只进了内存没落盘 ⇒ 下次重启就没了，而 dashboard 会照着
+                    # 它显示降级提示。当作失败重试。
+                    raise RuntimeError("identity scope not persisted")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.plugin.logger.debug(f"身份作用域登记待重试: {exc}")
+            else:
+                return
+            await asyncio.sleep(delays.pop(0) if delays else 1800)
+
+    def ensure_identity_scope_declared(self) -> None:
+        """（重新）启动登记任务。切换连接模式后必须调用。"""
+        task = getattr(self.plugin, "_identity_scope_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self.plugin._identity_scope_task = asyncio.create_task(
+            self.declare_identity_scope_forever()
+        )
+
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
         """Serialize the whole settings transaction.
 
@@ -820,6 +897,9 @@ class QQSettingsService:
         if qq_connection_mode is not None:
             self.plugin._qq_settings["qq_connection_mode"] = str(qq_connection_mode or "napcat").strip()
             self.plugin._emit_log("INFO", f"连接模式已切换: {self.plugin._qq_settings['qq_connection_mode']}")
+            # 换模式就是换 wire format：napcat 的裸 QQ 号与开放平台的
+            # member_openid 不是同一种东西，登记必须跟着翻。
+            self.ensure_identity_scope_declared()
         if qq_open_app_id is not None:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:

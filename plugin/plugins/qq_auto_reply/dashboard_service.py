@@ -109,6 +109,10 @@ class QQDashboardService:
             },
             "backlog_items": list(self.plugin._relay_backlog_items),
             "config_ready": await self.plugin.config_store.exists(),
+            # 降级必须可见，不得假装成功（设计文档 §2.15.4.3）：开放平台上
+            # 一个人在每个群是一个不同的 ID，信赖度不跨群累计、主人档位只在
+            # 配置过的那个群生效。UI 照这个字段决定要不要说出来。
+            "identity_scope": self._identity_scope_payload(),
             "ui": self._build_open_ui_payload(available=True),
         }
 
@@ -121,6 +125,8 @@ class QQDashboardService:
                 {"id": "save_settings", "entry_id": "save_settings"},
                 {"id": "refresh_actual_contacts", "entry_id": "refresh_actual_contacts"},
                 {"id": "add_trusted_user", "entry_id": "add_trusted_user"},
+                {"id": "list_identity_claims", "entry_id": "list_identity_claims"},
+                {"id": "bind_identity_account", "entry_id": "bind_identity_account"},
                 {"id": "remove_trusted_user", "entry_id": "remove_trusted_user"},
                 {"id": "set_user_nickname", "entry_id": "set_user_nickname"},
                 {"id": "add_trusted_group", "entry_id": "add_trusted_group"},
@@ -286,6 +292,128 @@ class QQDashboardService:
         payload = await self.build_dashboard_state()
         payload["persisted"] = success
         return Ok(payload)
+
+    #: 查多少个名册用户的账本权重就停。名册通常只有几个人，这个上限存在的
+    #: 意义是别让一个被塞了几百人的名册在每次打开页面时发几百个请求。
+    IDENTITY_CANDIDATE_MAX = 50
+
+    async def list_identity_claims(self):
+        """待认领的群内 ID + 合并候选（设计文档 §2.15.4.3 第 1 级）。
+
+        候选**只按账本权重排序**（``|adjustment| + message_count``），且
+        **不预选任何一项**。这不是 UI 品味问题：按昵称相似度排序等于把一个
+        被硬约束否决的启发式（自动身份合并）塞给用户当默认答案，而合错两个
+        人会污染账本且不可回退。排序规则要改，先去改设计文档。
+        """
+        dispatcher = getattr(self.plugin, "message_dispatcher", None)
+        claims = (
+            dispatcher.list_open_platform_pending_claims()
+            if dispatcher is not None else []
+        )
+        candidates: list[dict[str, Any]] = []
+        permission_mgr = self.plugin.permission_mgr
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if permission_mgr is not None and bridge is not None:
+            for user in permission_mgr.list_users()[:self.IDENTITY_CANDIDATE_MAX]:
+                account_id = bridge.speaker_account_id(user.get("qq"))
+                try:
+                    profile = await bridge.fetch_speaker_profile(account_id)
+                except Exception:
+                    # 服务端没起来时照样要能列出名册；权重缺失只影响排序，
+                    # 不影响用户认得出「这是我私聊授权的那个自己」。
+                    profile = {}
+                candidates.append({
+                    "account_id": account_id,
+                    "qq": str(user.get("qq") or ""),
+                    "level": str(user.get("level") or ""),
+                    "nickname": str(user.get("nickname") or ""),
+                    "entity_id": profile.get("entity_id"),
+                    "adjustment_sum": float(profile.get("adjustment_sum") or 0.0),
+                    "message_count": int(
+                        profile.get("account_message_count") or 0
+                    ),
+                })
+        candidates.sort(
+            key=lambda row: (
+                abs(row["adjustment_sum"]) + row["message_count"]
+            ),
+            reverse=True,
+        )
+        return Ok({
+            "claims": claims,
+            "candidates": candidates,
+            "identity_scope": self._identity_scope_payload(),
+        })
+
+    def _identity_scope_payload(self) -> dict[str, Any]:
+        """当前连接模式下标识符的协议语义，给 UI 显示降级提示用。
+
+        读的是本地那张协议表而不是服务端已登记的值：提示要不要显示只取决于
+        现在跑的是哪个模式，不该因为 memory_server 还没起来就少提示一句。
+        """
+        settings = self.plugin._qq_settings or {}
+        mode = str(settings.get("qq_connection_mode") or "napcat").strip()
+        table = self.plugin.settings_service.IDENTITY_SCOPE_BY_MODE
+        entry = table.get(mode)
+        if entry is None:
+            return {
+                "mode": mode, "channel": "",
+                "actor_scope": "unknown", "conversation_scope": "unknown",
+            }
+        channel, actor_scope, conversation_scope = entry
+        return {
+            "mode": mode,
+            "channel": channel,
+            "actor_scope": actor_scope,
+            "conversation_scope": conversation_scope,
+        }
+
+    async def bind_identity_account(
+        self, *, user_id: str, entity_id: str,
+    ):
+        """把一个群内 ID 并入已有身份。**只能由人在 UI 上触发。**
+
+        合并的是**信赖度账本**（entity←account），不是权限名册：名册按裸
+        actor id 索引，所以「让主人在这个群里也算主人」仍然要单独把这个 ID
+        加进信任用户。两件事分开做是对的——把 bind 顺手当成提权会让信赖度
+        这一层变成权限升级的通道。
+        """
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if bridge is None:
+            return Err(SdkError(
+                "NOT_INITIALIZED: "
+                + self.plugin.i18n.t(
+                    "errors.memory_bridge_not_initialized",
+                    default="记忆桥未初始化",
+                )
+            ))
+        actor = str(user_id or "").strip()
+        target_entity = str(entity_id or "").strip()
+        if not actor or not target_entity:
+            return Err(SdkError(
+                "INVALID_ARGUMENT: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_missing_args",
+                    default="user_id 与 entity_id 都不能为空",
+                )
+            ))
+        # 平台前缀只在 memory_bridge 里拼一次，调用侧（含前端）不许自己拼。
+        target_account = bridge.speaker_account_id(actor)
+        try:
+            result = await bridge.bind_speaker_account(
+                account_id=target_account,
+                entity_id=target_entity,
+                bound_by="qq_auto_reply.dashboard",
+            )
+        except Exception as exc:
+            return Err(SdkError(
+                "BIND_FAILED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_failed",
+                    default="合并身份失败: {error}", error=str(exc),
+                )
+            ))
+        return Ok({"bind": result})
 
     async def remove_trusted_user(self, *, qq_number: str):
         if not self.plugin.permission_mgr:

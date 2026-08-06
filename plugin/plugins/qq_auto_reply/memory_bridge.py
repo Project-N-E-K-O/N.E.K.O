@@ -407,6 +407,80 @@ class QQMemoryBridge:
         response.raise_for_status()
         return response.json()
 
+    async def declare_identity_scope(
+        self,
+        *,
+        channel: str,
+        actor_scope: str,
+        conversation_scope: str,
+        asserted_by: str,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """把本通道标识符的**协议语义**登记进服务端身份池。
+
+        登记的是「这个连接模式的 wire format 是什么」，不是「我们观察到了
+        什么」——所以这里没有、也永远不该有任何 account id 或样本参数。见
+        ``adeclare_platform_identity_scope`` 的 docstring。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/scope",
+            json={
+                "platform": self.PLATFORM,
+                "channel": channel,
+                "actor_scope": actor_scope,
+                "conversation_scope": conversation_scope,
+                "asserted_by": asserted_by,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def bind_speaker_account(
+        self,
+        *,
+        account_id: str,
+        entity_id: str,
+        bound_by: str,
+        timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """把一个 account 并入已有 entity。**只能由人触发**。
+
+        唯一调用方是信任用户页的「合并到已有身份」——开放平台上同一个人在
+        每个群是一个不同的 member_openid，跨群把信赖度并起来只有人工断言这
+        一条路（见设计文档 §2.15.4.3 第 1 级）。任何自动建边（昵称、共现、
+        时序、编辑距离）都被硬约束否决，不要在调用侧偷偷补上。
+        """
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/identity/accounts/bind",
+            json={
+                "account_id": account_id,
+                "entity_id": entity_id,
+                "bound_by": bound_by,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def fetch_speaker_profile(
+        self, account_id: str, *, timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """一个 account 的只读诊断视图（entity_id + 账本权重）。
+
+        合并候选**只能按账本权重排序**，这个方法就是权重的来源。
+        """
+        client = self._client()
+        response = await client.get(
+            f"{self._base_url()}/internal/trust/profile",
+            params={"account_id": account_id},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def post_scoped_memory_history_batch(
         self,
         her_name: str,

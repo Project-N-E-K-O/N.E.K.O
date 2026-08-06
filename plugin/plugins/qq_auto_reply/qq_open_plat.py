@@ -16,16 +16,35 @@ from .qq_connection import QQConnectionBase
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
 # ==========================================
-# R11 身份作用域取证
+# R11 身份作用域：已判定
 # （docs/design/speaker-trust-entity-semantics.md §2.15.4）
 # ==========================================
 #
-# 开放平台在群消息里下发的 author.id 与在私聊里下发的 author.id 是不是同一个
-# 作用域（全局 user_openid 还是 app×群×人 的 member_openid），**离线无法判定**：
-# 零 fixture、零 vendored SDK、零文档样例。判定只能靠真机跑一遍、读日志。
+# 结论：**开放平台的群/私聊事件里，author 下根本没有 id 这个键。**依据是腾讯
+# 官方的两份一手材料，互相印证：
 #
-# 下面这组常量与函数就是为了让那次取证可做。它们不参与任何判定、不改变任何
-# 行为；取证结论回来之前，权限逻辑一行都不该动。
+# - 官方文档 bot-docs `server-inter/message/send-receive/event.md` 的字段表与
+#   示例 JSON：C2C_MESSAGE_CREATE 的 author 只有 `user_openid`；
+#   GROUP_AT_MESSAGE_CREATE 的 author 只有 `member_openid`，群标识是
+#   `group_openid`；
+# - 官方 SDK botpy `message.py`：`C2CMessage._User` 只读 `user_openid`、
+#   `GroupMessage._User` 只读 `member_openid`；只有**频道**体系的
+#   `Message._User` 才有 `id`——而本连接器不处理频道消息事件。
+#
+# 而 `author.get("id")` 正是本文件曾经取的键（从 napcat/OneBot 的
+# `sender.user_id` 抄来的，连 `<@!(\d+)>` 纯数字正则都是同一次抄写的产物）。
+# 于是两条路径的 user_id **恒为空串**：所有说话人塌成同一个空身份，
+# `_maybe_reserve_open_platform_admin` 因 `not sender_id` 永不触发，私聊回复
+# POST 到 `/v2/users//messages`。
+#
+# 官方文档「唯一身份机制」同时回答了作用域：*相同 bot 在不同的群，获取到同一
+# 个用户在群内的唯一识别号 openid 不一样，称为 member_openid*。⇒ R11 兑现，
+# `actor_scope = per_conversation`，按 §2.15.4.3 走降级（登记见
+# `settings_service.declare_identity_scope`，人工断言 UI 见信任用户页）。
+#
+# 下面这组取证常量与函数**保留**：官方文档的字段表不保证穷尽实际 payload
+# （比如有没有未文档化的 union_openid 兄弟键），留着可以在真机上确认。默认
+# 关，不参与任何判定。
 _IDENTITY_PROBE_TAG = "[R11]"
 _IDENTITY_PROBE_EVENTS = ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE")
 #: 单次连接最多记录多少条。取证只需要三条（群 X、群 Y、私聊各一），上限
@@ -96,6 +115,28 @@ def build_identity_probe_line(event_type: str, data: Any) -> str:
         f"group.ids={_probe_identifier_values(group_fields)} "
         f"data.keys={_probe_key_names(payload)}"
     )
+
+
+#: 说话人 id 的取值顺序，第一个非空者胜。两条路径**必须分开**：同一个真人在
+#: 私聊是 user_openid、在每个群各是一个 member_openid，没有任何一个键在两边都
+#: 有值（见模块顶部）。
+#:
+#: `id` 留在末位当回落，不是因为怀疑官方文档，而是因为拿掉它会让协议加键时本
+#: 函数**静默返回空串**——而空说话人 id 恰恰是这次缺陷的形态：权限、记忆、发送
+#: 三条路径全都不报错，只是无声地全错。取到一个可能不对的 id 也好过取到空。
+_C2C_ACTOR_ID_KEYS = ("user_openid", "id")
+_GROUP_ACTOR_ID_KEYS = ("member_openid", "id")
+
+
+def pick_actor_id(author: Any, keys: tuple[str, ...]) -> str:
+    """按 ``keys`` 顺序取第一个非空的说话人标识。纯函数。"""
+    if not isinstance(author, dict):
+        return ""
+    for key in keys:
+        value = str(author.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 class QQOpenPlatformConnection(QQConnectionBase):
@@ -789,14 +830,15 @@ class QQOpenPlatformConnection(QQConnectionBase):
     def _convert_event(self, event_type: str, data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """QQ 开放平台事件 → 内部统一消息格式"""
         author = data.get("author", {})
-        user_id = str(author.get("id") or "")
+        # 开放平台的 author 只有一个 openid 键，没有 username；这一行取到值的
+        # 唯一场景是协议将来加键。昵称缺失由 display_name_service 兜底。
         user_nickname = str(author.get("username") or "") or None
 
         if event_type == "C2C_MESSAGE_CREATE":
             return {
                 "message_type": "private",
                 "channel": self.CHANNEL,
-                "user_id": user_id,
+                "user_id": pick_actor_id(author, _C2C_ACTOR_ID_KEYS),
                 "user_nickname": user_nickname,
                 "content": str(data.get("content") or ""),
                 "message_id": str(data.get("id") or ""),
@@ -815,7 +857,9 @@ class QQOpenPlatformConnection(QQConnectionBase):
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             content = str(data.get("content") or "")
             # 该通道的群标识本就是 openid（见 display_name_service 的说明），
-            # 平台按 v2 语义可能挂在 group_openid 而不是 group_id。顺序不能反：
+            # 官方 v2 把它挂在 group_openid 而不是 group_id（bot-docs 的
+            # GROUP_AT_MESSAGE_CREATE 字段表与示例 JSON 都只有 group_openid），
+            # 所以实际生效的一直是回落这一支。顺序仍然不能反：
             # group_id 有值时必须继续用它，否则群 subject_id 会整体换键，而
             # memory/scopes.py 是字节相等匹配、无别名，存量 scoped 群记忆会一次
             # 性失联。只在原键为空时兜底，才能既零行为变化又挡住全量丢消息。
@@ -838,7 +882,7 @@ class QQOpenPlatformConnection(QQConnectionBase):
             return {
                 "message_type": "group",
                 "channel": self.CHANNEL,
-                "user_id": user_id,
+                "user_id": pick_actor_id(author, _GROUP_ACTOR_ID_KEYS),
                 "user_nickname": user_nickname,
                 "content": clean_content,
                 "message_id": str(data.get("id") or ""),

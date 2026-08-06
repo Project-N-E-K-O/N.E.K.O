@@ -715,15 +715,121 @@ async def test_channel_collision_is_detected_without_touching_the_ledger():
 
 
 async def test_platform_identity_scope_is_never_inferred_by_code(pool):
-    """Showing "unknown" is the honest state until a human fills it in."""
+    """Showing "unknown" is the honest state until someone declares it.
+
+    Traffic must not move this container. Not one message, not a thousand,
+    not messages whose ids visibly disagree -- concluding a scope from what
+    came over the wire is the inference this whole design forbids.
+    """
     await _open_gate()
     await trust_store.aapply_trust_mutations([
         _mutation("qq:1", activity=[("activity_a0000001", 1)],
                   channel="napcat"),
+        # Two ids that a naive observer would "obviously" read as
+        # per-conversation. The pool still says nothing.
+        _mutation("qq:MEMBER_IN_X", activity=[("activity_a0000002", 1)],
+                  channel="open"),
+        _mutation("qq:MEMBER_IN_Y", activity=[("activity_a0000003", 1)],
+                  channel="open"),
     ])
     assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
     stored = json.loads(pool.read_text(encoding="utf-8"))
     assert stored["platform_identity_scope"] == {}
+
+
+async def test_declaring_a_scope_records_it_with_its_asserter(pool):
+    result = await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+
+    assert result["persisted"] is True
+    scope = trust_store.trust_snapshot().platform_identity_scope("qq")
+    assert scope["actor_scope"] == "per_conversation"
+    assert scope["conversation_scope"] == "global"
+    assert scope["channel"] == "open"
+    assert scope["asserted_by"] == "protocol:qq-open-v2"
+    assert scope["asserted_at"]
+    stored = json.loads(pool.read_text(encoding="utf-8"))
+    assert stored["platform_identity_scope"]["qq"] == scope
+
+
+async def test_redeclaring_the_same_scope_does_not_touch_disk(pool):
+    """A connector declares on every startup; that must not rewrite the pool."""
+    await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+    before = pool.read_text(encoding="utf-8")
+
+    again = await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+
+    # ``persisted`` means "disk agrees with memory", so a no-op reports True
+    # exactly like the other idempotent mutators. The proof that nothing was
+    # written is the file itself: any real write bumps ``updated_at``.
+    assert again["persisted"] is True
+    assert pool.read_text(encoding="utf-8") == before
+
+
+async def test_switching_connection_mode_redeclares_the_scope(pool):
+    await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="open", actor_scope="per_conversation",
+        conversation_scope="global", asserted_by="protocol:qq-open-v2",
+    )
+    result = await trust_store.adeclare_platform_identity_scope(
+        "qq", channel="napcat", actor_scope="global",
+        conversation_scope="global", asserted_by="protocol:onebot-v11",
+    )
+
+    assert result["persisted"] is True
+    scope = trust_store.trust_snapshot().platform_identity_scope("qq")
+    assert (scope["channel"], scope["actor_scope"]) == ("napcat", "global")
+
+
+@pytest.mark.parametrize("actor_scope", [
+    "", "probably_global", "PER_CONVERSATION_ISH", "per-conversation", None,
+])
+async def test_a_scope_outside_the_closed_set_is_refused(pool, actor_scope):
+    """A hedged value would leave every consumer guessing what it licenses."""
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.adeclare_platform_identity_scope(
+            "qq", channel="open", actor_scope=actor_scope,
+            conversation_scope="global", asserted_by="protocol:qq-open-v2",
+        )
+    assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
+
+
+async def test_an_unattributed_declaration_is_refused(pool):
+    """Without an asserter, a declaration reads exactly like an inference."""
+    with pytest.raises(trust_store.TrustIdentityError):
+        await trust_store.adeclare_platform_identity_scope(
+            "qq", channel="open", actor_scope="per_conversation",
+            conversation_scope="global", asserted_by="  ",
+        )
+    assert trust_store.trust_snapshot().platform_identity_scope("qq") == {}
+
+
+async def test_the_declaration_signature_admits_nothing_derived_from_traffic():
+    """The argument list is the guardrail; keep it unable to express an inference.
+
+    No account id, no sample payload, no observed counter -- a caller who
+    wanted to launder "we saw two different ids" into an assertion has no
+    parameter to put it in.
+    """
+    import inspect
+
+    params = set(
+        inspect.signature(
+            trust_store.adeclare_platform_identity_scope
+        ).parameters
+    )
+    assert params == {
+        "platform", "channel", "actor_scope", "conversation_scope",
+        "asserted_by",
+    }
 
 
 # ── reconcile ───────────────────────────────────────────────────────────────

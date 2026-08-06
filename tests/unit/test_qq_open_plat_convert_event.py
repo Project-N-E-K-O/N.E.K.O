@@ -10,6 +10,11 @@ The fallback order is the load-bearing part: ``group_id`` must keep
 winning when present. Flipping it would re-key every group subject_id,
 and scope matching is byte equality with no aliasing, so all existing
 scoped group memories would be orphaned in one shot.
+
+The ``author`` blocks below carry the real protocol keys. They used to say
+``{"id": ...}``, which is the very assumption that turned out to be wrong --
+see ``test_qq_open_platform_actor_identity.py`` for where the speaker id
+actually comes from.
 """
 
 import pytest
@@ -27,7 +32,7 @@ def _group_payload(**group_keys) -> dict:
     payload = {
         "id": "msg-1",
         "content": "<@!bot-self> zaima",
-        "author": {"id": "user-1", "username": "neko"},
+        "author": {"member_openid": "user-1"},
     }
     payload.update(group_keys)
     return payload
@@ -72,7 +77,7 @@ def test_convert_event_private_message_keeps_group_id_empty():
         {
             "id": "msg-2",
             "content": "hi",
-            "author": {"id": "user-1", "username": "neko"},
+            "author": {"user_openid": "user-1"},
             "group_openid": "G-openid",
         },
     )
