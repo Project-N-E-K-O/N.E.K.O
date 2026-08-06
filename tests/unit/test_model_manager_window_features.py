@@ -138,7 +138,21 @@ def test_vrm_saved_legacy_url_normalization_ignores_query_and_hash_suffixes():
     )[0]
 
     assert "\\.vrma(?:[?#]|$)" in helper
-    assert ".replace(/\\.vrma(?:[?#].*)?$/i, '.vrma.gz')" in helper
+    assert "decodeURIComponent(assetName)" in helper
+    assert "'/static/vrm/animation/' + assetName + '.vrma.gz'" in helper
+
+
+def test_vrm_catalog_player_resets_before_loading_a_new_model():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    load_block = source.split("// 在加载新模型前，显式停止之前的动作并清理", 1)[1].split(
+        "// 加载新模型后，重置播放状态", 1
+    )[0]
+
+    cancel = "vrmMotionCatalogPlayer.cancel('model_manager_model_load', { resume: false });"
+    assert cancel in load_block
+    assert load_block.index(cancel) < load_block.index("await vrmManager.loadModel(modelUrl")
 
 
 def test_vrm_preview_ignores_stale_playback_completions():

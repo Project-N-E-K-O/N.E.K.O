@@ -3330,6 +3330,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // 在加载新模型前，显式停止之前的动作并清理
                 stopIdleRotation('vrm');
+                if (vrmMotionCatalogPlayer) {
+                    vrmMotionCatalogPlayer.cancel('model_manager_model_load', { resume: false });
+                }
                 if (vrmManager.vrmaAction) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -3433,8 +3436,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function normalizeBundledVrmAnimationUrl(url, availableValues) {
         const value = String(url || '');
-        if (!/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(value)) return value;
-        const compressed = value.replace(/\.vrma(?:[?#].*)?$/i, '.vrma.gz');
+        const match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+        if (!match) return value;
+        let assetName = match[1];
+        try {
+            assetName = decodeURIComponent(assetName);
+        } catch (_) {
+            // Keep the original path segment when it is not valid URI encoding.
+        }
+        const compressed = '/static/vrm/animation/' + assetName + '.vrma.gz';
         return availableValues && availableValues.has(compressed) ? compressed : value;
     }
 

@@ -1,9 +1,18 @@
 (function() {
   'use strict';
 
+  var COMPRESSED_BUNDLED_VRM_IDLE_NAMES = new Set([
+    'liked', 'wait01', 'wait02', 'wait03', 'wait04', 'wait05',
+    '全身展示', '射击姿态', '屈伸运动', '旋转', '模特姿势', '比 V 手势', '致意问候'
+  ]);
+
   function normalizeBundledVrmIdleUrl(url) {
     var value = String(url || '');
-    if (!/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(value)) return url;
+    var match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+    if (!match) return url;
+    var assetName = match[1];
+    try { assetName = decodeURIComponent(assetName); } catch (_) {}
+    if (!COMPRESSED_BUNDLED_VRM_IDLE_NAMES.has(assetName)) return url;
     return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
   }
 

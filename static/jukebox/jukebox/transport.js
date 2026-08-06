@@ -1,3 +1,18 @@
+var JUKEBOX_COMPRESSED_BUNDLED_VRM_IDLE_NAMES = new Set([
+  'liked', 'wait01', 'wait02', 'wait03', 'wait04', 'wait05',
+  '全身展示', '射击姿态', '屈伸运动', '旋转', '模特姿势', '比 V 手势', '致意问候'
+]);
+
+function normalizeJukeboxBundledVrmIdleUrl(url) {
+  const value = String(url || '');
+  const match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+  if (!match) return url;
+  let assetName = match[1];
+  try { assetName = decodeURIComponent(assetName); } catch (_) {}
+  if (!JUKEBOX_COMPRESSED_BUNDLED_VRM_IDLE_NAMES.has(assetName)) return url;
+  return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
+}
+
 Object.assign(window.Jukebox, {
   startConfigPolling: function() {
     Jukebox.stopConfigPolling();
@@ -842,9 +857,7 @@ Object.assign(window.Jukebox, {
         if (!vrmIdleUrl) {
           vrmIdleUrl = window.lanlan_config?.vrmIdleAnimation || '/static/vrm/animation/wait03.vrma.gz';
         }
-        if (/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(String(vrmIdleUrl || ''))) {
-          vrmIdleUrl = String(vrmIdleUrl).replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
-        }
+        vrmIdleUrl = normalizeJukeboxBundledVrmIdleUrl(vrmIdleUrl);
         const restoreRequestId = ++Jukebox.State.playRequestId;
         await window.vrmManager.playVRMAAnimation(vrmIdleUrl, {
           loop: true,
