@@ -474,6 +474,25 @@
         });
     }
 
+    function actionHistorical(text, sourceIndex) {
+        const source = folded(text);
+        const current = splitClauses(source).find(function (clause) {
+            return sourceIndex >= clause.start && sourceIndex < clause.end;
+        });
+        if (!current) return false;
+        const prefix = source.slice(current.start, sourceIndex);
+        return /\b(?:used\s+to|previously|formerly|earlier|yesterday|last\s+(?:time|night|week|month|year))\b/iu.test(current.raw)
+            || /\b(?:was|were|had|did)\b[^.!?;]*$/iu.test(prefix)
+            || /\bwould\s+(?:(?:often|usually|always)\s+)?$/iu.test(prefix);
+    }
+
+    function actionOnlyHistorical(text, anchor) {
+        const positions = termPositions(text, anchor);
+        return !!positions.length && positions.every(function (sourceIndex) {
+            return actionHistorical(text, sourceIndex);
+        });
+    }
+
     function clauseStartIndex(text, sourceIndex) {
         const source = normalize(text);
         const boundaries = new RegExp(CLAUSE_BOUNDARY.source, CLAUSE_BOUNDARY.flags);
@@ -716,16 +735,26 @@
             const output = [];
             const hasKana = /[\u3040-\u30ff]/u.test(source);
             const hasChineseText = /[\u3400-\u9fff\uf900-\ufaff]/u.test(source) && !hasKana;
+            const hasNonHanScript = /[A-Za-zÀ-ž\u0400-\u04ff\uac00-\ud7af]/u.test(source);
             const needsTraditionalNormalization = locale === 'zh-TW' || TRADITIONAL_HINT.test(source);
             const simplifiedSource = needsTraditionalNormalization
                 ? this._simplifyTraditional(source) : source;
+            const hasCanonicalChineseMotion = hasChineseText && this.pack.rules.some(function (rule) {
+                return includesAny(
+                    simplifiedSource,
+                    localizedStrict(rule.phrases, 'zh-CN').concat(localizedStrict(rule.aliases, 'zh-CN'))
+                );
+            });
+            const needsMixedNormalization = hasNonHanScript && !hasCanonicalChineseMotion;
             // 简体中文已经是权威动作语言，直接保留原句才能保住分句、先后
             // 关系和修饰范围。只有繁中或非中文脚本才需要进入规范化映射。
             if (hasChineseText && !needsTraditionalNormalization
-                && !['ja', 'ko'].includes(locale) && !settings.speechMode) return source;
+                && !['ja', 'ko'].includes(locale) && !settings.speechMode
+                && !needsMixedNormalization) return source;
             const locales = hasChineseText
                 ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN']
-                    : settings.speechMode ? semanticLocales(source, locale) : [locale]
+                    : settings.speechMode || needsMixedNormalization
+                        ? semanticLocales(source, locale) : [locale]
                 : semanticLocales(source, locale);
             const guardNegationTerms = unique(locales.reduce((terms, candidateLocale) => {
                 return terms.concat(this._common(candidateLocale).negation || []);
@@ -839,7 +868,8 @@
                             commonEvidenceText(matchSource, candidateLocale, 'hypothetical'),
                             candidate.sourceIndex,
                             guardHypotheticalTerms
-                        ) || actionHasConditionalSuffix(matchSource, candidate.sourceEnd);
+                        ) || actionHasConditionalSuffix(matchSource, candidate.sourceEnd)
+                            || actionHistorical(matchSource, candidate.sourceIndex);
                         const actorBlocked = settings.speechMode
                             && !speechActorAllowed(
                                 matchSource,
@@ -1434,6 +1464,7 @@
                     ).find(function (term) {
                         return !actionNegated(assistantText, term, assistantNegationTerms)
                             && !actionOnlyConditional(assistantText, term)
+                            && !actionOnlyHistorical(assistantText, term)
                             && speechActorAllowed(assistantText, term, undefined, assistantMetaTerms);
                     });
                     if (!match) return false;
@@ -1470,6 +1501,7 @@
                             return !commandNegated(userText, term, userNegationTerms)
                                 && !actionNegated(userText, term, userNegationTerms)
                                 && !actionOnlyConditional(userText, term)
+                                && !actionOnlyHistorical(userText, term)
                                 && userCommandActorAllowed(userText, term);
                         })
                         .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];
@@ -1503,6 +1535,7 @@
                 ).find(function (term) {
                     return !actionNegated(assistantText, term, assistantNegationTerms)
                         && !actionOnlyConditional(assistantText, term)
+                        && !actionOnlyHistorical(assistantText, term)
                         && speechActorAllowed(assistantText, term, undefined, assistantMetaTerms);
                 });
                 if (!match) return false;

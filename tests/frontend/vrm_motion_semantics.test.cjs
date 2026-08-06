@@ -482,6 +482,34 @@ assert.equal(core.analyzeSpeech('好的，但我不能这么做。', {
 });
 assert.equal(core.analyzeSpeech("I won't clap", { locale: 'en' }).plan.length, 0);
 
+["can't clap", 'cannot clap', "couldn't clap", "won't clap", 'unable to clap'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'en' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('Okay.', {
+    locale: 'en', userText: "won't wave"
+}).plan.length, 0);
+assert.equal(core.analyze('can clap', { locale: 'en' }).plan[0].intent, 'clap');
+
+[
+    ['\u8bf7 wave goodbye', 'zh-CN'],
+    ['wave \u4e00\u4e0b', 'en']
+].forEach(function ([text, locale]) {
+    assert.equal(core.analyze(text, { locale: locale }).plan[0].intent, 'wave', text);
+});
+const canonicalChineseStage = '\u8f7b\u8f7b\u9f13\u638c';
+assert.equal(core.analyze(canonicalChineseStage, {
+    locale: 'zh-CN'
+}).canonicalZh, canonicalChineseStage);
+
+['I used to clap', 'I was clapping earlier', 'Earlier I was clapping'].forEach(function (text) {
+    assert.equal(core.analyze(text, { locale: 'en' }).plan.length, 0, text);
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
+assert.deepEqual(core.analyzeSpeech('I used to clap, but I wave now', {
+    locale: 'en'
+}).plan.map(function (item) { return item.intent; }), ['wave']);
+assert.equal(core.analyzeSpeech('I clap now', { locale: 'en' }).plan[0].intent, 'clap');
+
 requiredLocales.forEach(function (locale) {
     assert.ok(semantics.speech.refusals[locale].length > 0, locale + ' refusal terms');
 });
