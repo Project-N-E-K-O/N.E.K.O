@@ -722,13 +722,6 @@ def test_backfill_reads_archive_rows_too(tmp_path):
     with open(archive_path, "w", encoding="utf-8") as fh:
         json.dump([
             {"id": "arch1", "text": "群规是不剧透"},
-            # 仲裁败者：Stage-2 检索到一律跳过，而 restore 明确把它们排除在
-            # 外（只留在归档里），所以它们永远不会再变成活跃行——索引里留着
-            # 纯占候选窗口。
-            {
-                "id": "loser1", "text": "群规是不能剧透",
-                "arbitration_archived_at": "2026-07-01T00:00:00",
-            },
         ], fh)
 
     captured: list[list[tuple[str, str]]] = []
@@ -963,43 +956,31 @@ def test_the_arbitration_prompt_never_claims_a_detector():
 
 
 @pytest.mark.asyncio
-async def test_restoring_an_arbitration_loser_reopens_the_backfill(tmp_path):
-    """Arbitration losers are left out of the backfill, and its marker is
-    persistent — so a restore has to reopen it or the row stays invisible to
-    Stage-2 forever.
+async def test_restoring_an_arbitration_loser_needs_no_index_work(tmp_path):
+    """Archived rows — losers included — are all in the index, so a restore
+    has nothing to schedule.
 
-    The restore does NOT index the row itself: ``index_fact`` swallows its
-    own errors and returns nothing, so a "failed? then invalidate" branch
-    around it could never fire. Invalidating unconditionally is the version
-    that cannot silently do nothing.
+    The alternative (exclude losers, then re-index or invalidate on restore)
+    was tried and reverted: every step of that compensation swallows its own
+    errors, so "it failed" and "it worked" are indistinguishable. Keeping the
+    rows indexed costs a few candidate-window slots and removes the whole
+    failure class.
     """
     import json
 
     cm = _cm(str(tmp_path))
-    cleared: list[str] = []
-    backfilled: list[list] = []
+    touched: list = []
 
-    class _MarkerIndex(_FakeIndex):
-        def __init__(self):
-            super().__init__()
-            self.needs = False
-
-        def clear_fts_backfill_marker(self, name):
-            cleared.append(name)
-            self.needs = True
+    class _WatchfulIndex(_FakeIndex):
+        async def aindex_fact(self, *a, **k):
+            touched.append(("index", a))
 
         def fts_index_needs_backfill(self, _name):
-            return self.needs
+            return False
 
-        async def abackfill_fact_index(self, _name, rows):
-            backfilled.append(rows)
-            return len(rows)
-
-    index = _MarkerIndex()
     with patch("memory.facts.get_config_manager", return_value=cm):
-        store = FactStore(time_indexed_memory=index)
+        store = FactStore(time_indexed_memory=_WatchfulIndex())
     store._config_manager = cm
-    store._fts_backfilled = {"小天"}
 
     char_dir = os.path.join(str(tmp_path), "小天")
     os.makedirs(char_dir, exist_ok=True)
@@ -1014,11 +995,41 @@ async def test_restoring_an_arbitration_loser_reopens_the_backfill(tmp_path):
         }], fh)
 
     assert await store.arestore_arbitrated_fact("小天", 1) is True
-    assert cleared == ["小天"]
-    assert "小天" not in store._fts_backfilled
+    assert touched == []
 
-    # 下一次写入的回填必须把这条复活的行带上，且 id 保持原类型。
-    await store._aensure_fact_index_backfilled(
-        "小天", await store.aload_facts("小天"),
-    )
-    assert backfilled and (1, "旧的整数 id 行") in backfilled[0]
+
+def test_the_backfill_keeps_arbitration_losers_indexed(tmp_path):
+    """Reverted #2703 round 7: excluding them saved a little window space and
+    bought a chain of silently-failing compensations on the restore path."""
+    import asyncio
+    import json
+
+    cm = _cm(str(tmp_path))
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        harness = _PersistHarness(_FakeIndex())
+    harness._config_manager = cm
+
+    archive_path = os.path.join(str(tmp_path), "facts_archive.json")
+    with open(archive_path, "w", encoding="utf-8") as fh:
+        json.dump([{
+            "id": "loser1", "text": "群规是不能剧透",
+            "arbitration_archived_at": "2026-07-01T00:00:00",
+        }], fh)
+
+    captured: list[list] = []
+
+    class _CapturingIndex(_FakeIndex):
+        def fts_index_needs_backfill(self, _name):
+            return True
+
+        async def abackfill_fact_index(self, _name, rows):
+            captured.append(rows)
+            return len(rows)
+
+    harness._time_indexed = _CapturingIndex()
+    with patch.object(
+        harness, "_facts_archive_path", return_value=archive_path,
+    ):
+        asyncio.run(harness._aensure_fact_index_backfilled("小天", []))
+
+    assert captured == [[("loser1", "群规是不能剧透")]]

@@ -1943,19 +1943,9 @@ class FactStore:
                     return True
 
             try:
-                restored_ok = await asyncio.to_thread(_restore)
-                if restored_ok:
-                    # 复活的行必须回到近重复索引里：回填刻意跳过仲裁败者
-                    # （归档期间它们永远不会被检索到），而回填标记是持久
-                    # 的——什么都不做的话这条 fact 就永远对 Stage-2 不可见。
-                    #
-                    # 这里**不**自己调 index_fact：那条路径自己吞异常、成功
-                    # 与失败的返回值无法区分，补一层「失败就作废标记」的判
-                    # 断实际上永远不会触发（这段代码为此连挂四轮 review）。
-                    # 改成只作废标记，让下一次写入重跑一遍全量回填——那时
-                    # 这一行已经在 active 里，自然会被索引到。
-                    await self._ainvalidate_fts_backfill(name)
-                return restored_ok
+                # 复活不需要碰索引：归档行本来就全在索引里（见
+                # _aensure_fact_index_backfilled 里的说明）。
+                return await asyncio.to_thread(_restore)
             except BaseException:
                 def _invalidate() -> None:
                     with self._get_lock(name):
@@ -4130,21 +4120,23 @@ class FactStore:
                         return None
                     if not isinstance(data, list):
                         return None
-                    # 仲裁败者（arbitration_archived_at）不进索引：Stage-2
-                    # 检索到它们一律跳过，而 arestore_scoped_subject 的
-                    # to_restore 明确把它们排除在外、只留在归档里——也就是
-                    # 说它们永远不会再变成活跃行，索引里留着纯粹是占候选
-                    # 窗口，能把真正的活跃近重复挤出那 200 行。
+                    # 归档行**全部**入索引，包括仲裁败者。
                     #
-                    # subject 归档行相反，必须留：subject 复活会把它们写回
-                    # active，而复活路径不碰 FTS 索引，这时候剔掉就等于让
-                    # 复活后的事实永久检索不到。absorbed 行同理（它们照旧
-                    # 参与硬重复拦截）。
+                    # 一度按「Stage-2 反正会跳过败者，留着只占候选窗口」把
+                    # 它们剔掉过，结果是：`arestore_arbitrated_fact` 能把
+                    # 败者搬回 active，于是复活的行必须有人补索引，而补索引
+                    # 这件事的每一步（index_fact、作废回填标记）都自己吞异
+                    # 常、成功与失败无法区分——连着四轮 review 都在这条链上
+                    # 挖出「失败了但看不出来」。
+                    #
+                    # 那个剔除是个微优化（省几行候选窗口），换来的却是一整
+                    # 类静默失效。留着它们：Stage-2 检索到会跳过（在扣候选
+                    # 预算**之前**），首窗被占满还有一次扩窗到 200 兜底，而
+                    # 复活路径什么都不用做——行本来就在索引里。
                     return [
                         (fid, str(r.get('text') or ''))
                         for r in data
                         if isinstance(r, dict)
-                        and not r.get('arbitration_archived_at')
                         and (fid := _readable_fact_id(r)) is not None
                     ]
 
@@ -4170,23 +4162,6 @@ class FactStore:
         except Exception as e:
             logger.debug(
                 f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
-            )
-
-    async def _ainvalidate_fts_backfill(self, name: str) -> None:
-        """Force the next write to rebuild the near-dup index for ``name``."""
-        try:
-            done = self._fts_backfilled
-            if done is not None:
-                done.discard(name)
-            if self._time_indexed is not None:
-                await asyncio.to_thread(
-                    self._time_indexed.clear_fts_backfill_marker, name,
-                )
-        except Exception as exc:
-            # 作废失败 = 我们知道索引缺了一行、却没能记下来，下次也不会重建。
-            # 比一次普通的索引失败更值得看见。
-            logger.warning(
-                f"[FactStore] {name}: 作废回填标记失败，近重复索引可能缺行: {exc}"
             )
 
     async def _aenqueue_near_dup_pairs(
