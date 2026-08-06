@@ -147,6 +147,29 @@ def test_vrm_preview_ignores_stale_playback_completions():
     )
     assert "let vrmAnimationPlaybackRequestId = 0;" in source
     assert source.count("if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;") >= 4
+    playback = source.split(
+        "async function playSelectedVrmAnimationOption", 1
+    )[1].split("// VRM动作选择按钮点击事件", 1)[0]
+    assert "const requestIsCurrent = () =>" in playback
+    assert "if (!requestIsCurrent()) return false;" in playback
+    assert playback.index("await loadVrmMotionCatalog()") < playback.index(
+        "if (!requestIsCurrent()) return false;"
+    )
+    assert len(re.findall(
+        r"playSelectedVrmAnimationOption\(\s*selectedOption,\s*playbackRequestId\s*\)",
+        source,
+    )) == 3  # function declaration plus both callers
+
+
+def test_vrm_catalog_hold_pose_remains_stoppable():
+    source = Path("static/js/model_manager/page-controller.js").read_text(
+        encoding="utf-8"
+    )
+    playback = source.split(
+        "async function playSelectedVrmAnimationOption", 1
+    )[1].split("// VRM动作选择按钮点击事件", 1)[0]
+
+    assert "['loop', 'hold'].includes(" in playback
 
 
 def test_static_asset_version_tracks_vrm_motion_player():

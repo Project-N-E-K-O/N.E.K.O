@@ -3611,19 +3611,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    async function playSelectedVrmAnimationOption(selectedOption) {
+    async function playSelectedVrmAnimationOption(selectedOption, playbackRequestId) {
         if (!selectedOption) throw new Error('No VRM animation selected');
+        const requestIsCurrent = () => playbackRequestId === undefined
+            || playbackRequestId === vrmAnimationPlaybackRequestId;
         const assetId = selectedOption.getAttribute('data-motion-asset-id');
         const isCatalogMotion = selectedOption.getAttribute('data-system-motion') === 'true';
         const displayName = selectedOption.getAttribute('data-filename') || selectedOption.textContent || '';
         let isLooping = true;
         if (assetId && isCatalogMotion) {
             if (!vrmMotionCatalogPlayer) await loadVrmMotionCatalog();
+            if (!requestIsCurrent()) return false;
             if (!vrmMotionCatalogPlayer) throw new Error('Motion catalog player is unavailable');
             vrmMotionCatalogPlayer.setSavedRestAnimations(
                 getSelectedIdleAnimations('vrm-idle-animation-multiselect')
             );
-            isLooping = selectedOption.getAttribute('data-playback') === 'loop';
+            isLooping = ['loop', 'hold'].includes(
+                selectedOption.getAttribute('data-playback')
+            );
             if (!isLooping) {
                 isVrmAnimationPlaying = true;
                 updateVRMAnimationPlayButtonIcon();
@@ -3714,7 +3719,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (vrmManager) {
                     const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
                     try {
-                        const playbackStarted = await playSelectedVrmAnimationOption(selectedOption);
+                        const playbackStarted = await playSelectedVrmAnimationOption(
+                            selectedOption,
+                            playbackRequestId
+                        );
                         if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;
                         isVrmAnimationPlaying = playbackStarted;
                         updateVRMAnimationPlayButtonIcon();
@@ -3787,7 +3795,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
 
                 try {
-                    const playbackStarted = await playSelectedVrmAnimationOption(selectedOption);
+                    const playbackStarted = await playSelectedVrmAnimationOption(
+                        selectedOption,
+                        playbackRequestId
+                    );
                     if (playbackRequestId !== vrmAnimationPlaybackRequestId) return;
                     isVrmAnimationPlaying = playbackStarted;
                     updateVRMAnimationPlayButtonIcon();
