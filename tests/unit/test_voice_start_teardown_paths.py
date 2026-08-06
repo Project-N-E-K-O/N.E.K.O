@@ -41,6 +41,7 @@ import json
 import re
 import shutil
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -365,23 +366,53 @@ _AUTOMATIC_RESTART = r"""
          + env.order.join(',') + ')');
 }
 
-// Capture committed during the delay -- a restart that already opened the mic on
-// an earlier pass -- must be stopped before the unwind, same as the mic flow.
+// Everything above runs the PRE-CLAIM half of the check, where the snapshots
+// stand in for an owner token the restart does not have yet. The awaits after
+// the claim are the other half, and they ask a different pair of questions --
+// sessionStartSuperseded / supersededByAudioStart against the owner. Capture in
+// particular can only be committed on that side: the restart claims, is
+// acknowledged, and opens the microphone.
 {
   const env = makeEnv();
   env.S.voiceSessionStartEpoch = 5;
   const restart = restartFlow(env, 5, env.W.sessionStartClaimSeq());
-  env.S.isRecording = true;
+
+  const restartOwner = claim(env, 'audio');
+  restart.claim(restartOwner);
+  env.W.releaseSessionStart(restartOwner);  // acknowledged
+  env.S.isRecording = true;                 // and the microphone is open
 
   env.W.releaseSessionStart(claim(env, 'text'));
 
-  assert(restart.standDown() === true, 'the text takeover stops the restart');
+  assert(restart.standDown() === true,
+         'a text send after this restart claimed must stop it -- otherwise it reports '
+         + '"restart complete" and keeps the microphone open over the text session');
   assert(env.order.join(',') === 'stop,unwind',
          'the unwind clears S.isRecording without stopping the stream, and the text teardown '
          + 'is gated on it -- stopping after the unwind leaks the microphone (got: '
          + env.order.join(',') + ')');
   assert(env.stopArgs[0] && env.stopArgs[0].notifyServer === false,
          'the newer start owns the socket');
+}
+
+// The owned branch's other half: a mic press after this restart claimed. Same
+// verdict, opposite treatment of the unwind -- and the pending mode says
+// 'audio' for both, so only ownership can tell them apart.
+{
+  const env = makeEnv();
+  env.S.voiceSessionStartEpoch = 5;
+  const restart = restartFlow(env, 5, env.W.sessionStartClaimSeq());
+
+  const restartOwner = claim(env, 'audio');
+  restart.claim(restartOwner);
+  env.W.releaseSessionStart(restartOwner);
+
+  claim(env, 'audio');
+
+  assert(restart.standDown() === true, 'a newer audio start stops this restart too');
+  assert(env.order.length === 0,
+         'but it is mid-getUserMedia on the state the unwind destroys (ran: '
+         + env.order.join(',') + ')');
 }
 """
 
@@ -730,11 +761,20 @@ _EPOCH_WRITE = re.compile(
 _CLAIM_MODE = re.compile(r"claimSessionStart\(\s*'([a-z]+)'")
 
 # Discovered, not listed: the point is to notice a writer nobody thought to add
-# here. Each entry is (file, the statement) and the set must match exactly.
-_EXPECTED_EPOCH_WRITERS = {
-    ("app-buttons.js", "S.voiceSessionStartEpoch = voiceStartEpoch;"),
-    ("app-state.js", "S.voiceSessionStartEpoch += 1;"),
-}
+# here. Counted, not just collected: two identical statements in one file
+# collapse into a single entry in a set, and app-state.js is exactly where that
+# would hide -- a second `S.voiceSessionStartEpoch += 1;` there is character for
+# character the legitimate lever.
+_EXPECTED_EPOCH_WRITERS = Counter({
+    ("app-buttons.js", "S.voiceSessionStartEpoch = voiceStartEpoch;"): 1,
+    ("app-state.js", "S.voiceSessionStartEpoch += 1;"): 1,
+})
+
+# The one write in app-state.js is the cancel lever. Naming its function keeps
+# the file-level exemption below from covering a second writer that lands
+# somewhere else in the same file.
+_EPOCH_LEVER = "cancelPendingSessionStart"
+_JS_FUNCTION = re.compile(r"window\.(\w+)\s*=\s*function")
 
 
 @pytest.mark.unit
@@ -754,30 +794,42 @@ def test_the_epoch_is_minted_at_exactly_one_call_site():
     composer's text claim keeps the set intact and fails here instead.
 
     Mutation-verified: add ``S.voiceSessionStartEpoch += 1;`` beside the text
-    claim in app-buttons.js and the set reddens; delete the mic button's mint and
-    the set reddens; move the mic mint in front of the composer's text claim and
-    the mode check reddens.
+    claim in app-buttons.js and the tally reddens; delete the mic button's mint
+    and the tally reddens; move the mic mint in front of the composer's text
+    claim and the mode check reddens; duplicate the cancel lever's write inside
+    app-state.js and the tally reddens on the count; put a write in
+    ``claimSessionStart`` instead and the enclosing-function check reddens.
     """
-    found = set()
+    found = Counter()
     for path in sorted(_STATIC_APP.parent.rglob("*.js")):
         source = path.read_text(encoding="utf-8", errors="replace")
         for match in _EPOCH_WRITE.finditer(source):
             line = source[source.rfind("\n", 0, match.start()) + 1:
                           source.find("\n", match.start())].strip()
-            found.add((path.name, line))
+            lineno = source.count("\n", 0, match.start()) + 1
+            where = f"{path.name}:{lineno}"
+            found[(path.name, line)] += 1
 
             if path.name == "app-state.js":
                 # The cancel lever is the epoch's own module: `claimSessionStart`
-                # is DEFINED above it, never called below it, so the call-site
-                # question does not apply.
+                # is DEFINED above it and never called below it, so the call-site
+                # question below cannot be asked. Ask instead which function this
+                # write is in, so the exemption covers the lever and not the file.
+                enclosing = [m.group(1) for m in _JS_FUNCTION.finditer(source, 0, match.start())]
+                assert enclosing and enclosing[-1] == _EPOCH_LEVER, (
+                    f"{where}: this epoch write is in `{enclosing[-1] if enclosing else '?'}`, "
+                    f"not the `{_EPOCH_LEVER}` lever. app-state.js is exempt from the "
+                    "audio-claim check only because the lever is the one deliberate writer "
+                    "there; anything else in this file has to justify itself."
+                )
                 continue
             claim = _CLAIM_MODE.search(source, match.end())
             assert claim is not None, (
-                f"{path.name}: an epoch is minted at `{line}` and no start is claimed after "
+                f"{where}: an epoch is minted at `{line}` and no start is claimed after "
                 "it -- a mint that belongs to no start cannot be a voice-start intent."
             )
             assert claim.group(1) == "audio", (
-                f"{path.name}: the epoch minted at `{line}` is followed by a "
+                f"{where}: the epoch minted at `{line}` is followed by a "
                 f"`{claim.group(1)}` claim. The epoch means 'the newest VOICE start intent': "
                 "both stand-down checks read a moved epoch as a cancellation and return "
                 "BEFORE the global unwind, so a text flow minting one stops handing the mic "
@@ -786,12 +838,13 @@ def test_the_epoch_is_minted_at_exactly_one_call_site():
             )
 
     assert found == _EXPECTED_EPOCH_WRITERS, (
-        "the set of writers to S.voiceSessionStartEpoch changed.\n"
-        f"  found:    {sorted(found)}\n"
-        f"  expected: {sorted(_EXPECTED_EPOCH_WRITERS)}\n"
+        "the writers to S.voiceSessionStartEpoch changed.\n"
+        f"  found:    {sorted(found.items())}\n"
+        f"  expected: {sorted(_EXPECTED_EPOCH_WRITERS.items())}\n"
         "A new writer is only legitimate if it is a fresh VOICE start intent or the global "
-        "cancel lever; anything else breaks the two consumers named above. A missing one "
-        "means the signal those consumers read is no longer produced."
+        "cancel lever; anything else breaks the consumers named above. A missing one means "
+        "the signal those consumers read is no longer produced. A count above one means the "
+        "same statement now appears twice -- identical text, so only the tally can see it."
     )
 
 
@@ -805,6 +858,14 @@ def test_the_epoch_has_two_consumers_outside_the_start_flows():
     epoch reaches it. They are the second and third independent reason the epoch
     may only move for voice starts, and they live in different files from
     everything else in this suite.
+
+    Every release is checked for its guard, not counted. An unguarded clear
+    consumes the pending route change on the next UI refresh or lifecycle event,
+    with no voice start involved -- the same early-consumption bug the epoch's
+    voice-only rule exists to prevent, arrived from the other side.
+
+    Mutation-verified: drop the epoch comparison from either clear's condition
+    and this reddens naming that function.
     """
     predict = "targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;"
     for path in (APP_AUDIO_CAPTURE_PATH, APP_SETTINGS_PATH):
@@ -816,7 +877,26 @@ def test_the_epoch_has_two_consumers_outside_the_start_flows():
         )
 
     source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
-    assert source.count("S.voiceSettingsPendingUntilEpoch = null;") >= 2, (
-        "app-audio-capture.js: the pending voice-settings gate is released in fewer places "
-        "than the two that read the epoch against it."
+    clear = "S.voiceSettingsPendingUntilEpoch = null;"
+    sites = [i for i in range(len(source)) if source.startswith(clear, i)]
+    assert len(sites) == 2, (
+        "app-audio-capture.js: expected the pending voice-settings state to be released in "
+        f"exactly the two places that read the epoch against it, found {len(sites)}. A new "
+        "release site needs its own guard checked here."
     )
+    for at in sites:
+        start = source.rfind("function ", 0, at)
+        assert start != -1, "app-audio-capture.js: a release site sits outside any function"
+        name = source[start + len("function "):source.index("(", start)]
+        condition = source[start:at]
+        assert "(Number(S.voiceSessionStartEpoch) || 0)" in condition, (
+            f"app-audio-capture.js: `{name}` releases the pending voice settings without "
+            "consulting the live epoch, so a UI refresh or an unrelated lifecycle event "
+            "consumes a voice-route change that never took effect."
+        )
+        assert (">= S.voiceSettingsPendingUntilEpoch" in condition
+                or "< S.voiceSettingsPendingUntilEpoch" in condition), (
+            f"app-audio-capture.js: `{name}` looks at the epoch but no longer compares it "
+            "against the epoch the change is pending until, so the release is not gated on "
+            "the voice start actually having happened."
+        )
