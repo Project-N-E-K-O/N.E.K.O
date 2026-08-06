@@ -190,8 +190,10 @@ async def test_cancelling_the_rotation_leaves_it_all_or_nothing():
 
     task = asyncio.create_task(_rotate(mgr))
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    assert isinstance(
+        (await asyncio.gather(task, return_exceptions=True))[0],
+        asyncio.CancelledError,
+    )
 
     # Cancelled before entry: nothing applied, and nothing half-applied.
     assert _turn_state(mgr) == ("sid-old", True, True)
@@ -215,8 +217,10 @@ async def test_a_suspending_lock_holder_is_what_would_tear_the_rotation():
     await asyncio.sleep(0)  # let it reach the contended acquire
     task.cancel()
     mgr.lock.release()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    assert isinstance(
+        (await asyncio.gather(task, return_exceptions=True))[0],
+        asyncio.CancelledError,
+    )
 
     assert _turn_state(mgr) == ("sid-old", False, False)
 
@@ -236,9 +240,26 @@ async def test_pipeline_clear_resets_the_done_ledger_with_the_interrupt():
     assert mgr._tts_done_pending_until_ready is False
 
 
+async def _cancel_inside_the_interrupt_sleep(mgr):
+    """Start the clear, cancel it during the 20ms wait, assert it got that far."""
+
+    task = asyncio.create_task(_clear_pipeline(mgr))
+    # Long enough to get past the interrupt and into the sleep, short enough
+    # to stay inside its 20ms.
+    await asyncio.sleep(0.005)
+    task.cancel()
+    assert isinstance(
+        (await asyncio.gather(task, return_exceptions=True))[0],
+        asyncio.CancelledError,
+    )
+    assert mgr.tts_request_queue.messages == [("__interrupt__", None)], (
+        "test must cancel after the interrupt was queued, or it proves nothing"
+    )
+
+
 @pytest.mark.asyncio
 async def test_cancelling_the_pipeline_clear_cannot_strand_the_done_ledger():
-    """Regression: the interrupt and the ledger reset must land together.
+    """Regression: the interrupt and the queued-flag reset must land together.
 
     ``_clear_tts_pipeline`` sleeps 20ms waiting for the worker to act on
     ``__interrupt__``. A cancellation there used to leave the sentinel voided
@@ -250,16 +271,30 @@ async def test_cancelling_the_pipeline_clear_cannot_strand_the_done_ledger():
     mgr = _make_manager()
     mgr.tts_thread = _FakeAliveThread()
 
-    task = asyncio.create_task(_clear_pipeline(mgr))
-    # Long enough to get past the interrupt and into the sleep, short enough
-    # to stay inside its 20ms.
-    await asyncio.sleep(0.005)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    await _cancel_inside_the_interrupt_sleep(mgr)
 
-    assert mgr.tts_request_queue.messages == [("__interrupt__", None)], (
-        "test must cancel after the interrupt was queued, or it proves nothing"
-    )
     assert mgr._tts_done_queued_for_turn is False
-    assert mgr._tts_done_pending_until_ready is False
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_pipeline_clear_keeps_deferred_done_with_its_chunks():
+    """The other flag must NOT be hoisted alongside — it is paired elsewhere.
+
+    ``_tts_done_pending_until_ready`` means "these pending chunks still owe a
+    done sentinel", so it belongs with ``tts_pending_chunks``, and the two are
+    cleared together at the end of the clear. Resetting it early would tear
+    the pair in the opposite direction: cancellation during the sleep would
+    drop the flag while leaving the chunks, and once the worker reports ready
+    ``_flush_tts_pending_chunks`` re-enqueues that text with no sentinel
+    behind it, leaving the synthesizer unflushed.
+    """
+
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_pending_chunks = [("sid-old", "还没刷出去的文本")]
+    mgr._tts_done_pending_until_ready = True
+
+    await _cancel_inside_the_interrupt_sleep(mgr)
+
+    assert mgr._tts_done_pending_until_ready is True
+    assert mgr.tts_pending_chunks == [("sid-old", "还没刷出去的文本")]

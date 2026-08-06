@@ -109,7 +109,10 @@ CORE_LOCK_NO_AWAIT
     no acquire is a cancellation point — which is what makes those paired
     writes atomic (#2619). The first ``await`` inside any of these blocks
     makes the lock contendable and reopens a torn "flags say the new turn,
-    speech id still says the old one" state at every one of them.
+    speech id still says the old one" state at every one of them. The lock
+    must also be taken ONLY as a context manager — manual
+    ``acquire()``/``release()`` would hold it across awaits while presenting
+    no block for the shape check to see.
 
 VOICE_IDENTITY_LAYERING
     The in-memory speaker identity domain owns only model identity, normalized
@@ -989,6 +992,13 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
     that write ``current_speech_id`` alongside both TTS done flags. So the
     invariant is the fix, and this gate is what keeps it true.
 
+    Two halves, because a shape check alone is defeatable. The reachable
+    shape — no suspension inside any ``async with self.lock`` block — is only
+    meaningful if every acquisition IS such a block, so the lock is also
+    required to appear nowhere else: manual ``acquire()``/``release()`` holds
+    it across arbitrary awaits while presenting no block to inspect.
+    ``manager.py``'s binding assignment is the single exemption.
+
     The check is deliberately package-wide rather than pinned to the rotation
     sites: the property is a property of the lock, and one careless holder
     anywhere is enough to lose it everywhere.
@@ -1026,6 +1036,48 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         if path.name == "__init__.py":
             continue
         tree = parse(path)
+        # Every sanctioned mention of the lock is the context expression of an
+        # ``async with``. Manual ``await self.lock.acquire()`` ... ``release()``
+        # would hold it across arbitrary awaits while presenting no AsyncWith
+        # node for the scan below to inspect — the one rewrite that defeats
+        # this gate without tripping it. So the reachable-shape check is
+        # paired with a form check: any other reference to ``self.lock`` is
+        # rejected outright, which also covers handing the lock to a helper
+        # that awaits under it.
+        sanctioned: set[int] = {
+            id(item.context_expr)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncWith)
+            for item in node.items
+            if is_session_lock(item)
+        }
+        # manager.py binds the attribute once; that assignment target is the
+        # only non-``async with`` mention the package is allowed to carry.
+        bind_targets: set[int] = {
+            id(target)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Attribute) and target.attr == "lock"
+            and isinstance(target.value, ast.Name) and target.value.id == "self"
+        } if path == manager_path else set()
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Attribute)
+                and node.attr == "lock"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "self"
+            ):
+                continue
+            if id(node) in sanctioned or id(node) in bind_targets:
+                continue
+            violations.append(Violation(
+                path, node.lineno, node.col_offset, "CORE_LOCK_NO_AWAIT",
+                "self.lock referenced outside an 'async with self.lock' block — the "
+                "session lock may only be taken as a context manager. Manual "
+                "acquire()/release() (or passing the lock elsewhere) can hold it across "
+                "an await without presenting a block for this gate to check, which makes "
+                "the lock contendable and reopens the torn sid/TTS-flag state (#2619)"))
         for block in ast.walk(tree):
             if not isinstance(block, ast.AsyncWith):
                 continue

@@ -2149,6 +2149,55 @@ def test_lock_gate_ignores_other_locks(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "manual",
+    [
+        # The rewrite that holds the lock across an await while presenting no
+        # AsyncWith node at all — a shape-only gate walks straight past it.
+        "        await self.lock.acquire()\n"
+        "        await self.flush()\n"
+        "        self.lock.release()\n",
+        # Same escape, one indirection further out.
+        "        held = self.lock\n"
+        "        async with held:\n"
+        "            await self.flush()\n",
+        # Handing it to something that may await under it.
+        "        await self._helper_that_awaits(self.lock)\n",
+    ],
+)
+def test_lock_gate_rejects_taking_the_lock_outside_a_context_manager(
+    contract_checker,
+    tmp_path: Path,
+    manual: str,
+) -> None:
+    source = (
+        _CLEAN_PROBE
+        + "\n"
+        + "    async def sneaky(self):\n"
+        + manual
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    # One report per illegal mention, so the acquire/release pair yields two.
+    assert violations, "the manual form must not walk past the gate"
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert all(
+        "outside an 'async with self.lock' block" in v.message for v in violations
+    )
+
+
+@pytest.mark.unit
+def test_lock_gate_allows_the_one_binding_assignment_in_manager(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``self.lock = asyncio.Lock()`` is the single sanctioned non-block mention."""
+
+    assert _lock_violations(contract_checker, tmp_path, _CLEAN_PROBE) == []
+
+
+@pytest.mark.unit
 def test_lock_gate_fails_loudly_when_no_lock_block_is_left(
     contract_checker,
     tmp_path: Path,
