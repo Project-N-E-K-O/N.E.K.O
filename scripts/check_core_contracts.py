@@ -1125,6 +1125,19 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
     an external holder can only arise from new code reaching into the
     attribute directly. Measured today: no production module outside the
     package references a manager's ``.lock`` at all.
+
+    Second known boundary: the ``asyncio`` binding check is scope- and
+    control-flow-blind. It requires every binding of the name to be a plain
+    ``import asyncio``, but does not work out which one reaches the
+    ``self.lock`` assignment — a module-level import plus a conditional
+    ``import asyncio`` inside ``__init__`` satisfies it. That is deliberate:
+    the local import makes the name local for the whole method, so the
+    un-taken branch raises ``UnboundLocalError`` at ``asyncio.Lock()``
+    (measured). The failure is a crash at construction, not a lock with
+    different suspension semantics slipping through — unlike the shadowing
+    forms above, which run fine and only the gate cannot see. Deciding it
+    properly needs reaching-definition analysis at the assignment, which is a
+    dataflow pass this syntax-level gate does not want to become.
     """
 
     def suspension_kind(node: ast.AST) -> str | None:
