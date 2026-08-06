@@ -38,9 +38,8 @@ def test_vrm_load_normalizes_legacy_bundled_idle_animation_path():
         1,
     )[0]
 
-    assert (
-        "^\\/static\\/vrm\\/animation\\/[^?#]+\\.vrma(?:[?#]|$)" in helper
-    )
+    assert "COMPRESSED_BUNDLED_VRMA_NAMES.has(assetName)" in helper
+    assert "decodeURIComponent(assetName)" in helper
     assert ".replace(/\\.vrma(?=[?#]|$)/i, '.vrma.gz')" in helper
     assert "normalizeBundledVrmAnimationPath(" in load_body
     assert "window.lanlan_config?.vrmIdleAnimation" in load_body

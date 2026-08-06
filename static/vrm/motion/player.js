@@ -165,7 +165,9 @@
 
         catalog(locale) {
             return this.assets.filter(function (asset) {
-                return asset.disabled !== true && !DISABLED_INTENTS.has(asset.m);
+                return asset.disabled !== true
+                    && !DISABLED_INTENTS.has(asset.m)
+                    && (!asset.card || asset.card.kind !== 'control');
             }).map(function (asset) {
                 return {
                     id: asset.id,
