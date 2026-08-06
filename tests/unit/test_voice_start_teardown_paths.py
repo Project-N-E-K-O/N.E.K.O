@@ -91,6 +91,28 @@ function liftStandDown(path, name) {
 const MIC_STAND_DOWN = liftStandDown(__APP_BUTTONS_PATH__, 'micStartMustStandDown');
 const RESTART_STAND_DOWN = liftStandDown(__APP_WEBSOCKET_PATH__, 'restartMustStandDown');
 
+// The onclose cleanup is a plain block inside S.socket.onclose rather than a
+// named function, so it is taken by its markers. Lifted for the same reason as
+// the two checks above: a hand-written copy of "what onclose does" keeps
+// asserting the copy after the real one changes, and the whole point of these
+// cases is which state that block leaves behind.
+function liftRegion(path, from, to, what) {
+  const source = fs.readFileSync(path, 'utf8');
+  const start = source.indexOf(from);
+  assert(start !== -1, what + ': `' + from + '` is gone');
+  assert(source.indexOf(from, start + 1) === -1, what + ': `' + from + '` is no longer unique');
+  const end = source.indexOf(to, start);
+  assert(end > start, what + ': `' + to + '` no longer follows it');
+  return source.slice(start, end);
+}
+
+const ONCLOSE_CLEANUP = liftRegion(
+  __APP_WEBSOCKET_PATH__,
+  '// Clean up session Promise',
+  '// Clear audio queue',
+  'the onclose session cleanup'
+);
+
 function makeEnv() {
   const S = {
     sessionStartedResolver: null,
@@ -153,6 +175,18 @@ function restartFlow(env, restartVoiceEpoch, restartClaimSeq) {
 
 function claim(env, mode) {
   return env.W.claimSessionStart(mode, function () {}, function () {});
+}
+
+// Run the real block, with the socket's own timer handle in place so the timer
+// clear is exercised rather than assumed.
+function runOncloseCleanup(env) {
+  const run = new Function('S', 'window', 'console', 'clearTimeout', ONCLOSE_CLEANUP);
+  run(
+    env.S,
+    env.W,
+    { log() {} },
+    function (handle) { env.order.push('clearTimeout:' + handle); }
+  );
 }
 """
 
@@ -465,14 +499,20 @@ _DISCONNECT_ONCLOSE = r"""
   const disconnectedAt = env.W.sessionStartClaimSeq();
   const restart = restartFlow(env, env.S.voiceSessionStartEpoch, disconnectedAt);
 
-  // --- the onclose cleanup, in the shape app-websocket.js runs it ---
-  env.S.sessionStartedRejecter(new Error('WebSocket连接断开'));
-  env.S.sessionStartedResolver = null;
-  env.S.sessionStartedRejecter = null;
+  // The 15s start timeout this flow armed, so the cleanup has one to cancel.
+  env.W.sessionTimeoutId = 'start-timeout';
+
+  runOncloseCleanup(env);
 
   assert(killedWith !== null,
          'onclose must settle the pending start, or its flow waits on that promise forever '
          + 'with the mic button stuck active/disabled');
+  assert(env.S.sessionStartedResolver === null && env.S.sessionStartedRejecter === null,
+         'and must vacate the slot');
+  assert(env.order.join(',') === 'clearTimeout:start-timeout',
+         'and cancel the start timeout, which would otherwise fire into a dead socket (ran: '
+         + env.order.join(',') + ')');
+  assert(env.W.sessionTimeoutId === null, 'the handle goes with it');
   assert(env.S._pendingSessionStartMode === 'audio',
          'onclose leaves the pending mode behind -- the restart check reads it, so if this '
          + 'ever changes that check changes meaning with it');
@@ -507,9 +547,8 @@ _DISCONNECT_ONCLOSE = r"""
   const disconnectedAt = env.W.sessionStartClaimSeq();
   const restart = restartFlow(env, env.S.voiceSessionStartEpoch, disconnectedAt);
 
-  env.S.sessionStartedRejecter(new Error('WebSocket连接断开'));
-  env.S.sessionStartedResolver = null;
-  env.S.sessionStartedRejecter = null;
+  // No armed timer here, so env.order stays free for the unwind assertion below.
+  runOncloseCleanup(env);
 
   assert(env.S._pendingSessionStartMode === 'text', 'the dead text start left its mode behind');
   assert(env.W.sessionStartsSince(disconnectedAt) === false,
@@ -645,10 +684,16 @@ def test_a_cancellation_after_a_takeover_outranks_it():
 def test_the_onclose_cleanup_does_not_disarm_the_restart_it_schedules():
     """The disconnect kills the pending start, then rebuilds through the restart.
 
+    The cleanup is lifted out of ``S.socket.onclose`` and executed, not
+    reproduced here: a hand-written copy of what onclose does goes on asserting
+    the copy after the real block changes, and what that block leaves behind is
+    the entire subject of these cases.
+
     Mutation-verified: make the onclose cleanup null ``_pendingSessionStartMode``
-    as well and the premise assertion reddens (it is what the restart's mode arm
-    reads); drop the ownership gate from ``releaseSessionStart`` and the killed
-    flow clears the restart's slot.
+    as well and this reddens on the premise the restart's mode arm reads; stop it
+    rejecting the pending start and it reddens on the flow left hanging; drop the
+    ownership gate from ``releaseSessionStart`` and the killed flow clears the
+    restart's slot.
     """
     _drive(_DISCONNECT_ONCLOSE)
 
