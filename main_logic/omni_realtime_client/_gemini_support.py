@@ -413,11 +413,16 @@ class _GeminiMixin:
         """
         if not self._gemini_context_manager:
             return
-        await self._own_teardown("_gemini_close_task", self._close_gemini_impl)
+        await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
-    async def _close_gemini_impl(self) -> None:
-        context = self._gemini_context_manager
-        session = self._gemini_session
+    def _detach_for_gemini_close(self):
+        """Seize the context to exit, synchronously (see ``_own_teardown``)."""
+
+        return self._close_gemini_impl(
+            self._gemini_context_manager, self._gemini_session
+        )
+
+    async def _close_gemini_impl(self, context, session) -> None:
         if context is None:
             return
         try:

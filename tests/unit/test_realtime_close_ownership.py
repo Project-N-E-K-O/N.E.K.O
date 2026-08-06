@@ -245,6 +245,77 @@ async def test_teardown_outliving_its_connection_does_not_touch_the_replacement(
     replacement_silence_task.cancel()
 
 
+@pytest.mark.asyncio
+async def test_teardown_seizes_the_socket_before_a_replacement_can_attach():
+    """A coroutine's body does not run at create_task time. If the teardown
+    detached inside the task, a connect() one await away would attach first and
+    the teardown would then close the brand-new socket."""
+    client = _make_client()
+    retired_ws = _FakeWs()
+    client.ws = retired_ws
+
+    async def _shutdown(reason):
+        return None
+
+    client._response_arbiter.shutdown = _shutdown
+
+    replacement = AsyncMock()
+    connecting = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def _slow_connect(*args, **kwargs):
+        connecting.set()
+        await resume.wait()
+        return replacement
+
+    with patch("websockets.connect", new=_slow_connect):
+        connect_task = asyncio.create_task(
+            client.connect(instructions="hi", native_audio=True)
+        )
+        await asyncio.wait_for(connecting.wait(), timeout=5)
+
+        # close() and the pending connect() become runnable in the same tick:
+        # the connect resumes and attaches while the teardown task is merely
+        # scheduled.
+        closing = asyncio.create_task(client.close())
+        resume.set()
+        await asyncio.wait_for(connect_task, timeout=5)
+        await asyncio.wait_for(closing, timeout=5)
+
+    assert retired_ws.close_calls == 1
+    replacement.close.assert_not_awaited()
+    assert client.ws is replacement
+
+
+@pytest.mark.asyncio
+async def test_audio_processor_is_not_released_after_a_replacement_adopts_it():
+    """connect() only builds a processor when the field is empty, so a
+    replacement attaching while the teardown waits for the audio lock adopts
+    this very one."""
+    client = _make_client()
+    client.ws = _FakeWs()
+
+    async def _shutdown(reason):
+        return None
+
+    client._response_arbiter.shutdown = _shutdown
+
+    processor = MagicMock()
+    client._audio_processor = processor
+
+    await client._audio_processing_lock.acquire()
+    closing = asyncio.create_task(client.close())
+    await _settle()
+
+    # The reconnect completes while the teardown is queued on the audio lock.
+    client._on_connection_attached()
+    client._audio_processing_lock.release()
+    await asyncio.wait_for(closing, timeout=5)
+
+    processor.close.assert_not_called()
+    assert client._audio_processor is processor
+
+
 # ── Gemini SDK context exit ──────────────────────────────────────────
 
 
@@ -326,6 +397,41 @@ async def test_gemini_close_leaves_a_replacement_session_alone():
     assert client._gemini_session is replacement_session
     assert client.ws is replacement_session
     assert replacement_context.exit_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_retired_gemini_context_is_exited_even_after_a_reconnect():
+    """The retired context is unreachable from the client once
+    ``_connect_gemini()`` overwrites the field, so the reference the teardown
+    seized is the only one that can still exit that SDK connection."""
+    client = _make_client()
+    client._is_gemini = True
+    retired_context = _GatedGeminiContext()
+    retired_session = object()
+    client._gemini_context_manager = retired_context
+    client._gemini_session = retired_session
+    client.ws = retired_session
+    entered, release, _calls = _gate_arbiter_shutdown(client)
+
+    closing = asyncio.create_task(client.close())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    replacement_context = _GatedGeminiContext()
+    replacement_session = object()
+    client._gemini_context_manager = replacement_context
+    client._gemini_session = replacement_session
+    client.ws = replacement_session
+    client._on_connection_attached()
+
+    release.set()
+    retired_context.release.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert retired_context.exit_calls == 1, "the retired SDK connection must still be exited"
+    assert replacement_context.exit_calls == 0
+    assert client._gemini_context_manager is replacement_context
+    assert client._gemini_session is replacement_session
+    assert client.ws is replacement_session
 
 
 @pytest.mark.asyncio
