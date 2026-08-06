@@ -3634,6 +3634,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const displayName = selectedOption.getAttribute('data-filename') || selectedOption.textContent || '';
         let isLooping = true;
         if (assetId && isCatalogMotion) {
+            stopIdleRotation('vrm');
             if (vrmManager) vrmManager.stopVRMAAnimation();
             if (!vrmMotionCatalogPlayer) await loadVrmMotionCatalog();
             if (!requestIsCurrent()) return false;

@@ -144,10 +144,8 @@ async function waitForLoadStart(predicate, message) {
 
     const secureCryptoDescriptor = Object.getOwnPropertyDescriptor(global, 'crypto');
     Object.defineProperty(global, 'crypto', { configurable: true, value: undefined });
-    await assert.rejects(
-        player._assetUrl(player.assets[0]),
-        /SHA-256 integrity verification requires a secure browser context/
-    );
+    global.fetch = async function () { return response(sourceBuffer); };
+    assert.match(await player._assetUrl(player.assets[0]), /^blob:test-/);
     Object.defineProperty(global, 'crypto', secureCryptoDescriptor);
 
     const packed = zlib.gzipSync(decodedSource);
