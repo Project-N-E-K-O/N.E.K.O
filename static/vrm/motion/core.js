@@ -46,7 +46,12 @@
         '後': '后', '著': '着', '覺': '觉', '氣': '气', '壞': '坏', '興': '兴',
         '揮': '挥', '彈': '弹', '鋼': '钢', '擊': '击', '鍵': '键'
     });
-    const TRADITIONAL_HINT = /[點頭搖輕緊張開攏體側臉紅雙腳盤穩裡來會這沒為說對請讓繼續後著覺氣壞興揮問禮別縮緒動夢閉靜調處現樣應謝]/u;
+    const TRADITIONAL_HINT = new RegExp(
+        '[' + Object.keys(TRADITIONAL_TO_SIMPLIFIED).filter(function (character) {
+            return TRADITIONAL_TO_SIMPLIFIED[character] !== character;
+        }).join('') + ']',
+        'u'
+    );
 
     function normalize(value) {
         return String(value || '')
@@ -314,6 +319,36 @@
         return scopedBeforeIndex(text, folded(text).indexOf(folded(anchor)), terms, width);
     }
 
+    function commandNegated(text, anchor, terms) {
+        const source = folded(text);
+        const anchorIndex = source.indexOf(folded(anchor));
+        if (anchorIndex < 0) return false;
+        const prefix = source.slice(0, anchorIndex);
+        const boundaries = [',', ';', '.', '!', '?', '，', '；', '。', '！', '？', ' but ', ' however ', '但是', '不过'];
+        const boundary = boundaries.reduce(function (latest, marker) {
+            return Math.max(latest, prefix.lastIndexOf(marker));
+        }, -1);
+        return includesAny(prefix.slice(boundary + 1), terms);
+    }
+
+    function actionEvidenceScope(text, sourceIndex, sourceEnd) {
+        const source = normalize(text);
+        const boundaries = new RegExp(CLAUSE_BOUNDARY.source, CLAUSE_BOUNDARY.flags);
+        let start = 0;
+        let end = source.length;
+        let match;
+        while ((match = boundaries.exec(source)) !== null) {
+            const boundaryEnd = match.index + match[0].length;
+            if (boundaryEnd <= sourceIndex) {
+                start = boundaryEnd;
+            } else if (match.index >= sourceEnd) {
+                end = match.index;
+                break;
+            }
+        }
+        return source.slice(start, end);
+    }
+
     function speechActorAllowed(text, anchor, occurrenceIndex) {
         const source = folded(text);
         const needle = folded(anchor);
@@ -325,7 +360,7 @@
             return false;
         }
         const selfActor = /(?:我|人家|本喵|咱|俺|\bi\b|\bi['’]m\b|\bi['’]ll\b|私|僕|わたし|나|내가|я|yo|eu)/giu;
-        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|\b(?:you|he|she|they|user|player|person|someone|somebody|friend|girl|boy|man|woman)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
+        const otherActor = /(?:你|您|他|她|它|对方|用户|玩家|主人|\b(?:you|he|she|him|her|they|them|user|player|person|someone|somebody|friend|girl|boy|man|woman)\b|彼|彼女|あなた|너|그|그녀|он|она|ты|él|ella|você)/giu;
         let selfIndex = -1;
         let otherIndex = -1;
         let match;
@@ -531,7 +566,7 @@
                 ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN'] : [locale]
                 : semanticLocales(source, locale);
 
-            ['negation', 'hypothetical', 'background', 'light', 'strong'].forEach(function (kind) {
+            ['negation', 'hypothetical', 'background'].forEach(function (kind) {
                 if (locales.some((candidateLocale) => {
                     const common = this._common(candidateLocale);
                     const evidenceSource = candidateLocale === 'zh-CN'
@@ -569,6 +604,13 @@
             })[0];
             if (exactRule && (!settings.speechMode
                 || speechActorAllowed(exactRule.matchSource, exactRule.anchor))) {
+                const exactDegree = intensity(
+                    exactRule.matchSource,
+                    this._common(exactRule.locale)
+                );
+                if (exactDegree.explicit) {
+                    output.push(exactDegree.value === 3 ? COMMON_ZH.strong : COMMON_ZH.light);
+                }
                 output.push(localized(exactRule.rule.phrases, 'zh-CN')[0]
                     || exactRule.rule.nameZh || exactRule.rule.id);
                 const exactStyle = styleFor(
@@ -622,7 +664,7 @@
                             matchSource,
                             candidate.sourceIndex,
                             common.hypothetical,
-                            12
+                            24
                         );
                         const actorBlocked = settings.speechMode
                             && !speechActorAllowed(
@@ -685,13 +727,21 @@
                 if (style.name && STYLE_ZH[style.name]) {
                     actionText = STYLE_ZH[style.name] + actionText;
                 }
+                const localDegree = intensity(
+                    actionEvidenceScope(entry.matchSource, entry.sourceIndex, entry.sourceEnd),
+                    this._common(entry.locale)
+                );
+                if (localDegree.explicit) {
+                    actionText = (localDegree.value === 3 ? COMMON_ZH.strong : COMMON_ZH.light)
+                        + '，' + actionText;
+                }
                 const nextIndex = selectedRules[index + 1]
                     ? selectedRules[index + 1].sourceIndex : source.length;
                 const repeats = count(entry.matchSource.slice(entry.sourceIndex, nextIndex));
                 if (repeats === 2) actionText += '两下';
                 else if (repeats >= 3) actionText += '三下';
                 actionClauses.push(actionText);
-            });
+            }, this);
             if (actionClauses.length) output.push(actionClauses.join('，然后'));
 
             return unique(output).join('，');
@@ -936,7 +986,8 @@
 
                 if (clause.role !== 'event') {
                     const modifier = this._modifier(clause, locale);
-                    if (decisions.length && clause.role !== 'historical' && clause.role !== 'meta') {
+                    if (decisions.length && clause.relation !== 'sequence'
+                        && clause.role !== 'historical' && clause.role !== 'meta') {
                         this._attachModifier(decisions[decisions.length - 1], modifier);
                     } else if (clause.role === 'modifier' || clause.role === 'cause') {
                         pendingModifiers.push(modifier);
@@ -1185,7 +1236,7 @@
                 const commandCandidates = (speech.commands || []).map((command) => {
                     const match = matchingTerms(userText, this._intentSpeechTerms(command, locale))
                         .filter(function (term) {
-                            return !scopedBefore(userText, term, common.negation, 9)
+                            return !commandNegated(userText, term, common.negation)
                                 && userCommandActorAllowed(userText, term);
                         })
                         .sort(function (a, b) { return normalize(b).length - normalize(a).length; })[0];

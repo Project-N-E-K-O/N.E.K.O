@@ -140,6 +140,8 @@ assert.equal(core.analyzeSpeech('我帮你坐起来。', {
 
 assert.notEqual(intent('Please wait while I check that.', { locale: 'en' }), 'plead');
 assert.equal(core.analyze('if she waves goodbye', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyze('when she waves goodbye', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyze('whenever she waves goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyze('do not wave goodbye', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('The user claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('She nods.', { locale: 'en' }).plan.length, 0);
@@ -148,6 +150,9 @@ assert.equal(core.analyzeSpeech('This user claps.', { locale: 'en' }).plan.lengt
 assert.equal(core.analyzeSpeech('Someone nods.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('My friend claps.', { locale: 'en' }).plan.length, 0);
 assert.equal(core.analyzeSpeech('A young girl claps.', { locale: 'en' }).plan.length, 0);
+['I make her clap.', 'I help him wave goodbye.', 'I ask them to nod.'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan.length, 0, text);
+});
 assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'a young girl clap'
 }).plan.length, 0);
@@ -165,6 +170,11 @@ assert.equal(core.analyzeSpeech('Okay.', {
 ['让她鼓掌', '叫他鼓掌', '让她开心地鼓掌', '请他们轻轻挥手'].forEach(function (userText) {
     assert.equal(core.analyzeSpeech('好的', {
         locale: 'zh-CN', userText: userText
+    }).plan.length, 0, userText);
+});
+['do not want to clap', 'not going to wave'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en', userText: userText
     }).plan.length, 0, userText);
 });
 
@@ -185,6 +195,14 @@ assert.equal(core.analyzeSpeech('I clap', { locale: 'en' }).plan[0].intensity, 2
 assert.equal(core.analyzeSpeech('I gently clap', { locale: 'en' }).plan[0].intensity, 1);
 assert.equal(core.analyzeSpeech('I vigorously clap', { locale: 'en' }).plan[0].intensity, 3);
 assert.equal(core.analyzeSpeech('I firmly nod', { locale: 'en' }).plan[0].intensity, 3);
+const mixedIntensity = core.analyzeSpeech('gently wave then vigorously clap', { locale: 'en' });
+assert.deepEqual(mixedIntensity.plan.map(function (item) {
+    return [item.intent, item.intensity];
+}), [['wave', 1], ['clap', 3]]);
+const trailingMixedIntensity = core.analyzeSpeech('wave gently then clap vigorously', { locale: 'en' });
+assert.deepEqual(trailingMixedIntensity.plan.map(function (item) {
+    return [item.intent, item.intensity];
+}), [['wave', 1], ['clap', 3]]);
 
 const exactCardAccepted = core.analyzeSpeech('好的。', {
     locale: 'zh-CN', userText: '站着连续拍手鼓掌'
@@ -214,6 +232,11 @@ traditionalCases.forEach(function ([text, expectedIntent, expectedAsset]) {
     const result = core.analyze(text, { locale: 'zh-TW' });
     assert.equal(result.plan[0].intent, expectedIntent, text);
     if (expectedAsset) assert.equal(result.plan[0].evidence.assetId, expectedAsset, text);
+});
+['en', 'zh-CN'].forEach(function (locale) {
+    const result = core.analyze('彈奏鋼琴', { locale: locale });
+    assert.equal(result.plan[0].intent, 'piano', locale + ' Traditional Chinese detection');
+    assert.equal(result.plan[0].evidence.assetId, 'piano_01', locale + ' Traditional Chinese asset');
 });
 
 ['演奏钢琴', '弹奏钢琴'].forEach(function (text) {
