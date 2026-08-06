@@ -101,6 +101,16 @@ VOICE_INPUT_LAYERING
     processing, routers, or arbitrary utility modules. ASR runtime code emits
     neutral callbacks and cannot import the Core-owned Registry in reverse.
 
+CORE_LOCK_NO_AWAIT
+    No ``async with self.lock`` block holds a suspension point. Twelve of
+    those blocks write ``current_speech_id``, eight of them writing the two
+    TTS done flags in the same block. Because no holder suspends, the lock is
+    never observed held, every acquire takes the uncontended fast path, and
+    no acquire is a cancellation point — which is what makes those paired
+    writes atomic (#2619). The first ``await`` inside any of these blocks
+    makes the lock contendable and reopens a torn "flags say the new turn,
+    speech id still says the old one" state at every one of them.
+
 VOICE_IDENTITY_LAYERING
     The in-memory speaker identity domain owns only model identity, normalized
     references, and profiles. Its package initializer is inert; its domain
@@ -937,6 +947,135 @@ def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
             core_dir / "asr_runtime.py", 1, 0, "VOICE_FAIL_CLOSED_CHOKEPOINT",
             f"{CHOKEPOINT}() is gone from main_logic/core — it is the only sanctioned caller "
             f"of {sorted(REVOKE_HELPERS)}, so its removal makes this gate vacuous"))
+    return violations
+
+
+def _statements_in_critical_section(body: list[ast.stmt]):
+    """Yield every node a critical section actually executes.
+
+    Nested ``def`` / ``async def`` / ``lambda`` bodies are skipped: code
+    defined inside the block runs when the closure is called, not while the
+    lock is held, so an ``await`` in there is not a suspension of this
+    critical section. Descending into them would make the gate fire on
+    something that is fine.
+    """
+
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Violation]:
+    """CORE_LOCK_NO_AWAIT — the session lock is never held across a suspension.
+
+    Every ``async with self.lock`` block in the package holds only
+    synchronous statements. That is not a style preference, it is what makes
+    the speech-id rotations atomic, and it holds by induction: if no holder
+    ever suspends while holding the lock, no other task can ever observe it
+    held, so ``await self.lock.acquire()`` always takes the uncontended fast
+    path and never yields — which means cancellation cannot be delivered
+    between taking the lock and the writes inside it.
+
+    #2619 read the same code the other way round and proposed reordering the
+    writes in ``rotate_speech_id_for_response_done`` to close a torn-state
+    window. Measured, that window does not exist while this contract holds:
+    the acquire never suspends, so the rotation either runs whole or does not
+    start. The first ``await`` added inside any of these blocks is what would
+    make the window real — for that rotation and for the eight other blocks
+    that write ``current_speech_id`` alongside both TTS done flags. So the
+    invariant is the fix, and this gate is what keeps it true.
+
+    The check is deliberately package-wide rather than pinned to the rotation
+    sites: the property is a property of the lock, and one careless holder
+    anywhere is enough to lose it everywhere.
+    """
+
+    def suspension_kind(node: ast.AST) -> str | None:
+        # ``yield`` counts: it turns the holder into an async generator and
+        # hands control back to whoever drives it, which can abandon or throw
+        # into the generator while the lock is still held.
+        if isinstance(node, ast.Await):
+            return "await"
+        if isinstance(node, ast.AsyncFor):
+            return "async for"
+        if isinstance(node, ast.AsyncWith):
+            return "nested async with"
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return "yield"
+        # ``[x async for x in y]`` carries no AsyncFor node of its own.
+        if isinstance(node, ast.comprehension) and node.is_async:
+            return "async comprehension"
+        return None
+
+    def is_session_lock(item: ast.withitem) -> bool:
+        expr = item.context_expr
+        return (
+            isinstance(expr, ast.Attribute)
+            and expr.attr == "lock"
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id == "self"
+        )
+
+    violations: list[Violation] = []
+    blocks_seen = 0
+    for path in sorted(core_dir.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = parse(path)
+        for block in ast.walk(tree):
+            if not isinstance(block, ast.AsyncWith):
+                continue
+            if not any(is_session_lock(item) for item in block.items):
+                continue
+            blocks_seen += 1
+            for node in _statements_in_critical_section(block.body):
+                kind = suspension_kind(node)
+                if kind is None:
+                    continue
+                violations.append(Violation(
+                    path, getattr(node, "lineno", block.lineno),
+                    getattr(node, "col_offset", block.col_offset),
+                    "CORE_LOCK_NO_AWAIT",
+                    f"'{kind}' inside the 'async with self.lock' block opened at line "
+                    f"{block.lineno} — the session lock must never be held across a "
+                    f"suspension. While it is not, the lock is never contended, so every "
+                    f"acquire takes the fast path, no acquire is a cancellation point, and "
+                    f"the sid+TTS-flag writes inside these blocks are atomic (#2619). One "
+                    f"suspension here makes the lock contendable and reopens that torn "
+                    f"state at every one of these blocks, not just this one. Do the awaited "
+                    f"work before or after the block"))
+                break  # one report per block; the first suspension is the defect
+    if not blocks_seen:
+        violations.append(Violation(
+            core_dir / "turn.py", 1, 0, "CORE_LOCK_NO_AWAIT",
+            "no 'async with self.lock' block left in main_logic/core — either the session "
+            "lock moved or the rotations stopped taking it; this gate is now vacuous, so "
+            "update it instead of letting it go dark"))
+    # The no-suspension argument assumes a plain asyncio.Lock: a reentrant or
+    # threading primitive would make 'never observed held' false for reasons
+    # this AST cannot see.
+    manager_tree = parse(manager_path)
+    declares_asyncio_lock = any(
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "lock"
+            and isinstance(t.value, ast.Name) and t.value.id == "self"
+            for t in node.targets
+        )
+        and isinstance(node.value, ast.Call)
+        and dotted_node_path(node.value.func) == "asyncio.Lock"
+        for node in ast.walk(manager_tree)
+    )
+    if not declares_asyncio_lock:
+        violations.append(Violation(
+            manager_path, 1, 0, "CORE_LOCK_NO_AWAIT",
+            "self.lock is no longer bound to asyncio.Lock() in manager.py — the atomicity "
+            "this gate protects rests on the uncontended-acquire fast path of that exact "
+            "primitive; re-derive the contract before swapping it"))
     return violations
 
 
@@ -1821,6 +1960,7 @@ def run(root: Path) -> list[Violation]:
     violations: list[Violation] = []
     violations.extend(check_voice_identity_contracts(root))
     violations.extend(check_fail_closed_chokepoint(core_dir))
+    violations.extend(check_session_lock_atomicity(core_dir, manager_path))
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)
     facade_owners = facade_owner_modules(init_tree)

@@ -1975,3 +1975,241 @@ def test_voice_identity_contract_rejects_model_assets_inside_domain_package(
         "found models/speaker.onnx"
         in messages
     )
+
+
+# ── CORE_LOCK_NO_AWAIT ──────────────────────────────────────────────────
+#
+# The gate exists because the atomicity of every ``current_speech_id`` +
+# TTS-done-flag write rests on one property of ``self.lock``: no holder ever
+# suspends, so the lock is never observed held, so ``acquire()`` always takes
+# the uncontended fast path and is therefore not a cancellation point (#2619).
+# These tests pin what makes that property checkable.
+
+
+def _lock_core_dir(
+    tmp_path: Path,
+    probe_source: str,
+    manager_source: str | None = None,
+) -> tuple[Path, Path]:
+    """A minimal core package: manager.py binding the lock plus one probe module."""
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="utf-8")
+    manager = core / "manager.py"
+    manager.write_text(
+        manager_source
+        if manager_source is not None
+        else (
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+        encoding="utf-8",
+    )
+    (core / "probe.py").write_text(probe_source, encoding="utf-8")
+    return core, manager
+
+
+def _lock_violations(contract_checker, tmp_path: Path, probe_source: str, **kw):
+    core, manager = _lock_core_dir(tmp_path, probe_source, **kw)
+    return contract_checker.check_session_lock_atomicity(core, manager)
+
+
+_CLEAN_PROBE = (
+    '"""m."""\n\n'
+    "class ProbeMixin:\n"
+    '    """m."""\n\n'
+    "    async def rotate(self):\n"
+    "        await self.prepare()\n"
+    "        async with self.lock:\n"
+    "            self.current_speech_id = new_id()\n"
+    "            self._tts_done_queued_for_turn = False\n"
+    "        await self.announce()\n"
+)
+
+
+@pytest.mark.unit
+def test_lock_gate_accepts_a_critical_section_with_no_suspension(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """Awaits before and after the block are exactly the sanctioned shape."""
+
+    assert _lock_violations(contract_checker, tmp_path, _CLEAN_PROBE) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # The plain form: this is what would make the rotation tearable.
+        "await self.flush()",
+        "value = await self.flush()",
+        # ...and the spellings that suspend without an ``await`` statement of
+        # their own, each of which an Await-only scan walks straight past.
+        "async for item in self.stream():\n                pass",
+        "async with self.other_lock:\n                pass",
+        "self.rows = [x async for x in self.stream()]",
+        "self.rows = [await self.one(x) for x in self.batch]",
+        "yield self.current_speech_id",
+    ],
+)
+def test_lock_gate_rejects_every_suspension_spelling(
+    contract_checker,
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        f"            {statement}\n"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "async with self.lock" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_reports_one_violation_per_block_not_per_suspension(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The defect is the block, not each await in it — three awaits, one report."""
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            await self.a()\n"
+        "            await self.b()\n"
+        "            await self.c()\n"
+    )
+
+    assert len(_lock_violations(contract_checker, tmp_path, source)) == 1
+
+
+@pytest.mark.unit
+def test_lock_gate_ignores_awaits_in_closures_defined_inside_the_block(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A coroutine DEFINED under the lock does not RUN under it.
+
+    Flagging this would be a false positive: the closure body executes when
+    someone awaits the returned object, which by definition is after the
+    ``async with`` has exited.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            async def later():\n"
+        "                await self.flush()\n"
+        "            self._deferred = later\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_ignores_other_locks(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """Only ``self.lock`` carries the contract.
+
+    ``self.tts_cache_lock`` and friends are ordinary locks whose holders may
+    await; widening the rule to every attribute named ``*lock`` would fail the
+    package on code that is fine.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def flush(self):\n"
+        "        async with self.tts_cache_lock:\n"
+        "            await self.drain()\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_fails_loudly_when_no_lock_block_is_left(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A gate that silently matches nothing is worse than no gate."""
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        self.current_speech_id = new_id()\n"
+    )
+
+    messages = [v.message for v in _lock_violations(contract_checker, tmp_path, source)]
+
+    assert any("vacuous" in m for m in messages)
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_swapping_the_lock_primitive(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The fast-path argument is specific to ``asyncio.Lock``.
+
+    A reentrant or threading primitive would break "never observed held" for
+    reasons no AST walk over the critical sections can see, so the binding
+    itself is part of the contract.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import threading\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = threading.RLock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "asyncio.Lock()" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_holds_on_the_real_core_package(contract_checker) -> None:
+    """The contract this gate encodes is true of the tree today.
+
+    Not a tautology with the synthetic cases above: this is the measurement
+    #2619's premise turns on. If it ever fails, the torn-state window that
+    issue described becomes real and the rotation sites need revisiting.
+    """
+
+    core_dir = PROJECT_ROOT / "main_logic" / "core"
+    violations = contract_checker.check_session_lock_atomicity(
+        core_dir, core_dir / "manager.py"
+    )
+
+    assert violations == [], "\n".join(v.render(PROJECT_ROOT) for v in violations)

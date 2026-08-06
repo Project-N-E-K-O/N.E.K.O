@@ -1234,21 +1234,28 @@ class _TransportMixin:
         last step — there is nothing behind it for a slow hook to starve. That
         is NOT the same as being uncancellable, and an earlier version of this
         comment claimed it was: the arbiter bounds the whole notification, so
-        the rotation can still be cancelled at its only await, taking the
-        session lock. Today that leaves the host half-rotated — the TTS flags
-        say a fresh turn while the speech id still says the old one — because
-        ``rotate_speech_id_for_response_done`` writes those flags before it
-        takes the lock.
+        the rotation can be cancelled. What it cannot do is land half-applied.
+        Its only await is taking the session lock, and no holder of that lock
+        suspends while holding it, so the lock is never observed held and that
+        acquire always takes the uncontended fast path without yielding — the
+        cancellation therefore arrives before the rotation is entered or after
+        it has returned. A second version of this comment claimed the opposite
+        (TTS flags saying a fresh turn while the speech id still said the old
+        one); measured, that state is not reachable while the lock invariant
+        holds, and the invariant is now enforced by CORE_LOCK_NO_AWAIT in
+        ``scripts/check_core_contracts.py`` rather than left to convention
+        (#2619).
 
-        Measured, that state is repaired by the next turn's terminal, which
-        rotates unconditionally; it is not the permanent silence the earlier
-        comment described. It also is not this path's to fix: the rotation has
-        two other callers that are cancelled just as ordinarily and with no
-        escape hatch involved
+        This still is not the path to shield the rotation from. The rotation
+        has two other callers cancelled just as ordinarily and with no escape
+        hatch involved
         ([_responses.py](main_logic/omni_realtime_client/_responses.py) and
         [proactive.py](main_logic/core/proactive.py), both inside
-        fire-and-forget tasks), so making the rotation all-or-nothing belongs
-        in the rotation itself. Tracked separately.
+        fire-and-forget tasks), and shielding here measurably reopens the hole
+        ``_turn_epoch`` closed: a detached rotation takes the lock after the
+        epoch has already moved and overwrites the new session's speech id,
+        which ``lifecycle.py``'s lock-free write cannot be FIFO-ordered
+        against.
 
         ``on_sid_rotate`` is conditional because providers WITH server VAD
         rotate the speech id from ``speech_stopped`` instead; firing here too

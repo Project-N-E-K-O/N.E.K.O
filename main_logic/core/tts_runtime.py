@@ -321,7 +321,23 @@ class TtsRuntimeMixin:
         regardless of ``use_tts``, so a Realtime native voice session
         (``use_tts=False``) can still have a live worker that needs
         interrupting on ``interrupt_audio``.
+
+        The two TTS-done flags are reset here, before the first ``await``,
+        because clearing the pipeline is what invalidates them — see the
+        comment on the reset itself.
         """
+        # 这两个 flag 是"本轮 done sentinel 已排队"的唯一记账，而下面的
+        # ``__interrupt__`` 一入队就把那个 sentinel 作废了。所以 reset 属于
+        # interrupt 的同一步，必须落在函数的第一个 await（下面的 sleep）之前：
+        # 从函数入口到 put("__interrupt__") 全是同步语句，取消无从投递，两者因此
+        # 原子。放在 await 之后（历史写法：由各调用方在 await 返回后各自清）取消
+        # 落在 sleep 上就会留下"worker 已被中断、记账还说已排队"的残留态，下一轮
+        # ``_request_tts_done_locked`` 因此 early-return "already"，flush sentinel
+        # 永远进不了队 —— 正是 handle_new_message 那两行清零本来要防的后果。
+        # 调用方在本函数返回后的重复清零保留不动：那是给 sleep 窗口内被并发
+        # 置回 True 的情况兜底，与这里要修的取消残留是两件事。
+        self._tts_done_queued_for_turn = False
+        self._tts_done_pending_until_ready = False
         if self.tts_thread and self.tts_thread.is_alive():
             while not self.tts_response_queue.empty():
                 try:
