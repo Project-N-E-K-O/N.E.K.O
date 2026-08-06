@@ -1,8 +1,18 @@
 import json
 import re
+import shutil
 from pathlib import Path
 
+import pytest
+
 from tests.node_harness import run_node_script
+
+
+def run_model_manager_node(script: str) -> None:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for model-manager JavaScript tests")
+    run_node_script(node, script, check=True)
 
 
 MODEL_MANAGER_PART_NAMES = (
@@ -176,7 +186,7 @@ assert.equal(
   '/static/vrm/animation/custom-idle.vrma?keep=1'
 );
 """
-    run_node_script("node", script, check=True)
+    run_model_manager_node(script)
 
 
 def test_vrm_catalog_player_resets_before_loading_a_new_model():
@@ -216,7 +226,7 @@ vm.runInNewContext({json.dumps(function_source)}, context);
   assert.deepEqual(calls[1], ['load', '/user_vrm/model.vrm']);
 }})().catch(function (error) {{ console.error(error); process.exit(1); }});
 """
-    run_node_script("node", script, check=True)
+    run_model_manager_node(script)
 
 
 def test_vrm_preview_ignores_stale_playback_completions():
