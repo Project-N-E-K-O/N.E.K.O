@@ -231,12 +231,19 @@ def test_jukebox_loader_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
             playVRMAAnimation: async (url) => calls.push(url)
           };
           await window.Jukebox.restoreIdleAnimation();
+          window.lanlan_config.vrmIdleAnimations = [
+            '/static/vrm/animation/custom-idle.vrma'
+          ];
+          await window.Jukebox.restoreIdleAnimation();
           return calls;
         }
         """
     )
 
-    assert restored == ["/static/vrm/animation/wait03.vrma.gz?legacy=1"]
+    assert restored == [
+        "/static/vrm/animation/wait03.vrma.gz?legacy=1",
+        "/static/vrm/animation/custom-idle.vrma",
+    ]
 
 
 @pytest.mark.frontend
@@ -377,12 +384,17 @@ def test_jukebox_transport_normalizes_legacy_bundled_vrm_idle(mock_page: Page):
             playVRMAAnimation: async (url) => calls.push(url)
           };
           await window.Jukebox.restoreIdleAnimation();
+          window.lanlan_config.vrmIdleAnimation = '/static/vrm/animation/custom-idle.vrma';
+          await window.Jukebox.restoreIdleAnimation();
           return calls;
         }
         """
     )
 
-    assert restored == ["/static/vrm/animation/wait03.vrma.gz#saved"]
+    assert restored == [
+        "/static/vrm/animation/wait03.vrma.gz#saved",
+        "/static/vrm/animation/custom-idle.vrma",
+    ]
 
 
 def test_jukebox_parts_are_loaded_in_directory_order():
