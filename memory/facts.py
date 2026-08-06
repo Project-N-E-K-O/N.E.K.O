@@ -60,6 +60,7 @@ from memory.evidence import evidence_score
 from memory.timeindex import (
     FACT_NEAR_DUP_ARBITRATE_OVERLAP,
     FACT_NEAR_DUP_IDENTICAL_OVERLAP,
+    normalized_identity,
 )
 from memory.scopes import (
     MemorySubject,
@@ -3483,6 +3484,8 @@ class FactStore:
         # 仲裁队列——队列是 ids-only，指向一条还没写进 facts.json 的 fact 就
         # 是悬空引用，回滚后更是永久指向不存在的 id。
         near_dup_pairs: list[tuple[dict, dict, float]] = []
+        # 每次调用只取一次停用名（identity 归一两侧都要用它）。
+        near_dup_stop_names: list[str] | None = None
         upgraded_count = 0
         provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
@@ -3731,6 +3734,17 @@ class FactStore:
                 await self._aensure_fact_index_backfilled(
                     lanlan_name, existing_facts,
                 )
+                if near_dup_stop_names is None:
+                    from memory.stop_names import acollect_stop_names
+                    try:
+                        near_dup_stop_names = await acollect_stop_names(
+                            self._config_manager, lanlan_name,
+                        )
+                    except Exception:
+                        near_dup_stop_names = []
+                candidate_identity = normalized_identity(
+                    text, near_dup_stop_names,
+                )
                 # FTS5 is still character-wide, so fetch a wider window and
                 # keep the historical "top-3 candidates" semantics *inside*
                 # the subject boundary: cross-subject rows neither count as
@@ -3815,12 +3829,29 @@ class FactStore:
                             )
                             if hit_date and hit_date != daily_event_date:
                                 continue
-                        if overlap >= FACT_NEAR_DUP_IDENTICAL_OVERLAP:
-                            # 折叠 + 去停用名后 token 集完全一致：与 Stage-1
-                            # 的精确重复只差繁简 / 停用名 / 标点，照旧直接挡。
+                        if (
+                            overlap >= FACT_NEAR_DUP_IDENTICAL_OVERLAP
+                            and normalized_identity(
+                                hit.get('text') or '', near_dup_stop_names,
+                            ) == candidate_identity
+                        ):
+                            # 归一后逐字相同：与 Stage-1 的精确重复只差繁简 /
+                            # 大小写 / 停用名 / 标点，照旧直接挡。
+                            #
+                            # overlap == 1.0 只是先筛一道（归一相同必然 token
+                            # 集相同，反过来不成立），**不能**单独当判据：
+                            # n-gram 集丢掉了顺序，「喜欢猫，不喜欢狗」和
+                            # 「喜欢狗，不喜欢猫」是同一个集合却是相反的话。
                             is_dup = True
                             duplicate_hit = hit
                             break
+                        if (hit.get('entity') or 'master') != entity:
+                            # 仲裁队列按 entity 分桶（向量侧 detect_candidates
+                            # 同款边界）：master / neko / relationship 的事实
+                            # 撞在一起没有可比性，交给 LLM 只会诱发误合并。
+                            # 上面的硬挡不受此限——Stage-1 的 hash 同样不含
+                            # entity，跨 entity 的同一句话本来就只留一条。
+                            continue
                         if arbitration_hit is None and not hit.get('absorbed'):
                             # absorbed 行已折进反思：把新文本并进去会把它从
                             # 归档路径复活，比留着重复更糟（对齐向量侧
@@ -4045,7 +4076,11 @@ class FactStore:
                     if isinstance(f, dict) and f.get('id')
                 ]
 
-                def _read_archive() -> list[tuple[str, str]]:
+                def _read_archive() -> list[tuple[str, str]] | None:
+                    """None = 读失败。区别于「文件不存在」（合法的 0 行）：
+                    把读失败当空归档的话，本轮回填会照常落下完成标记，而标记
+                    是持久的——归档修好、进程重启都不会再回填，那些行从此挡
+                    不住重复，与本方法 docstring 承诺的正相反。"""
                     path = self._facts_archive_path(lanlan_name)
                     if not os.path.exists(path):
                         return []
@@ -4053,16 +4088,22 @@ class FactStore:
                         with open(path, encoding='utf-8') as fh:
                             data = json.load(fh)
                     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-                        return []
+                        return None
                     if not isinstance(data, list):
-                        return []
+                        return None
                     return [
                         (str(r.get('id')), str(r.get('text') or ''))
                         for r in data
                         if isinstance(r, dict) and r.get('id')
                     ]
 
-                rows.extend(await asyncio.to_thread(_read_archive))
+                archived_rows = await asyncio.to_thread(_read_archive)
+                if archived_rows is None:
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 归档不可读，跳过本轮近重复索引回填"
+                    )
+                    return
+                rows.extend(archived_rows)
                 indexed = await self._time_indexed.abackfill_fact_index(
                     lanlan_name, rows,
                 )

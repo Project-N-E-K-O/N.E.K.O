@@ -1006,10 +1006,20 @@ class FactDedupResolver:
             printing its text overlap under the ``cosine=`` label would
             hand the model a number that means something else.
             """
-            overlap = item.get('text_overlap')
+            # 脏值不抛：这段在 try 之外，一条被手改成字符串的 text_overlap
+            # 会让异常穿出 _aresolve_locked，既不 bump resolve_attempts 也不
+            # 进 dead-letter——整个队列永久卡在队头那条上（对齐同文件
+            # resolve_attempts 走 safe_int_field 的口径）。
+            def _num(value: object) -> float | None:
+                try:
+                    return float(value)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    return None
+
+            overlap = _num(item.get('text_overlap'))
             if overlap is not None:
-                return f"text_overlap={float(overlap):.3f}"
-            return f"cosine={float(item.get('cosine', 0.0)):.3f}"
+                return f"text_overlap={overlap:.3f}"
+            return f"cosine={_num(item.get('cosine')) or 0.0:.3f}"
 
         pairs_text = "\n".join(
             f"[{i}] candidate: {cand_text}"

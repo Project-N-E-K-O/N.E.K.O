@@ -34,6 +34,7 @@ from memory.timeindex import (
     FACT_NEAR_DUP_IDENTICAL_OVERLAP,
     TimeIndexedMemory,
     fts_tokens,
+    normalized_identity,
     token_overlap,
 )
 from memory.script_fold import fold_script
@@ -90,6 +91,56 @@ def test_overlap_does_not_separate_meaning():
     assert token_overlap(cat, dog) > token_overlap(rephrase, same)
     # ...而那条真该合并的改写仍然够得着仲裁线。
     assert token_overlap(rephrase, same) >= FACT_NEAR_DUP_ARBITRATE_OVERLAP
+
+
+def test_clause_swap_shares_a_token_set_but_not_an_identity():
+    """Codex P1: n-gram sets discard order, so two opposite statements can
+    reach overlap 1.0. Only the order-preserving normal form may gate the
+    hard drop."""
+    a, b = "喜欢猫，不喜欢狗", "喜欢狗，不喜欢猫"
+    assert token_overlap(fts_tokens(a), fts_tokens(b)) == 1.0
+    assert normalized_identity(a) != normalized_identity(b)
+
+
+def test_identity_ignores_script_case_punctuation_and_stop_names():
+    assert normalized_identity("用戶最近養了一隻貓") == normalized_identity(
+        "用户最近养了一只猫",
+    )
+    assert normalized_identity("用户养了猫，很开心") == normalized_identity(
+        "用户养了猫。很开心",
+    )
+    assert normalized_identity("User Likes Cats") == normalized_identity(
+        "user likes cats",
+    )
+    assert normalized_identity("兰兰喜欢猫", ["兰兰"]) == normalized_identity(
+        "喜歡貓", ["蘭蘭"],
+    )
+
+
+def test_latin_case_does_not_destroy_the_overlap_score():
+    """unicode61 retrieves case-insensitively; scoring must agree or a
+    case-only variant scores 0 and looks less alike than unrelated text."""
+    assert token_overlap(
+        fts_tokens("USER LIKES CATS"), fts_tokens("user likes cats"),
+    ) == 1.0
+
+
+def test_tokenize_refuses_to_fall_back_to_a_different_splitter(monkeypatch):
+    """Whatever fts_tokens returns gets persisted. A fallback splitter would
+    write rows the normal tokenizer can never match, under a backfill marker
+    claiming the index is complete — so it must raise instead."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _boom(name, *args, **kwargs):
+        if name == "memory.hybrid_recall":
+            raise ImportError("simulated")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _boom)
+    with pytest.raises(ImportError):
+        fts_tokens("用户最近养了一只猫")
 
 
 def _cm(tmpdir: str):
@@ -253,6 +304,37 @@ async def test_identical_token_set_still_drops_the_new_fact(tmp_path):
     created = await _persist(harness, "用戶最近養了一隻貓")
 
     assert created == []
+    resolver.aenqueue_candidates.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_clause_swap_is_written_and_arbitrated_not_dropped(tmp_path):
+    """Codex P1, end of the chain: overlap 1.0 alone must not drop a fact."""
+    harness = _harness(tmp_path, [("existing", 1.0)])
+    _seed(harness, "喜欢猫，不喜欢狗")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=1)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "喜欢狗，不喜欢猫")
+
+    assert len(created) == 1
+    resolver.aenqueue_candidates.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_different_entity_is_never_arbitrated(tmp_path):
+    """The queue buckets by entity (the vector detector does too); a master
+    fact arbitrated against a relationship fact can be merged away."""
+    harness = _harness(tmp_path, [("existing", 0.9)])
+    _seed(harness, "用户最近养了一只狗", entity="relationship")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=0)
+    harness.attach_dedup_resolver(resolver)
+
+    created = await _persist(harness, "用户最近养了一只猫")
+
+    assert len(created) == 1
     resolver.aenqueue_candidates.assert_not_awaited()
 
 
@@ -433,6 +515,68 @@ def test_backfill_reads_archive_rows_too(tmp_path):
     # 第二次不再重扫。
     asyncio.run(harness._aensure_fact_index_backfilled("小天", []))
     assert len(captured) == 1
+
+
+def test_an_unreadable_archive_aborts_the_backfill(tmp_path):
+    """Treating a corrupt archive as "no archived rows" would let the
+    persistent completion marker land, and those rows would never be
+    indexed again — not after repair, not after a restart."""
+    import asyncio
+
+    cm = _cm(str(tmp_path))
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        harness = _PersistHarness(_FakeIndex())
+    harness._config_manager = cm
+
+    archive_path = os.path.join(str(tmp_path), "facts_archive.json")
+    with open(archive_path, "w", encoding="utf-8") as fh:
+        fh.write("{ this is not valid json")
+
+    calls: list[int] = []
+
+    class _CountingIndex(_FakeIndex):
+        def fts_index_needs_backfill(self, _name):
+            return True
+
+        async def abackfill_fact_index(self, _name, rows):
+            calls.append(len(rows))
+            return len(rows)
+
+    harness._time_indexed = _CountingIndex()
+    with patch.object(
+        harness, "_facts_archive_path", return_value=archive_path,
+    ):
+        asyncio.run(harness._aensure_fact_index_backfilled(
+            "小天", [{"id": "act1", "text": "用户最近养了一只猫"}],
+        ))
+        assert calls == []  # 回填根本没跑，标记自然落不下
+
+        # 修好归档之后，下一次写入照常回填。
+        with open(archive_path, "w", encoding="utf-8") as fh:
+            fh.write('[{"id": "arch1", "text": "群规是不剧透"}]')
+        asyncio.run(harness._aensure_fact_index_backfilled(
+            "小天", [{"id": "act1", "text": "用户最近养了一只猫"}],
+        ))
+        assert calls == [2]
+
+
+def test_backfill_drops_duplicate_ids(index):
+    """An interrupted archive commit can leave one id in both facts.json and
+    facts_archive.json; the FTS table has no uniqueness constraint, so two
+    rows would each eat a candidate slot."""
+    from sqlalchemy import text as sql_text
+
+    indexed = index.backfill_fact_index("小天", [
+        ("f1", "用户最近养了一只猫"),
+        ("f1", "用户最近养了一只猫"),
+        ("f2", "用户喜欢喝咖啡"),
+    ])
+    assert indexed == 2
+    with index.engines["小天"].connect() as conn:
+        rows = conn.execute(sql_text(
+            "SELECT count(*) FROM facts_fts_v2 WHERE fact_id = 'f1'"
+        )).fetchone()
+    assert rows[0] == 1
 
 
 def test_a_failed_backfill_is_retried(tmp_path):

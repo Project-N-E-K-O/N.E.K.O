@@ -70,24 +70,60 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
       Latin runs stay whole. Sharing the rules keeps the dedup side and
       the recall side talking about the same units.
 
+    Latin is lower-cased because unicode61 matches it case-insensitively:
+    without this an ``USER LIKES CATS`` row is *retrieved* for a query of
+    ``user likes cats`` and then scores 0, so a pair differing only in
+    case looks less alike than two unrelated facts.
+
     Double quotes are dropped up front: a token carrying one would break
     the quoting of the FTS5 query built from it, and dropping it on both
     sides keeps the two in step.
+
+    Raises if the shared tokenizer cannot be imported. There is
+    deliberately no fallback splitter: whatever this returns gets
+    *persisted*, and a fallback that tokenizes differently would write
+    rows the normal tokenizer can never match again — with the backfill
+    marker claiming the index is complete. Failing here degrades dedup
+    for the moment; a fallback would corrupt the index for good.
     """
     from memory.script_fold import fold_script
 
-    raw = fold_script(str(content or "")).replace('"', ' ')
-    folded_stop_names = [fold_script(n) for n in (stop_names or [])] or None
-    try:
-        # 懒 import：hybrid_recall 会拉起 persona，import-time 硬依赖在
-        # memory-only 的 entrypoint 上不成立（同 hybrid_recall 自己的做法）。
-        from memory.hybrid_recall import _tokenize
-    except Exception as exc:
-        logger.warning(f"[TimeIndexedMemory] tokenize 回退到空白切分: {exc}")
-        if folded_stop_names:
-            raw = strip_stop_names(raw, folded_stop_names)
-        return [t for t in raw.split() if len(t) >= 2]
+    # 懒 import：hybrid_recall 会拉起 persona，import-time 硬依赖在
+    # memory-only 的 entrypoint 上不成立（同 hybrid_recall 自己的做法）。
+    from memory.hybrid_recall import _tokenize
+
+    raw = fold_script(str(content or "")).replace('"', ' ').lower()
+    # stop-name 也一起折 + 转小写：strip_stop_names 是逐字面替换/词边界
+    # 匹配，两侧不同形就永远撞不上。
+    folded_stop_names = [
+        fold_script(n).lower() for n in (stop_names or [])
+    ] or None
     return _tokenize(raw, folded_stop_names)
+
+
+def normalized_identity(content: str, stop_names: list[str] | None = None) -> str:
+    """Order-preserving normal form used to decide "this is the same sentence".
+
+    Same normalization as ``fts_tokens`` (fold, lower-case, stop-names)
+    but the result keeps character order and drops only the separators
+    the tokenizer splits on. Two texts with the same value here differ
+    at most in script, case, stop-names and punctuation.
+
+    Token-set equality can NOT stand in for this: n-gram sets discard
+    order, so ``喜欢猫，不喜欢狗`` and ``喜欢狗，不喜欢猫`` — opposite
+    statements — produce the identical set and would read as the same
+    sentence.
+    """  # noqa: DOCSTRING_CJK
+    from memory.persona import _SPLIT_RE
+    from memory.script_fold import fold_script
+
+    raw = fold_script(str(content or "")).lower()
+    folded_stop_names = [
+        fold_script(n).lower() for n in (stop_names or [])
+    ]
+    if folded_stop_names:
+        raw = strip_stop_names(raw, folded_stop_names)
+    return "".join(seg for seg in _SPLIT_RE.split(raw) if seg)
 
 
 def token_overlap(left: list[str], right: list[str]) -> float:
@@ -929,14 +965,20 @@ class TimeIndexedMemory:
                         text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE}")
                     ).fetchall()
                 }
-                payload = [
-                    {
+                # 输入按 fact_id 去重（活跃行优先——它排在 rows 前半段）：
+                # 归档提交被打断时同一个 id 可以同时躺在 facts.json 和
+                # facts_archive.json 里，而 FTS 表没有唯一约束，两份都插进去
+                # 会各占一个候选名额，把真正的近重复挤出窗口。
+                seen: set[str] = set()
+                payload = []
+                for fact_id, content in rows:
+                    if not fact_id or fact_id in indexed or fact_id in seen:
+                        continue
+                    seen.add(fact_id)
+                    payload.append({
                         "fid": fact_id,
                         "content": " ".join(fts_tokens(content, stop_names)),
-                    }
-                    for fact_id, content in rows
-                    if fact_id and fact_id not in indexed
-                ]
+                    })
                 if payload:
                     conn.execute(
                         text(

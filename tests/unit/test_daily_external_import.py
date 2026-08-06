@@ -286,7 +286,7 @@ async def test_fts_dedup_exempts_cross_date_daily_hits():
     assert len(cross_date) == 1  # 不同日期：豁免，落盘
 
     same_date = await harness._apersist_new_facts(
-        "Neko", [_daily_fact("gym workout in the early morning", "2026-07-12")],
+        "Neko", [_daily_fact("Morning Workout at the Gym", "2026-07-12")],
         semantic_dedup=True,
     )
     assert len(same_date) == 0  # 同日期近似：仍判重复
