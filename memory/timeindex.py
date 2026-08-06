@@ -74,10 +74,10 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     the quoting of the FTS5 query built from it, and dropping it on both
     sides keeps the two in step.
     """
-    from utils.cjk_fold import fold_cjk
+    from memory.script_fold import fold_script
 
-    raw = fold_cjk(str(content or "")).replace('"', ' ')
-    folded_stop_names = [fold_cjk(n) for n in (stop_names or [])] or None
+    raw = fold_script(str(content or "")).replace('"', ' ')
+    folded_stop_names = [fold_script(n) for n in (stop_names or [])] or None
     try:
         # 懒 import：hybrid_recall 会拉起 persona，import-time 硬依赖在
         # memory-only 的 entrypoint 上不成立（同 hybrid_recall 自己的做法）。

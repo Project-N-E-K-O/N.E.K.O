@@ -36,11 +36,7 @@ from memory.timeindex import (
     fts_tokens,
     token_overlap,
 )
-from utils.cjk_fold import (
-    _SIMP_FOLD_TARGET,
-    _TRAD_FOLD_SOURCE,
-    fold_cjk,
-)
+from memory.script_fold import fold_script
 
 
 # ── 1. tokenization ──────────────────────────────────────────────────
@@ -60,17 +56,12 @@ def test_traditional_and_simplified_tokenize_identically():
 
 
 def test_fold_leaves_non_cjk_alone_and_is_idempotent():
-    assert fold_cjk("hello ABC 123") == "hello ABC 123"
-    assert fold_cjk("") == ""
-    once = fold_cjk("使用者最近養了一隻貓")
-    assert fold_cjk(once) == once
-
-
-def test_fold_map_columns_line_up():
-    """maketrans pairs the two constants positionally — equal length or the
-    whole map silently shifts by one character."""
-    assert len(_TRAD_FOLD_SOURCE) == len(_SIMP_FOLD_TARGET)
-    assert len(_TRAD_FOLD_SOURCE) > 1000
+    """``memory.script_fold`` is shared with the recall side (#2584); the
+    fold's own invariants are pinned there. What matters here is only that
+    the dedup side folds at all, on both index and query."""
+    assert fold_script("hello ABC 123") == "hello ABC 123"
+    once = fold_script("使用者最近養了一隻貓")
+    assert fold_script(once) == once
 
 
 def test_stop_names_are_stripped_after_folding():
