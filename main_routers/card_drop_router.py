@@ -284,20 +284,38 @@ async def _confirm_cloud_forge_debit(
     if not credentials:
         return {"confirmed": False, "detail": "client_not_registered"}
     client_id, client_proof = credentials
+    base_url = _social_base_url()
+    try:
+        parsed_base_url = urlparse(base_url)
+        base_hostname = parsed_base_url.hostname
+        if parsed_base_url.scheme == "https" and base_hostname:
+            send_client_proof = True
+        elif (
+            parsed_base_url.scheme == "http"
+            and base_hostname
+            and base_hostname.lower() in _LOOPBACK_HOSTS
+        ):
+            send_client_proof = False
+        else:
+            return {"confirmed": False, "detail": "invalid_cloud_base_url"}
+    except ValueError:
+        return {"confirmed": False, "detail": "invalid_cloud_base_url"}
     url = (
-        f"{_social_base_url()}/api/cards/forge-operations/"
+        f"{base_url}/api/cards/forge-operations/"
         f"{operation_id}/debit-confirmation"
     )
+    request_payload = {
+        "client_id": client_id,
+        "credit_id": credit_id,
+        "card_id": card_id,
+    }
+    if send_client_proof:
+        request_payload["client_proof"] = client_proof
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
             response = await client.post(
                 url,
-                json={
-                    "client_id": client_id,
-                    "client_proof": client_proof,
-                    "credit_id": credit_id,
-                    "card_id": card_id,
-                },
+                json=request_payload,
             )
     except (httpx.HTTPError, OSError):
         return {"confirmed": False, "detail": "cloud_unreachable"}
@@ -305,7 +323,7 @@ async def _confirm_cloud_forge_debit(
         payload = response.json()
     except (ValueError, TypeError):
         payload = {}
-    if response.status_code >= 400 or not isinstance(payload, dict):
+    if not 200 <= response.status_code < 300 or not isinstance(payload, dict):
         detail = payload.get("detail") if isinstance(payload, dict) else None
         return {
             "confirmed": False,
