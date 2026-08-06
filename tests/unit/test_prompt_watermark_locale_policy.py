@@ -35,26 +35,12 @@ import ast
 import re
 from pathlib import Path
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROMPTS_DIR = _REPO_ROOT / "config" / "prompts"
 
 _MARKER = re.compile(r"={4,}[^=\n]*={4,}")
 _CJK = re.compile(r"[一-鿿]")
 _OTHER_LOCALES = ("en", "ja", "ko", "ru", "es", "pt")
-
-# Frames that already violated the rule before issue #2500's final batch, kept
-# greppable rather than silently excused. STARTUP_GREETING_CONSTRAINT's zh-TW row
-# is half-converted on main (Traditional opener, Simplified closer) while all six
-# other locales carry the Simplified watermark, and unlike most of the backlog it
-# IS reachable today (its normalizer keeps Traditional). Fixing it changes a live
-# Traditional prompt, so it belongs to whoever owns that table, not to a
-# template-only backfill.
-_KNOWN_VIOLATIONS = {
-    "======以下為啟動問候約束======",
-    "======以上为啟動問候約束======",
-}
 
 
 def _strings(node: ast.AST) -> list[str]:
@@ -138,7 +124,7 @@ def test_zh_tw_copies_every_cross_locale_watermark_verbatim():
         unanimous = len(set(spellings)) == 1
         if not (unanimous and _CJK.search(spellings[0])):
             continue
-        if mine == spellings[0] or mine in _KNOWN_VIOLATIONS:
+        if mine == spellings[0]:
             continue
         if zh is not None and mine == zh:
             continue
@@ -165,17 +151,4 @@ def test_zh_tw_does_not_leave_prose_frames_in_simplified():
         offenders.append(f"{path}:{line} slot#{index}: zh-TW copies zh verbatim ({mine!r}) while siblings translate: {sorted(set(spellings))[:3]}")
     assert not offenders, (
         "zh-TW left a per-locale frame in Simplified:\n" + "\n".join(offenders)
-    )
-
-
-@pytest.mark.parametrize("marker", sorted(_KNOWN_VIOLATIONS))
-def test_known_violations_still_exist(marker):
-    """Drop an allowlist entry once its table is fixed, don't let it rot."""
-    found = any(
-        marker == mine
-        for _p, _l, _i, _zh, mine, _s in _localized_tables()
-    )
-    assert found, (
-        f"{marker!r} no longer appears in any zh-TW row — remove it from "
-        "_KNOWN_VIOLATIONS instead of leaving a stale exemption behind."
     )

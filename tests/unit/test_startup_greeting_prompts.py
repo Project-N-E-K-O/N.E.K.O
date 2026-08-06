@@ -190,7 +190,12 @@ def test_startup_getters_reach_traditional_chinese_templates():
     assert "======以下为環境提示======" in base_prompt
     assert "======以上为環境提示======" in base_prompt
     assert "請結合" in guidance
-    assert "======以上为啟動問候約束======" in guidance
+    assert "最終只輸出一句簡短自然的話" in guidance
+    # The frame itself is the cross-locale watermark, spelled the same in every
+    # row, so it proves nothing about which template was reached -- the
+    # Traditional prose above does. Asserted here only to keep zh-TW from
+    # drifting back to a half-converted marker.
+    assert "======以上为启动问候约束======" in guidance
 
 
 def test_crossed_conversation_day_uses_six_am_boundary_and_year_rollover():

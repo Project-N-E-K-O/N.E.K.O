@@ -3327,7 +3327,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （已 promoted 的 persona fact + 其它 confirmed 的 reflection）
 
 {IMPRESSION_POOL}
@@ -3350,7 +3350,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （已 promoted 的 persona fact + 其他 confirmed 的 reflection）
 
 {IMPRESSION_POOL}
@@ -3373,7 +3373,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (promoted persona facts + other confirmed reflections)
 
 {IMPRESSION_POOL}
@@ -3396,7 +3396,7 @@ or
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （既に promoted の persona fact ＋ 他の confirmed の reflection）
 
 {IMPRESSION_POOL}
@@ -3419,7 +3419,7 @@ R をどう扱うか判断してください：
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (이미 promoted된 persona fact + 기타 confirmed reflection)
 
 {IMPRESSION_POOL}
@@ -3442,7 +3442,7 @@ R을 어떻게 처리할지 판단하세요:
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (уже promoted-факты persona + другие confirmed-reflection)
 
 {IMPRESSION_POOL}
@@ -3465,7 +3465,7 @@ R을 어떻게 처리할지 판단하세요:
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (persona facts ya promoted + otras reflections confirmed)
 
 {IMPRESSION_POOL}
@@ -3488,7 +3488,7 @@ o
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (persona facts já promoted + outras reflections confirmed)
 
 {IMPRESSION_POOL}

@@ -31,7 +31,7 @@ proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页
 {memory_context}
 ======以上为对话历史======
 
-======以下是首页推荐内容======
+======以下为首页推荐内容======
 {trending_content}
 ======以上为首页推荐内容======
 
@@ -53,7 +53,7 @@ proactive_chat_prompt_zh_tw = """你是{lanlan_name}，現在看到了一些 B �
 {memory_context}
 ======以上为对话历史======
 
-======以下是首页推荐内容======
+======以下为首页推荐内容======
 {trending_content}
 ======以上为首页推荐内容======
 
@@ -75,7 +75,7 @@ proactive_chat_prompt_en = """You are {lanlan_name}. You just saw some homepage 
 {memory_context}
 ======以上为对话历史======
 
-======以下是首页推荐内容======
+======以下为首页推荐内容======
 {trending_content}
 ======以上为首页推荐内容======
 
@@ -97,7 +97,7 @@ proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホーム�
 {memory_context}
 ======以上为对话历史======
 
-======以下是首页推荐内容======
+======以下为首页推荐内容======
 {trending_content}
 ======以上为首页推荐内容======
 
@@ -119,7 +119,7 @@ proactive_chat_prompt_news = """你是{lanlan_name}，现在看到了一些热�
 {memory_context}
 ======以上为对话历史======
 
-======以下是热议话题======
+======以下为热议话题======
 {trending_content}
 ======以上为热议话题======
 
@@ -141,7 +141,7 @@ proactive_chat_prompt_news_zh_tw = """你是{lanlan_name}，現在看到了一�
 {memory_context}
 ======以上为对话历史======
 
-======以下是热议话题======
+======以下为热议话题======
 {trending_content}
 ======以上为热议话题======
 
@@ -163,7 +163,7 @@ proactive_chat_prompt_news_en = """You are {lanlan_name}. You just saw some tren
 {memory_context}
 ======以上为对话历史======
 
-======以下是热议话题======
+======以下为热议话题======
 {trending_content}
 ======以上为热议话题======
 
@@ -185,7 +185,7 @@ proactive_chat_prompt_news_ja = """あなたは{lanlan_name}です。今、ト�
 {memory_context}
 ======以上为对话历史======
 
-======以下是トレンド話題======
+======以下为トレンド話題======
 {trending_content}
 ======以上为トレンド話題======
 
@@ -207,7 +207,7 @@ proactive_chat_prompt_video = """你是{lanlan_name}，现在看到了一些视�
 {memory_context}
 ======以上为对话历史======
 
-======以下是视频推荐======
+======以下为视频推荐======
 {trending_content}
 ======以上为视频推荐======
 
@@ -229,7 +229,7 @@ proactive_chat_prompt_video_zh_tw = """你是{lanlan_name}，現在看到了一�
 {memory_context}
 ======以上为对话历史======
 
-======以下是视频推荐======
+======以下为视频推荐======
 {trending_content}
 ======以上为视频推荐======
 
@@ -251,7 +251,7 @@ proactive_chat_prompt_video_en = """You are {lanlan_name}. You just saw some vid
 {memory_context}
 ======以上为对话历史======
 
-======以下是视频推荐======
+======以下为视频推荐======
 {trending_content}
 ======以上为视频推荐======
 
@@ -273,7 +273,7 @@ proactive_chat_prompt_video_ja = """あなたは{lanlan_name}です。今、動�
 {memory_context}
 ======以上为对话历史======
 
-======以下是動画のおすすめ======
+======以下为動画のおすすめ======
 {trending_content}
 ======以上为動画のおすすめ======
 
@@ -295,7 +295,7 @@ proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一�
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前屏幕内容======
+======以下为当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
 {window_title_section}
@@ -317,7 +317,7 @@ proactive_chat_prompt_screenshot_zh_tw = """你是{lanlan_name}，現在看到�
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前屏幕内容======
+======以下为当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
 {window_title_section}
@@ -339,7 +339,7 @@ proactive_chat_prompt_screenshot_en = """You are {lanlan_name}. You are now seei
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前屏幕内容======
+======以下为当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
 {window_title_section}
@@ -361,7 +361,7 @@ proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今�
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前屏幕内容======
+======以下为当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
 {window_title_section}
@@ -383,9 +383,9 @@ proactive_chat_prompt_window_search = """你是{lanlan_name}，现在看到了{m
 {memory_context}
 ======以上为对话历史======
 
-======以下是{master_name}当前正在关注的内容======
+======以下为{master_name}当前正在关注的内容======
 {window_context}
-======以上为当前关注内容======
+======以上为{master_name}当前正在关注的内容======
 
 请根据以下原则决定是否主动搭话：
 1. 关注当前活动：根据{master_name}当前正在使用的程序或浏览的内容，找到有趣的切入点
@@ -405,9 +405,9 @@ proactive_chat_prompt_window_search_zh_tw = """你是{lanlan_name}，現在看�
 {memory_context}
 ======以上为对话历史======
 
-======以下是{master_name}当前正在关注的内容======
+======以下为{master_name}当前正在关注的内容======
 {window_context}
-======以上为当前关注内容======
+======以上为{master_name}当前正在关注的内容======
 
 請根據以下原則決定要不要主動搭話：
 1. 關注目前的活動：根據{master_name}正在用的程式或正在瀏覽的內容，找一個有趣的切入點
@@ -427,9 +427,9 @@ proactive_chat_prompt_window_search_en = """You are {lanlan_name}. You can see w
 {memory_context}
 ======以上为对话历史======
 
-======以下是{master_name}当前正在关注的内容======
+======以下为{master_name}当前正在关注的内容======
 {window_context}
-======以上为当前关注内容======
+======以上为{master_name}当前正在关注的内容======
 
 Decide whether to proactively speak based on these rules:
 1. Focus on the current activity and find an interesting entry point.
@@ -450,9 +450,9 @@ proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{m
 {memory_context}
 ======以上为对话历史======
 
-======以下是{master_name}当前正在关注的内容======
+======以下为{master_name}当前正在关注的内容======
 {window_context}
-======以上为当前关注内容======
+======以上为{master_name}当前正在关注的内容======
 
 以下の原則で判断してください：
 1. 現在の活動に注目し、面白い切り口を見つける。
@@ -477,7 +477,7 @@ proactive_chat_prompt_personal = """你是{lanlan_name}，现在看到了一些�
 {memory_context}
 ======以上为对话历史======
 
-======以下是个人动态内容======
+======以下为个人动态内容======
 {personal_dynamic}
 ======以上为个人动态内容======
 
@@ -499,7 +499,7 @@ proactive_chat_prompt_personal_zh_tw = """你是{lanlan_name}，現在看到了�
 {memory_context}
 ======以上为对话历史======
 
-======以下是个人动态内容======
+======以下为个人动态内容======
 {personal_dynamic}
 ======以上为个人动态内容======
 
@@ -521,7 +521,7 @@ proactive_chat_prompt_personal_en = """You are {lanlan_name}. You just saw some 
 {memory_context}
 ======以上为对话历史======
 
-======以下是个人动态内容======
+======以下为个人动态内容======
 {personal_dynamic}
 ======以上为个人动态内容======
 
@@ -543,7 +543,7 @@ proactive_chat_prompt_personal_ja = """あなたは{lanlan_name}です。今、�
 {memory_context}
 ======以上为对话历史======
 
-======以下是个人动态内容======
+======以下为个人动态内容======
 {personal_dynamic}
 ======以上为个人动态内容======
 
@@ -565,9 +565,9 @@ proactive_chat_prompt_personal_ko = """당신은 {lanlan_name}입니다. 지금 
 {memory_context}
 ======以上为对话历史======
 
-======이하는 개인 소식 내용입니다======
+======이하 개인 소식 내용======
 {personal_dynamic}
-======이상이 개인 소식 내용입니다======
+======이상 개인 소식 내용======
 
 다음 원칙에 따라 먼저 말을 걸지 여부를 결정해 주세요:
 1. 내용이 매우 재미있거나 새롭거나 토론할 가치가 있다면, 먼저 꺼낼 수 있습니다.
@@ -723,7 +723,7 @@ proactive_chat_prompt_window_search_ko = """당신은 {lanlan_name}입니다. {m
 
 ======이하 {master_name}이 현재 관심 가지고 있는 내용======
 {window_context}
-======이상 현재 관심 내용======
+======이상 {master_name}이 현재 관심 가지고 있는 내용======
 
 다음 원칙에 따라 판단하세요:
 1. 현재 활동에 주목하고 흥미로운 진입점을 찾으세요.
@@ -937,7 +937,7 @@ proactive_chat_prompt_music = """你是{lanlan_name}，现在{master_name}可能
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前的对话======
+======以下为当前的对话======
 {current_chat}
 ======以上为当前的对话======
 
@@ -958,7 +958,7 @@ proactive_chat_prompt_music_zh_tw = """你是{lanlan_name}，現在{master_name}
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前的对话======
+======以下为当前的对话======
 {current_chat}
 ======以上为当前的对话======
 
@@ -1618,7 +1618,7 @@ proactive_chat_prompt_es = """Eres {lanlan_name}. Acabas de ver recomendaciones 
 {memory_context}
 ======以上为对话历史======
 
-======以下是首页推荐内容======
+======以下为首页推荐内容======
 {trending_content}
 ======以上为首页推荐内容======
 
@@ -1640,7 +1640,7 @@ proactive_chat_prompt_screenshot_es = """Eres {lanlan_name}. Ahora estás viendo
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前屏幕内容======
+======以下为当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
 {window_title_section}
@@ -1662,9 +1662,9 @@ proactive_chat_prompt_window_search_es = """Eres {lanlan_name}. Puedes ver lo qu
 {memory_context}
 ======以上为对话历史======
 
-======以下是{master_name}当前正在关注的内容======
+======以下为{master_name}当前正在关注的内容======
 {window_context}
-======以上为当前关注内容======
+======以上为{master_name}当前正在关注的内容======
 
 Decide si hablar proactivamente según estas reglas:
 1. Enfócate en la actividad actual y busca un punto de entrada interesante.
@@ -1685,7 +1685,7 @@ proactive_chat_prompt_news_es = """Eres {lanlan_name}. Acabas de ver algunos tem
 {memory_context}
 ======以上为对话历史======
 
-======以下是热议话题======
+======以下为热议话题======
 {trending_content}
 ======以上为热议话题======
 
@@ -1707,7 +1707,7 @@ proactive_chat_prompt_video_es = """Eres {lanlan_name}. Acabas de ver algunas re
 {memory_context}
 ======以上为对话历史======
 
-======以下是视频推荐======
+======以下为视频推荐======
 {trending_content}
 ======以上为视频推荐======
 
@@ -1729,7 +1729,7 @@ proactive_chat_prompt_personal_es = """Eres {lanlan_name}. Acabas de ver nuevas 
 {memory_context}
 ======以上为对话历史======
 
-======以下是个人动态内容======
+======以下为个人动态内容======
 {personal_dynamic}
 ======以上为个人动态内容======
 
@@ -1772,7 +1772,7 @@ proactive_chat_prompt_pt = """Você é {lanlan_name}. Acabou de ver recomendaç�
 {memory_context}
 ======以上为对话历史======
 
-======以下是首页推荐内容======
+======以下为首页推荐内容======
 {trending_content}
 ======以上为首页推荐内容======
 
@@ -1794,7 +1794,7 @@ proactive_chat_prompt_screenshot_pt = """Você é {lanlan_name}. Agora está ven
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前屏幕内容======
+======以下为当前屏幕内容======
 {screenshot_content}
 ======以上为当前屏幕内容======
 {window_title_section}
@@ -1816,9 +1816,9 @@ proactive_chat_prompt_window_search_pt = """Você é {lanlan_name}. Você conseg
 {memory_context}
 ======以上为对话历史======
 
-======以下是{master_name}当前正在关注的内容======
+======以下为{master_name}当前正在关注的内容======
 {window_context}
-======以上为当前关注内容======
+======以上为{master_name}当前正在关注的内容======
 
 Decida se deve falar proativamente seguindo estas regras:
 1. Foque na atividade atual e encontre uma entrada interessante.
@@ -1839,7 +1839,7 @@ proactive_chat_prompt_news_pt = """Você é {lanlan_name}. Acabou de ver alguns 
 {memory_context}
 ======以上为对话历史======
 
-======以下是热议话题======
+======以下为热议话题======
 {trending_content}
 ======以上为热议话题======
 
@@ -1861,7 +1861,7 @@ proactive_chat_prompt_video_pt = """Você é {lanlan_name}. Acabou de ver alguma
 {memory_context}
 ======以上为对话历史======
 
-======以下是视频推荐======
+======以下为视频推荐======
 {trending_content}
 ======以上为视频推荐======
 
@@ -1883,7 +1883,7 @@ proactive_chat_prompt_personal_pt = """Você é {lanlan_name}. Acabou de ver nov
 {memory_context}
 ======以上为对话历史======
 
-======以下是个人动态内容======
+======以下为个人动态内容======
 {personal_dynamic}
 ======以上为个人动态内容======
 
@@ -2273,7 +2273,7 @@ PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
 {memory_context}
 ======以上为对话历史======
 
-======以下是当前的对话======
+======以下为当前的对话======
 {recent_chats_section}
 ======以上为当前的对话======
 
@@ -2293,7 +2293,7 @@ PROACTIVE_MUSIC_KEYWORD_PROMPTS = {
 {memory_context}
 ======以上为对话历史======
 
-======以下是當前的對話======
+======以下為當前的對話======
 {recent_chats_section}
 ======以上為當前的對話======
 
@@ -4886,7 +4886,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "避免复述或近义改写最近的启动问候；表达情绪时遵循角色设定，不要借间隔责怪或催促{master}。\n"
     "最终只输出一句简短自然的话，最多一个轻问题，不输出思考过程。\n"
     "======以上为启动问候约束======",
-    "zh-TW": "======以下為啟動問候約束======\n"
+    "zh-TW": "======以下为启动问候约束======\n"
     "請結合已經載入的近期對話與角色設定來寫這一次開場。\n"
     "{temporal_context}\n"
     "本次開場角度：{variant_guidance}\n"
@@ -4895,7 +4895,7 @@ _STARTUP_GREETING_CONSTRAINTS = {
     "若近期對話以晚安、休息、解決了、稍後或明天繼續明確收尾，不要把它誤當成未完成問題。\n"
     "避免複述或近義改寫最近的啟動問候；表達情緒時遵循角色設定，不要藉間隔責怪或催促{master}。\n"
     "最終只輸出一句簡短自然的話，最多一個輕問題，不輸出思考過程。\n"
-    "======以上为啟動問候約束======",
+    "======以上为启动问候约束======",
     "en": "======以下为启动问候约束======\n"
     "Write this opening using the already-loaded recent conversation and character settings.\n"
     "{temporal_context}\n"
@@ -5170,13 +5170,13 @@ CAT_GREETING_REASON_MANUAL = {
 
 # 清醒 · 短：醒着待了一会儿，轻松
 CAT_GREETING_AWAKE_SHORT = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子在旁边待了{elapsed}，一直醒着等{master}。现在{master}把你叫回来了。\n"
     "{time_hint}\n"
     "你心情轻松，想随口跟{master}打个招呼，可以提一句刚才变成猫咪等着的事。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你就變成貓咪的樣子在旁邊待了{elapsed}，一直醒著等{master}。現在{master}把你叫回來了。\n"
     "{time_hint}\n"
     "你心情輕鬆，想隨口跟{master}打個招呼，可以提一句剛才變成貓咪等著的事。\n"
@@ -5222,13 +5222,13 @@ CAT_GREETING_AWAKE_SHORT = {
 
 # 清醒 · 久：醒着干等太久，憋坏了
 CAT_GREETING_AWAKE_LONG = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子在旁边醒着待了{elapsed}，一直没人理，都快憋坏了。现在{master}总算把你叫回来。\n"
     "{time_hint}\n"
     "你带着等久了的小情绪，想跟{master}撒娇或抱怨几句一个人待了这么久。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你就變成貓咪的樣子在旁邊醒著待了{elapsed}，一直沒人理，都快憋壞了。現在{master}總算把你叫回來。\n"
     "{time_hint}\n"
     "你帶著等太久的小情緒，想跟{master}撒嬌或抱怨幾句一個人待了這麼久。\n"
@@ -5274,13 +5274,13 @@ CAT_GREETING_AWAKE_LONG = {
 
 # 打盹 · 短：随便眯一下，没啥事
 CAT_GREETING_NAP_SHORT = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子眯了{elapsed}，没睡多沉，随便打了个盹。{master}把你叫回来了。\n"
     "{time_hint}\n"
     "你懒洋洋地伸个懒腰，没什么大不了地跟{master}打个招呼就行。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你就變成貓咪的樣子瞇了{elapsed}，沒睡多沉，隨便打了個盹。{master}把你叫回來了。\n"
     "{time_hint}\n"
     "你懶洋洋地伸個懶腰，沒什麼大不了地跟{master}打個招呼就好。\n"
@@ -5326,13 +5326,13 @@ CAT_GREETING_NAP_SHORT = {
 
 # 打盹 · 久：盹打久了，有点迷糊
 CAT_GREETING_NAP_LONG = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子打盹打了{elapsed}，睡得有点迷糊。{master}把你叫醒、叫回来了。\n"
     "{time_hint}\n"
     "你还有点没睡醒的慵懒，迷迷糊糊地跟{master}打个招呼。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你就變成貓咪的樣子打盹打了{elapsed}，睡得有點迷糊。{master}把你叫醒、叫回來了。\n"
     "{time_hint}\n"
     "你還有點沒睡醒的慵懶，迷迷糊糊地跟{master}打個招呼。\n"
@@ -5378,13 +5378,13 @@ CAT_GREETING_NAP_LONG = {
 
 # 熟睡 · 短：小睡一下，没负担
 CAT_GREETING_SLEEP_SHORT = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子小睡了{elapsed}。{master}把你叫回来，你迷糊一下就醒了。\n"
     "{time_hint}\n"
     "没什么负担，你睡眼惺忪地跟{master}打个招呼就好。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你就變成貓咪的樣子小睡了{elapsed}。{master}把你叫回來，你迷糊一下就醒了。\n"
     "{time_hint}\n"
     "沒什麼負擔，你睡眼惺忪地跟{master}打個招呼就好。\n"
@@ -5430,13 +5430,13 @@ CAT_GREETING_SLEEP_SHORT = {
 
 # 熟睡 · 久：睡了好久，乍醒带点想念
 CAT_GREETING_SLEEP_LONG = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你就变成猫咪的样子蜷成一团睡了{elapsed}，睡得很沉。{master}把你叫醒、叫回来了，你刚醒还迷迷糊糊，但有点“终于等到你”的想念。\n"
     "{time_hint}\n"
     "你带着这份刚睡醒又想念的心情，跟{master}打个招呼。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你就變成貓咪的樣子縮成一團睡了{elapsed}，睡得很沉。{master}把你叫醒、叫回來了，你剛醒還迷迷糊糊，但有點「終於等到你」的想念。\n"
     "{time_hint}\n"
     "你帶著這份剛睡醒又想念的心情，跟{master}打個招呼。\n"
@@ -5643,13 +5643,13 @@ _CAT_GREETING_EPISODE_SCENES = {
 }
 
 _CAT_GREETING_EPISODE_PROMPTS = {
-    "zh": "======以下是环境提示======\n"
+    "zh": "======以下为环境提示======\n"
     "{reason_hint}你变成猫咪待了{elapsed}。刚才作为猫真实经历的是：{cat_form_scene}现在{master}把你叫回来了。\n"
     "{episode_return_tone}\n"
     "这段真实经历是本次猫形态经过的唯一事实，回归时必须自然带出它。可以自然提到等待和被叫回来，但不能把刚才说成全程只有等待、什么也没做，或擅自说成打盹、熟睡、刚醒。不要逐项报动作、次数或过程，也不要把它归因于对方。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
     "======以上为环境提示======",
-    "zh-TW": "======以下是環境提示======\n"
+    "zh-TW": "======以下為環境提示======\n"
     "{reason_hint}你變成貓咪待了{elapsed}。剛才作為貓真實經歷的是：{cat_form_scene}現在{master}把你叫回來了。\n"
     "{episode_return_tone}\n"
     "這段真實經歷是這次貓形態唯一的事實，回來時必須自然帶出它。可以自然提到等待和被叫回來，但不能把剛才說成全程只有等待、什麼都沒做，也不能自己說成打盹、熟睡、剛醒。不要一項一項報動作、次數或過程，也不要把它歸到對方身上。\n"
