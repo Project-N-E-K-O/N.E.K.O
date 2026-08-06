@@ -1866,8 +1866,8 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: none !important;
 }
 
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell:has(> #music-player-mount.compact-music-player-mount:not(:empty)) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
-    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 96px, 160px 96px, 160px 0);
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden])) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0);
 }
 
 #react-chat-window-root {
