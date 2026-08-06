@@ -1346,6 +1346,10 @@ class LifecycleMixin:
         request_kwargs = {"timeout": 5.0}
         if getattr(self, "_user_language_explicit", False):
             request_kwargs["params"] = {"language": self.user_language}
+        elif getattr(self, "_conversation_render_language", None):
+            request_kwargs["params"] = {
+                "render_language": self._conversation_render_language,
+            }
         return request_kwargs
 
     async def _start_session_fetch_new_dialog(self, lanlan_name, port):

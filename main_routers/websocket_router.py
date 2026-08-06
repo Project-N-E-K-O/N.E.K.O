@@ -38,6 +38,7 @@ import asyncio
 import time
 
 from utils.logger_config import get_module_logger
+from utils.language_utils import is_supported_language_code, normalize_language_code
 from utils.new_character_greeting_state import has_pending as has_new_character_greeting_pending
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -797,6 +798,21 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 user_language = message.get("language")
                 session_manager[lanlan_name].set_user_language(user_language)
                 logger.info(f"收到用户语言设置: {user_language}")
+            render_language = message.get("render_language")
+            if is_supported_language_code(render_language):
+                render_language = normalize_language_code(
+                    render_language,
+                    format="full",
+                )
+                render_language_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_render_language",
+                    None,
+                )
+                if callable(render_language_setter):
+                    render_language_setter(render_language)
+            else:
+                render_language = None
 
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
 
@@ -1139,14 +1155,30 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         _schedule_greeting_task(
                             lanlan_name,
                             "new-character",
-                            session_manager[lanlan_name].trigger_new_character_greeting,
+                            (
+                                lambda: session_manager[
+                                    lanlan_name
+                                ].trigger_new_character_greeting(
+                                    render_language=render_language,
+                                )
+                            )
+                            if render_language
+                            else session_manager[
+                                lanlan_name
+                            ].trigger_new_character_greeting,
                         )
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
                         _schedule_greeting_task(
                             lanlan_name,
                             "ordinary",
-                            session_manager[lanlan_name].trigger_greeting,
+                            (
+                                lambda: session_manager[lanlan_name].trigger_greeting(
+                                    render_language=render_language,
+                                )
+                            )
+                            if render_language
+                            else session_manager[lanlan_name].trigger_greeting,
                         )
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
@@ -1187,6 +1219,11 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         cat_tier,
                         cat_was_auto,
                         episode=episode,
+                        **(
+                            {"render_language": render_language}
+                            if render_language
+                            else {}
+                        ),
                     ),
                 )
 

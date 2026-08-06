@@ -335,6 +335,7 @@ class NotifyMixin:
 
         self.user_language = normalized_lang
         self._user_language_explicit = True
+        self._conversation_render_language = normalized_lang
         self._conversation_turn_language = normalized_lang
         self._set_conversation_turn_language(normalized_lang)
         if normalized_lang != language:
@@ -349,6 +350,20 @@ class NotifyMixin:
         # 推到当前 active / pending session 的 wire 上（OmniRealtimeClient
         # 支持 session.update 携带新 tools；OmniOfflineClient 下次 stream_text
         # 自动用最新 _tool_definitions）。
+        self._register_builtin_tools()
+        self._fire_task(self._sync_tools_to_active_session())
+
+    def set_render_language(self, language: str):
+        """Apply a request/UI fallback without marking it as durable preference."""
+        if not language or not is_supported_language_code(language):
+            return
+        normalized_lang = normalize_language_code(language, format='full')
+        self._conversation_render_language = normalized_lang
+        if getattr(self, '_user_language_explicit', False):
+            return
+        self.user_language = normalized_lang
+        self._conversation_turn_language = normalized_lang
+        self._set_conversation_turn_language(normalized_lang)
         self._register_builtin_tools()
         self._fire_task(self._sync_tools_to_active_session())
     

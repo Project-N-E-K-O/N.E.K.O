@@ -3300,9 +3300,14 @@ async def set_prompt_locale_preference(
 
 
 @app.get("/new_dialog/{lanlan_name}")
-async def new_dialog(lanlan_name: str, language: str | None = None):
-    with language_context(_activate_request_language(language)):
-        return await _new_dialog(lanlan_name, language)
+async def new_dialog(
+    lanlan_name: str,
+    language: str | None = None,
+    render_language: str | None = None,
+):
+    request_language = language if is_supported_language_code(language) else render_language
+    with language_context(_activate_request_language(request_language)):
+        return await _new_dialog(lanlan_name, language, render_language)
 
 
 async def _write_new_dialog_locale(
@@ -3415,7 +3420,11 @@ outbox_infra.register_outbox_handler(
 )
 
 
-async def _new_dialog(lanlan_name: str, language: str | None = None):
+async def _new_dialog(
+    lanlan_name: str,
+    language: str | None = None,
+    render_language: str | None = None,
+):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
     has_explicit_language = is_supported_language_code(language)
@@ -3437,9 +3446,14 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if not has_explicit_language:
-        language = await asyncio.to_thread(
+        durable_language = await asyncio.to_thread(
             locale_state.get_character_prompt_locale,
             lanlan_name,
+        )
+        language = (
+            durable_language
+            if is_supported_language_code(durable_language)
+            else render_language
         )
 
     if has_explicit_language:

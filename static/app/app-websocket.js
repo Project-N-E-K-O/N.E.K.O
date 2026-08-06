@@ -1712,13 +1712,28 @@
         }
     }
 
+    function getExplicitConversationLanguageForCurrentCharacter() {
+        try {
+            if (S.conversationLanguageHydrated === true) {
+                return S.conversationLanguageExplicit || '';
+            }
+            if (typeof window.getExplicitConversationLanguagePreference === 'function') {
+                return window.getExplicitConversationLanguagePreference(
+                    getWebSocketLanlanName() || ''
+                ) || '';
+            }
+        } catch (_) { /* omit unavailable explicit preference */ }
+        return '';
+    }
+
     function hydrateConversationLanguage(characterName) {
         var hydrationId = (Number(S._conversationLanguageHydrationId) || 0) + 1;
         S._conversationLanguageHydrationId = hydrationId;
         S.conversationLanguageHydrated = false;
         var fallback = getConversationLanguageForCurrentCharacter();
         if (!characterName) {
-            S.conversationLanguage = fallback;
+            S.conversationLanguage = '';
+            S.conversationLanguageExplicit = '';
             S.conversationLanguageHydrated = true;
             return Promise.resolve(fallback);
         }
@@ -1746,7 +1761,10 @@
             var resolved = hydrated || {};
             var language = resolved.language || fallback;
             if (S._conversationLanguageHydrationId !== hydrationId) return language;
-            S.conversationLanguage = language || fallback;
+            // Hydrated state stores only a durable character preference. The
+            // effective/UI fallback remains request-local and is re-read live.
+            S.conversationLanguage = resolved.explicitLanguage || '';
+            S.conversationLanguageExplicit = resolved.explicitLanguage || '';
             S.conversationLanguageHydrated = true;
             // Only mirror an explicit character preference into the local cache.
             // effective_language is a UI/global fallback and must remain dynamic.
@@ -1757,9 +1775,11 @@
                     { dispatch: false, source: 'server' }
                 );
             }
-            _syncLanguageToBackend(S.conversationLanguage);
+            if (resolved.explicitLanguage) {
+                _syncLanguageToBackend(resolved.explicitLanguage);
+            }
             _sendGreetingCheckIfReady();
-            return S.conversationLanguage;
+            return language;
         }
 
         return Promise.race([
@@ -1787,6 +1807,12 @@
     // Upper bound for the settings-sync gate below: a hung POST must never
     // block session starts or socket-dependent flows for longer than this.
     var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;
+
+    function waitForConversationLanguageHydration() {
+        var pending = S._conversationLanguageHydration;
+        if (!pending || typeof pending.then !== 'function') return Promise.resolve();
+        return pending.catch(function () { /* hydration is fail-soft */ });
+    }
 
     /**
      * Refresh the current Core's independent-ASR capability from the same
@@ -1924,9 +1950,9 @@
                 new Promise(function (resolve) { setTimeout(resolve, SETTINGS_SYNC_GATE_TIMEOUT_MS); })
             ]).then(function () {
                 return ensureWebSocketOpenNow(timeoutMs);
-            });
+            }).then(waitForConversationLanguageHydration);
         }
-        return ensureWebSocketOpenNow(timeoutMs);
+        return ensureWebSocketOpenNow(timeoutMs).then(waitForConversationLanguageHydration);
     }
 
     function ensureWebSocketOpenNow(timeoutMs) {
@@ -2087,6 +2113,22 @@
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
                         msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
                         handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session') {
+                        var explicitLanguage = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+                            ? getExplicitConversationLanguageForCurrentCharacter()
+                            : '';
+                        var renderLanguage = typeof getConversationLanguageForCurrentCharacter === 'function'
+                            ? getConversationLanguageForCurrentCharacter()
+                            : '';
+                        if (explicitLanguage) {
+                            msg.language = explicitLanguage;
+                            handshakeStamped = true;
+                        }
+                        if (renderLanguage) {
+                            msg.render_language = renderLanguage;
+                            handshakeStamped = true;
+                        }
                     }
                     if (handshakeStamped) {
                         data = JSON.stringify(msg);
@@ -4978,14 +5020,19 @@
                 // above resolves the durable per-character preference; only a
                 // character with no explicit choice falls back to the UI locale.
                 var greetingLang = getConversationLanguageForCurrentCharacter();
+                var explicitGreetingLang = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+                    ? getExplicitConversationLanguageForCurrentCharacter()
+                    : '';
                 var greetingIsSwitch = !!S._greetingCheckIsSwitch;
                 var greetingReason = S._greetingCheckReason || (greetingIsSwitch ? 'character-switch' : 'ws-open');
-                S.socket.send(JSON.stringify({
+                var greetingMessage = {
                     action: 'greeting_check',
                     is_switch: greetingIsSwitch,
-                    language: greetingLang,
+                    render_language: greetingLang,
                     reason: greetingReason
-                }));
+                };
+                if (explicitGreetingLang) greetingMessage.language = explicitGreetingLang;
+                S.socket.send(JSON.stringify(greetingMessage));
                 S._greetingCheckPending = false;
                 S._greetingCheckIsSwitch = false;
                 S._greetingCheckReason = '';
@@ -5046,6 +5093,7 @@
         S._conversationLanguageHydrationId =
             (Number(S._conversationLanguageHydrationId) || 0) + 1;
         S.conversationLanguage = detail.language;
+        S.conversationLanguageExplicit = detail.language;
         S.conversationLanguageHydrated = true;
         _syncLanguageToBackend(detail.language);
         _sendGreetingCheckIfReady();
@@ -5059,6 +5107,7 @@
         S._conversationLanguageHydrationId =
             (Number(S._conversationLanguageHydrationId) || 0) + 1;
         S.conversationLanguage = event.newValue;
+        S.conversationLanguageExplicit = event.newValue;
         S.conversationLanguageHydrated = true;
         _syncLanguageToBackend(event.newValue);
         _sendGreetingCheckIfReady();
@@ -5094,14 +5143,18 @@
             return;
         }
         var catLang = getConversationLanguageForCurrentCharacter();
+        var explicitCatLang = typeof getExplicitConversationLanguageForCurrentCharacter === 'function'
+            ? getExplicitConversationLanguageForCurrentCharacter()
+            : '';
         try {
             var catGreetingMessage = {
                 action: 'cat_greeting_check',
                 cat_duration_seconds: durationSeconds,
                 tier: detail.tier || '',
                 was_auto: !!detail.wasAuto,
-                language: catLang
+                render_language: catLang
             };
+            if (explicitCatLang) catGreetingMessage.language = explicitCatLang;
             if (catMemorySummary) {
                 catGreetingMessage.cat_memory_summary = catMemorySummary;
             }

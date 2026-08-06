@@ -444,6 +444,15 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
     assert "explicitLanguage: explicitLanguage" in hydration
     assert "if (resolved.explicitLanguage" in hydration
     assert "resolved.explicitLanguage," in hydration
+    assert "S.conversationLanguage = resolved.explicitLanguage || '';" in hydration
+    assert "if (resolved.explicitLanguage)" in hydration
+
+    assert "function waitForConversationLanguageHydration()" in websocket_source
+    assert ".then(waitForConversationLanguageHydration)" in websocket_source
+    assert "msg.language = explicitLanguage;" in websocket_source
+    assert "msg.render_language = renderLanguage;" in websocket_source
+    assert "render_language: greetingLang" in websocket_source
+    assert "if (explicitGreetingLang) greetingMessage.language" in websocket_source
 
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
     assert "payload.language.trim() || null" in memory_source
@@ -460,6 +469,57 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
         "input, textarea, select:not(.conversation-language-select)"
         in form_source
     )
+
+
+@pytest.mark.unit
+def test_render_language_updates_templates_without_becoming_explicit():
+    from main_logic.core.notify import NotifyMixin
+
+    manager = object.__new__(NotifyMixin)
+    manager.user_language = None
+    manager._user_language_explicit = False
+    manager._conversation_render_language = None
+    manager._conversation_turn_language = None
+    manager._set_conversation_turn_language = lambda language: None
+    manager._register_builtin_tools = lambda: None
+
+    async def sync_tools():
+        return None
+
+    manager._sync_tools_to_active_session = sync_tools
+    manager._fire_task = lambda coro: coro.close()
+
+    manager.set_render_language("ja")
+    assert manager.user_language == "ja"
+    assert manager._conversation_render_language == "ja"
+    assert manager._user_language_explicit is False
+
+    manager.set_user_language("en")
+    manager.set_render_language("ru")
+    assert manager.user_language == "en"
+    assert manager._conversation_render_language == "ru"
+    assert manager._user_language_explicit is True
+
+
+@pytest.mark.unit
+def test_greeting_render_language_stays_out_of_explicit_language_path():
+    router_source = (
+        PROJECT_ROOT / "main_routers" / "websocket_router.py"
+    ).read_text(encoding="utf-8")
+    greeting_source = (
+        PROJECT_ROOT / "main_logic" / "core" / "greeting.py"
+    ).read_text(encoding="utf-8")
+    memory_source = (
+        PROJECT_ROOT / "app" / "memory_server" / "routes.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'message.get("render_language")' in router_source
+    assert "set_render_language" in router_source
+    assert "set_user_language(render_language)" not in router_source
+    assert "render_language=render_language" in router_source
+    assert "render_language or self.user_language" in greeting_source
+    assert "render_language: str | None = None" in memory_source
+    assert "else render_language" in memory_source
 
 
 @pytest.mark.unit
@@ -492,6 +552,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
         const S = {
           _conversationLanguageHydrationId: 0,
           conversationLanguage: '',
+          conversationLanguageExplicit: '',
           conversationLanguageHydrated: false
         };
         const fetches = [];
@@ -557,9 +618,10 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           timers[0].callback();
           assert.equal(await sameGeneration, 'en');
           assert.deepEqual(events, [
-            { type: 'sync', language: 'en' },
             { type: 'greeting' }
           ]);
+          assert.equal(S.conversationLanguage, '');
+          assert.equal(S.conversationLanguageExplicit, '');
 
           fetches[0].resolve(response({
             success: true,
@@ -568,7 +630,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           }));
           await flushPromises();
           assert.equal(S.conversationLanguage, 'ja');
-          assert.deepEqual(events.slice(2), [
+          assert.deepEqual(events.slice(1), [
             {
               type: 'cache',
               language: 'ja',
@@ -591,12 +653,13 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           const currentGeneration = hydrateConversationLanguage('Current');
           timers[2].callback();
           assert.equal(await currentGeneration, 'ko');
-          assert.equal(S.conversationLanguage, 'ko');
+          assert.equal(S.conversationLanguage, '');
+          assert.equal(S.conversationLanguageExplicit, '');
 
           const eventsBeforeStaleResponse = events.length;
           fetches[1].resolve(response({ success: true, language: 'ru' }));
           await flushPromises();
-          assert.equal(S.conversationLanguage, 'ko');
+          assert.equal(S.conversationLanguage, '');
           assert.equal(events.length, eventsBeforeStaleResponse);
 
           fetches[2].resolve(response({ success: true, language: 'zh-CN' }));
@@ -621,13 +684,11 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           fetches[3].reject(new Error('network failed'));
           assert.equal(await failedGeneration, 'es');
           assert.deepEqual(events, [
-            { type: 'sync', language: 'es' },
             { type: 'greeting' }
           ]);
           timers[3].callback();
           await flushPromises();
           assert.deepEqual(events, [
-            { type: 'sync', language: 'es' },
             { type: 'greeting' }
           ]);
 
@@ -649,6 +710,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           fetches[4].resolve(response({ success: true, language: 'ru' }));
           await flushPromises();
           assert.equal(S.conversationLanguage, 'ja');
+          assert.equal(S.conversationLanguageExplicit, 'ja');
           assert.equal(events.length, eventsBeforeManualLateResponse);
 
           // The cross-window storage listener has the same generation fence.
@@ -668,6 +730,7 @@ def test_conversation_language_hydration_timeout_and_late_response_runtime():
           fetches[5].resolve(response({ success: true, language: 'zh-CN' }));
           await flushPromises();
           assert.equal(S.conversationLanguage, 'ko');
+          assert.equal(S.conversationLanguageExplicit, 'ko');
           assert.equal(events.length, eventsBeforeStorageLateResponse);
 
           process.stdout.write('ok');
