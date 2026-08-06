@@ -757,6 +757,16 @@ def test_language_hydration_keeps_fallbacks_dynamic_and_import_uses_only_explici
     assert "render_language: greetingLang" in websocket_source
     assert "if (explicitGreetingLang) greetingMessage.language" in websocket_source
 
+    render_sync = _slice_between(
+        websocket_source,
+        "function _syncRenderLanguageToBackend(lng)",
+        LANGUAGE_LISTENERS_START_ANCHOR,
+        "界面语言渲染同步",
+    )
+    assert "render_language: lng" in render_sync
+    assert re.search(r"(?m)^\s*language:\s*lng", render_sync) is None
+    assert "window.i18next.on('languageChanged', _syncRenderLanguageToBackend)" in render_sync
+
     assert "async function getExplicitConversationTemplateLanguage" in memory_source
     assert "payload.language.trim() || null" in memory_source
     assert "if (explicitLanguage) payload.language = explicitLanguage;" in memory_source

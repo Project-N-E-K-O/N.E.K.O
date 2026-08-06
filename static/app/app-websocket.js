@@ -5070,9 +5070,9 @@
     window.addEventListener('vrm-model-loaded', _onModelReady);
     window.addEventListener('mmd-model-loaded', _onModelReady);
 
-    // Only the dedicated conversation-language event updates mgr.user_language.
-    // A plain i18next languageChanged event is UI-only and must not overwrite a
-    // character's explicit template-language preference.
+    // Only the dedicated conversation-language event updates the explicit
+    // template-language preference. UI locale changes still refresh the
+    // render-only fallback used by sessions without an explicit preference.
     function _syncLanguageToBackend(lng) {
         if (!lng || typeof lng !== 'string') return;
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
@@ -5084,6 +5084,29 @@
         } catch (e) {
             console.warn('[language_update] send failed:', e);
         }
+    }
+    function _syncRenderLanguageToBackend(lng) {
+        if (!lng || typeof lng !== 'string') return;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'language_update',
+                render_language: lng,
+            }));
+        } catch (e) {
+            console.warn('[language_update] render language send failed:', e);
+        }
+    }
+    if (window.i18next && typeof window.i18next.on === 'function') {
+        window.i18next.on('languageChanged', _syncRenderLanguageToBackend);
+    } else {
+        window.addEventListener('localechange', function () {
+            try {
+                var lng = (window.i18next && typeof window.i18next.language === 'string')
+                    ? window.i18next.language : '';
+                _syncRenderLanguageToBackend(lng);
+            } catch (_) { /* noop */ }
+        });
     }
     window.addEventListener('neko:conversation-language-changed', function (event) {
         var detail = event && event.detail ? event.detail : {};
