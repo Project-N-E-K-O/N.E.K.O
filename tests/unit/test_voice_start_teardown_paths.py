@@ -38,6 +38,7 @@ name the mutation.
 """
 
 import json
+import re
 import shutil
 import textwrap
 from pathlib import Path
@@ -51,6 +52,7 @@ APP_STATE_PATH = _STATIC_APP / "app-state.js"
 APP_BUTTONS_PATH = _STATIC_APP / "app-buttons.js"
 APP_WEBSOCKET_PATH = _STATIC_APP / "app-websocket.js"
 APP_AUDIO_CAPTURE_PATH = _STATIC_APP / "app-audio-capture.js"
+APP_SETTINGS_PATH = _STATIC_APP / "app-settings.js"
 
 # Shared prologue: the real ownership helpers, the two real stand-down checks,
 # and a fresh environment per scenario so one scenario's claim sequence cannot
@@ -709,27 +711,111 @@ def test_only_a_voice_start_mints_the_voice_start_epoch():
     "applies from the next voice start" as ``voiceSessionStartEpoch + 1``, so a
     text send would consume a pending voice-route change that never took effect.
 
+    What this case cannot see is WHO mints: it drives the shared helper, and the
+    helper is not where minting lives. The call sites are pinned by
+    ``test_the_epoch_is_minted_at_exactly_one_call_site`` below.
+
     Mutation-verified: mint an epoch inside ``claimSessionStart`` and this
     reddens twice -- on the mint itself and on the lost unwind.
     """
     _drive(_EPOCH_IS_VOICE_ONLY)
 
 
-@pytest.mark.unit
-def test_the_voice_settings_gate_is_the_epochs_second_consumer():
-    """Named here because the harness above cannot see it.
+# Assignment to the epoch in any form, and nothing that merely compares against
+# it: `!==` and `===` both leave a character in front of the `=` this must not
+# match, and `+=` / `++` must.
+_EPOCH_WRITE = re.compile(
+    r"(?:S|window\.appState)\.voiceSessionStartEpoch\s*(?:\+\+|--|[+\-*/]?=(?!=))"
+)
+_CLAIM_MODE = re.compile(r"claimSessionStart\(\s*'([a-z]+)'")
 
-    ``markVoiceSettingsPending`` targets ``voiceSessionStartEpoch + 1`` and both
-    consumers release the pending state once the live epoch reaches it. That is
-    a second, independent reason the epoch may only move for voice starts, and
-    it lives in a different file from everything else in this suite.
+# Discovered, not listed: the point is to notice a writer nobody thought to add
+# here. Each entry is (file, the statement) and the set must match exactly.
+_EXPECTED_EPOCH_WRITERS = {
+    ("app-buttons.js", "S.voiceSessionStartEpoch = voiceStartEpoch;"),
+    ("app-state.js", "S.voiceSessionStartEpoch += 1;"),
+}
+
+
+@pytest.mark.unit
+def test_the_epoch_is_minted_at_exactly_one_call_site():
+    """The invariant lives at the call sites, and the helper cannot enforce it.
+
+    ``claimSessionStart`` deliberately never mints, so a harness driving it can
+    only show what minting would COST. Moving a mint into the composer's text
+    send, or deleting the mic button's, is invisible from there -- and both are
+    one line. So sweep every file for writes to the epoch and require the set to
+    be exactly the two that carry a voice-start intent: the mic button, and the
+    cancel lever behind goodbye / avatar drop / character switch.
+
+    The mic button's mint sits ~150 lines above its claim, so "is this a voice
+    flow" is asked the only way that survives the distance: the next start it
+    claims must be an audio one. Moving that same statement down in front of the
+    composer's text claim keeps the set intact and fails here instead.
+
+    Mutation-verified: add ``S.voiceSessionStartEpoch += 1;`` beside the text
+    claim in app-buttons.js and the set reddens; delete the mic button's mint and
+    the set reddens; move the mic mint in front of the composer's text claim and
+    the mode check reddens.
     """
-    source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
-    assert "var targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;" in source, (
-        "app-audio-capture.js: the pending voice-settings gate no longer predicts the next "
-        "voice epoch -- if it now keys off something else, the epoch's voice-only meaning "
-        "has one fewer reason to hold and this suite's reasoning needs revisiting."
+    found = set()
+    for path in sorted(_STATIC_APP.parent.rglob("*.js")):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        for match in _EPOCH_WRITE.finditer(source):
+            line = source[source.rfind("\n", 0, match.start()) + 1:
+                          source.find("\n", match.start())].strip()
+            found.add((path.name, line))
+
+            if path.name == "app-state.js":
+                # The cancel lever is the epoch's own module: `claimSessionStart`
+                # is DEFINED above it, never called below it, so the call-site
+                # question does not apply.
+                continue
+            claim = _CLAIM_MODE.search(source, match.end())
+            assert claim is not None, (
+                f"{path.name}: an epoch is minted at `{line}` and no start is claimed after "
+                "it -- a mint that belongs to no start cannot be a voice-start intent."
+            )
+            assert claim.group(1) == "audio", (
+                f"{path.name}: the epoch minted at `{line}` is followed by a "
+                f"`{claim.group(1)}` claim. The epoch means 'the newest VOICE start intent': "
+                "both stand-down checks read a moved epoch as a cancellation and return "
+                "BEFORE the global unwind, so a text flow minting one stops handing the mic "
+                "button back, and markVoiceSettingsPending's pending voice-route change is "
+                "consumed by a text send that never applied it."
+            )
+
+    assert found == _EXPECTED_EPOCH_WRITERS, (
+        "the set of writers to S.voiceSessionStartEpoch changed.\n"
+        f"  found:    {sorted(found)}\n"
+        f"  expected: {sorted(_EXPECTED_EPOCH_WRITERS)}\n"
+        "A new writer is only legitimate if it is a fresh VOICE start intent or the global "
+        "cancel lever; anything else breaks the two consumers named above. A missing one "
+        "means the signal those consumers read is no longer produced."
     )
+
+
+@pytest.mark.unit
+def test_the_epoch_has_two_consumers_outside_the_start_flows():
+    """Named here because the harness cannot see either of them.
+
+    ``markVoiceSettingsPending`` (app-audio-capture.js) and the cross-window ASR
+    flip (app-settings.js) both encode "applies from the next voice start" as
+    ``voiceSessionStartEpoch + 1`` and release the pending state once the live
+    epoch reaches it. They are the second and third independent reason the epoch
+    may only move for voice starts, and they live in different files from
+    everything else in this suite.
+    """
+    predict = "targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;"
+    for path in (APP_AUDIO_CAPTURE_PATH, APP_SETTINGS_PATH):
+        source = path.read_text(encoding="utf-8")
+        assert predict in source, (
+            f"{path.name}: the pending voice-settings gate no longer predicts the next voice "
+            "epoch -- if it now keys off something else, the epoch's voice-only meaning has "
+            "one fewer reason to hold and this suite's reasoning needs revisiting."
+        )
+
+    source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     assert source.count("S.voiceSettingsPendingUntilEpoch = null;") >= 2, (
         "app-audio-capture.js: the pending voice-settings gate is released in fewer places "
         "than the two that read the epoch against it."
