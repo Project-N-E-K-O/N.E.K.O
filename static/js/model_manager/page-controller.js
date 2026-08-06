@@ -3330,9 +3330,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // 在加载新模型前，显式停止之前的动作并清理
                 stopIdleRotation('vrm');
-                if (vrmMotionCatalogPlayer) {
-                    vrmMotionCatalogPlayer.cancel('model_manager_model_load', { resume: false });
-                }
                 if (vrmManager.vrmaAction) {
                     vrmManager.stopVRMAAnimation();
                     isVrmAnimationPlaying = false;
@@ -3345,7 +3342,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // 用户保存的 idle 选择由 loadCharacterLighting 恢复后通过 startIdleRotation 覆盖。
                 //增加 addShadow: false
                 // 【注意】朝向会自动从preferences中加载（在vrm-core.js的loadModel中处理）
-                await vrmManager.loadModel(modelUrl, {
+                await loadVrmModelWithCatalogReset(vrmMotionCatalogPlayer, vrmManager, modelUrl, {
                     addShadow: false,
                     idleAnimation: '/static/vrm/animation/wait03.vrma.gz'
                 });
@@ -3446,6 +3443,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         const compressed = '/static/vrm/animation/' + assetName + '.vrma.gz';
         return availableValues && availableValues.has(compressed) ? compressed : value;
+    }
+
+    async function loadVrmModelWithCatalogReset(catalogPlayer, manager, modelUrl, options) {
+        if (catalogPlayer) {
+            catalogPlayer.cancel('model_manager_model_load', { resume: false });
+        }
+        return manager.loadModel(modelUrl, options);
     }
 
     function mergeVrmAnimationLists(importedAnimations, catalogAnimations) {
