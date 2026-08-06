@@ -1168,21 +1168,29 @@ def check_session_lock_atomicity(core_dir: Path, manager_path: Path) -> list[Vio
         ``.lock`` acquisition with any other receiver, and manager.py's
         binding is the only non-``async with`` mention at all.
 
-        The literal reflective spellings count too — ``getattr(x, "lock")``
-        and ``x.__dict__["lock"]`` reach the same object while carrying no
-        ``Attribute`` node named ``lock`` for a syntax-only match to see.
-        Same reasoning as ``check_fail_closed_chokepoint``'s ``called_name``
-        in this file: a gate a one-line rewrite defeats is not a gate. A
-        computed name (``getattr(x, name)``) is out of reach of any AST check
-        and is not claimed to be covered.
+        The literal reflective spellings count too — ``getattr(x, "lock")``,
+        ``setattr(x, "lock", …)`` and ``x.__dict__["lock"]`` reach the same
+        attribute while carrying no ``Attribute`` node named ``lock`` for a
+        syntax-only match to see. Reads and WRITES both: a reflective write
+        replaces the primitive itself, which the exact-once binding check
+        would never notice, and then a perfectly clean-looking ``async with
+        self.lock:`` runs on a lock whose acquire may suspend. Same reasoning
+        as ``check_fail_closed_chokepoint``'s ``called_name`` in this file: a
+        gate a one-line rewrite defeats is not a gate. A computed name
+        (``getattr(x, name)``) is out of reach of any AST check and is not
+        claimed to be covered.
         """
+
+        REFLECTIVE = {
+            "getattr", "setattr",
+            "object.__getattribute__", "object.__setattr__",
+        }
 
         if isinstance(node, ast.Attribute):
             return node.attr == "lock"
         if (
             isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
+            and dotted_node_path(node.func) in REFLECTIVE
             and len(node.args) >= 2
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value == "lock"

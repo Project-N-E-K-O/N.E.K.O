@@ -2471,6 +2471,7 @@ def test_lock_gate_rejects_an_annotated_rebind_too(
     "acquisition",
     [
         pytest.param('getattr(self, "lock")', id="getattr"),
+        pytest.param('object.__getattribute__(self, "lock")', id="getattribute"),
         pytest.param('self.__dict__["lock"]', id="dunder-dict"),
     ],
 )
@@ -2497,6 +2498,42 @@ def test_lock_gate_sees_the_lock_reached_reflectively(
     assert violations
     assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
     assert any("must never be held across a suspension" in v.message for v in violations)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param('setattr(self, "lock", OtherLock())', id="setattr"),
+        pytest.param('object.__setattr__(self, "lock", OtherLock())', id="object-setattr"),
+        pytest.param('self.__dict__["lock"] = OtherLock()', id="dunder-dict-write"),
+    ],
+)
+def test_lock_gate_sees_the_lock_replaced_reflectively(
+    contract_checker,
+    tmp_path: Path,
+    write: str,
+) -> None:
+    """A reflective WRITE swaps the primitive the whole contract rests on.
+
+    The exact-once binding check in manager.py would still see only the
+    original ``self.lock = asyncio.Lock()``, and every later ``async with
+    self.lock:`` would look clean while running on a lock whose acquire can
+    suspend. Catching reads but not writes would be the same inconsistency
+    this gate criticised elsewhere.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    def swap(self):\n"
+        f"        {write}\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("outside an 'async with' block" in v.message for v in violations)
 
 
 @pytest.mark.unit
