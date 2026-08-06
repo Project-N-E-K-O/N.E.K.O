@@ -7,6 +7,9 @@ import {
 
 const DIST_DIR = resolve('.vitepress/dist')
 const PUBLIC_DIR = resolve('public')
+const SITEMAP_URL = `${SITE_ORIGIN}/sitemap.xml`
+const SITEMAP_NAMESPACE = 'http://www.sitemaps.org/schemas/sitemap/0.9'
+const TARGET_SEARCH_CRAWLERS = ['Baiduspider']
 const errors = []
 
 function filesRecursively(directory, extension) {
@@ -64,6 +67,15 @@ function fail(file, message) {
   errors.push(`${file}: ${message}`)
 }
 
+function robotsGroup(source, userAgent) {
+  const groups = source.split(/\r?\n\s*\r?\n/)
+  return groups.find((group) =>
+    group
+      .split(/\r?\n/)
+      .some((line) => line.trim().toLowerCase() === `user-agent: ${userAgent.toLowerCase()}`),
+  )
+}
+
 function jsonLdNodes(data) {
   if (!data || typeof data !== 'object') return []
   return Array.isArray(data['@graph']) ? data['@graph'] : [data]
@@ -87,16 +99,67 @@ if (!existsSync(sitemapPath)) fail('sitemap.xml', 'file is missing')
 
 if (existsSync(robotsPath)) {
   const robots = readFileSync(robotsPath, 'utf8')
-  if (!robots.includes('Sitemap: https://project-neko.online/sitemap.xml')) {
+  if (!robots.includes(`Sitemap: ${SITEMAP_URL}`)) {
     fail('robots.txt', 'does not declare the production sitemap URL')
+  }
+
+  for (const crawler of TARGET_SEARCH_CRAWLERS) {
+    const group = robotsGroup(robots, crawler)
+    if (!group) {
+      fail('robots.txt', `does not declare an explicit ${crawler} policy`)
+      continue
+    }
+    if (!/^Allow:\s*\/$/gim.test(group)) {
+      fail('robots.txt', `${crawler} is not explicitly allowed to crawl the site`)
+    }
+    if (/^Disallow:\s*\/$/gim.test(group)) {
+      fail('robots.txt', `${crawler} is explicitly blocked from the site root`)
+    }
   }
 }
 
 const sitemapUrls = new Set()
 if (existsSync(sitemapPath)) {
   const sitemap = readFileSync(sitemapPath, 'utf8')
-  for (const match of sitemap.matchAll(/<loc>([\s\S]*?)<\/loc>/g)) {
-    sitemapUrls.add(decodeXml(match[1].trim()))
+  if (!new RegExp(`<urlset\\b[^>]*\\bxmlns=["']${SITEMAP_NAMESPACE}["']`, 'i').test(sitemap)) {
+    fail('sitemap.xml', 'does not use the standard sitemap urlset namespace')
+  }
+
+  const locValues = [...sitemap.matchAll(/<loc>([\s\S]*?)<\/loc>/g)].map((match) =>
+    decodeXml(match[1].trim()),
+  )
+
+  for (const value of locValues) {
+    if (sitemapUrls.has(value)) {
+      fail('sitemap.xml', `contains a duplicate URL: ${value}`)
+      continue
+    }
+    sitemapUrls.add(value)
+
+    let url
+    try {
+      url = new URL(value)
+    } catch {
+      fail('sitemap.xml', `contains an invalid absolute URL: ${value}`)
+      continue
+    }
+    if (url.origin !== SITE_ORIGIN || url.protocol !== 'https:') {
+      fail('sitemap.xml', `URL is not canonical HTTPS on ${SITE_ORIGIN}: ${value}`)
+    }
+    if (url.search || url.hash) {
+      fail('sitemap.xml', `URL contains a query string or fragment: ${value}`)
+    }
+  }
+
+  if (![...sitemapUrls].some((url) => url.startsWith(`${SITE_ORIGIN}/zh-CN/`))) {
+    fail('sitemap.xml', 'does not include any Simplified Chinese documentation URLs')
+  }
+
+  for (const match of sitemap.matchAll(/<lastmod>([\s\S]*?)<\/lastmod>/g)) {
+    const value = match[1].trim()
+    if (Number.isNaN(Date.parse(value))) {
+      fail('sitemap.xml', `contains an invalid lastmod value: ${value}`)
+    }
   }
 }
 
