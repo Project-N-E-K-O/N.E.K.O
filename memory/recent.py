@@ -21,6 +21,8 @@ import os
 import asyncio
 import hashlib
 import logging
+import locale
+import sys
 from contextlib import suppress
 
 from config.prompts.prompts_memory import (
@@ -54,13 +56,17 @@ def _safe_print(*args, **kwargs):
     On Windows Chinese (GBK) consoles, printing emoji like ✅/⚠️ raises
     ``UnicodeEncodeError`` and aborts the memory pipeline mid-flight. Keep the
     plain ``print`` (privacy rule: raw dialog only via print, never logger) but
-    degrade un-encodable characters to ``?`` instead of crashing.
+    degrade only the un-encodable emoji to ``?`` (keep CJK text readable by
+    encoding with the target stream's encoding).
     """
     try:
         print(*args, **kwargs)
     except UnicodeEncodeError:
-        text = " ".join(str(a) for a in args)
-        safe = text.encode("ascii", "replace").decode("ascii")
+        output = kwargs.get("file") or sys.stdout
+        encoding = getattr(output, "encoding", None) or locale.getpreferredencoding(False)
+        sep = kwargs.get("sep", " ")
+        joined = str(sep).join(str(a) for a in args)
+        safe = joined.encode(encoding, "replace").decode(encoding)
         kwargs.pop("file", None)
         kwargs.pop("flush", None)
         print(safe, **kwargs)
