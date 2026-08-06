@@ -1024,7 +1024,9 @@
 
     window.addEventListener('neko-model-manager-mode-set', function (event) {
         selectedMode = String(event && event.detail && event.detail.mode || configuredMode()).toLowerCase();
-        if (selectedMode !== 'vrm' && player) player.cancel('model_mode_changed');
+        if (selectedMode !== 'vrm' && player) {
+            player.cancel('model_mode_changed', { resume: false });
+        }
         if (selectedMode === 'vrm') {
             if (!player) {
                 void initialize();

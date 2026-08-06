@@ -79,6 +79,10 @@ assert.equal(websocketSource.includes("new BroadcastChannel('neko_motion_lifecyc
 assert.match(websocketSource, /appInterpage\.nekoBroadcastChannel/);
 assert.match(websocketSource, /function relayClosedMotionStage\(event\)/);
 assert.match(websocketSource, /event\.detail\.text/);
+assert.match(
+    websocketSource,
+    /window\.addEventListener\('pageshow',[\s\S]*window\.addEventListener\('neko-compact-caption-update', relayClosedMotionStage\)/
+);
 assert.match(relaySource, /case 'motion_lifecycle'/);
 assert.match(relaySource, /neko:motion-lifecycle-relay/);
 assert.match(relaySource, /!motionCurrentName \|\| motionDetail\.lanlan_name !== motionCurrentName/);
@@ -91,6 +95,7 @@ assert.equal(
 assert.match(runtimeSource, /neko:motion-lifecycle-relay/);
 assert.match(runtimeSource, /window\.__nekoMotionOwnsVrmPlayback = false/);
 assert.match(runtimeSource, /releasePlaybackOwnership\(\)/);
+assert.match(runtimeSource, /player\.cancel\('model_mode_changed', \{ resume: false \}\)/);
 assert.match(runtimeSource, /syncSavedRestAnimations\(\)/);
 assert.match(runtimeSource, /if \(refreshMode\(\) === 'vrm'\) void initialize\(\)/);
 assert.equal(runtimeSource.includes('\n    void initialize();\n'), false);

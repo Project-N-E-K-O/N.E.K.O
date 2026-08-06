@@ -43,7 +43,8 @@
         '臉': '脸', '紅': '红', '雙': '双', '腳': '脚', '盤': '盘', '穩': '稳',
         '裡': '里', '來': '来', '會': '会', '這': '这', '沒': '没', '為': '为',
         '說': '说', '對': '对', '請': '请', '讓': '让', '繼': '继', '續': '续',
-        '後': '后', '著': '着', '覺': '觉', '氣': '气', '壞': '坏', '興': '兴'
+        '後': '后', '著': '着', '覺': '觉', '氣': '气', '壞': '坏', '興': '兴',
+        '揮': '挥', '彈': '弹', '鋼': '钢', '擊': '击', '鍵': '键'
     });
     const TRADITIONAL_HINT = /[點頭搖輕緊張開攏體側臉紅雙腳盤穩裡來會這沒為說對請讓繼續後著覺氣壞興揮問禮別縮緒動夢閉靜調處現樣應謝]/u;
 
@@ -356,8 +357,9 @@
             }, -1);
         };
         if (lastIndex(thirdPartyActors) >= 0
+            || /(?:让|叫|请|要求)\s*(?:他|她|他们|她们)\s*$/u.test(prefix)
             || /(?:^|[\s，,。！？])(?:他|她)(?=$|[\s，,。！？]|正在|要|会|应该)/u.test(prefix)
-            || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they)\b/iu.test(prefix)) {
+            || /\b(?:user|player|person|someone|somebody|friend|girl|boy|man|woman|he|she|they|him|her|them)\b/iu.test(prefix)) {
             return false;
         }
         let selfIndex = lastIndex(selfActors);
@@ -518,19 +520,23 @@
             const hasKana = /[\u3040-\u30ff]/u.test(source);
             const hasChineseText = /[\u3400-\u9fff\uf900-\ufaff]/u.test(source) && !hasKana;
             const needsTraditionalNormalization = locale === 'zh-TW' || TRADITIONAL_HINT.test(source);
+            const simplifiedSource = needsTraditionalNormalization
+                ? this._simplifyTraditional(source) : source;
             // 简体中文已经是权威动作语言，直接保留原句才能保住分句、先后
             // 关系和修饰范围。只有繁中或非中文脚本才需要进入规范化映射。
             if (hasChineseText && !needsTraditionalNormalization
                 && !['ja', 'ko'].includes(locale)) return source;
             const locales = hasChineseText
-                ? needsTraditionalNormalization ? ['zh-TW'] : [locale]
+                ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN'] : [locale]
                 : semanticLocales(source, locale);
 
             ['negation', 'hypothetical', 'background', 'light', 'strong'].forEach(function (kind) {
                 if (locales.some((candidateLocale) => {
                     const common = this._common(candidateLocale);
+                    const evidenceSource = candidateLocale === 'zh-CN'
+                        ? simplifiedSource : source;
                     return includesAny(
-                        commonEvidenceText(source, candidateLocale, kind),
+                        commonEvidenceText(evidenceSource, candidateLocale, kind),
                         common[kind]
                     );
                 })) output.push(COMMON_ZH[kind]);
@@ -538,23 +544,37 @@
 
             const exactRule = this.pack.rules.map((rule) => {
                 const exactLocale = locales.find(function (candidateLocale) {
+                    const candidateSource = candidateLocale === 'zh-CN'
+                        ? simplifiedSource : source;
                     return localized(rule.phrases, candidateLocale)
                         .concat(localized(rule.aliases, candidateLocale))
-                        .some(function (phrase) { return folded(phrase) === folded(source); });
+                        .some(function (phrase) {
+                            return folded(phrase) === folded(candidateSource);
+                        });
                 });
                 if (!exactLocale) return null;
+                const exactSource = exactLocale === 'zh-CN' ? simplifiedSource : source;
                 const anchor = localized(rule.phrases, exactLocale)
                     .concat(localized(rule.aliases, exactLocale))
-                    .find(function (phrase) { return folded(phrase) === folded(source); });
-                return { rule: rule, locale: exactLocale, anchor: anchor };
+                    .find(function (phrase) { return folded(phrase) === folded(exactSource); });
+                return {
+                    rule: rule,
+                    locale: exactLocale,
+                    anchor: anchor,
+                    matchSource: exactSource
+                };
             }).filter(Boolean).sort(function (left, right) {
                 return Number(right.rule.priority || 0) - Number(left.rule.priority || 0);
             })[0];
             if (exactRule && (!settings.speechMode
-                || speechActorAllowed(source, exactRule.anchor))) {
+                || speechActorAllowed(exactRule.matchSource, exactRule.anchor))) {
                 output.push(localized(exactRule.rule.phrases, 'zh-CN')[0]
                     || exactRule.rule.nameZh || exactRule.rule.id);
-                const exactStyle = styleFor(source, exactRule.rule.styles, exactRule.locale);
+                const exactStyle = styleFor(
+                    exactRule.matchSource,
+                    exactRule.rule.styles,
+                    exactRule.locale
+                );
                 if (exactStyle.name && STYLE_ZH[exactStyle.name]) output.push(STYLE_ZH[exactStyle.name]);
                 return unique(output).join('，');
             }
@@ -564,11 +584,13 @@
                 let ruleMatches = [];
                 for (const candidateLocale of locales) {
                     const common = this._common(candidateLocale);
+                    const matchSource = candidateLocale === 'zh-CN'
+                        ? simplifiedSource : source;
                     const localizedEvidence = localized(rule.phrases, candidateLocale)
                         .concat(localized(rule.aliases, candidateLocale));
                     const phraseMatches = [];
                     localizedEvidence.forEach(function (phrase) {
-                        termPositions(source, phrase).forEach(function (sourceIndex) {
+                        termPositions(matchSource, phrase).forEach(function (sourceIndex) {
                             phraseMatches.push({
                                 anchor: phrase,
                                 sourceIndex: sourceIndex,
@@ -577,12 +599,12 @@
                         });
                     });
                     const frame = frameEvidence(
-                        source,
+                        matchSource,
                         localized(rule.frames, candidateLocale),
                         common.negation
                     );
                     const candidates = phraseMatches.length ? phraseMatches : frame.length
-                        ? termPositions(source, frame[frame.length - 1]).map(function (sourceIndex) {
+                        ? termPositions(matchSource, frame[frame.length - 1]).map(function (sourceIndex) {
                             return {
                                 anchor: frame[frame.length - 1],
                                 sourceIndex: sourceIndex,
@@ -591,21 +613,28 @@
                         }) : [];
                     ruleMatches = candidates.filter(function (candidate) {
                         const blocked = scopedBeforeIndex(
-                            source,
+                            matchSource,
                             candidate.sourceIndex,
                             common.negation,
                             9
                         ) || scopedBeforeIndex(
-                            source,
+                            matchSource,
                             candidate.sourceIndex,
                             common.hypothetical,
                             12
                         );
                         const actorBlocked = settings.speechMode
-                            && !speechActorAllowed(source, candidate.anchor, candidate.sourceIndex);
+                            && !speechActorAllowed(
+                                matchSource,
+                                candidate.anchor,
+                                candidate.sourceIndex
+                            );
                         return !blocked && !actorBlocked;
                     }).map(function (candidate) {
-                        return Object.assign({ locale: candidateLocale }, candidate);
+                        return Object.assign({
+                            locale: candidateLocale,
+                            matchSource: matchSource
+                        }, candidate);
                     });
                     if (ruleMatches.length) {
                         ruleMatches.sort(function (left, right) {
@@ -626,6 +655,7 @@
                     matchedRules.push({
                         rule: rule,
                         locale: match.locale,
+                        matchSource: match.matchSource,
                         sourceIndex: match.sourceIndex,
                         sourceEnd: match.sourceEnd
                     });
@@ -646,13 +676,13 @@
                 // nameZh 是给人看的动作卡名称，不保证本身属于语义短语。
                 let actionText = localized(entry.rule.phrases, 'zh-CN')[0]
                     || entry.rule.nameZh || entry.rule.id;
-                const style = styleFor(source, entry.rule.styles, entry.locale);
+                const style = styleFor(entry.matchSource, entry.rule.styles, entry.locale);
                 if (style.name && STYLE_ZH[style.name]) {
                     actionText = STYLE_ZH[style.name] + actionText;
                 }
                 const nextIndex = selectedRules[index + 1]
                     ? selectedRules[index + 1].sourceIndex : source.length;
-                const repeats = count(source.slice(entry.sourceIndex, nextIndex));
+                const repeats = count(entry.matchSource.slice(entry.sourceIndex, nextIndex));
                 if (repeats === 2) actionText += '两下';
                 else if (repeats >= 3) actionText += '三下';
                 actionClauses.push(actionText);

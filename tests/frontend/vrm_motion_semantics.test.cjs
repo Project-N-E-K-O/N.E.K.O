@@ -154,6 +154,42 @@ assert.equal(core.analyzeSpeech('Okay.', {
 assert.equal(core.analyzeSpeech('Okay.', {
     locale: 'en', userText: 'you clap'
 }).plan[0].intent, 'clap');
+['make her clap', 'make him clap', 'make them clap'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en', userText: userText
+    }).plan.length, 0, userText);
+});
+['让她鼓掌', '叫他鼓掌'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('好的', {
+        locale: 'zh-CN', userText: userText
+    }).plan.length, 0, userText);
+});
+
+[
+    ['I wave goodbye', 'wave'],
+    ['I clap', 'clap'],
+    ['I nod', 'nod'],
+    ['I play piano', 'piano']
+].forEach(function ([text, expected]) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, expected, text);
+});
+
+const traditionalCases = [
+    ['輕輕揮手', 'wave', null],
+    ['彈奏鋼琴', 'piano', 'piano_01'],
+    ['雙手敲擊鍵盤', 'piano', 'piano_01']
+];
+traditionalCases.forEach(function ([text, expectedIntent, expectedAsset]) {
+    const result = core.analyze(text, { locale: 'zh-TW' });
+    assert.equal(result.plan[0].intent, expectedIntent, text);
+    if (expectedAsset) assert.equal(result.plan[0].evidence.assetId, expectedAsset, text);
+});
+
+['演奏钢琴', '弹奏钢琴'].forEach(function (text) {
+    const result = core.analyze(text, { locale: 'zh-CN' });
+    assert.equal(result.plan[0].intent, 'piano', text);
+    assert.equal(result.plan[0].evidence.assetId, 'piano_01', text);
+});
 assert.equal(intent('特别用力点头'), 'nod');
 assert.equal(intent('告别时挥手'), 'wave');
 assert.equal(core.analyze('别点头', { locale: 'zh-CN' }).plan.length, 0);

@@ -1961,7 +1961,9 @@
           "腦袋往下點"
         ],
         "en": [
+          "nod",
           "nods",
+          "nod my head",
           "nods her head",
           "dips his head once"
         ],
@@ -2357,8 +2359,11 @@
           "朝你揮手"
         ],
         "en": [
+          "wave hello",
           "waves hello",
+          "wave goodbye",
           "waves goodbye",
+          "wave at you",
           "waves at you"
         ],
         "ja": [
@@ -2442,8 +2447,11 @@
           "雙手拍在一起"
         ],
         "en": [
+          "clap",
           "claps",
+          "applaud",
           "applauds",
+          "clap both hands",
           "claps both hands"
         ],
         "ja": [
@@ -4963,8 +4971,12 @@
           "手指按下琴鍵"
         ],
         "en": [
+          "play piano",
+          "play the piano",
           "plays piano",
+          "sit at the piano",
           "sits at the piano",
+          "press piano keys",
           "presses piano keys"
         ],
         "ja": [
