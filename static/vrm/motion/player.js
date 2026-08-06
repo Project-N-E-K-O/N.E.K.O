@@ -322,9 +322,7 @@
                         return asset.id === this.state.restAsset.id
                             || asset.url === this.state.restAsset.url;
                     });
-                if (normalizedUrls.length && !selectedRestStillAvailable) {
-                    this.state.restAsset = null;
-                } else if (!normalizedUrls && this.state.restAsset.origin === 'user-config') {
+                if (normalizedUrls.length === 0 || !selectedRestStillAvailable) {
                     this.state.restAsset = null;
                 }
             }
@@ -429,7 +427,7 @@
             // 官方内置动作直接复用 static/vrm/animation，避免在源码和安装包
             // 同时保存 VRMA 与 gzip 副本。外部已授权动作包仍可声明 gzip transport。
             // 无论 transport 为何，解码后的 Blob URL 都只在当前播放期间存在。
-            const response = await fetch(assetUrl(asset), { cache: 'no-store' });
+            const response = await fetch(assetUrl(asset), { cache: 'no-cache' });
             if (!response.ok) throw new Error(asset.id + ' HTTP ' + response.status);
             const packed = await response.arrayBuffer();
             const packedBytes = new Uint8Array(packed);

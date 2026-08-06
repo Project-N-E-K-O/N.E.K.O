@@ -3620,6 +3620,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const displayName = selectedOption.getAttribute('data-filename') || selectedOption.textContent || '';
         let isLooping = true;
         if (assetId && isCatalogMotion) {
+            if (vrmManager) vrmManager.stopVRMAAnimation();
             if (!vrmMotionCatalogPlayer) await loadVrmMotionCatalog();
             if (!requestIsCurrent()) return false;
             if (!vrmMotionCatalogPlayer) throw new Error('Motion catalog player is unavailable');
