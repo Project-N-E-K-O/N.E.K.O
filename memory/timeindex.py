@@ -145,12 +145,10 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     #
     # ⚠️ 回落也必须先剥停用名：直接拿 raw 切的话，`兰兰猫` 会原样存成一个
     # token，停用名白剥了，还会跟别的含这个名字的事实互相命中。
-    residue_source = raw
-    if folded_stop_names:
-        try:
-            residue_source = strip_stop_names(raw, folded_stop_names)
-        except Exception:
-            pass
+    residue_source = (
+        strip_stop_names(raw, folded_stop_names)
+        if folded_stop_names else raw
+    )
     residue = [seg for seg in residue_source.split() if seg]
     return residue[:1] if residue else []
 
