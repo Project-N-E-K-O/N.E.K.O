@@ -54,6 +54,7 @@ class ProactiveChatCommand:
     language: Any = None
     lang: Any = None
     i18n_language: Any = None
+    render_language: Any = None
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "ProactiveChatCommand":
@@ -82,6 +83,7 @@ class ProactiveChatCommand:
             language=payload.get("language"),
             lang=payload.get("lang"),
             i18n_language=payload.get("i18n_language"),
+            render_language=payload.get("render_language"),
         )
 
     @property

@@ -676,7 +676,9 @@
 
         const recognition = new SpeechRecognition();
         recognition.lang = (function () {
-            const raw = (typeof window.i18next !== 'undefined' && window.i18next.language)
+            const raw = (typeof window.getConversationLanguagePreference === 'function'
+                && window.getConversationLanguagePreference())
+                || (typeof window.i18next !== 'undefined' && window.i18next.language)
                 || (typeof navigator !== 'undefined' && navigator.language)
                 || 'zh-CN';
             const tag = String(raw).toLowerCase();

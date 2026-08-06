@@ -1227,6 +1227,16 @@ def test_locale_helpers_accept_legacy_data_keyword_from_all_import_paths() -> No
         assert resolver(data={"language": "zh-TW"}, mgr=mgr, fallback="zh") == "zh-TW"
 
 
+def test_topic_hook_locale_uses_render_language_without_declaring_it(monkeypatch) -> None:
+    mgr = SimpleNamespace(user_language="en", _user_language_explicit=False)
+    data = {"render_language": "zh-TW"}
+    monkeypatch.setattr(service, "get_global_language_full", lambda: "en")
+
+    assert service._resolve_topic_hook_locale(data, mgr, fallback="zh-CN") == "zh-TW"
+    assert service._resolve_declared_topic_hook_locale(data, mgr) is None
+    assert service._new_dialog_locale_params(data, mgr) is None
+
+
 def test_safe_fire_proactive_done_is_exported_from_legacy_paths() -> None:
     assert (
         system_router_facade._safe_fire_proactive_done

@@ -228,6 +228,7 @@ from . import routes  # noqa: F401
 from .routes import (  # noqa: F401
     ExternalMemoryImportRequest,
     HistoryRequest,
+    PromptLocalePreferenceRequest,
     NEW_DIALOG_QPS_FLUSH_INTERVAL,
     QueryMemoryRequest,
     _format_legacy_settings_as_text,
@@ -242,6 +243,7 @@ from .routes import (  # noqa: F401
     cancel_correction,
     get_memory,
     get_persona,
+    get_prompt_locale_preference,
     get_recent_history,
     get_settings,
     import_external_markdown,
@@ -251,4 +253,5 @@ from .routes import (  # noqa: F401
     process_conversation_for_renew,
     query_memory,
     settle_conversation,
+    set_prompt_locale_preference,
 )

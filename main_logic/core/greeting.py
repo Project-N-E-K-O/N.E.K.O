@@ -46,7 +46,7 @@ from config.prompts.prompts_avatar_interaction import (
     _sanitize_avatar_interaction_text_context,
 )
 from utils.config_manager import get_config_manager
-from utils.language_utils import normalize_language_code, get_global_language
+from utils.language_utils import normalize_language_code, get_global_language_full
 from uuid import uuid4
 from ._shared import (
     logger,
@@ -61,9 +61,10 @@ class GreetingMixin:
     @staticmethod
     def _greeting_locale_keys(language: str | None) -> tuple[str, str]:
         """Return the short prompt locale and full regional holiday locale."""
+        selected_language = language or get_global_language_full()
         return (
-            normalize_language_code(language, format='short'),
-            normalize_language_code(language, format='full'),
+            normalize_language_code(selected_language, format='short'),
+            normalize_language_code(selected_language, format='full'),
         )
 
     def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
@@ -304,7 +305,7 @@ class GreetingMixin:
         )
         return {"accepted": False, "reason": ack_reason, "interaction_id": interaction_id}
 
-    async def trigger_greeting(self) -> None:
+    async def trigger_greeting(self, *, render_language: str | None = None) -> None:
         """On first connect or character switch, trigger a proactive greeting based on the gap since the last conversation.
 
         Flow: query memory_server for the gap → build the guiding prompt → proactively start a text session → deliver.
@@ -399,7 +400,9 @@ class GreetingMixin:
             logger.info("[%s] trigger_greeting: voice session appeared during gap query, skipping", self.lanlan_name)
             return
 
-        _lang, _holiday_lang = self._greeting_locale_keys(self.user_language)
+        _lang, _holiday_lang = self._greeting_locale_keys(
+            render_language or self.user_language
+        )
         from config.prompts.prompts_proactive import get_greeting_prompt, get_time_of_day_hint
         from config.prompts.prompts_proactive import get_startup_greeting_guidance
         from utils.time_format import format_elapsed as _format_elapsed
@@ -738,6 +741,8 @@ class GreetingMixin:
         tier: str,
         was_auto: bool,
         episode: dict | None = None,
+        *,
+        render_language: str | None = None,
     ) -> None:
         """When transforming back from cat form to catgirl (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
 
@@ -767,7 +772,9 @@ class GreetingMixin:
         # tier → 行为：cat1=清醒 / cat2=打盹 / cat3=熟睡。
         behavior = {"cat1": "awake", "cat2": "nap", "cat3": "sleep"}.get(str(tier or "").strip().lower(), "awake")
 
-        _lang = normalize_language_code(self.user_language, format='short')
+        _lang, _ = self._greeting_locale_keys(
+            render_language or self.user_language
+        )
         from config.prompts.prompts_proactive import (
             CAT_GREETING_SILENT_BELOW_SECONDS,
             get_cat_greeting_episode_prompt, get_cat_greeting_episode_scene,
@@ -898,7 +905,11 @@ class GreetingMixin:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
-    async def trigger_new_character_greeting(self) -> None:
+    async def trigger_new_character_greeting(
+        self,
+        *,
+        render_language: str | None = None,
+    ) -> None:
         from config.prompts.prompts_proactive import get_new_character_greeting_prompt
         from utils.new_character_greeting_state import has_pending, remove_pending
 
@@ -915,7 +926,9 @@ class GreetingMixin:
             logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
 
-        _lang = normalize_language_code(getattr(self, 'user_language', '') or '', format='short') or get_global_language()
+        _lang, _ = self._greeting_locale_keys(
+            render_language or getattr(self, 'user_language', None)
+        )
         template = get_new_character_greeting_prompt(_lang)
 
         if self._is_voice_session_active_or_starting():

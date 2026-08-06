@@ -41,6 +41,24 @@ def _extract_request_language_full(data: Any) -> str | None:
         return None
 
 
+def _extract_request_render_language_full(data: Any) -> str | None:
+    """Return the request-only template locale without mutating session state."""
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("render_language")
+    if not raw or not is_supported_language_code(raw):
+        return None
+    try:
+        return normalize_language_code(str(raw), format="full")
+    except Exception:
+        return None
+
+
+def _extract_request_prompt_language_full(data: Any) -> str | None:
+    """Prefer a durable request locale, then its render-only fallback."""
+    return _extract_request_language_full(data) or _extract_request_render_language_full(data)
+
+
 def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
     """Extract the frontend i18n ground truth from the request body, writing it back to ``mgr.user_language`` along the way.
 
@@ -129,6 +147,9 @@ def _resolve_game_prompt_locale(
     if request_locale:
         _absorb_request_language(data, lanlan_name)
         return request_locale
+    render_locale = _extract_request_render_language_full(data)
+    if render_locale:
+        return render_locale
     try:
         name = str(lanlan_name or "").strip()
         session_manager = get_session_manager()

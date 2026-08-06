@@ -968,6 +968,13 @@ window.addEventListener('load', function () {
     // 仅使用 localechange，因为 i18next languageChanged 已会触发 localechange
     function updateLocaleDependent() {
         loadSubscriptions();
+        if (Array.isArray(window.characterCards) && typeof renderCharaCardsView === 'function') {
+            renderCharaCardsView();
+        }
+        if (typeof renderHiddenCatgirls === 'function') {
+            renderHiddenCatgirls();
+        }
+        updateReferenceAudioDisplay();
         syncTitleDataText();
     }
     updateLocaleDependent();

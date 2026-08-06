@@ -22,6 +22,7 @@ Note that the cross server is a one-way forwarder and never sends anything back 
 
 import ssl
 import uuid
+import inspect
 from urllib.parse import quote
 
 import asyncio
@@ -726,6 +727,40 @@ def _mark_memory_cache_exception(
         logger.warning(msg)
 
 
+async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) -> None:
+    """Run an optional post-settlement callback and resolve its in-process ack.
+
+    Language-preference changes attach this private control data to the ordinary
+    ``session end`` queue item.  Running the callback here keeps it ordered after
+    every older chat message and after the terminal memory-server write, while the
+    future lets the caller avoid returning before the isolation step completes.
+    """
+    callback = message.get("_after_memory_settlement")
+    completion = message.get("_memory_settlement_done")
+    if not callable(callback):
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_result(None)
+        return
+
+    try:
+        callback_result = callback()
+        if inspect.isawaitable(callback_result):
+            await callback_result
+    except Exception as exc:
+        logger.warning(
+            "[%s] session-end post-settlement callback failed: %s: %s",
+            lanlan_name,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_exception(exc)
+    else:
+        if isinstance(completion, asyncio.Future) and not completion.done():
+            completion.set_result(None)
+
+
 async def run_sync_connector(
     message_queue: asyncio.Queue,
     lanlan_name,
@@ -1248,6 +1283,9 @@ async def run_sync_connector(
                                         )
 
                             elif message["data"] == 'session end': # 当前session结束了
+                                is_context_reset_barrier = callable(
+                                    message.get("_after_memory_settlement")
+                                )
                                 # 检查是否正在关闭，如果是则跳过网络操作
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过session end处理")
@@ -1324,20 +1362,28 @@ async def run_sync_connector(
                                     last_synced_index = 0
                                     break
                                 
-                                # 会话结算：
-                                # - 有增量（未被 /cache 覆盖）→ /process
-                                # - 无增量但有历史（已全部 /cache）→ /settle，补全摘要/时间索引/事实提取
+                                # 普通会话结算：有增量走 /process，否则走 /settle。
+                                # 语言切换屏障随后会权威清空 recent.json，因此不再做
+                                # 注定被丢弃的摘要：仅把未同步尾部经轻量 /cache 写入
+                                # 时间索引/outbox；没有尾部时可以直接进入清理回调。
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                _settle_endpoint = "process" if remaining else "settle"
+                                if is_context_reset_barrier:
+                                    _settle_endpoint = "cache" if remaining else None
+                                else:
+                                    _settle_endpoint = "process" if remaining else "settle"
                                 _settle_payload = remaining if remaining else []
-                                if not shutdown_event.is_set():
+                                if _settle_endpoint is not None and not shutdown_event.is_set():
                                     try:
                                         ok, err_detail, _ = await _post_memory_server(
                                             _settle_endpoint,
                                             lanlan_name,
                                             _settle_payload,
-                                            timeout_s=30.0,
+                                            timeout_s=(
+                                                10.0
+                                                if is_context_reset_barrier
+                                                else 30.0
+                                            ),
                                             language=_current_user_language(),
                                         )
                                         if not ok:
@@ -1362,6 +1408,39 @@ async def run_sync_connector(
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"[{lanlan_name}] Message processing error: {e}", exc_info=True)
+                finally:
+                    is_memory_barrier = (
+                        isinstance(message, dict)
+                        and message.get("type") == "system"
+                        and message.get("data") == "session end"
+                        and (
+                            callable(message.get("_after_memory_settlement"))
+                            or isinstance(
+                                message.get("_memory_settlement_done"),
+                                asyncio.Future,
+                            )
+                        )
+                    )
+                    if is_memory_barrier:
+                        # Even when terminal persistence failed unexpectedly, the
+                        # old connector-local tail must not survive the isolation
+                        # callback and leak into a later session.  Normal session
+                        # ends already clear these fields in their success path;
+                        # repeating the reset here makes the barrier fail closed.
+                        chat_history.clear()
+                        last_synced_index = 0
+                        user_input_cache = ''
+                        user_input_sources.clear()
+                        text_output_cache = ''
+                        text_output_request_id = None
+                        current_turn = 'user'
+                        had_user_input_this_turn = False
+                        current_turn_start_index = 0
+                        pending_user_images = []
+                        await _complete_session_end_memory_barrier(
+                            message,
+                            lanlan_name,
+                        )
 
             # ws 维护已下沉到独立 _slot_maintainer task，主 loop 不再做巡检。
 

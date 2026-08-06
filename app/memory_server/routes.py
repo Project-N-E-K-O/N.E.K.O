@@ -70,6 +70,10 @@ class HistoryRequest(BaseModel):
     language: str | None = None
 
 
+class PromptLocalePreferenceRequest(BaseModel):
+    language: str
+
+
 def _activate_request_language(language: str | None) -> str:
     """Resolve the locale for this request without changing the process default.
 
@@ -3241,10 +3245,69 @@ async def cancel_correction(lanlan_name: str):
     
     return {"status": "no_task"}
 
+
+@app.get("/prompt-locale/{lanlan_name}")
+async def get_prompt_locale_preference(lanlan_name: str):
+    """Return the durable internal-template locale for one character."""
+    name = validate_lanlan_name(lanlan_name)
+    language = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale,
+        name,
+    )
+    return {
+        "success": True,
+        "language": language,
+        "effective_language": language or get_global_language_full(),
+    }
+
+
+@app.put("/prompt-locale/{lanlan_name}")
+async def set_prompt_locale_preference(
+    lanlan_name: str,
+    request: PromptLocalePreferenceRequest,
+):
+    """Persist a character's template locale without injecting prompt text."""
+    name = validate_lanlan_name(lanlan_name)
+    if not is_supported_language_code(request.language):
+        raise HTTPException(status_code=400, detail="Unsupported language")
+
+    normalized = normalize_language_code(request.language, format="full")
+    previous = await asyncio.to_thread(
+        locale_state.get_character_prompt_locale,
+        name,
+    )
+    order = await asyncio.to_thread(
+        locale_state.reserve_character_prompt_locale_order,
+        name,
+    )
+    persisted = await asyncio.to_thread(
+        locale_state.record_character_prompt_locale,
+        name,
+        normalized,
+        order=order,
+    )
+    if persisted != normalized:
+        raise HTTPException(
+            status_code=409,
+            detail="A newer language preference superseded this request",
+        )
+    return {
+        "success": True,
+        "language": normalized,
+        "previous_language": previous,
+        "changed": previous != normalized,
+    }
+
+
 @app.get("/new_dialog/{lanlan_name}")
-async def new_dialog(lanlan_name: str, language: str | None = None):
-    with language_context(_activate_request_language(language)):
-        return await _new_dialog(lanlan_name, language)
+async def new_dialog(
+    lanlan_name: str,
+    language: str | None = None,
+    render_language: str | None = None,
+):
+    request_language = language if is_supported_language_code(language) else render_language
+    with language_context(_activate_request_language(request_language)):
+        return await _new_dialog(lanlan_name, language, render_language)
 
 
 async def _write_new_dialog_locale(
@@ -3357,7 +3420,11 @@ outbox_infra.register_outbox_handler(
 )
 
 
-async def _new_dialog(lanlan_name: str, language: str | None = None):
+async def _new_dialog(
+    lanlan_name: str,
+    language: str | None = None,
+    render_language: str | None = None,
+):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
     has_explicit_language = is_supported_language_code(language)
@@ -3379,9 +3446,14 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if not has_explicit_language:
-        language = await asyncio.to_thread(
+        durable_language = await asyncio.to_thread(
             locale_state.get_character_prompt_locale,
             lanlan_name,
+        )
+        language = (
+            durable_language
+            if is_supported_language_code(durable_language)
+            else render_language
         )
 
     if has_explicit_language:

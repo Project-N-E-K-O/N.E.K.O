@@ -2415,16 +2415,20 @@
         return btoa(binary);
     }
 
-    function getCurrentUiLanguage() {
-        const candidates = [
-            window.i18n && window.i18n.language,
-            window.i18next && window.i18next.language,
-            document.documentElement && document.documentElement.lang
-        ];
-        for (const candidate of candidates) {
-            if (typeof candidate === 'string' && candidate.trim()) {
-                return candidate.trim();
+    async function getExplicitConversationTemplateLanguage(characterName) {
+        if (!characterName) return null;
+        try {
+            const response = await fetch(
+                '/api/characters/character/' + encodeURIComponent(characterName) + '/language-preference',
+                { cache: 'no-store' }
+            );
+            if (!response.ok) return null;
+            const payload = await response.json();
+            if (payload && payload.success === true && typeof payload.language === 'string') {
+                return payload.language.trim() || null;
             }
+        } catch (error) {
+            console.warn('[MemoryBrowser] Explicit language preference lookup failed:', error);
         }
         return null;
     }
@@ -2439,6 +2443,9 @@
         if (!selected.length) {
             throw new Error(translate('memory.externalImportNoSelection', 'No files selected.'));
         }
+        // External import persists an explicitly supplied locale as the character's
+        // prompt locale. Never send the effective UI fallback as if it were explicit.
+        const explicitLanguage = await getExplicitConversationTemplateLanguage(targetCharacter);
         const zipFiles = selected.filter(file => /\.zip$/i.test(file.name));
         if (zipFiles.length) {
             if (selected.length !== 1) {
@@ -2447,12 +2454,13 @@
             if (zipFiles[0].size > 8 * 1024 * 1024) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
-            return {
+            const payload = {
                 character_name: targetCharacter,
                 source_format: format ? format.value : 'auto',
-                language: getCurrentUiLanguage(),
                 archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
             };
+            if (explicitLanguage) payload.language = explicitLanguage;
+            return payload;
         }
         const files = [];
         let total = 0;
@@ -2469,12 +2477,13 @@
                 content: await file.text()
             });
         }
-        return {
+        const payload = {
             character_name: targetCharacter,
             source_format: format ? format.value : 'auto',
-            language: getCurrentUiLanguage(),
             files: files
         };
+        if (explicitLanguage) payload.language = explicitLanguage;
+        return payload;
     }
 
     function broadcastExternalMemoryEdited(characterName) {
