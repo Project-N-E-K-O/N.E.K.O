@@ -78,6 +78,7 @@ import json
 import math
 import os
 import time
+from collections import OrderedDict
 from typing import Any
 
 from config import (
@@ -85,6 +86,7 @@ from config import (
     HYBRID_RECALL_BUDGET_EACH,
     HYBRID_RECALL_BUDGET_TOTAL,
     HYBRID_RECALL_COSINE_THRESHOLD,
+    HYBRID_RECALL_POOL_CACHE_MAX_FILES,
     HYBRID_RECALL_RRF_K,
     HYBRID_RECALL_TIME_BUDGET,
 )
@@ -415,17 +417,29 @@ def _rrf_fuse(
 # Load-then-stat would file stale data under a fresh identity and serve it until
 # the next write — the one direction that actually goes wrong.
 #
-# Entries are keyed by path and bounded by (characters × 2 files), so no eviction
-# policy is needed. Rows are shared, not copied — every consumer on the recall
-# path treats them as read-only (``_tag_tier`` shallow-copies before stamping,
-# ``_rrf_fuse`` copies again before adding ``_rrf_score``). Do not hand these
-# lists to a mutating caller.
+# Rows are shared, not copied — every consumer on the recall path treats them as
+# read-only (``_tag_tier`` shallow-copies before stamping, ``_rrf_fuse`` copies
+# again before adding ``_rrf_score``). Do not hand these lists to a mutating
+# caller.
+#
+# Eviction: LRU capped at ``HYBRID_RECALL_POOL_CACHE_MAX_FILES`` entries.
+# The original version of this cache had none, on the reasoning that entries are
+# "bounded by (characters × 2 files)". That bounded the entry *count* while the
+# thing needing a bound is *bytes*: every character ever recalled kept its whole
+# archive resident forever, so a multi-character install paid for all of them at
+# once even though only one is usually active. An LRU over entries fixes exactly
+# that waste — idle characters fall out — without touching the active character's
+# hit rate, which is where the latency win lives. Note this deliberately does NOT
+# cap a single huge archive: evicting the active character's pool would just
+# restore the per-recall re-parse this cache exists to remove. Bounding total
+# corpus size is a different problem, tracked separately (archive sharding).
 #
 # No lock: two concurrent recalls can both miss and both parse, which wastes one
 # parse but cannot corrupt anything (dict assignment is atomic under the GIL).
 # A lock would serialize recalls across groups for no correctness gain.
 
-_POOL_CACHE: dict[str, tuple[tuple[int, int], list[dict]]] = {}
+# OrderedDict, not dict: eviction needs move_to_end / popitem(last=False).
+_POOL_CACHE: OrderedDict[str, tuple[tuple[int, int], list[dict]]] = OrderedDict()
 
 
 def _file_identity(path) -> tuple[int, int] | None:
@@ -468,9 +482,16 @@ async def _aload_pool_cached(path, aload_fn) -> list[dict]:
         return await aload_fn()
     cached = _POOL_CACHE.get(path)
     if cached is not None and cached[0] == identity:
+        _POOL_CACHE.move_to_end(path)  # mark as most-recently used
         return cached[1]
     rows = await aload_fn()
     _POOL_CACHE[path] = (identity, rows)
+    _POOL_CACHE.move_to_end(path)
+    while len(_POOL_CACHE) > HYBRID_RECALL_POOL_CACHE_MAX_FILES:
+        evicted, _ = _POOL_CACHE.popitem(last=False)
+        logger.debug(
+            "[hybrid_recall] pool cache 淘汰最久未用条目: %s", evicted,
+        )
     return rows
 
 
@@ -484,6 +505,48 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
         _POOL_CACHE.clear()
     else:
         _POOL_CACHE.pop(path, None)
+
+
+# Every key the recall path reads off an archived fact, and who reads it.
+# Archive rows are projected onto exactly this set at load time (#2550): a real
+# archived fact carries 20+ fields, recall looks at 15, and the difference is
+# permanently resident once the pool cache holds it. Measured on 50k synthetic
+# archived rows: 70MB → 33MB (-53%), on top of the -65% from shedding vectors.
+#
+#   id                                   _drop_archive_overlap, result rendering
+#   text                                 _hard_filter, _bm25_rank, rendering
+#   score / suppress / suppressed /
+#     protected / target_type / status   MemoryRecallReranker._hard_filter
+#   subject_kind / subject_id / scope    memory.scopes.filter_entries_for_subjects
+#   entity                               result rendering
+#   created_at / event_start_at /
+#     event_end_at                       _entry_event_window, rendering
+#
+# Deliberately NOT carried over: embedding (archive never enters the vector
+# pool), plus importance / hash / event_when_raw / schema_version / absorbed /
+# signal_processed / tags / source / speaker_id — all write-path or
+# reflection-synthesis concerns that no recall consumer touches.
+#
+# ⚠️ Adding a field read to any recall consumer means adding it here too, or it
+# silently reads None on archived rows only (active facts keep every field, so
+# the bug shows up exclusively for old memories — an unpleasant thing to debug).
+# ``test_projected_rows_still_render_every_result_field`` runs a full recall over
+# an archived row and asserts every rendered field survived, so the two cannot
+# drift apart unnoticed.
+_ARCHIVE_RECALL_KEYS = frozenset({
+    'id', 'text',
+    'score', 'suppress', 'suppressed', 'protected', 'target_type', 'status',
+    'subject_kind', 'subject_id', 'scope',
+    'entity',
+    'created_at', 'event_start_at', 'event_end_at',
+})
+
+
+def _project_archive_row(row: dict) -> dict:
+    """Keep only the keys recall reads. Absent keys stay absent — every consumer
+    goes through ``.get()``, so "missing" and "present but None" are already
+    indistinguishable to them, and the sparse form is the smaller of the two."""
+    return {k: v for k, v in row.items() if k in _ARCHIVE_RECALL_KEYS}
 
 
 async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
@@ -525,16 +588,15 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
                 )
             )
         ]
-        # 归档明确不进向量池（见模块顶部 Pool composition），所以归档行上的
-        # base64 向量在召回路径上是纯死重量——占了文件 ~12/13 的体积，解析出来
-        # 只为了被无视，还要一直挂在上面这份缓存里。落盘那份保持原样（恢复路径
-        # 把行搬回 active 时仍拿得到缓存向量），只在进内存这一刻剥掉。
-        # 指纹字段（embedding_text_sha256 / _model_id）留着不动：它们很小，
-        # 且删了会让行看起来像"从未嵌入过"，反而是误导。
-        for row in rows:
-            if isinstance(row, dict) and row.get('embedding') is not None:
-                row['embedding'] = None
-        return rows
+        # 投影到召回真正读的字段（见 _ARCHIVE_RECALL_KEYS）。这一步同时把向量
+        # 剥掉了——归档明确不进向量池（见模块顶部 Pool composition），那列占了
+        # 文件 ~12/13 的体积，解析出来只为被无视，还要一直挂在上面那份缓存里。
+        # 落盘那份保持原样：恢复路径把行搬回 active 时仍要拿到缓存向量、以及
+        # 其余所有写侧字段，所以剥离只发生在"进内存"这一刻。
+        return [
+            _project_archive_row(row) if isinstance(row, dict) else row
+            for row in rows
+        ]
 
     async def _aread() -> list[dict]:
         return await asyncio.to_thread(_read)

@@ -863,23 +863,105 @@ class _ArchiveTmpCase(unittest.IsolatedAsyncioTestCase):
 
 class TestArchiveLoadShedsVectors(_ArchiveTmpCase):
     """Archive rows never enter the embedding pool, so their vectors must not
-    stay resident in the cached pool either."""
+    stay resident in the cached pool either — and neither must the write-path
+    fields no recall consumer reads."""
 
-    async def test_embedding_payload_dropped_fingerprints_kept(self):
-        from memory.hybrid_recall import _aload_archive_facts
+    async def test_row_is_projected_to_recall_fields_only(self):
+        from memory.hybrid_recall import _ARCHIVE_RECALL_KEYS, _aload_archive_facts
 
         self._write([{
-            "id": "fa_1", "text": "归档的一条",
+            # recall reads these
+            "id": "fa_1", "text": "归档的一条", "entity": "master", "score": 1,
+            "created_at": "2026-07-01T12:00:00",
+            "event_start_at": "2026-07-01T12:00:00", "event_end_at": None,
+            "subject_kind": None, "subject_id": None, "scope": None,
+            # nothing on the recall path reads any of these
             "embedding": "AAAAAAAAAAA=",
             "embedding_text_sha256": "a" * 64,
             "embedding_model_id": "local-text-retrieval-v1-4d-int8",
+            "importance": 3, "hash": "b" * 32, "schema_version": 2,
+            "absorbed": True, "signal_processed": True, "tags": [],
+            "source": "user_observation", "speaker_id": None,
+            "event_when_raw": {"offset": 0, "unit": "day"},
         }])
         rows = await _aload_archive_facts(self._store(), "testcat")
         self.assertEqual(len(rows), 1)
-        self.assertIsNone(rows[0]["embedding"])
-        # 指纹留着：删掉会让这行看起来像"从未嵌入过"，误导恢复/重嵌路径。
-        self.assertEqual(rows[0]["embedding_text_sha256"], "a" * 64)
-        self.assertEqual(rows[0]["text"], "归档的一条")
+        row = rows[0]
+
+        # Content recall depends on survives untouched.
+        self.assertEqual(row["text"], "归档的一条")
+        self.assertEqual(row["id"], "fa_1")
+        self.assertEqual(row["entity"], "master")
+        self.assertEqual(row["created_at"], "2026-07-01T12:00:00")
+
+        # Everything else is gone — including the embedding fingerprints. The
+        # projected row is a recall candidate, not a persistence record; the
+        # on-disk row keeps every field (see the sibling test), so nothing that
+        # re-embeds or restores is reading this shape.
+        self.assertEqual(set(row) - _ARCHIVE_RECALL_KEYS, set())
+        for dropped in (
+            "embedding", "embedding_text_sha256", "embedding_model_id",
+            "importance", "hash", "schema_version", "absorbed",
+            "signal_processed", "tags", "source", "event_when_raw",
+        ):
+            self.assertNotIn(dropped, row)
+
+    async def test_projection_keeps_absent_keys_absent(self):
+        """Sparse in, sparse out: every consumer uses .get(), so materializing
+        the missing keys as None would only cost memory."""
+        from memory.hybrid_recall import _aload_archive_facts
+
+        self._write([{"id": "fa_1", "text": "只有两个字段"}])
+        rows = await _aload_archive_facts(self._store(), "testcat")
+        self.assertEqual(set(rows[0]), {"id", "text"})
+
+    async def test_projected_rows_still_render_every_result_field(self):
+        """End-to-end pin: whatever hybrid_recall puts in a result dict must
+        survive the projection. Catches "added a rendered field but forgot to
+        add it to _ARCHIVE_RECALL_KEYS", which would otherwise go wrong only
+        for archived rows — i.e. only for old memories."""
+        from memory.hybrid_recall import hybrid_recall
+
+        self._write([{
+            "id": "fa_1", "text": "博士养过一只叫做三花的猫", "entity": "master",
+            "score": 1, "created_at": "2026-07-01T12:00:00",
+            "event_start_at": "2026-06-30T20:00:00",
+            "event_end_at": "2026-06-30T22:00:00",
+            "subject_kind": "group_chat", "subject_id": "qq:123", "scope": "group_chat",
+            "importance": 3, "absorbed": True, "embedding": "AAAAAAAAAAA=",
+        }])
+        engine = MagicMock()
+        engine.aload_reflections = AsyncMock(return_value=[])
+        engine._reflections_path = MagicMock(
+            return_value=os.path.join(self.tmpdir, "reflections.json"),
+        )
+        store = self._store()
+        store.aload_facts = AsyncMock(return_value=[])
+        with patch("memory.hybrid_recall._cosine_rank", new=AsyncMock(return_value=[])), \
+             patch("memory.hybrid_recall.HYBRID_RECALL_BM25_THRESHOLD", 0.0):
+            res = await hybrid_recall(
+                lanlan_name="testcat", query="博士 猫",
+                fact_store=store, reflection_engine=engine,
+                config_manager=MagicMock(),
+                subjects=[{
+                    "subject_kind": "group_chat", "subject_id": "qq:123",
+                    "scope": "group_chat",
+                }],
+            )
+        hit = next(r for r in res["results"] if r["id"] == "fa_1")
+        # Each of these is read off the (projected) row by the result builder.
+        self.assertEqual(hit["text"], "博士养过一只叫做三花的猫")
+        self.assertEqual(hit["tier"], "fact_archive")
+        self.assertEqual(hit["entity"], "master")
+        self.assertEqual(hit["subject_kind"], "group_chat")
+        self.assertEqual(hit["subject_id"], "qq:123")
+        self.assertEqual(hit["scope"], "group_chat")
+        self.assertEqual(hit["created_at"], "2026-07-01T12:00:00")
+        self.assertEqual(hit["event_start_at"], "2026-06-30T20:00:00")
+        self.assertEqual(hit["event_end_at"], "2026-06-30T22:00:00")
+        # A projection that dropped a rendered field would surface as None here,
+        # not as a crash — hence the explicit per-field assertions above.
+        self.assertNotIn(None, [hit["entity"], hit["scope"], hit["created_at"]])
 
     async def test_on_disk_archive_keeps_its_vectors(self):
         """Shedding happens on read only — the restore path still needs the
@@ -1055,6 +1137,92 @@ class TestPoolParseCache(_ArchiveTmpCase):
         self.assertIsNone(_file_identity(""))
         self.assertIsNone(_file_identity(None))
         self.assertEqual(_POOL_CACHE, {})
+
+
+class TestPoolCacheLRU(unittest.IsolatedAsyncioTestCase):
+    """The cache must not keep every character's archive resident forever.
+
+    The original version had no eviction, reasoning that entries are "bounded by
+    (characters x 2 files)". That bounds the entry *count*; what needs bounding
+    is *bytes*. A multi-character install paid for every character it had ever
+    recalled, while normally only one is active.
+    """
+
+    async def asyncSetUp(self):
+        from memory.hybrid_recall import _invalidate_pool_cache
+
+        _invalidate_pool_cache()
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(_invalidate_pool_cache)
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def _store_for(self, name):
+        path = os.path.join(self.tmpdir, f"{name}_archive.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([{"id": f"{name}_1", "text": f"{name} 的归档内容"}], f)
+        store = MagicMock()
+        store._facts_archive_path = MagicMock(return_value=path)
+        return store, path
+
+    async def test_idle_characters_are_evicted(self):
+        from memory.hybrid_recall import _POOL_CACHE, _aload_archive_facts
+
+        with patch("memory.hybrid_recall.HYBRID_RECALL_POOL_CACHE_MAX_FILES", 3):
+            paths = []
+            for i in range(5):
+                store, path = self._store_for(f"char{i}")
+                paths.append(path)
+                await _aload_archive_facts(store, f"char{i}")
+            self.assertEqual(len(_POOL_CACHE), 3)
+            # The three most recent survive; the two oldest are gone.
+            self.assertEqual(list(_POOL_CACHE), paths[2:])
+
+    async def test_reuse_refreshes_recency(self):
+        """A character that keeps being recalled must not be evicted just
+        because it was loaded first."""
+        from memory.hybrid_recall import _POOL_CACHE, _aload_archive_facts
+
+        with patch("memory.hybrid_recall.HYBRID_RECALL_POOL_CACHE_MAX_FILES", 2):
+            store_a, path_a = self._store_for("alpha")
+            store_b, path_b = self._store_for("beta")
+            store_c, path_c = self._store_for("gamma")
+
+            await _aload_archive_facts(store_a, "alpha")
+            await _aload_archive_facts(store_b, "beta")
+            # Touch alpha again — a cache HIT must count as a use.
+            await _aload_archive_facts(store_a, "alpha")
+            await _aload_archive_facts(store_c, "gamma")
+
+            self.assertEqual(len(_POOL_CACHE), 2)
+            self.assertIn(path_a, _POOL_CACHE)   # kept: recently reused
+            self.assertIn(path_c, _POOL_CACHE)   # kept: just loaded
+            self.assertNotIn(path_b, _POOL_CACHE)  # evicted: least recent
+
+    async def test_eviction_does_not_lose_rows_for_the_active_caller(self):
+        """Evicting only drops the cache reference; a caller already holding the
+        rows keeps them, and the next load simply re-parses."""
+        from memory.hybrid_recall import _aload_archive_facts
+
+        with patch("memory.hybrid_recall.HYBRID_RECALL_POOL_CACHE_MAX_FILES", 1):
+            store_a, _ = self._store_for("alpha")
+            rows_a = await _aload_archive_facts(store_a, "alpha")
+            store_b, _ = self._store_for("beta")
+            await _aload_archive_facts(store_b, "beta")  # evicts alpha
+
+            self.assertEqual(rows_a[0]["id"], "alpha_1")  # still usable
+            again = await _aload_archive_facts(store_a, "alpha")
+            self.assertEqual(again[0]["id"], "alpha_1")   # re-parsed, same content
+
+    async def test_single_character_is_never_evicted_by_its_own_reloads(self):
+        """Reloading the same file must not push it out of a size-1 cache —
+        that would turn every recall back into a re-parse."""
+        from memory.hybrid_recall import _POOL_CACHE, _aload_archive_facts
+
+        with patch("memory.hybrid_recall.HYBRID_RECALL_POOL_CACHE_MAX_FILES", 1):
+            store, path = self._store_for("solo")
+            for _ in range(5):
+                await _aload_archive_facts(store, "solo")
+            self.assertEqual(list(_POOL_CACHE), [path])
 
 
 if __name__ == "__main__":
