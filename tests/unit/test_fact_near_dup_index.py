@@ -378,12 +378,13 @@ async def _persist(harness, text):
 @pytest.mark.asyncio
 async def test_a_lossless_variant_still_drops_the_new_fact(tmp_path):
     harness = _harness(tmp_path, [("existing", FACT_NEAR_DUP_IDENTICAL_OVERLAP)])
-    _seed(harness, "用户最近养了一只猫")
+    _seed(harness, "用户 最近养了一只猫")
     resolver = MagicMock()
     resolver.aenqueue_candidates = AsyncMock(return_value=1)
     harness.attach_dedup_resolver(resolver)
 
-    created = await _persist(harness, "用户最近养了一只猫")
+    # 必须是**变体**而不是同一个字符串：同文的话，归一化整个删掉这条也照样绿。
+    created = await _persist(harness, "用户  最近养了一只猫")
 
     assert created == []
     resolver.aenqueue_candidates.assert_not_awaited()
@@ -579,6 +580,28 @@ async def test_pairs_are_queued_outside_the_persistence_lock(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_dropped_enqueue_leaves_a_trace(tmp_path):
+    """aenqueue_candidates returns 0 both for "already queued" and for
+    "maintenance mode, the queue file was never written". The caller can't
+    tell them apart, but it must not report the second as success.
+
+    Patches the logger rather than using caplog: this repo's module loggers
+    don't propagate to root, so caplog sees nothing."""
+    harness = _harness(tmp_path, [("existing", 0.87)])
+    _seed(harness, "用户最近养了一只猫")
+    resolver = MagicMock()
+    resolver.aenqueue_candidates = AsyncMock(return_value=0)
+    harness.attach_dedup_resolver(resolver)
+
+    from memory.facts import logger as facts_logger
+
+    with patch.object(facts_logger, "debug") as debug:
+        await _persist(harness, "用户最近养了一只狗")
+
+    assert any("未入队" in str(call.args[0]) for call in debug.call_args_list)
+
+
+@pytest.mark.asyncio
 async def test_pair_is_queued_only_after_the_save_succeeds(tmp_path):
     """The queue is ids-only, so a pair naming a fact that never reached
     facts.json is a dangling reference."""
@@ -641,7 +664,9 @@ async def test_end_to_end_over_a_real_index(tmp_path):
         dog = await _write("用户最近养了一只狗")
         assert len(dog) == 1
         _, pairs = resolver.aenqueue_candidates.await_args.args
-        assert pairs[0]["existing_id"] == first[0]["id"]
+        # first 与 trad 折叠后 token 串逐字相同、bm25 并列，SQLite 的行序未
+        # 定义，代码也没承诺挑哪一条——断言只该管「配到了猫那两条之一」。
+        assert pairs[0]["existing_id"] in {first[0]["id"], trad[0]["id"]}
         assert pairs[0]["candidate_id"] == dog[0]["id"]
 
         # 无关的事实：不入队。
@@ -887,3 +912,60 @@ def test_a_failed_backfill_is_retried(tmp_path):
         # 成功之后才停。
         asyncio.run(harness._aensure_fact_index_backfilled("小天", rows))
         assert attempts == [1, 1]
+
+
+# ── 6. 仲裁侧的两条契约 ──────────────────────────────────────────
+
+
+def test_the_arbitration_prompt_never_claims_a_detector(): 
+    """The queue is fed by two detectors now (cosine and Dice overlap), and
+    an FTS pair can exist with vectors switched off entirely. A prompt that
+    tells the model everything came from cosine mislabels the evidence it is
+    about to make an irreversible merge/replace call on."""
+    from config.prompts.prompts_memory import FACT_DEDUP_PROMPT
+
+    forbidden = (
+        "cosine", "向量相似度", "ベクトル類似度", "벡터 유사도",
+        "косинус", "similitud vectorial", "similaridade vetorial",
+    )
+    offenders = {
+        locale: word
+        for locale, text in FACT_DEDUP_PROMPT.items()
+        for word in forbidden
+        if word.lower() in text.lower()
+    }
+    assert offenders == {}
+
+
+@pytest.mark.asyncio
+async def test_restoring_an_arbitration_loser_reindexes_it(tmp_path):
+    """The backfill deliberately skips arbitration losers, and its marker is
+    persistent — so a row coming back out of the archive has to be indexed
+    right there or it stays invisible to Stage-2 forever."""
+    import json
+
+    cm = _cm(str(tmp_path))
+    indexed: list[tuple] = []
+
+    class _RecordingIndex(_FakeIndex):
+        async def aindex_fact(self, name, fact_id, text):
+            indexed.append((name, fact_id, text))
+
+    with patch("memory.facts.get_config_manager", return_value=cm):
+        store = FactStore(time_indexed_memory=_RecordingIndex())
+    store._config_manager = cm
+
+    char_dir = os.path.join(str(tmp_path), "小天")
+    os.makedirs(char_dir, exist_ok=True)
+    with open(os.path.join(char_dir, "facts.json"), "w", encoding="utf-8") as fh:
+        json.dump([], fh)
+    with open(
+        os.path.join(char_dir, "facts_archive.json"), "w", encoding="utf-8",
+    ) as fh:
+        json.dump([{
+            "id": "loser1", "text": "用户最近养了一只猫", "entity": "master",
+            "arbitration_archived_at": "2026-07-01T00:00:00",
+        }], fh)
+
+    assert await store.arestore_arbitrated_fact("小天", "loser1") is True
+    assert indexed == [("小天", "loser1", "用户最近养了一只猫")]

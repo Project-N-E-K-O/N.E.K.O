@@ -102,8 +102,15 @@ def fts_tokens(content: str, stop_names: list[str] | None = None) -> list[str]:
     deliberately no fallback splitter: whatever this returns gets
     *persisted*, and a fallback that tokenizes differently would write
     rows the normal tokenizer can never match again — with the backfill
-    marker claiming the index is complete. Failing here degrades dedup
-    for the moment; a fallback would corrupt the index for good.
+    marker claiming the index is complete.
+
+    Note what raising costs on the write path: ``index_fact`` calls this
+    outside its own ``try``, so the error reaches
+    ``_apersist_new_facts_locked`` and rolls back the whole batch — the
+    facts are not written at all, not merely left unindexed. That is the
+    intended trade (the store's existing rule is that an index failure
+    must roll back, or a retry hits dedup and reports a false success),
+    but it is a heavier failure than "dedup degrades for a while".
     """
     from memory.script_fold import fold_script
 

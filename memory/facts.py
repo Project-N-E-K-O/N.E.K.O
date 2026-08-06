@@ -1943,7 +1943,15 @@ class FactStore:
                     return True
 
             try:
-                return await asyncio.to_thread(_restore)
+                restored_ok = await asyncio.to_thread(_restore)
+                if restored_ok:
+                    # 复活的行必须重新进近重复索引：回填刻意跳过仲裁败者
+                    # （它们在归档里永远不会被检索到），而回填标记是持久的
+                    # ——不在这里补索引，这条复活的 fact 就永远对 Stage-2
+                    # 不可见。best-effort：索引失败不该把已经落盘的复活
+                    # 回滚掉，下一次全量重建会补上。
+                    await self._areindex_restored_fact(name, target_id)
+                return restored_ok
             except BaseException:
                 def _invalidate() -> None:
                     with self._get_lock(name):
@@ -4153,6 +4161,36 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
             )
 
+    async def _areindex_restored_fact(self, name: str, fact_id: object) -> None:
+        """Put a just-restored row back into the near-dup index.
+
+        Arbitration losers are deliberately left out of the backfill —
+        they can never be a live hit while archived — so a row coming
+        back out of the archive has to be indexed explicitly. The
+        backfill marker is persistent, so nothing else will ever pick
+        it up.
+        """
+        if self._time_indexed is None:
+            return
+        try:
+            rows = await self.aload_facts(name)
+            text = next(
+                (
+                    str(row.get('text') or '')
+                    for row in rows
+                    if isinstance(row, dict)
+                    and str(_readable_fact_id(row) or '') == str(fact_id)
+                ),
+                None,
+            )
+            if not text:
+                return
+            await self._time_indexed.aindex_fact(name, fact_id, text)
+        except Exception as e:
+            logger.warning(
+                f"[FactStore] {name}: 复活行重新索引失败 fact={fact_id}: {e}"
+            )
+
     async def _aenqueue_near_dup_pairs(
         self, lanlan_name: str,
         pairs: list[tuple[dict, dict, float]],
@@ -4206,10 +4244,20 @@ class FactStore:
         if not payload:
             return
         try:
-            await resolver.aenqueue_candidates(lanlan_name, payload)
+            appended = await resolver.aenqueue_candidates(lanlan_name, payload)
         except Exception as e:
             logger.warning(
                 f"[FactStore] {lanlan_name}: 近重复候选入队失败: {e}"
+            )
+            return
+        if not appended:
+            # 0 有两种含义：全撞了队列里的既有配对（正常），或维护态下队列
+            # 文件根本没写成（候选就此丢了——重试会撞 Stage-1 精确去重，
+            # Stage-2 不会再跑第二遍）。这里分不开，但至少让它留下痕迹，
+            # 别表现得像投递成功。
+            logger.debug(
+                f"[FactStore] {lanlan_name}: {len(payload)} 对近重复候选未入队"
+                f"（重复配对或队列不可写）"
             )
 
     async def _aload_signal_targets(
