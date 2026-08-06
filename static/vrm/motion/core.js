@@ -746,7 +746,20 @@
                     localizedStrict(rule.phrases, 'zh-CN').concat(localizedStrict(rule.aliases, 'zh-CN'))
                 );
             });
-            const needsMixedNormalization = hasNonHanScript && !hasCanonicalChineseMotion;
+            const detectedLocales = semanticLocales(source, locale);
+            const hasNonHanMotion = hasNonHanScript && hasCanonicalChineseMotion
+                && detectedLocales.some((candidateLocale) => {
+                    if (candidateLocale === 'zh-CN' || candidateLocale === 'zh-TW') return false;
+                    return this.pack.rules.some(function (rule) {
+                        return includesAny(
+                            source,
+                            localizedStrict(rule.phrases, candidateLocale)
+                                .concat(localizedStrict(rule.aliases, candidateLocale))
+                        );
+                    });
+                });
+            const needsMixedNormalization = hasNonHanScript
+                && (!hasCanonicalChineseMotion || hasNonHanMotion);
             // 简体中文已经是权威动作语言，直接保留原句才能保住分句、先后
             // 关系和修饰范围。只有繁中或非中文脚本才需要进入规范化映射。
             if (hasChineseText && !needsTraditionalNormalization
@@ -755,8 +768,8 @@
             const locales = hasChineseText
                 ? needsTraditionalNormalization ? ['zh-TW', 'zh-CN']
                     : settings.speechMode || needsMixedNormalization
-                        ? semanticLocales(source, locale) : [locale]
-                : semanticLocales(source, locale);
+                        ? detectedLocales : [locale]
+                : detectedLocales;
             const guardNegationTerms = unique(locales.reduce((terms, candidateLocale) => {
                 return terms.concat(this._common(candidateLocale).negation || []);
             }, []).concat(settings.additionalNegationTerms || []));

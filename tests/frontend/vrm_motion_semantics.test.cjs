@@ -592,6 +592,27 @@ assert.deepEqual(
 );
 assert.deepEqual(global.NekoMotionText.extractClosedStages('（还没有说完'), []);
 
+function closedStageIntents(text) {
+    const stage = global.NekoMotionText.extractClosedStages(text)[0];
+    return core.analyze(stage.raw, { locale: 'zh-CN' }).plan.map(function (item) {
+        return item.intent;
+    });
+}
+[
+    ['(\u8bf7\u6325\u624b and clap)', ['wave', 'clap']],
+    ['(wave \u4e00\u4e0b\u7136\u540e\u9f13\u638c)', ['wave', 'clap']],
+    ['(\u6325\u624b\u7136\u540e\u9f13\u638c)', ['wave', 'clap']],
+    ['(\u8bf7\u6325\u624b and do not clap)', ['wave']],
+    ['(please do not wave \u7136\u540e\u9f13\u638c)', ['clap']]
+].forEach(function ([text, expected]) {
+    assert.deepEqual(closedStageIntents(text), expected, text);
+});
+assert.equal(
+    core.toChineseFrame('\u8bf7\u6325\u624b VRM', 'zh-CN'),
+    '\u8bf7\u6325\u624b VRM',
+    'non-motion Latin text keeps the Chinese stage fast path'
+);
+
 [
     ['Okay?', 'en', 'wave goodbye'],
     ['\u53ef\u4ee5\u5417\uff1f', 'zh-CN', '\u6325\u624b'],
