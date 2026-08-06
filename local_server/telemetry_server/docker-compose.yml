@@ -8,6 +8,8 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      # IANA 时区；可在 .env 或宿主环境中覆盖。
+      - TZ=${TZ:-Asia/Shanghai}
       # ★ Must override: admin auth token (used for dashboard / export / queries).
       # Set TELEMETRY_ADMIN_TOKEN in your .env file (or shell environment) before
       # running docker-compose; otherwise the container falls back to a clearly

@@ -73,6 +73,24 @@ check_dependencies() {
     echo "   OpenSSL version: $(openssl version 2>/dev/null || echo "Not found")"
 }
 
+# Configure the process and system timezone before any service or certificate
+# code runs.  ``tzdata`` is installed in both image variants; an invalid
+# user-provided TZ intentionally falls back to the image default rather than
+# preventing the application from starting.
+configure_timezone() {
+    local timezone="${TZ:-Asia/Shanghai}"
+    local zoneinfo="/usr/share/zoneinfo/$timezone"
+
+    if [ -f "$zoneinfo" ]; then
+        ln -snf "$zoneinfo" /etc/localtime
+        printf '%s\n' "$timezone" > /etc/timezone
+        export TZ="$timezone"
+        echo "🕒 Container timezone: $timezone"
+    else
+        echo "⚠️ Invalid TZ '$timezone'; keeping existing timezone"
+    fi
+}
+
 # 输出详细的SSL证书信息（这个就是为了图一乐，不给关！）
 print_certificate_fun_info() {
     local cert_file="$1"
@@ -1179,13 +1197,14 @@ main() {
     
     setup_signal_handlers
     check_dependencies
+    configure_timezone
     setup_configuration
     setup_dependencies
     setup_nginx_proxy
     
-    # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）
-    mkdir -p /home/neko/.local/share/N.E.K.O
-    chown -R neko:neko /home/neko/.local/share/N.E.K.O
+    # 确保持久化的用户目录对 neko 用户可写（Docker bind mount 初次创建时可能归 root）
+    mkdir -p /home/neko/.local/share/N.E.K.O /home/neko/.openfang /home/neko/.neko
+    chown -R neko:neko /home/neko/.local/share/N.E.K.O /home/neko/.openfang /home/neko/.neko
     
     # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
     start_openfang_daemon

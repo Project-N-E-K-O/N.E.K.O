@@ -22,11 +22,13 @@ The entrypoint generates `/app/config/core_config.json` only when absent or when
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | User configuration, characters, memories, feature data |
-| `./logs` | `/app/logs` | Logs |
+| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | User configuration, characters, memories, user plugins, plugin data, and normal service logs |
+| `./openfang` | `/home/neko/.openfang` | OpenFang configuration and runtime state |
+| `./neko-home` | `/home/neko/.neko` | Plugin Market OAuth login state and other user credentials |
+| `./logs` | `/app/logs` | Source-mode debug-log fallback; normal logs are in `./N.E.K.O/logs` |
 | `./ssl` | `/home/neko/ssl` | TLS certificate/key |
 
-Back up the first mount before upgrades. Never expose the data or private-key directories through a web server.
+`TZ` defaults to `Asia/Shanghai`; override it in `.env` with any IANA timezone such as `Etc/UTC`. Back up `N.E.K.O`, `openfang`, `neko-home`, and `ssl` before upgrades. Never expose data or private-key directories through a web server. Do not point `PLUGIN_CONFIG_ROOT`, `PLUGIN_PACKAGES_ROOT`, or `PACKAGE_PROFILES_ROOT` outside these mounts, or the corresponding user-plugin data will not survive container recreation.
 
 ## Build locally
 

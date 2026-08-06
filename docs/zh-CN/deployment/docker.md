@@ -16,11 +16,13 @@ docker compose up -d
 
 | 宿主 | 容器 | 用途 |
 | --- | --- | --- |
-| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | 配置、角色、记忆、功能数据 |
-| `./logs` | `/app/logs` | 日志 |
+| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | 配置、角色、记忆、用户插件、插件数据和常规日志 |
+| `./openfang` | `/home/neko/.openfang` | OpenFang 配置和运行状态 |
+| `./neko-home` | `/home/neko/.neko` | 插件市场 OAuth 登录状态等用户级凭据 |
+| `./logs` | `/app/logs` | 源码模式调试日志回退；常规日志见 `./N.E.K.O/logs` |
 | `./ssl` | `/home/neko/ssl` | TLS 证书/私钥 |
 
-升级前备份数据，严禁公开数据或私钥目录。
+`TZ` 默认是 `Asia/Shanghai`，可在 `.env` 改为任意 IANA 时区（例如 `Etc/UTC`）。升级前备份 `N.E.K.O`、`openfang`、`neko-home` 和 `ssl`；严禁公开数据或私钥目录。不要用 `PLUGIN_CONFIG_ROOT`、`PLUGIN_PACKAGES_ROOT` 或 `PACKAGE_PROFILES_ROOT` 指向这些挂载之外的路径，否则对应用户插件数据不会随容器持久化。
 
 当前 Compose 没有 `build:`，旧的 `docker compose build` 说法无效。本地构建应在仓库根目录执行：
 

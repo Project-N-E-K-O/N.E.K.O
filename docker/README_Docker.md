@@ -165,12 +165,19 @@ docker-compose down
 ```bash
 docker run -d \
   --name neko \
-  -p 48911:48911 \
+  -p 48911:80 \
+  -p 48912:443 \
+  -e TZ="Asia/Shanghai" \
   -e NEKO_CORE_API_KEY="your-api-key" \
   -e NEKO_CORE_API="qwen" \
-  -v $(pwd)/config:/app/config \
-  -v $(pwd)/memory:/app/memory \
-  -v $(pwd)/static:/app/static \
+  -e XDG_DATA_HOME="/home/neko/.local/share" \
+  -e NEKO_STORAGE_SELECTED_ROOT="/home/neko/.local/share/N.E.K.O" \
+  -e NEKO_STORAGE_ANCHOR_ROOT="/home/neko/.local/share/N.E.K.O" \
+  -v $(pwd)/N.E.K.O:/home/neko/.local/share/N.E.K.O \
+  -v $(pwd)/openfang:/home/neko/.openfang \
+  -v $(pwd)/neko-home:/home/neko/.neko \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/ssl:/home/neko/ssl \
   neko:latest
 ```
 
@@ -178,27 +185,29 @@ docker run -d \
 
 建议挂载以下目录到宿主机：
 
-- `/app/config` - 配置文件目录
-- `/app/memory` - 记忆数据目录
-- `/app/static` - Live2D 模型和静态资源
-- `/app/logs` - 日志文件目录
+- `/home/neko/.local/share/N.E.K.O` - 配置、记忆、角色、用户插件及插件数据
+- `/home/neko/.openfang` - OpenFang 配置和状态
+- `/home/neko/.neko` - 插件市场 OAuth 登录状态
+- `/app/logs` - 源码模式的调试日志回退（常规日志位于数据目录的 `logs/`）
+- `/home/neko/ssl` - TLS 证书和私钥
 
 示例：
 
 ```yaml
 volumes:
-  - ./config:/app/config
-  - ./memory:/app/memory
-  - ./static:/app/static
+  - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
+  - ./openfang:/home/neko/.openfang
+  - ./neko-home:/home/neko/.neko
   - ./logs:/app/logs
+  - ./ssl:/home/neko/ssl
 ```
 
 ## 🔍 配置优先级
 
 配置加载优先级（从高到低）：
 
-1. **环境变量** - `NEKO_*` 开头的环境变量
-2. **挂载的配置文件** - `/app/config/*.json`
+1. **持久化运行时配置** - `/home/neko/.local/share/N.E.K.O/config/*.json`
+2. **首次启动输入** - Compose / `docker run` 传入的 `NEKO_*` 环境变量
 3. **内置默认值** - 代码中定义的默认值
 
 ## 📝 完整配置参考
@@ -307,4 +316,3 @@ A: 运行 `docker exec neko python -c "from utils.config_manager import get_conf
 - [项目 README](../README.MD)
 - [配置系统说明](../config/__init__.py)
 - [Config Manager 源码](../utils/config_manager/)
-

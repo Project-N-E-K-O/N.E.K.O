@@ -52,14 +52,28 @@ services:
       # 1. 持久化配置目录（XDG_DATA_HOME 规范路径）
       - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
 
-      # 2. 日志目录
+      # 2. OpenFang 的配置和运行状态
+      - ./openfang:/home/neko/.openfang
+
+      # 3. 插件市场 OAuth 登录状态及其他用户级凭据
+      - ./neko-home:/home/neko/.neko
+
+      # 4. 源码模式的调试日志回退目录；常规服务日志在 ./N.E.K.O/logs
       - ./logs:/app/logs
 
-      # 3. SSL证书目录
+      # 5. SSL证书目录
       - ./ssl:/home/neko/ssl
 
     # 环境变量
     environment:
+      # 统一容器内的本地时间；可在 docker/.env 中改为其他 IANA 时区
+      - TZ=${TZ:-Asia/Shanghai}
+
+      # 强制所有运行时数据留在上述持久化挂载内，避免存储位置配置指向容器临时层
+      - XDG_DATA_HOME=/home/neko/.local/share
+      - NEKO_STORAGE_SELECTED_ROOT=/home/neko/.local/share/N.E.K.O
+      - NEKO_STORAGE_ANCHOR_ROOT=/home/neko/.local/share/N.E.K.O
+
       # OpenFang A2A 监听端口（容器内部使用 127.0.0.1，无需对外暴露）
       - OPENFANG_PORT=50051
 

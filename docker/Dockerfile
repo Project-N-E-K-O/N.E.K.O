@@ -63,6 +63,8 @@ ARG HTTPS_PROXY
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Shanghai
+ENV XDG_DATA_HOME=/home/neko/.local/share
 # Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
 # build runs on US Azure runners while the package mirror is in China, so large
 # wheels are slow to transfer; 30s caused spurious "operation timed out" failures.
@@ -101,6 +103,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     nginx \
     openssl \
     bc \
+    tzdata \
     fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/* && \
     unset http_proxy && \
@@ -234,13 +237,10 @@ ENV PYTHONPATH="/app:$PYTHONPATH"
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 12. Create data persistence directory
-VOLUME ["/data"]
-
-# 13. Expose ports
+# 12. Expose ports
 EXPOSE 80 443
 
-# 14. Show build information
+# 13. Show build information
 RUN echo "========================================" && \
     echo "  N.E.K.O. Standard Image Build Complete" && \
     echo "========================================" && \
@@ -249,5 +249,5 @@ RUN echo "========================================" && \
     echo "Nginx version: $(nginx -v 2>&1)" && \
     echo "========================================"
 
-# 15. Set entrypoint
+# 14. Set entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
