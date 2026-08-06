@@ -10,11 +10,35 @@ const VRM_IDLE_FPS = 30;
 const VRM_INTERACTIVE_FPS_HOLD_MS = 900;
 const VRM_IDLE_FPS_GOVERNOR_INTERVAL_MS = 300;
 
+const COMPRESSED_BUNDLED_VRMA_NAMES = new Set([
+    'liked',
+    'wait01',
+    'wait02',
+    'wait03',
+    'wait04',
+    'wait05',
+    '全身展示',
+    '射击姿态',
+    '屈伸运动',
+    '旋转',
+    '模特姿势',
+    '比 V 手势',
+    '致意问候'
+]);
+
 function normalizeBundledVrmAnimationPath(animationPath) {
     const value = String(animationPath || '');
-    if (!/^\/static\/vrm\/animation\/[^?#]+\.vrma(?:[?#]|$)/i.test(value)) {
+    const match = value.match(/^\/static\/vrm\/animation\/([^/?#]+)\.vrma(?:[?#]|$)/i);
+    if (!match) {
         return animationPath;
     }
+    let assetName = match[1];
+    try {
+        assetName = decodeURIComponent(assetName);
+    } catch (_) {
+        // Keep the original path segment when it is not valid URI encoding.
+    }
+    if (!COMPRESSED_BUNDLED_VRMA_NAMES.has(assetName)) return animationPath;
     return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
 }
 

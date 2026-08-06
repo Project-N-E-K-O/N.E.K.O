@@ -84,12 +84,13 @@ async function waitForLoadStart(predicate, message) {
 
     const zhCatalog = player.catalog('zh-CN');
     const enCatalog = player.catalog('en-US');
-    assert.equal(zhCatalog.length, 74);
+    assert.equal(zhCatalog.length, 73);
     assert.equal(zhCatalog[0].name, '开心地回应喜欢和亲近');
     assert.equal(enCatalog[0].name, 'Happily respond with affection');
     assert.equal(enCatalog[0].path, '/static/vrm/animation/liked.vrma.gz');
     assert.equal(enCatalog[0].systemMotion, true);
     assert.equal(zhCatalog.some(function (asset) { return asset.id === 'cheer_01'; }), false);
+    assert.equal(zhCatalog.some(function (asset) { return asset.id === 'recover_01'; }), false);
 
     let previewPlan = null;
     player.playPlan = async function (plan) {
