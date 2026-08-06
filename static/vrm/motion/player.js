@@ -316,9 +316,17 @@
                     card: { systemRestEligible: true }
                 };
             });
-            if (this.state.restAsset && this.state.restAsset.origin === 'user-config'
-                && !this.savedRestAssets.some((asset) => asset.url === this.state.restAsset.url)) {
-                this.state.restAsset = null;
+            if (this.state.restAsset) {
+                const selectedRestStillAvailable = this.savedRestAssetIds.has(this.state.restAsset.id)
+                    || this.savedRestAssets.some((asset) => {
+                        return asset.id === this.state.restAsset.id
+                            || asset.url === this.state.restAsset.url;
+                    });
+                if (normalizedUrls.length && !selectedRestStillAvailable) {
+                    this.state.restAsset = null;
+                } else if (!normalizedUrls && this.state.restAsset.origin === 'user-config') {
+                    this.state.restAsset = null;
+                }
             }
             return normalizedUrls.length;
         }
@@ -335,9 +343,14 @@
                 candidates = candidates.concat(this.savedRestAssets);
             }
             if (decision.intent === 'idle' && decision.systemRest === true) {
+                const hasSavedRestSelection = this.savedRestAssets.length > 0
+                    || this.savedRestAssetIds.size > 0;
                 const companionRest = candidates.filter((asset) => {
-                    return (asset.card && asset.card.systemRestEligible === true)
-                        || this.savedRestAssetIds.has(asset.id);
+                    if (hasSavedRestSelection) {
+                        return this.savedRestAssetIds.has(asset.id)
+                            || asset.origin === 'user-config';
+                    }
+                    return asset.card && asset.card.systemRestEligible === true;
                 });
                 if (!companionRest.length) return null;
                 candidates = companionRest;
@@ -944,6 +957,13 @@
                     this.metrics.failures += 1;
                     console.warn('[NekoMotion] cancel recovery failed:', error);
                 });
+            } else {
+                this.state.posture = 'stand';
+                this.state.phase = 'boot';
+                this.state.currentAsset = null;
+                this.state.restAsset = null;
+                this.state.poseAsset = null;
+                this.state.poseStyle = null;
             }
             emit('neko-motion-playback', {
                 status: 'cancelled',
