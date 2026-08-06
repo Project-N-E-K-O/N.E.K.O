@@ -864,12 +864,19 @@
             state.closeStarted = false;
             state.busy = true;
             render();
-            try {
-                await reconcileStatus();
-            } finally {
-                state.busy = false;
-                render();
+            const reconciled = await reconcileStatus();
+            if (!reconciled) {
+                setMessage(
+                    translate(
+                        'voiceIdentity.requestFailed',
+                        '操作失败，请稍后重试。'
+                    ),
+                    true
+                );
+                return;
             }
+            state.busy = false;
+            render();
         });
     }
 

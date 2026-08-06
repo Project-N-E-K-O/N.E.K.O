@@ -1860,6 +1860,52 @@ test('bfcache restore reconciles an active server session before controls re-ena
     assert.equal(harness.elements.get('voice-identity-record').disabled, false);
 });
 
+test('failed bfcache reconciliation keeps mutation controls gated', async () => {
+    let statusRequests = 0;
+    const harness = createHarness({
+        route(url) {
+            if (url === '/api/config/page_config') {
+                return jsonResponse({ autostart_csrf_token: 'csrf-token' });
+            }
+            if (url === '/api/voice-identity/status') {
+                statusRequests += 1;
+                if (statusRequests === 1) {
+                    return jsonResponse({
+                        enrollment: { session_id: 'session-1', stage: 'fixed_1' },
+                        profile: { available: true, state: 'active' },
+                        filter: { enabled: true },
+                    });
+                }
+                return jsonResponse(
+                    { error: 'status_unavailable' },
+                    { ok: false, status: 503 },
+                );
+            }
+            if (url === '/api/voice-identity/enrollment/cancel') {
+                return jsonResponse(
+                    { error: 'cancel_unconfirmed' },
+                    { ok: false, status: 503 },
+                );
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await harness.initialize();
+    harness.pagehide();
+    await harness.pageshow();
+
+    assert.equal(statusRequests, 2);
+    assert.equal(harness.elements.get('voice-identity-start').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-reenroll').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-delete').disabled, true);
+    assert.equal(harness.elements.get('voice-identity-filter').disabled, true);
+    assert.equal(
+        harness.elements.get('voice-identity-message').textContent,
+        'Request failed.',
+    );
+});
+
 test('window close waits for an in-flight start and cancels its late session', async () => {
     const startRequested = deferred();
     const startResponse = deferred();
