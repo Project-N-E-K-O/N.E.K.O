@@ -1494,30 +1494,44 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         def _reset_override(settings):
             nonlocal override_found
             raw_overrides = settings.get("prompt_overrides") or {}
-            overrides = (
-                dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
-            )
-            target = locale
-            locale_overrides = overrides.get(target)
-            if not (isinstance(locale_overrides, dict)
-                    and layer_def["i18n_key"] in locale_overrides):
-                # 精确桶里没有，就删掉运行时实际在用的那个桶（存量用户可能存
-                # 在旧短码 'zh' 下）。不这么做，「恢复默认」会返回
-                # no_override_found，而那份覆盖继续生效——用户既看不见也删不掉。
-                found = resolve_prompt_override(
-                    overrides, locale, layer_def["i18n_key"],
+            overrides = {
+                bucket: (dict(entries) if isinstance(entries, dict) else entries)
+                for bucket, entries in (
+                    raw_overrides.items() if isinstance(raw_overrides, dict) else ()
                 )
+            }
+            i18n_key = layer_def["i18n_key"]
+            removed = False
+
+            # 先删精确桶。它可能存着空串（编辑器清空时的存法），resolve 看不见
+            # 那种，光靠下面的循环会漏。
+            exact = overrides.get(locale)
+            if isinstance(exact, dict) and i18n_key in exact:
+                exact.pop(i18n_key)
+                removed = True
+
+            # 再一直删到「解析不出覆盖」为止。只删精确桶是不够的：候选链上
+            # 还有别的桶（存量短码 'zh'，以及每条链都会带上的 'zh-CN' /
+            # 'en'），删掉 zh-TW 之后它们会顶上来 —— 「恢复默认」就变成了
+            # 「换一份旧覆盖」，而且再按一次还是它。
+            # ⚠️ 代价说清楚：同一个人如果按 locale 分别调过这一层的提示词，
+            # 重置会把该层其它 locale 的那几份一起清掉。单用户桌面应用里，
+            # 这比「按了恢复默认却恢复不掉」轻 —— 后者没有任何出路。
+            while True:
+                found = resolve_prompt_override(overrides, locale, i18n_key)
                 if found is None:
-                    return False
-                target = found[0]
-                locale_overrides = overrides.get(target)
-            locale_overrides = dict(locale_overrides)
+                    break
+                overrides[found[0]].pop(i18n_key, None)
+                removed = True
+
+            if not removed:
+                return False
             override_found = True
-            locale_overrides.pop(layer_def["i18n_key"])
-            if locale_overrides:
-                overrides[target] = locale_overrides
-            else:
-                overrides.pop(target, None)
+            for bucket in [
+                b for b, entries in overrides.items()
+                if isinstance(entries, dict) and not entries
+            ]:
+                overrides.pop(bucket, None)
             settings["prompt_overrides"] = overrides
             return True
 

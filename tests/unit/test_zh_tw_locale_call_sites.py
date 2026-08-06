@@ -617,6 +617,166 @@ async def test_qq_reset_clears_the_bucket_the_runtime_actually_uses():
 
 
 @pytest.mark.parametrize(
+    "shadowed_bucket", ["zh", "zh-CN", "en"],
+)
+@pytest.mark.asyncio
+async def test_qq_reset_does_not_resurrect_a_shadowed_override(shadowed_bucket):
+    """Reset must leave the default resolving, not the next bucket down.
+
+    Once the editor saves under the full locale, an older bucket for the same
+    layer keeps sitting further along the candidate chain. Deleting only the
+    exact bucket hands the layer straight back to that older value — "restore
+    default" then reports success while a custom prompt is still applied, and
+    pressing it again changes nothing.
+
+    ``zh-CN`` is the common case, not an exotic one: ``locale_candidates``
+    appends the plugin's default locale to every chain.
+    """
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    settings = {
+        "qq_connection_mode": "napcat",
+        "prompt_overrides": {
+            "zh-TW": {"output_prompt_section": "新的繁中覆蓋"},
+            shadowed_bucket: {"output_prompt_section": "被遮住的舊覆蓋"},
+        },
+    }
+    facade = _prompt_editor_facade(settings)
+    facade.session_instruction_service._discard_all_sessions_for_prompt_change = (
+        lambda: None
+    )
+
+    async def _mutate(_self, fn):
+        return fn(settings)
+
+    with language_context("zh-TW"):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(QQAutoReplyPlugin, "_mutate_business_config", _mutate)
+            await facade.reset_prompt_override(
+                locale="zh-TW", layer_id="output",
+            )
+
+        rendered = facade.session_instruction_service._resolve_static_layer(
+            "output_prompt_section", "默认模板",
+        )
+        payload = getattr(
+            asyncio.run(facade.get_prompt_editor_state()), "value", None,
+        )
+
+    assert rendered == "默认模板"
+    assert _layer_state(payload, "output")["has_override"] is False
+
+
+@pytest.mark.asyncio
+async def test_qq_reset_sweeps_the_whole_candidate_chain():
+    """Every position on the chain has to go, not just the first shadow.
+
+    With buckets stacked at ``zh-TW`` / ``zh`` / ``zh-CN`` / ``en``, removing
+    the exact bucket plus one more still leaves two behind — the layer would
+    resolve to a custom prompt again. The sweep has to run to exhaustion.
+    """
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    settings = {
+        "qq_connection_mode": "napcat",
+        "prompt_overrides": {
+            "zh-TW": {"output_prompt_section": "繁中"},
+            "zh": {"output_prompt_section": "舊短碼"},
+            "zh-CN": {"output_prompt_section": "简中"},
+            "en": {"output_prompt_section": "english"},
+        },
+    }
+    facade = _prompt_editor_facade(settings)
+    facade.session_instruction_service._discard_all_sessions_for_prompt_change = (
+        lambda: None
+    )
+
+    async def _mutate(_self, fn):
+        return fn(settings)
+
+    with language_context("zh-TW"):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(QQAutoReplyPlugin, "_mutate_business_config", _mutate)
+            await facade.reset_prompt_override(
+                locale="zh-TW", layer_id="output",
+            )
+        rendered = facade.session_instruction_service._resolve_static_layer(
+            "output_prompt_section", "默认模板",
+        )
+
+    assert settings["prompt_overrides"] == {}
+    assert rendered == "默认模板"
+
+
+@pytest.mark.asyncio
+async def test_qq_reset_leaves_other_layers_alone():
+    """The sweep is per-layer: other layers' overrides in the same buckets
+    must survive, or "restore default" on one layer would wipe the lot."""
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    settings = {
+        "qq_connection_mode": "napcat",
+        "prompt_overrides": {
+            "zh-TW": {
+                "output_prompt_section": "要重置的",
+                "role_prompt_section": "要留下的",
+            },
+            "zh-CN": {"role_prompt_section": "也要留下的"},
+        },
+    }
+    facade = _prompt_editor_facade(settings)
+    facade.session_instruction_service._discard_all_sessions_for_prompt_change = (
+        lambda: None
+    )
+
+    async def _mutate(_self, fn):
+        return fn(settings)
+
+    with language_context("zh-TW"):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(QQAutoReplyPlugin, "_mutate_business_config", _mutate)
+            await facade.reset_prompt_override(
+                locale="zh-TW", layer_id="output",
+            )
+
+    assert settings["prompt_overrides"] == {
+        "zh-TW": {"role_prompt_section": "要留下的"},
+        "zh-CN": {"role_prompt_section": "也要留下的"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_qq_reset_clears_a_blank_placeholder_bucket():
+    """A cleared layer stores ``""``, which ``resolve_prompt_override``
+    deliberately ignores. Reset still has to remove it, otherwise the
+    placeholder lingers forever and reset reports no_override_found."""
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    settings = {
+        "qq_connection_mode": "napcat",
+        "prompt_overrides": {"zh-TW": {"output_prompt_section": ""}},
+    }
+    facade = _prompt_editor_facade(settings)
+    facade.session_instruction_service._discard_all_sessions_for_prompt_change = (
+        lambda: None
+    )
+
+    async def _mutate(_self, fn):
+        return fn(settings)
+
+    with language_context("zh-TW"):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(QQAutoReplyPlugin, "_mutate_business_config", _mutate)
+            result = await facade.reset_prompt_override(
+                locale="zh-TW", layer_id="output",
+            )
+
+    payload = getattr(result, "value", result)
+    assert payload.get("reason") != "no_override_found"
+    assert settings["prompt_overrides"] == {}
+
+
+@pytest.mark.parametrize(
     ("ui_locale", "expected"), [("zh-TW", "zh-TW"), ("zh-CN", "zh-CN")],
 )
 def test_qq_prompt_editor_state_defaults_to_full_locale(ui_locale, expected):
