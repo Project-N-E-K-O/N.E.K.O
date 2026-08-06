@@ -351,6 +351,50 @@ async def test_pair_is_queued_only_after_the_save_succeeds(tmp_path):
     resolver.aenqueue_candidates.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_end_to_end_over_a_real_index(tmp_path):
+    """Index and query through the real SQLite path.
+
+    Every other Stage-2 test here stubs the index, so none of them would
+    notice the two sides disagreeing about what a token is — which is
+    exactly the failure #2703 describes.
+    """
+    cm = _cm(str(tmp_path))
+    with patch("memory.timeindex.get_config_manager", return_value=cm), \
+         patch("memory.facts.get_config_manager", return_value=cm):
+        time_index = TimeIndexedMemory(recent_history_manager=MagicMock())
+        store = FactStore(time_indexed_memory=time_index)
+        store._config_manager = cm
+        resolver = MagicMock()
+        resolver.aenqueue_candidates = AsyncMock(return_value=1)
+        store.attach_dedup_resolver(resolver)
+
+        async def _write(text):
+            return await store._apersist_new_facts(
+                "小天", [{"text": text, "importance": 7, "entity": "master"}],
+                default_source="user_observation", semantic_dedup=True,
+            )
+
+        first = await _write("用户最近养了一只猫")
+        assert len(first) == 1
+
+        # 繁体重述：Stage-1 的 hash 差得远，靠折叠后的 token 集全同挡住。
+        assert await _write("用戶最近養了一隻貓") == []
+        resolver.aenqueue_candidates.assert_not_awaited()
+
+        # 一字之差的另一件事：写入 + 进仲裁队列，不能被闸门吃掉。
+        dog = await _write("用户最近养了一只狗")
+        assert len(dog) == 1
+        _, pairs = resolver.aenqueue_candidates.await_args.args
+        assert pairs[0]["existing_id"] == first[0]["id"]
+        assert pairs[0]["candidate_id"] == dog[0]["id"]
+
+        # 无关的事实：不入队。
+        resolver.aenqueue_candidates.reset_mock()
+        assert len(await _write("用户喜欢在深夜写代码")) == 1
+        resolver.aenqueue_candidates.assert_not_awaited()
+
+
 def test_the_index_module_exposes_no_bm25_search():
     """The rename is the guard: a caller left on the old name would keep
     comparing against a negative bm25 threshold, which now means the
