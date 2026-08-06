@@ -909,13 +909,28 @@ migrate_legacy_bootstrap_config() {
     local LEGACY_CONFIG_FILE="/app/config/core_config.json"
     local CONFIG_ROOT="${NEKO_STORAGE_SELECTED_ROOT:-${XDG_DATA_HOME:-/home/neko/.local/share}/N.E.K.O}"
     local RUNTIME_CONFIG_FILE="$CONFIG_ROOT/config/core_config.json"
+    local RUNTIME_CONFIG_DIR="$(dirname "$RUNTIME_CONFIG_FILE")"
+    local TEMP_CONFIG_FILE=""
 
     if [ -n "${NEKO_FORCE_ENV_UPDATE:-}" ] || [ -f "$RUNTIME_CONFIG_FILE" ] || [ ! -f "$LEGACY_CONFIG_FILE" ]; then
         return 0
     fi
 
-    mkdir -p "$(dirname "$RUNTIME_CONFIG_FILE")"
-    cp "$LEGACY_CONFIG_FILE" "$RUNTIME_CONFIG_FILE"
+    mkdir -p "$RUNTIME_CONFIG_DIR"
+    if ! TEMP_CONFIG_FILE=$(mktemp "$RUNTIME_CONFIG_DIR/.core_config.json.migrate.XXXXXX"); then
+        echo "❌ Failed to create a temporary file for legacy configuration migration"
+        return 1
+    fi
+    if ! cp "$LEGACY_CONFIG_FILE" "$TEMP_CONFIG_FILE"; then
+        rm -f "$TEMP_CONFIG_FILE"
+        echo "❌ Failed to copy legacy configuration into the persistent runtime root"
+        return 1
+    fi
+    if ! mv -f "$TEMP_CONFIG_FILE" "$RUNTIME_CONFIG_FILE"; then
+        rm -f "$TEMP_CONFIG_FILE"
+        echo "❌ Failed to finalize legacy configuration migration"
+        return 1
+    fi
     echo "📦 Migrated legacy /app/config/core_config.json into the persistent runtime root"
 }
 
