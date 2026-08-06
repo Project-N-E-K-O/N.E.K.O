@@ -182,7 +182,7 @@ class _TransportMixin:
         # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
         # 超时后 websockets 内部会 transport.abort() 强制关闭。
         self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
-        self._rearm_teardown_ownership()
+        self._on_connection_attached()
         # Do not reopen the arbiter until the replacement transport exists.
         # A failed reconnect must leave the prior shutdown state intact.
         self._response_arbiter.reset_connection_state()
@@ -2045,25 +2045,32 @@ class _TransportMixin:
             logger.error(f"Error in message handling: {str(e)}")
             raise
 
-    def _rearm_teardown_ownership(self) -> None:
-        """Hand the teardown latches to the connection that just attached.
+    def _on_connection_attached(self) -> None:
+        """Mark a replacement connection as live and hand it the teardown latches.
 
         A close task closes the socket it detached, so it is finished with the
         previous connection's socket the moment a replacement is installed —
         and a latched finished task would make the new connection's close a
-        no-op. Rearming has to happen where the socket is assigned, not at the
-        top of connect(): a close landing in the connect await window would
+        no-op. This has to happen where the socket is assigned, not at the top
+        of connect(): a close landing in the connect await window would
         otherwise run to completion against no socket at all, and the
         replacement would attach behind an already-finished latch that every
         later close() just re-awaits. No await between the assignment and this
         call, so no third party can observe the pair half-applied.
 
-        An unfinished predecessor is unaffected — it already owns the old
-        socket outright and nothing here cancels it.
+        The generation bump is the other half. An unfinished predecessor is not
+        cancelled — it owns the retired socket and must finish closing it — but
+        everything else it would touch (the silence scalars connect() just
+        primed, the shared audio processor, the Gemini session) is client-wide
+        state that now belongs to the replacement. Teardowns compare the
+        generation after each await and keep their hands off what is no longer
+        theirs.
         """
 
+        self._connection_generation += 1
         self._close_task = None
         self._failed_transport_close_task = None
+        self._gemini_close_task = None
 
     async def _own_teardown(self, slot: str, factory):
         """Await a teardown that this client owns, not the caller.
@@ -2134,22 +2141,40 @@ class _TransportMixin:
         await self._own_teardown("_close_task", self._close_impl)
 
     async def _close_impl(self) -> None:
+        # Snapshot the connection this teardown belongs to, and detach what it
+        # is going to release, BEFORE the first await. The teardown outlives
+        # its caller by design, so connect() is free to attach a replacement
+        # while this one is parked in the arbiter shutdown — after that point
+        # anything read off the client can already be the replacement's.
+        generation = self._connection_generation
         ws, self.ws = self.ws, None
+        silence_check_task, self._silence_check_task = self._silence_check_task, None
+
         response_arbiter = getattr(self, "_response_arbiter", None)
         if response_arbiter is not None:
             await response_arbiter.shutdown("realtime client closed")
 
         # 取消静默检测任务
-        if self._silence_check_task:
-            self._silence_check_task.cancel()
+        if silence_check_task:
+            silence_check_task.cancel()
             try:
-                await self._silence_check_task
+                await silence_check_task
             except asyncio.CancelledError:
                 pass
             except Exception as e:
                 logger.error(f"Error cancelling silence check task: {e}")
-            finally:
-                self._silence_check_task = None
+
+        if self._connection_generation != generation:
+            # A replacement attached while this teardown ran. Everything below
+            # is client-wide — the silence scalars connect() has just primed,
+            # the audio processor the new connection is already feeding, the
+            # Gemini session it installed — and none of it is ours to release.
+            # The retired socket still is.
+            logger.info(
+                "Realtime close: a replacement connection attached; releasing only the retired socket"
+            )
+            await self._release_retired_socket(ws)
+            return
 
         # 重置静默超时相关状态
         self._silence_timeout_triggered = False
@@ -2173,6 +2198,16 @@ class _TransportMixin:
             await self._close_gemini()
             return
 
+        await self._release_retired_socket(ws)
+
+    async def _release_retired_socket(self, ws) -> None:
+        """Physically close the socket a teardown detached."""
+
+        if self._is_gemini:
+            # A Gemini session is released through the context manager that
+            # opened it, not here — and once a replacement has attached, that
+            # context manager went with the connection which owned it.
+            return
         if ws:
             try:
                 # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，

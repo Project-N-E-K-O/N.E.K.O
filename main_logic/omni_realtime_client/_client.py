@@ -141,6 +141,13 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Reset by connect(), because the client object outlives a connection.
         self._close_task = None
         self._failed_transport_close_task = None
+        self._gemini_close_task = None
+        # Bumped when a replacement connection attaches. A teardown that
+        # outlived its caller compares it after every await: the socket it
+        # detached is still its own to close, but client-wide state (silence
+        # scalars, the shared audio processor, the Gemini session) belongs to
+        # whoever attached last.
+        self._connection_generation = 0
 
         # Track current response state
         self._current_response_id = None

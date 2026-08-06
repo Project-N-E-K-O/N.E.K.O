@@ -7,7 +7,8 @@ afterwards, so a cancel landing in between took the only reference with it:
   arbiter shutdown (deliberately — no ticket may outlive the socket);
 - ``_close_failed_transport()`` does the same on the fatal path;
 - ``_close_gemini()`` cleared the SDK context manager in a ``finally``, which
-  runs on cancel too, so a retry found nothing left to exit;
+  runs on cancel too — and an interrupted ``__aexit__()`` cannot be retried
+  anyway, so the exit itself must not be interrupted;
 - ``_cleanup_pending_session_resources()`` cleared ``pending_session`` in a
   ``finally`` while ``_reset_preparation_state`` cancels its caller a *second*
   time when its 2s wait expires — landing inside that very close.
@@ -15,9 +16,13 @@ afterwards, so a cancel landing in between took the only reference with it:
 Every canceller here is internal: a hot-swap final task or background prep
 task cancelled by a concurrent start/end_session. Reported as items 12-14 of
 the #2602 index.
+
+Outliving the caller means a teardown can also outlive its connection, so the
+other half is scope: it releases what it detached, and keeps its hands off the
+client-wide state a replacement connection has since taken over.
 """
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -197,10 +202,57 @@ async def test_close_inside_the_connect_window_does_not_latch_the_new_socket_shu
     attached.close.assert_awaited_once_with()
 
 
+@pytest.mark.asyncio
+async def test_teardown_outliving_its_connection_does_not_touch_the_replacement():
+    """The teardown is explicitly allowed to outlive its caller, so it can also
+    outlive its connection. Everything it reads after its first await —
+    silence-check task, audio processor, silence scalars — is client-wide, and
+    once a replacement has attached none of it is the old teardown's to
+    release. Only the socket it detached still is."""
+    client = _make_client()
+    retired_ws = _FakeWs()
+    client.ws = retired_ws
+    entered, release, _calls = _gate_arbiter_shutdown(client)
+
+    retired_silence_task = asyncio.create_task(asyncio.Event().wait())
+    client._silence_check_task = retired_silence_task
+
+    closing = asyncio.create_task(client.close())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    # A reconnect completes while the old teardown is parked.
+    replacement_ws = _FakeWs()
+    replacement_silence_task = asyncio.create_task(asyncio.Event().wait())
+    replacement_processor = MagicMock()
+    client.ws = replacement_ws
+    client._silence_check_task = replacement_silence_task
+    client._audio_processor = replacement_processor
+    client._last_speech_time = 1234.0
+    client._on_connection_attached()
+
+    release.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert retired_ws.close_calls == 1, "the retired socket is still the teardown's own"
+    assert retired_silence_task.cancelled()
+    assert not replacement_silence_task.done(), "the replacement's silence check must survive"
+    assert client._silence_check_task is replacement_silence_task
+    replacement_processor.close.assert_not_called()
+    assert client._audio_processor is replacement_processor
+    assert client._last_speech_time == 1234.0
+    assert client.ws is replacement_ws
+
+    replacement_silence_task.cancel()
+
+
 # ── Gemini SDK context exit ──────────────────────────────────────────
 
 
 class _GatedGeminiContext:
+    """A context manager that would happily be re-entered — so a test asserting
+    the exit ran once is asserting the production guarantee, not this fake's
+    one-shot behaviour."""
+
     def __init__(self):
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
@@ -213,12 +265,17 @@ class _GatedGeminiContext:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_gemini_exit_keeps_the_references_for_a_retry():
+async def test_cancelled_gemini_caller_does_not_interrupt_the_sdk_exit():
+    """An async context manager is one-shot: an ``__aexit__()`` unwound by a
+    cancel cannot be resumed by calling it again. So the exit must not be
+    interrupted — the cancel has to stop the waiting, not the exiting, and the
+    exit must run exactly once."""
     client = _make_client()
     context = _GatedGeminiContext()
+    session = object()
     client._gemini_context_manager = context
-    client._gemini_session = object()
-    client.ws = client._gemini_session
+    client._gemini_session = session
+    client.ws = session
 
     caller = asyncio.create_task(client._close_gemini())
     await asyncio.wait_for(context.entered.wait(), timeout=5)
@@ -227,18 +284,48 @@ async def test_cancelled_gemini_exit_keeps_the_references_for_a_retry():
     with pytest.raises(asyncio.CancelledError):
         await caller
 
-    # The SDK context exit never completed, so the references are the only way
-    # back to it — dropping them orphans the session for good.
+    # Still parked inside the SDK exit, holding its own references.
+    assert context.exit_calls == 1
     assert client._gemini_context_manager is context
-    assert client._gemini_session is not None
 
+    retry = asyncio.create_task(client._close_gemini())
+    await _settle()
     context.release.set()
-    await asyncio.wait_for(client._close_gemini(), timeout=5)
+    await asyncio.wait_for(retry, timeout=5)
 
-    assert context.exit_calls == 2
+    assert context.exit_calls == 1, "the interrupted exit must be finished, not re-entered"
     assert client._gemini_context_manager is None
     assert client._gemini_session is None
     assert client.ws is None
+
+
+@pytest.mark.asyncio
+async def test_gemini_close_leaves_a_replacement_session_alone():
+    client = _make_client()
+    context = _GatedGeminiContext()
+    retired_session = object()
+    client._gemini_context_manager = context
+    client._gemini_session = retired_session
+    client.ws = retired_session
+
+    closing = asyncio.create_task(client._close_gemini())
+    await asyncio.wait_for(context.entered.wait(), timeout=5)
+
+    # A reconnect completes while the retired session is still exiting.
+    replacement_context = _GatedGeminiContext()
+    replacement_session = object()
+    client._gemini_context_manager = replacement_context
+    client._gemini_session = replacement_session
+    client.ws = replacement_session
+    client._on_connection_attached()
+
+    context.release.set()
+    await asyncio.wait_for(closing, timeout=5)
+
+    assert client._gemini_context_manager is replacement_context
+    assert client._gemini_session is replacement_session
+    assert client.ws is replacement_session
+    assert replacement_context.exit_calls == 0
 
 
 @pytest.mark.asyncio
