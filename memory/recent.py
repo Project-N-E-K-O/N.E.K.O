@@ -48,6 +48,24 @@ from config import (
 from datetime import datetime
 
 
+def _safe_print(*args, **kwargs):
+    """Print without crashing on GBK consoles (emoji cannot be encoded).
+
+    On Windows Chinese (GBK) consoles, printing emoji like ✅/⚠️ raises
+    ``UnicodeEncodeError`` and aborts the memory pipeline mid-flight. Keep the
+    plain ``print`` (privacy rule: raw dialog only via print, never logger) but
+    degrade un-encodable characters to ``?`` instead of crashing.
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        text = " ".join(str(a) for a in args)
+        safe = text.encode("ascii", "replace").decode("ascii")
+        kwargs.pop("file", None)
+        kwargs.pop("flush", None)
+        print(safe, **kwargs)
+
+
 def _detect_recent_prompt_language(text: str) -> str:
     return detect_prompt_language_with_ascii_fallback(
         text,
@@ -987,23 +1005,23 @@ class CompressedRecentHistoryManager:
                         raw_summary if isinstance(raw_summary, str)
                         else json.dumps(raw_summary, ensure_ascii=False)
                     )
-                    print(f"💗摘要结果：{summary}")
+                    _safe_print(f"💗摘要结果：{summary}")
                     return summary
                 else:
-                    print('💥 摘要failed: ', response_content)
+                    _safe_print('💥 摘要failed: ', response_content)
                     retries += 1
             except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
-                    print(f'❌ 摘要模型失败，已达到最大重试次数: {e}')
+                    _safe_print(f'❌ 摘要模型失败，已达到最大重试次数: {e}')
                     break
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
-                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
+                _safe_print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
                 await asyncio.sleep(wait_time)
             except Exception as e:
-                print(f'❌ 摘要模型失败：{e}')
+                _safe_print(f'❌ 摘要模型失败：{e}')
                 # 如果解析失败，重试
                 retries += 1
         return None
@@ -1394,23 +1412,23 @@ class CompressedRecentHistoryManager:
                     sane = truncate_to_last_sentence_end(summary_text)
                     if not sane:
                         sane = summary_text
-                    print(f"💗第二轮摘要结果：{sane}")
+                    _safe_print(f"💗第二轮摘要结果：{sane}")
                     return sane
                 else:
-                    print('💥 第二轮摘要failed: ', response_content)
+                    _safe_print('💥 第二轮摘要failed: ', response_content)
                     retries += 1
             except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
-                    print(f'❌ 第二轮摘要模型失败，已达到最大重试次数: {e}')
+                    _safe_print(f'❌ 第二轮摘要模型失败，已达到最大重试次数: {e}')
                     return None
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
-                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
+                _safe_print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
                 await asyncio.sleep(wait_time)
             except Exception as e:
-                print(f'❌ 第二轮摘要模型失败：{e}')
+                _safe_print(f'❌ 第二轮摘要模型失败：{e}')
                 retries += 1
         return None
 
@@ -1582,7 +1600,7 @@ class CompressedRecentHistoryManager:
 
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
-            print(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
+            _safe_print(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
             return ('failed', None)
 
         # snapshot 由 caller 提供（spawn 时拍下）；为兼容老调用兜底从磁盘读
@@ -1618,7 +1636,7 @@ class CompressedRecentHistoryManager:
 
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
-            print(f"⚠️ {lanlan_name} 的记忆整理被取消（准备调用LLM前）")
+            _safe_print(f"⚠️ {lanlan_name} 的记忆整理被取消（准备调用LLM前）")
             return ('failed', None)
 
         retries = 0
@@ -1654,11 +1672,11 @@ class CompressedRecentHistoryManager:
 
                 # 检查是否被取消（LLM调用后）
                 if cancel_event and cancel_event.is_set():
-                    print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
+                    _safe_print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return ('failed', None)
 
                 if _review_response_hit_output_limit(response):
-                    print(f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析")
+                    _safe_print(f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析")
                     return ('output_exhausted', None)
 
                 # 确保response_content是字符串
@@ -1677,7 +1695,7 @@ class CompressedRecentHistoryManager:
                     and 'explanation' in review_result
                     and isinstance(review_result.get('corrected_dialogue'), list)
                 ):
-                    print(f"❌ 审阅响应格式错误：{response_content}")
+                    _safe_print(f"❌ 审阅响应格式错误：{response_content}")
                     return ('failed', None)
 
                 print(f"记忆整理结果：{review_result['explanation']}")
@@ -1779,33 +1797,33 @@ class CompressedRecentHistoryManager:
                 except recent_file.RecentFileDeletedError:
                     return ('failed', None)
                 if commit_status == 'white':
-                    print(f"⚠️ {lanlan_name} {detail}（白 review，丢弃）")
+                    _safe_print(f"⚠️ {lanlan_name} {detail}（白 review，丢弃）")
                     return ('white', None)
                 if commit_status != 'patched':
-                    print(f"❌ {lanlan_name} review 提交失败：{detail}")
+                    _safe_print(f"❌ {lanlan_name} review 提交失败：{detail}")
                     return ('failed', None)
 
-                print(f"✅ {lanlan_name} 的记忆已修正：{detail}")
+                _safe_print(f"✅ {lanlan_name} 的记忆已修正：{detail}")
                 return ('patched', new_fingerprint)
 
             except openai_retry_error_types() as e:
                 logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
-                    print(f'❌ 记忆整理失败，已达到最大重试次数: {e}')
+                    _safe_print(f'❌ 记忆整理失败，已达到最大重试次数: {e}')
                     return ('failed', None)
                 # 指数退避: 1, 2, 4 秒
                 wait_time = 2 ** (retries - 1)
-                print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
+                _safe_print(f'⚠️ 遇到网络或429错误，等待 {wait_time} 秒后重试 (第 {retries}/{max_retries} 次)')
                 await asyncio.sleep(wait_time)
                 # 检查是否被取消
                 if cancel_event and cancel_event.is_set():
-                    print(f"⚠️ {lanlan_name} 的记忆整理在重试等待期间被取消")
+                    _safe_print(f"⚠️ {lanlan_name} 的记忆整理在重试等待期间被取消")
                     return ('failed', None)
             except Exception as e:
                 logger.error(f"❌ 历史记录审阅失败：{e}")
                 return ('failed', None)
 
         # 如果所有重试都失败
-        print(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
+        _safe_print(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
         return ('failed', None)
