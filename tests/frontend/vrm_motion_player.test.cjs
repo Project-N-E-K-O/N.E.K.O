@@ -368,6 +368,44 @@ async function waitForLoadStart(predicate, message) {
     }, 'saved-built-in', 'stand').id, 'saved-built-in');
 
     savedCatalogPlayer.assets = [{
+        id: 'official_wait_04',
+        m: 'shy',
+        f: 'animation/wait04.vrma',
+        compression: 'gzip',
+        card: { systemRestEligible: false }
+    }];
+    savedCatalogPlayer.setSavedRestAnimations([
+        '/static/vrm/animation/wait04.vrma'
+    ]);
+    assert.equal(savedCatalogPlayer.savedRestAssets.length, 1);
+    assert.equal(
+        savedCatalogPlayer.savedRestAssets[0].url,
+        '/static/vrm/animation/wait04.vrma.gz'
+    );
+
+    const scheduledRestPlayer = new global.NekoMotionPlayer();
+    scheduledRestPlayer.assets = [{
+        id: 'queued-rest',
+        m: 'idle',
+        in: 'stand',
+        out: 'stand',
+        mode: 'loop',
+        card: { systemRestEligible: true }
+    }];
+    scheduledRestPlayer._playAsset = async function () { return true; };
+    scheduledRestPlayer.busy = true;
+    assert.equal(
+        await scheduledRestPlayer.enterRest({
+            assetId: 'queued-rest',
+            force: true,
+            seed: 'queued-rest'
+        }),
+        true
+    );
+    assert.notEqual(scheduledRestPlayer.idleSwitchTimer, null);
+    scheduledRestPlayer._clearIdleSwitch();
+
+    savedCatalogPlayer.assets = [{
         id: 'saved-motion-pack',
         m: 'idle',
         f: 'motion/01_base/natural-wait.vrma',

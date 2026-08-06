@@ -298,6 +298,7 @@
                     return assetUrl(asset) === url;
                 });
                 if (!catalogAsset) return true;
+                if (catalogAsset.m !== 'idle') return true;
                 this.savedRestAssetIds.add(catalogAsset.id);
                 return false;
             });
@@ -529,9 +530,9 @@
             this.idleSwitchTimer = null;
         }
 
-        _scheduleIdleSwitch(generation, seed, mode) {
+        _scheduleIdleSwitch(generation, seed, mode, allowBusy) {
             this._clearIdleSwitch();
-            if (generation !== this.queueGeneration || this.busy
+            if (generation !== this.queueGeneration || (!allowBusy && this.busy)
                 || this.state.posture !== 'stand' || this.state.phase !== 'rest'
                 || !this.state.restAsset) return false;
 
@@ -642,7 +643,8 @@
                     this._scheduleIdleSwitch(
                         this.queueGeneration,
                         settings.seed || this.profile.key || 'rest',
-                        'rest'
+                        'rest',
+                        true
                     );
                 }
             }

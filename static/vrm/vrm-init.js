@@ -688,7 +688,12 @@ function _startVrmIdleRotation(urls) {
             const url = pickRandom();
             if (url) {
                 if (mgr.vrmaAction) mgr.stopVRMAAnimation();
-                await mgr.playVRMAAnimation(url, { loop: true, immediate: true, isIdle: true });
+                const played = await mgr.playVRMAAnimation(url, {
+                    loop: true,
+                    immediate: true,
+                    isIdle: true
+                });
+                if (played !== true) return;
                 _vrmIdleLastUrl = url;
                 console.debug('[VRM IdleRotation] 切换待机动作:', url.split('/').pop());
 
