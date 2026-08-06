@@ -1293,7 +1293,9 @@
             const userText = normalize(settings.userText);
             const speech = this.pack.speech || {};
             const common = this._common(locale);
-            const metaTerms = this._speechTerms(speech.meta, locale);
+            const metaTerms = unique(semanticLocales(assistantText, locale).reduce(function (terms, candidateLocale) {
+                return terms.concat(localizedStrict(speech.meta, candidateLocale));
+            }, []));
             const refused = !!assistantText
                 && includesAny(assistantText, this._speechTerms(speech.refusals, locale));
             const questioned = /[?？]\s*$/u.test(assistantText)

@@ -1602,6 +1602,72 @@
         }
       },
       {
+        "id": "wave",
+        "priority": 92,
+        "terms": {
+          "zh-CN": [
+            "挥手",
+            "挥手告别"
+          ],
+          "zh-TW": [
+            "揮手",
+            "揮手告別"
+          ],
+          "en": [
+            "wave",
+            "wave goodbye"
+          ],
+          "ja": [
+            "手を振って"
+          ],
+          "ko": [
+            "손을 흔들어"
+          ],
+          "ru": [
+            "помаши рукой"
+          ],
+          "es": [
+            "saluda con la mano"
+          ],
+          "pt": [
+            "acene com a mão"
+          ]
+        }
+      },
+      {
+        "id": "piano",
+        "priority": 91,
+        "terms": {
+          "zh-CN": [
+            "弹钢琴",
+            "演奏钢琴"
+          ],
+          "zh-TW": [
+            "彈鋼琴",
+            "演奏鋼琴"
+          ],
+          "en": [
+            "play piano",
+            "play the piano"
+          ],
+          "ja": [
+            "ピアノを弾いて"
+          ],
+          "ko": [
+            "피아노를 쳐"
+          ],
+          "ru": [
+            "сыграй на пианино"
+          ],
+          "es": [
+            "toca el piano"
+          ],
+          "pt": [
+            "toque piano"
+          ]
+        }
+      },
+      {
         "id": "clap",
         "priority": 90,
         "terms": {
@@ -4222,6 +4288,9 @@
         "zh-TW": [
           "蹲下",
           "跪坐好"
+        ],
+        "en": [
+          "sit down"
         ]
       },
       "frames": {
@@ -4401,6 +4470,9 @@
           "趴伏",
           "四肢趴伏",
           "趴在地上"
+        ],
+        "en": [
+          "lie down"
         ]
       },
       "frames": {
@@ -4749,6 +4821,10 @@
         "zh-TW": [
           "撐地起身",
           "從跪坐起身"
+        ],
+        "en": [
+          "stand up",
+          "get up"
         ]
       },
       "frames": {

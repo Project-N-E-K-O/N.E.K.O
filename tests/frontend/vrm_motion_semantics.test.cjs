@@ -272,6 +272,34 @@ assert.equal(core.analyzeSpeech('我可以挥手了。告诉你一声。', {
     assert.equal(core.analyzeSpeech(text, { locale: 'en' }).plan[0].intent, 'shake', text);
 });
 
+[
+    ['wave goodbye', 'wave'],
+    ['play piano', 'piano']
+].forEach(function ([userText, expected]) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en', userText: userText
+    }).plan[0].intent, expected, userText);
+});
+['do not wave goodbye', 'ask the audience to play piano'].forEach(function (userText) {
+    assert.equal(core.analyzeSpeech('Okay.', {
+        locale: 'en', userText: userText
+    }).plan.length, 0, userText);
+});
+
+[
+    ['sit down', 'sit'],
+    ['lie down', 'lie'],
+    ['stand up', 'recover']
+].forEach(function ([text, expected]) {
+    assert.equal(core.analyze(text, { locale: 'en' }).plan[0].intent, expected, text);
+});
+
+['For example, I clap', 'The instruction is clap'].forEach(function (text) {
+    assert.equal(core.analyzeSpeech(text, { locale: 'zh-CN' }).plan.length, 0, text);
+});
+assert.equal(core.analyzeSpeech('举例，我鼓掌', { locale: 'en' }).plan.length, 0);
+assert.equal(core.analyzeSpeech('I clap', { locale: 'zh-CN' }).plan[0].intent, 'clap');
+
 assert.deepEqual(core.analyze(
     'wave now. If she claps, nod later',
     { locale: 'en' }
@@ -331,6 +359,14 @@ assert.equal(core.analyzeSpeech('好的，但我不能这么做。', {
 
 requiredLocales.forEach(function (locale) {
     assert.ok(semantics.speech.refusals[locale].length > 0, locale + ' refusal terms');
+});
+['wave', 'piano'].forEach(function (intentId) {
+    const command = semantics.speech.commands.find(function (candidate) {
+        return candidate.id === intentId;
+    });
+    requiredLocales.forEach(function (locale) {
+        assert.ok(command.terms[locale].length > 0, intentId + ' ' + locale + ' command terms');
+    });
 });
 
 const traditionalCases = [
