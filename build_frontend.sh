@@ -17,28 +17,35 @@ fi
 # --- 0. Built-in PNGTuber models ---
 uv run --no-sync python "$SCRIPT_DIR/scripts/unpack_builtin_pngtuber.py"
 
-# --- 1. yui-origin Live2D model (unpack from assets/) ---
-YUI_ARCHIVE="$SCRIPT_DIR/assets/yui-origin.tar.gz"
-YUI_DIR="$SCRIPT_DIR/static/yui-origin"
-YUI_MARKER="$YUI_DIR/yui-origin.moc3"
+# --- 1. Built-in Live2D models (unpack from assets/) ---
+# 每个模型都是 assets/<name>.tar.gz，解到 static/<name>/，marker 是 <name>.moc3。
+unpack_live2d_model() {
+  local model="$1"
+  local archive="$SCRIPT_DIR/assets/$model.tar.gz"
+  local dir="$SCRIPT_DIR/static/$model"
+  local marker="$dir/$model.moc3"
 
-if [ ! -f "$YUI_ARCHIVE" ]; then
-  echo "[build_frontend] yui-origin archive missing: $YUI_ARCHIVE" >&2
-  exit 1
-fi
-
-if [ ! -f "$YUI_MARKER" ] || [ "$YUI_ARCHIVE" -nt "$YUI_MARKER" ]; then
-  echo "[build_frontend] unpacking yui-origin..."
-  rm -rf "$YUI_DIR"
-  tar -xzmf "$YUI_ARCHIVE" -C "$SCRIPT_DIR/static"
-  if [ ! -f "$YUI_MARKER" ]; then
-    echo "[build_frontend] yui-origin marker missing after unpack: $YUI_MARKER" >&2
+  if [ ! -f "$archive" ]; then
+    echo "[build_frontend] $model archive missing: $archive" >&2
     exit 1
   fi
-  echo "[build_frontend] yui-origin done: $YUI_DIR"
-else
-  echo "[build_frontend] yui-origin up to date, skip"
-fi
+
+  if [ ! -f "$marker" ] || [ "$archive" -nt "$marker" ]; then
+    echo "[build_frontend] unpacking $model..."
+    rm -rf "$dir"
+    tar -xzmf "$archive" -C "$SCRIPT_DIR/static"
+    if [ ! -f "$marker" ]; then
+      echo "[build_frontend] $model marker missing after unpack: $marker" >&2
+      exit 1
+    fi
+    echo "[build_frontend] $model done: $dir"
+  else
+    echo "[build_frontend] $model up to date, skip"
+  fi
+}
+
+unpack_live2d_model yui-origin
+unpack_live2d_model yui-lolita
 
 # --- 2. Plugin Manager (Vue) ---
 PM_DIR="$SCRIPT_DIR/frontend/plugin-manager"

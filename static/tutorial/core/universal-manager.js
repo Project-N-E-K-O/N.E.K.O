@@ -21,8 +21,8 @@ const TUTORIAL_PAGES = Object.freeze([
 ]);
 const TUTORIAL_STORAGE_KEY_PREFIX = 'neko_tutorial_';
 const TUTORIAL_FLOW_PREFIX = '[TutorialFlow]';
-const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-origin';
-const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json';
+const TUTORIAL_YUI_LIVE2D_MODEL_NAME = 'yui-lolita';
+const TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json';
 const TUTORIAL_AVATAR_OVERRIDE_TIMEOUT_MS = 8000;
 const HOME_TUTORIAL_RESET_EVENT = 'neko:home-tutorial-reset';
 const HOME_TUTORIAL_RESET_STORAGE_EVENT_KEY = 'neko_home_tutorial_reset_event';
@@ -2141,8 +2141,8 @@ class UniversalTutorialManager {
         const loadedPath = this.tutorialNonEmptyString(manager._lastLoadedModelPath);
         const rootPath = this.tutorialNonEmptyString(manager.modelRootPath);
         const modelName = this.tutorialNonEmptyString(manager.modelName);
-        return loadedPath.indexOf('/static/yui-origin/yui-origin.model3.json') >= 0
-            || rootPath === '/static/yui-origin'
+        return loadedPath.indexOf('/static/yui-lolita/yui-lolita.model3.json') >= 0
+            || rootPath === '/static/yui-lolita'
             || modelName === TUTORIAL_YUI_LIVE2D_MODEL_NAME;
     }
 

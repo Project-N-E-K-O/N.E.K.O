@@ -817,8 +817,8 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     live2d_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
-    yui_model = json.loads(Path("static/yui-origin/yui-origin.model3.json").read_text(encoding="utf-8"))
-    yui_display_info = json.loads(Path("static/yui-origin/yui-origin.cdi3.json").read_text(encoding="utf-8"))
+    yui_model = json.loads(Path("static/yui-lolita/yui-lolita.model3.json").read_text(encoding="utf-8"))
+    yui_display_info = json.loads(Path("static/yui-lolita/yui-lolita.cdi3.json").read_text(encoding="utf-8"))
     yui_param_ids = {
         item.get("Id")
         for item in yui_display_info.get("Parameters", [])
@@ -904,8 +904,8 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
         assert param_id in avatar_source
 
     yui_file_refs = yui_model.get("FileReferences", {})
-    assert yui_file_refs.get("Moc") == "yui-origin.moc3"
-    assert yui_file_refs.get("DisplayInfo") == "yui-origin.cdi3.json"
+    assert yui_file_refs.get("Moc") == "yui-lolita.moc3"
+    assert yui_file_refs.get("DisplayInfo") == "yui-lolita.cdi3.json"
     for param_id in ("Param75", "Param90", "Param92", "Param95"):
         assert param_id in yui_param_ids
 
@@ -1618,7 +1618,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "this.revealTutorialLive2dPrepared();" in teardown_block
     assert "this.revealPrepared();" in restore_block
     assert "live2d: this.tutorialModelName" in begin_block
-    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
+    assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-lolita/yui-lolita.model3.json'" in tutorial_source
     assert "const ROUND_COUNT = 7" in seven_day_state_source
     launch_block = tutorial_source.split("const launchTutorial = () => {", 1)[1].split(
         "if (this.isI18nReady())",

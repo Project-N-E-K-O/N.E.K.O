@@ -21,39 +21,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem --- 1. yui-origin Live2D model (unpack from assets/) ---
-set "YUI_ARCHIVE=%ROOT_DIR%\assets\yui-origin.tar.gz"
-set "YUI_DIR=%ROOT_DIR%\static\yui-origin"
-set "YUI_MARKER=%YUI_DIR%\yui-origin.moc3"
-
-if not exist "%YUI_ARCHIVE%" (
-  echo [build_frontend] yui-origin archive missing: %YUI_ARCHIVE%
-  exit /b 1
-)
-
-set "YUI_NEED_EXTRACT=0"
-if not exist "%YUI_MARKER%" (
-  set "YUI_NEED_EXTRACT=1"
-) else (
-  for /f %%I in ('powershell -NoProfile -Command "if ((Get-Item -LiteralPath $env:YUI_ARCHIVE).LastWriteTime -gt (Get-Item -LiteralPath $env:YUI_MARKER).LastWriteTime) {1} else {0}"') do set "YUI_NEED_EXTRACT=%%I"
-)
-
-if "%YUI_NEED_EXTRACT%"=="1" (
-  echo [build_frontend] unpacking yui-origin...
-  if exist "%YUI_DIR%" rmdir /s /q "%YUI_DIR%"
-  tar -xzmf "%YUI_ARCHIVE%" -C "%ROOT_DIR%\static"
-  if errorlevel 1 (
-    echo [build_frontend] yui-origin unpack failed
-    exit /b 1
-  )
-  if not exist "%YUI_MARKER%" (
-    echo [build_frontend] yui-origin marker missing after unpack: %YUI_MARKER%
-    exit /b 1
-  )
-  echo [build_frontend] yui-origin done: %YUI_DIR%
-) else (
-  echo [build_frontend] yui-origin up to date, skip
-)
+rem --- 1. Built-in Live2D models (unpack from assets/) ---
+call :unpack_live2d yui-origin
+if errorlevel 1 exit /b 1
+call :unpack_live2d yui-lolita
+if errorlevel 1 exit /b 1
 
 rem --- 2. Plugin Manager (Vue) ---
 set "PM_DIR=%ROOT_DIR%\frontend\plugin-manager"
@@ -120,3 +92,42 @@ echo [build_frontend] react-neko-chat done: %RC_DIST%
 echo.
 echo [build_frontend] all production frontend projects built successfully.
 exit /b 0
+
+rem --- helper: unpack one built-in Live2D model ---
+rem 每个模型都是 assets\<name>.tar.gz，解到 static\<name>\，marker 是 <name>.moc3。
+:unpack_live2d
+setlocal
+set "MODEL=%~1"
+set "YUI_ARCHIVE=%ROOT_DIR%\assets\%MODEL%.tar.gz"
+set "YUI_DIR=%ROOT_DIR%\static\%MODEL%"
+set "YUI_MARKER=%YUI_DIR%\%MODEL%.moc3"
+
+if not exist "%YUI_ARCHIVE%" (
+  echo [build_frontend] %MODEL% archive missing: %YUI_ARCHIVE%
+  endlocal & exit /b 1
+)
+
+set "YUI_NEED_EXTRACT=0"
+if not exist "%YUI_MARKER%" (
+  set "YUI_NEED_EXTRACT=1"
+) else (
+  for /f %%I in ('powershell -NoProfile -Command "if ((Get-Item -LiteralPath $env:YUI_ARCHIVE).LastWriteTime -gt (Get-Item -LiteralPath $env:YUI_MARKER).LastWriteTime) {1} else {0}"') do set "YUI_NEED_EXTRACT=%%I"
+)
+
+if "%YUI_NEED_EXTRACT%"=="1" (
+  echo [build_frontend] unpacking %MODEL%...
+  if exist "%YUI_DIR%" rmdir /s /q "%YUI_DIR%"
+  tar -xzmf "%YUI_ARCHIVE%" -C "%ROOT_DIR%\static"
+  if errorlevel 1 (
+    echo [build_frontend] %MODEL% unpack failed
+    endlocal & exit /b 1
+  )
+  if not exist "%YUI_MARKER%" (
+    echo [build_frontend] %MODEL% marker missing after unpack: %YUI_MARKER%
+    endlocal & exit /b 1
+  )
+  echo [build_frontend] %MODEL% done: %YUI_DIR%
+) else (
+  echo [build_frontend] %MODEL% up to date, skip
+)
+endlocal & exit /b 0

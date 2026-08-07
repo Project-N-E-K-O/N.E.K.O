@@ -153,7 +153,6 @@ static/ziraitikuwa/*
 static/neko/*
 static/kemomimi/*
 static/yui/*
-static/yui-lolita/*
 static/react/neko-chat/*
 打包说明.txt
 runtime_hook_inflect.py
@@ -249,8 +248,9 @@ static/jukebox/*.fbx
 tests/prompt_dump.json
 tests/testbench/docs/dev_note.txt
 
-# yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
+# 内置 Live2D 模型源码打包在 assets/<name>.tar.gz；build_frontend 解压到此
 /static/yui-origin/
+/static/yui-lolita/
 # 内置 PNGTuber 模型源码位于 frontend/pngtuber-packs；build_frontend 解压到此
 /static/pngtuber/
 

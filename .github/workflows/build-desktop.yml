@@ -325,6 +325,14 @@ jobs:
             exit 0
           fi
           uv run --no-sync python scripts/unpack_builtin_pngtuber.py
+          # 内置 Live2D 模型：Linux 分支由 build_frontend.sh 解压，这里是绕过那个脚本
+          # 的 Windows/macOS 路径，必须自己解一次，否则 --include-data-dir=static 打进
+          # dist 的 static/ 里没有默认模型（check_nuitka_dist 会把这种情况判红）。
+          for model in yui-origin yui-lolita; do
+            rm -rf "static/$model"
+            tar -xzmf "assets/$model.tar.gz" -C static/
+            test -f "static/$model/$model.moc3"
+          done
           cd frontend/plugin-manager
           npm ci
           npm run build-only
