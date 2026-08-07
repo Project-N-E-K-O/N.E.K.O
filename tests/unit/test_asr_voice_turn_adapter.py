@@ -673,6 +673,56 @@ async def test_confirmation_observes_evaluation_tail_without_refeeding_audio() -
         await adapter.close()
 
 
+async def test_confirmation_expiry_waits_for_inflight_continuation() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    gate = _BlockingGate(
+        [
+            (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            (SpeechActivityEvent.SPEECH_RESUMED,),
+        ],
+        blocked_indices=(1,),
+    )
+    coordinator = _FakeCoordinator([_complete()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=commit,
+        candidate_complete_confirmation_seconds=0.05,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=b"\x01\x00",
+        )
+        await adapter.wait_idle()
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=b"\x02\x00",
+        )
+        assert await asyncio.to_thread(gate.started[1].wait, 1)
+
+        await asyncio.sleep(0.1)
+        assert commits == []
+
+        gate.release[1].set()
+        await adapter.wait_idle()
+        assert commits == []
+    finally:
+        gate.release[1].set()
+        await adapter.close()
+
+
 async def test_multiple_pauses_coalesce_to_one_followup_evaluation() -> None:
     coordinator = _FakeCoordinator(
         [_failed_evaluation(EvaluationStatus.STALE), _complete()],

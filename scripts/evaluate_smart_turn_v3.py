@@ -1155,6 +1155,8 @@ def evaluate_manifest(
 ) -> dict[str, Any]:
     """Evaluate a validated manifest and return a privacy-redacted report."""
 
+    if criteria is not None and manifest.sha256 != criteria.manifest_sha256:
+        raise ValueError("manifest SHA-256 does not match the pre-registered criteria")
     selected_threshold = (
         criteria.decision_threshold
         if threshold is None and criteria is not None

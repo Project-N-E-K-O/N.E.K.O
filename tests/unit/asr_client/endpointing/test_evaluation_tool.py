@@ -502,19 +502,17 @@ def test_gate_binds_the_entire_frozen_manifest_before_inference(tmp_path: Path) 
     payload["cases"][0]["id"] = _token("case", 999)
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    report = evaluate_manifest(
-        load_manifest(manifest_path),
-        _Predictor(_passing_probabilities(cases)),
-        criteria=criteria,
-    )
+    class _MustNotPredict:
+        def predict_probability(self, audio: np.ndarray) -> float:
+            del audio
+            raise AssertionError("mismatched frozen evidence must not run inference")
 
-    assert report["gate"]["outcome"] == "blocked"
-    binding_check = next(
-        check
-        for check in report["gate"]["checks"]
-        if check["check"] == "manifest_binding"
-    )
-    assert binding_check["status"] == "blocked"
+    with pytest.raises(ValueError, match="pre-registered criteria"):
+        evaluate_manifest(
+            load_manifest(manifest_path),
+            _MustNotPredict(),
+            criteria=criteria,
+        )
 
 
 def test_criteria_threshold_must_match_the_deployed_smart_turn_config(

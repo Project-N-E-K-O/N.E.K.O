@@ -105,7 +105,14 @@ class _PendingCompleteConfirmation:
     probability: float | None
 
 
-_ControlItem: TypeAlias = _ResetItem | _CloseItem | _EvaluationResultItem
+@dataclass(frozen=True, slots=True)
+class _CompleteConfirmationItem:
+    pending: _PendingCompleteConfirmation
+
+
+_ControlItem: TypeAlias = (
+    _ResetItem | _CloseItem | _EvaluationResultItem | _CompleteConfirmationItem
+)
 _QueueItem: TypeAlias = _AudioItem | _ControlItem
 
 
@@ -437,6 +444,11 @@ class _VoiceTurnAdapter:
                     if self._failed:
                         await self._drain_queue_on_failure_exit()
                         return
+                    continue
+                if isinstance(item, _CompleteConfirmationItem):
+                    if self._fallback_task is not None and self._fallback_task.done():
+                        self._fallback_task = None
+                    await self._publish_pending_complete_confirmation(item.pending)
                     continue
                 await self._process_close()
                 if not item.completed.done():
@@ -953,7 +965,7 @@ class _VoiceTurnAdapter:
 
         async def confirm_complete() -> None:
             await asyncio.sleep(delay_seconds)
-            await self._publish_pending_complete_confirmation(pending)
+            self._queue.put_control_nowait(_CompleteConfirmationItem(pending))
 
         self._fallback_task = asyncio.create_task(
             confirm_complete(), name=f"asr-voice-turn-{reason}-complete-confirm"

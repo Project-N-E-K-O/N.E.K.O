@@ -210,6 +210,31 @@ async def test_sink_writes_only_privacy_safe_ordered_jsonl_under_data(
     )
 
 
+async def test_sink_flushes_events_while_session_is_still_active(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "data" / "smart_turn" / "runtime.jsonl"
+    sink = create_smart_turn_runtime_diagnostics(
+        environ={
+            SMART_TURN_DIAGNOSTICS_ENABLED_ENV: "1",
+            SMART_TURN_DIAGNOSTICS_PATH_ENV: "data/smart_turn/runtime.jsonl",
+        },
+        repo_root=tmp_path,
+    )
+
+    def read_if_present() -> str:
+        return target.read_text("utf-8") if target.exists() else ""
+
+    sink.candidate(reason="candidate_pause")
+    async with asyncio.timeout(1):
+        while not (contents := await asyncio.to_thread(read_if_present)):
+            await asyncio.sleep(0.01)
+
+    records = [json.loads(line) for line in contents.splitlines()]
+    assert [record["event"] for record in records] == ["session_start", "candidate"]
+    await sink.close()
+
+
 async def test_sink_rejects_paths_outside_repository_data(tmp_path: Path) -> None:
     sink = create_smart_turn_runtime_diagnostics(
         environ={

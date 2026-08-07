@@ -296,6 +296,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
                         )
                     stream.write(command.line)
                     stream.write("\n")
+                    stream.flush()
                 except Exception:
                     broken = True
                     _close_stream(stream)
