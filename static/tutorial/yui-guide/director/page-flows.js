@@ -190,30 +190,6 @@
             });
         },
 
-        async openMicPanel() {
-            return this.callHomeInteractionApi('openMicPanel', [], async () => {
-                const popup = this.getManagedPanelElement('mic');
-                const trigger = this.resolveElement('.${p}-trigger-btn');
-                if (!popup || !trigger || typeof trigger.click !== 'function') {
-                    return false;
-                }
-                if (!this.isManagedPanelVisible('mic')) {
-                    trigger.click();
-                }
-                const opened = await this.waitForElement(() => (
-                    this.isManagedPanelVisible('mic') ? popup : null
-                ), 1800);
-                if (!opened) {
-                    return false;
-                }
-                const screenShareToggle = popup.querySelector('[data-neko-screen-share-action="toggle"]');
-                if (!screenShareToggle && typeof window.renderFloatingMicList === 'function') {
-                    await window.renderFloatingMicList(popup);
-                }
-                return true;
-            });
-        },
-
         async closeAgentPanel() {
             const closed = await this.callHomeInteractionApi('closeAgentPanel', [], () => {
                 return this.setFallbackFloatingPopupVisible('agent', false);

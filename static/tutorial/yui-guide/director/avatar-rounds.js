@@ -124,7 +124,6 @@
                 day3SettingsSceneIds.includes(sceneId)
                 || day4SettingsSceneIds.includes(sceneId)
                 || day5SettingsSceneIds.includes(sceneId)
-                || sceneId === 'day1_screen_entry_invite'
             ) {
                 return true;
             }
@@ -163,7 +162,6 @@
                 : '';
             return !!(
                 operation === 'day1-intro-basic-voice-showcase'
-                || operation === 'day1-screen-share-entry-flow'
                 || operation === 'day3-open-settings-personalization'
                 || operation === 'day3-settings-detail'
                 || operation.indexOf('day1-managed-scene:') === 0

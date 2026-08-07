@@ -76,9 +76,6 @@
                     context.narrationPromise
                 )
             ));
-            this.registerOperation('day1-screen-share-entry-flow', (context) => (
-                this.runDay1ScreenShareEntryFlow(context.scene)
-            ));
             this.registerOperation('day1-managed-scene:takeover_capture_cursor', (context) => (
                 this.runDay1TakeoverCaptureCursor(context.scene)
             ));
@@ -285,45 +282,6 @@
                 }
             }
             return true;
-        }
-
-        async runDay1ScreenShareEntryFlow(scene) {
-            const director = this.director;
-            if (!director || typeof director.openMicPanel !== 'function') {
-                return false;
-            }
-
-            const opened = await director.openMicPanel();
-            if (!opened || director.isStopping()) {
-                return false;
-            }
-
-            const screenShareRow = await director.waitForElement(() => {
-                const popup = director.getManagedPanelElement('mic');
-                const target = popup
-                    ? popup.querySelector('[data-neko-mic-main-action-row="screen"]')
-                    : null;
-                return target && director.getElementRect(target) ? target : null;
-            }, 2200);
-            if (!screenShareRow || director.isStopping()) {
-                return false;
-            }
-
-            const screenShareButton = screenShareRow.querySelector('[data-neko-mic-main-action="screen"]');
-            if (!screenShareButton || !director.getElementRect(screenShareButton) || director.isStopping()) {
-                return false;
-            }
-
-            director.setSpotlightGeometryHint(screenShareRow, {
-                padding: 4,
-                radius: 12,
-                geometry: 'rounded-rect'
-            });
-            director.applyGuideHighlights({
-                key: (scene && scene.id ? scene.id : 'day1-screen-share-entry') + '-screen-share',
-                primary: screenShareRow
-            });
-            return !!(await director.moveCursorToElement(screenShareButton, 760));
         }
 
         async runDay1TakeoverCaptureCursor(scene) {
