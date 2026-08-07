@@ -77,6 +77,10 @@ AGENT_USE_EXTRA_BODY = True
 
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
+    # OpenAI 系列
+    "gpt-5.6-luna": EXTRA_BODY_OPENAI,
+    "gpt-5.6-terra": EXTRA_BODY_OPENAI,
+    "gpt-5-nano": EXTRA_BODY_OPENAI,
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash": EXTRA_BODY_OPENAI,
@@ -91,6 +95,8 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-plus-2026-05-26": EXTRA_BODY_OPENAI,
     "qwen3.7-plus": EXTRA_BODY_OPENAI,
     "qwen3.7-max": EXTRA_BODY_OPENAI,
+    "qwen3.7-flash": EXTRA_BODY_OPENAI,
+    "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
@@ -119,6 +125,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
     "free-model": EXTRA_BODY_CLAUDE,
     # Claude 系列（Anthropic 原生：enable 须用 adaptive，本 PR 暂不翻，见 EXTRA_BODY_ANTHROPIC）
+    "claude-sonnet-5": EXTRA_BODY_ANTHROPIC,
     "claude-sonnet-4-6": EXTRA_BODY_ANTHROPIC,
     "claude-haiku-4-5-20251001": EXTRA_BODY_ANTHROPIC,
     "claude-opus-4-7": EXTRA_BODY_ANTHROPIC,
