@@ -208,17 +208,40 @@ def test_active_persona_cards_have_distinct_style_copy():
 
 
 @pytest.mark.unit
-def test_legacy_prompt_ids_cannot_be_newly_resolved_or_selected():
+def test_legacy_prompt_ids_are_hidden_by_default_but_remain_selectable():
     active_ids = {preset["preset_id"] for preset in list_persona_presets()}
+    all_ids = [
+        preset["preset_id"]
+        for preset in list_persona_presets(include_legacy=True)
+    ]
 
     assert "classic_genki" not in active_ids
-    assert get_persona_preset("classic_genki") is None
-    assert get_persona_prompt_guidance("classic_genki", "zh") == ""
+    assert all_ids[-3:] == ["classic_genki", "tsundere_helper", "elegant_butler"]
+    assert get_persona_preset("classic_genki") is not None
+    classic_prompt = get_persona_prompt_guidance("classic_genki", "zh")
+    assert "sunny cat girl" in classic_prompt
+    assert "{MASTER_NAME}是{LANLAN_NAME}的亲人" in classic_prompt
+    assert "{LANLAN_NAME}对{MASTER_NAME}毫无保留" in classic_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_legacy_persona_prompts_resolve_in_every_language(lang):
+    legacy_ids = ["classic_genki", "tsundere_helper", "elegant_butler"]
+    prompts = [get_persona_prompt_guidance(preset_id, lang) for preset_id in legacy_ids]
+
+    assert all(prompts)
+    assert all("{_" not in prompt for prompt in prompts)
+    assert all("output only words {LANLAN_NAME} can actually say aloud" in prompt for prompt in prompts)
+    assert all("Punctuation may guide TTS" in prompt for prompt in prompts)
+    assert all("Camera language and narrated memory-search processes are always forbidden" in prompt for prompt in prompts)
+    assert all("Unless {MASTER_NAME} explicitly requests text role-play" in prompt for prompt in prompts)
+    assert len(set(prompts)) == len(legacy_ids)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("locale", ["zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
-def test_active_persona_cards_are_complete_in_every_locale(locale):
+def test_selectable_persona_cards_are_complete_in_every_locale(locale):
     locale_path = Path(__file__).parents[2] / "static" / "locales" / f"{locale}.json"
     selection_copy = json.loads(locale_path.read_text(encoding="utf-8"))["memory"]["characterSelection"]
     required_fields = {
@@ -235,7 +258,7 @@ def test_active_persona_cards_are_complete_in_every_locale(locale):
         "boundaries",
     }
 
-    for preset in list_persona_presets(locale):
+    for preset in list_persona_presets(locale, include_legacy=True):
         localized_card = selection_copy[preset["preset_id"]]
         assert required_fields <= localized_card.keys()
         assert all(str(localized_card[field]).strip() for field in required_fields)

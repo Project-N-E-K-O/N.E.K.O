@@ -2055,6 +2055,17 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
         "function normalizeCompactDesktopWorkArea(raw)",
         1,
     )[0]
+    resize_drag_script = (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "app"
+        / "app-react-chat-window"
+        / "resize-drag-and-api.js"
+    ).read_text(encoding="utf-8")
+    stop_drag_block = resize_drag_script.split("I.stopDrag = function stopDrag(options)", 1)[1].split(
+        "function bindDragging()",
+        1,
+    )[0]
     listener_block = script.split("window.addEventListener('neko:desktop-compact-layout-change'", 1)[1].split(
         "window.addEventListener('neko:desktop-avatar-bounds-change'",
         1,
@@ -2066,6 +2077,23 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
     assert "if (baseAnchorChanged && !compactSurfaceDesktopResizeActive)" in handler_block
     assert "compactSurfaceAnchorLocked = false;" in handler_block
     assert "compactSurfaceAnchorSnapshot = '';" in handler_block
+    assert "noteCompactSurfaceManualDragRelease" in script
+    assert "isCompactSurfaceManualDragReleaseGuardActive" in handler_block
+    assert "localCompactDragActive" in handler_block
+    release_index = stop_drag_block.index(
+        "I.noteCompactSurfaceManualDragRelease(compactRect);"
+    )
+    dispatch_index = stop_drag_block.index(
+        "I.dispatchCompactSurfaceLayoutChange(compactRect);"
+    )
+    assert release_index < dispatch_index
+    guard_start = handler_block.index(
+        "if (!localCompactDragActive && !manualDragReleaseGuardActive) {"
+    )
+    guard_end = handler_block.index("\n            }", guard_start)
+    guard_block = handler_block[guard_start:guard_end]
+    assert "compactSurfaceAnchorLocked = false;" in guard_block
+    assert "compactSurfaceAnchorSnapshot = '';" in guard_block
     assert "scheduleCompactMinimizeBallTracking();" in handler_block
     assert "var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;" in listener_block
     assert "handleDesktopCompactLayoutChange(layout || null);" in listener_block

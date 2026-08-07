@@ -224,9 +224,11 @@ COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-
 # 7b. Copy OpenFang binary (Rust A2A agent daemon)
 COPY --from=openfang-downloader /usr/local/bin/openfang /usr/local/bin/openfang
 
-# 7c. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
-RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
-    test -f static/yui-origin/yui-origin.moc3
+# 7c. Extract built-in Live2D models (assets/<name>.tar.gz → static/<name>/)
+RUN cd /app && for model in yui-origin yui-lolita; do \
+        tar -xzmf "assets/$model.tar.gz" -C static/ || exit 1; \
+        test -f "static/$model/$model.moc3" || exit 1; \
+    done
 
 # 8. Install Python dependencies using uv
 RUN cd /app && \

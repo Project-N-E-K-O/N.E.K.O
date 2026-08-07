@@ -7,14 +7,15 @@ ROOT = Path(__file__).resolve().parents[2]
 APP_STATE = ROOT / "static" / "app" / "app-state.js"
 APP_SETTINGS = ROOT / "static" / "app" / "app-settings.js"
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
+ASR_RUNTIME = ROOT / "main_logic" / "core" / "asr_runtime.py"
 LOCALE_DIR = ROOT / "static" / "locales"
 LOCALES = ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW")
 
 
-def test_new_profile_voice_settings_default_enabled_without_becoming_authoritative() -> None:
+def test_new_profile_independent_asr_defaults_off_without_becoming_authoritative() -> None:
     state = APP_STATE.read_text(encoding="utf-8")
 
-    assert "independentAsrEnabled: true" in state
+    assert "independentAsrEnabled: false" in state
     assert "coreApiSupportsIndependentAsr: null" in state
     assert "voiceInputResourceOptimizationEnabled: true" in state
     assert "settingsHydrated: false" in state
@@ -25,7 +26,7 @@ def test_new_profile_voice_settings_default_enabled_without_becoming_authoritati
 def test_voice_settings_preserve_explicit_false_during_boot_merge() -> None:
     settings = APP_SETTINGS.read_text(encoding="utf-8")
 
-    assert "settings.independentAsrEnabled ?? true" in settings
+    assert "settings.independentAsrEnabled ?? false" in settings
     assert "settings.voiceInputResourceOptimizationEnabled ?? true" in settings
     assert "settings.independentAsrEnabled || true" not in settings
     assert "settings.voiceInputResourceOptimizationEnabled || true" not in settings
@@ -38,8 +39,14 @@ def test_reset_defaults_match_new_profile_voice_defaults() -> None:
         maxsplit=1,
     )[1].split("function _serverSettingsForMerge", maxsplit=1)[0]
 
-    assert "independentAsrEnabled: true" in reset_defaults
+    assert "independentAsrEnabled: false" in reset_defaults
     assert "voiceInputResourceOptimizationEnabled: true" in reset_defaults
+
+
+def test_backend_defaults_missing_independent_asr_preference_off() -> None:
+    runtime = ASR_RUNTIME.read_text(encoding="utf-8")
+
+    assert 'settings.get("independentAsrEnabled", False)' in runtime
 
 
 def test_resource_optimization_uses_only_the_canonical_shared_setting_key() -> None:

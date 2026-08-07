@@ -1714,6 +1714,15 @@ def test_settings_uses_i18n_copy_for_warning_and_user_visible_text(mock_page: Pa
         """
     )
 
+    settings_preset_url = mock_page.evaluate(
+        """
+        () => window.__requestLog.find((entry) => (
+            new URL(entry.url, window.location.origin).pathname === '/api/characters/persona-presets'
+        )).url
+        """
+    )
+    assert parse_qs(urlparse(settings_preset_url).query).get("include_legacy") == ["true"]
+
     expect(mock_page.locator("[data-role='eyebrow']")).to_have_text("Persona retune")
     expect(mock_page.locator("[data-role='title']")).to_have_text("Let me switch into a new little vibe for you.")
     expect(mock_page.locator("[data-role='hint']")).to_have_text(

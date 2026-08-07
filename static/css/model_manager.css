@@ -110,6 +110,14 @@ body {
     cursor: grabbing;
 }
 
+body.model-manager-page.model-manager-background-dragging #live2d-canvas,
+body.model-manager-page.model-manager-background-dragging #vrm-canvas,
+body.model-manager-page.model-manager-background-dragging #mmd-canvas,
+body.model-manager-page.model-manager-background-dragging #pngtuber-container {
+    cursor: grabbing !important;
+    user-select: none;
+}
+
 #model-manager-toast {
     position: fixed;
     left: 50%;

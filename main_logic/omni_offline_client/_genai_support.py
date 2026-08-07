@@ -74,6 +74,82 @@ class _GenaiToolsUnsupported(Exception):
     (SDK missing, model rejected, etc.) so the caller can fall back to
     the OpenAI-compat path with tools silently disabled."""
 
+
+# Gemini 的 thought_signature 在两条路径上形态不同：native SDK 给 ``Part
+# .thought_signature`` 的裸 bytes，OpenAI-compat 端点给
+# ``tool_calls[].extra_content.google.thought_signature`` 的 base64 字符串。
+# 统一工具调用历史（两条路径共用的 dict）一律按后者存：JSON 可序列化、能
+# 直接落盘、且换一条路线继续同一段历史时也能原样回传。
+_EXTRA_CONTENT_VENDOR_KEY = "google"
+_THOUGHT_SIGNATURE_KEY = "thought_signature"
+
+
+def _extra_content_from_thought_signature(signature: Any) -> Optional[dict]:
+    """Wrap a native ``Part.thought_signature`` into the shared history shape.
+
+    Returns ``None`` when the part carries no signature, so ordinary
+    non-thinking turns never grow an ``extra_content`` key."""
+    if not signature:
+        return None
+    if isinstance(signature, str):
+        encoded = signature  # 已是 base64（部分 SDK 版本直接给 str）
+    else:
+        import base64 as _b64
+        try:
+            encoded = _b64.b64encode(bytes(signature)).decode("ascii")
+        except (TypeError, ValueError) as e:
+            logger.debug("genai: unusable thought_signature dropped: %s", e)
+            return None
+    return {_EXTRA_CONTENT_VENDOR_KEY: {_THOUGHT_SIGNATURE_KEY: encoded}}
+
+
+def _thought_signature_from_extra_content(extra_content: Any) -> Optional[bytes]:
+    """Inverse of ``_extra_content_from_thought_signature``: pull the base64
+    signature out of a history entry and decode it back to the bytes the
+    native SDK wants. ``None`` when absent or unparseable."""
+    if not isinstance(extra_content, dict):
+        return None
+    vendor = extra_content.get(_EXTRA_CONTENT_VENDOR_KEY)
+    if not isinstance(vendor, dict):
+        return None
+    encoded = vendor.get(_THOUGHT_SIGNATURE_KEY)
+    if not encoded or not isinstance(encoded, str):
+        return None
+    import base64 as _b64
+    # 只有我们自己写的那半边保证是标准字母表 + padding；另一半是 compat
+    # 端点原样存下来的串，字母表和 padding 由 Google 说了算。这里两种字母表
+    # 都收、缺 padding 也补，别让一个纯编码约定差异把签名静默丢掉——那等于
+    # 把本要修的 400 又放回来。真正的垃圾串仍被 validate=True 挡住。
+    normalized = encoded.replace("-", "+").replace("_", "/")
+    normalized += "=" * (-len(normalized) % 4)
+    try:
+        return _b64.b64decode(normalized, validate=True)
+    except (ValueError, TypeError) as e:
+        logger.warning("genai: malformed thought_signature in history dropped: %s", e)
+        return None
+
+
+def _genai_function_call_part(types, *, call_id: str, name: str, args: dict, signature: Optional[bytes]):
+    """Build the ``Part(function_call=...)`` for a replayed tool call, carrying
+    ``thought_signature`` when history has one.
+
+    Gemini rejects a follow-up request whose function-call history lost the
+    signature (400 INVALID_ARGUMENT), so this is what makes multi-round tool
+    calling work at all on thinking models. Falls back to a signature-less
+    part if the installed SDK's ``Part`` doesn't accept the field — an old
+    SDK is better served by the pre-existing (broken-for-Gemini-3) behaviour
+    than by a hard crash."""
+    fc = types.FunctionCall(id=call_id, name=name, args=args)
+    if signature:
+        try:
+            return types.Part(function_call=fc, thought_signature=signature)
+        except Exception as e:  # pragma: no cover — old google-genai only
+            logger.warning(
+                "genai: Part rejected thought_signature (%s); replaying without it",
+                e,
+            )
+    return types.Part(function_call=fc)
+
 def _genai_messages_to_contents(
     messages: list,
 ) -> tuple[Optional[str], list]:
@@ -139,11 +215,17 @@ def _genai_messages_to_contents(
                             args = json.loads(fn.get("arguments") or "{}") if isinstance(fn.get("arguments"), str) else (fn.get("arguments") or {})
                         except json.JSONDecodeError:
                             args = {"_raw": fn.get("arguments") or ""}
-                        parts.append(types.Part(function_call=types.FunctionCall(
-                            id=tc.get("id") or "",
+                        parts.append(_genai_function_call_part(
+                            types,
+                            call_id=tc.get("id") or "",
                             name=fn.get("name") or "",
                             args=args,
-                        )))
+                            # thought_signature 必须跟着它那条 function_call
+                            # 一起回放，否则 Gemini 思考模型下一轮直接 400。
+                            signature=_thought_signature_from_extra_content(
+                                tc.get("extra_content")
+                            ),
+                        ))
                     contents.append(types.Content(role="model", parts=parts))
                 else:
                     parts = _genai_parts_from_content(msg.get("content", ""))
@@ -415,7 +497,8 @@ class _GenaiMixin:
                 raise
 
             # Per-iteration accumulators.
-            collected_tool_calls: list = []  # list of (id, name, args_dict, raw_args_str)
+            # list of (id, name, args_dict, raw_args_str, extra_content|None)
+            collected_tool_calls: list = []
             # 是否见过任何 function_call part（含名字为空、随后被 drop 的）：
             # "进入 tool 轮"的判据必须用它而不是 collected——全被 drop 时
             # collected 为空，但这轮确实不是普通文本轮。
@@ -486,11 +569,17 @@ class _GenaiMixin:
                                 raw_args = json.dumps(args, ensure_ascii=False)
                             except (TypeError, ValueError):
                                 raw_args = "{}"
+                            # thought_signature 挂在 Part 上（不在 FunctionCall
+                            # 里），必须在这里就抓走存进历史：下一轮回放这条
+                            # function_call 时 Gemini 思考模型要求原样带回。
                             collected_tool_calls.append((
                                 getattr(fn_call, "id", "") or "",
                                 tc_name,
                                 args,
                                 raw_args,
+                                _extra_content_from_thought_signature(
+                                    getattr(part, "thought_signature", None)
+                                ),
                             ))
                         elif text:
                             if tool_leak_filter is not None:
@@ -626,14 +715,16 @@ class _GenaiMixin:
             if collected_tool_calls and self.on_tool_call is not None:
                 # Execute tools, append a unified assistant + tool history (dict shape
                 # accepted by both paths), then continue tool-iteration loop.
-                tool_calls_dict = [
-                    {
+                tool_calls_dict = []
+                for i, (tc_id, tc_name, _args, tc_raw, tc_extra) in enumerate(collected_tool_calls):
+                    entry = {
                         "id": tc_id or f"call_{i}",
                         "type": "function",
                         "function": {"name": tc_name, "arguments": tc_raw},
                     }
-                    for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
-                ]
+                    if tc_extra:
+                        entry["extra_content"] = tc_extra
+                    tool_calls_dict.append(entry)
                 # 把本轮已经流给用户的 text 一起写进历史。Gemini 在同一 turn
                 # 里允许 text part 与 function_call part 并存；如果这里仍写
                 # ``content=""``，下一轮 LLM 看到的上下文会缺掉前半句，模型
@@ -647,7 +738,7 @@ class _GenaiMixin:
                     "tool_calls": tool_calls_dict,
                 })
                 executed_tool_calls += len(collected_tool_calls)
-                for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
+                for i, (tc_id, tc_name, tc_args, tc_raw, _tc_extra) in enumerate(collected_tool_calls):
                     tool_call = ToolCall(
                         name=tc_name,
                         arguments=tc_args,

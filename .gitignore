@@ -248,8 +248,11 @@ static/jukebox/*.fbx
 tests/prompt_dump.json
 tests/testbench/docs/dev_note.txt
 
-# yui-origin Live2D 模型源码打包在 assets/yui-origin.tar.gz；build_frontend 解压到此
+# 内置 Live2D 模型源码打包在 assets/<name>.tar.gz；build_frontend 解压到此
 /static/yui-origin/
+/static/yui-lolita/
+# 内置 PNGTuber 模型源码位于 frontend/pngtuber-packs；build_frontend 解压到此
+/static/pngtuber/
 
 # Plugin runtime and local live-screen artifacts
 /plugin/plugins/*/plugin.toml.lock

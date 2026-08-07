@@ -57,11 +57,15 @@ def test_live2d_initial_snap_uses_runtime_threshold():
     assert "const snapInfo = await this._checkSnapRequired(model);" in model_source
 
 
-def test_live2d_display_switch_still_snaps_after_window_move():
+def test_live2d_display_switch_defers_snap_and_save_to_drag_terminal():
     source = _live2d_source()
 
     display_switch_section = source.split("console.log('[Live2D] 屏幕切换成功:', result);", 1)[1]
-    assert "const snapped = await this._checkAndPerformSnap(model, { afterDisplaySwitch: true });" in display_switch_section
+    display_switch_method = display_switch_section.split("// setupResizeSnapDetection", 1)[0]
+    assert "_checkAndPerformSnap" not in display_switch_method
+    assert "_savePositionAfterInteraction" not in display_switch_method
+    assert "await waitForLive2DDesktopCoordinateSettlement(" in display_switch_method
+    assert "targetDisplay.id" in display_switch_method
 
 
 def test_live2d_does_not_switch_display_during_drag_before_mouseup():
@@ -115,26 +119,32 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
     host_guard = "if (isLive2DHostModelDragActive()) return;"
     assert host_guard in drag_end
     for cleanup in (
-        "this._isDraggingModel = false;",
-        "document.getElementById('live2d-canvas').style.cursor = '';",
-        "restoreButtonPointerEvents();",
+        "releaseLocalDragUi();",
         "dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;",
     ):
         assert drag_end.index(cleanup) < drag_end.index(host_guard)
-    for settlement in (
-        "const displaySwitched = await this._checkAndSwitchDisplay(model);",
-        "await this._checkAndPerformSnap(model)",
-        "await this._savePositionAfterInteraction();",
-        "await this._tryApplyLive2DPeek(model);",
-    ):
-        assert drag_end.index(host_guard) < drag_end.index(settlement)
+    assert drag_end.index(host_guard) < drag_end.index(
+        "await this._settleLive2DDragTerminal(model);"
+    )
     assert host_guard in drag_move
     host_guard_index = drag_move.index(host_guard)
-    for coordinate_assignment in (
-        "model.x = x - dragStartPos.x;",
-        "model.y = y - dragStartPos.y;",
-    ):
-        assert host_guard_index < drag_move.index(coordinate_assignment)
+    assert host_guard_index < drag_move.index(
+        "placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);"
+    )
+
+
+def test_live2d_drag_cancel_and_blur_only_clear_the_local_session():
+    source = _live2d_source()
+    drag_source = source.split(
+        "Live2DManager.prototype.setupDragAndDrop = function",
+        1,
+    )[1].split("Live2DManager.prototype.setupWheelZoom", 1)[0]
+
+    assert "const cancelLocalDragSession = () => {" in drag_source
+    assert "if (event && event.type === 'pointercancel')" in drag_source
+    assert "const onDragBlur = () => {\n        cancelLocalDragSession();" in drag_source
+    assert "window.addEventListener('blur', onDragBlur);" in drag_source
+    assert "window.removeEventListener('blur', this._dragBlurListener);" in source
 
 
 def test_live2d_click_touch_set_logs_trigger_summary():

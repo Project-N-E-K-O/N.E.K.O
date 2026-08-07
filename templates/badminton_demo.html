@@ -3934,8 +3934,8 @@
       ['setupFloatingButtons', 'setupHTMLLockIcon', 'setupReturnButtonContainerDrag'].forEach(function (name) {
         if (typeof window.live2dManager[name] !== 'function') window.live2dManager[name] = function () {};
       });
-      var modelPath = live2dPath || '/static/yui-origin/yui-origin.model3.json';
-      if (!live2dPath) console.warn('[badminton_demo] 当前 Live2D 路径缺失，使用默认 yui-origin 作为 Live2D 最后兜底');
+      var modelPath = live2dPath || '/static/yui-lolita/yui-lolita.model3.json';
+      if (!live2dPath) console.warn('[badminton_demo] 当前 Live2D 路径缺失，使用默认 yui-lolita 作为 Live2D 最后兜底');
       var loadPromise = window.live2dManager.loadModel(modelPath);
       if (loadPromise && typeof loadPromise.catch === 'function') {
         loadPromise.catch(function () {});
@@ -4071,7 +4071,7 @@
   }
   async function initNekoAvatar() {
     var charData = await loadBadmintonCharacter();
-    var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';
+    var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';
     window.lanlan_config.model_type = 'live2d';
     window.lanlan_config.live3d_sub_type = '';
     await initLive2DAvatar(live2dPath);

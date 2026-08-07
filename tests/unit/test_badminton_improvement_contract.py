@@ -197,7 +197,7 @@ def test_badminton_invite_character_request_uses_invited_lanlan_name():
     assert "var requestedLanlanName = String(window.__nekoBadmintonQueryLanlanName || '').trim();" in html
     assert "characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);" in html
     assert "var charResp = await fetch(characterPath);" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html
@@ -2768,7 +2768,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "sweetSpot.clone().project(window.badmintonPlayerVrmManager.camera);" in html
     assert "clientX / Math.max(1, window.innerWidth) * BASE_W" in html
     assert "window.__badmintonPlayerRacketDebug = {" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html

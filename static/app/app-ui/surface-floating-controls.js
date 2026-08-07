@@ -94,8 +94,66 @@
             });
         }
 
+        // The floating controls become visible before the return flow has
+        // finished resetting the hidden session buttons. Preserve a mic click
+        // made in that window and replay it after the return is complete.
+        let catReturnInProgress = false;
+        let floatingMicToggleGeneration = 0;
+
+        window.addEventListener('neko:cat-return-commit', () => {
+            catReturnInProgress = true;
+        });
+        window.addEventListener('neko:cat-return-complete', () => {
+            catReturnInProgress = false;
+        });
+        window.addEventListener('neko:cat-return-abort', () => {
+            catReturnInProgress = false;
+        });
+
+        function waitForCatReturnComplete(timeoutMs) {
+            if (!catReturnInProgress) {
+                return Promise.resolve(true);
+            }
+            return new Promise((resolve) => {
+                let settled = false;
+                let timeoutId = null;
+                const finish = (completed) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timeoutId) clearTimeout(timeoutId);
+                    window.removeEventListener('neko:cat-return-complete', handleComplete);
+                    window.removeEventListener('neko:cat-return-abort', handleAbort);
+                    resolve(completed);
+                };
+                const handleComplete = () => finish(true);
+                const handleAbort = () => finish(false);
+                window.addEventListener('neko:cat-return-complete', handleComplete);
+                window.addEventListener('neko:cat-return-abort', handleAbort);
+                timeoutId = setTimeout(() => finish(false), timeoutMs);
+            });
+        }
+
+        function reconcileFloatingMicButtonState() {
+            const active = !!(I.S.isRecording || I.S.voiceStartPending || window.isMicStarting);
+            if (typeof window.syncFloatingMicButtonState === 'function') {
+                window.syncFloatingMicButtonState(active);
+            }
+            return active;
+        }
+
         window.addEventListener('live2d-mic-toggle', async (e) => {
+            const toggleGeneration = ++floatingMicToggleGeneration;
             if (e.detail.active) {
+                if (catReturnInProgress) {
+                    const returnCompleted = await waitForCatReturnComplete(15000);
+                    if (toggleGeneration !== floatingMicToggleGeneration) {
+                        return;
+                    }
+                    if (!returnCompleted) {
+                        reconcileFloatingMicButtonState();
+                        return;
+                    }
+                }
                 if (I.S.isRecording) {
                     // 已在录音：仅按需联动自动共享屏幕
                     if (voiceAutoScreenEnabled()) {
@@ -117,6 +175,13 @@
                     micButton.click();
                     await waitForVoiceRecordingReady(5000);
                 }
+                if (toggleGeneration !== floatingMicToggleGeneration) {
+                    return;
+                }
+                // Disabled native buttons silently reject click(). Reconcile
+                // the optimistic floating state so its screen-share shortcut
+                // cannot remain visible after a rejected or failed start.
+                reconcileFloatingMicButtonState();
                 // 仅当用户显式开启「语音时自动共享屏幕」才联动起屏；默认关 = 开麦只开麦。
                 if (I.S.isRecording && voiceAutoScreenEnabled()) {
                     await startScreenSharingFromVoiceButton();
@@ -1236,6 +1301,8 @@
                     timestamp: Date.now()
                 }
             }));
+            let returnTerminalPublished = false;
+            try {
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (I.multiWindowReturnBallDragState) {
                 I.multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -1706,8 +1773,20 @@
                     timestamp: Date.now()
                 }
             }));
+            returnTerminalPublished = true;
 
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
+            } finally {
+                if (!returnTerminalPublished) {
+                    window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
+                        detail: {
+                            source: event && event.type ? event.type : 'return-click',
+                            reason: 'return-incomplete',
+                            timestamp: Date.now()
+                        }
+                    }));
+                }
+            }
         };
 
         // 统一监听各模型类型的回来事件

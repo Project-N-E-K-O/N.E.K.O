@@ -16,7 +16,7 @@ uv sync
 ./build_frontend.sh
 ```
 
-Scripts は Yui Origin を確認し、`npm ci` で Vue plugin manager を `frontend/plugin-manager/dist/`、React chat を `static/react/neko-chat/` に build します。
+Scripts は内蔵 Live2D asset（Yui Lolita / Yui Origin）を確認し、`npm ci` で Vue plugin manager を `frontend/plugin-manager/dist/`、React chat を `static/react/neko-chat/` に build します。
 
 Iterative work は owning frontend directory で `npm ci && npm run dev`。Plugin manager は 5173 で `VITE_BACKEND_URL` または 48916 へ proxy、React は 5174。Production React bundle は `index.html` と `chat.html` が共有します。
 

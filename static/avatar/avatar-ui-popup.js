@@ -3071,7 +3071,7 @@ const AvatarPopupMixin = {
 
             const settingsItems = [
                 { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
-                { id: 'voice-identity', label: window.t ? window.t('settings.menu.voiceIdentity') : '声纹身份', labelKey: 'settings.menu.voiceIdentity', icon: '/static/icons/mic_icon_off.png', action: 'navigate', url: '/voice_identity' },
+            { id: 'voice-identity', label: window.t ? window.t('settings.menu.voiceIdentity') : '声纹身份', labelKey: 'settings.menu.voiceIdentity', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_identity' },
                 { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
             ];
 

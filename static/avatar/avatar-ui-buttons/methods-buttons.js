@@ -4,6 +4,8 @@
     const DAY_MS = 24 * 60 * 60 * 1000;
     let midnightTimer = null;
     let localeListenerBound = false;
+    let tutorialReadyRefreshBound = false;
+    let tutorialLoadListenerBound = false;
     let fallbackFirstSeenDate = null;
 
     function getLocalDateKey(date = new Date()) {
@@ -34,29 +36,90 @@
         return Math.max(0, Math.floor((todayUtc - firstUtc) / DAY_MS));
     }
 
-    function readFirstSeenDate(todayDate) {
+    function getEarlierDateKey(left, right) {
+        const parsedLeft = parseDateKey(left);
+        const parsedRight = parseDateKey(right);
+        if (!parsedLeft) return parsedRight ? right : null;
+        if (!parsedRight) return left;
+        const leftUtc = Date.UTC(parsedLeft.year, parsedLeft.month - 1, parsedLeft.day);
+        const rightUtc = Date.UTC(parsedRight.year, parsedRight.month - 1, parsedRight.day);
+        return leftUtc <= rightUtc ? left : right;
+    }
+
+    function readTutorialState() {
+        const tutorialApi = window.NekoSevenDayTutorialState;
+        if (!tutorialApi || typeof tutorialApi.loadState !== 'function') return null;
+        try {
+            const state = tutorialApi.loadState({ persistMigration: false });
+            return state && typeof state === 'object' ? state : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function isExistingTutorialUser(state) {
+        if (!state) return false;
+        const settledRounds = new Set([
+            ...(Array.isArray(state.completedRounds) ? state.completedRounds : []),
+            ...(Array.isArray(state.skippedRounds) ? state.skippedRounds : [])
+        ].map(Number));
+        const roundCount = Number(window.NekoSevenDayTutorialState?.ROUND_COUNT) || 7;
+        for (let round = 1; round <= roundCount; round += 1) {
+            if (!settledRounds.has(round)) return false;
+        }
+        return true;
+    }
+
+    function getUnlockedDateKey(todayDate) {
+        const unlockedDate = new Date(todayDate);
+        unlockedDate.setDate(unlockedDate.getDate() - LOCK_DAYS);
+        return getLocalDateKey(unlockedDate);
+    }
+
+    function readUnlockEvidence(todayDate) {
         const today = getLocalDateKey(todayDate);
+        const tutorialState = readTutorialState();
+        const tutorialFirstSeenDate = tutorialState && parseDateKey(tutorialState.firstSeenDate)
+            ? tutorialState.firstSeenDate
+            : null;
+        const existingUser = isExistingTutorialUser(tutorialState);
+        let storedFirstSeenDate = null;
         try {
             const stored = window.localStorage && window.localStorage.getItem(STORAGE_KEY);
-            if (parseDateKey(stored)) return stored;
-            if (!fallbackFirstSeenDate) fallbackFirstSeenDate = today;
-            if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, fallbackFirstSeenDate);
+            if (parseDateKey(stored)) storedFirstSeenDate = stored;
         } catch (_) {
             // localStorage may be unavailable in private or restricted contexts.
         }
-        if (!fallbackFirstSeenDate) fallbackFirstSeenDate = today;
-        return fallbackFirstSeenDate;
+
+        let firstSeenDate = getEarlierDateKey(storedFirstSeenDate, tutorialFirstSeenDate);
+        if (!firstSeenDate) firstSeenDate = fallbackFirstSeenDate || today;
+        if (existingUser && getCalendarDayDelta(firstSeenDate, today) < LOCK_DAYS) {
+            // 七日教程会把升级用户迁移为“全部轮次已结算”。将这个结论固化到
+            // 社交入口自己的状态里，避免教程被重置后老用户又重新充能。
+            firstSeenDate = getUnlockedDateKey(todayDate);
+        }
+        fallbackFirstSeenDate = firstSeenDate;
+
+        if (storedFirstSeenDate !== firstSeenDate) {
+            try {
+                if (window.localStorage) window.localStorage.setItem(STORAGE_KEY, firstSeenDate);
+            } catch (_) {
+                // localStorage may be unavailable in private or restricted contexts.
+            }
+        }
+        return { firstSeenDate, existingUser };
     }
 
     function getStatus(todayDate = new Date()) {
-        const firstSeenDate = readFirstSeenDate(todayDate);
+        const evidence = readUnlockEvidence(todayDate);
+        const firstSeenDate = evidence.firstSeenDate;
         const today = getLocalDateKey(todayDate);
         const dayDelta = getCalendarDayDelta(firstSeenDate, today);
         return {
             firstSeenDate,
             dayDelta,
             remainingDays: Math.max(0, LOCK_DAYS - dayDelta),
-            unlocked: dayDelta >= LOCK_DAYS
+            unlocked: evidence.existingUser || dayDelta >= LOCK_DAYS
         };
     }
 
@@ -128,6 +191,15 @@
         }, Math.max(1000, nextMidnight.getTime() - Date.now()));
     }
 
+    function bindTutorialReadyRefresh() {
+        if (tutorialReadyRefreshBound) return true;
+        const tutorialApi = window.NekoSevenDayTutorialState;
+        if (!tutorialApi || typeof tutorialApi.ready !== 'function') return false;
+        tutorialReadyRefreshBound = true;
+        Promise.resolve(tutorialApi.ready()).then(refreshButtons, refreshButtons);
+        return true;
+    }
+
     window.nekoSocialUnlock = window.nekoSocialUnlock || {
         getStatus,
         isUnlocked: (todayDate) => getStatus(todayDate).unlocked,
@@ -139,6 +211,13 @@
             if (!localeListenerBound) {
                 window.addEventListener('localechange', refreshButtons);
                 localeListenerBound = true;
+            }
+            if (!bindTutorialReadyRefresh() && !tutorialLoadListenerBound) {
+                window.addEventListener('load', () => {
+                    bindTutorialReadyRefresh();
+                    refreshButtons();
+                }, { once: true });
+                tutorialLoadListenerBound = true;
             }
             if (!status.unlocked && !midnightTimer) scheduleNextMidnight();
             return status;

@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title data-i18n="cookiesLogin.guide.title">新手通用获取教程</title>
+    <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/theme-manager.js"></script>
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <style>
+        :root {
+            --bg: oklch(0.97 0.014 225);
+            --bg-edge: oklch(0.92 0.05 215);
+            --surface: oklch(0.995 0.006 225 / 0.72);
+            --surface-soft: oklch(0.985 0.012 225 / 0.58);
+            --fg: oklch(0.22 0.035 255);
+            --muted: oklch(0.53 0.03 250);
+            --border: oklch(0.84 0.04 225 / 0.78);
+            --accent: oklch(0.72 0.17 220);
+            --accent-dim: oklch(0.56 0.15 225);
+            --accent-soft: oklch(0.92 0.065 220 / 0.72);
+            --glow: oklch(0.72 0.17 220 / 0.22);
+            --font-ui: "Segoe UI Variable Text", "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+            --font-display: "Segoe UI Variable Display", "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+        }
+        [data-theme="dark"] {
+            --bg: oklch(0.19 0.025 248);
+            --bg-edge: oklch(0.24 0.055 235);
+            --surface: oklch(0.25 0.028 245 / 0.78);
+            --surface-soft: oklch(0.28 0.035 240 / 0.62);
+            --fg: oklch(0.91 0.025 225);
+            --muted: oklch(0.7 0.035 230);
+            --border: oklch(0.38 0.055 230 / 0.74);
+            --accent: oklch(0.76 0.15 215);
+            --accent-dim: oklch(0.79 0.13 215);
+            --accent-soft: oklch(0.31 0.075 225 / 0.7);
+            --glow: oklch(0.72 0.18 215 / 0.3);
+        }
+        *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        html, body { min-height: 100%; }
+        body {
+            margin: 0;
+            color: var(--fg);
+            background:
+                radial-gradient(circle at 82% 14%, var(--glow), transparent 34%),
+                radial-gradient(circle at 10% 88%, color-mix(in oklch, var(--accent) 13%, transparent), transparent 32%),
+                linear-gradient(125deg, var(--bg), var(--bg-edge));
+            font-family: var(--font-ui);
+            user-select: none;
+            overflow-x: hidden;
+        }
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 52px 0 0;
+            pointer-events: none;
+            opacity: 0.13;
+            background-image: radial-gradient(circle, var(--accent) 0.8px, transparent 1px);
+            background-size: 42px 42px;
+        }
+        body.neko-page-minimized { min-height: 0; overflow: hidden; }
+        body.neko-page-minimized .guide-shell { display: none; }
+        .app-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            height: 52px;
+            padding: 0 16px 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: color-mix(in oklch, var(--surface) 82%, transparent);
+            border-bottom: 1px solid var(--border);
+            box-shadow: 0 8px 28px rgba(15, 55, 80, 0.08);
+            backdrop-filter: blur(18px) saturate(140%);
+            -webkit-backdrop-filter: blur(18px) saturate(140%);
+            -webkit-app-region: drag;
+        }
+        .header-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+        .header-brand img { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--accent); }
+        .header-right {
+            --neko-window-control-color: var(--fg);
+            --neko-window-control-group-background: color-mix(in oklch, var(--surface) 92%, transparent);
+            --neko-window-control-group-border: color-mix(in oklch, var(--border) 82%, transparent);
+            --neko-window-control-hover-background: var(--accent-soft);
+            --neko-window-control-active-background: color-mix(in oklch, var(--accent-soft) 78%, var(--accent));
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            padding-right: 0;
+            -webkit-app-region: no-drag;
+        }
+        .guide-shell {
+            position: relative;
+            z-index: 1;
+            width: min(880px, calc(100% - 36px));
+            margin: 0 auto;
+            padding: 52px 0 64px;
+        }
+        .guide-hero { margin-bottom: 28px; }
+        .guide-eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--accent-dim);
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+        .guide-eyebrow::before { content: ''; width: 22px; height: 2px; background: var(--accent); box-shadow: 0 0 10px var(--glow); }
+        h1 {
+            margin: 10px 0 9px;
+            font: 750 clamp(28px, 5vw, 44px)/1.18 var(--font-display);
+            letter-spacing: -0.035em;
+        }
+        .guide-subtitle { max-width: 700px; margin: 0; color: var(--muted); line-height: 1.75; font-size: 15px; }
+        .steps {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .step {
+            position: relative;
+            padding: 24px;
+            overflow: hidden;
+            contain: layout paint style;
+            background: linear-gradient(145deg, var(--surface), var(--surface-soft));
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: 0 16px 38px rgba(18, 58, 83, 0.08), inset 0 1px rgba(255,255,255,0.28);
+            backdrop-filter: blur(18px) saturate(135%);
+            -webkit-backdrop-filter: blur(18px) saturate(135%);
+        }
+        .step-header {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: 38px minmax(0, 1fr);
+            column-gap: 13px;
+            align-items: start;
+            margin-bottom: 18px;
+        }
+        .step::after {
+            content: attr(data-step);
+            position: absolute;
+            right: 20px;
+            top: 10px;
+            color: color-mix(in oklch, var(--accent) 11%, transparent);
+            font: 800 72px/1 var(--font-display);
+        }
+        .step-number {
+            width: 38px;
+            height: 38px;
+            border-radius: 12px;
+            display: grid;
+            place-items: center;
+            color: white;
+            background: linear-gradient(145deg, var(--accent), var(--accent-dim));
+            box-shadow: 0 8px 20px var(--glow);
+            font-weight: 750;
+        }
+        .step-title {
+            margin: 0 0 4px;
+            color: var(--fg);
+            font: 720 18px/1.35 var(--font-display);
+        }
+        .step-copy {
+            position: relative;
+            z-index: 1;
+            max-width: 700px;
+            color: var(--muted);
+            line-height: 1.72;
+            font-size: 14px;
+        }
+        .step-media,
+        .step-gallery figure {
+            position: relative;
+            z-index: 1;
+            contain: paint;
+            margin: 0;
+            padding: 10px;
+            overflow: hidden;
+            background: color-mix(in oklch, var(--surface) 88%, white);
+            border: 1px solid color-mix(in oklch, var(--border) 84%, transparent);
+            border-radius: 13px;
+            box-shadow: inset 0 1px rgba(255,255,255,0.36);
+        }
+        [data-theme="dark"] .step-media,
+        [data-theme="dark"] .step-gallery figure {
+            background: oklch(0.2 0.02 245 / 0.7);
+            box-shadow: inset 0 1px rgba(255,255,255,0.08);
+        }
+        .step-media img,
+        .step-gallery img {
+            display: block;
+            width: 100%;
+            height: auto;
+            max-height: 560px;
+            object-fit: contain;
+            border-radius: 8px;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+        .step-gallery {
+            display: grid;
+            grid-template-columns: 1.1fr 0.9fr;
+            gap: 12px;
+            align-items: stretch;
+        }
+        .step-gallery figure { display: grid; place-items: center; min-height: 230px; }
+        .step-gallery img { max-height: 300px; }
+        .step-tip {
+            display: inline-flex;
+            margin-top: 10px;
+            padding: 5px 9px;
+            color: var(--accent-dim);
+            background: var(--accent-soft);
+            border-radius: 7px;
+            font-size: 12px;
+            font-weight: 650;
+        }
+        .security-note {
+            margin-top: 18px;
+            padding: 16px 18px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            background: color-mix(in oklch, var(--accent-soft) 72%, var(--surface));
+            border: 1px solid color-mix(in oklch, var(--accent) 32%, var(--border));
+            border-radius: 15px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.65;
+        }
+        .security-note svg { flex: 0 0 auto; color: var(--accent-dim); margin-top: 2px; }
+        .security-note strong { display: block; color: var(--fg); margin-bottom: 2px; }
+        .guide-footer { margin-top: 24px; display: flex; justify-content: flex-end; }
+        .back-button {
+            border: 1px solid color-mix(in oklch, var(--accent) 40%, var(--border));
+            border-radius: 11px;
+            padding: 10px 16px;
+            color: white;
+            background: linear-gradient(145deg, var(--accent), var(--accent-dim));
+            box-shadow: 0 9px 24px var(--glow);
+            font: 650 13px/1 var(--font-ui);
+            cursor: pointer;
+        }
+        .back-button:hover { filter: brightness(1.04); transform: translateY(-1px); }
+        @media (max-width: 680px) {
+            .guide-shell { padding-top: 34px; }
+            .step {
+                padding: 18px;
+                background: color-mix(in oklch, var(--surface) 94%, var(--bg));
+                backdrop-filter: none;
+                -webkit-backdrop-filter: none;
+                box-shadow: 0 10px 26px rgba(18, 58, 83, 0.07), inset 0 1px rgba(255,255,255,0.24);
+            }
+            .step-gallery { grid-template-columns: 1fr; }
+            .step-gallery figure { min-height: 0; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { transition: none !important; }
+        }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-brand">
+            <img src="/static/favicon.ico" alt="" draggable="false">
+            <span data-i18n="cookiesLogin.header">凭证管理中心</span>
+        </div>
+        <div class="header-right neko-window-controls">
+            <button type="button" class="neko-window-control-btn header-pin" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                <span class="neko-window-pin-icon" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn close-page-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭" draggable="false">
+            </button>
+        </div>
+    </header>
+
+    <main class="guide-shell">
+        <section class="guide-hero">
+            <span class="guide-eyebrow">N.E.K.O. GUIDE</span>
+            <h1 data-i18n="cookiesLogin.guide.title">新手通用获取教程</h1>
+            <p class="guide-subtitle" data-i18n="cookiesLogin.guide.subtitle">按通用流程获取浏览器 Cookie，再返回凭证管理中心填写对应字段。</p>
+        </section>
+
+        <section class="steps" data-i18n-aria="cookiesLogin.guide.stepsLabel" aria-label="教程步骤">
+            <article class="step" data-step="01">
+                <div class="step-header">
+                    <div class="step-number">1</div>
+                    <div>
+                        <h2 class="step-title" data-i18n="cookiesLogin.guide.step1Title">打开平台网站并确认登录</h2>
+                        <div class="step-copy" data-i18n="cookiesLogin.guide.step1">在浏览器中打开需要获取凭证的平台网站，并确认账号已经登录。</div>
+                    </div>
+                </div>
+                <div class="step-gallery">
+                    <figure><img src="/static/images/cookies/guide/step-1-site.png" width="417" height="181" data-i18n-alt="cookiesLogin.guide.step1Title" alt="打开平台网站" draggable="false"></figure>
+                    <figure><img src="/static/images/cookies/guide/step-1-login.png" width="386" height="425" data-i18n-alt="cookiesLogin.guide.step1LoginAlt" alt="确认账号已经登录" draggable="false"></figure>
+                </div>
+            </article>
+            <article class="step" data-step="02">
+                <div class="step-header">
+                    <div class="step-number">2</div>
+                    <div>
+                        <h2 class="step-title" data-i18n="cookiesLogin.guide.step2Title">打开浏览器开发者工具</h2>
+                        <div class="step-copy" data-i18n="cookiesLogin.guide.step2">按 F12 打开开发者工具；若快捷键无效，也可以从浏览器菜单中打开。</div>
+                    </div>
+                </div>
+                <figure class="step-media"><img src="/static/images/cookies/guide/step-2-devtools.png" width="1218" height="802" data-i18n-alt="cookiesLogin.guide.step2Title" alt="打开浏览器开发者工具" draggable="false"></figure>
+            </article>
+            <article class="step" data-step="03">
+                <div class="step-header">
+                    <div class="step-number">3</div>
+                    <div>
+                        <h2 class="step-title" data-i18n="cookiesLogin.guide.step3Title">切换到 Application 面板</h2>
+                        <div class="step-copy" data-i18n="cookiesLogin.guide.step3">在开发者工具顶部选择 Application（应用程序）。若未显示，请先展开右侧的隐藏面板菜单。</div>
+                    </div>
+                </div>
+                <figure class="step-media"><img src="/static/images/cookies/guide/step-3-application.png" width="784" height="800" data-i18n-alt="cookiesLogin.guide.step3Title" alt="切换到 Application 面板" draggable="false"></figure>
+            </article>
+            <article class="step" data-step="04">
+                <div class="step-header">
+                    <div class="step-number">4</div>
+                    <div>
+                        <h2 class="step-title" data-i18n="cookiesLogin.guide.step4Title">展开 Cookies 并选择域名</h2>
+                        <div class="step-copy" data-i18n="cookiesLogin.guide.step4">在左侧 Storage（存储）区域展开 Cookies，然后选择当前登录平台的域名。</div>
+                    </div>
+                </div>
+                <figure class="step-media"><img src="/static/images/cookies/guide/step-4-cookies.png" width="1052" height="899" data-i18n-alt="cookiesLogin.guide.step4Title" alt="展开 Cookies 并选择域名" draggable="false"></figure>
+            </article>
+            <article class="step" data-step="05">
+                <div class="step-header">
+                    <div class="step-number">5</div>
+                    <div>
+                        <h2 class="step-title" data-i18n="cookiesLogin.guide.step5Title">复制所需字段的 Cookie Value</h2>
+                        <div class="step-copy" data-i18n="cookiesLogin.guide.step5">按照凭证管理页列出的字段名称找到对应 Cookie，双击下方 Cookie Value 全选并复制，然后返回填写。</div>
+                        <span class="step-tip" data-i18n="cookiesLogin.guide.step5Tip">只需复制 Cookie Value，无需处理其他列。</span>
+                    </div>
+                </div>
+                <figure class="step-media"><img src="/static/images/cookies/guide/step-5-value.png" width="1159" height="998" data-i18n-alt="cookiesLogin.guide.step5Title" alt="复制所需字段的 Cookie Value" draggable="false"></figure>
+            </article>
+        </section>
+
+        <aside class="security-note">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"></path><path d="m9 12 2 2 4-4"></path></svg>
+            <div><strong data-i18n="cookiesLogin.guide.securityTitle">安全提醒</strong><span data-i18n="cookiesLogin.guide.securityText">凭证等同于登录身份，请勿分享给他人；仅在本机的 N.E.K.O. 页面中粘贴。</span></div>
+        </aside>
+
+        <div class="guide-footer">
+            <button type="button" class="back-button" onclick="closeGuide()" data-i18n="cookiesLogin.guide.back">返回凭证管理</button>
+        </div>
+    </main>
+
+    <script>
+        if (!window.nekoWindowControl) {
+            window.nekoWindowControl = {
+                minimize() {
+                    document.body.classList.toggle('neko-page-minimized');
+                    return { ok: true };
+                },
+                async maximize() {
+                    if (document.fullscreenElement) await document.exitFullscreen();
+                    else await document.documentElement.requestFullscreen();
+                    return { ok: true, isMaximized: !!document.fullscreenElement };
+                },
+                isMaximized() { return !!document.fullscreenElement; }
+            };
+        }
+
+        function renderGuideCopy() {
+            if (window.i18next && window.i18next.language) document.documentElement.lang = window.i18next.language;
+        }
+
+        function applyRequestedTheme() {
+            const requestedTheme = new URLSearchParams(window.location.search).get('theme');
+            if ((requestedTheme === 'dark' || requestedTheme === 'light') && window.nekoTheme) {
+                window.nekoTheme.apply(requestedTheme === 'dark', { persist: false });
+            }
+        }
+
+        function closeGuide() {
+            if (window.opener && !window.opener.closed) {
+                window.close();
+                return;
+            }
+            window.location.href = '/cookies_login';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            applyRequestedTheme();
+            renderGuideCopy();
+        });
+        window.addEventListener('localechange', renderGuideCopy);
+    </script>
+</body>
+</html>

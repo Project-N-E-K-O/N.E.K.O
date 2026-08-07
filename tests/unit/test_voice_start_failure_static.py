@@ -202,9 +202,12 @@ class FakeButton {{
     this.classList = new FakeClassList();
     this.disabled = false;
     this.clickCount = 0;
+    this.onClick = null;
   }}
   click() {{
+    if (this.disabled) return;
     this.clickCount += 1;
+    if (typeof this.onClick === 'function') this.onClick();
   }}
 }}
 
@@ -241,6 +244,16 @@ global.window = {{
     const handlers = this._listeners.get(type) || [];
     handlers.push(handler);
     this._listeners.set(type, handlers);
+  }},
+  removeEventListener(type, handler) {{
+    const handlers = this._listeners.get(type) || [];
+    this._listeners.set(type, handlers.filter((candidate) => candidate !== handler));
+  }},
+  async dispatchNamed(type, detail = {{}}) {{
+    const handlers = [...(this._listeners.get(type) || [])];
+    for (const handler of handlers) {{
+      await handler({{ type, detail }});
+    }}
   }},
   async dispatchMicToggle(active) {{
     const handlers = this._listeners.get('live2d-mic-toggle') || [];
@@ -989,6 +1002,86 @@ def test_floating_mic_toggle_actual_state_matrix(name, script_body, expected):
     assert result["mic"]["disabled"] is expected["disabled"], name
     assert result["mic"]["classes"] == expected["classes"], name
     assert result["stopCalls"] == expected["stopCalls"], name
+
+
+def test_floating_mic_click_during_cat_return_replays_after_return_completion():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    await window.dispatchNamed('neko:cat-return-commit');
+    micButton.disabled = true;
+    const togglePromise = window.dispatchMicToggle(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const clicksBeforeReturnComplete = micButton.clickCount;
+
+    micButton.disabled = false;
+    micButton.onClick = function () {
+      S.isRecording = true;
+      micButton.classList.add('active', 'recording');
+    };
+    await window.dispatchNamed('neko:cat-return-complete');
+    await togglePromise;
+    return { clicksBeforeReturnComplete };
+        """
+    )
+
+    assert result["result"]["clicksBeforeReturnComplete"] == 0
+    assert result["mic"]["clicks"] == 1
+    assert result["mic"]["classes"] == ["active", "recording"]
+
+
+def test_floating_mic_click_during_aborted_cat_return_is_released_immediately():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    await window.dispatchNamed('neko:cat-return-commit');
+    micButton.disabled = true;
+    const abortedTogglePromise = window.dispatchMicToggle(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await window.dispatchNamed('neko:cat-return-abort');
+    await abortedTogglePromise;
+    const clicksAfterAbort = micButton.clickCount;
+
+    micButton.disabled = false;
+    micButton.onClick = function () {
+      S.isRecording = true;
+      micButton.classList.add('active', 'recording');
+    };
+    await window.dispatchMicToggle(true);
+    return { clicksAfterAbort };
+        """
+    )
+
+    assert result["result"]["clicksAfterAbort"] == 0
+    assert result["mic"]["clicks"] == 1
+    assert result["mic"]["classes"] == ["active", "recording"]
+
+
+def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
+    source = _read(APP_UI_PATH)
+    marker = "const handleReturnClick = async (event) => {"
+    start = source.index(marker)
+    brace = source.index("{", start)
+    handler = source[start : _balanced_js_block_end(source, brace) + 1]
+
+    commit_index = handler.index("new CustomEvent('neko:cat-return-commit'")
+    guard_index = handler.index("let returnTerminalPublished = false;", commit_index)
+    try_index = handler.index("try {", guard_index)
+    failed_model_return = handler.index("if (modelDisplayReady === false) {", try_index)
+    finally_index = handler.index("} finally {", failed_model_return)
+    abort_index = handler.index("new CustomEvent('neko:cat-return-abort'", finally_index)
+    complete_index = handler.index(
+        "new CustomEvent('neko:cat-return-complete'",
+        try_index,
+    )
+    published_index = handler.index(
+        "returnTerminalPublished = true;",
+        complete_index,
+    )
+    finally_brace = handler.index("{", finally_index)
+    finally_end = _balanced_js_block_end(handler, finally_brace)
+
+    assert commit_index < guard_index < try_index < failed_model_return < finally_index < abort_index
+    assert try_index < complete_index < published_index < finally_index
+    assert finally_brace < abort_index <= finally_end
 
 
 def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():

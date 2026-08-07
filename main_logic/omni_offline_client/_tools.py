@@ -131,20 +131,29 @@ class _ToolingMixin:
         calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
         if not calls:
             return 0
+        tool_calls_dict = []
+        for i, c in enumerate(calls):
+            entry = {
+                "id": c.id or f"call_{i}",
+                "type": "function",
+                "function": {
+                    "name": c.name,
+                    "arguments": c.arguments or "{}",
+                },
+            }
+            # Provider-owned blob that came down with this call (Gemini's
+            # OpenAI-compat ``thought_signature``). Round-tripped verbatim:
+            # Gemini rejects the follow-up request when a function call in
+            # history lost its signature. Only attached when the provider
+            # actually sent one, so ordinary endpoints keep a clean history.
+            extra_content = getattr(c, "extra_content", None)
+            if extra_content:
+                entry["extra_content"] = extra_content
+            tool_calls_dict.append(entry)
         assistant_turn = {
             "role": "assistant",
             "content": assistant_text or "",
-            "tool_calls": [
-                {
-                    "id": c.id or f"call_{i}",
-                    "type": "function",
-                    "function": {
-                        "name": c.name,
-                        "arguments": c.arguments or "{}",
-                    },
-                }
-                for i, c in enumerate(calls)
-            ],
+            "tool_calls": tool_calls_dict,
         }
         if assistant_reasoning:
             assistant_turn["reasoning_content"] = assistant_reasoning

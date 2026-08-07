@@ -15,13 +15,15 @@ async function loadMasterProfile() {
 function renderMasterForm(master) {
     const form = document.getElementById('master-form');
     if (!form) return;
+    const fixedFooter = document.getElementById('master-profile-dialog-footer');
     form.innerHTML = '';
+    if (fixedFooter) fixedFooter.innerHTML = '';
     const masterProfileName = normalizeCharacterFieldName(master['档案名']);
     const hasMasterProfileName = !!masterProfileName;
 
     // 档案名
     const baseWrapper = document.createElement('div');
-    baseWrapper.className = 'field-row-wrapper';
+    baseWrapper.className = 'field-row-wrapper profile-row';
     const baseLabel = document.createElement('label');
     const profileNameText = window.t ? window.t('character.profileName') : '档案名';
     const requiredText = window.t ? window.t('character.required') : '*';
@@ -43,17 +45,18 @@ function renderMasterForm(master) {
             ? window.t('character.profileNameRenameOnlyHint')
             : '请通过“修改名称”按钮修改档案名';
     }
+    _panelAttachProfileNameLimiter(nameInput);
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
 
     // 重命名按钮
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
-    renameBtn.className = 'btn sm';
-    renameBtn.style.minWidth = '70px';
+    renameBtn.className = 'btn sm row-action-btn rename-action';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
     const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名我的档案';
-    renameBtn.textContent = renameText;
+    renameBtn.innerHTML = '<img src="/static/icons/edit.png" alt="" class="edit-icon" aria-hidden="true">'
+        + ' <span data-i18n="character.rename">' + renameText + '</span>';
     renameBtn.title = renameTitle;
     renameBtn.setAttribute('aria-label', renameTitle);
     renameBtn.disabled = !hasMasterProfileName;
@@ -74,7 +77,7 @@ function renderMasterForm(master) {
         ) return;
         renderedCustomFields.add(normalizedKey);
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const label = document.createElement('label');
         _panelSetFieldLabel(label, normalizedKey);
@@ -85,15 +88,17 @@ function renderMasterForm(master) {
         const textarea = document.createElement('textarea');
         textarea.name = normalizedKey;
         textarea.rows = 1;
+        textarea.placeholder = window.t
+            ? window.t('character.detailDescriptionPlaceholder')
+            : '可输入详细描述';
         textarea.value = master[k];
         row.appendChild(textarea);
         wrapper.appendChild(row);
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
-        const deleteText = window.t ? window.t('character.deleteField') : '删除设定';
-        delBtn.textContent = deleteText;
+        delBtn.className = 'btn sm delete row-action-btn delete-action setting-field-delete';
+        _panelConfigureFieldDeleteButton(delBtn);
         delBtn.onclick = function () { deleteMasterField(this); };
         wrapper.appendChild(delBtn);
 
@@ -109,39 +114,60 @@ function renderMasterForm(master) {
         textarea.addEventListener('change', showMasterActionButtons);
     });
 
-    // 按钮区
-    const btnArea = document.createElement('div');
-    btnArea.className = 'btn-area';
-    btnArea.style.display = 'flex';
-    btnArea.style.justifyContent = 'flex-end';
-    btnArea.style.gap = '6px';
-    btnArea.style.marginTop = '8px';
+    // 新增设定工具栏：与角色卡设定页使用相同的布局槽位。
+    const addFieldArea = document.createElement('div');
+    addFieldArea.className = 'btn-area add-field-area settings-toolbar-row';
+    addFieldArea.id = 'master-profile-add-actions';
+
+    const addFieldLabelPlaceholder = document.createElement('div');
+    addFieldArea.appendChild(addFieldLabelPlaceholder);
+
+    const addFieldSpacer = document.createElement('div');
+    addFieldArea.appendChild(addFieldSpacer);
 
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
-    addBtn.className = 'btn sm add';
+    addBtn.className = 'btn sm add settings-primary-action';
     const addText = window.t ? window.t('character.addMasterField') : '新增设定';
-    addBtn.textContent = addText;
+    addBtn.innerHTML = '<img src="/static/icons/add.png" alt="" class="add-icon" aria-hidden="true">'
+        + ' <span data-i18n="character.addMasterField">' + addText + '</span>';
     addBtn.onclick = addMasterField;
-    btnArea.appendChild(addBtn);
+    addFieldArea.appendChild(addBtn);
+    if (fixedFooter) {
+        fixedFooter.appendChild(addFieldArea);
+    } else {
+        form.appendChild(addFieldArea);
+    }
+
+    // 保存/取消操作区：与角色卡设定页保持同一排布和按钮机制。
+    const btnArea = document.createElement('div');
+    btnArea.className = 'btn-area settings-action-row';
+
+    const actionLabelPlaceholder = document.createElement('div');
+    btnArea.appendChild(actionLabelPlaceholder);
+
+    const actionSpacer = document.createElement('div');
+    btnArea.appendChild(actionSpacer);
 
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
     saveBtn.id = 'save-master-btn';
-    saveBtn.className = 'btn sm';
+    saveBtn.className = 'btn sm settings-save-action';
     saveBtn.style.display = hasMasterProfileName ? 'none' : '';
     const saveText = window.t ? window.t('character.saveMaster') : '保存我的档案';
-    saveBtn.textContent = saveText;
+    saveBtn.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon" aria-hidden="true">'
+        + ' <span data-i18n="character.saveMaster">' + saveText + '</span>';
     saveBtn.onclick = saveMasterForm;
     btnArea.appendChild(saveBtn);
 
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.id = 'cancel-master-btn';
-    cancelBtn.className = 'btn sm';
+    cancelBtn.className = 'btn sm settings-cancel-action';
     cancelBtn.style.display = 'none';
     const cancelText = window.t ? window.t('character.cancel') : '取消';
-    cancelBtn.textContent = cancelText;
+    cancelBtn.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon" aria-hidden="true">'
+        + ' <span data-i18n="character.cancel">' + cancelText + '</span>';
     cancelBtn.onclick = function () {
         loadMasterProfile();
     };
@@ -346,7 +372,7 @@ async function addMasterField() {
         return;
     }
     const wrapper = document.createElement('div');
-    wrapper.className = 'field-row-wrapper custom-row';
+    wrapper.className = 'field-row-wrapper custom-row setting-field-row';
     const label = document.createElement('label');
     _panelSetFieldLabel(label, key);
     wrapper.appendChild(label);
@@ -356,13 +382,16 @@ async function addMasterField() {
     const textarea = document.createElement('textarea');
     textarea.name = key;
     textarea.rows = 1;
+    textarea.placeholder = window.t
+        ? window.t('character.detailDescriptionPlaceholder')
+        : '可输入详细描述';
     row.appendChild(textarea);
     wrapper.appendChild(row);
 
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
-    delBtn.className = 'btn sm delete';
-    delBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
+    delBtn.className = 'btn sm delete row-action-btn delete-action setting-field-delete';
+    _panelConfigureFieldDeleteButton(delBtn);
     delBtn.onclick = function () { deleteMasterField(this); };
     wrapper.appendChild(delBtn);
 
@@ -452,7 +481,8 @@ async function renameMaster() {
 function toggleMasterSection() {
     const content = document.getElementById('master-profile-content');
     const header = document.getElementById('master-profile-header');
-    if (!content || !header) return;
+    const backdrop = document.getElementById('master-profile-backdrop');
+    if (!content || !header || !backdrop) return;
     const isOpening = !content.classList.contains('open');
 
     if (content._masterProfileHideTimer) {
@@ -465,24 +495,83 @@ function toggleMasterSection() {
     }
 
     if (isOpening) {
-        content.style.display = 'block';
-        content.style.setProperty('--master-profile-viewport-left', `${content.getBoundingClientRect().left}px`);
+        content._masterProfilePreviousFocus = document.activeElement;
+        content.removeAttribute('inert');
+        content._masterProfileFocusTrap = function (event) {
+            if (event.key !== 'Tab' || document.querySelector('.modal-overlay')) return;
+
+            const focusableElements = Array.from(content.querySelectorAll([
+                'a[href]',
+                'button:not([disabled])',
+                'input:not([disabled]):not([type="hidden"])',
+                'select:not([disabled])',
+                'textarea:not([disabled])',
+                '[contenteditable="true"]',
+                '[tabindex]:not([tabindex="-1"])'
+            ].join(','))).filter(element => (
+                !element.hidden
+                && element.getAttribute('aria-hidden') !== 'true'
+                && element.getClientRects().length > 0
+            ));
+            if (!focusableElements.length) {
+                event.preventDefault();
+                return;
+            }
+
+            const firstFocusable = focusableElements[0];
+            const lastFocusable = focusableElements[focusableElements.length - 1];
+            const activeElement = document.activeElement;
+            const activeElementIsFocusable = focusableElements.includes(activeElement);
+            if (event.shiftKey && (activeElement === firstFocusable || !activeElementIsFocusable)) {
+                event.preventDefault();
+                lastFocusable.focus({ preventScroll: true });
+            } else if (!event.shiftKey && (activeElement === lastFocusable || !activeElementIsFocusable)) {
+                event.preventDefault();
+                firstFocusable.focus({ preventScroll: true });
+            }
+        };
+        document.addEventListener('keydown', content._masterProfileFocusTrap);
+        backdrop.style.display = 'block';
+        content.style.display = 'flex';
+        content.setAttribute('aria-hidden', 'false');
+        backdrop.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('master-profile-dialog-open');
+        const body = content.querySelector('.master-profile-dialog-body');
+        if (body) body.scrollTop = 0;
+        backdrop.getBoundingClientRect();
         content.getBoundingClientRect();
+        backdrop.classList.add('open');
         content.classList.add('open');
         header.classList.add('open');
-        header.setAttribute('aria-expanded', 'true');
+        requestAnimationFrame(() => {
+            content.querySelector('.master-profile-dialog-close')?.focus({ preventScroll: true });
+        });
         return;
     }
 
+    backdrop.classList.remove('open');
     content.classList.remove('open');
     header.classList.remove('open');
-    header.setAttribute('aria-expanded', 'false');
+    if (content._masterProfileFocusTrap) {
+        document.removeEventListener('keydown', content._masterProfileFocusTrap);
+        content._masterProfileFocusTrap = null;
+    }
+    const previousFocus = content._masterProfilePreviousFocus;
+    if (previousFocus && typeof previousFocus.focus === 'function') {
+        previousFocus.focus({ preventScroll: true });
+    }
+    content.setAttribute('aria-hidden', 'true');
+    content.setAttribute('inert', '');
+    backdrop.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('master-profile-dialog-open');
 
     const hideContent = function (event) {
         if (event && event.target !== content) return;
-        if (event && event.propertyName !== 'clip-path') return;
+        if (event && event.propertyName !== 'opacity') return;
         if (!content.classList.contains('open')) {
             content.style.display = 'none';
+            backdrop.style.display = 'none';
+            content._masterProfilePreviousFocus = null;
         }
         content.removeEventListener('transitionend', hideContent);
         if (content._masterProfileHideTimer) {
@@ -496,8 +585,19 @@ function toggleMasterSection() {
 
     content.addEventListener('transitionend', hideContent);
     content._masterProfileHideContent = hideContent;
-    content._masterProfileHideTimer = setTimeout(hideContent, 280);
+    content._masterProfileHideTimer = setTimeout(hideContent, 300);
 }
+
+document.addEventListener('keydown', function (event) {
+    const content = document.getElementById('master-profile-content');
+    if (
+        event.key === 'Escape'
+        && content?.classList.contains('open')
+        && !document.querySelector('.modal-overlay')
+    ) {
+        toggleMasterSection();
+    }
+});
 
 // ===================== 隐藏猫娘 =====================
 

@@ -820,7 +820,7 @@ function openCatgirlPanel(card, originEl) {
 
     // === 设定标签内容 ===
     const settingsContent = document.createElement('div');
-    settingsContent.className = 'panel-tab-content panel-tab-settings active';
+    settingsContent.className = 'panel-tab-content panel-tab-settings settings-form-layout active';
     buildCatgirlDetailForm(name, rawData, isNew, settingsContent);
     rightSection.appendChild(settingsContent);
 

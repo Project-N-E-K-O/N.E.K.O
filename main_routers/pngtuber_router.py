@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/model/pngtuber", tags=["pngtuber"])
 logger = get_module_logger(__name__, "Main")
 
 PNGTUBER_USER_PATH = "/user_pngtuber"
+PNGTUBER_STATIC_PATH = "/static/pngtuber"
 PNGTUBER_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp"}
 MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_PACKAGE_SIZE = 250 * 1024 * 1024
@@ -87,9 +88,14 @@ def _read_model_json(package_dir: Path) -> dict:
         return json.load(f)
 
 
-def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
+def _normalize_pngtuber_config(
+    model_dir_name: str,
+    model_json: dict,
+    url_root: str = PNGTUBER_USER_PATH,
+) -> dict:
     raw = model_json.get("pngtuber") or model_json.get("_reserved", {}).get("avatar", {}).get("pngtuber") or {}
     result: dict = {}
+    model_url_root = f"{url_root.rstrip('/')}/{model_dir_name}"
     image_fields = [
         "idle_image",
         "talking_image",
@@ -111,7 +117,7 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
             result[field] = stripped
         else:
             rel = _safe_relative_path(stripped)
-            result[field] = f"{PNGTUBER_USER_PATH}/{model_dir_name}/{rel.as_posix()}" if rel else ""
+            result[field] = f"{model_url_root}/{rel.as_posix()}" if rel else ""
 
     metadata_path = raw.get("layered_metadata") or raw.get("metadata")
     if isinstance(metadata_path, str) and metadata_path.strip():
@@ -120,7 +126,7 @@ def _normalize_pngtuber_config(model_dir_name: str, model_json: dict) -> dict:
             result["layered_metadata"] = stripped
         else:
             rel = _safe_relative_path(stripped)
-            result["layered_metadata"] = f"{PNGTUBER_USER_PATH}/{model_dir_name}/{rel.as_posix()}" if rel else ""
+            result["layered_metadata"] = f"{model_url_root}/{rel.as_posix()}" if rel else ""
     else:
         result["layered_metadata"] = ""
 
@@ -310,28 +316,35 @@ async def get_pngtuber_models():
         config_mgr = get_config_manager()
         config_mgr.ensure_pngtuber_directory()
         models = []
-        for package_dir in sorted(config_mgr.pngtuber_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not package_dir.is_dir() or not (package_dir / "model.json").exists():
+        roots = (
+            (config_mgr.project_root / "static" / "pngtuber", "builtin", PNGTUBER_STATIC_PATH),
+            (config_mgr.pngtuber_dir, "user", PNGTUBER_USER_PATH),
+        )
+        for root, location, url_root in roots:
+            if not root.is_dir():
                 continue
-            try:
-                model_json = await asyncio.to_thread(_read_model_json, package_dir)
-                if model_json.get("model_type") != "pngtuber":
+            for package_dir in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+                if not package_dir.is_dir() or not (package_dir / "model.json").exists():
                     continue
-                pngtuber = _normalize_pngtuber_config(package_dir.name, model_json)
-                display_name = model_json.get("name") or package_dir.name
-                models.append({
-                    "name": display_name,
-                    "folder": package_dir.name,
-                    "filename": package_dir.name,
-                    "location": "user",
-                    "type": "pngtuber",
-                    "model_type": "pngtuber",
-                    "url": f"{PNGTUBER_USER_PATH}/{package_dir.name}/model.json",
-                    "pngtuber": pngtuber,
-                    "source_format": model_json.get("source_format", "simple_package"),
-                })
-            except Exception as exc:
-                logger.warning("跳过无效PNGTuber模型 %s: %s", package_dir, exc)
+                try:
+                    model_json = await asyncio.to_thread(_read_model_json, package_dir)
+                    if model_json.get("model_type") != "pngtuber":
+                        continue
+                    pngtuber = _normalize_pngtuber_config(package_dir.name, model_json, url_root)
+                    display_name = model_json.get("name") or package_dir.name
+                    models.append({
+                        "name": display_name,
+                        "folder": package_dir.name,
+                        "filename": package_dir.name,
+                        "location": location,
+                        "type": "pngtuber",
+                        "model_type": "pngtuber",
+                        "url": f"{url_root}/{package_dir.name}/model.json",
+                        "pngtuber": pngtuber,
+                        "source_format": model_json.get("source_format", "simple_package"),
+                    })
+                except Exception as exc:
+                    logger.warning("跳过无效PNGTuber模型 %s: %s", package_dir, exc)
         return JSONResponse(content={"success": True, "models": models})
     except Exception as exc:
         logger.error("获取PNGTuber模型列表失败: %s", exc, exc_info=True)
