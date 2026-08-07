@@ -141,6 +141,7 @@ def test_native_frame_capture_is_used_by_stream_and_screenshot_paths() -> None:
 
     assert "nativeFrameCapture" in screen
     assert "startNativeScreenStreaming" in screen
+    assert "ensureModelVisibleForScreenSharing" in screen
     assert "desktopProvider.captureSourceAsDataUrl" in buttons
     assert "desktopProvider.captureSourceAsDataUrl" in proactive
     assert "resolveDesktopCaptureProvider()" in websocket
@@ -173,9 +174,11 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "captureSocket === S.socket" in native_stream
     assert "captureSocket.send(JSON.stringify(" in native_stream
     assert native_stream.count("await stopScreenSharing(true);") >= 4
-    assert "buildStreamDataMessage(result.dataUrl, inputType, sourceId)" in native_stream
+    assert "normalizeNativeCaptureDataUrlForStream(result.dataUrl)" in native_stream
+    assert "buildStreamDataMessage(streamDataUrl, inputType, sourceId)" in native_stream
     assert "window.captureDesktopSourceWithTimeout(" in native_stream
     assert "'captureSourceAsDataUrl'" in native_stream
+    assert "data:image/jpeg;base64," in screen
     assert "(S.screenCaptureStream || activeNativeCaptureSourceId)" in screen
     assert "var isNativeCaptureActive = activeNativeCaptureSourceId !== null;" in select_source
     assert (
