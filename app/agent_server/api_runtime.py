@@ -15,6 +15,15 @@
 
 """Analyzer, lifecycle, and task endpoints for the agent server."""
 
+import math
+from collections import OrderedDict
+
+from main_logic.agent_event_bus import (
+    USER_UTTERANCE_CONTENT_MAX_CHARS,
+    USER_UTTERANCE_EVENT_ID_MAX_CHARS,
+    USER_UTTERANCE_LANLAN_MAX_CHARS,
+)
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -184,6 +193,118 @@ def _voice_transcript_plugin_gate_reason() -> str:
     return ""
 
 
+_USER_UTTERANCE_OBSERVED_CACHE_MAX_ITEMS = 2048
+_user_utterance_observed_event_ids: OrderedDict[str, None] = OrderedDict()
+
+
+def _remember_user_utterance_observed(event_id: str) -> None:
+    _user_utterance_observed_event_ids[event_id] = None
+    _user_utterance_observed_event_ids.move_to_end(event_id)
+    while (
+        len(_user_utterance_observed_event_ids)
+        > _USER_UTTERANCE_OBSERVED_CACHE_MAX_ITEMS
+    ):
+        _user_utterance_observed_event_ids.popitem(last=False)
+
+
+def _bucket_has_user_utterance_event(
+    get_user_context: Any,
+    bucket: str,
+    event_id: str,
+) -> bool:
+    if not callable(get_user_context):
+        return False
+    try:
+        recent = get_user_context(
+            bucket_id=bucket,
+            limit=_USER_UTTERANCE_OBSERVED_CACHE_MAX_ITEMS,
+        )
+    except Exception:
+        return False
+    if not isinstance(recent, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("_event_id") == event_id
+        for item in recent
+    )
+
+
+def _handle_user_utterance_observed(event: Any) -> None:
+    """Validate and append one Main observation to Agent-owned plugin state."""
+    if not isinstance(event, dict):
+        return
+
+    event_id = event.get("event_id")
+    timestamp = event.get("timestamp")
+    lanlan_name = event.get("lanlan_name")
+    content = event.get("content")
+    is_voice = event.get("is_voice")
+
+    if type(event_id) is not str:
+        return
+    normalized_event_id = event_id.strip()
+    if (
+        not normalized_event_id
+        or len(normalized_event_id) > USER_UTTERANCE_EVENT_ID_MAX_CHARS
+    ):
+        return
+    if type(timestamp) is not float or not math.isfinite(timestamp) or timestamp <= 0:
+        return
+    if type(lanlan_name) is not str:
+        return
+    normalized_lanlan = lanlan_name.strip() or "default"
+    if len(normalized_lanlan) > USER_UTTERANCE_LANLAN_MAX_CHARS:
+        return
+    if type(content) is not str:
+        return
+    normalized_content = content.strip()
+    if (
+        not normalized_content
+        or len(normalized_content) > USER_UTTERANCE_CONTENT_MAX_CHARS
+    ):
+        return
+    if type(is_voice) is not bool:
+        return
+    if normalized_event_id in _user_utterance_observed_event_ids:
+        return
+
+    try:
+        from plugin.core.state import state as plugin_state
+
+        add_user_context_event = getattr(plugin_state, "add_user_context_event", None)
+        if not callable(add_user_context_event):
+            return
+        get_user_context = getattr(plugin_state, "get_user_context", None)
+    except Exception:
+        return
+
+    buckets = tuple(dict.fromkeys(("default", normalized_lanlan)))
+    pending_buckets = [
+        bucket
+        for bucket in buckets
+        if not _bucket_has_user_utterance_event(
+            get_user_context,
+            bucket,
+            normalized_event_id,
+        )
+    ]
+    payload = {
+        "type": "user_message",
+        "content": normalized_content,
+        "lanlan": normalized_lanlan,
+        "is_voice": is_voice,
+        "source": "main_logic.core",
+        "_event_id": normalized_event_id,
+    }
+    try:
+        for bucket in pending_buckets:
+            add_user_context_event(bucket, payload)
+    except Exception:
+        return
+
+    _remember_user_utterance_observed(normalized_event_id)
+
+
 async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     event_id = str((event or {}).get("event_id") or "")
     lanlan_name = (event or {}).get("lanlan_name")
@@ -307,7 +428,10 @@ def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id
 
 
 async def _on_session_event(event: Dict[str, Any]) -> None:
-    event_type = (event or {}).get("event_type")
+    event_type = event.get("event_type") if isinstance(event, dict) else None
+    if event_type == "user_utterance_observed":
+        _handle_user_utterance_observed(event)
+        return
     if event_type == "agent_intent_restore_signal":
         # First-real-client-session signal from main_server (sent on
         # ``greeting_check``). Restore persisted agent runtime intent now

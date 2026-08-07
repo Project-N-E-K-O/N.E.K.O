@@ -23,6 +23,7 @@ from the asyncio thread (local TCP latency is very low).
 """
 
 import asyncio
+import math
 import os
 import threading
 import time
@@ -56,6 +57,12 @@ def _zmq_addr(env_key: str, default_port: int) -> str:
 SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）
 AGENT_PUSH_ADDR   = _zmq_addr("NEKO_ZMQ_AGENT_PUSH_PORT", 48962)    # agent -> main（PUSH/PULL）
 ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent（PUSH/PULL，可靠分析队列）
+
+# Cross-process user-utterance events are deliberately small: they travel on
+# the best-effort session PUB socket and are copied into plugin context memory.
+USER_UTTERANCE_CONTENT_MAX_CHARS = 4096
+USER_UTTERANCE_EVENT_ID_MAX_CHARS = 128
+USER_UTTERANCE_LANLAN_MAX_CHARS = 256
 
 _main_bridge_ref: Optional["MainServerAgentBridge"] = None
 _ack_waiters: dict[str, asyncio.Future] = {}
@@ -353,6 +360,51 @@ async def publish_session_event_threadsafe(event: Dict[str, Any]) -> bool:
     if hasattr(bridge, "publish_session_event_threadsafe"):
         return await bridge.publish_session_event_threadsafe(event)
     return await bridge.publish_session_event(event)
+
+
+async def publish_user_utterance_observed(
+    *,
+    event_id: str,
+    timestamp: float,
+    lanlan_name: str,
+    content: str,
+    is_voice: bool,
+) -> bool:
+    """Best-effort publish of one bounded, canonical user utterance."""
+    if type(event_id) is not str:
+        return False
+    normalized_event_id = event_id.strip()
+    if (
+        not normalized_event_id
+        or len(normalized_event_id) > USER_UTTERANCE_EVENT_ID_MAX_CHARS
+    ):
+        return False
+    if type(timestamp) is not float or not math.isfinite(timestamp) or timestamp <= 0:
+        return False
+    if type(lanlan_name) is not str:
+        return False
+    normalized_lanlan = lanlan_name.strip() or "default"
+    if len(normalized_lanlan) > USER_UTTERANCE_LANLAN_MAX_CHARS:
+        return False
+    if type(content) is not str:
+        return False
+    normalized_content = content.strip()
+    if (
+        not normalized_content
+        or len(normalized_content) > USER_UTTERANCE_CONTENT_MAX_CHARS
+    ):
+        return False
+    if type(is_voice) is not bool:
+        return False
+
+    return await publish_session_event({
+        "event_type": "user_utterance_observed",
+        "event_id": normalized_event_id,
+        "timestamp": timestamp,
+        "lanlan_name": normalized_lanlan,
+        "content": normalized_content,
+        "is_voice": is_voice,
+    })
 
 
 def notify_analyze_ack(event_id: str) -> None:

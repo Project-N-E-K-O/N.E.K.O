@@ -88,6 +88,7 @@ from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
     publish_analyze_request_reliably,
+    publish_user_utterance_observed,
     publish_voice_transcript_observed_best_effort,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
@@ -177,7 +178,8 @@ import httpx
 # form): CROSS_MODE_RESTART_WAIT_SECONDS, HIDE_DIRTY_VOICE_TRANSCRIPTS,
 # _CONTEXT_APPEND_DEFAULT_MAX_TOKENS, load/aload_global_conversation_settings,
 # dispatch_text_user_message, is_livestream_active, process_screen_data,
-# get_tts_worker, publish_analyze_request_reliably and
+# get_tts_worker, publish_analyze_request_reliably,
+# publish_user_utterance_observed and
 # publish_voice_transcript_observed_best_effort therefore keeps working
 # through a different mechanism: the mixins do not from-import those symbols
 # but read them late via ``_core_facade.<attr>`` at every call site. When
