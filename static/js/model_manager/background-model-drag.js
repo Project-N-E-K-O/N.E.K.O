@@ -180,6 +180,9 @@
             type: 'pngtuber',
             surface: container,
             move(deltaX, deltaY) {
+                if (typeof manager.beginModelManagerPositionEditing === 'function') {
+                    manager.beginModelManagerPositionEditing();
+                }
                 const placement = manager.getActivePlacement();
                 manager.setActiveOffsets(
                     placement.offsetX + deltaX,
@@ -201,8 +204,8 @@
                 if (typeof manager.restartLayeredAnimationLoop === 'function') {
                     manager.restartLayeredAnimationLoop();
                 }
-                if (typeof manager.saveCurrentConfig === 'function') {
-                    await manager.saveCurrentConfig();
+                if (typeof window.stageModelManagerPNGTuberPlacement === 'function') {
+                    window.stageModelManagerPNGTuberPlacement(manager.config);
                 }
             }
         };

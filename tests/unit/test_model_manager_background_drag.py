@@ -42,6 +42,8 @@ def test_background_drag_is_a_separate_model_manager_controller():
     assert "model.x += deltaX * point.scaleX;" in source
     assert "interaction._moveModelCenterToWindowPoint(" in source
     assert "manager.setActiveOffsets(" in source
+    assert "manager.beginModelManagerPositionEditing();" in source
+    assert "window.stageModelManagerPNGTuberPlacement(manager.config);" in source
 
 
 def test_pngtuber_background_surface_does_not_reuse_image_drag_handler():
@@ -134,3 +136,111 @@ function pointer(target, x, y) {{
 }})().catch(error => {{ console.error(error); process.exit(1); }});
 """
     run_node_script(node, script, check=True, cwd=Path.cwd())
+
+
+def test_pngtuber_background_drag_renders_offsets_and_stages_manager_save():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for model-manager background drag tests")
+
+    source = read_source("static/js/model_manager/background-model-drag.js")
+    script = f"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+const documentListeners = new Map();
+const windowListeners = new Map();
+const bodyClasses = new Set(['model-manager-page']);
+const container = {{
+  classList: {{ contains() {{ return false; }} }},
+  style: {{ display: 'block', visibility: 'visible' }},
+  setPointerCapture() {{}},
+  releasePointerCapture() {{}},
+}};
+let renderedPlacement = null;
+let stagedConfig = null;
+const manager = {{
+  container,
+  image: {{}},
+  isLocked: false,
+  config: {{ offset_x: 100, offset_y: 50 }},
+  editing: false,
+  beginModelManagerPositionEditing() {{
+    if (!this.editing) this.setActiveOffsets(0, 0);
+    this.editing = true;
+  }},
+  getActivePlacement() {{
+    return {{ offsetX: this.config.offset_x, offsetY: this.config.offset_y }};
+  }},
+  setActiveOffsets(x, y) {{ this.config.offset_x = x; this.config.offset_y = y; }},
+  applyTransform() {{
+    renderedPlacement = this.editing
+      ? {{ x: this.config.offset_x, y: this.config.offset_y }}
+      : {{ x: 0, y: 0 }};
+  }},
+  isLayeredActive() {{ return false; }},
+  syncGlobalConfig() {{}},
+  saveCurrentConfig() {{ throw new Error('model-manager drag must not use runtime auto-save'); }},
+}};
+const document = {{
+  readyState: 'complete',
+  body: {{
+    classList: {{
+      contains(name) {{ return bodyClasses.has(name); }},
+      toggle(name, active) {{ if (active) bodyClasses.add(name); else bodyClasses.delete(name); }},
+    }},
+  }},
+  addEventListener(name, handler) {{ documentListeners.set(name, handler); }},
+  getElementById() {{ return null; }},
+}};
+const window = {{
+  _modelManagerCurrentAvatarType: 'pngtuber',
+  pngtuberManager: manager,
+  stageModelManagerPNGTuberPlacement(config) {{ stagedConfig = {{ ...config }}; }},
+  addEventListener(name, handler) {{ windowListeners.set(name, handler); }},
+  getComputedStyle(element) {{ return element.style; }},
+}};
+const context = {{ console, document, window, Promise, Math }};
+vm.runInNewContext({json.dumps(source)}, context);
+
+function pointer(x, y) {{
+  return {{
+    target: container, clientX: x, clientY: y, pointerId: 11,
+    button: 0, isPrimary: true,
+    preventDefault() {{}}, stopPropagation() {{}},
+  }};
+}}
+
+(async () => {{
+  documentListeners.get('pointerdown')(pointer(400, 300));
+  windowListeners.get('pointermove')(pointer(430, 320));
+  assert.deepEqual(renderedPlacement, {{ x: 30, y: 20 }});
+  windowListeners.get('pointerup')(pointer(430, 320));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stagedConfig.offset_x, 30);
+  assert.equal(stagedConfig.offset_y, 20);
+}})().catch(error => {{ console.error(error); process.exit(1); }});
+"""
+    run_node_script(node, script, check=True, cwd=Path.cwd())
+
+
+def test_pngtuber_manager_page_stages_dragged_config_for_explicit_save():
+    core = read_source("static/pngtuber-core.js")
+    controller = read_source("static/js/model_manager/page-controller.js")
+
+    render_block = core.split("getRenderPlacement(placement) {", 1)[1].split(
+        "setActiveScale(nextScale)", 1
+    )[0]
+    stage_block = controller.split(
+        "function stageModelManagerPNGTuberPlacement(runtimeConfig) {", 1
+    )[1].split("async function saveModelToCharacter", 1)[0]
+
+    assert "!this._modelManagerUseCurrentPlacement" in render_block
+    assert "beginModelManagerPositionEditing()" in core
+    assert "const renderPlacement = this.getRenderPlacement(this.getActivePlacement());" in core
+    assert "this.setActiveOffsets(renderPlacement.offsetX, renderPlacement.offsetY);" in core
+    assert "this._modelManagerUseCurrentPlacement = false;" in core
+    assert "currentModelInfo.pngtuber = mergePNGTuberConfigForSave(" in stage_block
+    assert "window.hasUnsavedChanges = true;" in stage_block
+    assert "savePositionBtn.disabled = false;" in stage_block
+    assert "window.stageModelManagerPNGTuberPlacement" in stage_block

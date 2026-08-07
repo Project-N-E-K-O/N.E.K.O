@@ -2590,13 +2590,25 @@
         }
 
         getRenderPlacement(placement) {
-            if (isModelManagerPage() && !this.config.preserve_model_manager_position) {
+            if (isModelManagerPage()
+                && !this.config.preserve_model_manager_position
+                && !this._modelManagerUseCurrentPlacement) {
                 return Object.assign({}, placement, {
                     offsetX: 0,
                     offsetY: 0
                 });
             }
             return placement;
+        }
+
+        beginModelManagerPositionEditing() {
+            if (!isModelManagerPage()) return false;
+            if (!this._modelManagerUseCurrentPlacement) {
+                const renderPlacement = this.getRenderPlacement(this.getActivePlacement());
+                this.setActiveOffsets(renderPlacement.offsetX, renderPlacement.offsetY);
+            }
+            this._modelManagerUseCurrentPlacement = true;
+            return true;
         }
 
         setActiveScale(nextScale) {
@@ -3053,6 +3065,7 @@
         async load(config) {
             this.detachDragListeners();
             this.clearEmotion({ render: false });
+            this._modelManagerUseCurrentPlacement = false;
             this.config = normalizeConfig(config || {});
             await this.setupLayeredAdapter();
             this.ensureContainer();

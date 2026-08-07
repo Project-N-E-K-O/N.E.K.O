@@ -1655,6 +1655,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         );
     }
 
+    function stageModelManagerPNGTuberPlacement(runtimeConfig) {
+        if (currentModelType !== 'pngtuber' || !runtimeConfig || !currentModelInfo) {
+            return false;
+        }
+        currentModelInfo.pngtuber = mergePNGTuberConfigForSave(
+            null,
+            currentModelInfo.pngtuber,
+            runtimeConfig
+        );
+        window.hasUnsavedChanges = true;
+        if (savePositionBtn) savePositionBtn.disabled = false;
+        markModelChangedForCardFacePrompt();
+        return true;
+    }
+
+    window.stageModelManagerPNGTuberPlacement = stageModelManagerPNGTuberPlacement;
+
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
         let effectiveLive3dSubType = currentLive3dSubType || '';
 
