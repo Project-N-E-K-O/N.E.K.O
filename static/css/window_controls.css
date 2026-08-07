@@ -186,7 +186,6 @@
     height: 1.5px;
     background: currentColor;
     border-radius: 999px;
-    transform: translateY(5px);
 }
 
 .neko-window-maximize-icon {
