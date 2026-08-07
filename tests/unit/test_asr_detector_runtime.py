@@ -718,7 +718,7 @@ async def test_strict_retry_complete_commits_after_confirmation_delay() -> None:
         coordinator=coordinator,
         on_commit=on_commit,
         continuation_timeout_seconds=0.01,
-        strict_complete_confirmation_seconds=0.03,
+        strict_complete_confirmation_seconds=0.2,
         smart_turn_required=True,
     )
 
@@ -832,7 +832,7 @@ async def test_candidate_pause_complete_commits_after_confirmation_delay() -> No
         gate=gate,
         coordinator=coordinator,
         on_commit=on_commit,
-        candidate_complete_confirmation_seconds=0.03,
+        candidate_complete_confirmation_seconds=0.2,
         smart_turn_required=True,
     )
 

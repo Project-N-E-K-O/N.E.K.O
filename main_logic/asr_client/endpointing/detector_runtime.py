@@ -758,8 +758,7 @@ class _VoiceTurnAdapter:
                 elif item.reason == "strict_retry":
                     confirmation_seconds = self._strict_complete_confirmation_seconds
             if confirmation_seconds > 0:
-                for tail_item in evaluation_tail:
-                    await self._process_audio(tail_item)
+                self._observe_evaluation_tail(evaluation_tail)
                 if (
                     self._closed
                     or self._failed

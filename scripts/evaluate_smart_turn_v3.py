@@ -1047,6 +1047,15 @@ def _build_checkpoint_gate(
     }
 
 
+def _installed_distribution_version(distributions: Sequence[str]) -> str:
+    for distribution in distributions:
+        try:
+            return importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return "unknown"
+
+
 def _runtime_provenance(asset_dir: Path) -> dict[str, Any]:
     model: dict[str, Any] = {"filename": "smart_turn_v3.onnx"}
     manifest_path = asset_dir / "manifest.json"
@@ -1093,7 +1102,9 @@ def _runtime_provenance(asset_dir: Path) -> dict[str, Any]:
             "platform": platform.platform(),
             "python": platform.python_version(),
             "numpy": np.__version__,
-            "onnxruntime": importlib.metadata.version("onnxruntime"),
+            "onnxruntime": _installed_distribution_version(
+                ("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
+            ),
         },
     }
 
@@ -1378,6 +1389,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.fixture_dir is not None or args.labels is not None:
             parser.error(
                 "--manifest cannot be combined with legacy --fixture-dir/--labels"
+            )
+        if args.criteria is not None and args.threshold is not None:
+            parser.error(
+                "--threshold cannot be combined with --criteria; the "
+                "pre-registered decision_threshold is authoritative"
             )
         manifest = load_manifest(args.manifest)
         criteria = load_acceptance_criteria(args.criteria) if args.criteria else None

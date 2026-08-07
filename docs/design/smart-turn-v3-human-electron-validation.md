@@ -187,7 +187,10 @@ matrix-compliant speaker, one or more false-complete decisions across that
 speaker's incomplete cases count as one speaker with a premature split. One or
 more false-incomplete decisions across the speaker's complete cases count as
 one speaker with a missed endpoint. Wilson intervals are calculated over those
-speaker-level any-error counts.
+speaker-level any-error counts. They are two-sided at `confidence_level`, using
+`NormalDist().inv_cdf(0.5 + confidence_level / 2.0)`; the reported upper bound
+therefore uses the `(1 + confidence_level) / 2` quantile (0.975 when
+`confidence_level` is 0.95).
 
 Raw case confusion cells, complete recall, continuation specificity,
 premature-split rate, missed-endpoint rate, and balanced accuracy remain useful

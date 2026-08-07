@@ -287,7 +287,7 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
     await _eventually(lambda: coordinator.unload_calls == 1, timeout=2.0)
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=3)
-    armed = adapter._smart_turn_unload_task   # reset() 排下的这一轮 TTL 卸载
+    armed = adapter._smart_turn_unload_task  # reset() 排下的这一轮 TTL 卸载
     assert armed is not None
     await adapter.push_audio(
         generation=1,
@@ -548,7 +548,9 @@ async def test_silero_keeps_consuming_while_smart_turn_is_blocked() -> None:
             (SpeechActivityEvent.SPEECH_RESUMED,),
         ]
     )
-    coordinator = _FakeCoordinator([_failed_evaluation(EvaluationStatus.STALE)], block_evaluation=True)
+    coordinator = _FakeCoordinator(
+        [_failed_evaluation(EvaluationStatus.STALE)], block_evaluation=True
+    )
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=gate,
@@ -626,6 +628,46 @@ async def test_evaluation_tail_overflow_uses_backpressure_without_failure() -> N
         coordinator.evaluate_release.set()
         await adapter.wait_idle()
         assert adapter.failed is False
+    finally:
+        coordinator.evaluate_release.set()
+        await adapter.close()
+
+
+async def test_confirmation_observes_evaluation_tail_without_refeeding_audio() -> None:
+    first_pcm = b"\x01\x00" * 160
+    tail_pcm = b"\x02\x00" * 160
+    coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
+    gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), ()])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        candidate_complete_confirmation_seconds=10.0,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+    try:
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=first_pcm,
+        )
+        await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=tail_pcm,
+        )
+        await _eventually(lambda: len(gate.feed_calls) == 2)
+
+        coordinator.evaluate_release.set()
+        await adapter.wait_idle()
+
+        assert coordinator.pushed_audio == [first_pcm, tail_pcm]
+        assert gate.feed_calls == [first_pcm, tail_pcm]
     finally:
         coordinator.evaluate_release.set()
         await adapter.close()
@@ -847,7 +889,9 @@ async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
     await adapter.close()
 
 
-async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> None:
+async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> (
+    None
+):
     commits: list[tuple[int, int, int]] = []
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
@@ -925,9 +969,7 @@ async def test_semantic_degraded_fallback_is_cancelled_by_speech_resume() -> Non
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         commits.append((generation, buffer_epoch, utterance_id))
 
-    coordinator = _FakeCoordinator(
-        [_failed_evaluation(EvaluationStatus.UNAVAILABLE)]
-    )
+    coordinator = _FakeCoordinator([_failed_evaluation(EvaluationStatus.UNAVAILABLE)])
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=_FakeGate(
