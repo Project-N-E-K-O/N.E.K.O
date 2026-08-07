@@ -1703,10 +1703,16 @@ Object.assign(window.Jukebox, {
       }
 
       .play-btn.jukebox-mode-btn {
+        width: 32px;
+        height: 32px;
+        min-width: 32px;
+        min-height: 32px;
         background: linear-gradient(160deg, rgba(255,255,255,0.86), rgba(232,247,255,0.72));
         border: 1px solid rgba(99,199,232,0.24);
         color: rgba(38,118,148,0.88);
-        padding: 6px 7px;
+        padding: 5px;
+        box-sizing: border-box;
+        border-radius: 999px;
         box-shadow: 0 3px 8px rgba(78,153,190,0.12);
       }
 
@@ -1724,6 +1730,11 @@ Object.assign(window.Jukebox, {
 
       .play-btn.jukebox-mode-btn.active:hover {
         background: #38a6d2;
+      }
+
+      .play-btn.jukebox-mode-btn svg {
+        display: block;
+        fill: currentColor;
       }
 
       .jukebox-controls-row {
@@ -1775,13 +1786,29 @@ Object.assign(window.Jukebox, {
 
       .jukebox-transport-btn,
       .jukebox-play-pause-btn {
+        width: 32px;
+        height: 32px;
         min-width: 32px;
-        min-height: 30px;
-        box-shadow: 0 4px 10px rgba(53,169,201,0.18);
+        min-height: 32px;
+        padding: 5px;
+        box-sizing: border-box;
+        border: 1px solid rgba(99,199,232,0.24);
+        border-radius: 999px;
+        background: linear-gradient(160deg, rgba(255,255,255,0.86), rgba(232,247,255,0.72));
+        color: ${Jukebox.Config.volume.iconColor};
+        box-shadow: 0 3px 8px rgba(78,153,190,0.12);
       }
 
-      .jukebox-play-pause-btn {
-        min-width: 36px;
+      .play-btn.jukebox-transport-btn:hover {
+        background: ${Jukebox.Config.volume.iconHoverBg};
+        color: ${Jukebox.Config.volume.iconHoverColor};
+        transform: translateY(-1px);
+        box-shadow: 0 5px 12px rgba(99,199,232,0.18);
+      }
+
+      .play-btn.jukebox-transport-btn svg {
+        display: block;
+        fill: currentColor;
       }
 
       #jukebox-progress-slider {
@@ -1789,9 +1816,9 @@ Object.assign(window.Jukebox, {
         min-width: 0;
         -webkit-appearance: none;
         appearance: none;
-        height: 3px;
-        background: ${Jukebox.Config.progress.trackBg};
-        border-radius: 999px;
+        height: 14px;
+        margin: 0;
+        background: transparent;
         outline: none;
         cursor: default;
         pointer-events: none;
@@ -1809,7 +1836,14 @@ Object.assign(window.Jukebox, {
         height: 8px;
         background: ${Jukebox.Config.progress.sliderBg};
         border-radius: 50%;
+        margin-top: -2.5px;
         transition: background 0.3s;
+      }
+
+      #jukebox-progress-slider::-webkit-slider-runnable-track {
+        height: 3px;
+        background: ${Jukebox.Config.progress.trackBg};
+        border-radius: 999px;
       }
 
       #jukebox-progress-slider.seekable::-webkit-slider-thumb {
@@ -1823,6 +1857,12 @@ Object.assign(window.Jukebox, {
         background: ${Jukebox.Config.progress.sliderBg};
         border-radius: 50%;
         border: none;
+      }
+
+      #jukebox-progress-slider::-moz-range-track {
+        height: 3px;
+        background: ${Jukebox.Config.progress.trackBg};
+        border-radius: 999px;
       }
 
       #jukebox-progress-slider.seekable::-moz-range-thumb {
@@ -2224,7 +2264,26 @@ Object.assign(window.Jukebox, {
       }
 
       [data-theme="dark"] #jukebox-progress-slider {
+        background: transparent;
+      }
+
+      [data-theme="dark"] #jukebox-progress-slider::-webkit-slider-runnable-track,
+      [data-theme="dark"] #jukebox-progress-slider::-moz-range-track {
         background: rgba(148, 163, 184, 0.22);
+      }
+
+      [data-theme="dark"] .play-btn.jukebox-transport-btn {
+        color: #b7e8f8;
+        background: rgba(30, 41, 59, 0.9);
+        border-color: rgba(124, 218, 244, 0.22);
+        box-shadow: 0 4px 12px rgba(2, 8, 23, 0.26);
+      }
+
+      [data-theme="dark"] .play-btn.jukebox-transport-btn:hover {
+        color: #f8fafc;
+        background: rgba(14, 165, 233, 0.2);
+        border-color: rgba(124, 218, 244, 0.36);
+        box-shadow: 0 6px 16px rgba(14, 165, 233, 0.16);
       }
 
       [data-theme="dark"] #jukebox-progress-slider::-webkit-slider-thumb,
