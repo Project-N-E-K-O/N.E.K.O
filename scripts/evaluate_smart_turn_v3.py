@@ -94,6 +94,10 @@ LANGUAGE_CRITERIA_KEYS = frozenset(
     }
 )
 SCENARIO_LABEL_KEYS = frozenset({"complete", "incomplete"})
+SMART_TURN_MODEL_FILENAME = "smart_turn_v3.onnx"
+PRODUCTION_ASSET_DIR = (
+    PROJECT_ROOT / "main_logic" / "asr_client" / "endpointing" / "models"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +234,39 @@ def _declared_sha256(value: Any, *, context: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         raise ValueError(f"{context} must be a lowercase SHA-256 digest")
     return value
+
+
+def _declared_smart_turn_model_sha256(asset_dir: Path) -> str:
+    manifest = _load_json_object(
+        asset_dir / "manifest.json", description="asset manifest"
+    )
+    assets = manifest.get("assets")
+    if not isinstance(assets, list):
+        raise ValueError("asset manifest assets must be a list")
+    matches = [
+        asset
+        for asset in assets
+        if isinstance(asset, dict)
+        and asset.get("filename") == SMART_TURN_MODEL_FILENAME
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"asset manifest must declare exactly one {SMART_TURN_MODEL_FILENAME}"
+        )
+    return _declared_sha256(
+        matches[0].get("sha256"),
+        context=f"asset manifest {SMART_TURN_MODEL_FILENAME} sha256",
+    )
+
+
+def _require_deployed_model_for_registered_run(asset_dir: Path) -> None:
+    expected = _declared_smart_turn_model_sha256(PRODUCTION_ASSET_DIR)
+    selected = _declared_smart_turn_model_sha256(asset_dir)
+    if selected != expected:
+        raise ValueError(
+            "registered evaluation requires the deployed SmartTurn model SHA-256 "
+            f"{expected}, but --asset-dir declares {selected}"
+        )
 
 
 def _finite_rate(value: Any, *, context: str) -> float:
@@ -1414,6 +1451,11 @@ def main(argv: list[str] | None = None) -> int:
         criteria = None
 
     asset_dir = args.asset_dir.resolve()
+    if criteria is not None:
+        try:
+            _require_deployed_model_for_registered_run(asset_dir)
+        except ValueError as exc:
+            parser.error(str(exc))
     runtime = SmartTurnV3(enabled=True, asset_dir=asset_dir)
     if not runtime.load():
         parser.error(f"Smart Turn runtime unavailable: {runtime.unavailable_reason}")

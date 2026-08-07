@@ -196,6 +196,8 @@ class _VoiceTurnAdapter:
         self._evaluation_tail_capacity_us = queue_capacity_ms * 1_000
         self._evaluation_tail: list[_AudioItem] = []
         self._evaluation_tail_duration_us = 0
+        self._confirmation_tail: list[_AudioItem] = []
+        self._confirmation_tail_duration_us = 0
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._candidate_complete_confirmation_seconds = (
@@ -330,9 +332,20 @@ class _VoiceTurnAdapter:
         self._ensure_running()
         samples = len(pcm16) // 2
         duration_us = (samples * 1_000_000 + sample_rate_hz - 1) // sample_rate_hz
+        pending = self._pending_complete_confirmation
+        retains_for_confirmation = (
+            pending is not None
+            and pending.identity == (generation, buffer_epoch, utterance_id)
+            and pending.detector_identity is not None
+            and detector_identity is not None
+            and detector_identity.detector_epoch
+            == pending.detector_identity.detector_epoch
+            and detector_identity.sequence_no > pending.detector_identity.sequence_no
+        )
         if (
-            self._evaluation_task is not None
+            (self._evaluation_task is not None or retains_for_confirmation)
             and self._evaluation_tail_duration_us
+            + self._confirmation_tail_duration_us
             + self._queue.audio_duration_us
             + duration_us
             > self._evaluation_tail_capacity_us
@@ -522,6 +535,7 @@ class _VoiceTurnAdapter:
             self._evaluation_tail_duration_us += item.duration_us
         else:
             self._observe_accepted_audio(item)
+        self._retain_confirmation_audio(item)
         self._smart_turn_audio_evidence.accepted_audio(
             identity=item.identity,
             pcm16=item.pcm16,
@@ -785,6 +799,7 @@ class _VoiceTurnAdapter:
                     item.reason,
                     probability=probability,
                     delay_seconds=confirmation_seconds,
+                    evaluation_tail=evaluation_tail,
                 )
                 return
             await self._publish_complete_result(
@@ -836,6 +851,28 @@ class _VoiceTurnAdapter:
         for item in items:
             self._observe_accepted_audio(item)
 
+    def _retain_confirmation_audio(self, item: _AudioItem) -> None:
+        pending = self._pending_complete_confirmation
+        candidate = pending.detector_identity if pending is not None else None
+        incoming = item.detector_identity
+        if (
+            pending is None
+            or candidate is None
+            or incoming is None
+            or item.identity != pending.identity
+            or incoming.detector_epoch != candidate.detector_epoch
+            or incoming.sequence_no <= candidate.sequence_no
+        ):
+            return
+        self._confirmation_tail.append(item)
+        self._confirmation_tail_duration_us += item.duration_us
+
+    def _clear_confirmation_audio(self) -> tuple[_AudioItem, ...]:
+        items = tuple(self._confirmation_tail)
+        self._confirmation_tail.clear()
+        self._confirmation_tail_duration_us = 0
+        return items
+
     def _complete_observed_candidate(
         self,
         detector_identity: DetectorIngressIdentity | None,
@@ -880,6 +917,7 @@ class _VoiceTurnAdapter:
         self._latest_detector_identity = None
         self._evaluation_tail.clear()
         self._evaluation_tail_duration_us = 0
+        self._clear_confirmation_audio()
         self._successor_audio_fence = None
         self._smart_turn_audio_evidence.discard()
         await self._coordinator.reset()
@@ -953,6 +991,7 @@ class _VoiceTurnAdapter:
         *,
         probability: float | None,
         delay_seconds: float,
+        evaluation_tail: tuple[_AudioItem, ...] = (),
     ) -> None:
         self._cancel_fallback()
         pending = _PendingCompleteConfirmation(
@@ -962,6 +1001,8 @@ class _VoiceTurnAdapter:
             probability=probability,
         )
         self._pending_complete_confirmation = pending
+        for item in evaluation_tail:
+            self._retain_confirmation_audio(item)
 
         async def confirm_complete() -> None:
             await asyncio.sleep(delay_seconds)
@@ -998,6 +1039,7 @@ class _VoiceTurnAdapter:
         if current_task is self._fallback_task:
             self._fallback_task = None
         self._pending_complete_confirmation = None
+        confirmation_tail = self._clear_confirmation_audio()
         if (
             self._closed
             or self._failed
@@ -1014,7 +1056,8 @@ class _VoiceTurnAdapter:
             pending.detector_identity,
             pending.reason,
             probability=pending.probability,
-            evaluation_tail=(),
+            evaluation_tail=confirmation_tail,
+            tail_already_observed=True,
             wait_for_commit=wait_for_commit,
         )
         return True
@@ -1048,6 +1091,7 @@ class _VoiceTurnAdapter:
         *,
         probability: float | None,
         evaluation_tail: tuple[_AudioItem, ...],
+        tail_already_observed: bool = False,
         wait_for_commit: bool = False,
     ) -> None:
         self._strict_endpoint_deadline = None
@@ -1081,8 +1125,6 @@ class _VoiceTurnAdapter:
             detector_identity,
             active_identity=active_identity,
         )
-        if completion_published is not None:
-            await completion_published
         if wait_for_commit and completion_published is not None:
             commit_tasks = tuple(
                 task
@@ -1094,6 +1136,12 @@ class _VoiceTurnAdapter:
                     commit_tasks,
                     timeout=_COMMIT_DRAIN_ON_CLOSE_SECONDS,
                 )
+        elif completion_published is not None:
+            await completion_published
+        if active_identity == identity:
+            if not tail_already_observed:
+                self._observe_evaluation_tail(evaluation_tail)
+            return
         for tail_item in evaluation_tail:
             await self._process_audio(
                 _AudioItem(
@@ -1106,6 +1154,7 @@ class _VoiceTurnAdapter:
 
     def _cancel_fallback(self) -> None:
         self._pending_complete_confirmation = None
+        self._clear_confirmation_audio()
         task = self._fallback_task
         self._fallback_task = None
         if task is not None:

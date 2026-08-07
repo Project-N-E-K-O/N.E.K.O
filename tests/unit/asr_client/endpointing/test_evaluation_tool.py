@@ -819,6 +819,58 @@ def test_cli_rejects_threshold_with_registered_criteria(
     assert "--threshold cannot be combined with --criteria" in capsys.readouterr().err
 
 
+def test_cli_rejects_nonproduction_model_before_registered_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cases = _multilingual_holdout_cases()
+    manifest_path = _manifest(tmp_path / "evidence", cases)
+    criteria_path = _criteria(manifest_path.parent, manifest_path)
+    asset_dir = tmp_path / "alternate-assets"
+    asset_dir.mkdir()
+    alternate_model = b"self-consistent alternate model"
+    (asset_dir / "smart_turn_v3.onnx").write_bytes(alternate_model)
+    (asset_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "assets": [
+                    {
+                        "filename": "smart_turn_v3.onnx",
+                        "sha256": hashlib.sha256(alternate_model).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _MustNotLoad:
+        def __init__(self, **kwargs):
+            del kwargs
+            raise AssertionError("registered digest mismatch must fail before load")
+
+    monkeypatch.setattr("scripts.evaluate_smart_turn_v3.SmartTurnV3", _MustNotLoad)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--manifest",
+                str(manifest_path),
+                "--criteria",
+                str(criteria_path),
+                "--asset-dir",
+                str(asset_dir),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    assert (
+        "registered evaluation requires the deployed SmartTurn model SHA-256" in error
+    )
+    assert hashlib.sha256(alternate_model).hexdigest() in error
+
+
 def test_cli_preserves_report_but_returns_nonzero_when_registered_gate_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

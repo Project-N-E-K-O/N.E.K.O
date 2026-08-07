@@ -256,15 +256,22 @@ uv run python scripts/evaluate_smart_turn_v3.py `
 $LASTEXITCODE
 ```
 
+When `--criteria` is present, the evaluator rejects any `--asset-dir` whose
+SmartTurn model digest differs from the production asset manifest before the
+runtime is loaded or inference begins. Exploratory runs without criteria may
+still select another self-consistent asset directory, but they cannot produce a
+registered acceptance result.
+
 The evaluator writes requested JSON/Markdown reports before returning. When a
 criteria file is supplied, both `blocked` and `fail` return exit code `2`; only
 `pass` returns `0`. Exploratory runs without criteria return `0` but are not an
 acceptance signal.
 
-The gate first requires the loaded manifest SHA-256 to match the digest frozen
-inside the criteria. The report also binds the evidence to the manifest and
-criteria SHA-256 values, the
-pinned model version/SHA, and the evaluator script SHA-256. Provenance also
+The gate first requires the loaded evidence manifest SHA-256 to match the digest
+frozen inside the criteria, while the CLI separately requires the selected
+model SHA-256 to match the production asset manifest. The report also binds the
+evidence to the manifest and criteria SHA-256 values, the pinned model
+version/SHA, and the evaluator script SHA-256. Provenance also
 contains Git revision (suffixed `-dirty` when tracked or untracked changes are
 present), platform, Python, NumPy, and ONNX Runtime versions. Latency is split
 between calibration and holdout and separates the cold first inference from
