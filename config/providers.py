@@ -40,6 +40,21 @@ from typing import Any
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_OPENAI_THINKING = {"enable_thinking": True}
 
+# ⚠️ 上面那个 OPENAI 指的是「OpenAI-compatible 形状」—— enable_thinking 是 DashScope /
+# Silicon 这类兼容网关的方言，OpenAI 自己不认。下面这两组才是 api.openai.com 原生的。
+# 实测（2026-08-07，Chat Completions）：
+#   - 嵌套 {"reasoning": {"effort": ...}} 是 OpenRouter / Responses API 的形状，Chat
+#     Completions 直接 400 Unknown parameter: 'reasoning'；原生只收顶层 reasoning_effort。
+#   - 档位按模型分裂，没有一个全家通用的「最低档」：
+#       gpt-5.6-luna / gpt-5.6-terra → none / low / medium / high / xhigh（无 minimal）
+#       gpt-5-nano                   → minimal / low / medium / high（无 none）
+#     所以关思考要分两组常量，凝神侧都收敛到 low（两家都支持）。
+EXTRA_BODY_OPENAI_NATIVE = {"reasoning_effort": "none"}
+EXTRA_BODY_OPENAI_NATIVE_THINKING = {"reasoning_effort": "low"}
+
+EXTRA_BODY_OPENAI_NATIVE_MINIMAL = {"reasoning_effort": "minimal"}
+EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING = {"reasoning_effort": "low"}
+
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
 
@@ -77,13 +92,11 @@ AGENT_USE_EXTRA_BODY = True
 
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
-    # OpenAI 系列 —— 用 reasoning.effort 而不是 EXTRA_BODY_OPENAI。后者名字里的
-    # 「OPENAI」指的是「OpenAI-compatible 形状」的 enable_thinking，那是 DashScope /
-    # Silicon 这类兼容网关的方言，OpenAI 自己不认，发过去会被判 Unrecognized request
-    # argument。effort 档位跟 OpenRouter 同形，凝神侧也因此自动有 none→low 的对偶。
-    "gpt-5.6-luna": EXTRA_BODY_OPENROUTER,
-    "gpt-5.6-terra": EXTRA_BODY_OPENROUTER,
-    "gpt-5-nano": EXTRA_BODY_OPENROUTER,
+    # OpenAI 原生系列 —— 走顶层 reasoning_effort，别拿 EXTRA_BODY_OPENAI /
+    # EXTRA_BODY_OPENROUTER 来填，那两个形状都会被 400（见常量处的实测记录）。
+    "gpt-5.6-luna": EXTRA_BODY_OPENAI_NATIVE,
+    "gpt-5.6-terra": EXTRA_BODY_OPENAI_NATIVE,
+    "gpt-5-nano": EXTRA_BODY_OPENAI_NATIVE_MINIMAL,
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash": EXTRA_BODY_OPENAI,
@@ -182,6 +195,8 @@ def get_agent_extra_body(model: str) -> dict | None:
 # MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、原样保留。
 _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_OPENAI): EXTRA_BODY_OPENAI_THINKING,
+    id(EXTRA_BODY_OPENAI_NATIVE): EXTRA_BODY_OPENAI_NATIVE_THINKING,
+    id(EXTRA_BODY_OPENAI_NATIVE_MINIMAL): EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING,
     id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
@@ -210,6 +225,8 @@ def focus_extra_body(model: str) -> dict | None:
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
       - reasoning.effort: none -> low                   (OpenRouter)
+      - reasoning_effort: none|minimal -> low           (OpenAI native; the
+        floor differs per model, low is the one both generations accept)
 
     Provider extras that are NOT thinking knobs (e.g. ``step-2-mini``'s built-in
     ``web_search`` tools, or MiniMax's reasoning_split) are preserved unchanged.
