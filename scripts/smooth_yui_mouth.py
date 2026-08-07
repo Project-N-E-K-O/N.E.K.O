@@ -221,8 +221,11 @@ def main():
         help="Model directory containing *.motion3.json files (default: static/yui-origin)",
     )
     args = parser.parse_args()
+    files = sorted(args.root.glob("*.motion3.json"))
+    if not files:
+        parser.error(f"no *.motion3.json files under {args.root}")
     print(f"sigma={SIGMA_S}s  out={OUT_HZ}Hz  fade={FADE_S}s  sample={SAMPLE_HZ}Hz")
-    for f in sorted(args.root.glob("*.motion3.json")):
+    for f in files:
         s = process(f)
         line = f"{f.name:<28}"
         for tid in TARGET_IDS:
