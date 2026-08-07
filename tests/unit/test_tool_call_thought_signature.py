@@ -488,11 +488,7 @@ def test_thought_signature_decodes_both_base64_alphabets(encoded, expected):
     pydantic serializer emits the URL-safe alphabet. An alphabet or padding
     difference must not silently drop the signature — that would put the very
     400 this change fixes right back."""
-    from main_logic.omni_offline_client._genai_support import (
-        _thought_signature_from_extra_content,
-    )
-
-    decoded = _thought_signature_from_extra_content(
+    decoded = _ofc_genai._thought_signature_from_extra_content(
         {"google": {"thought_signature": encoded}}
     )
     assert decoded == expected
@@ -504,12 +500,8 @@ def test_thought_signature_rejects_garbage_instead_of_decoding_it():
     corrupted string decodes to plausible-but-wrong bytes and we hand Gemini a
     signature that was never issued. Returning None (replay without a signature)
     is the honest failure."""
-    from main_logic.omni_offline_client._genai_support import (
-        _thought_signature_from_extra_content,
-    )
-
     # Lenient base64 would drop the '!' characters and happily return b'ABCD\x00B'.
-    assert _thought_signature_from_extra_content(
+    assert _ofc_genai._thought_signature_from_extra_content(
         {"google": {"thought_signature": "Q!U!J!D!RABC"}}
     ) is None
 
