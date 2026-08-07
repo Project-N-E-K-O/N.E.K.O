@@ -71,7 +71,6 @@ type StatusCopy = {
   disconnected: string
   checking: string
   unknown: string
-  wsLabel: string
   taskLabel: string
   taskIdle: string
   adminHint: string
@@ -109,11 +108,11 @@ type GuideCopy = {
 const COPY: Record<LocaleKey, GuideCopy> = {
   "zh-CN": {
     title: "Minecraft 游戏插件 快速开始",
-    subtitle: "让猫娘陪你玩 MC——通过 mc-agent 桥接 mineflayer bot 控制游戏内化身。",
+    subtitle: "让猫娘陪你玩 MC——她会有一个自己的游戏角色，和你在同一个世界里一起行动。",
     notice: "mc-agent 还在持续更新中：安装流程和控制面板的界面会随版本变化，网盘里的包也会不定期替换。如果你看到的界面和这里写的对不上，多半是新版还没发布或你手上还是旧包，请耐心等待更新。",
     cards: [
       { title: "先装 Minecraft", badge: "Install", body: "Java 版 v1.21.1 推荐，其他 1.21.x 也可。自己买正版或离线启动。" },
-      { title: "再开 mc-agent", badge: "Bridge", body: "下面下个 mc-agent 解压、双击「启动.bat」启动它。它和 N.E.K.O 是两个独立程序，靠 WebSocket 联通。首次启动会自动打开控制面板网页，密钥、模型、游戏端口全在网页里填，不用碰任何文件。猫娘默认用离线模式进游戏，不需要另外给她买正版账号（代价是进不了开了正版验证的联机服务器，你自己开的局域网世界不受影响）。" },
+      { title: "再开 mc-agent", badge: "Setup", body: "下面下个 mc-agent 解压、双击「启动.bat」启动它。它和 N.E.K.O 是两个各自独立的程序，都开着就会自动连上。首次启动会自动打开控制面板网页，密钥、模型、游戏端口全在网页里填，不用碰任何文件。猫娘默认用离线模式进游戏，不需要另外给她买正版账号（代价是进不了开了正版验证的联机服务器，你自己开的局域网世界不受影响）。" },
       { title: "最后和猫娘一起玩吧", badge: "Play", body: "先在 MC 里把单人世界「对局域网开放」，猫娘才连得进来。然后和她正常聊天，她会一边陪你说话、一边和你在游戏里一起玩，就像身边真多了个玩家。（部分 AI 供应商暂时没法同时语音对话和操作游戏。）" },
     ],
     status: {
@@ -124,10 +123,9 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       disconnected: "未连接",
       checking: "检查中…",
       unknown: "未知",
-      wsLabel: "WebSocket",
       taskLabel: "当前任务",
       taskIdle: "（空闲）",
-      adminHint: "密钥、模型、MC 端口、bot 名字和皮肤全在管理面板（mindserver UI）里改，这是唯一的配置入口。",
+      adminHint: "密钥、模型、MC 端口、猫娘的名字和皮肤全在管理面板里改，这是唯一的配置入口。",
       errorPrefix: "查询失败：",
     },
     download: {
@@ -150,8 +148,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     portsTitle: "端口说明",
     ports: [
       { key: "mc", label: "MC 游戏端口（默认 55916）", value: "你「对局域网开放」时显示的那个数字。bot 通过它连进游戏世界。" },
-      { key: "mindserver", label: "mindserver 管理端口（默认 8765）", value: "上面那个「打开管理面板」按钮跳的就是这个。密钥、模型、bot 名字和人设、皮肤、游戏连接、行为开关全在这里改。" },
-      { key: "plugin", label: "plugin 桥接端口（默认 48909）", value: "插件和 mc-agent 之间的内部通信。一般不用动；想动改 NEKO_PLUGIN_WS_PORT 环境变量。" },
+      { key: "admin", label: "管理面板（localhost:8765）", value: "上面那个「打开管理面板」按钮跳的就是这个。密钥、模型、猫娘的名字和人设、皮肤、游戏连接、行为开关全在这里改。" },
     ],
     tipsTitle: "排错",
     tips: [
@@ -162,15 +159,15 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       "在面板里换了皮肤但游戏里没变：皮肤要真显示出来，Minecraft 服务端得装 FabricTailor 模组；没装的话面板里能看到、游戏里还是默认皮肤，其他功能不受影响。",
       "想关掉 mc-agent：在管理面板的 bot 列表里点 Stop，或者直接关 N.E.K.O。",
     ],
-    warning: "本插件只控制 bot；它在 MC 世界里的行为受你的指令和当前 LLM 模型能力影响，复杂任务可能会失败或绕路。",
+    warning: "猫娘在 MC 世界里的行为受你的指令和当前 AI 模型能力影响，复杂任务可能会失败或绕路。",
   },
   en: {
     title: "Minecraft Game Plugin — Quickstart",
-    subtitle: "Let neko-chan play MC with you. mc-agent bridges a mineflayer bot to control an in-game avatar.",
+    subtitle: "Let neko-chan play MC with you — she gets her own in-game character and moves around the same world you do.",
     notice: "mc-agent is still under active development: the install flow and the control panel UI change between versions, and the netdisk archives get replaced from time to time. If what you see doesn't match this page, you're most likely on an older build or the new one isn't out yet — please be patient and wait for the update.",
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
-      { title: "Run mc-agent", badge: "Bridge", body: "Download mc-agent below, unzip, double-click 启动.bat. It's a separate program from N.E.K.O., they talk over WebSocket. On first launch it opens a control panel in your browser — API key, model and game port all go in there, you never edit a file. Neko-chan joins in offline mode by default, so she doesn't need her own paid Minecraft account (the trade-off: she can't join online-mode servers; your own LAN world is unaffected)." },
+      { title: "Run mc-agent", badge: "Setup", body: "Download mc-agent below, unzip, double-click 启动.bat. It's a separate program from N.E.K.O.; run both and they connect on their own. On first launch it opens a control panel in your browser — API key, model and game port all go in there, you never edit a file. Neko-chan joins in offline mode by default, so she doesn't need her own paid Minecraft account (the trade-off: she can't join online-mode servers; your own LAN world is unaffected)." },
       { title: "Play together", badge: "Play", body: "First, open your single-player world to LAN so neko-chan can connect. Then just chat with neko-chan — she'll keep talking with you while playing alongside you in the world, like a real second player. (Some AI providers can't yet voice-chat and operate the game at the same time.)" },
     ],
     status: {
@@ -181,10 +178,9 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       disconnected: "Disconnected",
       checking: "Checking…",
       unknown: "Unknown",
-      wsLabel: "WebSocket",
       taskLabel: "Current task",
       taskIdle: "(idle)",
-      adminHint: "API key, model, MC port, bot name and skin are all changed in the admin panel (mindserver UI) — it's the only place you configure anything.",
+      adminHint: "API key, model, MC port, neko-chan's name and skin are all changed in the admin panel — it's the only place you configure anything.",
       errorPrefix: "Query failed: ",
     },
     download: {
@@ -207,8 +203,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     portsTitle: "Ports",
     ports: [
       { key: "mc", label: "MC game port (default 55916)", value: "The number MC shows when you Open to LAN. The bot uses this to join your world." },
-      { key: "mindserver", label: "mindserver admin port (default 8765)", value: "Where the \"Open admin panel\" button goes. API key, model, bot name and persona, skin, game connection and behavior toggles all live here." },
-      { key: "plugin", label: "plugin bridge port (default 48909)", value: "Internal channel between this plugin and mc-agent. Don't touch unless port is in use — override with NEKO_PLUGIN_WS_PORT env var." },
+      { key: "admin", label: "Admin panel (localhost:8765)", value: "Where the \"Open admin panel\" button goes. API key, model, neko-chan's name and persona, skin, game connection and behavior toggles all live here." },
     ],
     tipsTitle: "Troubleshooting",
     tips: [
@@ -219,15 +214,15 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       "Changed the skin in the panel but the game looks the same: skins only render if the Minecraft server has the FabricTailor mod installed. Without it the panel shows your skin but the game keeps the default one; nothing else is affected.",
       "To stop mc-agent: click Stop in the admin panel's bot list, or just close N.E.K.O.",
     ],
-    warning: "This plugin only controls the bot. In-world behavior depends on your prompts and the current LLM's capability; complex tasks may stall or detour.",
+    warning: "What neko-chan does in the world depends on your instructions and the capability of the AI model in use; complex tasks may stall or detour.",
   },
   ja: {
     title: "Minecraft ゲームプラグイン クイックスタート",
-    subtitle: "猫娘ちゃんと MC を遊ぼう。mc-agent が mineflayer ボットを橋渡しして、ゲーム内アバターを操作します。",
+    subtitle: "猫娘ちゃんと MC を遊ぼう。彼女は自分のキャラクターを持って、同じ世界であなたと一緒に動きます。",
     notice: "mc-agent は現在も更新中です：導入手順やコントロールパネルの画面はバージョンごとに変わり、ネットディスク上のパッケージも随時差し替えられます。ここの説明と実際の画面が食い違う場合は、新版が未公開か手元が旧版のことがほとんどなので、アップデートをお待ちください。",
     cards: [
       { title: "Minecraft を入れる", badge: "Install", body: "Java 版 v1.21.1 推奨。他の 1.21.x でも可。お好きなランチャーで。" },
-      { title: "mc-agent を起動", badge: "Bridge", body: "下のカードから mc-agent を入手・解凍し「启动.bat」をダブルクリック。N.E.K.O とは別プログラムで WebSocket 経由で連携。初回起動時にブラウザでコントロールパネルが自動的に開き、API キー・モデル・ゲームのポートはすべてそこで入力します（ファイルを編集する必要はありません）。猫娘ちゃんは既定でオフラインモードで参加するので、専用の正規アカウントは不要です（その代わり正規認証のマルチサーバーには入れません。自分で開いた LAN ワールドは問題なし）。" },
+      { title: "mc-agent を起動", badge: "Setup", body: "下のカードから mc-agent を入手・解凍し「启动.bat」をダブルクリック。N.E.K.O とは別のプログラムで、両方を起動しておけば自動でつながります。初回起動時にブラウザでコントロールパネルが自動的に開き、API キー・モデル・ゲームのポートはすべてそこで入力します（ファイルを編集する必要はありません）。猫娘ちゃんは既定でオフラインモードで参加するので、専用の正規アカウントは不要です（その代わり正規認証のマルチサーバーには入れません。自分で開いた LAN ワールドは問題なし）。" },
       { title: "一緒に遊ぼう", badge: "Play", body: "まず自分のシングルプレイ世界を「LANに公開」すると猫娘ちゃんが入れます。あとは普通におしゃべりするだけ。猫娘ちゃんは会話を続けながら、本物のもう一人のプレイヤーのように一緒に遊んでくれる。（一部の AI プロバイダーでは、音声会話とゲーム操作の同時進行がまだできない場合があります。）" },
     ],
     status: {
@@ -238,10 +233,9 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       disconnected: "未接続",
       checking: "確認中…",
       unknown: "不明",
-      wsLabel: "WebSocket",
       taskLabel: "現在のタスク",
       taskIdle: "（待機）",
-      adminHint: "API キー、モデル、MC ポート、ボット名、スキンはすべて管理パネル（mindserver UI）で変更します。設定の入口はここだけです。",
+      adminHint: "API キー、モデル、MC ポート、猫娘ちゃんの名前、スキンはすべて管理パネルで変更します。設定の入口はここだけです。",
       errorPrefix: "問い合わせ失敗: ",
     },
     download: {
@@ -264,8 +258,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     portsTitle: "ポート一覧",
     ports: [
       { key: "mc", label: "MC ゲームポート（既定 55916）", value: "「LANに公開」時に MC が表示する番号。ボットがこれでワールドに参加。" },
-      { key: "mindserver", label: "mindserver 管理ポート（既定 8765）", value: "「管理パネルを開く」が飛ぶ先。API キー、モデル、ボット名と人格、スキン、ゲーム接続、動作スイッチはすべてここ。" },
-      { key: "plugin", label: "plugin ブリッジポート（既定 48909）", value: "プラグインと mc-agent の内部通信。基本いじらない。変えるなら NEKO_PLUGIN_WS_PORT 環境変数で。" },
+      { key: "admin", label: "管理パネル（localhost:8765）", value: "「管理パネルを開く」が飛ぶ先。API キー、モデル、猫娘ちゃんの名前と人格、スキン、ゲーム接続、動作スイッチはすべてここ。" },
     ],
     tipsTitle: "トラブルシューティング",
     tips: [
@@ -276,15 +269,15 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       "パネルでスキンを変えてもゲーム内が変わらない: スキンの反映には Minecraft サーバー側に FabricTailor モッドが必要。未導入だとパネルには表示されてもゲーム内は既定スキンのまま（他の機能に影響なし）。",
       "mc-agent を止める: 管理パネルのボット一覧から Stop、または N.E.K.O ごと終了。",
     ],
-    warning: "本プラグインはボット操作のみ。世界内での挙動は指示内容と現在の LLM 性能に依存し、複雑なタスクは失敗 / 迂回することがあります。",
+    warning: "世界内での猫娘ちゃんの挙動は、指示内容と使用中の AI モデルの性能に左右されます。複雑なタスクは失敗 / 迂回することがあります。",
   },
   ko: {
     title: "Minecraft 게임 플러그인 빠른 시작",
-    subtitle: "고양이 캐릭터와 함께 MC를 즐기세요. mc-agent가 mineflayer 봇을 게임 내 아바타로 다리 놓아 줍니다.",
+    subtitle: "고양이와 함께 MC를 즐기세요. 고양이는 자기 캐릭터로 같은 월드에 들어와 너와 함께 움직여요.",
     notice: "mc-agent는 아직 계속 업데이트 중입니다: 설치 흐름과 제어판 화면이 버전마다 달라지고, 네트워크 드라이브의 압축 파일도 수시로 교체돼요. 여기 설명과 실제 화면이 다르면 대개 새 버전이 아직 안 나왔거나 예전 빌드를 쓰고 있는 것이니, 업데이트를 조금만 기다려 주세요.",
     cards: [
       { title: "Minecraft 설치", badge: "Install", body: "Java 에디션 v1.21.1 권장. 다른 1.21.x도 가능. 원하는 런처 사용." },
-      { title: "mc-agent 실행", badge: "Bridge", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动.bat」 더블클릭. N.E.K.O와는 별개 프로그램으로 WebSocket으로 연동. 처음 실행하면 브라우저에 제어판이 자동으로 열리고, API 키·모델·게임 포트를 전부 그 웹 화면에서 입력해요(파일을 건드릴 일 없음). 고양이는 기본적으로 오프라인 모드로 접속하니 정품 계정을 따로 살 필요는 없어요(대신 정품 인증을 켠 멀티 서버에는 못 들어가요. 직접 연 LAN 월드는 문제없음)." },
+      { title: "mc-agent 실행", badge: "Setup", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动.bat」 더블클릭. N.E.K.O와는 별개 프로그램이라 둘 다 켜 두면 알아서 연결돼요. 처음 실행하면 브라우저에 제어판이 자동으로 열리고, API 키·모델·게임 포트를 전부 그 웹 화면에서 입력해요(파일을 건드릴 일 없음). 고양이는 기본적으로 오프라인 모드로 접속하니 정품 계정을 따로 살 필요는 없어요(대신 정품 인증을 켠 멀티 서버에는 못 들어가요. 직접 연 LAN 월드는 문제없음)." },
       { title: "함께 놀기", badge: "Play", body: "먼저 본인 싱글플레이 월드를 「LAN에 공개」해야 고양이가 들어올 수 있어요. 그다음 그냥 평범하게 대화하세요. 고양이는 너와 이야기를 나누면서 진짜 또 한 명의 플레이어처럼 함께 놀아 줍니다. (일부 AI 제공자는 아직 음성 대화와 게임 조작을 동시에 못 할 수 있어요.)" },
     ],
     status: {
@@ -295,10 +288,9 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       disconnected: "연결 안 됨",
       checking: "확인 중…",
       unknown: "알 수 없음",
-      wsLabel: "WebSocket",
       taskLabel: "현재 작업",
       taskIdle: "(대기)",
-      adminHint: "API 키, 모델, MC 포트, 봇 이름, 스킨 모두 관리 패널(mindserver UI)에서 변경합니다. 설정 입구는 여기 하나뿐이에요.",
+      adminHint: "API 키, 모델, MC 포트, 고양이 이름, 스킨 모두 관리 패널에서 변경합니다. 설정 입구는 여기 하나뿐이에요.",
       errorPrefix: "조회 실패: ",
     },
     download: {
@@ -321,8 +313,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     portsTitle: "포트 안내",
     ports: [
       { key: "mc", label: "MC 게임 포트 (기본 55916)", value: "「LAN에 공개」 시 MC가 보여주는 숫자. 봇이 이를 통해 월드 참가." },
-      { key: "mindserver", label: "mindserver 관리 포트 (기본 8765)", value: "「관리 패널 열기」가 가는 곳. API 키, 모델, 봇 이름과 성격, 스킨, 게임 연결, 동작 스위치가 전부 여기에 있어요." },
-      { key: "plugin", label: "plugin 브릿지 포트 (기본 48909)", value: "플러그인과 mc-agent 사이 내부 통신. 보통 손대지 않음. 바꾸려면 NEKO_PLUGIN_WS_PORT 환경변수." },
+      { key: "admin", label: "관리 패널 (localhost:8765)", value: "「관리 패널 열기」가 가는 곳. API 키, 모델, 고양이 이름과 성격, 스킨, 게임 연결, 동작 스위치가 전부 여기에 있어요." },
     ],
     tipsTitle: "문제 해결",
     tips: [
@@ -333,15 +324,15 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       "패널에서 스킨을 바꿨는데 게임에서 그대로: 스킨이 실제로 보이려면 Minecraft 서버에 FabricTailor 모드가 설치돼 있어야 해요. 없으면 패널에만 보이고 게임에서는 기본 스킨 (다른 기능에는 영향 없음).",
       "mc-agent 종료: 관리 패널의 봇 목록에서 Stop, 또는 N.E.K.O 전체 종료.",
     ],
-    warning: "본 플러그인은 봇 제어만 담당. 월드 내 행동은 지시 내용과 현재 LLM 능력에 따라 달라지며 복잡한 작업은 실패 / 우회할 수 있음.",
+    warning: "월드 안에서 고양이가 하는 행동은 네 지시와 지금 쓰는 AI 모델의 능력에 따라 달라져요. 복잡한 작업은 실패하거나 돌아갈 수 있어요.",
   },
   ru: {
     title: "Игровой плагин Minecraft — Быстрый старт",
-    subtitle: "Играй в MC вместе с нэко-тян. mc-agent связывает mineflayer-бота с аватаром в игре.",
+    subtitle: "Играй в MC вместе с нэко-тян — у неё будет свой персонаж, и она будет ходить по тому же миру, что и ты.",
     notice: "mc-agent всё ещё активно обновляется: процесс установки и интерфейс панели управления меняются от версии к версии, архивы на дисках время от времени заменяются. Если увиденное не совпадает с этой страницей — скорее всего, новая версия ещё не вышла или у тебя старая сборка. Пожалуйста, дождись обновления.",
     cards: [
       { title: "Установи Minecraft", badge: "Install", body: "Java Edition v1.21.1 рекомендуется; другие 1.21.x тоже подойдут. Любой лаунчер." },
-      { title: "Запусти mc-agent", badge: "Bridge", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动.bat. Это отдельная программа от N.E.K.O., связь по WebSocket. При первом запуске в браузере сама откроется панель управления — ключ API, модель и игровой порт вводятся только там, никакие файлы править не нужно. Нэко-тян по умолчанию заходит в офлайн-режиме, так что отдельный лицензионный аккаунт покупать не надо (расплата: на серверы с проверкой лицензии она не попадёт; твой собственный LAN-мир это не затрагивает)." },
+      { title: "Запусти mc-agent", badge: "Setup", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动.bat. Это отдельная программа от N.E.K.O. — запусти обе, и они соединятся сами. При первом запуске в браузере сама откроется панель управления — ключ API, модель и игровой порт вводятся только там, никакие файлы править не нужно. Нэко-тян по умолчанию заходит в офлайн-режиме, так что отдельный лицензионный аккаунт покупать не надо (расплата: на серверы с проверкой лицензии она не попадёт; твой собственный LAN-мир это не затрагивает)." },
       { title: "Играйте вместе", badge: "Play", body: "Сначала открой свой одиночный мир для сети (кнопка «Открыть для сети»), чтобы нэко-тян смогла подключиться. Затем просто болтай с нэко-тян — она будет общаться с тобой и одновременно играть рядом, как настоящий второй игрок. (У части AI-провайдеров пока не получается одновременно вести голосовой диалог и управлять игрой.)" },
     ],
     status: {
@@ -352,10 +343,9 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       disconnected: "Нет связи",
       checking: "Проверка…",
       unknown: "Неизвестно",
-      wsLabel: "WebSocket",
       taskLabel: "Текущая задача",
       taskIdle: "(простой)",
-      adminHint: "Ключ API, модель, MC-порт, имя бота и скин меняются в админ-панели (mindserver UI) — это единственная точка настройки.",
+      adminHint: "Ключ API, модель, MC-порт, имя нэко-тян и скин меняются в админ-панели — это единственная точка настройки.",
       errorPrefix: "Ошибка запроса: ",
     },
     download: {
@@ -378,8 +368,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     portsTitle: "Порты",
     ports: [
       { key: "mc", label: "Игровой порт MC (по умолч. 55916)", value: "Число, которое показывает MC при открытии для сети. Бот использует его для входа в мир." },
-      { key: "mindserver", label: "Админ-порт mindserver (по умолч. 8765)", value: "Куда ведёт кнопка «Открыть админ-панель». Здесь ключ API, модель, имя и характер бота, скин, подключение к игре и переключатели поведения." },
-      { key: "plugin", label: "Мост-порт plugin (по умолч. 48909)", value: "Внутренняя связь между плагином и mc-agent. Обычно не трогай. Меняй переменной окружения NEKO_PLUGIN_WS_PORT." },
+      { key: "admin", label: "Админ-панель (localhost:8765)", value: "Куда ведёт кнопка «Открыть админ-панель». Здесь ключ API, модель, имя и характер нэко-тян, скин, подключение к игре и переключатели поведения." },
     ],
     tipsTitle: "Решение проблем",
     tips: [
@@ -390,7 +379,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
       "Поменял скин в панели, а в игре без изменений: чтобы скин реально отображался, на сервере Minecraft должен стоять мод FabricTailor. Без него скин виден только в панели, а в игре остаётся стандартный (на остальное не влияет).",
       "Остановить mc-agent: нажми Stop в списке ботов админ-панели, или просто закрой N.E.K.O.",
     ],
-    warning: "Плагин управляет только ботом. Поведение в мире зависит от твоих инструкций и текущей модели LLM; сложные задачи могут провалиться или пойти в обход.",
+    warning: "Что нэко-тян делает в мире, зависит от твоих инструкций и возможностей используемой AI-модели; сложные задачи могут провалиться или пойти в обход.",
   },
 }
 
@@ -406,7 +395,6 @@ function resolveLocale(locale: string | undefined): LocaleKey {
 type StatusState = {
   loading: boolean
   connected: boolean | null  // null = never queried yet
-  wsUrl: string
   pendingTask: string
   error: string
 }
@@ -431,7 +419,6 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
   const [state, setState] = useState<StatusState>({
     loading: false,
     connected: null,
-    wsUrl: "",
     pendingTask: "",
     error: "",
   })
@@ -459,7 +446,6 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
       setState({
         loading: false,
         connected: Boolean(data.connected),
-        wsUrl: String(data.ws_url || ""),
         pendingTask: String(data.pending_task || ""),
         error: "",
       })
@@ -509,8 +495,10 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
         ? status.connected
         : status.disconnected
 
+  // Only the player-facing bits go on this card. The bridge URL the status
+  // entry also returns (ws://localhost:48909) is plumbing — it belongs in the
+  // plugin README, not on a panel end users read.
   const statusItems = [
-    { key: "ws", label: status.wsLabel, value: state.wsUrl || "—" },
     {
       key: "task",
       label: status.taskLabel,
