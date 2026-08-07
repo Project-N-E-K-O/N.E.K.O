@@ -102,8 +102,16 @@ function createHarness({
                         renderer: {
                             coordinateSpace: virtualBounds ? 'virtual-window-local' : 'window-local',
                             screenOrigin: {
-                                x: virtualBounds ? virtualBounds.x : (Number(display.screenX) || displayBounds.x || 0),
-                                y: virtualBounds ? virtualBounds.y : (Number(display.screenY) || displayBounds.y || 0)
+                                x: virtualBounds
+                                    ? virtualBounds.x
+                                    : (Number.isFinite(Number(display.screenX))
+                                        ? Number(display.screenX)
+                                        : (Number(displayBounds.x) || 0)),
+                                y: virtualBounds
+                                    ? virtualBounds.y
+                                    : (Number.isFinite(Number(display.screenY))
+                                        ? Number(display.screenY)
+                                        : (Number(displayBounds.y) || 0))
                             }
                         },
                         crop: virtualBounds ? { cropRevision: Number(physicalCropState.cropRevision) || 0 } : null
@@ -439,7 +447,9 @@ test('restoring a peek transform keeps the grabbed model-local point under the p
     model.rotation = 0;
     model.scale.x = 1;
     assert.equal(harness.placeLive2DGrabPointAtPointer(model, localGrab, pointer), true);
-    assert.deepEqual(model.toGlobal(localGrab), pointer);
+    const restored = model.toGlobal(localGrab);
+    assert.ok(Math.abs(restored.x - pointer.x) < 1e-9, `x mismatch: ${restored.x} vs ${pointer.x}`);
+    assert.ok(Math.abs(restored.y - pointer.y) < 1e-9, `y mismatch: ${restored.y} vs ${pointer.y}`);
 });
 
 test('edge peek enter naturally moves model offscreen and reports visible bounds', async () => {

@@ -166,8 +166,9 @@ def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits
     assert "await this.restoreLive2DPeek('click-restore');" not in drag_source
     assert "clearLive2DPeek('drag-start');" in drag_source
     assert "this.clearLive2DPeek('drag-start');" not in drag_source
-    assert "clearLive2DPeek('drag-start');" in drag_source
-    assert "placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);" in drag_source
+    assert drag_source.count(
+        "placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);"
+    ) == 1
     assert "restore: false" not in drag_source
     assert "if (this.isLive2DPeekActive()) {" in wheel_source
     assert "return; // edge peek ignores wheel zoom" in wheel_source
@@ -283,10 +284,19 @@ def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():
     assert "await this._savePositionAfterInteraction();" in terminal_source
     assert "const edgeContact = isLive2DPeekEnabled()" in terminal_source
     assert "settleLive2DBaseAtEdgeContact(model, edgeContact)" in terminal_source
-    assert "await this._tryApplyLive2DPeek(model, settledContact);" in terminal_source
+    edge_terminal_source = terminal_source.split(
+        "if (edgeContact && settleLive2DBaseAtEdgeContact(model, edgeContact))", 1
+    )[1].split("const snapped = await this._checkAndPerformSnap(model);", 1)[0]
+    assert "await this._savePositionAfterInteraction();" in edge_terminal_source
     assert (
-        terminal_source.index("await this._savePositionAfterInteraction();")
-        < terminal_source.index("await this._tryApplyLive2DPeek(model, settledContact);")
+        "await this._tryApplyLive2DPeek(model, settledContact);"
+        in edge_terminal_source
+    )
+    assert (
+        edge_terminal_source.index("await this._savePositionAfterInteraction();")
+        < edge_terminal_source.index(
+            "await this._tryApplyLive2DPeek(model, settledContact);"
+        )
     )
 
 

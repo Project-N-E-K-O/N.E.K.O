@@ -1907,15 +1907,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             }
             if (!hasMoved) return;
 
-            if (edgePeekStartedDrag && hasMoved && !edgePeekDragCleared) {
+            if (edgePeekStartedDrag && !edgePeekDragCleared) {
                 // 先恢复 base 姿态，再用原始模型局部抓取点反解平移；旋转/镜像
                 // 解除后鼠标下仍是用户按住的同一点。
                 clearLive2DPeek('drag-start');
-                placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);
                 edgePeekDragCleared = true;
-            } else {
-                placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);
             }
+            placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);
         }
     };
 
