@@ -72,12 +72,14 @@ async def reload_config(runtime: Any) -> LiveConfig:
     loaded = LiveConfig.from_mapping(data)
     async with get_config_lock(runtime):
         old_config = runtime.config
+        old_live_mode = str(getattr(old_config, "live_mode", "co_stream") or "co_stream")
         old_platform = normalize_live_platform(getattr(old_config, "live_platform", "bilibili"))
         old_room_id = int(getattr(old_config, "live_room_id", 0) or 0)
         old_room_ref = _configured_room_ref(old_config, old_platform)
         old_provider = _captured_provider(runtime, old_platform)
         was_listening = _is_listening(old_provider)
         activate_config(runtime, loaded)
+        _reconcile_live_mode(runtime, old_live_mode, runtime.config.live_mode)
         runtime._config_revision += 1
         clean = _live_config_diff(old_config, runtime.config)
         await reconcile_live_listener_after_config(
@@ -105,6 +107,7 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
     async with get_config_lock(runtime):
         _normalize_live_target_update(runtime, clean)
         old_room_id = int(runtime.config.live_room_id or 0)
+        old_live_mode = str(getattr(runtime.config, "live_mode", "co_stream") or "co_stream")
         old_platform = normalize_live_platform(getattr(runtime.config, "live_platform", "bilibili"))
         old_room_ref = _configured_room_ref(runtime.config, old_platform)
         old_provider = _captured_provider(runtime, old_platform)
@@ -121,6 +124,7 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
         if was_listening and live_diff:
             runtime._accepting_live_events = False
         activate_config(runtime, candidate)
+        _reconcile_live_mode(runtime, old_live_mode, runtime.config.live_mode)
         runtime._config_revision += 1
         live_target_keys = {"live_platform", "live_room_ref", "live_room_id"}
         defer_instruction_sync = (
@@ -201,3 +205,11 @@ def _normalize_live_target_update(runtime: Any, clean: dict[str, Any]) -> None:
     normalized = normalize_room_ref_for_platform(target_platform, raw_room_ref)
     clean["live_room_ref"] = str(normalized.get("room_ref") or "")
     clean["live_room_id"] = 0
+
+
+def _reconcile_live_mode(runtime: Any, old_mode: str, new_mode: str) -> None:
+    if str(old_mode or "").strip() == str(new_mode or "").strip():
+        return
+    reconcile = getattr(getattr(runtime, "live_events", None), "reconcile_live_mode", None)
+    if callable(reconcile):
+        reconcile(old_mode, new_mode)

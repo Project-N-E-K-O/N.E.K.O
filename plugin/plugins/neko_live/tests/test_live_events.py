@@ -111,6 +111,7 @@ class _FakeCtx:
         )
         self.recent_results: list[dict] = []
         self.payloads: list[dict] = []
+        self.live_target_lanlan = ""
 
     async def handle_live_payload(self, payload: dict):
         self.payloads.append(payload)
@@ -135,12 +136,14 @@ class _FakeAmbientDispatcher:
         *,
         session_key: str,
         expired: bool = False,
+        target_lanlan: str | None = None,
     ) -> str:
         self.messages.append(
             {
                 "text": text,
                 "session_key": session_key,
                 "expired": expired,
+                "target_lanlan": target_lanlan,
             }
         )
         return "queued"
@@ -484,11 +487,13 @@ async def test_co_stream_refresh_waits_again_before_a_follow_up_publish():
         *,
         session_key: str,
         expired: bool = False,
+        target_lanlan: str | None = None,
     ) -> str:
         result = await original_push(
             text,
             session_key=session_key,
             expired=expired,
+            target_lanlan=target_lanlan,
         )
         if len(dispatcher.messages) == 1:
             hub.submit(_danmaku("43", text="follow-up"))
@@ -600,6 +605,59 @@ async def test_co_stream_passive_snapshot_has_no_expiry_timer():
     await hub.teardown()
 
 
+async def test_switching_from_co_stream_clears_context_for_original_target():
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx.live_target_lanlan = "StartCat"
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    hub._ambient_sleep = no_sleep
+    hub.submit(_danmaku("42", text="同播弹幕"))
+    await hub._ambient_refresh_task
+    assert ctx.dispatcher.messages[-1]["target_lanlan"] == "StartCat"
+
+    ctx.live_target_lanlan = "OtherCat"
+    ctx.config.live_mode = "solo_stream"
+    hub.reconcile_live_mode("co_stream", "solo_stream")
+    pending = list(hub._ambient_clear_tasks)
+    assert pending
+    await asyncio.gather(*pending)
+
+    assert [item["expired"] for item in ctx.dispatcher.messages] == [False, True]
+    assert ctx.dispatcher.messages[-1]["target_lanlan"] == "StartCat"
+    assert "同播弹幕" not in ctx.dispatcher.messages[-1]["text"]
+    await hub.teardown()
+
+
+async def test_switching_to_co_stream_publishes_authoritative_empty_snapshot():
+    ctx = _FakeCtx(remaining=0.0, live_mode="solo_stream")
+    ctx.config.live_enabled = True
+    ctx._accepting_live_events = True
+    ctx.live_target_lanlan = "StartCat"
+    ctx.dispatcher = _FakeAmbientDispatcher()
+    hub = await _make_hub(ctx)
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    hub._ambient_sleep = no_sleep
+    ctx.config.live_mode = "co_stream"
+    hub.reconcile_live_mode("solo_stream", "co_stream")
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+
+    assert len(ctx.dispatcher.messages) == 1
+    assert ctx.dispatcher.messages[0]["expired"] is False
+    assert ctx.dispatcher.messages[0]["target_lanlan"] == "StartCat"
+    assert "当前无权威弹幕行" in ctx.dispatcher.messages[0]["text"]
+    await hub.teardown()
+
+
 async def test_co_stream_session_reset_clears_the_previous_session_key():
     ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
     ctx.config.live_enabled = True
@@ -651,6 +709,7 @@ async def test_co_stream_new_snapshot_waits_for_previous_session_clear():
             *,
             session_key: str,
             expired: bool = False,
+            target_lanlan: str | None = None,
         ) -> str:
             if expired:
                 self.clear_started.set()
@@ -659,6 +718,7 @@ async def test_co_stream_new_snapshot_waits_for_previous_session_clear():
                 text,
                 session_key=session_key,
                 expired=expired,
+                target_lanlan=target_lanlan,
             )
 
     ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
@@ -693,6 +753,80 @@ async def test_co_stream_new_snapshot_waits_for_previous_session_clear():
     await hub.teardown()
 
 
+async def test_failed_ambient_clear_retains_owner_until_explicit_boundary_retry():
+    class FailFirstClearDispatcher(_FakeAmbientDispatcher):
+        def __init__(self) -> None:
+            super().__init__()
+            self.clear_attempt_targets: list[str | None] = []
+            self.fail_next_clear = True
+
+        async def push_ambient_room_context(
+            self,
+            text: str,
+            *,
+            session_key: str,
+            expired: bool = False,
+            target_lanlan: str | None = None,
+        ) -> str:
+            if expired:
+                self.clear_attempt_targets.append(target_lanlan)
+                if self.fail_next_clear:
+                    self.fail_next_clear = False
+                    raise RuntimeError("synthetic clear failure")
+            return await super().push_ambient_room_context(
+                text,
+                session_key=session_key,
+                expired=expired,
+                target_lanlan=target_lanlan,
+            )
+
+    ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")
+    ctx.config.live_enabled = True
+    ctx._accepting_live_events = True
+    ctx.live_target_lanlan = "StartCat"
+    dispatcher = FailFirstClearDispatcher()
+    ctx.dispatcher = dispatcher
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("42", text="old-target context"))
+    await hub._ambient_refresh_task
+
+    ctx.config.live_mode = "solo_stream"
+    hub.reconcile_live_mode("co_stream", "solo_stream")
+    await asyncio.gather(*list(hub._ambient_clear_tasks))
+
+    assert dispatcher.clear_attempt_targets == ["StartCat"]
+    assert hub.status()["ambient_pending_clear_count"] == 1
+    assert any(
+        row["op"] == "ambient_context_clear_failed" for row in ctx.audit.records
+    )
+
+    # A different target cannot receive a new passive snapshot while the old
+    # target's tombstone is still unsubmitted.
+    ctx.live_target_lanlan = "OtherCat"
+    ctx.config.live_mode = "co_stream"
+    assert await hub._publish_ambient_context() is False
+    assert [item["target_lanlan"] for item in dispatcher.messages] == ["StartCat"]
+    assert hub.status()["ambient_publish_last_reason"] == "ambient_clear_pending"
+
+    # The next explicit mode boundary retries once on the original target;
+    # only after that succeeds may the new target receive its snapshot.
+    hub.reconcile_live_mode("solo_stream", "co_stream")
+    refresh = hub._ambient_refresh_task
+    assert refresh is not None
+    await refresh
+
+    assert dispatcher.clear_attempt_targets == ["StartCat", "StartCat"]
+    assert [item["expired"] for item in dispatcher.messages] == [False, True, False]
+    assert [item["target_lanlan"] for item in dispatcher.messages] == [
+        "StartCat",
+        "StartCat",
+        "OtherCat",
+    ]
+    assert hub.status()["ambient_pending_clear_count"] == 0
+    await hub.teardown()
+
+
 async def test_co_stream_new_snapshot_waits_for_cancel_resistant_old_publish():
     class CancellationResistantDispatcher(_FakeAmbientDispatcher):
         def __init__(self) -> None:
@@ -707,6 +841,7 @@ async def test_co_stream_new_snapshot_waits_for_cancel_resistant_old_publish():
             *,
             session_key: str,
             expired: bool = False,
+            target_lanlan: str | None = None,
         ) -> str:
             if not expired and self._hold_first_publish:
                 self._hold_first_publish = False
@@ -719,6 +854,7 @@ async def test_co_stream_new_snapshot_waits_for_cancel_resistant_old_publish():
                 text,
                 session_key=session_key,
                 expired=expired,
+                target_lanlan=target_lanlan,
             )
 
     ctx = _FakeCtx(remaining=0.0, live_mode="co_stream")

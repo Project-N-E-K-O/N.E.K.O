@@ -8,6 +8,11 @@ from typing import Any
 from .contracts import normalize_live_platform
 from .runtime_live_input import remember_live_room_context
 from .runtime_live_session import begin_live_session, invalidate_live_session
+from .runtime_live_target import (
+    capture_live_target,
+    release_live_target,
+    release_live_target_if_scene_restored,
+)
 
 
 def begin_live_listener_operation(runtime: Any) -> int:
@@ -74,6 +79,7 @@ async def reconcile_live_listener_after_config(
         runtime.live_connection_auth_mode = "unknown"
         runtime.safety_guard.set_connected(False)
         await runtime.restore_instructions(force=True)
+        release_live_target_if_scene_restored(runtime)
         runtime.audit.record(
             "live_reconnect_stop_failed",
             f"previous listener stop failed: {type(exc).__name__}",
@@ -87,11 +93,13 @@ async def reconcile_live_listener_after_config(
         runtime.safety_guard.set_connected(False)
         _clear_connected_room_status(runtime)
         await runtime.restore_instructions(force=True)
+        release_live_target_if_scene_restored(runtime)
         return
     if not runtime.config.live_enabled:
         runtime.live_connection_state = "disconnected"
         runtime.live_connection_auth_mode = "unknown"
         runtime.safety_guard.set_connected(False)
+        release_live_target_if_scene_restored(runtime)
         return
     if platform == "bilibili":
         try:
@@ -104,6 +112,7 @@ async def reconcile_live_listener_after_config(
             runtime.live_connection_auth_mode = "unknown"
             runtime.safety_guard.set_connected(False)
             await runtime.restore_instructions(force=True)
+            release_live_target_if_scene_restored(runtime)
             runtime.audit.record(
                 "live_reconnect_auth_required",
                 "Bilibili login required before reconnecting after config change",
@@ -130,6 +139,7 @@ async def reconcile_live_listener_after_config(
         await runtime.sync_live_instructions(force=True)
     else:
         await runtime.restore_instructions(force=True)
+        release_live_target_if_scene_restored(runtime)
     runtime.audit.record(
         "live_reconnected" if started else "live_reconnect_failed",
         (
@@ -151,6 +161,21 @@ async def reconcile_live_listener_after_config(
 
 async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     await _await_pending_live_listener_cleanup(runtime)
+    retry_pending_clear = getattr(
+        getattr(runtime, "live_events", None),
+        "retry_pending_context_clear",
+        None,
+    )
+    if callable(retry_pending_clear):
+        try:
+            retry_pending_clear()
+        except Exception as exc:
+            runtime.audit.record(
+                "ambient_context_clear_retry_failed",
+                f"pending passive context clear retry failed: {type(exc).__name__}",
+                level="warning",
+            )
+    capture_live_target(runtime)
     operation_id = begin_live_listener_operation(runtime)
     runtime._accepting_live_events = False
     # Tool calls can hold the realtime voice turn open after the plugin has
@@ -167,6 +192,8 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
             runtime.config.live_enabled = False
             runtime.safety_guard.set_connected(False)
             runtime._accepting_live_events = False
+            if not bool(getattr(runtime, "instructions_injected", False)):
+                release_live_target(runtime)
         raise
     except Exception as exc:
         started = False
@@ -195,6 +222,8 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime.config.live_enabled = bool(started)
     runtime.safety_guard.set_connected(started)
     runtime._accepting_live_events = bool(started)
+    if not started and not bool(getattr(runtime, "instructions_injected", False)):
+        release_live_target(runtime)
     if started:
         refresh = getattr(
             getattr(runtime, "live_events", None),
@@ -235,6 +264,8 @@ async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> Non
                     runtime.live_connection_auth_mode = "unknown"
                     runtime._live_listener_started_at = 0.0
                     runtime.safety_guard.set_connected(False)
+                    if mark_disabled:
+                        release_live_target_if_scene_restored(runtime)
 
 
 async def handle_unexpected_live_listener_stop(
@@ -243,8 +274,15 @@ async def handle_unexpected_live_listener_stop(
     connection_state: str = "disconnected",
 ) -> None:
     """Converge runtime state after a provider stops without an explicit user action."""
-    _mark_unexpected_live_listener_stop(runtime, connection_state=connection_state)
-    await runtime.restore_instructions(force=True)
+    operation_id = _mark_unexpected_live_listener_stop(
+        runtime,
+        connection_state=connection_state,
+    )
+    try:
+        await runtime.restore_instructions(force=True)
+    finally:
+        if is_current_live_listener_operation(runtime, operation_id):
+            release_live_target_if_scene_restored(runtime)
 
 
 def schedule_unexpected_live_listener_stop(
@@ -254,13 +292,20 @@ def schedule_unexpected_live_listener_stop(
 ) -> "asyncio.Task[Any] | None":
     """Immediately close event ownership, then restore host state off-callback."""
 
-    _mark_unexpected_live_listener_stop(runtime, connection_state=connection_state)
     current = getattr(runtime, "_live_listener_cleanup_task", None)
     if current is not None and not current.done():
         return current
+    operation_id = _mark_unexpected_live_listener_stop(
+        runtime,
+        connection_state=connection_state,
+    )
 
     async def restore() -> None:
-        await runtime.restore_instructions(force=True)
+        try:
+            await runtime.restore_instructions(force=True)
+        finally:
+            if is_current_live_listener_operation(runtime, operation_id):
+                release_live_target_if_scene_restored(runtime)
 
     task = asyncio.create_task(restore())
     runtime._live_listener_cleanup_task = task

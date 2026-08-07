@@ -19,6 +19,7 @@ def initialize_runtime_state(runtime: Any) -> None:
     runtime.runtime_log = RuntimeLog()
     runtime.live_connection_state = "disconnected"
     runtime.live_connection_auth_mode = "unknown"
+    runtime.live_target_lanlan = ""
     runtime.live_room_context = {}
     runtime.instructions_injected = False
     runtime.instructions_signature = ""

@@ -423,14 +423,17 @@ The co-stream passive-context validation path exposes only bounded lifecycle cou
 - `ambient_support_retention_seconds`: local verified-support retention, currently 90 seconds.
 - `ambient_support_delivery_id_count`: bounded provider-id dedupe count; ids themselves are never exposed.
 - `ambient_publish_count`: non-expired passive snapshots queued in the current session, including the explicit empty authoritative state.
-- `ambient_expiry_count`: session-boundary invalidation markers queued for the previous session key; there is no timer-driven expiry.
+- `ambient_expiry_count`: session- or live-mode-boundary invalidation markers queued for the previous context key; there is no timer-driven expiry.
+- `ambient_pending_clear_count`: `0` or `1`; one old session/target tombstone whose submission has not succeeded. The target and session key are never projected.
 - `ambient_publish_suppressed_count`: snapshot attempts omitted by live, session, Safety Guard, output-channel, unchanged-content, or failure gates.
-- `ambient_publish_last_reason`: latest stable gate/result reason such as `queued`, `unchanged`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, or a bounded failure type.
+- `ambient_publish_last_reason`: latest stable gate/result reason such as `queued`, `unchanged`, `ambient_clear_pending`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, or a bounded failure type.
 - `ambient_hook_candidate_reads` / `ambient_hook_candidate_hits`: bounded local callback-selection evaluations and successful winners.
 - `ambient_hook_last_reason`: one allowlisted selector outcome: `selected.chorus`, `selected.continuity`, `selected.question`, `selected.mood`, `selected.complete`, `no_candidates`, `already_selected`, `duplicate_or_flood`, `low_value`, `fragment`, or `no_suitable`. `already_selected` records active-path selection only; it is not submission or playback evidence.
 - `ambient_hook_last_score` / `ambient_hook_last_candidate_count`: non-negative integer winner score and eligible-candidate count. They expose neither rank input nor viewer content.
 
 These fields are diagnostics, not proof that the model consumed the context or that an active support acknowledgement was audible. No callback text, nickname, UID, assistant output, summary, viewer profile, or historical memory is copied into status or audit. Dispatcher `pushed` records only the handoff of a request that passed `core/safety_guard.py` and `adapters/neko_dispatcher.py`; it is not playback confirmation and does not authorize direct `plugin.push_message` calls. Session-reset clearing uses the previous session's coalescing key and does not copy viewer text into audit.
+
+The role selected when the listener starts is runtime-private ownership state. It is used to keep active output, live-scene `read` overlays, passive snapshots, and their clear markers on one role until disconnect, but the role name is not added to status, timeline, audit, or scheduler history.
 
 The compact prompt renderer reuses the same source window only for an already scheduled response. It creates no timer, queue, persistence, network request, model call, or output route. The block is capped at 240 characters and is never copied into status or audit. `live_events.status()` exposes only resettable operational counters and stable reason metadata:
 

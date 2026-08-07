@@ -287,6 +287,71 @@ async def test_connect_live_room_uses_authenticated_mode(
 
 
 @pytest.mark.asyncio
+async def test_connect_attempt_retries_pending_passive_clear_even_when_start_fails(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.bili_live_ingest.start_result = False
+    retries = 0
+
+    def retry_pending_context_clear() -> None:
+        nonlocal retries
+        retries += 1
+
+    runtime.live_events.retry_pending_context_clear = retry_pending_context_clear  # type: ignore[method-assign]
+
+    snapshot = await runtime.connect_live_room()
+
+    assert retries == 1
+    assert snapshot["connected"] is False
+
+
+@pytest.mark.asyncio
+async def test_pending_passive_clear_retry_error_does_not_block_connect(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+
+    def fail_retry() -> None:
+        raise RuntimeError("synthetic retry failure")
+
+    runtime.live_events.retry_pending_context_clear = fail_retry  # type: ignore[method-assign]
+
+    snapshot = await runtime.connect_live_room()
+
+    assert snapshot["connected"] is True
+    assert any(
+        row["op"] == "ambient_context_clear_retry_failed"
+        for row in runtime.audit.recent()
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_session_keeps_starting_character_until_disconnect(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.plugin.ctx = SimpleNamespace(_current_lanlan="StartCat")
+    runtime.config.live_room_id = 123
+
+    await runtime.connect_live_room()
+    assert runtime.live_target_lanlan == "StartCat"
+
+    runtime.plugin.ctx._current_lanlan = "OtherCat"
+    await runtime.disconnect_live_room()
+
+    scene_messages = [
+        item
+        for item in runtime.plugin.pushed_messages
+        if item.get("metadata", {}).get("context_type") == "live_scene"
+    ]
+    assert [item["target_lanlan"] for item in scene_messages] == [
+        "StartCat",
+        "StartCat",
+    ]
+    assert runtime.live_target_lanlan == ""
+
+
+@pytest.mark.asyncio
 async def test_connect_live_room_fails_closed_when_login_status_cannot_be_verified(
     runtime: LiveRuntime,
 ) -> None:
@@ -577,6 +642,57 @@ async def test_new_listener_waits_for_pending_disconnect_context_restore(
     assert runtime.bili_live_ingest.started == [123]
 
 
+@pytest.mark.asyncio
+async def test_unexpected_stop_restores_and_releases_original_live_target(
+    runtime: LiveRuntime,
+) -> None:
+    runtime.plugin.ctx = SimpleNamespace(_current_lanlan="OtherCat")
+    runtime.live_target_lanlan = "StartCat"
+    runtime.instructions_injected = True
+
+    cleanup = schedule_unexpected_live_listener_stop(runtime)
+    duplicate = schedule_unexpected_live_listener_stop(runtime)
+    assert cleanup is not None
+    assert duplicate is cleanup
+    await cleanup
+
+    assert runtime.plugin.pushed_messages[-1]["target_lanlan"] == "StartCat"
+    assert runtime.live_target_lanlan == ""
+
+
+@pytest.mark.asyncio
+async def test_failed_scene_restore_retains_original_target_for_retry(
+    runtime: LiveRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime.plugin.ctx = SimpleNamespace(_current_lanlan="OtherCat")
+    runtime.live_target_lanlan = "StartCat"
+    runtime.instructions_injected = True
+    original_restore = runtime.dispatcher.push_context_restore
+    attempts = 0
+
+    async def flaky_restore(text: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary output failure")
+        return await original_restore(text)
+
+    monkeypatch.setattr(runtime.dispatcher, "push_context_restore", flaky_restore)
+
+    await stop_live_listener(runtime)
+
+    assert runtime.instructions_injected is True
+    assert runtime.live_target_lanlan == "StartCat"
+    assert runtime.plugin.pushed_messages == []
+
+    await stop_live_listener(runtime)
+
+    assert runtime.instructions_injected is False
+    assert runtime.live_target_lanlan == ""
+    assert runtime.plugin.pushed_messages[-1]["target_lanlan"] == "StartCat"
+
+
 def test_live_scene_keeps_natural_viewer_bridge_subordinate_in_co_stream(
     runtime: LiveRuntime,
 ) -> None:
@@ -661,6 +777,21 @@ async def test_update_config_reinjects_live_scene_when_stream_theme_changes(
     assert runtime.plugin.pushed_messages[1]["metadata"]["description"] == "NEKO Live behavior restore"
     assert runtime.plugin.pushed_messages[2]["metadata"]["description"] == "NEKO Live behavior instructions"
     assert "second theme" in runtime.plugin.pushed_messages[2]["parts"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_update_config_reconciles_live_mode_context_ownership(
+    runtime: LiveRuntime,
+) -> None:
+    transitions: list[tuple[str, str]] = []
+    runtime.live_events.reconcile_live_mode = (  # type: ignore[method-assign]
+        lambda old, new: transitions.append((old, new))
+    )
+
+    await runtime.update_config({"live_mode": "solo_stream"})
+    await runtime.update_config({"live_mode": "solo_stream"})
+
+    assert transitions == [("co_stream", "solo_stream")]
 
 
 @pytest.mark.asyncio

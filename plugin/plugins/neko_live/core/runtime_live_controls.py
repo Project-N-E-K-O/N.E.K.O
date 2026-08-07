@@ -6,6 +6,7 @@ from typing import Any
 
 from .contracts import LiveConfig
 from .runtime_live_listener import refresh_live_room_context
+from .runtime_live_target import release_live_target_if_scene_restored
 
 
 def _flush_runtime_log(runtime: Any, reason: str) -> None:
@@ -241,6 +242,8 @@ async def connect_live_room(
     _flush_runtime_log(runtime, "connect" if started else "connect_failed")
     _reset_runtime_log(runtime)
     await runtime.sync_live_instructions()
+    if not started:
+        release_live_target_if_scene_restored(runtime)
     runtime.audit.record(
         "live_connected" if started else "live_connect_failed",
         "danmaku listener started" if started else "failed to start danmaku listener",
