@@ -93,7 +93,12 @@ def test_only_requested_top_level_templates_define_pin_controls():
     assert_pin_precedes_minimize(
         character_manager,
         "templates/character_card_manager.html",
-        'class="minimize-btn"',
+        # Anchor on the id, not on ``class="minimize-btn"``: #2750 unified the
+        # window-control styling by prepending ``neko-window-control-btn`` to the
+        # class list, so a token that assumed minimize-btn was the FIRST class
+        # stopped matching and ``str.index`` raised instead of asserting. The id
+        # survives restyling (same reason the openclaw_guide case below uses one).
+        'id="minimizeBtn"',
     )
 
     openclaw_guide = read_text("templates/openclaw_guide.html")
