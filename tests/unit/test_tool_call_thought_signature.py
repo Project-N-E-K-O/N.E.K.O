@@ -32,8 +32,23 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
-# base64 of b"sig-123" — the shape the Gemini compat endpoint sends down.
-_SIGNATURE_EXTRA = {"google": {"thought_signature": "c2lnLTEyMw=="}}
+# The signature bytes deliberately encode to a string containing BOTH '+' and
+# '/', so the standard and URL-safe base64 alphabets disagree on it. A neutral
+# fixture (e.g. b"sig-123" -> "c2lnLTEyMw==", identical under both alphabets)
+# would leave the encode/decode pair free to drift to another alphabet with
+# every test still green — and the alphabet is the one thing that decides
+# whether a real signature survives the round trip.
+_SIGNATURE_BYTES = b"\xfb\xef\xbe\x03\xff\xe0sig"
+_SIGNATURE_B64 = "++++A//gc2ln"  # standard alphabet; URL-safe would be "----A__gc2ln"
+_SIGNATURE_EXTRA = {"google": {"thought_signature": _SIGNATURE_B64}}
+
+
+def test_signature_fixture_discriminates_base64_alphabets():
+    """Guard on the guard: if the fixture ever loses its alphabet-specific
+    characters, every other test in this file silently stops being able to
+    catch an encoder/decoder alphabet swap."""
+    assert base64.b64encode(_SIGNATURE_BYTES).decode() == _SIGNATURE_B64
+    assert base64.urlsafe_b64encode(_SIGNATURE_BYTES).decode() != _SIGNATURE_B64
 
 
 class _FakeAsyncStream:
@@ -337,7 +352,7 @@ async def test_offline_genai_persists_thought_signature_into_history(monkeypatch
     async def _round1():
         yield _Chunk([_Part(
             function_call=_FunctionCall("recall_memory", {"q": "x"}, id_="c1"),
-            thought_signature=b"sig-123",
+            thought_signature=_SIGNATURE_BYTES,
         )])
 
     async def _round2():
@@ -361,7 +376,11 @@ async def test_offline_genai_persists_thought_signature_into_history(monkeypatch
     )
     stored = assistant_turn["tool_calls"][0].get("extra_content")
     assert stored is not None, "genai 路径必须把 Part.thought_signature 存进历史"
-    assert base64.b64decode(stored["google"]["thought_signature"]) == b"sig-123"
+    encoded = stored["google"]["thought_signature"]
+    assert base64.b64decode(encoded) == _SIGNATURE_BYTES
+    # Pin the alphabet, not just round-trippability: the compat endpoint's own
+    # strings are what this history is replayed as.
+    assert encoded == _SIGNATURE_B64
 
 
 @pytest.mark.asyncio
@@ -419,7 +438,7 @@ def test_genai_messages_to_contents_replays_thought_signature():
     model_turn = next(c for c in contents if c.role == "model")
     fc_parts = [p for p in model_turn.parts if getattr(p, "function_call", None)]
     assert len(fc_parts) == 2
-    assert fc_parts[0].thought_signature == b"sig-123"
+    assert fc_parts[0].thought_signature == _SIGNATURE_BYTES
     # A call with no signature must not be given a fabricated one.
     assert not fc_parts[1].thought_signature
 
@@ -438,3 +457,338 @@ def test_genai_messages_to_contents_survives_malformed_signature():
     _, contents = _genai_messages_to_contents(messages)
     part = next(p for p in contents[0].parts if getattr(p, "function_call", None))
     assert not part.thought_signature
+
+
+@pytest.mark.parametrize("encoded", [
+    _SIGNATURE_B64,                                    # standard, padded
+    _SIGNATURE_B64.replace("+", "-").replace("/", "_"),  # URL-safe alphabet
+    _SIGNATURE_B64.rstrip("="),                        # standard, padding stripped
+])
+def test_thought_signature_decodes_both_base64_alphabets(encoded):
+    """Only the half we write ourselves is guaranteed standard+padded; the other
+    half is whatever the compat endpoint sent down, and google-genai's own
+    pydantic serializer emits the URL-safe alphabet. An alphabet or padding
+    difference must not silently drop the signature — that would put the very
+    400 this change fixes right back."""
+    from main_logic.omni_offline_client._genai_support import (
+        _thought_signature_from_extra_content,
+    )
+
+    decoded = _thought_signature_from_extra_content(
+        {"google": {"thought_signature": encoded}}
+    )
+    assert decoded == _SIGNATURE_BYTES
+
+
+def test_thought_signature_rejects_garbage_instead_of_decoding_it():
+    """Accepting two alphabets must not slide into accepting anything: without
+    strict validation, base64 silently DISCARDS non-alphabet characters, so a
+    corrupted string decodes to plausible-but-wrong bytes and we hand Gemini a
+    signature that was never issued. Returning None (replay without a signature)
+    is the honest failure."""
+    from main_logic.omni_offline_client._genai_support import (
+        _thought_signature_from_extra_content,
+    )
+
+    # Lenient base64 would drop the '!' characters and happily return b'ABCD\x00B'.
+    assert _thought_signature_from_extra_content(
+        {"google": {"thought_signature": "Q!U!J!D!RABC"}}
+    ) is None
+
+
+# ---------------------------------------------------------------------------
+# 4. Signature belongs to the call it arrived on, not to a position
+# ---------------------------------------------------------------------------
+
+
+def test_collect_tool_calls_signature_stays_on_non_zero_index():
+    """Mirror of the index-0 case: a signature that arrives on index 1 must land
+    on index 1. Testing only "index 0 has it, index 1 doesn't" cannot tell a
+    correct implementation apart from one that always attaches to the first
+    call."""
+    from utils.llm_client import ChatOpenAI
+
+    deltas_per_chunk = [[
+        {"index": 0, "id": "c0", "type": "function",
+         "function": {"name": "first_tool", "arguments": "{}"}},
+        {"index": 1, "id": "c1", "type": "function",
+         "function": {"name": "recall_memory", "arguments": "{}"},
+         "extra_content": _SIGNATURE_EXTRA},
+    ]]
+    out = ChatOpenAI.collect_tool_calls(deltas_per_chunk)
+    assert [c.name for c in out] == ["first_tool", "recall_memory"]
+    assert out[0].extra_content is None
+    assert out[1].extra_content == _SIGNATURE_EXTRA
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_history_keeps_signature_on_its_own_call():
+    """Same invariant one layer up: with two parallel calls where only the
+    second carries a signature, the history entry that gets it must be the
+    second one."""
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+    from utils.llm_client import LLMStreamChunk
+
+    tools = [
+        ToolDefinition(name="first_tool", description="a",
+                       parameters={"type": "object", "properties": {}}),
+        ToolDefinition(name="recall_memory", description="b",
+                       parameters={"type": "object", "properties": {}}),
+    ]
+    chunks_call_1 = [
+        LLMStreamChunk(content="", tool_call_deltas=[
+            {"index": 0, "id": "c0", "type": "function",
+             "function": {"name": "first_tool", "arguments": "{}"}},
+            {"index": 1, "id": "c1", "type": "function",
+             "function": {"name": "recall_memory", "arguments": "{}"},
+             "extra_content": _SIGNATURE_EXTRA},
+        ]),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content="done", finish_reason="stop")]
+
+    client = _bare_offline_client()
+    client.llm = _FakeLLM([chunks_call_1, chunks_call_2])
+    client._tool_definitions = tools
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "x"}]
+    async for _ in client._astream_with_tools(messages):
+        pass
+
+    calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )["tool_calls"]
+    assert [c["function"]["name"] for c in calls] == ["first_tool", "recall_memory"]
+    assert "extra_content" not in calls[0]
+    assert calls[1]["extra_content"] == _SIGNATURE_EXTRA
+
+
+@pytest.mark.asyncio
+async def test_offline_genai_signature_stays_on_its_own_part():
+    """genai twin: two function_call parts in one chunk, only the second Part
+    carries a thought_signature."""
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    async def _round1():
+        yield _Chunk([
+            _Part(function_call=_FunctionCall("first_tool", {}, id_="c0")),
+            _Part(function_call=_FunctionCall("recall_memory", {}, id_="c1"),
+                  thought_signature=_SIGNATURE_BYTES),
+        ])
+
+    async def _round2():
+        yield _Chunk([_Part(text="done")])
+
+    client = _bare_offline_client()
+    _genai_client_state(client, _genai_client_for(_round1, _round2))
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "x"}]
+    async for _ in client._astream_genai_with_tools(messages):
+        pass
+
+    calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )["tool_calls"]
+    assert [c["function"]["name"] for c in calls] == ["first_tool", "recall_memory"]
+    assert "extra_content" not in calls[0]
+    assert calls[1]["extra_content"] == _SIGNATURE_EXTRA
+
+
+# ---------------------------------------------------------------------------
+# 5. The real SDK boundary — fakes above cannot prove either of these
+# ---------------------------------------------------------------------------
+
+
+def test_extra_content_survives_openai_sdk_into_request_body():
+    """The whole change is worthless unless the key survives openai-python's
+    request transform into the actual HTTP body. Every other test in this file
+    stops at "the key is in the messages list", which a TypedDict-filtering SDK
+    would happily strip afterwards."""
+    import json
+
+    import httpx
+    import openai
+
+    captured = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={
+            "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "ok"}}],
+        })
+
+    sdk = openai.OpenAI(
+        api_key="sk-test", base_url="https://api.example.com/v1",
+        http_client=httpx.Client(transport=httpx.MockTransport(_handler)),
+    )
+    sdk.chat.completions.create(model="m", messages=[
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "recall_memory", "arguments": "{}"},
+            "extra_content": _SIGNATURE_EXTRA,
+        }]},
+        {"role": "tool", "tool_call_id": "c1", "name": "recall_memory", "content": "{}"},
+    ])
+
+    wire_call = captured["body"]["messages"][1]["tool_calls"][0]
+    assert wire_call["extra_content"] == _SIGNATURE_EXTRA, (
+        "openai-python 把 tool_calls 里的未知字段剥掉了——本改动的整条链就断了"
+    )
+
+
+def test_extra_content_readable_off_real_sdk_delta_object():
+    """The streaming tests fake the SDK's delta with SimpleNamespace, which can
+    expose an attribute the real model class would have dropped. Pin the read
+    against the type openai-python actually constructs from a raw chunk."""
+    from openai._models import construct_type
+    from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
+
+    from utils.llm_client.openai_client import _plain_dict
+
+    tool_call = construct_type(
+        value={
+            "index": 0, "id": "c1", "type": "function",
+            "function": {"name": "recall_memory", "arguments": "{}"},
+            "extra_content": _SIGNATURE_EXTRA,
+        },
+        type_=ChoiceDeltaToolCall,
+    )
+    assert _plain_dict(getattr(tool_call, "extra_content", None)) == _SIGNATURE_EXTRA
+
+
+def test_plain_dict_handles_model_objects_and_scalars():
+    """``_plain_dict``'s non-dict fallbacks are the reason a future SDK that
+    materializes unknown fields as models still works. Untested, they are just
+    a claim in a comment."""
+    from utils.llm_client.openai_client import _plain_dict
+
+    class _Dumpable:
+        def model_dump(self):
+            return dict(_SIGNATURE_EXTRA)
+
+    class _ToDict:
+        def to_dict(self):
+            return dict(_SIGNATURE_EXTRA)
+
+    class _Exploding:
+        def model_dump(self):
+            raise RuntimeError("boom")
+
+    assert _plain_dict(_Dumpable()) == _SIGNATURE_EXTRA
+    assert _plain_dict(_ToDict()) == _SIGNATURE_EXTRA
+    assert _plain_dict(None) is None
+    assert _plain_dict("not-a-dict") is None
+    # A dumper that raises must degrade to "no extra_content", never propagate.
+    assert _plain_dict(_Exploding()) is None
+
+
+# ---------------------------------------------------------------------------
+# 6. The signature is bound to the route that minted it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_switch_model_strips_signature_when_endpoint_changes(monkeypatch):
+    """``switch_model(vision_model, use_vision_config=True)`` re-points the
+    session at a separately configured provider and deliberately keeps the
+    history. A Google-private blob must not ride along to that endpoint —
+    openai-python forwards unknown tool_call keys verbatim, and a strict
+    endpoint rejects the request, breaking every remaining turn."""
+    import main_logic.omni_offline_client._streaming as _streaming
+
+    client = _bare_offline_client()
+    client.model = "gemini-3-pro"
+    client.base_url = "https://www.lanlan.app/v1"
+    client.api_key = "free-key"
+    client.vision_model = "gpt-4o"
+    client.vision_base_url = "https://api.openai.com/v1"
+    client.vision_api_key = "sk-vision"
+    client.max_response_length = 300
+    client._genai_client = None
+    client._use_genai_sdk = False
+
+    async def _aclose():
+        return None
+
+    client.llm = type("F", (), {"aclose": staticmethod(_aclose)})()
+    client._conversation_history = [
+        {"role": "user", "content": "还记得吗"},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "recall_memory", "arguments": "{}"},
+            "extra_content": _SIGNATURE_EXTRA,
+        }]},
+        {"role": "tool", "tool_call_id": "c1", "name": "recall_memory", "content": "{}"},
+    ]
+
+    async def _fake_create(*_a, **_kw):
+        return type("F", (), {"aclose": staticmethod(_aclose)})()
+
+    monkeypatch.setattr(_streaming, "create_chat_llm_async", _fake_create)
+
+    await client.switch_model("gpt-4o", use_vision_config=True)
+
+    assistant_turn = client._conversation_history[1]
+    assert "extra_content" not in assistant_turn["tool_calls"][0], (
+        "切到另一个 endpoint 后，Gemini 的 thought_signature 不能跟着历史发过去"
+    )
+    # The rest of the tool round must survive — dropping the whole turn would
+    # orphan the tool result and cost the model its own context.
+    assert assistant_turn["tool_calls"][0]["function"]["name"] == "recall_memory"
+    assert client._conversation_history[2]["role"] == "tool"
+
+
+@pytest.mark.asyncio
+async def test_switch_model_keeps_signature_on_same_endpoint(monkeypatch):
+    """Dual, and the more important half: swapping models WITHIN one endpoint
+    (both slots pointed at the same Gemini route) must keep the signature —
+    stripping there would hand back the exact 400 this change fixes."""
+    import main_logic.omni_offline_client._streaming as _streaming
+
+    async def _aclose():
+        return None
+
+    client = _bare_offline_client()
+    client.model = "gemini-3-pro"
+    client.base_url = "https://www.lanlan.app/v1"
+    client.api_key = "free-key"
+    client.vision_model = "gemini-3-pro-vision"
+    client.vision_base_url = "https://www.lanlan.app/v1"
+    client.vision_api_key = "free-key"
+    client.max_response_length = 300
+    client._genai_client = None
+    client._use_genai_sdk = False
+    client.llm = type("F", (), {"aclose": staticmethod(_aclose)})()
+    client._conversation_history = [
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "recall_memory", "arguments": "{}"},
+            "extra_content": _SIGNATURE_EXTRA,
+        }]},
+    ]
+
+    async def _fake_create(*_a, **_kw):
+        return type("F", (), {"aclose": staticmethod(_aclose)})()
+
+    monkeypatch.setattr(_streaming, "create_chat_llm_async", _fake_create)
+
+    await client.switch_model("gemini-3-pro-vision", use_vision_config=True)
+
+    assert client._conversation_history[0]["tool_calls"][0]["extra_content"] == _SIGNATURE_EXTRA

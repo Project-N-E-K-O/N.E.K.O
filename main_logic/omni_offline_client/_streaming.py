@@ -54,6 +54,42 @@ from ._genai_support import (
 )
 from ._lifecycle import _with_dialog_slop
 
+
+def _strip_route_bound_tool_call_extras(history) -> int:
+    """Drop ``tool_calls[].extra_content`` from a history that is about to be
+    replayed on a DIFFERENT endpoint. Returns how many were dropped.
+
+    ``extra_content`` is a vendor-private blob (today: Gemini's
+    ``thought_signature``) that only the endpoint which minted it understands.
+    It is stored so the same route can replay it — but the history outlives the
+    route: ``switch_model(vision_model, use_vision_config=True)`` re-points
+    ``self.llm`` at a separately configured provider for the rest of the session
+    and deliberately keeps the history. openai-python forwards unknown keys
+    inside ``messages[].tool_calls[]`` into the request body verbatim, so
+    without this the blob is POSTed to a provider that never issued it — and
+    endpoints that validate message objects strictly reject the request, which
+    would break every remaining turn of the session.
+
+    Dropping degrades that history to its pre-signature form (exactly what the
+    endpoint would have received before signatures were stored at all), so the
+    worst case is the old behaviour rather than a hard failure.
+
+    Scope note: the sibling ``reasoning_content`` field on the same assistant
+    turn has the same route-bound nature and predates this helper. It is left
+    alone deliberately — it has its own provider contract (thinking endpoints
+    require it echoed back) and its own failure mode, and changing it belongs
+    in its own change rather than riding along here.
+    """
+    stripped = 0
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        for tool_call in (msg.get("tool_calls") or []):
+            if isinstance(tool_call, dict) and tool_call.pop("extra_content", None) is not None:
+                stripped += 1
+    return stripped
+
+
 class _StreamingMixin:
     def update_max_response_length(self, max_length: int) -> None:
         """Update the response token cap (the user may change settings mid-conversation).
@@ -144,6 +180,11 @@ class _StreamingMixin:
                 timeout=DIALOG_LLM_STREAM_TIMEOUT_SECONDS,  # hang-guard; generous so normal/long replies aren't truncated
                 provider_type=provider_type,
             )
+            # 端点是否真的换了 —— 换 endpoint（或换账号）才需要清掉历史里
+            # 那些只有铸造方看得懂的 vendor 私有字段。同一个 endpoint 只换
+            # 模型（conversation → vision 都在同一家）不能清：那正是签名要
+            # 起作用的场景，清了等于把本要修的 400 又放回来。
+            route_changed = (base_url != self.base_url) or (api_key != self.api_key)
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model
@@ -152,6 +193,18 @@ class _StreamingMixin:
             # 把 vision 走的 Gemini endpoint 错误路由到 OpenAI-compat（反之亦然）。
             self.base_url = base_url
             self.api_key = api_key
+            if route_changed:
+                # getattr 防御与本文件其余处一致：__new__ 绕过 __init__ 的测试桩
+                # 没有这个字段，helper 对 None 也是 no-op。
+                dropped = _strip_route_bound_tool_call_extras(
+                    getattr(self, "_conversation_history", None)
+                )
+                if dropped:
+                    logger.info(
+                        "switch_model: dropped %d route-bound tool_call extra_content "
+                        "entry/entries before replaying history on %s",
+                        dropped, base_url or "(default endpoint)",
+                    )
             # 路由旗标随之刷新；旧 _genai_client 抛弃（若 api_key 变了它已失效）。
             # genai.Client 内部持有 httpx 连接池——直接 = None 靠 GC 回收虽不
             # 是 leak，但提早 close() 能马上释放底层连接（SDK 没暴露 aclose，

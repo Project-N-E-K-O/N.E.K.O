@@ -116,8 +116,14 @@ def _thought_signature_from_extra_content(extra_content: Any) -> Optional[bytes]
     if not encoded or not isinstance(encoded, str):
         return None
     import base64 as _b64
+    # 只有我们自己写的那半边保证是标准字母表 + padding；另一半是 compat
+    # 端点原样存下来的串，字母表和 padding 由 Google 说了算。这里两种字母表
+    # 都收、缺 padding 也补，别让一个纯编码约定差异把签名静默丢掉——那等于
+    # 把本要修的 400 又放回来。真正的垃圾串仍被 validate=True 挡住。
+    normalized = encoded.replace("-", "+").replace("_", "/")
+    normalized += "=" * (-len(normalized) % 4)
     try:
-        return _b64.b64decode(encoded, validate=True)
+        return _b64.b64decode(normalized, validate=True)
     except (ValueError, TypeError) as e:
         logger.warning("genai: malformed thought_signature in history dropped: %s", e)
         return None
