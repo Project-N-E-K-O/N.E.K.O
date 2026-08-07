@@ -2593,6 +2593,7 @@
                         window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
                             detail: {
                                 requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                text: normalizedVoiceTranscript.slice(0, 1000),
                                 source: 'voice'
                             }
                         }));
