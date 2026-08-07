@@ -69,9 +69,18 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),
+    # React 聊天窗构建产物（gitignore 目录）；漏建则 index.html/chat.html 的聊天面板 404。
+    ("static/react/neko-chat", "neko-chat-window.iife.js"),
     ("templates", None),
     ("assets", None),
     ("data/browser_use_prompts", None),
+    # 离线模型资产：prepare_*.py 脚本在 Nuitka 前下载，权重不入库，冻结包无运行时下载路径；
+    # 漏打则本地端点检测/说话人识别/向量记忆静默降级。CI 另有逐文件深检（Verify bundled
+    # offline assets），此处兜住"目录/权重整体缺失"这类静默漂移。
+    ("data/embedding_models", None),
+    ("main_logic/asr_client/endpointing/models", "silero_vad.onnx"),
+    ("main_logic/asr_client/endpointing/models", "smart_turn_v3.onnx"),
+    ("main_logic/asr_client/speaker_shadow/models", "campplus-zh-en-advanced.onnx"),
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     # 应用内 OpenClaw 引导文档 + 图片，agent_router 经 /api/agent/openclaw/guide/* 提供；纯数据目录。
