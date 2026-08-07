@@ -81,30 +81,18 @@
         .header-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; }
         .header-brand img { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--accent); }
         .header-right {
+            --neko-window-control-color: var(--fg);
+            --neko-window-control-group-background: color-mix(in oklch, var(--surface) 92%, transparent);
+            --neko-window-control-group-border: color-mix(in oklch, var(--border) 82%, transparent);
+            --neko-window-control-hover-background: var(--accent-soft);
+            --neko-window-control-active-background: color-mix(in oklch, var(--accent-soft) 78%, var(--accent));
+            --neko-window-control-close-color: var(--fg);
+            --neko-window-control-close-hover-background: oklch(0.62 0.18 25 / 0.76);
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 2px;
             padding-right: 0;
             -webkit-app-region: no-drag;
-        }
-        .header-right .neko-window-control-btn {
-            color: var(--fg);
-        }
-        .header-right .neko-window-control-btn:hover {
-            background: var(--accent-soft);
-        }
-        .header-right .close-page-btn {
-            width: 32px;
-            height: 32px;
-            padding: 0;
-            border: none;
-            background: transparent;
-            cursor: pointer;
-        }
-        .header-right .close-page-btn img {
-            display: block;
-            width: 32px;
-            height: 32px;
         }
         .guide-shell {
             position: relative;

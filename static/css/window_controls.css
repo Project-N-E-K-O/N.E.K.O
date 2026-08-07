@@ -1,10 +1,32 @@
-/* 自绘窗口控制按钮：最小化、最大化/恢复 */
-.neko-window-actions,
-.neko-window-controls {
+/* 统一窗口控制按钮：置顶、最小化、最大化/恢复、关闭 */
+.neko-window-actions {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-left: auto;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+}
+
+.neko-window-controls {
+    --neko-window-control-color: #fff;
+    --neko-window-control-group-background: rgba(255, 255, 255, 0.1);
+    --neko-window-control-group-border: rgba(255, 255, 255, 0.16);
+    --neko-window-control-hover-background: rgba(255, 255, 255, 0.2);
+    --neko-window-control-active-background: rgba(255, 255, 255, 0.3);
+    --neko-window-control-close-color: #fff5f5;
+    --neko-window-control-close-hover-background: rgba(248, 113, 113, 0.28);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+    padding: 3px;
+    border: 1px solid var(--neko-window-control-group-border);
+    border-radius: 12px;
+    background: var(--neko-window-control-group-background);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 4px 16px rgba(15, 23, 42, 0.12);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     flex-shrink: 0;
     -webkit-app-region: no-drag;
 }
@@ -19,67 +41,86 @@
     margin: 0;
 }
 
+.neko-window-controls .neko-window-control-btn,
+.neko-window-controls .minimize-btn,
+.neko-window-controls .maximize-btn,
 .neko-window-controls .close-btn,
-.neko-window-controls .close-page-btn {
-    position: static;
-    right: auto;
+.neko-window-controls .close-page-btn,
+.neko-window-controls .voice-close {
+    position: relative;
     top: auto;
-    transform: none;
-    margin: 0;
-    flex-shrink: 0;
-    -webkit-app-region: no-drag;
-}
-
-.neko-window-controls .close-btn:hover,
-.neko-window-controls .close-page-btn:hover {
-    transform: translateY(-1px);
-}
-
-.neko-window-controls .close-btn:active,
-.neko-window-controls .close-page-btn:active {
-    transform: translateY(1px) scale(0.95);
-}
-
-.neko-window-control-btn {
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: #fff;
-    cursor: pointer;
-    line-height: 1;
+    right: auto;
+    bottom: auto;
+    left: auto;
     display: flex;
+    width: 32px;
+    height: 30px;
     align-items: center;
     justify-content: center;
-    transition:
-        background 0.2s ease,
-        color 0.2s ease,
-        transform 0.1s ease,
-        opacity 0.2s ease,
-        box-shadow 0.2s ease;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--neko-window-control-color);
+    cursor: pointer;
+    line-height: 1;
+    transform: none;
+    opacity: 1;
+    z-index: auto;
+    transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
     flex-shrink: 0;
     -webkit-app-region: no-drag;
 }
 
-.neko-window-control-btn[hidden] {
+.neko-window-controls .neko-window-control-btn[hidden] {
     display: none;
 }
 
-.neko-window-control-btn.is-pinned {
-    background: linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.18));
-    color: #fff;
-    box-shadow:
-        inset 0 0 0 1px rgba(255, 255, 255, 0.32),
-        0 3px 10px rgba(15, 79, 120, 0.16);
+.neko-window-controls .neko-window-control-btn:hover,
+.neko-window-controls .minimize-btn:hover,
+.neko-window-controls .maximize-btn:hover,
+.neko-window-controls .close-btn:hover,
+.neko-window-controls .close-page-btn:hover,
+.neko-window-controls .voice-close:hover {
+    background: var(--neko-window-control-hover-background);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(15, 23, 42, 0.12);
 }
 
-.neko-window-control-btn.is-pinned:hover {
-    background: linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24));
+.neko-window-controls .neko-window-control-btn:active,
+.neko-window-controls .minimize-btn:active,
+.neko-window-controls .maximize-btn:active,
+.neko-window-controls .close-btn:active,
+.neko-window-controls .close-page-btn:active,
+.neko-window-controls .voice-close:active {
+    background: var(--neko-window-control-active-background);
+    transform: translateY(0) scale(0.94);
+    box-shadow: none;
+}
+
+.neko-window-controls .neko-window-control-btn:focus-visible,
+.neko-window-controls .minimize-btn:focus-visible,
+.neko-window-controls .maximize-btn:focus-visible,
+.neko-window-controls .close-btn:focus-visible,
+.neko-window-controls .close-page-btn:focus-visible,
+.neko-window-controls .voice-close:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--neko-window-control-color) 78%, transparent);
+    outline-offset: 2px;
+}
+
+.neko-window-controls .neko-window-control-btn.is-pinned {
+    background: var(--neko-window-control-hover-background);
     box-shadow:
-        inset 0 0 0 1px rgba(255, 255, 255, 0.4),
-        0 4px 12px rgba(15, 79, 120, 0.2);
+        inset 0 0 0 1px color-mix(in srgb, var(--neko-window-control-color) 24%, transparent),
+        0 3px 8px rgba(15, 23, 42, 0.12);
+}
+
+.neko-window-controls .neko-window-control-btn.is-pinned:hover {
+    background: var(--neko-window-control-active-background);
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--neko-window-control-color) 32%, transparent),
+        0 4px 10px rgba(15, 23, 42, 0.16);
 }
 
 .neko-window-pin-icon {
@@ -117,25 +158,12 @@
     animation: neko-window-pin-lock 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-[data-neko-window-control="pin"]:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.92);
-    outline-offset: 2px;
-}
-
-.neko-window-control-btn:hover {
-    background: rgba(255, 255, 255, 0.2);
-    transform: translateY(-1px);
-}
-
-.neko-window-control-btn:active {
-    background: rgba(255, 255, 255, 0.3);
-    transform: translateY(1px) scale(0.95);
-    opacity: 0.9;
-}
-
-.neko-window-control-btn:disabled,
+.neko-window-controls .neko-window-control-btn:disabled,
+.neko-window-controls .minimize-btn:disabled,
+.neko-window-controls .maximize-btn:disabled,
 .neko-window-controls .close-btn:disabled,
-.neko-window-controls .close-page-btn:disabled {
+.neko-window-controls .close-page-btn:disabled,
+.neko-window-controls .voice-close:disabled {
     cursor: not-allowed;
     opacity: 0.45;
     transform: none;
@@ -154,39 +182,94 @@
 
 .neko-window-minimize-icon {
     display: block;
-    width: 16px;
-    height: 2px;
+    width: 14px;
+    height: 1.5px;
     background: currentColor;
-    border-radius: 2px;
+    border-radius: 999px;
     transform: translateY(5px);
 }
 
 .neko-window-maximize-icon {
     display: block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid currentColor;
-    border-radius: 2px;
+    width: 13px;
+    height: 13px;
+    border: 1.6px solid currentColor;
+    border-radius: 3px;
     box-sizing: border-box;
-    transition: all 0.2s ease;
+    transition: transform 0.18s ease;
 }
 
 .neko-window-maximize-icon.restored {
     position: relative;
-    background: #40c5f1;
+    transform: translate(2px, 2px);
 }
 
 .neko-window-maximize-icon.restored::after {
     content: '';
     position: absolute;
-    top: -3px;
-    left: 3px;
-    width: 14px;
-    height: 14px;
-    border: 2px solid currentColor;
-    border-radius: 2px;
-    background: #40c5f1;
+    top: -5px;
+    left: -5px;
+    width: 11px;
+    height: 11px;
+    border: 1.6px solid currentColor;
+    border-radius: 3px;
     box-sizing: border-box;
+}
+
+.neko-window-controls [data-neko-window-control="close"],
+.neko-window-controls .close-btn,
+.neko-window-controls .close-page-btn,
+.neko-window-controls .voice-close {
+    color: var(--neko-window-control-close-color);
+}
+
+.neko-window-controls [data-neko-window-control="close"]::before,
+.neko-window-controls [data-neko-window-control="close"]::after,
+.neko-window-controls .close-btn::before,
+.neko-window-controls .close-btn::after,
+.neko-window-controls .close-page-btn::before,
+.neko-window-controls .close-page-btn::after,
+.neko-window-controls .voice-close::before,
+.neko-window-controls .voice-close::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 15px;
+    height: 1.7px;
+    margin: -0.85px 0 0 -7.5px;
+    border-radius: 999px;
+    background: currentColor;
+    box-shadow: 0 1px 1px rgba(15, 23, 42, 0.14);
+}
+
+.neko-window-controls [data-neko-window-control="close"]::before,
+.neko-window-controls .close-btn::before,
+.neko-window-controls .close-page-btn::before,
+.neko-window-controls .voice-close::before {
+    transform: rotate(45deg);
+}
+
+.neko-window-controls [data-neko-window-control="close"]::after,
+.neko-window-controls .close-btn::after,
+.neko-window-controls .close-page-btn::after,
+.neko-window-controls .voice-close::after {
+    transform: rotate(-45deg);
+}
+
+.neko-window-controls [data-neko-window-control="close"] img,
+.neko-window-controls .close-btn img,
+.neko-window-controls .close-page-btn img,
+.neko-window-controls .voice-close img {
+    display: none !important;
+}
+
+.neko-window-controls [data-neko-window-control="close"]:hover,
+.neko-window-controls .close-btn:hover,
+.neko-window-controls .close-page-btn:hover,
+.neko-window-controls .voice-close:hover {
+    background: var(--neko-window-control-close-hover-background);
+    color: #fff;
 }
 
 html:has(body > .container > .container-header),
