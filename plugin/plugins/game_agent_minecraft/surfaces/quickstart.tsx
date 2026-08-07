@@ -109,7 +109,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   "zh-CN": {
     title: "Minecraft 游戏插件 快速开始",
     subtitle: "让猫娘陪你玩 MC——她会有一个自己的游戏角色，和你在同一个世界里一起行动。",
-    notice: "mc-agent 还在持续更新中：安装流程和控制面板的界面会随版本变化，网盘里的包也会不定期替换。如果你看到的界面和这里写的对不上，先回上面的下载卡片重新下一份最新的包；重下之后还是对不上，那就是新版还没发布，请耐心等待更新。",
+    notice: "mc-agent 还在持续更新中：安装流程和控制面板的界面会随版本变化，网盘里的包也会不定期替换。如果你看到的界面和这里写的对不上，先用本页的「下载 mc-agent」卡片重新下一份最新的包；重下之后还是对不上，那就是新版还没发布，请耐心等待更新。",
     cards: [
       { title: "先装 Minecraft", badge: "Install", body: "Java 版 v1.21.1 推荐，其他 1.21.x 也可。自己买正版或离线启动。" },
       { title: "再开 mc-agent", badge: "Setup", body: "下面下个 mc-agent 解压、双击「启动.bat」启动它。它和 N.E.K.O 是两个各自独立的程序，都开着就会自动连上。首次启动会自动打开控制面板网页，密钥、模型、游戏端口全在网页里填，不用碰任何文件。猫娘默认用离线模式进游戏，不需要另外给她买正版账号（代价是进不了开了正版验证的联机服务器，你自己开的局域网世界不受影响）。" },
@@ -130,7 +130,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "下载 mc-agent",
-      hint: "三个网盘任选其一，下载完解压到一个短路径的目录（整条路径最好别超过 90 个字符），双击里面的「启动.bat」即可。启动后回这里点刷新看状态。",
+      hint: "三个网盘任选其一，下载完解压到一个短路径的目录（整条路径最好别超过 90 个字符），双击里面的「启动.bat」即可。启动后回这里点刷新看状态。已经装好了也可以从这里下新版覆盖更新。",
       quark: "夸克网盘",
       gdrive: "Google Drive",
       baidu: "百度网盘（提取码 kuro）",
@@ -164,7 +164,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   en: {
     title: "Minecraft Game Plugin — Quickstart",
     subtitle: "Let neko-chan play MC with you — she gets her own in-game character and moves around the same world you do.",
-    notice: "mc-agent is still under active development: the install flow and the control panel UI change between versions, and the netdisk archives get replaced from time to time. If what you see doesn't match this page, first re-download the latest archive from the download card above. If it still doesn't match after that, the new build simply isn't out yet — please be patient and wait for the update.",
+    notice: "mc-agent is still under active development: the install flow and the control panel UI change between versions, and the netdisk archives get replaced from time to time. If what you see doesn't match this page, first re-download the latest archive from the \"Download mc-agent\" card on this page. If it still doesn't match after that, the new build simply isn't out yet — please be patient and wait for the update.",
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
       { title: "Run mc-agent", badge: "Setup", body: "Download mc-agent below, unzip, double-click 启动.bat. It's a separate program from N.E.K.O.; run both and they connect on their own. On first launch it opens a control panel in your browser — API key, model and game port all go in there, you never edit a file. Neko-chan joins in offline mode by default, so she doesn't need her own paid Minecraft account (the trade-off: she can't join online-mode servers; your own LAN world is unaffected)." },
@@ -185,7 +185,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "Download mc-agent",
-      hint: "Pick whichever drive is fastest. Unzip into a folder with a short path (keep the whole path under ~90 characters), double-click 启动.bat inside to launch, then hit Refresh here.",
+      hint: "Pick whichever drive is fastest. Unzip into a folder with a short path (keep the whole path under ~90 characters), double-click 启动.bat inside to launch, then hit Refresh here. Already set up? These are also the links to grab a newer build and update over it.",
       quark: "Quark Drive (CN)",
       gdrive: "Google Drive",
       baidu: "Baidu Pan (code: kuro)",
@@ -219,7 +219,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   ja: {
     title: "Minecraft ゲームプラグイン クイックスタート",
     subtitle: "猫娘ちゃんと MC を遊ぼう。彼女は自分のキャラクターを持って、同じ世界であなたと一緒に動きます。",
-    notice: "mc-agent は現在も更新中です：導入手順やコントロールパネルの画面はバージョンごとに変わり、ネットディスク上のパッケージも随時差し替えられます。ここの説明と実際の画面が食い違う場合は、まず上のダウンロードカードから最新のパッケージを取り直してください。それでも合わない場合は新版がまだ公開されていないので、アップデートをお待ちください。",
+    notice: "mc-agent は現在も更新中です：導入手順やコントロールパネルの画面はバージョンごとに変わり、ネットディスク上のパッケージも随時差し替えられます。ここの説明と実際の画面が食い違う場合は、まずは本ページの「mc-agent をダウンロード」カードから最新のパッケージを取り直してください。それでも合わない場合は新版がまだ公開されていないので、アップデートをお待ちください。",
     cards: [
       { title: "Minecraft を入れる", badge: "Install", body: "Java 版 v1.21.1 推奨。他の 1.21.x でも可。お好きなランチャーで。" },
       { title: "mc-agent を起動", badge: "Setup", body: "下のカードから mc-agent を入手・解凍し「启动.bat」をダブルクリック。N.E.K.O とは別のプログラムで、両方を起動しておけば自動でつながります。初回起動時にブラウザでコントロールパネルが自動的に開き、API キー・モデル・ゲームのポートはすべてそこで入力します（ファイルを編集する必要はありません）。猫娘ちゃんは既定でオフラインモードで参加するので、専用の正規アカウントは不要です（その代わり正規認証のマルチサーバーには入れません。自分で開いた LAN ワールドは問題なし）。" },
@@ -240,7 +240,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "mc-agent をダウンロード",
-      hint: "回線に合うものを選んで DL し、パスの短いフォルダに解凍（全体で 90 文字以内が目安）→ 中の「启动.bat」をダブルクリックで起動 → こちらで更新ボタンを押す。",
+      hint: "回線に合うものを選んで DL し、パスの短いフォルダに解凍（全体で 90 文字以内が目安）→ 中の「启动.bat」をダブルクリックで起動 → こちらで更新ボタンを押す。導入済みでも、新版を取り直して上書き更新する入口はここです。",
       quark: "Quark Drive（中国）",
       gdrive: "Google Drive",
       baidu: "百度网盘（パスワード kuro）",
@@ -274,7 +274,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   ko: {
     title: "Minecraft 게임 플러그인 빠른 시작",
     subtitle: "고양이와 함께 MC를 즐기세요. 고양이는 자기 캐릭터로 같은 월드에 들어와 너와 함께 움직여요.",
-    notice: "mc-agent는 아직 계속 업데이트 중입니다: 설치 흐름과 제어판 화면이 버전마다 달라지고, 네트워크 드라이브의 압축 파일도 수시로 교체돼요. 여기 설명과 실제 화면이 다르면 먼저 위 다운로드 카드에서 최신 패키지를 다시 받아 보세요. 다시 받아도 그대로면 새 버전이 아직 안 나온 것이니 업데이트를 조금만 기다려 주세요.",
+    notice: "mc-agent는 아직 계속 업데이트 중입니다: 설치 흐름과 제어판 화면이 버전마다 달라지고, 네트워크 드라이브의 압축 파일도 수시로 교체돼요. 여기 설명과 실제 화면이 다르면 먼저 이 페이지의 「mc-agent 다운로드」 카드에서 최신 패키지를 다시 받아 보세요. 다시 받아도 그대로면 새 버전이 아직 안 나온 것이니 업데이트를 조금만 기다려 주세요.",
     cards: [
       { title: "Minecraft 설치", badge: "Install", body: "Java 에디션 v1.21.1 권장. 다른 1.21.x도 가능. 원하는 런처 사용." },
       { title: "mc-agent 실행", badge: "Setup", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动.bat」 더블클릭. N.E.K.O와는 별개 프로그램이라 둘 다 켜 두면 알아서 연결돼요. 처음 실행하면 브라우저에 제어판이 자동으로 열리고, API 키·모델·게임 포트를 전부 그 웹 화면에서 입력해요(파일을 건드릴 일 없음). 고양이는 기본적으로 오프라인 모드로 접속하니 정품 계정을 따로 살 필요는 없어요(대신 정품 인증을 켠 멀티 서버에는 못 들어가요. 직접 연 LAN 월드는 문제없음)." },
@@ -295,7 +295,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "mc-agent 다운로드",
-      hint: "네트워크에 맞는 드라이브를 골라 다운로드 후 경로가 짧은 폴더에 압축 해제(전체 경로 90자 이내 권장) → 안의 「启动.bat」 더블클릭으로 실행 → 여기서 새로고침.",
+      hint: "네트워크에 맞는 드라이브를 골라 다운로드 후 경로가 짧은 폴더에 압축 해제(전체 경로 90자 이내 권장) → 안의 「启动.bat」 더블클릭으로 실행 → 여기서 새로고침. 이미 설치했더라도 새 버전을 받아 덮어쓰는 입구도 여기예요.",
       quark: "Quark Drive (중국)",
       gdrive: "Google Drive",
       baidu: "百度网盘 (비밀번호 kuro)",
@@ -329,7 +329,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   ru: {
     title: "Игровой плагин Minecraft — Быстрый старт",
     subtitle: "Играй в MC вместе с нэко-тян — у неё будет свой персонаж, и она будет ходить по тому же миру, что и ты.",
-    notice: "mc-agent всё ещё активно обновляется: процесс установки и интерфейс панели управления меняются от версии к версии, архивы на дисках время от времени заменяются. Если увиденное не совпадает с этой страницей, сначала перекачай свежий архив по карточке «Скачать» выше. Если и после этого не совпадает — новая версия просто ещё не вышла, дождись обновления.",
+    notice: "mc-agent всё ещё активно обновляется: процесс установки и интерфейс панели управления меняются от версии к версии, архивы на дисках время от времени заменяются. Если увиденное не совпадает с этой страницей, сначала перекачай свежий архив по карточке «Скачать mc-agent» на этой странице. Если и после этого не совпадает — новая версия просто ещё не вышла, дождись обновления.",
     cards: [
       { title: "Установи Minecraft", badge: "Install", body: "Java Edition v1.21.1 рекомендуется; другие 1.21.x тоже подойдут. Любой лаунчер." },
       { title: "Запусти mc-agent", badge: "Setup", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动.bat. Это отдельная программа от N.E.K.O. — запусти обе, и они соединятся сами. При первом запуске в браузере сама откроется панель управления — ключ API, модель и игровой порт вводятся только там, никакие файлы править не нужно. Нэко-тян по умолчанию заходит в офлайн-режиме, так что отдельный лицензионный аккаунт покупать не надо (расплата: на серверы с проверкой лицензии она не попадёт; твой собственный LAN-мир это не затрагивает)." },
@@ -350,7 +350,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     },
     download: {
       title: "Скачать mc-agent",
-      hint: "Выбери диск побыстрее, распакуй в папку с коротким путём (весь путь лучше держать короче ~90 символов), дважды кликни 启动.bat внутри для запуска, затем жми «Обновить» здесь.",
+      hint: "Выбери диск побыстрее, распакуй в папку с коротким путём (весь путь лучше держать короче ~90 символов), дважды кликни 启动.bat внутри для запуска, затем жми «Обновить» здесь. Уже всё настроено? Отсюда же качается свежая сборка для обновления поверх.",
       quark: "Quark Drive (Китай)",
       gdrive: "Google Drive",
       baidu: "Baidu Pan (код kuro)",
@@ -534,27 +534,29 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
         </Stack>
       </Card>
 
-      {state.connected !== true ? (
-        <Card title={copy.download.title}>
-          <Stack>
-            <Text>{copy.download.hint}</Text>
-            <ButtonGroup>
-              <Button
-                tone="primary"
-                onClick={() => openExternalUrl(DOWNLOAD_LINKS.quark)}
-              >
-                {copy.download.quark}
-              </Button>
-              <Button onClick={() => openExternalUrl(DOWNLOAD_LINKS.gdrive)}>
-                {copy.download.gdrive}
-              </Button>
-              <Button onClick={() => openExternalUrl(DOWNLOAD_LINKS.baidu)}>
-                {copy.download.baidu}
-              </Button>
-            </ButtonGroup>
-          </Stack>
-        </Card>
-      ) : null}
+      {/* Always rendered, including when already connected. An outdated
+          mc-agent still speaks the bridge protocol and so reports as
+          connected — those are exactly the users the notice above sends
+          here to re-download, and hiding the card would strand them. */}
+      <Card title={copy.download.title}>
+        <Stack>
+          <Text>{copy.download.hint}</Text>
+          <ButtonGroup>
+            <Button
+              tone="primary"
+              onClick={() => openExternalUrl(DOWNLOAD_LINKS.quark)}
+            >
+              {copy.download.quark}
+            </Button>
+            <Button onClick={() => openExternalUrl(DOWNLOAD_LINKS.gdrive)}>
+              {copy.download.gdrive}
+            </Button>
+            <Button onClick={() => openExternalUrl(DOWNLOAD_LINKS.baidu)}>
+              {copy.download.baidu}
+            </Button>
+          </ButtonGroup>
+        </Stack>
+      </Card>
 
       <Grid cols={3}>
         {copy.cards.map((card) => (
