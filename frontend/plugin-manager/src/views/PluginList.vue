@@ -422,7 +422,8 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
-import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { uploadPluginPackage, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { usePluginPackageInstaller } from '@/composables/usePluginPackageInstaller'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
@@ -438,6 +439,7 @@ const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 const { t, locale } = useI18n()
 const { buildActions, executeAction, shouldUseHoldConfirm } = usePluginListContextActions()
+const { installPackagePath: installImportedPackage } = usePluginPackageInstaller()
 const TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
 
 const reloadingAll = ref(false)
@@ -919,8 +921,10 @@ async function handleImportFileChange(event: Event) {
 
   importing.value = true
   try {
-    const result = await uploadAndInstallPlugin(file)
-    const count = result.install.installed_plugin_count ?? 0
+    const upload = await uploadPluginPackage(file)
+    const result = await installImportedPackage(upload.path)
+    if (!result) return
+    const count = result.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
     await refreshAfterPluginChange()
   } catch (error: any) {

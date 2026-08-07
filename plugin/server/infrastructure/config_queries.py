@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.config_protected import validate_protected_fields_unchanged
-from plugin.server.infrastructure.config_paths import get_plugin_config_path
+from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config
 from plugin.server.infrastructure.config_toml import (
     parse_toml_text,
@@ -58,7 +58,7 @@ def load_plugin_config(plugin_id: str, *, validate: bool = True) -> dict[str, ob
 
 
 def load_plugin_config_toml(plugin_id: str) -> dict[str, object]:
-    config_path = get_plugin_config_path(plugin_id)
+    config_path = ensure_plugin_runtime_config(plugin_id)
     try:
         toml_text = config_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:

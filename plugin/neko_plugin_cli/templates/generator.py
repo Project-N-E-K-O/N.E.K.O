@@ -83,6 +83,15 @@ def generate_plugin(spec: PluginSpec, target_dir: Path) -> list[Path]:
     toml_path.write_text(_render_plugin_toml(spec), encoding="utf-8", newline="\n")
     created.append(toml_path)
 
+    # config.example.toml
+    config_example_path = target_dir / "config.example.toml"
+    config_example_path.write_text(
+        _render_config_example_toml(spec),
+        encoding="utf-8",
+        newline="\n",
+    )
+    created.append(config_example_path)
+
     # __init__.py
     init_path = target_dir / "__init__.py"
     init_path.write_text(_render_init_py(spec), encoding="utf-8", newline="\n")
@@ -255,16 +264,20 @@ def _render_plugin_toml(spec: PluginSpec) -> str:
     if "store" in spec.features:
         lines.extend(["", "[plugin.store]", "enabled = true"])
 
-    auto_start = "true" if "timer" in spec.features or "message" in spec.features else "false"
-    lines.extend([
-        "",
-        "[plugin_runtime]",
-        "enabled = true",
-        f"auto_start = {auto_start}",
-    ])
-
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_config_example_toml(spec: PluginSpec) -> str:
+    auto_start = "true" if "timer" in spec.features or "message" in spec.features else "false"
+    return "\n".join(
+        [
+            "[plugin_runtime]",
+            "enabled = true",
+            f"auto_start = {auto_start}",
+            "",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------

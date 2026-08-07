@@ -33,7 +33,7 @@ def test_update_plugin_config_validates_protected_fields(monkeypatch: pytest.Mon
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda plugin_id: config_path)
     monkeypatch.setattr(module, "load_toml_from_stream", lambda stream, context: current_config)
     monkeypatch.setattr(module, "deep_merge", lambda base, updates: merged_config)
 
@@ -96,7 +96,7 @@ def test_update_plugin_config_atomic_write_after_file_lock_released(
         assert getattr(stream, "closed") is True
 
     monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda plugin_id: config_path)
     monkeypatch.setattr(module, "file_lock", _file_lock)
     monkeypatch.setattr(module, "load_toml_from_stream", lambda stream, context: current_config)
     monkeypatch.setattr(module, "deep_merge", lambda base, updates: merged_config)
@@ -152,7 +152,7 @@ def test_replace_plugin_config_atomic_write_after_file_lock_released(
         assert getattr(stream, "closed") is True
 
     monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda plugin_id: config_path)
     monkeypatch.setattr(module, "file_lock", _file_lock)
     monkeypatch.setattr(module, "load_toml_from_stream", lambda stream, context: current_config)
     monkeypatch.setattr(module, "dump_toml_bytes", lambda payload: b"ok")
@@ -216,7 +216,7 @@ def test_update_plugin_config_toml_atomic_write_after_file_lock_released(
         assert getattr(stream, "closed") is True
 
     monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda plugin_id: config_path)
     monkeypatch.setattr(module, "file_lock", _file_lock)
     monkeypatch.setattr(module, "load_toml_from_stream", lambda stream, context: current_config)
     monkeypatch.setattr(module, "atomic_write_text", _atomic_write_text)
@@ -235,7 +235,7 @@ def test_update_plugin_config_open_failure_reports_path_and_stage(
     config_path = tmp_path / "missing" / "plugin.toml"
 
     monkeypatch.setattr(module, "get_plugin_update_lock", lambda plugin_id: threading.Lock())
-    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "ensure_plugin_runtime_config", lambda plugin_id: config_path)
 
     with pytest.raises(HTTPException) as exc_info:
         module.update_plugin_config("demo", {"runtime": {"enabled": False}})

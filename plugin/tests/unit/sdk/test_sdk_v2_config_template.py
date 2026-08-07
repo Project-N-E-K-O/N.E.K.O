@@ -118,14 +118,14 @@ async def test_config_template_main_view_write_semantics() -> None:
     dumped = await cfg.dump()
     assert dumped["feature"]["enabled"] is False
     await cfg.set("feature.flag", True)
+    assert ctx.updated == {"feature": {"flag": True}}
     updated = await cfg.update({"feature": {"mode": "fast"}})
+    assert ctx.updated == {"feature": {"mode": "fast"}}
     assert updated["feature"]["mode"] == "fast"
 
     fallback = core_config.PluginConfig(_CtxNoProfileApis())
-    with pytest.raises((ValidationError, TransportError)):
-        await fallback.set("feature.flag", True)
-    with pytest.raises((ValidationError, TransportError)):
-        await fallback.update({"x": 1})
+    await fallback.set("feature.flag", True)
+    assert await fallback.update({"x": 1}) == {"x": 1}
 
     no_active_ctx = _CtxFull()
     no_active_ctx.profiles_state["config_profiles"]["active"] = None
@@ -133,7 +133,7 @@ async def test_config_template_main_view_write_semantics() -> None:
     assert (await no_active.profile_ensure_active("runtime", {"feature": {"enabled": True}})) == "runtime"
     assert (await no_active.profile_active()) == "runtime"
     await no_active.set("x", 1)
-    await no_active.update({"x": 1})
+    assert no_active_ctx.updated == {"x": 1}
 
 
 @pytest.mark.asyncio
@@ -310,18 +310,15 @@ async def test_config_template_branch_edges() -> None:
             self.profiles_state["config_profiles"]["active"] = None
 
     no_active = core_config.PluginConfig(_CtxNoActive())
-    with pytest.raises((ValidationError, TransportError)):
-        await no_active.set("x", 1)
-    with pytest.raises((ValidationError, TransportError)):
-        await no_active.update({"x": 1})
+    await no_active.set("x", 1)
+    assert await no_active.update({"x": 1}) == {"x": 1}
 
 
 @pytest.mark.asyncio
-async def test_config_template_set_profile_write_error_branch() -> None:
+async def test_config_template_set_does_not_use_profile_write_api() -> None:
     class _CtxSetFail(_CtxFull):
         async def upsert_own_profile_config(self, profile_name: str, config: dict[str, object], *, make_active: bool = False, timeout: float = 10.0):
             return {"data": {"config": "bad"}}
 
     cfg = core_config.PluginConfig(_CtxSetFail())
-    with pytest.raises((ValidationError, TransportError)):
-        await cfg.set("feature.flag", True)
+    await cfg.set("feature.flag", True)
