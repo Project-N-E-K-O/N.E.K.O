@@ -2757,7 +2757,8 @@
         }
     },
     "voiceIdentity": {
-        "title": "Perfil de voz del Owner",
+        "pageTitle": "Panel de registro de huella vocal (en desarrollo)",
+        "title": "Panel de registro de huella vocal",
         "profileStatus": "Estado del Profile",
         "privacyTitle": "Antes de empezar",
         "privacyBody": "El perfil de voz se procesa localmente y se guarda cifrado. Nunca se envía a un ASR Provider. Esta función beta reduce parte del consumo de voces que no son del Owner y no es autenticación de seguridad.",

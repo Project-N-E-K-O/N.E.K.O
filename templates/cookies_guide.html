@@ -81,111 +81,17 @@
         .header-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; }
         .header-brand img { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--accent); }
         .header-right {
+            --neko-window-control-color: var(--fg);
+            --neko-window-control-group-background: color-mix(in oklch, var(--surface) 92%, transparent);
+            --neko-window-control-group-border: color-mix(in oklch, var(--border) 82%, transparent);
+            --neko-window-control-hover-background: var(--accent-soft);
+            --neko-window-control-active-background: color-mix(in oklch, var(--accent-soft) 78%, var(--accent));
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 2px;
             padding-right: 0;
             -webkit-app-region: no-drag;
         }
-        .header-right .window-dot {
-            position: relative;
-            width: 32px;
-            height: 32px;
-            background: transparent;
-            border: none;
-            cursor: pointer;
-            padding: 0;
-            margin: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 50%;
-            -webkit-app-region: no-drag;
-        }
-        .header-right .window-dot::before {
-            content: '';
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            display: block;
-            box-shadow: inset 0 0 0 0.75px rgba(0, 0, 0, 0.14), 0 1px 2px rgba(24, 48, 58, 0.16);
-            transition: filter 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        .header-right .dot-close::before { background: #ff5f57; }
-        .header-right .dot-min::before { background: #febc2e; }
-        .header-right .dot-max::before { background: #28c840; }
-        .header-right .dot-close { color: #7a211d; }
-        .header-right .dot-min { color: #765313; }
-        .header-right .dot-max { color: #176126; }
-        .header-right .window-dot-icon {
-            position: absolute;
-            z-index: 1;
-            display: block;
-            width: 10px;
-            height: 10px;
-            pointer-events: none;
-            opacity: 0.94;
-            transition: opacity 0.15s ease;
-        }
-        .header-right .window-dot:hover .window-dot-icon { opacity: 1; }
-        .header-right .dot-close-icon::before,
-        .header-right .dot-close-icon::after {
-            content: '';
-            position: absolute;
-            top: 4px;
-            left: 0;
-            width: 10px;
-            height: 2px;
-            border-radius: 1px;
-            background: currentColor;
-        }
-        .header-right .dot-close-icon::before { transform: rotate(45deg); }
-        .header-right .dot-close-icon::after { transform: rotate(-45deg); }
-        .header-right .dot-min-icon {
-            width: 10px;
-            height: 2px;
-            border-radius: 1px;
-            background: currentColor;
-        }
-        .header-right .neko-window-maximize-icon {
-            width: 10px;
-            height: 10px;
-            border: 2px solid currentColor;
-            border-radius: 1.5px;
-            background: transparent;
-            box-sizing: border-box;
-            transition: opacity 0.15s ease;
-        }
-        .header-right .neko-window-maximize-icon.restored {
-            position: absolute;
-            background: transparent;
-            transform: translate(1px, 1px);
-        }
-        .header-right .neko-window-maximize-icon.restored::after {
-            content: '';
-            position: absolute;
-            top: -4px;
-            left: -4px;
-            width: 9px;
-            height: 9px;
-            border: 2px solid currentColor;
-            border-radius: 1.5px;
-            background: transparent;
-            box-sizing: border-box;
-        }
-        .header-right .window-dot:hover::before {
-            filter: saturate(1.08) brightness(1.04);
-            transform: scale(1.06);
-            box-shadow: inset 0 0 0 0.75px rgba(0, 0, 0, 0.16), 0 2px 5px rgba(24, 48, 58, 0.2);
-        }
-        .header-right .window-dot:active::before {
-            filter: saturate(0.96) brightness(0.95);
-            transform: scale(0.92);
-            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
-        }
-        .header-right .window-dot:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 1px; }
-        .header-right .header-pin { width: 28px; height: 28px; border-radius: 50%; }
-        .header-right .header-pin .neko-window-pin-icon { width: 14px; height: 14px; }
         .guide-shell {
             position: relative;
             z-index: 1;
@@ -369,14 +275,14 @@
             <button type="button" class="neko-window-control-btn header-pin" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
                 <span class="neko-window-pin-icon" aria-hidden="true"></span>
             </button>
-            <button type="button" class="window-dot dot-min" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
-                <span class="window-dot-icon dot-min-icon" aria-hidden="true"></span>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon" aria-hidden="true"></span>
             </button>
-            <button type="button" class="window-dot dot-max" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
-                <span class="window-dot-icon neko-window-maximize-icon" aria-hidden="true"></span>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon" aria-hidden="true"></span>
             </button>
-            <button type="button" class="window-dot dot-close" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
-                <span class="window-dot-icon dot-close-icon" aria-hidden="true"></span>
+            <button type="button" class="neko-window-control-btn close-page-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭" draggable="false">
             </button>
         </div>
     </header>

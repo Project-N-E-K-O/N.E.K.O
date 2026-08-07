@@ -2757,7 +2757,8 @@
         }
     },
     "voiceIdentity": {
-        "title": "Owner 声纹设置",
+        "pageTitle": "声纹注册面板（开发中）",
+        "title": "声纹注册面板",
         "profileStatus": "Profile 状态",
         "privacyTitle": "开始前请了解",
         "privacyBody": "声纹仅在本机处理并加密保存，不会发送给 ASR Provider。这是用于减少部分非 Owner 语音消耗的测试功能，不属于安全认证。",

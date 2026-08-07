@@ -2757,7 +2757,8 @@
         }
     },
     "voiceIdentity": {
-        "title": "Perfil de voz do Owner",
+        "pageTitle": "Painel de cadastro de impressão vocal (em desenvolvimento)",
+        "title": "Painel de cadastro de impressão vocal",
         "profileStatus": "Estado do Profile",
         "privacyTitle": "Antes de começar",
         "privacyBody": "O perfil de voz é processado localmente e guardado com criptografia. Nunca é enviado a um ASR Provider. Este recurso beta reduz parte do consumo de vozes que não são do Owner e não é autenticação de segurança.",

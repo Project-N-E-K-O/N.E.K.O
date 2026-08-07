@@ -69,8 +69,8 @@ def test_voice_identity_page_is_routed_and_available_in_settings_window() -> Non
     )
     assert "finalUrl.startsWith('/voice_identity')" in popup
     assert "windowName = 'neko_voice_identity'" in popup
-    assert "icon: '/static/icons/mic_icon_off.png'" in popup
-    assert (ROOT / "static/icons/mic_icon_off.png").is_file()
+    assert "icon: '/static/icons/voice_clone_icon.png'" in popup
+    assert (ROOT / "static/icons/voice_clone_icon.png").is_file()
     assert "menuItem.setAttribute('role', 'button')" in popup
     assert "menuItem.tabIndex = 0" in popup
     assert "menuItem.addEventListener('keydown'" in popup
@@ -99,6 +99,28 @@ def test_settings_menu_icons_are_decorative_for_button_names() -> None:
     assert "menuItem.querySelector('img').alt" not in menu_item
 
 
+def test_voice_identity_header_keeps_title_bounded() -> None:
+    stylesheet = (ROOT / "static/css/voice_identity.css").read_text(
+        encoding="utf-8"
+    )
+
+    title = re.search(
+        r"\.voice-identity-header h2\s*\{([^}]*)\}", stylesheet
+    )
+    title_layers = re.search(
+        r"\.voice-identity-header h2::before,\s*"
+        r"\.voice-identity-header h2::after\s*\{([^}]*)\}",
+        stylesheet,
+    )
+    assert title is not None
+    assert "min-width: 0" in title.group(1)
+    assert "overflow: hidden" in title.group(1)
+    assert "text-overflow: ellipsis" in title.group(1)
+    assert title_layers is not None
+    assert "overflow: hidden" in title_layers.group(1)
+    assert "text-overflow: ellipsis" in title_layers.group(1)
+
+
 def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     template = (ROOT / "templates/voice_identity.html").read_text(
         encoding="utf-8"
@@ -107,7 +129,19 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
         encoding="utf-8"
     )
 
-    assert 'data-i18n="voiceIdentity.title"' in template
+    assert (
+        '<title data-i18n="voiceIdentity.pageTitle">声纹注册面板（开发中）</title>'
+        in template
+    )
+    assert (
+        '<h2 data-i18n="voiceIdentity.pageTitle" '
+        'data-text="声纹注册面板（开发中）">声纹注册面板（开发中）</h2>'
+        in template
+    )
+    assert 'class="voice-identity-shell container"' in template
+    assert 'class="voice-identity-header container-header page-title-bar"' in template
+    assert 'class="container-content"' in template
+    assert 'data-neko-window-control="pin"' in template
     assert 'id="voice-identity-step"' in template
     assert 'id="voice-identity-step-announcement"' in template
     assert 'role="status" aria-live="polite" aria-atomic="true"' in template
@@ -121,22 +155,25 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     assert "--voice-focus: #082f45" in stylesheet
     assert "--voice-focus: #8edcff" in stylesheet
     assert "outline: 3px solid var(--voice-focus)" in stylesheet
-    assert "filter: brightness(0) saturate(100%)" in stylesheet
     assert _contrast_ratio("#075b80", "#f8fcff") >= 4.5
     assert _contrast_ratio("#b4233b", "#fff0f2") >= 4.5
-    assert _contrast_ratio("#082f45", "#49d5fd") >= 3
-    assert _contrast_ratio("#082f45", "#159ff5") >= 3
     assert "--voice-muted: #61798a" in stylesheet
     assert _contrast_ratio("#61798a", "#ffffff") >= 4.5
-    eyebrow_block = stylesheet[
-        stylesheet.index(".eyebrow {"):
-        stylesheet.index("}", stylesheet.index(".eyebrow {"))
+    switch_block = stylesheet[
+        stylesheet.index("\n.switch {"):
+        stylesheet.index("}", stylesheet.index("\n.switch {"))
     ]
-    assert "opacity:" not in eyebrow_block
+    assert "width: 54px" in switch_block
+    assert "height: 30px" in switch_block
+    assert "align-self: center" in switch_block
+    assert "flex: 0 0 auto" in switch_block
+    assert "flex: 0 0 54px" not in switch_block
     switch_track_start = stylesheet.index("\n.switch-track {")
     switch_track_block = stylesheet[
         switch_track_start:stylesheet.index("}", switch_track_start)
     ]
+    assert "position: absolute" in switch_track_block
+    assert "inset: 0" in switch_track_block
     switch_track_color = re.search(
         r"background:\s*(#[0-9a-fA-F]{6})", switch_track_block
     )
@@ -173,10 +210,16 @@ def test_voice_identity_template_is_an_accessible_step_wizard() -> None:
     )
     assert _contrast_ratio(dark_focus.group(1), dark_panel_hex) >= 3
     header_block = stylesheet[
-        stylesheet.index(".voice-identity-header {"):
-        stylesheet.index("}", stylesheet.index(".voice-identity-header {"))
+        stylesheet.index(
+            ".voice-identity-page .voice-identity-header {"
+        ) : stylesheet.index(
+            "}", stylesheet.index(".voice-identity-page .voice-identity-header {")
+        )
     ]
-    assert "color: #082f45" in header_block
+    assert "padding: 18px 24px" in header_block
+    assert "linear-gradient(to right, #4bd4fd, #17a7ff)" in header_block
+    assert "position: relative" in header_block
+    assert "box-shadow:" not in header_block
     assert "/static/js/voice_identity.js" in template
     assert "/static/css/voice_identity.css" in template
     assert "embedding" not in template.lower()
@@ -258,6 +301,7 @@ def test_voice_identity_route_is_reserved_for_character_profiles() -> None:
 
 def test_all_locales_define_complete_voice_identity_copy() -> None:
     required = {
+        "pageTitle",
         "title",
         "privacyTitle",
         "privacyBody",
@@ -289,6 +333,11 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         )
         copy = payload["voiceIdentity"]
         assert required <= set(copy)
+        assert copy["pageTitle"].strip()
+        assert copy["title"].strip()
+        if locale == "zh-CN":
+            assert copy["pageTitle"] == "声纹注册面板（开发中）"
+            assert copy["title"] == "声纹注册面板"
         assert len(copy["fixedPrompts"]) == 3
         assert all(
             isinstance(prompt, str) and prompt.strip()
@@ -318,3 +367,4 @@ def test_locale_bootstrap_declares_a_non_empty_locale_cache_key() -> None:
     assert locale_version and locale_version.group(1).strip(), (
         "i18n-i18next.js 必须带一个非空的 LOCALE_VERSION 常量做 locale cache-bust"
     )
+    assert locale_version.group(1) != "2026-08-07-credentials-console-guide"

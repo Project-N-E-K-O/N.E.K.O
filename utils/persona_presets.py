@@ -16,6 +16,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from utils.legacy_persona_presets import (
+    get_persona_preset as get_legacy_persona_preset,
+    get_persona_prompt_guidance as get_legacy_persona_prompt_guidance,
+    list_persona_presets as list_legacy_persona_presets,
+)
+
 PERSONA_OVERRIDE_FIELDS = (
     "性格原型",
     "性格",
@@ -938,7 +944,10 @@ def get_persona_prompt_guidance(preset_id: str, lang: str | None = None) -> str:
             lang = get_global_language_full()
         except Exception:
             lang = "zh"
-    return _build_persona_prompt(preset_id, lang)
+    guidance = _build_persona_prompt(preset_id, lang)
+    if guidance:
+        return guidance
+    return get_legacy_persona_prompt_guidance(preset_id, lang)
 
 
 def _decorate_preset_with_guidance(preset: dict, lang: str | None) -> dict:
@@ -948,18 +957,25 @@ def _decorate_preset_with_guidance(preset: dict, lang: str | None) -> dict:
     return decorated
 
 
-def list_persona_presets(lang: str | None = None) -> list[dict]:
-    """Return copies of all built-in presets, with prompt_guidance baked in the given language."""
-    return [_decorate_preset_with_guidance(preset, lang) for preset in _PRESETS]
+def list_persona_presets(
+    lang: str | None = None,
+    *,
+    include_legacy: bool = False,
+) -> list[dict]:
+    """Return active presets and optionally the archived presets used by card settings."""
+    presets = [_decorate_preset_with_guidance(preset, lang) for preset in _PRESETS]
+    if include_legacy:
+        presets.extend(list_legacy_persona_presets(lang))
+    return presets
 
 
 def get_persona_preset(preset_id: str, lang: str | None = None) -> dict | None:
-    """Get a preset copy by id, with prompt_guidance baked in the given language."""
+    """Get an active or archived preset copy by id."""
     normalized_preset_id = str(preset_id or "").strip()
     for preset in _PRESETS:
         if preset["preset_id"] == normalized_preset_id:
             return _decorate_preset_with_guidance(preset, lang)
-    return None
+    return get_legacy_persona_preset(normalized_preset_id, lang)
 
 
 def build_persona_override_payload(

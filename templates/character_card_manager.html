@@ -21,86 +21,9 @@
         /* 标题栏按钮容器 */
         .title-bar-buttons {
             display: flex;
-            gap: 8px;
+            gap: 2px;
             align-items: center;
             -webkit-app-region: no-drag;
-        }
-
-        /* 最小化、最大化/恢复按钮 - 样式与关闭按钮统一 */
-        .minimize-btn,
-        .maximize-btn {
-            background: transparent;
-            border: none;
-            color: #fff;
-            cursor: pointer;
-            padding: 0;
-            line-height: 1;
-            border-radius: 4px;
-            transition: background 0.2s, transform 0.1s ease;
-            width: 32px;
-            height: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            -webkit-app-region: no-drag;
-        }
-
-        .minimize-btn:hover,
-        .maximize-btn:hover {
-            background: rgba(255, 255, 255, 0.2);
-            transform: translateY(-1px);
-        }
-
-        .minimize-btn:active,
-        .maximize-btn:active {
-            background: rgba(255, 255, 255, 0.3);
-            transform: translateY(1px) scale(0.95);
-            opacity: 0.9;
-        }
-
-        /* 最小化图标：横线 */
-        .minimize-icon {
-            display: block;
-            width: 16px;
-            height: 2px;
-            background: #fff;
-            border-radius: 2px;
-            transform: translateY(5px);
-        }
-
-        /* 最大化图标：实心方框 */
-        .maximize-icon {
-            display: block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-radius: 2px;
-            box-sizing: border-box;
-            transition: all 0.2s ease;
-        }
-
-        /* 恢复图标：重叠方框（模拟窗口层叠） */
-        .maximize-icon.restored {
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-radius: 2px;
-            position: relative;
-            background: #4BD4FD;
-            box-sizing: border-box;
-        }
-
-        .maximize-icon.restored::after {
-            content: '';
-            position: absolute;
-            top: -3px;
-            left: 3px;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-radius: 2px;
-            background: #4BD4FD;
-            box-sizing: border-box;
         }
 
         /* 我的档案补充样式 */
@@ -425,12 +348,7 @@
             }
             .title-bar-buttons {
                 flex: 0 0 auto;
-                gap: clamp(4px, 1.5vw, 8px);
-            }
-            .minimize-btn,
-            .maximize-btn {
-                width: clamp(28px, 10vw, 32px);
-                height: clamp(28px, 10vw, 32px);
+                gap: 2px;
             }
         }
     </style>
@@ -442,17 +360,17 @@
     <!-- 页面标题栏 - 支持拖动窗口 -->
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
-        <div class="title-bar-buttons">
+        <div class="title-bar-buttons neko-window-controls">
             <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
                 <span class="neko-window-pin-icon" aria-hidden="true"></span>
             </button>
-            <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
-                <span class="minimize-icon"></span>
+            <button class="neko-window-control-btn minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon minimize-icon"></span>
             </button>
-            <button class="maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
-                <span class="maximize-icon"></span>
+            <button class="neko-window-control-btn maximize-btn" id="maximizeBtn" onclick="toggleMaximize()" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon maximize-icon"></span>
             </button>
-            <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
+            <button class="neko-window-control-btn close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭">
                 <img src="/static/icons/close_button.png" data-i18n-alt="common.close" draggable="false">
             </button>
         </div>

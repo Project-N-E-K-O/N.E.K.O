@@ -8,6 +8,11 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'js/voice_identity.js'), 'utf8');
 const stylesheet = fs.readFileSync(path.join(__dirname, 'css/voice_identity.css'), 'utf8');
+const darkModeStylesheet = fs.readFileSync(path.join(__dirname, 'css/dark-mode.css'), 'utf8');
+const windowControlsStylesheet = fs.readFileSync(
+    path.join(__dirname, 'css/window_controls.css'),
+    'utf8',
+);
 const template = fs.readFileSync(path.join(__dirname, '../templates/voice_identity.html'), 'utf8');
 
 function deferred() {
@@ -2036,19 +2041,28 @@ test('dark theme overrides panel, text, accent, border, and action colors', () =
     const secondaryButtonRule = stylesheet.match(/\.secondary-button\s*\{([^}]*)\}/);
     assert.ok(secondaryButtonRule, 'Missing light-theme secondary button rule');
     assert.match(secondaryButtonRule[1], /(?:^|;)\s*color:\s*#075b80\s*;/);
-    const windowControlRule = stylesheet.match(
-        /\.voice-identity-header \.neko-window-control-btn\s*\{([^}]*)\}/,
+    const windowControlRule = windowControlsStylesheet.match(
+        /(?:^|\n)\.neko-window-control-btn\s*\{([^}]*)\}/,
     );
-    assert.ok(windowControlRule, 'Missing voice header window-control override');
-    assert.match(windowControlRule[1], /(?:^|;)\s*color:\s*#082f45\s*;/);
+    assert.ok(windowControlRule, 'Missing shared window-control style');
+    assert.match(windowControlRule[1], /(?:^|;)\s*color:\s*#fff\s*;/);
+    assert.doesNotMatch(
+        stylesheet,
+        /\.voice-identity-header \.neko-window-control-btn\s*\{[^}]*\bcolor\s*:/,
+    );
     assert.match(template, /id="voice-identity-timer" aria-hidden="true"/);
     assert.match(template, /<body class="voice-identity-page">/);
+    assert.match(
+        template,
+        /class="voice-identity-header container-header page-title-bar"/,
+    );
+    assert.match(template, /class="close-page-btn"/);
     assert.match(
         stylesheet,
         /html\[data-theme="dark"\] body\.voice-identity-page:not\(\.subtitle-web-host\):not\(\.subtitle-window-host\)/,
     );
     assert.match(
-        stylesheet,
-        /\[data-theme="dark"\] \.voice-close img\s*\{[^}]*filter:\s*brightness\(0\) saturate\(100%\)/,
+        darkModeStylesheet,
+        /\[data-theme="dark"\] \.container-header img,[^}]*filter:\s*brightness\(0\.85\)/,
     );
 });

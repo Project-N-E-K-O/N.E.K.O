@@ -2757,7 +2757,8 @@
         }
     },
     "voiceIdentity": {
-        "title": "Owner 声紋設定",
+        "pageTitle": "声紋登録パネル（開発中）",
+        "title": "声紋登録パネル",
         "profileStatus": "Profile の状態",
         "privacyTitle": "開始前にご確認ください",
         "privacyBody": "声紋はローカルで処理され、暗号化して保存されます。ASR Provider には送信されません。このベータ機能は一部の非 Owner 音声による消費を減らすもので、セキュリティ認証ではありません。",

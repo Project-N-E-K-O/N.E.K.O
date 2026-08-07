@@ -89,7 +89,7 @@ def test_reload_page_notice_code_distinguishes_character_settings():
 
 @pytest.mark.unit
 def test_get_character_data_uses_persona_override_in_runtime_view():
-    # Removed preset IDs must keep working from the profile and prompt stored on disk.
+    # Archived preset IDs resolve their full prompt again while retaining the stored profile.
 
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
@@ -118,13 +118,13 @@ def test_get_character_data_uses_persona_override_in_runtime_view():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert character_data[current_name]["一句话台词"] == "今天也让我陪着你吧。"
-        assert "energetic, affectionate cat companion" in prompt_map[current_name]
-        assert "sunny cat girl" not in prompt_map[current_name]
+        assert "sunny cat girl" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
 def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_override_exists():
-    # A removed preset falls back to its landed prompt while still replacing stale blocks.
+    # An archived preset resolves its full prompt while still replacing stale blocks.
 
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
@@ -160,15 +160,15 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         _, _, _, character_data, _, prompt_map, _, _, _ = config_manager.get_character_data()
 
         assert character_data[current_name]["性格原型"] == "优雅全能管家"
-        assert "elegant, steady, professional composure" in prompt_map[current_name]
-        assert "butler-cat girl" not in prompt_map[current_name]
+        assert "butler-cat girl" in prompt_map[current_name]
+        assert "elegant, steady, professional composure" not in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
 def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
-    # Custom text and a removed preset's landed prompt both remain effective.
+    # Custom text and an archived preset's resolved prompt both remain effective.
 
     with TemporaryDirectory() as td:
         config_manager = _make_config_manager(Path(td))
@@ -200,8 +200,8 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists():
 
         assert character_data[current_name]["性格原型"] == "经典元气猫娘"
         assert "reserved fox spirit" in prompt_map[current_name]
-        assert "energetic, affectionate cat companion" in prompt_map[current_name]
-        assert "sunny cat girl" not in prompt_map[current_name]
+        assert "sunny cat girl" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -246,8 +246,8 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         assert "moonlight" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
-        assert "energetic, affectionate cat companion" in prompt_map[current_name]
-        assert "sunny cat girl" not in prompt_map[current_name]
+        assert "sunny cat girl" in prompt_map[current_name]
+        assert "energetic, affectionate cat companion" not in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -309,6 +309,16 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 "empathetic_older_sister",
                 "sharp_tongued_junior",
                 "chaotic_online_friend",
+            ]
+
+            settings_presets_response = await router_module.list_persona_presets_route(
+                _DummyRequest({}, query_params={"include_legacy": "true"}),
+            )
+            settings_presets_body = _parse_json_response(settings_presets_response)
+            assert [preset["preset_id"] for preset in settings_presets_body["presets"]][-3:] == [
+                "classic_genki",
+                "tsundere_helper",
+                "elegant_butler",
             ]
 
             ja_presets_response = await router_module.list_persona_presets_route(
@@ -1258,16 +1268,39 @@ async def test_character_persona_routes_reject_invalid_json_and_normalize_non_ob
                 "error": "无效的人格预设",
             }
 
-            removed_preset_selection = await router_module.update_character_persona_selection(
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_persona_selection_accepts_legacy_preset_id():
+    with TemporaryDirectory() as td:
+        config_manager = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(config_manager)
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", config_manager):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=config_manager,
+                logger=None,
+                initialize_character_data=_noop,
+                switch_current_catgirl_fast=_noop,
+                init_one_catgirl=_noop,
+                remove_one_catgirl=_noop,
+            )
+
+            crud_module, cards_module, notify_module, router_module = _reload_persona_modules()
+            current_name = config_manager.load_characters()["当前猫娘"]
+
+            result = await router_module.update_character_persona_selection(
                 current_name,
                 _DummyRequest({"preset_id": "classic_genki", "source": "manual_reselect"}),
             )
-            removed_preset_body = _parse_json_response(removed_preset_selection)
-            assert removed_preset_selection.status_code == 400
-            assert removed_preset_body == {
-                "success": False,
-                "error": "无效的人格预设",
-            }
+
+            assert result["success"] is True
+            assert result["selection"]["preset_id"] == "classic_genki"
 
 
 @pytest.mark.unit
