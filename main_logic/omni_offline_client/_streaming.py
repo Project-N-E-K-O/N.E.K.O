@@ -184,7 +184,16 @@ class _StreamingMixin:
             # 那些只有铸造方看得懂的 vendor 私有字段。同一个 endpoint 只换
             # 模型（conversation → vision 都在同一家）不能清：那正是签名要
             # 起作用的场景，清了等于把本要修的 400 又放回来。
-            route_changed = (base_url != self.base_url) or (api_key != self.api_key)
+            #
+            # 比较前把空串归一成 None：上面 vision 分支已经做过这一步而
+            # conversation 分支没有，两边留着不同的"空"表示会让同一个端点被
+            # 判成换了路由——误判方向是"多清"，正好打在本改动的目标场景上。
+            def _same(a, b) -> bool:
+                return (a or None) == (b or None)
+
+            route_changed = not (
+                _same(base_url, self.base_url) and _same(api_key, self.api_key)
+            )
             old_llm = self.llm
             self.llm = new_llm
             self.model = new_model

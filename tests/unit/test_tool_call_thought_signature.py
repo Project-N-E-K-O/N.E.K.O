@@ -42,13 +42,23 @@ _SIGNATURE_BYTES = b"\xfb\xef\xbe\x03\xff\xe0sig"
 _SIGNATURE_B64 = "++++A//gc2ln"  # standard alphabet; URL-safe would be "----A__gc2ln"
 _SIGNATURE_EXTRA = {"google": {"thought_signature": _SIGNATURE_B64}}
 
+# 9 bytes divides by 3, so _SIGNATURE_B64 needs no padding at all — it cannot
+# exercise the "re-pad a stripped string" branch. This 10-byte twin encodes to a
+# "==" tail, and still differs between the two alphabets.
+_PADDED_BYTES = _SIGNATURE_BYTES + b"\xff"
+_PADDED_B64 = "++++A//gc2ln/w=="
+
 
 def test_signature_fixture_discriminates_base64_alphabets():
-    """Guard on the guard: if the fixture ever loses its alphabet-specific
-    characters, every other test in this file silently stops being able to
-    catch an encoder/decoder alphabet swap."""
+    """Guard on the guard: if the fixtures ever lose their alphabet-specific
+    characters — or the padded twin stops needing padding — every other test in
+    this file silently stops being able to catch an encoder/decoder alphabet or
+    padding change."""
     assert base64.b64encode(_SIGNATURE_BYTES).decode() == _SIGNATURE_B64
     assert base64.urlsafe_b64encode(_SIGNATURE_BYTES).decode() != _SIGNATURE_B64
+    assert base64.b64encode(_PADDED_BYTES).decode() == _PADDED_B64
+    assert base64.urlsafe_b64encode(_PADDED_BYTES).decode() != _PADDED_B64
+    assert _PADDED_B64.endswith("==") and "=" not in _SIGNATURE_B64
 
 
 class _FakeAsyncStream:
@@ -459,12 +469,20 @@ def test_genai_messages_to_contents_survives_malformed_signature():
     assert not part.thought_signature
 
 
-@pytest.mark.parametrize("encoded", [
-    _SIGNATURE_B64,                                    # standard, padded
-    _SIGNATURE_B64.replace("+", "-").replace("/", "_"),  # URL-safe alphabet
-    _SIGNATURE_B64.rstrip("="),                        # standard, padding stripped
+@pytest.mark.parametrize("encoded,expected", [
+    # standard alphabet, length needs no padding
+    (_SIGNATURE_B64, _SIGNATURE_BYTES),
+    (_SIGNATURE_B64.replace("+", "-").replace("/", "_"), _SIGNATURE_BYTES),
+    # standard alphabet, padded — and the same string with its padding stripped,
+    # which is the only case that reaches the re-padding branch
+    (_PADDED_B64, _PADDED_BYTES),
+    (_PADDED_B64.rstrip("="), _PADDED_BYTES),
+    # URL-safe, padded and unpadded — the exact forms google-genai's own pydantic
+    # serializer produces and accepts
+    (_PADDED_B64.replace("+", "-").replace("/", "_"), _PADDED_BYTES),
+    (_PADDED_B64.replace("+", "-").replace("/", "_").rstrip("="), _PADDED_BYTES),
 ])
-def test_thought_signature_decodes_both_base64_alphabets(encoded):
+def test_thought_signature_decodes_both_base64_alphabets(encoded, expected):
     """Only the half we write ourselves is guaranteed standard+padded; the other
     half is whatever the compat endpoint sent down, and google-genai's own
     pydantic serializer emits the URL-safe alphabet. An alphabet or padding
@@ -477,7 +495,7 @@ def test_thought_signature_decodes_both_base64_alphabets(encoded):
     decoded = _thought_signature_from_extra_content(
         {"google": {"thought_signature": encoded}}
     )
-    assert decoded == _SIGNATURE_BYTES
+    assert decoded == expected
 
 
 def test_thought_signature_rejects_garbage_instead_of_decoding_it():
@@ -572,10 +590,12 @@ async def test_offline_openai_history_keeps_signature_on_its_own_call():
 
 
 @pytest.mark.asyncio
-async def test_offline_genai_signature_stays_on_its_own_part():
+async def test_offline_genai_signature_stays_on_its_own_part(monkeypatch):
     """genai twin: two function_call parts in one chunk, only the second Part
     carries a thought_signature."""
     from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     async def _round1():
         yield _Chunk([
@@ -772,6 +792,46 @@ async def test_switch_model_keeps_signature_on_same_endpoint(monkeypatch):
     client.vision_model = "gemini-3-pro-vision"
     client.vision_base_url = "https://www.lanlan.app/v1"
     client.vision_api_key = "free-key"
+    client.max_response_length = 300
+    client._genai_client = None
+    client._use_genai_sdk = False
+    client.llm = type("F", (), {"aclose": staticmethod(_aclose)})()
+    client._conversation_history = [
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "recall_memory", "arguments": "{}"},
+            "extra_content": _SIGNATURE_EXTRA,
+        }]},
+    ]
+
+    async def _fake_create(*_a, **_kw):
+        return type("F", (), {"aclose": staticmethod(_aclose)})()
+
+    monkeypatch.setattr(_streaming, "create_chat_llm_async", _fake_create)
+
+    await client.switch_model("gemini-3-pro-vision", use_vision_config=True)
+
+    assert client._conversation_history[0]["tool_calls"][0]["extra_content"] == _SIGNATURE_EXTRA
+
+
+@pytest.mark.asyncio
+async def test_switch_model_treats_empty_and_none_credentials_as_same_route(monkeypatch):
+    """Empty string and None are the same "no explicit endpoint / key", and the
+    two branches that pick them normalize differently. Comparing the raw values
+    would call one endpoint two routes and strip a signature that is still
+    valid — the misfire lands exactly on the case this change exists to fix."""
+    import main_logic.omni_offline_client._streaming as _streaming
+
+    async def _aclose():
+        return None
+
+    client = _bare_offline_client()
+    client.model = "gemini-3-pro"
+    client.base_url = ""        # 空串
+    client.api_key = ""
+    client.vision_model = "gemini-3-pro-vision"
+    client.vision_base_url = None   # 同一个"默认端点"，另一种写法
+    client.vision_api_key = None
     client.max_response_length = 300
     client._genai_client = None
     client._use_genai_sdk = False
