@@ -2532,7 +2532,7 @@
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
             if (this.container) {
-                this.container.style.pointerEvents = 'none';
+                this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
             if (centerAnchored) {
@@ -2590,13 +2590,25 @@
         }
 
         getRenderPlacement(placement) {
-            if (isModelManagerPage() && !this.config.preserve_model_manager_position) {
+            if (isModelManagerPage()
+                && !this.config.preserve_model_manager_position
+                && !this._modelManagerUseCurrentPlacement) {
                 return Object.assign({}, placement, {
                     offsetX: 0,
                     offsetY: 0
                 });
             }
             return placement;
+        }
+
+        beginModelManagerPositionEditing() {
+            if (!isModelManagerPage()) return false;
+            if (!this._modelManagerUseCurrentPlacement) {
+                const renderPlacement = this.getRenderPlacement(this.getActivePlacement());
+                this.setActiveOffsets(renderPlacement.offsetX, renderPlacement.offsetY);
+            }
+            this._modelManagerUseCurrentPlacement = true;
+            return true;
         }
 
         setActiveScale(nextScale) {
@@ -3053,6 +3065,7 @@
         async load(config) {
             this.detachDragListeners();
             this.clearEmotion({ render: false });
+            this._modelManagerUseCurrentPlacement = false;
             this.config = normalizeConfig(config || {});
             await this.setupLayeredAdapter();
             this.ensureContainer();
@@ -3632,7 +3645,7 @@
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
             this.container.style.visibility = 'visible';
-            this.container.style.pointerEvents = 'none';
+            this.container.style.pointerEvents = isModelManagerPage() ? 'auto' : 'none';
             if (this.image) {
                 this.image.style.visibility = 'visible';
                 this.image.style.pointerEvents = this.isLocked ? 'none' : 'auto';

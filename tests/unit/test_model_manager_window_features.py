@@ -23,6 +23,7 @@ MODEL_MANAGER_PART_NAMES = (
     "card-face.js",
     "path-request-fullscreen.js",
     "page-controller.js",
+    "background-model-drag.js",
     "window-lifecycle.js",
 )
 

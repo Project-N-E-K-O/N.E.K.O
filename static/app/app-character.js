@@ -1647,7 +1647,7 @@
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
                 throwIfStale();
                 if (!modelResponse.ok) {
-                    // 原本失败也走成功路径：configRes.ok 失败时跳进 fallback yui-origin，
+                    // 原本失败也走成功路径：configRes.ok 失败时跳进 fallback yui-lolita，
                     // 但 modelResponse 本身失败时 modelData.success/model_info 缺失，下面
                     // `if (modelData.success && modelData.model_info)` 直接跳过整个加载块，
                     // 用户看到的是空白容器但弹"已切换到 xxx"——配合本 PR 入口 dedupe，
@@ -1723,9 +1723,9 @@
                         }
                     } else {
                         // 模型配置获取失败（可能因 CFA/反勒索防护导致路径不可用），回退到默认模型
-                        console.warn(`[猫娘切换] 模型配置获取失败 (HTTP ${modelConfigRes.status}: ${modelData.model_info.path}), 回退到默认模型 yui-origin`);
+                        console.warn(`[猫娘切换] 模型配置获取失败 (HTTP ${modelConfigRes.status}: ${modelData.model_info.path}), 回退到默认模型 yui-lolita`);
                         try {
-                            const defaultPath = '/static/yui-origin/yui-origin.model3.json';
+                            const defaultPath = '/static/yui-lolita/yui-lolita.model3.json';
                             const defaultRes = await fetch(defaultPath);
                             throwIfStale();
                             if (defaultRes.ok) {
@@ -1745,7 +1745,7 @@
                                 if (window.live2dManager?.pixi_app?.ticker && !window.live2dManager.pixi_app.ticker.started) {
                                     window.live2dManager.pixi_app.ticker.start();
                                 }
-                                console.log('[猫娘切换] 已回退加载默认模型 yui-origin');
+                                console.log('[猫娘切换] 已回退加载默认模型 yui-lolita');
                             } else {
                                 // throw 而非只 log：原本静默继续会让 showLive2d() + "已切换到 xxx"
                                 // toast 都跑，但实际模型没载起来。配合 dedupe 让用户看空白点不动。

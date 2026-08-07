@@ -213,7 +213,7 @@
             this.openReason = 'settings';
             this.currentCharacterName = String(characterName || '').trim() || await this.fetchCurrentCharacterName();
             this.currentLanguage = getCurrentLanguage();
-            this.presets = await this.fetchPresets(this.currentLanguage);
+            this.presets = await this.fetchPresets(this.currentLanguage, true);
             this.ensureOverlay();
             this.renderStageOne();
             this.showOverlay();
@@ -424,11 +424,17 @@
             return String(payload.current_catgirl || '').trim();
         }
 
-        async fetchPresets(language) {
+        async fetchPresets(language, includeLegacy = false) {
             const requestLanguage = String(language || '').trim();
-            const url = requestLanguage
-                ? `/api/characters/persona-presets?language=${encodeURIComponent(requestLanguage)}`
-                : '/api/characters/persona-presets';
+            const query = new URLSearchParams();
+            if (requestLanguage) {
+                query.set('language', requestLanguage);
+            }
+            if (includeLegacy) {
+                query.set('include_legacy', 'true');
+            }
+            const queryString = query.toString();
+            const url = '/api/characters/persona-presets' + (queryString ? `?${queryString}` : '');
             const payload = await requestJson(url);
             return Array.isArray(payload.presets) ? payload.presets : [];
         }
@@ -441,7 +447,7 @@
             }
 
             const runId = ++this.localeRefreshRunId;
-            const presets = await this.fetchPresets(nextLanguage);
+            const presets = await this.fetchPresets(nextLanguage, this.openReason === 'settings');
             if (
                 runId !== this.localeRefreshRunId
                 || this.overlay !== overlay

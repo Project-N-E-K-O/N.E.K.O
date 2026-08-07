@@ -558,7 +558,7 @@ function closeModalOnOutsideClick(event) {
     }
 }
 
-// 检查当前模型是否为默认模型（yui-origin）
+// 检查当前模型是否为内置模型（yui-lolita / yui-origin）
 function isDefaultModel() {
     // 使用保存的角色卡模型名称
     const currentModel = window.currentCharacterCardModel || '';
@@ -589,12 +589,16 @@ function isLegacyDefaultLive2DModel(modelName) {
     return modelName === 'yui_default' || modelName === 'yui-default';
 }
 
+// 随包发的内置 Live2D 模型（对应后端 BUILTIN_LIVE2D_MODEL_NAMES）：收方一定有，
+// 角色卡导出/创意工坊上传都不该把它们当成用户自己导入的模型去打包。
+const BUILTIN_LIVE2D_MODEL_NAMES = ['yui-lolita', 'yui-origin'];
+
 function isStaticDefaultLive2DModel(modelName, rawData = {}) {
     if (isLegacyDefaultLive2DModel(modelName)) {
         return true;
     }
 
-    if (modelName !== 'yui-origin') {
+    if (BUILTIN_LIVE2D_MODEL_NAMES.indexOf(modelName) < 0) {
         return false;
     }
 

@@ -939,6 +939,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let currentModelInfo = null;
     let availableModels = [];
+    const LAST_LIVE2D_MODEL_SELECTION_KEY = 'lastLive2DModelSelection';
+    let lastLive2DModelSelection = null;
     let currentModelFiles = { motion_files: [], expression_files: [] };
     let live2dModel = null;
     let currentEmotionMapping = null; // { motions: {...}, expressions: {...} }
@@ -1151,6 +1153,189 @@ document.addEventListener('DOMContentLoaded', async () => {
         showStatus(t('live2d.pixiInitFailed', `PIXI 初始化失败: ${errMsg}`, { error: errMsg }));
     }
 
+    function normalizeLive2DSelectionPath(value) {
+        let normalized = String(value || '').trim().replace(/\\/g, '/').split(/[?#]/, 1)[0];
+        try {
+            normalized = decodeURIComponent(normalized);
+        } catch (_) {
+            // 保留无法解码的原始路径
+        }
+        return normalized;
+    }
+
+    function normalizeLive2DSelectionSource(value, path = '') {
+        const source = String(value || '').trim().toLowerCase();
+        if (source === 'static' || source === 'builtin') return 'builtin';
+        if (source === 'documents' || source === 'user_mods' || source === 'local' || source === 'local_imported') {
+            return 'local_imported';
+        }
+        if (source === 'workshop' || source === 'steam_workshop') return 'steam_workshop';
+        if (source === 'manual_external') return source;
+
+        const normalizedPath = normalizeLive2DSelectionPath(path);
+        if (normalizedPath.startsWith('/workshop/')) return 'steam_workshop';
+        if (normalizedPath.startsWith('/static/')) return 'builtin';
+        if (normalizedPath.startsWith('/user_live2d/') || normalizedPath.startsWith('/user_live2d_local/')) {
+            return 'local_imported';
+        }
+        if (/^https?:\/\//i.test(normalizedPath)) return 'manual_external';
+        return '';
+    }
+
+    function getLive2DModelSelection(model) {
+        if (!model) return null;
+        const path = normalizeLive2DSelectionPath(model.path || model.url || '');
+        return {
+            item_id: String(model.item_id || '').trim(),
+            path,
+            source: normalizeLive2DSelectionSource(model.source, path),
+            name: String(model.name || '').trim(),
+        };
+    }
+
+    function getLive2DOptionSelection(option) {
+        if (!option || option.dataset.modelType !== 'live2d') return null;
+        const path = normalizeLive2DSelectionPath(option.dataset.modelPath || '');
+        return {
+            item_id: String(option.dataset.itemId || '').trim(),
+            path,
+            source: normalizeLive2DSelectionSource(option.dataset.modelSource, path),
+            name: String(option.dataset.modelName || option.value || '').trim(),
+        };
+    }
+
+    // 按 item_id → 路径 → 来源+名称 → 唯一名称恢复，避免同名模型误选。
+    function findLive2DSelectionMatch(candidates, selection, getSelection) {
+        if (!selection) return null;
+        const target = {
+            item_id: String(selection.item_id || '').trim(),
+            path: normalizeLive2DSelectionPath(selection.path || ''),
+            source: normalizeLive2DSelectionSource(selection.source, selection.path),
+            name: String(selection.name || '').trim(),
+        };
+        const entries = Array.from(candidates || [])
+            .map(candidate => ({ candidate, binding: getSelection(candidate) }))
+            .filter(entry => entry.binding);
+        const uniqueMatch = predicate => {
+            const matches = entries.filter(entry => predicate(entry.binding));
+            return matches.length === 1 ? matches[0].candidate : null;
+        };
+
+        if (target.item_id) {
+            const itemMatches = entries.filter(entry => entry.binding.item_id === target.item_id);
+            if (itemMatches.length === 1) return itemMatches[0].candidate;
+            if (itemMatches.length > 1 && target.path) {
+                const pathMatch = itemMatches.find(entry => entry.binding.path === target.path);
+                if (pathMatch) return pathMatch.candidate;
+            }
+        }
+        if (target.path) {
+            const pathMatch = uniqueMatch(binding => binding.path === target.path);
+            if (pathMatch) return pathMatch;
+        }
+        if (target.source && target.name) {
+            const sourceMatch = uniqueMatch(binding => binding.source === target.source && binding.name === target.name);
+            if (sourceMatch) return sourceMatch;
+        }
+        if (target.name) {
+            return uniqueMatch(binding => binding.name === target.name);
+        }
+        return null;
+    }
+
+    function readRememberedLive2DSelection() {
+        if (lastLive2DModelSelection) return lastLive2DModelSelection;
+        try {
+            lastLive2DModelSelection = JSON.parse(localStorage.getItem(LAST_LIVE2D_MODEL_SELECTION_KEY) || 'null');
+        } catch (_) {
+            lastLive2DModelSelection = null;
+        }
+        return lastLive2DModelSelection;
+    }
+
+    function rememberLive2DSelection(selection, characterName = '') {
+        if (!selection) return;
+        const normalized = {
+            item_id: String(selection.item_id || '').trim(),
+            path: normalizeLive2DSelectionPath(selection.path || ''),
+            source: normalizeLive2DSelectionSource(selection.source, selection.path),
+            name: String(selection.name || '').trim(),
+            character_name: String(characterName || selection.character_name || '').trim(),
+        };
+        if (!normalized.item_id && !normalized.path && !normalized.name) return;
+
+        const previous = readRememberedLive2DSelection();
+        if (previous && normalized.path && normalizeLive2DSelectionPath(previous.path) === normalized.path) {
+            normalized.item_id = normalized.item_id || String(previous.item_id || '').trim();
+            normalized.source = normalized.source || normalizeLive2DSelectionSource(previous.source, previous.path);
+            normalized.name = normalized.name || String(previous.name || '').trim();
+            normalized.character_name = normalized.character_name || String(previous.character_name || '').trim();
+        }
+        lastLive2DModelSelection = normalized;
+        try {
+            localStorage.setItem(LAST_LIVE2D_MODEL_SELECTION_KEY, JSON.stringify(normalized));
+        } catch (_) {
+            // localStorage 不可用时仍保留本次页面会话内的选择
+        }
+    }
+
+    function findLive2DOptionBySelection(selection) {
+        return findLive2DSelectionMatch(modelSelect?.options, selection, getLive2DOptionSelection);
+    }
+
+    function findLive2DModelBySelection(selection) {
+        return findLive2DSelectionMatch(availableModels, selection, getLive2DModelSelection);
+    }
+
+    function selectLive2DOption(option) {
+        if (!option || !modelSelect) return false;
+        const index = Array.from(modelSelect.options).indexOf(option);
+        if (index < 0) return false;
+        modelSelect.selectedIndex = index;
+        return true;
+    }
+
+    function rememberSelectedLive2DModel(option, characterName = '') {
+        const optionSelection = getLive2DOptionSelection(option);
+        const model = findLive2DModelBySelection(optionSelection);
+        rememberLive2DSelection(getLive2DModelSelection(model) || optionSelection, characterName);
+    }
+
+    function rememberDormantLive2DModelFromCharacterConfig(catgirlConfig, characterName) {
+        const configuredLive2D = catgirlConfig?._reserved?.avatar?.live2d ?? catgirlConfig?.live2d;
+        const configuredPath = normalizeLive2DSelectionPath(
+            configuredLive2D && typeof configuredLive2D === 'object'
+                ? configuredLive2D.model_path
+                : configuredLive2D
+        );
+        if (!configuredPath) return;
+
+        // asset_source / asset_source_id 属于当前激活模型，保存 PNGTuber 后已不再代表休眠的 Live2D。
+        const matchedModel = findLive2DModelBySelection({ path: configuredPath });
+        if (matchedModel) {
+            rememberLive2DSelection(getLive2DModelSelection(matchedModel), characterName);
+            return;
+        }
+        const filename = configuredPath.split('/').pop() || '';
+        rememberLive2DSelection({
+            path: configuredPath,
+            name: filename.replace(/\.model3\.json$/i, ''),
+        }, characterName);
+    }
+
+    function createLive2DModelOption(model) {
+        const option = document.createElement('option');
+        const selection = getLive2DModelSelection(model);
+        option.value = selection.name;
+        option.textContent = model.display_name || selection.name;
+        option.setAttribute('data-model-type', 'live2d');
+        option.dataset.modelName = selection.name;
+        option.dataset.modelPath = selection.path;
+        option.dataset.modelSource = selection.source;
+        if (selection.item_id) option.dataset.itemId = selection.item_id;
+        return option;
+    }
+
     async function loadLive2DModelOptions({ showLoadedStatus = true } = {}) {
         try {
             // 使用助手替换原有 fetch
@@ -1159,14 +1344,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (availableModels.length > 0) {
                 modelSelect.innerHTML = ''; // 不添加第一个"选择模型"选项
                 availableModels.forEach(model => {
-                    const option = document.createElement('option');
-                    option.value = model.name;
-                    option.textContent = model.display_name || model.name;
-                    option.setAttribute('data-model-type', 'live2d');
-                    if (model.item_id) {
-                        option.dataset.itemId = model.item_id;
-                    }
-                    modelSelect.appendChild(option);
+                    modelSelect.appendChild(createLive2DModelOption(model));
                 });
                 // 如果没有选择，自动选择第一个模型
                 if (modelSelect.options.length > 0 && !modelSelect.value) {
@@ -1199,12 +1377,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function reloadSelectedLive2DModelAfterModeSwitch() {
         if (currentModelType !== 'live2d' || !modelSelect) return;
 
-        let selectedOption = modelSelect.selectedOptions && modelSelect.selectedOptions[0];
-        if (!selectedOption || selectedOption.dataset.modelType !== 'live2d') {
-            selectedOption = Array.from(modelSelect.options).find(option => option.dataset.modelType === 'live2d');
-            if (!selectedOption) return;
-            modelSelect.value = selectedOption.value;
-        }
+        const rememberedSelection = readRememberedLive2DSelection();
+        const selectedOption = findLive2DOptionBySelection(rememberedSelection)
+            || Array.from(modelSelect.options).find(option => option.dataset.modelType === 'live2d');
+        if (!selectedOption) return;
+        selectLive2DOption(selectedOption);
 
         if (typeof updateLive2DModelDropdown === 'function') {
             updateLive2DModelDropdown();
@@ -1477,6 +1654,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             runtimeConfig || {}
         );
     }
+
+    function stageModelManagerPNGTuberPlacement(runtimeConfig) {
+        if (currentModelType !== 'pngtuber' || !runtimeConfig || !currentModelInfo) {
+            return false;
+        }
+        currentModelInfo.pngtuber = mergePNGTuberConfigForSave(
+            null,
+            currentModelInfo.pngtuber,
+            runtimeConfig
+        );
+        window.hasUnsavedChanges = true;
+        if (savePositionBtn) savePositionBtn.disabled = false;
+        markModelChangedForCardFacePrompt();
+        return true;
+    }
+
+    window.stageModelManagerPNGTuberPlacement = stageModelManagerPNGTuberPlacement;
 
     async function saveModelToCharacter(modelName, itemId = null, vrmAnimation = null) {
         let effectiveLive3dSubType = currentLive3dSubType || '';
@@ -1844,6 +2038,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // subType: 当 type === 'live3d' 时，传入 'vrm' 或 'mmd' 以区分子类型
     async function switchModelDisplay(type, subType, options = {}) {
         const previousModelType = currentModelType;
+        if (previousModelType === 'live2d' && type !== 'live2d' && currentModelInfo && currentModelInfo.type !== 'pngtuber') {
+            rememberSelectedLive2DModel(modelSelect?.selectedOptions?.[0]);
+        }
         currentModelType = type;
         window._modelManagerCurrentAvatarType = type;
         if (type === 'live3d') {
@@ -1851,6 +2048,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else if (type !== 'live3d') {
             currentLive3dSubType = '';
         }
+        window._modelManagerCurrentLive3dSubType = currentLive3dSubType;
         localStorage.setItem('modelType', type);
 
         // 无论后续初始化是否成功，都保证派发教程事件
@@ -6363,7 +6561,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        currentModelInfo = availableModels.find(m => m.name === modelName);
+        currentModelInfo = findLive2DModelBySelection(getLive2DOptionSelection(selectedOption));
         if (!currentModelInfo) return;
 
         // 获取选中的option元素，从中获取item_id
@@ -6374,7 +6572,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentModelInfo.item_id = modelSteamId;
         }
 
-        await loadModel(modelName, currentModelInfo, modelSteamId);
+        rememberLive2DSelection(getLive2DModelSelection(currentModelInfo));
+        await loadModel(currentModelInfo.name || modelName, currentModelInfo, modelSteamId);
 
         // 不自动保存模型到角色，改为标记为有未保存更改，用户需手动点击"保存设置"
         if (!isSuppressedModelManagerChangeEvent(e)) {
@@ -7785,14 +7984,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         availableModels = await modelsResponse.json();
                         modelSelect.innerHTML = `<option value="" data-placeholder="true">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
                         availableModels.forEach(model => {
-                            const option = document.createElement('option');
-                            option.value = model.name;
-                            // 使用display_name（如果存在）显示更友好的名称
-                            option.textContent = model.display_name || model.name;
-                            if (model.item_id) {
-                                option.dataset.itemId = model.item_id;
-                            }
-                            modelSelect.appendChild(option);
+                            modelSelect.appendChild(createLive2DModelOption(model));
                         });
 
 
@@ -8425,13 +8617,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 availableModels = await RequestHelper.fetchJson('/api/live2d/models');
                 modelSelect.innerHTML = `<option value="" data-placeholder="true">${t('live2d.pleaseSelectModel', '选择模型')}</option>`;
                 availableModels.forEach(model => {
-                    const option = document.createElement('option');
-                    option.value = model.name;
-                    option.textContent = model.display_name || model.name;
-                    if (model.item_id) {
-                        option.dataset.itemId = model.item_id;
-                    }
-                    modelSelect.appendChild(option);
+                    modelSelect.appendChild(createLive2DModelOption(model));
                 });
 
                 if (successCount > 0 && currentLive2DName) {
@@ -8881,6 +9067,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             let modelType = catgirlConfig.model_type || ((hasValidVRMPath || hasValidMMDPath) ? 'live3d' : 'live2d');
             // 兼容旧配置：'vrm' 统一为 'live3d'
             if (modelType === 'vrm') modelType = 'live3d';
+            rememberDormantLive2DModelFromCharacterConfig(catgirlConfig, lanlanName);
 
             if (modelType === 'pngtuber' && hasValidPNGTuber) {
                 await switchModelDisplay('pngtuber', '', { preferredPNGTuberConfig: pngtuberConfig });
@@ -9130,7 +9317,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 设置模型选择器
                     currentModelInfo = model_info;
                     window._modelManagerLoadedFallbackModel = model_info.is_fallback === true;
-                    modelSelect.value = model_name;
+                    const selectedOption = findLive2DOptionBySelection(getLive2DModelSelection(model_info));
+                    if (selectedOption) {
+                        selectLive2DOption(selectedOption);
+                    } else {
+                        modelSelect.value = model_name;
+                    }
+                    rememberLive2DSelection(getLive2DModelSelection(model_info), catgirl_name);
 
                     // 更新按钮文字
                     if (typeof updateLive2DModelSelectButtonText === 'function') {
@@ -9165,10 +9358,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 如果已自动加载了一个模型，确保在下拉框中选中它
     // 这是双重保险：防止 loadCurrentCharacterModel() 内部设置失败
     if (currentModelType === 'live2d' && currentModelInfo && currentModelInfo.name) {
-        const exists = availableModels.some(m => m.name === currentModelInfo.name);
-        if (exists && modelSelect.value !== currentModelInfo.name) {
-            modelSelect.value = currentModelInfo.name;
-        }
+        const selectedOption = findLive2DOptionBySelection(getLive2DModelSelection(currentModelInfo));
+        if (selectedOption) selectLive2DOption(selectedOption);
     }
 
     await restorePendingParameterEditorSaveState(savePositionBtn, {

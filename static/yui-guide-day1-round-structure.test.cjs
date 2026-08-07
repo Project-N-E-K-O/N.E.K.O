@@ -155,6 +155,27 @@ test('Day1 intro basic voice showcase is delegated from timeline operation', () 
   assert.match(operationBody, /adoptPreTakeoverGhostCursorLookAtHandle/);
 });
 
+test('Day1 screen share entry keeps the floating toolbar visible', () => {
+  const sceneBlock = getSceneBlock(day1Source, 'day1_screen_entry');
+  const toolbarPredicateBlock = directorSource.split('shouldShowAvatarFloatingToolbarForScene(scene) {')[1].split(
+    'isAvatarFloatingInputIntroScene(scene) {',
+    1
+  )[0];
+  assert.ok(toolbarPredicateBlock, 'expected to find the floating toolbar scene predicate');
+
+  assert.match(sceneBlock, /operation:\s*'day1-screen-share-entry-flow'/);
+  assert.match(sceneBlock, /spotlight:\s*false/);
+  assert.match(toolbarPredicateBlock, /operation === 'day1-screen-share-entry-flow'/);
+});
+
+test('Day1 screen share invite keeps the row spotlight and ghost cursor in place', () => {
+  const sceneBlock = getSceneBlock(day1Source, 'day1_screen_entry_invite');
+
+  assert.match(sceneBlock, /target:\s*'#\$\{p\}-popup-mic \[data-neko-mic-main-action-row="screen"\]'/);
+  assert.match(sceneBlock, /cursorAction:\s*'hold'/);
+  assert.match(directorSource, /sceneId === 'day1_screen_entry_invite'/);
+});
+
 test('Day1 button handoff scenes keep the shared tutorial interrupt resistance path', () => {
   for (const sceneId of [
     'day1_intro_basic_voice',

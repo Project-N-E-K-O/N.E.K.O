@@ -712,7 +712,7 @@ class AsrRuntimeMixin:
             # settings POST failed or was still in flight at session start.
             enabled = handshake_enabled
         else:
-            enabled = bool(settings.get("independentAsrEnabled", True))
+            enabled = bool(settings.get("independentAsrEnabled", False))
         optimization_handshake = resource_optimization_override
         if resource_optimization_override is ...:
             optimization_handshake = getattr(

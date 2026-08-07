@@ -10,10 +10,11 @@ const METHODS_SOURCE = fs.readFileSync(
     'utf8'
 );
 
-function loadSocialUnlock() {
+function loadSocialUnlock(options = {}) {
     const storage = new Map();
     const listeners = new Map();
     const registeredButtons = [];
+    let tutorialState = options.tutorialState || null;
     const window = {
         localStorage: {
             getItem(key) { return storage.has(key) ? storage.get(key) : null; },
@@ -22,6 +23,18 @@ function loadSocialUnlock() {
         addEventListener(type, listener) { listeners.set(type, listener); },
         t(key, params = {}) { return `${key}:${params.days ?? ''}`; }
     };
+    if (options.withTutorialState) {
+        window.NekoSevenDayTutorialState = {
+            ROUND_COUNT: 7,
+            loadState() { return tutorialState; },
+            ready() {
+                if (options.authoritativeTutorialState) {
+                    tutorialState = options.authoritativeTutorialState;
+                }
+                return Promise.resolve(tutorialState);
+            }
+        };
+    }
     const document = {
         querySelectorAll(selector) {
             assert.equal(selector, '[data-social-button="true"]');
@@ -63,6 +76,90 @@ test('clock moving backward does not unlock the social entry early', () => {
     assert.equal(earlier.dayDelta, 0);
     assert.equal(earlier.remainingDays, 3);
     assert.equal(earlier.unlocked, false);
+});
+
+test('existing users migrated by the seven-day tutorial skip charging immediately', () => {
+    const { api, storage } = loadSocialUnlock({
+        withTutorialState: true,
+        tutorialState: {
+            firstSeenDate: '2026-01-01',
+            completedRounds: [],
+            skippedRounds: [1, 2, 3, 4, 5, 6, 7]
+        }
+    });
+
+    const status = api.getStatus(new Date(2026, 0, 1, 12));
+    assert.equal(status.unlocked, true);
+    assert.equal(status.remainingDays, 0);
+    assert.equal(storage.get('neko.social.unlock.v1'), '2025-12-29');
+});
+
+test('users whose tutorial first-seen date is three days old skip charging', () => {
+    const { api, storage } = loadSocialUnlock({
+        withTutorialState: true,
+        tutorialState: {
+            firstSeenDate: '2026-01-01',
+            completedRounds: [1],
+            skippedRounds: []
+        }
+    });
+
+    const status = api.getStatus(new Date(2026, 0, 4, 12));
+    assert.equal(status.unlocked, true);
+    assert.equal(status.remainingDays, 0);
+    assert.equal(storage.get('neko.social.unlock.v1'), '2026-01-01');
+});
+
+test('genuinely new users still charge from the shared first-seen date', () => {
+    const { api } = loadSocialUnlock({
+        withTutorialState: true,
+        tutorialState: {
+            firstSeenDate: '2026-01-01',
+            completedRounds: [],
+            skippedRounds: []
+        }
+    });
+
+    const status = api.getStatus(new Date(2026, 0, 1, 12));
+    assert.equal(status.unlocked, false);
+    assert.equal(status.remainingDays, 3);
+});
+
+test('authoritative tutorial migration refreshes an already-rendered social button', async () => {
+    const now = new Date();
+    const today = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0')
+    ].join('-');
+    const { api, registeredButtons } = loadSocialUnlock({
+        withTutorialState: true,
+        tutorialState: {
+            firstSeenDate: today,
+            completedRounds: [],
+            skippedRounds: []
+        },
+        authoritativeTutorialState: {
+            firstSeenDate: today,
+            completedRounds: [],
+            skippedRounds: [1, 2, 3, 4, 5, 6, 7]
+        }
+    });
+    const button = {
+        dataset: {},
+        style: {},
+        setAttribute(name, value) { this[name] = value; },
+        removeAttribute(name) { delete this[name]; },
+        querySelectorAll() { return []; }
+    };
+
+    api.registerButton(button);
+    registeredButtons.push(button);
+    assert.equal(button.dataset.socialLocked, 'true');
+
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(button.dataset.socialLocked, 'false');
+    assert.equal(button['aria-disabled'], 'false');
 });
 
 test('all social opening paths contain the shared unlock guard', () => {

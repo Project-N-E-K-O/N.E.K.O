@@ -56,6 +56,62 @@ def test_normalize_pngtuber_config_defaults_mobile_scale_from_desktop_scale_stri
     assert result["mobile_offset_y"] == 0
 
 
+def test_normalize_pngtuber_config_supports_builtin_static_root():
+    result = pngtuber_router._normalize_pngtuber_config(
+        "yui-origin",
+        {
+            "model_type": "pngtuber",
+            "pngtuber": {
+                "idle_image": "idle.png",
+                "layered_metadata": "metadata.pngtube-remix.json",
+            },
+        },
+        pngtuber_router.PNGTUBER_STATIC_PATH,
+    )
+
+    assert result["idle_image"] == "/static/pngtuber/yui-origin/idle.png"
+    assert result["layered_metadata"] == "/static/pngtuber/yui-origin/metadata.pngtube-remix.json"
+
+
+async def test_get_pngtuber_models_lists_builtin_and_user_packages(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    builtin_dir = project_root / "static" / "pngtuber" / "yui-origin"
+    user_root = tmp_path / "user_pngtuber"
+    user_dir = user_root / "custom"
+    builtin_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    model_template = {
+        "model_type": "pngtuber",
+        "source_format": "pngtube_remix_pngremix",
+        "pngtuber": {"idle_image": "idle.png"},
+    }
+    (builtin_dir / "model.json").write_text(
+        json.dumps({**model_template, "name": "YUI Origin"}),
+        encoding="utf-8",
+    )
+    (user_dir / "model.json").write_text(
+        json.dumps({**model_template, "name": "Custom"}),
+        encoding="utf-8",
+    )
+    config_manager = SimpleNamespace(
+        project_root=project_root,
+        pngtuber_dir=user_root,
+        ensure_pngtuber_directory=lambda: True,
+    )
+    monkeypatch.setattr(pngtuber_router, "get_config_manager", lambda: config_manager)
+
+    response = await pngtuber_router.get_pngtuber_models()
+    body = json.loads(response.body.decode("utf-8"))
+
+    assert response.status_code == 200
+    assert [(model["folder"], model["location"]) for model in body["models"]] == [
+        ("yui-origin", "builtin"),
+        ("custom", "user"),
+    ]
+    assert body["models"][0]["url"] == "/static/pngtuber/yui-origin/model.json"
+    assert body["models"][0]["pngtuber"]["idle_image"] == "/static/pngtuber/yui-origin/idle.png"
+
+
 @pytest.mark.parametrize("scale", ["nan", "inf", "-inf"])
 def test_normalize_pngtuber_config_defaults_mobile_scale_for_non_finite_desktop_scale(scale):
     result = pngtuber_router._normalize_pngtuber_config(

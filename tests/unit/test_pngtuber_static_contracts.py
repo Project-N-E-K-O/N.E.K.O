@@ -112,7 +112,7 @@ def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets(
     assert "this.config.mobile_offset_y = 0" not in source
 
 
-def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():
+def test_pngtuber_container_pointer_events_stay_passthrough_outside_model_manager():
     core_source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     interpage_source = read_js_parts(APP_INTERPAGE_PATH)
     app_ui_source = read_js_parts(APP_UI_PATH)
@@ -128,7 +128,8 @@ def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():
     ]
     assert "pointer-events: none;" in css_container_block
     assert "pointer-events: auto;" in css_image_block
-    assert "this.container.style.pointerEvents = 'none';" in core_source
+    assert "this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';" in core_source
+    assert "this.container.style.pointerEvents = isModelManagerPage() ? 'auto' : 'none';" in core_source
 
     assert "restoredPngtuberContainer.style.pointerEvents = 'auto';" not in interpage_source
     assert "pngtuberContainer.style.pointerEvents = 'auto';" not in interpage_source

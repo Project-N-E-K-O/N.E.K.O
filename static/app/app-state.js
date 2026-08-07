@@ -88,7 +88,7 @@
         selectedMicrophoneId: null,
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
-        independentAsrEnabled: true,
+        independentAsrEnabled: false,
         // Current Core capability loaded from /api/config/core_api. Keep this
         // tri-state: only an explicit false may disable the effective UI;
         // null means unknown and leaves the user's persisted preference alone.

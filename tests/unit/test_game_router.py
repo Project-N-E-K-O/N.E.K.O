@@ -1264,14 +1264,14 @@ def test_badminton_template_contract():
     assert "live3d_sub_type" in html
     assert "async function initVRMAvatar(vrmPath)" in html
     assert "async function initMMDAvatar(mmdPath)" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html
     assert "await initVRMAvatar(vrmPath);" not in html
     assert "initPIXI('neko-l2d-canvas', 'neko-l2d-container'" in html
     assert "loadModel(modelPath)" in html
-    assert "var modelPath = live2dPath || '/static/yui-origin/yui-origin.model3.json'" in html
+    assert "var modelPath = live2dPath || '/static/yui-lolita/yui-lolita.model3.json'" in html
     assert "当前 Live2D 路径缺失" in html
     assert "角色接口不可用或未返回 model_type" not in html
     assert "modelType === 'live3d' && subType === 'vrm'" not in html

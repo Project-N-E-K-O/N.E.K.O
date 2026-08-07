@@ -31,6 +31,33 @@
             && typeof provider.captureSourceAsDataUrl === 'function');
     }
 
+    function hasVisibleModelSurface() {
+        var modelContainerIds = [
+            'live2d-container',
+            'vrm-container',
+            'mmd-container',
+            'pngtuber-container'
+        ];
+        for (var i = 0; i < modelContainerIds.length; i += 1) {
+            var container = document.getElementById(modelContainerIds[i]);
+            if (!container || container.classList.contains('hidden') || container.classList.contains('minimized')) {
+                continue;
+            }
+            var computed = window.getComputedStyle ? getComputedStyle(container) : null;
+            if (container.style.display === 'none' || (computed && computed.display === 'none')) continue;
+            if (container.style.visibility === 'hidden' || (computed && computed.visibility === 'hidden')) continue;
+            return true;
+        }
+        return false;
+    }
+
+    async function ensureModelVisibleForScreenSharing() {
+        // 屏幕分享不应改变当前模型/毛线球状态。只有模型确实没有可见容器时，
+        // 才执行历史兼容的恢复逻辑，避免 showCurrentModel 重新触发视口和边界同步。
+        if (hasVisibleModelSurface() || typeof window.showCurrentModel !== 'function') return;
+        await window.showCurrentModel();
+    }
+
     var nativeCaptureGeneration = 0;
     var activeNativeCaptureSourceId = null;
 
@@ -308,6 +335,70 @@
         return { dataUrl: dataUrl, width: targetWidth, height: targetHeight };
     }
     mod.captureCanvasFrame = captureCanvasFrame;
+
+    /**
+     * 将桌面壳原生截图统一编码成后端屏幕流要求的 JPEG。
+     * Electron 的 NativeImage.toDataURL() 返回 PNG，而 stream_data 的
+     * 屏幕数据校验只接受 data:image/jpeg;base64,...。
+     */
+    function normalizeNativeCaptureDataUrlForStream(dataUrl) {
+        if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+            return Promise.resolve(null);
+        }
+        if (dataUrl.startsWith('data:image/jpeg;base64,')) {
+            return Promise.resolve(dataUrl);
+        }
+
+        return new Promise(function (resolve) {
+            var image = new Image();
+            var settled = false;
+
+            function finish(result) {
+                if (settled) return;
+                settled = true;
+                image.onload = null;
+                image.onerror = null;
+                image.src = '';
+                resolve(result);
+            }
+
+            image.onload = function () {
+                var width = image.naturalWidth || image.width;
+                var height = image.naturalHeight || image.height;
+                if (!width || !height) {
+                    finish(null);
+                    return;
+                }
+
+                var maxWidth = C.MAX_SCREENSHOT_WIDTH || 1280;
+                var maxHeight = C.MAX_SCREENSHOT_HEIGHT || 720;
+                if (width > maxWidth || height > maxHeight) {
+                    var scale = Math.min(maxWidth / width, maxHeight / height);
+                    width = Math.max(1, Math.round(width * scale));
+                    height = Math.max(1, Math.round(height * scale));
+                }
+
+                try {
+                    var canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    var context = canvas.getContext('2d');
+                    context.drawImage(image, 0, 0, width, height);
+                    var jpegDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                    finish(jpegDataUrl.startsWith('data:image/jpeg;base64,') ? jpegDataUrl : null);
+                } catch (error) {
+                    console.warn('[屏幕源] 原生截图转 JPEG 失败:', error);
+                    finish(null);
+                }
+            };
+            image.onerror = function () {
+                console.warn('[屏幕源] 原生截图图片加载失败');
+                finish(null);
+            };
+            image.src = dataUrl;
+        });
+    }
+    mod.normalizeNativeCaptureDataUrlForStream = normalizeNativeCaptureDataUrlForStream;
 
     // ======================== captureFrameFromStream ========================
     /**
@@ -900,9 +991,18 @@
                 }
                 throw new Error(errorMessage);
             }
+            var streamDataUrl = await normalizeNativeCaptureDataUrlForStream(result.dataUrl);
+            if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
+                return false;
+            }
+            if (!streamDataUrl) {
+                throw new Error('Native screen capture image conversion failed');
+            }
             if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
                 captureSocket.send(JSON.stringify(
-                    buildStreamDataMessage(result.dataUrl, inputType, sourceId)
+                    buildStreamDataMessage(streamDataUrl, inputType, sourceId)
                 ));
             } else if (isCurrentNativeCapture()) {
                 stopScreening();
@@ -1105,7 +1205,7 @@
             var captureStream = attempt.initialStream;
 
             // 初始化音频播放上下文
-            if (window.showCurrentModel) await window.showCurrentModel(); // 智能显示当前模型
+            await ensureModelVisibleForScreenSharing();
             if (discardCancelledScreenSharingStart(attempt)) return;
             if (!S.audioPlayerContext) {
                 S.audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();

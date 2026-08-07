@@ -433,8 +433,16 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.compactSurfaceTrackingSettleFramesRemaining = 0;
     I.compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
+    var compactSurfaceManualDragReleaseUntil = 0;
     I.compactInteractionGeometrySnapshot = '';
     I.compactSurfaceAnchorLocked = false;
+    I.noteCompactSurfaceManualDragRelease = function noteCompactSurfaceManualDragRelease() {
+        compactSurfaceManualDragReleaseUntil = Date.now() + 1400;
+        I.compactSurfaceAnchorLocked = true;
+    };
+    I.isCompactSurfaceManualDragReleaseGuardActive = function isCompactSurfaceManualDragReleaseGuardActive() {
+        return Date.now() < compactSurfaceManualDragReleaseUntil;
+    };
     I.compactSurfacePendingModelOpen = false;
     I.compactSurfaceResizeSession = null;
     I.compactSurfaceDesktopResizeActive = false;
@@ -499,8 +507,13 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
             compactDesktopSurfaceAnchorSnapshot = nextAnchorSnapshot;
         }
         if (baseAnchorChanged && !I.compactSurfaceDesktopResizeActive) {
-            I.compactSurfaceAnchorLocked = false;
-            I.compactSurfaceAnchorSnapshot = '';
+            var localCompactDragActive = !!(I.dragState && I.dragState.compactSurface);
+            var manualDragReleaseGuardActive = typeof I.isCompactSurfaceManualDragReleaseGuardActive === 'function'
+                && I.isCompactSurfaceManualDragReleaseGuardActive();
+            if (!localCompactDragActive && !manualDragReleaseGuardActive) {
+                I.compactSurfaceAnchorLocked = false;
+                I.compactSurfaceAnchorSnapshot = '';
+            }
         }
         // 桌面侧布局变化（窗口移动/跨屏等）：立即唤醒短 settle，避免静止态停帧后漏掉新 anchor。
         I.scheduleCompactMinimizeBallTracking();

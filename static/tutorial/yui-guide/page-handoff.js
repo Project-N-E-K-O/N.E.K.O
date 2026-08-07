@@ -998,6 +998,54 @@
         });
     }
 
+    /**
+     * 打开语音聊天弹层，并渲染语音设置侧边栏内容。
+     *
+     * @returns {Promise<boolean>} 弹层及其内容是否成功打开
+     */
+    function openMicPanel() {
+        var prefix = getPrefix();
+        var manager = getManager(prefix);
+        var popup = getPopup('mic', prefix);
+        var trigger = document.querySelector('.' + prefix + '-trigger-btn');
+
+        if (!manager || !popup || !trigger || typeof manager.showPopup !== 'function') {
+            console.warn('[YuiGuideHandoff] openMicPanel: manager/popup/trigger 不可用');
+            return Promise.resolve(false);
+        }
+
+        var renderMicPanel = function () {
+            return new Promise(function (resolve) {
+                window.requestAnimationFrame(function () {
+                    window.requestAnimationFrame(resolve);
+                });
+            }).then(function () {
+                if (typeof window.renderFloatingMicList !== 'function') {
+                    return false;
+                }
+                return Promise.resolve(window.renderFloatingMicList(popup));
+            });
+        };
+
+        if (popup.style.display === 'flex') {
+            return renderMicPanel().then(function (rendered) {
+                return rendered ? waitForPopupPositioned('mic', prefix) : false;
+            });
+        }
+
+        dispatchSyntheticPress(trigger);
+        manager.showPopup('mic', popup);
+
+        return waitFor(function () {
+            return popup.style.display === 'flex' ? true : null;
+        }, POPUP_OPEN_ANIMATION_MS + 500).then(function (opened) {
+            if (!opened) return false;
+            return renderMicPanel().then(function (rendered) {
+                return rendered ? waitForPopupPositioned('mic', prefix) : false;
+            });
+        });
+    }
+
     function closeAgentPanel() {
         var manager = getManager();
         document.querySelectorAll('[data-neko-sidepanel-type="agent-user-plugin-actions"], [data-neko-sidepanel-type="agent-openclaw-actions"]').forEach(function (panel) {
@@ -1446,6 +1494,7 @@
         openSettingsPanel: openSettingsPanel,
         closeSettingsPanel: closeSettingsPanel,
         openAgentPanel: openAgentPanel,
+        openMicPanel: openMicPanel,
         closeAgentPanel: closeAgentPanel,
         ensureSettingsMenuVisible: ensureSettingsMenuVisible,
         triggerGoodbye: triggerGoodbye,

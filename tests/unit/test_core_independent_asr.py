@@ -5585,7 +5585,7 @@ async def test_start_session_handshake_missing_falls_back_to_persisted(
     start_mock.assert_awaited_once()
 
 
-async def test_missing_independent_asr_setting_defaults_enabled(monkeypatch) -> None:
+async def test_missing_independent_asr_setting_defaults_disabled(monkeypatch) -> None:
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     monkeypatch.setattr(
@@ -5603,9 +5603,8 @@ async def test_missing_independent_asr_setting_defaults_enabled(monkeypatch) -> 
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    start_mock.assert_awaited_once()
-    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is True
-    assert runtime._asr_route_mode != "native"
+    start_mock.assert_not_awaited()
+    assert runtime._asr_route_mode == "native"
 
 
 @pytest.mark.parametrize("malformed", ["true", 1, 0, [True], {"enabled": True}])

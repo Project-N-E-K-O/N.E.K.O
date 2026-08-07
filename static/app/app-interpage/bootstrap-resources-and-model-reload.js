@@ -1505,7 +1505,7 @@ I.mod = window.appInterpage;
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
 
-                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-origin。
+                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-lolita。
                             if (!skipIdleRestore) {
                                 restoreLive2DIdleAnimationOnMainPage();
                             }

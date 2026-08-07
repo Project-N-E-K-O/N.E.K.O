@@ -20,7 +20,7 @@ uv sync
 ./build_frontend.sh
 ```
 
-The scripts verify/unpack `assets/yui-origin.tar.gz`, run `npm ci`, build the Vue plugin manager to `frontend/plugin-manager/dist/`, and build React chat to `static/react/neko-chat/`.
+The scripts verify/unpack `assets/yui-lolita.tar.gz` and `assets/yui-origin.tar.gz`, run `npm ci`, build the Vue plugin manager to `frontend/plugin-manager/dist/`, and build React chat to `static/react/neko-chat/`.
 
 For iterative work, run `npm ci && npm run dev` in the owning frontend directory. Plugin manager uses port 5173 and proxies to `VITE_BACKEND_URL` or `http://localhost:48916`; React chat uses port 5174. Its production bundle is mounted by both `templates/index.html` and `templates/chat.html`.
 

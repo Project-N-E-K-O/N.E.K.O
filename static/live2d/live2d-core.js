@@ -1707,6 +1707,56 @@ class Live2DManager {
     }
 
     /**
+     * 解析并限制 drawable 矩形的 padding。
+     *
+     * @param {number|string} rawPadding 原始 padding
+     * @param {number} fallback 无效输入时的默认值
+     * @returns {number} 0-32 范围内的 padding
+     */
+    _resolveRectPadding(rawPadding, fallback = 0) {
+        const requestedPadding =
+            (typeof rawPadding === 'number' ||
+                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
+                ? Number(rawPadding)
+                : NaN;
+        return Number.isFinite(requestedPadding)
+            ? Math.max(0, Math.min(32, requestedPadding))
+            : fallback;
+    }
+
+    /**
+     * 获取当前实际可渲染 drawable 的未裁剪屏幕区域。
+     *
+     * 该公开入口仅供贴边拖拽链读取未裁剪画面几何。既有桌面输入区继续
+     * 走 getModelInputRegionRects()，本功能不能改写普通点击穿透合同。
+     */
+    getModelDrawableScreenRects(options = {}, modelOverride = null) {
+        const model = modelOverride || this.currentModel;
+        if ((model && model.destroyed) ||
+            (modelOverride && this.currentModel && modelOverride !== this.currentModel)) {
+            return [];
+        }
+
+        const padding = this._resolveRectPadding(options?.padding, 0);
+        const modelBounds = this._getUnclippedModelScreenBounds();
+        const drawableRects = this._getRenderableDrawableScreenRects(
+            modelBounds,
+            null,
+            false
+        );
+        if (!Array.isArray(drawableRects)) return [];
+
+        return drawableRects.map((rect) => {
+            if (!rect) return null;
+            const left = Number(rect.left) - padding;
+            const top = Number(rect.top) - padding;
+            const right = Number(rect.right) + padding;
+            const bottom = Number(rect.bottom) + padding;
+            return this._createScreenRect(left, top, right, bottom);
+        }).filter(Boolean);
+    }
+
+    /**
      * 获取当前实际可渲染 drawable 的屏幕输入区域。
      *
      * 桌面宿主使用这些区域构造 Native Wayland compositor input region。
@@ -1729,15 +1779,7 @@ class Live2DManager {
             return [];
         }
 
-        const rawPadding = options?.padding;
-        const requestedPadding =
-            (typeof rawPadding === 'number' ||
-                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
-                ? Number(rawPadding)
-                : NaN;
-        const padding = Number.isFinite(requestedPadding)
-            ? Math.max(0, Math.min(32, requestedPadding))
-            : 8;
+        const padding = this._resolveRectPadding(options?.padding, 8);
         // Drawable vertices already carry their real screen coordinates. When
         // vertices are temporarily unavailable, logical fallback mapping must
         // use the model's full (unclipped) bounds as its scale basis. Edge peek

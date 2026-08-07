@@ -27,7 +27,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from config import CHARACTER_RESERVED_FIELDS
+from config import CHARACTER_RESERVED_FIELDS, DEFAULT_LIVE2D_MODEL_PATH
 from utils.conversation_settings_constants import (
     ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS as _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
@@ -876,7 +876,7 @@ def _derive_character_binding_summary(
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":
-        fallback_model_ref = "yui-origin/yui-origin.model3.json"
+        fallback_model_ref = DEFAULT_LIVE2D_MODEL_PATH
 
     return {
         "character_name": character_name,
