@@ -123,6 +123,11 @@ class Live2DManager {
         this.isInitialized = false;
         this.motionTimer = null;
         this._motionTimerGeneration = 0;
+        this._actionMotionRequestPendingModel = null;
+        this._simpleMotionActive = false;
+        this._transientExpressionGeneration = 0;
+        this._transientExpressionTask = null;
+        this._activeTransientExpression = false;
         this.isEmotionChanging = false;
         this.dragEnabled = false;
         this.isFocusing = false;

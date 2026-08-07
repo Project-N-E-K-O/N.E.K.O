@@ -215,7 +215,7 @@
                         <span class="round-stroke-text" id="motion-select-text" data-i18n="live2d.selectMotion" data-text="Select Motion">选择动作</span>
                     </button>
                     <select id="motion-select" class="control-select" style="display: none;" disabled>
-                        <option value="" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
+                        <option value="" data-placeholder="true" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
                     </select>
                     <div id="motion-dropdown" class="motion-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->
@@ -235,7 +235,7 @@
                         <span class="round-stroke-text" id="expression-select-text" data-i18n="live2d.selectExpression" data-text="Select Expression">选择表情</span>
                     </button>
                     <select id="expression-select" class="control-select" style="display: none;" disabled>
-                        <option value="" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
+                        <option value="" data-placeholder="true" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
                     </select>
                     <div id="expression-dropdown" class="expression-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->
@@ -681,6 +681,7 @@
     <script src="/static/pngtuber-core.js?v={{ static_asset_version | default('0') }}"></script>
 
     <script src="/static/js/model_manager/runtime-loaders.js?v={{ static_asset_version | default('0') }}"></script>
+    <script src="/static/vrm/motion/player.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/dropdown-manager.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/page-bridge.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/card-face.js?v={{ static_asset_version | default('0') }}"></script>

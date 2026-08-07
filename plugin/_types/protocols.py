@@ -9,6 +9,7 @@ from pathlib import Path
 
 if TYPE_CHECKING:
     from plugin.core.bus.types import BusHubProtocol
+    from plugin.sdk.shared.core.types import PushMessageResult
 
 
 @runtime_checkable
@@ -450,8 +451,8 @@ class PluginContextProtocol(Protocol):
         fast_mode: bool = False,
         delivery: Any = None,
         reply: Optional[bool] = None,
-    ) -> None:
-        """推送消息到主进程。
+    ) -> "PushMessageResult":
+        """推送消息到主进程，并返回本地传输层提交结果。
 
         v2 推荐参数 (visibility/ai_behavior/parts) 见 push_message_schema 文档；
         其余参数为 v1 deprecated，host 端会自动翻译并 emit DeprecationWarning。

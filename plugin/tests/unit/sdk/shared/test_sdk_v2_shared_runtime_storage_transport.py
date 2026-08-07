@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from plugin.sdk.shared import runtime, storage, transport
+from plugin.sdk.shared.models import Ok
+from plugin.sdk.shared.models.exceptions import TransportError
 from plugin.sdk.shared.runtime import call_chain
 from plugin.sdk.shared.runtime import system_info
 from plugin.sdk.shared.storage import database
@@ -162,6 +164,83 @@ async def test_async_call_chain_isolated_per_task() -> None:
     assert (await plane.publish("topic", {})).is_ok()
     assert (await plane.subscribe("topic", handler=lambda payload: payload)).is_ok()
     assert (await plane.unsubscribe("topic")).is_ok()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_reason", "expected_reason"),
+    [
+        ("backpressure", "backpressure"),
+        ({"private": "must-not-propagate"}, "transport_error"),
+    ],
+)
+async def test_message_plane_transport_propagates_local_submission_rejection(
+    raw_reason: object,
+    expected_reason: str,
+) -> None:
+    class _RejectedContext:
+        def push_message(self, **_kwargs: object) -> dict[str, object]:
+            return {"submitted": False, "reason": raw_reason}
+
+    seen: list[dict[str, object]] = []
+
+    async def _handler(payload: dict[str, object]) -> object:
+        seen.append(payload)
+        return Ok(None)
+
+    plane = message_plane.MessagePlaneTransport(
+        plugin_ctx=_RejectedContext(),  # type: ignore[arg-type]
+    )
+    assert (await plane.subscribe("topic", _handler)).is_ok()
+
+    result = await plane.publish("topic", {"value": 1})
+
+    assert result.is_err()
+    error = result.err()
+    assert isinstance(error, TransportError)
+    assert error.code == "message_submission_failed"
+    assert error.context["reason"] == expected_reason
+    assert "must-not-propagate" not in str(error)
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_message_plane_transport_runs_handlers_after_local_submission() -> None:
+    class _SubmittedContext:
+        def push_message(self, **_kwargs: object) -> dict[str, object]:
+            return {"submitted": True}
+
+    seen: list[dict[str, object]] = []
+
+    async def _handler(payload: dict[str, object]) -> object:
+        seen.append(payload)
+        return Ok(None)
+
+    plane = message_plane.MessagePlaneTransport(
+        plugin_ctx=_SubmittedContext(),  # type: ignore[arg-type]
+    )
+    assert (await plane.subscribe("topic", _handler)).is_ok()
+
+    result = await plane.notify("topic", {"value": 1})
+
+    assert result.is_ok()
+    assert seen == [{"value": 1}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_result", [None, {"ok": True}])
+async def test_message_plane_transport_preserves_legacy_unconfirmed_success(
+    legacy_result: object,
+) -> None:
+    class _LegacyContext:
+        def push_message(self, **_kwargs: object) -> object:
+            return legacy_result
+
+    plane = message_plane.MessagePlaneTransport(
+        plugin_ctx=_LegacyContext(),  # type: ignore[arg-type]
+    )
+
+    assert (await plane.publish("topic", {})).is_ok()
 
 
 def test_runtime_contract_placeholder_classes() -> None:

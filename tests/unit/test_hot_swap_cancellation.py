@@ -43,7 +43,11 @@ import pytest
 import main_logic.core as core_module
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
+from main_logic.proactive_delivery import (
+    DELIVERY_ACK_FUTURE_KEY,
+    DELIVERY_RETRACTED_KEY,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
+)
 
 
 class _FakeSession:
@@ -80,6 +84,9 @@ def _make_swap_manager():
     mgr.session = None
     mgr.message_handler_task = None
     mgr.pending_session = None
+    # Production sets this in __init__; the pending-session close is a task the
+    # manager owns so a cancelled caller cannot strand an open socket.
+    mgr._pending_session_close_tasks = set()
     mgr.background_preparation_task = None
     mgr.final_swap_task = None
     mgr.pending_session_warmed_up_event = None
@@ -293,6 +300,37 @@ async def test_final_swap_happy_path_still_promotes():
         await _drain_task(old_listener_task)
 
 
+@pytest.mark.asyncio
+async def test_final_swap_does_not_emit_prime_context(monkeypatch, capsys):
+    sentinel = "PRIVATE_FINAL_PRIME_SENTINEL_2635"
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    mgr.message_cache_for_new_session = [object()]
+    mgr._convert_cache_to_str = lambda _cache: sentinel
+
+    logged = []
+
+    def _capture_log(message, *args, **kwargs):
+        del kwargs
+        logged.append(str(message) % args if args else str(message))
+
+    for level in ("debug", "info", "warning", "error", "exception"):
+        monkeypatch.setattr(core_module.logger, level, _capture_log)
+
+    try:
+        await mgr._perform_final_swap_sequence()
+        captured = capsys.readouterr()
+        emitted = captured.out + captured.err + "\n".join(logged)
+        assert sentinel not in emitted
+    finally:
+        await _drain_task(mgr.message_handler_task)
+
+
 def _extra_entry(delivery_id, summary):
     """A pending_extra_replies entry in the exact shape enqueue_agent_callback produces."""
     return {
@@ -355,6 +393,365 @@ async def _run_swap_as_final_swap_task(mgr):
         # report the regression instead of the test erroring out.
         pass
     return task
+
+
+def _passive_callback(summary, *, coalesce_key=""):
+    return {
+        "event": "agent_task_callback",
+        "origin": "event",
+        "summary": summary,
+        "detail": summary,
+        "status": "completed",
+        "delivery_mode": "passive",
+        "coalesce_key": coalesce_key,
+    }
+
+
+def _install_passive_prime_barrier(session, *, expected_text):
+    prime_entered = asyncio.Event()
+    allow_prime = asyncio.Event()
+
+    async def _prime(text, *, skipped=False):
+        session.prime_calls.append((text, skipped))
+        if expected_text in text:
+            prime_entered.set()
+            await allow_prime.wait()
+
+    session.prime_context = _prime
+    return prime_entered, allow_prime
+
+
+@pytest.mark.asyncio
+async def test_final_swap_prime_claim_survives_flood_until_promote(monkeypatch):
+    """Exercise claim/flood/late-ACK through the complete swap sequence."""
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 2)
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    prime_entered, allow_prime = _install_passive_prime_barrier(
+        new_session,
+        expected_text="selected before provider await",
+    )
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    loop = asyncio.get_running_loop()
+    delivered_ack = loop.create_future()
+    dropped_ack = loop.create_future()
+    delivered = _passive_callback("selected before provider await")
+    delivered[DELIVERY_ACK_FUTURE_KEY] = delivered_ack
+    mgr.enqueue_agent_callback(delivered)
+
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    swap_task = mgr.final_swap_task
+    await asyncio.wait_for(prime_entered.wait(), timeout=5)
+
+    dropped = _passive_callback("oldest retractable filler")
+    dropped[DELIVERY_ACK_FUTURE_KEY] = dropped_ack
+    newest = _passive_callback("newest filler")
+    mgr.enqueue_agent_callback(dropped)
+    mgr.enqueue_agent_callback(newest)
+
+    assert mgr.pending_agent_callbacks == [delivered, newest]
+    assert not delivered_ack.done()
+    assert dropped_ack.done() and dropped_ack.result() is False
+    assert delivered.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+
+    allow_prime.set()
+    await asyncio.wait_for(swap_task, timeout=10)
+    try:
+        assert mgr.session is new_session
+        assert delivered_ack.done() and delivered_ack.result() is True
+        assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in delivered
+        assert mgr.pending_agent_callbacks == [newest]
+    finally:
+        await _drain_task(mgr.message_handler_task)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_cancel_releases_claim_after_same_key_update():
+    """A full-sequence abort releases claim without a premature ACK."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    prime_entered, _allow_prime = _install_passive_prime_barrier(
+        new_session,
+        expected_text="old snapshot",
+    )
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    old_ack = asyncio.get_running_loop().create_future()
+    old = _passive_callback("old snapshot", coalesce_key="state")
+    old[DELIVERY_ACK_FUTURE_KEY] = old_ack
+    mgr.enqueue_agent_callback(old)
+
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    swap_task = mgr.final_swap_task
+    await asyncio.wait_for(prime_entered.wait(), timeout=5)
+
+    newer = _passive_callback("new snapshot", coalesce_key="state")
+    mgr.enqueue_agent_callback(newer)
+    assert mgr.pending_agent_callbacks == [old, newer]
+    assert old.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+    assert not old_ack.done()
+
+    swap_task.cancel()
+    await asyncio.wait_for(swap_task, timeout=10)
+    assert mgr.session is old_session
+    assert new_session.closed
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in old
+    assert not old_ack.done()
+
+    selected, text = mgr._select_passive_callbacks_for_swap_prime()
+    assert old_ack.done() and old_ack.result() is False
+    assert selected == [newer]
+    assert "new snapshot" in text and "old snapshot" not in text
+    assert mgr.pending_agent_callbacks == [newer]
+    mgr._release_swap_prime_passive_claims(selected)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_passive_prime_failure_aborts_pending_session():
+    """An uncertain provider write cannot be promoted and retried later."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+
+    async def _prime(text, *, skipped=False):
+        new_session.prime_calls.append((text, skipped))
+        if "uncertain provider write" in text:
+            raise RuntimeError("provider outcome unknown")
+
+    new_session.prime_context = _prime
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("uncertain provider write")
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.session is old_session
+    assert new_session.closed
+    assert mgr.pending_agent_callbacks == [callback]
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+    assert not delivery_ack.done()
+
+
+@pytest.mark.asyncio
+async def test_final_swap_retracted_claim_aborts_pending_session():
+    """A business retraction during prime wins without provider/local drift."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    prime_entered, allow_prime = _install_passive_prime_barrier(
+        new_session,
+        expected_text="cancelled music request",
+    )
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("cancelled music request")
+    callback["channel"] = "music_playback"
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    swap_task = mgr.final_swap_task
+    await asyncio.wait_for(prime_entered.wait(), timeout=5)
+
+    mirror = {
+        "_callback_delivery_id": callback["_callback_delivery_id"],
+        "summary": "cancelled music request",
+    }
+    legacy_extra = "legacy plain-string extra"
+    mgr.pending_extra_replies.extend([legacy_extra, mirror])
+    callback[DELIVERY_RETRACTED_KEY] = True
+    mgr._purge_retracted_agent_callbacks()
+    assert mgr.pending_agent_callbacks == [callback]
+    assert mgr.pending_extra_replies == [legacy_extra, mirror]
+    assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+
+    allow_prime.set()
+    await asyncio.wait_for(swap_task, timeout=10)
+
+    assert mgr.session is old_session
+    assert new_session.closed
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == [legacy_extra]
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+    assert delivery_ack.done() and delivery_ack.result() is False
+
+
+@pytest.mark.asyncio
+async def test_final_swap_rechecks_retraction_after_core_voice_lock_wait():
+    """Retraction while the shared voice lock is held must not close old."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_session = _make_fake_realtime_session("old")
+    new_session = _make_fake_realtime_session("pending")
+    prime_entered, allow_prime = _install_passive_prime_barrier(
+        new_session,
+        expected_text="retracted during voice lock wait",
+    )
+
+    class _CoreVoiceLockBarrier:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def __aenter__(self):
+            self.entered.set()
+            await self.release.wait()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    voice_lock = _CoreVoiceLockBarrier()
+    mgr._core_voice_session_swap_lock = voice_lock
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("retracted during voice lock wait")
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    swap_task = mgr.final_swap_task
+    try:
+        await asyncio.wait_for(prime_entered.wait(), timeout=5)
+        allow_prime.set()
+        await asyncio.wait_for(voice_lock.entered.wait(), timeout=5)
+        callback[DELIVERY_RETRACTED_KEY] = True
+        mgr._purge_retracted_agent_callbacks()
+        assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+        voice_lock.release.set()
+        await asyncio.wait_for(swap_task, timeout=10)
+
+        assert mgr.session is old_session
+        assert not old_session.closed and old_session.ws is not None
+        assert new_session.closed
+        assert mgr.pending_agent_callbacks == []
+        assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+        assert delivery_ack.done() and delivery_ack.result() is False
+        assert mgr.is_hot_swap_imminent is False
+    finally:
+        allow_prime.set()
+        voice_lock.release.set()
+        if not swap_task.done():
+            swap_task.cancel()
+        await _drain_task(swap_task)
+        await _drain_task(mgr.message_handler_task)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_rechecks_retraction_after_waiting_for_promote_lock():
+    """A claim retracted while promote waits for the CAS lock must abort."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    old_close_complete = asyncio.Event()
+
+    class _CloseSignals(_FakeSession):
+        async def close(self):
+            await super().close()
+            old_close_complete.set()
+
+    old_session = _CloseSignals("old")
+    new_session = _make_fake_realtime_session("pending")
+    prime_entered, allow_prime = _install_passive_prime_barrier(
+        new_session,
+        expected_text="retracted during CAS wait",
+    )
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("retracted during CAS wait")
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    await mgr.lock.acquire()
+    try:
+        mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+        swap_task = mgr.final_swap_task
+        await asyncio.wait_for(prime_entered.wait(), timeout=5)
+        allow_prime.set()
+        await asyncio.wait_for(old_close_complete.wait(), timeout=5)
+        callback[DELIVERY_RETRACTED_KEY] = True
+        mgr._purge_retracted_agent_callbacks()
+        assert callback.get(SWAP_PRIME_DELIVERY_CLAIM_KEY) is True
+    finally:
+        mgr.lock.release()
+
+    await asyncio.wait_for(swap_task, timeout=10)
+
+    assert mgr.session is old_session
+    assert new_session.closed
+    assert mgr.pending_agent_callbacks == []
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+    assert delivery_ack.done() and delivery_ack.result() is False
+    assert mgr.is_hot_swap_imminent is False
+
+
+@pytest.mark.asyncio
+async def test_final_swap_promote_cas_loss_releases_passive_claim():
+    """A takeover at promote keeps the callback queued and unclaimed."""
+    mgr = _make_swap_manager()
+    mgr.pending_agent_callbacks = []
+    mgr._normalize_context_text_for_source = lambda _source, text: text
+    winner_session = _FakeSession("winner")
+    new_session = _make_fake_realtime_session("pending")
+
+    class _TakeoverOnClose(_FakeSession):
+        async def close(self):
+            await super().close()
+            mgr.session = winner_session
+            mgr.message_handler_task = object()
+
+    old_session = _TakeoverOnClose("old")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    delivery_ack = asyncio.get_running_loop().create_future()
+    callback = _passive_callback("queued across CAS loss")
+    callback[DELIVERY_ACK_FUTURE_KEY] = delivery_ack
+    mgr.enqueue_agent_callback(callback)
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.session is winner_session
+    assert new_session.closed
+    assert mgr.pending_agent_callbacks == [callback]
+    assert SWAP_PRIME_DELIVERY_CLAIM_KEY not in callback
+    assert not delivery_ack.done()
 
 
 @pytest.mark.asyncio

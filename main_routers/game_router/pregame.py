@@ -491,7 +491,11 @@ async def _run_soccer_pregame_context_ai(
         neko_initiated=neko_initiated,
         neko_invite_text=neko_invite_text,
         prompt_template=get_soccer_pregame_context_prompt(
-            prompt_locale or char_info.get("user_language")
+            # 兜底腿也要全码：prompt_locale 为空时才走到这里，短码会把繁体塌成 zh
+            # （issue #2500 第 2 步）。与本文件下面两处 `or user_language_full` 同形。
+            prompt_locale
+            or char_info.get("user_language_full")
+            or char_info.get("user_language")
         ),
         extra_payload={"gameType": "soccer"},
     )

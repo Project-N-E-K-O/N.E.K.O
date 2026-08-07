@@ -1,0 +1,9 @@
+Corpora is dedicated to the public domain under CC0 1.0.
+
+To the extent possible under law, Darius Kazemi has waived all copyright and
+related or neighboring rights to Corpora. The project accepts contributed data
+under the same CC0 terms.
+
+Upstream project: https://github.com/dariusk/corpora
+CC0 1.0: https://creativecommons.org/publicdomain/zero/1.0/
+Pinned source commit: cf30ca27ab176b63623af1ddcfa2447ac07305ba

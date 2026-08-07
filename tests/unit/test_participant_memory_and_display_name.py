@@ -904,6 +904,7 @@ def _participant_session_plugin(history, *, switch_on=True, nickname="小明"):
     )
     bridge = MagicMock()
     bridge.participant_subject.side_effect = QQMemoryBridge.participant_subject
+    bridge.speaker_account_id.side_effect = QQMemoryBridge.speaker_account_id
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "processed"})
     bridge.post_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data = {
@@ -919,6 +920,10 @@ def _participant_session_plugin(history, *, switch_on=True, nickname="小明"):
         get_nickname=lambda sender_id: None,
         get_permission_level=lambda sender_id: "trusted",
     )
+    # The legacy trust push has landed, so the plugin may report tiers. Before
+    # it lands the plugin deliberately sends NO trust fields at all.
+    trust_ready = asyncio.Event()
+    trust_ready.set()
     plugin = SimpleNamespace(
         _user_sessions={"private:1001": user_data},
         _qq_settings={"private_participant_memory_enabled": switch_on},
@@ -926,6 +931,7 @@ def _participant_session_plugin(history, *, switch_on=True, nickname="小明"):
         permission_mgr=permission_mgr,
         logger=MagicMock(),
         _spawn_memory_sync_task=MagicMock(),
+        trust_ready=trust_ready,
     )
     return plugin, user_data, bridge
 
@@ -957,7 +963,10 @@ async def test_participant_finalize_settles_scoped_never_legacy_process():
         "subject_kind": "participant", "subject_id": "qq:1001",
     }
     assert kwargs["speaker_label"] == "小明(1001)"
-    assert kwargs["speaker_trust"] == pytest.approx(0.8)
+    # The plugin reports the permission TIER; the score is derived server-side
+    # from the global pool. No trust value is computed here any more.
+    assert kwargs["speaker_tier"] == "trusted"
+    assert "speaker_trust" not in kwargs
     assert kwargs["display_name"] == "小明"
     sent = bridge.post_scoped_memory_history.await_args.args[1]
     assert [m["role"] for m in sent] == ["user", "assistant"]
@@ -1071,9 +1080,97 @@ async def test_participant_digest_uses_session_permission_snapshot():
     )
 
     kwargs = bridge.post_scoped_memory_history.await_args.kwargs
-    assert kwargs["speaker_trust"] == pytest.approx(
-        SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"]
+    assert kwargs["speaker_tier"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_participant_digest_uses_receipt_permission_after_promotion():
+    """Promotion while queued cannot turn prior participant speech into owner."""
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
     )
+
+    history = [SimpleNamespace(type="human", content="排队前收到的话")]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    user_data.update({
+        "permission_level": "admin",
+        "private_permission_level_at_receipt": "normal",
+    })
+    plugin.permission_mgr.get_permission_level = lambda _sender_id: "admin"
+    service = QQSessionMemoryService(plugin)
+
+    assert await service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=0,
+    )
+
+    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
+    assert kwargs["speaker_tier"] == "normal"
+    assert "speaker_is_owner" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_participant_digest_reports_one_activity_event_per_batch():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [
+        SimpleNamespace(type="human", content="第一批"),
+        SimpleNamespace(type="human", content="第二批"),
+    ]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    service = QQSessionMemoryService(plugin)
+    service.GROUP_HISTORY_MAX_MESSAGES = 1
+
+    assert await service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=0,
+    )
+
+    calls = bridge.post_scoped_memory_history.await_args_list
+    assert len(calls) == 2
+    # Trust is no longer refreshed between batches by the plugin: the server
+    # re-reads the pool at the start of every request, which is the same
+    # semantics with one fewer place to drift.
+    assert all("speaker_trust" not in call.kwargs for call in calls)
+    assert [call.kwargs["speaker_tier"] for call in calls] == [
+        "trusted", "trusted",
+    ]
+    # One batch-level activity event per POST, with distinct ids: the private
+    # path has no per-message stamp, so the cursor range is the stability
+    # source.
+    ids = [
+        call.kwargs["speaker_activity_events"][0]["id"] for call in calls
+    ]
+    assert len(set(ids)) == 2
+
+
+@pytest.mark.asyncio
+async def test_open_private_tier_resolves_unknown_participant_to_none_trust():
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content="陌生人的话")]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    user_data["permission_level"] = "open"
+    plugin.permission_mgr.get_permission_level = lambda _sender_id: "none"
+    service = QQSessionMemoryService(plugin)
+
+    assert await service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=0,
+    )
+
+    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
+    assert kwargs["speaker_tier"] == "none"
+    assert "speaker_is_owner" not in kwargs
 
 
 @pytest.mark.asyncio
@@ -1252,6 +1349,14 @@ def test_prime_gates_participant_and_demoted_legacy_sessions():
     ud = _prime({}, permission_level="admin")
     assert ud["private_memory_mode"] == "legacy"
     assert ud["memory_enabled"] is True
+    # A queued participant turn keeps its receipt-time tier even if the live
+    # permission used by session bootstrap has already been promoted.
+    ud = _prime(
+        {"private_permission_level_at_receipt": None},
+        permission_level="admin", private_memory_mode="participant",
+        private_permission_level_at_receipt="normal",
+    )
+    assert ud["private_permission_level_at_receipt"] == "normal"
 
     # Handler-time permission may differ from the receipt-time mode. The
     # latter owns persistence routing, so neither direction can retarget the
@@ -1266,6 +1371,58 @@ def test_prime_gates_participant_and_demoted_legacy_sessions():
     )
     assert ud["private_memory_mode"] == "legacy"
     assert ud["memory_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_participant_history_reset_rotates_activity_epoch():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+
+    history = [SimpleNamespace(type="system", content="system")]
+    plugin, user_data, _bridge = _participant_session_plugin(history)
+    user_data.update({
+        "last_participant_digest_index": 4,
+        "_speaker_trust_activity_epoch": "old-epoch",
+        "reply_chunks": [],
+    })
+    context = SimpleNamespace(
+        persist_memory=True, permission_level="trusted",
+        is_group=False, group_id=None, sender_id="1001",
+        user_title="小明", user_nickname="小明",
+        memory_context_used=False, ephemeral_session=False,
+        login_status="online", login_self_id="9", login_nickname="n",
+        private_memory_mode="participant",
+    )
+
+    QQSessionRuntimeService(plugin).prime_generation_session_state(
+        user_data, session_key="private:1001", context=context,
+    )
+    assert user_data["last_participant_digest_index"] == 1
+    activity_epoch = user_data["_speaker_trust_activity_epoch"]
+    assert activity_epoch != "old-epoch"
+
+    history.append(SimpleNamespace(type="human", content="same exchange"))
+    memory_service = QQSessionMemoryService(plugin)
+    assert await memory_service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=1,
+    )
+    # The rotated epoch reaches the wire through the HASHED activity event id
+    # (a raw identity string would 422 on any character name with a space).
+    # Keyed by the batch's START cursor only — see the comment at the call
+    # site: including the end cursor would renumber a grown retry.
+    sent = _bridge.post_scoped_memory_history.await_args.kwargs[
+        "speaker_activity_events"
+    ]
+    assert sent[0]["id"] == memory_service._activity_event_id(
+        "qq:1001", f"participant:Neko:{activity_epoch}:1",
+    )
+    assert sent[0]["id"].startswith("activity_")
 
 
 # ---------------------------------------------------------------------------

@@ -273,6 +273,72 @@ def _relay(r: httpx.Response):
     return r.json()
 
 
+async def _confirm_cloud_forge_debit(
+    *,
+    operation_id: str,
+    credit_id: str,
+    card_id: str,
+) -> dict:
+    """Tell the cloud about a debit only after the local ledger has committed it."""
+    credentials = await asyncio.to_thread(_get_client_credentials)
+    if not credentials:
+        return {"confirmed": False, "detail": "client_not_registered"}
+    client_id, client_proof = credentials
+    base_url = _social_base_url()
+    try:
+        parsed_base_url = urlparse(base_url)
+        base_hostname = parsed_base_url.hostname
+        if parsed_base_url.scheme == "https" and base_hostname:
+            send_client_proof = True
+        elif (
+            parsed_base_url.scheme == "http"
+            and base_hostname
+            and base_hostname.lower() in _LOOPBACK_HOSTS
+        ):
+            send_client_proof = False
+        else:
+            return {"confirmed": False, "detail": "invalid_cloud_base_url"}
+    except ValueError:
+        return {"confirmed": False, "detail": "invalid_cloud_base_url"}
+    url = (
+        f"{base_url}/api/cards/forge-operations/"
+        f"{operation_id}/debit-confirmation"
+    )
+    request_payload = {
+        "client_id": client_id,
+        "credit_id": credit_id,
+        "card_id": card_id,
+    }
+    if send_client_proof:
+        request_payload["client_proof"] = client_proof
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            response = await client.post(
+                url,
+                json=request_payload,
+            )
+    except (httpx.HTTPError, OSError):
+        return {"confirmed": False, "detail": "cloud_unreachable"}
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = None
+    if not 200 <= response.status_code < 300 or not isinstance(payload, dict):
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        return {
+            "confirmed": False,
+            "detail": str(detail or f"http_{response.status_code}"),
+        }
+    confirmed = (
+        payload.get("confirmed") is True
+        and str(payload.get("operation_id") or "") == operation_id
+        and str(payload.get("credit_id") or "") == credit_id
+        and str(payload.get("card_id") or "") == card_id
+        and bool(payload.get("confirmed_at"))
+    )
+    return {"confirmed": confirmed}
+
+
 def _origin_port(parsed) -> int | None:
     if parsed.port:
         return parsed.port
@@ -2048,7 +2114,18 @@ async def commit_credit_endpoint(
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
-    return JSONResponse(result, headers=cors)
+    confirmation = await _confirm_cloud_forge_debit(
+        operation_id=operation_id,
+        credit_id=credit_id,
+        card_id=str(payload.get("card_id") or ""),
+    )
+    return JSONResponse(
+        {
+            **result,
+            "debit_confirmed": confirmation.get("confirmed") is True,
+        },
+        headers=cors,
+    )
 
 
 @router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="云端明确失败后释放本机券预占")

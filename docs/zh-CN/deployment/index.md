@@ -9,6 +9,8 @@
 
 跨平台 workflow 构建 Windows、macOS、Linux 产物；定时输出是 **nightly 预发行版**，不是稳定版承诺。
 
+维护者发布稳定桌面版时，请遵循[手动发布桌面稳定版](./manual-desktop-release)。
+
 源码要求 Python 3.11、`uv`，以及满足前端 lockfile 的 Node（plugin manager 要求 `^20.19.0 || >=22.12.0`）。
 
 本地向量是可选的 CPU 能力；禁用时 BM25 仍可用。详见[本地嵌入模型资源](./embedding-models)。

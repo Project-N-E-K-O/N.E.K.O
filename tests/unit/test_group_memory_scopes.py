@@ -41,7 +41,7 @@ class _FakeTimeIndexed:
     def __init__(self):
         self.hits: list[tuple[str, float]] = []
 
-    async def asearch_facts(self, lanlan_name, text, limit):
+    async def asearch_similar_facts(self, lanlan_name, text, limit):
         return list(self.hits)[:limit]
 
     async def aindex_fact(self, lanlan_name, fact_id, text):
@@ -176,7 +176,7 @@ async def test_fts_semantic_hit_from_another_group_does_not_dedup():
     first = await harness._apersist_new_facts(
         "Neko", [_fact("周五晚上八点一起玩")], subject=group_a, semantic_dedup=False,
     )
-    index.hits = [(first[0]["id"], -10.0)]
+    index.hits = [(first[0]["id"], 1.0)]
     created = await harness._apersist_new_facts(
         "Neko", [_fact("周五晚八点开黑")], subject=group_b, semantic_dedup=True,
     )
@@ -459,6 +459,9 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
@@ -522,6 +525,9 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.fetch_bootstrap_memory = AsyncMock(return_value="旧私人记忆")
     bridge.fetch_scoped_bootstrap_memory = AsyncMock()
     plugin = SimpleNamespace(
@@ -558,6 +564,9 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
     from plugin.plugins.qq_auto_reply.reply_context_node import QQReplyContextNode
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
@@ -662,6 +671,9 @@ async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
     from plugin.plugins.qq_auto_reply.reply_context_node import QQReplyContextNode
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
@@ -723,6 +735,9 @@ async def test_qq_group_session_writes_only_scoped_history():
     ]
     session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
@@ -769,9 +784,9 @@ async def test_qq_group_session_writes_only_scoped_history():
         subject=QQMemoryBridge.group_subject("7788"),
         timeout=30.0,
     )
-    # 成员 bucket 走批形态：每段带 subject / speaker_label / speaker_trust
-    # （无 permission_mgr → level "none" 的初值）。
-    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    # 成员 bucket 走批形态：每段带 subject / speaker_label / speaker_id。
+    # 不带任何 trust 字段——这个 fake plugin 没有 trust_ready，而闸门未开时
+    # 插件根本不上报 tier / activity（纵深防御第一层）。
     bridge.post_scoped_memory_history_batch.assert_awaited_once_with(
         "Neko",
         [{
@@ -779,13 +794,201 @@ async def test_qq_group_session_writes_only_scoped_history():
                 {"role": "user", "content": [{"type": "text", "text": "我最喜欢三文鱼"}]},
             ],
             "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
-            "speaker_label": "2046",
-            "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+                "speaker_label": "2046",
+                "speaker_id": "qq:2046",
         }],
         timeout=30.0,
     )
     bridge.post_memory_history.assert_not_awaited()
     assert "group:7788" not in plugin._user_sessions
+
+
+@pytest.mark.asyncio
+async def test_exact_dedup_reconciles_request_sources_conservatively():
+    harness = _PersistHarness()
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    first = await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
+            "speaker_label": "Alice",
+        },
+    )
+    same_speaker_reconciled = []
+    await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+            "speaker_label": "Alice",
+        },
+        reconciled_facts=same_speaker_reconciled,
+    )
+    assert first[0]["speaker_id"] == "qq:1001"
+    assert first[0]["speaker_trust"] == pytest.approx(0.3)
+    assert "speaker_provenance_mixed" not in first[0]
+    assert same_speaker_reconciled == [first[0]]
+    mixed_reconciled = []
+    await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.9,
+            "speaker_label": "Bob",
+        },
+        reconciled_facts=mixed_reconciled,
+    )
+    assert all(
+        key not in first[0]
+        for key in ("speaker_id", "speaker_trust", "speaker_label")
+    )
+    assert first[0]["speaker_provenance_mixed"] is True
+    assert mixed_reconciled == [first[0]]
+    await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:3003", "speaker_trust": 1.0,
+            "speaker_label": "Carol",
+        },
+    )
+    assert first[0]["speaker_provenance_mixed"] is True
+    assert all(
+        key not in first[0]
+        for key in ("speaker_id", "speaker_trust", "speaker_label")
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconciled_facts_preserve_typed_scoped_identities():
+    harness = _PersistHarness()
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    existing = await harness._apersist_new_facts(
+        "Neko", [_fact("first fact"), _fact("second fact")],
+        subject=subject, semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    existing[0]["id"] = 1
+    existing[1]["id"] = "1"
+
+    reconciled = []
+    await harness._apersist_new_facts(
+        "Neko", [_fact("first fact"), _fact("second fact")],
+        subject=subject, semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.9},
+        reconciled_facts=reconciled,
+    )
+
+    assert [(type(fact["id"]), fact["id"]) for fact in reconciled] == [
+        (int, 1), (str, "1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exact_dedup_provenance_rolls_back_when_save_fails():
+    harness = _PersistHarness()
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    first = await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    harness.asave_facts = AsyncMock(side_effect=OSError("disk full"))
+    with pytest.raises(OSError, match="disk full"):
+        await harness._apersist_new_facts(
+            "Neko", [_fact("同一事实")], subject=subject,
+            semantic_dedup=False,
+            speaker_provenance={
+                "speaker_id": "qq:2002", "speaker_trust": 0.9,
+            },
+        )
+    assert first[0]["speaker_id"] == "qq:1001"
+    assert first[0]["speaker_trust"] == pytest.approx(0.3)
+    assert "speaker_provenance_mixed" not in first[0]
+
+
+@pytest.mark.asyncio
+async def test_fts_dedup_reconciles_request_sources_conservatively():
+    index = _FakeTimeIndexed()
+    harness = _PersistHarness(index)
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    first = await harness._apersist_new_facts(
+        "Neko", [_fact("Alice likes cats")], subject=subject,
+        semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    first[0].pop("hash", None)
+    index.hits = [(first[0]["id"], 1.0)]
+    reconciled = []
+    duplicate = await harness._apersist_new_facts(
+        "Neko", [_fact("Alice likes cats")], subject=subject,
+        semantic_dedup=True,
+        speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.9},
+        reconciled_facts=reconciled,
+    )
+    assert duplicate == []
+    assert first[0]["speaker_provenance_mixed"] is True
+    assert all(
+        key not in first[0]
+        for key in ("speaker_id", "speaker_trust", "speaker_label")
+    )
+    assert reconciled == [first[0]]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_preserves_cross_speaker_authored_order():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    levels = {"9999": "admin", "1001": "normal"}
+    sent = []
+
+    async def _post(_name, segments, **_kwargs):
+        sent.extend(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, sid: {"subject_id": f"qq:{gid}:{sid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    plugin = SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda _sender: None,
+            get_permission_level=lambda sender: levels[sender],
+        ),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+    user_data = {}
+
+    def _context(sender_id, message):
+        return SimpleNamespace(
+            member_memory_enabled=True, is_group=True, group_facing=False,
+            group_scene_mode="", source_kind="incoming",
+            sender_id=sender_id, user_nickname="", message=message,
+        )
+
+    service.record_group_member_turn(user_data, _context("9999", "先询问"))
+    service.record_group_member_turn(user_data, _context("1001", "我喜欢猫"))
+    service.record_group_member_turn(user_data, _context("9999", "她确实喜欢猫"))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    assert [segment["speaker_label"] for segment in sent] == [
+        "9999", "1001", "9999",
+    ]
+    assert [
+        segment["messages"][0]["content"][0]["text"] for segment in sent
+    ] == ["先询问", "我喜欢猫", "她确实喜欢猫"]
 
 
 @pytest.mark.asyncio
@@ -798,6 +1001,9 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     history = [SimpleNamespace(type="human", content="群消息")]
     session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
@@ -814,11 +1020,12 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     failed_member_messages = [
         {"role": "user", "content": [{"type": "text", "text": "A"}]},
     ]
+    later_member_messages = [
+        {"role": "user", "content": [{"type": "text", "text": "B"}]},
+    ]
     member_buckets = {
         "2046": failed_member_messages,
-        "4096": [
-            {"role": "user", "content": [{"type": "text", "text": "B"}]},
-        ],
+        "4096": later_member_messages,
     }
     user_data = {
         "memory_enabled": True,
@@ -846,29 +1053,44 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
     assert [seg["speaker_label"] for seg in sent_segments] == ["2046", "4096"]
     assert user_data["group_memory_flushed"] is True
-    # 批内单段失败只保留那一段的桶，成功段当场弹出。
-    assert list(member_buckets) == ["2046"]
+    # 后段虽已入库，但前序失败时仍保留重试，避免 authored chronology
+    # 在插件侧越过缺口；服务端精确去重保证重试幂等。
+    assert list(member_buckets) == ["2046", "4096"]
     assert "group:7788" in plugin._user_sessions
     session.close.assert_not_awaited()
 
     bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
         "status": "processed",
-        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+        "segments": [
+            {"status": "ok", "created": 0, "fact_ids": []},
+            {"status": "ok", "created": 0, "fact_ids": []},
+        ],
     })
     completed = await service.finalize_user_memory_session(
         "group:7788", reason="retry",
     )
 
     assert completed is True
-    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
     bridge.post_scoped_memory_history_batch.assert_awaited_once_with(
         "Neko",
-        [{
-            "messages": failed_member_messages,
-            "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
-            "speaker_label": "2046",
-            "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
-        }],
+        [
+            {
+                "messages": failed_member_messages,
+                "subject": QQMemoryBridge.group_participant_subject(
+                    "7788", "2046",
+                ),
+                "speaker_label": "2046",
+                "speaker_id": "qq:2046",
+            },
+            {
+                "messages": later_member_messages,
+                "subject": QQMemoryBridge.group_participant_subject(
+                    "7788", "4096",
+                ),
+                "speaker_label": "4096",
+                "speaker_id": "qq:4096",
+            },
+        ],
         timeout=30.0,
     )
     assert member_buckets == {}
@@ -1500,6 +1722,7 @@ async def test_scoped_synthesis_creates_confirmed_reflection(tmp_path):
             # 钉住「直出 confirmed 必须带最小正 rein，过 score>0 渲染门」。
             "id": f"g{index}", "text": f"群事实 {index}",
             "entity": "group_chat", "importance": 5, "absorbed": False,
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
             **group.as_entry_fields(),
         }
         for index in range(6)
@@ -1552,6 +1775,8 @@ async def test_scoped_synthesis_creates_confirmed_reflection(tmp_path):
     assert created[0]["auto_confirmed"] is True
     assert created[0]["scope"] == group.scope
     assert created[0]["subject_kind"] == "group_chat"
+    assert created[0]["speaker_id"] == "qq:1001"
+    assert created[0]["speaker_trust"] == pytest.approx(0.8)
     # score>0 渲染门：即便源 facts 全是默认档 importance，直出 confirmed
     # 的 scoped 反思也必须立即对 /scoped_context 可见。
     assert float(created[0]["reinforcement"]) > 0.0
@@ -1597,7 +1822,9 @@ async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
             "created_at": (now - timedelta(days=20)).isoformat(),
             "confirmed_at": (now - timedelta(days=8)).isoformat(),
             "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
-            "source_fact_ids": ["g2"], **group.as_entry_fields(),
+            "source_fact_ids": ["g2"],
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
+            **group.as_entry_fields(),
         },
     ]
     with open(
@@ -1635,10 +1862,12 @@ async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
     assert status_by_id["ref_scoped_confirmed"]["status"] == "promoted"
     scoped_section = persona.get(group.persona_section_key)
     assert scoped_section is not None
-    assert any(
-        entry.get("text") == "群主是老王"
-        for entry in scoped_section.get("facts", [])
+    promoted = next(
+        entry for entry in scoped_section.get("facts", [])
+        if entry.get("text") == "群主是老王"
     )
+    assert promoted["speaker_id"] == "qq:1001"
+    assert promoted["speaker_trust"] == pytest.approx(0.8)
 
 
 @pytest.mark.asyncio
@@ -1799,15 +2028,16 @@ async def test_fts_dedup_window_not_crowded_by_scoped_rows():
             subject=group, semantic_dedup=False,
         )
     legacy_first = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=False,
     )
+    legacy_first[0].pop("hash", None)
     scoped_ids = [fact["id"] for fact in harness._mem[:3]]
-    index.hits = [(fid, -10.0) for fid in scoped_ids] + [
-        (legacy_first[0]["id"], -10.0),
+    index.hits = [(fid, 1.0) for fid in scoped_ids] + [
+        (legacy_first[0]["id"], 1.0),
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚八点要开黑")], semantic_dedup=True,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=True,
     )
     assert duplicate == []
 
@@ -1830,14 +2060,14 @@ async def test_fts_dedup_sees_archived_rows(tmp_path):
     arch_path.write_text(
         _json.dumps(archived, ensure_ascii=False), encoding="utf-8",
     )
-    index.hits = [("arch1", -10.0)]
+    index.hits = [("arch1", 1.0)]
 
     with patch.object(
         harness, "_facts_archive_path", return_value=str(arch_path),
     ):
         duplicate = await harness._apersist_new_facts(
             "Neko",
-            [{"text": "群规是不能剧透", "importance": 7, "entity": "group_chat"}],
+            [{"text": "群规是不剧透", "importance": 7, "entity": "group_chat"}],
             subject=group, semantic_dedup=True,
         )
     assert duplicate == []
@@ -1858,15 +2088,16 @@ async def test_fts_dedup_escalates_past_crowded_first_window():
             subject=group, semantic_dedup=False,
         )
     legacy_first = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚上八点想开黑")], semantic_dedup=False,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=False,
     )
+    legacy_first[0].pop("hash", None)
     scoped_ids = [fact["id"] for fact in harness._mem[:10]]
-    index.hits = [(fid, -10.0) for fid in scoped_ids] + [
-        (legacy_first[0]["id"], -10.0),
+    index.hits = [(fid, 1.0) for fid in scoped_ids] + [
+        (legacy_first[0]["id"], 1.0),
     ]
 
     duplicate = await harness._apersist_new_facts(
-        "Neko", [_fact("主人周五晚八点要开黑")], semantic_dedup=True,
+        "Neko", [_fact("master wants to game on friday night")], semantic_dedup=True,
     )
     assert duplicate == []
 
@@ -2117,7 +2348,7 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         fs._time_indexed = SimpleNamespace(
             aindex_fact=AsyncMock(side_effect=RuntimeError("maintenance")),
             adelete_fact_from_index=AsyncMock(),
-            asearch_facts=AsyncMock(return_value=[]),
+            asearch_similar_facts=AsyncMock(return_value=[]),
         )
         with pytest.raises(RuntimeError):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
@@ -2133,10 +2364,12 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         assert any(f.get("text") == "索引失败的事实" for f in created)
 
 
-def _batch_segment(group_id, sender_id, label, texts, *, trust=None):
+def _batch_segment(
+    group_id, sender_id, label, texts, *, trust=None, speaker_id=None,
+):
     from memory.scopes import MemorySubject
 
-    return {
+    segment = {
         "messages": [
             SimpleNamespace(type="human", content=text) for text in texts
         ],
@@ -2146,6 +2379,9 @@ def _batch_segment(group_id, sender_id, label, texts, *, trust=None):
         "speaker_label": label,
         "speaker_trust": trust,
     }
+    if speaker_id is not None:
+        segment["speaker_id"] = speaker_id
+    return segment
 
 
 @pytest.mark.asyncio
@@ -2424,8 +2660,8 @@ async def test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment(
     把这类当成空壳静默丢掉、该段照报 ok，调用方就会 pop 掉那个桶——
     成员维度的唯一副本，内容真的没了（Codex P1）。
 
-    认出来的事实仍照常落盘：重试会把它们重新抽一遍、SHA-256 去重兜住重复，
-    而万一重试一直失败，起码这些不会跟着丢。"""  # noqa: DOCSTRING_CJK
+    认出来的前序事实仍照常落盘；为防重试反转 created_at，后序段也必须
+    fail-closed 留待重试，不能越过这个失败段先落盘。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2447,13 +2683,13 @@ async def test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment(
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
 
-    assert [r["status"] for r in results] == ["failed", "ok"], (
+    assert [r["status"] for r in results] == ["failed", "failed"], (
         "带文字的看不懂条目被当成空壳丢了，该段却照报 ok"
     )
     assert [f["text"] for f in results[0]["created"]] == ["认得出的事实"]
     assert results[0]["dropped"] == 0, "它不是空壳，不该记进 dropped"
     persisted = {f["text"] for f in await fs.aload_facts("Neko")}
-    assert persisted == {"认得出的事实", "邻段不受连累"}
+    assert persisted == {"认得出的事实"}
 
 
 @pytest.mark.asyncio
@@ -2487,7 +2723,7 @@ async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
 
-    assert [r["status"] for r in results] == ["failed", "ok"]
+    assert [r["status"] for r in results] == ["failed", "failed"]
     assert results[0]["created"] == []
 
     # 对照一：给了 facts 数组就算答过了（哪怕空数组 = 本段无事实），旁挂
@@ -2529,7 +2765,7 @@ async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
     fs._allm_call_with_retries = _non_string_text
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
-    assert [r["status"] for r in results] == ["failed", "ok"], (
+    assert [r["status"] for r in results] == ["failed", "failed"], (
         "text 不是字符串但裹着内容的段对象被当成「本段无事实」了"
     )
     assert results[0]["created"] == []
@@ -2614,7 +2850,7 @@ async def test_map_shaped_malformed_fact_is_not_treated_as_an_empty_shell(
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch(segments, "Neko")
 
-    assert [r["status"] for r in results] == ["failed", "ok"], (
+    assert [r["status"] for r in results] == ["failed", "failed"], (
         "文本在键上的畸形事实被当成空壳，段照报 ok，桶会被 pop"
     )
     assert results[0]["dropped"] == 0, "它不是空壳，不该记进 dropped"
@@ -2974,8 +3210,7 @@ async def test_batch_extraction_fails_closed_when_nothing_attributable(tmp_path)
 
 @pytest.mark.asyncio
 async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
-    """一段 persist 失败不得连累其他段重来（fail_closed 改 per-段的核心
-    语义）：失败段报 failed（调用方保留那个桶），成功段正常 ok。"""  # noqa: DOCSTRING_CJK
+    """A later persist failure does not roll back an earlier committed segment."""
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -3006,6 +3241,42 @@ async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
     assert [r["status"] for r in results] == ["ok", "failed"]
     assert [f["text"] for f in results[0]["created"]] == ["A 的事实"]
     assert results[1]["created"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_stops_after_chronological_failure(tmp_path):
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {"text": "较早事实", "importance": 5, "segment": 1},
+            {"text": "较晚事实", "importance": 5, "segment": 2},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["earlier"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["later"]),
+    ]
+    real_persist = fs._apersist_new_facts
+    persisted_subjects = []
+
+    async def _first_persist_fails(lanlan_name, extracted, **kwargs):
+        subject_id = getattr(kwargs.get("subject"), "subject_id", "")
+        persisted_subjects.append(subject_id)
+        if subject_id == "qq:7788:1001":
+            raise RuntimeError("disk full")
+        return await real_persist(lanlan_name, extracted, **kwargs)
+
+    fs._apersist_new_facts = _first_persist_fails
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [result["status"] for result in results] == ["failed", "failed"]
+    assert persisted_subjects == ["qq:7788:1001"]
+    assert await fs.aload_facts("Neko") == []
 
 
 @pytest.mark.asyncio
@@ -3061,13 +3332,17 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
             {
                 "text": "试图伪造来源", "importance": 5, "segment": 1,
                 "speaker_trust": 999, "speaker_label": "admin 本人",
+                "speaker_id": "qq:9999",
             },
             {"text": "B 的事实", "importance": 5, "segment": 2},
         ]
 
     fs._allm_call_with_retries = _llm
     segments = [
-        _batch_segment("7788", "1001", "Alice(1001)", ["a"], trust=0.3),
+        _batch_segment(
+            "7788", "1001", "Alice(1001)", ["a"], trust=0.3,
+            speaker_id="qq:1001",
+        ),
         _batch_segment("7788", "1002", "Bob(1002)", ["b"], trust=0.5),
     ]
     with patch("memory.facts.get_global_language_full", return_value="zh"):
@@ -3076,6 +3351,7 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
     fact = results[0]["created"][0]
     assert fact["speaker_label"] == "Alice(1001)"
     assert fact["speaker_trust"] == 0.3
+    assert fact["speaker_id"] == "qq:1001"
 
 
 @pytest.mark.asyncio
@@ -3409,7 +3685,12 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
 
     store = MagicMock()
     store.extract_facts_batch = AsyncMock(return_value=[
-        {"status": "ok", "created": [{"id": "fact_1", "text": "x"}], "dropped": 2},
+        {"status": "ok", "created": [{
+            "id": "fact_1", "text": "x",
+            "subject_kind": "group_participant",
+            "subject_id": "qq:100:1001",
+            "scope": "group_participant:qq:100:1001",
+        }], "dropped": 2},
         {"status": "failed", "created": []},
     ])
     with patch.object(memory_routes.runtime, "fact_store", store):
@@ -3423,6 +3704,14 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
     assert [seg["dropped"] for seg in result["segments"]] == [2, 0]
     assert result["segments"][0]["created"] == 1
     assert result["segments"][0]["fact_ids"] == ["fact_1"]
+    assert result["segments"][0]["fact_identities"] == [[
+        "fact_1", "group_participant", "qq:100:1001",
+        "group_participant:qq:100:1001",
+    ]]
+    assert result["segments"][0]["created_fact_identities"] == [[
+        "fact_1", "group_participant", "qq:100:1001",
+        "group_participant:qq:100:1001",
+    ]]
     assert result["segments"][0]["subject"]["subject_id"] == "qq:100:1001"
     # 传给 FactStore 的段带解析后的 messages / subject / label / trust。
     sent = store.extract_facts_batch.await_args.args[0]
@@ -4375,6 +4664,7 @@ async def test_force_summary_branch_binds_draft_before_settling():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="_trigger_proactive_speech removed; icebreaker now uses _try_icebreaker")
 async def test_proactive_prompt_row_excluded_from_digest():
     """The silence-timer proactive turn appends a synthetic system-
     instruction human row to the shared history; like rapid-fire control
@@ -4428,6 +4718,7 @@ async def test_proactive_prompt_row_excluded_from_digest():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="_reply_to_ignored_message removed; retro now uses buffer-style summary")
 async def test_retro_replay_honors_receipt_time_policy():
     """Retroactive review replays a backlog message through the shared
     session: consent belongs to when it was SAID. A message received while
@@ -5248,6 +5539,7 @@ async def test_private_flush_prompt_not_excluded_and_cache_lags_tail_draft():
     plugin = SimpleNamespace(
         _user_sessions={"private:1": user_data},
         memory_bridge=SimpleNamespace(
+            speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
             post_memory_history=AsyncMock(return_value={"status": "ok"}),
         ),
         logger=MagicMock(),
@@ -5694,6 +5986,7 @@ async def test_core_memory_section_reports_member_usage_via_out_param():
         },
         logger=MagicMock(),
         memory_bridge=SimpleNamespace(
+            speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
             group_subject=QQMemoryBridge.group_subject,
             group_participant_subject=QQMemoryBridge.group_participant_subject,
             fetch_scoped_bootstrap_memory=AsyncMock(return_value="群规是不剧透"),
@@ -5837,6 +6130,9 @@ async def test_recall_reports_participant_usage_to_caller():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = (
         lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
     )
@@ -6302,6 +6598,9 @@ async def test_failed_disable_save_restores_pre_optout_cursor():
         return await fn()
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = (
         lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
     )
@@ -6411,6 +6710,9 @@ async def test_shutdown_drains_pending_disable_sessions():
         return await fn()
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     plugin = SimpleNamespace(
@@ -6473,6 +6775,9 @@ async def test_rollback_discard_drops_failed_optin_interval():
         return await fn()
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     plugin = SimpleNamespace(
         _user_sessions={"group:7788": user_data},
@@ -7026,6 +7331,9 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.query_relevant_memory = AsyncMock()
     bridge.fetch_scoped_bootstrap_memory = AsyncMock()
     plugin = SimpleNamespace(
@@ -7130,6 +7438,9 @@ async def test_enable_rebase_consumes_dead_cutoff_and_keeps_cursor_monotonic():
         return await fn()
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     plugin = SimpleNamespace(
         _user_sessions={"group:7788": user_data},
@@ -7182,6 +7493,9 @@ async def test_retain_settle_pops_only_the_cutoff_it_consumed():
         }
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = (
         lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
     )
@@ -7231,6 +7545,9 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(6)]
     session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = (
         lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
     )
@@ -7413,6 +7730,7 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
 
     group = MemorySubject.group_chat("qq", "100")
     fact_store = MagicMock()
+    fact_store._subject_forget_is_active.return_value = False
     fact_store._config_manager = MagicMock()
     _api_config = {"model": "fake", "base_url": "http://fake", "api_key": "sk"}
     fact_store._config_manager.get_model_api_config = MagicMock(
@@ -7443,6 +7761,12 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
         {
             # New-schema scoped pair: different domain, must stay queued.
             "candidate_id": "c2", "existing_id": "e2",
+            "candidate_subject_kind": group.kind,
+            "candidate_subject_id": group.subject_id,
+            "candidate_scope": group.scope,
+            "existing_subject_kind": group.kind,
+            "existing_subject_id": group.subject_id,
+            "existing_scope": group.scope,
             "entity": "group_chat",
             "subject_key": group.key, "scope": group.scope,
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:01",
@@ -7625,6 +7949,9 @@ async def test_group_reply_success_records_scoped_mentions_best_effort():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = (
         lambda gid: {"subject_kind": "group_chat", "subject_id": f"qq:{gid}"}
     )
@@ -7725,6 +8052,9 @@ async def test_group_digest_batches_never_skip_backlog():
     history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(8)]
     session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data = {
@@ -8041,6 +8371,9 @@ async def test_focus_shift_digest_batches_never_skip_backlog():
     history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(8)]
     session = SimpleNamespace(_conversation_history=history)
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data = {"session": session, "her_name": "Neko"}
@@ -8166,6 +8499,9 @@ async def test_digest_cursor_rebases_after_history_reset():
     ]
     session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data = {
@@ -8351,6 +8687,159 @@ async def test_correction_domains_and_apply_respect_custom_scope(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_persona_trust_override_revalidates_current_old_provenance(tmp_path):
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_provenance_drift"
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [{
+        "id": "old", "text": "Alice is smart",
+        "speaker_provenance_mixed": True,
+    }]}
+    await pm.asave_persona(name, persona)
+    items = [{
+        "old_text": "Alice is smart",
+        "new_text": "Alice is not smart",
+        "entity": "master",
+        "created_at": "2026-08-02T00:00:00",
+        "old_speaker_id": "qq:1001",
+        "old_speaker_trust": 0.9,
+        "new_speaker_id": "qq:2002",
+        "new_speaker_trust": 0.2,
+    }]
+
+    resolved = await pm._apply_correction_results(
+        name, items, {0}, [{"index": 0, "action": "keep_new"}],
+    )
+
+    assert resolved == 1
+    facts = (await pm.aensure_persona(name))["master"]["facts"]
+    assert [fact["text"] for fact in facts] == ["Alice is not smart"]
+    assert facts[0]["speaker_id"] == "qq:2002"
+
+
+@pytest.mark.asyncio
+async def test_correction_apply_treats_oversized_trust_as_unknown(tmp_path):
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_oversized_trust"
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [{"text": "Alice is smart"}]}
+    await pm.asave_persona(name, persona)
+    items = [{
+        "old_text": "Alice is smart",
+        "new_text": "Alice is not smart",
+        "entity": "master",
+        "created_at": "2026-08-02T00:00:00",
+        "new_speaker_id": "qq:2002",
+        "new_speaker_trust": 10 ** 400,
+    }]
+
+    resolved = await pm._apply_correction_results(
+        name, items, {0}, [{"index": 0, "action": "keep_new"}],
+    )
+
+    assert resolved == 1
+    facts = (await pm.aensure_persona(name))["master"]["facts"]
+    assert [fact["text"] for fact in facts] == ["Alice is not smart"]
+    assert facts[0]["speaker_id"] == "qq:2002"
+    assert "speaker_trust" not in facts[0]
+
+
+@pytest.mark.asyncio
+async def test_correction_refresh_disambiguates_equal_timestamps(tmp_path):
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_equal_timestamps"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    items = [{
+        "old_text": "first old", "new_text": "first new",
+        "entity": "master", "created_at": "2026-08-02T00:00:00",
+    }, {
+        "old_text": "second old", "new_text": "second new",
+        "entity": "master", "created_at": "2026-08-02T00:00:00",
+    }]
+    corr_path.write_text(_json.dumps(items), encoding="utf-8")
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [
+        {"text": "first old"}, {"text": "second old"},
+    ]}
+    await pm.asave_persona(name, persona)
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)):
+        resolved = await pm._apply_correction_results(
+            name, items, {0}, [{"index": 0, "action": "keep_new"}],
+            refresh_pending=True,
+        )
+
+    assert resolved == 1
+    texts = {
+        fact["text"]
+        for fact in (await pm.aensure_persona(name))["master"]["facts"]
+    }
+    assert texts == {"first new", "second old"}
+    assert _json.loads(corr_path.read_text(encoding="utf-8")) == [items[1]]
+
+
+@pytest.mark.asyncio
+async def test_correction_refresh_requeues_prompt_provenance_drift(tmp_path):
+    import json as _json
+
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_prompt_provenance_drift"
+    corr_path = tmp_path / f"{name}_corrections.json"
+    item = {
+        "correction_id": "corr-1",
+        "old_text": "Alice is smart",
+        "new_text": "Alice is not smart",
+        "entity": "master",
+        "created_at": "2026-08-02T00:00:00",
+        "old_speaker_trust": 0.9,
+        "new_speaker_trust": 0.2,
+    }
+    corr_path.write_text(_json.dumps([item]), encoding="utf-8")
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [{"text": item["old_text"]}]}
+    await pm.asave_persona(name, persona)
+
+    class _FakeLLM:
+        async def ainvoke(self, _prompt):
+            fresh = {**item, "old_speaker_provenance_mixed": True}
+            corr_path.write_text(_json.dumps([fresh]), encoding="utf-8")
+            resp = MagicMock()
+            resp.content = '[{"index": 0, "action": "keep_old"}]'
+            return resp
+
+        async def aclose(self):
+            return None
+
+    async def _fake_create(*_args, **_kwargs):
+        return _FakeLLM()
+
+    with patch.object(pm, "_corrections_path", return_value=str(corr_path)), \
+         patch("utils.llm_client.create_chat_llm_async", _fake_create):
+        resolved = await pm.resolve_corrections(name)
+
+    assert resolved == 0
+    queued = _json.loads(corr_path.read_text(encoding="utf-8"))
+    assert queued == [{**item, "old_speaker_provenance_mixed": True}]
+    assert "resolve_attempts" not in queued[0]
+    facts = (await pm.aensure_persona(name))["master"]["facts"]
+    assert [fact["text"] for fact in facts] == [item["old_text"]]
+
+
+@pytest.mark.asyncio
 async def test_member_toggle_off_settles_buckets_before_clearing():
     """Turning group_member_memory_enabled off (group memory still on) must
     settle already-collected member buckets before clearing them — finalize
@@ -8362,6 +8851,9 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
     )
@@ -8460,7 +8952,7 @@ def test_static_layer_falls_back_when_required_placeholders_missing():
     )
 
     weak = "## 场景：群聊共享上下文\n请自然地参考正在进行的讨论。"
-    i18n = SimpleNamespace(t=lambda key, default="": weak)
+    i18n = SimpleNamespace(t=lambda key, default="", **kw: weak)
     plugin = SimpleNamespace(i18n=i18n, _qq_settings={}, logger=MagicMock())
     service = QQSessionInstructionService(plugin)
 
@@ -8534,6 +9026,9 @@ async def test_finalize_honors_opt_out_cutoff():
     history = [SimpleNamespace(type="human", content=f"msg {i}") for i in range(6)]
     session = SimpleNamespace(_conversation_history=history, close=AsyncMock())
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = QQMemoryBridge.group_subject
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data = {
@@ -9299,6 +9794,9 @@ async def test_core_memory_section_reads_the_localized_template():
     )
 
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.fetch_bootstrap_memory = AsyncMock(return_value="长期记忆内容")
     bridge.fetch_scoped_bootstrap_memory = AsyncMock()
     bundle = {
@@ -9792,9 +10290,11 @@ async def test_context_build_executes_end_to_end(monkeypatch):
         group_id="7788",
         source_kind="rapid_fire_flush",
         inherited_consent_snapshot={"group_member_memory_enabled": True},
+        group_speaker_permission_level_at_receipt="normal",
     )
     assert context.is_group is True
     assert context.consent_snapshot == {"group_member_memory_enabled": True}
+    assert context.group_speaker_permission_level_at_receipt == "normal"
     # Synthetic turns drop the nominal sender for memory purposes.
     assert context.turn_uid
 
@@ -9913,6 +10413,8 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     client = QQClient.__new__(QQClient)
     client._pending_actions = {}
     client.logger = None
+    client._sent_message_ids = []
+    client.record_sent_message_id = client._sent_message_ids.append
     sent: list = []
 
     class _WS:
@@ -9930,6 +10432,9 @@ async def test_private_segments_send_waits_for_the_echo_receipt():
     assert await client.send_private_record("2046", "file:///a.wav") == "pm-1"
     assert sent[-1]["action"] == "send_private_msg"
     assert not client._pending_actions  # no leaked futures
+    # A confirmed private send records its id too (the quoted-reply check
+    # asks "is this one of mine?" for private chats as well).
+    assert client._sent_message_ids == ["pm-1"]
 
     # No receipt -> None (the caller falls back to text).
     class _SilentWS:
@@ -10597,6 +11102,9 @@ async def test_digest_batches_stop_at_the_provisional_barrier_when_asked():
         "provisional_draft_rows": [draft],
     }
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_subject.side_effect = lambda gid: {"subject_id": f"qq:{gid}"}
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
     service = QQSessionMemoryService(SimpleNamespace(
@@ -11031,6 +11539,9 @@ async def test_member_flush_success_pops_bucket_and_label():
         "group_member_memory_labels": {"2046": "小张(2046)"},
     }
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
@@ -11121,19 +11632,29 @@ async def test_loss_terminal_flushes_send_one_bucket_per_request():
         "pending_member_settle": True,
     }
     requests: list[list[dict]] = []
+    active = 0
+    max_active = 0
 
     async def _post_batch(her_name, segments, *, timeout=30.0):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
         requests.append(segments)
-        # 第一个请求超时/断连：只该带走它自己那一个成员。
-        if len(requests) == 1:
-            raise RuntimeError("connection reset")
-        return {
-            "status": "processed",
-            "segments": [
-                {"status": "ok", "created": 0, "dropped": 0}
-                for _ in segments
-            ],
-        }
+        request_number = len(requests)
+        try:
+            await asyncio.sleep(0)
+            # 第一个请求超时/断连：只该带走它自己那一个成员。
+            if request_number == 1:
+                raise RuntimeError("connection reset")
+            return {
+                "status": "processed",
+                "segments": [
+                    {"status": "ok", "created": 0, "dropped": 0}
+                    for _ in segments
+                ],
+            }
+        finally:
+            active -= 1
 
     plugin = SimpleNamespace(
         logger=MagicMock(),
@@ -11143,6 +11664,7 @@ async def test_loss_terminal_flushes_send_one_bucket_per_request():
             "group_member_memory_enabled": False,
         },
         memory_bridge=SimpleNamespace(
+            speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
             group_participant_subject=(
                 lambda gid, sid: {
                     "subject_kind": "group_participant",
@@ -11168,9 +11690,10 @@ async def test_loss_terminal_flushes_send_one_bucket_per_request():
         f"抹掉整批成员"
     )
     assert all(len(segs) == 1 for segs in requests)
-    assert sorted(
+    assert [
         segs[0]["subject"]["subject_id"] for segs in requests
-    ) == [f"qq:7788:{1000 + i}" for i in range(4)]
+    ] == [f"qq:7788:{1000 + i}" for i in range(4)]
+    assert max_active == 1
 
 
 @pytest.mark.asyncio
@@ -11191,6 +11714,9 @@ async def test_member_flush_packs_small_buckets_into_one_request():
         "group_member_memory_labels": {},
     }
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
@@ -11232,6 +11758,9 @@ async def test_member_flush_malformed_batch_response_keeps_all_buckets():
         "group_member_memory_labels": {},
     }
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
@@ -11250,10 +11779,1172 @@ async def test_member_flush_malformed_batch_response_keeps_all_buckets():
 
 
 @pytest.mark.asyncio
-async def test_speaker_trust_derived_from_permission_level():
-    """信赖度初值按权限等级派生（阶段一只落字段）：admin/trusted/normal/
-    none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""  # noqa: DOCSTRING_CJK
-    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+async def test_member_flush_preserves_permission_snapshot_per_authored_message():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=(
+        lambda _name, segments, **_kwargs: {
+            "status": "processed",
+            "segments": [
+                {"status": "ok", "created": 0, "fact_ids": []}
+                for _ in segments
+            ],
+        }
+    ))
+    current_level = {"value": "normal"}
+    trust_ready = asyncio.Event()
+    trust_ready.set()
+    plugin = SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda _sender: None,
+            get_permission_level=lambda _sender: current_level["value"],
+        ),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        trust_ready=trust_ready,
+    )
+    service = QQSessionMemoryService(plugin)
+    user_data = {}
+    base = dict(
+        member_memory_enabled=True,
+        is_group=True,
+        group_facing=False,
+        group_scene_mode="",
+        source_kind="incoming",
+        sender_id="1001",
+        user_nickname="",
+    )
+    service.record_group_member_turn(
+        user_data, SimpleNamespace(
+            **base, message="普通时说的", permission_level="trusted",
+        ),
+    )
+    current_level["value"] = "admin"
+    service.record_group_member_turn(
+        user_data, SimpleNamespace(
+            **base, message="成为主人后说的", permission_level="trusted",
+        ),
+    )
+    current_level["value"] = "normal"
+    service.record_group_member_turn(
+        user_data, SimpleNamespace(
+            **base, message="恢复普通后说的", permission_level="trusted",
+        ),
+    )
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == ["1001"]
+    assert bridge.post_scoped_memory_history_batch.await_count == 2
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    assert bridge.post_scoped_memory_history_batch.await_count == 3
+    requests = [
+        call.args[1]
+        for call in bridge.post_scoped_memory_history_batch.await_args_list
+    ]
+    assert [len(segments) for segments in requests] == [1, 1, 1]
+    segments = [segment for request in requests for segment in request]
+    assert len(segments) == 3
+    # The permission held WHEN EACH MESSAGE WAS AUTHORED decides its segment's
+    # tier; a promotion or demotion while the bucket waited must not
+    # retroactively change what was already said.
+    assert segments[0].get("speaker_is_owner") is None
+    assert segments[0]["speaker_tier"] == "normal"
+    assert segments[1]["speaker_is_owner"] is True
+    assert segments[1]["speaker_tier"] == "admin"
+    assert segments[2].get("speaker_is_owner") is None
+    assert segments[2]["speaker_tier"] == "normal"
+    assert segments[0]["messages"][0]["content"][0]["text"] == "普通时说的"
+    assert segments[1]["messages"][0]["content"][0]["text"] == "成为主人后说的"
+    assert segments[2]["messages"][0]["content"][0]["text"] == "恢复普通后说的"
+
+
+def test_member_turn_uses_permission_snapshot_not_live_manager():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda _sender: None,
+            get_permission_level=lambda _sender: "admin",
+        ),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+    user_data = {}
+    service.record_group_member_turn(user_data, SimpleNamespace(
+        member_memory_enabled=True,
+        is_group=True,
+        group_facing=False,
+        group_scene_mode="",
+        source_kind="incoming",
+        sender_id="1001",
+        user_nickname="",
+        message="升权前说的",
+        permission_level="trusted",
+        group_speaker_permission_level_at_receipt="normal",
+    ))
+    stored = user_data["group_member_memory_messages"]["1001"][0]
+    assert stored["_speaker_permission_level"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_member_flush_refreshes_trust_after_owner_request_boundary():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    trust = {"1001": 0.8, "9000": 0.95}
+    requests = []
+
+    async def _post(_name, segments, **_kwargs):
+        requests.append(segments)
+        return {
+            "status": "processed",
+            "segments": [
+                {
+                    "status": "ok",
+                    "trust_events": ([{
+                        "kind": "correction",
+                        "speaker_id": "qq:1001",
+                        "event_id": "owner-corrects-member",
+                    }] if segment.get("speaker_is_owner") else []),
+                }
+                for segment in segments
+            ],
+        }
+
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    permission_mgr = SimpleNamespace(
+        get_nickname=lambda _sender: None,
+        get_permission_level=lambda sender: (
+            "admin" if sender == "9000" else "normal"
+        ),
+    )
+    trust_ready = asyncio.Event()
+    trust_ready.set()
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=permission_mgr,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        trust_ready=trust_ready,
+    ))
+    user_data = {}
+    for sender, message, level in (
+        ("1001", "更正前", "normal"),
+        ("9000", "主人纠正", "admin"),
+        ("1001", "更正后", "normal"),
+    ):
+        service.record_group_member_turn(user_data, SimpleNamespace(
+            member_memory_enabled=True,
+            is_group=True,
+            group_facing=False,
+            group_scene_mode="",
+            source_kind="incoming",
+            sender_id=sender,
+            user_nickname="",
+            message=message,
+            permission_level=level,
+        ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    # The owner's correction lands in request 1; the corrected member's later
+    # message is restaged into request 2. The request BOUNDARY is what matters:
+    # the server takes one pool snapshot per request, so the second request
+    # scores that member against the already-applied correction while the
+    # first one cannot. The plugin no longer carries a score across the
+    # boundary at all.
+    assert [len(request) for request in requests] == [2, 1]
+    assert requests[0][0]["speaker_id"] == "qq:1001"
+    assert requests[1][0]["speaker_id"] == "qq:1001"
+    assert all(
+        "speaker_trust" not in segment
+        for request in requests for segment in request
+    )
+    assert requests[0][0]["speaker_tier"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_member_flush_retries_only_the_failed_permission_segment():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    normal = {
+        "role": "user", "content": "normal message",
+        "_speaker_permission_level": "normal",
+    }
+    admin = {
+        "role": "user", "content": "admin message",
+        "_speaker_permission_level": "admin",
+    }
+    user_data = {
+        "group_member_memory_messages": {"1001": [normal, admin]},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=[
+        {"status": "processed", "segments": [{"status": "ok"}]},
+        {"status": "processed", "segments": [{"status": "failed"}]},
+    ])
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == ["1001"]
+    assert user_data["group_member_memory_messages"]["1001"] == [admin]
+    assert user_data["group_member_memory_labels"]["1001"] == "Alice(1001)"
+
+    bridge.post_scoped_memory_history_batch.reset_mock()
+    bridge.post_scoped_memory_history_batch.side_effect = None
+    bridge.post_scoped_memory_history_batch.return_value = {
+        "status": "processed", "segments": [{"status": "ok"}],
+    }
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert len(retried) == 1
+    assert retried[0]["messages"] == [admin]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_retries_owner_after_failed_chronological_predecessor():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    member = {
+        "role": "user", "content": "member fact",
+        "_speaker_permission_level": "normal",
+    }
+    owner = {
+        "role": "user", "content": "owner confirms member fact",
+        "_speaker_permission_level": "admin",
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "1001": [member], "9999": [owner],
+        },
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "9999": "Owner(9999)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "failed"},
+            {"status": "ok", "trust_events": [{"kind": "confirmation"}]},
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+
+    # The owner segment succeeded on the server, but its authored predecessor
+    # did not — retain BOTH so the owner never lands ahead of a gap in
+    # chronology. Exact dedup keeps the retried fact write idempotent.
+    assert set(failed) == {"1001", "9999"}
+    assert user_data["group_member_memory_messages"] == {
+        "1001": [member], "9999": [owner],
+    }
+
+    bridge.post_scoped_memory_history_batch.return_value = {
+        "status": "processed",
+        "segments": [
+            {"status": "ok"},
+            {"status": "ok"},
+        ],
+    }
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [segment["messages"] for segment in retried] == [[member], [owner]]
+    assert user_data["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_unpersisted_private_trust_keeps_the_cursor_for_retry(persisted):
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    bridge = SimpleNamespace(
+        participant_subject=lambda sender_id: {"subject_id": f"qq:{sender_id}"},
+        post_scoped_memory_history=AsyncMock(return_value={
+            "status": "processed", "trust_events": [],
+        }),
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    service._slice_group_history_batch = MagicMock(side_effect=[
+        ([{"role": "user", "content": "already persisted"}], 1),
+        # Second call drains: the loop must terminate, not spin to its
+        # per-round batch cap (which would return False for the wrong reason).
+        ([], 1),
+    ])
+    bridge.post_scoped_memory_history = AsyncMock(return_value={
+        "status": "processed", "trust": {"persisted": persisted},
+    })
+    service.plugin.trust_ready = asyncio.Event()
+    service.plugin.trust_ready.set()
+    bridge.speaker_account_id = lambda sid: f"qq:{sid}"
+    user_data = {"last_participant_digest_index": 0}
+
+    if persisted:
+        assert await service._settle_participant_digest_batches(
+            user_data=user_data, sender_id="1001", her_name="Neko",
+            reason="test", conversation_history=[object()],
+            last_participant_digest_index=0,
+        )
+    else:
+        with pytest.raises(
+            RuntimeError, match="speaker trust update persistence failed",
+        ):
+            await service._settle_participant_digest_batches(
+                user_data=user_data, sender_id="1001", her_name="Neko",
+                reason="test", conversation_history=[object()],
+                last_participant_digest_index=0,
+            )
+
+    # persisted=false must NOT advance the cursor: the owner-signal replay ring
+    # is keyed on THIS request's text, so popping here loses the correction.
+    assert user_data["last_participant_digest_index"] == (1 if persisted else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_unpersisted_group_trust_retains_the_bucket_for_retry(persisted):
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    old = {
+        "role": "user", "content": "old",
+        "_speaker_permission_level": "normal",
+        "_speaker_activity_id": "activity-old",
+    }
+    new = {
+        "role": "user", "content": "new",
+        "_speaker_permission_level": "normal",
+        "_speaker_activity_id": "activity-new",
+    }
+    user_data = {
+        "group_member_memory_messages": {"1001": [old]},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.return_value = {
+        "subject_id": "qq:7788:1001",
+    }
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed", "segments": [{"status": "ok"}],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    async def _post(*_args, **_kwargs):
+        # A message arriving mid-flush must not be consumed by this response.
+        user_data["group_member_memory_messages"]["1001"].append(new)
+        return {
+            "status": "processed",
+            "segments": [{
+                "status": "ok", "trust": {"persisted": persisted},
+            }],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service.plugin.trust_ready = asyncio.Event()
+    service.plugin.trust_ready.set()
+    bridge.speaker_account_id = lambda sid: f"qq:{sid}"
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == ([] if persisted else ["1001"])
+
+    expected = [new] if persisted else [old, new]
+    assert user_data["group_member_memory_messages"]["1001"] == expected
+    if persisted:
+        bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+            "status": "processed",
+            "segments": [{"status": "ok", "trust": {"persisted": True}}],
+        })
+        assert await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason="retry",
+        ) == []
+        events = bridge.post_scoped_memory_history_batch.await_args.args[1][0][
+            "speaker_activity_events"
+        ]
+        # Per-message ids: the retry carries ONLY the new message's id, so an
+        # amplified retry cannot recount the already-acknowledged prefix.
+        ids = {event["id"] for event in events}
+        assert ids == {
+            service._activity_event_id("qq:1001", "activity-new"),
+        }
+
+
+def _mark_segments_unpersisted(bridge):
+    """Rewrap a batch mock so every segment reports ``trust.persisted=false``."""
+    inner = bridge.post_scoped_memory_history_batch
+
+    async def _post(*args, **kwargs):
+        response = await inner(*args, **kwargs)
+        for segment in response.get("segments") or []:
+            segment.setdefault("trust", {})["persisted"] = False
+        return response
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+
+
+@pytest.mark.asyncio
+async def test_owner_trust_failure_excludes_later_persisted_batch_facts():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    owner = {
+        "role": "user", "content": "owner observation",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 1,
+    }
+    later = {
+        "role": "user", "content": "later member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "9999": [owner], "1001": [later],
+        },
+        "group_member_memory_labels": {
+            "9999": "Owner(9999)", "1001": "Alice(1001)",
+        },
+    }
+    later_identity = [
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "fact_identities": [[
+                "owner-fact", "group_participant", "qq:7788:9999",
+                "group_participant:qq:7788:9999",
+            ]]},
+            {"status": "ok", "fact_identities": [later_identity]},
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    # Exercise the response-processing invariant directly: an older server or
+    # future packer may return an owner segment before another persisted row.
+    service._pack_member_segment_groups = (
+        lambda groups, **_kwargs: [[
+            spec for group in groups for spec in group
+        ]]
+    )
+    # The pool write failed post-commit, so the server answered 200 with
+    # ``trust.persisted == false``. The retained owner segment must still be
+    # told which facts LATER segments authored — that second responsibility is
+    # independent of trust and has to survive the protocol change.
+    _mark_segments_unpersisted(bridge)
+    service.plugin.trust_ready = asyncio.Event()
+    service.plugin.trust_ready.set()
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert "9999" in failed
+
+    assert owner["_trust_signal_excluded_fact_identities"] == [later_identity]
+    assert user_data["group_member_memory_messages"] == {
+        "9999": [owner], "1001": [later],
+    }
+
+
+@pytest.mark.asyncio
+async def test_owner_retry_does_not_exclude_later_reconciled_existing_fact():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    owner = {
+        "role": "user", "content": "owner observation",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 1,
+    }
+    later = {
+        "role": "user", "content": "later reconciliation",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
+    }
+    user_data = {
+        "group_member_memory_messages": {"9999": [owner], "1001": [later]},
+        "group_member_memory_labels": {
+            "9999": "Owner(9999)", "1001": "Alice(1001)",
+        },
+    }
+    existing_identity = [
+        "existing-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "created_fact_identities": []},
+            {
+                "status": "ok",
+                "fact_identities": [existing_identity],
+                "created_fact_identities": [],
+            },
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    service._pack_member_segment_groups = (
+        lambda groups, **_kwargs: [[spec for group in groups for spec in group]]
+    )
+    _mark_segments_unpersisted(bridge)
+    service.plugin.trust_ready = asyncio.Event()
+    service.plugin.trust_ready.set()
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert "9999" in failed
+
+    # A row a later segment merely RECONCILED already existed before this
+    # owner spoke, so it is not a post-observation fact and must not be
+    # excluded from the retry.
+    assert "_trust_signal_excluded_fact_identities" not in owner
+
+
+@pytest.mark.asyncio
+async def test_owner_retry_sends_post_observation_fact_exclusions_to_server():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    owner = {
+        "role": "user", "content": "owner observation",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 2,
+        "_trust_signal_excluded_fact_identities": [[
+            "later-fact", "group_participant", "qq:7788:1001",
+            "group_participant:qq:7788:1001",
+        ]],
+    }
+    user_data = {
+        "group_member_memory_messages": {"9999": [owner]},
+        "group_member_memory_labels": {"9999": "Owner(9999)"},
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed", "segments": [{"status": "ok"}],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    service._apply_speaker_trust_update = AsyncMock(return_value=None)
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+
+    sent = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    owner_segment = sent[0]
+    assert owner_segment["trust_signal_excluded_fact_identities"] == [(
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    )]
+    assert (
+        "_trust_signal_excluded_fact_identities"
+        not in owner_segment["messages"][0]
+    )
+
+
+@pytest.mark.asyncio
+async def test_member_flush_retries_later_non_owner_after_failed_predecessor():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    first = {
+        "role": "user", "content": "first member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 1,
+    }
+    second = {
+        "role": "user", "content": "second member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "1001": [first], "1002": [second],
+        },
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "failed"},
+            {"status": "ok", "fact_ids": ["second-fact"]},
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+
+    assert set(failed) == {"1001", "1002"}
+    assert user_data["group_member_memory_messages"] == {
+        "1001": [first], "1002": [second],
+    }
+    bridge.post_scoped_memory_history_batch.return_value = {
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "fact_ids": ["first-fact"]},
+            {"status": "ok", "fact_ids": ["second-fact"]},
+        ],
+    }
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [segment["messages"] for segment in retried] == [[first], [second]]
+    assert user_data["group_member_memory_messages"] == {}
+    # Both segments were reported in authored order on the retry; the
+    # activity/signal settlement they used to drive now happens server-side in
+    # one pool write per request.
+    assert [
+        segment["speaker_id"] for segment in retried
+    ] == ["qq:1001", "qq:1002"]
+
+
+@pytest.mark.asyncio
+async def test_failed_owner_records_successful_later_member_fact_exclusion():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    owner = {
+        "role": "user", "content": "owner first",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 1,
+    }
+    later = {
+        "role": "user", "content": "member later",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "9999": [owner], "1001": [later],
+        },
+        "group_member_memory_labels": {
+            "9999": "Owner(9999)", "1001": "Alice(1001)",
+        },
+    }
+    later_identity = [
+        "later-fact", "group_participant", "qq:7788:1001",
+        "group_participant:qq:7788:1001",
+    ]
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "failed"},
+            {
+                "status": "ok",
+                "created_fact_identities": [later_identity],
+            },
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    service._pack_member_segment_groups = (
+        lambda groups, **_kwargs: [[spec for group in groups for spec in group]]
+    )
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+
+    assert set(failed) == {"9999", "1001"}
+    assert owner["_trust_signal_excluded_fact_identities"] == [later_identity]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_splits_oversized_permission_runs_in_order():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": f"message-{index}",
+            "_speaker_permission_level": (
+                "admin" if index % 2 else "normal"
+            ),
+        }
+        for index in range(9)
+    ]
+    user_data = {
+        "group_member_memory_messages": {"1001": messages},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+    active = 0
+    max_active = 0
+
+    async def _post(_name, segments, **_kwargs):
+        nonlocal active, max_active
+        assert len(segments) <= 8
+        calls.append(segments)
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == ["1001"]
+    for retry in range(1, 10):
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        if not failed:
+            break
+    assert failed == []
+    assert [len(call) for call in calls] == [1] * 9
+    assert max_active == 1
+    assert [
+        segment["messages"][0]["content"]
+        for call in calls for segment in call
+    ] == [f"message-{index}" for index in range(9)]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_serializes_cross_sender_request_chronology():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    alice = []
+    bob = []
+    for index in range(9):
+        message = {
+            "role": "user", "content": f"message-{index}",
+            "_speaker_permission_level": "normal",
+            "_speaker_sequence": index,
+        }
+        (alice if index % 2 == 0 else bob).append(message)
+    user_data = {
+        "group_member_memory_messages": {"1001": alice, "1002": bob},
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+    active = 0
+    max_active = 0
+
+    async def _post(_name, segments, **_kwargs):
+        nonlocal active, max_active
+        calls.append(segments)
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == ["1001", "1002"]
+    for retry in range(1, 10):
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        if not failed:
+            break
+    assert failed == []
+    assert max_active == 1
+    assert [
+        segment["messages"][0]["content"]
+        for call in calls for segment in call
+    ] == [f"message-{index}" for index in range(9)]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_restages_repeated_speaker_after_activity_update():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages = {
+        "1001": [
+            {"role": "user", "content": "b1", "_speaker_sequence": 1},
+            {"role": "user", "content": "b2", "_speaker_sequence": 3},
+        ],
+        "1002": [
+            {"role": "user", "content": "c1", "_speaker_sequence": 2},
+        ],
+    }
+    user_data = {
+        "group_member_memory_messages": messages,
+        "group_member_memory_labels": {"1001": "B(1001)", "1002": "C(1002)"},
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+
+    async def _post(_name, segments, **_kwargs):
+        calls.append(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    # A speaker who spoke on both sides of another speaker is restaged into a
+    # second request so authored chronology is preserved across the boundary.
+    assert [[s["speaker_id"] for s in call] for call in calls] == [
+        ["qq:1001", "qq:1002"], ["qq:1001"],
+    ]
+    # Trust is re-read server-side at each request boundary, so the plugin
+    # carries no score at all between the two.
+    assert all(
+        "speaker_trust" not in segment
+        for call in calls for segment in call
+    )
+
+
+@pytest.mark.asyncio
+async def test_opt_out_isolated_drain_has_a_total_wall_clock_budget():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "is_group": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "pending_member_settle": True,
+        "pending_settle_buckets": {
+            "1001": [{"role": "user", "content": "slow"}],
+            "1002": [{"role": "user", "content": "later"}],
+        },
+        "pending_settle_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    started = asyncio.Event()
+
+    async def _post(_name, segments, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    async def _run_with_session_lock(_session_key, fn):
+        return await fn()
+
+    bridge = SimpleNamespace(
+        speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
+        group_participant_subject=lambda gid, uid: {
+            "subject_id": f"qq:{gid}:{uid}",
+        },
+        post_scoped_memory_history_batch=_post,
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"group:7788": ud},
+        _qq_settings={
+            "group_memory_enabled": False,
+            "group_member_memory_enabled": False,
+        },
+        _run_with_session_lock=_run_with_session_lock,
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=None,
+    ))
+    service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS = 0.01
+    service._await_pending_session_settlement = AsyncMock(return_value=True)
+
+    await asyncio.wait_for(service.settle_member_buckets_on_disable(), 0.2)
+
+    assert started.is_set()
+    assert "pending_settle_buckets" not in ud
+    assert "pending_member_settle" not in ud
+    service.plugin.logger.error.assert_any_call(
+        "[member_memory_disabled] 群 7788 隔离结算超过 0.0s，"
+        "剩余 2 个成员 bucket 按 opt-out 丢弃"
+    )
+
+
+@pytest.mark.asyncio
+async def test_member_flush_defers_owner_chain_beyond_join_timeout_waves():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages = [
+        {
+            "role": "user", "content": f"message-{index}",
+            "_speaker_permission_level": (
+                "admin" if index % 2 else "normal"
+            ),
+            "_speaker_sequence": index,
+        }
+        for index in range(17)
+    ]
+    user_data = {
+        "group_member_memory_messages": {"1001": messages},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+
+    async def _post(_name, segments, **_kwargs):
+        calls.append(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == ["1001"]
+    assert [len(call) for call in calls] == [1, 1]
+    assert user_data["group_member_memory_messages"]["1001"] == messages[2:]
+
+    failed = ["1001"]
+    for retry in range(1, 10):
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        if not failed:
+            break
+    assert failed == []
+    assert [len(call) for call in calls] == [1] * 17
+    assert user_data["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
+async def test_member_flush_defers_parallel_batches_beyond_join_timeout_waves():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages_by_sender = {"1001": [], "1002": []}
+    for index in range(65):
+        sender_id = "1001" if index % 2 == 0 else "1002"
+        messages_by_sender[sender_id].append({
+            "role": "user", "content": f"message-{index}",
+            "_speaker_permission_level": "normal",
+            "_speaker_sequence": index,
+        })
+    last_message = messages_by_sender["1001"][-1]
+    user_data = {
+        "group_member_memory_messages": messages_by_sender,
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+
+    async def _post(_name, segments, **_kwargs):
+        calls.append(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == ["1001", "1002"]
+    assert len(calls) == 2
+    assert set(user_data["group_member_memory_messages"]) == {"1001", "1002"}
+    assert last_message in user_data["group_member_memory_messages"]["1001"]
+
+    attempts_per_sweep = [len(calls)]
+    for retry in range(1, 40):
+        before = len(calls)
+        failed = await service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason=f"retry-{retry}",
+        )
+        attempts_per_sweep.append(len(calls) - before)
+        if not failed:
+            break
+    assert failed == []
+    assert all(1 <= attempts <= 2 for attempts in attempts_per_sweep)
+    assert user_data["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
+async def test_speaker_tier_reported_from_permission_level():
+    """插件只上报权限档位，分数由服务端按全局 trust 池派生：admin/trusted/
+    normal/none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -11266,35 +12957,54 @@ async def test_speaker_trust_derived_from_permission_level():
         "group_member_memory_labels": {},
     }
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
-    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
-        "status": "processed",
-        "segments": [
-            {"status": "ok", "created": 0, "fact_ids": []} for _ in range(4)
-        ],
-    })
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=(
+        lambda _name, segments, **_kwargs: {
+            "status": "processed",
+            "segments": [
+                {"status": "ok", "created": 0, "fact_ids": []}
+                for _ in segments
+            ],
+        }
+    ))
+    trust_ready = asyncio.Event()
+    trust_ready.set()
     service = QQSessionMemoryService(SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(
             get_permission_level=lambda sender: levels.get(sender, "none"),
         ),
+        trust_ready=trust_ready,
     ))
     await service._flush_member_buckets(
         ud, group_id="7788", her_name="Neko", reason="test",
     )
-    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
-    trust_by_sender = {
-        seg["speaker_label"]: seg["speaker_trust"] for seg in sent_segments
+    sent_segments = [
+        segment
+        for call in bridge.post_scoped_memory_history_batch.await_args_list
+        for segment in call.args[1]
+    ]
+    tier_by_sender = {
+        seg["speaker_label"]: seg["speaker_tier"] for seg in sent_segments
     }
-    assert trust_by_sender == {
-        "1001": SPEAKER_TRUST_BY_PERMISSION_LEVEL["admin"],
-        "1002": SPEAKER_TRUST_BY_PERMISSION_LEVEL["trusted"],
-        "1003": SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"],
-        "1004": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+    assert tier_by_sender == {
+        "1001": "admin", "1002": "trusted",
+        "1003": "normal", "1004": "none",
     }
+    # No score is computed plugin-side any more.
+    assert all("speaker_trust" not in seg for seg in sent_segments)
+    # ``speaker_is_owner`` is DERIVED from the canonical tier, so the two can
+    # never disagree — and a disagreement would now be a hard 422.
+    assert [
+        seg["speaker_label"] for seg in sent_segments
+        if seg.get("speaker_is_owner")
+    ] == ["1001"]
 
 
 @pytest.mark.asyncio
@@ -11517,7 +13227,6 @@ async def test_session_instructions_forward_full_locale_to_memory(
 ):
     from plugin.plugins.qq_auto_reply import session_instruction_service as module
 
-    monkeypatch.setattr(module, "get_global_language", lambda: "zh")
     monkeypatch.setattr(module, "get_global_language_full", lambda: "zh-TW")
     plugin = SimpleNamespace(
         logger=MagicMock(),
@@ -11747,6 +13456,51 @@ async def test_cancelled_save_publishes_an_opt_in_that_did_land():
     assert published == [{"group_memory_enabled": True}]
 
 
+@pytest.mark.asyncio
+async def test_repeated_cancellation_keeps_consent_save_shielded():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    service = QQSettingsService.__new__(QQSettingsService)
+    published: list = []
+    rolled: list[bool] = []
+    service.plugin = SimpleNamespace(
+        _qq_settings={"group_memory_enabled": False},
+        _emit_log=lambda *a, **k: None,
+        logger=MagicMock(),
+    )
+    service._rollback_unpersisted_memory_toggles = (
+        lambda persisted, **_kwargs: rolled.append(persisted)
+    )
+    service._publish_consent_opt_ins = published.append
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_success(overlay=None):
+        started.set()
+        await release.wait()
+        return True
+
+    service.persist_business_config = _slow_success
+    task = asyncio.create_task(service._persist_with_consent_rollback(
+        deferred_opt_ins={"group_memory_enabled": True},
+        group_memory_before=False, group_memory_after=False,
+        member_memory_before=False, member_memory_after=False,
+        cross_group_before=False,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert rolled == [True]
+    assert published == [{"group_memory_enabled": True}]
+
+
 def test_cross_group_section_normalizes_the_current_group_id():
     """Group ids arrive with whitespace from several call paths. Comparing
     them raw makes the CURRENT group look like another one, so its own
@@ -11968,6 +13722,9 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
         "pending_member_settle": True,
     }
     bridge = MagicMock()
+    bridge.speaker_account_id.side_effect = (
+        lambda sid: f"qq:{str(sid or '').strip()}"
+    )
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
@@ -13219,6 +14976,9 @@ async def test_receipt_snapshot_requires_both_memory_switches():
         handler_runtime_service=SimpleNamespace(
             track_handler_task=lambda task: None,
         ),
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda _sender: "normal",
+        ),
     )
     dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
     dispatcher.plugin = plugin
@@ -13227,12 +14987,153 @@ async def test_receipt_snapshot_requires_both_memory_switches():
     assert stamped, "the handler was never scheduled"
     assert stamped[0]["_member_memory_at_receipt"] is False
     assert stamped[0]["_group_memory_at_receipt"] is False
+    assert stamped[0][
+        "_group_speaker_permission_level_at_receipt"
+    ] == "normal"
     # ...and with the parent open, the child stamp follows the child switch.
     plugin._qq_settings["group_memory_enabled"] = True
+    plugin.permission_mgr.get_permission_level = lambda _sender: "admin"
     plugin._running = True
     inbox.append({"message_type": "group", "group_id": "7788", "user_id": "2046"})
     await asyncio.wait_for(dispatcher.process_messages(), timeout=5.0)
     assert stamped[1]["_member_memory_at_receipt"] is True
+    assert stamped[1][
+        "_group_speaker_permission_level_at_receipt"
+    ] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_group_handler_forwards_permission_receipt_snapshot():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = SimpleNamespace(
+        _qq_settings={"backlog_labels": []},
+        qq_client=None,
+        attention_service=None,
+        fatigue_service=None,
+        _user_sessions={},
+        _record_backlog_message=AsyncMock(),
+        _emit_log=lambda *_args, **_kwargs: None,
+        _sanitize_message_text=lambda text, **_kwargs: text,
+        _build_session_key=lambda **_kwargs: "group:7788",
+        _maybe_notify_backlog_summary=AsyncMock(),
+    )
+    dispatcher._maybe_reserve_open_platform_admin = AsyncMock()
+    dispatcher.handle_group_message = AsyncMock()
+    await dispatcher.handle_message({
+        "message_type": "group",
+        "group_id": "7788",
+        "user_id": "2046",
+        "content": "hi",
+        "_group_speaker_permission_level_at_receipt": "normal",
+    })
+    assert dispatcher.handle_group_message.await_args.kwargs[
+        "group_speaker_permission_level_at_receipt"
+    ] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_group_request_carries_permission_receipt_snapshot():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    run = AsyncMock(return_value=SimpleNamespace(
+        action="skip", reply_text="", traces=[],
+    ))
+    recorded = MagicMock()
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _qq_settings={},
+        qq_client=None,
+        reply_pipeline=SimpleNamespace(run=run),
+        runtime_service=SimpleNamespace(record_pipeline_outcome=recorded),
+        _emit_log=lambda *_args, **_kwargs: None,
+    )
+    await dispatcher.handle_group_message(
+        "7788",
+        "2046",
+        "hi",
+        False,
+        group_memory_at_receipt=True,
+        member_memory_at_receipt=True,
+        group_speaker_permission_level_at_receipt="normal",
+    )
+    request = run.await_args.args[0]
+    assert request.group_speaker_permission_level_at_receipt == "normal"
+
+
+@pytest.mark.asyncio
+async def test_group_handler_snapshots_permission_before_first_await():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    permission = {"level": "normal"}
+
+    async def evaluate(**_kwargs):
+        permission["level"] = "admin"
+        return SimpleNamespace(action="reply", force_reply=False, reason="test")
+
+    run = AsyncMock(return_value=SimpleNamespace(
+        action="skip", reply_text="", traces=[],
+    ))
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _qq_settings={},
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda _sender: permission["level"],
+        ),
+        attention_gate_service=SimpleNamespace(
+            evaluate=evaluate,
+            check_focus_shift=AsyncMock(return_value=None),
+        ),
+        qq_client=None,
+        reply_pipeline=SimpleNamespace(run=run),
+        runtime_service=SimpleNamespace(
+            record_pipeline_outcome=lambda **_kwargs: None,
+        ),
+        _emit_log=lambda *_args, **_kwargs: None,
+    )
+
+    await dispatcher.handle_group_message("7788", "2046", "hi", False)
+
+    request = run.await_args.args[0]
+    assert permission["level"] == "admin"
+    assert request.group_speaker_permission_level_at_receipt == "normal"
+
+
+@pytest.mark.asyncio
+async def test_reply_context_receives_group_permission_receipt_snapshot():
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQReplyDecision,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import QQReplyPipelineRunner
+
+    build = AsyncMock(return_value=object())
+    runner = QQReplyPipelineRunner(SimpleNamespace(
+        reply_context_node=SimpleNamespace(build=build),
+    ))
+    request = QQReplyRequest(
+        message_text="hi",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+        group_speaker_permission_level_at_receipt="normal",
+    )
+    await runner._run_context(
+        request,
+        QQReplyDecision(action="reply", permission_level="admin"),
+    )
+    assert build.await_args.kwargs[
+        "group_speaker_permission_level_at_receipt"
+    ] == "normal"
 
 
 def test_synthetic_marking_survives_a_session_swapped_mid_turn():

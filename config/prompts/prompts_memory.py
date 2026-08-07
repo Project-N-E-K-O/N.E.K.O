@@ -3327,7 +3327,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （已 promoted 的 persona fact + 其它 confirmed 的 reflection）
 
 {IMPRESSION_POOL}
@@ -3350,7 +3350,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （已 promoted 的 persona fact + 其他 confirmed 的 reflection）
 
 {IMPRESSION_POOL}
@@ -3373,7 +3373,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (promoted persona facts + other confirmed reflections)
 
 {IMPRESSION_POOL}
@@ -3396,7 +3396,7 @@ or
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （既に promoted の persona fact ＋ 他の confirmed の reflection）
 
 {IMPRESSION_POOL}
@@ -3419,7 +3419,7 @@ R をどう扱うか判断してください：
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (이미 promoted된 persona fact + 기타 confirmed reflection)
 
 {IMPRESSION_POOL}
@@ -3442,7 +3442,7 @@ R을 어떻게 처리할지 판단하세요:
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (уже promoted-факты persona + другие confirmed-reflection)
 
 {IMPRESSION_POOL}
@@ -3465,7 +3465,7 @@ R을 어떻게 처리할지 판단하세요:
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (persona facts ya promoted + otras reflections confirmed)
 
 {IMPRESSION_POOL}
@@ -3488,7 +3488,7 @@ o
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (persona facts já promoted + outras reflections confirmed)
 
 {IMPRESSION_POOL}
@@ -3983,6 +3983,8 @@ PERSONA_CORRECTION_PROMPT = {
 {pairs}
 ======以上为记忆条目======
 
+trust 仅使用 high/medium/low 粗粒度档位；只把它当作来源线索，不要推断精确分数。
+
 对于每组，判断：
 - merge: 把新观察与旧记忆融合成一条，提供合并后的 text
 - keep_new: 新观察完全取代旧记忆
@@ -4011,6 +4013,8 @@ PERSONA_CORRECTION_PROMPT = {
 {pairs}
 ======以上为记忆条目======
 
+Trust uses only coarse high/medium/low bands. Treat it only as a source cue; do not infer an exact score.
+
 For each pair, determine:
 - merge: fuse the new observation with the old memory into a single entry — provide the merged text
 - keep_new: the new observation completely replaces the old memory
@@ -4024,6 +4028,8 @@ Output only a JSON array. Each item should contain index, action, and text (opti
 ======以下为记忆条目======
 {pairs}
 ======以上为记忆条目======
+
+trust は high/medium/low の粗い区分のみです。情報源の手掛かりとしてだけ使い、正確な数値を推測しないでください。
 
 各組について判断：
 - merge: 新しい観察と古い記憶を一つに融合 — 統合後のテキストを提供
@@ -4039,6 +4045,8 @@ JSON配列のみを出力。各項目には index、action、text（任意）を
 {pairs}
 ======以上为记忆条目======
 
+trust는 high/medium/low의 거친 등급만 사용합니다. 출처 단서로만 보고 정확한 수치를 추정하지 마세요.
+
 각 쌍에 대해 판단:
 - merge: 새로운 관찰을 오래된 기억과 하나로 융합 — 병합된 text를 제공
 - keep_new: 새로운 관찰이 오래된 기억을 완전히 대체
@@ -4052,6 +4060,8 @@ JSON 배열만 출력하세요. 각 항목에는 index, action, text(선택)를 
 ======以下为记忆条目======
 {pairs}
 ======以上为记忆条目======
+
+Trust задаётся только грубыми уровнями high/medium/low. Используйте его лишь как подсказку об источнике и не выводите точное значение.
 
 Для каждой пары определите:
 - merge: объедините новое наблюдение со старым воспоминанием в одну запись, предоставьте объединённый text
@@ -4067,6 +4077,8 @@ JSON 배열만 출력하세요. 각 항목에는 index, action, text(선택)를 
 {pairs}
 ======以上为记忆条目======
 
+Trust usa solo bandas generales high/medium/low. Trátalo únicamente como una señal de la fuente; no deduzcas una puntuación exacta.
+
 Para cada par, decide:
 - merge: fusiona la nueva observación con la memoria antigua en una sola entrada; proporciona el text combinado
 - keep_new: la nueva observación reemplaza por completo a la memoria antigua
@@ -4080,6 +4092,8 @@ Devuelve solo un array JSON. Cada elemento debe contener index, action y text (o
 ======以下为记忆条目======
 {pairs}
 ======以上为记忆条目======
+
+Trust usa apenas faixas gerais high/medium/low. Trate-o somente como um indício da fonte; não infira uma pontuação exata.
 
 Para cada par, decida:
 - merge: funda a nova observação com a memória antiga em uma única entrada; forneça o text combinado
@@ -4115,14 +4129,17 @@ persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
 
 
 # ---------- fact_dedup_prompt → i18n dict ----------
-# Drives memory/fact_dedup.py's resolve loop. Vector cosine selects
-# candidate (candidate_text, existing_text) pairs above a similarity
-# threshold; this prompt asks the LLM to classify each pair into
-# merge / replace / keep_both. The LLM is the arbiter, vector is just
-# the candidate generator — cosine alone can't separate "主人喜欢猫"
-# from "主人讨厌猫", so we always defer the final call to the model.
+# Drives memory/fact_dedup.py's resolve loop. Two detectors nominate
+# (candidate_text, existing_text) pairs: the embedding sweep (cosine)
+# and the FTS5 near-duplicate check (Dice token overlap, #2703). Each
+# pair carries the score of whichever one found it, so the wording here
+# must stay detector-neutral — an FTS pair can exist with vectors turned
+# off entirely, and telling the model it came from cosine would label
+# the evidence wrong. This prompt asks the LLM to classify each pair
+# into merge / replace / keep_both; the detectors only nominate, since
+# no similarity score separates "主人喜欢猫" from "主人讨厌猫".
 FACT_DEDUP_PROMPT = {
-    "zh": """以下是 {COUNT} 组通过向量相似度筛选出的候选事实对，请逐组判断是否真的指向同一件事，并选择处理方式。
+    "zh": """以下是 {COUNT} 组由相似度筛选出的候选事实对，请逐组判断是否真的指向同一件事，并选择处理方式。
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4134,12 +4151,12 @@ FACT_DEDUP_PROMPT = {
 - keep_both: 看似相似但其实是两件不同的事（如"喜欢"与"讨厌"，或同一对象在不同情境下的不同状态），都保留
 
 注意：
-- cosine 高只是相似度高，不代表语义相同，特别要警惕褒贬相反、肯定/否定相反的情况
+- 分数高只说明表层相似，不代表语义相同，特别要警惕褒贬相反、肯定/否定相反的情况
 - 优先选 keep_both 而非误合并；记忆系统对错误合并的容忍度低于对冗余的容忍度
 
 仅输出 JSON 数组，每项包含 index、action：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "zh-TW": """以下是 {COUNT} 組透過向量相似度篩選出的候選事實對，請逐組判斷是否真的指向同一件事，並選擇處理方式。
+    "zh-TW": """以下是 {COUNT} 組由相似度篩選出的候選事實對，請逐組判斷是否真的指向同一件事，並選擇處理方式。
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4151,12 +4168,12 @@ FACT_DEDUP_PROMPT = {
 - keep_both: 看似相似但其實是兩件不同的事（如「喜歡」與「討厭」，或同一物件在不同情境下的不同狀態），都保留
 
 注意：
-- cosine 高只是相似度高，不代表語意相同，特別要警惕褒貶相反、肯定/否定相反的情況
+- 分數高只說明表層相似，不代表語意相同，特別要警惕褒貶相反、肯定/否定相反的情況
 - 優先選 keep_both 而非誤合併；記憶系統對錯誤合併的容忍度低於對冗餘的容忍度
 
 僅輸出 JSON 陣列，每項包含 index、action：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "en": """Below are {COUNT} candidate fact pairs flagged by cosine similarity. For each pair, decide whether they actually refer to the same thing and choose how to handle it.
+    "en": """Below are {COUNT} candidate fact pairs flagged by a similarity check. For each pair, decide whether they actually refer to the same thing and choose how to handle it.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4168,12 +4185,12 @@ For each pair, pick one action:
 - keep_both: they look similar but are actually distinct ("likes" vs "dislikes", or the same subject in different contexts) — keep both
 
 Notes:
-- High cosine means high *surface* similarity, not semantic identity. Be especially careful about polarity flips (positive/negative, like/dislike).
+- A high score means high *surface* similarity, not semantic identity. Be especially careful about polarity flips (positive/negative, like/dislike).
 - Prefer keep_both over a wrongful merge — the memory system tolerates redundancy much better than incorrect merges.
 
 Output only a JSON array, each item containing index and action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "ja": """以下は {COUNT} 組のベクトル類似度で抽出された候補ペアです。各ペアについて、本当に同じ事柄を指しているか判断し、処理方法を選んでください。
+    "ja": """以下は {COUNT} 組の類似度で抽出された候補ペアです。各ペアについて、本当に同じ事柄を指しているか判断し、処理方法を選んでください。
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4185,12 +4202,12 @@ Output only a JSON array, each item containing index and action:
 - keep_both: 似ているが実際には別の事柄（"好き"と"嫌い"のような極性反転、あるいは異なる文脈での同じ対象）→ 両方残す
 
 注意：
-- 高い cosine は表層的な類似度であり、意味的同一性ではない。特に極性反転（肯定/否定、好き/嫌い）に注意
+- スコアが高いのは表層的な類似であり、意味的同一性ではない。特に極性反転（肯定/否定、好き/嫌い）に注意
 - 誤合併よりも keep_both を優先。記憶システムは冗長性より誤合併に対する耐性が低い
 
 JSON 配列のみを出力し、各項目に index と action を含めてください：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "ko": """아래는 벡터 유사도로 선별된 {COUNT}쌍의 후보 사실 쌍입니다. 각 쌍에 대해 실제로 같은 것을 가리키는지 판단하고 처리 방법을 선택하세요.
+    "ko": """아래는 유사도로 선별된 {COUNT}쌍의 후보 사실 쌍입니다. 각 쌍에 대해 실제로 같은 것을 가리키는지 판단하고 처리 방법을 선택하세요.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4202,12 +4219,12 @@ JSON 配列のみを出力し、各項目に index と action を含めてくだ
 - keep_both: 비슷해 보이지만 실제로는 다른 것 ("좋아함"과 "싫어함" 같은 극성 반전, 혹은 다른 맥락의 같은 대상) — 둘 다 유지
 
 주의:
-- 높은 cosine은 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 특히 극성 반전(긍정/부정, 좋아함/싫어함)에 주의
+- 높은 점수는 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 특히 극성 반전(긍정/부정, 좋아함/싫어함)에 주의
 - 잘못된 병합보다 keep_both를 우선. 기억 시스템은 중복보다 잘못된 병합에 대한 내성이 더 낮음
 
 JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "ru": """Ниже представлены {COUNT} пар фактов-кандидатов, отобранных по косинусной близости. Для каждой пары определите, действительно ли они описывают одно и то же, и выберите способ обработки.
+    "ru": """Ниже представлены {COUNT} пар фактов-кандидатов, отобранных по близости. Для каждой пары определите, действительно ли они описывают одно и то же, и выберите способ обработки.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4219,12 +4236,12 @@ JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 - keep_both: похожи внешне, но на самом деле разные ("любит" vs "не любит", тот же объект в разных контекстах) — сохранить обе
 
 Замечания:
-- Высокий cosine означает поверхностное сходство, а не семантическую идентичность. Особенно осторожно с инверсией полярности (положительное/отрицательное, любит/не любит).
+- Высокий балл означает поверхностное сходство, а не семантическую идентичность. Особенно осторожно с инверсией полярности (положительное/отрицательное, любит/не любит).
 - Предпочитайте keep_both ошибочному слиянию — система памяти переносит избыточность лучше, чем неверные слияния.
 
 Выводите только JSON-массив, каждый элемент содержит index и action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "es": """A continuación hay {COUNT} pares de hechos candidatos seleccionados por similitud vectorial. Para cada par, decide si realmente apuntan a lo mismo y elige cómo manejarlo.
+    "es": """A continuación hay {COUNT} pares de hechos candidatos seleccionados por similitud. Para cada par, decide si realmente apuntan a lo mismo y elige cómo manejarlo.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4236,12 +4253,12 @@ Para cada par, elige una acción:
 - keep_both: parecen similares pero son cosas distintas (por ejemplo "le gusta" vs "no le gusta", o el mismo sujeto en contextos diferentes); conserva ambos
 
 Notas:
-- Un cosine alto solo indica similitud superficial, no identidad semántica. Ten especial cuidado con inversión de polaridad (positivo/negativo, gusta/no gusta).
+- Una puntuación alta solo indica similitud superficial, no identidad semántica. Ten especial cuidado con inversión de polaridad (positivo/negativo, gusta/no gusta).
 - Prefiere keep_both antes que una fusión errónea; el sistema de memoria tolera mejor la redundancia que las fusiones incorrectas.
 
 Devuelve solo un array JSON; cada elemento contiene index y action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "pt": """Abaixo há {COUNT} pares de fatos candidatos selecionados por similaridade vetorial. Para cada par, decida se eles realmente apontam para a mesma coisa e escolha como lidar com isso.
+    "pt": """Abaixo há {COUNT} pares de fatos candidatos selecionados por similaridade. Para cada par, decida se eles realmente apontam para a mesma coisa e escolha como lidar com isso.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4253,7 +4270,7 @@ Para cada par, escolha uma ação:
 - keep_both: parecem semelhantes, mas são coisas distintas (por exemplo "gosta" vs "não gosta", ou o mesmo assunto em contextos diferentes); mantenha ambos
 
 Notas:
-- Um cosine alto indica apenas similaridade superficial, não identidade semântica. Tenha cuidado especial com inversão de polaridade (positivo/negativo, gosta/não gosta).
+- Uma pontuação alta indica apenas similaridade superficial, não identidade semântica. Tenha cuidado especial com inversão de polaridade (positivo/negativo, gosta/não gosta).
 - Prefira keep_both a uma fusão incorreta; o sistema de memória tolera melhor redundância do que fusões erradas.
 
 Retorne apenas um array JSON; cada item contém index e action:
@@ -4820,6 +4837,7 @@ SCOPED_MEMORY_REFINE_PROMPT = {
 规则：
 - merge：语义重复的多条揉成一条，合并文本必须保留各源条目的全部独立信息
 - 明确矛盾的条目也必须 merge 成一条结论：优先用时间演变措辞（如「曾经X，后来变为Y」）；无法判断演变顺序时，采信 trust 标注更高或表述更具体的一方，并在结论里保留不确定性（如「对X的态度有反复」）
+- trust 标注只有 high/medium/low 粗粒度档位，不代表可推断的精确分数
 - 拿不准的条目不要动；无需任何合并时返回空数组 []
 - 同一个 id 只能出现在一个 action 里；source_ids 至少 2 条
 - 只输出 JSON 数组，不要输出其他内容
@@ -4840,6 +4858,7 @@ JSON 输出格式：
 規則：
 - merge：語義重複的多條揉成一條，合併文本必須保留各源條目的全部獨立資訊
 - 明確矛盾的條目也必須 merge 成一條結論：優先用時間演變措辭（如「曾經X，後來變為Y」）；無法判斷演變順序時，採信 trust 標註更高或表述更具體的一方，並在結論裡保留不確定性（如「對X的態度有反覆」）
+- trust 標註只有 high/medium/low 粗粒度檔位，不代表可推斷的精確分數
 - 拿不準的條目不要動；無需任何合併時回傳空陣列 []
 - 同一個 id 只能出現在一個 action 裡；source_ids 至少 2 條
 - 只輸出 JSON 陣列，不要輸出其他內容
@@ -4860,6 +4879,7 @@ JSON 輸出格式：
 Rules:
 - merge: fold semantically duplicate entries into one; the merged text must preserve every distinct piece of information from the sources
 - clearly contradictory entries MUST also be merged into a single conclusion: prefer temporal-change wording (e.g. "used to X, later Y"); when the order cannot be determined, side with the entry carrying a higher trust annotation or the more specific wording, and keep the uncertainty in the conclusion (e.g. "attitude toward X has wavered")
+- trust annotations are coarse high/medium/low bands, not exact scores that can be inferred
 - leave anything you are unsure about untouched; return an empty array [] when nothing needs merging
 - each id may appear in at most one action; source_ids needs at least 2 entries
 - output ONLY the JSON array, nothing else
@@ -4880,6 +4900,7 @@ JSON output format:
 ルール：
 - merge：意味的に重複する複数エントリを 1 条に統合する。統合後のテキストは各ソースの独立した情報をすべて保持すること
 - 明確に矛盾するエントリも必ず 1 条の結論に merge する：時間的変化の表現（例「以前はX、後にY」）を優先；順序が判断できない場合は trust 注釈が高い方またはより具体的な記述を採用し、結論に不確実性を残す（例「Xへの態度は揺れている」）
+- trust 注釈は high/medium/low の粗い区分だけで、正確な数値を推測できるものではない
 - 判断に迷うエントリは触らない；統合不要なら空配列 [] を返す
 - 同一 id は 1 つの action にのみ出現可；source_ids は最低 2 件
 - JSON 配列のみを出力し、他の内容を出力しない
@@ -4900,6 +4921,7 @@ JSON 出力形式：
 규칙:
 - merge: 의미가 중복되는 여러 항목을 하나로 병합하되, 병합 텍스트는 각 원본 항목의 모든 고유 정보를 보존해야 함
 - 명백히 모순되는 항목도 반드시 하나의 결론으로 merge: 시간 변화 표현(예: "예전에는 X였으나 이후 Y")을 우선; 순서를 판단할 수 없으면 trust 주석이 높거나 더 구체적인 쪽을 채택하고 결론에 불확실성을 남김(예: "X에 대한 태도가 오락가락함")
+- trust 주석은 high/medium/low의 거친 등급일 뿐, 정확한 수치를 추정할 수 없음
 - 확신이 없는 항목은 건드리지 말 것; 병합할 것이 없으면 빈 배열 [] 반환
 - 같은 id는 하나의 action에만 등장 가능; source_ids는 최소 2개
 - JSON 배열만 출력하고 다른 내용은 출력하지 말 것
@@ -4920,6 +4942,7 @@ JSON 출력 형식:
 Правила:
 - merge: семантически дублирующиеся записи сводятся в одну; объединённый текст должен сохранить всю уникальную информацию из источников
 - явно противоречащие записи ТАКЖЕ обязательно объединяются в один вывод: предпочитайте формулировку временного изменения (например, «раньше X, позже Y»); если порядок определить нельзя, доверяйте записи с более высокой пометкой trust или более конкретной формулировке и сохраните неопределённость в выводе (например, «отношение к X менялось»)
+- пометки trust — лишь грубые уровни high/medium/low, по ним нельзя выводить точное значение
 - всё, в чём не уверены, не трогайте; если объединять нечего, верните пустой массив []
 - каждый id может появиться максимум в одном action; source_ids — минимум 2 записи
 - выводите ТОЛЬКО JSON-массив, ничего больше
@@ -4940,6 +4963,7 @@ JSON 출력 형식:
 Reglas:
 - merge: funde las entradas semánticamente duplicadas en una sola; el texto fusionado debe conservar toda la información distintiva de las fuentes
 - las entradas claramente contradictorias TAMBIÉN deben fusionarse en una única conclusión: prefiere la formulación de cambio temporal (p. ej., «antes X, luego Y»); si el orden no puede determinarse, da crédito a la entrada con mayor anotación trust o a la formulación más específica, y conserva la incertidumbre en la conclusión (p. ej., «la actitud hacia X ha fluctuado»)
+- las anotaciones trust son bandas generales high/medium/low, no puntuaciones exactas que puedan deducirse
 - no toques nada de lo que no estés seguro; devuelve un array vacío [] cuando no haya nada que fusionar
 - cada id puede aparecer como máximo en un action; source_ids necesita al menos 2 entradas
 - imprime SOLO el array JSON, nada más
@@ -4960,6 +4984,7 @@ Formato de salida JSON:
 Regras:
 - merge: funda entradas semanticamente duplicadas em uma só; o texto mesclado deve preservar toda a informação distinta das fontes
 - entradas claramente contraditórias TAMBÉM devem ser mescladas em uma única conclusão: prefira a formulação de mudança temporal (ex.: «antes X, depois Y»); se a ordem não puder ser determinada, dê crédito à entrada com anotação trust mais alta ou à formulação mais específica, e preserve a incerteza na conclusão (ex.: «a atitude em relação a X tem oscilado»)
+- as anotações trust são faixas gerais high/medium/low, não pontuações exatas que possam ser inferidas
 - não toque em nada de que não tenha certeza; devolva um array vazio [] quando não houver nada a mesclar
 - cada id pode aparecer no máximo em um action; source_ids precisa de pelo menos 2 entradas
 - imprima APENAS o array JSON, nada mais

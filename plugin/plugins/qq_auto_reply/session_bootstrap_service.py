@@ -274,6 +274,12 @@ class QQSessionBootstrapService:
                 "session_key": session_key,
                 "sender_id": context.sender_id,
                 "permission_level": context.permission_level,
+                "private_permission_level_at_receipt": (
+                    getattr(
+                        context, "private_permission_level_at_receipt", None,
+                    )
+                    if not context.is_group else None
+                ),
                 "is_group": context.is_group,
                 "group_id": context.group_id,
                 "user_title": context.user_title,

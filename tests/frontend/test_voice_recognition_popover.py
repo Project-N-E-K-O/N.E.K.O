@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -6,14 +7,17 @@ from playwright.sync_api import Page
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
-VOICE_POPOVER_GLOBAL_LISTENERS = (
+VOICE_POPOVER_LOCAL_LISTENERS = (
     "document:pointerdown",
     "document:keydown",
     "window:resize",
     "window:scroll",
+)
+VOICE_POPOVER_GLOBAL_LISTENERS = (
     "window:voice-input-lifecycle-changed",
     "window:neko:voice-session-started",
     "window:neko:voice-settings-pending-changed",
+    "window:neko:core-api-capability-changed",
 )
 
 
@@ -41,19 +45,26 @@ def _install_voice_popover_harness(
 ) -> None:
     permission_source, render_expression = _voice_popover_sources()
     page.set_content(
-        '<div id="live2d-popup-mic" style="display:flex;opacity:1"></div>'
+        '<div id="live2d-popup-mic" '
+        'style="display:flex;opacity:1;position:fixed;left:20px;top:20px"></div>'
+        '<button id="outside-target" '
+        'style="position:fixed;left:700px;top:500px;width:80px;height:40px">'
+        "outside</button>"
     )
 
     harness = r"""
 (() => {
     const listenerBalance = Object.create(null);
+    const trackedListenerKeys = new Set(__TRACKED_LISTENER_KEYS__);
     let failWindowListenerType = null;
     function trackListeners(target, prefix) {
         const originalAdd = target.addEventListener.bind(target);
         const originalRemove = target.removeEventListener.bind(target);
         target.addEventListener = function (type, listener, options) {
             const key = prefix + ':' + type;
-            listenerBalance[key] = (listenerBalance[key] || 0) + 1;
+            if (trackedListenerKeys.has(key)) {
+                listenerBalance[key] = (listenerBalance[key] || 0) + 1;
+            }
             const result = originalAdd(type, listener, options);
             if (prefix === 'window' && type === failWindowListenerType) {
                 failWindowListenerType = null;
@@ -63,7 +74,9 @@ def _install_voice_popover_harness(
         };
         target.removeEventListener = function (type, listener, options) {
             const key = prefix + ':' + type;
-            listenerBalance[key] = (listenerBalance[key] || 0) - 1;
+            if (trackedListenerKeys.has(key)) {
+                listenerBalance[key] = (listenerBalance[key] || 0) - 1;
+            }
             return originalRemove(type, listener, options);
         };
     }
@@ -101,6 +114,7 @@ def _install_voice_popover_harness(
         speakerGainNode: null,
         spatialAudioEnabled: true,
         independentAsrEnabled: true,
+        coreApiSupportsIndependentAsr: true,
         independentAsrActive: true,
         independentAsrProvider: 'qwen',
         voiceInputResourceOptimizationEnabled: true,
@@ -116,6 +130,8 @@ def _install_voice_popover_harness(
     };
     const C = {
         DEFAULT_SPEAKER_VOLUME: 100,
+        MAX_SPEAKER_VOLUME: 200,
+        SPEAKER_VOLUME_KNEE_RATIO: 0.75,
         MIN_MIC_GAIN_DB: -5,
         MAX_MIC_GAIN_DB: 25,
     };
@@ -147,9 +163,28 @@ def _install_voice_popover_harness(
     }
     function ensureMicPopupScrollbarStyle() {}
     function attachTransientMicPopupScrollbar() { return () => {}; }
+    window.__screenToggleCalls = 0;
     function createScreenShareToggleButton() {
-        return document.createElement('button');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.nekoScreenShareAction = 'toggle';
+        button.addEventListener('click', () => { window.__screenToggleCalls += 1; });
+        return button;
     }
+    let deferScreenSources = false;
+    const screenSourceResolvers = [];
+    window.renderFloatingScreenSourceList = async (container) => {
+        if (deferScreenSources) {
+            await new Promise((resolve) => {
+                screenSourceResolvers.push(resolve);
+            });
+        }
+        const source = document.createElement('button');
+        source.type = 'button';
+        source.textContent = 'test-screen';
+        container.appendChild(source);
+        return true;
+    };
 
     let micPermissionGranted = false;
     let cachedMicDevices = null;
@@ -176,19 +211,57 @@ def _install_voice_popover_harness(
                 new Error('permission rejected')
             );
         },
+        deferScreenSources() {
+            deferScreenSources = true;
+        },
+        resolveScreenSources() {
+            deferScreenSources = false;
+            while (screenSourceResolvers.length) {
+                screenSourceResolvers.shift()();
+            }
+        },
+        pendingScreenSources: () => screenSourceResolvers.length,
         failMicVolumeVisualization() {
             failMicVolumeVisualization = true;
         },
-        failVoicePanelSetupOn(type) {
+        failVoiceControlsSetupOn(type) {
             failWindowListenerType = type;
         },
         pendingPermissions: () => mediaResolvers.length,
         popup: () => document.getElementById('live2d-popup-mic'),
-        panel: () => document.querySelector('[role="dialog"]'),
-        panels: () => document.querySelectorAll('[role="dialog"]').length,
+        action: (key) => document.querySelector(
+            '[data-neko-mic-main-action="' + key + '"]'
+        ),
+        voiceAction: () => document.querySelector(
+            '[data-neko-mic-main-action="voice-recognition"]'
+        ),
+        actionRow: (key) => document.querySelector(
+            '[data-neko-mic-main-action-row="' + key + '"]'
+        ),
+        voiceToggle: () => document.querySelector(
+            '[data-neko-mic-main-action-row="voice-recognition"] '
+            + '.neko-voice-setting-toggle-input'
+        ),
+        screenToggle: () => document.querySelector(
+            '[data-neko-mic-main-action-row="screen"] '
+            + '[data-neko-screen-share-action="toggle"]'
+        ),
+        panel: (key = 'voice-recognition') => document.querySelector(
+            '.neko-mic-subwindow[data-neko-mic-action-key="' + key + '"]'
+        ),
+        ownedPanels: () => document.querySelectorAll(
+            '.neko-mic-subwindow[data-neko-sidepanel-owner="live2d-popup-mic"]'
+        ),
+        panels: () => document.querySelectorAll('.neko-mic-subwindow').length,
     };
 })();
 """
+    harness = harness.replace(
+        "__TRACKED_LISTENER_KEYS__",
+        json.dumps(
+            [*VOICE_POPOVER_LOCAL_LISTENERS, *VOICE_POPOVER_GLOBAL_LISTENERS]
+        ),
+    )
     harness = harness.replace(
         "__DEFERRED_PERMISSION__", "true" if deferred_permission else "false"
     )
@@ -216,14 +289,23 @@ def test_overlapping_voice_popover_renders_keep_one_owned_instance(
             const afterOverlap = {
                 renderResults,
                 panels: window.__voicePopoverTest.panels(),
+                voiceActions: document.querySelectorAll(
+                    '[data-neko-mic-main-action="voice-recognition"]'
+                ).length,
                 capturedErrors: [...window.__voicePopoverTest.capturedErrors],
                 listenerBalance: { ...window.__voicePopoverTest.listenerBalance },
             };
             const third = await window.renderFloatingMicList(popup);
+            window.__voicePopoverTest.voiceAction().click();
+            await Promise.resolve();
+            const panel = window.__voicePopoverTest.panel();
             return {
                 afterOverlap,
                 third,
                 panelsAfterRerender: window.__voicePopoverTest.panels(),
+                panelOwner: panel?.getAttribute('data-neko-sidepanel-owner'),
+                panelIsSidePanel: panel?.hasAttribute('data-neko-sidepanel'),
+                panelActionKey: panel?.getAttribute('data-neko-mic-action-key'),
                 listenerBalanceAfterRerender: {
                     ...window.__voicePopoverTest.listenerBalance,
                 },
@@ -233,22 +315,27 @@ def test_overlapping_voice_popover_renders_keep_one_owned_instance(
 
     assert result["afterOverlap"]["renderResults"] == [False, True]
     assert not result["afterOverlap"]["capturedErrors"]
-    assert result["afterOverlap"]["panels"] == 1
+    assert result["afterOverlap"]["panels"] == 0
+    assert result["afterOverlap"]["voiceActions"] == 1
     assert result["third"] is True
     assert result["panelsAfterRerender"] == 1
+    assert result["panelOwner"] == "live2d-popup-mic"
+    assert result["panelIsSidePanel"] is True
+    assert result["panelActionKey"] == "voice-recognition"
 
     expected_global_listeners = {
-        "document:pointerdown": 1,
-        "document:keydown": 1,
-        "window:resize": 1,
-        "window:scroll": 1,
-        "window:voice-input-lifecycle-changed": 1,
-        "window:neko:voice-session-started": 1,
-        "window:neko:voice-settings-pending-changed": 1,
+        key: 1 for key in VOICE_POPOVER_GLOBAL_LISTENERS
     }
-    for key, expected in expected_global_listeners.items():
-        assert result["afterOverlap"]["listenerBalance"].get(key) == expected
-        assert result["listenerBalanceAfterRerender"].get(key) == expected
+    assert {
+        key: value
+        for key, value in result["afterOverlap"]["listenerBalance"].items()
+        if value
+    } == expected_global_listeners
+    assert {
+        key: value
+        for key, value in result["listenerBalanceAfterRerender"].items()
+        if value
+    } == expected_global_listeners
 
 
 @pytest.mark.frontend
@@ -286,6 +373,43 @@ def test_stale_voice_popover_failure_cannot_clear_new_render(page: Page) -> None
 
 
 @pytest.mark.frontend
+def test_hung_core_capability_refresh_does_not_block_microphone_popup(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            window.__voicePopoverTest.state.coreApiSupportsIndependentAsr = null;
+            window.refreshCoreApiCapability = () => new Promise(() => {});
+            const popup = window.__voicePopoverTest.popup();
+            return Promise.race([
+                window.renderFloatingMicList(popup).then(async (rendered) => {
+                    const panelsBeforeOpen = window.__voicePopoverTest.panels();
+                    window.__voicePopoverTest.voiceAction().click();
+                    await Promise.resolve();
+                    return {
+                        rendered,
+                        panelsBeforeOpen,
+                        panelsAfterOpen: window.__voicePopoverTest.panels(),
+                    };
+                }),
+                new Promise((resolve) => setTimeout(
+                    () => resolve({ timedOut: true }),
+                    250
+                )),
+            ]);
+        }"""
+    )
+
+    assert result == {
+        "rendered": True,
+        "panelsBeforeOpen": 0,
+        "panelsAfterOpen": 1,
+    }
+
+
+@pytest.mark.frontend
 def test_current_voice_popover_failure_disposes_owned_portal(page: Page) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
 
@@ -308,8 +432,11 @@ def test_current_voice_popover_failure_disposes_owned_portal(page: Page) -> None
     assert result["rendered"] is True
     assert result["panels"] == 0
     assert result["errorText"] == "microphone.loadFailed"
-    for key in VOICE_POPOVER_GLOBAL_LISTENERS:
-        assert result["listenerBalance"].get(key) == 0
+    assert not {
+        key: value
+        for key, value in result["listenerBalance"].items()
+        if value
+    }
 
 
 @pytest.mark.frontend
@@ -321,7 +448,7 @@ def test_voice_popover_setup_failure_disposes_registered_listeners(
     result = page.evaluate(
         """async () => {
             const popup = window.__voicePopoverTest.popup();
-            window.__voicePopoverTest.failVoicePanelSetupOn(
+            window.__voicePopoverTest.failVoiceControlsSetupOn(
                 'neko:voice-settings-pending-changed'
             );
             const rendered = await window.renderFloatingMicList(popup);
@@ -339,8 +466,11 @@ def test_voice_popover_setup_failure_disposes_registered_listeners(
     assert result["rendered"] is True
     assert result["panels"] == 0
     assert result["errorText"] == "microphone.loadFailed"
-    for key in VOICE_POPOVER_GLOBAL_LISTENERS:
-        assert result["listenerBalance"].get(key) == 0
+    assert not {
+        key: value
+        for key, value in result["listenerBalance"].items()
+        if value
+    }
 
 
 @pytest.mark.frontend
@@ -351,18 +481,27 @@ def test_voice_popover_disposes_when_popup_host_is_removed(page: Page) -> None:
         """async () => {
             const popup = window.__voicePopoverTest.popup();
             await window.renderFloatingMicList(popup);
+            window.__voicePopoverTest.voiceAction().click();
+            await Promise.resolve();
+            const panelsBeforeRemoval = window.__voicePopoverTest.panels();
             popup.remove();
             await Promise.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 0));
             return {
+                panelsBeforeRemoval,
                 panels: window.__voicePopoverTest.panels(),
                 listenerBalance: { ...window.__voicePopoverTest.listenerBalance },
             };
         }"""
     )
 
+    assert result["panelsBeforeRemoval"] == 1
     assert result["panels"] == 0
-    for key in VOICE_POPOVER_GLOBAL_LISTENERS:
-        assert result["listenerBalance"].get(key) == 0
+    assert not {
+        key: value
+        for key, value in result["listenerBalance"].items()
+        if value
+    }
 
 
 @pytest.mark.frontend
@@ -375,6 +514,8 @@ def test_voice_popover_toggles_have_accessible_names_and_hints(
         """async () => {
             const popup = window.__voicePopoverTest.popup();
             await window.renderFloatingMicList(popup);
+            window.__voicePopoverTest.voiceAction().click();
+            await Promise.resolve();
             return Array.from(
                 window.__voicePopoverTest.panel().querySelectorAll(
                     'input[type="checkbox"]'
@@ -402,6 +543,383 @@ def test_voice_popover_toggles_have_accessible_names_and_hints(
 
 
 @pytest.mark.frontend
+def test_voice_device_and_screen_actions_share_one_owned_subwindow(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+
+            async function openAndSnapshot(key) {
+                test.action(key).click();
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                const panels = Array.from(test.ownedPanels());
+                return {
+                    count: panels.length,
+                    actionKey: panels[0]?.getAttribute(
+                        'data-neko-mic-action-key'
+                    ),
+                    owner: panels[0]?.getAttribute(
+                        'data-neko-sidepanel-owner'
+                    ),
+                    sidePanel: panels[0]?.hasAttribute('data-neko-sidepanel'),
+                };
+            }
+
+            const voice = await openAndSnapshot('voice-recognition');
+            const device = await openAndSnapshot('device');
+            const screen = await openAndSnapshot('screen');
+            const closeButton = test.ownedPanels()[0].querySelector(
+                'button[aria-label="Close"]'
+            );
+            closeButton.click();
+            return {
+                voice,
+                device,
+                screen,
+                panelsAfterClose: test.ownedPanels().length,
+            };
+        }"""
+    )
+
+    assert result["voice"] == {
+        "count": 1,
+        "actionKey": "voice-recognition",
+        "owner": "live2d-popup-mic",
+        "sidePanel": True,
+    }
+    assert result["device"] == {
+        "count": 1,
+        "actionKey": "device",
+        "owner": "live2d-popup-mic",
+        "sidePanel": True,
+    }
+    assert result["screen"] == {
+        "count": 1,
+        "actionKey": "screen",
+        "owner": "live2d-popup-mic",
+        "sidePanel": True,
+    }
+    assert result["panelsAfterClose"] == 0
+
+
+@pytest.mark.frontend
+def test_voice_action_uses_shared_260ms_hover_collapse(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(
+                window.__voicePopoverTest.popup()
+            );
+        }"""
+    )
+
+    page.locator(
+        '[data-neko-mic-main-action="voice-recognition"]'
+    ).hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    page.locator(
+        '.neko-mic-subwindow[data-neko-mic-action-key="voice-recognition"]'
+    ).hover()
+    page.wait_for_timeout(320)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+    page.locator("#outside-target").hover()
+    page.wait_for_timeout(100)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+    page.wait_for_function(
+        "window.__voicePopoverTest.panels() === 0", timeout=2000
+    )
+
+
+@pytest.mark.frontend
+def test_voice_action_rerender_clears_the_previous_hover_timer(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(
+                window.__voicePopoverTest.popup()
+            );
+        }"""
+    )
+
+    page.locator(
+        '[data-neko-mic-main-action="voice-recognition"]'
+    ).hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    page.locator("#outside-target").hover()
+    page.wait_for_timeout(50)
+
+    page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            await window.renderFloatingMicList(test.popup());
+            test.voiceAction().click();
+            await Promise.resolve();
+        }"""
+    )
+    page.wait_for_timeout(320)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 1
+
+
+@pytest.mark.frontend
+def test_stale_screen_open_cannot_relabel_a_new_voice_subwindow(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const popup = test.popup();
+            await window.renderFloatingMicList(popup);
+            test.deferScreenSources();
+            test.action('screen').click();
+            if (test.pendingScreenSources() !== 1) {
+                throw new Error('expected the old screen panel to be pending');
+            }
+
+            await window.renderFloatingMicList(popup);
+            test.voiceAction().click();
+            await Promise.resolve();
+            const newVoicePanel = test.panel();
+            const beforeResolve = {
+                count: test.ownedPanels().length,
+                actionKey: newVoicePanel?.getAttribute(
+                    'data-neko-mic-action-key'
+                ),
+            };
+
+            test.resolveScreenSources();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const currentPanel = test.ownedPanels()[0];
+            return {
+                beforeResolve,
+                afterResolve: {
+                    count: test.ownedPanels().length,
+                    samePanel: currentPanel === newVoicePanel,
+                    actionKey: currentPanel?.getAttribute(
+                        'data-neko-mic-action-key'
+                    ),
+                },
+            };
+        }"""
+    )
+
+    expected = {"count": 1, "actionKey": "voice-recognition"}
+    assert result["beforeResolve"] == expected
+    assert result["afterResolve"] == {
+        **expected,
+        "samePanel": True,
+    }
+
+
+@pytest.mark.frontend
+def test_action_row_controls_are_siblings_and_do_not_cross_trigger(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+    page.evaluate(
+        """async () => {
+            await window.renderFloatingMicList(
+                window.__voicePopoverTest.popup()
+            );
+        }"""
+    )
+
+    structure = page.evaluate(
+        """() => {
+            const test = window.__voicePopoverTest;
+            const voiceAction = test.voiceAction();
+            const voiceToggle = test.voiceToggle();
+            const voiceRow = test.actionRow('voice-recognition');
+            const screenAction = test.action('screen');
+            const screenToggle = test.screenToggle();
+            const screenRow = test.actionRow('screen');
+            return {
+                voiceRowTag: voiceRow?.tagName,
+                voiceSiblings: voiceAction?.parentElement === voiceRow
+                    && voiceToggle?.closest('label')?.parentElement === voiceRow,
+                voiceNested: voiceAction?.contains(voiceToggle),
+                checkboxInsideButton: voiceToggle?.closest('button') !== null,
+                screenToggleTag: screenToggle?.tagName,
+                screenSiblings: screenAction?.parentElement === screenRow
+                    && screenToggle?.parentElement === screenRow,
+                screenNested: screenAction?.contains(screenToggle),
+            };
+        }"""
+    )
+    assert structure == {
+        "voiceRowTag": "DIV",
+        "voiceSiblings": True,
+        "voiceNested": False,
+        "checkboxInsideButton": False,
+        "screenToggleTag": "BUTTON",
+        "screenSiblings": True,
+        "screenNested": False,
+    }
+
+    screen_toggle = page.locator(
+        '[data-neko-mic-main-action-row="screen"] '
+        '[data-neko-screen-share-action="toggle"]'
+    )
+    screen_toggle.focus()
+    page.keyboard.press("Space")
+    assert page.evaluate("window.__screenToggleCalls") == 1
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+    asr_input = page.locator(
+        '[data-neko-mic-main-action-row="voice-recognition"] '
+        '.neko-voice-setting-toggle-input'
+    )
+    asr_input.hover()
+    page.wait_for_timeout(50)
+    assert page.evaluate("window.__voicePopoverTest.panels()") == 0
+
+    asr_input.click()
+    page.wait_for_timeout(50)
+    result = page.evaluate(
+        """() => ({
+            panels: window.__voicePopoverTest.panels(),
+            preference: window.__voicePopoverTest.state.independentAsrEnabled,
+            saveCalls: window.__saveCalls,
+        })"""
+    )
+    assert result == {"panels": 0, "preference": False, "saveCalls": 1}
+
+    asr_input.focus()
+    page.keyboard.press("Space")
+    result = page.evaluate(
+        """() => ({
+            panels: window.__voicePopoverTest.panels(),
+            preference: window.__voicePopoverTest.state.independentAsrEnabled,
+            saveCalls: window.__saveCalls,
+        })"""
+    )
+    assert result == {"panels": 0, "preference": True, "saveCalls": 2}
+
+    voice_action = page.locator(
+        '[data-neko-mic-main-action="voice-recognition"]'
+    )
+    voice_action.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_function("window.__voicePopoverTest.panels() === 1")
+    asr_input.hover()
+    page.wait_for_timeout(320)
+    result = page.evaluate(
+        """() => ({
+            panels: window.__voicePopoverTest.panels(),
+            preference: window.__voicePopoverTest.state.independentAsrEnabled,
+            checked: window.__voicePopoverTest.voiceToggle().checked,
+            saveCalls: window.__saveCalls,
+        })"""
+    )
+    assert result == {
+        "panels": 1,
+        "preference": True,
+        "checked": True,
+        "saveCalls": 2,
+    }
+    page.locator("#outside-target").hover()
+    page.wait_for_function("window.__voicePopoverTest.panels() === 0")
+
+
+@pytest.mark.frontend
+def test_core_without_independent_asr_shows_native_effective_view_and_keeps_preference(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const test = window.__voicePopoverTest;
+            const state = test.state;
+            state.coreApiSupportsIndependentAsr = false;
+            const popup = test.popup();
+            await window.renderFloatingMicList(popup);
+            const container = test.voiceAction();
+            container.click();
+            await Promise.resolve();
+
+            const panel = test.panel();
+            const asrInput = test.voiceToggle();
+            const panelInputs = panel.querySelectorAll('input[type="checkbox"]');
+            const noiseInput = panelInputs[0];
+            const optimizationInput = panelInputs[1];
+            const summary = () => container.querySelector(
+                '.neko-mic-action-sub-label'
+            ).textContent;
+            const status = () => panel.querySelector(
+                '.neko-voice-recognition-status'
+            ).textContent;
+
+            const nativeView = {
+                preference: state.independentAsrEnabled,
+                asrChecked: asrInput.checked,
+                asrDisabled: asrInput.disabled,
+                optimizationChecked: optimizationInput.checked,
+                optimizationDisabled: optimizationInput.disabled,
+                noiseDisabled: noiseInput.disabled,
+                summary: summary(),
+                status: status(),
+            };
+
+            // Even a synthetic change event must not mutate or persist the
+            // preference while the effective control is disabled.
+            asrInput.checked = true;
+            asrInput.dispatchEvent(new Event('change', { bubbles: true }));
+            const afterDisabledChange = {
+                preference: state.independentAsrEnabled,
+                checked: asrInput.checked,
+                saveCalls: window.__saveCalls,
+            };
+
+            state.coreApiSupportsIndependentAsr = true;
+            window.dispatchEvent(new CustomEvent(
+                'neko:core-api-capability-changed'
+            ));
+            const restoredView = {
+                preference: state.independentAsrEnabled,
+                asrChecked: asrInput.checked,
+                asrDisabled: asrInput.disabled,
+                optimizationChecked: optimizationInput.checked,
+                optimizationDisabled: optimizationInput.disabled,
+                summary: summary(),
+                status: status(),
+            };
+            return { nativeView, afterDisabledChange, restoredView };
+        }"""
+    )
+
+    assert result["nativeView"] == {
+        "preference": True,
+        "asrChecked": False,
+        "asrDisabled": True,
+        "optimizationChecked": False,
+        "optimizationDisabled": True,
+        "noiseDisabled": False,
+        "summary": "microphone.voiceRecognitionDisabled",
+        "status": "microphone.voiceRecognitionNativeCoreHint",
+    }
+    assert result["afterDisabledChange"] == {
+        "preference": True,
+        "checked": False,
+        "saveCalls": 0,
+    }
+    assert result["restoredView"] == {
+        "preference": True,
+        "asrChecked": True,
+        "asrDisabled": False,
+        "optimizationChecked": True,
+        "optimizationDisabled": False,
+        "summary": "microphone.independentAsrSummary",
+        "status": "microphone.voiceRecognitionStatusReady",
+    }
+
+
+@pytest.mark.frontend
 def test_voice_settings_pending_clears_only_after_target_session(
     page: Page,
 ) -> None:
@@ -411,8 +929,12 @@ def test_voice_settings_pending_clears_only_after_target_session(
         """async () => {
             const popup = window.__voicePopoverTest.popup();
             await window.renderFloatingMicList(popup);
+            window.__voicePopoverTest.voiceAction().click();
+            await Promise.resolve();
             const firstPanel = window.__voicePopoverTest.panel();
-            const firstStatus = firstPanel.lastElementChild;
+            const firstStatus = firstPanel.querySelector(
+                '.neko-voice-recognition-status'
+            );
             const optimizationInput = firstPanel.querySelectorAll(
                 'input[type="checkbox"]'
             )[1];
@@ -444,9 +966,7 @@ def test_voice_settings_pending_clears_only_after_target_session(
             window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
             const afterBlockedSession = firstStatus.textContent;
 
-            const asrInput = document.querySelector(
-                '[aria-controls="' + firstPanel.id + '"] input[type="checkbox"]'
-            );
+            const asrInput = window.__voicePopoverTest.voiceToggle();
             asrInput.checked = false;
             asrInput.dispatchEvent(new Event('change', { bubbles: true }));
             window.__voicePopoverTest.state.voiceSessionStartEpoch = 13;
@@ -491,7 +1011,7 @@ def test_voice_settings_pending_clears_only_after_target_session(
     assert result["oldStatusAfterDispose"] == pending_key
     assert result["oldStatusAfterEvent"] == pending_key
     assert result["oldPanelConnected"] is False
-    assert result["panels"] == 1
+    assert result["panels"] == 0
     assert result["listenerBalance"]["window:neko:voice-session-started"] == 1
     assert (
         result["listenerBalance"]["window:neko:voice-settings-pending-changed"]
@@ -505,48 +1025,55 @@ def test_voice_popover_keeps_active_route_and_keyboard_access(
 ) -> None:
     _install_voice_popover_harness(page, deferred_permission=False)
 
-    result = page.evaluate(
+    before_open = page.evaluate(
         """async () => {
             const popup = window.__voicePopoverTest.popup();
             await window.renderFloatingMicList(popup);
-            const panel = window.__voicePopoverTest.panel();
-            const container = document.querySelector(
-                '[aria-controls="' + panel.id + '"]'
-            );
-            const asrInput = container.querySelector('input[type="checkbox"]');
-            const panelInputs = panel.querySelectorAll('input[type="checkbox"]');
-            const noiseInput = panelInputs[0];
-            const optimizationInput = panelInputs[1];
+            const container = window.__voicePopoverTest.voiceAction();
+            const asrInput = window.__voicePopoverTest.voiceToggle();
 
             window.__voicePopoverTest.state.voiceChatActive = true;
             window.__voicePopoverTest.state.independentAsrActive = true;
             asrInput.checked = false;
             asrInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-            const summary = container.firstElementChild
-                .firstElementChild.lastElementChild.textContent;
+            const summary = container.querySelector(
+                '.neko-mic-action-sub-label'
+            ).textContent;
             container.focus();
-            container.dispatchEvent(new KeyboardEvent('keydown', {
-                key: 'Enter',
-                bubbles: true,
-            }));
-
             return {
                 summary,
-                noiseDisabled: noiseInput.disabled,
-                optimizationDisabled: optimizationInput.disabled,
-                panelOpen: container.getAttribute('aria-expanded'),
-                focusedNoise: document.activeElement === noiseInput,
+                actionTag: container.tagName,
+                actionFocused: document.activeElement === container,
+                panelsBeforeEnter: window.__voicePopoverTest.panels(),
+            };
+        }"""
+    )
+    page.keyboard.press("Enter")
+    after_open = page.evaluate(
+        """() => {
+            const panel = window.__voicePopoverTest.panel();
+            const panelInputs = panel.querySelectorAll('input[type="checkbox"]');
+            return {
+                panels: window.__voicePopoverTest.panels(),
+                noiseDisabled: panelInputs[0].disabled,
+                optimizationDisabled: panelInputs[1].disabled,
+                actionKey: panel.getAttribute('data-neko-mic-action-key'),
             };
         }"""
     )
 
-    assert result == {
+    assert before_open == {
         "summary": "microphone.independentAsrSummary",
+        "actionTag": "BUTTON",
+        "actionFocused": True,
+        "panelsBeforeEnter": 0,
+    }
+    assert after_open == {
+        "panels": 1,
         "noiseDisabled": False,
         "optimizationDisabled": True,
-        "panelOpen": "true",
-        "focusedNoise": True,
+        "actionKey": "voice-recognition",
     }
 
 
@@ -572,15 +1099,18 @@ def test_voice_popover_preserves_cross_window_active_route_across_rerender(
             state.voiceSettingsPendingUntilEpoch = 11;
             state.independentAsrEnabled = false;
             await window.renderFloatingMicList(popup);
+            const container = window.__voicePopoverTest.voiceAction();
+            container.click();
+            await Promise.resolve();
 
             const panel = window.__voicePopoverTest.panel();
-            const container = document.querySelector(
-                '[aria-controls="' + panel.id + '"]'
-            );
             return {
-                summary: container.firstElementChild
-                    .firstElementChild.lastElementChild.textContent,
-                status: panel.lastElementChild.textContent,
+                summary: container.querySelector(
+                    '.neko-mic-action-sub-label'
+                ).textContent,
+                status: panel.querySelector(
+                    '.neko-voice-recognition-status'
+                ).textContent,
             };
         }"""
     )
@@ -598,10 +1128,7 @@ def test_voice_popover_keyboard_focus_ring_is_visible(page: Page) -> None:
         """async () => {
             const popup = window.__voicePopoverTest.popup();
             await window.renderFloatingMicList(popup);
-            const panel = window.__voicePopoverTest.panel();
-            const container = document.querySelector(
-                '[aria-controls="' + panel.id + '"]'
-            );
+            const container = window.__voicePopoverTest.voiceAction();
             container.focus();
         }"""
     )
@@ -612,6 +1139,7 @@ def test_voice_popover_keyboard_focus_ring_is_visible(page: Page) -> None:
         """() => {
             const panel = window.__voicePopoverTest.panel();
             const input = panel.querySelector('input[type="checkbox"]');
+            input.focus();
             const slider = input.nextElementSibling;
             return {
                 focused: document.activeElement === input,

@@ -519,16 +519,42 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
     def _claim_voice_input_connection() -> None:
         nonlocal voice_input_claimed
-        if voice_input_claimed:
+        voice_mgr = session_manager[lanlan_name]
+        connection_id = str(this_session_id)
+        has_manager_lease_identity = hasattr(
+            voice_mgr,
+            "_voice_lease_connection_id",
+        )
+        manager_lease_connection_id = getattr(
+            voice_mgr,
+            "_voice_lease_connection_id",
+            None,
+        )
+        # ``voice_input_claimed`` means this socket engaged voice at least once;
+        # it does not guarantee the manager still binds the lease to it. A text
+        # session deliberately fail-closes the microphone route and vacates the
+        # manager lease while keeping this WebSocket alive. The next audio
+        # start on the same socket must therefore re-claim. Otherwise legacy
+        # authorization rejects before start_session is dispatched, leaving the
+        # frontend with no session_started/session_failed until its 15 s timeout.
+        #
+        # The global session-id guard above still prevents a superseded socket
+        # from reaching this path and stealing voice back from a newer window.
+        # Managers without the lease-identity field keep the historical
+        # claim-once behavior used by lightweight integrations and test doubles.
+        if voice_input_claimed and (
+            not has_manager_lease_identity
+            or manager_lease_connection_id == connection_id
+        ):
             return
         voice_input_claimed = True
         begin_voice_input = getattr(
-            session_manager[lanlan_name],
+            voice_mgr,
             "_begin_voice_input_connection",
             None,
         )
         if callable(begin_voice_input):
-            begin_voice_input(str(this_session_id))
+            begin_voice_input(connection_id)
             _voice_connection_sockets[lanlan_name] = (this_session_id, websocket)
             # Hand the socket to the manager too. mgr.websocket is reassigned
             # to every newly accepted socket, so it is the DISPLAY plane; the
@@ -537,12 +563,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             # recorder superseded by a newer chat window never hears that its
             # route died and keeps the hardware mic open.
             set_voice_ws = getattr(
-                session_manager[lanlan_name],
+                voice_mgr,
                 "_set_voice_input_websocket",
                 None,
             )
             if callable(set_voice_ws):
-                set_voice_ws(str(this_session_id), websocket)
+                set_voice_ws(connection_id, websocket)
 
     def _owns_voice_connection() -> bool:
         """True while this socket still holds the manager voice identity.
@@ -836,11 +862,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         message.get("voice_input_resource_optimization_enabled")
                     )
                 input_type = message.get("input_type", "audio")
+                # 前端每次 start_session 自带的请求标识，原样回带进
+                # session_started。多窗口下 ack 会经 voice-lease fan-out 到达
+                # 不是本请求方的窗口，标识就是接收方判断「这条是不是回应我」
+                # 的唯一依据（详见 core/notify.py send_session_started）。
+                request_id = message.get("request_id")
+                if isinstance(request_id, str):
+                    request_id = request_id.strip()[:128] or None
+                else:
+                    request_id = None
                 if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):
                         if input_type in _TEXT_SESSION_INPUT_TYPES:
                             logger.info("[%s] game route active: acknowledging text entry without starting ordinary text session", lanlan_name)
-                            _fire_task(session_manager[lanlan_name].send_session_started("text"))
+                            _fire_task(
+                                session_manager[lanlan_name].send_session_started(
+                                    "text", request_id=request_id
+                                )
+                            )
                             continue
                         if input_type == "audio":
                             logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
@@ -854,6 +893,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                                     message.get("new_session", False),
                                     "audio",
                                     user_initiated=True,
+                                    request_id=request_id,
                                     handshake_override=request_handshake_override,
                                     resource_optimization_override=(
                                         request_optimization_override
@@ -903,6 +943,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             message.get("new_session", False),
                             mode,
                             user_initiated=True,
+                            request_id=request_id,
                             handshake_override=request_handshake_override,
                             resource_optimization_override=(
                                 request_optimization_override

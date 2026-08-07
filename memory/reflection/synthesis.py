@@ -453,6 +453,8 @@ class SynthesisMixin:
             'event_end_at': event_end_at,
             'schema_version': _SCHEMA_V,
         })
+        from memory.speaker_trust import provenance_of_entries
+        reflection.update(provenance_of_entries(unabsorbed))
         if memory_subject is not None:
             reflection.update(memory_subject.as_entry_fields())
             # 简化群记忆管线：scoped reflection 不走 evidence 确认。群/成员
@@ -594,6 +596,7 @@ class SynthesisMixin:
             # 容当 RELATED_CONTEXT 会把它重新洗进活跃 reflection——归档
             # 语义就被这条侧路悄悄绕开了。
             and not f.get('subject_archived_at')
+            and not f.get('arbitration_archived_at')
             and is_cached_embedding_valid(f, f.get('text', ''), model_id)
         ]
         if not absorbed_pool:

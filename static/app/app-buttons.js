@@ -2266,7 +2266,12 @@
                 if (micStartMustStandDown()) return;
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
-                    input_type: 'audio'
+                    input_type: 'audio',
+                    // Read off OUR owner token, not the shared slot: a start
+                    // that displaced us during ensureWebSocketOpen above would
+                    // otherwise get its id stamped on this stale request, and
+                    // the ack for it would settle a promise it does not answer.
+                    request_id: window.sessionStartRequestId(micStartOwner)
                 }));
 
                 // Timeout (15s)
@@ -2778,7 +2783,8 @@
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'text',
-                    new_session: true
+                    new_session: true,
+                    request_id: window.sessionStartRequestId(textStartOwner)
                 }));
 
                 await sessionStartPromise;
@@ -3029,7 +3035,8 @@
                             S.socket.send(JSON.stringify({
                                 action: 'start_session',
                                 input_type: 'text',
-                                new_session: false
+                                new_session: false,
+                                request_id: window.sessionStartRequestId(composerStartOwner)
                             }));
 
                             // Timeout after WebSocket confirms connection

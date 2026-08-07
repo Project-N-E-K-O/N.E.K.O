@@ -231,7 +231,40 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         )
 
 
-def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id) -> None:
+def _resolve_analyze_lang(session_language: Optional[str]) -> str:
+    """Language for the analyzer's prompts: session locale first, process global as fallback.
+
+    ``session_language`` rides the analyze_request event (see
+    ``main_logic/agent_event_bus.publish_analyze_request_reliably``) and carries the
+    frontend i18n truth as a full code (``zh-CN`` / ``zh-TW`` / ``ja`` …). It wins
+    because this process cannot see it any other way: agent_server talks to
+    main_server over ZeroMQ and its own ``get_global_language()`` only derives
+    NEKO_LANGUAGE / Steam / system locale, which is simply wrong whenever the user's
+    UI language differs from the machine's.
+
+    Unvalidated input is fenced out first: ``normalize_language_code`` silently maps
+    anything unrecognized to ``'en'``, so a garbage value would look like a
+    deliberate English choice and beat the (correct) fallback.
+
+    Returns a SHORT code. Every agent prompt dict in ``config/prompts/prompts_agent.py``
+    is keyed by ``zh / en / ja / ko / ru / es / pt`` plus ``zh-TW``; a full ``zh-CN``
+    has no key there and would take ``_loc``'s fallback path with a warning. Traditional
+    Chinese therefore resolves to ``zh`` here, matching every other subsystem that reads
+    ``get_global_language()`` — switching the agent prompts to full codes belongs to the
+    zh-TW migration (issue #2500).
+    """
+    if session_language:
+        try:
+            from utils.language_utils import is_supported_language_code, normalize_language_code
+            if is_supported_language_code(session_language):
+                return normalize_language_code(str(session_language), format='short')
+            logger.debug("[AgentAnalyze] ignoring unsupported session language: %r", session_language)
+        except Exception:
+            logger.debug("[AgentAnalyze] session language normalize failed", exc_info=True)
+    return _rp_lang(None)
+
+
+def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id, session_language=None) -> None:
     """Throttled proactive-analyze path controlled by AGENT_PROACTIVE_ANALYZE_ENABLED.
 
     A proactive turn has no new user input, so the ordinary user-turn dedupe
@@ -269,7 +302,7 @@ def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id
     logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
     _create_tracked_task(_background_analyze_and_plan(
         messages, lanlan_name, conversation_id=conversation_id,
-        external_intent=None, proactive=True,
+        external_intent=None, proactive=True, session_language=session_language,
     ))
 
 
@@ -317,13 +350,19 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             lanlan_key = _normalize_lanlan_key(lanlan_name)
             conversation_id = event.get("conversation_id")
+            # Live session locale from main_server (full code, e.g. 'zh-TW').
+            # Absent → _resolve_analyze_lang falls back to this process's global.
+            session_language = event.get("language")
             # Proactive (self-initiated, no fresh user input) turn: opt-in,
             # separate throttled path. The ordinary user-turn dedupe below would
             # always drop these (the latest user message is a stale prior turn,
             # so its fingerprint matches), so proactive routing is mandatory, not
             # an optimization.
             if event.get("proactive"):
-                _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id)
+                _handle_proactive_analyze(
+                    messages, lanlan_name, lanlan_key, conversation_id,
+                    session_language=session_language,
+                )
                 return
             # Consume only new user turn. Assistant turn_end without new user input should be ignored.
             fp = _build_analyze_event_fingerprint(event)
@@ -344,11 +383,11 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
             external_intent = event.get("external_intent")
             _create_tracked_task(_background_analyze_and_plan(
                 messages, lanlan_name, conversation_id=conversation_id,
-                external_intent=external_intent,
+                external_intent=external_intent, session_language=session_language,
             ))
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False, session_language: Optional[str] = None):
     """
     [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
 
@@ -374,10 +413,10 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         Modules.analyze_lock = asyncio.Lock()
 
     async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive)
+        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive, session_language=session_language)
 
 
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False):
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False, session_language: Optional[str] = None):
     """Inner implementation, always called under analyze_lock."""
     try:
         if not Modules.analyzer_enabled:
@@ -410,11 +449,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
 
         # 一步完成：分析 + 执行
+        #
+        # lang 必须显式传：analyzer 的全部频道描述和系统提示都走 _loc(..., lang)
+        # （task_executor 里的 _assess_unified_channels / _assess_user_plugin /
+        # _stage1_llm_coarse_screen），漏传会落到 analyze_and_execute 的默认值
+        # "en"，让日/韩/俄/西/葡/中文用户全都拿到英文 prompt。
+        # 取值优先 session locale（随 analyze_request 事件从 main_server 带过来的
+        # 前端 i18n 真值），取不到才回落本进程全局值——见 _resolve_analyze_lang。
         result = await Modules.task_executor.analyze_and_execute(
             messages=enriched_messages,
             lanlan_name=lanlan_name,
             agent_flags=Modules.agent_flags,
             conversation_id=conversation_id,
+            lang=_resolve_analyze_lang(session_language),
             external_intent=external_intent,
             proactive=proactive,
         )

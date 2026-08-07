@@ -66,6 +66,11 @@ class TurnMixin:
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
         self.audio_resampler.clear()
         await self._clear_tts_pipeline()
+        # _tts_done_queued_for_turn 的权威清零已经在 _clear_tts_pipeline 入口、
+        # 与 __interrupt__ 入队同步完成（取消落在它内部的 sleep 上也不会留下
+        # "worker 已中断、记账还说已排队"的残留）。这里保留一次重复清零，兜底那
+        # ~20ms 窗口内被并发路径重新置 True 的情况；pending_until_ready 则由
+        # _clear_tts_pipeline 末尾与 tts_pending_chunks 成对清，这里同样是兜底。
         self._tts_done_queued_for_turn = False  # 新轮次重置 TTS 结束信号标记
         self._tts_done_pending_until_ready = False
         # 新一轮开始：清空上一轮 AI 文本累加器（即使上轮 turn end 已清过，
@@ -87,6 +92,21 @@ class TurnMixin:
             # owner/user_sid 并派发订阅者。
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=new_sid)
+
+    def read_current_speech_id(self) -> str | None:
+        """Hand the realtime client the host's notion of "which turn is live".
+
+        Passed to ``OmniRealtimeClient`` as ``get_host_turn_id``. The speech id
+        already IS the host's turn token — every writer that starts a turn
+        assigns a fresh one — so the client needs no token of its own, only a
+        way to sample this one at a turn start and compare at the end (#2612).
+
+        Deliberately not locked. The callers sample and compare a single
+        immutable string; taking ``self.lock`` here would put a host lock in
+        the realtime receive loop's path, and reading one instant staler only
+        shifts the guard's boundary, never inverts its answer.
+        """
+        return self.current_speech_id
 
     async def rotate_speech_id_for_response_done(self):
         """Lightweight sid rotation for realtime providers without server VAD.
@@ -110,6 +130,20 @@ class TurnMixin:
         Resetting ``audio_resampler`` is safe because the next turn's audio
         is a fresh stream — keeping stale soxr state would only risk a
         boundary artefact at turn 2's first frame.
+
+        On the write order and cancellation (#2619): the flags are cleared
+        before the ``async with self.lock`` that rotates the sid, which looks
+        like it could be cancelled half-applied. It cannot. No holder of
+        ``self.lock`` anywhere in this package suspends while holding it, so
+        the lock is never observed held, so this acquire always takes the
+        uncontended fast path and never yields — and a cancellation therefore
+        lands either before this method is entered or after it has returned,
+        never between these writes. That property is the whole reason this
+        shape is safe, so it is enforced rather than assumed: see
+        CORE_LOCK_NO_AWAIT in ``scripts/check_core_contracts.py``. Adding an
+        ``await`` inside any of those blocks makes the lock contendable and
+        makes this window real; move the awaited work out of the block
+        instead of reordering the writes here.
         """
         if self._takeover_active:
             return
@@ -1077,6 +1111,9 @@ class TurnMixin:
                 ack_timeout_s=0.8,
                 retries=1,
                 conversation_id=uuid4().hex,
+                # Session locale (full code) so the agent process prompts in the
+                # UI language instead of its own Steam/system locale.
+                language=getattr(self, "user_language", None),
             )
         except Exception as exc:
             logger.warning("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)
@@ -1267,7 +1304,20 @@ class TurnMixin:
         return bool(record_transcript_text)
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
-        """Output transcription callback: handles text display and TTS (for voice mode)"""
+        """Output transcription callback: handles text display and TTS (for voice mode).
+
+        The turn this chunk belongs to is read ONCE, before the first await,
+        and carried from there — never re-read afterwards. ``send_lanlan_response``
+        suspends on the frontend WebSocket, and a user turn starting during that
+        suspension takes ``current_speech_id`` with it (#2612): re-reading the
+        field on the way out would queue a dead turn's tail under the successor's
+        speech id and speak it as part of the new turn.
+
+        Same shape ``handle_text_data`` already uses for the proactive
+        contextvar. What differs here is that the identity matters even when
+        that contextvar is unset — the ordinary voice path has no expected sid,
+        but it still has a turn, and that is the path #2612 was filed against.
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime output transcript len=%d", self.lanlan_name, len(text or ""))
             return
@@ -1281,26 +1331,46 @@ class TurnMixin:
                 expected_sid, self.current_speech_id, len(text),
             )
             return
+        # 本 chunk 的轮次身份：proactive 路径就是调用方钉住的那个 sid，普通语音
+        # 路径则是此刻在跑的那一轮。两者都在第一个 await 之前读、之后用。
+        turn_sid = expected_sid if expected_sid is not None else self.current_speech_id
         # 无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(
+        publish_result = await self.send_lanlan_response(
             text,
             is_first_chunk,
+            turn_id=turn_sid,
             remember_voice_echo=not self.use_tts,
+            expected_speech_id=expected_sid,
         )
-        
+        # ``None`` means the guarded send lost ownership at its internal queue-write
+        # boundary. Do not leak the same stale chunk into TTS. (handle_text_data
+        # 同款。仅对 proactive 有意义：普通轮次不传 expected_speech_id，永不返回 None。)
+        if expected_sid is not None and publish_result is None:
+            return
+
         # 如果配置了TTS，将文本发送到TTS队列或缓存
         if self.use_tts:
             async with self.tts_cache_lock:
+                # send_lanlan_response 会在前端 WebSocket 上挂起。写 TTS 之前重新
+                # 确认这一轮还是自己的：期间用户开了新一轮的话，下面这段文本属于
+                # 已经死掉的那轮，排进新 sid 会被当成新一轮的话念出来。
+                if self.current_speech_id != turn_sid:
+                    logger.debug(
+                        "handle_output_transcript drop after publish: "
+                        "turn_sid=%s current_sid=%s len=%d",
+                        turn_sid, self.current_speech_id, len(text),
+                    )
+                    return
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
-                        self._enqueue_tts_text_chunk(self.current_speech_id, text)
+                        self._enqueue_tts_text_chunk(turn_sid, text)
                     except Exception as e:
                         logger.warning(f"⚠️ 发送TTS请求失败: {e}")
                 else:
                     # TTS未就绪，先缓存（规范化延迟到 _flush_tts_pending_chunks）
-                    self.tts_pending_chunks.append((self.current_speech_id, text))
+                    self.tts_pending_chunks.append((turn_sid, text))
                     if len(self.tts_pending_chunks) == 1:
                         logger.info("TTS未就绪，开始缓存文本chunk...")
                     # 仅在回复首 chunk 尝试拉起，避免每个 chunk 都重试

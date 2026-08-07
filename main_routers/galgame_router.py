@@ -42,10 +42,11 @@ from config.prompts.prompts_galgame import (
     get_galgame_dialogue_footer,
     get_galgame_dialogue_header,
     get_galgame_option_generation_prompt,
+    normalize_galgame_locale,
 )
 from config.prompts.prompts_sys import _loc
 from utils.file_utils import robust_json_loads
-from utils.language_utils import detect_language, normalize_language_code
+from utils.language_utils import detect_prompt_language
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
@@ -64,16 +65,30 @@ GALGAME_OPTION_LABELS = ("A", "B", "C")
 
 
 def _resolve_language(text_sample: str, request_lang: str | None) -> str:
-    """Pick the best 'short' language code for the prompt."""
+    """Pick the prompt-dict key for the prompt: a short code, or 'zh-TW'.
+
+    Every dict in ``prompts_galgame`` is keyed by the eight core locales with a
+    ``zh-TW`` row of its own, so the request language is resolved at FULL width
+    (issue #2500 step 2). ``format='short'`` used to collapse Traditional into
+    Simplified here, which left those rows unreachable.
+
+    The detection branch cannot just be normalized the same way: ``detect_language``
+    reports script families, so Traditional and Simplified both come back as 'zh'
+    no matter what the user typed. ``detect_prompt_language`` is the pair that
+    refines a Chinese detection with the caller's own locale, which is the only
+    signal that separates the two.
+    """
     if request_lang:
         try:
-            return normalize_language_code(request_lang, format='short') or 'en'
+            return normalize_galgame_locale(request_lang)
         except Exception:
             # Bad language tag from the client — fall through to text-based detection.
             pass
     try:
         if text_sample.strip():
-            return normalize_language_code(detect_language(text_sample), format='short') or 'en'
+            # request_lang is unusable by the time we get here, so detect_prompt_language
+            # falls back to the process-wide full locale for the Chinese refinement.
+            return detect_prompt_language(text_sample, default='en', ui_language=request_lang)
     except Exception:
         # detect_language can choke on emoji-only / very short strings — default to en.
         pass

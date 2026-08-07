@@ -291,109 +291,40 @@ class ToolCallingMixin:
 
     @staticmethod
     def _render_recall_block(results: list, _lang: str) -> str:
-        """Render recall hits as the markdown block the model receives.
+        """Render recall hits through the shared entry point, with a header.
 
         Format: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``, under an
         i18n overview line.
 
-        tier/entity go through the localized label table (a scoped entry's
-        entity is always its subject.kind, and echoing it raw would push
-        ``[fact/group_chat]`` into a Chinese prompt); the plugin's
-        ``memory_bridge.render_relevant_memory`` shares that table. The
-        memory text itself is never translated. The time anchor prefers
-        when the event actually happened — event_end_at → event_start_at →
-        created_at, the same order as the persona stale block and temporal
-        ``_past_anchor`` — so the model sees when the event happened rather
-        than when the memory was written, plus a localized relative label.
+        No line building happens here. ``memory.recall_render`` is the one
+        place recall results become prompt text — it owns the label table,
+        the time anchor and the token budgets, and it owns them once so
+        this side and the QQ plugin's ``render_relevant_memory`` cannot
+        drift apart (issue #2588; the two used to be hand-written twins).
+        This method supplies the locale and the overview line, which the
+        entry point charges to the same budget because it lands in the same
+        string the model reads.
 
-        Budget mirrors the plugin twin: each entry truncated by tokens
-        (never dropped), the block through the same
-        ``take_lines_within_token_budget``. Entry count here comes from
-        hybrid_recall's fusion cap rather than the plugin's limit=5, so
-        this is the side where the block cap actually binds.
+        Entry count here comes from hybrid_recall's fusion cap rather than
+        the plugin's limit=5, so this is the side where the block cap
+        actually binds.
 
         Deliberately synchronous, and called through ``asyncio.to_thread``
         — see the caller.
         """  # noqa: DOCSTRING_CJK
-        from config import (
-            RECALL_RENDER_ENTRY_MAX_TOKENS,
-            RECALL_RENDER_LINE_OVERHEAD_TOKENS,
-            RECALL_RENDER_TOTAL_MAX_TOKENS,
+        from config import RECALL_RENDER_TOTAL_MAX_TOKENS
+        from memory.recall_render import render_recall_block
+
+        block = render_recall_block(
+            results, _lang,
+            header_template=_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang),
         )
-        from config.prompts.prompts_memory import render_recall_entry_tag
-        from memory.temporal import (
-            time_since_label as _time_label,
-            _parse_iso_safe,
-            to_naive_local,
-        )
-        from utils.tokenize import (
-            count_tokens,
-            take_lines_within_token_budget,
-            truncate_to_tokens,
-        )
-        entry_lines: list[str] = []
-        for i, r in enumerate(results, start=1):
-            tag = render_recall_entry_tag(r.get("tier"), r.get("entity"), _lang)
-            # str() coerce 防 malformed memory entry：facts/reflections.json
-            # 走 JSON 序列化往返，理论上 text / 时间字段应是 str，但 manual
-            # edit / 老格式残留 / 迁移 bug 都可能让它们变 list / int 等
-            # truthy non-string（时间戳尤其常见，老数据可能存 epoch int）。
-            # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
-            # tool call 翻 is_error，模型反而不能正常走。
-            text = truncate_to_tokens(
-                str(r.get("text") or "").strip(),
-                RECALL_RENDER_ENTRY_MAX_TOKENS,
-            )
-            # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
-            # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
-            # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
-            # 把本可用的低优先级字段挡掉，渲染出乱码日期（Codex）。
-            # _parse_iso_safe 对 None / int / list 等都安全返回 None。
-            # date_part 和 rel 都从同一个归一后的 datetime 出，口径一致。
-            anchor_dt = None
-            for _cand in (
-                r.get("event_end_at"),
-                r.get("event_start_at"),
-                r.get("created_at"),
-            ):
-                anchor_dt = to_naive_local(_parse_iso_safe(_cand))
-                if anchor_dt is not None:
-                    break
-            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else ""
-            rel = _time_label(anchor_dt.isoformat(), lang=_lang) if anchor_dt else ""
-            if date_part and rel:
-                time_suffix = f"  ({date_part}, {rel})"
-            elif date_part:
-                time_suffix = f"  ({date_part})"
-            else:
-                time_suffix = ""
-            # 整行再兜一次底（与插件侧对偶）：截断只管 text，而 tag 里的
-            # tier / entity 是未知枚举原样透出的，手改过的 facts.json 能塞
-            # 进任意长的 entity——而整段预算的"至少留一条"规则会无条件留下
-            # 第一行。行上限用「单条 + 行装饰」的口径，正常条目够不着。
-            entry_lines.append(truncate_to_tokens(
-                f"{i}. {tag} {text}{time_suffix}",
-                RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS,
-            ))
-        # 首行 i18n 总览也进这个字符串，所以要先从预算里扣掉，否则整段实际
-        # 超预算（ja 的表头就有 14 tok）。用 n=条目总数 估表头开销：最终 n
-        # 只可能更小、位数只可能更少，往大了估是安全方向。
-        header_template = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang)
-        header_reserve = count_tokens(
-            header_template.format(n=len(entry_lines))
-        ) + count_tokens("\n")
-        kept, dropped = take_lines_within_token_budget(
-            entry_lines, max(0, RECALL_RENDER_TOTAL_MAX_TOKENS - header_reserve),
-        )
-        if dropped:
+        if block.dropped:
             logger.info(
                 "[recall_memory] rendered block over %d tok budget; dropped "
-                "trailing %d entries", RECALL_RENDER_TOTAL_MAX_TOKENS, dropped,
+                "trailing %d entries", RECALL_RENDER_TOTAL_MAX_TOKENS, block.dropped,
             )
-        # 总览按**实际渲染出去的条数**算：报 n=8 却只列 5 条会让模型以为
-        # 剩下三条被自己漏掉了，追着再调一次工具。
-        header = header_template.format(n=len(kept))
-        return "\n".join([header] + kept)
+        return block.text
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """Sync the registry's current state to all active clients.

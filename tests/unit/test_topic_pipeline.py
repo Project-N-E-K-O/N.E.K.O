@@ -1288,16 +1288,29 @@ async def test_activity_tracker_can_start_topic_heartbeat_without_collector():
     assert isinstance(result[0], asyncio.CancelledError)
 
 
-def test_activity_tracker_topic_candidate_heartbeat_uses_full_global_locale():
+def test_activity_tracker_heartbeat_never_reads_the_short_locale():
+    """Neither heartbeat consumer may go back to the short accessor.
+
+    Both the topic pool and (since #2500 step 2) the activity narration take
+    the full locale, so the loop's own non-privacy path must not name
+    ``get_global_language`` at all — a re-introduced short read would
+    silently collapse zh-TW to zh again. The values that actually reach the
+    two consumers are pinned behaviourally in
+    ``tests/unit/test_zh_tw_locale_call_sites.py``.
+    """
     from main_logic.activity.tracker import UserActivityTracker
 
     source = inspect.getsource(UserActivityTracker._activity_guess_loop)
+    # The privacy-mode early-continue above keeps its own short fallback, so
+    # look only at the main body below it.
+    main_body = source.split("if _privacy_mode_active():", 1)[-1]
+    main_body = main_body.split("continue", 1)[-1]
 
-    assert "from utils.language_utils import get_global_language, get_global_language_full" in source
-    assert "activity_lang = get_global_language() or 'en'" in source
-    assert "topic_lang = get_global_language_full() or activity_lang" in source
-    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in source
-    assert "lang=activity_lang" in source
+    assert "get_global_language()" not in main_body
+    assert "activity_lang = get_global_language_full() or 'en'" in main_body
+    assert "topic_lang = activity_lang" in main_body
+    assert "self._process_topic_candidates_if_ready(lang=topic_lang, now=ts)" in main_body
+    assert "lang=activity_lang" in main_body
 
 
 @pytest.mark.asyncio

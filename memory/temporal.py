@@ -223,6 +223,33 @@ def to_naive_local(dt: datetime | None) -> datetime | None:
     return dt
 
 
+def explicit_event_window(entry: dict) -> tuple[str | None, str | None]:
+    """Return persisted event bounds, excluding synthesis-time fallbacks.
+
+    Reflection synthesis fills missing bounds from ``created_at`` so render
+    and expiry code always has an anchor.  Those ingestion timestamps are not
+    an explicit event window and must not become one merely because a derived
+    row receives a newer ``created_at``.
+    """
+    if not isinstance(entry, dict):
+        return None, None
+    raw_start = entry.get('event_start_at')
+    raw_end = entry.get('event_end_at')
+    start = to_naive_local(_parse_iso_safe(raw_start))
+    end = to_naive_local(_parse_iso_safe(raw_end))
+    created = to_naive_local(_parse_iso_safe(entry.get('created_at')))
+    if (
+        not entry.get('event_when_raw')
+        and start == created
+        and (end is None or end == created)
+    ):
+        return None, None
+    return (
+        raw_start if start is not None else None,
+        raw_end if end is not None else None,
+    )
+
+
 def _past_anchor(entry: dict) -> datetime | None:
     """Time anchor for past judgment (end > start > added > created).
 

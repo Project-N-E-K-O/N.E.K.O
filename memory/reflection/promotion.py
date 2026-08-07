@@ -364,6 +364,7 @@ class PromotionMixin:
                         entity=r.get('entity', 'relationship'),
                         source='reflection_time_driven',
                         source_id=rid,
+                        speaker_provenance=r,
                         **promote_kwargs,
                     )
                 except Exception as e:

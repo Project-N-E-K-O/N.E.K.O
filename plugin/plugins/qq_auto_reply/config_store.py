@@ -82,8 +82,14 @@ class QQAutoReplyConfigStore:
             # QQ 开放平台
             "qq_open_app_id": "",
             "qq_open_client_secret": "",
+            # R11 身份作用域取证开关（qq_open_plat.py 顶部有完整说明）。默认
+            # 关：打开后每条群/私聊事件都会往持久日志里写一行标识符字段，只有
+            # 维护者做那次取证时才需要。
+            "qq_open_identity_probe_enabled": False,
             "trusted_users": [],
             "trusted_groups": [],
+            # 全局 per-QQ 信赖度演化账本；群与私聊 participant 共池。
+            "speaker_trust_profiles": {},
             "normal_relay_probability": 0.1,
             "open_reply_probability": 0.1,
             "show_onboarding": True,
@@ -101,11 +107,14 @@ class QQAutoReplyConfigStore:
             "group_attention_message_recovery": 0.6,
             "group_attention_reply_penalty": 1.3,
             "group_attention_keyword_boost_scale": 2.5,
-            "group_attention_focus_lock_seconds": 120,
+            "group_attention_focus_lock_seconds": 60,
+            "group_attention_focus_rise_seconds": 30,
+            "group_attention_focus_cooldown_seconds": 60,
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,
             "group_attention_min_threshold": 1.0,
             "group_attention_message_gain": 0.25,
+            "icebreaker_cold_threshold": 3,
             "backlog_retention_limit": 200,
             "backlog_summary_threshold": 10,
             "backlog_notify_cooldown_seconds": 900,
@@ -157,6 +166,11 @@ class QQAutoReplyConfigStore:
         merged.update(payload)
         merged["trusted_users"] = payload.get("trusted_users") if isinstance(payload.get("trusted_users"), list) else []
         merged["trusted_groups"] = payload.get("trusted_groups") if isinstance(payload.get("trusted_groups"), list) else []
+        # 存量 trust 池：**只读透传，永不改名、永不删键、永不归一**。池已上移
+        # memory_server，这份磁盘数据是一次性迁移源，且每次启动都会被重推
+        # （服务端按 account 哨兵幂等跳过）。归一/截断它等于悄悄改写迁移源，
+        # 而池文件一旦丢失就再也恢复不到迁移时刻的状态。
+        # `merged.update(payload)` 已经原样带过来了，这里刻意不做任何处理。
         merged["backlog_labels"] = self.normalize_backlog_labels(payload.get("backlog_labels"))
         reply_mode = self.normalize_reply_mode(payload.get("reply_mode"))
         if reply_mode != "text" or "reply_mode" in payload:
@@ -181,6 +195,8 @@ class QQAutoReplyConfigStore:
             normalized.update(dict(config or {}))
             normalized["trusted_users"] = list(normalized.get("trusted_users") or [])
             normalized["trusted_groups"] = list(normalized.get("trusted_groups") or [])
+            # 见 load()：存量 trust 池只读透传，save 不重建、不归一。
+            # `normalized.update(dict(config))` 已原样保留原值。
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
             normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))

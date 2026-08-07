@@ -297,7 +297,7 @@
     var dot = document.createElement('span');
     dot.className = 'neko-social-embed-dot';
     title.appendChild(dot);
-    title.appendChild(document.createTextNode((window.t && window.t('buttons.social')) || 'Neko Community'));
+    title.appendChild(document.createTextNode((window.t && window.t('buttons.social')) || 'nekoverse'));
 
     var closeBtn = document.createElement('button');
     closeBtn.className = 'neko-social-embed-close';

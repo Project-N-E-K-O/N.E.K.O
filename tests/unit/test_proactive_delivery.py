@@ -16,6 +16,8 @@ from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
     DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
+    SWAP_PRIME_DELIVERY_CLAIM_KEY,
+    VOICE_DELIVERY_COMMITTED_KEY,
     effective_priority,
 )
 
@@ -430,6 +432,138 @@ def test_passive_flood_guard_bounds_callback_queue_without_extras(monkeypatch):
     ]
     assert mgr.pending_extra_replies == []
     assert dropped_ack.done() and dropped_ack.result is False
+
+
+def test_flood_guard_rejects_incoming_when_older_send_started(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed_ack = _FakeAckFuture()
+    incoming_ack = _FakeAckFuture()
+    committed = _passive_cb("provider send started")
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed[DELIVERY_ACK_FUTURE_KEY] = committed_ack
+    incoming = _passive_cb("cannot displace committed")
+    incoming[DELIVERY_ACK_FUTURE_KEY] = incoming_ack
+    mgr.pending_agent_callbacks = [committed]
+
+    mgr.enqueue_agent_callback(incoming)
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert not committed_ack.done()
+    assert incoming_ack.done() and incoming_ack.result is False
+    assert incoming.get(DELIVERY_RETRACTED_KEY) is True
+
+
+@pytest.mark.parametrize(
+    "ownership_key",
+    [VOICE_DELIVERY_COMMITTED_KEY, SWAP_PRIME_DELIVERY_CLAIM_KEY],
+)
+@pytest.mark.parametrize("pre_submitted", [False, True])
+def test_flood_rejected_newer_does_not_stale_provider_owned_old(
+    monkeypatch,
+    ownership_key,
+    pre_submitted,
+):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("provider-owned old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[ownership_key] = True
+    old_seq = old["_coalesce_submit_seq"]
+
+    rejected_ack = _FakeAckFuture()
+    newer = _proactive_cb("flood rejected newer", coalesce_key="state")
+    newer[DELIVERY_ACK_FUTURE_KEY] = rejected_ack
+    if pre_submitted:
+        class _ManagerStub:
+            def submit(self, callback, **_kwargs):
+                self.submitted = callback
+
+        manager = _ManagerStub()
+        mgr.proactive_manager = manager
+        mgr.is_goodbye_silent = lambda: False
+        mgr.submit_proactive_callback(newer, coalesce_key="state")
+        assert manager.submitted is newer
+        assert mgr._coalesce_latest["state"] == newer["_coalesce_submit_seq"]
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected_ack.done() and rejected_ack.result is False
+    assert mgr._coalesce_latest["state"] == old_seq
+    old.pop(ownership_key)
+    assert mgr._retract_stale_coalesced([old]) is False
+
+
+def test_flood_rollback_preserves_newer_manager_held_sequence(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    old = _passive_cb("claimed old", coalesce_key="state")
+    mgr.enqueue_agent_callback(old)
+    old[SWAP_PRIME_DELIVERY_CLAIM_KEY] = True
+
+    async def _deliver(_batch):
+        return None
+
+    mgr.proactive_manager = ProactiveDeliveryManager(deliver=_deliver)
+    mgr.is_goodbye_silent = lambda: False
+    held = _proactive_cb("manager-held newer", coalesce_key="state")
+    mgr.submit_proactive_callback(held, coalesce_key="state")
+
+    rejected = _passive_cb("flood-rejected newest", coalesce_key="state")
+    mgr.enqueue_agent_callback(rejected)
+
+    assert mgr.pending_agent_callbacks == [old]
+    assert rejected.get(DELIVERY_RETRACTED_KEY) is True
+    assert mgr._coalesce_latest["state"] == held["_coalesce_submit_seq"]
+    old.pop(SWAP_PRIME_DELIVERY_CLAIM_KEY)
+    assert mgr._retract_stale_coalesced([old]) is True
+
+
+def test_newer_same_key_keeps_committed_callback_voice_mirror():
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started", coalesce_key="state")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_id = committed["_callback_delivery_id"]
+
+    newer = _proactive_cb("next snapshot", coalesce_key="state")
+    mgr.enqueue_agent_callback(newer)
+
+    assert mgr.pending_agent_callbacks == [committed, newer]
+    assert [extra["summary"] for extra in mgr.pending_extra_replies] == [
+        "provider send started",
+        "next snapshot",
+    ]
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == committed_id
+
+
+def test_extra_flood_guard_keeps_provider_owned_voice_mirror(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "AGENT_CALLBACK_QUEUE_MAX_ITEMS", 1)
+    mgr = _make_session_mgr()
+    committed = _proactive_cb("provider send started")
+    mgr.enqueue_agent_callback(committed)
+    committed[VOICE_DELIVERY_COMMITTED_KEY] = True
+    committed_mirror = mgr.pending_extra_replies[0]
+    mgr.pending_extra_replies.append({
+        "_callback_delivery_id": "orphan-id",
+        "summary": "safe orphan",
+    })
+
+    # A passive incoming callback triggers both flood guards. It is rejected
+    # from the callback queue; the unrelated orphan, not the committed mirror,
+    # is the only safe extra victim.
+    mgr.enqueue_agent_callback(_passive_cb("incoming"))
+
+    assert mgr.pending_agent_callbacks == [committed]
+    assert mgr.pending_extra_replies == [committed_mirror]
 
 
 def test_enqueue_coalesce_resolves_superseded_ack_false():

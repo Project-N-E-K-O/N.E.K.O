@@ -8,6 +8,20 @@ tests/test_inputs/
 # scripts/check_i18n.py 偶尔会被人 redirect 到这里，别再次入库
 /i18n_check_output.txt
 
+# 容器的持久化目录：里面有用户记忆、角色卡、含 API key 的配置和 TLS 私钥，
+# 一旦被 `git add -A` 带进提交就等于公开。两个位置都要挡：维护中的
+# docker-compose.yml 在 docker/ 下（它的 ./ 相对路径落在那里），而 README 教的是
+# 把 compose 片段存到自己的目录里跑，那个目录可能就是仓库根。
+# 旧布局的 N.E.K.O/ 与 ssl/ 一并挡上 —— 迁移做到一半时它们就摊在工作区里，
+# 那恰恰是最容易顺手 `git add -A` 的时候。
+/neko-home/
+/ssl/
+/N.E.K.O/
+/docker/neko-home/
+/docker/ssl/
+/docker/logs/
+/docker/N.E.K.O/
+
 # 忽略日志文件
 *.log
 /logs/
@@ -147,6 +161,7 @@ build*
 !build_frontend.bat
 !build_frontend.sh
 !build-desktop*.yml
+!scripts/build-desktop-release.ps1
 metadata.package.json
 version_info.txt
 
@@ -239,3 +254,4 @@ tests/testbench/docs/dev_note.txt
 # Plugin runtime and local live-screen artifacts
 /plugin/plugins/*/plugin.toml.lock
 /.codex-live-screen.png
+plugin/plugins/data/user_profile_cache.json

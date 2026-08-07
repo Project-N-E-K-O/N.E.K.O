@@ -86,6 +86,10 @@ class QQPromptBuilder:
         group_id: str | None,
         message: str,
         current_message_id: str = "",
+        is_reply_to_bot: bool = False,
+        quoted_message_id: str = "",
+        mentions_other_user: bool = False,
+        mentions_all: bool = False,
     ) -> str:
         if is_group and not group_facing:
             return self.plugin._build_group_turn_message(
@@ -95,5 +99,9 @@ class QQPromptBuilder:
                 group_id=group_id,
                 message=message,
                 current_message_id=current_message_id,
+                is_reply_to_bot=is_reply_to_bot,
+                quoted_message_id=quoted_message_id,
+                mentions_other_user=mentions_other_user,
+                mentions_all=mentions_all,
             )
         return message

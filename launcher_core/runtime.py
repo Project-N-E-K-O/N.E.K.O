@@ -47,6 +47,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 from multiprocessing import Process, freeze_support, Event
+
+# ``plugin/`` is also used as an import root for user-plugin processes and it
+# contains a sibling ``config`` package.  Keep the repository root first here,
+# otherwise a long-lived test process (or an embedded plugin host) can resolve
+# the launcher's top-level ``config`` imports to ``plugin.config`` instead.
+_PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+while _PROJECT_ROOT in sys.path:
+    sys.path.remove(_PROJECT_ROOT)
+sys.path.insert(0, _PROJECT_ROOT)
+
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 from utils import parent_guard, single_instance

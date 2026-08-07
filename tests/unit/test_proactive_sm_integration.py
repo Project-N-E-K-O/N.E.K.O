@@ -1703,7 +1703,9 @@ def test_start_session_success_path_clears_goodbye_silent_gate():
     normalized_source = re.sub(r"\s+", " ", _read_core_package_source())
     success_marker = "self._session_start_circuit_open = False"
     clear_marker = "if self.is_goodbye_silent(): self.set_goodbye_silent(False)"
-    notify_marker = "await self.send_session_started(input_mode)"
+    # The ack now names the start it answers (#2539), so match the call opener
+    # rather than the whole call: the args are not what this guard is about.
+    notify_marker = "await self.send_session_started(input_mode"
 
     clear_pos = normalized_source.index(clear_marker)
     success_pos = normalized_source.rindex(success_marker, 0, clear_pos)

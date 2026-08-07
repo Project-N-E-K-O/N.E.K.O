@@ -130,6 +130,7 @@
             this.originalBodyPointerEvents = '';
             this.openReason = 'onboarding';
             this.currentLanguage = '';
+            this.localeRefreshRunId = 0;
             this.typewriterRunId = 0;
             this.typewriterTimer = null;
             this.homeTutorialCompletedInSession = false;
@@ -432,6 +433,40 @@
             return Array.isArray(payload.presets) ? payload.presets : [];
         }
 
+        async refreshForLocaleChange() {
+            const nextLanguage = getCurrentLanguage();
+            const overlay = this.overlay;
+            if (!overlay || overlay.hidden) {
+                return;
+            }
+
+            const runId = ++this.localeRefreshRunId;
+            const presets = await this.fetchPresets(nextLanguage);
+            if (
+                runId !== this.localeRefreshRunId
+                || this.overlay !== overlay
+                || !document.body.contains(overlay)
+                || overlay.hidden
+                || !presets.length
+            ) {
+                return;
+            }
+
+            this.currentLanguage = nextLanguage;
+            this.presets = presets;
+            const stageTwo = overlay.querySelector('.character-personality-stage-two');
+            const selectedPresetId = this.selectedPresetId;
+            const stillOnStageTwo = !!(stageTwo && !stageTwo.hidden && selectedPresetId);
+            if (stillOnStageTwo) {
+                const selectedPreset = presets.find((preset) => preset.preset_id === selectedPresetId);
+                if (selectedPreset) {
+                    this.renderStageTwo(selectedPreset, nextLanguage);
+                    return;
+                }
+            }
+            this.renderStageOne();
+        }
+
         ensureOverlay() {
             ensureStyles();
             if (this.overlay && document.body.contains(this.overlay)) {
@@ -563,8 +598,15 @@
                 }
             };
 
+            const refreshForLocaleChange = () => {
+                void this.refreshForLocaleChange().catch((error) => {
+                    console.warn('[CharacterPersonalityOnboarding] failed to refresh locale:', error);
+                });
+            };
+
             window.addEventListener(HOME_TUTORIAL_RESET_EVENT, resetHomeTutorialCompleted);
             window.addEventListener('storage', resetHomeTutorialCompletedFromStorage);
+            window.addEventListener('localechange', refreshForLocaleChange);
             window.addEventListener(STARTUP_GREETING_RELEASE_EVENT, handleHomeTutorialStartupRelease);
             window.addEventListener('neko:tutorial-started', queueResume);
             window.addEventListener('neko:tutorial-completed', markHomeTutorialCompleted);
@@ -589,13 +631,13 @@
             }
 
             window.addEventListener('beforeunload', () => {
-                if (!this.resetBroadcastChannel) {
-                    return;
+                window.removeEventListener('localechange', refreshForLocaleChange);
+                if (this.resetBroadcastChannel) {
+                    try {
+                        this.resetBroadcastChannel.close();
+                    } catch (_) {}
+                    this.resetBroadcastChannel = null;
                 }
-                try {
-                    this.resetBroadcastChannel.close();
-                } catch (_) {}
-                this.resetBroadcastChannel = null;
             });
         }
 
@@ -731,9 +773,10 @@
 
         getPresetHighlights(preset) {
             const highlightMap = {
-                classic_genki: ['高共情', '贴贴型', '情绪充电'],
-                tsundere_helper: ['嘴硬心软', '高可靠', '吐槽式偏爱'],
-                elegant_butler: ['稳妥周全', '优雅克制', '先你一步'],
+                frail_younger_sister: ['主动留人', '黏人迟疑', '拒绝不纠缠'],
+                empathetic_older_sister: ['温柔接管', '从容坚定', '可靠承诺'],
+                sharp_tongued_junior: ['强势毒舌', '行动偏爱', '嘴硬不认'],
+                chaotic_online_friend: ['正经胡说', '玩梗装傻', '事实可靠'],
             };
             const presetId = preset && preset.preset_id;
             const fallbacks = highlightMap[presetId] || [];
@@ -1111,12 +1154,19 @@
             if (!this.overlay) {
                 return;
             }
+            ++this.localeRefreshRunId;
             this.prepareOverlayPointerEvents();
             this.updateHeaderCopy();
             this.overlay.hidden = false;
+            if (this.currentLanguage && this.currentLanguage !== getCurrentLanguage()) {
+                void this.refreshForLocaleChange().catch((error) => {
+                    console.warn('[CharacterPersonalityOnboarding] failed to refresh reopened overlay:', error);
+                });
+            }
         }
 
         hideOverlay() {
+            ++this.localeRefreshRunId;
             if (this.overlay) {
                 this.overlay.hidden = true;
             }

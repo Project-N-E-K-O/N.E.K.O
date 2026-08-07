@@ -735,10 +735,10 @@ async def test_fts_dedup_lets_revived_subject_restate_archived_fact(tmp_path):
     await asweep_scoped_subject_archive("小天", **_sweep_kwargs(fs, pm, re))
     assert await fs.aload_facts("小天") == []
 
-    # FTS stub：命中已 subject 归档的 fs1（分数 -10 = 强相似）。
+    # FTS stub：命中已 subject 归档的 fs1（overlap 1.0 = token 集全同）。
     class _FTSStub:
-        async def asearch_facts(self, _name, _text, _limit):
-            return [("fs1", -10.0)]
+        async def asearch_similar_facts(self, _name, _text, _limit):
+            return [("fs1", 1.0)]
 
         async def aindex_fact(self, *_a, **_k):
             return None
@@ -764,8 +764,8 @@ async def test_fts_dedup_lets_revived_subject_restate_archived_fact(tmp_path):
                       indent=2, ensure_ascii=False)
 
     class _FTSStub2:
-        async def asearch_facts(self, _name, _text, _limit):
-            return [("ab1", -10.0)]
+        async def asearch_similar_facts(self, _name, _text, _limit):
+            return [("ab1", 1.0)]
 
         async def aindex_fact(self, *_a, **_k):
             return None
@@ -773,7 +773,7 @@ async def test_fts_dedup_lets_revived_subject_restate_archived_fact(tmp_path):
     fs._time_indexed = _FTSStub2()
     created2 = await fs.apersist_scoped_facts(
         "小天",
-        [{"text": "小红爱喝咖啡", "importance": 6}],
+        [{"text": "小红喜欢喝咖啡", "importance": 6}],
         subject=SUBJ_ACTIVE,
     )
     assert created2 == []  # absorbed 归档行照旧参与近似去重
@@ -827,6 +827,41 @@ async def test_restore_roundtrip_all_three_stores(tmp_path):
     assert result2 == {'facts': 0, 'reflections': 0, 'persona_entries': 0}
     refls2 = await re._aload_reflections_full("小天")
     assert len([r for r in refls2 if r['id'] == "rs1"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_subject_restore_never_resurrects_an_arbitration_loser(tmp_path):
+    _, fs, _, _, _, _ = _install(str(tmp_path))
+    fs._facts["小天"] = []
+    await fs.asave_facts("小天")
+    loser = _scoped_fact(
+        "loser", "rejected fact", SUBJ_STALE, created_at=_iso(120),
+    )
+    loser["arbitration_archived_at"] = _iso(1)
+    loser["arbitration_reason"] = "trust_preferred_existing"
+
+    from utils.file_utils import atomic_write_json
+    archive_path = fs._facts_archive_path("小天")
+    atomic_write_json(archive_path, [loser], indent=2, ensure_ascii=False)
+    assert fs._archive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(), NOW,
+    ) == 0
+    with open(archive_path, encoding="utf-8") as handle:
+        rows = json.load(handle)
+    assert "subject_archived_at" not in rows[0]
+
+    rows[0]["subject_archived_at"] = NOW.isoformat()
+    atomic_write_json(archive_path, rows, indent=2, ensure_ascii=False)
+    assert fs._restore_subject_facts(
+        "小天", SUBJ_STALE, (NOW + timedelta(seconds=1)).isoformat(),
+    ) == 1
+    assert await fs.aload_facts("小天") == []
+    with open(archive_path, encoding="utf-8") as handle:
+        remaining = json.load(handle)
+    assert remaining[0]["id"] == "loser"
+    assert remaining[0]["arbitration_archived_at"]
+    assert "subject_archived_at" not in remaining[0]
+    assert remaining[0]["restored_at"]
 
 
 @pytest.mark.asyncio

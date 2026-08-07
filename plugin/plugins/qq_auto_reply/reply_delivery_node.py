@@ -136,15 +136,20 @@ class QQReplyDeliveryNode:
     @staticmethod
     def _compose_text(block: QQMessageBlock) -> str:
         """组合文字 + emoji + at + reply 为最终文本。"""
+        import re as _re
+
         parts: list[str] = []
         if block.reply_to:
             parts.append(f"[CQ:reply,id={block.reply_to}]")
         if block.at_user:
             parts.append(f"[CQ:at,qq={block.at_user}]")
         if block.text:
-            parts.append(block.text)
+            # 兜底：清除 prompt 模板 XML 标签残留（模型偶有输出未进 msg 包裹的裸标签，
+            # 后处理器移除后仍可能因格式变体留下漏网之鱼）
+            clean = block.text
+            clean = _re.sub(r"</?(?:reply|msg|at|poke|sticker|record|keyboard|text|emoji|think|feeling|forward|mark)(?:\s[^>]*)?\s*/?>", "", clean, flags=_re.IGNORECASE)
+            parts.append(clean.strip())
         if block.emoji:
-            # QQ 系统表情：使用 OneBot CQ 码
             parts.append(f"[CQ:face,id={block.emoji}]")
         return "".join(parts)
 
@@ -152,12 +157,12 @@ class QQReplyDeliveryNode:
         self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str,
         *, keyboard: str = "",
     ) -> bool:
-        """Returns True when the send is confirmed or fire-and-forget.
+        """Returns True only when the send came back confirmed.
 
-        NapCat sends return None by design (failure surfaces as an
-        exception); the Open Platform client returns the message id, or
-        None on a swallowed failure - only that explicit None means the
-        message was not delivered."""
+        Both platforms report one: the Open Platform client returns the
+        message id (None when it swallowed a failure), and the NapCat
+        client returns the id from the echo round-trip (None on timeout).
+        None means the message was not confirmed delivered."""
         if not text:
             return False
         mode = self.plugin._get_reply_mode()
@@ -222,7 +227,9 @@ class QQReplyDeliveryNode:
         if not sticker_path:
             return False
         return self._confirm_platform_result(
-            await self.plugin.qq_client.send_group_image(plan.target_id, sticker_path),
+            await self.plugin.qq_client.send_group_image(
+                plan.target_id, sticker_path, sub_type="1",
+            ),
         )
 
     async def _send_poke(self, plan: QQDeliveryPlan, block: QQMessageBlock) -> bool:

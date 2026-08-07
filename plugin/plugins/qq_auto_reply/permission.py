@@ -15,12 +15,20 @@ class PermissionManager:
     _NICKNAME_FORBIDDEN_CHARS = frozenset("[]|")
     _NICKNAME_ALLOWED_FORMAT_CHARS = frozenset({"\u200d"})
 
-    def __init__(self, trusted_users: List[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        trusted_users: List[Dict[str, Any]] = None,
+    ):
         """
         初始化权限管理器
 
         Args:
             trusted_users: 信任用户列表，格式: [{"qq": "123456", "level": "admin", "nickname": "小明"}, ...]
+
+        信赖度（speaker_trust）已上移到 memory_server 的全局池，本类只负责
+        名册与权限档位：插件的唯一职责是**上报档位**（wire 上的
+        `speaker_tier`），分数由服务端按 account 全局计算。磁盘上的
+        `speaker_trust_profiles` 键原样保留，只做一次性迁移源。
         """
         self._users: Dict[str, Dict[str, Any]] = {}  # {qq: {level, nickname?, normal_relay_probability?}}
 
