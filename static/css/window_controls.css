@@ -14,8 +14,7 @@
     --neko-window-control-group-border: rgba(255, 255, 255, 0.16);
     --neko-window-control-hover-background: rgba(255, 255, 255, 0.2);
     --neko-window-control-active-background: rgba(255, 255, 255, 0.3);
-    --neko-window-control-close-color: #fff5f5;
-    --neko-window-control-close-hover-background: rgba(248, 113, 113, 0.28);
+    --neko-window-control-close-color: var(--neko-window-control-color);
     display: flex;
     align-items: center;
     gap: 2px;
@@ -261,14 +260,6 @@
 .neko-window-controls .close-page-btn img,
 .neko-window-controls .voice-close img {
     display: none !important;
-}
-
-.neko-window-controls [data-neko-window-control="close"]:hover,
-.neko-window-controls .close-btn:hover,
-.neko-window-controls .close-page-btn:hover,
-.neko-window-controls .voice-close:hover {
-    background: var(--neko-window-control-close-hover-background);
-    color: #fff;
 }
 
 html:has(body > .container > .container-header),
