@@ -2181,6 +2181,40 @@ Object.assign(window.Jukebox, {
         background: #38a6d2;
       }
 
+      /* 复用聊天轮盘按钮的激活蓝色，保持跨界面操作色一致。 */
+      [data-theme="dark"] .jukebox-table td.song-action .play-btn {
+        color: #d9f3ff;
+        background: radial-gradient(circle at 30% 25%, rgba(92, 196, 255, 0.3) 0%, rgba(36, 68, 96, 0.96) 44%, rgba(17, 34, 51, 0.98) 100%);
+        border: 1px solid rgba(92, 196, 255, 0.42);
+        box-shadow:
+          0 0 0 1px rgba(92, 196, 255, 0.22),
+          0 4px 12px rgba(14, 83, 128, 0.28),
+          inset 0 1px 0 rgba(255, 255, 255, 0.14),
+          inset 0 -8px 14px rgba(6, 19, 32, 0.2);
+      }
+
+      [data-theme="dark"] .jukebox-table td.song-action .play-btn:hover {
+        color: #ffffff;
+        background: radial-gradient(circle at 30% 25%, rgba(126, 211, 255, 0.38) 0%, rgba(42, 78, 109, 0.98) 44%, rgba(17, 34, 51, 1) 100%);
+        border-color: rgba(126, 211, 255, 0.58);
+        box-shadow:
+          0 0 0 2px rgba(92, 196, 255, 0.3),
+          0 7px 16px rgba(14, 83, 128, 0.34),
+          inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      }
+
+      [data-theme="dark"] .jukebox-table td.song-action .play-btn.playing,
+      [data-theme="dark"] .jukebox-table td.song-action .play-btn.playing:hover {
+        color: #fff4f5;
+        background: radial-gradient(circle at 30% 25%, rgba(255, 170, 180, 0.3) 0%, rgba(122, 49, 65, 0.98) 44%, rgba(66, 24, 36, 1) 100%);
+        border-color: rgba(255, 151, 165, 0.5);
+        box-shadow:
+          0 0 0 1px rgba(255, 151, 165, 0.22),
+          0 5px 14px rgba(132, 35, 57, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.16),
+          inset 0 -8px 14px rgba(54, 12, 24, 0.22);
+      }
+
       [data-theme="dark"] .speaker-icon,
       [data-theme="dark"] .speaker-muted-icon {
         filter: none;
@@ -2418,8 +2452,13 @@ Object.assign(window.Jukebox, {
 
       [data-theme="dark"] .sam-tab.active {
         color: #ffffff;
-        background: #238bb5;
-        box-shadow: 0 8px 20px rgba(14, 165, 233, 0.22);
+        background: radial-gradient(circle at 30% 25%, rgba(92, 196, 255, 0.3) 0%, rgba(36, 68, 96, 0.96) 44%, rgba(17, 34, 51, 0.98) 100%);
+        border-color: rgba(92, 196, 255, 0.42);
+        box-shadow:
+          0 0 0 1px rgba(92, 196, 255, 0.22),
+          0 8px 20px rgba(14, 83, 128, 0.28),
+          inset 0 1px 0 rgba(255, 255, 255, 0.14),
+          inset 0 -8px 14px rgba(6, 19, 32, 0.2);
       }
 
       [data-theme="dark"] .sam-file-drop-zone,
