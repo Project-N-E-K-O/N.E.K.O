@@ -19,7 +19,7 @@ import logging
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.3"
+APP_VERSION = "0.9.0"
 logger = logging.getLogger(f"{APP_NAME}.{__package__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
