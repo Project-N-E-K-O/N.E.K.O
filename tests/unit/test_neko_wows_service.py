@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
+import threading
 import urllib.error
 
 import pytest
@@ -19,6 +21,7 @@ from plugin.plugins.neko_wows.adapters.service_manager import (
     MODE_OFFLINE,
     SERVICE_ID,
     ServiceHealth,
+    ServiceStatus,
     WowsServiceManager,
     api_major,
     is_loopback_url,
@@ -26,6 +29,7 @@ from plugin.plugins.neko_wows.adapters.service_manager import (
     probe_health,
 )
 from plugin.plugins.neko_wows.domain.contracts import WowsConfig
+from plugin.plugins.neko_wows import NekoWowsPlugin
 
 
 class FakeResponse:
@@ -191,6 +195,58 @@ def test_a_foreign_service_blocks_both_launch_and_shutdown(monkeypatch):
     # And stopping must be a no-op: we own nothing here.
     stopped = manager.stop()
     assert "nothing to stop" in stopped.detail
+
+
+def test_a_conflicting_service_is_not_safe_for_transport():
+    status = ServiceStatus(
+        mode=MODE_CONFLICT,
+        health=ServiceHealth(reachable=True, ours=False),
+    )
+    assert status.transport_allowed is False
+
+
+@pytest.mark.parametrize("mode", [MODE_EXTERNAL, MODE_MANAGED, MODE_OFFLINE, MODE_DISABLED])
+def test_non_conflicting_service_states_allow_transport_supervision(mode):
+    assert ServiceStatus(mode=mode).transport_allowed is True
+
+
+def test_plugin_does_not_start_transport_for_a_conflicting_service():
+    starts = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin.transport = type("Transport", (), {"start": lambda _self: starts.append(1)})()
+    plugin._running = False
+    plugin._reconnect_required = False
+    status = ServiceStatus(
+        mode=MODE_CONFLICT,
+        health=ServiceHealth(reachable=True, ours=False),
+    )
+
+    assert NekoWowsPlugin._activate_transport(plugin, status) is False
+    assert starts == []
+    assert plugin._running is False
+    assert plugin._reconnect_required is True
+
+
+def test_config_change_keeps_reconnect_required_after_conflict_blocked_start():
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._state_lock = threading.RLock()
+    plugin._running = False
+    plugin._reconnect_required = True
+    plugin.cfg = WowsConfig()
+
+    async def reload_config():
+        cfg = WowsConfig()
+        cfg.service_url = "http://127.0.0.1:18111"
+        plugin.cfg = cfg
+        return cfg
+
+    plugin._reload_config = reload_config
+
+    result = asyncio.run(NekoWowsPlugin.on_config_change(plugin))
+
+    assert result.is_ok()
+    assert plugin._reconnect_required is True
 
 
 def test_auto_start_disabled_is_reported_not_attempted(monkeypatch):

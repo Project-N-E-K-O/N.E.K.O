@@ -49,7 +49,11 @@ from .adapters.runtime_timeline import (
     STAGE_SERVICE,
     RuntimeTimeline,
 )
-from .adapters.schema_adapter import UnsupportedApiVersion, WowsSchemaAdapter
+from .adapters.schema_adapter import (
+    UnexpectedServiceIdentity,
+    UnsupportedApiVersion,
+    WowsSchemaAdapter,
+)
 from .adapters.service_manager import WowsServiceManager
 from .adapters.transport import CursorGate, RawFrame, TelemetryTransport
 from .detectors._base import DetectorRegistry
@@ -71,6 +75,7 @@ from .domain.contracts import (
     WowsConfig,
 )
 from .domain.facts import FactBuilder
+from .domain.snapshot import STATUS_ENDED
 from .knowledge.importer import DocumentImporter, DocumentRejected
 from .knowledge.retrieval import WowsTacticsRepository
 from .knowledge.store import KnowledgeStore
@@ -92,6 +97,7 @@ CONFIG_SECTION = "neko_wows"
 KNOWLEDGE_DB_NAME = "tactical_knowledge.db"
 
 STORE_CHANNEL_MODE = "channel_mode"
+STORE_INTRUSION_SETTINGS = "intrusion_settings"
 STORE_INTRUSION_MODE = "dialogue_intrusion_mode"
 STORE_QUIET_WINDOW = "user_chat_quiet_window_seconds"
 STORE_DISABLED_CATEGORIES = "disabled_categories"
@@ -114,6 +120,13 @@ class NekoWowsPlugin(NekoPluginBase):
         super().__init__(ctx)
         self.cfg = WowsConfig()
         self._state_lock = threading.RLock()
+        # Preference actions await durable storage. Serialize those transactions
+        # without holding the transport-thread pipeline lock across an await.
+        self._preference_lock = asyncio.Lock()
+        # Serializes one whole frame against configuration changes and pipeline
+        # resets. No frame may observe a mixture of old detectors and new output
+        # policy, especially while dry-run is being changed.
+        self._pipeline_lock = threading.RLock()
 
         self.timeline = RuntimeTimeline(self.cfg.observability_max_events)
         self.service = WowsServiceManager(
@@ -148,6 +161,7 @@ class NekoWowsPlugin(NekoPluginBase):
         self._prompt_bundle = DEFAULT_BUNDLE
         self._last_candidate = None
         self._service_signature: tuple[str, str] | None = None
+        self._blocked_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     # ------------------------------------------------------------------ 配置
     def _build_registry(self) -> DetectorRegistry:
@@ -159,31 +173,54 @@ class NekoWowsPlugin(NekoPluginBase):
             *build_targeting_detectors(self.cfg),
         ))
 
-    async def _reload_config(self) -> WowsConfig:
-        try:
-            raw = await self.config.dump()
-        except Exception as exc:
-            self.logger.warning(f"config read failed, keeping dry_run on: {exc}")
-            raw = {}
-        section = raw.get(CONFIG_SECTION) if isinstance(raw, dict) else None
-        cfg = WowsConfig.from_mapping(section if isinstance(section, dict) else None)
+    async def _reload_config(self, *, force_dry_run: bool = False) -> WowsConfig:
+        async with self._preference_lock:
+            try:
+                raw = await self.config.dump()
+            except Exception as exc:
+                self.logger.warning(f"config read failed, keeping dry_run on: {exc}")
+                raw = {}
+            section = raw.get(CONFIG_SECTION) if isinstance(raw, dict) else None
+            cfg = WowsConfig.from_mapping(
+                section if isinstance(section, dict) else None)
 
-        # Panel-set preferences win over the TOML defaults; `dry_run` is
-        # deliberately not among them, so a stale store can never enable output.
-        await self._apply_stored_preferences(cfg)
-        self._apply_config(cfg)
-        return cfg
+            # Panel-set preferences win over the TOML defaults; `dry_run` is
+            # deliberately not among them, so a stale store cannot enable output.
+            await self._apply_stored_preferences(cfg)
+            with self._pipeline_lock:
+                # Real output is a session choice. Startup always returns to the
+                # safety default, while hot reload preserves the panel choice.
+                cfg.dry_run = True if force_dry_run else bool(self.cfg.dry_run)
+                self._apply_config(cfg)
+            return cfg
 
     async def _apply_stored_preferences(self, cfg: WowsConfig) -> None:
         mode = await self._stored(STORE_CHANNEL_MODE)
         if mode in ALL_CHANNEL_MODES:
             cfg.channel_mode = mode
-        intrusion = await self._stored(STORE_INTRUSION_MODE)
-        if intrusion in ALL_INTRUSION_MODES:
-            cfg.dialogue_intrusion_mode = intrusion
-        quiet = await self._stored(STORE_QUIET_WINDOW)
-        if isinstance(quiet, (int, float)) and not isinstance(quiet, bool):
-            cfg.user_chat_quiet_window_seconds = max(0.0, min(1800.0, float(quiet)))
+        intrusion_settings = await self._stored(STORE_INTRUSION_SETTINGS)
+        atomic_intrusion = (
+            isinstance(intrusion_settings, dict)
+            and intrusion_settings.get("mode") in ALL_INTRUSION_MODES
+            and isinstance(
+                intrusion_settings.get("quiet_window_seconds"), (int, float))
+            and not isinstance(
+                intrusion_settings.get("quiet_window_seconds"), bool)
+        )
+        if atomic_intrusion:
+            cfg.dialogue_intrusion_mode = intrusion_settings["mode"]
+            cfg.user_chat_quiet_window_seconds = max(
+                0.0, min(1800.0, float(
+                    intrusion_settings["quiet_window_seconds"])))
+        else:
+            # Read the old split keys so upgrades preserve existing preferences.
+            intrusion = await self._stored(STORE_INTRUSION_MODE)
+            if intrusion in ALL_INTRUSION_MODES:
+                cfg.dialogue_intrusion_mode = intrusion
+            quiet = await self._stored(STORE_QUIET_WINDOW)
+            if isinstance(quiet, (int, float)) and not isinstance(quiet, bool):
+                cfg.user_chat_quiet_window_seconds = max(
+                    0.0, min(1800.0, float(quiet)))
         categories = await self._stored(STORE_DISABLED_CATEGORIES)
         if isinstance(categories, list):
             cfg.disabled_categories = tuple(
@@ -200,24 +237,29 @@ class NekoWowsPlugin(NekoPluginBase):
             return None
 
     def _apply_config(self, cfg: WowsConfig) -> None:
-        with self._state_lock:
-            thresholds_changed = self._detection_signature(cfg) != self._detection_signature(self.cfg)
-            self.cfg = cfg
-        self.timeline.resize(cfg.observability_max_events)
-        self.service.apply_config(cfg)
-        self.policy.apply_config(cfg)
-        self.arbiter.apply_config(cfg)
-        self.router.apply_config(cfg)
-        self.dispatcher.apply_config(cfg)
-        self.transport.apply_config(cfg)
-        self.importer.apply_config(cfg)
-        if isinstance(self.tactics, WowsTacticsRepository):
-            self.tactics.apply_config(cfg)
-        self.facts = FactBuilder(cfg)
-        if thresholds_changed:
-            # Detector latches were computed against the old thresholds; keeping
-            # them would mix two rule sets in one battle.
-            self.registry = self._build_registry()
+        with self._pipeline_lock:
+            with self._state_lock:
+                thresholds_changed = (
+                    self._detection_signature(cfg)
+                    != self._detection_signature(self.cfg)
+                )
+                self.cfg = cfg
+            self.timeline.resize(cfg.observability_max_events)
+            self.service.apply_config(cfg)
+            self.policy.apply_config(cfg)
+            self.arbiter.apply_config(cfg)
+            self.router.apply_config(cfg)
+            self.dispatcher.apply_config(cfg)
+            self.transport.apply_config(cfg)
+            self.importer.apply_config(cfg)
+            if isinstance(self.tactics, WowsTacticsRepository):
+                self.tactics.apply_config(cfg)
+            self.facts = FactBuilder(cfg)
+            if thresholds_changed:
+                # Detector latches were computed against the old thresholds;
+                # keeping them would mix two rule sets in one battle.
+                self.registry = self._build_registry()
+                self._blocked_signature = ()
 
     @staticmethod
     def _detection_signature(cfg: WowsConfig) -> tuple:
@@ -267,7 +309,7 @@ class NekoWowsPlugin(NekoPluginBase):
     # ------------------------------------------------------------------ 生命周期
     @lifecycle(id="startup")
     async def startup(self, **_):
-        cfg = await self._reload_config()
+        cfg = await self._reload_config(force_dry_run=True)
         if not cfg.enabled:
             return Err(SdkError("neko_wows is disabled in configuration"))
 
@@ -278,17 +320,14 @@ class NekoWowsPlugin(NekoPluginBase):
         status = await asyncio.to_thread(self.service.start_if_needed)
         self._record_service(status)
 
-        self.transport.start()
-        with self._state_lock:
-            self._running = True
-            self._reconnect_required = False
+        transport_started = self._activate_transport(status)
 
         self.logger.info(
             f"neko_wows started (dry_run={cfg.dry_run}, url={cfg.service_url}, "
             f"service={status.mode})"
         )
         return Ok({
-            "status": "running",
+            "status": "running" if transport_started else "blocked",
             "dry_run": cfg.dry_run,
             "channel_mode": cfg.channel_mode,
             "service": status.as_dict(),
@@ -311,7 +350,8 @@ class NekoWowsPlugin(NekoPluginBase):
     @message(id="chat_quiet_window", source="chat")
     def on_chat_message(self, **_):
         """Start the quiet window. Only the timing is kept, never the text."""
-        self.arbiter.note_user_activity(time.monotonic())
+        with self._pipeline_lock:
+            self.arbiter.note_user_activity(time.monotonic())
         return Ok({"status": "observed"})
 
     @lifecycle(id="config_change")
@@ -321,7 +361,10 @@ class NekoWowsPlugin(NekoPluginBase):
         after = self._connection_signature()
         if before != after:
             with self._state_lock:
-                self._reconnect_required = self._running
+                # A conflict-blocked startup is not "running", but it still
+                # needs an explicit reconnect after the user fixes the source.
+                self._reconnect_required = (
+                    self._running or self._reconnect_required)
         return Ok({
             "status": "reloaded",
             "dry_run": cfg.dry_run,
@@ -343,6 +386,19 @@ class NekoWowsPlugin(NekoPluginBase):
             STAGE_SERVICE, status.mode, reason=status.detail,
             detail=status.as_dict())
 
+    def _activate_transport(self, status) -> bool:
+        """Start polling unless health positively identified a foreign service."""
+        if not status.transport_allowed:
+            with self._state_lock:
+                self._running = False
+                self._reconnect_required = True
+            return False
+        self.transport.start()
+        with self._state_lock:
+            self._running = True
+            self._reconnect_required = False
+        return True
+
     def _supervise_service(self) -> None:
         """Runs on a worker thread when the transport stops receiving frames.
 
@@ -363,7 +419,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 epoch=frame.epoch,
                 received_at=frame.received_at,
             )
-        except UnsupportedApiVersion as exc:
+        except (UnexpectedServiceIdentity, UnsupportedApiVersion) as exc:
             self.timeline.record(STAGE_FRAME, "rejected", reason=str(exc))
             return
         except Exception as exc:
@@ -389,6 +445,18 @@ class NekoWowsPlugin(NekoPluginBase):
                 reason=f"{type(exc).__name__}: {exc}")
 
     def _evaluate(self, snapshot) -> None:
+        with self._pipeline_lock:
+            try:
+                self._evaluate_locked(snapshot)
+            finally:
+                # End-of-battle call-outs are built and delivered first; then the
+                # scene instruction is removed so the next battle can inject it
+                # afresh. Cleanup is allowed even if dry-run was just re-enabled.
+                if snapshot.status == STATUS_ENDED:
+                    self.context_injector.restore(
+                        WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
+
+    def _evaluate_locked(self, snapshot) -> None:
         cfg = self.cfg
         facts = self.facts.build(snapshot)
         current = (snapshot, facts)
@@ -404,6 +472,7 @@ class NekoWowsPlugin(NekoPluginBase):
         result = self.registry.feed(previous, current, cfg=cfg)
         if result.identity_reset:
             self.arbiter.reset_battle(snapshot.battle_id)
+            self._blocked_signature = ()
             self.timeline.record(
                 STAGE_DETECT, "reset", seq=snapshot.seq,
                 battle_id=snapshot.battle_id,
@@ -413,19 +482,34 @@ class NekoWowsPlugin(NekoPluginBase):
             self.context_injector.push(
                 WOWS_CONTEXT_INSTRUCTIONS, dry_run=cfg.dry_run)
 
-        if result.blocked:
-            self.timeline.record(
-                STAGE_DETECT, "blocked", seq=snapshot.seq,
-                battle_id=snapshot.battle_id,
-                reason="missing required capabilities",
-                detail={
-                    entry.detector: list(entry.missing) for entry in result.blocked
-                },
-            )
-        if not result.events:
-            if not result.blocked:
+        blocked_signature = tuple(
+            (entry.detector, tuple(entry.missing)) for entry in result.blocked)
+        if blocked_signature != self._blocked_signature:
+            previously_blocked = bool(self._blocked_signature)
+            self._blocked_signature = blocked_signature
+            if blocked_signature:
                 self.timeline.record(
-                    STAGE_DETECT, result.reason, seq=snapshot.seq,
+                    STAGE_DETECT, "blocked", seq=snapshot.seq,
+                    battle_id=snapshot.battle_id,
+                    reason="missing required capabilities",
+                    detail={
+                        entry.detector: list(entry.missing)
+                        for entry in result.blocked
+                    },
+                )
+            elif previously_blocked:
+                self.timeline.record(
+                    STAGE_DETECT, "recovered", seq=snapshot.seq,
+                    battle_id=snapshot.battle_id,
+                    reason="required capabilities available again",
+                )
+        if not result.events:
+            # Ordinary evaluated frames are intentionally silent. At telemetry
+            # rates they otherwise evict the decisions and failures a user needs
+            # the timeline to explain.
+            if result.reason == "baseline" and not result.blocked:
+                self.timeline.record(
+                    STAGE_DETECT, "baseline", seq=snapshot.seq,
                     battle_id=snapshot.battle_id,
                     detail={"status": snapshot.status,
                             "transport": snapshot.transport})
@@ -478,6 +562,7 @@ class NekoWowsPlugin(NekoPluginBase):
             summary=candidate.summary,
             event_id=candidate.event_id,
             map_name=snapshot.map_name,
+            ship_name=snapshot.own_ship_name,
             ship_class=snapshot.own_ship_type,
             game_mode=snapshot.game_mode or snapshot.battle_type,
             topics=(candidate.summary,),
@@ -531,6 +616,7 @@ class NekoWowsPlugin(NekoPluginBase):
 
         return {
             "running": running,
+            "runtime_now": time.monotonic(),
             "config": {
                 "dry_run": cfg.dry_run,
                 "channel_mode": cfg.channel_mode,
@@ -624,19 +710,25 @@ class NekoWowsPlugin(NekoPluginBase):
         },
     )
     async def set_dry_run(self, value: bool = True, **_):
-        was_dry_run = bool(self.cfg.dry_run)
-        self.cfg.dry_run = bool(value)
-        if was_dry_run and not self.cfg.dry_run:
-            # Shadow cooldowns were accumulated against output nobody heard, and
-            # the detectors need a fresh baseline before the first real call-out.
-            self.arbiter.clear_shadow_state()
-            self.registry.reset()
-            self.dispatcher.reset_counters()
-            with self._state_lock:
-                self._previous = None
-            self.timeline.record(
-                STAGE_DELIVERY, "output_enabled",
-                reason="shadow cooldowns cleared and detectors re-baselined")
+        with self._pipeline_lock:
+            was_dry_run = bool(self.cfg.dry_run)
+            next_dry_run = bool(value)
+            if not was_dry_run and next_dry_run:
+                self.context_injector.restore(
+                    WOWS_RESTORE_INSTRUCTIONS, dry_run=True)
+            self.cfg.dry_run = next_dry_run
+            if was_dry_run and not next_dry_run:
+                # Shadow cooldowns were accumulated against output nobody heard,
+                # and detectors need a fresh baseline before real call-outs.
+                self.arbiter.clear_shadow_state()
+                self.registry.reset()
+                self.dispatcher.reset_counters()
+                self._blocked_signature = ()
+                with self._state_lock:
+                    self._previous = None
+                self.timeline.record(
+                    STAGE_DELIVERY, "output_enabled",
+                    reason="shadow cooldowns cleared and detectors re-baselined")
         # Session-only on purpose: enabling real output is an explicit act each
         # time the plugin starts, so a stale config can never turn it on.
         return Ok({"dry_run": self.cfg.dry_run, "session_only": True})
@@ -658,21 +750,23 @@ class NekoWowsPlugin(NekoPluginBase):
     async def set_channel_mode(self, mode: str = "dual", **_):
         if mode not in ALL_CHANNEL_MODES:
             return Err(SdkError(f"unknown channel mode: {mode!r}"))
-        self.cfg.channel_mode = mode
-        self.router.apply_config(self.cfg)
-        try:
-            await self.store.set(STORE_CHANNEL_MODE, mode)
-        except Exception as exc:
-            self.logger.warning(f"failed to persist channel mode: {exc}")
-        return Ok({"channel_mode": mode})
+        async with self._preference_lock:
+            error = await self._persist(STORE_CHANNEL_MODE, mode)
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.channel_mode = mode
+                self.router.apply_config(self.cfg)
+            return Ok({"channel_mode": mode})
 
     @ui.action(id="pause", label="急停", tone="danger",
                group="runtime", order=30, refresh_context=True)
     @plugin_entry(id="pause", name="急停", description="立即停止所有播报输出。")
     async def pause(self, **_):
-        self.dispatcher.pause("manual")
-        self.arbiter.pause()
-        self.timeline.record(STAGE_DELIVERY, "paused", reason="manual")
+        with self._pipeline_lock:
+            self.dispatcher.pause("manual")
+            self.arbiter.pause()
+            self.timeline.record(STAGE_DELIVERY, "paused", reason="manual")
         return Ok({"paused": True})
 
     @ui.action(id="resume", label="恢复", tone="success",
@@ -680,10 +774,11 @@ class NekoWowsPlugin(NekoPluginBase):
     @plugin_entry(id="resume", name="恢复",
                   description="恢复播报并清空失败计数。")
     async def resume(self, **_):
-        self.dispatcher.resume()
-        self.arbiter.resume()
-        self.service.resume()
-        self.timeline.record(STAGE_DELIVERY, "resumed", reason="manual")
+        with self._pipeline_lock:
+            self.dispatcher.resume()
+            self.arbiter.resume()
+            self.service.resume()
+            self.timeline.record(STAGE_DELIVERY, "resumed", reason="manual")
         return Ok({"paused": False})
 
     @ui.action(id="reconnect", label="重连数据源", tone="primary",
@@ -696,14 +791,15 @@ class NekoWowsPlugin(NekoPluginBase):
     async def reconnect(self, **_):
         self.transport.stop()
         status = await asyncio.to_thread(self.service.start_if_needed)
-        self.gate.reset()
-        self.registry.reset()
-        with self._state_lock:
-            self._previous = None
-            self._reconnect_required = False
-        self.transport.start()
+        with self._pipeline_lock:
+            self.gate.reset()
+            self.registry.reset()
+            self._blocked_signature = ()
+            with self._state_lock:
+                self._previous = None
+        connected = self._activate_transport(status)
         self._record_service(status)
-        return Ok({"service": status.as_dict()})
+        return Ok({"service": status.as_dict(), "transport_started": connected})
 
     @ui.action(id="clear_timeline", label="清空时间线", tone="info",
                group="diagnostics", order=60, refresh_context=True)
@@ -775,7 +871,11 @@ class NekoWowsPlugin(NekoPluginBase):
     async def delete_document(self, doc_id: str = "", **_):
         if not str(doc_id or "").strip():
             return Err(SdkError("缺少 doc_id"))
-        removed = await asyncio.to_thread(self.knowledge.delete_document, doc_id)
+        removed = await asyncio.to_thread(
+            self.knowledge.delete_document,
+            doc_id,
+            index_chunk_cap=self.cfg.tactics_index_chunk_cap,
+        )
         if not removed:
             return Err(SdkError("没有这份文档"))
         self.timeline.record(STAGE_DOCUMENTS, "deleted", reason=doc_id)
@@ -939,12 +1039,18 @@ class NekoWowsPlugin(NekoPluginBase):
         if mode not in ALL_INTRUSION_MODES:
             return Err(SdkError(f"unknown intrusion mode: {mode!r}"))
         window = max(0.0, min(1800.0, float(quiet_window_seconds)))
-        self.cfg.dialogue_intrusion_mode = mode
-        self.cfg.user_chat_quiet_window_seconds = window
-        self.arbiter.apply_config(self.cfg)
-        await self._persist(STORE_INTRUSION_MODE, mode)
-        await self._persist(STORE_QUIET_WINDOW, window)
-        return Ok({"mode": mode, "quiet_window_seconds": window})
+        async with self._preference_lock:
+            error = await self._persist(STORE_INTRUSION_SETTINGS, {
+                "mode": mode,
+                "quiet_window_seconds": window,
+            })
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.dialogue_intrusion_mode = mode
+                self.cfg.user_chat_quiet_window_seconds = window
+                self.arbiter.apply_config(self.cfg)
+            return Ok({"mode": mode, "quiet_window_seconds": window})
 
     @ui.action(id="set_category_enabled", label="设置事件类别", tone="primary",
                group="preferences", order=320, refresh_context=True)
@@ -966,14 +1072,19 @@ class NekoWowsPlugin(NekoPluginBase):
     ):
         if category not in ALL_CATEGORIES:
             return Err(SdkError(f"unknown category: {category!r}"))
-        disabled = set(self.cfg.disabled_categories)
-        disabled.discard(category) if enabled else disabled.add(category)
-        self.cfg.disabled_categories = tuple(
-            name for name in ALL_CATEGORIES if name in disabled)
-        self.policy.apply_config(self.cfg)
-        await self._persist(
-            STORE_DISABLED_CATEGORIES, list(self.cfg.disabled_categories))
-        return Ok({"disabled_categories": list(self.cfg.disabled_categories)})
+        async with self._preference_lock:
+            disabled = set(self.cfg.disabled_categories)
+            disabled.discard(category) if enabled else disabled.add(category)
+            next_disabled = tuple(
+                name for name in ALL_CATEGORIES if name in disabled)
+            error = await self._persist(
+                STORE_DISABLED_CATEGORIES, list(next_disabled))
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.disabled_categories = next_disabled
+                self.policy.apply_config(self.cfg)
+            return Ok({"disabled_categories": list(next_disabled)})
 
     @ui.action(id="set_lane_enabled", label="设置通道开关", tone="primary",
                group="preferences", order=330, refresh_context=True)
@@ -993,13 +1104,19 @@ class NekoWowsPlugin(NekoPluginBase):
     async def set_lane_enabled(self, lane: str = "", enabled: bool = True, **_):
         if lane not in ALL_LANES:
             return Err(SdkError(f"unknown lane: {lane!r}"))
-        disabled = set(self.cfg.disabled_lanes)
-        disabled.discard(lane) if enabled else disabled.add(lane)
-        self.cfg.disabled_lanes = tuple(
-            name for name in ALL_LANES if name in disabled)
-        self.policy.apply_config(self.cfg)
-        await self._persist(STORE_DISABLED_LANES, list(self.cfg.disabled_lanes))
-        return Ok({"disabled_lanes": list(self.cfg.disabled_lanes)})
+        async with self._preference_lock:
+            disabled = set(self.cfg.disabled_lanes)
+            disabled.discard(lane) if enabled else disabled.add(lane)
+            next_disabled = tuple(
+                name for name in ALL_LANES if name in disabled)
+            error = await self._persist(
+                STORE_DISABLED_LANES, list(next_disabled))
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.disabled_lanes = next_disabled
+                self.policy.apply_config(self.cfg)
+            return Ok({"disabled_lanes": list(next_disabled)})
 
     @ui.action(id="set_lane_timing", label="设置通道时序", tone="primary",
                group="preferences", order=340, refresh_context=True)
@@ -1023,26 +1140,29 @@ class NekoWowsPlugin(NekoPluginBase):
     ):
         if lane not in ALL_LANES:
             return Err(SdkError(f"unknown lane: {lane!r}"))
-        if ttl_seconds is not None:
-            value = max(1.0, min(600.0, float(ttl_seconds)))
-            if lane == LANE_URGENT:
-                self.cfg.urgent_ttl_seconds = value
-            else:
-                self.cfg.normal_ttl_seconds = value
-        if min_gap_seconds is not None:
-            value = max(0.0, min(3600.0, float(min_gap_seconds)))
-            if lane == LANE_URGENT:
-                self.cfg.urgent_min_gap_seconds = value
-            else:
-                self.cfg.normal_min_gap_seconds = value
-        self.policy.apply_config(self.cfg)
-        self.arbiter.apply_config(self.cfg)
-        return Ok({
-            "lane": lane,
-            "ttl_seconds": self.cfg.ttl_for(lane),
-            "min_gap_seconds": self.cfg.min_gap_for(lane),
-            "session_only": True,
-        })
+        async with self._preference_lock:
+            with self._pipeline_lock:
+                if ttl_seconds is not None:
+                    value = max(1.0, min(600.0, float(ttl_seconds)))
+                    if lane == LANE_URGENT:
+                        self.cfg.urgent_ttl_seconds = value
+                    else:
+                        self.cfg.normal_ttl_seconds = value
+                if min_gap_seconds is not None:
+                    value = max(0.0, min(3600.0, float(min_gap_seconds)))
+                    if lane == LANE_URGENT:
+                        self.cfg.urgent_min_gap_seconds = value
+                    else:
+                        self.cfg.normal_min_gap_seconds = value
+                self.policy.apply_config(self.cfg)
+                self.arbiter.apply_config(self.cfg)
+                result = {
+                    "lane": lane,
+                    "ttl_seconds": self.cfg.ttl_for(lane),
+                    "min_gap_seconds": self.cfg.min_gap_for(lane),
+                    "session_only": True,
+                }
+            return Ok(result)
 
     @plugin_entry(id="status", name="状态",
                   description="查看连接、战局与安全状态。")
@@ -1060,11 +1180,16 @@ class NekoWowsPlugin(NekoPluginBase):
         self.timeline.record(
             STAGE_PROMPTS, "activated", reason=bundle.revision_id)
 
-    async def _persist(self, key: str, value: Any) -> None:
+    async def _persist(self, key: str, value: Any) -> SdkError | None:
         try:
-            await self.store.set(key, value)
+            result = await self.store.set(key, value)
         except Exception as exc:
             self.logger.warning(f"failed to persist {key}: {exc}")
+            return SdkError(f"failed to persist preference: {key}")
+        if isinstance(result, Err):
+            self.logger.warning(f"failed to persist {key}: {result.error}")
+            return SdkError(f"failed to persist preference: {key}")
+        return None
 
 
 def _ask_for_documents() -> list[str]:
@@ -1128,21 +1253,18 @@ def _mod_hint(service, snapshot_view: dict[str, Any]) -> str:
     the symptoms and say which of them it sees.
     """
     if service.mode == "conflict":
-        return (
-            "该端口上有其它服务在应答（War Thunder 自带遥测也用 8111）。"
-            "请给 8111_for_wows 换一个端口，或先关掉占用方。"
-        )
+        return "conflict"
     if not service.health.reachable:
-        return "遥测服务未连上。检查 service_url，或填好 service_source_dir 后点重连。"
+        return "unreachable"
     if not snapshot_view:
-        return "服务已连上但还没收到快照。"
+        return "no_snapshot"
     status = snapshot_view.get("status")
     if status == "waiting":
-        return "服务在跑但还没有战局数据：确认游戏内采集器 Mod 已安装，并进入一局对战。"
+        return "waiting"
     if status == "stale":
-        return "数据停止更新：采集器可能已停写（游戏最小化或 Mod 出错）。"
+        return "stale"
     if snapshot_view.get("legacy"):
-        return "连到的是旧版服务（无 v1 信封），信封字段由插件本地推导，battleId 仅保证换局会变。"
+        return "legacy"
     return ""
 
 

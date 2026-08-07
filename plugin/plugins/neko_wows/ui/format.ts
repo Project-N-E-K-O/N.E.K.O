@@ -1,40 +1,50 @@
 import type { Tone } from "@neko/plugin-ui"
 
-export function formatClock(at?: number | null): string {
+import type { Translate } from "./types"
+
+export function formatClock(at?: number | null, locale?: string): string {
   if (!at) return "—"
   const date = new Date(at * 1000)
   if (Number.isNaN(date.getTime())) return "—"
-  return date.toLocaleTimeString()
+  return date.toLocaleTimeString(locale || undefined)
 }
 
-export function formatPercent(ratio?: number | null): string {
-  if (ratio === null || ratio === undefined) return "未知"
+export function formatPercent(
+  ratio: number | null | undefined,
+  t: Translate
+): string {
+  if (ratio === null || ratio === undefined) return t("common.unknown")
   return `${Math.round(ratio * 100)}%`
 }
 
-export function formatMetres(value?: number | null): string {
-  if (value === null || value === undefined) return "未知"
+export function formatMetres(
+  value: number | null | undefined,
+  t: Translate
+): string {
+  if (value === null || value === undefined) return t("common.unknown")
   return `${value} m`
 }
 
-export function formatCount(value?: number | null): string {
-  if (value === null || value === undefined) return "未知"
+export function formatCount(
+  value: number | null | undefined,
+  t: Translate
+): string {
+  if (value === null || value === undefined) return t("common.unknown")
   return String(value)
 }
 
-/** Service supervision mode, in the user's terms. */
-export function serviceModeLabel(mode?: string): string {
+export function serviceModeLabel(mode: string | undefined, t: Translate): string {
   switch (mode) {
     case "external":
-      return "外部服务（不由插件管理）"
+      return t("format.service.external")
     case "managed":
-      return "插件已拉起"
+      return t("format.service.managed")
     case "conflict":
-      return "端口被其它服务占用"
+      return t("format.service.conflict")
     case "disabled":
-      return "未启用自动拉起"
+      return t("format.service.disabled")
     default:
-      return "未连接"
+      return t("format.service.offline")
   }
 }
 
@@ -44,18 +54,21 @@ export function serviceModeTone(mode?: string): Tone {
   return "warning"
 }
 
-export function sourceStatusLabel(status?: string): string {
+export function sourceStatusLabel(
+  status: string | undefined,
+  t: Translate
+): string {
   switch (status) {
     case "live":
-      return "对战中"
+      return t("format.source.live")
     case "stale":
-      return "数据停更"
+      return t("format.source.stale")
     case "ended":
-      return "本局已结束"
+      return t("format.source.ended")
     case "waiting":
-      return "等待战局"
+      return t("format.source.waiting")
     default:
-      return "未知"
+      return t("common.unknown")
   }
 }
 
@@ -66,16 +79,35 @@ export function sourceStatusTone(status?: string): Tone {
   return "warning"
 }
 
-export function availabilityLabel(value?: string): string {
+export function intrusionModeLabel(
+  mode: string | undefined,
+  t: Translate
+): string {
+  switch (mode) {
+    case "no_interrupt":
+      return t("preferences.intrusion.noInterrupt")
+    case "allow_interrupt":
+      return t("preferences.intrusion.allow")
+    case "critical_only":
+      return t("preferences.intrusion.criticalOnly")
+    default:
+      return mode || "—"
+  }
+}
+
+export function availabilityLabel(
+  value: string | undefined,
+  t: Translate
+): string {
   switch (value) {
     case "available":
-      return "可用"
+      return t("format.availability.available")
     case "stale":
-      return "过期"
+      return t("format.availability.stale")
     case "unsupported":
-      return "服务未提供"
+      return t("format.availability.unsupported")
     default:
-      return "本帧无数据"
+      return t("format.availability.unknown")
   }
 }
 
@@ -86,87 +118,15 @@ export function availabilityTone(value?: string): Tone {
   return "info"
 }
 
-/**
- * Pipeline outcomes, phrased so a suppressed call-out never reads like a bug.
- * The distinction that matters most: the plugin chose not to speak, versus the
- * plugin tried and the host declined.
- */
-export function outcomeLabel(stage?: string, outcome?: string): string {
-  if (stage === "delivery") {
-    switch (outcome) {
-      case "delivered":
-        return "已投给猫娘"
-      case "dry_run":
-        return "dry-run 短路（未投）"
-      case "expired":
-        return "过期未投"
-      case "paused":
-        return "已暂停"
-      case "failed":
-        return "投递失败"
-      case "output_enabled":
-        return "已开启真实输出"
-      default:
-        return outcome || "—"
-    }
-  }
-  if (stage === "arbiter") {
-    switch (outcome) {
-      case "chosen":
-        return "选中"
-      case "queued":
-        return "入队"
-      case "cooldown":
-        return "冷却中"
-      case "lane_gap":
-        return "通道间隔未到"
-      case "once_per_battle":
-        return "本局已说过"
-      case "coalesced":
-        return "被新事件合并"
-      case "preempted":
-        return "被抢占"
-      case "expired":
-        return "TTL 到期"
-      case "paused":
-        return "输出已暂停"
-      case "quiet_window":
-        return "插件静默窗口（你在聊天）"
-      default:
-        return outcome || "—"
-    }
-  }
-  if (stage === "detect") {
-    switch (outcome) {
-      case "events":
-        return "产生事件"
-      case "blocked":
-        return "能力缺失，未评估"
-      case "baseline":
-        return "仅建立基线"
-      case "identity_reset":
-        return "战局切换，已重置"
-      case "reset":
-        return "重置"
-      case "evaluated":
-        return "无事件"
-      default:
-        return outcome || "—"
-    }
-  }
-  if (stage === "frame") {
-    switch (outcome) {
-      case "dropped":
-        return "重复/乱序，已丢弃"
-      case "rejected":
-        return "无法解析"
-      case "error":
-        return "链路异常"
-      default:
-        return outcome || "—"
-    }
-  }
-  return outcome || "—"
+export function outcomeLabel(
+  stage: string | undefined,
+  outcome: string | undefined,
+  t: Translate
+): string {
+  const key = outcome ? `format.outcome.${stage || "other"}.${outcome}` : ""
+  if (!key) return "—"
+  const translated = t(key)
+  return translated === key ? outcome || "—" : translated
 }
 
 export function outcomeTone(stage?: string, outcome?: string): Tone {
@@ -182,47 +142,19 @@ export function outcomeTone(stage?: string, outcome?: string): Tone {
   return "info"
 }
 
-export function stageLabel(stage?: string): string {
-  switch (stage) {
-    case "frame":
-      return "快照"
-    case "detect":
-      return "检测"
-    case "arbiter":
-      return "仲裁"
-    case "delivery":
-      return "投递"
-    case "service":
-      return "服务"
-    case "documents":
-      return "文档"
-    case "prompts":
-      return "提示词"
-    default:
-      return stage || "—"
-  }
+export function stageLabel(stage: string | undefined, t: Translate): string {
+  if (!stage) return "—"
+  const key = `format.stage.${stage}`
+  const translated = t(key)
+  return translated === key ? stage : translated
 }
 
-/** Broadcast categories double as coalesce keys; show the human name. */
-export function categoryLabel(category?: string): string {
-  switch (category) {
-    case "wows_lifecycle":
-      return "开局与终局"
-    case "wows_summary":
-      return "战后摘要"
-    case "wows_survival":
-      return "生存（沉没/血量/受伤）"
-    case "wows_situation":
-      return "局势（人数/孤立/建议）"
-    case "wows_threat":
-      return "威胁（逼近/多方向）"
-    case "wows_geometry":
-      return "几何（边界/露侧）"
-    case "wows_targeting":
-      return "目标与弹药"
-    case "wows_progress":
-      return "伤害里程碑"
-    default:
-      return category || "—"
-  }
+export function categoryLabel(
+  category: string | undefined,
+  t: Translate
+): string {
+  if (!category) return "—"
+  const key = `format.category.${category}`
+  const translated = t(key)
+  return translated === key ? category : translated
 }

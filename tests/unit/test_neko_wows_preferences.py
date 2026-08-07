@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 import pytest
 
+from plugin.sdk.plugin import Err, Ok, SdkError
+from plugin.plugins.neko_wows import NekoWowsPlugin
 from plugin.plugins.neko_wows.detectors._base import GameEvent
 from plugin.plugins.neko_wows.domain.catalog import (
     DAMAGE_MILESTONE,
@@ -17,6 +22,7 @@ from plugin.plugins.neko_wows.domain.contracts import (
     ALL_INTRUSION_MODES,
     CATEGORY_PROGRESS,
     CATEGORY_SURVIVAL,
+    CHANNEL_SINGLE,
     INTRUSION_ALLOW_INTERRUPT,
     INTRUSION_CRITICAL_ONLY,
     INTRUSION_NO_INTERRUPT,
@@ -62,6 +68,43 @@ def candidate(event_id, *, at=100.0, cfg=None):
 
 def outcomes(decision, event_id):
     return [step.outcome for step in decision.chain if step.event_id == event_id]
+
+
+class _ConfigSource:
+    def __init__(self, dry_run):
+        self.dry_run = dry_run
+
+    async def dump(self):
+        return {"neko_wows": {"dry_run": self.dry_run}}
+
+
+class _ReloadTarget:
+    def __init__(self, *, current, configured):
+        self.cfg = WowsConfig()
+        self.cfg.dry_run = current
+        self.config = _ConfigSource(configured)
+        self._preference_lock = asyncio.Lock()
+        self._pipeline_lock = threading.RLock()
+        self.logger = type("Logger", (), {"warning": lambda *_: None})()
+
+    async def _apply_stored_preferences(self, _cfg):
+        return None
+
+    def _apply_config(self, cfg):
+        self.cfg = cfg
+
+
+def test_startup_config_reload_always_forces_dry_run():
+    target = _ReloadTarget(current=False, configured=False)
+    cfg = asyncio.run(
+        NekoWowsPlugin._reload_config(target, force_dry_run=True))
+    assert cfg.dry_run is True
+
+
+def test_hot_reload_preserves_the_explicit_session_dry_run_choice():
+    target = _ReloadTarget(current=False, configured=True)
+    cfg = asyncio.run(NekoWowsPlugin._reload_config(target))
+    assert cfg.dry_run is False
 
 
 # --- category and lane switches ------------------------------------------
@@ -289,3 +332,258 @@ def test_timing_overrides_take_effect_through_the_shared_config():
 
     reopened = arbiter.decide([candidate(ENEMY_CLOSING, at=101.0, cfg=cfg)], 101.0)
     assert reopened.chosen is not None
+
+
+# --- live action atomicity -----------------------------------------------
+
+class _TrackingLock:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self.depth = 0
+
+    @property
+    def held(self):
+        return self.depth > 0
+
+    def __enter__(self):
+        self._lock.acquire()
+        self.depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.depth -= 1
+        self._lock.release()
+
+
+class _GuardedConfig(WowsConfig):
+    _GUARDED_FIELDS = frozenset({
+        "channel_mode",
+        "dialogue_intrusion_mode",
+        "user_chat_quiet_window_seconds",
+        "disabled_categories",
+        "disabled_lanes",
+        "urgent_ttl_seconds",
+        "urgent_min_gap_seconds",
+        "normal_ttl_seconds",
+        "normal_min_gap_seconds",
+    })
+
+    def attach_guard(self, lock):
+        self._guard_lock = lock
+
+    def __setattr__(self, name, value):
+        lock = getattr(self, "_guard_lock", None)
+        if lock is not None and name in self._GUARDED_FIELDS:
+            assert lock.held, f"{name} changed outside _pipeline_lock"
+        super().__setattr__(name, value)
+
+
+class _GuardedDependency:
+    def __init__(self, lock, *, enforce=True):
+        self.lock = lock
+        self.enforce = enforce
+        self.calls = []
+
+    def _record(self, name, *args):
+        if self.enforce:
+            assert self.lock.held, f"{name} called outside _pipeline_lock"
+        self.calls.append((name, args))
+
+    def apply_config(self, cfg):
+        self._record("apply_config", cfg)
+
+    def pause(self, *args):
+        self._record("pause", *args)
+
+    def resume(self):
+        self._record("resume")
+
+    def note_user_activity(self, at):
+        self._record("note_user_activity", at)
+
+
+class _ActionStore:
+    def __init__(self, outcome=Ok(None), *, raises=None):
+        self.outcome = outcome
+        self.raises = raises
+        self.calls = []
+
+    async def set(self, key, value):
+        self.calls.append((key, value))
+        if self.raises is not None:
+            raise self.raises
+        return self.outcome
+
+
+class _BlockingActionStore:
+    def __init__(self):
+        self.calls = []
+        self.first_started = asyncio.Event()
+        self.second_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def set(self, key, value):
+        self.calls.append((key, value))
+        if len(self.calls) == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        else:
+            self.second_started.set()
+        return Ok(None)
+
+
+class _ActionTimeline:
+    def record(self, *_args, **_kwargs):
+        return None
+
+
+def _action_target(*, guarded=True, store=None):
+    target = object.__new__(NekoWowsPlugin)
+    target._preference_lock = asyncio.Lock()
+    target._pipeline_lock = _TrackingLock()
+    target.cfg = _GuardedConfig() if guarded else WowsConfig()
+    if guarded:
+        target.cfg.attach_guard(target._pipeline_lock)
+    target.router = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.policy = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.arbiter = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.dispatcher = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.service = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.timeline = _ActionTimeline()
+    target.store = store or _ActionStore()
+    target.logger = type("Logger", (), {"warning": lambda *_args: None})()
+    return target
+
+
+@pytest.mark.parametrize(("action", "kwargs", "expected"), [
+    ("set_channel_mode", {"mode": CHANNEL_SINGLE},
+     {"channel_mode": CHANNEL_SINGLE}),
+    ("set_intrusion_mode", {
+        "mode": INTRUSION_NO_INTERRUPT,
+        "quiet_window_seconds": 25.0,
+    }, {
+        "dialogue_intrusion_mode": INTRUSION_NO_INTERRUPT,
+        "user_chat_quiet_window_seconds": 25.0,
+    }),
+    ("set_category_enabled", {
+        "category": CATEGORY_SURVIVAL,
+        "enabled": False,
+    }, {"disabled_categories": (CATEGORY_SURVIVAL,)}),
+    ("set_lane_enabled", {
+        "lane": LANE_URGENT,
+        "enabled": False,
+    }, {"disabled_lanes": (LANE_URGENT,)}),
+    ("set_lane_timing", {
+        "lane": LANE_URGENT,
+        "ttl_seconds": 15.0,
+        "min_gap_seconds": 3.0,
+    }, {"urgent_ttl_seconds": 15.0, "urgent_min_gap_seconds": 3.0}),
+])
+def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
+    action, kwargs, expected,
+):
+    target = _action_target()
+
+    result = asyncio.run(getattr(target, action)(**kwargs))
+
+    assert result.is_ok()
+    for field, value in expected.items():
+        assert getattr(target.cfg, field) == value
+
+
+@pytest.mark.parametrize(("action", "kwargs", "unchanged"), [
+    ("set_channel_mode", {"mode": CHANNEL_SINGLE},
+     {"channel_mode": "dual"}),
+    ("set_intrusion_mode", {
+        "mode": INTRUSION_NO_INTERRUPT,
+        "quiet_window_seconds": 25.0,
+    }, {
+        "dialogue_intrusion_mode": INTRUSION_CRITICAL_ONLY,
+        "user_chat_quiet_window_seconds": 60.0,
+    }),
+    ("set_category_enabled", {
+        "category": CATEGORY_SURVIVAL,
+        "enabled": False,
+    }, {"disabled_categories": ()}),
+    ("set_lane_enabled", {
+        "lane": LANE_URGENT,
+        "enabled": False,
+    }, {"disabled_lanes": ()}),
+])
+@pytest.mark.parametrize("store", [
+    _ActionStore(Err(SdkError("disk"))),
+    _ActionStore(raises=RuntimeError("disk")),
+])
+def test_persistent_preference_failure_keeps_runtime_unchanged(
+    action, kwargs, unchanged, store,
+):
+    target = _action_target(guarded=False, store=store)
+
+    result = asyncio.run(getattr(target, action)(**kwargs))
+
+    assert result.is_err()
+    for field, value in unchanged.items():
+        assert getattr(target.cfg, field) == value
+
+
+def test_pause_resume_and_chat_activity_are_pipeline_state_transitions():
+    target = _action_target()
+
+    assert asyncio.run(target.pause()).is_ok()
+    assert asyncio.run(target.resume()).is_ok()
+    assert target.on_chat_message().is_ok()
+
+
+def test_persistent_preference_actions_are_serialized():
+    async def scenario():
+        store = _BlockingActionStore()
+        target = _action_target(guarded=False, store=store)
+        first = asyncio.create_task(target.set_category_enabled(
+            category=CATEGORY_SURVIVAL, enabled=False))
+        await asyncio.wait_for(store.first_started.wait(), timeout=1.0)
+
+        second = asyncio.create_task(target.set_lane_enabled(
+            lane=LANE_URGENT, enabled=False))
+        await asyncio.sleep(0)
+        overlapped = store.second_started.is_set()
+
+        store.release_first.set()
+        first_result, second_result = await asyncio.gather(first, second)
+        assert overlapped is False
+        assert first_result.is_ok()
+        assert second_result.is_ok()
+
+    asyncio.run(scenario())
+
+
+def test_intrusion_mode_and_window_are_persisted_as_one_atomic_value():
+    target = _action_target()
+
+    result = asyncio.run(target.set_intrusion_mode(
+        mode=INTRUSION_NO_INTERRUPT, quiet_window_seconds=25.0))
+
+    assert result.is_ok()
+    assert target.store.calls == [(
+        "intrusion_settings",
+        {"mode": INTRUSION_NO_INTERRUPT, "quiet_window_seconds": 25.0},
+    )]
+
+
+def test_atomic_intrusion_preference_takes_precedence_over_legacy_keys():
+    class Target:
+        async def _stored(self, key):
+            values = {
+                "intrusion_settings": {
+                    "mode": INTRUSION_NO_INTERRUPT,
+                    "quiet_window_seconds": 25.0,
+                },
+                "dialogue_intrusion_mode": INTRUSION_ALLOW_INTERRUPT,
+                "user_chat_quiet_window_seconds": 600.0,
+            }
+            return values.get(key)
+
+    cfg = WowsConfig()
+    asyncio.run(NekoWowsPlugin._apply_stored_preferences(Target(), cfg))
+
+    assert cfg.dialogue_intrusion_mode == INTRUSION_NO_INTERRUPT
+    assert cfg.user_chat_quiet_window_seconds == 25.0

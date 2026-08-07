@@ -6,6 +6,7 @@ import pytest
 
 from plugin.plugins.neko_wows.adapters.schema_adapter import (
     LEGACY_STALE_SECONDS,
+    UnexpectedServiceIdentity,
     UnsupportedApiVersion,
     WowsSchemaAdapter,
 )
@@ -143,6 +144,13 @@ def test_unknown_major_version_is_refused():
     adapter = WowsSchemaAdapter()
     with pytest.raises(UnsupportedApiVersion):
         adapter.parse(v1_payload() | {"apiVersion": "2.0"})
+
+
+@pytest.mark.parametrize("service_id", ["", "8111-for-war-thunder", "other"])
+def test_v1_foreign_or_missing_service_identity_is_refused(service_id):
+    adapter = WowsSchemaAdapter()
+    with pytest.raises(UnexpectedServiceIdentity):
+        adapter.parse(v1_payload() | {"serviceId": service_id})
 
 
 def test_unsupported_domains_stay_unsupported():

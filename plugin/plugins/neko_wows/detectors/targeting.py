@@ -111,6 +111,14 @@ class DamageMilestoneDetector(Detector):
     def reset(self) -> None:
         self._last_milestone = 0.0
 
+    def observe(self, snapshot, facts) -> None:
+        damage = facts.damage_inflicted
+        if damage is None:
+            return
+        step = self.cfg.damage_milestone_step
+        reached = int(damage // step) * step
+        self._last_milestone = max(self._last_milestone, reached)
+
     def detect(self, previous, current, context: DetectorContext) -> Sequence[GameEvent]:
         _snapshot, facts = current
         damage = facts.damage_inflicted

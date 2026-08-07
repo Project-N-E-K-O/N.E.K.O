@@ -247,6 +247,21 @@ def test_events_resume_on_the_second_frame_after_recovery():
     assert LOW_HEALTH in fired(results)
 
 
+def test_live_domain_outage_recovery_does_not_reuse_rapid_damage_history():
+    """A live frame can lose one domain without changing source status."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, hp_ratio=1.0),
+        frame(seq=2, at=101.0, hp_ratio=0.95),
+        frame(seq=3, at=102.0, hp_ratio=0.95,
+              avail=availability(self=AVAIL_UNKNOWN)),
+        frame(seq=4, at=103.0, hp_ratio=0.20),
+    ])
+
+    assert RAPID_DAMAGE not in fired(results)
+    assert results[-1].baseline_only is True
+
+
 def test_battle_switch_resets_detector_state():
     registry = DetectorRegistry(build_survival_detectors(CFG))
     first = feed(registry, [
@@ -474,6 +489,16 @@ def test_damage_milestone_fires_once_per_step():
         frame(seq=5, at=104.0, damage=120000.0),
     ])
     assert fired(results).count(DAMAGE_MILESTONE) == 2
+
+
+def test_damage_already_present_on_the_baseline_is_not_replayed():
+    registry = DetectorRegistry(build_targeting_detectors(CFG))
+    results = feed(registry, [
+        frame(seq=1, at=100.0, damage=60000.0),
+        frame(seq=2, at=101.0, damage=60000.0),
+    ])
+
+    assert DAMAGE_MILESTONE not in fired(results)
 
 
 def test_ammo_hint_stays_silent_without_ballistics():

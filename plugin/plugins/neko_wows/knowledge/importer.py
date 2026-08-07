@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .store import TAG_KINDS, KnowledgeStore
+from .store import KnowledgeQuotaExceeded, TAG_KINDS, KnowledgeStore
 from .tokenize import term_frequencies
 
 SUPPORTED_SUFFIXES = (".md", ".markdown", ".txt")
@@ -292,41 +292,43 @@ class DocumentImporter:
         if encoded > cfg.tactics_max_file_bytes:
             raise DocumentRejected(_oversize_message(cfg.tactics_max_file_bytes))
 
-        stats = self.store.stats()
-        if stats["documents"] >= cfg.tactics_max_documents:
-            raise DocumentRejected(f"文档数量已达上限 {cfg.tactics_max_documents}")
-        if stats["total_bytes"] + encoded > cfg.tactics_max_total_bytes:
-            raise DocumentRejected(
-                f"总量会超过 {cfg.tactics_max_total_bytes // (1024 * 1024)} MiB")
-
         document = parse_document(
             name, raw_text,
             size=cfg.tactics_chunk_chars, overlap=cfg.tactics_chunk_overlap)
 
-        existing = self.store.has_hash(document.sha256)
-        if existing is not None:
+        try:
+            added = self.store.add_document(
+                title=document.title,
+                sha256=document.sha256,
+                size_bytes=document.size_bytes,
+                tags=document.tags,
+                chunks=[
+                    {"heading": chunk.heading, "text": chunk.text,
+                     "terms": chunk.terms}
+                    for chunk in document.chunks
+                ],
+                index_chunk_cap=cfg.tactics_index_chunk_cap,
+                max_documents=cfg.tactics_max_documents,
+                max_total_bytes=cfg.tactics_max_total_bytes,
+            )
+        except KnowledgeQuotaExceeded as exc:
+            if exc.kind == "documents":
+                raise DocumentRejected(
+                    f"文档数量已达上限 {exc.limit}") from exc
+            raise DocumentRejected(
+                f"总量会超过 {exc.limit // (1024 * 1024)} MiB") from exc
+
+        if not added.inserted:
             return {
                 "status": "duplicate",
-                "doc_id": existing,
+                "doc_id": added.doc_id,
                 "title": document.title,
             }
 
-        budget = max(0, cfg.tactics_index_chunk_cap - self.store.index_capacity_used())
-        doc_id = self.store.add_document(
-            title=document.title,
-            sha256=document.sha256,
-            size_bytes=document.size_bytes,
-            tags=document.tags,
-            chunks=[
-                {"heading": chunk.heading, "text": chunk.text, "terms": chunk.terms}
-                for chunk in document.chunks
-            ],
-            index_budget=budget,
-        )
-        indexed = min(budget, len(document.chunks))
+        indexed = added.indexed_chunks
         return {
             "status": "imported",
-            "doc_id": doc_id,
+            "doc_id": added.doc_id,
             "title": document.title,
             "chunks": len(document.chunks),
             "indexed_chunks": indexed,

@@ -23,9 +23,14 @@ import {
   sourceStatusLabel,
   sourceStatusTone,
 } from "./format"
-import type { DashboardState } from "./types"
+import type { DashboardState, Translate } from "./types"
 
-export function OverviewSection(props: { state: DashboardState }) {
+export function OverviewSection(props: {
+  state: DashboardState
+  t: Translate
+  locale: string
+}) {
+  const { t } = props
   const state = props.state || {}
   const service = state.service || {}
   const transport = state.transport || {}
@@ -39,116 +44,131 @@ export function OverviewSection(props: { state: DashboardState }) {
     <Stack gap={12}>
       {state.mod_hint ? (
         <Alert tone={service.mode === "conflict" ? "danger" : "warning"}>
-          {state.mod_hint}
+          {t(`overview.hint.${state.mod_hint}`)}
         </Alert>
       ) : null}
 
       {state.reconnect_required ? (
         <Alert tone="warning">
-          数据源配置已改动。改动只在重连后生效，点“重连数据源”应用。
+          {t("overview.reconnectRequired")}
         </Alert>
       ) : null}
 
       <Columns minWidth={180} gap={12}>
-        <StatCard label="遥测服务" value={serviceModeLabel(service.mode)} />
-        <StatCard label="传输" value={transport.mode || "未启动"} />
         <StatCard
-          label="战局状态"
-          value={sourceStatusLabel(snapshot.status)}
+          label={t("overview.stats.service")}
+          value={serviceModeLabel(service.mode, t)}
         />
         <StatCard
-          label="输出"
-          value={config.dry_run ? "dry-run（不发言）" : "真实输出"}
+          label={t("overview.stats.transport")}
+          value={transport.mode || t("common.notStarted")}
+        />
+        <StatCard
+          label={t("overview.stats.battle")}
+          value={sourceStatusLabel(snapshot.status, t)}
+        />
+        <StatCard
+          label={t("overview.stats.output")}
+          value={config.dry_run
+            ? t("overview.output.dryRun")
+            : t("overview.output.live")}
         />
       </Columns>
 
-      <Card title="数据源">
+      <Card title={t("overview.source.title")}>
         <Stack gap={8}>
           <Inline gap={8} wrap>
             <StatusBadge
               tone={serviceModeTone(service.mode)}
-              label={serviceModeLabel(service.mode)}
+              label={serviceModeLabel(service.mode, t)}
             />
             {service.paused ? (
-              <StatusBadge tone="danger" label="自动拉起已暂停" />
+              <StatusBadge tone="danger" label={t("overview.source.autoPaused")} />
             ) : null}
             {snapshot.legacy ? (
-              <StatusBadge tone="warning" label="旧版服务（信封本地推导）" />
+              <StatusBadge tone="warning" label={t("overview.source.legacy")} />
             ) : null}
           </Inline>
           <KeyValue
             data={{
-              地址: config.service_url || "—",
+              [t("overview.source.address")]: config.service_url || "—",
               serviceId: service.service_id || "—",
               apiVersion: service.api_version || "—",
               instanceId: service.instance_id || "—",
-              进程: service.pid ? `pid ${service.pid}` : "非插件托管",
-              说明: service.detail || "—",
-              错误: service.error || "无",
-              服务源码目录: config.service_source_dir || "（未配置，不自动拉起）",
-              游戏目录: config.game_dir || "（未配置）",
+              [t("overview.source.process")]: service.pid
+                ? `pid ${service.pid}`
+                : t("overview.source.externalProcess"),
+              [t("overview.source.detail")]: service.detail || "—",
+              [t("overview.source.error")]: service.error || t("common.none"),
+              [t("overview.source.sourceDir")]: config.service_source_dir
+                || t("overview.source.sourceDirMissing"),
+              [t("overview.source.gameDir")]: config.game_dir
+                || t("common.notConfigured"),
             }}
           />
         </Stack>
       </Card>
 
-      <Card title="传输与游标">
+      <Card title={t("overview.transport.title")}>
         <Stack gap={8}>
           <KeyValue
             data={{
-              当前模式: transport.mode || "未启动",
-              传输代次: `epoch ${transport.epoch ?? 0}`,
-              "WS 连接次数": formatCount(transport.ws_connects),
-              "WS 失败次数": formatCount(transport.ws_failures),
-              "REST 轮询次数": formatCount(transport.rest_polls),
-              "REST 失败次数": formatCount(transport.rest_failures),
-              重连等待: `${transport.reconnect_delay ?? 0}s`,
-              最近一帧: formatClock(transport.last_frame_at),
-              最近错误: transport.last_error || "无",
+              [t("overview.transport.mode")]: transport.mode || t("common.notStarted"),
+              [t("overview.transport.epoch")]: `epoch ${transport.epoch ?? 0}`,
+              [t("overview.transport.wsConnects")]: formatCount(transport.ws_connects, t),
+              [t("overview.transport.wsFailures")]: formatCount(transport.ws_failures, t),
+              [t("overview.transport.restPolls")]: formatCount(transport.rest_polls, t),
+              [t("overview.transport.restFailures")]: formatCount(transport.rest_failures, t),
+              [t("overview.transport.reconnectDelay")]: `${transport.reconnect_delay ?? 0}s`,
+              [t("overview.transport.lastFrame")]: formatClock(
+                transport.last_frame_at, props.locale),
+              [t("overview.transport.lastError")]: transport.last_error || t("common.none"),
             }}
           />
           <Divider />
           <KeyValue
             data={{
-              已接受游标: `${cursor.instance_id || "—"} / seq ${cursor.seq ?? -1}`,
-              接受帧数: formatCount(cursor.accepted),
-              丢弃帧数: describeDropped(cursor.dropped),
-              累计帧数: formatCount(counters.frames),
-              累计事件: formatCount(counters.events),
+              [t("overview.cursor.acceptedCursor")]: `${cursor.instance_id || "—"} / seq ${cursor.seq ?? -1}`,
+              [t("overview.cursor.acceptedFrames")]: formatCount(cursor.accepted, t),
+              [t("overview.cursor.droppedFrames")]: describeDropped(cursor.dropped),
+              [t("overview.cursor.totalFrames")]: formatCount(counters.frames, t),
+              [t("overview.cursor.totalEvents")]: formatCount(counters.events, t),
             }}
           />
-          <Text>
-            重复与乱序帧按 (instanceId, seq) 与传输代次丢弃，这些丢弃是正常的去重结果。
-          </Text>
+          <Text>{t("overview.cursor.help")}</Text>
         </Stack>
       </Card>
 
       {hasSnapshot ? (
-        <Card title="当前战局">
+        <Card title={t("overview.battle.title")}>
           <Stack gap={8}>
             <Inline gap={8} wrap>
               <StatusBadge
                 tone={sourceStatusTone(snapshot.status)}
-                label={sourceStatusLabel(snapshot.status)}
+                label={sourceStatusLabel(snapshot.status, t)}
               />
               {snapshot.transport ? (
-                <StatusBadge tone="info" label={`来自 ${snapshot.transport}`} />
+                <StatusBadge
+                  tone="info"
+                  label={t("overview.battle.from", { source: snapshot.transport })}
+                />
               ) : null}
             </Inline>
             <KeyValue
               data={{
                 battleId: snapshot.battle_id || "—",
-                seq: formatCount(snapshot.seq),
-                地图: snapshot.map_name || "未知",
-                模式: snapshot.game_mode || snapshot.battle_type || "未知",
-                自身血量: formatPercent(snapshot.own_hp_ratio),
-                存活友方: formatCount(snapshot.allies_alive),
-                存活敌方: formatCount(snapshot.enemies_alive),
-                最近敌舰: formatMetres(snapshot.nearest_enemy_m),
+                seq: formatCount(snapshot.seq, t),
+                [t("overview.battle.map")]: snapshot.map_name || t("common.unknown"),
+                [t("overview.battle.mode")]: snapshot.game_mode
+                  || snapshot.battle_type || t("common.unknown"),
+                [t("overview.battle.health")]: formatPercent(snapshot.own_hp_ratio, t),
+                [t("overview.battle.allies")]: formatCount(snapshot.allies_alive, t),
+                [t("overview.battle.enemies")]: formatCount(snapshot.enemies_alive, t),
+                [t("overview.battle.nearest")]: formatMetres(snapshot.nearest_enemy_m, t),
               }}
             />
             <Divider />
-            <Text>数据域可用性</Text>
+            <Text>{t("overview.battle.availability")}</Text>
             <Inline gap={6} wrap>
               {Object.keys(snapshot.availability || {})
                 .sort()
@@ -156,16 +176,13 @@ export function OverviewSection(props: { state: DashboardState }) {
                   <StatusBadge
                     key={domain}
                     tone={availabilityTone((snapshot.availability || {})[domain])}
-                    label={`${domain}：${availabilityLabel(
-                      (snapshot.availability || {})[domain]
+                    label={`${domain}: ${availabilityLabel(
+                      (snapshot.availability || {})[domain], t
                     )}`}
                   />
                 ))}
             </Inline>
-            <Text>
-              「本帧无数据」和「过期」都不等于否定结论：依赖它的检测器会被直接拦下，
-              而不是当成 false。
-            </Text>
+            <Text>{t("overview.battle.availabilityHelp")}</Text>
           </Stack>
         </Card>
       ) : null}

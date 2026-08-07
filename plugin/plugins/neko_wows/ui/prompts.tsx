@@ -19,13 +19,16 @@ import {
 import type { HostedAction } from "@neko/plugin-ui"
 
 import { formatClock, formatCount } from "./format"
-import type { PromptsState } from "./types"
+import type { PromptsState, Translate } from "./types"
 
 export function PromptsSection(props: {
   prompts: PromptsState
   actions: HostedAction[]
   busy: boolean
+  t: Translate
+  locale: string
 }) {
+  const { t } = props
   const prompts = props.prompts || {}
   const sections = prompts.sections || {}
   const limit = prompts.max_section_chars || 8000
@@ -68,26 +71,27 @@ export function PromptsSection(props: {
           tone={prompts.is_builtin ? "info" : "success"}
           label={
             prompts.is_builtin
-              ? "当前使用内置提示词"
-              : `当前版本 ${prompts.active_revision}`
+              ? t("prompts.current.builtin")
+              : t("prompts.current.revision", {
+                  revision: prompts.active_revision || "—",
+                })
           }
         />
         <StatusBadge
           tone="default"
-          label={`保留最近 ${formatCount(prompts.revisions_kept)} 版`}
+          label={t("prompts.current.kept", {
+            count: formatCount(prompts.revisions_kept, t),
+          })}
         />
       </Inline>
 
-      <Text>
-        通道模式决定哪几段被拼起来：dual 用 base + 对应 overlay，single 只用 base。
-        换版本只影响措辞，不动优先级、TTL 与抢占规则。
-      </Text>
+      <Text>{t("prompts.help")}</Text>
 
-      <Card title="三段编辑器">
+      <Card title={t("prompts.editor.title")}>
         <Stack gap={10}>
           <Field
             label={`base（${draft.base.length} / ${limit}）`}
-            error={tooLong(draft.base) ? "超过上限" : undefined}
+            error={tooLong(draft.base) ? t("prompts.editor.tooLong") : undefined}
           >
             <Textarea
               value={draft.base}
@@ -97,7 +101,7 @@ export function PromptsSection(props: {
           </Field>
           <Field
             label={`urgent overlay（${draft.urgent.length} / ${limit}）`}
-            error={tooLong(draft.urgent) ? "超过上限" : undefined}
+            error={tooLong(draft.urgent) ? t("prompts.editor.tooLong") : undefined}
           >
             <Textarea
               value={draft.urgent}
@@ -107,7 +111,7 @@ export function PromptsSection(props: {
           </Field>
           <Field
             label={`normal overlay（${draft.normal.length} / ${limit}）`}
-            error={tooLong(draft.normal) ? "超过上限" : undefined}
+            error={tooLong(draft.normal) ? t("prompts.editor.tooLong") : undefined}
           >
             <Textarea
               value={draft.normal}
@@ -115,15 +119,12 @@ export function PromptsSection(props: {
               onChange={(value) => setDraft({ ...draft, normal: value })}
             />
           </Field>
-          <Field label="备注（可选）">
+          <Field label={t("prompts.editor.note")}>
             <Textarea value={note} onChange={setNote} />
           </Field>
 
           {invalid ? (
-            <Alert tone="warning">
-              三段都不能为空，且都不能超过上限。校验是整包的：任何一段不合格就整包拒绝，
-              当前生效的版本不会被改动。
-            </Alert>
+            <Alert tone="warning">{t("prompts.editor.invalid")}</Alert>
           ) : null}
 
           <Inline gap={8} wrap>
@@ -133,29 +134,26 @@ export function PromptsSection(props: {
               actionId="save_prompt_revision"
               values={{ ...draft, note }}
             >
-              保存并启用
+              {t("prompts.editor.save")}
             </ActionButton>
             {findAction("reset_prompts") ? (
               <ActionButton action={findAction("reset_prompts")} tone="warning" refresh>
-                恢复内置提示词
+                {t("prompts.editor.reset")}
               </ActionButton>
             ) : null}
           </Inline>
         </Stack>
       </Card>
 
-      <Card title="本地预览">
+      <Card title={t("prompts.preview.title")}>
         <Stack gap={10}>
-          <Text>
-            用最近一次真实候选（没有就用内置样例）组装完整提示词。预览只在本地拼装，
-            不经过投递，也不会进入消息流。
-          </Text>
+          <Text>{t("prompts.preview.help")}</Text>
           <SegmentedControl
             value={lane}
             disabled={props.busy}
             options={[
-              { value: "urgent", label: "紧急" },
-              { value: "normal", label: "常规" },
+              { value: "urgent", label: t("prompts.preview.urgent") },
+              { value: "normal", label: t("prompts.preview.normal") },
             ]}
             onChange={(value) => setLane(String(value))}
           />
@@ -169,7 +167,7 @@ export function PromptsSection(props: {
               actionId="preview_prompt"
               values={{ ...draft, lane }}
             >
-              生成预览
+              {t("prompts.preview.generate")}
             </ActionButton>
           </Inline>
           {preview ? (
@@ -181,7 +179,7 @@ export function PromptsSection(props: {
         </Stack>
       </Card>
 
-      <Card title="版本历史">
+      <Card title={t("prompts.history.title")}>
         {(prompts.revisions || []).length ? (
           <DataTable
             data={prompts.revisions || []}
@@ -189,28 +187,36 @@ export function PromptsSection(props: {
             columns={[
               {
                 key: "revision_id",
-                label: "版本",
+                label: t("prompts.history.version"),
                 render: (row) =>
-                  row.active ? `${row.revision_id}（生效）` : row.revision_id,
+                  row.active
+                    ? t("prompts.history.activeRevision", {
+                        revision: row.revision_id,
+                      })
+                    : row.revision_id,
               },
               {
                 key: "created_at",
-                label: "保存时间",
-                render: (row) => formatClock(row.created_at),
+                label: t("prompts.history.savedAt"),
+                render: (row) => formatClock(row.created_at, props.locale),
               },
               {
                 key: "lengths",
-                label: "字符数",
+                label: t("prompts.history.lengths"),
                 render: (row) =>
                   `${row.lengths?.base ?? 0} / ${row.lengths?.urgent ?? 0} / ${row.lengths?.normal ?? 0}`,
               },
-              { key: "note", label: "备注", render: (row) => row.note || "—" },
+              {
+                key: "note",
+                label: t("prompts.history.note"),
+                render: (row) => row.note || "—",
+              },
               {
                 key: "active",
                 label: "",
                 render: (row) =>
                   row.active ? (
-                    <Text>当前</Text>
+                    <Text>{t("prompts.history.current")}</Text>
                   ) : (
                     <ActionButton
                       tone="info"
@@ -218,7 +224,7 @@ export function PromptsSection(props: {
                       actionId="activate_prompt_revision"
                       values={{ revision_id: row.revision_id }}
                     >
-                      回滚到该版本
+                      {t("prompts.history.rollback")}
                     </ActionButton>
                   ),
               },
@@ -226,8 +232,13 @@ export function PromptsSection(props: {
           />
         ) : (
           <Stack gap={6}>
-            <Text>还没有自定义版本，当前跑的是内置提示词。</Text>
-            <KeyValue data={{ 生效版本: prompts.active_revision || "builtin" }} />
+            <Text>{t("prompts.history.empty")}</Text>
+            <KeyValue
+              data={{
+                [t("prompts.history.effective")]: prompts.active_revision
+                  || t("prompts.current.builtin"),
+              }}
+            />
           </Stack>
         )}
       </Card>

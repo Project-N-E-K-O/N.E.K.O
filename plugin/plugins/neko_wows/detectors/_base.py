@@ -137,12 +137,14 @@ class DetectorRegistry:
         self.detectors = tuple(detectors)
         self._identity: tuple[str, str | None] | None = None
         self._live_baseline_ready = False
+        self._blocked_detectors: set[str] = set()
 
     def reset(self) -> None:
         for detector in self.detectors:
             detector.reset()
         self._identity = None
         self._live_baseline_ready = False
+        self._blocked_detectors.clear()
 
     def feed(
         self,
@@ -159,6 +161,7 @@ class DetectorRegistry:
                 detector.reset()
             self._identity = snapshot.identity
             self._live_baseline_ready = False
+            self._blocked_detectors.clear()
 
         # A comparable pair needs two consecutive live frames with the same
         # identity. Anything else can only be used to prime state.
@@ -175,9 +178,13 @@ class DetectorRegistry:
 
         events: list[GameEvent] = []
         blocked: list[BlockedDetector] = []
+        recovered_any = False
         for detector in self.detectors:
             missing = snapshot.missing_domains(detector.required)
             if missing:
+                if detector.name not in self._blocked_detectors:
+                    detector.reset()
+                    self._blocked_detectors.add(detector.name)
                 blocked.append(BlockedDetector(
                     detector=detector.name,
                     missing=missing,
@@ -185,7 +192,11 @@ class DetectorRegistry:
                 ))
                 continue
 
-            baseline_only = detector.needs_live and not comparable
+            recovered = detector.name in self._blocked_detectors
+            if recovered:
+                self._blocked_detectors.remove(detector.name)
+                recovered_any = True
+            baseline_only = detector.needs_live and (not comparable or recovered)
             context = DetectorContext(
                 now=facts.at,
                 baseline_only=baseline_only,
@@ -197,7 +208,7 @@ class DetectorRegistry:
         return FeedResult(
             events=tuple(events),
             blocked=tuple(blocked),
-            baseline_only=not comparable,
+            baseline_only=not comparable or recovered_any,
             identity_reset=identity_reset,
         )
 

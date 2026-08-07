@@ -130,7 +130,8 @@ class WowsTacticsRepository:
         rows = self.store.load_chunks(candidates)
         corpus = self.store.stats()
         total_chunks = max(1, corpus["indexed_chunks"])
-        average_length = (corpus["total_tokens"] / total_chunks) if total_chunks else 1.0
+        average_length = (
+            corpus["indexed_tokens"] / total_chunks) if total_chunks else 1.0
         query_trigrams = set(trigrams(query_text))
 
         scored: list[tuple[float, dict[str, Any]]] = []

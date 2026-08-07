@@ -1,3 +1,8 @@
+export type Translate = (
+  source: string,
+  params?: Record<string, any>
+) => string
+
 export type ServiceState = {
   mode?: string
   reachable?: boolean
@@ -178,6 +183,7 @@ export type PromptsState = {
 
 export type DashboardState = {
   running?: boolean
+  runtime_now?: number
   config?: WowsConfigView
   reconnect_required?: boolean
   service?: ServiceState

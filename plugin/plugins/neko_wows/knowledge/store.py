@@ -17,8 +17,11 @@ import sqlite3
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+from .tokenize import term_frequencies
 
 # Front matter keys that may become retrieval tags. Anything else is rejected at
 # import time rather than stored and ignored.
@@ -88,6 +91,22 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+class KnowledgeQuotaExceeded(Exception):
+    """Raised inside the atomic insert transaction when a corpus limit wins."""
+
+    def __init__(self, kind: str, limit: int) -> None:
+        self.kind = kind
+        self.limit = int(limit)
+        super().__init__(f"{kind} quota exceeded ({limit})")
+
+
+@dataclass(frozen=True)
+class AddDocumentResult:
+    doc_id: str
+    inserted: bool
+    indexed_chunks: int
+
+
 class KnowledgeStore:
     """All tactical-document and prompt-revision persistence, in one file."""
 
@@ -148,19 +167,44 @@ class KnowledgeStore:
         size_bytes: int,
         tags: Mapping[str, Sequence[str]],
         chunks: Sequence[Mapping[str, Any]],
-        index_budget: int,
-    ) -> str:
-        """Insert a document, its chunks and (up to `index_budget`) postings.
-
-        `index_budget` is how many of this document's chunks may still enter the
-        ranked index. Chunks beyond it are stored and remain tag-retrievable, so
-        exceeding the cap degrades ranking rather than losing content.
-        """
+        index_chunk_cap: int,
+        max_documents: int,
+        max_total_bytes: int,
+    ) -> AddDocumentResult:
+        """Atomically deduplicate, enforce quotas, and allocate index capacity."""
         doc_id = new_id("doc")
         now = time.time()
         with self._lock:
             conn = self._require()
             try:
+                # This also serializes quota decisions with other connections,
+                # not only threads sharing this KnowledgeStore instance.
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    "SELECT doc_id FROM documents WHERE sha256 = ?", (sha256,)
+                ).fetchone()
+                if existing is not None:
+                    conn.commit()
+                    return AddDocumentResult(
+                        doc_id=str(existing["doc_id"]),
+                        inserted=False,
+                        indexed_chunks=0,
+                    )
+
+                usage = conn.execute(
+                    "SELECT COUNT(*) AS documents, "
+                    "COALESCE(SUM(size_bytes), 0) AS total_bytes FROM documents"
+                ).fetchone()
+                if int(usage["documents"] or 0) >= int(max_documents):
+                    raise KnowledgeQuotaExceeded("documents", max_documents)
+                if int(usage["total_bytes"] or 0) + int(size_bytes) > int(max_total_bytes):
+                    raise KnowledgeQuotaExceeded("total_bytes", max_total_bytes)
+
+                indexed_row = conn.execute(
+                    "SELECT COALESCE(SUM(indexed), 0) AS n FROM chunks"
+                ).fetchone()
+                index_budget = max(
+                    0, int(index_chunk_cap) - int(indexed_row["n"] or 0))
                 conn.execute(
                     "INSERT INTO documents (doc_id, title, sha256, size_bytes, "
                     "chunk_count, imported_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -203,12 +247,19 @@ class KnowledgeStore:
             except Exception:
                 conn.rollback()
                 raise
-        return doc_id
+        return AddDocumentResult(
+            doc_id=doc_id,
+            inserted=True,
+            indexed_chunks=min(index_budget, len(chunks)),
+        )
 
-    def delete_document(self, doc_id: str) -> bool:
+    def delete_document(
+        self, doc_id: str, *, index_chunk_cap: int | None = None,
+    ) -> bool:
         with self._lock:
             conn = self._require()
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 chunk_ids = [
                     int(row["chunk_id"]) for row in conn.execute(
                         "SELECT chunk_id FROM chunks WHERE doc_id = ?", (doc_id,))
@@ -221,11 +272,44 @@ class KnowledgeStore:
                 conn.execute("DELETE FROM doc_tags WHERE doc_id = ?", (doc_id,))
                 cursor = conn.execute(
                     "DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+                if cursor.rowcount > 0 and index_chunk_cap is not None:
+                    self._backfill_index(conn, index_chunk_cap)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
         return cursor.rowcount > 0
+
+    @staticmethod
+    def _backfill_index(conn: sqlite3.Connection, index_chunk_cap: int) -> None:
+        used_row = conn.execute(
+            "SELECT COALESCE(SUM(indexed), 0) AS n FROM chunks"
+        ).fetchone()
+        remaining = max(0, int(index_chunk_cap) - int(used_row["n"] or 0))
+        if remaining <= 0:
+            return
+
+        rows = conn.execute(
+            "SELECT c.chunk_id, c.heading, c.text "
+            "FROM chunks c JOIN documents d ON d.doc_id = c.doc_id "
+            "WHERE c.indexed = 0 "
+            "ORDER BY d.imported_at, c.ordinal, c.chunk_id LIMIT ?",
+            (remaining,),
+        ).fetchall()
+        for row in rows:
+            chunk_id = int(row["chunk_id"])
+            terms = dict(term_frequencies(
+                f"{row['heading']}\n{row['text']}"))
+            if terms:
+                conn.executemany(
+                    "INSERT INTO chunk_terms (term, chunk_id, tf) VALUES (?, ?, ?)",
+                    [(term, chunk_id, int(tf)) for term, tf in terms.items()],
+                )
+            conn.execute(
+                "UPDATE chunks SET indexed = 1, token_count = ? "
+                "WHERE chunk_id = ?",
+                (sum(terms.values()), chunk_id),
+            )
 
     def clear_documents(self) -> int:
         with self._lock:
@@ -281,7 +365,9 @@ class KnowledgeStore:
                 "FROM documents").fetchone()
             chunks = conn.execute(
                 "SELECT COUNT(*) AS n, COALESCE(SUM(indexed), 0) AS indexed, "
-                "COALESCE(SUM(token_count), 0) AS tokens FROM chunks").fetchone()
+                "COALESCE(SUM(token_count), 0) AS tokens, "
+                "COALESCE(SUM(CASE WHEN indexed = 1 THEN token_count ELSE 0 END), 0) "
+                "AS indexed_tokens FROM chunks").fetchone()
             postings = conn.execute(
                 "SELECT COUNT(*) AS n FROM chunk_terms").fetchone()
         indexed_chunks = int(chunks["indexed"] or 0)
@@ -292,6 +378,7 @@ class KnowledgeStore:
             "indexed_chunks": indexed_chunks,
             "postings": int(postings["n"] or 0),
             "total_tokens": int(chunks["tokens"] or 0),
+            "indexed_tokens": int(chunks["indexed_tokens"] or 0),
         }
 
     def index_capacity_used(self) -> int:

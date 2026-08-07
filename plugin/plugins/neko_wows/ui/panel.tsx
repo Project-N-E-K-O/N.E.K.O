@@ -5,6 +5,8 @@ import {
   RefreshButton,
   Stack,
   Tabs,
+  useEffect,
+  useRef,
   useState,
 } from "@neko/plugin-ui"
 import type { PluginSurfaceProps } from "@neko/plugin-ui"
@@ -17,9 +19,33 @@ import { PromptsSection } from "./prompts"
 import { TimelineSection } from "./timeline"
 import type { DashboardState } from "./types"
 
+const AUTO_REFRESH_INTERVAL_MS = 2000
+
 export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>) {
   const state = props.state || {}
   const [busy, setBusy] = useState(false)
+  const refreshInFlight = useRef(false)
+
+  useEffect(() => {
+    let disposed = false
+    const refresh = async () => {
+      if (disposed || refreshInFlight.current) return
+      refreshInFlight.current = true
+      try {
+        await props.api.refresh()
+      } catch {
+        // A transient panel refresh failure must not stop future polling.
+      } finally {
+        refreshInFlight.current = false
+      }
+    }
+    const timer = globalThis.setInterval(
+      () => void refresh(), AUTO_REFRESH_INTERVAL_MS)
+    return () => {
+      disposed = true
+      globalThis.clearInterval(timer)
+    }
+  }, [props.api])
 
   const call = async (actionId: string, args?: Record<string, any>) => {
     setBusy(true)
@@ -34,13 +60,13 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
 
   return (
     <Page
-      title="战舰世界猫娘陪玩"
-      subtitle="只读 8111 遥测：把战局快照转成事件，仲裁后让猫娘自己组织措辞。"
+      title={props.t("panel.title")}
+      subtitle={props.t("panel.subtitle")}
     >
-      <ErrorBoundary title="面板渲染出错">
+      <ErrorBoundary title={props.t("panel.renderError")}>
         <Stack gap={12}>
           <Inline gap={8} justify="end">
-            <RefreshButton onRefresh={() => props.api.refresh()} />
+            <RefreshButton />
           </Inline>
 
           <Tabs
@@ -48,46 +74,60 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
             items={[
               {
                 id: "overview",
-                label: "概览",
-                content: <OverviewSection state={state} />,
+                label: props.t("panel.tabs.overview"),
+                content: (
+                  <OverviewSection state={state} t={props.t} locale={props.locale} />
+                ),
               },
               {
                 id: "timeline",
-                label: "实时战术链路",
-                content: <TimelineSection entries={state.timeline || []} />,
+                label: props.t("panel.tabs.timeline"),
+                content: (
+                  <TimelineSection
+                    entries={state.timeline || []}
+                    t={props.t}
+                    locale={props.locale}
+                  />
+                ),
               },
               {
                 id: "documents",
-                label: "战术文档",
+                label: props.t("panel.tabs.documents"),
                 content: (
                   <DocumentsSection
                     documents={state.documents || {}}
                     actions={props.actions || []}
                     busy={busy}
+                    t={props.t}
+                    locale={props.locale}
                   />
                 ),
               },
               {
                 id: "prompts",
-                label: "提示词实验室",
+                label: props.t("panel.tabs.prompts"),
                 content: (
                   <PromptsSection
                     prompts={state.prompts || {}}
                     actions={props.actions || []}
                     busy={busy}
+                    t={props.t}
+                    locale={props.locale}
                   />
                 ),
               },
               {
                 id: "preferences",
-                label: "偏好",
+                label: props.t("panel.tabs.preferences"),
                 content: (
                   <PreferencesSection
                     config={state.config || {}}
                     arbiter={state.arbiter || {}}
+                    runtimeNow={state.runtime_now || 0}
                     categories={state.categories || []}
                     lanes={state.lanes || []}
                     busy={busy}
+                    t={props.t}
                     onSetChannelMode={(mode) =>
                       call("set_channel_mode", { mode })
                     }
@@ -115,12 +155,13 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
               },
               {
                 id: "diagnostics",
-                label: "安全诊断",
+                label: props.t("panel.tabs.diagnostics"),
                 content: (
                   <DiagnosticsSection
                     state={state}
                     actions={props.actions || []}
                     busy={busy}
+                    t={props.t}
                     onSetDryRun={(value) => call("set_dry_run", { value })}
                   />
                 ),

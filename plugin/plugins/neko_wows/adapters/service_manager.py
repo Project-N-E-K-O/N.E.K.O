@@ -68,6 +68,11 @@ class ServiceStatus:
     detail: str = ""
     crash_count: int = 0
 
+    @property
+    def transport_allowed(self) -> bool:
+        """A reachable foreign service must never be polled as WoWS telemetry."""
+        return self.mode != MODE_CONFLICT
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,

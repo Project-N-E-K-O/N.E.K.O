@@ -280,6 +280,7 @@ class TacticQuery:
     summary: str = ""
     event_id: str = ""
     map_name: str | None = None
+    ship_name: str | None = None
     ship_class: str | None = None
     game_mode: str | None = None
     topics: tuple[str, ...] = ()
@@ -287,7 +288,9 @@ class TacticQuery:
     def text(self) -> str:
         """Free-text side of the query, used for term matching and ranking."""
         parts = [self.summary, *self.topics]
-        for value in (self.map_name, self.ship_class, self.game_mode):
+        for value in (
+            self.map_name, self.ship_name, self.ship_class, self.game_mode,
+        ):
             if value:
                 parts.append(value)
         return " ".join(part for part in parts if part)
@@ -297,6 +300,8 @@ class TacticQuery:
         candidates: dict[str, tuple[str, ...]] = {}
         if self.map_name:
             candidates["maps"] = (self.map_name,)
+        if self.ship_name:
+            candidates["ships"] = (self.ship_name,)
         if self.ship_class:
             candidates["classes"] = (self.ship_class,)
         if self.game_mode:

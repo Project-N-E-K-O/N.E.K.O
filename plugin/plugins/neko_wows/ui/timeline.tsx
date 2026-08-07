@@ -17,58 +17,75 @@ import {
   outcomeTone,
   stageLabel,
 } from "./format"
-import type { TimelineEntry } from "./types"
+import type { TimelineEntry, Translate } from "./types"
 
-export function TimelineSection(props: { entries: TimelineEntry[] }) {
+export function TimelineSection(props: {
+  entries: TimelineEntry[]
+  t: Translate
+  locale: string
+}) {
+  const { t } = props
   const entries = props.entries || []
   const [selected, setSelected] = useState<TimelineEntry | null>(null)
 
   if (!entries.length) {
     return (
       <EmptyState
-        title="还没有链路记录"
-        description="启动插件并进入一局对战后，每一帧的检测、仲裁与投递结果都会出现在这里。"
+        title={t("timeline.empty.title")}
+        description={t("timeline.empty.description")}
       />
     )
   }
 
   return (
     <Stack gap={12}>
-      <Text>
-        每一行是一个阶段的结果，包含没有产生输出的阶段 —— 猫娘没开口时，这里会说清是
-        插件自己压住了，还是宿主没有放行。
-      </Text>
+      <Text>{t("timeline.help")}</Text>
 
       <DataTable
         data={entries}
         maxRows={60}
-        emptyText="暂无记录"
+        emptyText={t("timeline.empty.rows")}
         onSelect={(row) => setSelected(row)}
         columns={[
-          { key: "at", label: "时间", render: (row) => formatClock(row.at) },
+          {
+            key: "at",
+            label: t("timeline.columns.time"),
+            render: (row) => formatClock(row.at, props.locale),
+          },
           {
             key: "stage",
-            label: "阶段",
-            render: (row) => stageLabel(row.stage),
+            label: t("timeline.columns.stage"),
+            render: (row) => stageLabel(row.stage, t),
           },
           {
             key: "outcome",
-            label: "结果",
+            label: t("timeline.columns.result"),
             render: (row) => (
               <StatusBadge
                 tone={outcomeTone(row.stage, row.outcome)}
-                label={outcomeLabel(row.stage, row.outcome)}
+                label={outcomeLabel(row.stage, row.outcome, t)}
               />
             ),
           },
-          { key: "event_id", label: "事件", render: (row) => row.event_id || "—" },
+          {
+            key: "event_id",
+            label: t("timeline.columns.event"),
+            render: (row) => row.event_id || "—",
+          },
           { key: "seq", label: "seq", render: (row) => row.seq ?? "—" },
-          { key: "reason", label: "原因", render: (row) => row.reason || "—" },
+          {
+            key: "reason",
+            label: t("timeline.columns.reason"),
+            render: (row) => row.reason || "—",
+          },
         ]}
       />
 
       {selected ? (
-        <Card title={`详情：${stageLabel(selected.stage)} / ${outcomeLabel(selected.stage, selected.outcome)}`}>
+        <Card title={t("timeline.detail.title", {
+          stage: stageLabel(selected.stage, t),
+          outcome: outcomeLabel(selected.stage, selected.outcome, t),
+        })}>
           <Stack gap={8}>
             <Text>
               {`seq ${selected.seq ?? "—"} · battleId ${selected.battle_id || "—"}`}
@@ -77,7 +94,7 @@ export function TimelineSection(props: { entries: TimelineEntry[] }) {
             {selected.detail && selected.detail.preview ? (
               <Stack gap={6}>
                 <Divider />
-                <Text>dry-run 下本应发给猫娘的完整提示词：</Text>
+                <Text>{t("timeline.detail.preview")}</Text>
                 <TextBlock text={selected.detail.preview} />
               </Stack>
             ) : null}
@@ -90,7 +107,7 @@ export function TimelineSection(props: { entries: TimelineEntry[] }) {
           </Stack>
         </Card>
       ) : (
-        <Text>点一行查看该阶段的完整事实与提示词预览。</Text>
+        <Text>{t("timeline.detail.select")}</Text>
       )}
     </Stack>
   )

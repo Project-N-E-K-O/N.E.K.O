@@ -20,6 +20,7 @@ import json
 import time
 from typing import Any, Mapping
 
+from .service_manager import SERVICE_ID
 from ..domain.snapshot import (
     AVAIL_AVAILABLE,
     AVAIL_STALE,
@@ -55,6 +56,10 @@ META_DOMAINS = (DOMAIN_ROSTER, DOMAIN_MAP_BOUNDS)
 
 class UnsupportedApiVersion(Exception):
     """Raised for an envelope whose major version we cannot interpret."""
+
+
+class UnexpectedServiceIdentity(Exception):
+    """Raised when a v1 envelope belongs to a different telemetry service."""
 
 
 def _number(value: Any) -> float | None:
@@ -104,6 +109,11 @@ class WowsSchemaAdapter:
 
         if api_version is None:
             return self._parse_legacy(payload, transport, epoch, now)
+
+        service_id = str(payload.get("serviceId") or "")
+        if service_id != SERVICE_ID:
+            raise UnexpectedServiceIdentity(
+                f"serviceId {service_id!r} does not match {SERVICE_ID!r}")
 
         major = _api_major(api_version)
         if major != SUPPORTED_API_MAJOR:
@@ -401,6 +411,7 @@ def _sum_table(raw: Any) -> float | None:
 __all__ = [
     "LEGACY_STALE_SECONDS",
     "SUPPORTED_API_MAJOR",
+    "UnexpectedServiceIdentity",
     "UnsupportedApiVersion",
     "WowsSchemaAdapter",
 ]

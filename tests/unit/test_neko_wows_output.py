@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
+
 import pytest
 
+from plugin.plugins.neko_wows import NekoWowsPlugin
 from plugin.plugins.neko_wows.adapters.neko_dispatcher import (
     ContextInjector,
     NekoDispatcher,
@@ -47,20 +51,22 @@ from plugin.plugins.neko_wows.presentation.prompt_router import (
 )
 from plugin.plugins.neko_wows.detectors._base import GameEvent
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
+from plugin.plugins.neko_wows.domain.snapshot import STATUS_ENDED
 
 
 class FakePlugin:
     """Counts every crossing of the host boundary."""
 
-    def __init__(self, *, fail=False):
+    def __init__(self, *, fail=False, receipt=None):
         self.calls: list[dict] = []
         self.fail = fail
+        self.receipt = {"submitted": True} if receipt is None else receipt
 
     def push_message(self, **kwargs):
         self.calls.append(kwargs)
         if self.fail:
             raise RuntimeError("host unavailable")
-        return True
+        return self.receipt
 
 
 class FakeClock:
@@ -127,6 +133,21 @@ def test_turning_dry_run_off_lets_the_call_through():
     assert plugin.calls[0]["source"] == "neko_wows"
 
 
+def test_a_declined_sdk_submission_is_not_reported_as_delivered():
+    plugin = FakePlugin(receipt={"submitted": False, "reason": "host_queue_full"})
+    cfg = WowsConfig()
+    cfg.dry_run = False
+    dispatcher = NekoDispatcher(plugin, cfg, clock=FakeClock())
+
+    result = dispatcher.deliver(request())
+
+    assert result.delivered is False
+    assert result.reason == REASON_FAILED
+    assert result.host_calls == 1
+    assert dispatcher.stats()["delivered"] == 0
+    assert dispatcher.stats()["recent_failures"] == 1
+
+
 def test_context_injection_is_also_suppressed_in_dry_run():
     plugin = FakePlugin()
     injector = ContextInjector(plugin)
@@ -144,6 +165,43 @@ def test_context_injection_is_read_only_not_a_turn():
     # Injecting twice would duplicate the scene setup.
     assert injector.push("场景说明", dry_run=False) is False
     assert len(plugin.calls) == 1
+
+
+def test_declined_context_submission_stays_retryable():
+    plugin = FakePlugin(receipt={"submitted": False, "reason": "unavailable"})
+    injector = ContextInjector(plugin)
+
+    assert injector.push("场景说明", dry_run=False) is False
+    assert injector.injected is False
+    assert injector.host_calls == 1
+
+    plugin.receipt = {"submitted": True}
+    assert injector.push("场景说明", dry_run=False) is True
+    assert injector.injected is True
+
+
+def test_restore_cleans_up_an_existing_context_even_after_dry_run_is_enabled():
+    plugin = FakePlugin()
+    injector = ContextInjector(plugin)
+    assert injector.push("场景说明", dry_run=False) is True
+
+    assert injector.restore("恢复说明", dry_run=True) is True
+    assert injector.injected is False
+    assert len(plugin.calls) == 2
+
+
+def test_battle_end_restores_context_after_the_frame_is_evaluated():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._pipeline_lock = threading.RLock()
+    plugin.cfg = WowsConfig()
+    plugin._evaluate_locked = lambda _snapshot: calls.append("evaluate")
+    plugin.context_injector = SimpleNamespace(
+        restore=lambda *_args, **_kwargs: calls.append("restore") or True)
+
+    NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_ENDED))
+
+    assert calls == ["evaluate", "restore"]
 
 
 # --- expiry, pausing, failure fuse --------------------------------------

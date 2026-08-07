@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
+from plugin.plugins.neko_wows.knowledge import importer as importer_module
+from plugin.plugins.neko_wows.knowledge import retrieval as retrieval_module
 from plugin.plugins.neko_wows.domain.contracts import (
     NullTacticsRepository,
     TacticQuery,
@@ -236,6 +241,36 @@ def test_the_total_size_quota_is_enforced(store):
     assert "总量" in str(excinfo.value)
 
 
+def test_concurrent_imports_cannot_both_cross_the_document_quota(
+    store, monkeypatch,
+):
+    tool = importer(store, tactics_max_documents=1)
+    barrier = threading.Barrier(2)
+    original_parse = importer_module.parse_document
+
+    def synchronized_parse(*args, **kwargs):
+        parsed = original_parse(*args, **kwargs)
+        barrier.wait(timeout=5.0)
+        return parsed
+
+    monkeypatch.setattr(importer_module, "parse_document", synchronized_parse)
+
+    def run(name, text):
+        try:
+            return tool.import_text(name, text)["status"]
+        except DocumentRejected:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda item: run(*item),
+            (("a.md", "并发内容甲"), ("b.md", "并发内容乙")),
+        ))
+
+    assert sorted(results) == ["imported", "rejected"]
+    assert store.stats()["documents"] == 1
+
+
 def test_unsupported_suffixes_are_rejected(store, tmp_path):
     path = tmp_path / "notes.pdf"
     path.write_text("内容", encoding="utf-8")
@@ -296,6 +331,38 @@ def test_an_exhausted_index_still_stores_the_document(store):
     assert store.stats()["documents"] == 1
 
 
+def test_bm25_average_length_uses_only_indexed_chunks(store, monkeypatch):
+    tool = importer(
+        store,
+        tactics_index_chunk_cap=1,
+        tactics_chunk_chars=120,
+        tactics_chunk_overlap=0,
+    )
+    body = "\n\n".join([
+        "巡洋舰距离控制要谨慎。" * 8,
+        "未索引的超长段落。" * 80,
+    ])
+    tool.import_text("lengths.md", "---\nmaps: Ocean\n---\n\n" + body)
+    stats = store.stats()
+    assert stats["indexed_chunks"] == 1
+    assert 0 < stats["indexed_tokens"] < stats["total_tokens"]
+
+    averages = []
+    original_bm25 = retrieval_module._bm25
+
+    def capture_average(*args, **kwargs):
+        averages.append(kwargs["average_length"])
+        return original_bm25(*args, **kwargs)
+
+    monkeypatch.setattr(retrieval_module, "_bm25", capture_average)
+    repository(store).search(
+        TacticQuery(summary="巡洋舰距离", map_name="Ocean"), limit=3)
+
+    assert averages
+    assert averages[0] == pytest.approx(
+        stats["indexed_tokens"] / stats["indexed_chunks"])
+
+
 # --- retrieval -----------------------------------------------------------
 
 def repository(store, **overrides):
@@ -339,6 +406,17 @@ def test_a_tag_match_injects_even_without_term_hits(store):
         TacticQuery(summary="开局", map_name="New Dawn"), limit=3)
     assert hits
     assert "maps:New Dawn" in hits[0].tags
+
+
+def test_a_ship_name_tag_is_queryable(store):
+    importer(store).import_text(
+        "yamato.md",
+        "---\nships: Yamato\n---\n\n开局先观察对面驱逐舰位置。",
+    )
+    hits = repository(store).search(
+        TacticQuery(summary="开局", ship_name="Yamato"), limit=3)
+    assert hits
+    assert "ships:Yamato" in hits[0].tags
 
 
 def test_tag_weighting_outranks_a_plain_term_match(store):
@@ -405,6 +483,30 @@ def test_a_deleted_document_disappears_from_results(store):
     assert store.stats()["postings"] == 0
 
 
+def test_deleting_an_indexed_document_backfills_free_capacity(store):
+    tool = importer(
+        store,
+        tactics_index_chunk_cap=2,
+        tactics_chunk_chars=120,
+        tactics_chunk_overlap=0,
+    )
+    first = tool.import_text(
+        "first.md",
+        "\n\n".join(("占位段落甲。" * 20, "占位段落乙。" * 20)),
+    )
+    second = tool.import_text("second.md", "鱼雷规避需要提前转向保持机动。")
+    assert first["indexed_chunks"] == 2
+    assert second["indexed_chunks"] == 0
+
+    assert store.delete_document(
+        first["doc_id"], index_chunk_cap=2) is True
+
+    remaining = {item["doc_id"]: item for item in store.list_documents()}
+    assert remaining[second["doc_id"]]["indexed_chunks"] == 1
+    assert repository(store).search(
+        TacticQuery(summary="鱼雷规避提前转向"), limit=3)
+
+
 def test_clearing_removes_everything(store):
     tool = importer(store)
     tool.import_text("a.md", "内容甲")
@@ -414,6 +516,7 @@ def test_clearing_removes_everything(store):
     assert stats == {
         "documents": 0, "total_bytes": 0, "chunks": 0,
         "indexed_chunks": 0, "postings": 0, "total_tokens": 0,
+        "indexed_tokens": 0,
     }
 
 
@@ -421,10 +524,12 @@ def test_clearing_removes_everything(store):
 
 def test_tag_candidates_map_battle_context_onto_kinds():
     query = TacticQuery(
-        summary="低血量", map_name="New Dawn", ship_class="Cruiser",
+        summary="低血量", map_name="New Dawn", ship_name="Yamato",
+        ship_class="Cruiser",
         game_mode="Domination", topics=("撤退",))
     assert query.tag_candidates() == {
         "maps": ("New Dawn",),
+        "ships": ("Yamato",),
         "classes": ("Cruiser",),
         "modes": ("Domination",),
         "topics": ("撤退",),

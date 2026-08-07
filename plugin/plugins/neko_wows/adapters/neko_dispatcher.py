@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from ..domain.contracts import DeliveryRequest, DeliveryResult
@@ -104,9 +105,20 @@ class NekoDispatcher:
                 return self._result(request, False, REASON_DRY_RUN, now)
 
         try:
-            self._plugin.push_message(**request.push_kwargs())
+            receipt = self._plugin.push_message(**request.push_kwargs())
         except Exception as exc:
             self._log("warning", f"push_message failed for {request.event_id}: {exc}")
+            with self._lock:
+                self.host_calls += 1
+            self._note_failure(now)
+            return self._result(request, False, REASON_FAILED, now, host_calls=1)
+
+        if not _submission_accepted(receipt):
+            reason = _submission_reason(receipt)
+            self._log(
+                "warning",
+                f"push_message declined for {request.event_id}: {reason}",
+            )
             with self._lock:
                 self.host_calls += 1
             self._note_failure(now)
@@ -166,32 +178,40 @@ class ContextInjector:
     def __init__(self, plugin, *, logger=None) -> None:
         self._plugin = plugin
         self.logger = logger
+        self._lock = threading.RLock()
         self._injected = False
         self.host_calls = 0
 
     @property
     def injected(self) -> bool:
-        return self._injected
+        with self._lock:
+            return self._injected
 
     def push(self, text: str, *, dry_run: bool) -> bool:
-        if dry_run or self._injected:
+        with self._lock:
+            if dry_run or self._injected:
+                return False
+            if self._send(text):
+                self._injected = True
+                return True
             return False
-        if self._send(text):
-            self._injected = True
-            return True
-        return False
 
     def restore(self, text: str, *, dry_run: bool) -> bool:
-        if dry_run or not self._injected:
+        # Cleanup is governed by whether context was actually injected. A user
+        # may re-enable dry-run before the battle ends; that must not strand the
+        # old scene instructions in the host.
+        del dry_run
+        with self._lock:
+            if not self._injected:
+                return False
+            if self._send(text):
+                self._injected = False
+                return True
             return False
-        if self._send(text):
-            self._injected = False
-            return True
-        return False
 
     def _send(self, text: str) -> bool:
         try:
-            self._plugin.push_message(
+            receipt = self._plugin.push_message(
                 source="neko_wows",
                 visibility=[],
                 # Context only: she should know the setting, not immediately
@@ -203,6 +223,7 @@ class ContextInjector:
                 metadata={"plugin": "neko_wows", "kind": "context"},
             )
         except Exception as exc:
+            self.host_calls += 1
             if self.logger is not None:
                 try:
                     self.logger.warning(f"context injection failed: {exc}")
@@ -210,7 +231,28 @@ class ContextInjector:
                     pass
             return False
         self.host_calls += 1
-        return True
+        if _submission_accepted(receipt):
+            return True
+        if self.logger is not None:
+            try:
+                self.logger.warning(
+                    f"context injection declined: {_submission_reason(receipt)}")
+            except Exception:
+                pass
+        return False
+
+
+def _submission_accepted(receipt: Any) -> bool:
+    """The SDK accepts responsibility only with an explicit true receipt."""
+    return isinstance(receipt, Mapping) and receipt.get("submitted") is True
+
+
+def _submission_reason(receipt: Any) -> str:
+    if isinstance(receipt, Mapping):
+        reason = receipt.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason.strip()[:200]
+    return "submission was not accepted"
 
 
 __all__ = [

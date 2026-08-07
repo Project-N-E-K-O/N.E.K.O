@@ -21,18 +21,26 @@ import {
 import type { HostedAction } from "@neko/plugin-ui"
 
 import { formatClock, formatCount } from "./format"
-import type { DocumentsState } from "./types"
+import type { DocumentsState, Translate } from "./types"
 
 export function DocumentsSection(props: {
   documents: DocumentsState
   actions: HostedAction[]
   busy: boolean
+  t: Translate
+  locale: string
 }) {
+  const { t } = props
   const documents = props.documents || {}
   const stats = documents.stats || {}
   const quotas = documents.quotas || {}
   const search = documents.last_search || {}
   const items = documents.items || []
+  const locale = props.locale.toLowerCase()
+  const showBackendReason = locale === "zh"
+    || locale.startsWith("zh-cn")
+    || locale.startsWith("zh-hans")
+    || locale.startsWith("zh-sg")
   const [title, setTitle] = useState("")
   const [content, setContent] = useState("")
   const findAction = (id: string) =>
@@ -41,62 +49,63 @@ export function DocumentsSection(props: {
   if (documents.available === false) {
     return (
       <Alert tone="danger">
-        {`文档库打不开：${documents.error || "未知原因"}。战术资料是可选的，链路其余部分不受影响。`}
+        {t("documents.unavailable", {
+          error: documents.error || t("common.unknownReason"),
+        })}
       </Alert>
     )
   }
 
   return (
     <Stack gap={12}>
-      <Text>
-        导入的资料只用于措辞参考。它会以「不可信参考资料」的形式围栏注入，既不能补齐
-        缺失的遥测数据，也不能覆盖事实。
-      </Text>
+      <Text>{t("documents.help")}</Text>
 
       <Columns minWidth={160} gap={12}>
         <StatCard
-          label="文档"
-          value={`${formatCount(stats.documents)} / ${formatCount(quotas.max_documents)}`}
+          label={t("documents.stats.documents")}
+          value={`${formatCount(stats.documents, t)} / ${formatCount(quotas.max_documents, t)}`}
         />
-        <StatCard label="分段" value={formatCount(stats.chunks)} />
+        <StatCard label={t("documents.stats.chunks")} value={formatCount(stats.chunks, t)} />
         <StatCard
-          label="已索引分段"
-          value={`${formatCount(stats.indexed_chunks)} / ${formatCount(quotas.index_chunk_cap)}`}
+          label={t("documents.stats.indexed")}
+          value={`${formatCount(stats.indexed_chunks, t)} / ${formatCount(quotas.index_chunk_cap, t)}`}
         />
-        <StatCard label="占用" value={formatBytes(stats.total_bytes)} />
+        <StatCard label={t("documents.stats.bytes")} value={formatBytes(stats.total_bytes, t)} />
       </Columns>
 
       {documents.index_truncated ? (
         <Alert tone="warning">
-          分段数量已超过排序索引上限，超出部分只能靠 front matter 标签检索，不参与 BM25
-          排序。想让全部内容参与排序，可以调高 tactics_index_chunk_cap 或减少导入量。
+          {t("documents.indexTruncated")}
         </Alert>
       ) : null}
 
-      <Card title="配额">
+      <Card title={t("documents.quotas.title")}>
         <Stack gap={8}>
           <Progress
-            label="存储用量"
+            label={t("documents.quotas.storage")}
             value={ratio(stats.total_bytes, quotas.max_total_bytes)}
           />
           <Progress
-            label="索引覆盖"
+            label={t("documents.quotas.coverage")}
             value={ratio(stats.indexed_chunks, stats.chunks)}
           />
           <KeyValue
             data={{
-              单文件上限: formatBytes(quotas.max_file_bytes),
-              总量上限: formatBytes(quotas.max_total_bytes),
-              分段长度: `${formatCount(quotas.chunk_chars)} 字符，重叠 ${formatCount(quotas.chunk_overlap)}`,
-              标签权重: formatCount(quotas.tag_weight),
-              最少词命中: formatCount(quotas.min_term_hits),
-              倒排条目: formatCount(stats.postings),
+              [t("documents.quotas.file")]: formatBytes(quotas.max_file_bytes, t),
+              [t("documents.quotas.total")]: formatBytes(quotas.max_total_bytes, t),
+              [t("documents.quotas.chunk")]: t("documents.quotas.chunkValue", {
+                size: formatCount(quotas.chunk_chars, t),
+                overlap: formatCount(quotas.chunk_overlap, t),
+              }),
+              [t("documents.quotas.tagWeight")]: formatCount(quotas.tag_weight, t),
+              [t("documents.quotas.minHits")]: formatCount(quotas.min_term_hits, t),
+              [t("documents.quotas.postings")]: formatCount(stats.postings, t),
             }}
           />
         </Stack>
       </Card>
 
-      <Card title="导入">
+      <Card title={t("documents.import.title")}>
         <Stack gap={10}>
           <Inline gap={8} wrap>
             {findAction("pick_documents") ? (
@@ -105,7 +114,7 @@ export function DocumentsSection(props: {
                 tone="primary"
                 refresh
               >
-                选择文件导入
+                {t("documents.import.pick")}
               </ActionButton>
             ) : null}
             {findAction("clear_documents") ? (
@@ -114,28 +123,30 @@ export function DocumentsSection(props: {
                 tone="danger"
                 refresh
               >
-                清空文档库
+                {t("documents.import.clear")}
               </ActionButton>
             ) : null}
           </Inline>
-          <Text>
-            全屏游戏下原生文件对话框可能被挡在游戏后面，那就用下面的粘贴方式。
-          </Text>
+          <Text>{t("documents.import.fullscreenHelp")}</Text>
           <Divider />
-          <Field label="标题（可留空，会取正文第一个标题）">
-            <Input value={title} onChange={setTitle} placeholder="例如：巡洋舰站位" />
+          <Field label={t("documents.import.titleLabel")}>
+            <Input
+              value={title}
+              onChange={setTitle}
+              placeholder={t("documents.import.titlePlaceholder")}
+            />
           </Field>
-          <Field label="正文（Markdown / 文本，可带 front matter）">
+          <Field label={t("documents.import.contentLabel")}>
             <Textarea
               value={content}
               onChange={setContent}
-              placeholder={"---\nmaps: New Dawn\nclasses: Cruiser\n---\n\n开局别急着推线……"}
+              placeholder={t("documents.import.contentPlaceholder")}
             />
           </Field>
           <Inline gap={8}>
             <ActionButton
               tone="primary"
-              refresh={false}
+              refresh
               onResult={() => {
                 setTitle("")
                 setContent("")
@@ -143,40 +154,40 @@ export function DocumentsSection(props: {
               actionId="import_document_text"
               values={{ title, content }}
             >
-              粘贴导入
+              {t("documents.import.paste")}
             </ActionButton>
           </Inline>
         </Stack>
       </Card>
 
-      <Card title="已导入">
+      <Card title={t("documents.list.title")}>
         {items.length ? (
           <DataTable
             data={items}
             rowKey="doc_id"
-            emptyText="还没有导入任何资料"
+            emptyText={t("documents.list.emptyRows")}
             columns={[
-              { key: "title", label: "标题" },
+              { key: "title", label: t("documents.list.columns.title") },
               {
                 key: "chunk_count",
-                label: "分段",
+                label: t("documents.list.columns.chunks"),
                 render: (row) =>
-                  `${formatCount(row.indexed_chunks)} / ${formatCount(row.chunk_count)}`,
+                  `${formatCount(row.indexed_chunks, t)} / ${formatCount(row.chunk_count, t)}`,
               },
               {
                 key: "tags",
-                label: "标签",
-                render: (row) => (row.tags || []).join("、") || "无",
+                label: t("documents.list.columns.tags"),
+                render: (row) => (row.tags || []).join(", ") || t("common.none"),
               },
               {
                 key: "size_bytes",
-                label: "大小",
-                render: (row) => formatBytes(row.size_bytes),
+                label: t("documents.list.columns.size"),
+                render: (row) => formatBytes(row.size_bytes, t),
               },
               {
                 key: "imported_at",
-                label: "导入时间",
-                render: (row) => formatClock(row.imported_at),
+                label: t("documents.list.columns.importedAt"),
+                render: (row) => formatClock(row.imported_at, props.locale),
               },
               {
                 key: "doc_id",
@@ -188,7 +199,7 @@ export function DocumentsSection(props: {
                     actionId="delete_document"
                     values={{ doc_id: row.doc_id }}
                   >
-                    删除
+                    {t("documents.list.delete")}
                   </ActionButton>
                 ),
               },
@@ -196,19 +207,21 @@ export function DocumentsSection(props: {
           />
         ) : (
           <EmptyState
-            title="文档库是空的"
-            description="没有资料时检索直接返回空，链路照常跑，只是不注入参考文本。"
+            title={t("documents.list.empty.title")}
+            description={t("documents.list.empty.description")}
           />
         )}
       </Card>
 
-      <Card title="最近一次检索">
+      <Card title={t("documents.search.title")}>
         {search.query_text ? (
           <Stack gap={8}>
             <Inline gap={8} wrap>
               <StatusBadge
                 tone={search.gated ? "warning" : "success"}
-                label={search.gated ? "未注入" : "已注入"}
+                label={search.gated
+                  ? t("documents.search.gated")
+                  : t("documents.search.injected")}
               />
               {(search.tags_used || []).map((tag) => (
                 <StatusBadge key={tag} tone="info" label={tag} />
@@ -216,30 +229,33 @@ export function DocumentsSection(props: {
             </Inline>
             <KeyValue
               data={{
-                查询: search.query_text,
-                标签候选: formatCount(search.tag_candidates),
-                词项候选: formatCount(search.term_candidates),
-                最多词命中: formatCount(search.best_term_hits),
-                参与排序: formatCount(search.scored),
+                [t("documents.search.query")]: search.query_text,
+                [t("documents.search.tagCandidates")]: formatCount(search.tag_candidates, t),
+                [t("documents.search.termCandidates")]: formatCount(search.term_candidates, t),
+                [t("documents.search.bestHits")]: formatCount(search.best_term_hits, t),
+                [t("documents.search.scored")]: formatCount(search.scored, t),
               }}
             />
             {search.gated ? (
-              <Alert tone="warning">{search.gate_reason || "未通过注入门"}</Alert>
+              <Alert tone="warning">
+                {(showBackendReason && search.gate_reason)
+                  || t("documents.search.gateFallback")}
+              </Alert>
             ) : null}
             {(search.hits || []).length ? (
               <DataTable
                 data={search.hits || []}
                 columns={[
-                  { key: "title", label: "命中" },
-                  { key: "score", label: "得分" },
-                  { key: "tag_hits", label: "标签命中" },
-                  { key: "term_hits", label: "词命中" },
+                  { key: "title", label: t("documents.search.columns.hit") },
+                  { key: "score", label: t("documents.search.columns.score") },
+                  { key: "tag_hits", label: t("documents.search.columns.tags") },
+                  { key: "term_hits", label: t("documents.search.columns.terms") },
                 ]}
               />
             ) : null}
           </Stack>
         ) : (
-          <Text>还没有发生过检索。有播报被选中时这里会显示命中项与得分。</Text>
+          <Text>{t("documents.search.empty")}</Text>
         )}
       </Card>
     </Stack>
@@ -251,8 +267,8 @@ function ratio(value?: number, total?: number): number {
   return Math.min(1, value / total)
 }
 
-function formatBytes(value?: number): string {
-  if (value === null || value === undefined) return "未知"
+function formatBytes(value: number | undefined, t: Translate): string {
+  if (value === null || value === undefined) return t("common.unknown")
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`

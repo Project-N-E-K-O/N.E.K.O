@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import tomllib
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -88,6 +90,44 @@ def test_all_six_pages_are_wired_into_the_panel():
     for page_id in ("overview", "timeline", "documents", "prompts",
                     "preferences", "diagnostics"):
         assert f'id: "{page_id}"' in panel, page_id
+
+
+def test_panel_refreshes_once_per_manual_click_and_also_polls_automatically():
+    panel = (PLUGIN_DIR / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    assert "AUTO_REFRESH_INTERVAL_MS" in panel
+    assert "useEffect" in panel
+    assert "setInterval" in panel
+    assert "<RefreshButton" in panel
+    assert "onRefresh=" not in panel
+
+
+def test_paste_import_refreshes_the_document_state():
+    source = (PLUGIN_DIR / "ui" / "documents.tsx").read_text(encoding="utf-8")
+    button = re.search(
+        r"<ActionButton(?:(?!</ActionButton>).)*actionId=\"import_document_text\""
+        r"(?:(?!</ActionButton>).)*</ActionButton>",
+        source,
+        re.DOTALL,
+    )
+    assert button is not None
+    assert "refresh={false}" not in button.group(0)
+    assert re.search(r"\brefresh\b", button.group(0))
+
+
+def test_traditional_locale_does_not_show_simplified_backend_reasons():
+    source = (PLUGIN_DIR / "ui" / "documents.tsx").read_text(encoding="utf-8")
+    assert 'startsWith("zh")' not in source
+    assert 'startsWith("zh-cn")' in source
+    assert 'startsWith("zh-hans")' in source
+
+
+def test_preference_inputs_follow_refreshed_props_and_quiet_deadline():
+    source = (PLUGIN_DIR / "ui" / "preferences.tsx").read_text(encoding="utf-8")
+    assert "useEffect" in source
+    assert "setQuiet(config.user_chat_quiet_window_seconds" in source
+    assert "setTtl(props.ttl" in source
+    assert "setMinGap(props.minGap" in source
+    assert "quiet_until > props.runtimeNow" in source
 
 
 def test_the_declared_ui_actions_exist_as_plugin_entries():
@@ -203,3 +243,45 @@ def test_declared_locales_exist(manifest):
     locales_dir = PLUGIN_DIR / manifest["plugin"]["i18n"]["locales_dir"]
     default_locale = manifest["plugin"]["i18n"]["default_locale"]
     assert (locales_dir / f"{default_locale}.json").is_file()
+
+
+def test_panel_translation_keys_exist_in_both_catalogs():
+    ui_dir = PLUGIN_DIR / "ui"
+    used: set[str] = set()
+    for path in (*ui_dir.glob("*.tsx"), *ui_dir.glob("*.ts")):
+        source = path.read_text(encoding="utf-8")
+        used.update(re.findall(r'\bt\(\s*["\']([^"\']+)["\']', source))
+
+    assert used, "the panel must route visible copy through the hosted translator"
+    catalogs = [
+        json.loads((PLUGIN_DIR / "i18n" / name).read_text(encoding="utf-8"))
+        for name in ("zh-CN.json", "zh-TW.json", "en.json")
+    ]
+    for key in sorted(used):
+        assert all(key in catalog for catalog in catalogs), key
+
+
+def test_dynamic_panel_statuses_are_localized_instead_of_exposing_codes():
+    catalogs = [
+        json.loads((PLUGIN_DIR / "i18n" / name).read_text(encoding="utf-8"))
+        for name in ("zh-CN.json", "zh-TW.json", "en.json")
+    ]
+    dynamic_keys = {
+        *(f"format.outcome.service.{value}" for value in (
+            "external", "managed", "offline", "conflict", "disabled")),
+        *(f"format.outcome.documents.{value}" for value in (
+            "imported", "duplicate", "rejected", "deleted", "cleared")),
+        "format.outcome.prompts.activated",
+        "format.outcome.prompts.reset",
+    }
+    for key in sorted(dynamic_keys):
+        assert all(key in catalog for catalog in catalogs), key
+
+    preferences = (
+        PLUGIN_DIR / "ui" / "preferences.tsx").read_text(encoding="utf-8")
+    prompts = (PLUGIN_DIR / "ui" / "prompts.tsx").read_text(encoding="utf-8")
+    assert "intrusionModeLabel(arbiter.intrusion_mode" in preferences
+    assert re.search(
+        r'prompts\.active_revision\s*\|\|\s*t\("prompts\.current\.builtin"\)',
+        prompts,
+    )
