@@ -109,7 +109,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   "zh-CN": {
     title: "Minecraft 游戏插件 快速开始",
     subtitle: "让猫娘陪你玩 MC——她会有一个自己的游戏角色，和你在同一个世界里一起行动。",
-    notice: "mc-agent 还在持续更新中：安装流程和控制面板的界面会随版本变化，网盘里的包也会不定期替换。如果你看到的界面和这里写的对不上，多半是新版还没发布或你手上还是旧包，请耐心等待更新。",
+    notice: "mc-agent 还在持续更新中：安装流程和控制面板的界面会随版本变化，网盘里的包也会不定期替换。如果你看到的界面和这里写的对不上，先回上面的下载卡片重新下一份最新的包；重下之后还是对不上，那就是新版还没发布，请耐心等待更新。",
     cards: [
       { title: "先装 Minecraft", badge: "Install", body: "Java 版 v1.21.1 推荐，其他 1.21.x 也可。自己买正版或离线启动。" },
       { title: "再开 mc-agent", badge: "Setup", body: "下面下个 mc-agent 解压、双击「启动.bat」启动它。它和 N.E.K.O 是两个各自独立的程序，都开着就会自动连上。首次启动会自动打开控制面板网页，密钥、模型、游戏端口全在网页里填，不用碰任何文件。猫娘默认用离线模式进游戏，不需要另外给她买正版账号（代价是进不了开了正版验证的联机服务器，你自己开的局域网世界不受影响）。" },
@@ -139,7 +139,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupSteps: [
       { title: "1. 装 Minecraft Java Edition", body: "推荐 v1.21.1（1.21.x 系列都行）。自己选择正版 / 离线启动器。" },
       { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent 压缩包，解压到一个路径短一点的目录（比如 C:\\mc-agent 或桌面）。然后双击里面的「启动.bat」（会开一个命令行黑窗口，别关）。它第一次启动会提示「还没有选择 AI 供应商，bot 暂不启动」，同时自动打开控制面板网页——接下来全部配置都在那个网页里做，不需要复制或编辑任何文件。" },
-      { title: "3. 在控制面板「AI 配置」页填密钥", body: "供应商分「国内直连 / 境外服务 / 本机运行」三组，国内那组不需要梯子、注册即用（DeepSeek、通义千问、智谱 GLM、Kimi、豆包、硅基流动等）。点一家 → 粘贴密钥（每张卡片上都有「去申请密钥」的外链）→ 点「测试连接」→ 测通后模型下拉会自动拉到该供应商的真实模型列表，挑一个保存。密钥只存在你自己电脑上，网页里永远显示成掩码。" },
+      { title: "3. 在控制面板「AI 配置」页填密钥", body: "供应商分「国内直连 / 境外服务 / 本机运行」三组，国内那组不需要梯子、注册即用（DeepSeek、通义千问、智谱 GLM、Kimi、豆包、硅基流动等）。点一家 → 粘贴密钥（每张卡片上都有「去申请密钥」的外链）→ 点「测试连接」→ 测通后模型下拉会自动拉到该供应商的真实模型列表，挑一个保存。密钥保存在你自己电脑上、网页里只显示掩码；调用模型时它会发给你选的那家供应商——用别人家的 API 本来就得带密钥认证。" },
       { title: "4. 开 MC 世界并「对局域网开放」", body: "进入单人世界 → ESC → 对局域网开放 → 选游戏模式 → 创建局域网世界。MC 会在聊天框显示「Local game hosted on port XXXXX」，记下这个端口号。" },
       { title: "5. 在控制面板「游戏连接」页填端口，再点「启动 Bot」", body: "点上面「打开管理面板」按钮 → 「游戏连接」页 → 把上一步抄下来的端口填进去 → 保存 → 点「启动 Bot」。包里自带的端口是占位值 25565，必须换成你自己那局的。" },
       { title: "6. 验证 bot 进游戏了", body: "MC 聊天框会看到「Neko joined the game」。看不到就刷新本页状态，或者看「启动.bat」那个黑窗口最后几行报什么错。" },
@@ -147,7 +147,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     portsTitle: "端口说明",
     ports: [
-      { key: "mc", label: "MC 游戏端口（默认 55916）", value: "你「对局域网开放」时显示的那个数字。bot 通过它连进游戏世界。" },
+      { key: "mc", label: "MC 游戏端口", value: "你「对局域网开放」时显示的那个数字，bot 通过它连进游戏世界。包里自带的是占位值 25565，一定要换成你自己那局的。" },
       { key: "admin", label: "管理面板（localhost:8765）", value: "上面那个「打开管理面板」按钮跳的就是这个。密钥、模型、猫娘的名字和人设、皮肤、游戏连接、行为开关全在这里改。" },
     ],
     tipsTitle: "排错",
@@ -164,7 +164,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   en: {
     title: "Minecraft Game Plugin — Quickstart",
     subtitle: "Let neko-chan play MC with you — she gets her own in-game character and moves around the same world you do.",
-    notice: "mc-agent is still under active development: the install flow and the control panel UI change between versions, and the netdisk archives get replaced from time to time. If what you see doesn't match this page, you're most likely on an older build or the new one isn't out yet — please be patient and wait for the update.",
+    notice: "mc-agent is still under active development: the install flow and the control panel UI change between versions, and the netdisk archives get replaced from time to time. If what you see doesn't match this page, first re-download the latest archive from the download card above. If it still doesn't match after that, the new build simply isn't out yet — please be patient and wait for the update.",
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
       { title: "Run mc-agent", badge: "Setup", body: "Download mc-agent below, unzip, double-click 启动.bat. It's a separate program from N.E.K.O.; run both and they connect on their own. On first launch it opens a control panel in your browser — API key, model and game port all go in there, you never edit a file. Neko-chan joins in offline mode by default, so she doesn't need her own paid Minecraft account (the trade-off: she can't join online-mode servers; your own LAN world is unaffected)." },
@@ -194,7 +194,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupSteps: [
       { title: "1. Install Minecraft Java Edition", body: "v1.21.1 recommended (any 1.21.x is fine). Pick any launcher (official, MultiMC, Prism, etc.)." },
       { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab the mc-agent archive, extract it into a short path (e.g. C:\\mc-agent or your Desktop). Then double-click 启动.bat inside (it opens a black console window — don't close it). On first launch it prints \"no AI provider selected yet, bot not started\" and opens the control panel in your browser — everything from here on is done in that web page, you never copy or edit a file." },
-      { title: "3. Set your API key on the panel's \"AI config\" page", body: "Providers are grouped into China-direct / overseas / local. Pick one → paste your key (each card links straight to that vendor's console to get one) → click \"Test connection\" → once it passes, the model dropdown auto-fills with that provider's real model list; pick one and save. The key never leaves your machine and is always shown masked in the UI." },
+      { title: "3. Set your API key on the panel's \"AI config\" page", body: "Providers are grouped into China-direct / overseas / local. Pick one → paste your key (each card links straight to that vendor's console to get one) → click \"Test connection\" → once it passes, the model dropdown auto-fills with that provider's real model list; pick one and save. Your key is stored on your own machine and always shown masked in the UI; it does get sent to the provider you picked whenever a request is made — that is how authenticating against their API works." },
       { title: "4. Open a world to LAN", body: "Single player → ESC → Open to LAN → pick game mode → Start. MC will print \"Local game hosted on port XXXXX\" in chat. Note the port number." },
       { title: "5. Enter the port on the \"Game connection\" page, then Start Bot", body: "Click \"Open admin panel\" above → Game connection page → type in the port you wrote down → save → click \"Start Bot\". The shipped value 25565 is only a placeholder; it must be replaced with your own session's port." },
       { title: "6. Confirm the bot joined", body: "You should see \"Neko joined the game\" in MC chat. If not, refresh status here or check the last few lines of the 启动.bat console window." },
@@ -202,7 +202,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     portsTitle: "Ports",
     ports: [
-      { key: "mc", label: "MC game port (default 55916)", value: "The number MC shows when you Open to LAN. The bot uses this to join your world." },
+      { key: "mc", label: "MC game port", value: "The number MC shows when you Open to LAN — the bot uses it to join your world. The shipped value 25565 is only a placeholder and must be replaced with your own session's port." },
       { key: "admin", label: "Admin panel (localhost:8765)", value: "Where the \"Open admin panel\" button goes. API key, model, neko-chan's name and persona, skin, game connection and behavior toggles all live here." },
     ],
     tipsTitle: "Troubleshooting",
@@ -219,7 +219,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   ja: {
     title: "Minecraft ゲームプラグイン クイックスタート",
     subtitle: "猫娘ちゃんと MC を遊ぼう。彼女は自分のキャラクターを持って、同じ世界であなたと一緒に動きます。",
-    notice: "mc-agent は現在も更新中です：導入手順やコントロールパネルの画面はバージョンごとに変わり、ネットディスク上のパッケージも随時差し替えられます。ここの説明と実際の画面が食い違う場合は、新版が未公開か手元が旧版のことがほとんどなので、アップデートをお待ちください。",
+    notice: "mc-agent は現在も更新中です：導入手順やコントロールパネルの画面はバージョンごとに変わり、ネットディスク上のパッケージも随時差し替えられます。ここの説明と実際の画面が食い違う場合は、まず上のダウンロードカードから最新のパッケージを取り直してください。それでも合わない場合は新版がまだ公開されていないので、アップデートをお待ちください。",
     cards: [
       { title: "Minecraft を入れる", badge: "Install", body: "Java 版 v1.21.1 推奨。他の 1.21.x でも可。お好きなランチャーで。" },
       { title: "mc-agent を起動", badge: "Setup", body: "下のカードから mc-agent を入手・解凍し「启动.bat」をダブルクリック。N.E.K.O とは別のプログラムで、両方を起動しておけば自動でつながります。初回起動時にブラウザでコントロールパネルが自動的に開き、API キー・モデル・ゲームのポートはすべてそこで入力します（ファイルを編集する必要はありません）。猫娘ちゃんは既定でオフラインモードで参加するので、専用の正規アカウントは不要です（その代わり正規認証のマルチサーバーには入れません。自分で開いた LAN ワールドは問題なし）。" },
@@ -249,7 +249,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupSteps: [
       { title: "1. Minecraft Java 版をインストール", body: "v1.21.1 推奨（1.21.x なら何でも）。公式 / MultiMC / Prism いずれでも。" },
       { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから mc-agent の配布パッケージを取得し、パスの短いフォルダ（例：C:\\mc-agent やデスクトップ）に解凍。中の「启动.bat」をダブルクリックで起動（黒いコンソール窓が開く、閉じないこと）。初回は「AI プロバイダーが未選択のためボットは起動しません」と表示され、ブラウザでコントロールパネルが自動的に開く。以降の設定はすべてその画面で行い、ファイルのコピーや編集は一切不要。" },
-      { title: "3. コントロールパネルの「AI 設定」ページで API キーを入力", body: "プロバイダーは「中国国内直結 / 海外サービス / ローカル実行」の 3 グループ。1 つ選ぶ → キーを貼り付け（各カードに発行ページへの外部リンクあり）→「接続テスト」→ 成功するとモデル一覧がそのプロバイダーの実データで埋まるので、1 つ選んで保存。キーは自分の PC 内にのみ保存され、画面上は常にマスク表示。" },
+      { title: "3. コントロールパネルの「AI 設定」ページで API キーを入力", body: "プロバイダーは「中国国内直結 / 海外サービス / ローカル実行」の 3 グループ。1 つ選ぶ → キーを貼り付け（各カードに発行ページへの外部リンクあり）→「接続テスト」→ 成功するとモデル一覧がそのプロバイダーの実データで埋まるので、1 つ選んで保存。キーは自分の PC に保存され、画面上は常にマスク表示。ただしリクエストのたびに選んだプロバイダーへ送信されます（相手の API を使う以上、キーによる認証は避けられません）。" },
       { title: "4. ワールドを LANに公開", body: "シングルプレイ → ESC → LANに公開 → モード選択 → 開始。チャットに「Local game hosted on port XXXXX」と出るのでポート番号を控える。" },
       { title: "5. 「ゲーム接続」ページにポートを入れて「ボット起動」", body: "上の「管理パネルを開く」→「ゲーム接続」ページ → 控えた番号を入力 → 保存 →「ボット起動」。同梱の 25565 は仮の値なので、必ず自分のセッションのポートに変更すること。" },
       { title: "6. ボットの参加を確認", body: "MC のチャットに「Neko joined the game」と出れば成功。出なければ本ページの状態を更新、または「启动.bat」の黒い窓の最終行のエラーを確認。" },
@@ -257,7 +257,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     portsTitle: "ポート一覧",
     ports: [
-      { key: "mc", label: "MC ゲームポート（既定 55916）", value: "「LANに公開」時に MC が表示する番号。ボットがこれでワールドに参加。" },
+      { key: "mc", label: "MC ゲームポート", value: "「LANに公開」時に MC が表示する番号。ボットがこれでワールドに参加。同梱の 25565 は仮の値なので、必ず自分のセッションのポートに変更すること。" },
       { key: "admin", label: "管理パネル（localhost:8765）", value: "「管理パネルを開く」が飛ぶ先。API キー、モデル、猫娘ちゃんの名前と人格、スキン、ゲーム接続、動作スイッチはすべてここ。" },
     ],
     tipsTitle: "トラブルシューティング",
@@ -274,7 +274,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   ko: {
     title: "Minecraft 게임 플러그인 빠른 시작",
     subtitle: "고양이와 함께 MC를 즐기세요. 고양이는 자기 캐릭터로 같은 월드에 들어와 너와 함께 움직여요.",
-    notice: "mc-agent는 아직 계속 업데이트 중입니다: 설치 흐름과 제어판 화면이 버전마다 달라지고, 네트워크 드라이브의 압축 파일도 수시로 교체돼요. 여기 설명과 실제 화면이 다르면 대개 새 버전이 아직 안 나왔거나 예전 빌드를 쓰고 있는 것이니, 업데이트를 조금만 기다려 주세요.",
+    notice: "mc-agent는 아직 계속 업데이트 중입니다: 설치 흐름과 제어판 화면이 버전마다 달라지고, 네트워크 드라이브의 압축 파일도 수시로 교체돼요. 여기 설명과 실제 화면이 다르면 먼저 위 다운로드 카드에서 최신 패키지를 다시 받아 보세요. 다시 받아도 그대로면 새 버전이 아직 안 나온 것이니 업데이트를 조금만 기다려 주세요.",
     cards: [
       { title: "Minecraft 설치", badge: "Install", body: "Java 에디션 v1.21.1 권장. 다른 1.21.x도 가능. 원하는 런처 사용." },
       { title: "mc-agent 실행", badge: "Setup", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动.bat」 더블클릭. N.E.K.O와는 별개 프로그램이라 둘 다 켜 두면 알아서 연결돼요. 처음 실행하면 브라우저에 제어판이 자동으로 열리고, API 키·모델·게임 포트를 전부 그 웹 화면에서 입력해요(파일을 건드릴 일 없음). 고양이는 기본적으로 오프라인 모드로 접속하니 정품 계정을 따로 살 필요는 없어요(대신 정품 인증을 켠 멀티 서버에는 못 들어가요. 직접 연 LAN 월드는 문제없음)." },
@@ -304,7 +304,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupSteps: [
       { title: "1. Minecraft Java 에디션 설치", body: "v1.21.1 권장 (1.21.x 모두 가능). 공식 / MultiMC / Prism 등 원하는 런처." },
       { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 mc-agent 압축 파일을 받아 경로가 짧은 폴더(예: C:\\mc-agent 또는 바탕화면)에 압축 해제. 그다음 안의 「启动.bat」을 더블클릭해 실행 (검은 콘솔 창이 열림, 닫지 말 것). 처음 실행하면 「AI 제공자를 아직 고르지 않아 봇을 시작하지 않습니다」라고 뜨면서 브라우저에 제어판이 자동으로 열려요. 이후 설정은 전부 그 웹 화면에서 하며, 파일을 복사하거나 편집할 일은 없어요." },
-      { title: "3. 제어판 「AI 설정」 페이지에서 API 키 입력", body: "제공자는 「중국 직결 / 해외 서비스 / 로컬 실행」 세 그룹. 하나 선택 → 키 붙여넣기(카드마다 발급 페이지 외부 링크 있음) → 「연결 테스트」 → 통과하면 모델 드롭다운이 그 제공자의 실제 모델 목록으로 채워지니 하나 골라 저장. 키는 내 PC에만 저장되고 화면에는 항상 마스킹되어 보여요." },
+      { title: "3. 제어판 「AI 설정」 페이지에서 API 키 입력", body: "제공자는 「중국 직결 / 해외 서비스 / 로컬 실행」 세 그룹. 하나 선택 → 키 붙여넣기(카드마다 발급 페이지 외부 링크 있음) → 「연결 테스트」 → 통과하면 모델 드롭다운이 그 제공자의 실제 모델 목록으로 채워지니 하나 골라 저장. 키는 내 PC에 저장되고 화면에는 항상 마스킹되어 보여요. 다만 요청할 때마다 고른 제공자에게 전송돼요 — 남의 API를 쓰려면 키 인증이 필요하니까요." },
       { title: "4. 월드를 LAN에 공개", body: "싱글 플레이 → ESC → LAN에 공개 → 게임 모드 선택 → 시작. 채팅창에 「Local game hosted on port XXXXX」가 표시되니 포트 번호 기록." },
       { title: "5. 「게임 연결」 페이지에 포트를 넣고 「봇 시작」", body: "위「관리 패널 열기」클릭 → 「게임 연결」 페이지 → 기록한 번호 입력 → 저장 → 「봇 시작」. 기본값 25565는 자리표시자일 뿐이니 반드시 본인 세션의 포트로 바꿔야 해요." },
       { title: "6. 봇 참가 확인", body: "MC 채팅에「Neko joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 「启动.bat」 콘솔 창의 마지막 줄 에러 확인." },
@@ -312,7 +312,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     portsTitle: "포트 안내",
     ports: [
-      { key: "mc", label: "MC 게임 포트 (기본 55916)", value: "「LAN에 공개」 시 MC가 보여주는 숫자. 봇이 이를 통해 월드 참가." },
+      { key: "mc", label: "MC 게임 포트", value: "「LAN에 공개」 시 MC가 보여주는 숫자. 봇이 이를 통해 월드에 참가해요. 기본값 25565는 자리표시자일 뿐이니 반드시 본인 세션의 포트로 바꿔야 해요." },
       { key: "admin", label: "관리 패널 (localhost:8765)", value: "「관리 패널 열기」가 가는 곳. API 키, 모델, 고양이 이름과 성격, 스킨, 게임 연결, 동작 스위치가 전부 여기에 있어요." },
     ],
     tipsTitle: "문제 해결",
@@ -329,7 +329,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
   ru: {
     title: "Игровой плагин Minecraft — Быстрый старт",
     subtitle: "Играй в MC вместе с нэко-тян — у неё будет свой персонаж, и она будет ходить по тому же миру, что и ты.",
-    notice: "mc-agent всё ещё активно обновляется: процесс установки и интерфейс панели управления меняются от версии к версии, архивы на дисках время от времени заменяются. Если увиденное не совпадает с этой страницей — скорее всего, новая версия ещё не вышла или у тебя старая сборка. Пожалуйста, дождись обновления.",
+    notice: "mc-agent всё ещё активно обновляется: процесс установки и интерфейс панели управления меняются от версии к версии, архивы на дисках время от времени заменяются. Если увиденное не совпадает с этой страницей, сначала перекачай свежий архив по карточке «Скачать» выше. Если и после этого не совпадает — новая версия просто ещё не вышла, дождись обновления.",
     cards: [
       { title: "Установи Minecraft", badge: "Install", body: "Java Edition v1.21.1 рекомендуется; другие 1.21.x тоже подойдут. Любой лаунчер." },
       { title: "Запусти mc-agent", badge: "Setup", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动.bat. Это отдельная программа от N.E.K.O. — запусти обе, и они соединятся сами. При первом запуске в браузере сама откроется панель управления — ключ API, модель и игровой порт вводятся только там, никакие файлы править не нужно. Нэко-тян по умолчанию заходит в офлайн-режиме, так что отдельный лицензионный аккаунт покупать не надо (расплата: на серверы с проверкой лицензии она не попадёт; твой собственный LAN-мир это не затрагивает)." },
@@ -359,7 +359,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupSteps: [
       { title: "1. Установи Minecraft Java Edition", body: "v1.21.1 рекомендуется (любой 1.21.x подойдёт). Любой лаунчер: официальный, MultiMC, Prism." },
       { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше скачай архив mc-agent и распакуй его в папку с коротким путём (например C:\\mc-agent или на Рабочий стол). Затем дважды кликни 启动.bat внутри (откроется чёрное окно консоли — не закрывай). При первом запуске он напишет «AI-провайдер ещё не выбран, бот не стартует» и сам откроет панель управления в браузере — вся дальнейшая настройка делается на этой веб-странице, копировать или править файлы не нужно." },
-      { title: "3. Впиши ключ API на странице «Настройка AI»", body: "Провайдеры разбиты на три группы: китайские напрямую / зарубежные сервисы / локальный запуск. Выбери одного → вставь ключ (на каждой карточке есть ссылка на консоль этого провайдера) → нажми «Проверить соединение» → после успеха выпадающий список моделей заполнится реальным перечнем этого провайдера, выбери одну и сохрани. Ключ хранится только на твоём компьютере, в интерфейсе он всегда показан маской." },
+      { title: "3. Впиши ключ API на странице «Настройка AI»", body: "Провайдеры разбиты на три группы: китайские напрямую / зарубежные сервисы / локальный запуск. Выбери одного → вставь ключ (на каждой карточке есть ссылка на консоль этого провайдера) → нажми «Проверить соединение» → после успеха выпадающий список моделей заполнится реальным перечнем этого провайдера, выбери одну и сохрани. Ключ хранится на твоём компьютере и в интерфейсе всегда показан маской, но при каждом запросе он отправляется выбранному провайдеру — иначе его API тебя не аутентифицирует." },
       { title: "4. Открой мир для сети", body: "Одиночная игра → ESC → Открыть для сети → выбери режим → Старт. MC напишет в чате «Local game hosted on port XXXXX». Запомни порт." },
       { title: "5. Впиши порт на странице «Подключение к игре» и нажми «Запустить бота»", body: "Жми «Открыть админ-панель» сверху → страница «Подключение к игре» → впиши записанный номер → сохрани → «Запустить бота». Идущее в комплекте значение 25565 — просто заглушка, его обязательно надо заменить на порт своей сессии." },
       { title: "6. Подтверди вход бота", body: "В чате MC появится «Neko joined the game». Если нет — обнови статус здесь или посмотри последние строки в чёрном окне 启动.bat." },
@@ -367,7 +367,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     ],
     portsTitle: "Порты",
     ports: [
-      { key: "mc", label: "Игровой порт MC (по умолч. 55916)", value: "Число, которое показывает MC при открытии для сети. Бот использует его для входа в мир." },
+      { key: "mc", label: "Игровой порт MC", value: "Число, которое показывает MC при открытии для сети — по нему бот заходит в мир. Идущее в комплекте значение 25565 это лишь заглушка, его обязательно надо заменить на порт своей сессии." },
       { key: "admin", label: "Админ-панель (localhost:8765)", value: "Куда ведёт кнопка «Открыть админ-панель». Здесь ключ API, модель, имя и характер нэко-тян, скин, подключение к игре и переключатели поведения." },
     ],
     tipsTitle: "Решение проблем",

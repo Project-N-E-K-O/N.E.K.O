@@ -36,9 +36,12 @@ agent 端启动方式由你自己决定：绿色包用户在解压出来的包�
 ## 启用步骤
 
 1. 启动 Minecraft agent server（绿色包双击 `启动.bat` 即可，端口默认
-   `48909` 不用管；改端口用 `NEKO_PLUGIN_WS_PORT`）。密钥、模型、MC 端口
-   都在 mc-agent 自己的控制面板 `http://localhost:8765` 里填，不需要手动
-   编辑它的任何配置文件
+   `48909` 不用管）。密钥、模型、MC 端口都在 mc-agent 自己的控制面板
+   `http://localhost:8765` 里填，不需要手动编辑它的任何配置文件。
+
+   > 改桥接端口要**改两处**：agent 侧的 `NEKO_PLUGIN_WS_PORT` 只挪动它自己
+   > 的监听端口，插件侧读的是下面 `[game_agent]` 里独立的 `ws_url`（默认
+   > `ws://localhost:48909`）。只改一处两边就连不上了。
 2. 在 N.E.K.O 插件管理界面启用 `game_agent_minecraft` 插件
 3. 如需修改配置，编辑 `plugin.toml` 的 `[game_agent]` 节后调
    `game_agent_reload_config` entry 应用：
