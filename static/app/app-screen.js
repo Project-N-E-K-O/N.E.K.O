@@ -992,6 +992,11 @@
                 throw new Error(errorMessage);
             }
             var streamDataUrl = await normalizeNativeCaptureDataUrlForStream(result.dataUrl);
+            if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
+                return false;
+            }
             if (!streamDataUrl) {
                 throw new Error('Native screen capture image conversion failed');
             }

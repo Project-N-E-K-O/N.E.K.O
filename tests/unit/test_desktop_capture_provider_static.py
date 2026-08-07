@@ -176,6 +176,22 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert native_stream.count("await stopScreenSharing(true);") >= 4
     assert "normalizeNativeCaptureDataUrlForStream(result.dataUrl)" in native_stream
     assert "buildStreamDataMessage(streamDataUrl, inputType, sourceId)" in native_stream
+    normalize_index = native_stream.index(
+        "normalizeNativeCaptureDataUrlForStream(result.dataUrl)"
+    )
+    current_after_normalize_index = native_stream.index(
+        "if (!isCurrentNativeCapture()) return false;",
+        normalize_index,
+    )
+    socket_after_normalize_index = native_stream.index(
+        "if (!isCaptureSocketOpen()) {",
+        current_after_normalize_index,
+    )
+    send_index = native_stream.index(
+        "captureSocket.send(JSON.stringify(",
+        socket_after_normalize_index,
+    )
+    assert normalize_index < current_after_normalize_index < socket_after_normalize_index < send_index
     assert "window.captureDesktopSourceWithTimeout(" in native_stream
     assert "'captureSourceAsDataUrl'" in native_stream
     assert "data:image/jpeg;base64," in screen
