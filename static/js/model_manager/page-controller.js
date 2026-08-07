@@ -2031,6 +2031,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else if (type !== 'live3d') {
             currentLive3dSubType = '';
         }
+        window._modelManagerCurrentLive3dSubType = currentLive3dSubType;
         localStorage.setItem('modelType', type);
 
         // 无论后续初始化是否成功，都保证派发教程事件

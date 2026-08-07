@@ -2532,7 +2532,7 @@
             const modelManagerPage = isModelManagerPage();
             const pointerEvents = this.isLocked ? 'none' : 'auto';
             if (this.container) {
-                this.container.style.pointerEvents = 'none';
+                this.container.style.pointerEvents = modelManagerPage ? 'auto' : 'none';
             }
             const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
             if (centerAnchored) {
@@ -3632,7 +3632,7 @@
             this.container.classList.remove('hidden');
             this.container.style.display = 'block';
             this.container.style.visibility = 'visible';
-            this.container.style.pointerEvents = 'none';
+            this.container.style.pointerEvents = isModelManagerPage() ? 'auto' : 'none';
             if (this.image) {
                 this.image.style.visibility = 'visible';
                 this.image.style.pointerEvents = this.isLocked ? 'none' : 'auto';
