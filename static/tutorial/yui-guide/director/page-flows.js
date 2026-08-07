@@ -193,7 +193,7 @@
         async openMicPanel() {
             return this.callHomeInteractionApi('openMicPanel', [], async () => {
                 const popup = this.getManagedPanelElement('mic');
-                const trigger = this.resolveElement('.${p}-trigger-btn');
+                const trigger = this.resolveElement(this.expandSelector('.${p}-trigger-btn'));
                 if (!popup || !trigger || typeof trigger.click !== 'function') {
                     return false;
                 }
