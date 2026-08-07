@@ -6,7 +6,7 @@ Object.assign(window.Jukebox, {
     Config: {
       // 面板
       panel: {
-        background: 'linear-gradient(160deg, rgba(255,255,255,.92), rgba(232,247,255,.86))',
+        background: 'rgba(248, 250, 252, 0.96)',
         color: 'rgba(28, 48, 68, 0.94)',
         border: '1px solid rgba(120, 203, 232, 0.45)',
         shadow: '0 18px 48px rgba(78, 153, 190, 0.28), 0 4px 18px rgba(255, 159, 189, 0.16)'
@@ -16,8 +16,8 @@ Object.assign(window.Jukebox, {
         borderBottom: 'rgba(116, 190, 224, 0.28)',
         tabColor: 'rgba(54, 92, 118, 0.76)',
         tabHoverBg: 'rgba(99, 199, 232, 0.14)',
-        tabActiveBg: 'linear-gradient(135deg, rgba(99,199,232,.92), rgba(255,159,189,.82))',
-        tabActiveShadow: '0 6px 16px rgba(99, 199, 232, 0.25)'
+        tabActiveBg: '#238bb5',
+        tabActiveShadow: '0 4px 10px rgba(35, 139, 181, 0.2)'
       },
       // 列表项
       item: {
@@ -3602,7 +3602,7 @@ Object.assign(window.Jukebox, {
         .sam-add-binding-btn:hover {
           border-color: rgba(255, 159, 189, 0.5);
           color: rgba(28, 48, 68, 0.94);
-          background: linear-gradient(135deg, rgba(99,199,232,0.24), rgba(255,159,189,0.2));
+          background: rgba(99, 199, 232, 0.2);
           transform: translateY(-1px);
           box-shadow: 0 5px 12px rgba(99, 199, 232, 0.18);
         }

@@ -511,7 +511,10 @@ async def get_jukebox_page(request: Request):
 async def get_jukebox_manager_page(request: Request):
     """Standalone jukebox manager window page (opened from the jukebox)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/jukebox_manager.html", {"request": request})
+    return templates.TemplateResponse("templates/jukebox_manager.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/toast", response_class=HTMLResponse)
