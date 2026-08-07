@@ -77,10 +77,13 @@ AGENT_USE_EXTRA_BODY = True
 
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
-    # OpenAI 系列
-    "gpt-5.6-luna": EXTRA_BODY_OPENAI,
-    "gpt-5.6-terra": EXTRA_BODY_OPENAI,
-    "gpt-5-nano": EXTRA_BODY_OPENAI,
+    # OpenAI 原生（api.openai.com）故意不在本表里 —— EXTRA_BODY_OPENAI 那个名字指的是
+    # 「OpenAI-compatible 形状」的 enable_thinking，是 DashScope/Silicon 等国产兼容网关的
+    # 方言，不是 OpenAI 自己的参数：发给 api.openai.com 会被判 Unrecognized request
+    # argument 直接 400。OpenAI 侧对应的旋钮是顶层 reasoning_effort（档位随模型而异，
+    # none 要 gpt-5.1+），需要单开一组常量并逐模型确认可用档位，留 follow-up。在那之前
+    # 这里保持空缺 —— get_extra_body 回落成空 dict、不下发任何 extra_body，与既有的
+    # gpt-5-chat-latest / 旧 gpt-4.1-nano 一致。
     # Qwen 系列
     "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash": EXTRA_BODY_OPENAI,
