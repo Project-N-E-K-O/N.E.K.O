@@ -397,6 +397,8 @@
     var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT = 18;
     var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;
     var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;
+    var COMPACT_TOOL_FAN_MUSIC_CONTROL_CUTOUT_WIDTH = 160;
+    var COMPACT_TOOL_FAN_MUSIC_CONTROL_CUTOUT_HEIGHT = 96;
 
     function readCompactToolFanPixelVar(style, name, fallback) {
         var rawValue = style ? style.getPropertyValue(name) : '';
@@ -432,6 +434,58 @@
             });
         }
         return slices;
+    }
+
+    function getCompactToolFanMusicControlCutoutRect(element, parentRect) {
+        if (!element || !parentRect || typeof element.closest !== 'function') return null;
+        var appShell = element.closest('.app-shell');
+        if (!appShell || typeof appShell.querySelector !== 'function') return null;
+        var musicBar = appShell.querySelector(
+            '#music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden])'
+        );
+        if (!musicBar || !musicBar.parentNode || musicBar.parentNode.parentNode !== appShell) return null;
+        var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        var cutoutWidth = readCompactToolFanPixelVar(
+            style,
+            '--compact-tool-wheel-music-control-cutout-width',
+            COMPACT_TOOL_FAN_MUSIC_CONTROL_CUTOUT_WIDTH
+        );
+        var cutoutHeight = readCompactToolFanPixelVar(
+            style,
+            '--compact-tool-wheel-music-control-cutout-height',
+            COMPACT_TOOL_FAN_MUSIC_CONTROL_CUTOUT_HEIGHT
+        );
+        return {
+            left: parentRect.left,
+            top: parentRect.top,
+            width: cutoutWidth,
+            height: cutoutHeight,
+            right: parentRect.left + cutoutWidth,
+            bottom: parentRect.top + cutoutHeight
+        };
+    }
+
+    function subtractCompactRect(rect, cutoutRect) {
+        var sourceRect = I.normalizeCompactDomRect(rect);
+        var overlap = intersectCompactRects(sourceRect, cutoutRect);
+        if (!sourceRect) return [];
+        if (!overlap) return [sourceRect];
+        return [
+            { left: sourceRect.left, top: sourceRect.top, right: sourceRect.right, bottom: overlap.top },
+            { left: sourceRect.left, top: overlap.bottom, right: sourceRect.right, bottom: sourceRect.bottom },
+            { left: sourceRect.left, top: overlap.top, right: overlap.left, bottom: overlap.bottom },
+            { left: overlap.right, top: overlap.top, right: sourceRect.right, bottom: overlap.bottom }
+        ].map(function (piece) {
+            if (piece.right <= piece.left || piece.bottom <= piece.top) return null;
+            return {
+                left: piece.left,
+                top: piece.top,
+                width: piece.right - piece.left,
+                height: piece.bottom - piece.top,
+                right: piece.right,
+                bottom: piece.bottom
+            };
+        }).filter(Boolean);
     }
 
     function expandCompactRect(rect, expandX, expandTop, expandBottom) {
@@ -493,6 +547,12 @@
         var items = [];
         if (parentRect) {
             var nativeRects = buildCompactToolFanCircleSliceRects(parentRect, element) || [parentRect];
+            var musicControlCutoutRect = getCompactToolFanMusicControlCutoutRect(element, parentRect);
+            if (musicControlCutoutRect) {
+                nativeRects = nativeRects.reduce(function (cutoutNativeRects, nativeRect) {
+                    return cutoutNativeRects.concat(subtractCompactRect(nativeRect, musicControlCutoutRect));
+                }, []);
+            }
             nativeRects.forEach(function (nativeRect, index) {
                 items.push({
                     id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index,

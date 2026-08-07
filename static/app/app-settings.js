@@ -578,7 +578,7 @@
             focusModeEnabled: false,
             focusCognitionEnabled: true,
             noiseReductionEnabled: true,
-            independentAsrEnabled: true,
+            independentAsrEnabled: false,
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
@@ -1896,7 +1896,7 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
-                S.independentAsrEnabled = settings.independentAsrEnabled ?? true;
+                S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.voiceInputResourceOptimizationEnabled =
                     settings.voiceInputResourceOptimizationEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;

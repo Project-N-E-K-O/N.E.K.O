@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from plugin.sdk.plugin import Err, Ok, SdkError
@@ -50,6 +51,9 @@ class QQDashboardService:
                 "token": str(settings.get("token") or ""),
                 "qq_open_app_id": str(settings.get("qq_open_app_id") or ""),
                 "qq_open_client_secret": str(settings.get("qq_open_client_secret") or ""),
+                "qq_open_identity_probe_enabled": bool(
+                    settings.get("qq_open_identity_probe_enabled", False)
+                ),
                 "token_configured": bool(settings.get("token")),
                 "token_masked": self.plugin._mask_token(str(settings.get("token") or "")),
                 "napcat_directory": str(napcat_dir),
@@ -72,6 +76,18 @@ class QQDashboardService:
                 "group_member_memory_enabled": bool(settings.get("group_member_memory_enabled", False)),
                 "private_participant_memory_enabled": bool(settings.get("private_participant_memory_enabled", False)),
                 "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
+                "group_attention_focus_rise_seconds": int(settings.get("group_attention_focus_rise_seconds", 30) or 30),
+                "group_attention_focus_cooldown_seconds": int(settings.get("group_attention_focus_cooldown_seconds", 60) or 60),
+                "group_attention_decay_per_second": float(settings.get("group_attention_decay_per_second", 0.02) or 0.02),
+                "group_attention_message_recovery": float(settings.get("group_attention_message_recovery", 0.6) or 0.6),
+                "group_attention_reply_penalty": float(settings.get("group_attention_reply_penalty", 1.3) or 1.3),
+                "group_attention_keyword_boost_scale": float(settings.get("group_attention_keyword_boost_scale", 2.5) or 2.5),
+                "group_attention_focus_lock_seconds": int(settings.get("group_attention_focus_lock_seconds", 120) or 120),
+                "group_attention_max_score": float(settings.get("group_attention_max_score", 10.0) or 10.0),
+                "group_attention_focus_threshold": float(settings.get("group_attention_focus_threshold", 4.0) or 4.0),
+                "group_attention_min_threshold": float(settings.get("group_attention_min_threshold", 1.0) or 1.0),
+                "group_attention_message_gain": float(settings.get("group_attention_message_gain", 0.25) or 0.25),
+                "icebreaker_cold_threshold": int(settings.get("icebreaker_cold_threshold", 3) or 3),
             },
             "guide": {
                 "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
@@ -94,6 +110,10 @@ class QQDashboardService:
             },
             "backlog_items": list(self.plugin._relay_backlog_items),
             "config_ready": await self.plugin.config_store.exists(),
+            # 降级必须可见，不得假装成功（设计文档 §2.15.4.3）：开放平台上
+            # 一个人在每个群是一个不同的 ID，信赖度不跨群累计、主人档位只在
+            # 配置过的那个群生效。UI 照这个字段决定要不要说出来。
+            "identity_scope": self._identity_scope_payload(),
             "ui": self._build_open_ui_payload(available=True),
         }
 
@@ -106,6 +126,9 @@ class QQDashboardService:
                 {"id": "save_settings", "entry_id": "save_settings"},
                 {"id": "refresh_actual_contacts", "entry_id": "refresh_actual_contacts"},
                 {"id": "add_trusted_user", "entry_id": "add_trusted_user"},
+                {"id": "list_identity_claims", "entry_id": "list_identity_claims"},
+                {"id": "bind_identity_account", "entry_id": "bind_identity_account"},
+                {"id": "unbind_identity_account", "entry_id": "unbind_identity_account"},
                 {"id": "remove_trusted_user", "entry_id": "remove_trusted_user"},
                 {"id": "set_user_nickname", "entry_id": "set_user_nickname"},
                 {"id": "add_trusted_group", "entry_id": "add_trusted_group"},
@@ -167,6 +190,18 @@ class QQDashboardService:
         truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
         sticker_cooldown_messages: Optional[int] = None,
+        group_attention_decay_per_second: Optional[float] = None,
+        group_attention_message_recovery: Optional[float] = None,
+        group_attention_reply_penalty: Optional[float] = None,
+        group_attention_keyword_boost_scale: Optional[float] = None,
+        group_attention_focus_lock_seconds: Optional[int] = None,
+        group_attention_focus_rise_seconds: Optional[int] = None,
+        group_attention_focus_cooldown_seconds: Optional[int] = None,
+        group_attention_max_score: Optional[float] = None,
+        group_attention_focus_threshold: Optional[float] = None,
+        group_attention_min_threshold: Optional[float] = None,
+        group_attention_message_gain: Optional[float] = None,
+        icebreaker_cold_threshold: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
         group_memory_enabled: Optional[bool] = None,
@@ -177,6 +212,8 @@ class QQDashboardService:
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
         qq_open_client_secret: Optional[str] = None,
+        qq_open_identity_probe_enabled: Optional[bool] = None,
+        local_stt_url: Optional[str] = None,
     ):
         try:
             result = await self.plugin.settings_service.save_settings(
@@ -193,6 +230,18 @@ class QQDashboardService:
                 truth_reply_probability=truth_reply_probability,
                 backlog_labels=backlog_labels,
                 sticker_cooldown_messages=sticker_cooldown_messages,
+                group_attention_decay_per_second=group_attention_decay_per_second,
+                group_attention_message_recovery=group_attention_message_recovery,
+                group_attention_reply_penalty=group_attention_reply_penalty,
+                group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
+                group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
+                group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
+                group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
+                group_attention_max_score=group_attention_max_score,
+                group_attention_focus_threshold=group_attention_focus_threshold,
+                group_attention_min_threshold=group_attention_min_threshold,
+                group_attention_message_gain=group_attention_message_gain,
+                icebreaker_cold_threshold=icebreaker_cold_threshold,
                 retroactive_review_max_messages=retroactive_review_max_messages,
                 retroactive_review_max_reply=retroactive_review_max_reply,
                 group_memory_enabled=group_memory_enabled,
@@ -203,6 +252,8 @@ class QQDashboardService:
                 qq_connection_mode=qq_connection_mode,
                 qq_open_app_id=qq_open_app_id,
                 qq_open_client_secret=qq_open_client_secret,
+                qq_open_identity_probe_enabled=qq_open_identity_probe_enabled,
+                local_stt_url=local_stt_url,
             )
         except ValueError as exc:
             message = str(exc)
@@ -243,6 +294,369 @@ class QQDashboardService:
         payload = await self.build_dashboard_state()
         payload["persisted"] = success
         return Ok(payload)
+
+    #: 查多少个名册用户的账本权重就停。名册通常只有几个人，这个上限存在的
+    #: 意义是别让一个被塞了几百人的名册在每次打开页面时发几百个请求。
+    IDENTITY_CANDIDATE_MAX = 50
+    #: 单个权重查询的超时。刻意远小于 bridge 的默认 10s：前端 ``call()`` 的
+    #: 死线是固定 20s，而权重只用来排序——为了排序把整个页面拖到超时，等于
+    #: 用一个装饰性字段换掉了唯一的修复入口。
+    IDENTITY_CANDIDATE_TIMEOUT = 3.0
+
+    async def list_identity_claims(self):
+        """待认领的群内 ID + 合并候选（设计文档 §2.15.4.3 第 1 级）。
+
+        候选**只按账本权重排序**（``|adjustment| + message_count``），且
+        **不预选任何一项**。这不是 UI 品味问题：按昵称相似度排序等于把一个
+        被硬约束否决的启发式（自动身份合并）塞给用户当默认答案，而合错两个
+        人会污染账本且不可回退。排序规则要改，先去改设计文档。
+        """
+        permission_mgr = self.plugin.permission_mgr
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        dispatcher = getattr(self.plugin, "message_dispatcher", None)
+        # 已经加进名册的 ID 当场出清单。只靠 `_note_open_platform_pending_claim`
+        # 移除的话，得等那个人**再发一次言**才消失——而他刚被认领，最可能的
+        # 下一步就是操作者刷新页面，看见同一行还在、于是重复点一次。
+        claims = (
+            dispatcher.list_open_platform_pending_claims(
+                is_claimed=(
+                    (lambda actor:
+                     permission_mgr.get_permission_level(actor) != "none")
+                    if permission_mgr is not None else None
+                ),
+            )
+            if dispatcher is not None else []
+        )
+        candidates: list[dict[str, Any]] = []
+        if permission_mgr is not None and bridge is not None:
+            roster = permission_mgr.list_users()[:self.IDENTITY_CANDIDATE_MAX]
+
+            async def _weight(account_id: str) -> dict[str, Any]:
+                try:
+                    return await bridge.fetch_speaker_profile(
+                        account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
+                    )
+                except Exception:
+                    # 服务端没起来时照样要能列出名册；权重缺失只影响排序，
+                    # 不影响用户认得出「这是我私聊授权的那个自己」。
+                    return {}
+
+            account_ids = [
+                bridge.speaker_account_id(user.get("qq")) for user in roster
+            ]
+            # 并发而不是串行：串行时最坏情况是 N × 超时，轻易越过前端 20s 的
+            # 死线，于是上面那个「服务端不可达也要能列出」的兜底反而失效。
+            profiles = await asyncio.gather(
+                *(_weight(account_id) for account_id in account_ids)
+            )
+            for user, account_id, profile in zip(roster, account_ids, profiles):
+                candidates.append({
+                    "account_id": account_id,
+                    "qq": str(user.get("qq") or ""),
+                    "level": str(user.get("level") or ""),
+                    "nickname": str(user.get("nickname") or ""),
+                    "entity_id": profile.get("entity_id"),
+                    "adjustment_sum": float(profile.get("adjustment_sum") or 0.0),
+                    "message_count": int(
+                        profile.get("account_message_count") or 0
+                    ),
+                })
+        candidates.sort(
+            key=lambda row: (
+                abs(row["adjustment_sum"]) + row["message_count"]
+            ),
+            reverse=True,
+        )
+        return Ok({
+            "claims": claims,
+            "candidates": candidates,
+            "identity_scope": self._identity_scope_payload(),
+        })
+
+    def _identity_scope_payload(self) -> dict[str, Any]:
+        """当前**在跑的**通道下标识符的协议语义，给 UI 显示降级提示用。
+
+        读的是本地那张协议表而不是服务端已登记的值：提示要不要显示只取决于
+        跑的是哪个通道，不该因为 memory_server 还没起来就少提示一句。
+
+        以**运行中的连接**为准而不是配置：改了 `qq_connection_mode` 之后旧
+        连接还在跑（save 的响应自己会报 ``reconnect_required``），这段时间
+        里按配置显示，等于在开放平台消息还在进来的时候把认领 UI 藏起来。
+        没有在跑时才回落到配置——那时配置就是下次连上的样子。
+
+        「在跑」看的是 ``_running`` 而不是 ``qq_client`` 是否为 None：
+        ``stop_runtime`` 只断开连接、把对象留在原地，而 ``CHANNEL`` 是类属
+        性，光看对象会把一个已经停掉的通道当成活的。
+        """
+        settings = self.plugin._qq_settings or {}
+        mode = str(settings.get("qq_connection_mode") or "napcat").strip()
+        table = self.plugin.settings_service.IDENTITY_SCOPE_BY_MODE
+        client = (
+            getattr(self.plugin, "qq_client", None)
+            if getattr(self.plugin, "_running", False) else None
+        )
+        live_channel = str(getattr(client, "CHANNEL", "") or "").strip()
+        if live_channel:
+            mode = next(
+                (
+                    key for key, entry in table.items()
+                    if entry[0] == live_channel
+                ),
+                # 跑着一个表外的新通道时，配置里那个模式描述的不是它。回落配置
+                # 会让页面照着一份不属于当前连接的语义显示，正好和上面那句
+                # 「以运行中的连接为准」相反。给一个查不到的键，让它落到下面的
+                # unknown 分支去。
+                live_channel,
+            )
+        entry = table.get(mode)
+        if entry is None:
+            return {
+                "mode": mode, "channel": "",
+                "actor_scope": "unknown", "conversation_scope": "unknown",
+            }
+        channel, actor_scope, conversation_scope = entry
+        return {
+            "mode": mode,
+            "channel": channel,
+            "actor_scope": actor_scope,
+            "conversation_scope": conversation_scope,
+        }
+
+    async def _identity_is_attached(self, bridge, account_id: str) -> bool:
+        """这个账号现在**是不是已经有归属**了（bind 的前置判据）。
+
+        并集：entity 下不止它一个账号，或者它带着 ``bound_by`` 落款。前者
+        认得出「已经并进某个身份」，后者认得出「并进去之后对方又被拆走、
+        只剩落款」——对 bind 来说两种都不能再绑，只看其一会漏。
+
+        这只是**前置**判据，真正的把关在服务端临界区里（``require_unbound``）：
+        两个页签并发绑同一个源时，两次前置检查可以都答「没绑」。这里先问一
+        次是为了给出人话错误，不是为了保证正确性。
+        """
+        profile = await bridge.fetch_speaker_profile(
+            account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
+        )
+        accounts = list(profile.get("entity_accounts") or [])
+        return len(accounts) > 1 or bool(profile.get("bound_by"))
+
+    async def _identity_has_bind_provenance(self, bridge, account_id: str) -> bool:
+        """这个账号是不是**我方 bind 出来的那一侧**（unbind 的前置判据）。
+
+        和上面那个判据**必须分开**，虽然看着像。落款只落在被绑的那一侧：
+        把 B 并进 A 之后，A 的 entity 下有两个账号但没有 ``bound_by``。用
+        「entity 下不止一个」去判 A 可 unbind，拆掉的是**原目标 A**而不是
+        B——A 的账本被搬走，按旧 entity 解析过的行留在原地。而合并入口现在
+        也挂在名册行上，A 就在那儿，点得到。
+
+        所以回滚的合法对象只有带落款的那一侧。
+        """
+        profile = await bridge.fetch_speaker_profile(
+            account_id, timeout=self.IDENTITY_CANDIDATE_TIMEOUT,
+        )
+        return bool(profile.get("bound_by"))
+
+    def _identity_bridge(self):
+        """记忆桥，缺席时返回 ``(None, Err)``。"""
+        bridge = getattr(self.plugin, "memory_bridge", None)
+        if bridge is not None:
+            return bridge, None
+        return None, Err(SdkError(
+            "NOT_INITIALIZED: "
+            + self.plugin.i18n.t(
+                "errors.memory_bridge_not_initialized",
+                default="记忆桥未初始化",
+            )
+        ))
+
+    async def bind_identity_account(
+        self, *, user_id: str, target_user_id: str,
+    ):
+        """把一个群内 ID 并入某个**名册用户**的身份。只能由人在 UI 上触发。
+
+        参数是目标**账号**而不是目标 entity，因为 entity 只从账本活动里
+        诞生：新装机器上、或记忆开关关着时，靠第一条私聊自动授权的那个主人
+        一个 entity 都没有——而他恰恰是所有群内 ID 要并进去的那一个。按
+        entity 收参会让这个主用例在 UI 上根本选不中。所以这里先 ensure 出
+        目标的种子 entity，再 bind。
+
+        ensure 出来的种子 entity 不是一条边（它把账号连到自己），真正的人身
+        断言是随后那次 bind。
+
+        合并的是**信赖度账本**（entity←account），不是权限名册：名册按裸
+        actor id 索引，所以「让主人在这个群里也算主人」仍然要单独把这个 ID
+        加进信任用户。两件事分开做是对的——把 bind 顺手当成提权会让信赖度
+        这一层变成权限升级的通道。
+        """
+        bridge, error = self._identity_bridge()
+        if error is not None:
+            return error
+        actor = str(user_id or "").strip()
+        target_actor = str(target_user_id or "").strip()
+        if not actor or not target_actor:
+            return Err(SdkError(
+                "INVALID_ARGUMENT: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_missing_args",
+                    default="user_id 与 target_user_id 都不能为空",
+                )
+            ))
+        if actor == target_actor:
+            return Err(SdkError(
+                "INVALID_ARGUMENT: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_same_account",
+                    default="不能把一个 ID 合并到它自己",
+                )
+            ))
+        # 目标必须此刻仍在名册里。UI 给的候选就是名册，但页签可能是旧的
+        # （另一个页签刚把那个人移除），而这个 entry 也能被通用表单直接调、
+        # 手输一个错字。`ensure_speaker_account` 对任何字符串都会建 entity，
+        # 于是源账本会被搬进一个凭空捏出来的身份，且成功返回。
+        permission_mgr = self.plugin.permission_mgr
+        if (
+            permission_mgr is None
+            or permission_mgr.get_permission_level(target_actor) == "none"
+        ):
+            return Err(SdkError(
+                "UNKNOWN_TARGET: "
+                + self.plugin.i18n.t(
+                    "errors.identity_target_not_in_roster",
+                    default="合并目标不在信任用户名册里，请刷新后重试",
+                )
+            ))
+        # 平台前缀只在 memory_bridge 里拼一次，调用侧（含前端）不许自己拼。
+        source_account = bridge.speaker_account_id(actor)
+        target_account = bridge.speaker_account_id(target_actor)
+        try:
+            # 已经绑过的必须先撤销才能改绑。直接改绑不是「换个目标」：
+            # `_bind_locked` 在源账号已有归属时走的是 merge，把**第一个目标
+            # 和第二个目标**并成一个身份——两个不同的真人。而 unbind 只拆得
+            # 回源账号，那两个目标仍然合着，操作者没有任何办法退回去。
+            if await self._identity_is_attached(bridge, source_account):
+                return Err(SdkError(
+                    "ALREADY_BOUND: "
+                    + self.plugin.i18n.t(
+                        "errors.identity_already_bound",
+                        default=(
+                            "这个 ID 已经合并过了。要改绑到别人，"
+                            "请先撤销当前的合并。"
+                        ),
+                    )
+                ))
+            ensured = await bridge.ensure_speaker_account(
+                account_id=target_account,
+            )
+            entity_id = str(ensured.get("entity_id") or "")
+            if not entity_id:
+                raise RuntimeError("ensure returned no entity_id")
+            if ensured.get("persisted") is False:
+                # 种子 entity 的 draft 被丢弃了 ⇒ 它并不存在，随后的 bind 会
+                # 以「unknown entity」404 收场，把操作者指向身份图而不是那次
+                # 失败的写盘。
+                return Err(SdkError(
+                    "NOT_PERSISTED: "
+                    + self.plugin.i18n.t(
+                        "errors.identity_not_persisted",
+                        default="写盘失败，身份没有改动，请重试",
+                    )
+                ))
+            result = await bridge.bind_speaker_account(
+                account_id=source_account,
+                entity_id=entity_id,
+                bound_by="qq_auto_reply.dashboard",
+                # 真正的把关：上面那次预检会被并发绕过（两个页签同时绑同一
+                # 个源，两次预检都答「没绑」，第二次就走进 merge 分支融合
+                # 两个候选）。只有临界区里的这一次判断不会失效。
+                require_unbound=True,
+            )
+        except Exception as exc:
+            return Err(SdkError(
+                "BIND_FAILED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_bind_failed",
+                    default="合并身份失败: {error}", error=str(exc),
+                )
+            ))
+        if result.get("persisted") is False:
+            # 写盘失败时 `_with_pool_write` 丢弃整份 draft，什么都没变。
+            # 这时弹「已合并」会让操作者以为做完了，然后去检查一个根本不
+            # 存在的合并。
+            return Err(SdkError(
+                "NOT_PERSISTED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_not_persisted",
+                    default="写盘失败，身份没有改动，请重试",
+                )
+            ))
+        return Ok({"bind": result})
+
+    async def unbind_identity_account(self, *, user_id: str):
+        """把一个群内 ID 拆回独立身份。**误绑的唯一回滚。**
+
+        必须和 bind 出现在同一个界面上：bind 立刻把两个账号的信赖度合到一
+        起，操作者选错一项就需要当场能退回来，而不是去翻文档找一个内部端
+        点。
+
+        **先确认它真的是被绑的那一侧再动手。** ``aunbind_account`` 对一个
+        「有账本但从没合并过」的独立账号并不是无操作：``_unbind_locked``
+        认得的是「这个账号已注册」，于是照样把它搬进一个 generation+1 的新
+        entity——已经按旧 entity 解析过的行会被留在原地，而反复按就反复造新
+        entity。所以判据在这一层挡，服务端那句 ``changed=false`` 只覆盖
+        「完全没注册过」这一种。
+
+        判据只看 ``bound_by``，**不看 entity 下有几个账号**：落款只落在被
+        绑的那一侧，所以「B 并进 A」之后 A 也满足「entity 下不止一个」。用
+        那个判据会让操作者在 A 的名册行上点撤销、拆走**原目标 A**——而合并
+        入口现在正挂在名册行上，A 就在那儿。
+
+        ``ledger_delta`` 与 ``effective_delta`` 通常是两个不同的数字，这不
+        是 bug：夹紧的聚合下「这个账号带走了多少」没有唯一答案。两个都原样
+        透传给 UI。
+        """
+        bridge, error = self._identity_bridge()
+        if error is not None:
+            return error
+        actor = str(user_id or "").strip()
+        if not actor:
+            # 这个接口只收 user_id，不能借用 bind 那条文案——它会报一个本
+            # 接口根本没有的字段名，操作者会去界面上找一个不存在的东西。
+            return Err(SdkError(
+                "INVALID_ARGUMENT: "
+                + self.plugin.i18n.t(
+                    "errors.identity_unbind_missing_args",
+                    default="user_id 不能为空",
+                )
+            ))
+        account_id = bridge.speaker_account_id(actor)
+        try:
+            if not await self._identity_has_bind_provenance(bridge, account_id):
+                return Ok({"unbind": {"changed": False, "reason": "not_bound"}})
+            result = await bridge.unbind_speaker_account(
+                account_id=account_id,
+                # 真正的把关在临界区里：上面那次预检读到的 `bound_by` 会被
+                # 并发的第一次撤销清掉，第二次就把一个**已经独立**的账号又
+                # 搬进一个新 entity。
+                require_provenance=True,
+            )
+            if result.get("changed") is False:
+                return Ok({"unbind": result})
+        except Exception as exc:
+            return Err(SdkError(
+                "UNBIND_FAILED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_unbind_failed",
+                    default="撤销合并失败: {error}", error=str(exc),
+                )
+            ))
+        if result.get("persisted") is False:
+            return Err(SdkError(
+                "NOT_PERSISTED: "
+                + self.plugin.i18n.t(
+                    "errors.identity_not_persisted",
+                    default="写盘失败，身份没有改动，请重试",
+                )
+            ))
+        return Ok({"unbind": result})
 
     async def remove_trusted_user(self, *, qq_number: str):
         if not self.plugin.permission_mgr:

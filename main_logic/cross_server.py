@@ -60,7 +60,7 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True) -> bool:
+async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True, language: str | None = None) -> bool:
     """Publish analyze request via EventBus with ack/retry.
 
     ``had_user_input`` is False for a proactive turn (lanlan spoke with no fresh
@@ -68,6 +68,12 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
     re-ran, and the "latest user message" here is a stale prior turn) and are
     marked ``proactive=True`` so the agent routes them through its throttled
     proactive path instead of the user-turn dedupe (which would drop them).
+
+    ``language`` is the live session locale, taken from the same
+    ``_current_user_language()`` provider that already feeds the memory-server
+    calls and the agent task-result rendering. The agent process cannot read the
+    session's ``user_language`` on its own, so its analyzer prompts would
+    otherwise follow the machine's Steam/system locale instead of the UI language.
     """
     try:
         # Optional optimization hint: the cheap pre-gate signal the master-emotion
@@ -103,6 +109,7 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
             conversation_id=conversation_id,
             external_intent=external_intent,
             proactive=not had_user_input,
+            language=language,
         )
         if sent:
             logger.debug(
@@ -1188,6 +1195,7 @@ async def run_sync_connector(
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
                                                 had_user_input=_turn_had_user_input,
+                                                language=_current_user_language(),
                                             )
                                             if sent:
                                                 logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
@@ -1288,6 +1296,7 @@ async def run_sync_connector(
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
+                                                language=_current_user_language(),
                                                 # session_end is terminal — never treated as proactive
                                                 # (had_user_input defaults True), so it always takes the
                                                 # ordinary user-turn path.

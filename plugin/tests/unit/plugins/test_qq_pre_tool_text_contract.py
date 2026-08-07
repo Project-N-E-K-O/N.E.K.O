@@ -128,6 +128,7 @@ async def test_buffer_summary_receives_pre_tool_and_final_text():
         raw_reply_text="我查一下<msg><text>查到了</text></msg>",
         used_fallback=False,
         used_default_message=False,
+        feeling="",
     )
 
     await runner._run_delivery(plan, request, outcome)
@@ -248,6 +249,7 @@ async def test_buffer_wait_ignores_a_literal_tag_in_structural_pre_tool(
         pre_tool_text=prefix,
         used_fallback=False,
         used_default_message=False,
+        feeling="",
     )
 
     await runner._run_delivery(plan, request, outcome)

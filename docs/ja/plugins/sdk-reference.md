@@ -15,7 +15,7 @@ from plugin.sdk.plugin import (
     # plugin-local i18n と settings
     PluginI18n, tr, PluginSettings, SettingsField,
     # Result 型
-    Ok, Err, Result, unwrap, unwrap_or,
+    Ok, Err, Result, PushMessageResult, unwrap, unwrap_or,
     # ランタイムヘルパー
     Plugins, PluginRouter, PluginConfig, PluginStore,
     SystemInfo,
@@ -65,19 +65,30 @@ self.report_status({
 })
 ```
 
-#### `push_message(**kwargs) -> object`
+#### `push_message(**kwargs) -> PushMessageResult`
 
 v2 schema でホストシステムにメッセージをプッシュします。
 
 ```python
-self.push_message(
+result = self.push_message(
     source="my_feature",
     visibility=["chat"],       # []、["chat"]、["hud"]、または両方
     ai_behavior="blind",       # "respond"、"read"、"blind"
     parts=[{"type": "text", "text": "タスクが完了しました"}],
     priority=5,
 )
+
+if not result["submitted"]:
+    # ローカル状態を保持します。再試行と重複排除はプラグイン側の方針です。
+    self.logger.warning("message submission failed: %s", result["reason"])
 ```
+
+`submitted=True` は、SDK の正規ローカル送信経路が payload の送信責任を
+引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
+確認ではありません。拒否理由は `backpressure`、`transport_error`、
+`transport_unavailable` のいずれかで、メッセージ本文や生の例外テキストは含みません。
+拒否結果には従来の呼び出し元との互換性のため `ok=False` も含まれます。新しいコードでは
+`submitted` を正式な判定基準として使用してください。
 
 v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は deprecated ですが current source では変換されます。今すぐ移行し、この文書から正確な removal release を保証しないでください。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
 

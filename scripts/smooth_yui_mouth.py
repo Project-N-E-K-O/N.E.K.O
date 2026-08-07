@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Smooth ParamMouthForm / ParamMouthOpenY in static/yui-origin motion files.
+"""Smooth ParamMouthForm / ParamMouthOpenY in Live2D motion files.
 
 The artist keyframes for the mouth params are too jittery for our use case
 (no lipsync, just background animation), causing visible flicker. This script
@@ -32,14 +32,16 @@ Meta.CurveCount / TotalSegmentCount / TotalPointCount are recomputed using the
 formula validated against the original files: per-curve points =
 4 + 3 * bezier_count + 1 * (linear|stepped|inverse_stepped)_count.
 
-Usage: `uv run python scripts/smooth_yui_mouth.py`
+Usage: `uv run python scripts/smooth_yui_mouth.py [--root static/yui-lolita]`
+(default root: static/yui-origin)
 """
 
+import argparse
 import json
 import math
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "static" / "yui-origin"
+DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "static" / "yui-origin"
 
 TARGET_IDS = ("ParamMouthForm", "ParamMouthOpenY")
 NEUTRAL = {"ParamMouthForm": 0.0, "ParamMouthOpenY": 0.0}
@@ -211,8 +213,19 @@ def process(path: Path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=DEFAULT_ROOT,
+        help="Model directory containing *.motion3.json files (default: static/yui-origin)",
+    )
+    args = parser.parse_args()
+    files = sorted(args.root.glob("*.motion3.json"))
+    if not files:
+        parser.error(f"no *.motion3.json files under {args.root}")
     print(f"sigma={SIGMA_S}s  out={OUT_HZ}Hz  fade={FADE_S}s  sample={SAMPLE_HZ}Hz")
-    for f in sorted(ROOT.glob("*.motion3.json")):
+    for f in files:
         s = process(f)
         line = f"{f.name:<28}"
         for tid in TARGET_IDS:

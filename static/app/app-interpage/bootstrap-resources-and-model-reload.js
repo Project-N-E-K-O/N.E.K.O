@@ -1505,7 +1505,7 @@ I.mod = window.appInterpage;
                                 window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                             }
 
-                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-origin。
+                            // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-lolita。
                             if (!skipIdleRestore) {
                                 restoreLive2DIdleAnimationOnMainPage();
                             }
@@ -1867,10 +1867,19 @@ I.mod = window.appInterpage;
                 }
             }
 
-            // 8. 停止当前动作并播放保存的待机动作
-            motionManager.stopAllMotions();
-            live2dModel.motion(groupName, motionIndex, 3);
-            console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+            // 8. 以 IDLE 优先级恢复；普通动作占用时不抢占
+            if (live2dManager.hasActiveActionMotion(live2dModel)) return;
+            const motionState = motionManager.state;
+            if (
+                (Number(motionState?.currentPriority || 0) === 1 || motionState?.reservedIdleGroup !== undefined)
+                && typeof motionManager.stopAllMotions === 'function'
+            ) {
+                motionManager.stopAllMotions();
+            }
+            const started = await live2dModel.motion(groupName, motionIndex, 1);
+            if (started) {
+                console.log('[Live2D Main] 已恢复待机动作并循环播放:', live2dIdleAnimation);
+            }
 
         } catch (error) {
             console.error('[Live2D Main] 恢复待机动作失败:', error);

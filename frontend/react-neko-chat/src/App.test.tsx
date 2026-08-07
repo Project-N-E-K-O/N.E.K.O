@@ -428,7 +428,7 @@ describe('App', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       const toolGroup = screen.getByRole('group', { name: 'Tool icons' });
-      expect(Array.from(toolGroup.querySelectorAll<HTMLButtonElement>('.composer-icon-button'))
+      expect(Array.from(toolGroup.querySelectorAll<HTMLButtonElement>('.composer-icon-button[data-avatar-tool-id]'))
         .map(button => button.getAttribute('aria-label'))).toEqual(['棒棒糖', '猫爪', '锤子']);
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
@@ -460,6 +460,50 @@ describe('App', () => {
     } finally {
       restoreLive2dBounds();
     }
+  });
+
+  it('lets the full chat configure the avatar tools shown in its emoji menu', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        assistantName="Neko"
+        onAvatarToolStateChange={onAvatarToolStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    const toolGroup = screen.getByRole('group', { name: 'Tool icons' });
+    expect(toolGroup.querySelectorAll('[data-avatar-tool-id]')).toHaveLength(3);
+    expect(toolGroup).toHaveAttribute('data-avatar-tool-button-count', '4');
+    expect(toolGroup.querySelector('.full-avatar-tool-settings-divider')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit quick tools' })).toHaveClass(
+      'composer-icon-button',
+      'full-avatar-tool-settings-button',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit quick tools' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+    expect(dialog.querySelector('[data-avatar-tool-library-id="rps"]')).not.toBeNull();
+
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-remove') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('[data-avatar-tool-library-id="rps"]') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-action.primary') as HTMLButtonElement);
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull());
+    expect(Array.from(toolGroup.querySelectorAll<HTMLElement>('[data-avatar-tool-id]'))
+      .map(button => button.dataset.avatarToolId)).toEqual(['rps', 'fist', 'hammer']);
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]'))
+      .toEqual(['rps', 'fist', 'hammer']);
+
+    fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'rps',
+      roundChoiceResultLabels: expect.objectContaining({
+        avatar_win: 'Neko wins',
+      }),
+    })));
   });
 
   it('publishes only the strict desktop descriptor from the full chat surface', async () => {

@@ -581,13 +581,28 @@ def test_youtube_cookie_i18n_contract_is_complete_for_all_locales():
         assert cookies_login_i18n["fields"]["youtubeCookie"]["label"]
         assert cookies_login_i18n["fields"]["youtubeCookie"]["desc"]
 
+        # 结构化步骤是语言无关的契约：只钉死 zh-CN 的话，别的语言包
+        # 悄悄退回旧的纯文本格式这条用例照样绿。
+        youtube_instruction = cookies_login_i18n["instructions"]["youtube"]
+        for marker in (
+            '<ol class="instruction-steps">',
+            "<b>F12</b>",
+            "<b>Network</b>",
+            "youtubei/v1/browse",
+            "<b>Request Headers</b>",
+        ):
+            assert marker in youtube_instruction, f"{locale_path.name}: {marker}"
+
     zh_instruction = json.loads(
         (locale_dir / "zh-CN.json").read_text(encoding="utf-8")
     )["cookiesLogin"]["instructions"]["youtube"]
-    assert "1. 获取 Cookie" in zh_instruction
-    assert "F12 → Network" in zh_instruction
+    assert "<b>获取 Cookie</b>" in zh_instruction
+    assert "<ol class=\"instruction-steps\">" in zh_instruction
+    assert "1. 获取 Cookie" not in zh_instruction
+    assert "<b>F12</b>" in zh_instruction
+    assert "<b>Network</b>" in zh_instruction
     assert "youtubei/v1/browse" in zh_instruction
-    assert "Request Headers 中复制完整的 Cookie 值" in zh_instruction
+    assert "<b>Request Headers</b> 中复制完整的 Cookie 值" in zh_instruction
 
 
 @pytest.mark.parametrize(

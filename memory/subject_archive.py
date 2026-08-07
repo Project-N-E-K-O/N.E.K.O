@@ -127,6 +127,35 @@ def collect_subject_last_writes(
     return last, no_ts - set(last)
 
 
+def _coalesce_by_participant(
+    last_writes: dict[tuple, tuple[MemorySubject, datetime]],
+) -> dict[tuple, tuple[MemorySubject, datetime]]:
+    """Give every account of one participant that participant's newest write.
+
+    Best-effort by design: an unloaded pool or a resolution failure degrades to
+    the identity, i.e. exactly today's per-subject behaviour. Archival must
+    never break because identity resolution had a bad day.
+    """
+    if not last_writes:
+        return last_writes
+    try:
+        from memory import trust_store
+        from memory.subject_identity import (
+            coalesce_participant_last_writes,
+            expand_subject,
+        )
+
+        snap = trust_store.trust_snapshot()
+        if not snap.loaded:
+            return last_writes
+        return coalesce_participant_last_writes(
+            last_writes, lambda subject: expand_subject(subject, snap),
+        )
+    except Exception as exc:  # noqa: BLE001 - archival must stay best-effort
+        logger.warning(f"[SubjectArchive] 参与者级归档合并跳过: {exc}")
+        return last_writes
+
+
 def find_stale_subjects(
     last_writes: dict[tuple, tuple[MemorySubject, datetime]],
     *,
@@ -212,6 +241,12 @@ async def asweep_scoped_subject_archive(
             f"[SubjectArchive] {name}: {len(no_ts)} 个 subject 无可解析时间戳，"
             f"跳过归档判定"
         )
+
+    # 参与者级合并：canonical 写路由之后，同一个人的非 canonical 堆停止写入，
+    # 90 天后会被判 stale——而这个人明明还活跃。取参与者内的最大时间戳并写回
+    # 每个 marker，让「最后写入时间」按人而不是按 account 计。resolver 由这里
+    # 注入，`subject_archive` 本身仍不 import trust_store。
+    last_writes = _coalesce_by_participant(last_writes)
 
     stale = find_stale_subjects(last_writes, now=now, stale_days=stale_days)
     report: dict = {

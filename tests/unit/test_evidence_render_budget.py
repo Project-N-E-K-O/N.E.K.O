@@ -15,11 +15,13 @@ Covers:
 from __future__ import annotations
 
 import logging
+import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from config import PERSONA_RENDER_ENCODING
 from utils.tokenize import count_tokens
 
 
@@ -138,6 +140,166 @@ def test_heuristic_floor_for_short_non_empty_text(monkeypatch):
     assert count_tokens("ok") >= 1
     assert count_tokens("") == 0
     _reset_fallback_warned_for_tests()
+
+
+# ── 降级计数是上界，不是估算（#2574） ────────────────────────────────
+#
+# #2574 报的是老启发式（非 CJK 约 0.25 token/char）在打包形态下系统性
+# 低估：URL / base64 / 代码片段这类高熵文本实测真实 token 能到预算的
+# 2.5–2.7 倍，而且整条链路没有任何告警。修法是把权重换成 UTF-8 字节
+# 长度（#2626）——BPE 的每个 token 至少映射 1 字节，merge 只会让 token
+# 更少，所以字节数是真实 token 数的**严格上界**。
+#
+# 这条上界性质是整个修复的立论基础，但此前没有测试直接钉住它：现有用
+# 例只覆盖了 warning 一次性、空串和短串下限。下面三条按「计数 → 单条
+# 截断 → 整段预算」把这条不变量在每一层各钉一遍，用的就是 issue 点名
+# 的那几类高熵样本。
+
+# issue 点名的三类高熵文本，加上 CJK / 混合 / 组合字符等边界形态。
+_HIGH_ENTROPY_SAMPLES = [
+    # URL：老启发式最惨的一类，标点和路径段几乎每个字符都自成 token
+    "https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/tokenize.py#L112",
+    # base64：没有任何可 merge 的自然语言词块
+    "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgcGFkZGluZyBkYXRhIQ==",
+    # 代码片段
+    "def _heuristic_char_weight(c): return float(len(c.encode('utf-8')))",
+    # 纯 CJK：字节权重在这里最保守（3 字节/字 vs 真实约 1 token/字）
+    "主人今天心情不错，说想吃辣条",
+    # 中英混排 + URL
+    "主人发了个链接 https://example.com/a?b=1&c=2 说让我看看",
+    # emoji（4 字节）与组合字符
+    "辣条好吃🌶️🔥 café é",
+    # 短串：max(1, ...) 下限的那一头
+    "ok",
+    "a",
+]
+
+
+def _real_encoder():
+    """The genuine tiktoken encoder — the reference these assertions are
+    measured against. Skip when the encoding data file is unavailable:
+    without it we would be comparing the heuristic to itself.
+
+    Must be called *before* the fallback patch goes in, or `import
+    tiktoken` hands back the MagicMock.
+    """
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding(PERSONA_RENDER_ENCODING)
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"tiktoken encoding data unavailable: {e}")
+    return enc
+
+
+@pytest.fixture
+def force_heuristic(monkeypatch):
+    """Force `_get_encoder` to fail so every counter in `utils.tokenize`
+    takes the heuristic branch, and yield the real encoder captured before
+    the patch as the reference.
+
+    Clears `_ENCODERS` on the way out: that cache stores the *failure* too
+    (which is what keeps the fallback from retrying disk IO on every call),
+    so leaving it would pin the rest of the process into fallback mode.
+    """
+    real_enc = _real_encoder()
+
+    from utils.tokenize import _reset_fallback_warned_for_tests
+
+    fake_tiktoken = MagicMock()
+    fake_tiktoken.get_encoding.side_effect = RuntimeError(
+        "encoding file missing — packaging bug simulation"
+    )
+    monkeypatch.setitem(sys.modules, 'tiktoken', fake_tiktoken)
+    _reset_fallback_warned_for_tests()
+    yield real_enc
+    _reset_fallback_warned_for_tests()
+
+
+@pytest.mark.parametrize("text", _HIGH_ENTROPY_SAMPLES)
+def test_heuristic_never_undercounts_real_tokens(text):
+    """The heuristic count must be >= the real tiktoken count — #2574's
+    core invariant.
+
+    Calls `_count_tokens_heuristic` directly, so no fallback patch is
+    needed and both numbers are available in the same test. The other
+    direction (how much it over-estimates) is deliberately unbounded: byte
+    weights run ~3x for CJK and ~4x for latin, which means rendering
+    *less* in fallback mode — the chosen trade-off (see the `utils
+    /tokenize.py` module docstring), not a regression.
+    """
+    from utils.tokenize import _count_tokens_heuristic
+
+    enc = _real_encoder()
+    real = len(enc.encode(text, disallowed_special=()))
+    heuristic = _count_tokens_heuristic(text)
+    assert heuristic >= real, (
+        f"降级计数低估了真实 token：{text!r} 启发式 {heuristic} < 真实 "
+        f"{real}——#2574 的预算突破就是这么来的"
+    )
+
+
+@pytest.mark.parametrize("text", _HIGH_ENTROPY_SAMPLES)
+@pytest.mark.parametrize("budget", [1, 5, 20])
+def test_heuristic_truncate_output_fits_real_budget(force_heuristic, text, budget):
+    """In fallback mode, what `truncate_to_tokens` returns must still fit
+    the budget when measured with the real tokenizer. This is the layer
+    the per-entry recall cap (L21, 400 tokens each) rests on."""
+    from utils.tokenize import truncate_to_tokens
+
+    enc = force_heuristic
+    out = truncate_to_tokens(text, budget)
+    real = len(enc.encode(out, disallowed_special=())) if out else 0
+    assert real <= budget, (
+        f"降级截断的输出超预算：{text!r} → {out!r} 真实 {real} > {budget}"
+    )
+
+
+@pytest.mark.parametrize("budget", [40, 120, 2200])
+def test_heuristic_line_budget_holds_against_real_tokenizer(force_heuristic, budget):
+    """In fallback mode, what `take_lines_within_token_budget` emits —
+    including the separator it will be joined with — must still fit the
+    budget when measured with the real tokenizer.
+
+    2200 is the L21 recall-block budget from #2563, the one #2574 measured
+    at 2.5-2.7x over under the old heuristic; 40 / 120 are tight enough
+    that trimming actually happens.
+
+    The single exemption is the always-keep-the-first-line rule, and it
+    only covers a first line that genuinely does not fit. So the cut is
+    also asserted to be *tight*: whatever was dropped first must be
+    something that really would have overflowed. Without that, an
+    implementation that returned only the first line no matter the budget
+    would satisfy every "within budget" assertion here. (The keep/drop
+    semantics themselves are covered in
+    `tests/unit/test_recall_render_token_budget.py`; this test only owns
+    the heuristic-vs-real half.)
+    """
+    from utils.tokenize import _count_tokens_heuristic, take_lines_within_token_budget
+
+    enc = force_heuristic
+    separator = "\n"
+    kept, dropped = take_lines_within_token_budget(
+        _HIGH_ENTROPY_SAMPLES, budget, separator=separator,
+    )
+    assert kept, "非零预算下至少要留一行"
+    assert dropped == len(_HIGH_ENTROPY_SAMPLES) - len(kept)
+
+    real = len(enc.encode(separator.join(kept), disallowed_special=()))
+    # 留了两行以上，就没有任何理由超预算；只留一行时豁免（首行必留）。
+    if len(kept) > 1:
+        assert real <= budget, (
+            f"降级整段预算被突破：留了 {len(kept)} 行，真实 {real} > {budget}"
+        )
+
+    if dropped:
+        # 裁剪点必须紧贴预算：把下一条加回来一定得超。这条按启发式（也就
+        # 是降级形态下调用方实际用的那把尺）量，因为它钉的是"什么时候停"，
+        # 不是"停下来那一刻真实是多少"。
+        with_next = separator.join(kept + [_HIGH_ENTROPY_SAMPLES[len(kept)]])
+        assert _count_tokens_heuristic(with_next) > budget, (
+            f"裁剪提前收手：留了 {len(kept)} 行、丢了 {dropped} 行，但加上"
+            f"下一条才 {_count_tokens_heuristic(with_next)} ≤ {budget}"
+        )
 
 
 # ── PersonaManager._score_trim_entries ─────────────────────────────

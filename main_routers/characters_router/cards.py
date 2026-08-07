@@ -69,7 +69,7 @@ from utils.frontend_utils import find_model_directory, is_user_imported_model
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.character_memory import asave_characters_with_recent_activation
 from config import (
-    DEFAULT_LIVE2D_MODEL_NAME,
+    BUILTIN_LIVE2D_MODEL_NAMES,
 )
 
 
@@ -309,7 +309,7 @@ async def export_catgirl_card(name: str):
     3. Append the archive data to the PNG image
     4. Return the PNG image for download
 
-    Note: the default model (DEFAULT_LIVE2D_MODEL_NAME) is never included in the export.
+    Note: built-in models (BUILTIN_LIVE2D_MODEL_NAMES) are never included in the export.
     """
     import zipfile
     import tempfile
@@ -378,11 +378,11 @@ async def export_catgirl_card(name: str):
                         else:
                             live2d_name = live2d_name.split('/')[-1]
 
-                        # 检查是否是默认模型
-                        if live2d_name == DEFAULT_LIVE2D_MODEL_NAME:
+                        # 检查是否是随包发的内置模型（收方一定有，不用打进包里）
+                        if live2d_name in BUILTIN_LIVE2D_MODEL_NAMES:
                             logger.info(
-                                f'猫娘 {name} 使用的是默认模型 '
-                                f'{DEFAULT_LIVE2D_MODEL_NAME}，跳过模型打包'
+                                f'猫娘 {name} 使用的是内置模型 '
+                                f'{live2d_name}，跳过模型打包'
                             )
                         else:
                             # 查找模型目录
@@ -1531,7 +1531,7 @@ async def export_catgirl_with_portrait(
                     live2d_path = get_reserved(catgirl_data, 'avatar', 'live2d', 'model_path', default='')
                     if live2d_path and live2d_path.strip():
                         live2d_name = live2d_path.split('/')[0] if '/' in live2d_path else live2d_path.replace('.model3.json', '')
-                        if live2d_name and live2d_name != DEFAULT_LIVE2D_MODEL_NAME:
+                        if live2d_name and live2d_name not in BUILTIN_LIVE2D_MODEL_NAMES:
                             model_dir, _ = find_model_directory(live2d_name)
                             if model_dir and os.path.exists(model_dir):
                                 if is_user_imported_model(model_dir, _config_manager):

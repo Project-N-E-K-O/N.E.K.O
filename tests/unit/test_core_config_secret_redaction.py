@@ -121,6 +121,8 @@ def test_get_redacts_every_core_config_secret(
     response = asyncio.run(core_config_router.get_core_config_api())
 
     assert response['success'] is True
+    assert response['effectiveCoreApi'] == 'qwen'
+    assert response['supportsIndependentAsr'] is True
     response_secret_fields = (
         'api_key',
         *_ASSIST_API_KEY_FIELDS,
@@ -162,6 +164,8 @@ def test_get_preserves_empty_secrets_and_free_access(
     response = asyncio.run(core_config_router.get_core_config_api())
 
     assert response['success'] is True
+    assert response['effectiveCoreApi'] == 'free'
+    assert response['supportsIndependentAsr'] is False
     assert response['api_key'] == 'free-access'
     for field in (
         *_ASSIST_API_KEY_FIELDS,
@@ -169,6 +173,30 @@ def test_get_preserves_empty_secrets_and_free_access(
         *_MODEL_API_KEY_FIELDS,
     ):
         assert response[field] == ''
+
+
+@pytest.mark.unit
+def test_get_uses_effective_realtime_core_for_asr_capability(
+    config_manager,
+    core_config_router,
+):
+    _write_core_config(config_manager, {
+        'coreApiKey': 'free-access',
+        'coreApi': 'free',
+        'assistApi': 'free',
+        'enableCustomApi': True,
+        'omniModelProvider': 'custom',
+        'omniModelId': 'local-omni',
+        'omniModelUrl': 'http://127.0.0.1:8080/v1',
+        'omniModelApiKey': 'local-key',
+    })
+
+    response = asyncio.run(core_config_router.get_core_config_api())
+
+    assert response['success'] is True
+    assert response['coreApi'] == 'free'
+    assert response['effectiveCoreApi'] == 'local'
+    assert response['supportsIndependentAsr'] is None
 
 
 @pytest.mark.unit

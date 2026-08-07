@@ -72,6 +72,7 @@ class QQReplyRequest:
     group_id: Optional[str] = None
     user_nickname: Optional[str] = None
     is_at_bot: bool = False
+    is_reply_to_bot: bool = False
     source_kind: str = "incoming"
     use_memory_context: Optional[bool] = None
     persist_memory: Optional[bool] = None
@@ -84,6 +85,7 @@ class QQReplyRequest:
     mentions_other_user: bool = False
     mentions_all: bool = False
     reply_message_id: str = ""
+    reply_context: str = ""
     at_user_id: str = ""
     fallback_to_text_on_voice_failure: bool = True
     # 内嵌合成轮（ack / 强制总结 / 缓冲汇总）继承缓冲里那些草稿的授权
@@ -100,6 +102,9 @@ class QQReplyRequest:
     # 群成员权限的接收边界快照。handler 排队/生成期间的升降权不得
     # 追溯改变已经说出的消息是否具有 owner trust 信号权限。
     group_speaker_permission_level_at_receipt: str | None = None
+    # 接收边界的通道观测快照（"napcat" / "open"）。纯诊断：只用于碰撞探测
+    # 与运维诊断，绝不参与任何键、账本分区、bind 判据或权限判定。
+    speaker_channel_at_receipt: str | None = None
     # 接收边界的私聊 participant 记忆政策快照（语义同上，作用于非 admin
     # 私聊轮；admin 私聊与群轮忽略它）。
     participant_memory_at_receipt: bool | None = None
@@ -175,6 +180,7 @@ class QQReplyContext:
     # 与否绑定发言时刻的授权状态——生成期间才切 ON 的轮不得回溯收集。
     member_memory_enabled: bool = False
     group_speaker_permission_level_at_receipt: str | None = None
+    speaker_channel_at_receipt: str | None = None
     # 本轮是否为私聊 participant 记忆轮（非 admin 私聊 + 接收时刻政策
     # ON）：读写都以对方的 participant 域为界，绝不落入 legacy 私聊主人
     # 语料（bridge 侧 subjects=None 的语义）。
@@ -288,6 +294,12 @@ class QQReplyOutcome:
     wait_directive_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
+    emoji_reaction_id: str = ""
+    feeling: str = ""                 # <feeling> 标签提取的情绪
+    forward_content: str = ""
+    forward_target: str = ""
+    forward_count: int = 0              # <forward count="N">，0=默认20条
+    forward_mark: bool = False          # <mark/> 标记转发起点
     relay_plan: QQRelayPlan | None = None
     relay_result: QQRelayResult | None = None
     delivery_plan: QQDeliveryPlan | None = None

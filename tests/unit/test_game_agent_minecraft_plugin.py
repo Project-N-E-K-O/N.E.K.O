@@ -1333,17 +1333,17 @@ def test_task_tool_description_preserves_master_words_and_coordinates():
         assert "next step" not in cue
 
 
-def test_prompts_have_all_seven_locales():
+def test_prompts_have_all_eight_locales():
     """Every entry in PROMPTS must carry a non-empty translation for
-    each supported language (zh, en, ja, ko, ru, es, pt). Missing keys
-    would otherwise silently fall back to EN and hide translation gaps
+    each supported language (zh, zh-TW, en, ja, ko, ru, es, pt). Missing
+    keys would otherwise silently fall back to EN and hide translation gaps
     from non-EN users."""
     from plugin.plugins.game_agent_minecraft import prompts
 
-    # Pin the expected locale set so the "seven locales" promise can't
-    # be silently regressed by editing SUPPORTED_LANGS down to six.
+    # Pin the expected locale set so the "eight locales" promise can't
+    # be silently regressed by editing SUPPORTED_LANGS down to seven.
     assert set(prompts.SUPPORTED_LANGS) == {
-        "zh", "en", "ja", "ko", "ru", "es", "pt",
+        "zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt",
     }
     missing: list[str] = []
     for key, bundle in prompts.PROMPTS.items():

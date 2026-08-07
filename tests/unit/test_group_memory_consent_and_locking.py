@@ -164,6 +164,7 @@ def _group_drain_harness(post_scoped):
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
         memory_bridge=SimpleNamespace(
+            speaker_account_id=lambda sid: f"qq:{str(sid or '').strip()}",
             post_scoped_memory_history=post_scoped,
             post_scoped_memory_history_batch=_batch_via_single,
             group_participant_subject=(

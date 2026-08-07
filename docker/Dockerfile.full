@@ -64,6 +64,8 @@ ARG HTTPS_PROXY
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Shanghai
+ENV XDG_DATA_HOME=/home/neko/.local/share
 # Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
 # build runs on US Azure runners while the package mirror is in China, so large
 # wheels are slow to transfer; 30s caused spurious "operation timed out" failures.
@@ -148,6 +150,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     nginx \
     openssl \
     bc \
+    tzdata \
     fonts-wqy-zenhei \
     fonts-liberation \
     fonts-noto-color-emoji \
@@ -178,12 +181,25 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     && rm -rf /var/lib/apt/lists/*
 
 #创建nginx用户和应用用户，以及Playwright缓存目录
+#
+# neko 固定 uid/gid 1000（不用 `-r` 的系统号段）。/home/neko 是 bind mount 出去的
+# 持久化目录，容器给它的属主会原样出现在宿主机上；1000 是绝大多数 Linux 发行版第一个
+# 普通用户的号，对上之后用户备份、编辑、删除 neko-home 都不必 sudo。系统号段（100-999）
+# 是动态分配的，宿主上通常对应某个无关的服务账户，甚至每次重建镜像都可能变。
+# entrypoint 里对 /home/neko 的 chown 用的就是字面量 1000:1000，两处必须一致。
+# 1000 在 debian:bookworm 上是空的，而且是结构性的空：base-passwd 的静态表只到
+# uid 42 和 65534，Debian Policy 把 100-999 划给系统账户（`adduser --system` 强制落
+# 在这一段，上面的 nginx 就是），1000 起才是普通用户段，而基础镜像里压根没有"普通
+# 用户"这个概念。⚠️ 别把最终阶段的 FROM 换成 ubuntu:* 或 node:*-bookworm —— 它们
+# 预建的 ubuntu / node 用户正好占着 1000。（本文件的 node:24-slim 只是 builder 阶段，
+# 产物靠 COPY --from 取，不进最终镜像。）真撞上了，下面两条会直接失败让 build 红，
+# 而不是静默退回另一个号。
 RUN groupadd -r nginx && \
     useradd -r -g nginx nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
-    groupadd -r neko && \
-    useradd -r -g neko -d /home/neko -s /bin/bash neko && \
+    groupadd -g 1000 neko && \
+    useradd -u 1000 -g 1000 -d /home/neko -s /bin/bash neko && \
     mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl /opt/ms-playwright && \
     chown -R neko:neko /home/neko /app /opt/ms-playwright
 
@@ -277,10 +293,12 @@ COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-
 # 7b. 复制 OpenFang 二进制（Rust A2A agent daemon）
 COPY --from=openfang-downloader /usr/local/bin/openfang /usr/local/bin/openfang
 
-# 7c. 解压 yui-origin Live2D 模型（assets/yui-origin.tar.gz → static/yui-origin/）
+# 7c. 解压内置 Live2D 模型（assets/<name>.tar.gz → static/<name>/）
 #     dev 用 build_frontend.{sh,bat} 解压；docker 路径绕过那两个脚本，单独解压一次
-RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
-    test -f static/yui-origin/yui-origin.moc3
+RUN cd /app && for model in yui-origin yui-lolita; do \
+        tar -xzmf "assets/$model.tar.gz" -C static/ || exit 1; \
+        test -f "static/$model/$model.moc3" || exit 1; \
+    done
 
 # 8. Install Python dependencies using uv
 RUN cd /app && \
@@ -309,13 +327,10 @@ ENV PYTHONPATH="/app:$PYTHONPATH"
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 12. Create data persistence directories
-VOLUME ["/data"]
-
-# 13. Expose ports
+# 12. Expose ports
 EXPOSE 80 443
 
-# 14. Show build information
+# 13. Show build information
 RUN echo "========================================" && \
     echo "  N.E.K.O. Full Image Build Complete" && \
     echo "========================================" && \
@@ -326,5 +341,5 @@ RUN echo "========================================" && \
     ls -la /opt/ms-playwright/ 2>/dev/null || echo "  (not found)" && \
     echo "========================================"
 
-# 15. Set entrypoint
+# 14. Set entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

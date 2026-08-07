@@ -1136,3 +1136,1793 @@ def test_fail_closed_gate_reports_a_missing_chokepoint(
     assert _chokepoint_codes(contract_checker, core) == [
         "VOICE_FAIL_CLOSED_CHOKEPOINT"
     ]
+
+
+def _write_minimal_voice_identity_layout(root: Path) -> Path:
+    package = root / "main_logic" / "voice_identity"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""identity."""\n', encoding="utf-8")
+    (package / "contracts.py").write_text('"""contracts."""\n', encoding="utf-8")
+    (package / "reference.py").write_text(
+        '"""reference."""\n'
+        "import numpy as np\n"
+        "from .contracts import SpeakerModelIdentity\n",
+        encoding="utf-8",
+    )
+    (package / "profile.py").write_text(
+        '"""profile."""\nfrom .reference import SpeakerReference\n',
+        encoding="utf-8",
+    )
+    return package
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_accepts_in_memory_dependency_direction(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    _write_minimal_voice_identity_layout(tmp_path)
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_fails_closed_when_package_is_missing(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    violations = contract_checker.check_voice_identity_contracts(tmp_path)
+
+    assert any(
+        violation.path == tmp_path / "main_logic" / "voice_identity"
+        and violation.message == "required voice_identity package is missing"
+        for violation in violations
+    )
+    assert sum(
+        violation.message == "required voice_identity domain file is missing"
+        for violation in violations
+    ) == 4
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_unlisted_modules(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    probe = package / "nested" / "store.py"
+    probe.parent.mkdir()
+    probe.write_text("import cryptography\n", encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+        if violation.path == probe
+    ]
+
+    assert "voice_identity module is missing an explicit dependency allowlist" in messages
+    assert "voice_identity domain must not import cryptography" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from . import contracts\n",
+        "from main_logic.voice_identity import contracts\n",
+    ],
+)
+def test_voice_identity_contract_allows_approved_importfrom_package_anchors(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_broad_parent_package_import(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text("import main_logic\n", encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any("found main_logic" in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def persist():\n"
+        "    from numpy import save as write\n"
+        "    write('embedding.npy', [1.0])\n",
+        "def persist():\n"
+        "    import numpy as np\n"
+        "    np.save('embedding.npy', [1.0])\n",
+    ],
+)
+def test_voice_identity_contract_rejects_local_import_aliases(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity imports must be declared at module scope" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rebind",
+    [
+        "import math as np",
+        "np = object()",
+        "np: object = object()",
+        "(np := object())",
+        "def np():\n    pass",
+        "class np:\n    pass",
+        "np, other = object(), object()",
+        "if True:\n    np = object()",
+        "async def np():\n    pass",
+        "values = [(np := value) for value in ()]",
+    ],
+)
+def test_voice_identity_contract_rejects_module_scope_import_rebinding(
+    contract_checker,
+    tmp_path: Path,
+    rebind: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{rebind}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity module-scope import bindings must not be rebound; found np"
+        in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "for math in (np,):\n    pass",
+        "with np.errstate() as math:\n    pass",
+        "try:\n    raise Exception()\nexcept Exception as math:\n    pass",
+        "match np:\n    case math:\n        pass",
+        "math += np",
+        "def holder(value=(math := np)):\n    pass",
+    ],
+)
+def test_voice_identity_contract_rejects_other_module_scope_binding_forms(
+    contract_checker,
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\nimport math\n{binding}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity module-scope import bindings must not be rebound; "
+        "found math"
+        in messages
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_global_rebinding_from_class_body(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "import math\n"
+        "class Rebind:\n"
+        "    global math\n"
+        "    math = np\n"
+        "    math.save('embedding.npy', [1.0])\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity module-scope import bindings must not be rebound; "
+        "found math"
+        in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "local_source",
+    [
+        "def local():\n    np = object()\n    return np",
+        "class Local:\n    np = object()",
+        "values = [np for np in ()]",
+        "np: object",
+    ],
+)
+def test_voice_identity_contract_allows_non_rebinding_name_reuse(
+    contract_checker,
+    tmp_path: Path,
+    local_source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{local_source}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_class_local_import_alias_shadowing(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "class SnapshotFactory:\n"
+        "    def save(self):\n"
+        "        pass\n"
+        "class Snapshot:\n"
+        "    np = SnapshotFactory()\n"
+        "    np.save()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_wildcard_imports(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "from numpy import *\nsave('embedding.npy', [1.0])\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity domain must not use wildcard imports" in messages
+
+
+@pytest.mark.unit
+def test_voice_identity_initializer_must_be_docstring_only(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "__init__.py").write_text(
+        '"""identity."""\nfrom .profile import SpeakerProfile\n',
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity/__init__.py may contain only a package docstring" in messages
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_requires_complete_domain_layout(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "profile.py").unlink()
+
+    violations = contract_checker.check_voice_identity_contracts(tmp_path)
+
+    assert any(
+        violation.code == "VOICE_IDENTITY_LAYERING"
+        and violation.path == package / "profile.py"
+        and "required voice_identity domain file is missing" in violation.message
+        for violation in violations
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "forbidden_import",
+    [
+        "from main_logic.asr_client import runtime",
+        "from main_logic.core import LLMSessionManager",
+        "from main_logic.voice_turn import contracts",
+        "import main_routers",
+        "import app",
+        "import onnxruntime",
+        "import keyring",
+        "import cryptography",
+        "import importlib",
+        "import logging",
+        "import os",
+        "import pathlib",
+        "import pickle",
+        "import sqlite3",
+    ],
+)
+def test_voice_identity_domain_rejects_cross_layer_imports(
+    contract_checker,
+    tmp_path: Path,
+    forbidden_import: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(f"{forbidden_import}\n", encoding="utf-8")
+
+    violations = contract_checker.check_voice_identity_contracts(tmp_path)
+
+    assert any(
+        violation.code == "VOICE_IDENTITY_LAYERING"
+        for violation in violations
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_domain_rejects_dynamic_cross_layer_import(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import importlib\n"
+        "runtime = importlib.import_module('main_logic.asr_client.runtime')\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity domain must not call importlib.import_module"
+        in messages
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "owner_path",
+    [
+        "main_logic/asr_client/probe.py",
+        "main_logic/core/probe.py",
+        "main_logic/voice_turn/probe.py",
+    ],
+)
+def test_voice_identity_contract_allows_outer_layers_to_consume_domain(
+    contract_checker,
+    tmp_path: Path,
+    owner_path: str,
+) -> None:
+    _write_minimal_voice_identity_layout(tmp_path)
+    probe = tmp_path / owner_path
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "from main_logic.voice_identity import profile\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("eval('1 + 1')\n", "must not call eval"),
+        ("exec('value = 1')\n", "must not call exec"),
+        ("__import__('math')\n", "must not call __import__"),
+        ("open('embedding.bin', 'wb')\n", "file I/O via open"),
+        (
+            "import numpy as np\nnp.save('embedding.npy', np.ones(1))\n",
+            "file I/O via numpy.save",
+        ),
+        (
+            "from numpy import load\nload('embedding.npy')\n",
+            "file I/O via numpy.load",
+        ),
+        (
+            "import numpy as np\nnp.savetxt('embedding.txt', np.ones(1))\n",
+            "file I/O via numpy.savetxt",
+        ),
+        (
+            "import numpy as np\nnp.loadtxt('embedding.txt')\n",
+            "file I/O via numpy.loadtxt",
+        ),
+        (
+            "import numpy as np\nnp.genfromtxt('embedding.csv')\n",
+            "file I/O via numpy.genfromtxt",
+        ),
+        (
+            "import numpy as np\nnp.lib.format.open_memmap('embedding.npy')\n",
+            "file I/O via numpy.lib.format.open_memmap",
+        ),
+        (
+            "import numpy as np\nnp.array([1.0]).tofile('embedding.bin')\n",
+            "file I/O via .tofile",
+        ),
+        (
+            "class Holder:\n"
+            "    def persist(self):\n"
+            "        self._embedding.tofile('embedding.bin')\n",
+            "file I/O via self._embedding.tofile",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_direct_dynamic_and_file_io_calls(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "call",
+    [
+        "np.copy([1.0])",
+        "np.zeros(1)",
+        "np.linalg.norm([1.0])",
+    ],
+)
+def test_voice_identity_contract_allows_in_memory_numpy_calls(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{call}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_required_threading_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import threading\nthreading.Lock()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "call",
+    [
+        "threading.Thread(target=lambda: None)",
+        "threading.Timer(1.0, lambda: None)",
+    ],
+)
+def test_voice_identity_contract_rejects_thread_creation(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import threading\n{call}.start()\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(
+        "may only call threading.Lock" in message
+        for message in messages
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_applies_comprehension_targets_in_order(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "values = [x for x in (1,) for np in np.load('embedding.npy')]\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert "voice_identity domain must not perform file I/O via numpy.load" in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def invoke(open):\n    open()\n",
+        "def invoke(eval):\n    eval()\n",
+        "def invoke(exec):\n    exec()\n",
+        "def invoke(__import__):\n    __import__()\n",
+        "def open():\n    pass\nopen()\n",
+    ],
+)
+def test_voice_identity_contract_allows_shadowed_protected_builtins(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("call", "resolved"),
+    [
+        ("np.lib.npyio.load('embedding.npy')", "numpy.lib.npyio.load"),
+        ("np.lib.format.read_array(stream)", "numpy.lib.format.read_array"),
+        (
+            "np.lib.format.write_array(stream, np.zeros(1))",
+            "numpy.lib.format.write_array",
+        ),
+        ("np.lib.npyio.DataSource()", "numpy.lib.npyio.DataSource"),
+        ("np.DataSource().open('embedding.npy')", "numpy.DataSource"),
+    ],
+)
+def test_voice_identity_contract_rejects_unapproved_direct_numpy_calls(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+    resolved: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{call}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(
+        "may only call approved in-memory NumPy APIs" in message
+        and resolved in message
+        for message in messages
+    )
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_unresolved_dump_method(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "class Snapshot:\n"
+        "    def dump(self):\n"
+        "        return b'snapshot'\n"
+        "\n"
+        "value = Snapshot().dump()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_allows_local_variable_dump_method(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "class Snapshot:\n"
+        "    def dump(self):\n"
+        "        return b'snapshot'\n"
+        "\n"
+        "snapshot = Snapshot()\n"
+        "value = snapshot.dump()\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "function_source",
+    [
+        "def use(np):\n    np.save()",
+        "async def use(np):\n    np.save()",
+        "def use():\n    np = Snapshot()\n    np.save()",
+        "use = lambda np: np.save()",
+        "values = [np.save() for np in (Snapshot(),)]",
+        "values = {np.save() for np in (Snapshot(),)}",
+        "values = (np.save() for np in (Snapshot(),))",
+        "values = {np: np.save() for np in (Snapshot(),)}",
+    ],
+)
+def test_voice_identity_contract_respects_local_import_shadowing(
+    contract_checker,
+    tmp_path: Path,
+    function_source: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "import numpy as np\n"
+        "class Snapshot:\n"
+        "    def save(self):\n"
+        "        return None\n"
+        f"{function_source}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import numpy as np\nnp.array([1.0]).dump('embedding.pkl')\n",
+            "file I/O via numpy.ndarray.dump",
+        ),
+        (
+            "import numpy as np\n"
+            "np.f2py.compile('end', modulename='carrier')\n",
+            "native code via numpy.f2py.compile",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_direct_numpy_boundary_bypasses(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "import numpy as np\n"
+            "embedding = np.array([1.0])\n"
+            "embedding.dump('embedding.pkl')\n",
+            "file I/O via embedding.dump",
+        ),
+        (
+            "import numpy as np\n"
+            "embedding = np.array([1.0])\n"
+            "np.ndarray.dump(embedding, 'embedding.pkl')\n",
+            "file I/O via numpy.ndarray.dump",
+        ),
+        (
+            "import numpy as np\n"
+            "def persist():\n"
+            "    embedding = np.array([1.0])\n"
+            "    embedding.dump('embedding.pkl')\n",
+            "file I/O via embedding.dump",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_other_ndarray_dump_forms(
+    contract_checker,
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        (
+            "np.recfromtxt('embedding.csv')",
+            "file I/O via numpy.recfromtxt",
+        ),
+        (
+            "np.fromregex('embedding.txt', r'.*', [('value', float)])",
+            "file I/O via numpy.fromregex",
+        ),
+        (
+            "np.ctypeslib.load_library('carrier', '.')",
+            "native library via numpy.ctypeslib.load_library",
+        ),
+    ],
+)
+def test_voice_identity_contract_rejects_explicitly_dangerous_numpy_calls(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+    expected: str,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        f"import numpy as np\n{call}\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert any(expected in message for message in messages)
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_does_not_claim_reflection_is_a_sandbox(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    (package / "reference.py").write_text(
+        "getter = getattr(__builtins__, 'open')\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker.check_voice_identity_contracts(tmp_path) == []
+
+
+@pytest.mark.unit
+def test_voice_identity_contract_rejects_model_assets_inside_domain_package(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    package = _write_minimal_voice_identity_layout(tmp_path)
+    model_path = package / "models" / "speaker.onnx"
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"not-a-real-model")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.check_voice_identity_contracts(tmp_path)
+    ]
+
+    assert (
+        "voice_identity domain must not contain packaged assets; "
+        "found models/speaker.onnx"
+        in messages
+    )
+
+
+# ── CORE_LOCK_NO_AWAIT ──────────────────────────────────────────────────
+#
+# The gate exists because the atomicity of every ``current_speech_id`` +
+# TTS-done-flag write rests on one property of ``self.lock``: no holder ever
+# suspends, so the lock is never observed held, so ``acquire()`` always takes
+# the uncontended fast path and is therefore not a cancellation point (#2619).
+# These tests pin what makes that property checkable.
+
+
+def _lock_core_dir(
+    tmp_path: Path,
+    probe_source: str,
+    manager_source: str | None = None,
+) -> tuple[Path, Path]:
+    """A minimal core package: manager.py binding the lock plus one probe module."""
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="utf-8")
+    manager = core / "manager.py"
+    manager.write_text(
+        manager_source
+        if manager_source is not None
+        else (
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+        encoding="utf-8",
+    )
+    (core / "probe.py").write_text(probe_source, encoding="utf-8")
+    return core, manager
+
+
+def _lock_violations(contract_checker, tmp_path: Path, probe_source: str, **kw):
+    core, manager = _lock_core_dir(tmp_path, probe_source, **kw)
+    return contract_checker.check_session_lock_atomicity(core, manager)
+
+
+_CLEAN_PROBE = (
+    '"""m."""\n\n'
+    "class ProbeMixin:\n"
+    '    """m."""\n\n'
+    "    async def rotate(self):\n"
+    "        await self.prepare()\n"
+    "        async with self.lock:\n"
+    "            self.current_speech_id = new_id()\n"
+    "            self._tts_done_queued_for_turn = False\n"
+    "        await self.announce()\n"
+)
+
+
+@pytest.mark.unit
+def test_lock_gate_accepts_a_critical_section_with_no_suspension(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """Awaits before and after the block are exactly the sanctioned shape."""
+
+    assert _lock_violations(contract_checker, tmp_path, _CLEAN_PROBE) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # The plain form: this is what would make the rotation tearable.
+        "await self.flush()",
+        "value = await self.flush()",
+        # ...and the spellings that suspend without an ``await`` statement of
+        # their own, each of which an Await-only scan walks straight past.
+        "async for item in self.stream():\n                pass",
+        "async with self.other_lock:\n                pass",
+        "self.rows = [x async for x in self.stream()]",
+        "self.rows = [await self.one(x) for x in self.batch]",
+        "yield self.current_speech_id",
+    ],
+)
+def test_lock_gate_rejects_every_suspension_spelling(
+    contract_checker,
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        f"            {statement}\n"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "async with self.lock" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_reports_one_violation_per_block_not_per_suspension(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The defect is the block, not each await in it — three awaits, one report."""
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            await self.a()\n"
+        "            await self.b()\n"
+        "            await self.c()\n"
+    )
+
+    assert len(_lock_violations(contract_checker, tmp_path, source)) == 1
+
+
+@pytest.mark.unit
+def test_lock_gate_ignores_a_generator_expression_body_under_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A generator expression body runs at consumption, not at creation.
+
+    Measured: ``(await work(x) async for x in src())`` evaluates nothing when
+    it is built, so the block never suspends and flagging it is a false
+    positive — and a gate that rejects harmless code teaches people to route
+    around it.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            self._pending = (await self.work(x) async for x in self.src())\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_still_sees_the_eager_outermost_iterable(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The one part of a generator expression that IS evaluated at creation.
+
+    Measured: ``(x for x in await get())`` runs ``await get()`` immediately,
+    so skipping the whole node would hide a real suspension.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            self._pending = (x for x in await self.get())\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "comprehension",
+    [
+        pytest.param("[await self.one(x) for x in self.batch]", id="list"),
+        pytest.param("{await self.one(x) for x in self.batch}", id="set"),
+        pytest.param("{x: await self.one(x) for x in self.batch}", id="dict"),
+    ],
+)
+def test_lock_gate_still_flags_eager_comprehensions(
+    contract_checker,
+    tmp_path: Path,
+    comprehension: str,
+) -> None:
+    """Only GENERATOR expressions are deferred; the other three run now."""
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        f"            self._rows = {comprehension}\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "swap",
+    [
+        pytest.param("asyncio.Lock = OtherLock", id="direct"),
+        pytest.param('setattr(asyncio, "Lock", OtherLock)', id="setattr"),
+        pytest.param('object.__setattr__(asyncio, "Lock", OtherLock)', id="object-setattr"),
+        pytest.param('asyncio.__dict__["Lock"] = OtherLock', id="dunder-dict"),
+    ],
+)
+def test_lock_gate_rejects_replacing_asyncio_lock_itself(
+    contract_checker,
+    tmp_path: Path,
+    swap: str,
+) -> None:
+    """The module can stay stdlib while its ``Lock`` attribute is swapped.
+
+    Both the name check and the ``asyncio.Lock()`` spelling survive that, so
+    neither notices the manager building an arbitrary primitive. Direct and
+    reflective spellings alike — catching one and not the other is a speed
+    bump, not a gate.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    def swap(self):\n"
+        f"        {swap}\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "asyncio.Lock is replaced" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_ignores_awaits_in_closures_defined_inside_the_block(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A coroutine DEFINED under the lock does not RUN under it.
+
+    Flagging this would be a false positive: the closure body executes when
+    someone awaits the returned object, which by definition is after the
+    ``async with`` has exited.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        "            async def later():\n"
+        "                await self.flush()\n"
+        "            self._deferred = later\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("definition", "why"),
+    [
+        pytest.param(
+            "            async def later(x=await self.flush()):\n"
+            "                return x\n",
+            "default values are evaluated at def time",
+            id="awaited-default",
+        ),
+        pytest.param(
+            "            @self.deco(await self.flush())\n"
+            "            def later():\n"
+            "                pass\n",
+            "decorator expressions are evaluated at def time",
+            id="awaited-decorator",
+        ),
+        pytest.param(
+            "            self._f = lambda x=await self.flush(): x\n",
+            "a lambda default is evaluated at def time too",
+            id="awaited-lambda-default",
+        ),
+    ],
+)
+def test_lock_gate_still_sees_definition_time_awaits_in_nested_defs(
+    contract_checker,
+    tmp_path: Path,
+    definition: str,
+    why: str,
+) -> None:
+    """Only the deferred BODY of a nested def is exempt, not its setup.
+
+    Measured: ``async def later(x=await flush())`` parses, and the default
+    runs at definition time — i.e. right here, with the lock held. Skipping
+    the whole node would let that through.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock:\n"
+        f"{definition}"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"], why
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_chained_binding_that_aliases_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """One object, two names — and the second name is not gate-checked.
+
+    Other lock attributes are intentionally allowed to be held across awaits,
+    so an alias of the session lock under another name is a way to suspend
+    while holding it.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.other_lock = self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "exactly one target" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("preamble", "signature"),
+    [
+        pytest.param("import custom_locks as asyncio\n", "self", id="import-as"),
+        pytest.param("from vendor import locks as asyncio\n", "self", id="from-import-as"),
+        pytest.param("import asyncio\nasyncio = custom_locks\n", "self", id="plain-rebind"),
+        # Not an import at all: the caller supplies the module.
+        pytest.param("import asyncio\n", "self, asyncio", id="parameter"),
+        pytest.param("import asyncio\n", "self, *, asyncio=custom_locks", id="kwonly-parameter"),
+        # A star import can bind any name the other module exports, and
+        # nothing in the AST says which — unknown, so not the sanctioned one.
+        pytest.param("import asyncio\nfrom vendor_locks import *\n", "self", id="wildcard-import"),
+    ],
+)
+def test_lock_gate_rejects_shadowing_the_asyncio_name(
+    contract_checker,
+    tmp_path: Path,
+    preamble: str,
+    signature: str,
+) -> None:
+    """The primitive is matched by spelling, so the name must mean stdlib.
+
+    Checked as "exactly one binding, and it is a plain ``import asyncio``"
+    rather than as a list of rebinding forms — the list of ways to bind a
+    name is open-ended, so a checker built from it stays one form behind.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            f"{preamble}\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            f"    def __init__({signature}):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "only by a plain 'import asyncio'" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "imports",
+    [
+        pytest.param("import asyncio\n", id="plain"),
+        pytest.param("import asyncio\nimport os\n", id="alongside-others"),
+        # A submodule import still binds the top-level name to the same stdlib
+        # package, so it is the same guarantee; rejecting it would be a false
+        # positive that pushes people to work around the gate.
+        pytest.param("import asyncio\nimport asyncio.subprocess\n", id="submodule"),
+    ],
+)
+def test_lock_gate_accepts_the_plain_asyncio_import(
+    contract_checker,
+    tmp_path: Path,
+    imports: str,
+) -> None:
+    """The sanctioned shape must stay accepted."""
+
+    assert _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            f"{imports}\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    ) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_ignores_other_locks(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """Only ``self.lock`` carries the contract.
+
+    ``self.tts_cache_lock`` and friends are ordinary locks whose holders may
+    await; widening the rule to every attribute named ``*lock`` would fail the
+    package on code that is fine.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def flush(self):\n"
+        "        async with self.tts_cache_lock:\n"
+        "            await self.drain()\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+# The three rewrites that hold the lock across an await while presenting no
+# ``async with self.lock`` block for a shape-only scan to inspect. Kept as
+# named constants rather than inline list entries: adjacent string literals
+# inside a list are how a missing comma silently merges two cases into one.
+_MANUAL_ACQUIRE_RELEASE = (
+    "        await self.lock.acquire()\n"
+    "        await self.flush()\n"
+    "        self.lock.release()\n"
+)
+_ALIASED_THEN_ENTERED = (
+    "        held = self.lock\n"
+    "        async with held:\n"
+    "            await self.flush()\n"
+)
+_HANDED_TO_A_HELPER = "        await self._helper_that_awaits(self.lock)\n"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "manual",
+    [
+        pytest.param(_MANUAL_ACQUIRE_RELEASE, id="manual-acquire-release"),
+        pytest.param(_ALIASED_THEN_ENTERED, id="aliased-then-entered"),
+        pytest.param(_HANDED_TO_A_HELPER, id="handed-to-a-helper"),
+    ],
+)
+def test_lock_gate_rejects_taking_the_lock_outside_a_context_manager(
+    contract_checker,
+    tmp_path: Path,
+    manual: str,
+) -> None:
+    source = (
+        _CLEAN_PROBE
+        + "\n"
+        + "    async def sneaky(self):\n"
+        + manual
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    # One report per illegal mention, so the acquire/release pair yields two.
+    assert violations, "the manual form must not walk past the gate"
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert all(
+        "outside an 'async with' block" in v.message for v in violations
+    )
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_context_manager_entered_after_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``async with self.lock, other:`` suspends twice with the lock held.
+
+    ``other.__aenter__`` runs after the lock is taken, and its ``__aexit__``
+    runs before the lock is released — neither is in the block body, so the
+    body scan alone never sees them.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.lock, self.tts_cache_lock:\n"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "entered after self.lock" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_allows_a_context_manager_entered_before_the_lock(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The other order is genuinely safe, so it must not be rejected.
+
+    On the way in the lock is not held yet; on the way out it is released
+    first (``__aexit__`` runs in reverse). Nothing suspends under it.
+    """
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        async with self.tts_cache_lock, self.lock:\n"
+        "            self.current_speech_id = new_id()\n"
+    )
+
+    assert _lock_violations(contract_checker, tmp_path, source) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_second_binding_that_swaps_the_primitive(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A rebind must not hide behind an earlier, valid-looking binding.
+
+    Checking that SOME binding is ``asyncio.Lock()`` lets a later
+    ``self.lock = OtherLock()`` through: the first line still satisfies the
+    primitive check while the object the code actually takes is the second.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self, reentrant=False):\n"
+            "        self.lock = asyncio.Lock()\n"
+            "        if reentrant:\n"
+            "            self.lock = OtherLock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "exactly once" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_an_annotated_rebind_too(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``self.lock: X = Y`` is an AnnAssign, a different node than Assign."""
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+            "        self.lock: object = OtherLock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "exactly once" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "acquisition",
+    [
+        pytest.param('getattr(self, "lock")', id="getattr"),
+        pytest.param('object.__getattribute__(self, "lock")', id="getattribute"),
+        pytest.param('self.__dict__["lock"]', id="dunder-dict"),
+    ],
+)
+def test_lock_gate_sees_the_lock_reached_reflectively(
+    contract_checker,
+    tmp_path: Path,
+    acquisition: str,
+) -> None:
+    """These carry no ``Attribute`` named ``lock`` for a syntax match to see.
+
+    Same standard the fail-closed chokepoint gate in this script already
+    holds itself to: a gate a one-line rewrite defeats is not a gate.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def sneaky(self):\n"
+        f"        async with {acquisition}:\n"
+        "            await self.flush()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("must never be held across a suspension" in v.message for v in violations)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param('setattr(self, "lock", OtherLock())', id="setattr"),
+        pytest.param('object.__setattr__(self, "lock", OtherLock())', id="object-setattr"),
+        pytest.param('self.__dict__["lock"] = OtherLock()', id="dunder-dict-write"),
+    ],
+)
+def test_lock_gate_sees_the_lock_replaced_reflectively(
+    contract_checker,
+    tmp_path: Path,
+    write: str,
+) -> None:
+    """A reflective WRITE swaps the primitive the whole contract rests on.
+
+    The exact-once binding check in manager.py would still see only the
+    original ``self.lock = asyncio.Lock()``, and every later ``async with
+    self.lock:`` would look clean while running on a lock whose acquire can
+    suspend. Catching reads but not writes would be the same inconsistency
+    this gate criticised elsewhere.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    def swap(self):\n"
+        f"        {write}\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("outside an 'async with' block" in v.message for v in violations)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param('setattr(self, "lock", OtherLock())', id="setattr"),
+        pytest.param('object.__setattr__(self, "lock", OtherLock())', id="object-setattr"),
+    ],
+)
+def test_lock_gate_never_sanctions_a_write_as_an_acquisition(
+    contract_checker,
+    tmp_path: Path,
+    write: str,
+) -> None:
+    """A setter in context-expression position is still a swap, not a take.
+
+    Recognising both spellings for the form check is right; treating a WRITE
+    as the thing an ``async with`` acquires is not — it recorded the setter
+    as a sanctioned acquisition and reported nothing. Entering ``None`` does
+    raise TypeError, but the swap has already happened by then and the
+    surrounding code is free to catch it.
+    """
+
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def sneaky(self):\n"
+        "        try:\n"
+        f"            async with {write}:\n"
+        "                pass\n"
+        "        except TypeError:\n"
+        "            pass\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("outside an 'async with' block" in v.message for v in violations)
+
+
+@pytest.mark.unit
+def test_lock_gate_sees_the_lock_taken_through_an_alias_of_self(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``owner = self`` then ``async with owner.lock:`` is the same object.
+
+    Resolving aliases properly is dataflow analysis; matching the attribute
+    name whatever the receiver over-approximates instead, which is the safe
+    direction. Measured, it costs nothing on the real package: it holds no
+    ``.lock`` acquisition with any receiver other than ``self``.
+    """
+
+    # Built on the clean probe so the package still holds a real
+    # ``async with self.lock`` block: without one the non-vacuity guard fires
+    # and the test would pass for the wrong reason.
+    source = _CLEAN_PROBE + (
+        "\n"
+        "    async def sneaky(self):\n"
+        "        owner = self\n"
+        "        async with owner.lock:\n"
+        "            await self.flush()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert violations
+    assert {v.code for v in violations} == {"CORE_LOCK_NO_AWAIT"}
+    assert any("must never be held across a suspension" in v.message for v in violations)
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_a_compound_import_whose_last_alias_shadows(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """One import statement, two aliases — Python keeps the last one.
+
+    Judging the containing statement let this pass on the strength of its
+    first alias while the name was actually bound to the second.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio, custom_locks as asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "only by a plain 'import asyncio'" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_counts_a_bare_local_annotation_of_the_module_name(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``asyncio: object`` in a function makes the NAME local for that scope.
+
+    Unlike an attribute annotation, this one changes what the later
+    ``asyncio.Lock()`` resolves to — measured, it raises UnboundLocalError
+    rather than reaching the module — so the name no longer means the import
+    and the primitive claim no longer holds.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        asyncio: object\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "only by a plain 'import asyncio'" in violations[0].message
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "relative",
+    [
+        pytest.param("__init__.py", id="facade-initializer"),
+        pytest.param("helpers/session.py", id="subpackage-module"),
+    ],
+)
+def test_lock_gate_scans_every_module_in_the_package(
+    contract_checker,
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    """A holder in the facade or a subpackage is still inside the package.
+
+    ``glob('*.py')`` is non-recursive and the initializer used to be skipped
+    outright, so a holder in either place was never parsed.
+    """
+
+    core, manager = _lock_core_dir(tmp_path, _CLEAN_PROBE)
+    holder = core / relative
+    holder.parent.mkdir(parents=True, exist_ok=True)
+    holder.write_text(
+        '"""m."""\n\n'
+        "class SneakyMixin:\n"
+        '    """m."""\n\n'
+        "    async def hold(self):\n"
+        "        async with self.lock:\n"
+        "            await self.work()\n",
+        encoding="utf-8",
+    )
+
+    violations = contract_checker.check_session_lock_atomicity(core, manager)
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "must never be held across a suspension" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_does_not_count_a_valueless_annotation_as_a_binding(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``self.lock: asyncio.Lock`` declares a type and assigns nothing.
+
+    It cannot change the runtime primitive, so counting it as a second
+    binding would fail the contract on a harmless type declaration — and a
+    gate that rejects harmless code teaches people to route around it.
+    """
+
+    assert _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import asyncio\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock: asyncio.Lock\n"
+            "        self.lock = asyncio.Lock()\n"
+        ),
+    ) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_allows_the_one_binding_assignment_in_manager(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """``self.lock = asyncio.Lock()`` is the single sanctioned non-block mention."""
+
+    assert _lock_violations(contract_checker, tmp_path, _CLEAN_PROBE) == []
+
+
+@pytest.mark.unit
+def test_lock_gate_fails_loudly_when_no_lock_block_is_left(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """A gate that silently matches nothing is worse than no gate."""
+
+    source = (
+        '"""m."""\n\n'
+        "class ProbeMixin:\n"
+        '    """m."""\n\n'
+        "    async def rotate(self):\n"
+        "        self.current_speech_id = new_id()\n"
+    )
+
+    violations = _lock_violations(contract_checker, tmp_path, source)
+
+    assert any("vacuous" in v.message for v in violations)
+    # This violation fires exactly when the package changed shape, so it must
+    # not point at a module that may have been renamed away with it.
+    assert all(v.path.exists() for v in violations), [str(v.path) for v in violations]
+
+
+@pytest.mark.unit
+def test_lock_gate_rejects_swapping_the_lock_primitive(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    """The fast-path argument is specific to ``asyncio.Lock``.
+
+    A reentrant or threading primitive would break "never observed held" for
+    reasons no AST walk over the critical sections can see, so the binding
+    itself is part of the contract.
+    """
+
+    violations = _lock_violations(
+        contract_checker,
+        tmp_path,
+        _CLEAN_PROBE,
+        manager_source=(
+            '"""m."""\n\n'
+            "import threading\n\n\n"
+            "class LLMSessionManager:\n"
+            '    """m."""\n\n'
+            "    def __init__(self):\n"
+            "        self.lock = threading.RLock()\n"
+        ),
+    )
+
+    assert [v.code for v in violations] == ["CORE_LOCK_NO_AWAIT"]
+    assert "asyncio.Lock()" in violations[0].message
+
+
+@pytest.mark.unit
+def test_lock_gate_holds_on_the_real_core_package(contract_checker) -> None:
+    """The contract this gate encodes is true of the tree today.
+
+    Not a tautology with the synthetic cases above: this is the measurement
+    #2619's premise turns on. If it ever fails, the torn-state window that
+    issue described becomes real and the rotation sites need revisiting.
+    """
+
+    core_dir = PROJECT_ROOT / "main_logic" / "core"
+    violations = contract_checker.check_session_lock_atomicity(
+        core_dir, core_dir / "manager.py"
+    )
+
+    assert violations == [], "\n".join(v.render(PROJECT_ROOT) for v in violations)

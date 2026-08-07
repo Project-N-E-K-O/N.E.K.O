@@ -203,6 +203,19 @@ def _trust_weighted_merge_text(
     # different speaker at once.
     if len(speaker_ids) != len(set(speaker_ids)):
         return proposed_text, sources
+    # The same early-exit lifted to the PERSON dimension. Distinct account
+    # strings are not distinct speakers: with canonical write routing one
+    # person's accounts land in the same refine cluster, and because the base
+    # tier is not aggregated across accounts their two rows can differ by far
+    # more than the arbitration margin. Abstaining leaves the model merge in
+    # place — the same fail-closed direction as the account-level check above.
+    from memory.speaker_trust import same_provenance_source
+    if any(
+        same_provenance_source(usable[i], usable[j]) is True
+        for i in range(len(usable))
+        for j in range(i + 1, len(usable))
+    ):
+        return proposed_text, sources
     ordered = sorted(
         usable, key=lambda source: normalize_trust(source.get('speaker_trust')),
         reverse=True,

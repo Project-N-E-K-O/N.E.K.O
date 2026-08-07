@@ -55,10 +55,15 @@ from .char_info import (
     _get_character_info,
     _get_current_character_info,
     _get_game_route_summary_llm_info,
-    _resolve_game_prompt_language,
+    _resolve_game_prompt_locale,
 )
 from .game_context import (
     _GAME_CONTEXT_FAILURE_VISIBLE_WINDOW_MAX_COUNT,
+    # 被 ``_run_soccer_passive_guard_ai`` 用着，但拆 runtime.py 上帝文件（#2270）时
+    # 漏在了这条 import 外面。端点那层的 ``except Exception`` 把 NameError 吞成
+    # ``{"ok": false, "reason": "exception"}``，所以 soccer 被动守卫一直静默退化成
+    # observe_more，没人看见。
+    _build_game_context_prompt_payload,
     _game_context_recent_dialogues,
 )
 from .memory_policy import (
@@ -155,6 +160,7 @@ from .session_pool import (  # noqa: F401
     _build_game_prompt,
     _close_and_remove_session,
     _game_session_create_locks,
+    _entry_prompt_locale,
     _game_session_key,
     _game_sessions,
     _get_or_create_session,
@@ -321,7 +327,7 @@ def _reset_game_session_text_history_for_turn(entry: dict, route_state: dict | N
     from utils.llm_client import SystemMessage
 
     instructions = str(entry.get("instructions") or getattr(session, "_instructions", "") or "")
-    language = entry.get("user_language") if isinstance(entry, dict) else None
+    language = _entry_prompt_locale(entry)
     history = [SystemMessage(content=instructions)] if instructions else []
     history.extend(_build_game_recent_history_messages(route_state, language))
     session._instructions = instructions
@@ -741,7 +747,7 @@ async def _run_game_chat(
                     event,
                     route_state,
                     lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
-                    language=str(entry.get("user_language") or ""),
+                    language=_entry_prompt_locale(entry),
                 )
                 if anger_pressure_cap:
                     event = dict(event)
@@ -754,7 +760,7 @@ async def _run_game_chat(
                         event,
                         route_state,
                         lanlan_prompt=str(entry.get("lanlan_prompt") or ""),
-                        language=str(entry.get("user_language") or ""),
+                        language=_entry_prompt_locale(entry),
                     )
                     if anger_pressure_cap:
                         event = dict(event)
@@ -768,7 +774,7 @@ async def _run_game_chat(
                 event_payload = _json.dumps(llm_visible_event, ensure_ascii=False)
             else:
                 event_payload = str(llm_visible_event)
-            event_text = get_game_chat_event_user_prompt(entry.get("user_language")).format(event=event_payload)
+            event_text = get_game_chat_event_user_prompt(_entry_prompt_locale(entry)).format(event=event_payload)
 
             llm_started_at = time.perf_counter()
             try:
@@ -950,7 +956,11 @@ def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str)
 async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -> Dict[str, Any]:
     route_state = _find_game_route_state_for_session("soccer", str(data.get("session_id") or ""), lanlan_name)
     char_info = _get_game_route_summary_llm_info(lanlan_name)
-    language = _absorb_request_language(data, lanlan_name) or char_info.get("user_language")
+    # 全码：短码会把 zh-TW 塌成 zh，让 soccer prompt 的繁体模板变成够不到的死数据
+    # （#2500 第 2 步）。``_resolve_game_prompt_locale`` 是 ``_absorb_request_language``
+    # 那条优先级链的全码孪生——请求体 > mgr.user_language > 全局缓存，并且同样在请求体
+    # 带 i18n 真值时回写 mgr.user_language。
+    language = _resolve_game_prompt_locale(lanlan_name, data) or char_info.get("user_language_full")
     stage = data.get("stage")
     prompt_type = str(data.get("promptType") or "surrender").strip()
 
@@ -1041,7 +1051,7 @@ async def game_chat(game_type: str, request: Request):
     event = data.get('event', {})
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     # 把请求体里的 i18n 真值同步进 mgr.user_language，让本次 game_chat → _run_game_chat
-    # → _get_character_info 链上 _resolve_game_prompt_language 拿到的 user_language
+    # → _get_character_info 链上 _resolve_game_prompt_locale 拿到的 user_language_full
     # 与前端 i18n 保持一致，而不是被早期 start_session 覆盖回去的全局缓存值。
     _absorb_request_language(data, lanlan_name)
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
@@ -2376,7 +2386,9 @@ async def game_realtime_context(game_type: str, request: Request):
 
     # 直接把 data 传进去，让请求体里的 i18n_language 走第一层优先级（兼带回写
     # mgr.user_language），与其他 soccer 端点的 _absorb_request_language 调用同形。
-    language = _resolve_game_prompt_language(lanlan_name, data=data)
+    # 取全码而非短码：下游 get_compact_realtime_context_texts 走 minigame 的
+    # locale 表，短码会把繁体塌成 zh（issue #2500 第 2 步）。
+    language = _resolve_game_prompt_locale(lanlan_name, data)
     text = _compact_realtime_context_text(game_type, data, language)
     session_id = str((data.get("state") or {}).get("sessionId") or data.get("session_id") or "")
     _log_game_debug_material(
@@ -2696,13 +2708,23 @@ async def game_quick_lines(game_type: str, request: Request):
         except Exception:
             current_name = ""
         requested_name = _resolve_lanlan_name(data.get("lanlan_name") or current_name)
-        # quick-lines 是 soccer 流程里第一个 LLM 端点：接住 _absorb_request_language
-        # 的返回值，避免在 SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
-        # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。
-        request_language = _absorb_request_language(data, requested_name)
-        request_language_full = _extract_request_language_full(data) if _is_badminton_game_type(game_type) else None
+        # quick-lines 是 soccer 流程里第一个 LLM 端点：请求体里的语言要直接用，而不是
+        # 只信 char_info —— SessionManager 还没 ready / mgr 拿不到的窗口下，char_info 的
+        # user_language 仍 stale 在全局缓存的旧值（首批 quick lines 落英文）。这里调
+        # _absorb_request_language 只为它的回写副作用（把真值同步进 mgr.user_language）；
+        # 本次要用的值由下面的 _extract_request_language_full 从同一个请求体取，取全码。
+        _absorb_request_language(data, requested_name)
+        # 全码，且不再只给 badminton 算：soccer 的 quick-lines 表自 #2706 起也有
+        # zh-TW 行，短码会把它塌掉。这个门原本无害，是因为 soccer 侧的 normalizer
+        # 当时本来就塌繁体；#2500 第 2 步把它翻成保留字形之后，这个门就成了繁中
+        # 用户开局第一批台词落简体的唯一原因。
+        request_language_full = _extract_request_language_full(data)
         char_info = _get_character_info(requested_name)
-        language = request_language_full or request_language or char_info.get("user_language")
+        language = (
+            request_language_full
+            or char_info.get("user_language_full")
+            or char_info.get("user_language")
+        )
         fallback_language = language
         cache_key = ""
         if _is_badminton_game_type(game_type):

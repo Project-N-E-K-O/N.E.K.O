@@ -1295,6 +1295,11 @@
         api.updateSettingsWindow(SubtitleShared.getSettings());
     }
 
+    function shouldSyncExternalSettingsWindow(detail) {
+        var source = detail && detail.source ? detail.source : '';
+        return source !== 'subtitle-window-sync' && source !== 'subtitle-storage-sync';
+    }
+
     function hasExternalSettingsBridge() {
         var api = window.nekoSubtitle;
         return !!(api &&
@@ -1806,7 +1811,6 @@
                 persist: false,
                 source: 'subtitle-window-sync'
             });
-            syncExternalSettingsWindow();
         }
 
         if (subtitleWindowController &&
@@ -1842,7 +1846,9 @@
                 if (!panelStateOnly || !hasExternalSettingsBridge()) {
                     resizeWindowToTranscript();
                 }
-                syncExternalSettingsWindow();
+                if (shouldSyncExternalSettingsWindow(detail)) {
+                    syncExternalSettingsWindow();
+                }
                 updateNativeInteractionPassthrough();
             }
         };

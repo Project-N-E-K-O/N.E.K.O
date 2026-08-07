@@ -14,9 +14,6 @@ from .group_permission import GroupPermissionManager
 class QQSettingsService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
-        # trust 演化的唯一写者锁：不同群/私聊会话可能同时结算同一个 QQ，
-        # 所有 read-modify-persist 必须在这里串行，不能依赖 session lock。
-        self._speaker_trust_lock = asyncio.Lock()
 
     def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
         """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理
@@ -176,6 +173,8 @@ class QQSettingsService:
         participant_markers_created: list[
             tuple[dict[str, Any], int]
         ] | None = None,
+        identity_probe_before: bool | None = None,
+        identity_probe_after: bool | None = None,
         deferred_opt_ins: dict[str, bool] | None = None,
     ) -> bool:
         # 取消路径也要能发布：写盘被 shield 保护，取消 await 不取消它。
@@ -194,6 +193,8 @@ class QQSettingsService:
             participant_memory_before=participant_memory_before,
             participant_memory_after=participant_memory_after,
             participant_markers_created=participant_markers_created,
+            identity_probe_before=identity_probe_before,
+            identity_probe_after=identity_probe_after,
         )
         # 写盘跑成独立 task：config_store.save 内部是 to_thread 的原子写，
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
@@ -324,15 +325,6 @@ class QQSettingsService:
             self._consent_lock = lock
         return lock
 
-    @property
-    def _speaker_trust_write_lock(self) -> asyncio.Lock:
-        """Return the global trust/settings writer lock, creating it lazily."""
-        lock = getattr(self, "_speaker_trust_lock", None)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._speaker_trust_lock = lock
-        return lock
-
     def _rollback_unpersisted_memory_toggles(
         self, persisted: bool, *,
         group_memory_before: bool, group_memory_after: bool,
@@ -344,6 +336,8 @@ class QQSettingsService:
         participant_markers_created: list[
             tuple[dict[str, Any], int]
         ] | None = None,
+        identity_probe_before: bool | None = None,
+        identity_probe_after: bool | None = None,
     ) -> None:
         """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
         按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
@@ -367,6 +361,22 @@ class QQSettingsService:
                     "WARNING",
                     "跨群上下文开关变更未能写盘，已回滚运行时策略",
                 )
+        if (
+            identity_probe_before is not None
+            and identity_probe_after is not None
+            and identity_probe_before != identity_probe_after
+        ):
+            # 只有 ON→OFF 方向能走到这里（OFF→ON 被延迟发布扣着，写盘失败
+            # 时根本没发布过）。磁盘还写着 ON，运行时若停在 OFF，下次重启
+            # 这个开关会自己"变回打开"——一个悄悄取消了自己的关闭动作。
+            # 恢复运行时值让两边一致，失败本身由 persisted=False 报给用户。
+            self.plugin._qq_settings["qq_open_identity_probe_enabled"] = (
+                identity_probe_before
+            )
+            self.plugin._emit_log(
+                "WARNING",
+                "ID 记录开关的变更未能写盘，已回滚运行时状态",
+            )
         if (
             participant_memory_before is not None
             and participant_memory_after is not None
@@ -581,19 +591,17 @@ class QQSettingsService:
         开关自己弹回去），而运行时要等写盘成功、由调用方显式发布。save()
         会返回规范化后的新 dict 并顶替 _qq_settings——发布之前得把这些键
         按旧值压回去，不然"延迟"会被这次顶替悄悄抵消。"""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                return await self._persist_business_config_locked(overlay)
+        async with self._consent_transaction_lock:
+            return await self._persist_business_config_locked(overlay)
 
     async def mutate_business_config(
         self, mutation: Callable[[dict[str, Any]], bool],
     ) -> bool:
-        """Run a direct settings read-modify-write under both writer locks."""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                if not mutation(self.plugin._qq_settings):
-                    return True
-                return await self._persist_business_config_locked()
+        """Run a direct settings read-modify-write under the writer lock."""
+        async with self._consent_transaction_lock:
+            if not mutation(self.plugin._qq_settings):
+                return True
+            return await self._persist_business_config_locked()
 
     async def _persist_business_config_locked(
         self,
@@ -611,31 +619,17 @@ class QQSettingsService:
             }
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
-            live_trust_profiles = (
-                self.plugin.permission_mgr.speaker_trust_profiles()
-                if self.plugin.permission_mgr else {}
-            )
-            self.plugin._qq_settings["speaker_trust_profiles"] = live_trust_profiles
-            staged_trust_profiles = getattr(
-                self, "_staged_speaker_trust_profiles", None,
-            )
             pre_publish = {
                 key: bool(self.plugin._qq_settings.get(key, False))
                 for key in (overlay or {})
             }
             payload = dict(self.plugin._qq_settings)
-            if isinstance(staged_trust_profiles, dict):
-                payload["speaker_trust_profiles"] = staged_trust_profiles
             if preserve_published_permissions:
                 payload.update(published_permissions)
             payload.update(overlay or {})
             saved = await self.plugin.config_store.save(payload)
             for key, value in pre_publish.items():
                 saved[key] = value
-            if isinstance(staged_trust_profiles, dict):
-                # The durable writer may publish the staged profile only
-                # after save succeeds; readers keep seeing the live snapshot.
-                saved["speaker_trust_profiles"] = live_trust_profiles
             if preserve_published_permissions:
                 saved.update(published_permissions)
             self.plugin._qq_settings = saved
@@ -688,108 +682,186 @@ class QQSettingsService:
     def rebuild_permission_managers(self, config: dict[str, Any]) -> None:
         self.plugin.permission_mgr = PermissionManager(
             config.get("trusted_users", []),
-            config.get("speaker_trust_profiles", {}),
         )
         self.plugin.group_permission_mgr = GroupPermissionManager(config.get("trusted_groups", []))
         self.plugin._refresh_admin_qq()
 
     @asynccontextmanager
     async def permission_manager_rebuild_guard(self):
-        """Serialize reloads with the global trust read-modify-write path."""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                yield
+        """Serialize reloads with the settings writer path.
 
-    async def apply_speaker_trust_update(
-        self,
-        *,
-        sender_id: str,
-        message_count: int,
-        activity_event_id: str,
-        trust_events: list[dict] | None = None,
-    ) -> bool:
-        """Single durable writer for global per-QQ trust evolution."""
-        async with self._speaker_trust_write_lock:
-            # Share the full settings transaction lock as well: a dashboard
-            # save writes the same config file and could otherwise publish a
-            # stale snapshot over this trust update.
-            async with self._consent_transaction_lock:
-                # Dashboard reloads replace the manager object. Resolve it
-                # only after both writer locks so a queued update cannot
-                # mutate a detached instance and then report success.
-                manager = self.plugin.permission_mgr
-                if manager is None:
-                    return False
-                before = manager.speaker_trust_profiles()
-                staged_manager = PermissionManager(
-                    speaker_trust_profiles=before,
-                )
-                changed = staged_manager.record_speaker_activity(
-                    sender_id, message_count, activity_event_id,
-                )
-                changed = (
-                    bool(staged_manager.apply_speaker_trust_events(
-                        trust_events or [],
-                    ))
-                    or changed
-                )
-                if not changed:
-                    return True
-                after = staged_manager.speaker_trust_profiles()
-                self._staged_speaker_trust_profiles = after
-                save_task = asyncio.ensure_future(
-                    self._persist_business_config_locked(
-                        refresh_backlog_store=False,
-                        preserve_published_permissions=True,
-                    )
-                )
-                try:
-                    persisted = await asyncio.shield(save_task)
-                except asyncio.CancelledError as cancelled:
-                    try:
-                        while not save_task.done():
-                            try:
-                                await asyncio.shield(save_task)
-                            except asyncio.CancelledError:
-                                # A second cancellation must not cancel the
-                                # in-flight settings write. Keep both writer
-                                # locks until the worker publishes an outcome.
-                                continue
-                        persisted = save_task.result()
-                    except asyncio.CancelledError:
-                        persisted = False
-                    except Exception as exc:
-                        self.plugin.logger.error(
-                            f"取消期间的 speaker trust 写盘失败: {exc}"
+        Only ONE lock now. The trust pool moved to memory_server, so the
+        dedicated ``_speaker_trust_write_lock`` — and with it the
+        ``ensure_future`` + ``shield`` + second-cancellation loop +
+        before/after rollback that existed solely to hold a lock across an
+        await — is gone. The server-side critical section runs entirely inside
+        one ``asyncio.to_thread``, which cannot be cancelled once handed off.
+        """
+        async with self._consent_transaction_lock:
+            yield
+
+    #: Backoff for the legacy trust push, then a fixed 1800s.
+    _MIGRATION_BACKOFF = (0, 5, 30, 120, 600)
+    #: Ledger identity. The server's per-account sentinel is keyed by
+    #: ``(source, account_id)``, so this string must never change casually —
+    #: changing it re-imports every account additively.
+    LEGACY_TRUST_SOURCE = (
+        "qq_auto_reply.business_config.speaker_trust_profiles.v1"
+    )
+
+    async def push_legacy_speaker_trust_forever(self) -> None:
+        """Push the frozen legacy trust ledger to memory_server, then open the gate.
+
+        RUNS ON EVERY STARTUP, FOREVER — this is not a one-shot migration, and
+        that is the point. The original design put a "migration done" marker in
+        the plugin's own config and the "already imported" marker in the pool
+        file, with no atomic relationship between them: lose the pool once and
+        the plugin sees its own marker, returns immediately, and the new pool's
+        barrier stays pending forever — every user's trust silently zero, with
+        no path to self-heal.
+
+        After the flip the plugin no longer evolves this snapshot, so each
+        startup merely re-sends the same frozen data; the server's per-account
+        sentinel matches and skips it without writing. A lost or corrupted pool
+        therefore self-heals to the migration-time state on the next start.
+
+        An empty ``profiles`` still sends ONE chunk with ``final=true``: a fresh
+        install has nothing to import but its barrier must still be opened, or
+        trust never turns on at all.
+        """
+        delays = list(self._MIGRATION_BACKOFF)
+        raw_profiles = (
+            self.plugin._qq_settings.get("speaker_trust_profiles") or {}
+        )
+        if not isinstance(raw_profiles, dict):
+            raw_profiles = {}
+        items = list(raw_profiles.items())
+        from config import SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX
+
+        chunks = [
+            dict(items[index:index + SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX])
+            for index in range(
+                0, len(items), SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX,
+            )
+        ] or [{}]
+        while True:
+            try:
+                for index, chunk in enumerate(chunks):
+                    result = (
+                        await self.plugin.memory_bridge
+                        .post_legacy_speaker_trust(
+                            platform="qq",
+                            source=self.LEGACY_TRUST_SOURCE,
+                            profiles=chunk,
+                            chunk_index=index,
+                            final=(index == len(chunks) - 1),
+                            timeout=30.0,
                         )
-                        persisted = False
-                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
-                    if persisted:
-                        manager.replace_speaker_trust_profiles(after)
-                        if isinstance(runtime_settings, dict):
-                            runtime_settings['speaker_trust_profiles'] = after
-                    elif isinstance(runtime_settings, dict):
-                        runtime_settings['speaker_trust_profiles'] = before
-                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
-                    cancelled.speaker_trust_persisted = bool(persisted)
-                    raise
-                except Exception:
-                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
-                    raise
-                self.__dict__.pop('_staged_speaker_trust_profiles', None)
-                if persisted:
-                    manager.replace_speaker_trust_profiles(after)
-                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
-                    if isinstance(runtime_settings, dict):
-                        runtime_settings['speaker_trust_profiles'] = after
-                    return True
-                runtime_settings = getattr(self.plugin, '_qq_settings', None)
-                if isinstance(runtime_settings, dict):
-                    runtime_settings['speaker_trust_profiles'] = before
-                self.plugin.logger.warning(
-                    f"speaker trust 写盘失败，已回滚 sender={sender_id}"
+                    )
+                    if result.get("skipped"):
+                        self.plugin.logger.warning(
+                            f"speaker trust 迁移跳过 "
+                            f"{len(result['skipped'])} 个非法 key: "
+                            f"{result['skipped'][:5]}"
+                        )
+                    if result.get("persisted") is False:
+                        raise RuntimeError("legacy trust import not persisted")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.plugin.logger.debug(
+                    f"speaker trust 迁移待重试: {exc}"
                 )
-                return False
+            else:
+                trust_ready = getattr(self.plugin, "trust_ready", None)
+                if trust_ready is not None:
+                    trust_ready.set()
+                self.plugin.logger.info(
+                    "speaker trust 已迁移到服务端，trust 上报已启用"
+                )
+                return
+            await asyncio.sleep(delays.pop(0) if delays else 1800)
+
+    #: 每个连接模式下标识符的**协议语义**：``(通道, actor_scope,
+    #: conversation_scope)``。
+    #:
+    #: 这是一张**查表**，不是推断的结果——两行的依据都是各自协议的公开契约，
+    #: 在收到第一条消息之前就已知：
+    #:
+    #: - ``napcat`` 走 OneBot，``user_id`` 是真实 QQ 号、``group_id`` 是真实群
+    #:   号，跨群跨会话都是同一个值 ⇒ 两轴都 ``global``；
+    #: - ``open_platform`` 走官方 v2：同一个人在每个群是一个不同的
+    #:   ``member_openid``（腾讯「唯一身份机制」原文），私聊里又换成
+    #:   ``user_openid`` ⇒ actor 轴 ``per_conversation``；而 ``group_openid``
+    #:   是「每群一个」而不是「每群每人一个」，对本 app 稳定 ⇒ 会话轴仍
+    #:   ``global``。这个非对称正是设计文档 §2.15.4.3 说「群侧可以救、人侧不
+    #:   行」的原因。
+    IDENTITY_SCOPE_BY_MODE: dict[str, tuple[str, str, str]] = {
+        "napcat": ("napcat", "global", "global"),
+        "open_platform": ("open", "per_conversation", "global"),
+    }
+    #: 断言来源。写协议名而不是 "code"：读的人要能一眼看出这条记录的依据是
+    #: 厂商文档，而不是本机跑出来的观测。
+    IDENTITY_SCOPE_ASSERTED_BY: dict[str, str] = {
+        "napcat": "protocol:onebot-v11",
+        "open_platform": "protocol:qq-open-v2",
+    }
+    #: 与 legacy trust push 同族的退避，理由也相同：memory_server 可能还没起。
+    _IDENTITY_SCOPE_BACKOFF = (0, 5, 30, 120, 600)
+
+    async def declare_identity_scope_forever(self, mode: str) -> None:
+        """把**指定**连接模式的标识符语义登记到服务端，失败就退避重试。
+
+        每次连上都跑：登记的是「现在跑着的这个通道的 wire format」，而模式
+        是可以改的。服务端对同一组值幂等，重复声明不写盘。
+
+        ``mode`` 是**传进来的**而不是在这里读配置：调用方（连接建立那一刻）
+        才知道实际连上的是哪个通道，而这个协程可能在退避里活很久，期间另
+        一个页签完全可以把配置改掉。重读配置会把一个还没生效的模式登记成
+        既成事实。
+
+        **不看任何消息。**取值只来自 ``IDENTITY_SCOPE_BY_MODE`` 这张协议表；
+        「观察到两个 id 不一样所以是 per_conversation」那条路是被硬约束否决
+        的，不要在这里补上。
+        """
+        entry = self.IDENTITY_SCOPE_BY_MODE.get(mode)
+        if entry is None:
+            # 未知模式不猜。留 unknown 比写一个编出来的值诚实。
+            return
+        channel, actor_scope, conversation_scope = entry
+        delays = list(self._IDENTITY_SCOPE_BACKOFF)
+        while True:
+            try:
+                result = await self.plugin.memory_bridge.declare_identity_scope(
+                    channel=channel,
+                    actor_scope=actor_scope,
+                    conversation_scope=conversation_scope,
+                    asserted_by=self.IDENTITY_SCOPE_ASSERTED_BY[mode],
+                )
+                if result.get("persisted") is False:
+                    # 只进了内存没落盘 ⇒ 下次重启就没了，而 dashboard 会照着
+                    # 它显示降级提示。当作失败重试。
+                    raise RuntimeError("identity scope not persisted")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.plugin.logger.debug(f"身份作用域登记待重试: {exc}")
+            else:
+                return
+            await asyncio.sleep(delays.pop(0) if delays else 1800)
+
+    def ensure_identity_scope_declared(self, mode: str) -> None:
+        """（重新）启动登记任务。只在连接真正建立之后调用。
+
+        ``mode`` 由调用方在**连上的那一刻**定下来并原样带进协程，见
+        ``declare_identity_scope_forever``。
+        """
+        task = getattr(self.plugin, "_identity_scope_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self.plugin._identity_scope_task = asyncio.create_task(
+            self.declare_identity_scope_forever(mode)
+        )
 
     async def save_settings(self, **kwargs: Any) -> dict[str, Any]:
         """Serialize the whole settings transaction.
@@ -799,9 +871,8 @@ class QQSettingsService:
         url, token, reply mode, probabilities) are silently dropped when
         the winner replaces the dict, and the consent rollback cannot
         reason about a `before` value another request already changed."""
-        async with self._speaker_trust_write_lock:
-            async with self._consent_transaction_lock:
-                return await self._save_settings_locked(**kwargs)
+        async with self._consent_transaction_lock:
+            return await self._save_settings_locked(**kwargs)
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
         onebot_url = kwargs.get("onebot_url")
@@ -830,10 +901,20 @@ class QQSettingsService:
         if qq_connection_mode is not None:
             self.plugin._qq_settings["qq_connection_mode"] = str(qq_connection_mode or "napcat").strip()
             self.plugin._emit_log("INFO", f"连接模式已切换: {self.plugin._qq_settings['qq_connection_mode']}")
+            # 这里**不**登记新模式：保存只改配置，旧连接还在跑（本方法的响应
+            # 自己会报 reconnect_required）。登记发生在连接真正建立之后，见
+            # runtime_ops_service 的 start_auto_reply——否则在那段可能无限长
+            # 的间隔里，池和 dashboard 描述的是一个还没生效的通道。
         if qq_open_app_id is not None:
             self.plugin._qq_settings["qq_open_app_id"] = str(qq_open_app_id or "").strip()
         if qq_open_client_secret is not None:
             self.plugin._qq_settings["qq_open_client_secret"] = str(qq_open_client_secret or "").strip()
+        # qq_open_identity_probe_enabled 不在这里就地写：它和记忆开关同族，
+        # 是「一打开就开始把别人的 ID 落进持久日志」的采集授权，必须走下面
+        # 那套延迟发布（开启只在写盘成功后才对运行时可见）。
+        local_stt_url = kwargs.get("local_stt_url")
+        if local_stt_url is not None:
+            self.plugin._qq_settings["local_stt_url"] = str(local_stt_url or "").strip()
         if napcat_directory is not None:
             self.plugin._qq_settings["napcat_directory"] = str(napcat_directory or "").strip()
         if show_napcat_window is not None:
@@ -871,12 +952,54 @@ class QQSettingsService:
         if sticker_cooldown_messages is not None:
             self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
             self.plugin._sticker_cooldown_messages = max(0, int(sticker_cooldown_messages))
+        group_attention_decay_per_second = kwargs.get("group_attention_decay_per_second")
+        if group_attention_decay_per_second is not None:
+            self.plugin._qq_settings["group_attention_decay_per_second"] = max(0.001, float(group_attention_decay_per_second))
+        group_attention_message_recovery = kwargs.get("group_attention_message_recovery")
+        if group_attention_message_recovery is not None:
+            self.plugin._qq_settings["group_attention_message_recovery"] = max(0.0, float(group_attention_message_recovery))
+        group_attention_reply_penalty = kwargs.get("group_attention_reply_penalty")
+        if group_attention_reply_penalty is not None:
+            self.plugin._qq_settings["group_attention_reply_penalty"] = max(0.0, float(group_attention_reply_penalty))
+        group_attention_keyword_boost_scale = kwargs.get("group_attention_keyword_boost_scale")
+        if group_attention_keyword_boost_scale is not None:
+            self.plugin._qq_settings["group_attention_keyword_boost_scale"] = max(0.1, float(group_attention_keyword_boost_scale))
+        group_attention_focus_lock_seconds = kwargs.get("group_attention_focus_lock_seconds")
+        if group_attention_focus_lock_seconds is not None:
+            self.plugin._qq_settings["group_attention_focus_lock_seconds"] = max(0, int(group_attention_focus_lock_seconds))
+        group_attention_max_score = kwargs.get("group_attention_max_score")
+        if group_attention_max_score is not None:
+            self.plugin._qq_settings["group_attention_max_score"] = max(1.0, float(group_attention_max_score))
+        group_attention_focus_threshold = kwargs.get("group_attention_focus_threshold")
+        if group_attention_focus_threshold is not None:
+            self.plugin._qq_settings["group_attention_focus_threshold"] = max(0.1, float(group_attention_focus_threshold))
+        group_attention_min_threshold = kwargs.get("group_attention_min_threshold")
+        if group_attention_min_threshold is not None:
+            self.plugin._qq_settings["group_attention_min_threshold"] = max(0.0, float(group_attention_min_threshold))
+        group_attention_message_gain = kwargs.get("group_attention_message_gain")
+        if group_attention_message_gain is not None:
+            self.plugin._qq_settings["group_attention_message_gain"] = max(0.0, float(group_attention_message_gain))
+        group_attention_focus_cooldown_seconds = kwargs.get("group_attention_focus_cooldown_seconds")
+        if group_attention_focus_cooldown_seconds is not None:
+            self.plugin._qq_settings["group_attention_focus_cooldown_seconds"] = max(10, int(group_attention_focus_cooldown_seconds))
+        group_attention_focus_rise_seconds = kwargs.get("group_attention_focus_rise_seconds")
+        if group_attention_focus_rise_seconds is not None:
+            self.plugin._qq_settings["group_attention_focus_rise_seconds"] = max(0, int(group_attention_focus_rise_seconds))
+        icebreaker_cold_threshold = kwargs.get("icebreaker_cold_threshold")
+        if icebreaker_cold_threshold is not None:
+            self.plugin._qq_settings["icebreaker_cold_threshold"] = max(0, int(icebreaker_cold_threshold))
         retroactive_review_max_messages = kwargs.get("retroactive_review_max_messages")
         if retroactive_review_max_messages is not None:
             self.plugin._qq_settings["retroactive_review_max_messages"] = max(1, int(retroactive_review_max_messages))
         retroactive_review_max_reply = kwargs.get("retroactive_review_max_reply")
         if retroactive_review_max_reply is not None:
             self.plugin._qq_settings["retroactive_review_max_reply"] = max(1, int(retroactive_review_max_reply))
+        enable_group_attention = kwargs.get("enable_group_attention")
+        if enable_group_attention is not None:
+            self.plugin._qq_settings["enable_group_attention"] = bool(enable_group_attention)
+        locale = kwargs.get("locale")
+        if locale is not None:
+            self.plugin._qq_settings["locale"] = str(locale or "").strip()
         group_memory_before = bool(
             self.plugin._qq_settings.get("group_memory_enabled", False)
         )
@@ -891,6 +1014,9 @@ class QQSettingsService:
         cross_group_before = bool(
             self.plugin._qq_settings.get("allow_cross_group_context", False)
         )
+        identity_probe_before = bool(
+            self.plugin._qq_settings.get("qq_open_identity_probe_enabled", False)
+        )
         # 授权方向不对称：关掉立刻生效（多关一会儿只是保守），打开必须等
         # 写盘成功——消息处理不取设置事务锁，写盘期间到达的轮次会照新开关
         # 读 scoped/跨群记忆并把回复**发出去**，而回滚只能清本地状态，收不
@@ -901,6 +1027,10 @@ class QQSettingsService:
             "group_member_memory_enabled",
             "private_participant_memory_enabled",
             "allow_cross_group_context",
+            # 取证开关同属采集授权：打开后每条消息都会把发送者 ID 落进
+            # **持久**日志文件，而写盘失败的授权是从未成立的授权——落下的
+            # 行不会跟着回滚。关掉照旧立刻生效（多关一会儿只是保守）。
+            "qq_open_identity_probe_enabled",
         ):
             value = kwargs.get(key)
             if value is None:
@@ -1011,6 +1141,12 @@ class QQSettingsService:
             participant_memory_before=participant_memory_before,
             participant_memory_after=participant_memory_after,
             participant_markers_created=participant_markers_created,
+            identity_probe_before=identity_probe_before,
+            identity_probe_after=bool(
+                self.plugin._qq_settings.get(
+                    "qq_open_identity_probe_enabled", False,
+                )
+            ),
         )
         if success and participant_settle_needed:
             # Do not race a failed-write rollback against this task: rollback

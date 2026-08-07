@@ -435,7 +435,9 @@ def _build_game_context_organizer_payload(
 async def _run_game_context_organizer_ai(state: dict, snapshot: list[dict]) -> dict:
     """Summarize older in-game context and extract observable signals."""
     char_info = _get_game_route_summary_llm_info(str(state.get("lanlan_name") or ""))
-    language = char_info.get("user_language")
+    # 全码：organizer 的 system/user prompt、formatter labels 和 dialog memory line
+    # 都走 minigame 的 locale 表，短码会把繁体塌成 zh（issue #2500 第 2 步）。
+    language = char_info.get("user_language_full") or char_info.get("user_language")
     payload = _build_game_context_organizer_payload(state, snapshot, language)
     system_prompt = get_game_context_organizer_system_prompt(language)
     user_prompt = get_game_context_organizer_user_prompt(language).format(

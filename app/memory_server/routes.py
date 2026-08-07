@@ -120,6 +120,42 @@ async def _resolve_foreground_memory_language(
 _SCOPED_LOCALE_LOOKUP_LIMIT = 8
 
 
+def _locale_lookup_subjects(subjects) -> list:
+    """Map the caller's subjects onto the canonical primaries to look up.
+
+    Accepts either wire models or domain subjects — this resolver runs on the
+    outer wrapper, i.e. before ``to_domain``. Coercion is local and does not
+    change the resolver's signature. A malformed descriptor is passed through
+    untouched: locale lookup must never be the thing that rejects a request.
+    """
+    from memory.scopes import MemoryScopeError, coerce_subject
+    from memory.subject_identity import canonical_subject
+    from memory import trust_store
+
+    if not subjects:
+        return []
+    snap = trust_store.trust_snapshot()
+    resolved: list = []
+    seen: set[tuple[str, str]] = set()
+    for raw in subjects:
+        try:
+            domain = coerce_subject(
+                raw.model_dump() if hasattr(raw, "model_dump") else raw
+            )
+        except (MemoryScopeError, ValueError, TypeError):
+            resolved.append(raw)
+            continue
+        if domain is None:
+            resolved.append(raw)
+            continue
+        primary = canonical_subject(domain, snap)
+        marker = (primary.key, primary.scope)
+        if marker not in seen:
+            seen.add(marker)
+            resolved.append(primary)
+    return resolved
+
+
 async def _resolve_scoped_memory_language(
     lanlan_name: str,
     subjects,
@@ -140,7 +176,21 @@ async def _resolve_scoped_memory_language(
     # schedule one thread-pool lookup per supplied item on its way to a 422.
     # Bounding here (rather than requiring every caller to validate first)
     # keeps the work bound a property of the resolver itself.
-    for subject in (subjects or [])[:_SCOPED_LOCALE_LOOKUP_LIMIT]:
+    # L-1/L-2: resolve through the SAME canonical mapping the write side uses,
+    # and feed only one subject per participant. Without the canonical step a
+    # routed account reserves under S_canonical and reads under S_A, misses
+    # forever and silently falls back to the character locale. Feeding the
+    # expansion instead of the primaries would multiply this bounded
+    # thread-pool budget by the number of accounts per person.
+    # Slice BEFORE canonicalizing, not after: this resolver runs ahead of the
+    # endpoint's own 1..8 rejection, and the comment above declares the bound to
+    # be a property of the resolver itself. Canonicalizing the full list first
+    # would do unbounded per-item work on input that is on its way to a 422.
+    # For a valid request (<= 8 subjects) the two orders are identical, since
+    # folding can only ever shrink the list.
+    for subject in _locale_lookup_subjects(
+        list(subjects or [])[:_SCOPED_LOCALE_LOOKUP_LIMIT]
+    ):
         descriptor = (
             subject.model_dump()
             if hasattr(subject, "model_dump")
@@ -972,6 +1022,34 @@ class ScopedFactsWriteRequest(BaseModel):
     display_name: str | None = None
 
 
+#: Wire-side anchored pattern. pydantic v2 compiles ``Field(pattern=...)`` with
+#: the Rust regex crate under UNANCHORED SEARCH semantics, so a bare
+#: ``[A-Za-z0-9_.:-]+`` accepts ``'participant:猫娘 A:12:34:56'`` and even values
+#: containing newlines — i.e. it is zero validation. The anchors must be
+#: ``\A...\z`` (LOWERCASE z) or ``^...$``: the Rust crate does not recognise
+#: ``\Z`` and raises ``SchemaError`` at model-definition time. Note that
+#: ``memory/identity.py`` goes through Python's ``re``, where ``\A...\Z`` is
+#: correct — the two layers must NOT share a pattern string.
+_ACTIVITY_EVENT_ID_PATTERN = r"\A[A-Za-z0-9_.:-]+\z"
+_SPEAKER_CHANNEL_PATTERN = r"\A[a-z0-9_]{1,16}\z"
+
+
+class ActivityEvent(BaseModel):
+    """One idempotent per-message activity token.
+
+    Per-message rather than per-batch: the old batch-level identity changed
+    whenever a retry grew the batch, so already-acknowledged prefixes got
+    counted again — which is the entire reason the plugin grew a three-layer
+    ``cancelled.speaker_trust_persisted`` protocol. Deduplicating by id on the
+    server makes an amplified retry harmless by construction.
+    """
+
+    id: str = Field(
+        min_length=8, max_length=96, pattern=_ACTIVITY_EVENT_ID_PATTERN,
+    )
+    count: int = Field(default=1, ge=1, le=1000)
+
+
 class ScopedHistorySegment(BaseModel):
     """One single-speaker slice of a batched /scoped_history request."""
     input_history: str
@@ -980,10 +1058,25 @@ class ScopedHistorySegment(BaseModel):
     # and a segment IS one speaker's bucket — an unlabeled segment would
     # render anonymous turns the model cannot attribute.
     speaker_label: str
-    # 0..1 initial trust derived by the caller from its permission tier.
-    # Stage one of the speaker-trust mechanism: stored on each fact,
-    # consumed by nothing yet.
+    # Legacy caller-computed trust. Kept only so a not-yet-flipped plugin build
+    # keeps working; mutually exclusive with the server-derived source below.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Server-derived trust source, exactly one of these two:
+    #   * speaker_tier — platforms with a four-rung permission ladder. A Literal
+    #     so a mistyped "Admin" 422s instead of silently landing on a default.
+    #   * speaker_base_trust — platforms without a ladder (danmaku guard_level,
+    #     medal level). Clamped server-side to SPEAKER_TRUST_MAX_REPORTED_BASE.
+    speaker_tier: Literal["admin", "trusted", "normal", "none"] | None = None
+    speaker_base_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Per-message idempotent activity tokens for this speaker.
+    speaker_activity_events: list[ActivityEvent] | None = None
+    # Observed transport ("napcat" / "open"). An OBSERVED ATTRIBUTE, never a
+    # key: it takes part in no ledger partitioning, no bind/merge predicate and
+    # no permission decision. Its only jobs are collision detection and ops
+    # diagnostics.
+    speaker_channel: str | None = Field(
+        default=None, pattern=_SPEAKER_CHANNEL_PATTERN,
+    )
     # Stable internal identity. Unlike speaker_label this never enters a prompt.
     speaker_id: str | None = None
     # Request-side authorization bit. It is never rendered or copied from LLM
@@ -1018,6 +1111,13 @@ class ScopedHistoryRequest(BaseModel):
     # Only meaningful alongside speaker_label — without a speaker there is
     # no one to trust, so the handler drops it when the label is absent.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Server-derived trust source (see ScopedHistorySegment for the contract).
+    speaker_tier: Literal["admin", "trusted", "normal", "none"] | None = None
+    speaker_base_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    speaker_activity_events: list[ActivityEvent] | None = None
+    speaker_channel: str | None = Field(
+        default=None, pattern=_SPEAKER_CHANNEL_PATTERN,
+    )
     speaker_id: str | None = None
     speaker_is_owner: bool = False
     # Optional display name for the single-subject shape's subject (see
@@ -1031,6 +1131,441 @@ class ScopedHistoryRequest(BaseModel):
     # the group-digest paths keep using it unchanged.
     segments: list[ScopedHistorySegment] | None = None
     language: str | None = None
+
+
+def _resolve_trust_source(
+    source, *, position: str, speaker_id: str | None,
+) -> dict:
+    """Validate one segment's trust source and normalize it. 422 on conflict.
+
+    The legacy caller-computed ``speaker_trust`` channel stays accepted while a
+    not-yet-flipped plugin build may be in the field, and mutual-exclusion 422s
+    make each request self-describing about which protocol it speaks. Removing
+    the legacy field entirely is a separate, release-timed change.
+    """
+    tier = getattr(source, "speaker_tier", None)
+    base = getattr(source, "speaker_base_trust", None)
+    legacy = getattr(source, "speaker_trust", None)
+    channel = getattr(source, "speaker_channel", None)
+    raw_events = getattr(source, "speaker_activity_events", None) or []
+    has_server_source = tier is not None or base is not None
+
+    if tier is not None and base is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{position}speaker_tier and speaker_base_trust are exclusive",
+        )
+    if legacy is not None and has_server_source:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{position}speaker_trust is exclusive with the "
+                f"server-derived trust source"
+            ),
+        )
+    if has_server_source and not speaker_id:
+        # Same rule the label path already states: without a speaker there is
+        # nobody to trust.
+        raise HTTPException(
+            status_code=422,
+            detail=f"{position}trust source requires a valid speaker_id",
+        )
+    if raw_events and not has_server_source:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{position}speaker_activity_events requires a trust source",
+        )
+    if channel is not None and not has_server_source:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{position}speaker_channel requires a trust source",
+        )
+    if (
+        getattr(source, "speaker_is_owner", False)
+        and has_server_source
+        and tier != "admin"
+    ):
+        # Hardening: with the tier on the wire no platform can mint an owner
+        # channel by nickname matching, and the unauthenticated self-reported
+        # base channel can never grant signing power over other speakers.
+        raise HTTPException(
+            status_code=422,
+            detail=f"{position}speaker_is_owner requires the admin tier",
+        )
+    # Repeated ids inside one batch are legitimate (identical text sent twice),
+    # so deduplicate rather than reject.
+    events: list = []
+    seen: set[str] = set()
+    for event in raw_events:
+        if event.id not in seen:
+            seen.add(event.id)
+            events.append(event)
+    return {
+        "tier": tier,
+        "base": base,
+        "legacy": legacy,
+        "channel": channel,
+        "activity_events": tuple(events),
+        "has_server_source": has_server_source,
+    }
+
+
+async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
+    """Rows this account wrote into someone else's pile while routing was on.
+
+    The one remediation signal an operator gets for the irreversible surface:
+    rows written during a binding carry the CANONICAL subject_id and this
+    account's ``speaker_id``, and after an unbind they stay there. There is
+    deliberately no move-back endpoint — moving a row means recomputing its
+    subject-salted hash, which can collapse it into an existing row at the
+    destination. So the operator has to be told a count and decide whether the
+    nuclear option (``scoped_forget``) is warranted.
+
+    Best-effort: returns ``None`` if the scan cannot run. An unbind must never
+    fail because a diagnostic count did.
+    """
+    from memory.identity import account_platform, normalize_account_id
+    from memory.scopes import subject_from_entry
+    from memory.subject_identity import subject_actor
+
+    normalized = normalize_account_id(account_id)
+    if normalized is None or runtime.fact_store is None:
+        return None
+    entity_id = snapshot_before.entity_of(normalized)
+    if entity_id is None:
+        return 0
+    platform = account_platform(normalized)
+    canonical = snapshot_before.canonical_account(entity_id, platform)
+    if not canonical or canonical == normalized:
+        # This account WAS the canonical, so nothing of its was ever routed
+        # away from its own subject.
+        return 0
+    canonical_actor = str(canonical).partition(":")[2]
+    try:
+        character_data = await runtime._config_manager.aload_characters()
+        names = list(character_data.get("猫娘", {}).keys())
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not break unbind
+        logger.warning(f"[Identity] stranded_rows 无法枚举角色: {exc}")
+        return None
+    stranded = 0
+    for name in names:
+        try:
+            # ``aload_facts_full`` = active + archived. Rows routed into the
+            # canonical pile can have aged into ``facts_archive.json`` already,
+            # and counting only the active file would report zero for an
+            # account whose stranded copies all archived — while this count is
+            # the operator's only cue that ``scoped_forget`` is still needed.
+            # The loader already collapses rows present in both files and
+            # degrades to active-only on a corrupt archive.
+            rows = await runtime.fact_store.aload_facts_full(name)
+        except Exception as exc:  # noqa: BLE001 - same
+            logger.warning(f"[Identity] stranded_rows 读取 {name} 失败: {exc}")
+            return None
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            if normalize_account_id(row.get("speaker_id")) != normalized:
+                continue
+            subject = subject_from_entry(row)
+            if subject is None:
+                continue
+            if subject.subject_id.split(":")[0] != platform:
+                continue
+            # Through the DECODING accessor, never a raw segment compare: the
+            # subject constructors percent-encode ``:``, so an actor that
+            # legitimately contains one reads ``a%3Ab`` here while the account
+            # id is ``a:b`` — a raw compare would silently never match and
+            # report zero stranded rows.
+            if subject_actor(subject) == canonical_actor:
+                stranded += 1
+    return stranded
+
+
+def _merge_forget_stats(stats: dict, delta) -> None:
+    """Accumulate one target's forget counters into the running total.
+
+    Numeric counters add; booleans OR (a store either did or did not act);
+    anything else keeps the last non-null value. Never silently replaces a
+    non-zero count with a later zero.
+    """
+    if not isinstance(delta, dict):
+        return
+    for key, value in delta.items():
+        current = stats.get(key)
+        if isinstance(value, bool) or isinstance(current, bool):
+            stats[key] = bool(current) or bool(value)
+        elif isinstance(value, (int, float)) and isinstance(
+            current, (int, float),
+        ):
+            stats[key] = current + value
+        elif value is not None or key not in stats:
+            stats[key] = value
+
+
+def _forget_fanout_targets(subject):
+    """Every subject a forget must erase, in a deterministic total order.
+
+    Fans out to the WHOLE PARTICIPANT (maintainer decision): a participant is
+    (entity × conversation) and is one isolation unit, so it must be one unit on
+    the delete axis too. Erasing only the requested subject would also fail to
+    be a real erase once canonical write routing is active, because the routed
+    rows sit in the canonical account's pile — "left the group, wipe my data"
+    would silently keep a copy.
+
+    NEVER CROSSES A PLATFORM (also a maintainer decision). A conversation id is
+    itself platform-prefixed, so a cross-platform account is structurally never
+    part of this participant and ``expand_subject`` already filters on it. The
+    assertion below makes that a CHECKED property rather than a coincidence, and
+    is the seam where a future opt-in cross-platform sweep would plug in — that
+    sweep is deliberately a separate, explicitly-requested operation, not a side
+    effect of leaving one group.
+
+    Sorted by ``(key, scope)`` so concurrent forgets acquire the per-subject
+    locks in the same order and cannot deadlock; the requested subject is
+    guaranteed present because expansion only ever grows the set.
+    """
+    from memory.subject_identity import expand_subject
+    from memory import trust_store
+
+    expanded = expand_subject(subject, trust_store.trust_snapshot())
+    requested_platform = subject.subject_id.split(":")[0]
+    targets = []
+    for candidate in expanded:
+        if candidate.subject_id.split(":")[0] != requested_platform:
+            logger.warning(
+                "[scoped_forget] 跳过跨平台扇出目标 %s（forget 不跨平台）",
+                candidate.subject_id,
+            )
+            continue
+        targets.append(candidate)
+    if not any(
+        (target.key, target.scope) == (subject.key, subject.scope)
+        for target in targets
+    ):  # pragma: no cover - expansion always contains the requested subject
+        targets.append(subject)
+    return sorted(targets, key=lambda item: (item.key, item.scope))
+
+
+def _fold_request_subjects(wire_subjects):
+    """``wire subjects -> (participant groups, flattened authorization list)``.
+
+    Read-side expansion is never truncated: a participant's marker set is every
+    account of that (entity, conversation), because a "first K" rule would make
+    the set depend on which account the request happened to start from, and
+    filtering is a set-membership test whose cost does not grow with set size
+    anyway. The bound lives at bind time.
+    """
+    from memory.scopes import flatten_groups
+    from memory.subject_identity import fold_participants
+    from memory import trust_store
+
+    domain = [subject.to_domain() for subject in wire_subjects]
+    groups = fold_participants(domain, trust_store.trust_snapshot())
+    return groups, list(flatten_groups(groups))
+
+
+async def _trust_snapshot_for_request():
+    """One pool snapshot per request. A single atomic attribute read."""
+    from memory import trust_store
+
+    return trust_store.trust_snapshot()
+
+
+def _apply_canonical_write_routing(parsed: dict, snap) -> None:
+    """Route this segment's write to the participant's canonical subject.
+
+    READ-ONLY against the snapshot: it resolves the canonical subject and
+    rewrites ``parsed["subject"]``, and seals NOTHING itself. R-CANON-1 lazy
+    sealing lives in ``trust_store._apply_trust_mutations_locked``, inside the
+    pool's critical section, so it shares that handler's single file write.
+
+    A consequence worth stating on a function labelled IRREVERSIBLE SURFACE:
+    ``/scoped_facts`` calls this but carries no trust mutation, so it never
+    seals — it only routes by an ALREADY sealed canonical. That is correct, but
+    it is not what "lazily seals on first write" would lead a reader to expect.
+
+    IRREVERSIBLE SURFACE, stated plainly: rows written while routing is active
+    carry the CANONICAL subject_id and the REAL account's speaker_id. After an
+    unbind those rows stay in somebody else's pile, and there is deliberately no
+    move-back endpoint — moving a row requires recomputing its subject-salted
+    hash, which can collapse it into an existing row at the destination, i.e.
+    exactly the trap being avoided. ``unbind`` reports a ``stranded_rows``
+    count; the nuclear option is ``scoped_forget``.
+    """
+    from memory.subject_identity import canonical_subject
+
+    subject = parsed.get("subject")
+    if subject is None:
+        return
+    routed = canonical_subject(subject, snap)
+    if routed is not subject and (
+        routed.key != subject.key or routed.scope != subject.scope
+    ):
+        parsed["subject"] = routed
+        parsed["canonical_routed"] = True
+
+
+def _stamp_resolved_trust(parsed: dict, snap) -> None:
+    """Resolve this segment's trust from the pool and stamp it, or abstain.
+
+    The key name ``speaker_trust`` is unchanged on purpose: ``FactStore``'s
+    ``_speaker_provenance_of`` / ``extract_facts`` / ``extract_facts_batch``
+    then need no change at all.
+
+    ``None`` means DO NOT WRITE THE KEY. Falling back to a default would stamp
+    a finite value on rows that legitimately carry none today (group digests
+    already go through a shape that omits it), flipping arbitration from
+    abstention to an active vote.
+    """
+    # From the SAME snapshot that routed the subject — one pool read per
+    # request (§4.4), so the stamp stays a pure function of the request-start
+    # state even if a bind/unbind lands mid-request.
+    speaker_id = parsed.get("speaker_id")
+    if speaker_id:
+        entity_id = snap.entity_of(speaker_id)
+        if entity_id:
+            parsed["speaker_entity_id"] = entity_id
+    source = parsed.get("trust_source") or {}
+    if not source.get("has_server_source"):
+        return
+    resolved = snap.resolve_trust(
+        parsed.get("speaker_id"),
+        tier=source.get("tier"),
+        base=source.get("base"),
+    )
+    if resolved is None:
+        # Either the platform's legacy barrier is still pending, or the id is
+        # unusable. Both abstain; only the former is worth reporting.
+        parsed["speaker_trust"] = None
+        from memory.identity import account_platform
+
+        if parsed.get("speaker_id") and snap.barrier_pending(
+            account_platform(parsed["speaker_id"])
+        ):
+            parsed["trust_gated"] = "legacy_import_pending"
+        return
+    parsed["speaker_trust"] = resolved
+
+
+def _trust_mutation_for(parsed: dict) -> "object | None":
+    """Build the pool mutation for one parsed segment, or ``None``."""
+    from memory.trust_store import ActivityEvent as PoolActivityEvent
+    from memory.trust_store import TrustMutation
+
+    speaker_id = parsed.get("speaker_id")
+    trust_source = parsed.get("trust_source") or {}
+    signal_events = tuple(parsed.get("trust_signal_events") or ())
+    activity = tuple(
+        PoolActivityEvent(id=event.id, count=event.count)
+        for event in (parsed.get("trust_activity_events") or ())
+    )
+    if not signal_events and not activity and not trust_source.get("channel"):
+        return None
+    return TrustMutation(
+        speaker_account_id=speaker_id,
+        activity_events=activity,
+        signal_events=signal_events,
+        channel=trust_source.get("channel"),
+    )
+
+
+async def _apply_trust_for_segments(parsed_segments):
+    """Fold the whole batch into the pool with ONE write. Never raises.
+
+    Returns ``(result, outcomes)`` where ``outcomes`` is aligned index-for-index
+    with ``parsed_segments`` so each segment can report its own numbers.
+
+    This is the handler's last durable write and it comes after every FactStore
+    call, which is what keeps the pool lock a leaf: it never overlaps the
+    FactStore lock order. Any failure before this point shows up as "trust did
+    not move at all".
+    """
+    from memory.trust_store import MutationOutcome
+
+    mutations = []
+    positions = []
+    for index, segment in enumerate(parsed_segments):
+        mutation = _trust_mutation_for(segment)
+        if mutation is not None:
+            mutations.append(mutation)
+            positions.append(index)
+    outcomes = [MutationOutcome() for _ in parsed_segments]
+    if not mutations:
+        return None, outcomes
+    from memory import trust_store
+
+    result = await trust_store.aapply_trust_mutations(mutations)
+    for position, outcome in zip(positions, result.per_mutation):
+        outcomes[position] = outcome
+    if not result.persisted:
+        logger.warning(
+            "[Trust] 池未落盘，本批 %d 段回传 persisted=false 让调用方保留重试",
+            len(mutations),
+        )
+    return result, outcomes
+
+
+def _trust_response_block(parsed: dict, result, outcome) -> dict:
+    """The per-segment ``trust`` block.
+
+    ``persisted`` drives the caller's retain-or-pop decision and MUST be
+    reported honestly:
+
+    | segment status | trust.persisted   | caller action        |
+    |----------------|-------------------|----------------------|
+    | ok             | true / null       | pop the bucket       |
+    | ok             | false             | RETAIN and retry     |
+    | failed / lost  | —                 | retain (unchanged)   |
+
+    ``false`` has to reach the plugin because at-least-once delivery of owner
+    signals depends on it: the replay ring in ``memory/facts.py`` is gated on
+    ``observation_id``, which is a hash of one of the CURRENT request's owner
+    messages — retry semantics, not time semantics. Always answering 200 and
+    letting the caller pop would break that chain, and one disk hiccup would
+    silently and permanently lose a ±0.04/0.08 owner correction.
+
+    ``persisted=null`` means this segment had NOTHING to settle, which is
+    different from "the write failed".
+
+    The reported condition is "did this segment attempt a pool mutation", NOT
+    "did it carry a tier". An owner segment sent before the migration push
+    lands still carries ``speaker_is_owner`` with no ``speaker_tier``, and the
+    route still evaluates, persists and folds its owner signals — reporting
+    ``null`` for those would let the caller pop a bucket whose correction was
+    deferred by the barrier or lost to a failed pool write.
+    """
+    trust_source = parsed.get("trust_source") or {}
+    attempted = bool(
+        trust_source.get("has_server_source")
+        or parsed.get("trust_signal_events")
+    )
+    if not attempted:
+        # Same key set as the branch below — a field that appears in only one
+        # shape of the same response block is a contract a caller cannot write
+        # against without a KeyError guard.
+        return {
+            "resolved": parsed.get("speaker_trust"),
+            "persisted": None,
+            "signals_applied": 0,
+            "activity_applied": 0,
+            "gated": None,
+            "channel_collision": False,
+        }
+    return {
+        "resolved": parsed.get("speaker_trust"),
+        "persisted": bool(result.persisted) if result is not None else None,
+        "signals_applied": int(getattr(outcome, "signals_applied", 0) or 0),
+        "activity_applied": int(getattr(outcome, "activity_applied", 0) or 0),
+        "gated": (
+            "legacy_import_pending"
+            if parsed.get("trust_gated")
+            or int(getattr(outcome, "signals_deferred", 0) or 0) > 0
+            else None
+        ),
+        "channel_collision": bool(
+            getattr(outcome, "channel_collision", False)
+        ),
+    }
 
 
 class ScopedContextRequest(BaseModel):
@@ -1140,6 +1675,11 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             "source": item.source,
         })
     subject = req.subject.to_domain()
+    # Canonical write routing, before the locale reservation for the same
+    # read/write-same-key reason as the /scoped_history paths.
+    _routing = {"subject": subject}
+    _apply_canonical_write_routing(_routing, await _trust_snapshot_for_request())
+    subject = _routing["subject"]
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_facts",
     )
@@ -1234,18 +1774,40 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     # 挂在 label 上：没有发言人就没有可信赖的对象（群 digest 无 label 时
     # 即便调用方误传 trust 也丢弃）；trust 缺省时不放键，provenance 形状
     # 与批段路径的 _speaker_provenance_of 一致。
+    from memory.speaker_trust import stable_speaker_id
+    speaker_id = stable_speaker_id(req.speaker_id)
+    if req.speaker_id is not None and speaker_id is None:
+        raise HTTPException(status_code=422, detail="invalid speaker_id")
+    trust_source = _resolve_trust_source(
+        req, position="", speaker_id=speaker_id,
+    )
+    # One snapshot for the whole request, taken before any FactStore call.
+    trust_snapshot_for_request = await _trust_snapshot_for_request()
+    trust_state: dict = {
+        "speaker_id": speaker_id,
+        "trust_source": trust_source,
+        "trust_activity_events": trust_source["activity_events"],
+        "speaker_trust": req.speaker_trust,
+    }
+    _stamp_resolved_trust(trust_state, trust_snapshot_for_request)
     speaker_provenance = None
     if speaker_label:
         speaker_provenance = {"speaker_label": speaker_label}
-        if req.speaker_trust is not None:
-            speaker_provenance["speaker_trust"] = req.speaker_trust
-        from memory.speaker_trust import stable_speaker_id
-        speaker_id = stable_speaker_id(req.speaker_id)
-        if req.speaker_id is not None and speaker_id is None:
-            raise HTTPException(status_code=422, detail="invalid speaker_id")
+        resolved_trust = trust_state.get("speaker_trust")
+        if resolved_trust is not None:
+            speaker_provenance["speaker_trust"] = resolved_trust
         if speaker_id is not None:
             speaker_provenance["speaker_id"] = speaker_id
+            entity_id = trust_state.get("speaker_entity_id")
+            if entity_id:
+                speaker_provenance["speaker_entity_id"] = entity_id
     subject = req.subject.to_domain()
+    # Canonical write routing, deliberately BEFORE the locale reservation below
+    # so the durable per-subject locale is keyed by the same subject the read
+    # side will resolve to.
+    trust_state["subject"] = subject
+    _apply_canonical_write_routing(trust_state, trust_snapshot_for_request)
+    subject = trust_state["subject"]
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_history",
     )
@@ -1329,7 +1891,7 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 key: fact[key]
                 for key in (
                     "speaker_id", "speaker_label", "speaker_trust",
-                    "speaker_provenance_mixed",
+                    "speaker_entity_id", "speaker_provenance_mixed",
                 )
                 if key in fact
             }
@@ -1378,6 +1940,7 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_is_owner=True,
             facts_snapshot=active_signal_facts,
             replay_facts_snapshot=replay_signal_facts,
+            identity=trust_snapshot_for_request,
         )
         if trust_events:
             try:
@@ -1406,11 +1969,20 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                         expected_reconciliations=reconciled_by_key,
                     )
                 )
+    # Last durable write of the handler, same contract as the batched path.
+    trust_state["trust_signal_events"] = tuple(trust_events or ())
+    trust_result, trust_outcomes = await _apply_trust_for_segments(
+        [trust_state],
+    )
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
         "created": len(created),
         "fact_ids": [fact.get("id") for fact in created if fact.get("id")],
+        "trust": _trust_response_block(
+            trust_state, trust_result, trust_outcomes[0],
+        ),
+        # Legacy field (see the batched path).
         "trust_events": trust_events,
     }
 
@@ -1448,6 +2020,12 @@ async def _process_scoped_history_segments(
         or req.speaker_id is not None
         or req.speaker_is_owner
         or req.display_name is not None
+        # The new trust-source fields must be listed here too, otherwise
+        # ``segments`` + a top-level ``speaker_tier`` slips through unchecked.
+        or req.speaker_tier is not None
+        or req.speaker_base_trust is not None
+        or req.speaker_activity_events is not None
+        or req.speaker_channel is not None
     ):
         raise HTTPException(
             status_code=422,
@@ -1520,6 +2098,7 @@ async def _process_scoped_history_segments(
         parsed.append({
             "messages": messages,
             "subject": subject,
+            "requested_subject": subject,
             "speaker_label": speaker_label,
             "speaker_trust": segment.speaker_trust,
             "speaker_id": segment.speaker_id,
@@ -1541,6 +2120,14 @@ async def _process_scoped_history_segments(
                 detail=f"segment {position}: invalid speaker_id",
             )
         parsed[-1]["speaker_id"] = parsed_speaker_id
+        parsed[-1]["trust_source"] = _resolve_trust_source(
+            segment,
+            position=f"segment {position}: ",
+            speaker_id=parsed_speaker_id,
+        )
+        parsed[-1]["trust_activity_events"] = (
+            parsed[-1]["trust_source"]["activity_events"]
+        )
     if total_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES:
         # 单批的 LLM 输入工作量上界与 legacy 单发同一口径：调用方按这个
         # 常量打包，越界是契约 bug，fail loud。
@@ -1551,6 +2138,25 @@ async def _process_scoped_history_segments(
                 f"{SCOPED_HISTORY_BATCH_MAX_MESSAGES} messages in total"
             ),
         )
+    # ── trust: one snapshot for the whole request, taken BEFORE any FactStore
+    # call, and write-side canonical routing BEFORE the locale reservation.
+    #
+    # Timing rule: the ``speaker_trust`` stamped on this request's facts is the
+    # pool state as of the START of the request, before this request's own
+    # events land. Otherwise "deduct the owner's correction of X, then stamp
+    # X's own fact" would make the result depend on segment order, and the
+    # handler would stop being retry-safe.
+    #
+    # Ordering rule: routing must precede the locale reservation below, because
+    # the read side resolves the durable per-subject locale through the same
+    # canonical mapping. Reserving under the requested subject and reading under
+    # the canonical one would miss forever and silently fall back to the
+    # character-level locale — which is the whole point of storing it.
+    trust_snapshot_for_request = await _trust_snapshot_for_request()
+    for segment in parsed:
+        _apply_canonical_write_routing(segment, trust_snapshot_for_request)
+        _stamp_resolved_trust(segment, trust_snapshot_for_request)
+
     signal_facts = None
     if any(segment.get("speaker_is_owner") for segment in parsed):
         # Freeze the pre-batch view. After extraction we replay successful
@@ -1613,7 +2219,7 @@ async def _process_scoped_history_segments(
             key: fact[key]
             for key in (
                 "speaker_id", "speaker_label", "speaker_trust",
-                "speaker_provenance_mixed",
+                "speaker_entity_id", "speaker_provenance_mixed",
             )
             if key in fact
         }
@@ -1738,6 +2344,7 @@ async def _process_scoped_history_segments(
                         speaker_is_owner=True,
                         facts_snapshot=active_signal_facts,
                         replay_facts_snapshot=replay_signal_facts,
+                        identity=trust_snapshot_for_request,
                     )
                 )
                 if (
@@ -1775,11 +2382,35 @@ async def _process_scoped_history_segments(
                             ],
                         )
                     )
+    # ── the handler's LAST durable write: one pool mutation for the whole batch.
+    #
+    # Invariant P1: every owner signal that became durable on a fact row is
+    # folded into the pool within this same request (or its retry), idempotent
+    # by event id. The server deliberately does NOT reproduce the plugin's
+    # "hold back a signal when an earlier segment failed" semantics and does NOT
+    # withhold signals by segment status: ``adjustment`` is a commutative sum,
+    # so settlement order cannot change the final value, and per-message
+    # activity ids make an amplified retry harmless. Without P1 the durable
+    # ledger would mix "should have folded but didn't" with "deliberately not
+    # folded yet" and the two would be indistinguishable afterwards.
+    #
+    # Activity, by contrast, is collected only for segments the model actually
+    # concluded on — matching the pre-migration "only apply on ok segments" rule.
+    for segment, result in zip(parsed, segment_results):
+        segment["trust_signal_events"] = tuple(
+            segment.get("trust_events") or ()
+        )
+        if result.get("status") != "ok":
+            segment["trust_activity_events"] = ()
+    trust_result, trust_outcomes = await _apply_trust_for_segments(parsed)
     return {
         "status": "processed",
         "segments": [
             {
                 "subject": segment["subject"].as_entry_fields(),
+                "trust": _trust_response_block(
+                    segment, trust_result, outcome,
+                ),
                 "status": result.get("status"),
                 "created": len(result.get("created") or []),
                 # 本段被丢弃的无内容垃圾条目数。嵌套输出下丢弃不损失内容
@@ -1822,12 +2453,18 @@ async def _process_scoped_history_segments(
                     for fact in (result.get("reconciled") or [])
                     if isinstance(fact, dict) and fact.get("id")
                 ],
+                # Legacy field. The pool now settles these server-side, so a
+                # flipped caller ignores it; it stays for a not-yet-flipped
+                # build and is removed together with the legacy
+                # ``speaker_trust`` request field.
                 "trust_events": (
                     list(segment.get("trust_events") or [])
                     if result.get("status") == "ok" else []
                 ),
             }
-            for segment, result in zip(parsed, segment_results)
+            for segment, result, outcome in zip(
+                parsed, segment_results, trust_outcomes,
+            )
         ],
     }
 
@@ -1891,7 +2528,11 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
         )
     if not req.subjects or len(req.subjects) > 8:
         raise HTTPException(status_code=422, detail="subjects must contain 1..8 items")
-    subjects = [subject.to_domain() for subject in req.subjects]
+    # Fold FIRST, then expand: the ``1..8`` check above runs on the raw request
+    # and folding can only shrink the slot list, so the wire contract still
+    # holds. Authorization uses the flattened expansion, while rendering gets
+    # the participant groups so budget, heading and id stay one-per-person.
+    groups, subjects = _fold_request_subjects(req.subjects)
     # suppress 的到期解除只发生在 aupdate_suppressions 里，而它此前只被
     # legacy 的 /get_settings、/new_dialog 调用——纯群聊部署永远走不到
     # 那两条路径，scoped reflection 第一次被 suppress 后就永久隐身。
@@ -1915,6 +2556,7 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
         confirmed_reflections,
         subjects=subjects,
         include_legacy_private=False,
+        participant_groups=groups,
     )
     return PlainTextResponse(rendered)
 
@@ -1947,58 +2589,108 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
     subject = req.subject.to_domain()
+    from memory import trust_store as _trust_store
+    if not _trust_store.trust_snapshot().loaded:
+        # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
+        # ``expand_subject`` degrades to just the requested subject — so a
+        # non-canonical account whose rows were routed into the canonical pile
+        # would get a PARTIAL erase reported as ``forgotten``. Under-deleting
+        # on a privacy path and calling it success is the one outcome worth a
+        # hard failure; the caller retries once the pool loads.
+        #
+        # Narrow by construction: a fresh or empty pool is ``loaded`` with no
+        # entities, so a deployment that never linked accounts never sees this.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "identity pool unreadable; refusing a partial scoped forget, "
+                "retry once the trust pool loads"
+            ),
+        )
+    targets = _forget_fanout_targets(subject)
     stats: dict = {}
-    fact_forget_started = False
-    reflection_forget_started = False
+    fact_forget_started: list = []
+    reflection_forget_started: list = []
+    acquired_locks: list = []
     # Component references are atomically replaced under this lock. Keep the
     # same generation alive until every tombstone is closed, otherwise reload
     # can split one forget transaction across old and new managers.
+    #
+    # ONE TRANSACTION FOR ALL TARGETS, not N independent ones. Splitting would
+    # break two things at once: (a) ``_reload_lock`` would be released between
+    # subjects, letting a reload cut in; (b) subject i's tombstone would close
+    # BEFORE subject i+1's opens, and fact extraction / reflection synthesis
+    # release their locks during LLM calls — an in-flight write captured before
+    # the forget could then land after its tombstone closed, growing data back
+    # inside a domain that was just erased. This is a privacy path; ordering
+    # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
-    subject_transaction_lock = None
-    subject_transaction_acquired = False
     try:
-        subject_transaction_lock = (
-            runtime.fact_store._get_subject_forget_transaction_lock(
-                lanlan_name, subject,
+        for target in targets:
+            lock = runtime.fact_store._get_subject_forget_transaction_lock(
+                lanlan_name, target,
             )
-        )
-        await subject_transaction_lock.acquire()
-        subject_transaction_acquired = True
-        # Bracket the whole multi-store transaction on both write paths.
-        # Fact extraction and reflection synthesis release their locks during
-        # LLM calls; work that starts before *or anywhere inside* this interval
-        # must not write after the endpoint reports forgotten.
-        await runtime.fact_store.abegin_subject_forget(lanlan_name, subject)
-        fact_forget_started = True
-        await runtime.reflection_engine.abegin_subject_forget(
-            lanlan_name, subject,
-        )
-        reflection_forget_started = True
-        stats.update(
-            await runtime.fact_dedup_resolver.aforget_subject(
-                lanlan_name, subject,
+            await lock.acquire()
+            acquired_locks.append(lock)
+        # ALL tombstones open before ANY erase.
+        for target in targets:
+            await runtime.fact_store.abegin_subject_forget(lanlan_name, target)
+            fact_forget_started.append(target)
+        for target in targets:
+            await runtime.reflection_engine.abegin_subject_forget(
+                lanlan_name, target,
             )
-        )
-        stats.update(await runtime.fact_store.aforget_subject(lanlan_name, subject))
-        stats.update(
-            await runtime.reflection_engine.aforget_subject(lanlan_name, subject)
-        )
-        stats.update(
-            await runtime.persona_manager.aforget_subject(lanlan_name, subject)
-        )
-        stats["prompt_locale"] = await asyncio.to_thread(
-            locale_state.forget_subject_prompt_locale,
-            lanlan_name,
-            subject,
-        )
+            reflection_forget_started.append(target)
+        for target in targets:
+            # SUM, never replace. Every store returns the same counter keys, so
+            # a per-target ``update`` reports only the LAST account's numbers —
+            # if the first account deleted rows and a later one deleted none,
+            # the endpoint would report zero for data it just erased. This is a
+            # privacy operation whose response is the operator's only receipt.
+            _merge_forget_stats(
+                stats,
+                await runtime.fact_dedup_resolver.aforget_subject(
+                    lanlan_name, target,
+                ),
+            )
+            _merge_forget_stats(
+                stats,
+                await runtime.fact_store.aforget_subject(lanlan_name, target),
+            )
+            _merge_forget_stats(
+                stats,
+                await runtime.reflection_engine.aforget_subject(
+                    lanlan_name, target,
+                ),
+            )
+            _merge_forget_stats(
+                stats,
+                await runtime.persona_manager.aforget_subject(
+                    lanlan_name, target,
+                ),
+            )
+            _merge_forget_stats(stats, {
+                "prompt_locale": await asyncio.to_thread(
+                    locale_state.forget_subject_prompt_locale,
+                    lanlan_name,
+                    target,
+                ),
+            })
         # Reflection/persona archive writers take their store locks. Their
         # forget calls above therefore drain any writer that had already
         # snapshotted this subject. Advance the persistent cutoff only now,
-        # while both write tombstones are still open, so a snapshot archived
+        # while every write tombstone is still open, so a snapshot archived
         # after the initial facts erase cannot become restore-eligible.
-        await runtime.fact_store.afinalize_subject_forget(
-            lanlan_name, subject,
-        )
+        #
+        # The cutoff is PER SUBJECT and persistent
+        # (``subject_forget_tombstones.json``). Skipping any target's cutoff
+        # would leave that account's archived shards restorable through event
+        # replay — i.e. a "left the group, wiped my data" request that quietly
+        # keeps a copy.
+        for target in targets:
+            await runtime.fact_store.afinalize_subject_forget(
+                lanlan_name, target,
+            )
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
@@ -2008,26 +2700,349 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     finally:
         try:
             try:
-                if reflection_forget_started:
+                for target in reversed(reflection_forget_started):
                     await runtime.reflection_engine.aend_subject_forget(
-                        lanlan_name, subject,
+                        lanlan_name, target,
                     )
             finally:
-                # Never strand the fact-write tombstone if the independent
+                # Never strand a fact-write tombstone if the independent
                 # reflection close encounters an unexpected failure.
-                if fact_forget_started:
+                for target in reversed(fact_forget_started):
                     await runtime.fact_store.aend_subject_forget(
-                        lanlan_name, subject,
+                        lanlan_name, target,
                     )
         finally:
-            if subject_transaction_acquired:
-                subject_transaction_lock.release()
+            for lock in reversed(acquired_locks):
+                lock.release()
             runtime._reload_lock.release()
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),
+        "forgotten_subjects": [
+            target.as_entry_fields() for target in targets
+        ],
         **stats,
     }
+
+
+# ── trust pool / identity endpoints ─────────────────────────────────────────
+# All character-agnostic (precedent: /internal/memory/import_external_markdown)
+# and NONE of them is in ``_STORAGE_LIMITED_MODE_ALLOWED_PATHS``: before the
+# runtime is ready they answer 409 ``storage_startup_blocked``. A caller must
+# retry that, and must NEVER read it as "this user has no trust".
+
+
+class TrustLegacyImportRequest(BaseModel):
+    source: str
+    platform: str
+    chunk_index: int = Field(default=0, ge=0)
+    final: bool = False
+    # Deliberately ``dict``, not a strict sub-model: the legacy normalizer this
+    # replaces was per-field tolerant, and all-or-nothing validation would let a
+    # single dirty profile 422 the whole request — which wedges the migration
+    # permanently, because a 422 never succeeds on retry either.
+    profiles: dict = Field(default_factory=dict)
+
+
+class TrustWaiveBarrierRequest(BaseModel):
+    platform: str
+
+
+class TrustReconcileRequest(BaseModel):
+    character_names: list[str] | None = None
+
+
+class IdentityBindRequest(BaseModel):
+    account_id: str
+    entity_id: str
+    bound_by: str | None = None
+    require_unbound: bool = False
+
+
+class IdentityAccountRequest(BaseModel):
+    account_id: str
+    require_provenance: bool = False
+
+
+class IdentityMergeRequest(BaseModel):
+    entity_id: str
+    other_entity_id: str
+
+
+class IdentityScopeDeclareRequest(BaseModel):
+    platform: str
+    channel: str
+    actor_scope: str
+    conversation_scope: str
+    asserted_by: str
+
+
+class IdentityEntityRequest(BaseModel):
+    entity_id: str
+
+
+def _identity_error(exc) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+def _require_loaded_identity_pool() -> None:
+    """Refuse identity mutations while the pool is read-only degraded.
+
+    ``_with_pool_write`` vetoes the write and returns ``persisted=False``, but
+    the endpoints would still answer 200 — so a human-triggered bind/unbind/
+    merge/forget silently becomes a no-op that reads as success. For unbind it
+    is worse than a no-op: ``_count_stranded_rows`` also resolves nothing on an
+    unloaded snapshot, so the operator's only remediation signal comes back as
+    a confident ``0``.
+
+    Same fail-closed rule already applied to ``scoped_forget``.
+    """
+    from memory import trust_store
+
+    if not trust_store.trust_snapshot().loaded:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "identity pool unreadable; identity changes are refused while "
+                "the trust pool is read-only, retry once it loads"
+            ),
+        )
+
+
+@app.get("/internal/trust/profile")
+async def get_trust_profile(account_id: str):
+    """Read-only diagnostics for one account. Never returns the ledger rings."""
+    from memory import trust_store
+
+    return trust_store.trust_snapshot().profile(account_id)
+
+
+@app.post("/internal/trust/import_legacy_profiles")
+async def import_legacy_trust_profiles(req: TrustLegacyImportRequest):
+    """Import one chunk of a platform's legacy trust ledger.
+
+    Additive merge, idempotent per (source, account_id). Safe to merge rather
+    than overwrite ONLY because the barrier guarantees this platform had zero
+    server-side evolution beforehand — that is the barrier's entire purpose.
+    A malformed profile lands in ``skipped``; the request never 422s as a whole.
+    """
+    from config import SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX
+    from memory import trust_store
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", req.platform or ""):
+        raise HTTPException(status_code=422, detail="invalid platform")
+    if not (req.source or "").strip():
+        raise HTTPException(status_code=422, detail="source is required")
+    if len(req.profiles) > SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX:
+        # Chunking is the caller's job; exceeding it is a contract bug.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"profiles must contain at most "
+                f"{SPEAKER_TRUST_LEGACY_IMPORT_CHUNK_MAX} items"
+            ),
+        )
+    return await trust_store.aimport_legacy_profiles(
+        platform=req.platform,
+        source=req.source,
+        profiles=req.profiles,
+        final=bool(req.final),
+    )
+
+
+@app.post("/internal/trust/waive_legacy_barrier")
+async def waive_legacy_trust_barrier(req: TrustWaiveBarrierRequest):
+    """Escape hatch: give up on a platform's legacy import and open its gate."""
+    from memory import trust_store
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", req.platform or ""):
+        raise HTTPException(status_code=422, detail="invalid platform")
+    return await trust_store.awaive_legacy_barrier(req.platform)
+
+
+@app.post("/internal/trust/reconcile_from_facts")
+async def reconcile_trust_from_facts(req: TrustReconcileRequest):
+    """Disaster recovery only — manual trigger, never automatic.
+
+    NOT a complete self-healer: ``scoped_forget`` deletes the fact rows that
+    carry ``_speaker_trust_signal_events``, so signals on a forgotten subject
+    have no reconstruction source. Correctness comes from the
+    ``trust.persisted`` round-trip and the caller's retain-and-retry, not from
+    this endpoint.
+    """
+    from memory import trust_store
+
+    if runtime.fact_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    names = req.character_names
+    if not names:
+        character_data = await runtime._config_manager.aload_characters()
+        names = list(character_data.get("猫娘", {}).keys())
+    return await trust_store.areconcile_from_facts(
+        runtime.fact_store, [validate_lanlan_name(name) for name in names],
+    )
+
+
+@app.post("/internal/identity/scope")
+async def declare_identity_scope(req: IdentityScopeDeclareRequest):
+    """Record what a platform's identifiers mean on the wire.
+
+    A connector may call this on every startup: the declaration is a transcript
+    of the vendor's published protocol, so it is a constant of the connection
+    mode rather than something learned from traffic. Re-declaring the same
+    tuple writes nothing.
+
+    This is emphatically NOT a place to report an observation. The request body
+    carries no account id and no sample precisely so that "we saw two different
+    ids, so it must be per_conversation" cannot be expressed — see the kill list
+    in ``memory.trust_store``. Deriving a scope from traffic and posting it here
+    would launder an inference into an assertion, and downstream consumers show
+    this value to the operator as ground truth.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    try:
+        return await trust_store.adeclare_platform_identity_scope(
+            req.platform,
+            channel=req.channel,
+            actor_scope=req.actor_scope,
+            conversation_scope=req.conversation_scope,
+            asserted_by=req.asserted_by,
+        )
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
+
+
+@app.post("/internal/identity/accounts/ensure")
+async def ensure_identity_account(req: IdentityAccountRequest):
+    """Register one account so it has an entity to be bound to.
+
+    ``bind`` takes an entity id and 404s on an unknown one, but an entity is
+    only born from ledger activity -- so a roster account that has never
+    accrued a trust event has none, and on a fresh install that describes the
+    very account everything else needs to merge INTO (the owner authorised in
+    DMs). This is the seam that lets the dashboard offer it as a merge target.
+
+    Creating the seed entity is not an edge and asserts nothing about who the
+    person is: it links the account to itself. The human assertion is the bind
+    that follows. No channel is recorded either -- ``channels_seen`` is an
+    observation of traffic, and this call is not traffic.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    entity_id, persisted = await trust_store.aensure_account(
+        req.account_id, report_persisted=True,
+    )
+    if entity_id is None:
+        raise HTTPException(status_code=422, detail="invalid account_id")
+    # Pass ``persisted`` through like bind/unbind do. Without it a failed disk
+    # write is invisible here and only surfaces one step later as the bind's
+    # 404 on an unknown entity -- the operator is then told "merge failed"
+    # instead of "the write failed", which points at the wrong thing.
+    return {
+        "account_id": req.account_id,
+        "entity_id": entity_id,
+        "persisted": persisted,
+    }
+
+
+@app.post("/internal/identity/accounts/bind")
+async def bind_identity_account(req: IdentityBindRequest):
+    """Link one account to an entity. HUMAN-TRIGGERED ONLY.
+
+    The number of automatic bind paths is zero and must stay zero. Never derive
+    an edge from a nickname, a bootstrap elevation, temporal adjacency, an edit
+    distance, or the observed channel — see the kill list in
+    ``memory.trust_store``. A dashboard offering candidates must rank them by
+    LEDGER WEIGHT ONLY and pre-select nothing; ranking by name similarity would
+    hand the user a rejected heuristic as the default answer.
+
+    Operational note, and both halves have to be stated together: on the TRUST
+    axis bind EARLY (a late bind lets self-attested signals accumulate first,
+    and merge does not refund them), while on the SUBJECT axis bind LATE (rows
+    written while a wrong binding is active stay in the canonical pile
+    irreversibly). Publishing only one of these is worse than publishing both.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    try:
+        return await trust_store.abind_account(
+            req.account_id, req.entity_id, bound_by=req.bound_by,
+            require_unbound=bool(req.require_unbound),
+        )
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
+
+
+@app.post("/internal/identity/accounts/unbind")
+async def unbind_identity_account(req: IdentityAccountRequest):
+    """Detach one account into a fresh entity. The only rollback for a mis-bind.
+
+    Returns BOTH ``ledger_delta`` and ``effective_delta``, and they are usually
+    different numbers — that is not a bug to be "fixed". Under a clamped
+    aggregate, "how much did this account take with it" has no unique answer:
+    removing an account can move the effective score by more than the clamp
+    itself, because it also releases the other accounts' saturation. An operator
+    given only the ledger number can never reconcile it with the score.
+
+    Known under-count: the activity write-amplification no-op skips recording
+    event ids once the ENTITY is saturated, so an account unbound below the cap
+    may have those messages counted again later. Bounded by
+    ``SPEAKER_TRUST_ACTIVITY_MAX_BONUS`` (0.02), far under the 0.15 margin.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    snapshot_before = trust_store.trust_snapshot()
+    try:
+        result = await trust_store.aunbind_account(
+            req.account_id,
+            require_provenance=bool(req.require_provenance),
+        )
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
+    result["stranded_rows"] = await _count_stranded_rows(
+        req.account_id, snapshot_before,
+    )
+    return result
+
+
+@app.post("/internal/identity/entities/merge")
+async def merge_identity_entities(req: IdentityMergeRequest):
+    """Merge two entities. HUMAN-TRIGGERED ONLY. Idempotent/commutative/associative."""
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    try:
+        return await trust_store.amerge_entities(
+            req.entity_id, req.other_entity_id,
+        )
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
+
+
+@app.post("/internal/identity/entities/forget")
+async def forget_identity_entity(req: IdentityEntityRequest):
+    """Drop one entity's identity records. Minimal by design.
+
+    Known weakness, stated rather than hidden: the signal EVENTS themselves live
+    on other people's fact rows and in the archive, so if the same account comes
+    back and the owner repeats the same sentence, a "forgotten" correction is
+    applied again.
+    """
+    from memory import trust_store
+
+    _require_loaded_identity_pool()
+    try:
+        return await trust_store.aforget_entity(req.entity_id)
+    except trust_store.TrustIdentityError as exc:
+        raise _identity_error(exc) from exc
 
 
 @app.post("/internal/memory/{lanlan_name}/scoped_mentions")
@@ -2050,7 +3065,7 @@ async def record_scoped_mentions(lanlan_name: str, req: ScopedMentionsRequest):
     response_text = (req.response_text or "").strip()
     if not response_text:
         return {"status": "skipped"}
-    subjects = [subject.to_domain() for subject in req.subjects]
+    _groups, subjects = _fold_request_subjects(req.subjects)
     await runtime.persona_manager.arecord_mentions(
         lanlan_name, response_text,
         subjects=subjects, include_legacy_private=False,
@@ -2108,7 +3123,9 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             status_code=422,
             detail="subjects must be omitted (legacy private) or contain 1..8 items",
         )
-    subjects = [subject.to_domain() for subject in (req.subjects or [])]
+    _groups, subjects = (
+        _fold_request_subjects(req.subjects) if req.subjects else ((), [])
+    )
     # Recall renders tier/entity tags and rerank prompts, so it needs the
     # subject's own durable locale when the caller has none — not whichever
     # locale the calling process happens to sit in.

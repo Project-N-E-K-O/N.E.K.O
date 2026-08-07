@@ -5396,6 +5396,93 @@ async def test_core_passes_only_configured_speaker_shadow_factory(
     factory.assert_not_called()
 
 
+async def test_connect_budget_does_not_block_a_free_native_route(
+    monkeypatch,
+) -> None:
+    # Codex P2. The budget bounds the PROVIDER CONNECT, nothing else. A request
+    # whose handshake disables independent ASR settles on native without talking
+    # to anyone, so refusing it over a connect budget would leave the route on
+    # its blocked placeholder and abort a microphone start that had nothing to
+    # wait for.
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        handshake_override=False,
+        connect_budget_seconds=0.0,
+    )
+
+    assert runtime._asr_route_mode == "native"
+    start_mock.assert_not_awaited()
+
+
+async def test_connect_budget_stops_a_connect_it_cannot_finish(
+    monkeypatch,
+) -> None:
+    # The other half: independent ASR IS wanted, so the decision would connect --
+    # and a verdict produced after the frontend's deadline is worse than none,
+    # because the client's timeout tears down the session that did start. Leave
+    # the route on the blocked placeholder, which is what the caller would have
+    # re-acked without re-deciding at all.
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        handshake_override=True,
+        connect_budget_seconds=0.0,
+    )
+
+    assert runtime._asr_route_mode == "blocked"
+    start_mock.assert_not_awaited()
+
+
+async def test_connect_budget_is_opt_in(monkeypatch) -> None:
+    # Every other caller (hot-swap, device change, the ordinary start) passes no
+    # budget and must keep connecting exactly as before.
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    async def _ready(**_kwargs):
+        # Epoch read at call time: the teardown that precedes the connect bumps
+        # it, and a result stamped with the pre-call value reads as stale.
+        return AsrStartResult(
+            status=AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=runtime._capture_ingress_token().session_epoch,
+        )
+
+    start_mock = AsyncMock(side_effect=_ready)
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio", handshake_override=True)
+
+    assert runtime._asr_route_mode == "independent"
+    start_mock.assert_awaited_once()
+
+
 async def test_provider_restart_reuses_accepted_session_optimization(
     monkeypatch,
 ) -> None:
@@ -5498,7 +5585,7 @@ async def test_start_session_handshake_missing_falls_back_to_persisted(
     start_mock.assert_awaited_once()
 
 
-async def test_missing_independent_asr_setting_defaults_enabled(monkeypatch) -> None:
+async def test_missing_independent_asr_setting_defaults_disabled(monkeypatch) -> None:
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     monkeypatch.setattr(
@@ -5516,9 +5603,8 @@ async def test_missing_independent_asr_setting_defaults_enabled(monkeypatch) -> 
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    start_mock.assert_awaited_once()
-    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is True
-    assert runtime._asr_route_mode != "native"
+    start_mock.assert_not_awaited()
+    assert runtime._asr_route_mode == "native"
 
 
 @pytest.mark.parametrize("malformed", ["true", 1, 0, [True], {"enabled": True}])
@@ -6351,7 +6437,7 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
         side_effect=lambda _mode, **_kwargs: order.append("asr")
     )
     manager.send_session_started = AsyncMock(
-        side_effect=lambda _mode: order.append("started")
+        side_effect=lambda _mode, **_kwargs: order.append("started")
     )
 
     stop = asyncio.Event()
@@ -6399,9 +6485,72 @@ async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> N
     assert not hasattr(runtime._asr_runtime, "_asr_route_mode")
 
 
-async def test_free_core_reports_unavailable_and_blocks_omni(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("persisted_enabled", "handshake_enabled"),
+    [
+        (True, None),
+        (False, None),
+        (False, True),
+        (True, False),
+    ],
+)
+async def test_free_core_always_uses_native_asr_regardless_of_toggle(
+    monkeypatch,
+    persisted_enabled: bool,
+    handshake_enabled: bool | None,
+) -> None:
     runtime = _Runtime()
     runtime.core_api_type = "free"
+    runtime.session.stream_audio = AsyncMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": persisted_enabled}),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+    runtime.set_independent_asr_handshake(handshake_enabled)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "native"
+    assert runtime._independent_asr_route_key == "free"
+    assert runtime._independent_asr_provider is None
+    start_mock.assert_not_awaited()
+    assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+    assert "ASR_INDEPENDENT_UNAVAILABLE" not in runtime.send_status.await_args.args[0]
+
+    assert await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    ) is True
+    runtime.session.stream_audio.assert_awaited_once_with(b"\x01\x00" * 160)
+
+
+async def test_free_core_uses_native_asr_when_preferences_are_unreadable(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "free"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(side_effect=OSError("preferences unavailable")),
+    )
+    start_mock = AsyncMock()
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+    runtime.set_independent_asr_handshake(True)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "native"
+    start_mock.assert_not_awaited()
+    assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
+
+
+async def test_unknown_core_capability_remains_fail_closed(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "unknown"
     monkeypatch.setattr(
         core_module,
         "aload_global_conversation_settings",
@@ -6411,7 +6560,10 @@ async def test_free_core_reports_unavailable_and_blocks_omni(monkeypatch) -> Non
     await runtime._start_independent_asr_if_enabled("audio")
 
     assert runtime._asr_route_mode == "blocked"
-    assert "ASR_INDEPENDENT_UNAVAILABLE" in runtime.send_status.await_args.args[0]
+    assert any(
+        "ASR_INDEPENDENT_FAILED" in status_call.args[0]
+        for status_call in runtime.send_status.await_args_list
+    )
 
 
 async def test_provider_error_without_audio_closes_and_blocks_omni() -> None:

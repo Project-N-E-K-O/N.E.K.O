@@ -33,6 +33,7 @@ MODEL_MANAGER_PART_NAMES = (
     "card-face.js",
     "path-request-fullscreen.js",
     "page-controller.js",
+    "background-model-drag.js",
     "window-lifecycle.js",
 )
 
@@ -49,6 +50,30 @@ def read_character_card_manager_source() -> str:
         (CHARACTER_CARD_MANAGER_JS_DIR / part_name).read_text(encoding="utf-8")
         for part_name in CHARACTER_CARD_MANAGER_PART_NAMES
     )
+
+
+def test_character_profile_idle_save_does_not_rewrite_cached_model_binding():
+    script = (CHARACTER_CARD_MANAGER_JS_DIR / "card-form-and-actions.js").read_text(encoding="utf-8")
+    idle_save_start = script.index("// 只保存 Live2D 待机动作")
+    idle_save_end = script.index("let selectedAfterSave", idle_save_start)
+    idle_save_block = script[idle_save_start:idle_save_end]
+    payload_match = re.search(
+        r"body:\s*JSON\.stringify\(\{(?P<body>.*?)\}\)",
+        idle_save_block,
+        re.DOTALL,
+    )
+    assert payload_match is not None
+    payload_body = payload_match.group("body")
+    payload_fields = re.findall(
+        r"""^\s*(?:['\"]([^'\"]+)['\"]|([A-Za-z_$][\w$]*))\s*:""",
+        payload_body,
+        re.MULTILINE,
+    )
+    fields = [quoted or bare for quoted, bare in payload_fields]
+
+    assert fields == ["live2d_idle_animation"]
+    assert "live2d_idle_animation: idleAnimation" in payload_body
+    assert "..." not in payload_body
 
 
 def test_character_card_manager_parts_load_in_dependency_order():

@@ -68,6 +68,7 @@ def test_cat1_return_button_assets_are_version_tracked():
     assert CAT1_EAT_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_CHAT_HISS_STICKER_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_CHAT_HISS_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_STICKER_PATH in pages_router._REACT_CHAT_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH.is_file()
     assert CAT1_PLAY_ASSET_PATH.is_file()
     assert CAT1_EAT_SOUND_PATH.is_file()

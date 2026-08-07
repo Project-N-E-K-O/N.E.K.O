@@ -18,6 +18,7 @@
 import asyncio
 import os
 import secrets
+from urllib.parse import parse_qsl
 
 import httpx
 from fastapi import Request
@@ -34,11 +35,29 @@ app = runtime.app
 logger = runtime.logger
 
 
+def _has_generated_asset_version(query_string: bytes) -> bool:
+    """Return whether ``v`` is a content-derived version safe to cache immutably."""
+    try:
+        query_params = parse_qsl(query_string.decode("ascii"), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return False
+
+    for key, value in query_params:
+        if key != "v":
+            continue
+        version_tail = value.rsplit("-", 1)[-1]
+        if version_tail.isascii() and version_tail.isdigit() and len(version_tail) >= 9:
+            return True
+    return False
+
+
 class CustomStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
         if path.endswith(".js"):
             response.headers["Content-Type"] = "application/javascript"
+        if _has_generated_asset_version(scope.get("query_string", b"")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
 

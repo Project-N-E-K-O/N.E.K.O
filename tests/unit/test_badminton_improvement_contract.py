@@ -197,7 +197,7 @@ def test_badminton_invite_character_request_uses_invited_lanlan_name():
     assert "var requestedLanlanName = String(window.__nekoBadmintonQueryLanlanName || '').trim();" in html
     assert "characterPath += '?lanlan_name=' + encodeURIComponent(requestedLanlanName);" in html
     assert "var charResp = await fetch(characterPath);" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html
@@ -1458,9 +1458,10 @@ def test_badminton_duel_difficulty_addendum_is_localized_per_full_locale():
 
     Asserted on the getter, which is the layer that has to keep zh-CN and zh-TW
     apart. ``_normalize_prompt_lang`` (the short-locale scheme the rest of this
-    module's tables use) collapses every Chinese variant to ``zh``; routing this
-    table through it would leave the zh-TW entry unreachable while still reading
-    as compliant to the static ``check_prompt_zh_tw`` gate.
+    module's tables use) spells Simplified Chinese ``zh``, so routing this table
+    through it would miss its ``zh-CN`` row. Until issue #2500 step 2 it also
+    collapsed zh-TW, which would have left that entry unreachable while still
+    reading as compliant to the static ``check_prompt_zh_tw`` gate.
     """
     get = prompts_badminton.get_badminton_duel_difficulty_control_prompt
 
@@ -2327,7 +2328,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "if (!senseiProbe.ok) throw new Error('Sensei VRM model missing: ' + SENSEI_VRM_PATH);" in html
     assert "loader.load(SENSEI_VRM_PATH, resolve, null, reject);" in html
     assert "manager.currentModel = { vrm: vrm, gltf: gltf, scene: vrm.scene, url: SENSEI_VRM_PATH };" in html
-    assert "await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {" in html
+    assert html.count("await manager.playVRMAAnimation('/static/vrm/animation/wait03.vrma.gz', {") == 2
     assert "isIdle: true" in html
     assert "playIdleAnimation" not in html
     assert "SENSEI_LIVE2D_PATH" not in html
@@ -2767,7 +2768,7 @@ def test_badminton_scene_uses_compact_avatars_and_net():
     assert "sweetSpot.clone().project(window.badmintonPlayerVrmManager.camera);" in html
     assert "clientX / Math.max(1, window.innerWidth) * BASE_W" in html
     assert "window.__badmintonPlayerRacketDebug = {" in html
-    assert "var live2dPath = charData.live2d_path || '/static/yui-origin/yui-origin.model3.json';" in html
+    assert "var live2dPath = charData.live2d_path || '/static/yui-lolita/yui-lolita.model3.json';" in html
     assert "window.lanlan_config.model_type = 'live2d';" in html
     assert "window.lanlan_config.live3d_sub_type = '';" in html
     assert "await initLive2DAvatar(live2dPath);" in html

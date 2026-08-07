@@ -57,6 +57,10 @@ from config.prompts.prompts_memory import (
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
+from memory.timeindex import (
+    FACT_NEAR_DUP_ARBITRATE_OVERLAP,
+    FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
+)
 from memory.scopes import (
     MemorySubject,
     coerce_subject,
@@ -319,6 +323,18 @@ class FactStore:
     # 几轮，而模块单例会在 pytest 用例之间串状态。
     _recheck_attempts_mem: dict | None = None
     _recheck_mem_guard: threading.Lock | None = None
+
+    # fact_dedup 的 LLM 仲裁队列。Stage-2 只捞候选、由它裁决，所以这里拿不到
+    # resolver 时 Stage-2 的命中就只能记日志（见 _aenqueue_near_dup_pairs）。
+    _dedup_resolver = None
+
+    def attach_dedup_resolver(self, resolver) -> None:
+        """Wire the arbitration queue that Stage-2 near-dup hits feed into.
+
+        Set by the memory runtime after both objects exist (the resolver
+        takes the store in its constructor, so the store cannot build it).
+        """
+        self._dedup_resolver = resolver
 
     def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
@@ -1260,8 +1276,20 @@ class FactStore:
         speaker_is_owner: bool,
         facts_snapshot: list[dict] | None = None,
         replay_facts_snapshot: list[dict] | None = None,
+        identity=None,
     ) -> list[dict]:
-        """Derive owner confirmation/correction signals from raw request text."""
+        """Derive owner confirmation/correction signals from raw request text.
+
+        ``identity`` is an optional ``TrustSnapshot``. With it, the
+        self-attestation ban widens from "same account" to "same PERSON", which
+        closes off "the owner endorses their own earlier statement from a second
+        account". Default ``None`` degrades byte-for-byte to the pre-existing
+        string comparison, so every existing caller and test is unaffected.
+
+        The entity layer decides whether an event is PRODUCED. It never decides
+        whose ledger the event lands in — that stays keyed by account all the
+        way down.
+        """
         if not speaker_is_owner or not isinstance(speaker_provenance, dict):
             return []
         from memory.speaker_trust import (
@@ -1347,6 +1375,17 @@ class FactStore:
                         and recorded.get('observation_id') == observation_id
                         and prior_identity is not None
                         and recorded_identity == prior_identity
+                        # DELIBERATELY account-level, NOT entity-level. This
+                        # is the replay ring: it re-delivers an already-durable
+                        # event after a lost response, keyed on the owner's own
+                        # account string. Widening it to ``same_entity`` would
+                        # let the replay ring re-issue events on behalf of a
+                        # DIFFERENT account of the same person. Asymmetry with
+                        # the self-attestation ban above is intended: after the
+                        # owner switches accounts the ban gets stricter (fewer
+                        # events) and replay gets stricter (fewer re-deliveries)
+                        # — both directions under-count, i.e. fail closed. Do
+                        # not "symmetrize" this.
                         and stable_speaker_id(
                             recorded.get('source_speaker_id')
                         ) == source_id
@@ -1364,6 +1403,13 @@ class FactStore:
                     continue
                 target_id = stable_speaker_id(prior.get('speaker_id'))
                 if target_id is None or target_id == source_id:
+                    continue
+                if identity is not None and identity.same_entity(
+                    source_id, target_id,
+                ):
+                    # Same person, second account: still self-attestation.
+                    # ``same_entity`` is conservative (unloaded pool ⇒ False),
+                    # so this can only ever suppress events, never invent them.
                     continue
                 # Raw owner observations carry no structured event window.
                 # Do not reinterpret an explicitly dated historical fact as a
@@ -1434,7 +1480,7 @@ class FactStore:
                 key: entry[key]
                 for key in (
                     'speaker_id', 'speaker_label', 'speaker_trust',
-                    'speaker_provenance_mixed',
+                    'speaker_entity_id', 'speaker_provenance_mixed',
                 )
                 if key in entry
             }
@@ -1652,7 +1698,7 @@ class FactStore:
         """
         provenance_keys = (
             'speaker_id', 'speaker_label', 'speaker_trust',
-            'speaker_provenance_mixed',
+            'speaker_entity_id', 'speaker_provenance_mixed',
         )
 
         def _provenance(entry: dict) -> dict:
@@ -1893,6 +1939,8 @@ class FactStore:
                     return True
 
             try:
+                # 复活不需要碰索引：归档行本来就全在索引里（见
+                # _aensure_fact_index_backfilled 里的说明）。
                 return await asyncio.to_thread(_restore)
             except BaseException:
                 def _invalidate() -> None:
@@ -3113,6 +3161,16 @@ class FactStore:
         speaker_id = stable_speaker_id(segment.get('speaker_id'))
         if speaker_id is not None:
             prov['speaker_id'] = speaker_id
+            # Persisted alongside speaker_id, never in place of it — and taken
+            # from the segment, so it comes from the SAME request-start pool
+            # snapshot that decided routing and trust (see
+            # ``_reconcile_existing_provenance`` for why a fresh lookup here
+            # would be wrong).
+            entity_id = str(
+                segment.get('speaker_entity_id') or ''
+            ).strip()
+            if entity_id:
+                prov['speaker_entity_id'] = entity_id
         return prov or None
 
     async def extract_facts_batch(
@@ -3319,6 +3377,12 @@ class FactStore:
         expected_subject_generation: int | None = None,
         reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
+        # 近重复配对在锁内只收集，出锁之后才投递：投递要拿
+        # FactDedupResolver 的 per-character 锁，而 aresolve 是反着来的——
+        # 它持 resolver 锁调 aarchive_arbitrated_facts，那个方法要拿这里
+        # 这把 _persist_alock。两边在同一个 loop 上互等就是死锁，之后这个
+        # 角色的写入和去重裁决都再也走不动。
+        near_dup_pairs: list[tuple[dict, dict, float]] = []
         async with self._get_persist_alock(lanlan_name):
             memory_subject = coerce_subject(subject)
             if (
@@ -3341,7 +3405,7 @@ class FactStore:
                     f"{memory_subject.scope})"
                 )
                 return []
-            return await self._apersist_new_facts_locked(
+            created = await self._apersist_new_facts_locked(
                 lanlan_name,
                 extracted,
                 default_source=default_source,
@@ -3349,7 +3413,11 @@ class FactStore:
                 subject=subject,
                 speaker_provenance=speaker_provenance,
                 reconciled_facts=reconciled_facts,
+                near_dup_pairs_out=near_dup_pairs,
             )
+        if near_dup_pairs:
+            await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
+        return created
 
     async def apersist_scoped_facts(
         self,
@@ -3384,6 +3452,7 @@ class FactStore:
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
+        near_dup_pairs_out: list | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3420,6 +3489,14 @@ class FactStore:
         memory_subject = coerce_subject(subject)
 
         new_facts: list[dict] = []
+        # Stage-2 捞到的 (新 fact, 既存 fact, 文字重叠度)。这里只往调用方给的
+        # 篮子里放，**不投递**：投递要拿 resolver 的锁，而本方法整个跑在
+        # _persist_alock 里，两把锁的获取顺序跟 aresolve 是反的（见调用方的
+        # 注释）。落盘成功之后、出锁之后才真正入队——队列是 ids-only，指向
+        # 一条还没写进 facts.json 的 fact 就是悬空引用。
+        near_dup_pairs: list[tuple[dict, dict, float]] = (
+            near_dup_pairs_out if near_dup_pairs_out is not None else []
+        )
         upgraded_count = 0
         provenance_updated_count = 0
         # (entry, 原 source, 原 signal_processed)：落盘/索引失败时还原
@@ -3434,6 +3511,25 @@ class FactStore:
             )
             if request_speaker_id is not None:
                 request_provenance['speaker_id'] = request_speaker_id
+                # Persisted alongside — NOT instead of — ``speaker_id``, whose
+                # bytes never change. It lets a same-person comparison succeed
+                # even when the pool is unavailable later; when it goes stale
+                # after a merge, the live pool lookup in
+                # ``same_provenance_source`` backs it up.
+                #
+                # Comes FROM THE CALLER, never from a fresh pool read here. The
+                # route resolves subject routing, trust and this id from ONE
+                # snapshot taken at request start (§4.4). Re-reading the live
+                # pool at persistence time would let an unbind landing
+                # mid-request write a row under the OLD canonical subject while
+                # stamping the account's NEW entity — and those stranded rows
+                # would then miss the persisted-entity equality that keeps the
+                # mixed pump closed.
+                entity_id = str(
+                    speaker_provenance.get('speaker_entity_id') or ''
+                ).strip()
+                if entity_id:
+                    request_provenance['speaker_entity_id'] = entity_id
             # label/trust predate stable speaker_id and remain valid request-
             # derived provenance on legacy callers.  Keep them independent:
             # model output still never enters this mapping.
@@ -3462,11 +3558,12 @@ class FactStore:
                 return
             from memory.speaker_trust import (
                 provenance_of_entries,
+                same_provenance_source,
                 stable_speaker_id,
             )
             provenance_keys = (
                 'speaker_id', 'speaker_label', 'speaker_trust',
-                'speaker_provenance_mixed',
+                'speaker_entity_id', 'speaker_provenance_mixed',
             )
             existing_speaker_id = stable_speaker_id(existing.get('speaker_id'))
             if existing.get('speaker_provenance_mixed') is True:
@@ -3478,7 +3575,39 @@ class FactStore:
                     existing, request_provenance,
                 ))
             else:
-                desired_provenance = {'speaker_provenance_mixed': True}
+                # Three-state. Canonical write routing makes two accounts of
+                # one person share a subject, and the fact hash is salted with
+                # the subject, so the same sentence now collides here for the
+                # first time. The old unconditional ``mixed`` would make that
+                # collision destroy the row's provenance permanently.
+                verdict = same_provenance_source(
+                    existing, request_provenance,
+                )
+                if verdict is False:
+                    # Genuinely two different people — today's behaviour, and
+                    # this regression must be preserved (I-P-6): the relaxation
+                    # applies to one person's accounts, NEVER across people.
+                    desired_provenance = {'speaker_provenance_mixed': True}
+                else:
+                    # ``True``  → same person, different account: keep the
+                    #             existing provenance verbatim. Abstain rather
+                    #             than merge, so ``min(trusts)`` can never
+                    #             ratchet an owner row down (see
+                    #             ``provenance_of_entries``).
+                    # ``None`` → unknown (pool unloaded / account unregistered).
+                    #             "I don't know" must never be written down as
+                    #             "I know it's mixed". Fail-closed: leave the
+                    #             row exactly as it is and count it.
+                    desired_provenance = {
+                        key: existing[key]
+                        for key in provenance_keys if key in existing
+                    }
+                    if verdict is None:
+                        logger.info(
+                            f"[FactStore] {lanlan_name}: {dedup_stage} "
+                            f"provenance_deferred fact_id={existing.get('id')} "
+                            f"(身份未知，保留原样、不写 mixed)"
+                        )
             current_provenance = {
                 key: existing[key]
                 for key in provenance_keys if key in existing
@@ -3506,6 +3635,12 @@ class FactStore:
         # id → fact 快查表：Stage-2 语义命中后按 id 找到既存 fact，比较 daily
         # event_date 决定是否豁免（跨日期重复事件不算 dup，CodeRabbit）。
         facts_by_id = {f.get('id'): f for f in existing_facts if f.get('id')}
+
+        if semantic_dedup and self._time_indexed is not None:
+            # 每批查一次（不是每条 fact），出了循环也就不需要进程内缓存。
+            await self._aensure_fact_index_backfilled(
+                lanlan_name, existing_facts,
+            )
 
         for fact in extracted:
             if not isinstance(fact, dict):
@@ -3603,18 +3738,21 @@ class FactStore:
                 )
                 continue
 
-            # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
+            # Stage 2: FTS5 近重复检索（轻量，无 LLM）。
+            #
+            # 这道闸**不再自己判定重复**（#2703）：文字重叠度高和「说的是同
+            # 一件事」不是一回事——「养了一只猫」和「养了一只狗」的 2/3-gram
+            # 重叠 0.87，是全场最高分，而它们必须各留一条。所以除了折叠归一
+            # 后 token 集完全相同（overlap 1.0，等价于 Stage-1 hash 的
+            # 繁简/停用名变体）之外，命中一律照常写入，只把 (新, 旧) 配对丢
+            # 给 fact_dedup 的 LLM 仲裁去裁 merge / replace / keep_both。
+            arbitration_hit: tuple[dict, float] | None = None
             if semantic_dedup and self._time_indexed is not None:
-                # FTS5 is still character-wide, so fetch a wider window and
-                # keep the historical "top-3 candidates" semantics *inside*
-                # the subject boundary: cross-subject rows neither count as
-                # duplicates nor consume the 3-candidate budget (a busy
-                # group would otherwise crowd legacy candidates out of a
-                # top-3 fetch and let legacy near-duplicates slip through).
                 # 扇出场景（同一事件按 subject 存 N 份、BM25 并列）可能把
                 # 首窗 10 条全部占满——此时本 subject 的候选在 rank 11 之后，
                 # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
-                # 文本本身是退化的口水句，去重已无意义）。
+                # 文本本身是退化的口水句，去重已无意义）。跨 subject / 跨
+                # entity / absorbed 的命中都只是被跳过，不影响扫描继续。
                 is_dup = False
                 duplicate_hit: dict | None = None
                 raw_limit = 10
@@ -3652,11 +3790,14 @@ class FactStore:
                     return archived_by_id
 
                 while True:
-                    similar = await self._time_indexed.asearch_facts(
+                    similar = await self._time_indexed.asearch_similar_facts(
                         lanlan_name, text, raw_limit,
                     )
-                    same_subject_seen = 0
-                    for fid, score in similar:
+                    # 每一趟都重扫全窗口并重挑：dice 是在 SQL 的 LIMIT
+                    # **之后**才算的，首窗里按 bm25 排在前面的行未必是
+                    # 重叠度最高的，扩窗后要以更大的窗口重新定夺。
+                    arbitration_hit = None
+                    for fid, overlap in similar:
                         hit = facts_by_id.get(fid)
                         if hit is None:
                             hit = (await _aarchived_by_id()).get(fid)
@@ -3672,10 +3813,7 @@ class FactStore:
                             or not entry_matches_subject(hit, memory_subject)
                         ):
                             continue
-                        same_subject_seen += 1
-                        if same_subject_seen > 3:
-                            break
-                        if score >= -5:
+                        if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
                             continue
                         if daily_event_date:
                             # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
@@ -3689,15 +3827,58 @@ class FactStore:
                             )
                             if hit_date and hit_date != daily_event_date:
                                 continue
-                        is_dup = True
-                        duplicate_hit = hit
-                        break
+                        if (hit.get('text') or '') == text:
+                            # 唯一允许直接丢弃新 fact 的判据：与命中行**逐字
+                            # 相同**。
+                            #
+                            # 这里一度做过各种归一（token 集 / 繁简折叠 / 去
+                            # 停用名 / 去标点 / 大小写 / 折空白），每一种都被
+                            # 找出反例：n-gram 集丢顺序（「喜欢猫，不喜欢狗」
+                            # 对「喜欢狗，不喜欢猫」）、繁简一对多（`鍾`/`鐘`
+                            # 都成 `钟`）、停用名表同时含双方名字（`主人喜欢
+                            # 猫`/`兰兰喜欢猫`）、标点带语义（`-10`/`10`）、
+                            # 大小写带语义（`/Foo`/`/foo`）、空白带语义
+                            # （`echo 'a  b'`/`echo 'a b'`）。结论是这条路上
+                            # 没有安全的归一——不可逆的丢弃只配得上逐字相等。
+                            #
+                            # 它仍然有活干：Stage-1 的 hash 集只含**活跃**行，
+                            # 所以「与某条归档行原文相同」这一类只有这里挡得
+                            # 住（归档行照旧参与拦截，是 main 上就有的行为）。
+                            is_dup = True
+                            duplicate_hit = hit
+                            break
+                        if (
+                            (hit.get('entity') or 'master') != entity
+                            or hit.get('absorbed')
+                        ):
+                            # 跨 entity：仲裁队列按 entity 分桶（向量侧
+                            # detect_candidates 同款边界），master / neko /
+                            # relationship 的事实撞在一起没有可比性，交给
+                            # LLM 只会诱发误合并。absorbed：已折进反思，把
+                            # 新文本并进去会把它从归档路径复活，比留着重复
+                            # 更糟。上面的硬挡都不受此限——Stage-1 的 hash
+                            # 同样不含 entity，跨 entity 的同一句话本来就
+                            # 只留一条；absorbed 行挡重复是既有行为。
+                            continue
+                        # 不再有「候选预算」：只取第一条（结果按 overlap
+                        # 降序，第一条就是最强的），所以数名额没有意义，而
+                        # 它带来的 break 会让扫描停在逐字相同那一行之前——
+                        # 几条 token 集相同但词序不同的行（overlap 都是
+                        # 1.0）排在前面，就能让真正的同文行永远没被看到。
+                        if arbitration_hit is None:
+                            arbitration_hit = (hit, overlap)
                     if (
                         is_dup
-                        or same_subject_seen >= 3
                         or len(similar) < raw_limit
                         or raw_limit >= 200
                     ):
+                        # 收手的理由只有一个：首窗没坐满（外面没东西了）。
+                        #
+                        # 刻意**不**因为「已经挑到候选」或「候选预算用完」
+                        # 就停：dice 是在 SQL 的 LIMIT 之后才算的，首窗里
+                        # 三条 0.26 的命中不该挡住窗外那条 0.9 的真重复
+                        # （它当时根本没被打分）。3 条预算只管「一趟里看
+                        # 几个候选」，不该当成「不用扩窗了」的信号。
                         break
                     raw_limit = 200
                 if is_dup:
@@ -3795,6 +3976,10 @@ class FactStore:
             # 静默丢弃 (Codex P2 round-10 on PR #1408)。
             hash_to_existing[content_hash] = fact_entry
             new_facts.append(fact_entry)
+            if arbitration_hit is not None:
+                near_dup_pairs.append(
+                    (fact_entry, arbitration_hit[0], arbitration_hit[1]),
+                )
 
             if self._time_indexed is not None:
                 try:
@@ -3866,6 +4051,213 @@ class FactStore:
                 reconciled_facts.extend(reconciled_by_identity.values())
 
         return new_facts
+
+    async def _aensure_fact_index_backfilled(
+        self, lanlan_name: str, active_facts: list[dict],
+    ) -> None:
+        """Populate the near-dup index once per character per process.
+
+        The index was rebuilt from scratch for #2703 (the old one indexed
+        raw text under a tokenizer that could not retrieve Chinese), and
+        ``index_fact`` only ever runs for a fact being written *now* — so
+        without this, every fact that predates the upgrade stays invisible
+        to Stage-2 and the check silently covers only new arrivals.
+
+        Archived rows go in too: they still block duplicates (an absorbed
+        row that stopped blocking would let its own text back in as a new
+        fact), and dropping them from the index would change that.
+
+        Best-effort by construction: a read-only or maintenance-mode
+        store just doesn't get the backfill this round, and the marker
+        stays unset so the next write retries.
+
+        Deliberately keeps **no** process-local "already done" set: that
+        cache would skip ``fts_index_needs_backfill`` entirely, so a
+        table dropped or replaced underneath a running process would
+        never be noticed (``index_fact`` would then rebuild an empty v2
+        while the persistent marker survives, losing the history even
+        across a restart). The check is one small query against
+        sqlite_master, run once per write batch rather than per fact.
+        """
+        if self._time_indexed is None:
+            return
+        try:
+            needs = await asyncio.to_thread(
+                self._time_indexed.fts_index_needs_backfill, lanlan_name,
+            )
+            if needs:
+                # id 一律**原样**带走，不要 str() 强转：本仓库允许 legacy 行
+                # 带非字符串标量 id（见 _speaker_trust_fact_id 的类型标注），
+                # 而 FTS5 的 `WHERE fact_id = :fid` 是类型敏感的——把 int 1
+                # 写成文本 "1"，隐私擦除按 int 1 删就删不掉，Stage-2 也用
+                # facts_by_id 反查不到。
+                # _readable_fact_id：facts.json 是用户/旧版本编辑过的普通
+                # 文件，id 位置可能是 list/dict。它们在别处一律当「不可用」
+                # 跳过，这里也必须——一行畸形 id 让整轮回填抛异常的话，标记
+                # 永远落不下，这个角色的近重复检索就此报废。
+                rows: list[tuple[object, str]] = [
+                    (fid, str(f.get('text') or ''))
+                    for f in active_facts
+                    if isinstance(f, dict)
+                    and (fid := _readable_fact_id(f)) is not None
+                ]
+
+                # 返回 None = 读失败，区别于「文件不存在」（合法的 0 行）。
+                # 把读失败当空归档的话，本轮回填会照常落下完成标记，而标记是
+                # 持久的——归档修好、进程重启都不会再回填，那些行从此挡不住
+                # 重复，与本方法 docstring 承诺的正相反。
+                def _read_archive() -> list[tuple[object, str]] | None:
+                    path = self._facts_archive_path(lanlan_name)
+                    if not os.path.exists(path):
+                        return []
+                    try:
+                        with open(path, encoding='utf-8') as fh:
+                            data = json.load(fh)
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                        return None
+                    if not isinstance(data, list):
+                        return None
+                    # 归档行**全部**入索引，包括仲裁败者。
+                    #
+                    # 一度按「Stage-2 反正会跳过败者，留着只占候选窗口」把
+                    # 它们剔掉过，结果是：`arestore_arbitrated_fact` 能把
+                    # 败者搬回 active，于是复活的行必须有人补索引，而补索引
+                    # 这件事的每一步（index_fact、作废回填标记）都自己吞异
+                    # 常、成功与失败无法区分——连着四轮 review 都在这条链上
+                    # 挖出「失败了但看不出来」。
+                    #
+                    # 那个剔除是个微优化（省几行候选窗口），换来的却是一整
+                    # 类静默失效。留着它们：Stage-2 检索到会跳过（在扣候选
+                    # 预算**之前**），首窗被占满还有一次扩窗到 200 兜底，而
+                    # 复活路径什么都不用做——行本来就在索引里。
+                    return [
+                        (fid, str(r.get('text') or ''))
+                        for r in data
+                        if isinstance(r, dict)
+                        and (fid := _readable_fact_id(r)) is not None
+                    ]
+
+                archived_rows = await asyncio.to_thread(_read_archive)
+                if archived_rows is None:
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 归档不可读，跳过本轮近重复索引回填"
+                    )
+                    return
+                rows.extend(archived_rows)
+                indexed = await self._time_indexed.abackfill_fact_index(
+                    lanlan_name, rows,
+                )
+                # 回填没跑成（indexed is None）不需要额外处理：标记只在
+                # backfill_fact_index 内部成功时才落，下一次写入自然重试。
+                if indexed:
+                    logger.info(
+                        f"[FactStore] {lanlan_name}: 回填 {indexed} 条 fact 到近重复索引"
+                    )
+        except Exception as e:
+            logger.debug(
+                f"[FactStore] {lanlan_name}: 近重复索引回填跳过: {e}"
+            )
+
+    @staticmethod
+    def _log_background_enqueue_result(task) -> None:
+        """Surface a background enqueue's outcome; nothing awaits it."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"[FactStore] 后台投递近重复候选失败: {exc}")
+
+    async def _aenqueue_near_dup_pairs(
+        self, lanlan_name: str,
+        pairs: list[tuple[dict, dict, float]],
+    ) -> None:
+        """Hand Stage-2's near-dup hits to the LLM arbitration queue.
+
+        Stage-2 knows two facts read alike; it does not know whether they
+        say the same thing. That question already has an owner —
+        ``FactDedupResolver`` batches (candidate, existing) pairs into one
+        LLM call classifying merge / replace / keep_both — and the vector
+        path feeds the very same queue, so a pair both paths find is
+        deduped by id inside ``aenqueue_candidates`` rather than arbitrated
+        twice.
+
+        Without a resolver attached (an embedded/legacy FactStore, or a
+        bootstrap that failed) the hits are logged and dropped: writing
+        both facts and saying so beats dropping one on textual overlap
+        alone.
+        """
+        from memory.fact_dedup import _fact_dedup_domain
+
+        resolver = self._dedup_resolver
+        if resolver is None:
+            logger.debug(
+                f"[FactStore] {lanlan_name}: {len(pairs)} 对近重复命中无仲裁队列可投递"
+            )
+            return
+        payload: list[dict] = []
+        for candidate, existing, overlap in pairs:
+            domain = _fact_dedup_domain(existing)
+            if domain is None:
+                continue
+            payload.append({
+                'candidate_id': candidate.get('id'),
+                'existing_id': existing.get('id'),
+                'candidate_subject_kind': candidate.get('subject_kind'),
+                'candidate_subject_id': candidate.get('subject_id'),
+                'candidate_scope': candidate.get('scope'),
+                'existing_subject_kind': existing.get('subject_kind'),
+                'existing_subject_id': existing.get('subject_id'),
+                'existing_scope': existing.get('scope'),
+                'entity': existing.get('entity') or 'master',
+                'subject_key': domain[0],
+                'scope': domain[1],
+                # 不塞 cosine（入队时按缺省落 0.0）：这两个数不是一回事，
+                # 而队列里的 cosine 会原样进仲裁 prompt，冒名顶替等于对模型
+                # 谎报证据强度。文字重叠单独一栏，detector 标明来路。
+                'text_overlap': overlap,
+                'detector': 'fts_near_dup',
+            })
+        if not payload:
+            return
+        try:
+            # 有界**等待**：resolver 的 per-character 锁会被 aresolve 攥着
+            # 跑完整个 LLM 调用（超时 60s）。scoped-history 之类的路由是直接
+            # await 到 _apersist_new_facts 的，fact 早就提交完了，不该让请求
+            # 再为一次无关的后台仲裁干等一分钟。
+            #
+            # ⚠️ shield 是必需的，不能直接 wait_for 那个协程：超时若正好落在
+            # 它已经拿到队列锁、进了 _asave_pending 之后，取消会放掉锁而
+            # atomic_write_json_async 的线程还在写——另一个写者同时做读改写，
+            # 两次原子替换后完成的那次会把先完成的整段更新盖掉。shield 之后
+            # 我们只是不再等，队列那边照常把自己写完。
+            enqueue = asyncio.ensure_future(
+                resolver.aenqueue_candidates(lanlan_name, payload)
+            )
+            appended = await asyncio.wait_for(
+                asyncio.shield(enqueue),
+                timeout=FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.info(
+                f"[FactStore] {lanlan_name}: 仲裁队列忙，{len(payload)} 对近重复"
+                f"候选改在后台投递"
+            )
+            enqueue.add_done_callback(self._log_background_enqueue_result)
+            return
+        except Exception as e:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: 近重复候选入队失败: {e}"
+            )
+            return
+        if not appended:
+            # 0 有两种含义：全撞了队列里的既有配对（正常），或维护态下队列
+            # 文件根本没写成（候选就此丢了——重试会撞 Stage-1 精确去重，
+            # Stage-2 不会再跑第二遍）。这里分不开，但至少让它留下痕迹，
+            # 别表现得像投递成功。
+            logger.debug(
+                f"[FactStore] {lanlan_name}: {len(payload)} 对近重复候选未入队"
+                f"（重复配对或队列不可写）"
+            )
 
     async def _aload_signal_targets(
         self, lanlan_name: str,
@@ -5048,9 +5440,13 @@ class FactStore:
             else:
                 entry['signal_processed'] = prev_signal
         for entry, previous in reversed(provenance_snapshots or []):
+            # Must be the SAME key set `_reconcile_existing_provenance` pops
+            # and rewrites — a key it wrote but this loop does not clear would
+            # survive the rollback and leave the cached row carrying an
+            # attribution that never reached disk.
             for key in (
                 'speaker_id', 'speaker_label', 'speaker_trust',
-                'speaker_provenance_mixed',
+                'speaker_entity_id', 'speaker_provenance_mixed',
             ):
                 entry.pop(key, None)
             entry.update(previous)

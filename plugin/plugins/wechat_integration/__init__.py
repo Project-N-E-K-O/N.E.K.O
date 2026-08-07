@@ -554,11 +554,14 @@ class WechatIntegrationPlugin(NekoPluginBase):
     async def _generate_wechat_reply(self, user_id: str, message: str) -> str | None:
         """生成微信回复。微信是主人专用通道，对话对象始终是主人。"""
         try:
-            from config.prompts.prompts_sys import SESSION_INIT_PROMPT
+            from config.prompts.prompts_sys import (
+                SESSION_INIT_PROMPT,
+                normalize_sys_prompt_locale,
+            )
             from main_logic.core import apply_role_placeholders
             from utils.config_manager import get_config_manager
             from utils.llm_client import create_chat_llm_async
-            from utils.language_utils import get_global_language
+            from utils.language_utils import get_global_language_full
 
             config_manager = get_config_manager()
             master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
@@ -585,15 +588,13 @@ class WechatIntegrationPlugin(NekoPluginBase):
                         character_card_fields[key] = value
 
             # 语言
-            user_language = get_global_language()
-            try:
-                from utils.i18n_utils import normalize_language_code
-                short_language = normalize_language_code(user_language, format="short") if normalize_language_code else user_language
-            except Exception:
-                short_language = user_language
+            # #2500 第 2 步：取全码再经 prompts_sys 归一。原先那次 format="short"
+            # 的短码化是顺手做的、不是有意的——它把 zh-TW 塌成 zh，繁中用户拿简体
+            # 模板。⚠️ 也不能拿全码裸查：简中的全码是 'zh-CN'，而这张表的简体键
+            # 是 'zh'。
+            short_language = normalize_sys_prompt_locale(get_global_language_full())
             init_prompt_template = SESSION_INIT_PROMPT.get(
-                short_language,
-                SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
+                short_language, SESSION_INIT_PROMPT["zh"],
             )
 
             # 构建 system prompt

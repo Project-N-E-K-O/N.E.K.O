@@ -47,6 +47,28 @@ UNIFIED_CHANNEL_SYSTEM_PROMPT = {
 只包含此列表中的渠道：{keys_json}。不要发明渠道。
 只返回 JSON 对象，不要 markdown 代码块，不要额外文字。""",
 
+    'zh-TW': """你是一個agentic automation assessment agent, 根據使用者的最新請求，判斷哪些Agent可以處理它。
+
+可用管道：
+{channels_block}
+
+指令：
+1. 分析對話，找出使用者最新的可執行請求。
+2. 對每個可用管道，判斷它能不能執行這項任務。
+3. 你應該選出最合適的單一管道，只為它設定 can_execute=true。
+   如果兩個管道同樣適合，你可以為兩個都設定 can_execute=true — 系統會用優先順序規則挑一個。
+4. 如果沒有管道能處理請求（例如純聊天、事實性問答），就對所有管道設定 can_execute=false。
+5. 如果有 `LATEST_USER_REQUEST`，以它為準，而不是助理宣稱的「已完成」。
+6. 純網頁任務（網頁搜尋、開啟 URL、填寫網頁表單、網頁內點擊）優先 `browser_use`；只有明確需要本機桌面應用程式、系統視窗、原生 GUI、跨應用程式鍵鼠操作時，才使用 `computer_use`。
+
+輸出格式（嚴格 JSON，不含其他內容）：
+{{
+{json_fields}
+}}
+
+只包含這份清單裡的管道：{keys_json}。不要自己發明管道。
+只回傳 JSON 物件，不要 markdown 程式碼區塊，不要多餘文字。""",
+
     'en': """You are an agentic automation assessment agent, given the user's latest request, decide which Agent(s) can handle it.
 
 Available Agents:
@@ -187,6 +209,9 @@ CHANNEL_DESC_QWENPAW = {
     'zh': ("- **qwenpaw**: 远程 Agent 系统 + 云端虚拟机。"
            "最适合需要完全自主的复杂、长时间任务（如多步研究、复杂网页工作流）。"
            "最慢最贵，但最强大。"),
+    'zh-TW': ("- **qwenpaw**: 遠端 Agent 系統 + 雲端虛擬機。"
+              "最適合需要完全自主的複雜、長時間任務（例如多步驟研究、複雜的網頁工作流程）。"
+              "最慢也最貴，但最強大。"),
     'en': ("- **qwenpaw**: Remote agent system running on a cloud VM. "
            "Best for complex, long-running tasks that need full autonomy (e.g., multi-step research, "
            "complex web workflows). Slowest and most expensive, but the most powerful."),
@@ -211,6 +236,9 @@ CHANNEL_DESC_OPENFANG = {
     'zh': ("- **openfang**: 本地 WASM 沙箱多 Agent 系统。"
            "适合需要工具编排的复合任务（数据处理、代码执行、多步思考、多维检索）。"
            "比浏览器慢但功能强大。不适合需要屏幕/GUI 交互的任务。"),
+    'zh-TW': ("- **openfang**: 本機 WASM 沙箱多 Agent 系統。"
+              "適合需要工具編排的複合任務（資料處理、程式碼執行、多步驟思考、多維度檢索）。"
+              "比瀏覽器慢但功能強大。不適合需要螢幕/GUI 互動的任務。"),
     'en': ("- **openfang**: Local WASM-sandboxed multi-agent system. "
            "Good for compound tasks requiring tool orchestration (data processing, "
            "code execution, multi-step reasoning, multi-dimensional retrieval). "
@@ -240,6 +268,10 @@ CHANNEL_DESC_BROWSER_USE = {
            "快速且经济，适合简单网页交互：打开 URL、填写网页表单、网页搜索、从网络下载。"
            "仅限本地浏览器任务 — 无法与操作系统应用交互。"
            "如果任务能在网页内完成，应优先选择它，而不是 `computer_use`。"),
+    'zh-TW': ("- **browser_use**: 本機瀏覽器自動化。"
+              "快又省，適合簡單的網頁互動：開啟 URL、填寫網頁表單、網頁搜尋、從網路下載。"
+              "只限本機瀏覽器任務 — 無法跟作業系統的應用程式互動。"
+              "如果任務能在網頁裡完成，應該優先選它，而不是 `computer_use`。"),
     'en': ("- **browser_use**: Local browser automation. "
            "Fast and cheap for simple web interactions: opening URLs, filling web forms, "
            "web search, downloading from the internet. "
@@ -276,6 +308,11 @@ CHANNEL_DESC_COMPUTER_USE = {
            "较慢、较贵，且会占用用户的鼠标键盘。"
            "在任务明确需要本地操作系统 GUI 交互时使用。"
            "如果网页内就能完成，不要优先选择它。"),
+    'zh-TW': ("- **computer_use**: 直接控制本機的鍵盤和滑鼠。"
+              "唯一能跟本機作業系統互動的管道（開啟桌面應用程式、點擊原生 UI 元件、控制滑鼠鍵盤）。"
+              "比較慢、比較貴，而且會佔用使用者的滑鼠鍵盤。"
+              "在任務明確需要本機作業系統 GUI 互動時才用。"
+              "如果在網頁裡就能完成，不要優先選它。"),
     'en': ("- **computer_use**: Direct local keyboard & mouse control. "
            "The ONLY channel that can interact with the local operating system "
            "(open desktop apps, click native UI elements, control the mouse/keyboard). "
@@ -363,6 +400,50 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",
+
+    'zh-TW': """你是一個使用者外掛automation assessment agent, 可用外掛清單：
+{plugins_desc}
+
+指令：
+1. 分析對話，判斷該不該為使用者的請求呼叫某個可用外掛。
+2. 看使用者的最新訊息／意圖 — 不要看 AI 有沒有回過話。AI 在對話裡回過話並不代表外掛就不需要；要評估的是使用者的請求能不能從外掛執行中得到好處。
+3. 如果可以，你必須回傳 plugin id、entry_id（該外掛裡要呼叫的具體入口）以及符合入口 schema 的 plugin_args。
+4. 如果無法確定具體是哪個外掛入口，就回傳 has_task=false 或 can_execute=false，並在 'reason' 欄位說明原因。
+5. 輸出必須只有一個 JSON 物件，不含其他內容。不要包含任何解釋性文字、markdown 或程式碼區塊。
+
+範例（必須嚴格照這個結構）：
+{{
+    "has_task": true,
+    "can_execute": true,
+    "task_description": "example: call testPlugin open entry",
+    "plugin_id": "testPlugin",
+    "entry_id": "open",
+    "plugin_args": {{"message": "hello"}},
+    "reason": ""
+}}
+
+輸出格式（嚴格 JSON）：
+{{
+    "has_task": boolean,
+    "can_execute": boolean,
+    "task_description": "簡要描述",
+    "plugin_id": "外掛 id 或 null",
+    "entry_id": "外掛裡的入口 id 或 null",
+    "plugin_args": {{...}} 或 null,
+    "reason": "原因"
+}}
+
+非常重要：
+- 只有在使用者最新的請求明確要求執行外掛能力、控制外部服務、查詢外掛狀態／資料，或明確授權外掛行動時，才設定 has_task=true。
+- 不要因為呼叫外掛「可能有幫助」、因為背景 turn_end 分析、因為一般閒聊、因為使用者沒有明確授權，或因為 AI 已經提過某個功能，就主動呼叫外掛。
+- 如果 has_task 和 can_execute 都是 true，entry_id 是必填的。
+- 如果 has_task/can_execute 為 true 但 entry_id 缺漏或為 null，這個回應會被視為不可執行。
+- 嚴格比對：plugin_id 和 entry_id 是程式識別碼。你必須從上面的可用外掛清單原樣複製（區分大小寫、逐字元比對）。不要發明、縮寫或改寫它們。如果找不到完全相符的，就設定 can_execute=false。
+- 如果入口有 args(...) 資訊，plugin_args 就用那些欄位名。只包含 schema 裡列出的欄位。
+- 當入口 schema 需要使用者文字欄位（例如 command/message/query/objective）時，必須照抄使用者最新訊息的原文；不要翻譯、摘要、改寫或自行補齊。
+- 如果使用者的意圖跟任何外掛描述的功能都對不太上，就設定 has_task=false。
+- 標了 [KEYWORD MATCH] 的外掛已經通過關鍵字預篩，優先考慮這些外掛符不符合使用者的意圖。
+只回傳 JSON 物件，不含其他內容。""",
 
     'en': """You are a User Plugin automation assessment agent, AVAILABLE PLUGINS:
 {plugins_desc}
@@ -644,6 +725,16 @@ USER_PLUGIN_COARSE_SCREEN_PROMPT = {
 
 指令：返回一个 JSON 数组，包含所有可能相关的插件ID。如果没有相关插件，返回空数组 []。
 只返回 JSON 数组，不要其他内容。""",
+
+    'zh-TW': """你是一個agentic automation assessment agent, 粗篩階段。根據使用者的請求，從以下外掛清單中選出所有可能相關的外掛 ID。
+
+可用外掛（id: 簡短描述）：
+{plugin_summaries}
+
+使用者請求：{user_text}
+
+指令：回傳一個 JSON 陣列，包含所有可能相關的外掛 ID。如果沒有相關的外掛，就回傳空陣列 []。
+只回傳 JSON 陣列，不要其他內容。""",
 
     'en': """You are an agentic automation assessment agent, coarse screening stage. Given the user's request, select ALL possibly relevant plugin IDs from the list below.
 

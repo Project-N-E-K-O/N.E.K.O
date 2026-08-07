@@ -4,17 +4,35 @@
 bound was "take the first 5"; a single merged reflection could be
 arbitrarily long, so the block had no ceiling at all.
 
-Two twins render that block — the QQ plugin's ``render_relevant_memory``
-and the main program's ``recall_memory`` tool handler. Both cap each entry
-by tokens (truncate, never drop — recall is relevance-ranked, so half of
-the hit still beats none of it) and both stop the block at the total
-budget. The last test in this file discovers the renderers instead of
-listing them, so a third one cannot be added un-budgeted.
+There is now ONE renderer — ``memory.recall_render.render_recall_block``.
+The QQ plugin's ``render_relevant_memory`` and the main app's
+``recall_memory`` tool handler are thin shells over it. That collapse is
+what these tests rest on, and it is why they look different from the
+version this file shipped with:
+
+Until issue #2588 the two shells were hand-written twins, and the guard
+against a third un-budgeted renderer was structural — parse the repo, find
+functions that render recall lines, check they CALL the two budget
+functions. That inference was defeated five times running (substring match,
+module-wide AST walk, a dead helper nested inside the renderer, a budget
+call parked in a return annotation, one parked in ``if False:``), and an
+adversarial pass then measured 12 more ways through, up to 95x over budget.
+The root problem is not fixable by tightening: "will this call execute, and
+is its result used" is undecidable, and each tightening also produced false
+positives that invite someone to weaken the guard later.
+
+So the budget is no longer inferred from source shape. It is measured, on
+the single render path, by the behavioural tests below — oversized input in,
+``count_tokens`` on what comes out. Two much cruder structural checks
+remain, and neither has to reason about execution: nobody but the entry
+point may call the recall label table, and every module that talks to
+``/query_memory`` must import the entry point.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +41,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from config import RECALL_RENDER_ENTRY_MAX_TOKENS, RECALL_RENDER_TOTAL_MAX_TOKENS
+from memory.recall_render import render_recall_block
 from utils.tokenize import count_tokens
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +130,9 @@ def test_shared_helper_always_emits_the_top_ranked_line():
     assert dropped == 1
 
 
+# ── the constants have to add up ─────────────────────────────────────
+
+
 def test_entry_cap_cannot_exceed_the_block_cap():
     """The per-entry cap is what keeps the helper's always-emit-one rule
     from blowing the block budget. Raise it above the total and the first
@@ -150,7 +172,7 @@ def test_block_cap_funds_a_full_page_of_max_length_entries():
     ).parameters["limit"].default
     assert isinstance(limit, int) and limit > 0
 
-    # Both renderers cap each rendered line at ENTRY + OVERHEAD, so a line
+    # The renderer caps each rendered line at ENTRY + OVERHEAD, so a line
     # of exactly that size is the worst case the block has to fund.
     per_line = RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS
     unit = "群里聊过的一件事情，"
@@ -182,26 +204,288 @@ def test_line_overhead_allowance_covers_what_the_renderer_actually_adds():
     measurement lands on exactly the allowance being checked and shrinking
     the constant shrinks the measurement with it — the assertion holds for
     any value, which is no assertion at all.
+
+    The decoration is locale-dependent (the tag and the relative-time label
+    are both translated), so every shipped locale has to fit the one
+    allowance.
     """
     from config import RECALL_RENDER_LINE_OVERHEAD_TOKENS
+    from config.prompts.prompts_memory import RECALL_ENTRY_TIER_LABEL
 
     body = "群里聊过的一件事情"
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory([
-            {
+    for lang in sorted(RECALL_ENTRY_TIER_LABEL["reflection"]):
+        rendered = render_recall_block(
+            [{
                 "text": body,
                 "tier": "reflection",
                 "entity": "group_participant",
                 "created_at": "2026-05-01T10:00:00",
-            },
-        ])
+            }],
+            lang,
+        ).text
 
-    assert body in rendered, "夹具失效：短条目被截断了，量到的就不是纯装饰"
-    overhead = count_tokens(rendered) - count_tokens(body)
-    assert 0 < overhead <= RECALL_RENDER_LINE_OVERHEAD_TOKENS, (
-        f"实测行装饰 {overhead} tok 超出预留的 "
-        f"{RECALL_RENDER_LINE_OVERHEAD_TOKENS} tok"
+        assert body in rendered, f"[{lang}] 夹具失效：短条目被截断了，量到的就不是纯装饰"
+        overhead = count_tokens(rendered) - count_tokens(body)
+        assert 0 < overhead <= RECALL_RENDER_LINE_OVERHEAD_TOKENS, (
+            f"[{lang}] 实测行装饰 {overhead} tok 超出预留的 "
+            f"{RECALL_RENDER_LINE_OVERHEAD_TOKENS} tok：{rendered!r}"
+        )
+
+
+# ── the single entry point: measured, not inferred ───────────────────
+
+
+def test_entry_point_truncates_an_oversized_entry_instead_of_dropping_it():
+    """A merged reflection can be thousands of tokens. Cut it, don't lose
+    it — the entry is there because it ranked highest for this query.
+
+    The per-line cap would bound the total on its own, so size alone
+    cannot tell the two apart. What only the per-entry cap buys is room
+    for the decoration: it trims the TEXT, leaving the trailing time
+    anchor intact, where a line-level cut would take the date off the end.
+    """
+    long_text = "露营的细节" * 2000
+    assert count_tokens(long_text) > RECALL_RENDER_ENTRY_MAX_TOKENS
+
+    rendered = render_recall_block([{
+        "text": long_text,
+        "tier": "fact",
+        "entity": "group_chat",
+        "created_at": "2026-05-01T10:00:00",
+    }], "zh").text
+
+    assert "露营的细节" in rendered, "超长条目应被截断保留，而不是整条消失"
+    assert re.search(r"\(2026-05-01(, .+)?\)$", rendered.rstrip()), (
+        f"正文没先按单条上限截断，时间后缀被整行截断吃掉了：{rendered[-40:]!r}"
     )
+    assert count_tokens(rendered) <= RECALL_RENDER_ENTRY_MAX_TOKENS + 32, (
+        f"单条召回未按 {RECALL_RENDER_ENTRY_MAX_TOKENS} tok 截断"
+    )
+
+
+def test_entry_point_block_stops_at_the_total_budget():
+    """Ten near-max entries must not add up to a 4000-token prompt block."""
+    chunk = "群里聊过的一件事情" * 200
+    results = [_result(f"{i}{chunk}") for i in range(10)]
+
+    block = render_recall_block(results, "zh")
+
+    assert block.text
+    assert count_tokens(block.text) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
+        f"召回段整体 {count_tokens(block.text)} tok 超过 "
+        f"{RECALL_RENDER_TOTAL_MAX_TOKENS} tok 预算"
+    )
+    # The block is a prefix of the relevance ranking, not a length-sorted
+    # subset: the top hit is always in and the tail is what goes.
+    assert block.text.startswith("1. ")
+    assert "10. " not in block.text
+    assert block.kept + block.dropped == 10, (
+        f"kept={block.kept} + dropped={block.dropped} 对不上喂进去的 10 条，"
+        f"调用方的日志会按这个数报错"
+    )
+
+
+def test_entry_point_keeps_short_entries_verbatim():
+    """The budget must not touch the ordinary case."""
+    block = render_recall_block([
+        _result("群里在聊露营"),
+        _result("阿离喜欢辣条", tier="reflection", entity="group_participant"),
+    ], "zh")
+
+    assert "群里在聊露营" in block.text
+    assert "阿离喜欢辣条" in block.text
+    assert block.text.count("\n") == 1
+    assert (block.kept, block.dropped) == (2, 0)
+
+
+def test_entry_point_numbers_stay_contiguous_when_an_entry_has_no_text():
+    """A textless entry is skipped BEFORE numbering, not after.
+
+    Both former twins filtered inside an ``enumerate`` over the raw
+    results, so an empty hit burned its index and the model was handed
+    ``1. ... / 3. ...`` — a gap it can only read as "entry 2 was withheld
+    from me".
+    """
+    block = render_recall_block([
+        _result("第一条"),
+        _result("   "),
+        {"text": None, "tier": "fact", "entity": "group_chat"},
+        _result("最后一条"),
+    ], "zh")
+
+    numbers = [ln.split(".", 1)[0] for ln in block.text.split("\n")]
+    assert numbers == ["1", "2"], f"编号出现跳号：{block.text!r}"
+    assert block.kept == 2
+
+
+def test_entry_point_skips_non_mapping_entries():
+    """Upstream JSON is not a contract. A malformed ``results`` list with a
+    string or None in it must not take the whole tool call down with an
+    AttributeError."""
+    block = render_recall_block(
+        ["不是 dict", None, 42, _result("真正的一条")], "zh",
+    )
+
+    assert block.text.startswith("1. ")
+    assert "真正的一条" in block.text
+    assert block.kept == 1
+
+
+_LONG_TAG_RESULT = {
+    "text": "群里在聊露营",
+    "tier": "fact",
+    # `render_recall_entry_tag` echoes unknown enums verbatim, and a
+    # hand-edited facts.json can hold anything here. The per-entry cap
+    # only trims `text`, so without a line-level cap this rides straight
+    # into the prompt — and the block's always-keep-one rule guarantees
+    # it is never the entry that gets dropped.
+    "entity": "损坏的超长 entity 值" * 500,
+}
+
+
+def test_entry_point_bounds_a_line_whose_tag_is_corrupt():
+    rendered = render_recall_block([_LONG_TAG_RESULT], "zh").text
+
+    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
+        f"畸形 entity 让整段涨到 {count_tokens(rendered)} tok，越过了 "
+        f"{RECALL_RENDER_TOTAL_MAX_TOKENS} 的安全上限"
+    )
+
+
+@pytest.mark.parametrize(
+    "entry,expected",
+    [
+        (
+            {
+                "event_end_at": "2026-05-03T10:00:00",
+                "event_start_at": "2026-05-02T10:00:00",
+                "created_at": "2026-06-01T10:00:00",
+            },
+            "2026-05-03",
+        ),
+        (
+            {
+                "event_start_at": "2026-05-02T10:00:00",
+                "created_at": "2026-06-01T10:00:00",
+            },
+            "2026-05-02",
+        ),
+        ({"created_at": "2026-06-01T10:00:00"}, "2026-06-01"),
+        # Non-empty but unparseable high-priority fields must fall through
+        # rather than stop the search — a manual edit or a migration leaves
+        # exactly this shape, and picking by truthiness renders a garbage
+        # date while a usable anchor sits one field down.
+        (
+            {
+                "event_end_at": "去年夏天",
+                "event_start_at": 1234567890,
+                "created_at": "2026-06-01T10:00:00",
+            },
+            "2026-06-01",
+        ),
+    ],
+    ids=["event_end", "event_start", "created", "unparseable-falls-through"],
+)
+def test_entry_point_anchors_on_when_it_happened_not_when_it_was_written(
+    entry, expected,
+):
+    """``event_end_at`` → ``event_start_at`` → ``created_at``, same order as
+    the persona stale block and temporal ``_past_anchor``.
+
+    These fields had ZERO fixtures in this file before issue #2588, which
+    is how B7 ("append un-budgeted text keyed on a field nobody sets") got
+    past all 24 tests here.
+    """
+    rendered = render_recall_block(
+        [{"text": "露营", "tier": "fact", "entity": "user", **entry}], "zh",
+    ).text
+
+    assert expected in rendered, f"时间锚点选错了：{rendered!r}"
+
+
+def test_entry_point_stays_in_budget_with_every_time_field_populated():
+    """Budget measured on entries where EVERY renderable field is set.
+
+    The sparse fixtures elsewhere in this file leave the event-time fields
+    empty, so text appended after the budget on their account was free —
+    measured at 1.01x and climbing with the data (issue #2588, B7). Fill
+    them in and the same append is a red test.
+    """
+    chunk = "露营的细节" * 200
+    results = [
+        {
+            "text": f"{i}{chunk}",
+            "tier": "reflection",
+            "entity": "group_participant",
+            "event_start_at": "2026-05-01T09:00:00",
+            "event_end_at": "2026-05-03T18:30:00",
+            "created_at": "2026-06-01T10:00:00",
+        }
+        for i in range(10)
+    ]
+
+    block = render_recall_block(results, "zh")
+
+    assert count_tokens(block.text) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
+        f"条目字段填满后整段 {count_tokens(block.text)} tok 超过预算 "
+        f"{RECALL_RENDER_TOTAL_MAX_TOKENS}——有内容是在预算之后追加的"
+    )
+    assert block.dropped, "夹具失效：没触发丢弃，这条用例什么都没测到"
+
+
+@pytest.mark.parametrize("lang", ["zh", "en", "ja"])
+def test_entry_point_charges_the_header_to_the_same_budget(lang):
+    """The overview line lands in the same string, so it comes out of the
+    same allowance.
+
+    The gate is set right at "two entries plus the header", where leaving
+    the header unpaid buys exactly one entry too many. A roomier fixture
+    cannot show this: the greedy stop usually leaves more slack than a
+    header costs, so the block stays under budget either way and the
+    assertion passes for the wrong reason. Header width is locale-
+    dependent (``ja`` is over twice ``en``), hence the parametrize —
+    a reservation tuned against Chinese would pass zh and fail ja.
+    """
+    from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
+
+    header_template = RECALL_MEMORY_TOOL_FOUND_HEADER[lang]
+    results = [_result(f"第{i}条召回到的记忆内容") for i in range(4)]
+    probe = render_recall_block(results[:1], lang, header_template=header_template)
+    line_cost = count_tokens(probe.text.split("\n")[1])
+    gate = 2 * line_cost + count_tokens(header_template.format(n=2))
+
+    with patch("config.RECALL_RENDER_TOTAL_MAX_TOKENS", gate):
+        block = render_recall_block(results, lang, header_template=header_template)
+
+    assert block.kept, "夹具失效：一条都没渲染出来"
+    assert count_tokens(block.text) <= gate, (
+        f"locale={lang}：整段 {count_tokens(block.text)} tok 超过闸门 {gate}"
+        f"——首行总览没有从预算里扣掉"
+    )
+
+
+def test_entry_point_header_counts_what_survived():
+    """Announcing "found 10" and then listing 3 makes the model believe it
+    lost seven results and call the tool again."""
+    from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
+
+    chunk = "聊过的一件事情" * 200
+    template = RECALL_MEMORY_TOOL_FOUND_HEADER["zh"]
+    block = render_recall_block(
+        [_result(f"{i}{chunk}") for i in range(10)], "zh",
+        header_template=template,
+    )
+
+    lines = block.text.split("\n")
+    listed = [ln for ln in lines[1:] if ln.strip()]
+    assert listed, "夹具失效：一条都没渲染出来"
+    assert len(listed) < 10, "夹具失效：没触发丢弃，这条用例什么都没测到"
+    # 整行相等，不是子串包含：`str(4) in "找到 41 条相关记忆"` 会放过任何
+    # 以正确数字开头的错误计数。
+    assert lines[0] == template.format(n=len(listed)), (
+        f"首行总览与实际条数不符：{lines[0]!r} vs {len(listed)} 条"
+    )
+    assert block.kept == len(listed)
 
 
 def test_a_full_page_of_max_length_entries_all_survive():
@@ -218,8 +502,7 @@ def test_a_full_page_of_max_length_entries_all_survive():
         for i in range(5)
     ]
 
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory(results)
+    rendered = render_recall_block(results, "zh").text
 
     assert len(rendered.split("\n")) == 5, (
         f"5 条满额召回没能全部进 prompt：\n{rendered[:200]}"
@@ -227,7 +510,7 @@ def test_a_full_page_of_max_length_entries_all_survive():
     assert rendered.startswith("1. ") and "\n5. " in rendered
 
 
-# ── plugin side: memory_bridge.render_relevant_memory ────────────────
+# ── the two shells that call it ──────────────────────────────────────
 
 
 def _bridge():
@@ -236,68 +519,55 @@ def _bridge():
     return QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
 
 
-def test_plugin_recall_truncates_an_oversized_entry_instead_of_dropping_it():
-    """A merged reflection can be thousands of tokens. Cut it, don't lose
-    it — the entry is there because it ranked highest for this query.
+def test_plugin_shell_renders_the_budgeted_block():
+    """The QQ side is a shell: same input, same string as the entry point.
 
-    The per-line cap would bound the total on its own, so size alone
-    cannot tell the two apart. What only the per-entry cap buys is room
-    for the decoration: it trims the TEXT, leaving the trailing date
-    intact, where a line-level cut would take the date off the end.
+    Compared against the entry point's own output rather than re-asserting
+    the budget, so this stays true if the format changes — what it pins is
+    that the shell adds no line building of its own. (It has: this side
+    used to cut its own date suffix with ``anchor[:10]``, losing the
+    relative-time label the main app showed.)
     """
-    long_text = "露营的细节" * 2000
-    assert count_tokens(long_text) > RECALL_RENDER_ENTRY_MAX_TOKENS
-
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory([{
-            "text": long_text,
-            "tier": "fact",
-            "entity": "group_chat",
+    results = [
+        _result("群里在聊露营"),
+        {
+            "text": "阿离喜欢辣条",
+            "tier": "reflection",
+            "entity": "group_participant",
             "created_at": "2026-05-01T10:00:00",
-        }])
+        },
+    ]
+    kept_out: list[int] = []
 
-    assert rendered, "超长条目应被截断保留，而不是整条消失"
-    assert "露营的细节" in rendered
-    assert rendered.rstrip().endswith("(2026-05-01)"), (
-        "正文没先按单条上限截断，日期后缀被整行截断吃掉了"
-    )
-    assert count_tokens(rendered) <= RECALL_RENDER_ENTRY_MAX_TOKENS + 32, (
-        f"单条召回未按 {RECALL_RENDER_ENTRY_MAX_TOKENS} tok 截断"
-    )
+    with patch(
+        "utils.language_utils.get_global_language_full", return_value="zh",
+    ):
+        rendered = _bridge().render_relevant_memory(results, kept_count_out=kept_out)
+
+    assert rendered == render_recall_block(results, "zh").text
+    assert kept_out == [2]
 
 
-def test_plugin_recall_block_stops_at_the_total_budget():
-    """Ten near-max entries must not add up to a 4000-token prompt block."""
+def test_plugin_shell_reports_the_drop_without_needing_a_logger():
+    """A missing logger must never cost the user their memory block.
+
+    ``render_relevant_memory`` had no plugin dependency at all until a
+    diagnostic line was added; an AttributeError there is swallowed by the
+    caller's ``except`` and the whole recall block silently disappears.
+    """
     chunk = "群里聊过的一件事情" * 200
-    results = [_result(f"{i}{chunk}") for i in range(10)]
+    bridge = _bridge()
+    bridge.plugin = SimpleNamespace()  # no .logger at all
 
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory(results)
+    with patch(
+        "utils.language_utils.get_global_language_full", return_value="zh",
+    ):
+        rendered = bridge.render_relevant_memory(
+            [_result(f"{i}{chunk}") for i in range(10)],
+        )
 
-    assert rendered
-    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
-        f"召回段整体超过 {RECALL_RENDER_TOTAL_MAX_TOKENS} tok 预算"
-    )
-    # The block is a prefix of the relevance ranking, not a length-sorted
-    # subset: the top hit is always in and the tail is what goes.
     assert rendered.startswith("1. ")
-    assert "10. " not in rendered
-
-
-def test_plugin_recall_keeps_short_entries_verbatim():
-    """The budget must not touch the ordinary case."""
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory([
-            _result("群里在聊露营"),
-            _result("阿离喜欢辣条", tier="reflection", entity="group_participant"),
-        ])
-
-    assert "群里在聊露营" in rendered
-    assert "阿离喜欢辣条" in rendered
-    assert rendered.count("\n") == 1
-
-
-# ── main-app twin: the recall_memory tool handler ────────────────────
+    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS
 
 
 class _ToolHarness:
@@ -312,7 +582,9 @@ class _ToolHarness:
         self.memory_server_port = 12345
 
 
-async def _call_tool(results: list[dict]) -> str:
+async def _call_tool_in(lang: str, results: list[dict]) -> str:
+    harness = _ToolHarness()
+    harness.user_language = lang
     payload = {"results": results, "elapsed_ms": 3.0}
     response = SimpleNamespace(
         is_success=True, status_code=200, text="", json=lambda: payload,
@@ -322,35 +594,15 @@ async def _call_tool(results: list[dict]) -> str:
         "utils.internal_http_client.get_internal_http_client",
         return_value=client,
     ):
-        return await _ToolHarness()._handle_recall_memory_call({"query": "露营"})
+        return await harness._handle_recall_memory_call({"query": "露营"})
+
+
+async def _call_tool(results: list[dict]) -> str:
+    return await _call_tool_in("zh", results)
 
 
 @pytest.mark.asyncio
-async def test_tool_recall_truncates_an_oversized_entry_instead_of_dropping_it():
-    """Main-app twin of the plugin cap. This repo has shipped a group-side
-    fix without the private-side one before.
-
-    Same reasoning as the plugin twin: the time suffix surviving is what
-    distinguishes trimming the text from cutting the whole line.
-    """
-    long_text = "露营的细节" * 2000
-    rendered = await _call_tool([{
-        "text": long_text,
-        "tier": "fact",
-        "entity": "group_chat",
-        "created_at": "2026-05-01T10:00:00",
-    }])
-
-    assert "露营的细节" in rendered
-    assert rendered.rstrip().endswith(")"), (
-        "正文没先按单条上限截断，时间后缀被整行截断吃掉了"
-    )
-    assert "2026-05-01" in rendered
-    assert count_tokens(rendered) <= RECALL_RENDER_ENTRY_MAX_TOKENS + 64
-
-
-@pytest.mark.asyncio
-async def test_tool_recall_block_stops_at_the_total_budget():
+async def test_tool_shell_block_stops_at_the_total_budget():
     """hybrid_recall returns more than the plugin's five, so this side is
     where the total gate actually binds.
 
@@ -371,63 +623,25 @@ async def test_tool_recall_block_stops_at_the_total_budget():
     )
 
 
-async def _call_tool_in(lang: str, results: list[dict]) -> str:
-    harness = _ToolHarness()
-    harness.user_language = lang
-    payload = {"results": results, "elapsed_ms": 3.0}
-    response = SimpleNamespace(
-        is_success=True, status_code=200, text="", json=lambda: payload,
-    )
-    client = SimpleNamespace(post=AsyncMock(return_value=response))
-    with patch(
-        "utils.internal_http_client.get_internal_http_client",
-        return_value=client,
-    ):
-        return await harness._handle_recall_memory_call({"query": "露营"})
-
-
-@pytest.mark.parametrize("lang", ["zh", "en", "ja"])
 @pytest.mark.asyncio
-async def test_tool_recall_reserves_room_for_its_localized_header(lang):
-    """The overview line lands in the same string, so it comes out of the
-    same allowance.
-
-    The gate is set right at "two entries plus the header", where leaving
-    the header unpaid buys exactly one entry too many. A roomier fixture
-    cannot show this: the greedy stop usually leaves more slack than a
-    header costs, so the block stays under budget either way and the
-    assertion passes for the wrong reason. Header width is locale-
-    dependent (``ja`` is over twice ``en``), hence the parametrize —
-    a reservation tuned against Chinese would pass zh and fail ja.
-    """
+async def test_tool_shell_passes_its_localized_header_to_the_entry_point():
+    """The overview line is the tool side's own contribution, and it is
+    charged to the block budget only because the shell hands it over as
+    ``header_template`` — a shell that formatted it itself and prepended
+    the result would put it outside the budget again."""
     from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
 
-    results = [_result(f"第{i}条召回到的记忆内容") for i in range(4)]
-    rendered_probe = await _call_tool_in(lang, results[:1])
-    header_probe = RECALL_MEMORY_TOOL_FOUND_HEADER[lang].format(n=2)
-    line_cost = count_tokens(rendered_probe.split("\n")[1])
-    header_cost = count_tokens(header_probe)
-    gate = 2 * line_cost + header_cost
+    results = [_result("露营那次带了帐篷"), _result("阿离没去")]
 
-    with patch(
-        # tool_calling 在函数体里 `from config import ...`，每次调用都重新
-        # 绑定，所以必须打在 config 上而不是模块属性上。
-        "config.RECALL_RENDER_TOTAL_MAX_TOKENS", gate,
-    ):
-        rendered = await _call_tool_in(lang, results)
+    rendered = await _call_tool(results)
 
-    listed = [ln for ln in rendered.split("\n")[1:] if ln.strip()]
-    assert listed, "夹具失效：一条都没渲染出来"
-    assert count_tokens(rendered) <= gate, (
-        f"locale={lang}：整段 {count_tokens(rendered)} tok 超过闸门 {gate}"
-        f"——首行总览没有从预算里扣掉"
-    )
+    assert rendered == render_recall_block(
+        results, "zh", header_template=RECALL_MEMORY_TOOL_FOUND_HEADER["zh"],
+    ).text
 
 
 @pytest.mark.asyncio
-async def test_tool_recall_header_count_matches_what_was_actually_rendered():
-    """Announcing "found 10" and then listing 3 makes the model believe it
-    lost seven results and call the tool again."""
+async def test_tool_shell_header_count_matches_what_was_actually_rendered():
     chunk = "聊过的一件事情" * 200
     rendered = await _call_tool([_result(f"{i}{chunk}") for i in range(10)])
 
@@ -437,44 +651,9 @@ async def test_tool_recall_header_count_matches_what_was_actually_rendered():
     listed = [ln for ln in lines[1:] if ln.strip()]
     assert listed, "夹具失效：一条都没渲染出来"
     assert len(listed) < 10, "夹具失效：没触发丢弃，这条用例什么都没测到"
-    # 整行相等，不是子串包含：`str(4) in "找到 41 条相关记忆"` 会放过任何
-    # 以正确数字开头的错误计数。
     assert lines[0] == RECALL_MEMORY_TOOL_FOUND_HEADER["zh"].format(
         n=len(listed)
     ), f"首行总览与实际条数不符：{lines[0]!r} vs {len(listed)} 条"
-
-
-# ── nothing on a rendered line is unbounded ──────────────────────────
-
-
-_LONG_TAG_RESULT = {
-    "text": "群里在聊露营",
-    "tier": "fact",
-    # `render_recall_entry_tag` echoes unknown enums verbatim, and a
-    # hand-edited facts.json can hold anything here. The per-entry cap
-    # only trims `text`, so without a line-level cap this rides straight
-    # into the prompt — and the block's always-keep-one rule guarantees
-    # it is never the entry that gets dropped.
-    "entity": "损坏的超长 entity 值" * 500,
-}
-
-
-def test_plugin_recall_bounds_a_line_whose_tag_is_corrupt():
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory([_LONG_TAG_RESULT])
-
-    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
-        f"畸形 entity 让整段涨到 {count_tokens(rendered)} tok，越过了 "
-        f"{RECALL_RENDER_TOTAL_MAX_TOKENS} 的安全上限"
-    )
-
-
-@pytest.mark.asyncio
-async def test_tool_recall_bounds_a_line_whose_tag_is_corrupt():
-    """Main-app twin of the same hole."""
-    rendered = await _call_tool([_LONG_TAG_RESULT])
-
-    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS
 
 
 # ── recall tokenization stays off the event loop ─────────────────────
@@ -515,7 +694,7 @@ async def test_plugin_recall_render_runs_off_the_event_loop():
 
     with patch.object(bridge, "_client", return_value=client), \
             patch("utils.tokenize.truncate_to_tokens", recording), \
-            patch("utils.language_utils.get_global_language", return_value="zh"):
+            patch("utils.language_utils.get_global_language_full", return_value="zh"):
         await bridge.query_relevant_memory("Neko", "露营")
 
     assert threads, "夹具失效：渲染根本没调用 truncate_to_tokens"
@@ -563,596 +742,224 @@ def test_qq_section_wrapper_stays_fixed_size():
     )
 
 
-# ── discovery guard: no un-budgeted third renderer ───────────────────
+# ── structural guards: the entry point is the only way in ────────────
+#
+# Deliberately crude. Neither of these asks whether a budget call executes
+# or whether its result is used — that question is undecidable, five
+# rounds of trying is what issue #2588 documents, and the answer here is
+# that there is only one render path and it is measured above. What is
+# left is to keep it the ONLY one.
 
-# ONE literal, used by both the module scan and the function scan. They
-# each held their own copy until the two were noticed drifting apart in
-# review — and a docstring below claimed they were already unified.
-_RECALL_RENDER_MARKER = "render_recall_entry_tag"
+_ENTRY_POINT = "memory/recall_render.py"
+
+_SKIP_DIR_PARTS = {
+    ".venv", "venv", "node_modules", "__pycache__", ".git", "build",
+    "dist", ".claude", "tests", "docs",
+}
 
 
-def _discovered_recall_renderers() -> dict[str, str]:
-    """Every module that renders a recall block, found by scanning.
+def _repo_python_sources() -> dict[str, str]:
+    """``{relative posix path: source}`` for every non-test module.
 
-    A hand-kept list only covers the sites whoever wrote it knew about,
-    and this repo's recall block has already grown from one to two. The
-    marker is ``render_recall_entry_tag`` — the shared label table both
-    shipped recall renderers go through — so a third one written the same
-    way shows up here the moment it exists.
-
-    ⚠️ KNOWN BLIND SPOT — see issue #2588. The marker is a proxy for "renders
-    the localized tier/entity prefix", not for "renders recall results into
-    a prompt", and the two come apart for any surface that reasonably
-    chooses NOT to label its entries — a 1:1 chat, where every entity is
-    the same, is the obvious case. Such a renderer contains no marker, is
-    never parsed, and every guard below silently skips it. Nothing here
-    detects that; do not read a green run as "no un-budgeted renderer
-    exists".
+    An unreadable file FAILS rather than being skipped. The previous scan
+    swallowed ``OSError`` / ``UnicodeDecodeError`` with a ``continue``, so
+    a module in any other encoding was silently exempt from every guard
+    below — measured at 10x over budget (issue #2588, A3).
     """
-    marker = _RECALL_RENDER_MARKER
-    skip_parts = {
-        ".venv", "venv", "node_modules", "__pycache__", ".git", "build",
-        "dist", ".claude", "tests",
-    }
-    renderers: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    unreadable: list[str] = []
     for path in _REPO_ROOT.rglob("*.py"):
         # Relative parts, not absolute: this checkout lives under a
         # `.claude/worktrees/...` path, so filtering on absolute parts
         # skips the entire repository and the scan silently finds nothing.
         rel = path.relative_to(_REPO_ROOT)
-        if skip_parts & set(rel.parts):
+        if _SKIP_DIR_PARTS & set(rel.parts):
             continue
         try:
-            source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if marker not in source:
-            continue
-        # The label table's own module defines the marker; it renders no block.
-        if rel.as_posix() == "config/prompts/prompts_memory.py":
-            continue
-        renderers[rel.as_posix()] = source
-    return renderers
+            sources[rel.as_posix()] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            unreadable.append(f"{rel.as_posix()} ({type(exc).__name__})")
+    assert not unreadable, (
+        f"这些 .py 读不出来，下面的护栏对它们是空转的：{unreadable}。"
+        f"非 UTF-8 模块请转成 UTF-8，别让扫描静默跳过"
+    )
+    return sources
 
 
-_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+def _files_calling(sources: dict[str, str], func_name: str) -> set[str]:
+    """Files with a CALL to ``func_name`` — ``def`` and ``import`` don't count.
 
-
-def _called_function_names(node: ast.AST) -> set[str]:
-    """Function names called on `node`'s OWN execution path.
-
-    Two exclusions, both of them holes this guard has already been through:
-
-    Nested scopes. ``ast.walk`` descends into nested ``def`` / ``class`` /
-    ``lambda`` bodies, which attributes a nested helper's calls to the
-    function enclosing it: park a never-called ``def`` inside the real
-    renderer, move both budget calls into it, and the renderer looks
-    budgeted while its actual render path is not. A nested function that
-    renders a recall block of its own is picked up on its own by
-    ``_recall_render_functions`` — being nested does not exempt it, and
-    being an enclosing scope does not earn credit for it.
-
-    Signature and decorator fields. Seeding from ``iter_child_nodes(node)``
-    also sweeps ``decorator_list``, ``args`` (parameter defaults and
-    annotations) and ``returns``. Those run at def/import time, not on the
-    render path — and under ``from __future__ import annotations`` an
-    annotation is never evaluated at all — so a budget call parked in a
-    return annotation satisfies the guard while the body stays unbounded.
-    Seed from ``node.body``: the statements that actually execute when the
-    renderer is called.
-
-    Statically dead statements. ``if False:`` / ``if 0:`` /
-    ``if TYPE_CHECKING:`` bodies, ``while False:`` bodies, and anything
-    after an unconditional ``return`` / ``raise`` / ``break`` / ``continue``
-    never run, so a budget call parked in one of them is the nested-helper
-    trick again without the helper.
-
-    Comprehensions are NOT skipped: they carry their own scope at runtime
-    but a call inside one is genuinely on this function's execution path.
-
-    ⚠️ WHAT THIS DOES NOT DO, stated because this docstring has already
-    been wrong twice. It is constant folding, not reachability analysis:
-    a branch on a module-level or env flag, a call after ``sys.exit()``,
-    an ``except`` clause that cannot fire, a loop that never iterates —
-    all still count as "called". And even perfect reachability would not
-    settle the real question, because the guard checks that the budget
-    functions are CALLED, never that their results are USED: discard the
-    return value of ``take_lines_within_token_budget`` and join the
-    original list, or append un-budgeted text after the budget runs, and
-    every check here stays green while the prompt is unbounded. Both were
-    measured (45x and 1.01x-and-climbing over budget); issue #2588 has the
-    full list.
-
-    So: a green run here means "no recall renderer has an obviously
-    decorative budget call". It does not mean the budget runs, and it does
-    not mean the block is bounded. What actually bounds the two shipped
-    renderers is the behavioural tests in this file, which render
-    oversized input and measure the result. Adversarial fixtures for every
-    shape this function DOES catch live in
-    ``test_call_scan_ignores_names_that_never_run``, with the strict dual
-    in ``test_call_scan_still_sees_budget_calls_that_do_run``.
+    Call sites, not text: mentioning the name in a comment, importing it,
+    or defining it is not calling it. Attribute calls (``mod.f(...)``)
+    count on the attribute name, so re-exporting the table under another
+    module does not launder it.
     """
-    names: set[str] = set()
-    _collect_calls_in_block(getattr(node, 'body', []) or [], names)
-    return names
-
-
-_TERMINATORS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
-
-# `match_case` only exists on 3.10+; the tuple stays valid either way.
-_MATCH_CASE = getattr(ast, "match_case", ())
-
-
-def _constant_truth(test: ast.AST) -> bool | None:
-    """`True`/`False` when `test` is decidable at parse time, else `None`.
-
-    ``TYPE_CHECKING`` counts as False: it is True only for type checkers,
-    and never when the renderer actually runs.
-    """
-    if isinstance(test, ast.Constant):
+    out: set[str] = set()
+    for rel, source in sources.items():
         try:
-            return bool(test.value)
-        except Exception:  # pragma: no cover — exotic __bool__ in a literal
-            return None
-    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-        inner = _constant_truth(test.operand)
-        return None if inner is None else (not inner)
-    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
-        return False
-    if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
-        return False
-    return None
-
-
-def _collect_calls_in_block(body: list, names: set[str]) -> None:
-    """Walk a statement list, skipping branches that cannot execute."""
-    for stmt in body:
-        if isinstance(stmt, _NESTED_SCOPES):
+            tree = ast.parse(source)
+        except SyntaxError:  # pragma: no cover — a broken file fails elsewhere
             continue
-        if isinstance(stmt, ast.If):
-            truth = _constant_truth(stmt.test)
-            if truth is True:
-                _collect_calls_in_block(stmt.body, names)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
-            if truth is False:
-                _collect_calls_in_block(stmt.orelse, names)
-                continue
-        if isinstance(stmt, ast.While) and _constant_truth(stmt.test) is False:
-            _collect_calls_in_block(stmt.orelse, names)
-            continue
-        # Hand nested statement LISTS over whole, not one statement at a
-        # time. `iter_child_nodes` flattens them, and a one-element list
-        # makes the terminator rule below a no-op inside every compound
-        # statement — `for ...: return; truncate_to_tokens(...)` would
-        # still count. That made the docstring's "anything after an
-        # unconditional return" true only of the outermost block.
-        for field, value in ast.iter_fields(stmt):
-            if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
-                _collect_calls_in_block(value, names)
-            elif isinstance(value, ast.stmt):
-                _collect_calls_in_block([value], names)
-            elif isinstance(value, ast.AST):
-                _collect_calls_in_expr(value, names)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, ast.AST):
-                        _collect_calls_in_expr(item, names)
-        if isinstance(stmt, _TERMINATORS):
-            return
-
-
-def _collect_calls_in_expr(node: ast.AST, names: set[str]) -> None:
-    """Collect call names from an expression subtree.
-
-    Recurses back into `_collect_calls_in_block` for any statement it meets
-    so the two halves cannot drift. ``except`` clauses and ``match`` cases
-    are neither statements nor expressions in the grammar (`excepthandler`
-    / `match_case`), so they get an explicit hand-off — otherwise their
-    bodies arrive here one statement at a time and the terminator rule
-    stops applying inside them.
-    """
-    stack = [node]
-    while stack:
-        child = stack.pop()
-        if isinstance(child, _NESTED_SCOPES):
-            continue
-        if isinstance(child, ast.stmt):
-            _collect_calls_in_block([child], names)
-            continue
-        if isinstance(child, (ast.ExceptHandler, _MATCH_CASE)):
-            for _field, value in ast.iter_fields(child):
-                if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
-                    _collect_calls_in_block(value, names)
-                elif isinstance(value, ast.AST):
-                    _collect_calls_in_expr(value, names)
-            continue
-        if isinstance(child, ast.Call):
-            func = child.func
-            if isinstance(func, ast.Name):
-                names.add(func.id)
-            elif isinstance(func, ast.Attribute):
-                names.add(func.attr)
-        stack.extend(ast.iter_child_nodes(child))
-
-
-def _recall_render_functions(source: str) -> list[ast.AST]:
-    """The function(s) in `source` that actually render a recall block.
-
-    Scoping is the whole point. Collecting call names from the MODULE root
-    sweeps up every call in the file, so a function nobody ever calls can
-    satisfy the guards below on the renderer's behalf: rewrite the real
-    ``take_lines_within_token_budget(...)`` as a hand-rolled loop, park a
-    dead helper mentioning the old names at the bottom of the module, and
-    both guards stay green while unbounded memory text reaches the prompt.
-    Substring matching was the first hole in this wall (a comment could
-    satisfy it), AST-over-the-module was the second, and AST-over-the-
-    function-including-its-nested-defs was the third — same trick, one
-    indent level in.
-
-    A renderer is identified by `_RECALL_RENDER_MARKER`, the same literal
-    the module scan uses — one constant, so the two steps cannot come to
-    disagree about what a recall renderer is. (They held separate copies
-    of the string until review noticed, while this paragraph already
-    claimed they were unified.) Matching is on the function's own body, so
-    an enclosing scope is not credited with a nested renderer's marker
-    call either: whichever function directly renders the block is the one
-    that has to carry the budget.
-
-    Inherits the module scan's blind spot — see
-    `_discovered_recall_renderers`: a renderer that does not label its
-    entries never reaches this function at all.
-    """
-    tree = ast.parse(source)
-    return [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and _RECALL_RENDER_MARKER in _called_function_names(node)
-    ]
-
-
-def _unbudgeted_recall_functions(source: str, required: set[str]) -> dict[str, list[str]]:
-    """`{function name: sorted missing calls}` for this module's renderers.
-
-    Checked per function, not against the union of all of them. The union
-    reopens the hole one level up: plant the marker in the dead helper too
-    and it is counted as a renderer, its budget calls join the pooled set,
-    and the real renderer is unbudgeted again with every guard green. Each
-    function that renders a recall block has to carry its own budget.
-    """
-    out: dict[str, list[str]] = {}
-    for node in _recall_render_functions(source):
-        missing = required - _called_function_names(node)
-        if missing:
-            out[node.name] = sorted(missing)
+            func = node.func
+            name = (
+                func.id if isinstance(func, ast.Name)
+                else func.attr if isinstance(func, ast.Attribute)
+                else None
+            )
+            if name == func_name:
+                out.add(rel)
+                break
     return out
 
 
-def test_every_recall_renderer_is_token_budgeted():
-    """Discovered, not listed — and checked on calls, not on text.
+def _files_with_url_literal(sources: dict[str, str], needle: str) -> set[str]:
+    """Files with ``needle`` inside a real string literal.
 
-    Substring-matching the constant names would pass on an ``import`` that
-    is never used, or on a ``# TODO: hook up RECALL_RENDER_*`` comment. The
-    claim is that the budget RUNS, so both budget calls have to be present
-    as actual calls.
+    Not a substring scan over the source: the endpoint is named in
+    comments and docstrings all over the memory subsystem (the budget
+    constants explain what they bound, ``hybrid_recall`` says which route
+    calls it), and counting those would make the client set unpinnable.
+    Docstrings are excluded for the same reason; an f-string's literal
+    parts are included, since that is how both real call sites build the
+    URL.
     """
-    renderers = _discovered_recall_renderers()
-    assert len(renderers) >= 2, (
-        f"发现式扫描只找到 {sorted(renderers)}；标记词失效了，这条护栏已经形同虚设"
-    )
-    required = {"truncate_to_tokens", "take_lines_within_token_budget"}
-    unbudgeted = {}
-    for rel, source in sorted(renderers.items()):
-        assert _recall_render_functions(source), (
-            f"{rel} 因为出现标记词而被认成召回渲染点，却找不到任何真正调用它的"
-            f"函数——护栏在这个文件上是空转的（标记词只出现在注释/字符串里？）"
-        )
-        missing = _unbudgeted_recall_functions(source, required)
-        if missing:
-            unbudgeted[rel] = missing
-    assert unbudgeted == {}, (
-        f"这些召回渲染点没有真正调用 token 预算（只是提到了常量名不算），"
-        f"会把任意长度的记忆原文塞进 prompt：{unbudgeted}"
-    )
+    out: set[str] = set()
+    for rel, source in sources.items():
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:  # pragma: no cover — a broken file fails elsewhere
+            continue
+        docstrings = set()
+        for node in ast.walk(tree):
+            if not isinstance(
+                node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                continue
+            body = getattr(node, "body", None) or []
+            if (
+                body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstrings.add(id(body[0].value))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and needle in node.value
+                and id(node) not in docstrings
+            ):
+                out.add(rel)
+                break
+    return out
 
 
-def test_every_recall_renderer_goes_through_the_shared_budget_helper():
-    """One helper for both, so the two budgets cannot drift apart.
+def test_repo_scan_reaches_the_files_it_claims_to_cover():
+    """A scan that finds nothing passes every guard below while proving
+    nothing. Pin that it actually reads this repo's modules."""
+    sources = _repo_python_sources()
 
-    The renderer set comes from the same discovery as above rather than a
-    second hardcoded list — otherwise a newly discovered third renderer
-    would be budget-checked but never helper-checked.
+    assert len(sources) > 200, f"仓库扫描只找到 {len(sources)} 个 .py，路径过滤把仓库滤没了"
+    for rel in (_ENTRY_POINT, "main_logic/core/tool_calling.py",
+                "plugin/plugins/qq_auto_reply/memory_bridge.py"):
+        assert rel in sources, f"扫描没覆盖到 {rel}，下面的护栏是空转的"
+
+
+def test_only_the_entry_point_labels_recall_entries():
+    """``render_recall_entry_tag`` is called from exactly one module.
+
+    This is the check that keeps the entry point single. A second renderer
+    that wants localized ``[tier/entity]`` prefixes has to call the table,
+    and calling it from anywhere else fails here.
+
+    Note what is NOT exempted: ``config/prompts/prompts_memory.py`` defines
+    the table, and the old scan skipped that file BY NAME — which made it
+    the one place a shared line-rendering helper could be parked to launder
+    a second renderer past every guard (issue #2588, A2, measured at 59x
+    over budget). Defining a function is not calling it, so no exemption is
+    needed and none is granted.
     """
-    renderers = _discovered_recall_renderers()
-    expected = {
-        "plugin/plugins/qq_auto_reply/memory_bridge.py",
-        "main_logic/core/tool_calling.py",
-    }
-    assert expected <= set(renderers), (
-        f"已知的两处渲染点没被发现式扫描找到：{expected - set(renderers)}"
-    )
-    hand_rolled = [
-        rel for rel, source in sorted(renderers.items())
-        if _unbudgeted_recall_functions(source, {"take_lines_within_token_budget"})
-    ]
-    assert hand_rolled == [], (
-        f"{hand_rolled} 没走共享预算 helper，会独自漂移"
+    callers = _files_calling(_repo_python_sources(), "render_recall_entry_tag")
+
+    assert callers == {_ENTRY_POINT}, (
+        f"召回条目标签表的调用点应当只有 {_ENTRY_POINT}，实测 {sorted(callers)}。\n"
+        f"召回渲染在 #2588 之后收口到单一入口：新的渲染面请调用 "
+        f"memory.recall_render.render_recall_block，别再手搓一份带预算的行渲染"
     )
 
 
-_KNOWN_RECALL_RENDERERS = {
-    "plugin/plugins/qq_auto_reply/memory_bridge.py",
+def test_the_entry_point_has_no_runtime_switch():
+    """No env lookup inside the renderer.
+
+    This is the one shape the behavioural tests structurally cannot catch:
+    a budget that only runs when a flag says so passes every measurement
+    here (the tests take the default path) and is off in production —
+    measured at 6.4x over budget (issue #2588, B3). Tests cannot enumerate
+    the environments they were not run in, so the rule is that the render
+    path has no environments: same input, same output, budget always on.
+
+    Narrow on purpose, and NOT a general reachability check — that is the
+    inference this whole file stopped making. It pins one property of one
+    module: nothing here reads the environment. A flag threaded in from a
+    caller would still get through; what this stops is the cheap version.
+    """
+    tree = ast.parse((_REPO_ROOT / _ENTRY_POINT).read_text(encoding="utf-8"))
+    env_reads = sorted({
+        node.attr if isinstance(node, ast.Attribute) else node.id
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"})
+        or (isinstance(node, ast.Name) and node.id in {"environ", "getenv"})
+    })
+
+    assert env_reads == [], (
+        f"{_ENTRY_POINT} 读了环境变量 {env_reads}：召回渲染必须是同样输入同样"
+        f"输出、预算恒定生效的纯函数。挂在开关后面的预算，测试跑的是默认路径，"
+        f"量不出生产环境关掉之后的结果"
+    )
+
+
+# Every module that talks to the structured recall endpoint. The memory
+# server's own route file defines it rather than calling it.
+_QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
+_KNOWN_RECALL_CLIENTS = {
     "main_logic/core/tool_calling.py",
+    "plugin/plugins/qq_auto_reply/memory_bridge.py",
 }
 
 
-def test_the_known_recall_renderers_are_exactly_these_two():
-    """Pin the renderer set, so a new one is not waved through on an AST guess.
+def test_every_query_memory_client_renders_through_the_entry_point():
+    """Whoever fetches recall results has to render them through the entry point.
 
-    The two guards above infer "this is budgeted" from the SHAPE of the
-    source, and that inference has been defeated five times running —
-    substring match, module-wide AST walk, a dead helper nested in the
-    renderer, a budget call in a return annotation, a budget call in an
-    ``if False:`` branch. Each fix was correct and each was followed by a
-    new way in, because "does this call run, and is its result used"
-    is undecidable in general.
+    The complement of the label check: that one catches a renderer that
+    wants tags, this one catches a renderer that does NOT. Dropping the
+    ``[fact/user]`` prefix is a reasonable product choice in a 1:1 chat
+    where every entity is the same — and it was the biggest hole in the
+    old marker-based scan, since such a file contained no marker, was never
+    parsed, and every guard silently skipped it (issue #2588, A1, measured
+    at 95x over budget). It cannot skip this one: it still has to ask the
+    memory server for the results.
 
-    The two renderers this repo ships do not rest on that inference —
-    they have behavioural budget tests here that render oversized input
-    and measure the result. A renderer nobody has written yet has none, so
-    this makes its arrival a loud failure rather than a silent AST pass.
-
-    ⚠️ IT IS NOT A BACKSTOP FOR EVERYTHING (an earlier version of this
-    docstring said it was). It reuses `_discovered_recall_renderers`, so
-    it inherits that scan's blind spot exactly: a new renderer that never
-    calls the shared tag helper is not in `found`, `found` therefore still
-    equals the known set, and this passes. It catches a new renderer
-    written like the existing two — not one written differently. Issue
-    #2588 tracks that, with a measured case at 95x over budget.
+    Membership is asserted by equality, so a new client is a loud failure
+    that has to come here and say what it renders through.
     """
-    found = set(_discovered_recall_renderers())
-    assert found == _KNOWN_RECALL_RENDERERS, (
-        f"召回渲染点集合变了：新增 {sorted(found - _KNOWN_RECALL_RENDERERS)}，"
-        f"消失 {sorted(_KNOWN_RECALL_RENDERERS - found)}。\n"
-        f"新增渲染点请补**行为**预算测试（喂超长输入、量渲染结果的 token 数），"
-        f"再把它加进 _KNOWN_RECALL_RENDERERS——上面两条护栏只能从源码形状推断"
-        f"「调了预算」，那个推断已经被绕过五次，不足以单独担保一个新渲染点。"
+    sources = _repo_python_sources()
+    clients = _files_with_url_literal(
+        sources, "/query_memory",
+    ) - {_QUERY_MEMORY_ROUTE_DEFINITION}
+
+    assert clients == _KNOWN_RECALL_CLIENTS, (
+        f"/query_memory 的调用方集合变了：新增 {sorted(clients - _KNOWN_RECALL_CLIENTS)}，"
+        f"消失 {sorted(_KNOWN_RECALL_CLIENTS - clients)}。\n"
+        f"新调用方请把结果交给 memory.recall_render.render_recall_block 渲染，"
+        f"再加进 _KNOWN_RECALL_CLIENTS"
     )
-
-
-# ── the call scan's own adversarial fixtures ─────────────────────────
-#
-# Every shape below defeated this guard at some point. They are checked
-# against the helper directly, so the next round of hardening cannot
-# silently give one of them back.
-
-_BUDGET_CALLS = {"truncate_to_tokens", "take_lines_within_token_budget"}
-
-_DEAD_SHAPES = [
-    ("nested-def", '''
-def render(results):
-    def _unused():
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("return-annotation", '''
-def render(results) -> truncate_to_tokens(take_lines_within_token_budget([], 1), 1):
-    return "".join(results)
-'''),
-    ("param-default", '''
-def render(results, _x=truncate_to_tokens("", 1), *, _y=take_lines_within_token_budget([], 1)):
-    return "".join(results)
-'''),
-    ("decorator", '''
-@register(truncate_to_tokens("", 1), take_lines_within_token_budget([], 1))
-def render(results):
-    return "".join(results)
-'''),
-    ("if-False", '''
-def render(results):
-    if False:
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("if-zero", '''
-def render(results):
-    if 0:
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("if-TYPE_CHECKING", '''
-def render(results):
-    if TYPE_CHECKING:
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("else-of-if-True", '''
-def render(results):
-    if True:
-        pass
-    else:
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("while-False", '''
-def render(results):
-    while False:
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("after-return", '''
-def render(results):
-    return "".join(results)
-    truncate_to_tokens("", 1)
-    take_lines_within_token_budget([], 1)
-'''),
-    ("nested-if-False-inside-live-branch", '''
-def render(results, flag):
-    if flag:
-        if False:
-            truncate_to_tokens("", 1)
-            take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("class-body", '''
-def render(results):
-    class _Unused:
-        x = truncate_to_tokens("", 1)
-        y = take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    # The terminator rule used to apply only to the function's own
-    # statement list: every compound statement handed its children over one
-    # at a time, so a one-element list made the rule a no-op inside them.
-    ("after-return-inside-for", '''
-def render(results):
-    for r in results:
-        return r
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-    ("after-return-inside-live-if", '''
-def render(results, flag):
-    if flag:
-        return "".join(results)
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    return ""
-'''),
-    ("after-raise-inside-try", '''
-def render(results):
-    try:
-        raise ValueError("x")
-        truncate_to_tokens("", 1)
-        take_lines_within_token_budget([], 1)
-    except ValueError:
-        pass
-    return "".join(results)
-'''),
-    ("after-continue-inside-except", '''
-def render(results):
-    out = []
-    for r in results:
-        try:
-            out.append(r)
-        except ValueError:
-            continue
-            truncate_to_tokens("", 1)
-            take_lines_within_token_budget([], 1)
-    return "".join(out)
-'''),
-    ("if-False-inside-with", '''
-def render(results, lock):
-    with lock:
-        if False:
-            truncate_to_tokens("", 1)
-            take_lines_within_token_budget([], 1)
-    return "".join(results)
-'''),
-]
-
-_LIVE_SHAPES = [
-    ("straight-line", '''
-def render(results):
-    lines = [truncate_to_tokens(r, 400) for r in results]
-    kept, _ = take_lines_within_token_budget(lines, 2204)
-    return "\\n".join(kept)
-'''),
-    ("inside-a-real-branch", '''
-def render(results, flag):
-    if flag:
-        lines = [truncate_to_tokens(r, 400) for r in results]
-        kept, _ = take_lines_within_token_budget(lines, 2204)
-        return "\\n".join(kept)
-    return ""
-'''),
-    ("inside-try-except", '''
-def render(results):
-    try:
-        lines = [truncate_to_tokens(r, 400) for r in results]
-        kept, _ = take_lines_within_token_budget(lines, 2204)
-    except ValueError:
-        return ""
-    return "\\n".join(kept)
-'''),
-    ("else-of-if-False", '''
-def render(results):
-    if False:
-        pass
-    else:
-        lines = [truncate_to_tokens(r, 400) for r in results]
-        kept, _ = take_lines_within_token_budget(lines, 2204)
-    return "\\n".join(kept)
-'''),
-    ("inside-a-real-loop", '''
-def render(results):
-    out = []
-    for r in results:
-        out.append(truncate_to_tokens(r, 400))
-    kept, _ = take_lines_within_token_budget(out, 2204)
-    return "\\n".join(kept)
-'''),
-    ("inside-an-except-handler", '''
-def render(results):
-    try:
-        raise ValueError("x")
-    except ValueError:
-        lines = [truncate_to_tokens(r, 400) for r in results]
-        kept, _ = take_lines_within_token_budget(lines, 2204)
-        return "\\n".join(kept)
-    return ""
-'''),
-    ("inside-a-with-block", '''
-def render(results, lock):
-    with lock:
-        lines = [truncate_to_tokens(r, 400) for r in results]
-        kept, _ = take_lines_within_token_budget(lines, 2204)
-    return "\\n".join(kept)
-'''),
-    ("after-an-early-return-in-a-branch", '''
-def render(results, flag):
-    if not flag:
-        return ""
-    lines = [truncate_to_tokens(r, 400) for r in results]
-    kept, _ = take_lines_within_token_budget(lines, 2204)
-    return "\\n".join(kept)
-'''),
-]
-
-
-@pytest.mark.parametrize("name,source", _DEAD_SHAPES, ids=[s[0] for s in _DEAD_SHAPES])
-def test_call_scan_ignores_names_that_never_run(name, source):
-    """A budget call that cannot execute must not count as budgeting.
-
-    Each of these is a way the guard was defeated (or could be): the render
-    path is a bare join with no ceiling, while both budget names appear
-    somewhere the interpreter never reaches.
-    """
-    fn = ast.parse(source).body[0]
-    assert isinstance(fn, ast.FunctionDef), f"夹具失效：{name} 没解析出函数"
-    seen = _called_function_names(fn)
-    assert not (_BUDGET_CALLS & seen), (
-        f"[{name}] 永远不会执行的预算调用被算成了「调过预算」：{sorted(_BUDGET_CALLS & seen)}"
+    entry_module = _ENTRY_POINT[:-3].replace("/", ".")
+    not_rendering = sorted(
+        rel for rel in clients if entry_module not in sources[rel]
     )
-
-
-@pytest.mark.parametrize("name,source", _LIVE_SHAPES, ids=[s[0] for s in _LIVE_SHAPES])
-def test_call_scan_still_sees_budget_calls_that_do_run(name, source):
-    """The strict dual — and the half that keeps the tightening honest.
-
-    A scan that returned nothing would pass every test above while being
-    useless; each round of hardening has to keep real, reachable budget
-    calls visible or the guard degrades into a permanent red that someone
-    eventually deletes.
-    """
-    fn = ast.parse(source).body[0]
-    seen = _called_function_names(fn)
-    assert _BUDGET_CALLS <= seen, (
-        f"[{name}] 真实执行路径上的预算调用没被看见：缺 {sorted(_BUDGET_CALLS - seen)}"
+    assert not_rendering == [], (
+        f"{not_rendering} 拿了召回结果却没走 {entry_module}——召回段就没有 token 上限了"
     )

@@ -225,6 +225,7 @@ class _GeminiMixin:
 
             # 设置 ws 为 session，用于兼容性检查
             self.ws = self._gemini_session
+            self._on_connection_attached()
             self._fatal_error_occurred = False
             self._gemini_user_transcript = ""
             self._gemini_user_transcript_after_interrupt = False
@@ -399,35 +400,71 @@ class _GeminiMixin:
             logger.error("Gemini send_tool_response failed: %s", e)
 
     async def _close_gemini(self) -> None:
-        """Close Gemini Live API session."""
-        if self._gemini_context_manager:
-            try:
-                await self._gemini_context_manager.__aexit__(None, None, None)
-            except Exception as e:
-                logger.error(f"Error closing Gemini session: {e}")
-            finally:
-                self._gemini_session = None
-                self._gemini_context_manager = None
-                self.ws = None
+        """Close Gemini Live API session.
 
-                # 重置静默超时相关状态（与普通close()保持一致）
-                self._silence_timeout_triggered = False
-                self._last_speech_time = None
-                self._silence_reset_pending = False
-                self._last_silence_clear_speech_time = 0.0
-                self._last_local_loud_time = 0.0
-                self._client_vad_active = False
-                self._client_vad_last_speech_time = 0.0
-                self._speech_detect_start = 0.0
-                self._rnnoise_vad_active = False
-                self._user_recent_activity_time = 0.0
-                self._ai_recent_activity_time = 0.0
+        An async context manager is one-shot: a ``__aexit__()`` interrupted by
+        a cancel cannot be resumed by calling it again — the cleanup generator
+        has already been unwound, and the second call returns or raises without
+        redoing what was interrupted. So the exit must not be interrupted in
+        the first place. It runs as a task this client owns and every caller
+        awaits it through ``shield``, which matters because a caller here can
+        genuinely be cancelled: besides ``close()``, the Gemini proactive
+        quarantine in ``_responses.py`` calls this from a fired task.
+        """
+        if not self._gemini_context_manager:
+            return
+        await self._own_teardown("_gemini_close_task", self._detach_for_gemini_close)
 
-                # 重置音频处理器状态
-                if self._audio_processor is not None:
-                    self._audio_processor.reset()
+    def _detach_for_gemini_close(self):
+        """Seize the context to exit, synchronously (see ``_own_teardown``)."""
 
-                logger.info("Gemini Live API session closed")
+        return self._close_gemini_impl(
+            self._gemini_context_manager, self._gemini_session
+        )
+
+    async def _close_gemini_impl(self, context, session) -> None:
+        if context is None:
+            return
+        try:
+            await context.__aexit__(None, None, None)
+        except Exception as e:
+            # A raised exit is still an exit that ran to its own conclusion —
+            # the references are dropped below either way, as before.
+            logger.error(f"Error closing Gemini session: {e}")
+
+        if self._gemini_context_manager is not context:
+            # A replacement session attached while the SDK exit ran. Its
+            # references — and the client-wide state below — are not ours to
+            # clear; ours was the context we just exited.
+            logger.info(
+                "Gemini close: a replacement session attached; leaving its state alone"
+            )
+            return
+
+        self._gemini_context_manager = None
+        if self._gemini_session is session:
+            self._gemini_session = None
+        if self.ws is session:
+            self.ws = None
+
+        # 重置静默超时相关状态（与普通close()保持一致）
+        self._silence_timeout_triggered = False
+        self._last_speech_time = None
+        self._silence_reset_pending = False
+        self._last_silence_clear_speech_time = 0.0
+        self._last_local_loud_time = 0.0
+        self._client_vad_active = False
+        self._client_vad_last_speech_time = 0.0
+        self._speech_detect_start = 0.0
+        self._rnnoise_vad_active = False
+        self._user_recent_activity_time = 0.0
+        self._ai_recent_activity_time = 0.0
+
+        # 重置音频处理器状态
+        if self._audio_processor is not None:
+            self._audio_processor.reset()
+
+        logger.info("Gemini Live API session closed")
 
     async def _handle_messages_gemini(self) -> None:
         """Handle messages from Gemini Live API."""
@@ -562,7 +599,12 @@ class _GeminiMixin:
                     # invariant is "every turn start advances the epoch", not
                     # "every turn start something currently reads": once a turn
                     # start stops advancing it, a release that DOES run cannot
-                    # tell that turn from its successor.
+                    # tell that turn from its successor. The host-turn sample
+                    # (#2612) is maintained here for the same reason and is
+                    # equally unread today — this path ends its turn by calling
+                    # ``on_response_done`` directly rather than through
+                    # ``_notify_turn_finished``, which is where the comparison
+                    # lives. Tracked with the rest of that divergence.
                     #
                     # Kept above the assignment, not between it and the bump:
                     # ``test_every_turn_start_advances_the_epoch`` discovers
@@ -571,6 +613,7 @@ class _GeminiMixin:
                     self._is_responding = True
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
+                    self._current_turn_host_id = self._read_host_turn_id()
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

@@ -16,7 +16,9 @@ from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
 
+from main_logic.asr_client import get_asr_core_capabilities
 from main_logic.asr_client.runtime import (
+    ASR_CONNECT_TOTAL_BUDGET_SECONDS,
     AsrRuntimeCallbacks,
     AsrStartStatus,
     IndependentAsrRuntime,
@@ -538,6 +540,7 @@ class AsrRuntimeMixin:
         preserve_hot_swap_audio: bool = False,
         handshake_override=...,
         resource_optimization_override=...,
+        connect_budget_seconds: float | None = None,
     ) -> None:
         """Resolve the microphone route for one session start.
 
@@ -546,6 +549,17 @@ class AsrRuntimeMixin:
         await. Ellipsis means "not supplied" — the internal re-entry paths
         (hot-swap, device change) have no request of their own and reuse the
         accepted live session's optimization choice.
+
+        ``connect_budget_seconds`` bounds only the PROVIDER CONNECT. A caller
+        working against a deadline (the dedupe reroute) passes what is left of
+        it; when that cannot cover a whole connect-and-retry phase this returns
+        with the route on its blocked placeholder rather than produce a verdict
+        nobody is still listening for. Checked here rather than at the call site
+        on purpose: the cheap outcomes -- independent ASR disabled by handshake
+        or by the persisted setting, or a Core that owns recognition natively --
+        settle on ``native`` without connecting to anything, and gating those on
+        a connect budget would strand a microphone that had nothing to wait for
+        (Codex P2).
         """
         self._ensure_asr_runtime_state()
         operation_generation = self._begin_asr_route_operation()
@@ -558,6 +572,11 @@ class AsrRuntimeMixin:
             return
         self._omni_mic_audio_bytes = 0
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
+        core_asr_capabilities = get_asr_core_capabilities(core_type)
+        supports_independent_asr = bool(
+            core_asr_capabilities is None
+            or core_asr_capabilities.supports_independent_asr
+        )
         self._independent_asr_route_key = core_type
         session_epoch = self._capture_ingress_token().session_epoch
         start_connection_id = self._voice_lease_connection_id
@@ -631,7 +650,7 @@ class AsrRuntimeMixin:
                 if handshake_override is ...
                 else handshake_override
             )
-            if unreadable_handshake is False:
+            if not supports_independent_asr or unreadable_handshake is False:
                 if not core_start_is_current():
                     return
                 # Same landing as the ordinary `not enabled` path below.
@@ -681,13 +700,19 @@ class AsrRuntimeMixin:
             if handshake_override is ...
             else handshake_override
         )
-        if handshake_enabled is not None:
+        if not supports_independent_asr:
+            # Some Core routes own speech recognition natively. Their route
+            # capability takes precedence over both the persisted preference
+            # and the per-session handshake, so a stale enabled toggle cannot
+            # turn a healthy native voice session into a blocked one.
+            enabled = False
+        elif handshake_enabled is not None:
             # The start_session handshake carries the frontend's authoritative
             # toggle; it overrides the persisted read, which is stale when the
             # settings POST failed or was still in flight at session start.
             enabled = handshake_enabled
         else:
-            enabled = bool(settings.get("independentAsrEnabled", True))
+            enabled = bool(settings.get("independentAsrEnabled", False))
         optimization_handshake = resource_optimization_override
         if resource_optimization_override is ...:
             optimization_handshake = getattr(
@@ -723,6 +748,21 @@ class AsrRuntimeMixin:
                     provider=core_type or "unknown",
                     session_epoch=session_epoch,
                 )
+            )
+            return
+        if (
+            connect_budget_seconds is not None
+            and connect_budget_seconds < ASR_CONNECT_TOTAL_BUDGET_SECONDS
+        ):
+            # Out of budget: leave the route on the blocked placeholder installed
+            # above, which is exactly the state the caller would have re-acked
+            # without re-deciding at all.
+            logger.info(
+                "[%s] independent ASR connect skipped: %.2fs of budget left,"
+                " under the %.1fs connect ceiling",
+                self.lanlan_name,
+                connect_budget_seconds,
+                ASR_CONNECT_TOTAL_BUDGET_SECONDS,
             )
             return
         start_kwargs: dict[str, object] = {
@@ -791,6 +831,82 @@ class AsrRuntimeMixin:
                 "asr_start_failed",
                 operation_generation=operation_generation,
             )
+
+    async def _rerun_route_for_deduped_start(
+        self,
+        input_mode: str,
+        *,
+        lease_connection_id: str,
+        remaining_deadline_seconds: float,
+        handshake_override=...,
+        resource_optimization_override=...,
+    ) -> None:
+        """Re-decide the microphone route for a deduplicated same-mode start.
+
+        A same-mode start that collides with an in-flight one starts nothing of
+        its own and only re-acks, so it inherits the in-flight start's verdict.
+        That verdict can already be void for THIS requester: a second window
+        claims the voice lease (websocket_router does it synchronously before
+        firing start_session), which invalidates the in-flight ASR start. That
+        start then returns ASR_START_STALE and returns early, leaving the route
+        on the "blocked" placeholder its own teardown installed -- and emitting
+        no status at all, since the stale exit is upstream of every emitter.
+        The ack carries that placeholder, so both windows latch fail-closed and
+        the microphone never opens for the session that did start, with nothing
+        on screen to explain it. Nothing re-decides in-session either: the only
+        other entry is the core-change reconcile.
+
+        Runs while no start is in flight (the caller waits for the count to
+        reach 0), so the fence inside ``_start_independent_asr_if_enabled`` sees
+        a settled, self-consistent state -- and the handshake passed down is
+        this request's own snapshot rather than whatever the shared field holds
+        by now.
+
+        Blocked routes only. A settled native/independent verdict is valid for
+        whoever ends up holding the microphone, and re-running would tear down
+        a healthy provider mid-session for nothing.
+
+        ``lease_connection_id`` is the caller's pre-wait snapshot: the wait is
+        seconds long, and a THIRD audio start claiming the microphone during it
+        would otherwise get its route configured from this superseded window's
+        handshake (Codex P2). The new holder runs this same path with a snapshot
+        that does match, so skipping here loses nothing.
+
+        ``remaining_deadline_seconds`` is what is left of the frontend's start
+        deadline, handed down as the connect budget. A connect-and-retry phase
+        can run to ASR_CONNECT_TOTAL_BUDGET_SECONDS, so starting one without room
+        for it would push the re-ack past the point where the client gives up --
+        and its timeout fires end_session, tearing down the session that did
+        start (Codex P2). Out of budget the bare re-ack is the better trade: it
+        is the pre-existing behaviour, and it still reaches the requester in
+        time. The budget stops the CONNECT only, never the cheap native
+        outcomes -- see _start_independent_asr_if_enabled.
+        """
+        if input_mode != "audio":
+            return
+        self._ensure_asr_runtime_state()
+        if self._voice_lease_connection_id != lease_connection_id:
+            logger.info(
+                "[%s] dedupe reroute skipped: voice lease moved on during the wait",
+                self.lanlan_name,
+            )
+            return
+        # The in-flight start's OWN mode is the authority, not this request's:
+        # the dedupe branch treats a missing ``_starting_input_mode`` as a match,
+        # so an audio request can land here against an in-flight text start. Its
+        # route is legitimately blocked for the text session's whole life, and
+        # re-deciding would hand a live microphone to a session that has no
+        # audio path at all.
+        if str(getattr(self, "input_mode", "") or "") != "audio":
+            return
+        if self._asr_route_mode != "blocked":
+            return
+        await self._start_independent_asr_if_enabled(
+            input_mode,
+            handshake_override=handshake_override,
+            resource_optimization_override=resource_optimization_override,
+            connect_budget_seconds=remaining_deadline_seconds,
+        )
 
     def _abandon_core_voice_turn(
         self,

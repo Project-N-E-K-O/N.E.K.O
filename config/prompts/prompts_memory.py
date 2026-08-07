@@ -3327,7 +3327,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （已 promoted 的 persona fact + 其它 confirmed 的 reflection）
 
 {IMPRESSION_POOL}
@@ -3350,7 +3350,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （已 promoted 的 persona fact + 其他 confirmed 的 reflection）
 
 {IMPRESSION_POOL}
@@ -3373,7 +3373,7 @@ PROMOTION_MERGE_PROMPT = {
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (promoted persona facts + other confirmed reflections)
 
 {IMPRESSION_POOL}
@@ -3396,7 +3396,7 @@ or
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 （既に promoted の persona fact ＋ 他の confirmed の reflection）
 
 {IMPRESSION_POOL}
@@ -3419,7 +3419,7 @@ R をどう扱うか判断してください：
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (이미 promoted된 persona fact + 기타 confirmed reflection)
 
 {IMPRESSION_POOL}
@@ -3442,7 +3442,7 @@ R을 어떻게 처리할지 판단하세요:
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (уже promoted-факты persona + другие confirmed-reflection)
 
 {IMPRESSION_POOL}
@@ -3465,7 +3465,7 @@ R을 어떻게 처리할지 판단하세요:
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (persona facts ya promoted + otras reflections confirmed)
 
 {IMPRESSION_POOL}
@@ -3488,7 +3488,7 @@ o
   R: "{R_TEXT}"
   R.evidence_score: {R_SCORE}
 
-======以下是 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
+======以下为 {AI_NAME} 关于 {MASTER_NAME} 的现有印象池======
 (persona facts já promoted + outras reflections confirmed)
 
 {IMPRESSION_POOL}
@@ -4129,14 +4129,17 @@ persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
 
 
 # ---------- fact_dedup_prompt → i18n dict ----------
-# Drives memory/fact_dedup.py's resolve loop. Vector cosine selects
-# candidate (candidate_text, existing_text) pairs above a similarity
-# threshold; this prompt asks the LLM to classify each pair into
-# merge / replace / keep_both. The LLM is the arbiter, vector is just
-# the candidate generator — cosine alone can't separate "主人喜欢猫"
-# from "主人讨厌猫", so we always defer the final call to the model.
+# Drives memory/fact_dedup.py's resolve loop. Two detectors nominate
+# (candidate_text, existing_text) pairs: the embedding sweep (cosine)
+# and the FTS5 near-duplicate check (Dice token overlap, #2703). Each
+# pair carries the score of whichever one found it, so the wording here
+# must stay detector-neutral — an FTS pair can exist with vectors turned
+# off entirely, and telling the model it came from cosine would label
+# the evidence wrong. This prompt asks the LLM to classify each pair
+# into merge / replace / keep_both; the detectors only nominate, since
+# no similarity score separates "主人喜欢猫" from "主人讨厌猫".
 FACT_DEDUP_PROMPT = {
-    "zh": """以下是 {COUNT} 组通过向量相似度筛选出的候选事实对，请逐组判断是否真的指向同一件事，并选择处理方式。
+    "zh": """以下是 {COUNT} 组由相似度筛选出的候选事实对，请逐组判断是否真的指向同一件事，并选择处理方式。
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4148,12 +4151,12 @@ FACT_DEDUP_PROMPT = {
 - keep_both: 看似相似但其实是两件不同的事（如"喜欢"与"讨厌"，或同一对象在不同情境下的不同状态），都保留
 
 注意：
-- cosine 高只是相似度高，不代表语义相同，特别要警惕褒贬相反、肯定/否定相反的情况
+- 分数高只说明表层相似，不代表语义相同，特别要警惕褒贬相反、肯定/否定相反的情况
 - 优先选 keep_both 而非误合并；记忆系统对错误合并的容忍度低于对冗余的容忍度
 
 仅输出 JSON 数组，每项包含 index、action：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "zh-TW": """以下是 {COUNT} 組透過向量相似度篩選出的候選事實對，請逐組判斷是否真的指向同一件事，並選擇處理方式。
+    "zh-TW": """以下是 {COUNT} 組由相似度篩選出的候選事實對，請逐組判斷是否真的指向同一件事，並選擇處理方式。
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4165,12 +4168,12 @@ FACT_DEDUP_PROMPT = {
 - keep_both: 看似相似但其實是兩件不同的事（如「喜歡」與「討厭」，或同一物件在不同情境下的不同狀態），都保留
 
 注意：
-- cosine 高只是相似度高，不代表語意相同，特別要警惕褒貶相反、肯定/否定相反的情況
+- 分數高只說明表層相似，不代表語意相同，特別要警惕褒貶相反、肯定/否定相反的情況
 - 優先選 keep_both 而非誤合併；記憶系統對錯誤合併的容忍度低於對冗餘的容忍度
 
 僅輸出 JSON 陣列，每項包含 index、action：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "en": """Below are {COUNT} candidate fact pairs flagged by cosine similarity. For each pair, decide whether they actually refer to the same thing and choose how to handle it.
+    "en": """Below are {COUNT} candidate fact pairs flagged by a similarity check. For each pair, decide whether they actually refer to the same thing and choose how to handle it.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4182,12 +4185,12 @@ For each pair, pick one action:
 - keep_both: they look similar but are actually distinct ("likes" vs "dislikes", or the same subject in different contexts) — keep both
 
 Notes:
-- High cosine means high *surface* similarity, not semantic identity. Be especially careful about polarity flips (positive/negative, like/dislike).
+- A high score means high *surface* similarity, not semantic identity. Be especially careful about polarity flips (positive/negative, like/dislike).
 - Prefer keep_both over a wrongful merge — the memory system tolerates redundancy much better than incorrect merges.
 
 Output only a JSON array, each item containing index and action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "ja": """以下は {COUNT} 組のベクトル類似度で抽出された候補ペアです。各ペアについて、本当に同じ事柄を指しているか判断し、処理方法を選んでください。
+    "ja": """以下は {COUNT} 組の類似度で抽出された候補ペアです。各ペアについて、本当に同じ事柄を指しているか判断し、処理方法を選んでください。
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4199,12 +4202,12 @@ Output only a JSON array, each item containing index and action:
 - keep_both: 似ているが実際には別の事柄（"好き"と"嫌い"のような極性反転、あるいは異なる文脈での同じ対象）→ 両方残す
 
 注意：
-- 高い cosine は表層的な類似度であり、意味的同一性ではない。特に極性反転（肯定/否定、好き/嫌い）に注意
+- スコアが高いのは表層的な類似であり、意味的同一性ではない。特に極性反転（肯定/否定、好き/嫌い）に注意
 - 誤合併よりも keep_both を優先。記憶システムは冗長性より誤合併に対する耐性が低い
 
 JSON 配列のみを出力し、各項目に index と action を含めてください：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "ko": """아래는 벡터 유사도로 선별된 {COUNT}쌍의 후보 사실 쌍입니다. 각 쌍에 대해 실제로 같은 것을 가리키는지 판단하고 처리 방법을 선택하세요.
+    "ko": """아래는 유사도로 선별된 {COUNT}쌍의 후보 사실 쌍입니다. 각 쌍에 대해 실제로 같은 것을 가리키는지 판단하고 처리 방법을 선택하세요.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4216,12 +4219,12 @@ JSON 配列のみを出力し、各項目に index と action を含めてくだ
 - keep_both: 비슷해 보이지만 실제로는 다른 것 ("좋아함"과 "싫어함" 같은 극성 반전, 혹은 다른 맥락의 같은 대상) — 둘 다 유지
 
 주의:
-- 높은 cosine은 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 특히 극성 반전(긍정/부정, 좋아함/싫어함)에 주의
+- 높은 점수는 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 특히 극성 반전(긍정/부정, 좋아함/싫어함)에 주의
 - 잘못된 병합보다 keep_both를 우선. 기억 시스템은 중복보다 잘못된 병합에 대한 내성이 더 낮음
 
 JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "ru": """Ниже представлены {COUNT} пар фактов-кандидатов, отобранных по косинусной близости. Для каждой пары определите, действительно ли они описывают одно и то же, и выберите способ обработки.
+    "ru": """Ниже представлены {COUNT} пар фактов-кандидатов, отобранных по близости. Для каждой пары определите, действительно ли они описывают одно и то же, и выберите способ обработки.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4233,12 +4236,12 @@ JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 - keep_both: похожи внешне, но на самом деле разные ("любит" vs "не любит", тот же объект в разных контекстах) — сохранить обе
 
 Замечания:
-- Высокий cosine означает поверхностное сходство, а не семантическую идентичность. Особенно осторожно с инверсией полярности (положительное/отрицательное, любит/не любит).
+- Высокий балл означает поверхностное сходство, а не семантическую идентичность. Особенно осторожно с инверсией полярности (положительное/отрицательное, любит/не любит).
 - Предпочитайте keep_both ошибочному слиянию — система памяти переносит избыточность лучше, чем неверные слияния.
 
 Выводите только JSON-массив, каждый элемент содержит index и action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "es": """A continuación hay {COUNT} pares de hechos candidatos seleccionados por similitud vectorial. Para cada par, decide si realmente apuntan a lo mismo y elige cómo manejarlo.
+    "es": """A continuación hay {COUNT} pares de hechos candidatos seleccionados por similitud. Para cada par, decide si realmente apuntan a lo mismo y elige cómo manejarlo.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4250,12 +4253,12 @@ Para cada par, elige una acción:
 - keep_both: parecen similares pero son cosas distintas (por ejemplo "le gusta" vs "no le gusta", o el mismo sujeto en contextos diferentes); conserva ambos
 
 Notas:
-- Un cosine alto solo indica similitud superficial, no identidad semántica. Ten especial cuidado con inversión de polaridad (positivo/negativo, gusta/no gusta).
+- Una puntuación alta solo indica similitud superficial, no identidad semántica. Ten especial cuidado con inversión de polaridad (positivo/negativo, gusta/no gusta).
 - Prefiere keep_both antes que una fusión errónea; el sistema de memoria tolera mejor la redundancia que las fusiones incorrectas.
 
 Devuelve solo un array JSON; cada elemento contiene index y action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
-    "pt": """Abaixo há {COUNT} pares de fatos candidatos selecionados por similaridade vetorial. Para cada par, decida se eles realmente apontam para a mesma coisa e escolha como lidar com isso.
+    "pt": """Abaixo há {COUNT} pares de fatos candidatos selecionados por similaridade. Para cada par, decida se eles realmente apontam para a mesma coisa e escolha como lidar com isso.
 
 ======以下为候选事实对======
 {PAIRS}
@@ -4267,7 +4270,7 @@ Para cada par, escolha uma ação:
 - keep_both: parecem semelhantes, mas são coisas distintas (por exemplo "gosta" vs "não gosta", ou o mesmo assunto em contextos diferentes); mantenha ambos
 
 Notas:
-- Um cosine alto indica apenas similaridade superficial, não identidade semântica. Tenha cuidado especial com inversão de polaridade (positivo/negativo, gosta/não gosta).
+- Uma pontuação alta indica apenas similaridade superficial, não identidade semântica. Tenha cuidado especial com inversão de polaridade (positivo/negativo, gosta/não gosta).
 - Prefira keep_both a uma fusão incorreta; o sistema de memória tolera melhor redundância do que fusões erradas.
 
 Retorne apenas um array JSON; cada item contém index e action:

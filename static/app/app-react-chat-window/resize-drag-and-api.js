@@ -127,6 +127,9 @@
         if (wasCompactSurface && wasMoved) {
             var compactRect = I.getCurrentCompactSurfaceRect();
             if (compactRect) {
+                if (typeof I.noteCompactSurfaceManualDragRelease === 'function') {
+                    I.noteCompactSurfaceManualDragRelease(compactRect);
+                }
                 I.dispatchCompactSurfaceLayoutChange(compactRect);
             }
         }
