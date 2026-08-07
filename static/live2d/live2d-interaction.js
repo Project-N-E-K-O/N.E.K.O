@@ -159,9 +159,7 @@ function isLive2DPointInRect(point, rect, padding = 0) {
         p.y <= rect.bottom + pad;
 }
 
-const LIVE2D_PEEK_TRIGGER_RATIO = 0.025;
-const LIVE2D_PEEK_TRIGGER_MIN_PX = 12;
-const LIVE2D_PEEK_TRIGGER_MAX_PX = 24;
+const LIVE2D_EDGE_CONTACT_TOLERANCE_PX = 8;
 const LIVE2D_PEEK_VISIBLE_RATIO = 0.22;
 const LIVE2D_PEEK_VISIBLE_MIN_PX = 96;
 const LIVE2D_PEEK_VISIBLE_MAX_PX = 180;
@@ -227,7 +225,7 @@ function refreshLive2DPeekDisplayContext(force = false) {
         return Promise.resolve(null);
     }
     const electronScreen = window.electronScreen;
-    if (!electronScreen || typeof electronScreen.getCurrentDisplay !== 'function') {
+    if (!electronScreen || typeof electronScreen.getDesktopCoordinateSnapshot !== 'function') {
         live2DPeekDisplayContext = null;
         return Promise.resolve(null);
     }
@@ -239,19 +237,25 @@ function refreshLive2DPeekDisplayContext(force = false) {
     }
 
     live2DPeekDisplayRefresh = Promise.resolve()
-        .then(() => electronScreen.getCurrentDisplay())
-        .then((displayInfo) => {
-            const workArea = normalizeLive2DPeekRect(displayInfo && displayInfo.workArea);
-            const displayBounds = normalizeLive2DPeekRect(displayInfo && displayInfo.bounds);
-            const screenX = Number.isFinite(Number(displayInfo && displayInfo.screenX))
-                ? Number(displayInfo.screenX)
-                : (displayBounds ? Number(displayBounds.x) : NaN);
-            const screenY = Number.isFinite(Number(displayInfo && displayInfo.screenY))
-                ? Number(displayInfo.screenY)
-                : (displayBounds ? Number(displayBounds.y) : NaN);
-            live2DPeekDisplayContext = workArea &&
+        .then(() => electronScreen.getDesktopCoordinateSnapshot())
+        .then((snapshot) => {
+            const version = Number(snapshot && snapshot.version);
+            const workArea = normalizeLive2DPeekRect(snapshot && snapshot.display && snapshot.display.workArea);
+            const screenOrigin = snapshot && snapshot.renderer && snapshot.renderer.screenOrigin;
+            const screenX = Number(screenOrigin && screenOrigin.x);
+            const screenY = Number(screenOrigin && screenOrigin.y);
+            live2DPeekDisplayContext = version === 2 && workArea &&
                 Number.isFinite(screenX) && Number.isFinite(screenY)
-                ? { screenX, screenY, workArea }
+                ? {
+                    version,
+                    displayId: snapshot.display.id,
+                    revision: Number(snapshot.revision) || 0,
+                    screenX,
+                    screenY,
+                    workArea,
+                    settled: !!(snapshot.window && snapshot.window.settled === true),
+                    cropRevision: Number(snapshot.crop && snapshot.crop.cropRevision) || 0
+                }
                 : null;
             return live2DPeekDisplayContext;
         })
@@ -265,11 +269,40 @@ function refreshLive2DPeekDisplayContext(force = false) {
     return live2DPeekDisplayRefresh;
 }
 
+async function waitForLive2DDesktopCoordinateSettlement(maxFrames = 20, expectedDisplayId = null) {
+    if (!isLive2DPeekDesktopRuntime()) return null;
+    let previousSignature = '';
+    const attempts = Math.max(2, Number(maxFrames) || 20);
+    for (let index = 0; index < attempts; index += 1) {
+        const context = await refreshLive2DPeekDisplayContext(true);
+        const displayMatches = expectedDisplayId === null || expectedDisplayId === undefined ||
+            String(context && context.displayId) === String(expectedDisplayId);
+        if (context && context.settled && displayMatches) {
+            const signature = [
+                context.displayId,
+                context.revision,
+                context.cropRevision,
+                context.screenX,
+                context.screenY
+            ].join(':');
+            if (signature === previousSignature) return context;
+            previousSignature = signature;
+        } else {
+            previousSignature = '';
+        }
+        await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    return null;
+}
+
 function getLive2DPeekTriggerViewport(viewport) {
     const context = isLive2DPeekDesktopRuntime()
         ? live2DPeekDisplayContext
         : null;
-    if (!viewport || !context || !context.workArea) return viewport;
+    if (!viewport) return null;
+    if (!context || !context.workArea) {
+        return isLive2DPeekDesktopRuntime() && window.electronScreen ? null : viewport;
+    }
 
     const area = context.workArea;
     const left = clampLive2DPeekCoordinate(
@@ -399,31 +432,82 @@ function getLive2DPeekViewportIntersection(bounds, viewport) {
     };
 }
 
-function getLive2DPeekAnchor(bounds, viewport) {
-    if (!bounds || !viewport) return null;
-    const horizontalThreshold = clampLive2DPeekCoordinate(
-        bounds.width * LIVE2D_PEEK_TRIGGER_RATIO,
-        LIVE2D_PEEK_TRIGGER_MIN_PX,
-        LIVE2D_PEEK_TRIGGER_MAX_PX
-    );
-    const verticalThreshold = clampLive2DPeekCoordinate(
-        bounds.height * LIVE2D_PEEK_TRIGGER_RATIO,
-        LIVE2D_PEEK_TRIGGER_MIN_PX,
-        LIVE2D_PEEK_TRIGGER_MAX_PX
-    );
-    const nearLeft = bounds.left <= viewport.left + horizontalThreshold;
-    const nearRight = viewport.right - bounds.right <= horizontalThreshold;
+function getLive2DModelGeometryRegions(manager, model) {
+    if (!manager || !model || typeof manager.getModelDrawableScreenRects !== 'function') {
+        return [];
+    }
+    try {
+        const rects = manager.getModelDrawableScreenRects({ padding: 0 }, model);
+        if (!Array.isArray(rects)) return [];
+        return rects.map((rect) => {
+            const normalized = normalizeLive2DPeekRect({
+                x: Number.isFinite(Number(rect && rect.left)) ? Number(rect.left) : Number(rect && rect.x),
+                y: Number.isFinite(Number(rect && rect.top)) ? Number(rect.top) : Number(rect && rect.y),
+                width: Number(rect && rect.width),
+                height: Number(rect && rect.height)
+            });
+            if (!normalized) return null;
+            return {
+                left: normalized.x,
+                top: normalized.y,
+                right: normalized.x + normalized.width,
+                bottom: normalized.y + normalized.height,
+                width: normalized.width,
+                height: normalized.height
+            };
+        }).filter(Boolean);
+    } catch (_) {
+        return [];
+    }
+}
+
+function getLive2DModelGeometryBounds(manager, model) {
+    const regions = getLive2DModelGeometryRegions(manager, model);
+    if (!regions.length) return null;
+    const left = Math.min(...regions.map((rect) => rect.left));
+    const top = Math.min(...regions.map((rect) => rect.top));
+    const right = Math.max(...regions.map((rect) => rect.right));
+    const bottom = Math.max(...regions.map((rect) => rect.bottom));
+    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) {
+        return null;
+    }
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        width: right - left,
+        height: bottom - top,
+        centerX: left + (right - left) / 2,
+        centerY: top + (bottom - top) / 2,
+        regions
+    };
+}
+
+function getLive2DPeekEdgeContact(manager, model, viewport = null) {
+    const geometry = getLive2DModelGeometryBounds(manager, model);
+    const fullViewport = getLive2DPeekViewport(geometry, manager);
+    const workArea = viewport || getLive2DPeekTriggerViewport(fullViewport);
+    if (!geometry || !workArea) return null;
+
+    const tolerance = LIVE2D_EDGE_CONTACT_TOLERANCE_PX;
+    const overlapsVertically = geometry.bottom >= workArea.top && geometry.top <= workArea.bottom;
+    const nearLeft = overlapsVertically &&
+        geometry.right >= workArea.left && geometry.left <= workArea.left + tolerance;
+    const nearRight = overlapsVertically &&
+        geometry.left <= workArea.right && geometry.right >= workArea.right - tolerance;
     if (!nearLeft && !nearRight) return null;
-    const nearTop = bounds.top <= viewport.top + verticalThreshold;
-    const nearBottom = viewport.bottom - bounds.bottom <= verticalThreshold;
+
     const side = nearLeft && nearRight
-        ? (bounds.left <= viewport.right - bounds.right ? 'left' : 'right')
+        ? (Math.abs(geometry.left - workArea.left) <= Math.abs(workArea.right - geometry.right)
+            ? 'left'
+            : 'right')
         : (nearLeft ? 'left' : 'right');
+    const nearTop = geometry.bottom >= workArea.top && geometry.top <= workArea.top + tolerance;
+    const nearBottom = geometry.top <= workArea.bottom && geometry.bottom >= workArea.bottom - tolerance;
     let verticalEdge = '';
     if (nearTop && nearBottom) {
-        verticalEdge = bounds.top + bounds.height / 2 <= viewport.top + viewport.height / 2
-            ? 'top'
-            : 'bottom';
+        verticalEdge = geometry.centerY <= workArea.top + workArea.height / 2 ? 'top' : 'bottom';
     } else if (nearTop) {
         verticalEdge = 'top';
     } else if (nearBottom) {
@@ -432,8 +516,35 @@ function getLive2DPeekAnchor(bounds, viewport) {
     return {
         edge: verticalEdge ? `${verticalEdge}-${side}` : side,
         side,
-        verticalEdge
+        verticalEdge,
+        geometry,
+        workArea,
+        displayRevision: live2DPeekDisplayContext ? live2DPeekDisplayContext.revision : 0,
+        cropRevision: live2DPeekDisplayContext ? live2DPeekDisplayContext.cropRevision : 0
     };
+}
+
+function settleLive2DBaseAtEdgeContact(model, contact) {
+    if (!model || !contact || !contact.geometry || !contact.workArea) return false;
+    const geometry = contact.geometry;
+    const workArea = contact.workArea;
+    let dx = contact.side === 'left'
+        ? workArea.left - geometry.left
+        : workArea.right - geometry.right;
+    let dy = 0;
+    if (contact.verticalEdge === 'top') {
+        dy = workArea.top - geometry.top;
+    } else if (contact.verticalEdge === 'bottom') {
+        dy = workArea.bottom - geometry.bottom;
+    } else if (geometry.top < workArea.top) {
+        dy = workArea.top - geometry.top;
+    } else if (geometry.bottom > workArea.bottom) {
+        dy = workArea.bottom - geometry.bottom;
+    }
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+    model.x += dx;
+    model.y += dy;
+    return true;
 }
 
 function getLive2DPeekRotationDegrees(anchor) {
@@ -535,12 +646,12 @@ function getLive2DPeekVerticalCorrection(bounds, viewport) {
     return 0;
 }
 
-function getLive2DPeekPlacement(model, bounds, manager = null) {
-    if (!model || !bounds) return null;
-    const viewport = getLive2DPeekViewport(bounds, manager);
-    const triggerViewport = getLive2DPeekTriggerViewport(viewport);
-    const anchor = getLive2DPeekAnchor(bounds, triggerViewport);
-    if (!anchor) return null;
+function getLive2DPeekPlacement(model, bounds, manager = null, anchor = null) {
+    if (!model || !bounds || !anchor) return null;
+    const viewport = anchor.workArea || getLive2DPeekTriggerViewport(
+        getLive2DPeekViewport(bounds, manager)
+    );
+    if (!viewport) return null;
     const { edge, side, verticalEdge } = anchor;
 
     const baseX = Number(model.x) || 0;
@@ -959,22 +1070,23 @@ Live2DManager.prototype._setLive2DPeekVisibility = async function (visible, reas
     return true;
 };
 
-Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
+Live2DManager.prototype._tryApplyLive2DPeek = async function (model, edgeContact = null) {
     if (!isLive2DPeekEnabled()) {
         this.clearLive2DPeek('widget-mode-disabled');
         return false;
     }
     if (window.electronScreen &&
-            typeof window.electronScreen.getCurrentDisplay === 'function') {
+            typeof window.electronScreen.getDesktopCoordinateSnapshot === 'function') {
         await refreshLive2DPeekDisplayContext();
     }
     if (!isLive2DPeekEnabled() || !model || model.destroyed) {
         this.clearLive2DPeek('widget-mode-disabled-after-display-check');
         return false;
     }
+    const contact = edgeContact || getLive2DPeekEdgeContact(this, model);
     const bounds = getLive2DPeekBounds(model);
-    const target = getLive2DPeekPlacement(model, bounds, this);
-    if (!bounds || !target) {
+    const target = getLive2DPeekPlacement(model, bounds, this, contact);
+    if (!contact || !bounds || !target) {
         this.clearLive2DPeek('drag-away-from-edge');
         return false;
     }
@@ -1086,7 +1198,7 @@ function captureLive2DPeekRestoreAnchor() {
     const validEdges = ['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
     if (!manager || !model || !validEdges.includes(edge)) return null;
     const bounds = getLive2DPeekBounds(model);
-    const viewport = getLive2DPeekViewport(bounds, manager);
+    const viewport = getLive2DPeekTriggerViewport(getLive2DPeekViewport(bounds, manager));
     const visibleBounds = state.visibleBounds || getLive2DPeekViewportIntersection(bounds, viewport);
     if (!viewport || !visibleBounds || viewport.height <= 0) return null;
     const storedEdgeAnchorRatio = Number(state.edgeAnchorRatio);
@@ -1123,23 +1235,33 @@ async function restoreLive2DPeekAnchor(anchor) {
     if (!manager || !model || !validEdges.includes(edge) || !side) return false;
     manager.clearLive2DPeek('widget-mode-anchor-prepare', { restore: false });
     let bounds = getLive2DPeekBounds(model);
-    const viewport = getLive2DPeekViewport(bounds, manager);
-    if (!bounds || !viewport) return false;
+    const viewport = getLive2DPeekTriggerViewport(getLive2DPeekViewport(bounds, manager));
+    let geometry = getLive2DModelGeometryBounds(manager, model);
+    if (!bounds || !viewport || !geometry) return false;
     if (edge.startsWith('top-')) {
-        model.y += viewport.top - bounds.top;
+        model.y += viewport.top - geometry.top;
     } else if (edge.startsWith('bottom-')) {
-        model.y += viewport.bottom - bounds.bottom;
+        model.y += viewport.bottom - geometry.bottom;
     } else {
         const ratio = clampLive2DPeekCoordinate(Number(anchor.edgeAnchorRatio), 0, 1);
         const targetCenterY = viewport.top + viewport.height * ratio;
-        model.y += targetCenterY - (bounds.top + bounds.height / 2);
+        model.y += targetCenterY - geometry.centerY;
     }
-    bounds = getLive2DPeekBounds(model);
-    if (!bounds) return false;
+    geometry = getLive2DModelGeometryBounds(manager, model);
+    if (!geometry) return false;
     model.x += side === 'left'
-        ? viewport.left - bounds.left
-        : viewport.right - bounds.right;
-    return await manager._tryApplyLive2DPeek(model);
+        ? viewport.left - geometry.left
+        : viewport.right - geometry.right;
+    const verticalEdge = edge.startsWith('top-')
+        ? 'top'
+        : (edge.startsWith('bottom-') ? 'bottom' : '');
+    return await manager._tryApplyLive2DPeek(model, {
+        edge,
+        side,
+        verticalEdge,
+        geometry: getLive2DModelGeometryBounds(manager, model),
+        workArea: viewport
+    });
 }
 
 async function reconcileLive2DPeekAfterDisplayChange() {
@@ -1195,7 +1317,8 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
     const { afterDisplaySwitch = false, threshold: customThreshold } = options;
 
     try {
-        const bounds = model.getBounds();
+        const bounds = getLive2DModelGeometryBounds(this, model);
+        if (!bounds) return null;
         const modelLeft = bounds.left;
         const modelRight = bounds.right;
         const modelTop = bounds.top;
@@ -1222,19 +1345,23 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         if (Number.isFinite(viewportW) && viewportW > 0) screenRight = Math.min(screenRight, viewportW);
         if (Number.isFinite(viewportH) && viewportH > 0) screenBottom = Math.min(screenBottom, viewportH);
 
-        // 可选：读 workArea 做二次保险（取更小值），但绝不能超过 innerWidth/innerHeight
-        if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
-            try {
-                const currentDisplay = await window.electronScreen.getCurrentDisplay();
-                if (currentDisplay && currentDisplay.workArea) {
-                    const waW = currentDisplay.workArea.width;
-                    const waH = currentDisplay.workArea.height;
-                    if (Number.isFinite(waW) && waW > 0) screenRight = Math.min(screenRight, waW);
-                    if (Number.isFinite(waH) && waH > 0) screenBottom = Math.min(screenBottom, waH);
-                }
-            } catch (e) {
-                console.debug('获取屏幕工作区域失败，使用窗口尺寸');
-            }
+        // 桌面端只能使用同一份 v2 坐标快照里的 raw workArea 和实际窗口原点。
+        // 快照不可用时 fail closed，不能退回 bottom-expanded 旧合同。
+        if (isLive2DPeekDesktopRuntime() && window.electronScreen) {
+            const context = await refreshLive2DPeekDisplayContext(true);
+            const workAreaViewport = getLive2DPeekTriggerViewport({
+                left: 0,
+                top: 0,
+                right: screenRight,
+                bottom: screenBottom,
+                width: screenRight,
+                height: screenBottom
+            });
+            if (!context || !workAreaViewport) return null;
+            screenLeft = workAreaViewport.left;
+            screenTop = workAreaViewport.top;
+            screenRight = workAreaViewport.right;
+            screenBottom = workAreaViewport.bottom;
         }
 
         // 计算超出边界的距离
@@ -1430,6 +1557,96 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
     return animated;
 };
 
+function getLive2DRendererPointer(event, manager) {
+    const pixiPoint = normalizeLive2DPoint(event && event.data && event.data.global);
+    if (pixiPoint) return pixiPoint;
+
+    const coordinates = getLive2DNiriPetPointerCoordinates(event);
+    if (coordinates.active) return normalizeLive2DPoint(coordinates.virtual);
+    const clientPoint = normalizeLive2DPoint(coordinates.local);
+    if (!clientPoint) return null;
+
+    const view = manager && manager.pixi_app && manager.pixi_app.view;
+    const rendererScreen = manager && manager.pixi_app && manager.pixi_app.renderer &&
+        manager.pixi_app.renderer.screen;
+    if (!view || typeof view.getBoundingClientRect !== 'function') return clientPoint;
+    const rect = view.getBoundingClientRect();
+    const rectWidth = Number(rect && rect.width);
+    const rectHeight = Number(rect && rect.height);
+    const rendererWidth = Number(rendererScreen && rendererScreen.width);
+    const rendererHeight = Number(rendererScreen && rendererScreen.height);
+    if (![rect.left, rect.top, rectWidth, rectHeight, rendererWidth, rendererHeight]
+            .every((value) => Number.isFinite(Number(value))) || rectWidth <= 0 || rectHeight <= 0) {
+        return clientPoint;
+    }
+    return {
+        x: (clientPoint.x - Number(rect.left)) * rendererWidth / rectWidth,
+        y: (clientPoint.y - Number(rect.top)) * rendererHeight / rectHeight
+    };
+}
+
+function getLive2DModelLocalGrabPoint(model, pointer) {
+    if (!model || !pointer || typeof model.toLocal !== 'function') return null;
+    try {
+        return normalizeLive2DPoint(model.toLocal(pointer));
+    } catch (_) {
+        return null;
+    }
+}
+
+function placeLive2DGrabPointAtPointer(model, localGrabPoint, pointer) {
+    if (!model || !localGrabPoint || !pointer || typeof model.toGlobal !== 'function') return false;
+    try {
+        const currentGlobal = normalizeLive2DPoint(model.toGlobal(localGrabPoint));
+        if (!currentGlobal) return false;
+        const parent = model.parent;
+        if (parent && typeof parent.toLocal === 'function') {
+            const desiredParent = normalizeLive2DPoint(parent.toLocal(pointer));
+            const currentParent = normalizeLive2DPoint(parent.toLocal(currentGlobal));
+            if (!desiredParent || !currentParent) return false;
+            model.x += desiredParent.x - currentParent.x;
+            model.y += desiredParent.y - currentParent.y;
+        } else {
+            model.x += pointer.x - currentGlobal.x;
+            model.y += pointer.y - currentGlobal.y;
+        }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+Live2DManager.prototype._settleLive2DDragTerminal = async function (model) {
+    if (!model || model.destroyed || !this._isModelReadyForInteraction) return false;
+
+    await this._checkAndSwitchDisplay(model);
+    if (isLive2DPeekDesktopRuntime() && window.electronScreen) {
+        const settledContext = await waitForLive2DDesktopCoordinateSettlement();
+        if (!settledContext) {
+            console.warn('[Live2D] 桌面坐标尚未落稳，停止本次拖拽结算');
+            return false;
+        }
+    }
+
+    const edgeContact = isLive2DPeekEnabled()
+        ? getLive2DPeekEdgeContact(this, model)
+        : null;
+    if (edgeContact && settleLive2DBaseAtEdgeContact(model, edgeContact)) {
+        const settledContact = getLive2DPeekEdgeContact(this, model, edgeContact.workArea);
+        if (settledContact) {
+            await this._savePositionAfterInteraction();
+            await this._tryApplyLive2DPeek(model, settledContact);
+            return true;
+        }
+    }
+
+    const snapped = await this._checkAndPerformSnap(model);
+    if (!snapped) {
+        await this._savePositionAfterInteraction();
+    }
+    return true;
+};
+
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
     clearLive2DPeek('model-reload');
@@ -1439,7 +1656,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     // this.pixi_app.stage.hitArea = this.pixi_app.screen;
 
     this._isDraggingModel = false;
-    let dragStartPos = new PIXI.Point();
+    let dragGrabLocalPoint = null;
 
     // 点击检测相关变量
     let clickStartTime = 0;
@@ -1502,6 +1719,22 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         }
     };
 
+    const releaseLocalDragUi = () => {
+        this._isDraggingModel = false;
+        const canvas = document.getElementById('live2d-canvas');
+        if (canvas) canvas.style.cursor = '';
+        restoreButtonPointerEvents();
+    };
+
+    const cancelLocalDragSession = () => {
+        if (!this._isDraggingModel) return;
+        releaseLocalDragUi();
+        dragGrabLocalPoint = null;
+        hasMoved = false;
+        edgePeekStartedDrag = false;
+        edgePeekDragCleared = false;
+    };
+
     const isYuiGuideDragLocked = () => {
         const body = document.body;
         return !!(body && (
@@ -1540,9 +1773,16 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             this.boostLinuxX11InteractiveFPS(1400);
         }
         this.isFocusing = false; // 拖拽时禁用聚焦
-        const globalPos = event.data.global;
-        dragStartPos.x = globalPos.x - model.x;
-        dragStartPos.y = globalPos.y - model.y;
+        const globalPos = getLive2DRendererPointer(event, this);
+        if (!globalPos) {
+            this._isDraggingModel = false;
+            return;
+        }
+        dragGrabLocalPoint = getLive2DModelLocalGrabPoint(model, globalPos);
+        if (!dragGrabLocalPoint) {
+            this._isDraggingModel = false;
+            return;
+        }
 
         // 记录点击开始信息
         clickStartTime = Date.now();
@@ -1575,9 +1815,11 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         // not settle coordinates, but local pointer/UI state still needs its
         // ordinary pointerup cleanup.
         if (this._isDraggingModel) {
-            this._isDraggingModel = false;
-            document.getElementById('live2d-canvas').style.cursor = '';
-            restoreButtonPointerEvents();
+            if (event && event.type === 'pointercancel') {
+                cancelLocalDragSession();
+                return;
+            }
+            releaseLocalDragUi();
             dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
             if (isLive2DHostModelDragActive()) return;
 
@@ -1612,24 +1854,16 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 return; // 点击不需要保存位置
             }
 
-            // 检测是否需要切换屏幕（多屏幕支持）
-            // _checkAndSwitchDisplay returns true if a display switch occurred (and saved internally)
-            const displaySwitched = await this._checkAndSwitchDisplay(model);
+            // 长按但没有发生真实移动，不得被当作拖拽结算或重新触发 Peek。
+            if (!hasMoved) return;
 
-            // 如果没有发生屏幕切换，检测并执行自动吸附
-            if (!displaySwitched) {
-                await recordDragHintPointerEdgeRelease();
-                // 执行自动吸附检测和动画
-                const snapped = await this._checkAndPerformSnap(model);
-
-                // 如果没有执行吸附，则正常保存位置
-                if (!snapped) {
-                    await this._savePositionAfterInteraction();
-                }
-                await this._tryApplyLive2DPeek(model);
-                // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
-            }
+            await recordDragHintPointerEdgeRelease();
+            await this._settleLive2DDragTerminal(model);
         }
+    };
+
+    const onDragBlur = () => {
+        cancelLocalDragSession();
     };
 
     const onDragMove = (event) => {
@@ -1657,10 +1891,10 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 return;
             }
 
-            // 将 window 坐标转换为 Pixi 全局坐标 (通常在全屏下是一样的，但为了保险)
-            // 这里假设 canvas 是全屏覆盖的
-            const x = event.clientX;
-            const y = event.clientY;
+            const pointer = getLive2DRendererPointer(event, this);
+            if (!pointer) return;
+            const x = pointer.x;
+            const y = pointer.y;
             dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
             void recordDragHintPointerEdgeApproach();
 
@@ -1671,16 +1905,17 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (moveDistance > CLICK_THRESHOLD_DISTANCE) {
                 hasMoved = true;
             }
+            if (!hasMoved) return;
 
             if (edgePeekStartedDrag && hasMoved && !edgePeekDragCleared) {
-                clearLive2DPeek('drag-start', { restore: false });
-                dragStartPos.x = x - model.x;
-                dragStartPos.y = y - model.y;
+                // 先恢复 base 姿态，再用原始模型局部抓取点反解平移；旋转/镜像
+                // 解除后鼠标下仍是用户按住的同一点。
+                clearLive2DPeek('drag-start');
+                placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);
                 edgePeekDragCleared = true;
+            } else {
+                placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);
             }
-
-            model.x = x - dragStartPos.x;
-            model.y = y - dragStartPos.y;
         }
     };
 
@@ -1692,15 +1927,20 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     if (this._dragMoveListener) {
         window.removeEventListener('pointermove', this._dragMoveListener);
     }
+    if (this._dragBlurListener) {
+        window.removeEventListener('blur', this._dragBlurListener);
+    }
 
     // 保存新的监听器引用
     this._dragEndListener = onDragEnd;
     this._dragMoveListener = onDragMove;
+    this._dragBlurListener = onDragBlur;
 
     // 使用 window 监听拖拽结束和移动，确保即使移出 canvas 也能响应
     window.addEventListener('pointerup', onDragEnd);
     window.addEventListener('pointercancel', onDragEnd);
     window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('blur', onDragBlur);
 };
 
 // 设置滚轮缩放
@@ -2916,7 +3156,8 @@ Live2DManager.prototype._debouncedSnapCheck = function () {
 };
 
 // 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
-// Returns true if a display switch occurred (and position was saved internally), false otherwise
+// Returns true after a display switch has settled. Final edge/snap/save
+// settlement belongs exclusively to the drag terminal caller.
 Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
     // 仅在 Electron 环境下执行
     if (!window.electronScreen || !window.electronScreen.moveWindowToDisplay) {
@@ -2925,9 +3166,10 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
 
     try {
         // 获取模型中心点的窗口坐标
-        const bounds = model.getBounds();
-        const modelCenterX = (bounds.left + bounds.right) / 2;
-        const modelCenterY = (bounds.top + bounds.bottom) / 2;
+        const bounds = getLive2DModelGeometryBounds(this, model);
+        if (!bounds) return false;
+        const modelCenterX = bounds.centerX;
+        const modelCenterY = bounds.centerY;
 
         // 获取所有屏幕信息
         const displays = await window.electronScreen.getAllDisplays();
@@ -2950,15 +3192,15 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
         // 需要转换为屏幕坐标（相对于屏幕的绝对坐标）
 
         // 首先获取当前窗口所在的显示器
-        const currentDisplay = await window.electronScreen.getCurrentDisplay();
-        if (!currentDisplay) {
+        const currentContext = await refreshLive2DPeekDisplayContext(true);
+        if (!currentContext) {
             console.warn('[Live2D] 无法获取当前显示器信息');
             return false;
         }
 
         // 计算当前窗口左上角在屏幕上的绝对位置
-        const windowScreenX = currentDisplay.screenX;
-        const windowScreenY = currentDisplay.screenY;
+        const windowScreenX = currentContext.screenX;
+        const windowScreenY = currentContext.screenY;
 
         // 计算模型中心点的屏幕绝对坐标
         const modelScreenX = windowScreenX + modelCenterX;
@@ -2989,11 +3231,15 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
                 if (result && result.success && !result.sameDisplay) {
                     console.log('[Live2D] 屏幕切换成功:', result);
 
-                    // 计算模型在新窗口中的位置
-                    // 新窗口左上角是 targetDisplay.screenX, targetDisplay.screenY
-                    // 模型新的窗口坐标 = 模型屏幕坐标 - 新窗口屏幕坐标
-                    const newModelX = modelScreenX - targetDisplay.screenX;
-                    const newModelY = modelScreenY - targetDisplay.screenY;
+                    const resultWindowBounds = normalizeLive2DPeekRect(result.windowBounds);
+                    const targetOriginX = resultWindowBounds
+                        ? resultWindowBounds.x
+                        : targetDisplay.screenX;
+                    const targetOriginY = resultWindowBounds
+                        ? resultWindowBounds.y
+                        : targetDisplay.screenY;
+                    const newModelCenterX = modelScreenX - targetOriginX;
+                    const newModelCenterY = modelScreenY - targetOriginY;
 
                     // 考虑缩放因子变化
                     if (result.scaleRatio && result.scaleRatio !== 1) {
@@ -3002,28 +3248,23 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
                         console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
                     }
 
-                    // 从中心点转换到锚点位置
-                    // newModelX/newModelY 是模型视觉中心的坐标
-                    // PIXI 的 x/y 是锚点位置，需要根据锚点偏离中心的距离调整
-                    model.x = newModelX + (model.anchor.x - 0.5) * model.width * model.scale.x;
-                    model.y = newModelY + (model.anchor.y - 0.5) * model.height * model.scale.y;
+                    // 以真实 drawable 中心保持全局位置，不再用模型整体尺寸和 anchor 猜偏移。
+                    model.x += newModelCenterX - modelCenterX;
+                    model.y += newModelCenterY - modelCenterY;
 
                     console.log('[Live2D] 模型新位置:', model.x, model.y);
 
-                    // 屏幕切换后，延迟两帧再检测是否需要吸附
-                    // 两帧：一帧给 setBounds 落地，一帧给 resize 事件刷新 innerWidth/Height
-                    await new Promise(resolve => requestAnimationFrame(resolve));
-                    await new Promise(resolve => requestAnimationFrame(resolve));
-
-                    // 检测并执行自动吸附（切换到新屏幕后模型可能仍超出边界）
-                    // 屏幕切换后使用更宽松的吸附条件（只要超出就吸附）
-                    const snapped = await this._checkAndPerformSnap(model, { afterDisplaySwitch: true });
-
-                    // 如果没有执行吸附，保存位置
-                    if (!snapped) {
-                        await this._savePositionAfterInteraction();
+                    const settledContext = await waitForLive2DDesktopCoordinateSettlement(
+                        20,
+                        targetDisplay.id
+                    );
+                    const settledGeometry = getLive2DModelGeometryBounds(this, model);
+                    if (settledContext && settledGeometry) {
+                        const settledCenterX = modelScreenX - settledContext.screenX;
+                        const settledCenterY = modelScreenY - settledContext.screenY;
+                        model.x += settledCenterX - settledGeometry.centerX;
+                        model.y += settledCenterY - settledGeometry.centerY;
                     }
-                    // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
                     if (window.NekoAvatarMultiScreenDragHint &&
                         typeof window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess === 'function') {
                         window.NekoAvatarMultiScreenDragHint.markDisplaySwitchSuccess('live2d');
@@ -3109,6 +3350,10 @@ Live2DManager.prototype.cleanupEventListeners = function () {
     if (this._dragMoveListener) {
         window.removeEventListener('pointermove', this._dragMoveListener);
         this._dragMoveListener = null;
+    }
+    if (this._dragBlurListener) {
+        window.removeEventListener('blur', this._dragBlurListener);
+        this._dragBlurListener = null;
     }
 
     // 清理鼠标跟踪监听器

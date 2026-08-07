@@ -1707,6 +1707,46 @@ class Live2DManager {
     }
 
     /**
+     * 获取当前实际可渲染 drawable 的未裁剪屏幕区域。
+     *
+     * 该公开入口仅供贴边拖拽链读取未裁剪画面几何。既有桌面输入区继续
+     * 走 getModelInputRegionRects()，本功能不能改写普通点击穿透合同。
+     */
+    getModelDrawableScreenRects(options = {}, modelOverride = null) {
+        const model = modelOverride || this.currentModel;
+        if ((model && model.destroyed) ||
+            (modelOverride && this.currentModel && modelOverride !== this.currentModel)) {
+            return [];
+        }
+
+        const rawPadding = options?.padding;
+        const requestedPadding =
+            (typeof rawPadding === 'number' ||
+                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
+                ? Number(rawPadding)
+                : NaN;
+        const padding = Number.isFinite(requestedPadding)
+            ? Math.max(0, Math.min(32, requestedPadding))
+            : 0;
+        const modelBounds = this._getUnclippedModelScreenBounds();
+        const drawableRects = this._getRenderableDrawableScreenRects(
+            modelBounds,
+            null,
+            false
+        );
+        if (!Array.isArray(drawableRects)) return [];
+
+        return drawableRects.map((rect) => {
+            if (!rect) return null;
+            const left = Number(rect.left) - padding;
+            const top = Number(rect.top) - padding;
+            const right = Number(rect.right) + padding;
+            const bottom = Number(rect.bottom) + padding;
+            return this._createScreenRect(left, top, right, bottom);
+        }).filter(Boolean);
+    }
+
+    /**
      * 获取当前实际可渲染 drawable 的屏幕输入区域。
      *
      * 桌面宿主使用这些区域构造 Native Wayland compositor input region。

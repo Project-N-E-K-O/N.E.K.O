@@ -14,14 +14,26 @@ def _source(path: Path) -> str:
 
 def _edge_peek_source() -> str:
     source = _source(LIVE2D_INTERACTION_PATH)
-    return source.split("LIVE2D_PEEK_TRIGGER_RATIO", 1)[1].split("/**", 1)[0]
+    return source.split("const LIVE2D_EDGE_CONTACT_TOLERANCE_PX", 1)[1].split(
+        "Live2DManager.prototype.setupDragAndDrop", 1
+    )[0]
+
+
+def _try_apply_source() -> str:
+    source = _source(LIVE2D_INTERACTION_PATH)
+    return source.split(
+        "Live2DManager.prototype._tryApplyLive2DPeek = async function", 1
+    )[1].split("function clearLive2DPeek", 1)[0]
 
 
 def test_live2d_widget_mode_edge_peek_is_widget_mode_gated_and_uses_six_anchors():
     source = _source(LIVE2D_INTERACTION_PATH)
     edge_peek_source = _edge_peek_source()
 
-    assert "LIVE2D_PEEK_TRIGGER_RATIO = 0.025" in source
+    assert "LIVE2D_PEEK_TRIGGER_RATIO" not in source
+    assert "LIVE2D_PEEK_TRIGGER_MIN_PX" not in source
+    assert "LIVE2D_PEEK_TRIGGER_MAX_PX" not in source
+    assert "LIVE2D_EDGE_CONTACT_TOLERANCE_PX = 8" in source
     assert "LIVE2D_PEEK_VISIBLE_RATIO = 0.22" in source
     assert "LIVE2D_PEEK_VISIBLE_MIN_PX = 96" in source
     assert "LIVE2D_PEEK_VISIBLE_MAX_PX = 180" in source
@@ -31,14 +43,16 @@ def test_live2d_widget_mode_edge_peek_is_widget_mode_gated_and_uses_six_anchors(
     assert "function isLive2DPeekEnabled()" in source
     assert "isLive2DPeekDesktopRuntime()" in source
     assert "window.nekoWidgetMode.isEnabled()" in source
-    assert "function getLive2DPeekAnchor(bounds, viewport)" in edge_peek_source
+    assert "function getLive2DPeekEdgeContact(manager, model, viewport = null)" in edge_peek_source
+    assert "getLive2DModelGeometryBounds(manager, model)" in edge_peek_source
+    assert "manager.getModelDrawableScreenRects({ padding: 0 }, model)" in edge_peek_source
     assert "nearLeft" in edge_peek_source
     assert "nearRight" in edge_peek_source
     assert "nearTop" in edge_peek_source
     assert "nearBottom" in edge_peek_source
     assert "verticalEdge ? `${verticalEdge}-${side}` : side" in edge_peek_source
     assert "'top-left', 'top-right', 'bottom-left', 'bottom-right'" in edge_peek_source
-    assert "this._tryApplyLive2DPeek(model)" in source
+    assert "this._tryApplyLive2DPeek(model, settledContact)" in source
 
 
 def test_live2d_widget_mode_edge_peek_hides_controls_without_locking_live2d():
@@ -51,7 +65,7 @@ def test_live2d_widget_mode_edge_peek_hides_controls_without_locking_live2d():
     assert "display: none !important;" in css_source
     assert "pointer-events: none !important;" in css_source
 
-    full_edge_peek_source = interaction_source.split("LIVE2D_PEEK_TRIGGER_RATIO", 1)[1]
+    full_edge_peek_source = interaction_source.split("const LIVE2D_EDGE_CONTACT_TOLERANCE_PX", 1)[1]
     full_edge_peek_source = full_edge_peek_source.split("Live2DManager.prototype.setupDragAndDrop", 1)[0]
     assert ".classList.add('neko-live2d-peek')" in full_edge_peek_source
     assert ".classList.remove('neko-live2d-peek')" in full_edge_peek_source
@@ -152,8 +166,9 @@ def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits
     assert "await this.restoreLive2DPeek('click-restore');" not in drag_source
     assert "clearLive2DPeek('drag-start');" in drag_source
     assert "this.clearLive2DPeek('drag-start');" not in drag_source
-    assert "clearLive2DPeek('drag-start', { restore: false });" in drag_source
-    assert "this.clearLive2DPeek('drag-start', { restore: false });" not in drag_source
+    assert "clearLive2DPeek('drag-start');" in drag_source
+    assert "placeLive2DGrabPointAtPointer(model, dragGrabLocalPoint, pointer);" in drag_source
+    assert "restore: false" not in drag_source
     assert "if (this.isLive2DPeekActive()) {" in wheel_source
     assert "return; // edge peek ignores wheel zoom" in wheel_source
     assert "this._debouncedSnapCheck();" not in wheel_source.split("if (this.isLive2DPeekActive()) {", 1)[1].split("return; // edge peek ignores wheel zoom", 1)[0]
@@ -206,7 +221,7 @@ def test_live2d_widget_mode_edge_peek_reports_viewport_intersection_bounds():
     assert "__nekoNiriPetPhysicalCrop" in interaction_source
     assert "state && state.enabled === true ? state.virtualBounds : null" in core_source
     assert "state && state.enabled === true ? state.virtualBounds : null" in interaction_source
-    assert "getLive2DPeekPlacement(model, bounds, this)" in edge_peek_source
+    assert "getLive2DPeekPlacement(model, bounds, this, contact)" in edge_peek_source
     assert "Math.max(fallbackW" not in viewport_source
     assert "Math.max(fallbackH" not in viewport_source
 
@@ -239,6 +254,7 @@ def test_live2d_widget_mode_edge_peek_normal_snap_caps_renderer_at_web_viewport(
     snap_source = interaction_source.split("Live2DManager.prototype._checkSnapRequired = async function", 1)[1]
     snap_source = snap_source.split("Live2DManager.prototype._applySnapAnimation", 1)[0]
 
+    assert "const bounds = getLive2DModelGeometryBounds(this, model);" in snap_source
     assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in snap_source
     assert "const rendererScreen = renderer && renderer.screen;" in snap_source
     assert "let screenRight = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : window.innerWidth;" in snap_source
@@ -252,19 +268,25 @@ def test_live2d_widget_mode_edge_peek_does_not_persist_peek_position():
     edge_peek_source = _edge_peek_source()
     drag_source = source.split("Live2DManager.prototype.setupDragAndDrop = function", 1)[1]
     drag_source = drag_source.split("Live2DManager.prototype.setupWheelZoom", 1)[0]
+    terminal_source = source.split(
+        "Live2DManager.prototype._settleLive2DDragTerminal = async function", 1
+    )[1].split("// 设置拖拽功能", 1)[0]
 
-    assert "_savePositionAfterInteraction" not in edge_peek_source
+    assert "_savePositionAfterInteraction" not in _try_apply_source()
     assert "baseX" in edge_peek_source
     assert "baseY" in edge_peek_source
     assert "peekX" in edge_peek_source
     assert "peekY" in edge_peek_source
     assert "hiddenX" in edge_peek_source
     assert "hiddenY" in edge_peek_source
-    assert "await this._savePositionAfterInteraction();" in drag_source
-    assert "await this._tryApplyLive2DPeek(model);" in drag_source
+    assert "await this._settleLive2DDragTerminal(model);" in drag_source
+    assert "await this._savePositionAfterInteraction();" in terminal_source
+    assert "const edgeContact = isLive2DPeekEnabled()" in terminal_source
+    assert "settleLive2DBaseAtEdgeContact(model, edgeContact)" in terminal_source
+    assert "await this._tryApplyLive2DPeek(model, settledContact);" in terminal_source
     assert (
-        drag_source.index("await this._savePositionAfterInteraction();")
-        < drag_source.index("await this._tryApplyLive2DPeek(model);")
+        terminal_source.index("await this._savePositionAfterInteraction();")
+        < terminal_source.index("await this._tryApplyLive2DPeek(model, settledContact);")
     )
 
 
