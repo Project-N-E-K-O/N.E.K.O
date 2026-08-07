@@ -94,6 +94,20 @@ low_hp_target_ratio = 0.2
 damage_milestone_step = 50000.0
 outnumbered_margin = 2
 
+# 离线舰船参数目录。目录只从插件数据目录读取，绝不因缺船自动联网。
+ship_catalog_enabled = true
+ship_catalog_version_policy = "warn"
+ship_catalog_language = "zh-CN"
+ship_catalog_context_batch_chars = 12000
+
+# 官方查询只作为显式 LLM 工具，默认关闭；Application ID 不会写入日志或面板。
+official_api_enabled = false
+official_api_region = "asia"
+official_api_application_id = ""
+official_api_language = "zh-cn"
+official_api_timeout_seconds = 5.0
+official_api_cache_ttl_seconds = 300.0
+
 # 战术文档库。存储配额可以放很大，但排序索引单独设上限：超出后文档仍然可以
 # 按 front matter 标签检索，只是不再参与 BM25 排序，面板会显示索引覆盖率。
 tactics_max_file_bytes = 8388608

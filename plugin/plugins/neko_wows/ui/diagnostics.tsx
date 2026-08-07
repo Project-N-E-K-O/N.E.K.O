@@ -29,6 +29,8 @@ export function DiagnosticsSection(props: {
   const config = state.config || {}
   const dispatcher = state.dispatcher || {}
   const arbiter = state.arbiter || {}
+  const catalog = state.ship_catalog || {}
+  const officialTool = catalog.official_tool || {}
   const paused = Boolean(dispatcher.paused || arbiter.paused)
   const findAction = (id: string) =>
     (props.actions || []).find((action) => action.id === id)
@@ -99,6 +101,52 @@ export function DiagnosticsSection(props: {
         />
       </Card>
 
+      <Card title={t("diagnostics.catalog.title")}>
+        <Stack gap={8}>
+          <Columns minWidth={140} gap={10}>
+            <StatCard
+              label={t("diagnostics.catalog.resolved")}
+              value={formatCount(catalog.resolved_ship_types, t)}
+            />
+            <StatCard
+              label={t("diagnostics.catalog.unresolved")}
+              value={formatCount(catalog.unresolved_objects, t)}
+            />
+            <StatCard
+              label={t("diagnostics.catalog.pending")}
+              value={formatCount(catalog.pending_ship_types, t)}
+            />
+            <StatCard
+              label={t("diagnostics.catalog.submitted")}
+              value={formatCount(catalog.submitted_ship_types, t)}
+            />
+          </Columns>
+          <KeyValue
+            data={{
+              [t("diagnostics.catalog.state")]: catalogStateLabel(catalog.state, t),
+              [t("diagnostics.catalog.activeVersion")]: catalog.active_catalog_version || "—",
+              [t("diagnostics.catalog.frozenVersion")]: catalog.frozen_catalog_version || "—",
+              [t("diagnostics.catalog.gameVersion")]: catalog.catalog_game_version || "—",
+              [t("diagnostics.catalog.clientVersion")]: catalog.client_game_version || "—",
+              [t("diagnostics.catalog.versionStatus")]: catalogVersionLabel(catalog.version_status, t),
+              [t("diagnostics.catalog.sourceCommit")]: catalog.source_commit
+                ? catalog.source_commit.slice(0, 12)
+                : "—",
+              [t("diagnostics.catalog.official")]: officialTool.enabled
+                ? t("diagnostics.catalog.enabled")
+                : t("diagnostics.catalog.disabled"),
+              [t("diagnostics.catalog.region")]: officialTool.region || "—",
+              [t("diagnostics.catalog.key")]: officialTool.key_configured
+                ? t("diagnostics.catalog.configured")
+                : t("diagnostics.catalog.notConfigured"),
+              [t("diagnostics.catalog.cacheEntries")]: formatCount(officialTool.cache_entries, t),
+              [t("diagnostics.catalog.cacheHits")]: formatCount(officialTool.cache_hits, t),
+              [t("diagnostics.catalog.cacheMisses")]: formatCount(officialTool.cache_misses, t),
+            }}
+          />
+        </Stack>
+      </Card>
+
       <Card title={t("diagnostics.actions.title")}>
         <Stack gap={8}>
           <Inline gap={8} wrap>
@@ -135,4 +183,18 @@ export function DiagnosticsSection(props: {
       </Card>
     </Stack>
   )
+}
+
+function catalogStateLabel(value: string | undefined, t: Translate): string {
+  if (value === "loaded") return t("diagnostics.catalog.state.loaded")
+  if (value === "null_catalog") return t("diagnostics.catalog.state.null")
+  if (value === "version_rejected") return t("diagnostics.catalog.state.rejected")
+  if (value === "disabled") return t("diagnostics.catalog.state.disabled")
+  return t("diagnostics.catalog.state.idle")
+}
+
+function catalogVersionLabel(value: string | undefined, t: Translate): string {
+  if (value === "match") return t("diagnostics.catalog.version.match")
+  if (value === "mismatch") return t("diagnostics.catalog.version.mismatch")
+  return t("diagnostics.catalog.version.unknown")
 }

@@ -31,6 +31,7 @@ from plugin.sdk.plugin import (
     Ok,
     SdkError,
     lifecycle,
+    llm_tool,
     message,
     neko_plugin,
     plugin_entry,
@@ -47,6 +48,7 @@ from .adapters.runtime_timeline import (
     STAGE_FRAME,
     STAGE_PROMPTS,
     STAGE_SERVICE,
+    STAGE_SHIP_CATALOG,
     RuntimeTimeline,
 )
 from .adapters.schema_adapter import (
@@ -92,6 +94,14 @@ from .presentation.instructions import (
 from .presentation.prompt_router import PromptProfile, WowsPromptRouter
 from .policy.arbiter import Arbiter, REASON_CHOSEN
 from .policy.tactic_policy import AdviceCandidate, WowsTacticPolicy
+from .ship_data.context import BattleShipContextManager, ContextObservation
+from .ship_data.official_api import (
+    OFFICIAL_LANGUAGES,
+    OfficialWowsApiClient,
+    official_error,
+)
+from .ship_data.resolver import ShipResolver
+from .ship_data.store import ShipCatalogStore
 
 CONFIG_SECTION = "neko_wows"
 KNOWLEDGE_DB_NAME = "tactical_knowledge.db"
@@ -112,6 +122,28 @@ _CONNECTION_KEYS = (
     "game_dir",
     "service_auto_start",
 )
+
+OFFICIAL_SHIP_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ship": {
+            "type": "string",
+            "description": "精确舰名、目录别名或十进制官方 ship ID。",
+        },
+        "configuration": {
+            "type": "string",
+            "enum": ["top"],
+            "default": "top",
+            "description": "首期仅支持顶配参考。",
+        },
+        "language": {
+            "type": "string",
+            "description": "可选官方 API 语言代码；省略时使用插件配置。",
+        },
+    },
+    "required": ["ship"],
+    "additionalProperties": False,
+}
 
 
 @neko_plugin
@@ -140,6 +172,20 @@ class NekoWowsPlugin(NekoPluginBase):
         self.router = WowsPromptRouter(self.cfg)
         self.dispatcher = NekoDispatcher(self, self.cfg, logger=self.logger)
         self.context_injector = ContextInjector(self, logger=self.logger)
+        self.ship_catalog_store = ShipCatalogStore(
+            self.data_path("ship_catalog"), logger=self.logger)
+        self.ship_context = BattleShipContextManager(
+            self,
+            self.ship_catalog_store,
+            self.cfg,
+            logger=self.logger,
+        )
+        self.official_api = OfficialWowsApiClient(
+            application_id=self.cfg.official_api_application_id,
+            region=self.cfg.official_api_region,
+            timeout_seconds=self.cfg.official_api_timeout_seconds,
+            cache_ttl_seconds=self.cfg.official_api_cache_ttl_seconds,
+        )
 
         # A plain sqlite3 store rather than the SDK's async `self.db`: retrieval
         # happens inside `_evaluate` on the transport thread, which cannot await.
@@ -250,6 +296,8 @@ class NekoWowsPlugin(NekoPluginBase):
             self.arbiter.apply_config(cfg)
             self.router.apply_config(cfg)
             self.dispatcher.apply_config(cfg)
+            self.ship_context.apply_config(cfg)
+            self.official_api.apply_config(cfg)
             self.transport.apply_config(cfg)
             self.importer.apply_config(cfg)
             if isinstance(self.tactics, WowsTacticsRepository):
@@ -343,6 +391,7 @@ class NekoWowsPlugin(NekoPluginBase):
         status = self.service.stop()
         self.context_injector.restore(
             WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
+        self.ship_context.reset("shutdown")
         self.knowledge.close()
         self.logger.info("neko_wows shutdown")
         return Ok({"status": "shutdown", "service": status.as_dict()})
@@ -455,6 +504,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 if snapshot.status == STATUS_ENDED:
                     self.context_injector.restore(
                         WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
+                    self.ship_context.reset("battle_end")
 
     def _evaluate_locked(self, snapshot) -> None:
         cfg = self.cfg
@@ -481,6 +531,20 @@ class NekoWowsPlugin(NekoPluginBase):
         if snapshot.is_live:
             self.context_injector.push(
                 WOWS_CONTEXT_INSTRUCTIONS, dry_run=cfg.dry_run)
+            try:
+                catalog_observation = self.ship_context.observe(
+                    snapshot, dry_run=cfg.dry_run)
+            except Exception as exc:
+                self.timeline.record(
+                    STAGE_SHIP_CATALOG,
+                    "error",
+                    seq=snapshot.seq,
+                    battle_id=snapshot.battle_id,
+                    reason=f"observation failed: {type(exc).__name__}",
+                )
+            else:
+                self._record_ship_catalog_observation(
+                    snapshot, catalog_observation)
 
         blocked_signature = tuple(
             (entry.detector, tuple(entry.missing)) for entry in result.blocked)
@@ -573,6 +637,33 @@ class NekoWowsPlugin(NekoPluginBase):
             self.logger.warning(f"tactical lookup failed: {type(exc).__name__}: {exc}")
             return ()
 
+    def _record_ship_catalog_observation(
+        self,
+        snapshot,
+        observation: ContextObservation,
+    ) -> None:
+        for event in observation.events:
+            detail = dict(event.detail)
+            reason = ""
+            if isinstance(detail.get("reason"), str):
+                reason = detail.pop("reason")[:200]
+            self.timeline.record(
+                STAGE_SHIP_CATALOG,
+                event.outcome,
+                seq=snapshot.seq,
+                battle_id=snapshot.battle_id,
+                reason=reason,
+                detail=detail,
+            )
+        if observation.error and not observation.events:
+            self.timeline.record(
+                STAGE_SHIP_CATALOG,
+                "error",
+                seq=snapshot.seq,
+                battle_id=snapshot.battle_id,
+                reason=observation.error,
+            )
+
     # ------------------------------------------------------------------ 面板数据
     def _dashboard_payload(self) -> dict[str, Any]:
         with self._state_lock:
@@ -641,6 +732,7 @@ class NekoWowsPlugin(NekoPluginBase):
             "arbiter": self.arbiter.stats(),
             "dispatcher": self.dispatcher.stats(),
             "context_injected": self.context_injector.injected,
+            "ship_catalog": self._ship_catalog_payload(),
             "documents": self._documents_payload(),
             "prompts": self._prompts_payload(bundle),
             "categories": list(ALL_CATEGORIES),
@@ -648,6 +740,20 @@ class NekoWowsPlugin(NekoPluginBase):
             "timeline": self.timeline.recent(60),
             "mod_hint": _mod_hint(service, snapshot_view),
         }
+
+    def _ship_catalog_payload(self) -> dict[str, Any]:
+        payload = dict(self.ship_context.stats())
+        stats_method = getattr(getattr(self, "official_api", None), "stats", None)
+        official_stats = stats_method() if callable(stats_method) else {}
+        payload["official_tool"] = {
+            "enabled": bool(self.cfg.official_api_enabled),
+            "region": self.cfg.official_api_region,
+            "key_configured": bool(self.cfg.official_api_application_id),
+            "cache_entries": official_stats.get("cache_entries", 0),
+            "cache_hits": official_stats.get("cache_hits", 0),
+            "cache_misses": official_stats.get("cache_misses", 0),
+        }
+        return payload
 
     def _documents_payload(self) -> dict[str, Any]:
         cfg = self.cfg
@@ -794,6 +900,7 @@ class NekoWowsPlugin(NekoPluginBase):
         with self._pipeline_lock:
             self.gate.reset()
             self.registry.reset()
+            self.ship_context.reset("reconnect")
             self._blocked_signature = ()
             with self._state_lock:
                 self._previous = None
@@ -1171,6 +1278,69 @@ class NekoWowsPlugin(NekoPluginBase):
         # The timeline is large and the panel already renders it.
         payload.pop("timeline", None)
         return Ok(payload)
+
+    @llm_tool(
+        name="wows_query_ship_official",
+        description=(
+            "显式查询 World of Warships 官方 API 的指定舰船顶配参数。"
+            "仅在需要核对官方在线数据时调用；日常战局参数由离线目录提供。"
+        ),
+        parameters=OFFICIAL_SHIP_TOOL_SCHEMA,
+        timeout=35.0,
+    )
+    async def wows_query_ship_official(
+        self,
+        ship: str,
+        configuration: str = "top",
+        language: str | None = None,
+        **_,
+    ) -> dict[str, Any]:
+        cfg = self.cfg
+        if not cfg.official_api_enabled:
+            return official_error("disabled")
+        if not cfg.official_api_application_id:
+            return official_error("missing_application_id")
+        if configuration != "top":
+            return official_error("invalid_configuration")
+
+        selected_language = (
+            language.strip().casefold()
+            if isinstance(language, str) and language.strip()
+            else cfg.official_api_language
+        )
+        if selected_language not in OFFICIAL_LANGUAGES:
+            return official_error("invalid_language")
+
+        value = ship.strip() if isinstance(ship, str) else ""
+        if not value:
+            return official_error("ship_not_found")
+        if value.isdecimal():
+            ship_id = int(value)
+        else:
+            catalog = None
+            try:
+                catalog = self.ship_catalog_store.snapshot()
+                if getattr(catalog, "meta", None) is None:
+                    return official_error("catalog_unavailable")
+                resolution = ShipResolver(catalog).resolve(value)
+                if not resolution.resolved or resolution.ship is None:
+                    return official_error("ship_not_found")
+                ship_id = resolution.ship.ship_id
+            except Exception:
+                return official_error("catalog_unavailable")
+            finally:
+                if catalog is not None:
+                    try:
+                        catalog.close()
+                    except Exception:
+                        pass
+
+        return await asyncio.to_thread(
+            self.official_api.query_ship_id,
+            ship_id,
+            configuration=configuration,
+            language=selected_language,
+        )
 
     # ------------------------------------------------------------------ 内部
     def _adopt_revision(self, revision: dict[str, Any]) -> None:

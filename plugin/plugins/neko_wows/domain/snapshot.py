@@ -132,6 +132,7 @@ class WowsSnapshot:
     # --- envelope ---
     service_id: str = ""
     api_version: str = ""
+    game_version: str = ""
     instance_id: str = ""
     seq: int = 0
     battle_id: str | None = None

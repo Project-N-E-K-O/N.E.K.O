@@ -17,6 +17,7 @@ from plugin.plugins.neko_wows.adapters.neko_dispatcher import (
     REASON_FAILED,
     REASON_PAUSED,
 )
+from plugin.plugins.neko_wows.adapters.runtime_timeline import STAGE_SHIP_CATALOG
 from plugin.plugins.neko_wows.domain.catalog import (
     AMMO_RECHECK_HINT,
     LOW_HEALTH,
@@ -52,6 +53,15 @@ from plugin.plugins.neko_wows.presentation.prompt_router import (
 from plugin.plugins.neko_wows.detectors._base import GameEvent
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
 from plugin.plugins.neko_wows.domain.snapshot import STATUS_ENDED
+from plugin.plugins.neko_wows.ship_data.context import (
+    BattleShipContextManager,
+    ContextObservation,
+)
+from plugin.plugins.neko_wows.ship_data.models import (
+    CatalogMeta,
+    CatalogShip,
+    ShipProfile,
+)
 
 
 class FakePlugin:
@@ -198,10 +208,235 @@ def test_battle_end_restores_context_after_the_frame_is_evaluated():
     plugin._evaluate_locked = lambda _snapshot: calls.append("evaluate")
     plugin.context_injector = SimpleNamespace(
         restore=lambda *_args, **_kwargs: calls.append("restore") or True)
+    plugin.ship_context = SimpleNamespace(
+        reset=lambda reason: calls.append(f"ship_reset:{reason}"))
 
     NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_ENDED))
 
-    assert calls == ["evaluate", "restore"]
+    assert calls == ["evaluate", "restore", "ship_reset:battle_end"]
+
+
+def test_battle_end_restores_context_when_evaluation_raises():
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin._pipeline_lock = threading.RLock()
+    plugin.cfg = WowsConfig()
+
+    def fail_evaluation(_snapshot):
+        calls.append("evaluate")
+        raise RuntimeError("evaluation failed")
+
+    plugin._evaluate_locked = fail_evaluation
+    plugin.context_injector = SimpleNamespace(
+        restore=lambda *_args, **_kwargs: calls.append("restore") or True)
+    plugin.ship_context = SimpleNamespace(
+        reset=lambda reason: calls.append(f"ship_reset:{reason}"))
+
+    with pytest.raises(RuntimeError, match="evaluation failed"):
+        NekoWowsPlugin._evaluate(plugin, SimpleNamespace(status=STATUS_ENDED))
+
+    assert calls == ["evaluate", "restore", "ship_reset:battle_end"]
+
+
+class _Timeline:
+    def __init__(self):
+        self.records = []
+
+    def record(self, *args, **kwargs):
+        self.records.append((args, kwargs))
+
+
+def _catalog_order_target(*, catalog_error: Exception | None = None):
+    calls = []
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin.cfg = WowsConfig(dry_run=False)
+    plugin._state_lock = threading.RLock()
+    plugin._previous = None
+    plugin._latest = None
+    plugin._events_seen = 0
+    plugin._blocked_signature = ()
+    plugin._last_candidate = None
+    plugin._prompt_bundle = SimpleNamespace(revision_id="builtin")
+    plugin.timeline = _Timeline()
+    facts = SimpleNamespace(at=100.0)
+    plugin.facts = SimpleNamespace(build=lambda _snapshot: facts)
+    event = SimpleNamespace(event_id="battle_started")
+    plugin.registry = SimpleNamespace(feed=lambda *_args, **_kwargs: SimpleNamespace(
+        identity_reset=False,
+        blocked=(),
+        events=(event,),
+        reason="events",
+    ))
+    plugin.context_injector = SimpleNamespace(
+        push=lambda *_args, **_kwargs: calls.append("scene") or True)
+
+    def observe(*_args, **_kwargs):
+        calls.append("ship")
+        if catalog_error is not None:
+            raise catalog_error
+        return ContextObservation(state="null_catalog")
+
+    plugin.ship_context = SimpleNamespace(observe=observe)
+    chosen = SimpleNamespace(
+        event_id="battle_started",
+        lane="normal",
+        severity=20,
+        summary="开局",
+    )
+    plugin.policy = SimpleNamespace(expand=lambda *_args: (chosen,))
+    plugin.arbiter = SimpleNamespace(
+        decide=lambda *_args: SimpleNamespace(chosen=chosen, chain=()),
+        commit=lambda *_args, **_kwargs: None,
+    )
+    request = SimpleNamespace(text="respond", event_id="battle_started")
+    plugin.router = SimpleNamespace(build=lambda *_args: request)
+    plugin.dispatcher = SimpleNamespace(deliver=lambda _request: (
+        calls.append("respond")
+        or SimpleNamespace(reason="delivered", host_calls=1)
+    ))
+    plugin._reference_for = lambda *_args: ()
+    ship = SimpleNamespace(
+        name="OwnShip",
+        tier=10,
+        ship_type="Battleship",
+        ui_id=1,
+        player_id=1001,
+        team_id=0,
+        relation="self",
+    )
+    snapshot = SimpleNamespace(
+        is_live=True,
+        active=True,
+        identity=("replay-inst", "battle-1"),
+        game_version="",
+        ships=(ship,),
+        self_ship=ship,
+        seq=1,
+        battle_id="battle-1",
+        status="live",
+        transport="ws",
+    )
+    return plugin, snapshot, calls
+
+
+def test_ship_catalog_observation_runs_after_scene_and_before_response():
+    plugin, snapshot, calls = _catalog_order_target()
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert calls == ["scene", "ship", "respond"]
+
+
+def test_automatic_lifecycle_never_queries_the_official_ship_api():
+    class GuardOfficialClient:
+        def __init__(self):
+            self.calls = 0
+
+        def query_ship_id(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("automatic lifecycle must stay on offline catalog")
+
+    plugin, snapshot, calls = _catalog_order_target()
+    plugin.cfg.official_api_enabled = True
+    plugin.cfg.official_api_application_id = "test-only-app-id"
+    official_api = GuardOfficialClient()
+    plugin.official_api = official_api
+    catalog_ship = CatalogShip(
+        ship_id=92001,
+        ship_index="replay:OwnShip",
+        name_key="IDS_OWNSHIP",
+        display_name="OwnShip",
+        nation="test",
+        ship_class="Battleship",
+        tier=10,
+    )
+    profile = ShipProfile(
+        profile_id="92001:reference_top:primary",
+        ship_id=92001,
+        configuration="reference_top",
+        variant_key="primary",
+        is_primary=True,
+        profile_schema_version=1,
+        data={},
+        profile_sha256="0" * 64,
+    )
+    catalog = SimpleNamespace(
+        meta=CatalogMeta(
+            schema_version=1,
+            catalog_version="lifecycle-test-v1",
+            game_version="",
+            channel="test",
+            source_repo="test",
+            source_commit="test-only",
+            content_sha256="0" * 64,
+            default_language="en",
+            ship_count=1,
+            profile_count=1,
+        ),
+        alias_candidates=lambda alias: (
+            (catalog_ship,) if alias == "ownship" else ()),
+        primary_profile=lambda ship_id: (
+            profile if ship_id == catalog_ship.ship_id else None),
+        close=lambda: None,
+    )
+    plugin.push_message = lambda **_kwargs: {"submitted": True}
+    real_ship_context = BattleShipContextManager(
+        plugin,
+        SimpleNamespace(snapshot=lambda **_kwargs: catalog),
+        plugin.cfg,
+    )
+
+    def observe_with_real_manager(*args, **kwargs):
+        calls.append("ship")
+        return real_ship_context.observe(*args, **kwargs)
+
+    plugin.ship_context = SimpleNamespace(observe=observe_with_real_manager)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert official_api.calls == 0
+    assert calls == ["scene", "ship", "respond"]
+    assert real_ship_context.stats()["resolved_ship_types"] == 1
+    assert real_ship_context.stats()["submitted_ship_types"] == 1
+
+
+def test_ship_catalog_failure_does_not_stop_existing_delivery():
+    plugin, snapshot, calls = _catalog_order_target(
+        catalog_error=RuntimeError("catalog unavailable"))
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
+    assert calls == ["scene", "ship", "respond"]
+    assert any(
+        args[:2] == (STAGE_SHIP_CATALOG, "error")
+        for args, _kwargs in plugin.timeline.records
+    )
+
+
+def test_ship_catalog_dashboard_never_exposes_official_application_id():
+    plugin = object.__new__(NekoWowsPlugin)
+    plugin.cfg = WowsConfig(
+        official_api_enabled=True,
+        official_api_region="asia",
+        official_api_application_id="secret-app-id",
+    )
+    plugin.ship_context = SimpleNamespace(stats=lambda: {
+        "state": "loaded",
+        "frozen_catalog_version": "v1",
+        "resolved_ship_types": 2,
+    })
+
+    payload = NekoWowsPlugin._ship_catalog_payload(plugin)
+
+    assert payload["official_tool"] == {
+        "enabled": True,
+        "region": "asia",
+        "key_configured": True,
+        "cache_entries": 0,
+        "cache_hits": 0,
+        "cache_misses": 0,
+    }
+    assert "secret-app-id" not in repr(payload)
 
 
 # --- expiry, pausing, failure fuse --------------------------------------

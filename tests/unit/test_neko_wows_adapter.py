@@ -129,6 +129,20 @@ def test_v1_envelope_is_read_verbatim():
     assert snapshot.cursor == ("inst-a", 7)
 
 
+def test_v1_game_version_is_preserved_when_service_supplies_it():
+    payload = v1_payload() | {"gameVersion": "15.6.0.0.12830008"}
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+
+    assert snapshot.game_version == "15.6.0.0.12830008"
+
+
+def test_v1_game_version_rejects_non_string_values():
+    snapshot = WowsSchemaAdapter().parse(v1_payload() | {"gameVersion": 156})
+
+    assert snapshot.game_version == ""
+
+
 def test_v1_body_is_normalized():
     snapshot = WowsSchemaAdapter().parse(v1_payload())
     assert snapshot.self_ship is not None

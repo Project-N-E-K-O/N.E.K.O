@@ -92,6 +92,33 @@ export type DispatcherState = {
   dry_run?: boolean
 }
 
+export type ShipCatalogState = {
+  enabled?: boolean
+  state?: string
+  active_catalog_version?: string
+  frozen_catalog_version?: string
+  catalog_game_version?: string
+  client_game_version?: string
+  version_status?: string
+  source_commit?: string
+  schema_version?: number | null
+  observed_objects?: number
+  resolved_ship_types?: number
+  unresolved_objects?: number
+  pending_ship_types?: number
+  submitted_ship_types?: number
+  unresolved_reasons?: Record<string, number>
+  last_error?: string
+  official_tool?: {
+    enabled?: boolean
+    region?: string
+    key_configured?: boolean
+    cache_entries?: number
+    cache_hits?: number
+    cache_misses?: number
+  }
+}
+
 export type WowsConfigView = {
   dry_run?: boolean
   channel_mode?: string
@@ -194,6 +221,7 @@ export type DashboardState = {
   arbiter?: ArbiterState
   dispatcher?: DispatcherState
   context_injected?: boolean
+  ship_catalog?: ShipCatalogState
   documents?: DocumentsState
   prompts?: PromptsState
   categories?: string[]

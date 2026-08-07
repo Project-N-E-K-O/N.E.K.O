@@ -34,6 +34,24 @@ ALL_INTRUSION_MODES = (
     INTRUSION_ALLOW_INTERRUPT,
 )
 
+SHIP_CATALOG_VERSION_WARN = "warn"
+SHIP_CATALOG_VERSION_STRICT = "strict"
+ALL_SHIP_CATALOG_VERSION_POLICIES = (
+    SHIP_CATALOG_VERSION_WARN,
+    SHIP_CATALOG_VERSION_STRICT,
+)
+SHIP_CATALOG_LANGUAGE_DEFAULT = "zh-CN"
+ALL_SHIP_CATALOG_LANGUAGES = ("en", "ja", "zh-CN", "zh-TW")
+
+OFFICIAL_API_REGION_ASIA = "asia"
+OFFICIAL_API_REGION_EU = "eu"
+OFFICIAL_API_REGION_NA = "na"
+ALL_OFFICIAL_API_REGIONS = (
+    OFFICIAL_API_REGION_ASIA,
+    OFFICIAL_API_REGION_EU,
+    OFFICIAL_API_REGION_NA,
+)
+
 # Coalesce keys double as broadcast categories: they already group events the way
 # a user thinks about them (survival, threat, targeting, ...).
 CATEGORY_LIFECYCLE = "wows_lifecycle"
@@ -112,6 +130,18 @@ class WowsConfig:
     low_hp_target_ratio: float = 0.2
     damage_milestone_step: float = 50000.0
     outnumbered_margin: int = 2
+
+    # --- offline ship catalog and explicit official lookup ---
+    ship_catalog_enabled: bool = True
+    ship_catalog_version_policy: str = SHIP_CATALOG_VERSION_WARN
+    ship_catalog_language: str = SHIP_CATALOG_LANGUAGE_DEFAULT
+    ship_catalog_context_batch_chars: int = 12_000
+    official_api_enabled: bool = False
+    official_api_region: str = OFFICIAL_API_REGION_ASIA
+    official_api_application_id: str = ""
+    official_api_language: str = "zh-cn"
+    official_api_timeout_seconds: float = 5.0
+    official_api_cache_ttl_seconds: float = 300.0
 
     # --- tactical documents ---
     tactics_max_file_bytes: int = 8 * 1024 * 1024
@@ -216,6 +246,34 @@ class WowsConfig:
         cfg.damage_milestone_step = number(
             "damage_milestone_step", 50000.0, 1000.0, 1000000.0)
         cfg.outnumbered_margin = int(number("outnumbered_margin", 2, 1, 12))
+
+        cfg.ship_catalog_enabled = flag("ship_catalog_enabled", True)
+        version_policy = text(
+            "ship_catalog_version_policy", SHIP_CATALOG_VERSION_WARN)
+        cfg.ship_catalog_version_policy = (
+            version_policy
+            if version_policy in ALL_SHIP_CATALOG_VERSION_POLICIES
+            else SHIP_CATALOG_VERSION_WARN
+        )
+        catalog_language = text(
+            "ship_catalog_language", SHIP_CATALOG_LANGUAGE_DEFAULT)
+        cfg.ship_catalog_language = (
+            catalog_language
+            if catalog_language in ALL_SHIP_CATALOG_LANGUAGES
+            else SHIP_CATALOG_LANGUAGE_DEFAULT
+        )
+        cfg.ship_catalog_context_batch_chars = int(number(
+            "ship_catalog_context_batch_chars", 12_000, 4_096, 65_536))
+        cfg.official_api_enabled = flag("official_api_enabled", False)
+        region = text("official_api_region", OFFICIAL_API_REGION_ASIA)
+        cfg.official_api_region = (
+            region if region in ALL_OFFICIAL_API_REGIONS else OFFICIAL_API_REGION_ASIA)
+        cfg.official_api_application_id = text("official_api_application_id", "")
+        cfg.official_api_language = text("official_api_language", "zh-cn") or "zh-cn"
+        cfg.official_api_timeout_seconds = number(
+            "official_api_timeout_seconds", 5.0, 0.5, 30.0)
+        cfg.official_api_cache_ttl_seconds = number(
+            "official_api_cache_ttl_seconds", 300.0, 0.0, 3600.0)
 
         cfg.tactics_max_file_bytes = int(number(
             "tactics_max_file_bytes", 8 * 1024 * 1024, 4096, 64 * 1024 * 1024))

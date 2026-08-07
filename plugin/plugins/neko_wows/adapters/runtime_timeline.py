@@ -20,6 +20,7 @@ STAGE_DELIVERY = "delivery"
 STAGE_SERVICE = "service"
 STAGE_DOCUMENTS = "documents"
 STAGE_PROMPTS = "prompts"
+STAGE_SHIP_CATALOG = "ship_catalog"
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ __all__ = [
     "STAGE_FRAME",
     "STAGE_PROMPTS",
     "STAGE_SERVICE",
+    "STAGE_SHIP_CATALOG",
     "RuntimeTimeline",
     "TimelineRecord",
 ]

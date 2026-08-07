@@ -28,6 +28,7 @@ from plugin.plugins.neko_wows.domain.contracts import (
     INTRUSION_NO_INTERRUPT,
     LANE_NORMAL,
     LANE_URGENT,
+    NullTacticsRepository,
     WowsConfig,
 )
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
@@ -400,6 +401,31 @@ class _GuardedDependency:
 
     def note_user_activity(self, at):
         self._record("note_user_activity", at)
+
+
+def test_apply_config_updates_ship_catalog_context_under_pipeline_lock():
+    target = object.__new__(NekoWowsPlugin)
+    target._pipeline_lock = _TrackingLock()
+    target._state_lock = threading.RLock()
+    target.cfg = WowsConfig()
+    target.timeline = _GuardedDependency(target._pipeline_lock)
+    target.timeline.resize = lambda *_args: None
+    target.service = _GuardedDependency(target._pipeline_lock)
+    target.policy = _GuardedDependency(target._pipeline_lock)
+    target.arbiter = _GuardedDependency(target._pipeline_lock)
+    target.router = _GuardedDependency(target._pipeline_lock)
+    target.dispatcher = _GuardedDependency(target._pipeline_lock)
+    target.transport = _GuardedDependency(target._pipeline_lock)
+    target.importer = _GuardedDependency(target._pipeline_lock)
+    target.ship_context = _GuardedDependency(target._pipeline_lock)
+    target.official_api = _GuardedDependency(target._pipeline_lock)
+    target.tactics = NullTacticsRepository()
+    target._blocked_signature = ()
+    cfg = WowsConfig(ship_catalog_enabled=False)
+
+    NekoWowsPlugin._apply_config(target, cfg)
+
+    assert target.ship_context.calls == [("apply_config", (cfg,))]
 
 
 class _ActionStore:

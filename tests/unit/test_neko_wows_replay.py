@@ -7,6 +7,7 @@ in the seam between two stages shows up here rather than only in a real battle.
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 import json
 from pathlib import Path
 
@@ -48,20 +49,119 @@ from plugin.plugins.neko_wows.presentation.prompt_router import (
     PromptProfile,
     WowsPromptRouter,
 )
+from plugin.plugins.neko_wows.ship_data.context import (
+    BattleShipContextManager,
+    ContextObservation,
+)
+from plugin.plugins.neko_wows.ship_data.models import (
+    CatalogMeta,
+    CatalogShip,
+    ShipProfile,
+)
+from plugin.plugins.neko_wows.ship_data.resolver import normalize_ship_alias
 
 REPLAY = (
     Path(__file__).resolve().parents[2]
     / "plugin" / "plugins" / "neko_wows" / "contract" / "replay_battle.json"
 )
 
+REPLAY_SHIP_IDS = {
+    "OwnShip": 91001,
+    "AllyCruiser": 91002,
+    "EnemyDD": 91003,
+    "EnemyCA": 91004,
+}
+REPLAY_SHIP_CLASSES = {
+    "OwnShip": "Battleship",
+    "AllyCruiser": "Cruiser",
+    "EnemyDD": "Destroyer",
+    "EnemyCA": "Cruiser",
+}
+
+
+class FakeCatalogSnapshot:
+    """Small immutable catalog surface, freshly pinned for each battle."""
+
+    def __init__(self):
+        self.closed = False
+        self.meta = CatalogMeta(
+            schema_version=1,
+            catalog_version="replay-catalog-v1",
+            game_version="",
+            channel="test",
+            source_repo="replay-fixture",
+            source_commit="test-only",
+            content_sha256="0" * 64,
+            default_language="en",
+            ship_count=len(REPLAY_SHIP_IDS),
+            profile_count=len(REPLAY_SHIP_IDS),
+        )
+        ships = {
+            name: CatalogShip(
+                ship_id=ship_id,
+                ship_index=f"replay:{name}",
+                name_key=f"IDS_{name.upper()}",
+                display_name=name,
+                nation="test",
+                ship_class=REPLAY_SHIP_CLASSES[name],
+                tier=10,
+            )
+            for name, ship_id in REPLAY_SHIP_IDS.items()
+        }
+        self._aliases = {
+            normalize_ship_alias(name): (ship,)
+            for name, ship in ships.items()
+        }
+        self._profiles = {
+            ship.ship_id: ShipProfile(
+                profile_id=f"{ship.ship_id}:reference_top:primary",
+                ship_id=ship.ship_id,
+                configuration="reference_top",
+                variant_key="primary",
+                is_primary=True,
+                profile_schema_version=1,
+                data={},
+                profile_sha256="0" * 64,
+            )
+            for ship in ships.values()
+        }
+
+    def alias_candidates(self, alias_norm: str):
+        if self.closed:
+            return ()
+        return self._aliases.get(alias_norm, ())
+
+    def primary_profile(self, ship_id: int):
+        if self.closed:
+            return None
+        return self._profiles.get(ship_id)
+
+    def close(self):
+        self.closed = True
+
+
+class FakeCatalogStore:
+    def __init__(self):
+        self.snapshots: list[FakeCatalogSnapshot] = []
+        self.requested_languages: list[str | None] = []
+
+    def snapshot(self, *, language=None):
+        self.requested_languages.append(language)
+        snapshot = FakeCatalogSnapshot()
+        self.snapshots.append(snapshot)
+        return snapshot
+
 
 class FakePlugin:
     def __init__(self):
         self.calls: list[dict] = []
+        self.call_frames: list[tuple[int | None, dict]] = []
+        self.frame_seq: int | None = None
 
     def push_message(self, **kwargs):
         self.calls.append(kwargs)
-        return True
+        self.call_frames.append((self.frame_seq, kwargs))
+        return {"submitted": True}
 
 
 class Pipeline:
@@ -85,10 +185,14 @@ class Pipeline:
         self.router = WowsPromptRouter(cfg)
         self.tactics = NullTacticsRepository()
         self.dispatcher = NekoDispatcher(self.plugin, cfg, clock=self._clock)
+        self.catalog_store = FakeCatalogStore()
+        self.ship_context = BattleShipContextManager(
+            self.plugin, self.catalog_store, cfg, clock=self._clock)
 
         self.previous = None
         self.now = 0.0
         self.snapshots = []
+        self.observations: list[tuple[int, ContextObservation]] = []
         self.detected: list[str] = []
         self.delivered: list[tuple[str, str]] = []
         self.dropped: list[str] = []
@@ -106,28 +210,40 @@ class Pipeline:
             self.dropped.append(reason)
             return
         self.snapshots.append(snapshot)
+        self.plugin.frame_seq = snapshot.seq
 
-        current = (snapshot, self.facts.build(snapshot))
-        result = self.registry.feed(self.previous, current, cfg=self.cfg)
-        self.previous = current
-        if result.identity_reset:
-            self.arbiter.reset_battle(snapshot.battle_id)
-        for entry in result.blocked:
-            self.blocked.append((entry.detector, entry.missing))
-        self.detected.extend(event.event_id for event in result.events)
+        try:
+            current = (snapshot, self.facts.build(snapshot))
+            result = self.registry.feed(self.previous, current, cfg=self.cfg)
+            self.previous = current
+            if result.identity_reset:
+                self.arbiter.reset_battle(snapshot.battle_id)
+            for entry in result.blocked:
+                self.blocked.append((entry.detector, entry.missing))
+            self.detected.extend(event.event_id for event in result.events)
 
-        candidates = self.policy.expand(result.events, current[1])
-        decision = self.arbiter.decide(candidates, self.now)
-        if decision.chosen is None:
-            return
-        request = self.router.build(
-            decision.chosen,
-            PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=self.cfg.dry_run),
-            self.tactics.search(decision.chosen.summary, limit=3, budget=0),
-        )
-        outcome = self.dispatcher.deliver(request)
-        self.arbiter.commit(decision.chosen, self.now, outcome_reason=outcome.reason)
-        self.delivered.append((request.event_id, outcome.reason))
+            if snapshot.is_live:
+                observation = self.ship_context.observe(
+                    snapshot, dry_run=self.cfg.dry_run)
+                self.observations.append((snapshot.seq, observation))
+
+            candidates = self.policy.expand(result.events, current[1])
+            decision = self.arbiter.decide(candidates, self.now)
+            if decision.chosen is None:
+                return
+            request = self.router.build(
+                decision.chosen,
+                PromptProfile(
+                    channel_mode=CHANNEL_DUAL, dry_run=self.cfg.dry_run),
+                self.tactics.search(decision.chosen.summary, limit=3, budget=0),
+            )
+            outcome = self.dispatcher.deliver(request)
+            self.arbiter.commit(
+                decision.chosen, self.now, outcome_reason=outcome.reason)
+            self.delivered.append((request.event_id, outcome.reason))
+        finally:
+            if snapshot.status == STATUS_ENDED:
+                self.ship_context.reset("battle_end")
 
 
 @pytest.fixture(scope="module")
@@ -198,6 +314,19 @@ def test_the_replay_makes_zero_host_calls_in_dry_run(replay, pipeline):
     assert pipeline.plugin.calls == []
     assert pipeline.dispatcher.stats()["host_calls"] == 0
     assert all(reason == REASON_DRY_RUN for _event, reason in pipeline.delivered)
+    assert pipeline.observations
+    assert all(
+        observation.submitted_ship_ids == ()
+        for _seq, observation in pipeline.observations
+    )
+
+
+def test_battle_end_releases_the_replay_catalog_context(replay, pipeline):
+    run(pipeline, replay["frames"])
+
+    assert pipeline.ship_context.stats()["state"] == "idle"
+    assert pipeline.catalog_store.snapshots
+    assert all(snapshot.closed for snapshot in pipeline.catalog_store.snapshots)
 
 
 def test_the_stale_frame_blocks_live_detectors_without_events(replay, pipeline):
@@ -242,6 +371,12 @@ def test_a_second_battle_resets_state_and_re_announces_the_start(replay, pipelin
         pipeline.feed(frame, epoch=1, at=500.0 + offset * 3.0)
 
     assert pipeline.detected.count(BATTLE_STARTED) == first_starts + 1
+    assert len(pipeline.catalog_store.snapshots) == 2
+    assert all(snapshot.closed for snapshot in pipeline.catalog_store.snapshots)
+    assert pipeline.catalog_store.requested_languages == [
+        pipeline.cfg.ship_catalog_language,
+        pipeline.cfg.ship_catalog_language,
+    ]
 
 
 def test_switching_to_real_output_delivers_and_counts(replay, pipeline):
@@ -251,8 +386,59 @@ def test_switching_to_real_output_delivers_and_counts(replay, pipeline):
     run(pipeline, replay["frames"])
 
     assert pipeline.plugin.calls, "something should have been said"
-    assert pipeline.dispatcher.stats()["host_calls"] == len(pipeline.plugin.calls)
-    for call in pipeline.plugin.calls:
+
+    def is_ship_reference_read(call):
+        return (
+            call["ai_behavior"] == "read"
+            and call.get("metadata", {}).get("kind") == "ship_reference"
+        )
+
+    respond_calls = [
+        call for call in pipeline.plugin.calls
+        if call["ai_behavior"] == "respond"
+    ]
+    ship_reads = [
+        call for call in pipeline.plugin.calls
+        if is_ship_reference_read(call)
+    ]
+    assert ship_reads, "live replay should inject ship reference context"
+    assert respond_calls, "the replay should still produce spoken output"
+    assert len(pipeline.plugin.calls) == len(respond_calls) + len(ship_reads), (
+        "every replay host call must be a response or ship-reference read")
+    assert pipeline.dispatcher.stats()["host_calls"] == len(respond_calls)
+    assert pipeline.ship_context.stats()["state"] == "idle"
+    assert all(snapshot.closed for snapshot in pipeline.catalog_store.snapshots)
+    expected_full_references = Counter({
+        ship_id: 1 for ship_id in REPLAY_SHIP_IDS.values()
+    })
+    full_reference_ids = Counter(
+        ship_id
+        for call in ship_reads
+        for ship_id in call["metadata"]["ship_ids"]
+        if ship_id not in call["metadata"]["count_update_ship_ids"]
+    )
+    assert full_reference_ids == expected_full_references
+    observed_submissions = Counter(
+        ship_id
+        for _seq, observation in pipeline.observations
+        for ship_id in observation.submitted_ship_ids
+    )
+    assert observed_submissions == expected_full_references
+    call_indexes_by_frame = defaultdict(
+        lambda: {"ship_reads": [], "responds": []})
+    for call_index, (frame_seq, call) in enumerate(pipeline.plugin.call_frames):
+        if is_ship_reference_read(call):
+            call_indexes_by_frame[frame_seq]["ship_reads"].append(call_index)
+        elif call["ai_behavior"] == "respond":
+            call_indexes_by_frame[frame_seq]["responds"].append(call_index)
+    paired_frames = [
+        indexes for indexes in call_indexes_by_frame.values()
+        if indexes["ship_reads"] and indexes["responds"]
+    ]
+    assert paired_frames, "at least one frame should both read and respond"
+    for indexes in paired_frames:
+        assert max(indexes["ship_reads"]) < min(indexes["responds"])
+    for call in respond_calls:
         assert call["source"] == "neko_wows"
         assert call["ai_behavior"] == "respond"
         assert call["visibility"] == []
@@ -264,8 +450,12 @@ def test_delivered_prompts_forbid_unsupported_claims(replay, pipeline):
     pipeline.dispatcher.apply_config(pipeline.cfg)
     run(pipeline, replay["frames"])
 
-    assert pipeline.plugin.calls
-    for call in pipeline.plugin.calls:
+    respond_calls = [
+        call for call in pipeline.plugin.calls
+        if call["ai_behavior"] == "respond"
+    ]
+    assert respond_calls
+    for call in respond_calls:
         text = call["parts"][0]["text"]
         assert "只使用给出的事实" in text
         assert "击杀" in text  # named explicitly as off limits
@@ -278,8 +468,12 @@ def test_rendered_facts_contain_no_unsupported_domain_data(replay, pipeline):
     pipeline.dispatcher.apply_config(pipeline.cfg)
     run(pipeline, replay["frames"])
 
-    assert pipeline.plugin.calls
-    for call in pipeline.plugin.calls:
+    respond_calls = [
+        call for call in pipeline.plugin.calls
+        if call["ai_behavior"] == "respond"
+    ]
+    assert respond_calls
+    for call in respond_calls:
         text = call["parts"][0]["text"]
         # Everything from "事件：" onward is generated from the fact dicts.
         facts_block = text.split("事件：", 1)[1]

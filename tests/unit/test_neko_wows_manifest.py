@@ -130,6 +130,31 @@ def test_preference_inputs_follow_refreshed_props_and_quiet_deadline():
     assert "quiet_until > props.runtimeNow" in source
 
 
+def test_diagnostics_declares_and_renders_ship_catalog_state():
+    types = (PLUGIN_DIR / "ui" / "types.ts").read_text(encoding="utf-8")
+    diagnostics = (
+        PLUGIN_DIR / "ui" / "diagnostics.tsx").read_text(encoding="utf-8")
+
+    assert "export type ShipCatalogState" in types
+    assert "ship_catalog?: ShipCatalogState" in types
+    for field in (
+        "frozen_catalog_version",
+        "version_status",
+        "resolved_ship_types",
+        "unresolved_objects",
+        "pending_ship_types",
+        "submitted_ship_types",
+        "official_tool",
+    ):
+        assert field in types
+    assert "state.ship_catalog" in diagnostics
+    assert 't("diagnostics.catalog.title")' in diagnostics
+    assert "key_configured" in diagnostics
+    assert "cache_hits" in diagnostics
+    assert "cache_misses" in diagnostics
+    assert "official_api_application_id" not in diagnostics
+
+
 def test_the_declared_ui_actions_exist_as_plugin_entries():
     from plugin.sdk.plugin import NekoPluginBase  # noqa: F401
     from plugin.plugins.neko_wows import NekoWowsPlugin
@@ -177,6 +202,51 @@ def test_the_manifest_section_parses_into_the_config(manifest):
     assert cfg.channel_mode in ALL_CHANNEL_MODES
     assert cfg.ttl_for(LANE_URGENT) == 8.0
     assert cfg.min_gap_for(LANE_NORMAL) == 18.0
+
+
+def test_ship_catalog_config_defaults_are_offline_safe():
+    cfg = WowsConfig()
+
+    assert cfg.ship_catalog_enabled is True
+    assert cfg.ship_catalog_version_policy == "warn"
+    assert cfg.ship_catalog_language == "zh-CN"
+    assert cfg.ship_catalog_context_batch_chars == 12_000
+    assert cfg.official_api_enabled is False
+    assert cfg.official_api_region == "asia"
+    assert cfg.official_api_application_id == ""
+    assert cfg.official_api_language == "zh-cn"
+    assert cfg.official_api_timeout_seconds == 5.0
+    assert cfg.official_api_cache_ttl_seconds == 300.0
+
+
+def test_ship_catalog_config_rejects_unknown_enums_and_clamps_numbers():
+    cfg = WowsConfig.from_mapping({
+        "ship_catalog_version_policy": "guess",
+        "official_api_region": "custom.example",
+        "ship_catalog_context_batch_chars": 1,
+        "official_api_timeout_seconds": 999,
+        "official_api_cache_ttl_seconds": -5,
+    })
+
+    assert cfg.ship_catalog_version_policy == "warn"
+    assert cfg.official_api_region == "asia"
+    assert cfg.ship_catalog_context_batch_chars == 4_096
+    assert cfg.official_api_timeout_seconds == 30.0
+    assert cfg.official_api_cache_ttl_seconds == 0.0
+
+
+def test_ship_catalog_language_accepts_only_supported_values():
+    supported = ("en", "ja", "zh-CN", "zh-TW")
+
+    assert tuple(
+        WowsConfig.from_mapping({"ship_catalog_language": language})
+        .ship_catalog_language
+        for language in supported
+    ) == supported
+    for unsupported in ("fr", "zh-cn", "EN", "", None, 1):
+        assert WowsConfig.from_mapping({
+            "ship_catalog_language": unsupported,
+        }).ship_catalog_language == "zh-CN"
 
 
 def test_a_corrupt_config_falls_back_to_dry_run():

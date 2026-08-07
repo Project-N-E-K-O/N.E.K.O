@@ -132,6 +132,11 @@ class WowsSchemaAdapter:
         return WowsSnapshot(
             service_id=str(payload.get("serviceId") or ""),
             api_version=api_version,
+            game_version=(
+                _text(payload.get("gameVersion"))
+                or _text(payload.get("game_version"))
+                or ""
+            ),
             instance_id=str(payload.get("instanceId") or ""),
             seq=int(seq) if isinstance(seq, int) and not isinstance(seq, bool) else 0,
             battle_id=_text(payload.get("battleId")),
@@ -181,6 +186,11 @@ class WowsSchemaAdapter:
         return WowsSnapshot(
             service_id="",
             api_version="",
+            game_version=(
+                _text(payload.get("gameVersion"))
+                or _text(payload.get("game_version"))
+                or ""
+            ),
             instance_id=self._legacy_instance_id,
             seq=self._legacy_seq,
             battle_id=self._legacy_battle_id,
