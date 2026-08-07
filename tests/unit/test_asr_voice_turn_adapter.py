@@ -666,6 +666,8 @@ async def test_confirmation_observes_evaluation_tail_without_refeeding_audio() -
         coordinator.evaluate_release.set()
         await adapter.wait_idle()
 
+        assert coordinator.evaluate_calls == 1
+        assert adapter.failed is False
         assert coordinator.pushed_audio == [first_pcm, tail_pcm]
         assert gate.feed_calls == [first_pcm, tail_pcm]
     finally:
