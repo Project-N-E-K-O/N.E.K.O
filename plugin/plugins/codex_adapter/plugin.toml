@@ -1,0 +1,91 @@
+[plugin]
+name = "Codex Adapter"
+type = "plugin"
+description = "通过 @llm_tool 将 OpenAI Codex CLI 注册为猫娘可调用的工具集。猫娘可以直接调用 Codex 执行项目开发任务：写代码、改 bug、跑测试、查文档。支持会话恢复（thread_id）、Web 搜索、快速模式、瞬态错误自动重试和 CODEX_HOME 管理。"
+short_description = "Expose OpenAI Codex CLI as catgirl-callable LLM tools. Run Codex tasks from the main project."
+keywords = [
+    "codex",
+    "openai",
+    "cli",
+    "agent",
+    "coding",
+    "developer",
+    "llm_tool",
+    "adapter",
+    "catgirl",
+    "猫娘",
+]
+version = "0.1.0"
+id = "codex_adapter"
+entry = "plugin.plugins.codex_adapter:CodexAdapterPlugin"
+
+[plugin.author]
+name = "N.E.K.O Community"
+
+[plugin.i18n]
+default_locale = "zh-CN"
+locales_dir = "i18n"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin_state]
+backend = "file"
+persist_mode = "auto"
+
+# 启用 PluginStore（SQLite KV 存储），用于持久化会话记录
+[plugin.store]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Codex Adapter 配置
+# 参考 paperclip/packages/adapters/codex-local 的 agentConfigurationDoc
+# ---------------------------------------------------------------------------
+[codex]
+# Codex CLI 可执行文件路径。留空则自动检测（PATH 上的 `codex`）。
+command = ""
+# 默认模型 ID（留空使用 Codex CLI 默认值，通常为 gpt-5.3-codex）。
+# 已知模型：gpt-5.5 / gpt-5.4 / gpt-5.3-codex / gpt-5.3-codex-spark /
+#           gpt-5 / gpt-5-mini / gpt-5-nano / o3 / o3-mini / o4-mini / codex-mini-latest
+model = ""
+# 推理努力级别（"" | "minimal" | "low" | "medium" | "high" | "xhigh"）。
+# 通过 -c model_reasoning_effort=... 传递给 Codex CLI。
+model_reasoning_effort = ""
+# 启用 Web 搜索（--search 参数）。
+search = false
+# 启用快速模式（service_tier="fast" + features.fast_mode=true）。
+# 仅对 gpt-5.5 / gpt-5.4 及手动指定的未知模型 ID 生效。
+fast_mode = false
+# 绕过审批和沙箱（--dangerously-bypass-approvals-and-sandbox）。
+# 
+# 重要：本插件设计用于非交互式环境（通过 @llm_tool 调用，stdin 是管道）。
+# 如果设置为 false，Codex CLI 在执行敏感操作时会要求用户确认，导致：
+# - 执行挂起等待用户输入（但无交互界面）
+# - 最终超时失败
+# - 无法保存 thread_id，破坏会话连续性
+#
+# 因此默认值为 true，确保在非交互式环境中正常工作。
+# 安全风险：启用后 Codex 将跳过所有安全审批和沙箱隔离，可能执行任意文件操作和命令。
+# 仅在受信任的环境中使用本插件。
+dangerously_bypass_approvals_and_sandbox = true
+# 单次执行超时（秒）。main_server LLM 工具上限 300s。
+timeout_sec = 300
+# 默认工作目录（留空 = 当前插件进程 cwd）。猫娘调用时可覆盖。
+cwd = ""
+# 指令文件路径（markdown）。内容会前置到 stdin 提示。
+instructions_file_path = ""
+# CODEX_HOME 目录路径。留空则使用共享 ~/.codex（或 CODEX_HOME 环境变量）。
+# 设置后会以此目录作为 Codex CLI 的 CODEX_HOME。
+codex_home = ""
+# OPENAI_API_KEY（可选）。设置后会写入 CODEX_HOME/auth.json。
+# 注意：Codex CLI >= 0.122 忽略 OPENAI_API_KEY 环境变量，只读 auth.json。
+openai_api_key = ""
+# 失败后自动重试新会话的次数。
+max_retries = 1
+# 额外 CLI 参数（JSON 数组字符串，如 "[\"--skip-git-repo-check\"]"）。
+extra_args = "[]"
