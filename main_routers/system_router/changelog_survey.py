@@ -21,6 +21,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 from ._shared import _read_json_object, _validate_local_mutation_request, logger, router
 import os
 import asyncio
+import datetime
 import json
 import re
 from fastapi import Request
@@ -115,6 +116,11 @@ def _safe_locale(lang: object) -> str:
     return lang if (isinstance(lang, str) and _LOCALE_RE.match(lang)) else ""
 
 
+def _utc_today() -> datetime.date:
+    """Today's UTC date; a seam so the expiry gate is testable without freezing time."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 def _load_survey_for_version(version: str, lang: str) -> dict | None:
     """Load config/surveys/<version>.json with a per-locale fallback chain.
 
@@ -134,6 +140,11 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
     reach English/Japanese/Traditional-Chinese users in Simplified Chinese. The
     match is exact and an empty/unknown locale never matches: a survey aimed at one
     audience must rather miss a few of its own than leak to the wrong one.
+
+    An optional ``expires_at`` (ISO date, inclusive) stops a time-bound notice from
+    being served once it is stale — a bundled announcement about a deadline would
+    otherwise still pop for someone whose first launch is months later. A malformed
+    value withholds the survey for the same reason the locale match is strict.
     """
     # Same three-level climb as _load_changelog above (package is one dir deeper
     # than the former monolithic module).
@@ -167,6 +178,21 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
             allowed = data.get("locales")
             if isinstance(allowed, list) and allowed:
                 if not lang or lang not in allowed:
+                    return None
+            # 时效：公告类内容常带截止日期（"8月20日前投票"），而安装包会被用户在
+            # 任意时间首次启动。过期后一律不再下发，免得给人推一个已经结束的活动。
+            # ISO 日期，含当天；写错格式同样不下发——与 locales 一样宁可漏发。
+            expires_at = data.get("expires_at")
+            if isinstance(expires_at, str) and expires_at.strip():
+                try:
+                    deadline = datetime.date.fromisoformat(expires_at.strip())
+                except ValueError:
+                    logger.warning(
+                        "survey %s has a malformed expires_at (%r); withholding it",
+                        version, expires_at,
+                    )
+                    return None
+                if _utc_today() > deadline:
                     return None
             # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
             # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。

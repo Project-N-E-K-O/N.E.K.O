@@ -128,7 +128,10 @@ jobs:
           # 不需在此生成；只补 git 不跟踪的运行时文件，让构建有可读的基准配置。
           configs = {
             'config/characters.json': {'主人': {'档案名': '', '性别': '', '昵称': ''}, '猫娘': {}, '当前猫娘': ''},
-            'config/core_config.json': {},
+            # coreApi/assistApi = free 是发给新用户的出厂默认（空 {} 会让新装用户
+            # 没有默认服务商）；密钥字段一律不写，保持种子无密钥。
+            # 本 workflow 不复用 build-desktop.yml，两处种子须一起改。
+            'config/core_config.json': {'coreApi': 'free', 'assistApi': 'free'},
             'config/user_preferences.json': [],
           }
           for path, data in configs.items():

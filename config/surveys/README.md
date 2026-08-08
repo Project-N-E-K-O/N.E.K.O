@@ -30,6 +30,18 @@ changelog 确认弹窗走完后，向**老玩家**（本地存过 `neko_last_not
 各语言的 locale 码见 `static/i18n-i18next.js` 的 `SUPPORTED_LANGUAGES`：
 `zh-CN`（简体）、`zh-TW`、`en`、`ja`、`ko`、`ru`、`es`、`pt`。
 
+### ⚠️ 带截止日期的内容必须写 `expires_at`
+
+安装包会被用户在任意时间首次启动，所以"8月20日前投票"这类内容如果不设时效，
+半年后新装的用户照样会收到一个早已结束的活动通知。加：
+
+```jsonc
+"expires_at": "2026-08-20"   // ISO 日期，含当天；之后一律不下发
+```
+
+按 UTC 日期比较。格式写错时**同样不下发**（并打 warning 日志）——与 `locales`
+一样，宁可漏发也不发错。不写该字段表示永不过期。
+
 ### 只发给老玩家
 
 这是问卷渠道的既有行为，无需额外配置：前端只在 `neko_last_notified_version` 已存在
