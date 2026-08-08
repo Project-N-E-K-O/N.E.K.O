@@ -892,7 +892,14 @@
         const currentNow = Number.isFinite(Number(now)) ? Number(now) : performance.now();
         if (!isInterruptResistOverrideActive(session) && !isAngryExitOverrideActive(session)) {
             if (Number.isFinite(Number(session.interruptSuspendedAt)) && session.interruptSuspendedAt > 0) {
-                session.startedAt += Math.max(0, currentNow - session.interruptSuspendedAt);
+                const suspendedDuration = Math.max(0, currentNow - session.interruptSuspendedAt);
+                session.startedAt += suspendedDuration;
+                if (
+                    session.phase === 'hold'
+                    && Number.isFinite(Number(session.holdStartedAt))
+                ) {
+                    session.holdStartedAt += suspendedDuration;
+                }
                 session.interruptSuspendedAt = 0;
             }
             return false;
@@ -3174,6 +3181,10 @@
                     this.holdTimer = window.setTimeout(() => {
                         this.holdTimer = 0;
                         if (this.active && !this.finished) {
+                            if (this.isCancelled()) {
+                                this.requestStop('cancelled', false);
+                                return;
+                            }
                             this.requestStop('hold_complete', true);
                         }
                     }, this.holdMs);
