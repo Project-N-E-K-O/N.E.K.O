@@ -308,8 +308,19 @@ class ClaudeCLIExecutor:
                 await proc.wait()
             except Exception:
                 pass
+            # 主动关闭管道，确保读取任务能结束
+            try:
+                if proc.stdout:
+                    proc.stdout.feed_eof()
+            except Exception:
+                pass
+            try:
+                if proc.stderr:
+                    proc.stderr.feed_eof()
+            except Exception:
+                pass
             # 等待读取任务结束
-            await _drain_tasks(stdout_task, stderr_task)
+            await _drain_tasks(stdout_task, stderr_task, timeout=5.0)
             stderr_text = "\n".join(stderr_lines)
             return parser.finalize(), ClassifiedError(
                 kind=TIMEOUT,
@@ -317,8 +328,20 @@ class ClaudeCLIExecutor:
                 retryable=False,
             )
 
-        # 等待读取任务完成
-        await _drain_tasks(stdout_task, stderr_task)
+        # 进程正常退出后，主动关闭管道，防止子进程持有管道导致读取任务无限阻塞
+        try:
+            if proc.stdout:
+                proc.stdout.feed_eof()
+        except Exception:
+            pass
+        try:
+            if proc.stderr:
+                proc.stderr.feed_eof()
+        except Exception:
+            pass
+
+        # 等待读取任务完成（带超时，作为额外保护）
+        await _drain_tasks(stdout_task, stderr_task, timeout=5.0)
 
         stream = parser.finalize()
 
@@ -353,13 +376,18 @@ class ClaudeCLIExecutor:
         return stream, None
 
 
-async def _drain_tasks(*tasks: asyncio.Task) -> None:
-    """等待所有任务结束，忽略异常。"""
+async def _drain_tasks(*tasks: asyncio.Task, timeout: Optional[float] = None) -> None:
+    """等待所有任务结束，忽略异常。如果指定 timeout，超时后取消未完成的任务。"""
     for task in tasks:
         try:
-            await task
-        except Exception:
-            pass
+            if timeout is not None:
+                await asyncio.wait_for(task, timeout=timeout)
+            else:
+                await task
+        except (asyncio.TimeoutError, Exception):
+            # 超时或异常时取消任务
+            if not task.done():
+                task.cancel()
 
 
 __all__ = [
