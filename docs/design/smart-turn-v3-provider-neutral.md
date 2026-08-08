@@ -177,12 +177,30 @@ Before treating the integrated routes as product-quality, maintainers must run
 `scripts/evaluate_smart_turn_v3.py` on an authorized labelled set that
 includes sentence-internal pauses, hesitation followed by continuation,
 complete turns, keyboard noise, and barge-in. The report always includes all
-four confusion-matrix cells and per-sample probabilities.
+four confusion-matrix cells and per-case probabilities, but those case rates
+are descriptive only. The registered gate uses each speaker's any-error result
+over a fixed scenario-by-label matrix and speaker-level Wilson intervals. The
+versioned, privacy-minimizing manifest, pre-registered checkpoint gate,
+multilingual collection matrix, opt-in runtime diagnostics, and separate
+Electron live-route procedure are specified in
+[`smart-turn-v3-human-electron-validation.md`](smart-turn-v3-human-electron-validation.md).
 
-No numeric product-quality threshold has been approved yet. Before any future
-approval run, the product owner must pre-register, for every language and
-route, the minimum labelled sample count, metric thresholds, maximum permitted
-premature-split count, and confidence method. Missing pre-registered criteria
-or failure of any criterion blocks product-quality approval. Remediation must
-tune the detector or route without weakening fail-closed behavior, then rerun
-the complete registered matrix; a partial rerun cannot clear the gate.
+The direct evaluator is checkpoint replay only. It does not exercise Electron,
+Silero candidate timing, coordinator retries, provider commit, or ASR network
+behavior. Even a passing checkpoint gate therefore leaves product-quality
+approval blocked until the registered live Electron route matrix passes.
+
+The deployed model decision threshold is fixed at `0.5`, and the evaluator
+rejects criteria that substitute another threshold. No numeric
+product-quality bounds have been approved yet. Before any future approval run,
+the product owner must freeze the complete manifest digest and pre-register,
+for every language, the exact speaker count and opaque-roster digest, minimum
+devices, the exact per-speaker
+scenario-by-label matrix, permitted
+speaker-level any-premature-split and any-missed-endpoint counts, Wilson upper
+bounds, and confidence level. Missing or matrix-noncompliant evidence blocks
+the checkpoint gate; a registered miss fails it. Either result produces a
+nonzero evaluator exit when criteria were supplied, and even a checkpoint pass
+leaves product approval blocked until the complete live Electron route matrix
+passes. Remediation must preserve fail-closed behavior and rerun the complete
+registered matrix; a partial rerun cannot clear the gate.
