@@ -1634,6 +1634,23 @@
                 return false;
             }
 
+            const avatarStageApi = window.YuiGuideAvatarStage;
+            if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
+                try {
+                    this.takeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
+                        targetPreset: 'top_flipped',
+                        hideMs: 1500,
+                        appearMs: 2000,
+                        holdMs: 2500,
+                        reducedMotion: this.shouldReduceTutorialMotion(),
+                        isCancelled: () => runId !== this.sceneRunId || this.isStopping()
+                    });
+                } catch (error) {
+                    console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
+                    this.takeoverTopPeekHandle = null;
+                }
+            }
+
             const keyboardToggle = await this.waitForElement(() => {
                 const toggleItem = this.getAgentToggleElement('agent-keyboard');
                 return this.getElementRect(toggleItem) ? toggleItem : null;
@@ -1740,19 +1757,6 @@
             await this.stopPersistentGhostCursorLookAtPerformance('takeover_top_peek');
             if (guardFailed()) {
                 return false;
-            }
-            const avatarStageApi = window.YuiGuideAvatarStage;
-            if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
-                try {
-                    this.takeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
-                        targetPreset: 'top_flipped',
-                        reducedMotion: this.shouldReduceTutorialMotion(),
-                        isCancelled: () => runId !== this.sceneRunId || this.isStopping()
-                    });
-                } catch (error) {
-                    console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
-                    this.takeoverTopPeekHandle = null;
-                }
             }
             if (guardFailed()) {
                 return false;

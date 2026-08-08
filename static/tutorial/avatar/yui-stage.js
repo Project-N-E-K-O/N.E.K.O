@@ -3080,6 +3080,7 @@
             this.reducedMotion = !!normalizedOptions.reducedMotion;
             this.hideMs = normalizeDuration(normalizedOptions.hideMs, PLUGIN_DASHBOARD_CORNER_HIDE_MS);
             this.appearMs = normalizeDuration(normalizedOptions.appearMs, PLUGIN_DASHBOARD_CORNER_APPEAR_MS);
+            this.holdMs = normalizeDuration(normalizedOptions.holdMs, 0);
             this.totalDurationMs = this.reducedMotion ? 0 : this.hideMs + this.appearMs;
             this.targetPosition = normalizeAvatarCornerPeekPosition(
                 normalizedOptions.position
@@ -3120,6 +3121,8 @@
             this.phase = 'idle';
             this.tickerAttached = false;
             this.interruptSuspendedAt = 0;
+            this.holdStartedAt = 0;
+            this.holdTimer = 0;
             this.tick = this.tick.bind(this);
         }
 
@@ -3165,6 +3168,16 @@
             this.applyFrame(this.reducedMotion ? this.cornerFrame : this.initialModelFrame, this.reducedMotion ? 1 : this.initialAlpha);
             if (this.reducedMotion) {
                 this.elevateContainerZIndex();
+                if (this.holdMs > 0) {
+                    this.phase = 'hold';
+                    this.holdStartedAt = performance.now();
+                    this.holdTimer = window.setTimeout(() => {
+                        this.holdTimer = 0;
+                        if (this.active && !this.finished) {
+                            this.requestStop('hold_complete', true);
+                        }
+                    }, this.holdMs);
+                }
                 return true;
             }
             if (this.ticker && typeof this.ticker.add === 'function') {
@@ -3208,6 +3221,10 @@
             this.active = false;
             this.finished = true;
             this.phase = 'finished';
+            if (this.holdTimer) {
+                window.clearTimeout(this.holdTimer);
+                this.holdTimer = 0;
+            }
             this.result = reason || this.result || 'stopped';
             this.detachTicker();
             if (this.frameId) {
@@ -3766,9 +3783,18 @@
                     lerp(0, 1, progress)
                 );
             } else {
-                this.phase = 'hold';
+                if (this.phase !== 'hold') {
+                    this.phase = 'hold';
+                    this.holdStartedAt = performance.now();
+                }
                 this.applyFrame(this.cornerFrame, 1);
                 this.elevateContainerZIndex();
+                if (
+                    this.holdMs > 0
+                    && performance.now() - this.holdStartedAt >= this.holdMs
+                ) {
+                    this.requestStop('hold_complete', true);
+                }
             }
         }
 
@@ -5914,6 +5940,7 @@
             isCancelled: normalizedOptions.isCancelled,
             hideMs: normalizedOptions.hideMs,
             appearMs: normalizedOptions.appearMs,
+            holdMs: normalizedOptions.holdMs,
             position: normalizedOptions.position,
             targetPosition: normalizedOptions.targetPosition,
             targetPreset: normalizedOptions.targetPreset,
