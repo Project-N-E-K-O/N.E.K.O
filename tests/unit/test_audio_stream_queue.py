@@ -2804,10 +2804,10 @@ async def test_unreadable_settings_do_not_kill_the_mic_when_asr_is_disabled():
     assert "ASR_INDEPENDENT_DISABLED" in codes
 
 
-async def test_absent_settings_still_default_without_failing_closed():
+async def test_absent_settings_use_disabled_default_without_failing_closed():
     # The other half of the strict read: an ABSENT file is not a failure. A
-    # first run has no settings yet and must use the enabled default rather
-    # than blocking the route.
+    # first run has no settings yet and must use the disabled default rather
+    # than blocking the microphone route.
     mgr = _make_routable_audio_manager(True)
     mgr._begin_voice_input_connection("socket-a")
     _authorize_core_lease(mgr)
@@ -2816,14 +2816,7 @@ async def test_absent_settings_still_default_without_failing_closed():
     mgr.send_status = AsyncMock()
     mgr._asr_runtime.abort = AsyncMock()
 
-    async def _ready_start(**_kwargs):
-        return AsrStartResult(
-            AsrStartStatus.READY,
-            provider="qwen",
-            session_epoch=mgr._capture_ingress_token().session_epoch,
-        )
-
-    mgr._asr_runtime.start = AsyncMock(side_effect=_ready_start)
+    mgr._asr_runtime.start = AsyncMock()
 
     async def _empty(**_kwargs):
         return {}
@@ -2835,7 +2828,8 @@ async def test_absent_settings_still_default_without_failing_closed():
     ):
         await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
 
-    assert mgr._asr_route_mode == "independent"
+    assert mgr._asr_route_mode == "native"
+    mgr._asr_runtime.start.assert_not_called()
 
 
 async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():

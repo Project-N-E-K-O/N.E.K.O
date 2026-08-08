@@ -555,8 +555,10 @@
                         storage: null,
                         today: localState.firstSeenDate,
                     });
+                    const settledByLegacyMigration = payload.settledByLegacyMigration === true;
                     if (
-                        localWasStored
+                        !settledByLegacyMigration
+                        && localWasStored
                         && getStateUpdatedAtMs(localState) > getStateUpdatedAtMs(authoritativeState)
                     ) {
                         const synchronizedMutationSequence = localMutationSequence;

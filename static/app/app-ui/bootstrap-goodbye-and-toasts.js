@@ -1093,19 +1093,13 @@ I.mod = window.appUi;
                 animation: pnBoxIn 0.3s ease;
             `;
 
-            // 标题 + 引导语
+            // 标题（钉在顶部，不随正文滚动）
             const head = document.createElement('div');
             head.style.cssText = 'margin:0 0 14px;flex-shrink:0;';
             const h2 = document.createElement('h2');
             h2.textContent = survey.title || _surveyText('survey.title', '问卷调查');
             h2.style.cssText = 'margin:0;color:#334155;font-size:21px;line-height:1.3;font-weight:800;';
             head.appendChild(h2);
-            if (survey.intro) {
-                const intro = document.createElement('p');
-                intro.textContent = survey.intro;
-                intro.style.cssText = 'margin:8px 0 0;color:#64748b;font-size:13px;line-height:1.55;font-weight:600;';
-                head.appendChild(intro);
-            }
 
             // 题目滚动区
             const form = document.createElement('form');
@@ -1117,6 +1111,18 @@ I.mod = window.appUi;
                 'scrollbar-width:thin',
                 'scrollbar-color:rgba(148,163,184,0.55) transparent',
             ].join(';');
+
+            // 引导语/公告正文放进滚动区而不是 head：纯公告（questions 为空）时正文
+            // 可能很长，留在 flex-shrink:0 的 head 里会在窄/矮窗口把页脚按钮挤出
+            // 视口，用户既不能提交也不能跳过。放这里则正文自己滚，按钮始终可见。
+            if (survey.intro) {
+                const intro = document.createElement('p');
+                intro.textContent = survey.intro;
+                // pre-line：intro 走 textContent，默认 white-space:normal 会把公告里的
+                // 段落换行折成空格；pre-line 保留 \n 同时仍折叠多余空格与缩进。
+                intro.style.cssText = 'margin:0;color:#64748b;font-size:13px;line-height:1.55;font-weight:600;white-space:pre-line;';
+                form.appendChild(intro);
+            }
 
             // 每题状态记录：{ q, getValue, markError }
             const fields = [];
