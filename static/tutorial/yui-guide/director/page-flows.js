@@ -1559,10 +1559,11 @@
         async runTakeoverKeyboardControlSequence(step, performance, runId) {
             const scaleSceneMs = this.createSceneScaler(performance && performance.voiceKey);
             const guardFailed = () => this.isGuardFailed(runId);
+            let localTakeoverTopPeekHandle = null;
             const stopTakeoverTopPeek = async (reason) => {
-                const handle = this.takeoverTopPeekHandle;
+                const handle = localTakeoverTopPeekHandle;
+                localTakeoverTopPeekHandle = null;
                 if (!handle || typeof handle.stop !== 'function') {
-                    this.takeoverTopPeekHandle = null;
                     return;
                 }
                 try {
@@ -1656,7 +1657,7 @@
             const avatarStageApi = window.YuiGuideAvatarStage;
             if (avatarStageApi && typeof avatarStageApi.startPluginDashboardCornerPeek === 'function') {
                 try {
-                    this.takeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
+                    localTakeoverTopPeekHandle = await avatarStageApi.startPluginDashboardCornerPeek({
                         targetPreset: 'top_flipped',
                         hideMs: 1500,
                         appearMs: 2000,
@@ -1664,9 +1665,16 @@
                         reducedMotion: this.shouldReduceTutorialMotion(),
                         isCancelled: () => runId !== this.sceneRunId || this.isStopping()
                     });
+                    if (localTakeoverTopPeekHandle && guardFailed()) {
+                        await stopTakeoverTopPeek('takeover_keyboard_control_aborted');
+                        return false;
+                    }
+                    if (localTakeoverTopPeekHandle) {
+                        this.takeoverTopPeekHandle = localTakeoverTopPeekHandle;
+                    }
                 } catch (error) {
                     console.warn('[YuiGuide] 插件面板角落动作启动失败:', error);
-                    this.takeoverTopPeekHandle = null;
+                    localTakeoverTopPeekHandle = null;
                 }
             }
 
