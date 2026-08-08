@@ -69,9 +69,11 @@ class SmartTurnRuntimeDiagnostics(Protocol):
     """Narrow event contract that cannot accept audio or transcript payloads."""
 
     @property
-    def enabled(self) -> bool: ...
+    def enabled(self) -> bool:
+        raise NotImplementedError
 
-    def candidate(self, *, reason: str) -> None: ...
+    def candidate(self, *, reason: str) -> None:
+        raise NotImplementedError
 
     def evaluation(
         self,
@@ -81,15 +83,20 @@ class SmartTurnRuntimeDiagnostics(Protocol):
         evaluation_ms: int,
         probability: float | None,
         threshold: float | None,
-    ) -> None: ...
+    ) -> None:
+        raise NotImplementedError
 
-    def complete(self, *, reason: str) -> None: ...
+    def complete(self, *, reason: str) -> None:
+        raise NotImplementedError
 
-    def failure(self, *, kind: str, stage: str) -> None: ...
+    def failure(self, *, kind: str, stage: str) -> None:
+        raise NotImplementedError
 
-    async def flush(self) -> None: ...
+    async def flush(self) -> None:
+        raise NotImplementedError
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, slots=True)
