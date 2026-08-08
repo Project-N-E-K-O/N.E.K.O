@@ -3,13 +3,14 @@ import json
 import math
 import os
 import wave
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-import scripts.evaluate_smart_turn_v3 as evaluation_tool
 from scripts.evaluate_smart_turn_v3 import (
+    _runtime_provenance,
     evaluate_cases,
     evaluate_manifest,
     load_acceptance_criteria,
@@ -629,8 +630,8 @@ def test_runtime_provenance_marks_dirty_checkout_and_library_versions(
             return _Completed("abc123\n")
         return _Completed(" M scripts/evaluate_smart_turn_v3.py\n")
 
-    monkeypatch.setattr(evaluation_tool.subprocess, "run", fake_run)
-    provenance = evaluation_tool._runtime_provenance(tmp_path)
+    monkeypatch.setattr("scripts.evaluate_smart_turn_v3.subprocess.run", fake_run)
+    provenance = _runtime_provenance(tmp_path)
 
     assert provenance["git_revision"] == "abc123-dirty"
     assert provenance["runtime"]["numpy"] == np.__version__
@@ -662,11 +663,13 @@ def test_runtime_provenance_resolves_onnx_distribution_variants(
     def fake_version(distribution: str) -> str:
         if distribution == available_distribution:
             return versions[distribution]
-        raise evaluation_tool.importlib.metadata.PackageNotFoundError(distribution)
+        raise PackageNotFoundError(distribution)
 
-    monkeypatch.setattr(evaluation_tool.importlib.metadata, "version", fake_version)
+    monkeypatch.setattr(
+        "scripts.evaluate_smart_turn_v3.importlib.metadata.version", fake_version
+    )
 
-    provenance = evaluation_tool._runtime_provenance(tmp_path)
+    provenance = _runtime_provenance(tmp_path)
 
     assert provenance["runtime"]["onnxruntime"] == expected_version
 

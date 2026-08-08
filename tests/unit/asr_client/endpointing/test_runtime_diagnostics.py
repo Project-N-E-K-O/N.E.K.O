@@ -449,4 +449,4 @@ async def test_voice_resources_close_before_a_stuck_diagnostics_sink(
     assert close_log == ["coordinator", "vad"]
     assert close_task.done() is False
     diagnostics.close_release.set()
-    await close_task
+    _ = await close_task

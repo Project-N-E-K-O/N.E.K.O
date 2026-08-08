@@ -238,6 +238,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
             try:
                 self._queue_event_locked("session_end", {})
             except Exception:
+                # Diagnostics are best-effort and must never block session teardown.
                 pass
             self._closed = True
             completed = threading.Event()

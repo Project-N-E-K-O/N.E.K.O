@@ -15,7 +15,7 @@ import wave
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias
+from typing import Protocol, TypeAlias
 
 
 SMART_TURN_AUDIO_EVIDENCE_ENABLED_ENV = "NEKO_SMART_TURN_AUDIO_EVIDENCE"
