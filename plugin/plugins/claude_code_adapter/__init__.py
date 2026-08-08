@@ -3,11 +3,18 @@
 通过 @llm_tool 将 Claude Code CLI 注册为猫娘可调用的工具集。
 
 猫娘可以通过以下工具调用 Claude Code 开发项目：
-- claude_code_execute: 执行 Claude Code 任务（写代码、改 bug、跑测试等）
+- claude_code_submit: 提交 Claude Code 任务到后台异步执行
+- claude_code_poll: 查询任务状态和结果
+- claude_code_cancel: 取消正在运行的任务
 - claude_code_check_health: 检查 Claude CLI 是否可用
 - claude_code_list_sessions: 列出所有会话
 - claude_code_clear_session: 清除会话记录
 - claude_code_get_config: 获取当前适配器配置
+
+异步任务系统：
+- 采用异步提交 + 轮询模式，避免 main_server 的 300 秒超时限制
+- 任务在后台执行，猫娘可以自主控制查询频率
+- 支持最多 2 个并发任务，结果保留 10 分钟
 
 设计参考：
 - Paperclip `claude-local` 适配器的执行流程
@@ -44,6 +51,7 @@ from .executor import (
 )
 from .parser import ClaudeOutputParser
 from .session import SessionManager, compute_prompt_signature
+from .task_manager import TaskManager
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +77,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         self._config: AdapterConfig = AdapterConfig()
         self._executor: Optional[ClaudeCLIExecutor] = None
         self._session_mgr: Optional[SessionManager] = None
+        self._task_mgr: Optional[TaskManager] = None
         self._ready: bool = False
 
     # ------------------------------------------------------------------
@@ -96,7 +105,12 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             # 4. 初始化执行器
             self._executor = ClaudeCLIExecutor(self._config, logger=self.logger)
 
-            # 5. 检测 Claude CLI 是否可用
+            # 5. 初始化任务管理器
+            self._task_mgr = TaskManager(self._executor, self._config, logger=self.logger)
+            await self._task_mgr.start()
+            self.logger.info("TaskManager initialized and started")
+
+            # 6. 检测 Claude CLI 是否可用
             cli_path = self._config.command or detect_claude_cli()
             cli_available = bool(cli_path)
 
@@ -127,6 +141,9 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
     async def shutdown(self, **_) -> Any:
         """关闭：释放资源。"""
         self._ready = False
+        if self._task_mgr:
+            await self._task_mgr.stop()
+            self.logger.info("TaskManager stopped")
         self.logger.info("ClaudeCodeAdapter shutdown")
         return Ok({"status": "shutdown"})
 
@@ -173,7 +190,6 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         model: str = "",
         effort: str = "",
         max_turns: int = 0,
-        timeout_sec: int = 0,
     ) -> ExecuteResult:
         """执行 Claude Code 任务，支持自动重试。
 
@@ -181,12 +197,6 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         - 首次执行尝试恢复会话（如果存在可恢复的会话）
         - 如果失败且错误可重试，新建会话重试
         - 最多重试 self._config.max_retries 次
-
-        Parameters
-        ----------
-        timeout_sec:
-            本次执行的超时时间（秒）。0 表示使用配置默认值。
-            猫娘可根据任务复杂度自主设定：简单任务300秒，复杂任务1800-3600秒。
         """
         assert self._executor is not None and self._session_mgr is not None
 
@@ -215,7 +225,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                     last_error.kind if last_error else "unknown",
                 )
 
-            # 构建 CLI 调用（传递自定义超时）
+            # 构建 CLI 调用
             invocation, build_err = build_cli_invocation(
                 self._config,
                 prompt=prompt,
@@ -224,7 +234,6 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
-                timeout_sec=timeout_sec,
             )
             if build_err is not None:
                 last_error = build_err
@@ -307,9 +316,9 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
     # ==================================================================
 
     @llm_tool(
-        name="claude_code_execute",
+        name="claude_code_submit",
         description=(
-            "调用 Claude Code CLI 执行编码任务。Claude Code 是一个强大的 AI 编码助手，"
+            "提交 Claude Code 编码任务到后台异步执行。Claude Code 是一个强大的 AI 编码助手，"
             "可以读写文件、运行命令、调试代码、写测试、查文档等。\n\n"
             "适用场景：\n"
             "- 写新功能、新文件\n"
@@ -317,15 +326,17 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             "- 运行测试、构建项目\n"
             "- 代码审查、重构\n"
             "- 查阅项目文档、理解代码结构\n\n"
+            "使用流程：\n"
+            "1. 调用 claude_code_submit 提交任务，立即返回 task_id\n"
+            "2. 调用 claude_code_poll 查询任务状态和结果\n"
+            "3. 如需取消，调用 claude_code_cancel\n\n"
             "参数说明：\n"
             "- prompt: 详细描述要让 Claude Code 做什么。要具体、清晰，包含必要的上下文。\n"
             "- cwd: 工作目录（项目根目录的绝对路径）。同一目录的调用会自动复用会话上下文。\n"
             "- model: 模型 ID（可选）。留空使用适配器默认配置。\n"
             "- effort: 推理努力级别（可选）：'low' / 'medium' / 'high'。留空使用默认配置。\n"
-            "- max_turns: 最大轮次（可选，0=使用默认值）。\n"
-            "- timeout_sec: 超时时间（可选，秒）。根据任务复杂度设定，默认1800秒（30分钟）。"
-            "简单任务可设300秒，复杂任务可设3600秒（1小时）甚至更长。\n\n"
-            "返回：包含 Claude Code 的最终回复文本、会话 ID、费用、轮次等信息的字典。"
+            "- max_turns: 最大轮次（可选，0=使用默认值）。\n\n"
+            "返回：包含 task_id 和 status 的字典。"
         ),
         parameters={
             "type": "object",
@@ -351,26 +362,21 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                     "type": "integer",
                     "description": "最大轮次（可选，0=使用默认值）。",
                 },
-                "timeout_sec": {
-                    "type": "integer",
-                    "description": "超时时间（秒）。根据任务复杂度自主设定：简单任务300秒，中等任务900秒，复杂任务1800-3600秒。留空使用默认1800秒。",
-                },
             },
             "required": ["prompt"],
         },
-        timeout=1800.0,
+        timeout=10.0,
     )
-    async def claude_code_execute(
+    async def claude_code_submit(
         self,
         prompt: str = "",
         cwd: str = "",
         model: str = "",
         effort: str = "",
         max_turns: int = 0,
-        timeout_sec: int = 0,
         **_,
     ) -> dict[str, Any]:
-        """执行 Claude Code 任务。"""
+        """提交 Claude Code 任务到后台异步执行。"""
         not_ready = self._ensure_ready()
         if not_ready is not None:
             return not_ready
@@ -378,19 +384,124 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         if not prompt or not prompt.strip():
             return Err(SdkError("prompt 不能为空"))
 
+        if self._task_mgr is None:
+            return Err(SdkError("TaskManager not initialized"))
+
         try:
-            result = await self._execute_with_retry(
-                prompt,
+            record = await self._task_mgr.submit(
+                prompt=prompt,
                 cwd=cwd,
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
-                timeout_sec=timeout_sec,
             )
-            return Ok(result.to_llm_payload())
+            return Ok({
+                "task_id": record.task_id,
+                "status": record.status.value,
+                "message": "任务已提交，请使用 claude_code_poll 查询结果",
+            })
         except Exception as e:
-            self.logger.exception("claude_code_execute failed")
-            return Err(SdkError(f"执行失败: {e}"))
+            self.logger.exception("claude_code_submit failed")
+            return Err(SdkError(f"提交任务失败: {e}"))
+
+    @llm_tool(
+        name="claude_code_poll",
+        description=(
+            "查询 Claude Code 异步任务的执行状态和结果。\n\n"
+            "使用流程：\n"
+            "1. 调用 claude_code_submit 提交任务，获取 task_id\n"
+            "2. 调用 claude_code_poll 查询任务状态\n"
+            "3. 当 status 为 'done' 时，结果在 result 字段中\n"
+            "4. 当 status 为 'error' 时，错误信息在 error 字段中\n\n"
+            "参数说明：\n"
+            "- task_id: 任务 ID（从 claude_code_submit 返回）\n\n"
+            "返回：包含 task_id、status、result/error 的字典。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "任务 ID（从 claude_code_submit 返回）。",
+                },
+            },
+            "required": ["task_id"],
+        },
+        timeout=10.0,
+    )
+    async def claude_code_poll(
+        self,
+        task_id: str = "",
+        **_,
+    ) -> dict[str, Any]:
+        """查询 Claude Code 任务状态。"""
+        not_ready = self._ensure_ready()
+        if not_ready is not None:
+            return not_ready
+
+        if not task_id or not task_id.strip():
+            return Err(SdkError("task_id 不能为空"))
+
+        if self._task_mgr is None:
+            return Err(SdkError("TaskManager not initialized"))
+
+        try:
+            result = await self._task_mgr.poll(task_id)
+            if "error" in result and result["error"].startswith("Task not found"):
+                return Err(SdkError(result["error"]))
+            return Ok(result)
+        except Exception as e:
+            self.logger.exception("claude_code_poll failed")
+            return Err(SdkError(f"查询任务失败: {e}"))
+
+    @llm_tool(
+        name="claude_code_cancel",
+        description=(
+            "取消正在运行的 Claude Code 异步任务。\n\n"
+            "适用场景：\n"
+            "- 任务执行时间过长，想提前终止\n"
+            "- 提交了错误的任务，需要取消\n"
+            "- 需要释放资源\n\n"
+            "参数说明：\n"
+            "- task_id: 任务 ID（从 claude_code_submit 返回）\n\n"
+            "返回：包含 task_id 和 status 的字典。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "任务 ID（从 claude_code_submit 返回）。",
+                },
+            },
+            "required": ["task_id"],
+        },
+        timeout=10.0,
+    )
+    async def claude_code_cancel(
+        self,
+        task_id: str = "",
+        **_,
+    ) -> dict[str, Any]:
+        """取消 Claude Code 任务。"""
+        not_ready = self._ensure_ready()
+        if not_ready is not None:
+            return not_ready
+
+        if not task_id or not task_id.strip():
+            return Err(SdkError("task_id 不能为空"))
+
+        if self._task_mgr is None:
+            return Err(SdkError("TaskManager not initialized"))
+
+        try:
+            result = await self._task_mgr.cancel(task_id)
+            if "error" in result:
+                return Err(SdkError(result["error"]))
+            return Ok(result)
+        except Exception as e:
+            self.logger.exception("claude_code_cancel failed")
+            return Err(SdkError(f"取消任务失败: {e}"))
 
     @llm_tool(
         name="claude_code_check_health",
@@ -568,10 +679,10 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
     # ==================================================================
 
     @plugin_entry(
-        id="execute",
-        name="执行 Claude Code 任务",
-        description="执行 Claude Code 任务（与 claude_code_execute LLM 工具相同的功能，供 UI/其他插件调用）。",
-        llm_result_fields=["output", "session_id", "num_turns"],
+        id="submit_task",
+        name="提交 Claude Code 异步任务",
+        description="提交 Claude Code 任务到后台异步执行（供 UI/其他插件调用）。",
+        llm_result_fields=["task_id", "status"],
         input_schema={
             "type": "object",
             "properties": {
@@ -584,7 +695,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             "required": ["prompt"],
         },
     )
-    async def execute_entry(
+    async def submit_task_entry(
         self,
         prompt: str = "",
         cwd: str = "",
@@ -593,7 +704,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         max_turns: int = 0,
         **_,
     ) -> Any:
-        """插件入口（与 LLM 工具功能相同，供 UI/其他插件调用）。"""
+        """插件入口（提交异步任务，供 UI/其他插件调用）。"""
         not_ready = self._ensure_ready()
         if not_ready is not None:
             return not_ready
@@ -601,18 +712,24 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         if not prompt or not prompt.strip():
             return Err(SdkError("prompt 不能为空"))
 
+        if self._task_mgr is None:
+            return Err(SdkError("TaskManager not initialized"))
+
         try:
-            result = await self._execute_with_retry(
-                prompt,
+            record = await self._task_mgr.submit(
+                prompt=prompt,
                 cwd=cwd,
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
             )
-            return Ok(result.to_llm_payload())
+            return Ok({
+                "task_id": record.task_id,
+                "status": record.status.value,
+            })
         except Exception as e:
-            self.logger.exception("execute_entry failed")
-            return Err(SdkError(f"执行失败: {e}"))
+            self.logger.exception("submit_task_entry failed")
+            return Err(SdkError(f"提交任务失败: {e}"))
 
 
 __all__ = ["ClaudeCodeAdapterPlugin"]

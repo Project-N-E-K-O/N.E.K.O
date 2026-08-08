@@ -1,0 +1,84 @@
+{
+  "panel": {
+    "title": "Claude Code Adapter",
+    "subtitle": "Enable catgirl to call Claude Code for development ✨",
+    
+    "status": {
+      "title": "🌸 Status Overview",
+      "cliStatus": "Claude Code Status",
+      "installed": "Installed ✓",
+      "notInstalled": "Not Installed ✗",
+      "cliPath": "Installation Path",
+      "unknown": "Unknown",
+      "model": "Model in Use",
+      "default": "Default Model",
+      "autoInject": "Auto Inject Config",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "installRequired": "⚠️ Claude Code not detected. Please follow the guide below to install, then restart N.E.K.O"
+    },
+    
+    "install": {
+      "title": "📦 Installation Guide (Beginner-Friendly)",
+      "step1": {
+        "title": "Step 1: Install Node.js",
+        "desc": "Claude Code requires Node.js runtime to work",
+        "tip": "💡 Tip: Recommend installing LTS (Long Term Support) version for stability~",
+        "button": "Go to Node.js Official Website"
+      },
+      "step2": {
+        "title": "Step 2: Install Claude Code",
+        "desc": "Open Command Prompt (Windows) or Terminal (macOS/Linux), then run:",
+        "command": "npm install -g @anthropic-ai/claude-code",
+        "tip": "💡 Tip: If installation is slow, configure npm mirror first~"
+      },
+      "step3": {
+        "title": "Step 3: Verify Installation",
+        "desc": "Run the following command to check if installation succeeded:",
+        "command": "claude --version",
+        "tip": "💡 Tip: If version number shows up, installation is successful!"
+      },
+      "step4": {
+        "title": "Step 4: Configure API Key",
+        "desc": "Claude Code needs Anthropic API Key to work. Two ways to configure:",
+        "tip": "💡 Tip: Users in China recommend using third-party API proxy services for convenience~"
+      }
+    },
+    
+    "config": {
+      "title": "⚙️ API Configuration",
+      "desc1": "Claude Code uses Anthropic official API by default, but users in China may need third-party proxy services.",
+      "desc2": "Method 1: Config File (Recommended)",
+      "tip1": "💡 Tip: Config file location: Windows at %APPDATA%\\Claude\\settings.json, macOS/Linux at ~/.claude/settings.json",
+      "desc3": "Method 2: Environment Variables",
+      "tip2": "💡 Tip: Environment variables take effect temporarily, suitable for testing"
+    },
+    
+    "usage": {
+      "title": "💬 Usage Examples",
+      "desc": "After installation and configuration, you can let catgirl use Claude Code like this:",
+      "example1": {
+        "title": "Example 1: Let catgirl write code for you",
+        "text": "\"Help me write a Python web scraper using Claude Code\""
+      },
+      "example2": {
+        "title": "Example 2: Let catgirl debug for you",
+        "text": "\"Use Claude Code to help me find what's wrong with this code\""
+      }
+    },
+    
+    "faq": {
+      "title": "❓ FAQ",
+      "q1": "Why is Claude Code installation so slow?",
+      "a1": "May be network issues. Suggest configuring npm mirror: npm config set registry https://registry.npmmirror.com",
+      "q2": "How to use Claude Code in China?",
+      "a2": "Need to use third-party API proxy services, or configure proxy. Recommend using proxy services that support Anthropic format.",
+      "q3": "Where to get API Key?",
+      "a3": "Official API Key requires registering on Anthropic website and binding credit card. For third-party proxy services, contact the service provider.",
+      "q4": "What to do if catgirl fails to call Claude Code?",
+      "a4": "Please check: 1) Is Claude Code installed correctly; 2) Is API Key configured correctly; 3) Is network connection normal; 4) Check N.E.K.O logs for detailed error info."
+    },
+    
+    "tip": "🌟 Warm Reminder: This plugin automatically reads API config from N.E.K.O main project and injects to Claude Code, no duplicate configuration needed. If you want to use your own Claude Code config, set auto_inject_api_config = false in plugin.toml"
+  }
+}

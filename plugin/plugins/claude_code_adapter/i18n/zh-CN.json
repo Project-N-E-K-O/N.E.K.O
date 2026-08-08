@@ -1,0 +1,84 @@
+{
+  "panel": {
+    "title": "Claude Code 适配器",
+    "subtitle": "让猫娘能够调用 Claude Code 进行代码开发 ✨",
+    
+    "status": {
+      "title": "🌸 状态概览",
+      "cliStatus": "Claude Code 状态",
+      "installed": "已安装 ✓",
+      "notInstalled": "未安装 ✗",
+      "cliPath": "安装路径",
+      "unknown": "未知",
+      "model": "使用模型",
+      "default": "默认模型",
+      "autoInject": "自动注入配置",
+      "enabled": "已启用",
+      "disabled": "已禁用",
+      "installRequired": "⚠️ 检测到 Claude Code 未安装，请按照下方指南完成安装后重启猫娘"
+    },
+    
+    "install": {
+      "title": "📦 安装指南（保姆级教程）",
+      "step1": {
+        "title": "第一步：安装 Node.js",
+        "desc": "Claude Code 需要 Node.js 环境才能运行",
+        "tip": "💡 小贴士：推荐安装 LTS（长期支持）版本，更稳定哦~",
+        "button": "前往 Node.js 官网下载"
+      },
+      "step2": {
+        "title": "第二步：安装 Claude Code",
+        "desc": "打开命令提示符（Windows）或终端（macOS/Linux），执行以下命令：",
+        "command": "npm install -g @anthropic-ai/claude-code",
+        "tip": "💡 小贴士：如果安装速度慢，可以先配置 npm 镜像源哦~"
+      },
+      "step3": {
+        "title": "第三步：验证安装",
+        "desc": "执行以下命令检查是否安装成功：",
+        "command": "claude --version",
+        "tip": "💡 小贴士：如果显示版本号，说明安装成功啦！"
+      },
+      "step4": {
+        "title": "第四步：配置 API Key",
+        "desc": "Claude Code 需要 Anthropic API Key 才能使用。有两种方式：",
+        "tip": "💡 小贴士：国内用户推荐使用第三方 API 中转服务，更方便哦~"
+      }
+    },
+    
+    "config": {
+      "title": "⚙️ API 配置说明",
+      "desc1": "Claude Code 默认使用 Anthropic 官方 API，但国内用户可能需要使用第三方中转服务。",
+      "desc2": "方式一：配置文件（推荐）",
+      "tip1": "💡 小贴士：配置文件位置：Windows 在 %APPDATA%\\Claude\\settings.json，macOS/Linux 在 ~/.claude/settings.json",
+      "desc3": "方式二：环境变量",
+      "tip2": "💡 小贴士：环境变量方式临时生效，适合测试使用"
+    },
+    
+    "usage": {
+      "title": "💬 使用示例",
+      "desc": "安装配置完成后，你可以这样让猫娘使用 Claude Code：",
+      "example1": {
+        "title": "示例 1：让猫娘帮你写代码",
+        "text": "\"帮我用 Claude Code 写一个 Python 爬虫程序\""
+      },
+      "example2": {
+        "title": "示例 2：让猫娘帮你调试",
+        "text": "\"用 Claude Code 帮我看看这段代码哪里出错了\""
+      }
+    },
+    
+    "faq": {
+      "title": "❓ 常见问题",
+      "q1": "为什么安装 Claude Code 这么慢？",
+      "a1": "可能是网络问题，建议配置 npm 镜像源：npm config set registry https://registry.npmmirror.com",
+      "q2": "国内如何使用 Claude Code？",
+      "a2": "需要使用第三方 API 中转服务，或者配置代理。推荐使用支持 Anthropic 格式的中转服务。",
+      "q3": "API Key 在哪里获取？",
+      "a3": "官方 API Key 需要在 Anthropic 官网注册并绑定信用卡。第三方中转服务的 Key 请联系服务商获取。",
+      "q4": "猫娘调用 Claude Code 失败怎么办？",
+      "a4": "请检查：1) Claude Code 是否正确安装；2) API Key 是否配置正确；3) 网络连接是否正常；4) 查看猫娘日志获取详细错误信息。"
+    },
+    
+    "tip": "🌟 温馨提示：本插件会自动从猫娘主项目读取 API 配置并注入给 Claude Code，无需重复配置。如果你想使用自己的 Claude Code 配置，可以在 plugin.toml 中设置 auto_inject_api_config = false"
+  }
+}
