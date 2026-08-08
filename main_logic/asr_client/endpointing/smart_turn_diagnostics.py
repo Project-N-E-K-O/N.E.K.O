@@ -324,6 +324,7 @@ class _JsonlSmartTurnRuntimeDiagnostics:
                 try:
                     stream.flush()
                 except Exception:
+                    # Close acknowledgement must survive a best-effort final flush.
                     pass
                 _close_stream(stream)
             command.completed.set()
