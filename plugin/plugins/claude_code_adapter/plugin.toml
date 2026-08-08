@@ -52,8 +52,9 @@ command = ""
 model = ""
 # 推理努力级别："" | "low" | "medium" | "high"。
 effort = ""
-# 单次执行最大轮次（0 = 使用 CLI 默认值）。
-max_turns_per_run = 0
+# 单次执行最大轮次（0 = 使用 CLI 默认值，可能导致任务提前终止）。
+# 建议设置为较大值（如 1000），让 Claude Code 持续运行直到任务完成。
+max_turns_per_run = 1000
 # 跳过权限提示（与 Paperclip 行为一致；仅用于受信任的本地开发场景）。
 dangerously_skip_permissions = true
 # 单次执行超时（秒）。子进程执行超时，可以设置很大（如 3600 = 1小时）。
