@@ -11,8 +11,15 @@ from .._poi import POIService
 from .._api import RAIN_CODES
 from .._coerce import clamp_int, clean_text
 from .._contracts import NearbyParams, NearbyResult
+from .._nearby_intent import (
+    NearbyIntentRequest,
+    NearbyIntentResolver,
+    NearbyIntentStatus,
+)
 from .._routing import format_distance
 from .._location import LocationPurpose
+
+_INTENT_RESOLVER = NearbyIntentResolver()
 
 
 class NearbyRouter(PluginRouter):
@@ -25,8 +32,8 @@ class NearbyRouter(PluginRouter):
         id="search_nearby",
         name="附近搜索",
         description=(
-            "搜索附近的餐厅、咖啡店、景点、超市等。"
-            "支持保存的地点标签或城市名作为搜索中心。"
+            "根据关键词或自然语言需求搜索附近的餐厅、咖啡店、景点、超市等。"
+            "支持保存的地点标签或城市名作为搜索中心；类型或位置不明确时会请求一次澄清。"
         ),
         params=NearbyParams,
         llm_result_model=NearbyResult,
@@ -38,6 +45,7 @@ class NearbyRouter(PluginRouter):
         query: str = "",
         location: str = "",
         radius: int = 3000,
+        _ctx: dict[str, Any] | None = None,
         **_,
     ):
         if params is not None:
@@ -49,19 +57,55 @@ class NearbyRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        clean_query = clean_text(query)
-        if not clean_query:
-            return Err(SdkError(i18n.t("nearby.no_query")))
+        raw_request = clean_text((_ctx or {}).get("latest_user_request"))
+        intent = _INTENT_RESOLVER.resolve(
+            NearbyIntentRequest(
+                raw_request=raw_request or clean_text(query),
+                proposed_query=clean_text(query),
+                proposed_location=clean_text(location),
+                proposed_radius=radius,
+                locale=i18n.locale,
+                is_conversational=bool(raw_request),
+            )
+        )
 
         # 解析搜索中心
         loc, loc_err = await plugin._resolve_location(
-            location or None,
+            intent.location or None,
             purpose=LocationPurpose.NEARBY,
         )
-        if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
+        needs_category = intent.status is NearbyIntentStatus.NEEDS_CLARIFICATION
+        if not loc and loc_err == "error.geocode_failed" and not needs_category:
+            return Err(SdkError(i18n.t(loc_err)))
 
-        radius = clamp_int(radius, 3000, 500, 50000)
+        needs_location = not loc
+        if needs_category or needs_location:
+            choices = list(intent.choices)
+            choices_text = (
+                ", ".join(choices) if i18n.locale == "en" else "、".join(choices)
+            )
+            if needs_category and needs_location:
+                clarification = i18n.t("nearby.clarify_both", choices=choices_text)
+            elif needs_category:
+                clarification = i18n.t("nearby.clarify_category", choices=choices_text)
+            else:
+                detail = i18n.t(loc_err or "error.no_location")
+                clarification = i18n.t("nearby.clarify_location", detail=detail)
+            return Ok(
+                {
+                    "status": "clarify",
+                    "summary": clarification,
+                    "choices": choices,
+                    "results": [],
+                    "count": 0,
+                }
+            )
+
+        clean_query = intent.query
+        if not clean_query:
+            return Err(SdkError(i18n.t("nearby.no_query")))
+
+        radius = clamp_int(intent.radius, 3000, 500, 50000)
 
         # POI 搜索
         svc = POIService(plugin._cfg)
@@ -69,6 +113,7 @@ class NearbyRouter(PluginRouter):
 
         if not poi_result.items:
             return Ok({
+                "status": "ready",
                 "summary": i18n.t("nearby.no_results", query=clean_query, location=loc["city"]),
                 "results": [],
                 "count": 0,
@@ -105,6 +150,7 @@ class NearbyRouter(PluginRouter):
             summary += f" | {weather_tip}"
 
         return Ok({
+            "status": "ready",
             "summary": summary,
             "results": results,
             "count": len(results),

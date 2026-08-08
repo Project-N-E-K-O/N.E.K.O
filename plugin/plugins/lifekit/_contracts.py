@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -85,7 +85,7 @@ class HourlyForecastResult(LifeKitModel):
 
 
 class NearbyParams(LifeKitModel):
-    query: str = Field(..., min_length=1, description="搜索关键词（如：火锅、咖啡、超市、景点）")
+    query: str = Field(..., min_length=1, description="搜索关键词或用户原始附近需求")
     location: str = Field("", description="搜索中心（地点标签或城市名，留空用默认位置）")
     radius: int = Field(3000, ge=500, le=50000, description="搜索半径（米，默认 3000）")
 
@@ -99,6 +99,8 @@ class NearbyResult(LifeKitModel):
     summary: str
     results: list[dict[str, Any]]
     count: int
+    status: Literal["ready", "clarify"] = "ready"
+    choices: list[str] = Field(default_factory=list)
     provider: str | None = None
     weather_tip: str = ""
 

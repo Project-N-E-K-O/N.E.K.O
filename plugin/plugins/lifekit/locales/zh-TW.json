@@ -75,6 +75,9 @@
   },
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",
+    "clarify_category": "你更想找哪類地方？請選擇：{choices}。",
+    "clarify_location": "{detail}。請補充搜尋中心，例如「吉林市附近的公園」，或使用已確認的儲存地點。",
+    "clarify_both": "還缺少搜尋中心和地點類型。可以直接說「吉林市附近的公園」，或選擇：{choices}。",
     "no_results": "在 {location} 附近沒有找到「{query}」相關的地點",
     "summary": "在 {location} 附近找到 {count} 個「{query}」: {top}",
     "rain_tip": "🌂 目前有雨，建議選擇室內場所"

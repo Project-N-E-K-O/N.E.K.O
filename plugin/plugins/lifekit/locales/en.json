@@ -75,6 +75,9 @@
   },
   "nearby": {
     "no_query": "Please enter a search keyword (e.g. restaurant, cafe, park)",
+    "clarify_category": "What kind of place do you want? Choose one: {choices}.",
+    "clarify_location": "{detail}. Please provide a search center, for example 'parks near Jilin City', or use a verified saved place.",
+    "clarify_both": "I still need a search center and place type. Try 'parks near Jilin City', or choose a type: {choices}.",
     "no_results": "No '{query}' found near {location}",
     "summary": "Found {count} '{query}' near {location}: {top}",
     "rain_tip": "🌂 It's raining — consider indoor options"
