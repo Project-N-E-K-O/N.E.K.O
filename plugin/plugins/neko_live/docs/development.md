@@ -676,7 +676,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 - **查询 HTTP 路径**（`lookup_live_room` → `bili_live_ingest._lookup_room_status_sync`，urllib + `to_thread`）：A1 已补临时 buvid3 cookie + 浏览器 headers（`getInfoByRoom` **不需** WBI 签名——WS 的 `_get_real_room_id` 调它也没签）。但匿名 buvid3 在 IP 被重度风控时仍可能 `code=-352`，彻底消除需登录态。
 
 **已落地处理（友好降级，非根治）**：
-- `BiliLiveIngestModule._friendly_lookup_message(code, raw)` 把失败码翻成人话：`-352` → 「B站风控校验失败（-352）：匿名查询被反爬拦截，可稍后重试/换网络/登录后再查；直播间监听（弹幕）通常仍可用」；房间不存在（`code in {1, 19002000}` / 含「不存在」「未找到」）→ 「请确认房间号」；其它非零码 → 带 `code` + 原始 message（不再裸码）。
+- `BiliLiveIngestModule._friendly_lookup_message(code, raw)` 把失败码翻成人话：`-352` → 「B站风控校验失败（-352）：查询被反爬拦截，可稍后重试/换网络/登录后再查；底层弹幕传输可能技术可达，但监听仍须等待已验证凭据和已确认的直播间目标」；房间不存在（`code in {1, 19002000}` / 含「不存在」「未找到」）→ 「请确认房间号」；其它非零码 → 带 `code` + 原始 message（不再裸码）。
 - 面板查询失败 `Alert` 显示该 message（`panel.tsx`：`liveRoomResult.message || t("panel.room.lookupFailed")`），不再死写「请检查房间号」，避免把风控误导成房号错误。
 
 **已落地（A1，反 -352，2026-06-17）**：`_lookup_room_status_sync` 重构为

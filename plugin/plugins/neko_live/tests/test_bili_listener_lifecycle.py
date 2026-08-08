@@ -76,6 +76,14 @@ def _module() -> BiliLiveIngestModule:
     return module
 
 
+def test_friendly_lookup_message_does_not_imply_accountless_listening() -> None:
+    message = BiliLiveIngestModule._friendly_lookup_message(-352, "")
+
+    assert "直播间监听（弹幕）通常仍可用" not in message
+    assert "已验证凭据" in message
+    assert "已确认的直播间目标" in message
+
+
 @pytest.mark.asyncio
 async def test_start_requires_runtime_bilibili_credential() -> None:
     module = _module()

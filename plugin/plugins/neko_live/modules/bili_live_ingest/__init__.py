@@ -735,13 +735,13 @@ class BiliLiveIngestModule(BaseModule):
 
     @staticmethod
     def _friendly_lookup_message(code: int, raw_message: str) -> str:
-        """把 B站查询失败码翻成人话。最常见的是 -352：匿名请求被反爬风控拦截
-        （查询走的 HTTP 路径没有像弹幕 WS 那样的临时 buvid3 反 -352 措施）。"""
+        """把 B站查询失败码翻成人话；-352 表示查询 HTTP 路径被风控拦截。"""
         raw = (raw_message or "").strip()
         if code == -352 or raw == "-352":
             return (
-                "B站风控校验失败（-352）：匿名查询被反爬拦截。"
-                "可稍后重试 / 更换网络 / 登录后再查；直播间监听（弹幕）通常仍可用。"
+                "B站风控校验失败（-352）：查询被反爬拦截。"
+                "可稍后重试 / 更换网络 / 登录后再查；底层弹幕传输可能技术可达，"
+                "但监听仍须等待已验证凭据和已确认的直播间目标。"
             )
         if code in (1, 19002000) or "不存在" in raw or "未找到" in raw:
             return f"未找到该直播间（code={code}），请确认房间号是否正确。"
