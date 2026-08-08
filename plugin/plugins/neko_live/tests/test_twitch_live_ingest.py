@@ -38,8 +38,14 @@ def test_twitchio_and_client_implementation_are_not_imported_at_provider_module_
         if isinstance(node, ast.Import):
             assert all(not alias.name.startswith("twitchio") for alias in node.names)
         if isinstance(node, ast.ImportFrom):
-            assert node.module != "twitchio"
-            assert not (node.level == 1 and node.module == "twitch_client")
+            assert not (node.module or "").startswith("twitchio")
+            assert not (
+                node.level == 1
+                and (
+                    node.module == "twitch_client"
+                    or any(alias.name == "twitch_client" for alias in node.names)
+                )
+            )
 
 
 class _HelixClient:

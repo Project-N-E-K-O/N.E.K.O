@@ -27,6 +27,7 @@ from plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref import (
 )
 from plugin.plugins.neko_live.modules.live_bridge import (
     LiveBridgeStartRequest,
+    LiveBridgeState,
     LiveBridgeTransport,
 )
 from plugin.plugins.neko_live.modules.live_bridge import process_supervisor as supervisor_module
@@ -269,6 +270,11 @@ def test_douyin_transport_state_syncs_runtime_and_ignores_old_provider_callback(
     module._apply_transport_state(DouyinTransportState(state="disconnected"))
     assert runtime.live_connection_state == "connected"
     assert runtime.safety_guard.connected is True
+
+
+def test_auth_required_survives_bridge_and_provider_state_projection() -> None:
+    assert LiveBridgeState(state="auth_required").safe_state() == "auth_required"
+    assert DouyinTransportState(state="auth_required").safe_state() == "auth_required"
 
 
 @pytest.mark.asyncio

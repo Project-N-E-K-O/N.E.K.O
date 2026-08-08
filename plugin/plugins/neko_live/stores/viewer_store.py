@@ -405,18 +405,14 @@ class ViewerStore:
         requested = max(0, int(limit))
         if requested <= _RECENT_PROFILE_CACHE_LIMIT and self._recent_cache_matches_store():
             return copy.deepcopy(self._recent_cache[:requested])
-        profiles = await self._load_all()
-        cache_projection = _recent_profile_projection(
-            profiles,
-            _RECENT_PROFILE_CACHE_LIMIT,
-        )
-        self._recent_cache = cache_projection
-        self._recent_cache_file = self._active_store_file()
-        self._recent_cache_signature = self._file_signature(self._recent_cache_file)
-        self._recent_cache_ready = True
-        if requested <= _RECENT_PROFILE_CACHE_LIMIT:
-            return copy.deepcopy(cache_projection[:requested])
-        return _recent_profile_projection(profiles, requested)
+        async with self._lock:
+            if requested <= _RECENT_PROFILE_CACHE_LIMIT and self._recent_cache_matches_store():
+                return copy.deepcopy(self._recent_cache[:requested])
+            profiles = await self._load_all()
+            self._update_recent_cache(profiles)
+            if requested <= _RECENT_PROFILE_CACHE_LIMIT:
+                return copy.deepcopy(self._recent_cache[:requested])
+            return _recent_profile_projection(profiles, requested)
 
     async def clear_profiles(self) -> dict[str, Any]:
         async with self._lock:

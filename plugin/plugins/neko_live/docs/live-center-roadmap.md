@@ -148,7 +148,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 - 自适应焦点由 LLM 判断，非确定性；`pendant` 依赖 bilibili_api。
 - B站协议会变（WBI / 风控），需跟进。
-- `lookup_live_room` 的 HTTP 路径已做 A1 反 -352 降频（临时 buvid3、浏览器 headers、撞 -352 刷新重试一次、成功缓存），但重度风控 IP 仍可能失败；已把失败码翻成人话（`bili_live_ingest._friendly_lookup_message`：-352→"风控校验失败，稍后重试/换网络/登录"，并在面板 Alert 显示该 message 而非死写"请检查房间号"），**根治**需登录态（P5）。注意：查询失败 ≠ 监听失败，弹幕 WS 路径通常仍可连。
+- `lookup_live_room` 的 HTTP 路径已做 A1 反 -352 降频（临时 buvid3、浏览器 headers、撞 -352 刷新重试一次、成功缓存），但重度风控 IP 仍可能失败；已把失败码翻成人话（`bili_live_ingest._friendly_lookup_message`：-352→"风控校验失败，稍后重试/换网络/登录"，并在面板 Alert 显示该 message 而非死写"请检查房间号"），**根治**需登录态（P5）。历史协议研究表明查询失败时弹幕 WS 在技术上可能仍可达，但该事实不构成匿名产品路径：UI、runtime 与 provider 都必须拒绝未验证凭据的监听启动。
 - 插件侧配置持久化仍按“内存先行 + 4s 预算”看待：host 持久化异常时配置仍内存即时生效，但**那一次的持久化会失败**（`config_persist_timeout`），即该次改动不落盘——stop/start 后可能还原成 `plugin.toml` 里的值。无竞争 / 无异常时应秒过。
 - ~~富模型 `on_event` 尚未被 pipeline 消费~~ ✅ P2.5 已由 `live_events` 中枢消费，`on_danmaku`→pipeline 直连已退役；`medal_info` 字段顺序沿用旧实现，精确化留待事件族梳理。
 

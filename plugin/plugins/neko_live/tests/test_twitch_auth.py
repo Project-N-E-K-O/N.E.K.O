@@ -629,6 +629,63 @@ async def test_logout_supersedes_in_flight_refresh_without_restoring_credential(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_credential_commits_allow_only_one_generation_owner() -> None:
+    store = _Store()
+    service = _service(store, _Http([]))
+    generation = await service._credential_generation_snapshot()
+    first = {"access_token": "first-access", "refresh_token": "first-refresh"}
+    second = {"access_token": "second-access", "refresh_token": "second-refresh"}
+
+    results = await asyncio.gather(
+        service._commit_credential(first, generation),
+        service._commit_credential(second, generation),
+    )
+
+    assert sorted(results) == ["saved", "superseded"]
+    assert len(store.saved) == 1
+    assert store.credential == store.saved[0]
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_memory_after_in_flight_commit_releases_lock() -> None:
+    store = _Store()
+    reload_started = asyncio.Event()
+    release_reload = asyncio.Event()
+    runtime = SimpleNamespace(
+        twitch_credential={"access_token": "old-access"},
+        twitch_credential_store=store,
+        config=SimpleNamespace(twitch_client_id="clientid123"),
+        audit=SimpleNamespace(record=lambda *_args, **_kwargs: None),
+    )
+
+    async def reload() -> None:
+        reload_started.set()
+        await release_reload.wait()
+        runtime.twitch_credential = await store.load()
+
+    service = TwitchAuthService(
+        credential_provider=store.load,
+        credential_saver=store.save,
+        credential_deleter=store.delete,
+        credential_reloader=reload,
+        request_json=_Http([]),
+    )
+    runtime.twitch_auth = service
+    generation = await service._credential_generation_snapshot()
+    fresh = {"access_token": "fresh-access", "refresh_token": "fresh-refresh"}
+
+    commit_task = asyncio.create_task(service._commit_credential(fresh, generation))
+    await reload_started.wait()
+    logout_task = asyncio.create_task(runtime_twitch_auth.logout(runtime))
+    release_reload.set()
+
+    assert await commit_task == "saved"
+    assert (await logout_task)["logged_out"] is True
+    assert runtime.twitch_credential is None
+    assert store.credential is None
+
+
+@pytest.mark.asyncio
 async def test_credential_delete_supersedes_in_flight_device_authorization() -> None:
     token_started = asyncio.Event()
     release_token = asyncio.Event()

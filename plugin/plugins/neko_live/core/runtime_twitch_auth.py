@@ -140,12 +140,12 @@ async def validate_credential(runtime: Any) -> dict[str, Any]:
 
 async def logout(runtime: Any) -> dict[str, Any]:
     auth = getattr(runtime, "twitch_auth", None)
-    runtime.twitch_credential = None
     if auth is not None:
         removed = await auth.delete_credential()
         await auth.cancel_device_authorization(_client_id(runtime))
     else:
         removed = await runtime.twitch_credential_store.delete()
+    runtime.twitch_credential = None
     runtime.audit.record("twitch_logout", "twitch credential removed", detail={"files": removed})
     return {
         "platform": "twitch",

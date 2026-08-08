@@ -17,7 +17,8 @@ _PUBLIC_TOPIC_SOURCES = {"fallback", "bili_trending"}
 _VIEWER_DERIVED_TOPIC_SOURCES = {"recent_danmaku", "live_thread"}
 
 _SENSITIVE_AUTH_RE = re.compile(
-    r"\b(?:proxy[-_]?authorization|authorization)\b\s*[:=]\s*(?:bearer|basic)?\s*[^\s;,]+",
+    r'''["']?\b(?:proxy[-_]?authorization|authorization)\b["']?\s*[:=]\s*'''
+    r'''["']?(?:bearer|basic)?\s*[^'"\s;,}\]]+["']?''',
     re.IGNORECASE,
 )
 _SENSITIVE_COOKIE_HEADER_RE = re.compile(r"\bcookie\s*:\s*[^\r\n]*", re.IGNORECASE)

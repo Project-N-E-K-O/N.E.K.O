@@ -139,6 +139,17 @@ def test_public_text_redacts_assignment_style_authorization_values():
     assert "PROXY-SECRET" not in rendered
 
 
+def test_public_text_redacts_quoted_mapping_style_authorization_values():
+    rendered = public_text(
+        '{"authorization": "Bearer AUTH-SECRET", '
+        "'proxy-authorization': 'Basic PROXY-SECRET'}"
+    )
+
+    assert "AUTH-SECRET" not in rendered
+    assert "PROXY-SECRET" not in rendered
+    assert rendered.count("[redacted]") == 2
+
+
 def test_viewer_event_public_projection_sanitizes_trace_and_drops_raw():
     projected = ViewerEvent(
         uid="1",

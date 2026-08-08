@@ -127,7 +127,11 @@ class SupportEventScheduler:
         bounded = max(1, min(100, int(queue_limit)))
         self._queue_limit = bounded
         self._combo_limit = bounded
-        self._retired_task_limit = bounded + 1
+        self._retired_task_limit = max(
+            self._retired_task_limit,
+            bounded + 1,
+            len(self._retired_tasks) + 1,
+        )
         self._finalized_combo_limit = max(self._finalized_combo_limit, bounded)
         self._processed_id_limit = max(self._processed_id_limit, bounded)
         return bounded
@@ -169,9 +173,17 @@ class SupportEventScheduler:
         )
         heapq.heappush(self._queue, (int(priority), self._sequence, task))
         self._idle.clear()
+        self._ensure_worker()
+        return True
+
+    def _ensure_worker(self) -> None:
+        if self._closed or not self._queue:
+            return
+        current = self._current_dispatch
+        if current is not None and current.generation == self._dispatch_generation:
+            return
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._run())
-        return True
 
     def _make_room(
         self,
@@ -451,6 +463,7 @@ class SupportEventScheduler:
         finally:
             if self._worker is worker:
                 self._worker = None
+            self._ensure_worker()
             self._refresh_idle()
 
     async def _try_claim_dispatch(self, task: _DispatchTask) -> bool:
@@ -522,6 +535,7 @@ class SupportEventScheduler:
             level="warning" if classification == "stray" else "info",
             detail=detail,
         )
+        self._ensure_worker()
         return classification
 
     async def _dispatch_once(

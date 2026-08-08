@@ -60,6 +60,20 @@ async def test_recent_profile_projection_cache_avoids_unchanged_dashboard_reload
 
 
 @pytest.mark.asyncio
+async def test_recent_profile_cache_rebuild_holds_writer_lock(tmp_path, monkeypatch):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    original_load_all = store._load_all
+
+    async def load_while_locked():
+        assert store._lock.locked() is True
+        return await original_load_all()
+
+    monkeypatch.setattr(store, "_load_all", load_while_locked)
+
+    assert await store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
 async def test_recent_profile_projection_cache_reloads_external_file_change(tmp_path):
     store = ViewerStore(_FakePlugin(tmp_path), audit=None)
     await store.upsert_identity(ViewerIdentity(uid="1", nickname="first"))

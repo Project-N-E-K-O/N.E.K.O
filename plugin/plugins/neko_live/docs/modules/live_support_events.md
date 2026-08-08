@@ -49,7 +49,7 @@ Ordinary danmaku is never promoted to this module from text alone. Text that mer
 - `provider_event_id` is the authoritative dedupe key when present. Processed IDs remain in a lazy-expiring 10-minute/4,096-entry session cache; this covers normal transport redelivery without retaining an entire long-running stream's event IDs. An event removed from the pending queue by a higher priority releases its provider ID (and combo tombstone, when applicable), because it was never dispatched and must remain retryable. `COMBO_SEND` is stateful: an identical delivery is ignored, while a monotonic count/value update with the same provider ID is allowed to advance the active combo. The short content fingerprint remains only an ingest fallback for callbacks without an event ID.
 - `COMBO_SEND` updates share `(room, viewer, combo_id)` state, keep the maximum observed count/value, and finalize once on explicit end or after one second without growth. Identity fields from the first packet are immutable; conflicting updates fail closed. Active combos and timer tasks are bounded, while finalized combo keys stay in a bounded 10-minute/4,096-entry tombstone cache.
 - Queue pressure admits a higher-priority event by removing the oldest pending event from the lowest available lower tier; this includes allowing a milestone to replace a pending high-value gift. Light events aggregate only when they have no authoritative provider event ID and their room, viewer, gift, coin type, and provider event type all match. Identified events remain individually retryable instead of entering an aggregate whose dedupe ownership cannot be recovered after eviction. No priority may exceed the hard pending limit (maximum 100); when no compatible aggregate or lower-priority victim exists, the newest event is rejected and reflected in aggregate overflow/drop counters.
-- The pending limit follows the active `queue_limit` configuration without a hidden minimum. Runtime decreases affect new admissions only: already accepted items and active combos drain normally instead of being silently evicted, while `status().queue_limit` exposes the effective scheduler value.
+- The pending limit follows the active `queue_limit` configuration without a hidden minimum. Values above 100 are clamped to the hard maximum, while lower configured values remain unchanged. Runtime decreases affect new admissions only: already accepted items and active combos drain normally instead of being silently evicted, while `status().queue_limit` exposes the effective scheduler value.
 - A failed dispatch is not retried, preventing duplicate thanks; it is recorded as `support.dispatch_failed` and subsequent support events continue normally. Audit-store failures are isolated from scheduling so an unavailable diagnostic side channel cannot strand the support queue.
 - Starting, changing, or ending a live session clears queue, combo timers, finalized keys, and processed IDs. Cancelled workers remain tracked until `wait_idle()`/`close()` confirms they have exited; after `close()` the scheduler is sealed and rejects any late submission through a stale reference.
 
@@ -66,6 +66,16 @@ Submission finalization has three internal classifications:
 - `stray`: the scheduler cannot prove the finishing task belongs to the current slot or bounded history; it is warning-only and cannot mutate a newer owner.
 
 Each finalization records `support.dispatch_submission_finalized` with sanitized task ID, event category, priority, classification, submission outcome, bounded Pipeline result status, and optional exception type. The scheduler counts only the fixed Pipeline status enum (`queued`, `dry_run`, `pushed`, `skipped`, `failed`, or `unknown`) and never retains result output, reason text, viewer data, or payload data. This distinguishes a returned dry-run/skip/failure from an unexplained missing result without adding another completion API. `submitted` means the plugin-side Pipeline/Dispatcher submission awaitable returned. It does not mean the host generated audio, TTS started, browser playback began, or the audience heard the line.
+
+### Status projection
+
+`LiveSupportEventsModule.status()` exposes eleven bounded `dispatch_*` counters for Dashboard/Monitor diagnostics:
+
+- `active_dispatch_count` and `dispatch_history_count` show whether one current submission owner exists and how many sanitized finalization records remain in the 32-entry history.
+- `dispatch_current_finalization_count`, `dispatch_retroactive_finalization_count`, and `dispatch_stray_finalization_count` count the three ownership classifications above.
+- `dispatch_pipeline_result_{queued,dry_run,pushed,skipped,failed,unknown}_count` count only the fixed Pipeline result enum.
+
+Dashboard and monitor consumers may display these aggregate counts, but they must not derive playback completion or expose task IDs, viewer identity, provider IDs, messages, gift text, result output, or raw payloads. The counters are in-memory, session-resettable diagnostics; they add no persistence or network work.
 
 ## Decision Points
 

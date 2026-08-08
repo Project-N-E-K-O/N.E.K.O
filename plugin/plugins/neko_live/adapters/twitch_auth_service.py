@@ -328,6 +328,7 @@ class TwitchAuthService:
                 return "superseded"
             if not await self._credential_saver(credential):
                 return "failed"
+            self._credential_generation += 1
             await self._credential_reloader()
             return "saved"
 

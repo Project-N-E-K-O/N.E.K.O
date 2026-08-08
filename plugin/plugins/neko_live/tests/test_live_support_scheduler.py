@@ -99,6 +99,31 @@ async def test_runtime_queue_limit_decrease_keeps_accepted_work_and_limits_new_a
 
 
 @pytest.mark.asyncio
+async def test_queue_limit_decrease_keeps_admission_open_while_retired_tasks_drain():
+    release_retired = asyncio.Event()
+    dispatched: list[str] = []
+
+    async def retire() -> None:
+        await release_retired.wait()
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=3)
+    retired = [asyncio.create_task(retire()) for _ in range(2)]
+    for task in retired:
+        scheduler._retire_task(task)
+
+    assert scheduler.update_queue_limit(1) == 1
+    assert scheduler.submit(_payload("accepted-while-retiring")) is True
+
+    release_retired.set()
+    await scheduler.wait_idle()
+    assert dispatched == ["accepted-while-retiring"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_finalized_combo_tombstones_use_bounded_ten_minute_default():
     async def dispatch(_payload: dict) -> None:
         return None
@@ -969,6 +994,43 @@ async def test_concurrent_claims_have_exactly_one_current_owner():
     assert scheduler.status()["current_dispatch_count"] == 1
     assert await scheduler._finish_dispatch(owner, outcome="cancelled") == "current"
     assert scheduler.status()["current_dispatch_count"] == 0
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_conflict_resumes_queue_after_current_owner_finishes():
+    audit = _Audit()
+    dispatched: list[str] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=audit, queue_limit=5)
+    owner = _DispatchTask(
+        task_id="support_manual_owner",
+        payload=_payload("owner"),
+        priority=SupportPriority.LIGHT,
+        sequence=1,
+        generation=scheduler._dispatch_generation,
+    )
+    assert await scheduler._try_claim_dispatch(owner) is True
+    assert scheduler.submit(_payload("queued")) is True
+    assert scheduler._worker is None
+
+    conflicting_worker = asyncio.create_task(scheduler._run())
+    scheduler._worker = conflicting_worker
+    await conflicting_worker
+
+    assert scheduler.status()["pending_count"] == 1
+    assert dispatched == []
+    assert any(
+        record["op"] == "support.dispatch_claim_conflict"
+        for record in audit.records
+    )
+
+    assert await scheduler._finish_dispatch(owner, outcome="submitted") == "current"
+    await scheduler.wait_idle()
+    assert dispatched == ["queued"]
     await scheduler.close()
 
 

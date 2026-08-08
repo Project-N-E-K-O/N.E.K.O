@@ -280,9 +280,9 @@ High-value events must still end in one of these outcomes. They must not directl
 only explain whether the scheduler may release its current slot; they are not new
 Dispatcher Outcomes and must not be projected as playback evidence. The audit detail is
 limited to opaque scheduler task ID, event category, priority, classification, outcome,
-and exception type. It excludes viewer identity, provider event ID, message/gift text, and
-raw payload. See `modules/live_support_events.md` for the approved state budget and exact
-ownership contract.
+bounded pipeline result status, and exception type. It excludes viewer identity, provider
+event ID, message/gift text, and raw payload. See `modules/live_support_events.md` for the
+approved state budget and exact ownership contract.
 
 ### High-value Event Priority Contract
 
@@ -426,7 +426,7 @@ The co-stream passive-context validation path exposes only bounded lifecycle cou
 - `ambient_expiry_count`: session- or live-mode-boundary invalidation markers queued for the previous context key; there is no timer-driven expiry.
 - `ambient_pending_clear_count`: `0` or `1`; one old session/target tombstone whose submission has not succeeded. The target and session key are never projected.
 - `ambient_publish_suppressed_count`: snapshot attempts omitted by live, session, Safety Guard, output-channel, unchanged-content, or failure gates.
-- `ambient_publish_last_reason`: latest stable gate/result reason such as `queued`, `unchanged`, `ambient_clear_pending`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, or a bounded failure type.
+- `ambient_publish_last_reason`: latest stable gate/result reason such as `submitted_unconfirmed`, `unchanged`, `superseded`, `ambient_clear_pending`, `not_co_stream`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, or a bounded failure type. `submitted_unconfirmed` records local transport submission only; it is not playback evidence.
 - `ambient_hook_candidate_reads` / `ambient_hook_candidate_hits`: bounded local callback-selection evaluations and successful winners.
 - `ambient_hook_last_reason`: one allowlisted selector outcome: `selected.chorus`, `selected.continuity`, `selected.question`, `selected.mood`, `selected.complete`, `no_candidates`, `already_selected`, `duplicate_or_flood`, `low_value`, `fragment`, or `no_suitable`. `already_selected` records active-path selection only; it is not submission or playback evidence.
 - `ambient_hook_last_score` / `ambient_hook_last_candidate_count`: non-negative integer winner score and eligible-candidate count. They expose neither rank input nor viewer content.

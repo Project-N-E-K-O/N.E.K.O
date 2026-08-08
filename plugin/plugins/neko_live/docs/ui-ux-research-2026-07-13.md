@@ -707,7 +707,7 @@ The Console is a stateful live-operation surface. It must not assemble itself fr
 ```mermaid
 stateDiagram-v2
     [*] --> NotReady
-    NotReady --> Ready: account valid or explicit provider fallback, and room confirmed
+    NotReady --> Ready: verified account and confirmed room
     Ready --> Live: start listening succeeds
     Live --> Paused: pause
     Paused --> Live: resume
@@ -742,7 +742,7 @@ Every state retains the same lightweight frame:
 - Show platform selection when more than one platform is available.
 - Show account authorization state and the single required authorization action for the selected platform.
 - Show room link/ID input and Confirm Room.
-- Disable Start Listening with a nearby plain-language reason until room confirmation is complete and the session has either valid authorization or an explicitly confirmed provider-supported fallback.
+- Disable Start Listening with a nearby plain-language reason until room confirmation is complete and the selected platform has verified authorization.
 - Keep interaction test, pause, resume, reconnect, and end hidden.
 - When the user edits the room input, immediately invalidate any previous room-confirmation result.
 
