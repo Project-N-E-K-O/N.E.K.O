@@ -2828,11 +2828,11 @@
             "visionInterval": "인지 간격"
         },
         "widgetMode": {
-            "enabledNotice": "가장자리 엿보기가 켜졌습니다.",
-            "disabledNotice": "가장자리 엿보기가 꺼졌습니다. Live2D가 다시 표시되고 드래그할 수 있습니다.",
+            "enabledNotice": "가장자리 내다보기 Beta가 켜졌습니다.",
+            "disabledNotice": "가장자리 내다보기 Beta가 꺼졌습니다. Live2D가 다시 표시되고 드래그할 수 있습니다.",
             "stealthEnabledNotice": "은신 모드가 켜졌습니다.",
             "stealthDisabledNotice": "은신 모드가 꺼졌습니다. Yui가 가장자리에서 계속 모습을 내밉니다.",
-            "toggleFailed": "가장자리 엿보기를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
+            "toggleFailed": "가장자리 내다보기 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",

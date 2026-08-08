@@ -2828,11 +2828,11 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "貼邊探身已開啟。",
-            "disabledNotice": "貼邊探身已關閉。Live2D 已恢復可見與可拖動狀態。",
+            "enabledNotice": "貼邊探身 Beta 已開啟。",
+            "disabledNotice": "貼邊探身 Beta 已關閉。Live2D 已恢復可見與可拖動狀態。",
             "stealthEnabledNotice": "隱身模式已開啟。",
             "stealthDisabledNotice": "隱身模式已關閉，Yui 將保持貼邊探身。",
-            "toggleFailed": "貼邊探身切換失敗，請稍後重試。"
+            "toggleFailed": "貼邊探身 Beta 切換失敗，請稍後重試。"
         },
         "toggles": {
             "allowInterrupt": "允許打斷",

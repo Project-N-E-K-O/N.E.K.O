@@ -2828,11 +2828,11 @@
             "visionInterval": "Perception Interval"
         },
         "widgetMode": {
-            "enabledNotice": "Edge Peek is on.",
-            "disabledNotice": "Edge Peek is off. Live2D is visible and draggable again.",
+            "enabledNotice": "Widget Mode Beta is on.",
+            "disabledNotice": "Widget Mode Beta is off. Live2D is visible and draggable again.",
             "stealthEnabledNotice": "Stealth Mode is on.",
             "stealthDisabledNotice": "Stealth Mode is off. Yui will remain peeking from the edge.",
-            "toggleFailed": "Failed to switch Edge Peek. Please try again later."
+            "toggleFailed": "Failed to switch Widget Mode Beta. Please try again later."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
