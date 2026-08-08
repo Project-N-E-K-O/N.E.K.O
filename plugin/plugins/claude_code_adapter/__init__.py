@@ -105,8 +105,8 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             # 4. 初始化执行器
             self._executor = ClaudeCLIExecutor(self._config, logger=self.logger)
 
-            # 5. 初始化任务管理器
-            self._task_mgr = TaskManager(self._executor, self._config, logger=self.logger)
+            # 5. 初始化任务管理器（传入 store 用于持久化）
+            self._task_mgr = TaskManager(self._executor, self._config, store=self.store, logger=self.logger)
             await self._task_mgr.start()
             self.logger.info("TaskManager initialized and started")
 
@@ -406,8 +406,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             return Ok({
                 "task_id": record.task_id,
                 "status": record.status.value,
-                "session_id": session_id,
-                "message": "任务已提交，请使用 claude_code_poll 查询结果",
+                "message": "任务已提交。请使用 claude_code_poll 查询结果。任务完成后，结果中会包含 session_id，请保存此 session_id 以便后续恢复会话。",
             })
         except Exception as e:
             self.logger.exception("claude_code_submit failed")
@@ -462,6 +461,81 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         except Exception as e:
             self.logger.exception("claude_code_poll failed")
             return Err(SdkError(f"查询任务失败: {e}"))
+
+    @llm_tool(
+        name="claude_code_history",
+        description=(
+            "查询 Claude Code 任务历史记录。支持按 task_id 或 session_id 查询。\n\n"
+            "适用场景：\n"
+            "- 查找之前提交的任务\n"
+            "- 根据 session_id 恢复会话\n"
+            "- 查看任务执行结果\n"
+            "- 任务中断后找到 session_id 用于恢复\n\n"
+            "参数说明（二选一）：\n"
+            "- task_id: 任务 ID（如 37c08c25）\n"
+            "- session_id: 会话 UUID（如 d9df3bfb-e206-456c-a9d7-feb40b8bc684）\n\n"
+            "返回：任务详情，包含 task_id、status、session_id、prompt、result 等。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "任务 ID（如 37c08c25）。与 session_id 二选一。",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "会话 UUID（如 d9df3bfb-e206-456c-a9d7-feb40b8bc684）。与 task_id 二选一。",
+                },
+            },
+        },
+        timeout=10.0,
+    )
+    async def claude_code_history(
+        self,
+        task_id: str = "",
+        session_id: str = "",
+        **_,
+    ) -> dict[str, Any]:
+        """查询 Claude Code 任务历史。"""
+        not_ready = self._ensure_ready()
+        if not_ready is not None:
+            return not_ready
+
+        if self._task_mgr is None:
+            return Err(SdkError("TaskManager not initialized"))
+
+        try:
+            record = None
+
+            # 按 task_id 查询
+            if task_id and task_id.strip():
+                record = await self._task_mgr.get_task_by_id(task_id.strip())
+
+            # 按 session_id 查询
+            elif session_id and session_id.strip():
+                record = await self._task_mgr.get_task_by_session_id(session_id.strip())
+
+            else:
+                return Err(SdkError("必须提供 task_id 或 session_id 之一"))
+
+            if record is None:
+                return Err(SdkError(f"未找到任务: task_id={task_id}, session_id={session_id}"))
+
+            # 返回任务详情
+            result = record.to_dict()
+            # 确保 session_id 字段存在
+            if "session_id" not in result:
+                if record.result and record.result.session_id:
+                    result["session_id"] = record.result.session_id
+                elif record.resume_session_id:
+                    result["session_id"] = record.resume_session_id
+
+            return Ok(result)
+
+        except Exception as e:
+            self.logger.exception("claude_code_history failed")
+            return Err(SdkError(f"查询任务历史失败: {e}"))
 
     @llm_tool(
         name="claude_code_cancel",

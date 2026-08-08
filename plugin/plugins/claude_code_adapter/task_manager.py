@@ -88,25 +88,31 @@ class TaskManager:
     - 提交任务到后台执行（asyncio.create_task）
     - 查询任务状态和结果
     - 取消正在运行的任务
-    - 自动清理过期任务（10分钟后）
+    - 自动清理过期任务（7天后）
     - 并发控制（最多同时 2 个任务）
+    - 持久化任务记录到 PluginStore，支持按 task_id 或 session_id 查询
     """
 
-    def __init__(self, executor, config, *, logger=None):
+    def __init__(self, executor, config, store=None, *, logger=None):
         self._executor = executor
         self._config = config
+        self._store = store  # PluginStore 实例，用于持久化
         self.logger = logger or logging.getLogger(__name__)
         self._tasks: Dict[str, TaskRecord] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: Optional[asyncio.Task] = None
         self._max_concurrent = 2  # 最大并发任务数
-        self._result_ttl = 600  # 结果保留时间（秒）
+        self._result_ttl = 7 * 24 * 3600  # 结果保留时间（7天）
 
     async def start(self):
-        """启动清理任务"""
+        """启动清理任务，并恢复历史任务"""
+        # 从 PluginStore 恢复历史任务
+        if self._store:
+            await self._restore_tasks()
+
         if self._cleanup_task is None:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-            self.logger.info("TaskManager started")
+            self.logger.info(f"TaskManager started, restored {len(self._tasks)} tasks")
 
     async def stop(self):
         """停止所有任务"""
@@ -265,10 +271,15 @@ class TaskManager:
             record.finished_at = time.time()
             self.logger.info(f"Task completed: {record.task_id}")
 
+            # 持久化完成的任务
+            await self._persist_task(record)
+
         except asyncio.CancelledError:
             record.status = TaskStatus.CANCELLED
             record.finished_at = time.time()
             self.logger.info(f"Task cancelled: {record.task_id}")
+            # 持久化取消的任务
+            await self._persist_task(record)
             raise
 
         except Exception as e:
@@ -276,6 +287,8 @@ class TaskManager:
             record.error_message = str(e)
             record.finished_at = time.time()
             self.logger.error(f"Task failed: {record.task_id}, error: {e}")
+            # 持久化失败的任务
+            await self._persist_task(record)
 
     async def _cleanup_loop(self):
         """定期清理过期任务"""
@@ -308,3 +321,109 @@ class TaskManager:
     def get_all_tasks(self) -> List[Dict[str, Any]]:
         """获取所有任务的状态（用于调试/监控）"""
         return [record.to_dict() for record in self._tasks.values()]
+
+    async def get_task_by_id(self, task_id: str) -> Optional[TaskRecord]:
+        """根据 task_id 查询任务记录"""
+        async with self._lock:
+            return self._tasks.get(task_id)
+
+    async def get_task_by_session_id(self, session_id: str) -> Optional[TaskRecord]:
+        """根据 session_id 查询任务记录"""
+        async with self._lock:
+            for record in self._tasks.values():
+                # 检查 result.session_id（任务完成后产生的实际 session_id）
+                if record.result and record.result.session_id == session_id:
+                    return record
+                # 检查 resume_session_id（恢复的会话）
+                if record.resume_session_id == session_id:
+                    return record
+        return None
+
+    async def _persist_task(self, record: TaskRecord):
+        """持久化任务记录到 PluginStore"""
+        if not self._store:
+            return
+
+        try:
+            # 构造可序列化的数据
+            data = {
+                "task_id": record.task_id,
+                "prompt": record.prompt,
+                "cwd": record.cwd,
+                "model": record.model,
+                "effort": record.effort,
+                "max_turns": record.max_turns,
+                "resume_session_id": record.resume_session_id,
+                "status": record.status.value,
+                "created_at": record.created_at,
+                "started_at": record.started_at,
+                "finished_at": record.finished_at,
+                "error_message": record.error_message,
+            }
+
+            # 序列化 result
+            if record.result:
+                data["result"] = {
+                    "session_id": record.result.session_id or "",
+                    "is_new_session": record.result.is_new_session,
+                    "messages": record.result.messages or [],
+                    "final_text": record.result.final_text or "",
+                    "total_cost_usd": record.result.total_cost_usd,
+                    "duration_ms": record.result.duration_ms,
+                    "num_turns": record.result.num_turns,
+                }
+
+            await self._store.set(f"task:{record.task_id}", data)
+            self.logger.debug(f"Persisted task {record.task_id} to store")
+        except Exception as e:
+            self.logger.error(f"Failed to persist task {record.task_id}: {e}")
+
+    async def _restore_tasks(self):
+        """从 PluginStore 恢复历史任务"""
+        try:
+            keys = await self._store.keys(prefix="task:")
+            for key in keys:
+                try:
+                    data = await self._store.get(key)
+                    if not data:
+                        continue
+
+                    # 反序列化 result
+                    result = None
+                    if "result" in data and data["result"]:
+                        result_data = data["result"]
+                        result = ExecuteResult(
+                            session_id=result_data.get("session_id", ""),
+                            is_new_session=result_data.get("is_new_session", True),
+                            messages=result_data.get("messages", []),
+                            final_text=result_data.get("final_text", ""),
+                            total_cost_usd=result_data.get("total_cost_usd", 0.0),
+                            duration_ms=result_data.get("duration_ms", 0),
+                            num_turns=result_data.get("num_turns", 0),
+                        )
+
+                    # 构造 TaskRecord
+                    record = TaskRecord(
+                        task_id=data["task_id"],
+                        prompt=data.get("prompt", ""),
+                        cwd=data.get("cwd", ""),
+                        model=data.get("model", ""),
+                        effort=data.get("effort", ""),
+                        max_turns=data.get("max_turns", 0),
+                        resume_session_id=data.get("resume_session_id", ""),
+                        status=TaskStatus(data.get("status", "done")),
+                        created_at=data.get("created_at", 0),
+                        started_at=data.get("started_at"),
+                        finished_at=data.get("finished_at"),
+                        result=result,
+                        error_message=data.get("error_message"),
+                    )
+
+                    self._tasks[record.task_id] = record
+                    self.logger.debug(f"Restored task {record.task_id} from store")
+                except Exception as e:
+                    self.logger.error(f"Failed to restore task from {key}: {e}")
+
+            self.logger.info(f"Restored {len(self._tasks)} tasks from store")
+        except Exception as e:
+            self.logger.error(f"Failed to restore tasks from store: {e}")
