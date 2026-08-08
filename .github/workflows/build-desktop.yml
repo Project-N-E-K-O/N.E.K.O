@@ -153,8 +153,44 @@ jobs:
           # build-time prepare step and the bundled runtime.
           # `--group galgame` adds the local rapidocr-pillow fork for the
           # bundled OCR backend without the opencv/shapely dependency chain.
-          uv sync --group galgame
+          # Remove the legacy distribution before reinstalling the renamed SDK:
+          # both distributions own the same bilibili_api/ import package, so an
+          # incremental environment can otherwise retain old metadata and module
+          # files. Reinstalling afterwards restores every shared file from the
+          # selected dev SDK.
+          uv pip uninstall --python .venv bilibili-api-python || true
+          uv sync --group galgame --reinstall-package bilibili-api-dev
           uv pip install --python .venv nuitka ordered-set zstandard
+
+      - name: Verify Bilibili SDK dependency convergence
+        shell: bash
+        run: |
+          VENV_PYTHON=".venv/bin/python"
+          if [ -f ".venv/Scripts/python.exe" ]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          fi
+          "$VENV_PYTHON" - <<'PY'
+          from importlib import metadata
+
+          installed = {
+              str(dist.metadata.get("Name", "")).lower(): dist.version
+              for dist in metadata.distributions()
+              if "bilibili-api" in str(dist.metadata.get("Name", "")).lower()
+          }
+          expected = {"bilibili-api-dev": "18.0.0a1"}
+          if installed != expected:
+              raise SystemExit(
+                  "Bilibili SDK environment is not clean: "
+                  f"expected {expected}, found {installed}. "
+                  "Run uv sync --reinstall-package bilibili-api-dev to remove "
+                  "legacy bilibili-api-python files."
+              )
+
+          from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginEvents
+
+          assert QrCodeLogin is not None
+          assert QrCodeLoginEvents is not None
+          PY
 
       - name: Prepare filtered built-in plugins for Nuitka
         shell: bash
@@ -433,8 +469,16 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
           # bilibili_dm/bilibili_danmaku plugins import bilibili_api; compile the
-          # package itself (CI previously only carried its package-data).
+          # package itself (CI previously only carried its package-data).  The
+          # dev SDK imports these transitive packages from login_v2/__init__ at
+          # runtime, so list them explicitly rather than relying on Nuitka's
+          # optional-import discovery.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=bilibili_api"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=Cryptodome"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=chompjs"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=frozendict"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=qrcode"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=qrcode_terminal"
           # galgame_plugin native OCR/vision cohort. Installed on every platform by
           # `uv sync --group galgame` (local rapidocr-pillow fork + pyclipper).
           # Nuitka's auto-follow misses their data files, so include package +
@@ -596,6 +640,12 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=bilibili_api
+          rem bilibili-api-dev login_v2 imports these transitive packages at runtime.
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=Cryptodome
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=chompjs
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=frozendict
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=qrcode
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=qrcode_terminal
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=bilibili_api
           rem galgame_plugin native OCR/vision cohort (uv sync --group galgame:
           rem local rapidocr-pillow fork + pyclipper; mss/dxcam from main deps).

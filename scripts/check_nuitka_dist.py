@@ -93,6 +93,10 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("main_logic/asr_client/endpointing/models", "silero_vad.onnx"),
     ("main_logic/asr_client/endpointing/models", "smart_turn_v3.onnx"),
     ("main_logic/asr_client/speaker_shadow/models", "campplus-zh-en-advanced.onnx"),
+    # bilibili-api-dev imports PyCryptodomeX through the ``Cryptodome`` namespace.
+    # Its native cipher modules cannot be compiled into the main executable, so
+    # their absence here proves the QR-login dependency closure is incomplete.
+    ("Cryptodome/Cipher", "_raw_aes.*"),
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     # 应用内 OpenClaw 引导文档 + 图片，agent_router 经 /api/agent/openclaw/guide/* 提供；纯数据目录。
