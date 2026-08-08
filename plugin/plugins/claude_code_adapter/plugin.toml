@@ -56,8 +56,9 @@ effort = ""
 max_turns_per_run = 0
 # 跳过权限提示（与 Paperclip 行为一致；仅用于受信任的本地开发场景）。
 dangerously_skip_permissions = true
-# 单次执行超时（秒）。main_server 上限 300s，这里取上限。
-timeout_sec = 300
+# 单次执行超时（秒）。子进程执行超时，可以设置很大（如 3600 = 1小时）。
+# 这个跟 main_server 的工具调用超时（300s）无关，是 Claude Code 子进程的执行时间。
+timeout_sec = 3600
 # 默认工作目录（留空 = 当前插件进程 cwd）。猫娘调用时可覆盖。
 cwd = ""
 # 附加系统提示文件路径（留空则不附加）。
