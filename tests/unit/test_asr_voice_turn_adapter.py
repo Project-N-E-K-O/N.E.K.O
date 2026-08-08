@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import threading
 from collections import deque
 from collections.abc import Iterable
@@ -212,8 +213,55 @@ class _FakeCoordinator:
         self.unload_calls += 1
 
 
+class _EvidenceSpy:
+    def __init__(self) -> None:
+        self.accepted: list[bytes] = []
+        self.current: list[bytes] = []
+        self.completed: list[tuple[bytes, ...]] = []
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def accepted_audio(self, *, identity, pcm16: bytes) -> None:
+        del identity
+        self.accepted.append(pcm16)
+        self.current.append(pcm16)
+
+    def complete(self, *, identity, reason, probability, threshold) -> None:
+        del identity, reason, probability, threshold
+        self.completed.append(tuple(self.current))
+        self.current.clear()
+
+    def discard(self) -> None:
+        self.current.clear()
+
+    async def close(self) -> None:
+        return None
+
+
 async def _noop_commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
     del generation, buffer_epoch, utterance_id
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("candidate_complete_confirmation_seconds", math.nan),
+        ("candidate_complete_confirmation_seconds", math.inf),
+        ("strict_complete_confirmation_seconds", math.nan),
+        ("strict_complete_confirmation_seconds", math.inf),
+    ],
+)
+def test_confirmation_delays_must_be_finite(argument: str, value: float) -> None:
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        _VoiceTurnAdapter(
+            vad=_FakeVad(),
+            gate=_FakeGate(),
+            coordinator=_FakeCoordinator(),
+            on_commit=_noop_commit,
+            **{argument: value},
+        )
 
 
 async def test_first_audio_lazy_loads_vad_off_loop_once() -> None:
@@ -677,6 +725,10 @@ async def test_confirmation_observes_evaluation_tail_without_refeeding_audio() -
 
 async def test_confirmation_expiry_waits_for_inflight_continuation() -> None:
     commits: list[tuple[int, int, int]] = []
+    first_pcm = b"\x01\x00"
+    continuation_pcm = b"\x02\x00"
+    observed: list[bytes] = []
+    ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         commits.append((generation, buffer_epoch, utterance_id))
@@ -694,32 +746,43 @@ async def test_confirmation_expiry_waits_for_inflight_continuation() -> None:
         gate=gate,
         coordinator=coordinator,
         on_commit=commit,
+        on_accepted_audio=lambda pcm16, *_args: observed.append(pcm16),
         candidate_complete_confirmation_seconds=0.05,
         smart_turn_required=True,
     )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
     await adapter.start()
     try:
         await adapter.push_audio(
             generation=1,
             buffer_epoch=1,
             utterance_id=1,
-            pcm16=b"\x01\x00",
+            pcm16=first_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 1),
         )
         await adapter.wait_idle()
         await adapter.push_audio(
             generation=1,
             buffer_epoch=1,
             utterance_id=1,
-            pcm16=b"\x02\x00",
+            pcm16=continuation_pcm,
+            detector_identity=DetectorIngressIdentity(ingress, 1, 2),
         )
         assert await asyncio.to_thread(gate.started[1].wait, 1)
 
         await asyncio.sleep(0.1)
         assert commits == []
+        assert observed == [first_pcm]
+        assert evidence.accepted == [first_pcm]
 
         gate.release[1].set()
         await adapter.wait_idle()
         assert commits == []
+        assert observed == [first_pcm, continuation_pcm]
+        assert evidence.accepted == [first_pcm, continuation_pcm]
+        assert evidence.completed == []
+        assert evidence.current == [first_pcm, continuation_pcm]
     finally:
         gate.release[1].set()
         await adapter.close()
@@ -733,15 +796,27 @@ async def test_confirmation_replays_newer_pcm_once_for_successor() -> None:
     coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
     gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), (), (), (), ()])
     successor = (2, 1, 2)
+    attribution_log: list[tuple[str, bytes | None]] = []
+
+    def observe_audio(pcm16, _sample_rate_hz, _detector_identity) -> None:
+        attribution_log.append(("audio", pcm16))
+
+    def advance_fence(*_args):
+        attribution_log.append(("fence", None))
+        return successor
+
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=gate,
         coordinator=coordinator,
         on_commit=_noop_commit,
-        on_completion_fence=lambda *_args: successor,
+        on_accepted_audio=observe_audio,
+        on_completion_fence=advance_fence,
         candidate_complete_confirmation_seconds=10.0,
         smart_turn_required=True,
     )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
     await adapter.start()
     try:
         await adapter.push_audio(
@@ -763,6 +838,8 @@ async def test_confirmation_replays_newer_pcm_once_for_successor() -> None:
         coordinator.evaluate_release.set()
         await adapter.wait_idle()
         assert adapter._pending_complete_confirmation is not None
+        assert attribution_log == [("audio", first_pcm)]
+        assert evidence.accepted == [first_pcm]
 
         await adapter.push_audio(
             generation=1,
@@ -774,10 +851,25 @@ async def test_confirmation_replays_newer_pcm_once_for_successor() -> None:
         await adapter.wait_idle()
         pending = adapter._pending_complete_confirmation
         assert pending is not None
+        assert attribution_log == [("audio", first_pcm)]
+        assert evidence.accepted == [first_pcm]
 
         assert await adapter._publish_pending_complete_confirmation(pending)
 
         assert adapter._identity == successor
+        assert attribution_log == [
+            ("audio", first_pcm),
+            ("fence", None),
+            ("audio", evaluation_tail_pcm),
+            ("audio", confirmation_pcm),
+        ]
+        assert evidence.accepted == [
+            first_pcm,
+            evaluation_tail_pcm,
+            confirmation_pcm,
+        ]
+        assert evidence.completed == [(first_pcm,)]
+        assert evidence.current == [evaluation_tail_pcm, confirmation_pcm]
         assert coordinator.pushed_audio == [
             first_pcm,
             evaluation_tail_pcm,
@@ -797,14 +889,18 @@ async def test_confirmation_does_not_refeed_pcm_without_identity_advance() -> No
     ingress = VoiceIngressToken(1, "socket", 1, 1, 1)
     coordinator = _FakeCoordinator([_complete()])
     gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,), ()])
+    observed: list[bytes] = []
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=gate,
         coordinator=coordinator,
         on_commit=_noop_commit,
+        on_accepted_audio=lambda pcm16, *_args: observed.append(pcm16),
         candidate_complete_confirmation_seconds=10.0,
         smart_turn_required=True,
     )
+    evidence = _EvidenceSpy()
+    adapter._smart_turn_audio_evidence = evidence
     await adapter.start()
     try:
         for sequence_no, pcm16 in ((1, first_pcm), (2, continuation_pcm)):
@@ -818,9 +914,15 @@ async def test_confirmation_does_not_refeed_pcm_without_identity_advance() -> No
             await adapter.wait_idle()
         pending = adapter._pending_complete_confirmation
         assert pending is not None
+        assert observed == [first_pcm]
+        assert evidence.accepted == [first_pcm]
 
         assert await adapter._publish_pending_complete_confirmation(pending)
 
+        assert observed == [first_pcm, continuation_pcm]
+        assert evidence.accepted == [first_pcm, continuation_pcm]
+        assert evidence.completed == [(first_pcm, continuation_pcm)]
+        assert evidence.current == []
         assert coordinator.pushed_audio == [first_pcm, continuation_pcm]
         assert gate.feed_calls == [first_pcm, continuation_pcm]
     finally:

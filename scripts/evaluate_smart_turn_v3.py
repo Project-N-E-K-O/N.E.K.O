@@ -186,13 +186,24 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant is not allowed: {value}")
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key is not allowed: {key}")
+        value[key] = item
+    return value
+
+
 def _load_json_object_snapshot(
     path: Path, *, description: str
 ) -> tuple[dict[str, Any], str]:
     try:
         encoded = path.read_bytes()
         value = json.loads(
-            encoded.decode("utf-8"), parse_constant=_reject_json_constant
+            encoded.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_json_keys,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"unable to read {description}: {exc}") from exc

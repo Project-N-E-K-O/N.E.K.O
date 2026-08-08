@@ -32,6 +32,20 @@ SCENARIO_MATRIX = {
 }
 
 
+@pytest.mark.parametrize("loader", [load_manifest, load_acceptance_criteria])
+def test_frozen_json_rejects_duplicate_keys_at_any_depth(
+    tmp_path: Path, loader
+) -> None:
+    snapshot_path = tmp_path / "frozen.json"
+    snapshot_path.write_text(
+        '{"nested":{"expected":"complete","expected":"incomplete"}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON key is not allowed: expected"):
+        loader(snapshot_path)
+
+
 def _token(prefix: str, number: int) -> str:
     return f"{prefix}-{number:032x}"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -32,7 +33,10 @@ class SmartTurnConfig:
             raise ValueError("max_audio_seconds must be positive")
         if self.inference_error_limit <= 0:
             raise ValueError("inference_error_limit must be positive")
-        if self.candidate_complete_confirmation_seconds < 0:
+        if (
+            not math.isfinite(self.candidate_complete_confirmation_seconds)
+            or self.candidate_complete_confirmation_seconds < 0
+        ):
             raise ValueError(
-                "candidate_complete_confirmation_seconds must be non-negative"
+                "candidate_complete_confirmation_seconds must be finite and non-negative"
             )
