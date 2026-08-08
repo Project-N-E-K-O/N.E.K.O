@@ -2212,6 +2212,40 @@ async def close_all_crawlers():
 # 4. 主调度函数
 # =======================================================
 
+def _sample_distinct_background_sources(
+    style_options: List[tuple[str, str | None]],
+    limit: int = 3,
+) -> List[tuple[str, str | None]]:
+    """Pick at most one randomized style from each selected provider."""
+    styles_by_source: Dict[str, List[str | None]] = {}
+    for source, keyword in style_options:
+        styles_by_source.setdefault(source, []).append(keyword)
+
+    selected_sources = random.sample(
+        list(styles_by_source),
+        min(limit, len(styles_by_source)),
+    )
+    return [
+        (source, random.choice(styles_by_source[source]))
+        for source in selected_sources
+    ]
+
+
+def _interleave_music_result_groups(
+    result_groups: List[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Round-robin provider results so early playback fallbacks stay independent."""
+    if not result_groups:
+        return []
+
+    interleaved: List[Dict[str, Any]] = []
+    for index in range(max(len(group) for group in result_groups)):
+        for group in result_groups:
+            if index < len(group):
+                interleaved.append(group[index])
+    return interleaved
+
+
 async def fetch_music_content(
     keyword: str,
     limit: int = 1,
@@ -2412,14 +2446,14 @@ async def fetch_music_content(
                 ('netease', '说唱'), ('musopen', None), ('fma', 'lofi'), 
                 ('fma', 'chill'), ('fma', 'electronic'), ('fma', 'hiphop')
             ]
-            selected_styles = random.sample(china_styles, min(3, len(china_styles)))
+            selected_styles = _sample_distinct_background_sources(china_styles)
         else:
             global_styles = [
                 ('itunes', 'lofi'), ('itunes', 'chill'), ('fma', 'ambient'), 
                 ('fma', 'electronic'), ('musopen', None), ('bandcamp', 'indie'), 
                 ('bandcamp', 'vgm'), ('bandcamp', 'lofi')
             ]
-            selected_styles = random.sample(global_styles, min(3, len(global_styles)))
+            selected_styles = _sample_distinct_background_sources(global_styles)
         
         for source, kw in selected_styles:
             if source == 'musopen':
@@ -2431,9 +2465,12 @@ async def fetch_music_content(
                 tasks.append(all_crawlers[source].search(kw, limit))
                 
         crawler_results = await asyncio.gather(*tasks, return_exceptions=True)
-        for res in crawler_results:
-            if isinstance(res, list) and res:
-                all_results.extend(res)
+        result_groups = [
+            res
+            for res in crawler_results
+            if isinstance(res, list) and res
+        ]
+        all_results.extend(_interleave_music_result_groups(result_groups))
 
     # 最终防线：即使未来某个 crawler 忘记在源头过滤，只要它带回标准化时长，
     # 超长内容也不会进入主动推荐和播放器。

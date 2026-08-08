@@ -1104,6 +1104,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-stack {
   max-width: min(86%, 320px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1123,6 +1124,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 .message-bubble {
+  min-width: 0;
+  max-width: 100%;
   padding: 9px 11px;
   border-radius: 8px 16px 16px 16px;
   box-shadow: 0 5px 14px rgba(53, 72, 104, 0.05);
@@ -1156,6 +1159,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-block {
   min-width: 0;
+  max-width: 100%;
 }
 
 /* 流式文字分块渐现 — 每批新文本整体淡入，参考 ChatGPT / Claude.ai */
@@ -1382,9 +1386,11 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 
 .message-block-link {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
-  min-width: 220px;
+  width: 100%;
+  min-width: min(220px, 100%);
+  max-width: 100%;
   padding: 10px;
   border-radius: 12px;
   color: inherit;
@@ -1394,6 +1400,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 .message-link-thumb {
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   border-radius: 10px;
   background: rgba(220, 228, 240, 0.9);
@@ -1409,6 +1417,8 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 .message-link-copy {
   display: grid;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .message-link-title {

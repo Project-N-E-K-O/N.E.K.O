@@ -248,13 +248,18 @@ def test_music_player_reports_confirmed_state_to_backend():
     player_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
     router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
 
-    assert "function reportMusicPlaybackState(state, track, playbackContext)" in player_source
+    assert (
+        "function reportMusicPlaybackState(state, track, playbackContext, failureReason)"
+        in player_source
+    )
     assert "function createMusicPlaybackReportContext(playbackId, options, track, token)" in player_source
     assert "function getOwnedMusicPlaybackReportContext(player, state)" in player_source
     assert "function normalizeMusicEventTimestamp(event)" in player_source
     assert "action: 'music_playback_state'" in player_source
     assert "playback_window_id: MUSIC_COORD_SENDER_ID" in player_source
     assert "playback_started_at: context.lifecycleStartedAt" in player_source
+    assert "reason: state === 'error'" in player_source
+    assert "String(failureReason || 'unknown').slice(0, 32)" in player_source
     assert "localPlayer._musicPlaybackReportContext = playbackReportContext" in player_source
     ownership_source = player_source.split(
         "function getOwnedMusicPlaybackReportContext(player, state)", 1
@@ -269,7 +274,12 @@ def test_music_player_reports_confirmed_state_to_backend():
     assert ") !== reportContext" in player_source
     assert "reportMusicPlaybackState('playing', null, reportContext)" in player_source
     assert "reportMusicPlaybackState('ended', null, reportContext)" in player_source
-    assert "reportMusicPlaybackState('error', null, reportContext)" in player_source
+    assert (
+        "reportMusicPlaybackState('error', null, reportContext, 'media_error')"
+        in player_source
+    )
+    assert "mediaResult.reason" in player_source
+    assert "'player_error'" in player_source
     assert "localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent" in player_source
     assert 'elif action == "music_playback_state":' in router_source
     assert "handle_music_playback_state(" in router_source

@@ -13,7 +13,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from utils.music_crawlers import (
     NeteaseCrawler, iTunesCrawler, SoundCloudCrawler, 
     MusopenCrawler, FMACrawler, BandcampCrawler, MusicCache, fetch_music_content,
-    music_cache, close_all_crawlers, _select_requested_song
+    music_cache, close_all_crawlers, _select_requested_song,
+    _sample_distinct_background_sources,
 )
 
 # ==========================================
@@ -1602,6 +1603,93 @@ async def test_fetch_music_content_orchestration():
             response = await fetch_music_content("keyword", limit=1)
             assert response['success'] is True
             assert any(r['name'] == "Mock Netease" for r in response['data'])
+
+
+@pytest.mark.unit
+def test_background_music_samples_distinct_providers():
+    style_options = [
+        ('netease', '华语'),
+        ('netease', '流行'),
+        ('musopen', None),
+        ('fma', 'lofi'),
+    ]
+
+    with (
+        patch(
+            'utils.music_crawlers.random.sample',
+            side_effect=lambda population, count: population[:count],
+        ),
+        patch(
+            'utils.music_crawlers.random.choice',
+            side_effect=lambda choices: choices[0],
+        ),
+    ):
+        selected = _sample_distinct_background_sources(style_options)
+
+    assert selected == [
+        ('netease', '华语'),
+        ('musopen', None),
+        ('fma', 'lofi'),
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_background_music_interleaves_distinct_provider_fallbacks():
+    """The first playback candidates must not all fail with one provider."""
+    mock_musopen = MagicMock()
+    mock_musopen.search = AsyncMock(return_value=[
+        {'name': 'Musopen 1', 'url': 'https://dl.musopen.org/m1.mp3', 'artist': 'M'},
+        {'name': 'Musopen 2', 'url': 'https://dl.musopen.org/m2.mp3', 'artist': 'M'},
+        {'name': 'Musopen 3', 'url': 'https://dl.musopen.org/m3.mp3', 'artist': 'M'},
+    ])
+    mock_netease = MagicMock()
+    mock_netease._cookie_invalid = False
+    mock_netease.search = AsyncMock(return_value=[
+        {'name': 'Netease 1', 'url': '/api/music/play/netease/n1', 'artist': 'N1'},
+        {'name': 'Netease 2', 'url': '/api/music/play/netease/n2', 'artist': 'N2'},
+        {'name': 'Netease 3', 'url': '/api/music/play/netease/n3', 'artist': 'N3'},
+    ])
+    mock_fma = MagicMock()
+    mock_fma.search = AsyncMock(return_value=[
+        {'name': 'FMA 1', 'url': 'https://freemusicarchive.org/f1.mp3', 'artist': 'F1'},
+        {'name': 'FMA 2', 'url': 'https://freemusicarchive.org/f2.mp3', 'artist': 'F2'},
+        {'name': 'FMA 3', 'url': 'https://freemusicarchive.org/f3.mp3', 'artist': 'F3'},
+    ])
+
+    with (
+        patch(
+            'utils.music_crawlers.get_music_crawlers',
+            return_value={
+                'musopen': mock_musopen,
+                'netease': mock_netease,
+                'fma': mock_fma,
+            },
+        ),
+        patch('utils.music_crawlers.is_china_region', return_value=True),
+        patch(
+            'utils.music_crawlers._sample_distinct_background_sources',
+            return_value=[
+                ('musopen', None),
+                ('netease', '流行'),
+                ('fma', 'chill'),
+            ],
+        ),
+    ):
+        response = await fetch_music_content(
+            '',
+            limit=5,
+            bypass_recommendation_dedupe=True,
+        )
+
+    assert response['success'] is True
+    assert [item['name'] for item in response['data']] == [
+        'Musopen 1',
+        'Netease 1',
+        'FMA 1',
+        'Musopen 2',
+        'Netease 2',
+    ]
 
 
 @pytest.mark.unit
