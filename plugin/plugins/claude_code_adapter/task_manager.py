@@ -93,10 +93,11 @@ class TaskManager:
     - 持久化任务记录到 PluginStore，支持按 task_id 或 session_id 查询
     """
 
-    def __init__(self, executor, config, store=None, *, logger=None):
+    def __init__(self, executor, config, store=None, session_mgr=None, *, logger=None):
         self._executor = executor
         self._config = config
         self._store = store  # PluginStore 实例，用于持久化
+        self._session_mgr = session_mgr  # SessionManager 实例，用于更新会话记录
         self.logger = logger or logging.getLogger(__name__)
         self._tasks: Dict[str, TaskRecord] = {}
         self._lock = asyncio.Lock()
@@ -273,6 +274,22 @@ class TaskManager:
 
             # 持久化完成的任务
             await self._persist_task(record)
+
+            # 更新会话记录（用于 list_sessions）
+            if self._session_mgr and stream.session_id:
+                try:
+                    await self._session_mgr.upsert(
+                        stream.session_id,
+                        record.cwd,
+                        "",  # prompt_signature
+                    )
+                    await self._session_mgr.touch(
+                        stream.session_id,
+                        turn_count=stream.result.num_turns if stream.result else 0,
+                    )
+                    self.logger.info(f"Session record updated: {stream.session_id}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to update session record: {e}")
 
         except asyncio.CancelledError:
             record.status = TaskStatus.CANCELLED
