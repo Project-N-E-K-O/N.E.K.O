@@ -125,6 +125,15 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
     base. This loader is independent of ``_load_changelog`` — changing it does not
     touch changelog's language fallback. The whole file is swapped per locale
     (question ids must stay identical across locales — answers are reported by id).
+
+    A survey may narrow its audience with an optional ``locales`` allowlist
+    (e.g. ``"locales": ["zh-CN"]``): the request locale must appear in it verbatim,
+    otherwise this returns None (-> has_survey:false). Without the field every
+    locale is served as before. The field exists because the fallback chain always
+    ends at the Simplified Chinese base file, so a base-only survey would otherwise
+    reach English/Japanese/Traditional-Chinese users in Simplified Chinese. The
+    match is exact and an empty/unknown locale never matches: a survey aimed at one
+    audience must rather miss a few of its own than leak to the wrong one.
     """
     # Same three-level climb as _load_changelog above (package is one dir deeper
     # than the former monolithic module).
@@ -152,6 +161,13 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
         except Exception:
             continue
         if isinstance(data, dict):
+            # 受众白名单：定向问卷/公告只发给列出的 locale。放在这里而不是端点里，
+            # 因为所有下发都经过本函数；且必须在回退落到 base 之后判断——正是
+            # "非该语言用户回退到简体 base" 这条路径需要被挡住。
+            allowed = data.get("locales")
+            if isinstance(allowed, list) and allowed:
+                if not lang or lang not in allowed:
+                    return None
             # 强制归一到文件版本（= APP_VERSION），不用 setdefault：本地化文件若误写了
             # 别的 survey_version，会让前端去重键和上报版本错位、统计分裂。
             data["survey_version"] = version

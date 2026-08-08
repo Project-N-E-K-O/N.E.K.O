@@ -1103,7 +1103,9 @@ I.mod = window.appUi;
             if (survey.intro) {
                 const intro = document.createElement('p');
                 intro.textContent = survey.intro;
-                intro.style.cssText = 'margin:8px 0 0;color:#64748b;font-size:13px;line-height:1.55;font-weight:600;';
+                // pre-line：intro 走 textContent，默认 white-space:normal 会把公告里的
+                // 段落换行折成空格；pre-line 保留 \n 同时仍折叠多余空格与缩进。
+                intro.style.cssText = 'margin:8px 0 0;color:#64748b;font-size:13px;line-height:1.55;font-weight:600;white-space:pre-line;';
                 head.appendChild(intro);
             }
 

@@ -14,6 +14,34 @@ changelog 确认弹窗走完后，向**老玩家**（本地存过 `neko_last_not
 回退链与 changelog 一致：用户语言 → `en` → 中文原文。某语言缺文件时整份回退，
 **问题 id 必须逐语言保持一致**（答案按 id 上报，id 漂移会把同一题拆成两题）。
 
+### ⚠️ 只发给部分语言时必须写 `locales`
+
+回退链**最终一定落到简体 base 文件**。所以只放 `<version>.json`（简体）而不做限制，
+英语 / 日语 / 繁体用户同样会收到——他们看到的是简体原文。要把一份问卷或公告限定给
+某些语言，在文件里加 `locales` 白名单：
+
+```jsonc
+"locales": ["zh-CN"]   // 只有请求 lang 恰好等于列表中某项才下发
+```
+
+判定是**精确匹配**，且空 locale（i18n 尚未就绪等）一律不下发——定向内容宁可漏发给
+自己人，也不能发给不该收的人。不写该字段时行为不变（所有语言按回退链下发）。
+
+各语言的 locale 码见 `static/i18n-i18next.js` 的 `SUPPORTED_LANGUAGES`：
+`zh-CN`（简体）、`zh-TW`、`en`、`ja`、`ko`、`ru`、`es`、`pt`。
+
+### 只发给老玩家
+
+这是问卷渠道的既有行为，无需额外配置：前端只在 `neko_last_notified_version` 已存在
+且不等于当前版本时才写 `neko_survey_eligible_for`（见 `static/app/app.js`），所以
+**全新安装的用户永远不会看到问卷**，只有从旧版升级上来的老玩家会。
+
+### 纯公告（没有题目）
+
+`questions` 可以是空数组：弹窗只渲染 `title` + `intro` 和「跳过 / 提交」两个按钮，
+用户点任一按钮即记 `neko_last_survey_version`、不再重复弹。`intro` 走 `textContent`
+渲染（不解析 HTML/Markdown，链接不可点击），`\n` 会保留为换行。
+
 ## Schema
 
 ```jsonc
