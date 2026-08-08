@@ -13,6 +13,7 @@ from .._chat import push_lifekit_content
 from .._coerce import clamp_int, clean_text
 from .._contracts import FoodRecommendParams, FoodRecommendResult
 from .._routing import format_distance
+from .._location import LocationPurpose
 
 # 天气 → 推荐关键词映射
 _WEATHER_FOOD: Dict[str, List[str]] = {
@@ -64,7 +65,10 @@ class FoodRecommendRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(location or None)
+        loc, loc_err = await plugin._resolve_location(
+            location or None,
+            purpose=LocationPurpose.FOOD,
+        )
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, tr, ui
@@ -119,8 +120,10 @@ class LocationsRouter(PluginRouter):
         plugin._resolve_locale()
         locale = plugin._i18n.locale
 
+        clean_address = clean_text(address)
+        resolved_query = clean_city
         try:
-            geo = await geocode_city(clean_city, locale=locale)
+            geo = await geocode_city(resolved_query, locale=locale)
         except GeocodeError as exc:
             plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
             return Err(SdkError(f"Unable to locate city: {clean_city} ({exc.cause})"))
@@ -139,11 +142,21 @@ class LocationsRouter(PluginRouter):
             new_loc: Dict[str, Any] = {
                 "id": self._new_location_id(locations),
                 "label": clean_label,
-                "city": geo["city"],
-                "address": clean_text(address),
+                "city": geo.get("admin2") or geo["city"],
+                "display_name": geo["city"],
+                "address": clean_address,
                 "lat": geo["lat"],
                 "lon": geo["lon"],
                 "country": geo.get("country", ""),
+                "country_code": geo.get("country", ""),
+                "admin1": geo.get("admin1", ""),
+                "admin2": geo.get("admin2", ""),
+                "precision": geo.get("_location_precision", "city"),
+                "source": geo.get("_location_source", "geocoder"),
+                "verified": bool(geo.get("_location_verified", True)),
+                "schema_version": 2,
+                "resolved_query": resolved_query,
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
                 "is_default": False,
             }
 

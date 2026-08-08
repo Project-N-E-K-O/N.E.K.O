@@ -11,6 +11,7 @@ from .._api import RAIN_CODES, SNOW_CODES
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
+from .._location import LocationPurpose
 
 
 def build_travel_advice(
@@ -96,7 +97,7 @@ class TravelAdviceRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(city)
+        loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 

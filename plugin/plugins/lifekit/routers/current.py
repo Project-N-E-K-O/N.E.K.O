@@ -10,6 +10,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 from .._api import daily_val
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, GetWeatherResult
+from .._location import LocationPurpose
 
 
 class CurrentWeatherRouter(PluginRouter):
@@ -37,7 +38,7 @@ class CurrentWeatherRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(city)
+        loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 

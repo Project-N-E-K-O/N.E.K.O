@@ -11,6 +11,7 @@ from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
 from .._chat import push_lifekit_content
 from .._coerce import clamp_int
 from .._contracts import HourlyForecastParams, HourlyForecastResult
+from .._location import LocationPurpose
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -47,7 +48,7 @@ class HourlyForecastRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(city)
+        loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 

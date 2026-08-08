@@ -12,6 +12,7 @@ from .._api import RAIN_CODES
 from .._coerce import clamp_int, clean_text
 from .._contracts import NearbyParams, NearbyResult
 from .._routing import format_distance
+from .._location import LocationPurpose
 
 
 class NearbyRouter(PluginRouter):
@@ -53,7 +54,10 @@ class NearbyRouter(PluginRouter):
             return Err(SdkError(i18n.t("nearby.no_query")))
 
         # 解析搜索中心
-        loc, loc_err = await plugin._resolve_location(location or None)
+        loc, loc_err = await plugin._resolve_location(
+            location or None,
+            purpose=LocationPurpose.NEARBY,
+        )
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 

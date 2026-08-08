@@ -11,6 +11,7 @@ from .._routing import RoutingService, format_duration, format_distance, haversi
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
 from .._contracts import TripAdviceParams, TripAdviceResult
+from .._location import LocationPurpose
 
 
 class TripRouter(PluginRouter):
@@ -53,12 +54,18 @@ class TripRouter(PluginRouter):
             return Err(SdkError(i18n.t("trip.no_destination")))
 
         # 解析起点
-        origin_loc, origin_err = await plugin._resolve_location(origin or None)
+        origin_loc, origin_err = await plugin._resolve_location(
+            origin or None,
+            purpose=LocationPurpose.ROUTE_ORIGIN,
+        )
         if not origin_loc:
             return Err(SdkError(i18n.t(origin_err or "error.no_location") + " (origin)"))
 
         # 解析终点
-        dest_loc, dest_err = await plugin._resolve_location(destination)
+        dest_loc, dest_err = await plugin._resolve_location(
+            destination,
+            purpose=LocationPurpose.ROUTE_DESTINATION,
+        )
         if not dest_loc:
             return Err(SdkError(i18n.t(dest_err or "error.no_location") + " (destination)"))
 

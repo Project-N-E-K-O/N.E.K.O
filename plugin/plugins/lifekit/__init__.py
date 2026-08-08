@@ -35,13 +35,22 @@ from plugin.sdk.plugin import (
 from ._i18n import I18n, LRUCache
 from ._coerce import clamp_int, clean_text, finite_float
 from ._geo import get_system_timezone, detect_vpn_conflict
-from ._api import geoip_locate, geocode_city, fetch_forecast, GeoIPError, GeocodeError, ForecastError, WeatherAPIError
+from ._api import geoip_locate, fetch_forecast, GeoIPError, ForecastError
+from ._geocoders import nominatim_candidates, open_meteo_candidates
 from .routers import (
     CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
     LocationsRouter, TripRouter, NearbyRouter,
     FoodRecommendRouter, RecipeRouter,
     AirQualityRouter, CurrencyRouter,
     CountdownRouter, UnitConvertRouter,
+)
+from ._location import (
+    LocationCandidate,
+    LocationPurpose,
+    LocationRequest,
+    LocationResolver,
+    LocationStatus,
+    SavedLocation,
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -63,7 +72,7 @@ class LifeKitPlugin(NekoPluginBase):
         force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
         enable_geoip: bool = SettingsField(
             True,
-            description="允许通过 IP 自动定位（禁用后仅用保存/手填/时区 fallback，走 HTTPS 的 ipapi.co）",
+            description="允许通过 IP 自动定位（禁用后仅用保存地点、默认城市或手填位置）",
         )
 
     # 声明 router 类，供主进程静态扫描 entry 元数据
@@ -82,6 +91,13 @@ class LifeKitPlugin(NekoPluginBase):
         self._cfg: Dict[str, Any] = {}
         self._i18n = I18n(_LOCALES_DIR)
         self._locations_lock = asyncio.Lock()
+        self._location_resolver = LocationResolver(
+            open_meteo=open_meteo_candidates,
+            nominatim=nominatim_candidates,
+            saved_locations=self._load_saved_locations_for_resolver,
+            geoip=self._geoip_location_candidate,
+            default_text=lambda: clean_text(self._cfg.get("default_city", "")),
+        )
 
         # 注册 routers — 必须在 __init__ 中，collect_entries 在 startup 之前调用
         for router_cls in self.__routers__:
@@ -167,87 +183,70 @@ class LifeKitPlugin(NekoPluginBase):
 
     # ── 共享：位置解析（供 routers 调用）──
 
-    async def _resolve_location(self, city: Optional[str] = None) -> tuple[Optional[Dict[str, Any]], str]:
-        """解析位置。返回 (location_dict, error_key)。
+    async def _resolve_location(
+        self,
+        city: Optional[str] = None,
+        *,
+        purpose: LocationPurpose = LocationPurpose.WEATHER,
+    ) -> tuple[Optional[Dict[str, Any]], str]:
+        """Resolve a location through the shared deterministic resolver."""
+        result = await self._location_resolver.resolve(
+            LocationRequest(
+                text=clean_text(city),
+                purpose=purpose,
+                allow_geoip=bool(self._cfg.get("enable_geoip", True)),
+                locale=self._i18n.locale,
+            )
+        )
+        if result.status is LocationStatus.RESOLVED and result.location is not None:
+            loc = result.location
+            if loc.source == "geoip" and detect_vpn_conflict(loc.timezone, get_system_timezone()):
+                self.logger.info(
+                    "IP location requires confirmation because timezone differs: ip_tz={}",
+                    loc.timezone,
+                )
+                return None, "error.location_confirmation_required"
+            return loc.as_legacy_dict(), ""
 
-        成功时 error_key 为空字符串，失败时为 i18n key。
-        """
-        locale = self._i18n.locale
-        target = clean_text(city)
+        if result.candidates:
+            self.logger.info(
+                "Location unresolved: status={}, candidates={}",
+                result.status.value,
+                [
+                    {"country": item.country_code, "precision": item.precision}
+                    for item in result.candidates[:5]
+                ],
+            )
+        error_keys = {
+            LocationStatus.AMBIGUOUS: "error.location_ambiguous",
+            LocationStatus.NEEDS_CONFIRMATION: "error.location_confirmation_required",
+            LocationStatus.NOT_FOUND: "error.city_not_found",
+            LocationStatus.PROVIDER_FAILED: "error.geocode_failed",
+            LocationStatus.NO_LOCATION: "error.no_location",
+        }
+        return None, error_keys.get(result.status, "error.no_location")
 
-        # 1. 用户本次指定的城市
-        if target:
-            # 检查是否匹配保存的地点标签
-            saved = await self._get_saved_default_or_named(target)
-            if saved:
-                return saved, ""
-            try:
-                loc = await geocode_city(target, locale=locale)
-                if loc:
-                    return loc, ""
-                return None, "error.city_not_found"
-            except GeocodeError as e:
-                return None, "error.geocode_timeout" if e.cause == "timeout" else "error.geocode_failed"
-
-        # 2. 保存的默认地点（PluginStore）
-        saved_default = await self._get_saved_default_or_named(None)
-        if saved_default:
-            return saved_default, ""
-
-        # 3. 配置文件的 default_city
-        default = self._cfg.get("default_city", "")
-        if default:
-            try:
-                loc = await geocode_city(default, locale=locale)
-                if loc:
-                    return loc, ""
-                return None, "error.city_not_found"
-            except GeocodeError as e:
-                return None, "error.geocode_timeout" if e.cause == "timeout" else "error.geocode_failed"
-
-        # IP 定位（可禁用以避免把 IP/位置发给第三方；默认开启，走 HTTPS）
-        ip_loc = None
-        if bool(self._cfg.get("enable_geoip", True)):
-            try:
-                ip_loc = await geoip_locate(locale=locale)
-            except GeoIPError:
-                pass  # IP 定位失败不致命，继续 fallback
-
-        if ip_loc is None:
-            fallback = await self._timezone_fallback()
-            if fallback:
-                return fallback, ""
-            return None, "error.no_location"
-
-        ip_tz = ip_loc.get("ip_timezone", "")
-        system_tz = get_system_timezone()
-
-        if detect_vpn_conflict(ip_tz, system_tz):
-            self.logger.info("VPN detected: IP tz={} vs system tz={}", ip_tz, system_tz)
-            fallback = await self._timezone_fallback(system_tz)
-            if fallback:
-                fallback["_vpn_detected"] = True
-                fallback["_ip_city"] = ip_loc.get("city", "")
-                return fallback, ""
-
-        ip_loc.pop("ip_timezone", None)
-        return ip_loc, ""
-
-    async def _timezone_fallback(self, system_tz: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        tz = system_tz or get_system_timezone()
-        if not tz:
+    async def _geoip_location_candidate(self) -> Optional[LocationCandidate]:
+        try:
+            loc = await geoip_locate(locale=self._i18n.locale)
+        except GeoIPError:
             return None
-        fallback_city = self._i18n.t(f"tz_city.{tz}")
-        if fallback_city == f"tz_city.{tz}":
-            parts = tz.split("/")
-            fallback_city = parts[-1].replace("_", " ") if len(parts) >= 2 else ""
-        if fallback_city:
-            try:
-                return await geocode_city(fallback_city, locale=self._i18n.locale)
-            except GeocodeError as exc:
-                self.logger.debug("Timezone fallback geocode failed: {}", exc)
-                return None
-        return None
+        if not loc:
+            return None
+        lat = finite_float(loc.get("lat"))
+        lon = finite_float(loc.get("lon"))
+        if lat is None or lon is None:
+            return None
+        return LocationCandidate(
+            display_name=clean_text(loc.get("city")) or "IP location",
+            latitude=lat,
+            longitude=lon,
+            country_code=clean_text(loc.get("country")).upper(),
+            precision="city",
+            source="geoip",
+            verified=False,
+            timezone=clean_text(loc.get("ip_timezone")),
+        )
 
     # ── 共享：天气数据（LRU 缓存，供 routers 调用）──
 
@@ -275,38 +274,37 @@ class LifeKitPlugin(NekoPluginBase):
             return self._i18n.t("error.unknown_weather", code=code)
         return text
 
-    async def _get_saved_default_or_named(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
-        """从 PluginStore 读取保存的地点。
-
-        name=None → 返回默认地点；name="家" → 返回标签匹配的地点。
-        """
-        try:
-            result = await self.store.get("saved_locations", [])
-            locations = result.value if hasattr(result, "value") else result
-            if not isinstance(locations, list) or not locations:
-                return None
-
-            def _extract(loc: dict) -> Optional[Dict[str, Any]]:
-                city = loc.get("city")
-                lat = finite_float(loc.get("lat"))
-                lon = finite_float(loc.get("lon"))
-                if not city or lat is None or lon is None:
-                    self.logger.debug("Skipping saved location with missing fields: {}", loc.get("label", "?"))
-                    return None
-                return {"city": city, "lat": lat, "lon": lon, "country": loc.get("country", "")}
-
-            if name:
-                for loc in locations:
-                    if loc.get("label") == name:
-                        return _extract(loc)
-                return None
-            for loc in locations:
-                if loc.get("is_default"):
-                    return _extract(loc)
-            return None
-        except Exception:
-            self.logger.debug("Failed to read saved locations", exc_info=True)
-            return None
+    async def _load_saved_locations_for_resolver(self) -> list[SavedLocation]:
+        records = await self._load_saved_locations_for_ui()
+        saved: list[SavedLocation] = []
+        for record in records:
+            lat = finite_float(record.get("lat"))
+            lon = finite_float(record.get("lon"))
+            display_name = clean_text(record.get("display_name") or record.get("city"))
+            label = clean_text(record.get("label"))
+            if lat is None or lon is None or not display_name or not label:
+                continue
+            schema_version = record.get("schema_version")
+            saved.append(
+                SavedLocation(
+                    label=label,
+                    is_default=bool(record.get("is_default")),
+                    location=LocationCandidate(
+                        display_name=display_name,
+                        latitude=lat,
+                        longitude=lon,
+                        country_code=clean_text(
+                            record.get("country_code") or record.get("country")
+                        ).upper(),
+                        admin1=clean_text(record.get("admin1")),
+                        admin2=clean_text(record.get("admin2")),
+                        precision=clean_text(record.get("precision")) or "city",
+                        source="saved",
+                        verified=schema_version == 2 and bool(record.get("verified")),
+                    ),
+                )
+            )
+        return saved
 
     async def _load_saved_locations_for_ui(self) -> list[Dict[str, Any]]:
         """Return saved locations for the Hosted UI dashboard."""

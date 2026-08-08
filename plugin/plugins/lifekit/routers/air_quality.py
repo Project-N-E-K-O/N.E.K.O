@@ -11,6 +11,7 @@ from .._api import AirQualityError, fetch_air_quality
 from .._chat import push_lifekit_content
 from .._coerce import finite_float
 from .._contracts import AirQualityResult, CityParams
+from .._location import LocationPurpose
 
 
 def _aqi_level(aqi: int) -> tuple[str, str]:
@@ -64,7 +65,10 @@ class AirQualityRouter(PluginRouter):
         plugin._resolve_locale()
         i18n = plugin._i18n
 
-        loc, loc_err = await plugin._resolve_location(city or None)
+        loc, loc_err = await plugin._resolve_location(
+            city or None,
+            purpose=LocationPurpose.AIR_QUALITY,
+        )
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
