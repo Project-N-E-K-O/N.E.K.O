@@ -7,6 +7,9 @@ import {
 
 const DIST_DIR = resolve('.vitepress/dist')
 const PUBLIC_DIR = resolve('public')
+const SITEMAP_URL = `${SITE_ORIGIN}/sitemap.xml`
+const SITEMAP_NAMESPACE = 'http://www.sitemaps.org/schemas/sitemap/0.9'
+const TARGET_SEARCH_CRAWLERS = ['Baiduspider']
 const errors = []
 
 function filesRecursively(directory, extension) {
@@ -64,6 +67,72 @@ function fail(file, message) {
   errors.push(`${file}: ${message}`)
 }
 
+function robotsGroup(source, userAgent) {
+  const target = userAgent.toLowerCase()
+  let groupStarted = false
+  let groupHasRules = false
+  let collectingTarget = false
+  let targetGroup = []
+
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*/, '').trim()
+    if (!line) continue
+
+    const separator = line.indexOf(':')
+    if (separator === -1) continue
+    const field = line.slice(0, separator).trim().toLowerCase()
+    const value = line.slice(separator + 1).trim()
+
+    if (field === 'user-agent') {
+      if (groupStarted && groupHasRules) {
+        if (collectingTarget) return targetGroup.join('\n')
+        groupHasRules = false
+        collectingTarget = false
+        targetGroup = []
+      }
+
+      groupStarted = true
+      if (value.toLowerCase() === target) collectingTarget = true
+      if (collectingTarget) targetGroup.push(line)
+      continue
+    }
+
+    if (!groupStarted) continue
+    groupHasRules = true
+    if (collectingTarget) targetGroup.push(line)
+  }
+
+  return collectingTarget ? targetGroup.join('\n') : undefined
+}
+
+function isValidSitemapLastmod(value) {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/,
+  )
+  if (!match) return false
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, zone] = match
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const day = Number(dayText)
+  const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (year === 0 || month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]) {
+    return false
+  }
+
+  if (hourText === undefined) return true
+  const hour = Number(hourText)
+  const minute = Number(minuteText)
+  const second = secondText === undefined ? 0 : Number(secondText)
+  if (hour > 23 || minute > 59 || second > 59) return false
+  if (zone === 'Z') return true
+
+  const zoneHour = Number(zone.slice(1, 3))
+  const zoneMinute = Number(zone.slice(4, 6))
+  return zoneHour <= 23 && zoneMinute <= 59
+}
+
 function jsonLdNodes(data) {
   if (!data || typeof data !== 'object') return []
   return Array.isArray(data['@graph']) ? data['@graph'] : [data]
@@ -87,16 +156,67 @@ if (!existsSync(sitemapPath)) fail('sitemap.xml', 'file is missing')
 
 if (existsSync(robotsPath)) {
   const robots = readFileSync(robotsPath, 'utf8')
-  if (!robots.includes('Sitemap: https://project-neko.online/sitemap.xml')) {
+  if (!robots.includes(`Sitemap: ${SITEMAP_URL}`)) {
     fail('robots.txt', 'does not declare the production sitemap URL')
+  }
+
+  for (const crawler of TARGET_SEARCH_CRAWLERS) {
+    const group = robotsGroup(robots, crawler)
+    if (!group) {
+      fail('robots.txt', `does not declare an explicit ${crawler} policy`)
+      continue
+    }
+    if (!/^Allow:\s*\/$/gim.test(group)) {
+      fail('robots.txt', `${crawler} is not explicitly allowed to crawl the site`)
+    }
+    if (/^Disallow:\s*\/$/gim.test(group)) {
+      fail('robots.txt', `${crawler} is explicitly blocked from the site root`)
+    }
   }
 }
 
 const sitemapUrls = new Set()
 if (existsSync(sitemapPath)) {
   const sitemap = readFileSync(sitemapPath, 'utf8')
-  for (const match of sitemap.matchAll(/<loc>([\s\S]*?)<\/loc>/g)) {
-    sitemapUrls.add(decodeXml(match[1].trim()))
+  if (!new RegExp(`<urlset\\b[^>]*\\bxmlns=["']${SITEMAP_NAMESPACE}["']`, 'i').test(sitemap)) {
+    fail('sitemap.xml', 'does not use the standard sitemap urlset namespace')
+  }
+
+  const locValues = [...sitemap.matchAll(/<loc>([\s\S]*?)<\/loc>/g)].map((match) =>
+    decodeXml(match[1].trim()),
+  )
+
+  for (const value of locValues) {
+    if (sitemapUrls.has(value)) {
+      fail('sitemap.xml', `contains a duplicate URL: ${value}`)
+      continue
+    }
+    sitemapUrls.add(value)
+
+    let url
+    try {
+      url = new URL(value)
+    } catch {
+      fail('sitemap.xml', `contains an invalid absolute URL: ${value}`)
+      continue
+    }
+    if (url.origin !== SITE_ORIGIN || url.protocol !== 'https:') {
+      fail('sitemap.xml', `URL is not canonical HTTPS on ${SITE_ORIGIN}: ${value}`)
+    }
+    if (url.search || url.hash) {
+      fail('sitemap.xml', `URL contains a query string or fragment: ${value}`)
+    }
+  }
+
+  if (![...sitemapUrls].some((url) => url.startsWith(`${SITE_ORIGIN}/zh-CN/`))) {
+    fail('sitemap.xml', 'does not include any Simplified Chinese documentation URLs')
+  }
+
+  for (const match of sitemap.matchAll(/<lastmod>([\s\S]*?)<\/lastmod>/g)) {
+    const value = match[1].trim()
+    if (!isValidSitemapLastmod(value)) {
+      fail('sitemap.xml', `contains an invalid lastmod value: ${value}`)
+    }
   }
 }
 

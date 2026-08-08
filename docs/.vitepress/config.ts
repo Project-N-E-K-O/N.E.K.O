@@ -592,6 +592,8 @@ export default defineConfig({
 
   lastUpdated: true,
   cleanUrls: true,
+  // Baidu consumes this canonical standards-based sitemap.
+  // Keep a single source of truth rather than maintaining crawler-specific copies.
   sitemap: {
     hostname: SITE_ORIGIN,
     transformItems: filterSitemapItems,
