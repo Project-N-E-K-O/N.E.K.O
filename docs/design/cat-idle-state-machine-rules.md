@@ -132,6 +132,8 @@ CAT1 本地文字的 `5%` 哈气彩蛋只通过哈气专用窄入口请求既有
 
 这些事件不创建第六个需求字段，也不直接映射动作。`return_click`、tier 变化与动作结果仍遵守异步边界，不能在旧入口同步启动下一动作。
 
+Electron 桌面窗口感知只在真实小猫形态的 CAT1 阶段启用：小猫已经显示且 tier 为 CAT1 时启动；进入 CAT2/CAT3、return、呼吸球切换、猫形态失效或页面卸载时停止；以后重新进入 CAT1 时建立新的正式 sensing session。这里复用的是 CAT1 的进入与退出生命周期，不是把窗口读取改成 Cat Mind 的 30 秒 tick。初始当前窗口、后续身份/位置/尺寸变化以及 unavailable/current 恢复都只转换为 CAT1 的 `desktop_occlusion_or_layer_change` observation；Web 页面没有桌面 bridge 时无动作。页面适配不创建读取、检查 timer、第二窗口目标或 Cat Mind action request。
+
 ### 3.5 动作完成和中断
 
 | 结果事件 | 食欲 | 困意 | 精力 | 社交需求 | 刺激需求 |
