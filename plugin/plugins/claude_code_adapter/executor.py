@@ -256,7 +256,15 @@ class ClaudeCLIExecutor:
             if proc.stderr is None:
                 return
             while True:
-                line = await proc.stderr.readline()
+                try:
+                    # 使用 wait_for 添加超时，防止无限阻塞
+                    line = await asyncio.wait_for(proc.stderr.readline(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # 检查进程是否还在运行
+                    if proc.returncode is not None:
+                        # 进程已退出，停止读取
+                        break
+                    continue
                 if not line:
                     break
                 stderr_lines.append(
@@ -268,7 +276,15 @@ class ClaudeCLIExecutor:
             if proc.stdout is None:
                 return
             while True:
-                line = await proc.stdout.readline()
+                try:
+                    # 使用 wait_for 添加超时，防止无限阻塞
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # 检查进程是否还在运行
+                    if proc.returncode is not None:
+                        # 进程已退出，停止读取
+                        break
+                    continue
                 if not line:
                     break
                 try:
