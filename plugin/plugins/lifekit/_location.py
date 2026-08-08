@@ -222,14 +222,14 @@ class LocationResolver:
                 pass
             candidates = _normalise_candidates(candidates, request.country_hint)
 
-        countries = {item.country_code for item in candidates if item.country_code}
+        eligible = _eligible_candidates(candidates, request.purpose)
+        countries = {item.country_code for item in eligible if item.country_code}
         if not request.country_hint.strip() and len(countries) > 1:
             return LocationResolution(
                 LocationStatus.AMBIGUOUS,
-                candidates=tuple(candidates),
+                candidates=tuple(eligible),
             )
 
-        eligible = _eligible_candidates(candidates, request.purpose)
         if disambiguation_required and not disambiguation_succeeded:
             if len(eligible) > 1:
                 return LocationResolution(

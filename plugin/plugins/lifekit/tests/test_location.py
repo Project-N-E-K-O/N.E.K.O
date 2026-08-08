@@ -37,7 +37,7 @@ async def test_ambiguous_chinese_city_is_not_silently_resolved() -> None:
                 longitude=121.89,
                 country_code="TW",
                 admin1="台湾",
-                precision="locality",
+                precision="city",
                 source="open_meteo",
             )
         ]
@@ -54,6 +54,46 @@ async def test_ambiguous_chinese_city_is_not_silently_resolved() -> None:
     assert result.status is LocationStatus.AMBIGUOUS
     assert result.location is None
     assert {item.country_code for item in result.candidates} == {"CN", "TW"}
+
+
+async def test_ineligible_foreign_locality_does_not_make_nearby_city_ambiguous() -> (
+    None
+):
+    china_city = LocationCandidate(
+        display_name="上海",
+        latitude=31.22,
+        longitude=121.46,
+        country_code="CN",
+        admin1="上海市",
+        precision="city",
+        source="open_meteo",
+    )
+    foreign_locality = LocationCandidate(
+        display_name="上海市",
+        latitude=41.05,
+        longitude=-90.50,
+        country_code="US",
+        admin1="Illinois",
+        precision="locality",
+        source="open_meteo",
+    )
+
+    async def open_meteo(query: str, **_kwargs: object) -> list[LocationCandidate]:
+        return [foreign_locality] if query == "上海市" else [china_city]
+
+    async def nominatim(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        return []
+
+    resolver = LocationResolver(open_meteo=open_meteo, nominatim=nominatim)
+
+    result = await resolver.resolve(
+        LocationRequest(text="上海", purpose=LocationPurpose.NEARBY)
+    )
+
+    assert result.status is LocationStatus.RESOLVED
+    assert result.location is not None
+    assert result.location.country_code == "CN"
+    assert result.location.precision == "city"
 
 
 async def test_saved_label_resolves_without_network() -> None:
