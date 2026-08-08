@@ -173,6 +173,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         model: str = "",
         effort: str = "",
         max_turns: int = 0,
+        timeout_sec: int = 0,
     ) -> ExecuteResult:
         """执行 Claude Code 任务，支持自动重试。
 
@@ -180,6 +181,12 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         - 首次执行尝试恢复会话（如果存在可恢复的会话）
         - 如果失败且错误可重试，新建会话重试
         - 最多重试 self._config.max_retries 次
+
+        Parameters
+        ----------
+        timeout_sec:
+            本次执行的超时时间（秒）。0 表示使用配置默认值。
+            猫娘可根据任务复杂度自主设定：简单任务300秒，复杂任务1800-3600秒。
         """
         assert self._executor is not None and self._session_mgr is not None
 
@@ -208,7 +215,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                     last_error.kind if last_error else "unknown",
                 )
 
-            # 构建 CLI 调用
+            # 构建 CLI 调用（传递自定义超时）
             invocation, build_err = build_cli_invocation(
                 self._config,
                 prompt=prompt,
@@ -217,6 +224,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
+                timeout_sec=timeout_sec,
             )
             if build_err is not None:
                 last_error = build_err
@@ -314,7 +322,9 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             "- cwd: 工作目录（项目根目录的绝对路径）。同一目录的调用会自动复用会话上下文。\n"
             "- model: 模型 ID（可选）。留空使用适配器默认配置。\n"
             "- effort: 推理努力级别（可选）：'low' / 'medium' / 'high'。留空使用默认配置。\n"
-            "- max_turns: 最大轮次（可选，0=使用默认值）。\n\n"
+            "- max_turns: 最大轮次（可选，0=使用默认值）。\n"
+            "- timeout_sec: 超时时间（可选，秒）。根据任务复杂度设定，默认1800秒（30分钟）。"
+            "简单任务可设300秒，复杂任务可设3600秒（1小时）甚至更长。\n\n"
             "返回：包含 Claude Code 的最终回复文本、会话 ID、费用、轮次等信息的字典。"
         ),
         parameters={
@@ -341,10 +351,14 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                     "type": "integer",
                     "description": "最大轮次（可选，0=使用默认值）。",
                 },
+                "timeout_sec": {
+                    "type": "integer",
+                    "description": "超时时间（秒）。根据任务复杂度自主设定：简单任务300秒，中等任务900秒，复杂任务1800-3600秒。留空使用默认1800秒。",
+                },
             },
             "required": ["prompt"],
         },
-        timeout=300.0,
+        timeout=1800.0,
     )
     async def claude_code_execute(
         self,
@@ -353,6 +367,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         model: str = "",
         effort: str = "",
         max_turns: int = 0,
+        timeout_sec: int = 0,
         **_,
     ) -> dict[str, Any]:
         """执行 Claude Code 任务。"""
@@ -370,6 +385,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
+                timeout_sec=timeout_sec,
             )
             return Ok(result.to_llm_payload())
         except Exception as e:

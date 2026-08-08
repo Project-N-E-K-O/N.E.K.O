@@ -56,8 +56,9 @@ effort = ""
 max_turns_per_run = 0
 # 跳过权限提示（与 Paperclip 行为一致；仅用于受信任的本地开发场景）。
 dangerously_skip_permissions = true
-# 单次执行超时（秒）。main_server 上限 300s，这里取上限。
-timeout_sec = 300
+# 单次执行超时（秒）。默认1800秒（30分钟），猫娘可根据任务复杂度自主调整。
+# 简单任务可设300秒，复杂任务可设3600秒（1小时）甚至更长。
+timeout_sec = 1800
 # 默认工作目录（留空 = 当前插件进程 cwd）。猫娘调用时可覆盖。
 cwd = ""
 # 附加系统提示文件路径（留空则不附加）。

@@ -39,8 +39,8 @@ class AdapterConfig:
     dangerously_skip_permissions: bool = True
     """跳过权限提示。仅用于受信任的本地开发场景。"""
 
-    timeout_sec: int = 300
-    """单次执行超时（秒）。main_server 上限 300s。"""
+    timeout_sec: int = 1800
+    """单次执行超时（秒）。默认30分钟，猫娘可根据任务复杂度调整。"""
 
     cwd: str = ""
     """默认工作目录。空字符串表示使用插件进程 cwd。"""
@@ -88,7 +88,7 @@ class AdapterConfig:
             effort=_str("effort"),
             max_turns_per_run=_int("max_turns_per_run", 0),
             dangerously_skip_permissions=_bool("dangerously_skip_permissions", True),
-            timeout_sec=_int("timeout_sec", 300) or 300,
+            timeout_sec=_int("timeout_sec", 1800) or 1800,
             cwd=_str("cwd"),
             append_system_prompt_file=_str("append_system_prompt_file"),
             skills_dir=_str("skills_dir"),

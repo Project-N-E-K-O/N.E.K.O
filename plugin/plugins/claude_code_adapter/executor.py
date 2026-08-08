@@ -87,6 +87,7 @@ def build_cli_invocation(
     model: str = "",
     effort: str = "",
     max_turns: int = 0,
+    timeout_sec: int = 0,
 ) -> tuple[CLIInvocation, Optional[ClassifiedError]]:
     """构建一次 Claude CLI 调用。
 
@@ -99,12 +100,14 @@ def build_cli_invocation(
     """
     # 1. 解析可执行文件路径
     exe_path = config.command or detect_claude_cli() or ""
+    # 动态超时：调用参数 > 配置默认值
+    effective_timeout = timeout_sec if timeout_sec > 0 else config.timeout_sec
     if not exe_path:
         placeholder = CLIInvocation(
             cmd=[],
             cwd=cwd or config.cwd or os.getcwd(),
             stdin_data=prompt.encode("utf-8"),
-            timeout=float(config.timeout_sec),
+            timeout=float(effective_timeout),
         )
         return placeholder, ClassifiedError(
             kind=CLI_NOT_FOUND,
@@ -161,7 +164,7 @@ def build_cli_invocation(
         cmd=cmd,
         cwd=effective_cwd,
         stdin_data=prompt.encode("utf-8"),
-        timeout=float(config.timeout_sec),
+        timeout=float(effective_timeout),
     )
     return invocation, None
 
