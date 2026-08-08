@@ -1137,7 +1137,7 @@ class _VoiceTurnAdapter:
                     timeout=_COMMIT_DRAIN_ON_CLOSE_SECONDS,
                 )
         elif completion_published is not None:
-            await completion_published
+            _ = await completion_published
         if active_identity == identity:
             if not tail_already_observed:
                 self._observe_evaluation_tail(evaluation_tail)
