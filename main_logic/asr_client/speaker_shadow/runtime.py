@@ -138,6 +138,9 @@ class _BackendProcessHost:
         )
         self._connection: Connection | None = parent_connection
         self._child_connection: Connection | None = child_connection
+        # Abandoned host reads keep a strong reference here until the thread
+        # they are blocked in unwinds, so the event loop cannot drop them.
+        self._pending_responses: set[asyncio.Future[Any]] = set()
         self._pcm_buffer = pcm_buffer
         self._process: BaseProcess | None = process
         self._terminate_timeout_seconds = terminate_timeout_seconds
@@ -264,32 +267,52 @@ class _BackendProcessHost:
             await self.terminate()
             raise _BackendHostError("backend host command failed") from exc
 
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        # One blocking read off the event loop, not a ``poll(0)`` spin. Each
+        # zero-timeout poll starts an overlapped pipe read and cancels it in
+        # the same breath, and on Windows that cancellation races the very
+        # response it asked about: the child answers and stays alive, the
+        # answer is swallowed, and the parent spins to a false timeout that no
+        # later poll can recover. A plain ``recv`` issues one read and never
+        # cancels it. Nothing else waits on this connection, so the read is
+        # released either by the response or by the host dying — including the
+        # ``terminate`` below, which closes the pipe on timeout and on
+        # cancellation.
+        response = asyncio.ensure_future(asyncio.to_thread(connection.recv))
+        self._pending_responses.add(response)
+        response.add_done_callback(self._consume_response_result)
         try:
-            while True:
-                if connection.poll(0.0):
-                    try:
-                        succeeded, value = connection.recv()
-                    except (BrokenPipeError, EOFError, OSError) as exc:
-                        await self.terminate()
-                        raise _BackendHostError(
-                            "backend host response failed"
-                        ) from exc
-                    if succeeded:
-                        return value
-                    raise _BackendHostError(f"backend operation failed: {value}")
-                if not process.is_alive():
-                    await asyncio.to_thread(self._dispose_handles)
-                    raise _BackendHostError("backend host exited without a response")
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    self.timed_out = True
-                    await self.terminate()
-                    raise _BackendHostTimeout(f"backend {operation} timed out")
-                await asyncio.sleep(min(_HOST_POLL_INTERVAL_SECONDS, remaining))
+            done, _ = await asyncio.wait({response}, timeout=timeout_seconds)
         except asyncio.CancelledError:
             await self.terminate()
             raise
+        if not done:
+            self.timed_out = True
+            # Terminating kills the child first, which breaks the pipe and
+            # releases the blocked read before the handles are disposed.
+            await self.terminate()
+            await asyncio.wait({response}, timeout=self._terminate_timeout_seconds)
+            raise _BackendHostTimeout(f"backend {operation} timed out")
+        try:
+            succeeded, value = response.result()
+        except (BrokenPipeError, EOFError, OSError) as exc:
+            if not process.is_alive():
+                await asyncio.to_thread(self._dispose_handles)
+                raise _BackendHostError(
+                    "backend host exited without a response"
+                ) from exc
+            await self.terminate()
+            raise _BackendHostError("backend host response failed") from exc
+        if succeeded:
+            return value
+        raise _BackendHostError(f"backend operation failed: {value}")
+
+    def _consume_response_result(self, response: asyncio.Future[Any]) -> None:
+        """Retire an abandoned host read once its blocked thread unwinds."""
+
+        self._pending_responses.discard(response)
+        if response.cancelled():
+            return
+        response.exception()
 
     async def _wait_for_exit(self, timeout_seconds: float) -> bool:
         process = self._process
