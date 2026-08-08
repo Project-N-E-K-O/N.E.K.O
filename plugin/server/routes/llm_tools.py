@@ -52,6 +52,43 @@ router = APIRouter(prefix="/api/llm-tools", tags=["llm-tools"])
 # ``main_routers/tool_router.py``.
 _DEFAULT_TOOL_TIMEOUT_SECONDS = 30.0
 
+# Only mcp_adapter's chat-injected tools are recorded into the run store
+# (运行记录 in the plugin management panel). Other plugins' LLM tools keep
+# their current no-record behavior. ponytail: drop this gate to record all.
+_MCP_ADAPTER_PLUGIN_ID = "mcp_adapter"
+
+
+def _record_tool_run(plugin_id: str, tool_name: str, out: Dict[str, Any]) -> None:
+    """Record an already-dispatched tool call as a completed run.
+
+    The call happened (or failed) before this runs, so no re-trigger
+    occurs — the record is written after the fact for visibility only.
+    """
+    if plugin_id != _MCP_ADAPTER_PLUGIN_ID:
+        return
+    try:
+        from plugin.server.runs.manager import RunError, record_external_call
+
+        is_error = bool(out.get("is_error"))
+        error = None
+        if is_error:
+            error = RunError(
+                code=str(out.get("error") or "TOOL_ERROR"),
+                message=str(out.get("error") or out.get("output"))[:500],
+            )
+        record_external_call(
+            plugin_id=plugin_id,
+            entry_id=_entry_id_for_tool(tool_name),
+            status="failed" if is_error else "succeeded",
+            error=error,
+            output=out.get("output"),
+        )
+    except Exception:
+        logger.exception(
+            "failed to record tool run: plugin_id={}, tool={}",
+            plugin_id, tool_name,
+        )
+
 
 def _entry_id_for_tool(tool_name: str) -> str:
     """Namespace LLM tool entries so they don't collide with regular
@@ -161,21 +198,25 @@ async def llm_tool_callback(
             "llm_tool_callback timeout: plugin_id={}, tool={}, err={}",
             plugin_id, tool_name, str(exc),
         )
-        return {
+        out = {
             "output": {"error": f"tool '{tool_name}' timed out after {timeout_seconds}s"},
             "is_error": True,
             "error": "TOOL_TIMEOUT",
         }
+        _record_tool_run(plugin_id, tool_name, out)
+        return out
     except Exception as exc:
         logger.exception(
             "llm_tool_callback exception: plugin_id={}, tool={}, err_type={}",
             plugin_id, tool_name, type(exc).__name__,
         )
-        return {
+        out = {
             "output": {"error": f"{type(exc).__name__}: {exc}"},
             "is_error": True,
             "error": type(exc).__name__,
         }
+        _record_tool_run(plugin_id, tool_name, out)
+        return out
 
     # The plugin's handler can return either:
     #  - A plain value (str/dict/list/...) → wrap in {"output": value}.
@@ -186,5 +227,7 @@ async def llm_tool_callback(
         out = {"output": result["output"], "is_error": bool(result["is_error"])}
         if result.get("error"):
             out["error"] = str(result["error"])
-        return out
-    return {"output": result, "is_error": False}
+    else:
+        out = {"output": result, "is_error": False}
+    _record_tool_run(plugin_id, tool_name, out)
+    return out

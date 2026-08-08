@@ -60,3 +60,4 @@ tool_timeout = 60
 auto_reconnect = true
 reconnect_interval = 5
 max_reconnect_attempts = 3
+inject_mcp = true
