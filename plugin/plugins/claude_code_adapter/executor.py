@@ -260,8 +260,9 @@ class ClaudeCLIExecutor:
                     # 使用 wait_for 添加超时，防止无限阻塞
                     line = await asyncio.wait_for(proc.stderr.readline(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # 检查进程是否还在运行
-                    if proc.returncode is not None:
+                    # 使用 poll() 检查进程是否还在运行
+                    # poll() 立即返回，如果进程已退出返回退出码，否则返回 None
+                    if proc.poll() is not None:
                         # 进程已退出，停止读取
                         break
                     continue
@@ -280,8 +281,9 @@ class ClaudeCLIExecutor:
                     # 使用 wait_for 添加超时，防止无限阻塞
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=1.0)
                 except asyncio.TimeoutError:
-                    # 检查进程是否还在运行
-                    if proc.returncode is not None:
+                    # 使用 poll() 检查进程是否还在运行
+                    # poll() 立即返回，如果进程已退出返回退出码，否则返回 None
+                    if proc.poll() is not None:
                         # 进程已退出，停止读取
                         break
                     continue
