@@ -328,8 +328,20 @@ class ClaudeCLIExecutor:
                 retryable=False,
             )
 
+        # 进程正常退出后，主动关闭管道，防止子进程持有管道导致读取任务无限阻塞
+        try:
+            if proc.stdout:
+                proc.stdout.feed_eof()
+        except Exception:
+            pass
+        try:
+            if proc.stderr:
+                proc.stderr.feed_eof()
+        except Exception:
+            pass
+
         # 等待读取任务完成
-        await _drain_tasks(stdout_task, stderr_task)
+        await _drain_tasks(stdout_task, stderr_task, timeout=10.0)
 
         stream = parser.finalize()
 
@@ -345,32 +357,22 @@ class ClaudeCLIExecutor:
                 self.logger.warning(f"Stderr output: {'; '.join(stderr_lines[:10])}")
 
         # 检查返回码和 result 事件
-        # 注意：Claude Code 可能以非零退出码退出，但如果 result 事件显示成功，则视为成功
         if return_code != 0:
             stderr_text = "\n".join(stderr_lines)
-            # 如果有 result 事件且不是错误，说明任务实际成功了
-            if stream.result and not stream.result.is_error:
-                # Claude Code 以非零退出码退出，但任务实际完成了
-                if self.logger is not None:
-                    self.logger.info(
-                        f"Process exited with code {return_code}, but result indicates success. "
-                        f"Treating as successful completion."
-                    )
-            elif stream.result and stream.result.is_error:
-                # 有 result 事件且标记为错误
+            # 如果有 result 事件的 is_error，优先用 result 的信息
+            if stream.result and stream.result.is_error:
                 err = classify_error(
                     stream.result.result_text or stderr_text,
                     return_code=return_code,
                     raw=stream.result.raw,
                 )
                 return stream, err
-            else:
-                # 没有 result 事件，用 stderr 分类
-                err = classify_error(
-                    stderr_text or f"process exited with code {return_code}",
-                    return_code=return_code,
-                )
-                return stream, err
+            # 否则用 stderr 分类
+            err = classify_error(
+                stderr_text or f"process exited with code {return_code}",
+                return_code=return_code,
+            )
+            return stream, err
 
         # 返回码 0 但 result 事件标记为错误
         if stream.result and stream.result.is_error:
