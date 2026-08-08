@@ -1,0 +1,26 @@
+[plugin]
+id = "data_backup"
+name = "数据备份"
+description = "为 N.E.K.O 配置、角色卡、记忆和模型资源创建可恢复快照。"
+short_description = "创建、恢复和管理本地数据快照。"
+keywords = ["backup", "snapshot", "restore", "备份", "恢复"]
+version = "0.2.1"
+type = "plugin"
+entry = "plugin.plugins.data_backup:DataBackupPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = false
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin.ui]
+enabled = true
