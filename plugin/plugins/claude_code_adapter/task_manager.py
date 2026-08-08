@@ -64,10 +64,18 @@ class TaskRecord:
 
         if self.status == TaskStatus.DONE and self.result:
             data["result"] = self.result.to_llm_payload()
+            # 返回 session_id 用于恢复
+            data["session_id"] = self.result.session_id or ""
         elif self.status == TaskStatus.ERROR:
             data["error"] = self.error_message or "Unknown error"
+            # 错误时也返回 session_id，用于恢复
+            data["session_id"] = self.resume_session_id
         elif self.status == TaskStatus.CANCELLED:
             data["error"] = "Task was cancelled"
+            data["session_id"] = self.resume_session_id
+        elif self.status == TaskStatus.RUNNING:
+            # 运行中时也返回已知的 session_id
+            data["session_id"] = self.resume_session_id
 
         return data
 
@@ -131,9 +139,13 @@ class TaskManager:
         model: str = "",
         effort: str = "",
         max_turns: int = 0,
+        resume_session_id: str = "",
     ) -> TaskRecord:
         """
         提交任务到后台执行
+
+        Args:
+            resume_session_id: 可选，恢复之前的会话 ID。如果提供，Claude Code 会在该会话上下文中继续工作。
 
         Returns:
             TaskRecord: 任务记录（包含 task_id 和初始状态）
@@ -154,13 +166,14 @@ class TaskManager:
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
+                resume_session_id=resume_session_id,
                 status=TaskStatus.PENDING,
             )
             self._tasks[task_id] = record
 
         # 在锁外启动后台任务，避免死锁
         record._task = asyncio.create_task(self._execute_task(record))
-        self.logger.info(f"Task submitted: {task_id}")
+        self.logger.info(f"Task submitted: {task_id}, resume_session_id: {resume_session_id or 'new session'}")
 
         return record
 
@@ -222,6 +235,7 @@ class TaskManager:
                 model=record.model,
                 effort=record.effort,
                 max_turns=record.max_turns,
+                resume_session_id=record.resume_session_id,
             )
 
             if build_err:

@@ -329,14 +329,16 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
             "使用流程：\n"
             "1. 调用 claude_code_submit 提交任务，立即返回 task_id\n"
             "2. 调用 claude_code_poll 查询任务状态和结果\n"
-            "3. 如需取消，调用 claude_code_cancel\n\n"
+            "3. 如需取消，调用 claude_code_cancel\n"
+            "4. 如果任务中断，可以使用返回的 session_id 恢复会话\n\n"
             "参数说明：\n"
             "- prompt: 详细描述要让 Claude Code 做什么。要具体、清晰，包含必要的上下文。\n"
             "- cwd: 工作目录（项目根目录的绝对路径）。同一目录的调用会自动复用会话上下文。\n"
             "- model: 模型 ID（可选）。留空使用适配器默认配置。\n"
             "- effort: 推理努力级别（可选）：'low' / 'medium' / 'high'。留空使用默认配置。\n"
-            "- max_turns: 最大轮次（可选，0=使用默认值）。\n\n"
-            "返回：包含 task_id 和 status 的字典。"
+            "- max_turns: 最大轮次（可选，0=使用默认值）。\n"
+            "- session_id: 恢复之前的会话 ID（可选）。如果提供，Claude Code 会在该会话上下文中继续工作。\n\n"
+            "返回：包含 task_id、status 和 session_id 的字典。"
         ),
         parameters={
             "type": "object",
@@ -362,6 +364,10 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                     "type": "integer",
                     "description": "最大轮次（可选，0=使用默认值）。",
                 },
+                "session_id": {
+                    "type": "string",
+                    "description": "恢复之前的会话 ID（可选）。如果提供，Claude Code 会在该会话上下文中继续工作。用于任务中断后恢复。",
+                },
             },
             "required": ["prompt"],
         },
@@ -374,6 +380,7 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
         model: str = "",
         effort: str = "",
         max_turns: int = 0,
+        session_id: str = "",
         **_,
     ) -> dict[str, Any]:
         """提交 Claude Code 任务到后台异步执行。"""
@@ -394,10 +401,12 @@ class ClaudeCodeAdapterPlugin(NekoPluginBase):
                 model=model,
                 effort=effort,
                 max_turns=max_turns,
+                resume_session_id=session_id,
             )
             return Ok({
                 "task_id": record.task_id,
                 "status": record.status.value,
+                "session_id": session_id,
                 "message": "任务已提交，请使用 claude_code_poll 查询结果",
             })
         except Exception as e:
