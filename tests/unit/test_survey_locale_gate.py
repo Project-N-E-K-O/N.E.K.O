@@ -132,6 +132,25 @@ def test_survey_without_expires_at_never_expires(surveys, monkeypatch):
     assert changelog_survey._load_survey_for_version("1.0.0", "zh-CN") is not None
 
 
+@pytest.mark.parametrize("bad", ["zh-CN", 42, {"0": "zh-CN"}, True])
+def test_non_list_locales_withholds_instead_of_going_unscoped(surveys, bad):
+    """``"locales": "zh-CN"`` is a plausible typo; treating it as "no allowlist"
+    would broadcast a targeted notice to every locale — exactly what the field prevents."""
+    surveys("1.0.0.json", {"title": "typo", "locales": bad, "questions": []})
+
+    for lang in ("zh-CN", "en", "ja", ""):
+        assert changelog_survey._load_survey_for_version("1.0.0", lang) is None
+
+
+@pytest.mark.parametrize("bad", [20260820, None, ["2026-08-20"], True])
+def test_non_string_expires_at_withholds_instead_of_never_expiring(surveys, monkeypatch, bad):
+    """A present-but-wrong-typed expiry must not silently mean "no expiry"."""
+    surveys("1.0.0.json", {"title": "notice", "expires_at": bad, "questions": []})
+    monkeypatch.setattr(changelog_survey, "_utc_today", lambda: date(2026, 8, 1))
+
+    assert changelog_survey._load_survey_for_version("1.0.0", "zh-CN") is None
+
+
 def test_empty_allowlist_is_treated_as_unscoped(surveys):
     """``"locales": []`` must not silently mute a survey for everyone."""
     surveys("1.0.0.json", {"title": "base", "locales": [], "questions": []})

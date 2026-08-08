@@ -175,18 +175,31 @@ def _load_survey_for_version(version: str, lang: str) -> dict | None:
             # 受众白名单：定向问卷/公告只发给列出的 locale。放在这里而不是端点里，
             # 因为所有下发都经过本函数；且必须在回退落到 base 之后判断——正是
             # "非该语言用户回退到简体 base" 这条路径需要被挡住。
-            allowed = data.get("locales")
-            if isinstance(allowed, list) and allowed:
-                if not lang or lang not in allowed:
+            # 缺字段 = 不限制；字段在但类型不对 = 不下发。作者把 ["zh-CN"] 手滑写成
+            # "zh-CN" 属于常见笔误，若按"不限制"处理，定向公告会静默发给所有语言，
+            # 恰好是这个字段要防的事——所以"写了但写坏"一律 fail closed。
+            if "locales" in data:
+                allowed = data.get("locales")
+                if not isinstance(allowed, list):
+                    logger.warning(
+                        "survey %s has a non-list locales (%r); withholding it",
+                        version, allowed,
+                    )
+                    return None
+                if allowed and (not lang or lang not in allowed):
                     return None
             # 时效：公告类内容常带截止日期（"8月20日前投票"），而安装包会被用户在
             # 任意时间首次启动。过期后一律不再下发，免得给人推一个已经结束的活动。
-            # ISO 日期，含当天；写错格式同样不下发——与 locales 一样宁可漏发。
-            expires_at = data.get("expires_at")
-            if isinstance(expires_at, str) and expires_at.strip():
-                try:
-                    deadline = datetime.date.fromisoformat(expires_at.strip())
-                except ValueError:
+            # ISO 日期，含当天；同上——写了但写坏（含写成数字 20260820）一律不下发。
+            if "expires_at" in data:
+                expires_at = data.get("expires_at")
+                deadline = None
+                if isinstance(expires_at, str) and expires_at.strip():
+                    try:
+                        deadline = datetime.date.fromisoformat(expires_at.strip())
+                    except ValueError:
+                        deadline = None
+                if deadline is None:
                     logger.warning(
                         "survey %s has a malformed expires_at (%r); withholding it",
                         version, expires_at,
