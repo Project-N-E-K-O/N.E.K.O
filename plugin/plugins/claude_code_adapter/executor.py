@@ -314,31 +314,23 @@ class ClaudeCLIExecutor:
                 except Exception:
                     pass
 
-        # 等待进程结束（带超时）
+        # 等待读取任务完成（它们会用 proc.poll() 检测主进程退出）
+        # 不再等待 proc.wait()，因为子进程可能持有管道导致无限阻塞
         try:
-            return_code = await asyncio.wait_for(
-                proc.wait(), timeout=invocation.timeout
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                timeout=invocation.timeout
             )
         except asyncio.TimeoutError:
             # 超时 — 杀死进程
             try:
                 proc.kill()
-                await proc.wait()
             except Exception:
                 pass
-            # 主动关闭管道，确保读取任务能结束
-            try:
-                if proc.stdout:
-                    proc.stdout.feed_eof()
-            except Exception:
-                pass
-            try:
-                if proc.stderr:
-                    proc.stderr.feed_eof()
-            except Exception:
-                pass
-            # 等待读取任务结束
-            await _drain_tasks(stdout_task, stderr_task, timeout=5.0)
+            # 取消读取任务
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await _drain_tasks(stdout_task, stderr_task, timeout=2.0)
             stderr_text = "\n".join(stderr_lines)
             return parser.finalize(), ClassifiedError(
                 kind=TIMEOUT,
@@ -346,20 +338,20 @@ class ClaudeCLIExecutor:
                 retryable=False,
             )
 
-        # 进程正常退出后，主动关闭管道，防止子进程持有管道导致读取任务无限阻塞
-        try:
-            if proc.stdout:
-                proc.stdout.feed_eof()
-        except Exception:
-            pass
-        try:
-            if proc.stderr:
-                proc.stderr.feed_eof()
-        except Exception:
-            pass
-
-        # 等待读取任务完成（带超时，作为额外保护）
-        await _drain_tasks(stdout_task, stderr_task, timeout=5.0)
+        # 获取返回码（如果主进程已退出）
+        return_code = proc.returncode
+        if return_code is None:
+            # 主进程可能还在运行，但读取任务已完成（管道关闭）
+            # 等待主进程退出
+            try:
+                return_code = await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # 主进程还没退出，但读取任务已完成，说明管道已关闭
+                # 可能是子进程持有管道，但主进程已退出
+                return_code = proc.returncode
+                if return_code is None:
+                    # 主进程还在运行，但读取任务已完成，异常情况
+                    return_code = -1
 
         stream = parser.finalize()
 
