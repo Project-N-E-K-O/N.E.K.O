@@ -158,7 +158,15 @@ def test_plugin_and_local_server_are_exempt():
 
 
 def test_main_program_dirs_are_covered():
-    for top in ("utils", "memory", "main_routers", "config", "tests", "scripts"):
+    for top in (
+        "utils",
+        "memory",
+        "knowledge",
+        "main_routers",
+        "config",
+        "tests",
+        "scripts",
+    ):
         assert not MOD._is_excluded(MOD.REPO_ROOT / top / "x.py"), top
 
 
