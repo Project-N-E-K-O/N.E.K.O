@@ -193,10 +193,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self._backlog_summary_threshold = 10
         self._backlog_notify_cooldown_seconds = 900
         self._backlog_issue_notify_threshold = 1
-        self._sticker_cooldown_messages = 5
         self._relay_backlog_items: list[dict[str, Any]] = []
         self._recent_pipeline_traces: list[dict[str, Any]] = []
-        self._sticker_since: dict[str, int] = {}  # 群 → 距上次表情包的消息数，≥5 才允许再发
         self._poke_timestamps: dict[str, list[float]] = {}  # user_id → 最近回戳时间戳列表（5分钟窗口）
         self._poke_storm: dict[str, list[tuple[float, str]]] = {}  # group_id → [(timestamp, poker_id)] 戳猫娘风暴检测
         self._startup_error: str | None = None
@@ -962,6 +960,39 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         })
 
     @plugin_entry(
+        id="adjust_group_attention",
+        name=tr("entries.adjust_group_attention.name", default="手动调整群注意力"),
+        description=tr("entries.adjust_group_attention.description", default="给指定群手动增减注意力分数，正数为加分、负数为减分。"),
+        input_schema={"type": "object", "properties": {
+            "group_id": {"type": "string"},
+            "delta": {"type": "number"},
+        }, "required": ["group_id", "delta"], "additionalProperties": False},
+    )
+    async def adjust_group_attention(self, group_id: str, delta: float, **_):
+        if not self.attention_service:
+            return Err(SdkError("attention_service_not_initialized"))
+        gid = str(group_id or "").strip()
+        if not gid:
+            return Err(SdkError("INVALID_INPUT: group_id 不能为空"))
+        try:
+            amount = float(delta or 0.0)
+        except (TypeError, ValueError):
+            return Err(SdkError("INVALID_INPUT: delta 必须是数字"))
+        if amount > 0:
+            await self.attention_service.boost_attention(gid, amount, reason="manual_adjust")
+        elif amount < 0:
+            await self.attention_service.consume_attention(gid, -amount, reason="manual_adjust")
+        else:
+            return Ok({"group_id": gid, "delta": 0.0, "note": "noop"})
+        state = self.attention_service.get_state(gid)
+        self._emit_log("INFO", f"[Attention] 手动调整 群{gid} delta={amount:+.1f} → score={state.attention_score:.1f}")
+        return Ok({
+            "group_id": gid,
+            "delta": amount,
+            "attention_score": float(state.attention_score),
+        })
+
+    @plugin_entry(
         id="ensure_napcat",
         name=tr("entries.ensure_napcat.name", default="启动 NapCat 进程"),
         description=tr("entries.ensure_napcat.description", default="启动 NapCat 外部进程并等待 OneBot 就绪（不连接 WebSocket）。"),
@@ -1048,7 +1079,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "qq_open_identity_probe_enabled": {"type": "boolean"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "private_participant_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -1063,18 +1094,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         normal_relay_probability: Optional[float] = None,
         truth_reply_probability: Optional[float] = None,
         backlog_labels: Optional[list[dict[str, Any]]] = None,
-        sticker_cooldown_messages: Optional[int] = None,
-        group_attention_decay_per_second: Optional[float] = None,
-        group_attention_message_recovery: Optional[float] = None,
-        group_attention_reply_penalty: Optional[float] = None,
-        group_attention_keyword_boost_scale: Optional[float] = None,
-        group_attention_focus_lock_seconds: Optional[int] = None,
-        group_attention_focus_rise_seconds: Optional[int] = None,
-        group_attention_focus_cooldown_seconds: Optional[int] = None,
         group_attention_max_score: Optional[float] = None,
         group_attention_focus_threshold: Optional[float] = None,
         group_attention_min_threshold: Optional[float] = None,
         group_attention_message_gain: Optional[float] = None,
+        attention_base_rise_rate: Optional[float] = None,
+        attention_message_boost: Optional[float] = None,
+        attention_honeymoon_seconds: Optional[int] = None,
+        attention_fall_seconds: Optional[int] = None,
+        attention_fall_rate: Optional[float] = None,
+        attention_consume_ratio: Optional[float] = None,
         icebreaker_cold_threshold: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
@@ -1103,18 +1132,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             normal_relay_probability=normal_relay_probability,
             truth_reply_probability=truth_reply_probability,
             backlog_labels=backlog_labels,
-            sticker_cooldown_messages=sticker_cooldown_messages,
-            group_attention_decay_per_second=group_attention_decay_per_second,
-            group_attention_message_recovery=group_attention_message_recovery,
-            group_attention_reply_penalty=group_attention_reply_penalty,
-            group_attention_keyword_boost_scale=group_attention_keyword_boost_scale,
-            group_attention_focus_lock_seconds=group_attention_focus_lock_seconds,
-            group_attention_focus_rise_seconds=group_attention_focus_rise_seconds,
-            group_attention_focus_cooldown_seconds=group_attention_focus_cooldown_seconds,
             group_attention_max_score=group_attention_max_score,
             group_attention_focus_threshold=group_attention_focus_threshold,
             group_attention_min_threshold=group_attention_min_threshold,
             group_attention_message_gain=group_attention_message_gain,
+            attention_base_rise_rate=attention_base_rise_rate,
+            attention_message_boost=attention_message_boost,
+            attention_honeymoon_seconds=attention_honeymoon_seconds,
+            attention_fall_seconds=attention_fall_seconds,
+            attention_fall_rate=attention_fall_rate,
+            attention_consume_ratio=attention_consume_ratio,
             icebreaker_cold_threshold=icebreaker_cold_threshold,
             retroactive_review_max_messages=retroactive_review_max_messages,
             retroactive_review_max_reply=retroactive_review_max_reply,
@@ -1415,11 +1442,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                     effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
             if lid == "time" and self.fatigue_service:
                 effective_text = self.fatigue_service.get_dynamic_time_context()
-            if lid == "fatigue_tiers" and self.fatigue_service:
-                lines = []
-                for threshold, text in self.fatigue_service._FATIGUE_TIERS:
-                    lines.append(f"{threshold}: {text}\n")
-                effective_text = "\n".join(lines)
             layers.append({
                 "id": lid,
                 "i18n_key": i18n_key,
@@ -1435,18 +1457,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         proactive_topics = list((self._qq_settings or {}).get("proactive_topics") or [])
         if not proactive_topics and self.attention_gate_service:
             proactive_topics = list(getattr(self.attention_gate_service, "_DEFAULT_PROACTIVE_TOPICS", []))
-        # 疲劳层级提示词（供前端查看和覆盖）
-        fatigue_tiers = []
-        if self.fatigue_service:
-            for threshold, text in self.fatigue_service._FATIGUE_TIERS:
-                fatigue_tiers.append({"threshold": threshold, "text": text})
         return Ok({
             "mode": mode,
             "locale": locale,
             "strategy_mode": strategy_mode,
             "layers": layers,
             "proactive_topics": proactive_topics,
-            "fatigue_tiers": fatigue_tiers,
         })
 
     @plugin_entry(
@@ -1708,25 +1724,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         success = await self._persist_business_config()
         self._emit_log("INFO", f"主动发言话题已更新: {len(topic_list)}条")
         return Ok({"count": len(topic_list), "persisted": success})
-
-    @plugin_entry(
-        id="save_fatigue_tiers",
-        name=tr("entries.save_fatigue_tiers.name", default="保存疲劳层级提示词"),
-        description=tr("entries.save_fatigue_tiers.description", default="覆盖默认的疲劳层级提示词。传入空列表恢复默认。"),
-        input_schema={"type": "object", "properties": {"tiers": {"type": "array", "items": {"type": "object", "properties": {"threshold": {"type": "integer"}, "text": {"type": "string"}}}}}, "additionalProperties": False},
-    )
-    async def save_fatigue_tiers(self, tiers: list[dict] = None, **_):
-        tier_list = []
-        for t in (tiers or []):
-            if isinstance(t, dict) and "threshold" in t and "text" in t:
-                tier_list.append({"threshold": int(t["threshold"]), "text": str(t["text"])})
-        if tier_list:
-            self._qq_settings["fatigue_tiers"] = tier_list
-        else:
-            self._qq_settings.pop("fatigue_tiers", None)
-        success = await self._persist_business_config()
-        self._emit_log("INFO", f"疲劳层级提示词已更新: {len(tier_list)}层")
-        return Ok({"count": len(tier_list), "persisted": success})
 
     async def _run_message_handler(self, message: Dict[str, Any]) -> None:
         await self.handler_runtime_service.run_message_handler(message)

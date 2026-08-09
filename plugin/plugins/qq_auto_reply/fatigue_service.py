@@ -6,9 +6,9 @@
   2. 会话累积 — 每条回复增加疲劳，随时间衰减
   3. 全局负载 — 近期消息总量产生的疲劳
 
-疲劳影响：
-  - 注意力衰减速度（decay_all 传入 fatigue 乘数）
-  - 回复风格约束（get_fatigue_prompt 注入 LLM 系统提示）
+疲劳影响（只服务注意力系统）：
+  - 注意力衰减速度：decay_all 传入 fatigue 乘数，高疲劳衰减更快
+  - 注意力回升速度：update_on_message_count 的恢复增益乘 recovery_scale，高疲劳回升更慢
 """
 
 from __future__ import annotations
@@ -43,53 +43,6 @@ class QQFatigueService:
     GLOBAL_FATIGUE_WINDOW = 600
     GLOBAL_FATIGUE_PER_MSG = 0.8
     GLOBAL_FATIGUE_CAP = 40
-
-    # ── 疲劳 → 提示词注入映射 ──
-    @property
-    def _FATIGUE_TIERS(self) -> list[tuple[int, str]]:
-        """疲劳层级提示词：优先读用户覆盖，否则用默认。"""
-        stored = (self.plugin._qq_settings or {}).get("fatigue_tiers")
-        if isinstance(stored, list) and stored:
-            tiers = []
-            for t in stored:
-                if isinstance(t, dict) and "threshold" in t and "text" in t:
-                    try:
-                        threshold = int(t["threshold"])
-                    except (ValueError, TypeError):
-                        continue
-                    tiers.append((threshold, str(t["text"])))
-            if tiers:
-                tiers.sort(key=lambda x: x[0])
-                return tiers
-        return self._DEFAULT_FATIGUE_TIERS
-
-    _DEFAULT_FATIGUE_TIERS = [
-        (15, (
-            "【强制】你精力充沛，心情很好。回复可以活泼一些。"
-            "每条消息严格控制在50字以内。"
-        )),
-        (30, (
-            "【强制】你感觉状态不错。正常聊天即可。"
-            "每条消息严格控制在40字以内。"
-        )),
-        (45, (
-            "【强制】你开始有点累了。每条消息不超过30字，最多发1个<msg>块。"
-            "语气可以随意一点，不要太正式。如果想用表情包代替文字也可以。"
-        )),
-        (60, (
-            "【强制】你挺累了不想说话。每条消息不超过20字，严格只发1个<msg>块。"
-            "优先用表情包(`<sticker>`)回应，比打字省力。"
-            "实在要用文字就用\"嗯\"\"哦\"\"好的呀..\"这种懒散语气。"
-        )),
-        (75, (
-            "【强制】你已经非常疲惫。每条消息不超过10字，或只发1个表情包。"
-            "能用表情包(`<sticker>`)就不用文字。大部分情况直接<msg></msg>不回复。"
-        )),
-        (100, (
-            "【强制】你已经累到快睡着了。回1个表情包(`<sticker>`)足矣。"
-            "除了点名非回不可，其他全部<msg></msg>。"
-        )),
-    ]
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -189,12 +142,13 @@ class QQFatigueService:
         ctx += '注意结合当前时间理解对话中的时间表达（如"刚刚""昨天""下周"等）。\n'
         return ctx
 
-    # ── 疲劳提示词 ──
+    # ── 注意力耦合 ──
 
-    def get_fatigue_prompt(self, session_key: str) -> str:
-        """疲劳 → 精力层级提示词。只影响回复风格。"""
+    def recovery_scale(self, session_key: str) -> float:
+        """疲劳 → 注意力回升倍率（0.0-1.0）。
+
+        高疲劳时注意力回升更慢：疲劳 0 → 1.0（完全恢复），
+        疲劳 50 → 0.5，疲劳 100 → 0（不再回升）。
+        """
         fatigue = self.calculate_fatigue(session_key)
-        for threshold, text in self._FATIGUE_TIERS:
-            if fatigue <= threshold:
-                return f"## 当前精力状态（疲劳 {fatigue:.0f}/100）\n{text}"
-        return ""
+        return max(0.0, 1.0 - fatigue / 100.0)

@@ -617,41 +617,12 @@ class QQMessageDispatcher:
             if enriched_content != raw_content and QQFeedbackClassifier.is_blacklisted(enriched_content, label_defs):
                 self.plugin._emit_log("INFO", f"黑名单过滤(转录后): text={enriched_content[:40]}")
                 return
-            # 主消息图片：调用 VLM 获取描述
+            # 主消息图片：调用 VLM 获取描述并注入 content。
+            # 纯图片消息的 raw_message 为空串、图片在 message 数组里，旧逻辑靠
+            # 替换文本中的 [CQ:image] 永远注入不进去 → 回溯补回摘要里图片内容
+            # 是空的。改为收集描述后直接拼进 content。
             if self.plugin.qq_client._image_describer:
-                import asyncio as _asyncio
-                from .qq_client import QQClient
-                # 从 raw message 数组或 raw_message 字符串中提取图片 URL
-                raw_msg = message.get("raw") or {}
-                segments = raw_msg.get("message") or message.get("message") or []
-                if isinstance(segments, list):
-                    img_urls = []
-                    for seg in segments:
-                        if isinstance(seg, dict) and seg.get("type") == "image":
-                            sd = seg.get("data") or {}
-                            u = str(sd.get("url") or sd.get("file") or "").strip()
-                            if u:
-                                img_urls.append(u)
-                    if img_urls:
-                        self.plugin._emit_log("DEBUG", f"[VLM] 检测到 {len(img_urls)} 张主消息图片, 开始描述...")
-                    for img_url in img_urls:
-                        try:
-                            desc = await _asyncio.wait_for(
-                                self.plugin.qq_client._image_describer(img_url),
-                                timeout=8.0,
-                            )
-                            if desc:
-                                # 替换 content 中第一个未处理的图片 CQ 码
-                                import re as _re
-                                raw = str(message.get("raw_message") or message.get("content") or "")
-                                new_raw = _re.sub(r'\[CQ:image,[^\]]*\]', f"[Image {desc}]", raw, count=1)
-                                message["raw_message"] = new_raw
-                                message["content"] = new_raw
-                                self.plugin._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
-                            else:
-                                self.plugin._emit_log("DEBUG", "[VLM] 图片描述返回为空")
-                        except Exception as e:
-                            self.plugin._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
+                await self._inject_image_descriptions(message)
         await self.plugin._record_backlog_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
@@ -758,6 +729,65 @@ class QQMessageDispatcher:
                 is_reply_to_bot=is_reply_to_bot,
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
+
+    async def _inject_image_descriptions(self, message: dict[str, Any]) -> None:
+        """调用 VLM 描述主消息中的图片，并把描述注入 content。
+
+        纯图片消息的 raw_message 常为空串、图片在 message 数组里，靠替换文本中的
+        [CQ:image] 注入不进去（回溯补回摘要里图片内容为空）。这里收集所有描述后：
+        - content 为空 → 直接设为 "[Image 描述]" 列表
+        - content 非空 → 按顺序替换其中的 [CQ:image] 占位，替换不到则追加到末尾
+        """
+        import asyncio as _asyncio
+        import re as _re
+
+        raw_msg = message.get("raw") or {}
+        segments = raw_msg.get("message") or message.get("message") or []
+        if not isinstance(segments, list):
+            return
+        img_urls: list[str] = []
+        for seg in segments:
+            if isinstance(seg, dict) and seg.get("type") == "image":
+                sd = seg.get("data") or {}
+                u = str(sd.get("url") or sd.get("file") or "").strip()
+                if u:
+                    img_urls.append(u)
+        if img_urls:
+            self.plugin._emit_log("DEBUG", f"[VLM] 检测到 {len(img_urls)} 张主消息图片, 开始描述...")
+        descriptions: list[str] = []
+        for img_url in img_urls:
+            try:
+                desc = await _asyncio.wait_for(
+                    self.plugin.qq_client._image_describer(img_url),
+                    timeout=8.0,
+                )
+                if desc:
+                    descriptions.append(f"[Image {desc}]")
+                    self.plugin._emit_log("INFO", f"[VLM] 图片描述: {desc[:40]}")
+                else:
+                    self.plugin._emit_log("DEBUG", "[VLM] 图片描述返回为空")
+            except Exception as e:
+                self.plugin._emit_log("DEBUG", f"[VLM] 图片描述失败: {type(e).__name__}")
+        if not descriptions:
+            return
+        base = str(message.get("content") or message.get("raw_message") or "").strip()
+        if base:
+            # 非空 content：按序替换其中的 [CQ:image] 占位；CQ 码不够时把
+            # 剩余描述追加到末尾（多图消息的 raw_message 可能只有部分占位）。
+            _it = iter(descriptions)
+
+            def _replace_image(match) -> str:
+                return next(_it, match.group(0))
+
+            new_text = _re.sub(r"\[CQ:image,[^\]]*\]", _replace_image, base)
+            leftover = list(_it)
+            if leftover:
+                new_text = f"{new_text} {' '.join(leftover)}".strip()
+        else:
+            # 纯图片：直接拼描述
+            new_text = " ".join(descriptions)
+        message["raw_message"] = new_text
+        message["content"] = new_text
 
     async def handle_private_message(
         self, sender_id: str, message_text: str,
@@ -885,6 +915,7 @@ class QQMessageDispatcher:
                 quoted_message_id=quoted_message_id,
                 sender_nickname=user_nickname or "",
                 timestamp=message_timestamp,
+                is_reply_to_bot=is_reply_to_bot,
             )
             if gate_decision.action == "ignore":
                 self.plugin.logger.info(

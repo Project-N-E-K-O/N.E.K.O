@@ -103,11 +103,19 @@ class QQNapcatService:
         if self.plugin.qq_client and self.plugin.qq_client.is_connected():
             self.clear_startup_error()
             return True
+        # NapCat 启动器/进程已知失败（目录不存在、启动器缺失、进程拉起失败）时
+        # 立即返回，不再空轮询等满 timeout——否则前端会因等待 20 秒而误报
+        # timeout，而实际是 NapCat 压根没起来。
+        if self.get_startup_error():
+            return False
         deadline = asyncio.get_running_loop().time() + max(1.0, float(timeout_seconds or 20.0))
         while asyncio.get_running_loop().time() < deadline:
             if self.plugin.qq_client and self.plugin.qq_client.is_connected():
                 self.clear_startup_error()
                 return True
+            # 轮询期间启动器可能已被判定失败：及时短路，避免空等满窗口
+            if self.get_startup_error():
+                return False
             await asyncio.sleep(max(0.1, float(poll_interval or 0.5)))
         self._set_startup_error("NapCat 已尝试启动，但没有客户端连接到反向 WS 服务器")
         return False
@@ -146,6 +154,9 @@ class QQNapcatService:
     async def ensure_napcat_started(self) -> None:
         configured_path = self.get_configured_napcat_path()
         if not configured_path:
+            # 未配置 napcat_directory：直接设错，避免 wait_for_onebot_ready
+            # 空轮询 20 秒让前端误报 timeout。
+            self._set_startup_error("未配置 NapCat 目录（napcat_directory）")
             return
         if self.plugin._napcat_process and self.plugin._napcat_process.returncode is None:
             return

@@ -103,17 +103,18 @@ class QQAutoReplyConfigStore:
             "napcat_directory": "",
             "show_napcat_window": True,
             "reply_mode": "text",
-            "group_attention_decay_per_second": 0.02,
-            "group_attention_message_recovery": 0.6,
-            "group_attention_reply_penalty": 1.3,
-            "group_attention_keyword_boost_scale": 2.5,
-            "group_attention_focus_lock_seconds": 60,
-            "group_attention_focus_rise_seconds": 30,
-            "group_attention_focus_cooldown_seconds": 60,
             "group_attention_max_score": 10.0,
             "group_attention_focus_threshold": 4.0,
             "group_attention_min_threshold": 1.0,
             "group_attention_message_gain": 0.25,
+            # 周期模型：rise 基础增速 / 消息加成 / 夺冠蜜月 / 回落窗口 / 回落速率 / 发言消耗
+            "attention_base_rise_rate": 0.02,
+            "attention_message_boost": 0.15,
+            "attention_keyword_boost_ratio": 1.8,
+            "attention_honeymoon_seconds": 60,
+            "attention_fall_seconds": 30,
+            "attention_fall_rate": 0.015,
+            "attention_consume_ratio": 0.10,
             "icebreaker_cold_threshold": 3,
             "backlog_retention_limit": 200,
             "backlog_summary_threshold": 10,
@@ -129,14 +130,12 @@ class QQAutoReplyConfigStore:
             # 回溯补回参数
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
-            "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
             # 疲劳系统参数（KiraAI-style 动态行为约束）
             "fatigue_enabled": True,
             "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
             "fatigue_circadian_low_hour": 3,         # 昼夜节律低谷时间
             "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
             "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
-            "proactive_silence_seconds": 300,         # 焦点群沉默多久后主动发言（秒），0=禁用
             # 群聊长期记忆显式 opt-in。成员记忆会增加按成员分桶的提取调用，
             # 因此独立开关且默认关闭。
             "group_memory_enabled": False,
