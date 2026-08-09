@@ -973,7 +973,8 @@ class QQSettingsService:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
         group_attention_max_score = kwargs.get("group_attention_max_score")
         if group_attention_max_score is not None:
-            self.plugin._qq_settings["group_attention_max_score"] = self._clamp_attention_float(group_attention_max_score, "group_attention_max_score", floor=1.0)
+            # 上限与前端 max=10、config 默认 10.0 对齐
+            self.plugin._qq_settings["group_attention_max_score"] = self._clamp_attention_float(group_attention_max_score, "group_attention_max_score", floor=1.0, ceiling=10.0)
         group_attention_focus_threshold = kwargs.get("group_attention_focus_threshold")
         if group_attention_focus_threshold is not None:
             self.plugin._qq_settings["group_attention_focus_threshold"] = self._clamp_attention_float(group_attention_focus_threshold, "group_attention_focus_threshold", floor=0.1)
