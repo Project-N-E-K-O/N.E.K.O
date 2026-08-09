@@ -119,6 +119,21 @@ export type ShipCatalogState = {
   }
 }
 
+export type ShotSummary = {
+  shot_id?: string
+  /** Wall-clock seconds, ready for `formatClock`. */
+  captured_at?: number
+  size_bytes?: number
+}
+
+export type ScreenshotState = {
+  enabled?: boolean
+  min_interval_seconds?: number
+  retain_count?: number
+  cooldown_remaining_seconds?: number
+  recent?: ShotSummary[]
+}
+
 export type WowsConfigView = {
   dry_run?: boolean
   channel_mode?: string
@@ -221,6 +236,7 @@ export type DashboardState = {
   arbiter?: ArbiterState
   dispatcher?: DispatcherState
   context_injected?: boolean
+  screenshot?: ScreenshotState
   ship_catalog?: ShipCatalogState
   documents?: DocumentsState
   prompts?: PromptsState

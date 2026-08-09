@@ -23,6 +23,8 @@ import asyncio
 import os
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from utils.screenshot_utils import analyze_image_with_vision_model
+from utils.vision_capability import model_supports_vision
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
@@ -108,10 +110,69 @@ class ToolCallingMixin:
 
     async def _on_tool_call(self, call: ToolCall) -> ToolResult:
         """Bridge invoked by both clients when the model emits a tool
-        call. Just forwards to the registry; the registry is process-
-        global and outlives any single session.
+        call. Forwards to the registry (process-global, outliving any
+        single session), then routes any images the tool returned.
         """
-        return await self.tool_registry.execute(call)
+        result = await self.tool_registry.execute(call)
+        if result.images:
+            await self._route_tool_images(result)
+        return result
+
+    async def _route_tool_images(self, result: ToolResult) -> None:
+        """Decide how a tool's pictures reach the model, and degrade if needed.
+
+        This is the single place that judgement lives, because it is the one
+        choke point both clients share. Doing it per-plugin would mean every
+        plugin reimplementing the fallback — and a plugin cannot see which
+        model the session is running anyway.
+
+        Pixels survive only for an offline session on a vision-capable model;
+        ``_astream_openai_with_tools`` injects them as a one-shot multimodal
+        message. Otherwise they are transcribed here and the list is cleared,
+        so no downstream code has to re-check.
+
+        Realtime always transcribes: its ``function_call_output`` item carries
+        a string, so there is nowhere to put an image.
+        """
+        if isinstance(self.session, OmniRealtimeClient):
+            reason = "realtime session"
+        else:
+            model = str(getattr(self.session, "model", "") or "")
+            if model_supports_vision(model):
+                return
+            reason = f"model {model!r} has no vision"
+
+        descriptions = []
+        for image in result.images:
+            descriptions.append(await self._describe_tool_image(image))
+        logger.info(
+            "Tool '%s': transcribed %d image(s) to text (%s)",
+            result.name, len(descriptions), reason,
+        )
+        result.images = []
+        result.merge_into_output(_image_descriptions=descriptions)
+
+    async def _describe_tool_image(self, image) -> str:
+        """Run one image through the vision model, never raising.
+
+        The caller is mid tool-call with the conversation model waiting, so a
+        vision outage has to become a sentence the character can say rather
+        than an exception. Silence would be worse than either: she would
+        answer as though she had looked.
+        """
+        try:
+            description = await analyze_image_with_vision_model(
+                image.data_b64,
+                extra_instruction=image.vision_prompt,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Tool image transcription failed: %s: %s", type(e).__name__, e)
+            description = None
+        if description:
+            return description
+        return "（画面无法解读：未配置视觉模型或解析失败）"
 
     # ------------------------------------------------------------------
     # 内置 pseudo 工具：recall_memory

@@ -162,7 +162,10 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
                     actions={props.actions || []}
                     busy={busy}
                     t={props.t}
+                    locale={props.locale}
                     onSetDryRun={(value) => call("set_dry_run", { value })}
+                    onSetScreenshotEnabled={(value) =>
+                      call("set_screenshot_enabled", { value })}
                   />
                 ),
               },

@@ -143,6 +143,14 @@ class WowsConfig:
     official_api_timeout_seconds: float = 5.0
     official_api_cache_ttl_seconds: float = 300.0
 
+    # --- proactive screenshots ---
+    # Off by default, and more emphatically so than the official API: this one
+    # captures the screen, writes JPEGs to disk, and ships the frame to a model
+    # provider. It only turns on when the user says so on the panel.
+    screenshot_enabled: bool = False
+    screenshot_min_interval_seconds: float = 15.0
+    screenshot_retain_count: int = 20
+
     # --- tactical documents ---
     tactics_max_file_bytes: int = 8 * 1024 * 1024
     tactics_max_documents: int = 500
@@ -274,6 +282,12 @@ class WowsConfig:
             "official_api_timeout_seconds", 5.0, 0.5, 30.0)
         cfg.official_api_cache_ttl_seconds = number(
             "official_api_cache_ttl_seconds", 300.0, 0.0, 3600.0)
+
+        cfg.screenshot_enabled = flag("screenshot_enabled", False)
+        cfg.screenshot_min_interval_seconds = number(
+            "screenshot_min_interval_seconds", 15.0, 0.0, 600.0)
+        cfg.screenshot_retain_count = int(number(
+            "screenshot_retain_count", 20, 1, 100))
 
         cfg.tactics_max_file_bytes = int(number(
             "tactics_max_file_bytes", 8 * 1024 * 1024, 4096, 64 * 1024 * 1024))

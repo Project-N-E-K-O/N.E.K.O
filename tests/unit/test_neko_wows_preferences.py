@@ -72,18 +72,33 @@ def outcomes(decision, event_id):
 
 
 class _ConfigSource:
-    def __init__(self, dry_run):
+    def __init__(self, dry_run, *, screenshot_enabled=False):
         self.dry_run = dry_run
+        self.screenshot_enabled = screenshot_enabled
 
     async def dump(self):
-        return {"neko_wows": {"dry_run": self.dry_run}}
+        return {"neko_wows": {
+            "dry_run": self.dry_run,
+            "screenshot_enabled": self.screenshot_enabled,
+        }}
 
 
 class _ReloadTarget:
-    def __init__(self, *, current, configured):
+    def __init__(
+        self,
+        *,
+        current,
+        configured,
+        current_screenshot_enabled=False,
+        configured_screenshot_enabled=False,
+    ):
         self.cfg = WowsConfig()
         self.cfg.dry_run = current
-        self.config = _ConfigSource(configured)
+        self.cfg.screenshot_enabled = current_screenshot_enabled
+        self.config = _ConfigSource(
+            configured,
+            screenshot_enabled=configured_screenshot_enabled,
+        )
         self._preference_lock = asyncio.Lock()
         self._pipeline_lock = threading.RLock()
         self.logger = type("Logger", (), {"warning": lambda *_: None})()
@@ -106,6 +121,29 @@ def test_hot_reload_preserves_the_explicit_session_dry_run_choice():
     target = _ReloadTarget(current=False, configured=True)
     cfg = asyncio.run(NekoWowsPlugin._reload_config(target))
     assert cfg.dry_run is False
+
+
+def test_startup_config_reload_always_disables_screenshots():
+    target = _ReloadTarget(
+        current=False,
+        configured=False,
+        current_screenshot_enabled=True,
+        configured_screenshot_enabled=True,
+    )
+    cfg = asyncio.run(
+        NekoWowsPlugin._reload_config(target, force_dry_run=True))
+    assert cfg.screenshot_enabled is False
+
+
+def test_hot_reload_preserves_the_explicit_session_screenshot_choice():
+    target = _ReloadTarget(
+        current=True,
+        configured=True,
+        current_screenshot_enabled=True,
+        configured_screenshot_enabled=False,
+    )
+    cfg = asyncio.run(NekoWowsPlugin._reload_config(target))
+    assert cfg.screenshot_enabled is True
 
 
 # --- category and lane switches ------------------------------------------
@@ -419,6 +457,7 @@ def test_apply_config_updates_ship_catalog_context_under_pipeline_lock():
     target.importer = _GuardedDependency(target._pipeline_lock)
     target.ship_context = _GuardedDependency(target._pipeline_lock)
     target.official_api = _GuardedDependency(target._pipeline_lock)
+    target.screenshots = _GuardedDependency(target._pipeline_lock)
     target.tactics = NullTacticsRepository()
     target._blocked_signature = ()
     cfg = WowsConfig(ship_catalog_enabled=False)

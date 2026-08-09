@@ -126,6 +126,23 @@ class ToolCall:
 
 
 @dataclass
+class ToolImage:
+    """One picture a tool wants the model to see.
+
+    ``data_b64`` is raw base64 with no ``data:`` prefix. ``vision_prompt``
+    says what the model should look for, and is deliberately used by both
+    delivery paths: it becomes the text part next to the image when the
+    picture is injected directly, and the extra instruction handed to the
+    vision model when the picture has to be transcribed instead. One
+    sentence, so the two paths cannot drift apart.
+    """
+
+    data_b64: str
+    mime: str = "image/jpeg"
+    vision_prompt: str = ""
+
+
+@dataclass
 class ToolResult:
     """Outcome of executing a ``ToolCall``."""
 
@@ -137,6 +154,12 @@ class ToolResult:
     output: Any
     is_error: bool = False
     error_message: str = ""
+    # Pictures ride beside ``output``, never inside it: they must not be
+    # serialized into the string the model reads. ``LLMSessionManager.
+    # _on_tool_call`` decides whether they are injected as a multimodal
+    # message or transcribed into text, and clears the list in the latter
+    # case.
+    images: List["ToolImage"] = field(default_factory=list)
 
     def output_as_json_string(self) -> str:
         """Render ``output`` as the JSON string that OpenAI Realtime / GLM /
@@ -147,6 +170,22 @@ class ToolResult:
             return json.dumps(self.output, ensure_ascii=False)
         except (TypeError, ValueError):
             return json.dumps({"result": str(self.output)}, ensure_ascii=False)
+
+    def merge_into_output(self, **fields: Any) -> None:
+        """Add fields to ``output``, normalizing it to a dict first.
+
+        ``output`` is whatever the tool returned — a plugin may well hand
+        back a bare string. Non-dict payloads are wrapped as
+        ``{"result": <original>}`` so there is one shape for every caller
+        that needs to annotate a result (image warnings, transcriptions).
+
+        Normalization runs even with no fields to add, so the payload shape
+        does not depend on whether the caller happened to have something to
+        say.
+        """
+        if not isinstance(self.output, dict):
+            self.output = {"result": self.output}
+        self.output.update(fields)
 
 
 # Callback shape exposed to the clients. Clients invoke this when the

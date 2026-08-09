@@ -14,15 +14,17 @@ import {
 } from "@neko/plugin-ui"
 import type { HostedAction } from "@neko/plugin-ui"
 
-import { formatCount } from "./format"
+import { formatClock, formatCount } from "./format"
 import type { DashboardState, Translate } from "./types"
 
 export function DiagnosticsSection(props: {
   state: DashboardState
   actions: HostedAction[]
   onSetDryRun: (value: boolean) => void
+  onSetScreenshotEnabled: (value: boolean) => void
   busy: boolean
   t: Translate
+  locale?: string
 }) {
   const { t } = props
   const state = props.state || {}
@@ -31,6 +33,8 @@ export function DiagnosticsSection(props: {
   const arbiter = state.arbiter || {}
   const catalog = state.ship_catalog || {}
   const officialTool = catalog.official_tool || {}
+  const screenshot = state.screenshot || {}
+  const recentShots = screenshot.recent || []
   const paused = Boolean(dispatcher.paused || arbiter.paused)
   const findAction = (id: string) =>
     (props.actions || []).find((action) => action.id === id)
@@ -144,6 +148,61 @@ export function DiagnosticsSection(props: {
               [t("diagnostics.catalog.cacheMisses")]: formatCount(officialTool.cache_misses, t),
             }}
           />
+        </Stack>
+      </Card>
+
+      <Card title={t("diagnostics.screenshot.title")}>
+        <Stack gap={10}>
+          <Switch
+            checked={Boolean(screenshot.enabled)}
+            disabled={props.busy}
+            label={t("diagnostics.screenshot.enable")}
+            onChange={(checked) => props.onSetScreenshotEnabled(checked)}
+          />
+          {screenshot.enabled ? (
+            <Warning>{t("diagnostics.screenshot.privacyWarning")}</Warning>
+          ) : (
+            <Text>{t("diagnostics.screenshot.disabledHelp")}</Text>
+          )}
+          {screenshot.enabled ? (
+            <>
+              <KeyValue
+                data={{
+                  [t("diagnostics.screenshot.interval")]:
+                    `${screenshot.min_interval_seconds ?? "—"}s`,
+                  [t("diagnostics.screenshot.cooldown")]:
+                    `${screenshot.cooldown_remaining_seconds ?? 0}s`,
+                  [t("diagnostics.screenshot.retain")]:
+                    formatCount(screenshot.retain_count, t),
+                }}
+              />
+              {findAction("capture_screenshot_now") ? (
+                <Inline gap={8} wrap>
+                  <ActionButton
+                    action={findAction("capture_screenshot_now")}
+                    tone="info"
+                    refresh
+                  >
+                    {t("diagnostics.screenshot.captureNow")}
+                  </ActionButton>
+                </Inline>
+              ) : null}
+              {recentShots.length ? (
+                <KeyValue
+                  data={Object.fromEntries(
+                    recentShots.map((shot) => [
+                      shot.shot_id || "—",
+                      `${formatClock(shot.captured_at, props.locale)} · ${Math.round(
+                        (shot.size_bytes || 0) / 1024
+                      )} KB`,
+                    ])
+                  )}
+                />
+              ) : (
+                <Text>{t("diagnostics.screenshot.empty")}</Text>
+              )}
+            </>
+          ) : null}
         </Stack>
       </Card>
 

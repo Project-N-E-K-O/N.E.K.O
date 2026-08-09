@@ -489,13 +489,15 @@ def test_numeric_official_application_error_is_unauthorized():
 
 
 def test_plugin_declares_exactly_one_official_lookup_tool():
+    """Going online is the one thing this plugin must not do by accident, so
+    there is exactly one tool that can — the rest are local-only."""
     plugin = object.__new__(NekoWowsPlugin)
 
     tools = collect_llm_tool_methods(plugin)
 
-    assert [meta.name for meta, _method in tools] == [
-        "wows_query_ship_official"]
-    meta = tools[0][0]
+    official = [meta for meta, _method in tools if "official" in meta.name]
+    assert [meta.name for meta in official] == ["wows_query_ship_official"]
+    meta = official[0]
     assert meta.parameters["required"] == ["ship"]
     assert meta.parameters["properties"]["configuration"]["enum"] == ["top"]
 

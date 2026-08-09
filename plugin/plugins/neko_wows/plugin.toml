@@ -108,6 +108,13 @@ official_api_language = "zh-cn"
 official_api_timeout_seconds = 5.0
 official_api_cache_ttl_seconds = 300.0
 
+# 主动截屏。她可以自己决定何时截取战舰世界画面来判断战局。默认关闭：这个功能
+# 会截取屏幕、把 JPEG 写进插件数据目录、并把画面发给模型厂商，必须由用户在面板
+# 上明确打开。命中最短间隔时工具返回 rate_limited，不会硬失败。
+screenshot_enabled = false
+screenshot_min_interval_seconds = 15.0
+screenshot_retain_count = 20
+
 # 战术文档库。存储配额可以放很大，但排序索引单独设上限：超出后文档仍然可以
 # 按 front matter 标签检索，只是不再参与 BM25 排序，面板会显示索引覆盖率。
 tactics_max_file_bytes = 8388608

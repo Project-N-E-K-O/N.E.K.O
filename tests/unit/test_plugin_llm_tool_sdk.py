@@ -423,6 +423,84 @@ async def test_callback_route_passes_through_error_shape():
     assert out == {"output": {"reason": "no_data"}, "is_error": True, "error": "NO_DATA"}
 
 
+async def _call_with_handler_result(handler_result):
+    """Run the callback route against a handler returning ``handler_result``."""
+    from plugin.core.state import state
+    from plugin.server.messaging import llm_tool_registry
+    from plugin.server.routes.llm_tools import llm_tool_callback
+
+    async with llm_tool_registry._lock:
+        llm_tool_registry._plugin_tools["p"]["t"] = {"timeout_seconds": 30.0}
+
+    class FakeHost:
+        async def trigger(self, entry_id, args, timeout):
+            return handler_result
+
+    state.plugin_hosts["p"] = FakeHost()
+    try:
+        return await llm_tool_callback(
+            plugin_id="p", tool_name="t",
+            body={"name": "t", "arguments": {}, "call_id": "c", "raw_arguments": "{}"},
+        )
+    finally:
+        state.plugin_hosts.pop("p", None)
+        async with llm_tool_registry._lock:
+            llm_tool_registry._plugin_tools.pop("p", None)
+
+
+@pytest.mark.asyncio
+async def test_callback_route_passes_through_images():
+    out = await _call_with_handler_result({
+        "output": {"shot_id": "shot_1"},
+        "is_error": False,
+        "images": [{"data_b64": "QUJD", "mime": "image/jpeg", "vision_prompt": "look"}],
+    })
+    assert out == {
+        "output": {"shot_id": "shot_1"},
+        "is_error": False,
+        "images": [{"data_b64": "QUJD", "mime": "image/jpeg", "vision_prompt": "look"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_callback_route_accepts_images_without_is_error():
+    """``images`` alone is enough to mark the envelope shape — a handler
+    returning pixels has no reason to also spell out ``is_error: False``."""
+    out = await _call_with_handler_result({
+        "output": {"ok": True},
+        "images": [{"data_b64": "QUJD"}],
+    })
+    assert out["is_error"] is False
+    assert out["output"] == {"ok": True}
+    assert out["images"] == [{"data_b64": "QUJD"}]
+
+
+@pytest.mark.asyncio
+async def test_callback_route_omits_images_key_when_there_are_none():
+    """Every pre-existing plugin must keep producing a byte-identical
+    response body; an empty ``images: []`` would be a silent wire change."""
+    out = await _call_with_handler_result({"output": {"ok": True}, "is_error": False})
+    assert "images" not in out
+
+
+@pytest.mark.asyncio
+async def test_callback_route_still_wraps_a_bare_dict():
+    """A plain dict that merely happens to contain ``output`` is data, not
+    an envelope — it needs ``is_error`` or ``images`` to be recognized."""
+    out = await _call_with_handler_result({"output": "just data"})
+    assert out == {"output": {"output": "just data"}, "is_error": False}
+
+
+@pytest.mark.asyncio
+async def test_callback_route_rejects_non_list_images():
+    out = await _call_with_handler_result({
+        "output": {"ok": True},
+        "is_error": False,
+        "images": "not a list",
+    })
+    assert "images" not in out
+
+
 @pytest.mark.asyncio
 async def test_register_remote_tool_skips_local_tracking_on_ok_false(monkeypatch):
     """``main_server`` can return HTTP 200 with body ``{"ok": false}``

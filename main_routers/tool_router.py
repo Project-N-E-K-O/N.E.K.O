@@ -73,11 +73,70 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
-from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from main_logic.tool_calling import ToolCall, ToolDefinition, ToolImage, ToolResult
 from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
+
+# Ceilings on the image channel of a tool callback. A plugin that hands back
+# a 4K frame would stall the whole tool loop (the payload rides a synchronous
+# HTTP hop, then a model request), so the limit is enforced here rather than
+# trusted to each plugin. Rejected images are dropped and reported in the
+# tool's output so the model knows a picture went missing instead of silently
+# reasoning without it.
+_MAX_TOOL_IMAGE_B64_BYTES = 2 * 1024 * 1024
+_MAX_TOOL_IMAGES = 2
+_ALLOWED_TOOL_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
+
+
+def _parse_tool_images(body: Dict[str, Any]) -> Tuple[List[ToolImage], List[str]]:
+    """Extract the optional ``images`` array from a plugin callback body.
+
+    Returns the accepted images plus human-readable warnings for whatever was
+    rejected. A body with no ``images`` key yields ``([], [])`` — that is the
+    entire backward-compatibility contract for plugins written before the
+    image channel existed.
+    """
+    raw = body.get("images")
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["tool images must be a list; ignored"]
+
+    images: List[ToolImage] = []
+    warnings: List[str] = []
+    for index, entry in enumerate(raw):
+        if len(images) >= _MAX_TOOL_IMAGES:
+            warnings.append(
+                f"a tool may return at most {_MAX_TOOL_IMAGES} image(s); "
+                f"{len(raw) - _MAX_TOOL_IMAGES} dropped"
+            )
+            break
+        if not isinstance(entry, dict):
+            warnings.append(f"image #{index} is not an object; dropped")
+            continue
+        data_b64 = entry.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            warnings.append(f"image #{index} has empty data_b64; dropped")
+            continue
+        if len(data_b64) > _MAX_TOOL_IMAGE_B64_BYTES:
+            warnings.append(
+                f"image #{index} is too large "
+                f"({len(data_b64)} > {_MAX_TOOL_IMAGE_B64_BYTES} base64 bytes); dropped"
+            )
+            continue
+        mime = entry.get("mime") or "image/jpeg"
+        if not isinstance(mime, str) or mime not in _ALLOWED_TOOL_IMAGE_MIMES:
+            warnings.append(f"image #{index} has unsupported mime {mime!r}; dropped")
+            continue
+        vision_prompt = entry.get("vision_prompt")
+        images.append(ToolImage(
+            data_b64=data_b64,
+            mime=mime,
+            vision_prompt=vision_prompt if isinstance(vision_prompt, str) else "",
+        ))
+    return images, warnings
 
 
 def _validate_local_callback_url(url: str) -> str:
@@ -388,13 +447,22 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         body = {"output": resp.text}
     if not isinstance(body, dict):
         body = {"output": body}
-    return ToolResult(
+    images, image_warnings = _parse_tool_images(body)
+    result = ToolResult(
         call_id=call.call_id,
         name=call.name,
         output=body.get("output", body),
         is_error=bool(body.get("is_error", False)),
         error_message=str(body.get("error") or "") if body.get("is_error") else "",
+        images=images,
     )
+    if image_warnings:
+        logger.warning(
+            "remote tool '%s' returned %d unusable image(s): %s",
+            call.name, len(image_warnings), "; ".join(image_warnings),
+        )
+        result.merge_into_output(_image_warnings=image_warnings)
+    return result
 
 
 def _ensure_dispatcher_bound(role_keys) -> None:

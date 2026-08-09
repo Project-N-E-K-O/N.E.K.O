@@ -761,6 +761,11 @@ class _GenaiMixin:
                         "name": tc_name,
                         "content": result.output_as_json_string(),
                     })
+                    # Symmetric with the OpenAI-compat path. The multimodal
+                    # user turn it appends converts cleanly here because
+                    # ``_genai_parts_from_content`` already maps
+                    # ``image_url`` data URLs onto ``inline_data`` parts.
+                    self._append_tool_result_images(messages, result)
                 # Sentinel：与 OpenAI 路径对偶，告诉上游 stream_text 把
                 # final-segment buffer 清掉（pre-tool 文本已被持久化进
                 # assistant turn 的 content 字段）。

@@ -102,9 +102,12 @@ from .ship_data.official_api import (
 )
 from .ship_data.resolver import ShipResolver
 from .ship_data.store import ShipCatalogStore
+from .vision.store import ShotStore
+from .vision.tool import ScreenshotService, facts_to_telemetry
 
 CONFIG_SECTION = "neko_wows"
 KNOWLEDGE_DB_NAME = "tactical_knowledge.db"
+SCREENSHOT_DIR_NAME = "screenshots"
 
 STORE_CHANNEL_MODE = "channel_mode"
 STORE_INTRUSION_SETTINGS = "intrusion_settings"
@@ -186,6 +189,13 @@ class NekoWowsPlugin(NekoPluginBase):
             timeout_seconds=self.cfg.official_api_timeout_seconds,
             cache_ttl_seconds=self.cfg.official_api_cache_ttl_seconds,
         )
+        self.shots = ShotStore(
+            self.data_path(SCREENSHOT_DIR_NAME),
+            self.cfg.screenshot_retain_count,
+            logger=self.logger,
+        )
+        self.screenshots = ScreenshotService(
+            self.cfg, self.shots, self._telemetry_snapshot, logger=self.logger)
 
         # A plain sqlite3 store rather than the SDK's async `self.db`: retrieval
         # happens inside `_evaluate` on the transport thread, which cannot await.
@@ -234,9 +244,15 @@ class NekoWowsPlugin(NekoPluginBase):
             # deliberately not among them, so a stale store cannot enable output.
             await self._apply_stored_preferences(cfg)
             with self._pipeline_lock:
-                # Real output is a session choice. Startup always returns to the
-                # safety default, while hot reload preserves the panel choice.
+                # Output and screen capture are session choices. Startup always
+                # returns to their safety defaults, while hot reload preserves
+                # the explicit panel choices.
                 cfg.dry_run = True if force_dry_run else bool(self.cfg.dry_run)
+                cfg.screenshot_enabled = (
+                    False
+                    if force_dry_run
+                    else bool(self.cfg.screenshot_enabled)
+                )
                 self._apply_config(cfg)
             return cfg
 
@@ -298,6 +314,7 @@ class NekoWowsPlugin(NekoPluginBase):
             self.dispatcher.apply_config(cfg)
             self.ship_context.apply_config(cfg)
             self.official_api.apply_config(cfg)
+            self.screenshots.apply_config(cfg)
             self.transport.apply_config(cfg)
             self.importer.apply_config(cfg)
             if isinstance(self.tactics, WowsTacticsRepository):
@@ -308,6 +325,20 @@ class NekoWowsPlugin(NekoPluginBase):
                 # keeping them would mix two rule sets in one battle.
                 self.registry = self._build_registry()
                 self._blocked_signature = ()
+
+    def _telemetry_snapshot(self) -> dict[str, Any]:
+        """The exact numbers to pair with a screenshot.
+
+        Read under the state lock because the transport thread rewrites
+        ``_latest`` on every frame, and a tool call arrives on the host's
+        event loop.
+        """
+        with self._state_lock:
+            latest = self._latest
+        if latest is None:
+            return {"in_battle": False}
+        _snapshot, facts = latest
+        return facts_to_telemetry(facts)
 
     @staticmethod
     def _detection_signature(cfg: WowsConfig) -> tuple:
@@ -392,6 +423,8 @@ class NekoWowsPlugin(NekoPluginBase):
         self.context_injector.restore(
             WOWS_RESTORE_INSTRUCTIONS, dry_run=self.cfg.dry_run)
         self.ship_context.reset("shutdown")
+        # Frames of the user's screen do not outlive the plugin.
+        self.shots.clear()
         self.knowledge.close()
         self.logger.info("neko_wows shutdown")
         return Ok({"status": "shutdown", "service": status.as_dict()})
@@ -732,6 +765,7 @@ class NekoWowsPlugin(NekoPluginBase):
             "arbiter": self.arbiter.stats(),
             "dispatcher": self.dispatcher.stats(),
             "context_injected": self.context_injector.injected,
+            "screenshot": self.screenshots.status(),
             "ship_catalog": self._ship_catalog_payload(),
             "documents": self._documents_payload(),
             "prompts": self._prompts_payload(bundle),
@@ -915,6 +949,61 @@ class NekoWowsPlugin(NekoPluginBase):
     async def clear_timeline(self, **_):
         self.timeline.clear()
         return Ok({"cleared": True})
+
+    # ------------------------------------------------------------------ 截屏
+    @ui.action(id="set_screenshot_enabled", label="主动截屏", tone="warning",
+               group="diagnostics", order=70, refresh_context=True)
+    @plugin_entry(
+        id="set_screenshot_enabled",
+        name="开关主动截屏",
+        description=(
+            "允许猫娘自己截取战舰世界画面判断战局。会截屏、把 JPEG 写进插件"
+            "数据目录、并把画面发给模型厂商，默认关闭。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"value": {"type": "boolean", "default": False}},
+        },
+    )
+    async def set_screenshot_enabled(self, value: bool = False, **_):
+        enabled = bool(value)
+        with self._pipeline_lock:
+            self.cfg.screenshot_enabled = enabled
+            self.screenshots.apply_config(self.cfg)
+            if not enabled:
+                # Turning it off deletes the frames too: leaving screenshots of
+                # the user's desktop on disk after they revoked permission
+                # would be the wrong reading of "off".
+                removed = self.shots.clear()
+            else:
+                removed = 0
+        # Session-only, mirroring set_dry_run: capturing the screen is an
+        # explicit act each time the plugin starts.
+        return Ok({
+            "screenshot_enabled": enabled,
+            "cleared_shots": removed,
+            "session_only": True,
+        })
+
+    @ui.action(id="capture_screenshot_now", label="截一张看看", tone="info",
+               group="diagnostics", order=80, refresh_context=True)
+    @plugin_entry(
+        id="capture_screenshot_now",
+        name="立即截图",
+        description="手动截一张，用于真机校准：确认定位到的是游戏窗口、画面拿得到。",
+    )
+    async def capture_screenshot_now(self, **_):
+        result = await asyncio.to_thread(self.screenshots.look)
+        output = result.get("output", {})
+        if not output.get("ok"):
+            return Err(SdkError(f"截图失败：{output.get('reason', 'unknown')}"))
+        # The panel wants the metadata, never the pixels — the frame is on
+        # disk and the dashboard payload lists it.
+        return Ok({
+            "shot_id": output.get("shot_id"),
+            "source": output.get("source"),
+            "window_title": output.get("window_title"),
+        })
 
     # ------------------------------------------------------------------ 文档
     @ui.action(id="pick_documents", label="选择文件导入", tone="primary",
@@ -1341,6 +1430,46 @@ class NekoWowsPlugin(NekoPluginBase):
             configuration=configuration,
             language=selected_language,
         )
+
+    # ------------------------------------------------------------------ 看战场
+    @llm_tool(
+        name="wows_look_at_battle",
+        description=(
+            "截取当前战舰世界画面看一眼战局。用在需要判断态势的时候："
+            "用户问该怎么打、要不要转向、能不能上；或者你想主动点评局势。"
+            "返回画面解读加上精确遥测（血量、存活数、最近敌舰方位距离）。"
+            "画面开销不小，最短 15 秒才能截一次，别连着调。"
+        ),
+        parameters={"type": "object", "properties": {}},
+        timeout=40.0,
+    )
+    async def wows_look_at_battle(self, **_) -> dict[str, Any]:
+        # Capture blocks on window enumeration and a desktop grab; keep both
+        # off the host event loop.
+        return await asyncio.to_thread(self.screenshots.look)
+
+    @llm_tool(
+        name="wows_recall_screenshot",
+        description=(
+            "重新查看之前截过的某张战场画面。截图只在产生它的那一轮可见，"
+            "之后要再看就用这个，传当时返回的 shot_id。只保留最近若干张，"
+            "太旧的会失效。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "shot_id": {
+                    "type": "string",
+                    "description": "之前 wows_look_at_battle 返回的句柄，形如 shot_7。",
+                },
+            },
+            "required": ["shot_id"],
+            "additionalProperties": False,
+        },
+        timeout=20.0,
+    )
+    async def wows_recall_screenshot(self, shot_id: str = "", **_) -> dict[str, Any]:
+        return await asyncio.to_thread(self.screenshots.recall, shot_id)
 
     # ------------------------------------------------------------------ 内部
     def _adopt_revision(self, revision: dict[str, Any]) -> None:

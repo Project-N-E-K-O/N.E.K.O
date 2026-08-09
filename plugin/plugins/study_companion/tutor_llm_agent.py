@@ -379,30 +379,9 @@ class TutorLLMAgent:
 
     @staticmethod
     def _model_supports_vision(model: str) -> bool:
-        normalized = str(model or "").strip().lower()
-        if not normalized:
-            return False
-        if normalized.startswith("glm-") and re.search(
-            r"(?:^|[-_.])\d+(?:\.\d+)?v(?:[-_.]|$)",
-            normalized,
-        ):
-            return True
-        return any(
-            marker in normalized
-            for marker in (
-                "gpt-4o",
-                "gpt-4.1",
-                "gpt-4.5",
-                "gpt-5",
-                "vision",
-                "vl",
-                "qwen2.5-vl",
-                "qwen-vl",
-                "gemini",
-                "claude-3",
-                "claude-4",
-            )
-        )
+        from utils.vision_capability import model_supports_vision
+
+        return model_supports_vision(model)
 
     @staticmethod
     def _message_has_image_content(message: dict[str, Any]) -> bool:
