@@ -43,6 +43,9 @@ class _FakeAttention:
     def _minimum_threshold(self) -> float:
         return 1.0
 
+    def _focus_threshold(self) -> float:
+        return 4.0
+
     async def update_on_message(self, message: dict) -> None:
         self.calls.append(f"update_on_message:{message.get('group_id')}")
 
@@ -256,6 +259,9 @@ class _OrderSensitiveAttention:
 
     def _minimum_threshold(self) -> float:
         return 1.0
+
+    def _focus_threshold(self) -> float:
+        return 4.0
 
     def get_focus_group(self) -> str | None:
         self.calls.append("get_focus_group")

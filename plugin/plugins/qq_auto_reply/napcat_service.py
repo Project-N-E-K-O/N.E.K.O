@@ -132,6 +132,14 @@ class QQNapcatService:
             if self.has_hard_startup_error():
                 return False
             await asyncio.sleep(max(0.1, float(poll_interval or 0.5)))
+            # sleep 可能跨过 deadline 返回，期间 OneBot 可能已连上、或硬错误已写入；
+            # 回到循环顶再检查会因 while 条件已为 False 而退出，因此这里补一次终检，
+            # 避免把就绪误报为超时、或用超时错误覆盖真实启动错误。
+            if self.plugin.qq_client and self.plugin.qq_client.is_connected():
+                self.clear_startup_error()
+                return True
+            if self.has_hard_startup_error():
+                return False
         self._set_startup_error(self.TRANSIENT_TIMEOUT_ERROR)
         return False
 
@@ -173,9 +181,10 @@ class QQNapcatService:
             return
         configured_path = self.get_configured_napcat_path()
         if not configured_path:
-            # 未配置 napcat_directory：直接设错，避免 wait_for_onebot_ready
-            # 空轮询 20 秒让前端误报 timeout。
-            self._set_startup_error("未配置 NapCat 目录（napcat_directory）")
+            # 未配置 napcat_directory → 不自动启动 NapCat（用户可能手动启动）。
+            # 这不是硬失败：wait_for_onebot_ready 仍会轮询等待手动启动的
+            # OneBot 连上来。不能设硬错误，否则手动启动的 OneBot 也无法通过
+            # ensure_napcat 完成连接。
             return
         if self.plugin._napcat_process and self.plugin._napcat_process.returncode is None:
             return
