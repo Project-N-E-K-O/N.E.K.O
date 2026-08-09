@@ -68,6 +68,11 @@
     "forecast_timeout": "天气数据请求超时，请稍后重试",
     "unknown_weather": "未知({code})"
   },
+  "location": {
+    "assumption": "位置存在歧义；本次先按“{selected}”查询并返回结果。其他候选：{alternatives}。如对象不对，请直接补充城市、省份或国家后重试。",
+    "no_alternatives": "暂无其他候选",
+    "unavailable": "本次无法确定可查询的位置，因此没有执行位置查询。{detail}"
+  },
   "trip": {
     "distance": "直线距离",
     "recommended": "推荐",

@@ -12,7 +12,7 @@ from .._chat import push_lifekit_content
 from .._coerce import finite_float
 from .._contracts import AirQualityResult, CityParams
 from .._location import LocationPurpose
-from .._location_entry import location_failure_result
+from .._location_entry import apply_location_assumption, location_unavailable_result
 
 
 def _aqi_level(aqi: int) -> tuple[str, str]:
@@ -71,12 +71,7 @@ class AirQualityRouter(PluginRouter):
             purpose=LocationPurpose.AIR_QUALITY,
         )
         if not loc:
-            return location_failure_result(
-                loc_err,
-                i18n,
-                field_name="city",
-                requested_location=city or "",
-            )
+            return location_unavailable_result(loc_err, i18n)
 
         tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
 
@@ -125,7 +120,7 @@ class AirQualityRouter(PluginRouter):
 
         push_lifekit_content(plugin, blocks)
 
-        return Ok({
+        return Ok(apply_location_assumption({
             "status": "ready",
             "city": loc["city"],
             "summary": summary,
@@ -141,4 +136,4 @@ class AirQualityRouter(PluginRouter):
             },
             "advice": advice,
             "next_actions": ["get_weather", "travel_advice", "food_recommend"],
-        })
+        }, loc, i18n))

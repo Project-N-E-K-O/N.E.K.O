@@ -68,6 +68,11 @@
     "forecast_timeout": "Se agotó el tiempo de espera para la solicitud de datos meteorológicos. Vuelva a intentarlo.",
     "unknown_weather": "Desconocido ({code})"
   },
+  "location": {
+    "assumption": "La ubicación es ambigua. Este resultado usa «{selected}». Otras opciones: {alternatives}. Si no es el lugar correcto, añade una ciudad, región o país y vuelve a intentarlo.",
+    "no_alternatives": "no hay otras opciones",
+    "unavailable": "No se pudo determinar una ubicación utilizable, así que no se ejecutó la consulta. {detail}"
+  },
   "trip": {
     "distance": "Distancia",
     "recommended": "Recomendado",

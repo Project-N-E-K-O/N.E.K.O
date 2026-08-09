@@ -2,6 +2,13 @@
 
 基于地理位置的多功能生活服务。天气查询、逐小时预报、出行建议、路线规划、常用地点管理、附近 POI 搜索。
 
+## Location risk policy
+
+- Read-only entries choose one deterministic primary location when several usable candidates remain, execute the query, and disclose the assumption and alternatives in the summary.
+- Nearby results always come from one search center; candidates from different places are never mixed.
+- If no usable location exists, read-only entries return `status=unavailable` instead of a blocking clarification.
+- Location writes keep their existing confirmation behavior.
+
 ## Development
 
 This repository is meant to live at:

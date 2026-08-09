@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, RootModel, field_validator
 
@@ -23,6 +23,17 @@ class LifeKitModel(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class LocationRiskFields(LifeKitModel):
+    assumed: bool = False
+    assumed_location: str = ""
+    ambiguity_warning: str = ""
+
+
+class LocationUnavailableResult(LifeKitModel):
+    status: Literal["unavailable"]
+    summary: str = Field(..., min_length=1)
+
+
 class ClarificationResult(LifeKitModel):
     status: Literal["clarify"]
     summary: str = Field(..., min_length=1)
@@ -38,8 +49,10 @@ class ClarificationResult(LifeKitModel):
         return summary
 
 
-class ClarifiableResult(RootModel[Any]):
-    """Validated union of a complete ready result and a clarification result."""
+class ProjectedResult(RootModel[Any]):
+    """Root result that explicitly controls scalar projection to the host."""
+
+    projected_statuses: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -47,7 +60,7 @@ class ClarifiableResult(RootModel[Any]):
         schema = super().model_json_schema(*args, **kwargs)
         schema["properties"] = {
             "status": {
-                "enum": ["ready", "clarify"],
+                "enum": list(cls.projected_statuses),
                 "title": "Status",
                 "type": "string",
             },
@@ -67,6 +80,43 @@ class ClarifiableResult(RootModel[Any]):
     @property
     def choices(self) -> list[str]:
         return list(getattr(self.root, "choices", []))
+
+
+class ClarifiableResult(ProjectedResult):
+    """Validated union of a complete ready result and a clarification result."""
+
+    projected_statuses = ("ready", "clarify")
+
+
+class ReadOnlyLocationResult(ProjectedResult):
+    """A location query either executes or returns a non-blocking outcome."""
+
+    projected_statuses = ("ready", "unavailable")
+
+    @classmethod
+    def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        schema = super().model_json_schema(*args, **kwargs)
+        schema["properties"].update(
+            {
+                "assumed": {"title": "Assumed", "type": "boolean"},
+                "assumed_location": {
+                    "title": "Assumed Location",
+                    "type": "string",
+                },
+                "ambiguity_warning": {
+                    "title": "Ambiguity Warning",
+                    "type": "string",
+                },
+            }
+        )
+        schema["required"] = [
+            "status",
+            "summary",
+            "assumed",
+            "assumed_location",
+            "ambiguity_warning",
+        ]
+        return schema
 
 
 class SavedLocationModel(LifeKitModel):
@@ -138,7 +188,7 @@ class HourlyForecastParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class _HourlyForecastReadyResult(LifeKitModel):
+class _HourlyForecastReadyResult(LocationRiskFields):
     status: Literal["ready"]
     city: str
     summary: str
@@ -146,9 +196,9 @@ class _HourlyForecastReadyResult(LifeKitModel):
     total_hours: int
 
 
-class HourlyForecastResult(ClarifiableResult):
+class HourlyForecastResult(ReadOnlyLocationResult):
     root: Annotated[
-        _HourlyForecastReadyResult | ClarificationResult,
+        _HourlyForecastReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
     ]
 
@@ -186,7 +236,7 @@ class NearbyParams(LifeKitModel):
         return list(normalize_preference_hints(value))
 
 
-class _NearbyReadyResult(LifeKitModel):
+class _NearbyReadyResult(LocationRiskFields):
     status: Literal["ready"]
     summary: str
     request: str
@@ -196,25 +246,29 @@ class _NearbyReadyResult(LifeKitModel):
     provider: str | None = None
     weather_tip: str = ""
     location_groups: list[dict[str, Any]] = Field(default_factory=list)
-    ambiguity_warning: str = ""
     suggestion: str = ""
 
 
-class _NearbyUnavailableResult(LifeKitModel):
+class _NearbyUnavailableResult(LocationRiskFields):
     status: Literal["unavailable"]
     summary: str
     request: str
     searched_terms: list[str]
     results: list[dict[str, Any]] = Field(default_factory=list)
     count: int = 0
-    error_code: Literal["UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE"]
-    retriable: Literal[True] = True
+    error_code: Literal[
+        "UPSTREAM_TIMEOUT",
+        "UPSTREAM_UNAVAILABLE",
+        "LOCATION_REQUIRED",
+        "LOCATION_PROVIDER_UNAVAILABLE",
+    ]
+    retriable: bool = True
     location_groups: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class NearbyResult(ClarifiableResult):
+class NearbyResult(ReadOnlyLocationResult):
     root: Annotated[
-        _NearbyReadyResult | _NearbyUnavailableResult | ClarificationResult,
+        _NearbyReadyResult | _NearbyUnavailableResult,
         Field(discriminator="status"),
     ]
 
@@ -223,7 +277,7 @@ class NearbyResult(ClarifiableResult):
         schema = super().model_json_schema(*args, **kwargs)
         schema["properties"].update({
             "status": {
-                "enum": ["ready", "clarify", "unavailable"],
+                "enum": ["ready", "unavailable"],
                 "title": "Status",
                 "type": "string",
             },
@@ -244,7 +298,12 @@ class NearbyResult(ClarifiableResult):
                 "type": "array",
             },
             "error_code": {
-                "enum": ["UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE"],
+                "enum": [
+                    "UPSTREAM_TIMEOUT",
+                    "UPSTREAM_UNAVAILABLE",
+                    "LOCATION_REQUIRED",
+                    "LOCATION_PROVIDER_UNAVAILABLE",
+                ],
                 "title": "Error Code",
                 "type": "string",
             },
@@ -253,6 +312,9 @@ class NearbyResult(ClarifiableResult):
         schema["required"] = [
             "status",
             "summary",
+            "assumed",
+            "assumed_location",
+            "ambiguity_warning",
             "request",
             "searched_terms",
             "results",
@@ -273,7 +335,7 @@ class FoodRecommendParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class _FoodRecommendReadyResult(LifeKitModel):
+class _FoodRecommendReadyResult(LocationRiskFields):
     status: Literal["ready"]
     summary: str
     recommendations: list[dict[str, Any]]
@@ -283,9 +345,9 @@ class _FoodRecommendReadyResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class FoodRecommendResult(ClarifiableResult):
+class FoodRecommendResult(ReadOnlyLocationResult):
     root: Annotated[
-        _FoodRecommendReadyResult | ClarificationResult,
+        _FoodRecommendReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
     ]
 
@@ -315,7 +377,7 @@ class CityParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class _GetWeatherReadyResult(LifeKitModel):
+class _GetWeatherReadyResult(LocationRiskFields):
     status: Literal["ready"]
     city: str
     summary: str
@@ -325,14 +387,14 @@ class _GetWeatherReadyResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class GetWeatherResult(ClarifiableResult):
+class GetWeatherResult(ReadOnlyLocationResult):
     root: Annotated[
-        _GetWeatherReadyResult | ClarificationResult,
+        _GetWeatherReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
     ]
 
 
-class _AirQualityReadyResult(LifeKitModel):
+class _AirQualityReadyResult(LocationRiskFields):
     status: Literal["ready"]
     city: str
     summary: str
@@ -341,14 +403,14 @@ class _AirQualityReadyResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class AirQualityResult(ClarifiableResult):
+class AirQualityResult(ReadOnlyLocationResult):
     root: Annotated[
-        _AirQualityReadyResult | ClarificationResult,
+        _AirQualityReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
     ]
 
 
-class _TravelAdviceReadyResult(LifeKitModel):
+class _TravelAdviceReadyResult(LocationRiskFields):
     status: Literal["ready"]
     city: str
     summary: str
@@ -359,9 +421,9 @@ class _TravelAdviceReadyResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class TravelAdviceResult(ClarifiableResult):
+class TravelAdviceResult(ReadOnlyLocationResult):
     root: Annotated[
-        _TravelAdviceReadyResult | ClarificationResult,
+        _TravelAdviceReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
     ]
 
@@ -443,7 +505,7 @@ class TripAdviceParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class _TripAdviceReadyResult(LifeKitModel):
+class _TripAdviceReadyResult(LocationRiskFields):
     status: Literal["ready"]
     origin: str
     destination: str
@@ -456,8 +518,8 @@ class _TripAdviceReadyResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class TripAdviceResult(ClarifiableResult):
+class TripAdviceResult(ReadOnlyLocationResult):
     root: Annotated[
-        _TripAdviceReadyResult | ClarificationResult,
+        _TripAdviceReadyResult | LocationUnavailableResult,
         Field(discriminator="status"),
     ]

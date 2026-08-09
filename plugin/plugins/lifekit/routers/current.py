@@ -11,7 +11,7 @@ from .._api import daily_val
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, GetWeatherResult
 from .._location import LocationPurpose
-from .._location_entry import location_failure_result
+from .._location_entry import apply_location_assumption, location_unavailable_result
 
 
 class CurrentWeatherRouter(PluginRouter):
@@ -41,12 +41,7 @@ class CurrentWeatherRouter(PluginRouter):
 
         loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
-            return location_failure_result(
-                loc_err,
-                i18n,
-                field_name="city",
-                requested_location=city or "",
-            )
+            return location_unavailable_result(loc_err, i18n)
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
@@ -102,7 +97,7 @@ class CurrentWeatherRouter(PluginRouter):
             blocks.append({"type": "text", "text": "\n".join(forecast_lines)})
         push_lifekit_content(plugin, blocks)
 
-        return Ok({
+        return Ok(apply_location_assumption({
             "status": "ready",
             "city": loc["city"],
             "summary": summary,
@@ -110,4 +105,4 @@ class CurrentWeatherRouter(PluginRouter):
             "forecast": forecast,
             "vpn_detected": bool(loc.get("_vpn_detected")),
             "next_actions": ["travel_advice — 出行建议", "food_recommend — 美食推荐", "air_quality — 空气质量", "hourly_forecast — 逐小时预报"],
-        })
+        }, loc, i18n))

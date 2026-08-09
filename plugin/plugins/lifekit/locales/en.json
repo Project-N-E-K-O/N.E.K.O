@@ -68,6 +68,11 @@
     "forecast_timeout": "Weather data request timed out — please try again",
     "unknown_weather": "Unknown ({code})"
   },
+  "location": {
+    "assumption": "The location is ambiguous. This result uses '{selected}'. Other candidates: {alternatives}. If that is not the place you meant, retry with a city, region, or country.",
+    "no_alternatives": "no other candidates",
+    "unavailable": "No usable location could be determined, so this location query was not run. {detail}"
+  },
   "trip": {
     "distance": "Distance",
     "recommended": "Recommended",

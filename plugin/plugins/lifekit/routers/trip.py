@@ -12,7 +12,7 @@ from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
 from .._contracts import TripAdviceParams, TripAdviceResult
 from .._location import LocationPurpose
-from .._location_entry import location_failure_result
+from .._location_entry import apply_location_assumptions, location_unavailable_result
 
 
 class TripRouter(PluginRouter):
@@ -60,17 +60,7 @@ class TripRouter(PluginRouter):
             purpose=LocationPurpose.ROUTE_ORIGIN,
         )
         if not origin_loc:
-            return location_failure_result(
-                origin_err,
-                i18n,
-                field_name="origin",
-                requested_location=origin or "",
-                context={
-                    "origin": origin or "",
-                    "destination": destination,
-                    "mode": mode,
-                },
-            )
+            return location_unavailable_result(origin_err, i18n)
 
         # 解析终点
         dest_loc, dest_err = await plugin._resolve_location(
@@ -78,18 +68,7 @@ class TripRouter(PluginRouter):
             purpose=LocationPurpose.ROUTE_DESTINATION,
         )
         if not dest_loc:
-            return location_failure_result(
-                dest_err,
-                i18n,
-                field_name="destination",
-                requested_location=destination,
-                context={
-                    "origin": origin or origin_loc["city"],
-                    "destination": destination,
-                    "mode": mode,
-                    "resolved_origin": origin_loc["city"],
-                },
-            )
+            return location_unavailable_result(dest_err, i18n)
 
         # 直线距离
         dist_km = haversine_km(origin_loc["lat"], origin_loc["lon"], dest_loc["lat"], dest_loc["lon"])
@@ -162,7 +141,7 @@ class TripRouter(PluginRouter):
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
-        return Ok({
+        return Ok(apply_location_assumptions({
             "status": "ready",
             "origin": origin_loc["city"],
             "destination": dest_loc["city"],
@@ -178,7 +157,7 @@ class TripRouter(PluginRouter):
                 f"search_terms=[景点,公园,咖啡馆] location={dest_loc['city']} — 目的地附近搜索",
                 "currency_convert — 汇率换算",
             ],
-        })
+        }, (origin_loc, dest_loc), i18n))
 
 
 def _mode_label(mode: str) -> str:

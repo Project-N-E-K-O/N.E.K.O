@@ -5,13 +5,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app.agent_server.channels.user_plugin import _plugin_terminal_status
 from plugin.sdk.plugin import Err, Ok
 
+from plugin.plugins.lifekit import LifeKitPlugin
 from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
-    LocationProblem,
-    LocationPurpose,
+    LocationResolver,
 )
 from plugin.plugins.lifekit._api import GeocodeError
 from plugin.plugins.lifekit._contracts import (
@@ -60,34 +61,6 @@ class _ClarifiableLocationPlugin(_AmbiguousLocationPlugin):
         return None, self.error_key
 
 
-class _CandidateLocationPlugin(_AmbiguousLocationPlugin):
-    async def _resolve_location(self, *_: Any, **__: Any):
-        candidates = (
-            LocationCandidate(
-                display_name="吉林市",
-                latitude=43.85,
-                longitude=126.56,
-                country_code="CN",
-                admin1="吉林省",
-                precision="city",
-            ),
-            LocationCandidate(
-                display_name="吉林",
-                latitude=25.00,
-                longitude=121.89,
-                country_code="TW",
-                admin1="台湾",
-                precision="locality",
-            ),
-        )
-        return None, LocationProblem(
-            error_key="error.location_ambiguous",
-            requested_location="吉林",
-            purpose=LocationPurpose.WEATHER,
-            candidates=candidates,
-        )
-
-
 class _AmbiguousDestinationPlugin(_AmbiguousLocationPlugin):
     def __init__(self) -> None:
         super().__init__()
@@ -101,6 +74,9 @@ class _AmbiguousDestinationPlugin(_AmbiguousLocationPlugin):
 
 
 class _Logger:
+    def info(self, *_: Any, **__: Any) -> None:
+        return None
+
     def warning(self, *_: Any, **__: Any) -> None:
         return None
 
@@ -114,78 +90,94 @@ class _LocationStorePlugin(_AmbiguousLocationPlugin):
 
 
 @pytest.mark.asyncio
-async def test_weather_entry_requests_clarification_for_ambiguous_city() -> None:
+async def test_weather_returns_the_primary_same_named_city_with_risk_disclosed() -> None:
+    async def open_meteo_candidates(*_: Any, **__: Any):
+        return [
+            LocationCandidate(
+                display_name="吉林市",
+                latitude=43.85,
+                longitude=126.56,
+                country_code="CN",
+                admin1="Jilin Province",
+                precision="city",
+                source="open_meteo",
+            ),
+            LocationCandidate(
+                display_name="吉林",
+                latitude=25.00,
+                longitude=121.89,
+                country_code="TW",
+                admin1="台湾",
+                precision="city",
+                source="open_meteo",
+            ),
+        ]
+
+    async def no_nominatim_candidates(*_: Any, **__: Any):
+        return []
+
+    class _ReadOnlyWeatherPlugin:
+        plugin_id = "lifekit"
+        _resolve_location = LifeKitPlugin._resolve_location
+        logger = _Logger()
+
+        def __init__(self) -> None:
+            self._cfg = {"enable_geoip": False}
+            self._i18n = I18n(Path(__file__).resolve().parents[1] / "locales")
+            self._location_resolver = LocationResolver(
+                open_meteo=open_meteo_candidates,
+                nominatim=no_nominatim_candidates,
+            )
+
+        def _resolve_locale(self) -> None:
+            self._i18n.set_locale("zh-CN")
+
+        async def _get_weather_data(self, loc: dict[str, Any]):
+            assert loc["city"] == "吉林市"
+            return {
+                "current": {
+                    "weather_code": 0,
+                    "temperature_2m": 24,
+                    "apparent_temperature": 23,
+                    "relative_humidity_2m": 50,
+                    "wind_speed_10m": 8,
+                    "uv_index": 3,
+                },
+                "daily": {"time": []},
+            }, None
+
+        def _wmo_text(self, _: int) -> str:
+            return "晴"
+
+        def push_message(self, **_: Any) -> dict[str, bool]:
+            return {"ok": True}
+
     router = CurrentWeatherRouter()
-    router._bind(_AmbiguousLocationPlugin())
-
-    result = await router.get_weather(city="上海")
-
-    assert isinstance(result, Ok)
-    assert result.value["status"] == "clarify"
-    assert "补充城市、省份或国家" in result.value["summary"]
-    assert result.value["context"]["field"] == "city"
-    assert result.value["context"]["requested_location"] == "上海"
-
-
-@pytest.mark.asyncio
-async def test_location_clarification_preserves_candidate_context() -> None:
-    router = CurrentWeatherRouter()
-    router._bind(_CandidateLocationPlugin())
+    router._bind(_ReadOnlyWeatherPlugin())
 
     result = await router.get_weather(city="吉林")
 
     assert isinstance(result, Ok)
-    assert result.value["choices"] == ["吉林市 · 吉林省 · CN", "吉林 · 台湾 · TW"]
-    assert result.value["context"]["purpose"] == "weather"
-    first_candidate = result.value["context"]["candidates"][0]
-    assert first_candidate["id"]
-    assert {key: value for key, value in first_candidate.items() if key != "id"} == {
-        "display_name": "吉林市",
-        "country_code": "CN",
-        "admin1": "吉林省",
-        "admin2": "",
-        "precision": "city",
-    }
+    assert result.value["status"] == "ready"
+    assert result.value["city"] == "吉林市"
+    assert result.value["assumed"] is True
+    assert result.value["assumed_location"] == "吉林市 · Jilin Province · CN"
+    assert "吉林 · 台湾 · TW" in result.value["ambiguity_warning"]
+    assert result.value["ambiguity_warning"] in result.value["summary"]
 
 
 @pytest.mark.asyncio
-async def test_location_clarification_distinguishes_identical_candidate_labels() -> None:
-    candidates = tuple(
-        LocationCandidate(
-            display_name="Springfield",
-            latitude=latitude,
-            longitude=longitude,
-            country_code="US",
-            admin1="Illinois",
-            precision="locality",
-        )
-        for latitude, longitude in ((39.78, -89.64), (39.80, -89.62))
-    )
-
-    class _DuplicateCandidatePlugin(_AmbiguousLocationPlugin):
-        async def _resolve_location(self, *_: Any, **__: Any):
-            return None, LocationProblem(
-                error_key="error.location_ambiguous",
-                requested_location="Springfield",
-                purpose=LocationPurpose.WEATHER,
-                candidates=candidates,
-            )
-
+async def test_weather_without_any_location_returns_completed_unavailable() -> None:
     router = CurrentWeatherRouter()
-    router._bind(_DuplicateCandidatePlugin())
+    router._bind(_AmbiguousLocationPlugin())
 
-    result = await router.get_weather(city="Springfield")
+    result = await router.get_weather(city="不存在的模糊地点")
 
     assert isinstance(result, Ok)
-    assert len(set(result.value["choices"])) == 2
-    candidate_ids = [
-        item["id"] for item in result.value["context"]["candidates"]
-    ]
-    assert len(set(candidate_ids)) == 2
-    assert all(candidate_id in choice for candidate_id, choice in zip(
-        candidate_ids,
-        result.value["choices"],
-    ))
+    assert result.value["status"] == "unavailable"
+    assert result.value["summary"]
+    assert _plugin_terminal_status(True, result.value) == "completed"
+    GetWeatherResult.model_validate(result.value)
 
 
 @pytest.mark.parametrize(
@@ -207,7 +199,7 @@ async def test_location_clarification_distinguishes_identical_candidate_labels()
     ],
 )
 @pytest.mark.asyncio
-async def test_location_entries_request_clarification_instead_of_failing(
+async def test_read_only_location_entries_return_unavailable_instead_of_blocking(
     router_type: type,
     method_name: str,
     kwargs: dict[str, Any],
@@ -218,31 +210,9 @@ async def test_location_entries_request_clarification_instead_of_failing(
     result = await getattr(router, method_name)(**kwargs)
 
     assert isinstance(result, Ok)
-    assert result.value["status"] == "clarify"
-    assert "补充城市、省份或国家" in result.value["summary"]
-
-
-@pytest.mark.asyncio
-async def test_location_clarification_preserves_non_location_entry_parameters() -> None:
-    hourly = HourlyForecastRouter()
-    hourly._bind(_AmbiguousLocationPlugin())
-    hourly_result = await hourly.hourly_forecast(city="上海", hours=72)
-
-    food = FoodRecommendRouter()
-    food._bind(_AmbiguousLocationPlugin())
-    food_result = await food.food_recommend(
-        location="上海",
-        cuisine="日料",
-        scene="约会",
-        radius=4200,
-    )
-
-    assert isinstance(hourly_result, Ok)
-    assert hourly_result.value["context"]["hours"] == 72
-    assert isinstance(food_result, Ok)
-    assert food_result.value["context"]["cuisine"] == "日料"
-    assert food_result.value["context"]["scene"] == "约会"
-    assert food_result.value["context"]["radius"] == 4200
+    assert result.value["status"] == "unavailable"
+    assert result.value["summary"]
+    assert _plugin_terminal_status(True, result.value) == "completed"
 
 
 @pytest.mark.parametrize(
@@ -273,7 +243,7 @@ async def test_location_clarification_preserves_non_location_entry_parameters() 
     ],
 )
 @pytest.mark.asyncio
-async def test_location_entries_clarify_every_user_correctable_outcome(
+async def test_read_only_entries_complete_for_every_unusable_location_outcome(
     error_key: str,
     router_type: type,
     method_name: str,
@@ -285,18 +255,21 @@ async def test_location_entries_clarify_every_user_correctable_outcome(
     result = await getattr(router, method_name)(**kwargs)
 
     assert isinstance(result, Ok)
-    assert result.value["status"] == "clarify"
+    assert result.value["status"] == "unavailable"
     assert result.value["summary"]
+    assert _plugin_terminal_status(True, result.value) == "completed"
 
 
 @pytest.mark.asyncio
-async def test_weather_entry_keeps_provider_failure_as_error() -> None:
+async def test_weather_provider_failure_returns_completed_unavailable() -> None:
     router = CurrentWeatherRouter()
     router._bind(_FailedLocationPlugin())
 
     result = await router.get_weather(city="上海")
 
-    assert isinstance(result, Err)
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert _plugin_terminal_status(True, result.value) == "completed"
 
 
 @pytest.mark.parametrize(
@@ -318,7 +291,7 @@ async def test_weather_entry_keeps_provider_failure_as_error() -> None:
     ],
 )
 @pytest.mark.asyncio
-async def test_location_entries_keep_provider_failure_as_error(
+async def test_read_only_entries_complete_on_location_provider_failure(
     router_type: type,
     method_name: str,
     kwargs: dict[str, Any],
@@ -328,11 +301,13 @@ async def test_location_entries_keep_provider_failure_as_error(
 
     result = await getattr(router, method_name)(**kwargs)
 
-    assert isinstance(result, Err)
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert _plugin_terminal_status(True, result.value) == "completed"
 
 
 @pytest.mark.asyncio
-async def test_trip_entry_identifies_ambiguous_destination_as_clarification() -> None:
+async def test_trip_with_no_usable_destination_returns_completed_unavailable() -> None:
     router = TripRouter()
     router._bind(_AmbiguousDestinationPlugin())
 
@@ -343,11 +318,8 @@ async def test_trip_entry_identifies_ambiguous_destination_as_clarification() ->
     )
 
     assert isinstance(result, Ok)
-    assert result.value["status"] == "clarify"
-    assert result.value["context"]["field"] == "destination"
-    assert result.value["context"]["origin"] == "上海"
-    assert result.value["context"]["destination"] == "朝阳"
-    assert result.value["context"]["mode"] == "transit"
+    assert result.value["status"] == "unavailable"
+    assert _plugin_terminal_status(True, result.value) == "completed"
 
 
 @pytest.mark.parametrize(
@@ -462,10 +434,18 @@ async def test_add_location_entry_classifies_untyped_geocode_outcomes(
         assert isinstance(result, Err)
 
 
+def test_write_location_result_contract_preserves_clarification() -> None:
+    result = AddLocationResult.model_validate(
+        {"status": "clarify", "summary": "请补充位置", "choices": []}
+    )
+
+    assert result.status == "clarify"
+    assert result.summary == "请补充位置"
+
+
 @pytest.mark.parametrize(
     "result_model",
     [
-        AddLocationResult,
         GetWeatherResult,
         HourlyForecastResult,
         AirQualityResult,
@@ -475,13 +455,13 @@ async def test_add_location_entry_classifies_untyped_geocode_outcomes(
         TripAdviceResult,
     ],
 )
-def test_location_result_contracts_preserve_clarification(result_model: type) -> None:
-    result = result_model.model_validate(
-        {"status": "clarify", "summary": "请补充位置", "choices": []}
-    )
-
-    assert result.status == "clarify"
-    assert result.summary == "请补充位置"
+def test_read_only_location_contracts_reject_blocking_clarification(
+    result_model: type,
+) -> None:
+    with pytest.raises(ValidationError):
+        result_model.model_validate(
+            {"status": "clarify", "summary": "请补充位置", "choices": []}
+        )
 
 
 @pytest.mark.parametrize(

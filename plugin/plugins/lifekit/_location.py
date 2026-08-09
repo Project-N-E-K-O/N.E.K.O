@@ -21,6 +21,18 @@ class LocationPurpose(str, Enum):
     SAVE = "save"
 
 
+READ_ONLY_LOCATION_PURPOSES = frozenset(
+    {
+        LocationPurpose.WEATHER,
+        LocationPurpose.AIR_QUALITY,
+        LocationPurpose.NEARBY,
+        LocationPurpose.FOOD,
+        LocationPurpose.ROUTE_ORIGIN,
+        LocationPurpose.ROUTE_DESTINATION,
+    }
+)
+
+
 class LocationStatus(str, Enum):
     RESOLVED = "resolved"
     AMBIGUOUS = "ambiguous"
@@ -173,6 +185,72 @@ class LocationCandidate:
             "_location_source": self.source,
             "_location_verified": self.verified,
         }
+
+
+@dataclass(frozen=True)
+class LocationAssumption:
+    selected_label: str
+    alternatives: tuple[str, ...] = field(default_factory=tuple)
+
+
+def select_primary_candidate(
+    candidates: tuple[LocationCandidate, ...],
+    *,
+    locale: str,
+    purpose: LocationPurpose,
+) -> Optional[LocationCandidate]:
+    """Choose one reproducible best-effort candidate for a read-only query."""
+    eligible = tuple(
+        candidate
+        for candidate in candidates
+        if _candidate_is_eligible(candidate, purpose)
+    )
+    if not eligible:
+        return None
+    normalized_locale = locale.strip().replace("_", "-").casefold()
+    preferred_country = {
+        "zh-cn": "CN",
+        "zh-tw": "TW",
+        "ja": "JP",
+        "ko": "KR",
+    }.get(normalized_locale, "")
+
+    def rank(candidate: LocationCandidate) -> tuple[object, ...]:
+        return (
+            -int(bool(preferred_country) and candidate.country_code == preferred_country),
+            -int(candidate.verified),
+            -_place_kind_rank(candidate.precision),
+            -{"open_meteo": 2, "nominatim": 1}.get(candidate.source, 0),
+            _normalise_place_name(candidate.display_name),
+            candidate.country_code,
+            _admin_key(candidate.admin1),
+            _admin_key(candidate.admin2),
+            round(candidate.latitude, 6),
+            round(candidate.longitude, 6),
+        )
+
+    return min(eligible, key=rank)
+
+
+def assumed_location_payload(
+    selected: LocationCandidate,
+    candidates: tuple[LocationCandidate, ...],
+) -> dict[str, object]:
+    """Project a best-effort location and its correction context for routers."""
+    payload = selected.as_legacy_dict()
+    payload.update(
+        {
+            "_location_assumption": LocationAssumption(
+                selected_label=selected.display_label(),
+                alternatives=tuple(
+                    candidate.display_label()
+                    for candidate in candidates
+                    if candidate != selected
+                ),
+            ),
+        }
+    )
+    return payload
 
 
 @dataclass(frozen=True)

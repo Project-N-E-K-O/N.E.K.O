@@ -17,6 +17,7 @@ from plugin.plugins.lifekit._location import (
     LocationCandidate,
     LocationProblem,
     LocationPurpose,
+    assumed_location_payload,
 )
 from plugin.plugins.lifekit.routers.nearby import NearbyRouter
 from plugin.plugins.lifekit.routers.air_quality import AirQualityRouter
@@ -40,33 +41,37 @@ class _AmbiguousRoadPlugin:
         self._i18n.set_locale("zh-CN")
 
     async def _resolve_location(self, *_: Any, **__: Any):
-        return None, LocationProblem(
+        candidates = (
+            LocationCandidate(
+                display_name="南京东路",
+                latitude=31.235,
+                longitude=121.475,
+                country_code="CN",
+                admin1="上海市",
+                admin2="上海市",
+                precision="address",
+                source="nominatim",
+            ),
+            LocationCandidate(
+                display_name="南京东路",
+                latitude=31.45,
+                longitude=121.10,
+                country_code="CN",
+                admin1="江苏省",
+                admin2="太仓市",
+                precision="address",
+                source="nominatim",
+            ),
+        )
+        return assumed_location_payload(candidates[0], candidates), LocationProblem(
             error_key="error.location_ambiguous",
             requested_location="南京东路",
             purpose=LocationPurpose.NEARBY,
-            candidates=(
-                LocationCandidate(
-                    display_name="南京东路",
-                    latitude=31.235,
-                    longitude=121.475,
-                    country_code="CN",
-                    admin1="上海市",
-                    admin2="上海市",
-                    precision="address",
-                    source="nominatim",
-                ),
-                LocationCandidate(
-                    display_name="南京东路",
-                    latitude=31.45,
-                    longitude=121.10,
-                    country_code="CN",
-                    admin1="江苏省",
-                    admin2="太仓市",
-                    precision="address",
-                    source="nominatim",
-                ),
-            ),
+            candidates=candidates,
         )
+
+    async def _get_weather_data(self, *_: Any, **__: Any):
+        return None, None
 
 
 class _NoopLogger:
@@ -155,11 +160,11 @@ async def test_ambiguous_nearby_results_are_visible_and_actionable_to_llm(
         lang="zh-CN",
     )
 
-    assert "位置名称有歧义" in detail
+    assert "位置存在歧义" in detail
     assert "上海市" in detail
     assert "上海景点" in detail
     assert "太仓市" in detail
-    assert "太仓景点" in detail
+    assert "太仓景点" not in detail
     assert "补充城市" in detail
 
 
@@ -176,7 +181,7 @@ async def test_ambiguous_nearby_results_are_visible_and_actionable_to_llm(
         (TripRouter, "trip_advice"),
     ],
 )
-def test_every_clarifiable_entry_projects_status_and_summary_to_llm(
+def test_location_entries_project_their_control_and_risk_scalars_to_llm(
     router_type: type,
     entry_id: str,
 ) -> None:
@@ -186,10 +191,21 @@ def test_every_clarifiable_entry_projects_status_and_summary_to_llm(
         assert entry.meta.llm_result_fields == [
             "status",
             "summary",
+            "assumed",
+            "assumed_location",
+            "ambiguity_warning",
             "request",
             "searched_terms",
             "results",
             "location_groups",
         ]
-    else:
+    elif router_type is LocationsRouter:
         assert entry.meta.llm_result_fields == ["status", "summary"]
+    else:
+        assert entry.meta.llm_result_fields == [
+            "status",
+            "summary",
+            "assumed",
+            "assumed_location",
+            "ambiguity_warning",
+        ]

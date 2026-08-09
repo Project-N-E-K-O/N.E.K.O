@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.agent_server.channels.user_plugin import _plugin_terminal_status
 from plugin.sdk.plugin import Err, Ok
 
 from plugin.plugins.lifekit import LifeKitPlugin
@@ -12,8 +13,6 @@ from plugin.plugins.lifekit import _poi
 from plugin.plugins.lifekit._contracts import NearbyResult
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
-    LocationProblem,
-    LocationPurpose,
     LocationResolver,
 )
 from plugin.plugins.lifekit.routers.nearby import NearbyRouter
@@ -76,37 +75,6 @@ class _FailedLocationPlugin(_NearbyPlugin):
 class _AmbiguousLocationPlugin(_NearbyPlugin):
     async def _resolve_location(self, *_: Any, **__: Any):
         return None, "error.location_ambiguous"
-
-
-class _AmbiguousCandidatePlugin(_NearbyPlugin):
-    async def _resolve_location(self, *_: Any, **__: Any):
-        return None, LocationProblem(
-            error_key="error.location_ambiguous",
-            requested_location="南京东路",
-            purpose=LocationPurpose.NEARBY,
-            candidates=(
-                LocationCandidate(
-                    display_name="南京东路",
-                    latitude=31.235,
-                    longitude=121.475,
-                    country_code="CN",
-                    admin1="上海市",
-                    admin2="上海市",
-                    precision="address",
-                    source="nominatim",
-                ),
-                LocationCandidate(
-                    display_name="南京东路",
-                    latitude=31.45,
-                    longitude=121.10,
-                    country_code="CN",
-                    admin1="江苏省",
-                    admin2="太仓市",
-                    precision="address",
-                    source="nominatim",
-                ),
-            ),
-        )
 
 
 @pytest.mark.asyncio
@@ -373,7 +341,7 @@ async def test_open_ended_needs_execute_the_llm_retrieval_plan(
 
 
 @pytest.mark.asyncio
-async def test_broad_request_keeps_provider_failure_as_error() -> None:
+async def test_broad_request_returns_unavailable_on_location_provider_failure() -> None:
     plugin = _FailedLocationPlugin()
     router = NearbyRouter()
     router._bind(plugin)
@@ -384,11 +352,14 @@ async def test_broad_request_keeps_provider_failure_as_error() -> None:
         _ctx={"latest_user_request": "我附近有啥地方可去吗？"},
     )
 
-    assert isinstance(result, Err)
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert result.value["error_code"] == "LOCATION_PROVIDER_UNAVAILABLE"
+    assert result.value["retriable"] is True
 
 
 @pytest.mark.asyncio
-async def test_specific_request_keeps_provider_failure_as_error() -> None:
+async def test_specific_request_returns_unavailable_on_location_provider_failure() -> None:
     plugin = _FailedLocationPlugin()
     router = NearbyRouter()
     router._bind(plugin)
@@ -399,7 +370,10 @@ async def test_specific_request_keeps_provider_failure_as_error() -> None:
         _ctx={"latest_user_request": "附近的公园"},
     )
 
-    assert isinstance(result, Err)
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert result.value["error_code"] == "LOCATION_PROVIDER_UNAVAILABLE"
+    assert result.value["retriable"] is True
 
 
 @pytest.mark.asyncio
@@ -465,7 +439,7 @@ async def test_nearby_does_not_disguise_programming_errors_as_upstream_outages(
 
 
 @pytest.mark.asyncio
-async def test_location_clarification_preserves_discovery_request() -> None:
+async def test_nearby_without_a_usable_location_returns_completed_unavailable() -> None:
     router = NearbyRouter()
     router._bind(_AmbiguousLocationPlugin())
 
@@ -479,21 +453,103 @@ async def test_location_clarification_preserves_discovery_request() -> None:
     )
 
     assert isinstance(result, Ok)
-    assert result.value["status"] == "clarify"
-    assert result.value["context"]["field"] == "location_hint"
-    assert result.value["context"]["request"] == "吉林附近的公园"
-    assert result.value["context"]["place_intent"] == "outdoors"
-    assert result.value["context"]["preference_hints"] == ["公园"]
-    assert result.value["context"]["location_hint"] == "吉林"
-    assert "search_terms" not in result.value["context"]
-    assert "location" not in result.value["context"]
-    assert result.value["context"]["radius"] == 2500
+    assert result.value["status"] == "unavailable"
+    assert result.value["request"] == "吉林附近的公园"
+    assert result.value["searched_terms"] == ["公园", "景点"]
+    assert result.value["results"] == []
+    assert result.value["error_code"] == "LOCATION_REQUIRED"
+    assert result.value["retriable"] is True
+    assert _plugin_terminal_status(True, result.value) == "completed"
+    NearbyResult.model_validate(result.value)
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_locations_are_searched_and_returned_in_labeled_groups(
+async def test_nearby_does_not_execute_an_ineligible_region_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    async def region_candidate(*_: Any, **__: Any):
+        return [
+            LocationCandidate(
+                display_name="吉林省",
+                latitude=43.7,
+                longitude=126.2,
+                country_code="CN",
+                precision="region",
+                source="open_meteo",
+            )
+        ]
+
+    async def no_nominatim_candidates(*_: Any, **__: Any):
+        return []
+
+    class _MustNotSearchClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, *_: Any, **__: Any) -> httpx.Response:
+            raise AssertionError("an ineligible region must not become a POI center")
+
+    class _RegionPlugin(_NearbyPlugin):
+        _resolve_location = LifeKitPlugin._resolve_location
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._cfg = {"enable_geoip": False}
+            self._location_resolver = LocationResolver(
+                open_meteo=region_candidate,
+                nominatim=no_nominatim_candidates,
+            )
+
+    monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _MustNotSearchClient())
+    router = NearbyRouter()
+    router._bind(_RegionPlugin())
+
+    result = await router.search_nearby(
+        request="吉林省附近有什么",
+        location_hint="吉林省",
+        place_intent="explore",
+        _ctx={"latest_user_request": "吉林省附近有什么"},
+    )
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "unavailable"
+    assert result.value["error_code"] == "LOCATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_location_searches_one_primary_center_without_mixing_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def open_meteo_candidates(*_: Any, **__: Any):
+        return [
+            LocationCandidate(
+                display_name="南京东路",
+                latitude=31.45,
+                longitude=121.10,
+                country_code="CN",
+                admin1="江苏省",
+                admin2="太仓市",
+                precision="address",
+                source="open_meteo",
+            ),
+            LocationCandidate(
+                display_name="南京东路",
+                latitude=31.235,
+                longitude=121.475,
+                country_code="CN",
+                admin1="上海市",
+                admin2="上海市",
+                precision="address",
+                source="open_meteo",
+            ),
+        ]
+
+    async def no_nominatim_candidates(*_: Any, **__: Any):
+        return []
+
     class _SuccessfulClient:
         async def __aenter__(self):
             return self
@@ -524,8 +580,20 @@ async def test_ambiguous_locations_are_searched_and_returned_in_labeled_groups(
             )
 
     monkeypatch.setattr(_poi.httpx, "AsyncClient", lambda **_: _SuccessfulClient())
+
+    class _ReadOnlyNearbyPlugin(_NearbyPlugin):
+        _resolve_location = LifeKitPlugin._resolve_location
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._cfg = {"enable_geoip": False}
+            self._location_resolver = LocationResolver(
+                open_meteo=open_meteo_candidates,
+                nominatim=no_nominatim_candidates,
+            )
+
     router = NearbyRouter()
-    router._bind(_AmbiguousCandidatePlugin())
+    router._bind(_ReadOnlyNearbyPlugin())
 
     result = await router.search_nearby(
         request="南京东路附近的餐厅",
@@ -536,86 +604,10 @@ async def test_ambiguous_locations_are_searched_and_returned_in_labeled_groups(
 
     assert isinstance(result, Ok)
     assert result.value["status"] == "ready"
-    assert result.value["count"] == 2
-    assert [group["location"]["admin2"] for group in result.value["location_groups"]] == [
-        "上海市",
-        "太仓市",
-    ]
-    assert [item["name"] for item in result.value["results"]] == [
-        "上海餐厅",
-        "太仓餐厅",
-    ]
-    assert [item["location"]["admin2"] for item in result.value["results"]] == [
-        "上海市",
-        "太仓市",
-    ]
-    assert "位置名称有歧义" in result.value["ambiguity_warning"]
-    assert "补充城市" in result.value["suggestion"]
-    assert result.value["ambiguity_warning"] in result.value["summary"]
-    assert "南京东路 · 上海市 · CN" in result.value["summary"]
-    assert "上海餐厅" in result.value["summary"]
-    assert "南京东路 · 江苏省 · 太仓市 · CN" in result.value["summary"]
-    assert "太仓餐厅" in result.value["summary"]
-    assert result.value["suggestion"] in result.value["summary"]
-    NearbyResult.model_validate(result.value)
-
-
-@pytest.mark.asyncio
-async def test_ambiguous_search_keeps_successful_locations_when_one_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _PartiallyAvailableClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_: object) -> None:
-            return None
-
-        async def post(self, url: str, **kwargs: object) -> httpx.Response:
-            query = str(kwargs.get("data", {}).get("data", ""))
-            if "31.45,121.1" in query:
-                return httpx.Response(
-                    503,
-                    text="provider unavailable",
-                    request=httpx.Request("POST", url),
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "elements": [
-                        {
-                            "type": "node",
-                            "id": 1,
-                            "lat": 31.236,
-                            "lon": 121.476,
-                            "tags": {"name": "上海餐厅", "amenity": "restaurant"},
-                        }
-                    ]
-                },
-                request=httpx.Request("POST", url),
-            )
-
-    monkeypatch.setattr(
-        _poi.httpx,
-        "AsyncClient",
-        lambda **_: _PartiallyAvailableClient(),
-    )
-    router = NearbyRouter()
-    router._bind(_AmbiguousCandidatePlugin())
-
-    result = await router.search_nearby(
-        request="南京东路附近的餐厅",
-        search_terms=["餐厅"],
-        location="南京东路",
-        _ctx={"latest_user_request": "南京东路附近的餐厅"},
-    )
-
-    assert isinstance(result, Ok)
     assert result.value["count"] == 1
-    assert [group["status"] for group in result.value["location_groups"]] == [
-        "ready",
-        "error",
-    ]
-    assert result.value["results"][0]["name"] == "上海餐厅"
-    assert "太仓市" in result.value["summary"]
-    assert "附近地点搜索失败" in result.value["summary"]
+    assert [item["name"] for item in result.value["results"]] == ["上海餐厅"]
+    assert result.value["assumed_location"] == "南京东路 · 上海市 · CN"
+    assert "南京东路 · 江苏省 · 太仓市 · CN" in result.value["ambiguity_warning"]
+    assert result.value["ambiguity_warning"] in result.value["summary"]
+    assert "太仓餐厅" not in str(result.value)
+    NearbyResult.model_validate(result.value)

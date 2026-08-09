@@ -68,6 +68,11 @@
     "forecast_timeout": "날씨 데이터 요청 시간이 초과되었습니다. 다시 시도해 주세요.",
     "unknown_weather": "알 수 없음({code})"
   },
+  "location": {
+    "assumption": "위치가 모호하여 이번에는 '{selected}' 기준으로 결과를 반환합니다. 다른 후보: {alternatives}. 의도한 장소가 아니면 도시, 지역 또는 국가를 추가해 다시 요청하세요.",
+    "no_alternatives": "다른 후보 없음",
+    "unavailable": "사용 가능한 위치를 확인하지 못해 이번 위치 조회는 실행하지 않았습니다. {detail}"
+  },
   "trip": {
     "distance": "거리",
     "recommended": "추천",

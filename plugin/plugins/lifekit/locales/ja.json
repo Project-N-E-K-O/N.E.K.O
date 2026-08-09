@@ -68,6 +68,11 @@
     "forecast_timeout": "気象データのリクエストがタイムアウトしました - もう一度お試しください",
     "unknown_weather": "不明 ({code})"
   },
+  "location": {
+    "assumption": "場所に曖昧さがあります。今回は「{selected}」として結果を返します。ほかの候補：{alternatives}。意図した場所と違う場合は、市区町村、地域、国を追加して再実行してください。",
+    "no_alternatives": "ほかの候補はありません",
+    "unavailable": "利用可能な場所を特定できなかったため、今回は位置検索を実行していません。{detail}"
+  },
   "trip": {
     "distance": "距離",
     "recommended": "おすすめ",

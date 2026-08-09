@@ -14,7 +14,7 @@ from .._coerce import clamp_int, clean_text
 from .._contracts import FoodRecommendParams, FoodRecommendResult
 from .._routing import format_distance
 from .._location import LocationPurpose
-from .._location_entry import location_failure_result
+from .._location_entry import apply_location_assumption, location_unavailable_result
 
 # 天气 → 推荐关键词映射
 _WEATHER_FOOD: Dict[str, List[str]] = {
@@ -74,17 +74,7 @@ class FoodRecommendRouter(PluginRouter):
             purpose=LocationPurpose.FOOD,
         )
         if not loc:
-            return location_failure_result(
-                loc_err,
-                i18n,
-                field_name="location",
-                requested_location=location or "",
-                context={
-                    "cuisine": clean_cuisine,
-                    "scene": clean_scene,
-                    "radius": radius,
-                },
-            )
+            return location_unavailable_result(loc_err, i18n)
 
         # 确定搜索关键词
         query = clean_cuisine or None
@@ -112,12 +102,12 @@ class FoodRecommendRouter(PluginRouter):
             )
 
         if not poi_result.items:
-            return Ok({
+            return Ok(apply_location_assumption({
                 "status": "ready",
                 "summary": f"在 {loc['city']} 附近没有找到「{query}」相关的餐厅",
                 "recommendations": [],
                 "query": query,
-            })
+            }, loc, i18n))
 
         # 构建推荐列表
         recs: List[Dict[str, Any]] = []
@@ -152,7 +142,7 @@ class FoodRecommendRouter(PluginRouter):
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
-        return Ok({
+        return Ok(apply_location_assumption({
             "status": "ready",
             "summary": summary,
             "recommendations": recs,
@@ -160,7 +150,7 @@ class FoodRecommendRouter(PluginRouter):
             "weather_reason": weather_reason,
             "provider": poi_result.provider,
             "next_actions": [f"search_recipe query={query} — 自己做{query}", "trip_advice — 规划去餐厅的路线"],
-        })
+        }, loc, i18n))
 
     @staticmethod
     def _pick_query(weather_data: Any, scene: str) -> tuple[str, str]:

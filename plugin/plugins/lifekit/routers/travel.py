@@ -12,7 +12,7 @@ from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
 from .._location import LocationPurpose
-from .._location_entry import location_failure_result
+from .._location_entry import apply_location_assumption, location_unavailable_result
 
 
 def build_travel_advice(
@@ -100,12 +100,7 @@ class TravelAdviceRouter(PluginRouter):
 
         loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
-            return location_failure_result(
-                loc_err,
-                i18n,
-                field_name="city",
-                requested_location=city or "",
-            )
+            return location_unavailable_result(loc_err, i18n)
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
@@ -136,10 +131,10 @@ class TravelAdviceRouter(PluginRouter):
             {"type": "text", "text": "\n".join(card_lines)},
         ])
 
-        return Ok({
+        return Ok(apply_location_assumption({
             "status": "ready",
             "city": loc["city"],
             "summary": summary,
             **advice,
             "next_actions": ["food_recommend — 美食推荐", "trip_advice — 路线规划"],
-        })
+        }, loc, i18n))

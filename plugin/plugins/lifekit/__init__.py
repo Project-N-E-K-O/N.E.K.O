@@ -52,8 +52,11 @@ from ._location import (
     LocationRequest,
     LocationResolver,
     LocationStatus,
+    READ_ONLY_LOCATION_PURPOSES,
     SavedLocation,
+    assumed_location_payload,
     location_problem_from_resolution,
+    select_primary_candidate,
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -214,15 +217,39 @@ class LifeKitPlugin(NekoPluginBase):
             loc = result.location
             if loc.source == "geoip" and detect_vpn_conflict(loc.timezone, get_system_timezone()):
                 self.logger.info(
-                    "IP location requires confirmation because timezone differs",
+                    "IP location differs from timezone; continuing as an assumption",
                 )
-                return None, LocationProblem(
+                problem = LocationProblem(
                     error_key="error.location_confirmation_required",
                     requested_location=effective_requested_location,
                     purpose=purpose,
                     candidates=(loc,),
                 )
+                if purpose in READ_ONLY_LOCATION_PURPOSES:
+                    return assumed_location_payload(loc, (loc,)), problem
+                return None, problem
             return loc.as_legacy_dict(), ""
+
+        if result.candidates and purpose in READ_ONLY_LOCATION_PURPOSES:
+            selected = select_primary_candidate(
+                result.candidates,
+                locale=self._i18n.locale,
+                purpose=purpose,
+            )
+            if selected is not None:
+                self.logger.info(
+                    "Location uncertain; continuing with primary candidate: "
+                    "purpose={}, status={}, candidate_count={}",
+                    purpose.value,
+                    result.status.value,
+                    len(result.candidates),
+                )
+                problem = location_problem_from_resolution(
+                    result,
+                    requested_location=effective_requested_location,
+                    purpose=purpose,
+                )
+                return assumed_location_payload(selected, result.candidates), problem
 
         if result.candidates:
             self.logger.info(
