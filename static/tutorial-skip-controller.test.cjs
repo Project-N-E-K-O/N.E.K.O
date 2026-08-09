@@ -159,13 +159,14 @@ test('tutorial skip does not absorb unrelated global release events', () => {
   assert.equal(heldRelease.immediateStopped, 1);
 });
 
-test('tutorial skip button renders a dedicated circular progress indicator', () => {
+test('tutorial skip source includes hold progress and preserves non-pointer activation', () => {
   assert.match(controllerSource, /DEFAULT_SKIP_HOLD_DURATION_MS = 1000/);
   assert.match(controllerSource, /class TutorialHoldProgressController/);
   assert.match(controllerSource, /neko-tutorial-skip-progress/);
   assert.match(controllerSource, /conic-gradient\(currentColor/);
   assert.match(controllerSource, /pointerleave', cancelHold/);
   assert.match(controllerSource, /touchcancel', cancelHold/);
-  assert.match(controllerSource, /addListener\(button, 'click', absorbClick\)/);
+  assert.match(controllerSource, /addListener\(button, 'click', handleClick\)/);
+  assert.match(controllerSource, /Number\(event\.detail\) !== 0/);
   assert.doesNotMatch(controllerSource, /addListener\(button, 'click', completeSkipRequest\)/);
 });

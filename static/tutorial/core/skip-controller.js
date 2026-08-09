@@ -700,6 +700,10 @@ html.dark ${selector}:hover {
                 }
                 return onSkip(event);
             };
+            const handleSkipError = (error) => {
+                console.warn('[TutorialSkipController] skip handler failed:', error);
+                resetSkipHandled();
+            };
 
             holdController = new TutorialHoldProgressController({
                 window: window,
@@ -713,10 +717,7 @@ html.dark ${selector}:hover {
                     button.classList.toggle('is-holding', active === true);
                 },
                 onComplete: completeSkipRequest,
-                onError: (error) => {
-                    console.warn('[TutorialSkipController] skip handler failed:', error);
-                    resetSkipHandled();
-                }
+                onError: handleSkipError
             });
 
             const common = window.YuiGuideCommon;
@@ -736,6 +737,17 @@ html.dark ${selector}:hover {
             const startHold = (event) => holdController.start(event);
             const cancelHold = (event) => holdController.cancel(event);
             const absorbClick = (event) => holdController.absorbEvent(event);
+            const handleClick = (event) => {
+                holdController.absorbEvent(event);
+                if (!event || Number(event.detail) !== 0) {
+                    return;
+                }
+                try {
+                    Promise.resolve(completeSkipRequest(event)).catch(handleSkipError);
+                } catch (error) {
+                    handleSkipError(error);
+                }
+            };
             const cancelHoldOnVisibilityLoss = () => {
                 if (this.document.hidden) {
                     holdController.cancel();
@@ -755,7 +767,7 @@ html.dark ${selector}:hover {
                 addListener(window, 'touchend', cancelHold, { capture: true, passive: false });
                 addListener(window, 'touchcancel', cancelHold, { capture: true, passive: false });
             }
-            addListener(button, 'click', absorbClick);
+            addListener(button, 'click', handleClick);
             addListener(button, 'contextmenu', absorbClick);
             addListener(button, 'dragstart', absorbClick);
             addListener(window, 'blur', cancelHold);
