@@ -14,6 +14,7 @@ from .._coerce import clamp_int, clean_text
 from .._contracts import FoodRecommendParams, FoodRecommendResult
 from .._routing import format_distance
 from .._location import LocationPurpose
+from .._location_entry import location_failure_result
 
 # 天气 → 推荐关键词映射
 _WEATHER_FOOD: Dict[str, List[str]] = {
@@ -64,24 +65,35 @@ class FoodRecommendRouter(PluginRouter):
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
+        radius = clamp_int(radius, 3000, 500, 50000)
+        clean_cuisine = clean_text(cuisine)
+        clean_scene = clean_text(scene)
 
         loc, loc_err = await plugin._resolve_location(
             location or None,
             purpose=LocationPurpose.FOOD,
         )
         if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
-
-        radius = clamp_int(radius, 3000, 500, 50000)
+            return location_failure_result(
+                loc_err,
+                i18n,
+                field_name="location",
+                requested_location=location or "",
+                context={
+                    "cuisine": clean_cuisine,
+                    "scene": clean_scene,
+                    "radius": radius,
+                },
+            )
 
         # 确定搜索关键词
-        query = clean_text(cuisine) or None
+        query = clean_cuisine or None
         weather_reason = ""
 
         if not query:
             # 根据天气 + 场景推荐
             weather_data, _ = await plugin._get_weather_data(loc)
-            query, weather_reason = self._pick_query(weather_data, clean_text(scene))
+            query, weather_reason = self._pick_query(weather_data, clean_scene)
 
         # POI 搜索
         svc = POIService(plugin._cfg)
@@ -89,6 +101,7 @@ class FoodRecommendRouter(PluginRouter):
 
         if not poi_result.items:
             return Ok({
+                "status": "ready",
                 "summary": f"在 {loc['city']} 附近没有找到「{query}」相关的餐厅",
                 "recommendations": [],
                 "query": query,
@@ -128,6 +141,7 @@ class FoodRecommendRouter(PluginRouter):
         ])
 
         return Ok({
+            "status": "ready",
             "summary": summary,
             "recommendations": recs,
             "query": query,

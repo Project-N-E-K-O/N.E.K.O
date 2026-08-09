@@ -1,3 +1,5 @@
+import pytest
+
 from plugin.plugins.lifekit._nearby_intent import (
     NearbyIntentRequest,
     NearbyIntentResolver,
@@ -184,6 +186,89 @@ def test_english_broad_request_uses_english_choices() -> None:
     assert result.choices == ("park", "attraction", "restaurant", "shopping mall")
 
 
+@pytest.mark.parametrize(
+    ("locale", "choices"),
+    [
+        ("ja", ("公園", "観光スポット", "レストラン", "ショッピングモール")),
+        ("ko", ("공원", "관광지", "식당", "쇼핑몰")),
+        ("ru", ("парк", "достопримечательность", "ресторан", "торговый центр")),
+        ("es", ("parque", "atracción", "restaurante", "centro comercial")),
+        ("pt", ("parque", "atração", "restaurante", "shopping center")),
+    ],
+)
+def test_broad_request_choices_cover_every_supported_locale(
+    locale: str,
+    choices: tuple[str, ...],
+) -> None:
+    result = NearbyIntentResolver().resolve(
+        NearbyIntentRequest(
+            raw_request="things to do nearby",
+            proposed_query="things to do nearby",
+            locale=locale,
+        )
+    )
+
+    assert result.status is NearbyIntentStatus.NEEDS_CLARIFICATION
+    assert result.choices == choices
+
+
+@pytest.mark.parametrize(
+    ("locale", "sentence"),
+    [
+        ("ja", "近くでできること"),
+        ("ko", "근처에서 할 일"),
+        ("ru", "чем заняться рядом"),
+        ("es", "qué hacer cerca"),
+        ("pt", "o que fazer perto"),
+    ],
+)
+def test_localized_broad_request_never_becomes_a_search_query(
+    locale: str,
+    sentence: str,
+) -> None:
+    result = NearbyIntentResolver().resolve(
+        NearbyIntentRequest(
+            raw_request=sentence,
+            proposed_query=sentence,
+            locale=locale,
+            is_conversational=True,
+        )
+    )
+
+    assert result.status is NearbyIntentStatus.NEEDS_CLARIFICATION
+    assert result.query == ""
+    assert result.choices
+
+
+@pytest.mark.parametrize(
+    ("locale", "sentence", "query"),
+    [
+        ("ja", "近くのカフェ", "カフェ"),
+        ("ko", "근처 카페", "카페"),
+        ("ru", "кафе рядом", "кофейня"),
+        ("es", "cafetería cerca", "cafetería"),
+        ("pt", "cafeteria perto", "cafeteria"),
+    ],
+)
+def test_explicit_category_is_localized_for_every_supported_locale(
+    locale: str,
+    sentence: str,
+    query: str,
+) -> None:
+    result = NearbyIntentResolver().resolve(
+        NearbyIntentRequest(
+            raw_request=sentence,
+            proposed_query=sentence,
+            locale=locale,
+            is_conversational=True,
+        )
+    )
+
+    assert result.status is NearbyIntentStatus.READY
+    assert result.query == query
+    assert result.category_id == "coffee_shop"
+
+
 def test_english_explicit_category_is_extracted() -> None:
     sentence = "Find a coffee shop nearby"
     result = NearbyIntentResolver().resolve(
@@ -196,6 +281,21 @@ def test_english_explicit_category_is_extracted() -> None:
 
     assert result.status is NearbyIntentStatus.READY
     assert result.query == "coffee shop"
+
+
+def test_english_parallel_categories_request_clarification() -> None:
+    result = NearbyIntentResolver().resolve(
+        NearbyIntentRequest(
+            raw_request="coffee shop or park nearby",
+            proposed_query="coffee shop",
+            locale="en",
+            is_conversational=True,
+        )
+    )
+
+    assert result.status is NearbyIntentStatus.NEEDS_CLARIFICATION
+    assert result.query == ""
+    assert result.choices == ("coffee shop", "park")
 
 
 def test_long_but_keyword_shaped_manual_query_remains_executable() -> None:

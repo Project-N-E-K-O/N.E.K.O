@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from plugin.plugins.lifekit import _geocoders
+from plugin.plugins.lifekit import LifeKitPlugin, _api, _geocoders
+from plugin.plugins.lifekit._api import GeocodeError
+from plugin.plugins.lifekit._geocoders import GeocoderError
 from plugin.plugins.lifekit._geocoders import open_meteo_candidates
 from plugin.plugins.lifekit._location import (
     LocationCandidate,
     LocationPurpose,
     LocationRequest,
+    LocationResolution,
     LocationResolver,
     LocationStatus,
     SavedLocation,
@@ -136,6 +141,41 @@ async def test_saved_label_resolves_without_network() -> None:
     assert result.location.display_name == "上海市"
 
 
+async def test_verified_saved_locality_cannot_bypass_nearby_precision_rules() -> None:
+    locality = LocationCandidate(
+        display_name="新村",
+        latitude=31.20,
+        longitude=121.40,
+        country_code="CN",
+        admin1="上海市",
+        precision="locality",
+        source="saved",
+        verified=True,
+    )
+
+    async def saved_locations() -> list[SavedLocation]:
+        return [SavedLocation(label="旧地址", location=locality)]
+
+    async def unexpected_geocoder(
+        *_args: object, **_kwargs: object
+    ) -> list[LocationCandidate]:
+        raise AssertionError("a saved label must not fall through to network providers")
+
+    resolver = LocationResolver(
+        open_meteo=unexpected_geocoder,
+        nominatim=unexpected_geocoder,
+        saved_locations=saved_locations,
+    )
+
+    result = await resolver.resolve(
+        LocationRequest(text="旧地址", purpose=LocationPurpose.NEARBY)
+    )
+
+    assert result.status is LocationStatus.NEEDS_CONFIRMATION
+    assert result.location is None
+    assert result.candidates == (locality,)
+
+
 async def test_blank_request_uses_verified_saved_default() -> None:
     async def unexpected_geocoder(
         *_args: object, **_kwargs: object
@@ -171,6 +211,45 @@ async def test_blank_request_uses_verified_saved_default() -> None:
 
     assert result.status is LocationStatus.RESOLVED
     assert result.location == default.location
+
+
+async def test_geoip_provider_failure_is_not_misclassified_as_missing_location() -> None:
+    async def empty_geocoder(
+        *_args: object,
+        **_kwargs: object,
+    ) -> list[LocationCandidate]:
+        return []
+
+    async def failed_geoip() -> LocationCandidate:
+        raise GeocoderError("timed out", cause="timeout")
+
+    resolver = LocationResolver(
+        open_meteo=empty_geocoder,
+        nominatim=empty_geocoder,
+        geoip=failed_geoip,
+    )
+
+    result = await resolver.resolve(LocationRequest())
+
+    assert result.status is LocationStatus.PROVIDER_FAILED
+    assert result.cause == "timeout"
+
+
+async def test_default_city_failure_preserves_effective_requested_location() -> None:
+    class _NotFoundResolver:
+        async def resolve(self, _request: LocationRequest) -> LocationResolution:
+            return LocationResolution(LocationStatus.NOT_FOUND)
+
+    plugin = object.__new__(LifeKitPlugin)
+    plugin._cfg = {"default_city": "Osaka", "enable_geoip": False}
+    plugin._i18n = SimpleNamespace(locale="en")
+    plugin._location_resolver = _NotFoundResolver()
+
+    location, problem = await plugin._resolve_location()
+
+    assert location is None
+    assert problem is not None
+    assert problem.requested_location == "Osaka"
 
 
 async def test_weather_can_use_legacy_saved_default() -> None:
@@ -419,6 +498,47 @@ async def test_region_is_not_a_nearby_search_center() -> None:
     assert result.candidates == (region,)
 
 
+async def test_ineligible_single_hit_falls_through_to_disambiguation_provider() -> None:
+    locality = LocationCandidate(
+        display_name="Springfield",
+        latitude=39.78,
+        longitude=-89.64,
+        country_code="US",
+        admin1="Illinois",
+        precision="locality",
+        source="open_meteo",
+    )
+    city = LocationCandidate(
+        display_name="Springfield",
+        latitude=39.80,
+        longitude=-89.64,
+        country_code="US",
+        admin1="Illinois",
+        precision="city",
+        source="nominatim",
+    )
+    nominatim_calls = 0
+
+    async def open_meteo(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        return [locality]
+
+    async def nominatim(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        nonlocal nominatim_calls
+        nominatim_calls += 1
+        return [city]
+
+    resolver = LocationResolver(open_meteo=open_meteo, nominatim=nominatim)
+
+    result = await resolver.resolve(
+        LocationRequest(text="Springfield", purpose=LocationPurpose.NEARBY)
+    )
+
+    assert nominatim_calls == 1
+    assert result.status is LocationStatus.RESOLVED
+    assert result.location is not None
+    assert result.location.precision == "city"
+
+
 async def test_country_hint_selects_city_over_region_and_locality() -> None:
     city = LocationCandidate(
         display_name="吉林市",
@@ -612,3 +732,18 @@ async def test_required_disambiguation_failure_never_confirms_first_hit() -> Non
     assert result.status is LocationStatus.PROVIDER_FAILED
     assert result.location is None
     assert result.candidates == (city,)
+
+
+async def test_geocode_city_preserves_timeout_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def timeout(*_args: object, **_kwargs: object) -> list[LocationCandidate]:
+        raise GeocoderError("timed out", cause="timeout")
+
+    monkeypatch.setattr(_api, "open_meteo_candidates", timeout)
+    monkeypatch.setattr(_api, "nominatim_candidates", timeout)
+
+    with pytest.raises(GeocodeError) as exc_info:
+        await _api.geocode_city("Beijing")
+
+    assert exc_info.value.cause == "timeout"

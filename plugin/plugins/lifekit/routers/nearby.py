@@ -17,7 +17,12 @@ from .._nearby_intent import (
     NearbyIntentStatus,
 )
 from .._routing import format_distance
-from .._location import LocationPurpose
+from .._location import (
+    LocationPurpose,
+    is_location_clarification,
+    location_clarification_payload,
+    location_error_key,
+)
 
 _INTENT_RESOLVER = NearbyIntentResolver()
 
@@ -75,30 +80,35 @@ class NearbyRouter(PluginRouter):
             purpose=LocationPurpose.NEARBY,
         )
         needs_category = intent.status is NearbyIntentStatus.NEEDS_CLARIFICATION
-        if not loc and loc_err == "error.geocode_failed" and not needs_category:
-            return Err(SdkError(i18n.t(loc_err)))
+        if not loc and not is_location_clarification(loc_err):
+            return Err(SdkError(i18n.t(location_error_key(loc_err))))
 
         needs_location = not loc
         if needs_category or needs_location:
             choices = list(intent.choices)
-            choices_text = (
-                ", ".join(choices) if i18n.locale == "en" else "、".join(choices)
-            )
+            choices_text = i18n.t("nearby.list_separator").join(choices)
             if needs_category and needs_location:
                 clarification = i18n.t("nearby.clarify_both", choices=choices_text)
             elif needs_category:
                 clarification = i18n.t("nearby.clarify_category", choices=choices_text)
             else:
-                detail = i18n.t(loc_err or "error.no_location")
+                detail = i18n.t(location_error_key(loc_err))
                 clarification = i18n.t("nearby.clarify_location", detail=detail)
             return Ok(
-                {
-                    "status": "clarify",
-                    "summary": clarification,
-                    "choices": choices,
-                    "results": [],
-                    "count": 0,
-                }
+                location_clarification_payload(
+                    clarification,
+                    error=loc_err,
+                    field_name="location",
+                    requested_location=intent.location,
+                    context={
+                        "kind": "nearby",
+                        "query": intent.query,
+                        "category_id": intent.category_id,
+                        "location": intent.location,
+                        "radius": intent.radius,
+                    },
+                    choices=choices if needs_category else None,
+                )
             )
 
         clean_query = intent.query

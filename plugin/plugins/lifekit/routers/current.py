@@ -11,6 +11,7 @@ from .._api import daily_val
 from .._chat import push_lifekit_content
 from .._contracts import CityParams, GetWeatherResult
 from .._location import LocationPurpose
+from .._location_entry import location_failure_result
 
 
 class CurrentWeatherRouter(PluginRouter):
@@ -40,7 +41,12 @@ class CurrentWeatherRouter(PluginRouter):
 
         loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
+            return location_failure_result(
+                loc_err,
+                i18n,
+                field_name="city",
+                requested_location=city or "",
+            )
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
@@ -97,6 +103,7 @@ class CurrentWeatherRouter(PluginRouter):
         push_lifekit_content(plugin, blocks)
 
         return Ok({
+            "status": "ready",
             "city": loc["city"],
             "summary": summary,
             "current": current,

@@ -75,6 +75,161 @@
   },
   "nearby": {
     "no_query": "请输入搜索关键词（如：火锅、咖啡、超市）",
+    "list_separator": "、",
+    "intent_choice_ids": [
+      "park",
+      "attraction",
+      "restaurant",
+      "shopping_mall"
+    ],
+    "intent_broad_phrases": [
+      "有啥地方可去",
+      "有什么地方可去",
+      "哪里可以去",
+      "去哪玩",
+      "好玩的地方",
+      "随便逛逛"
+    ],
+    "intent_dialogue_markers": [
+      "帮我",
+      "幫我",
+      "麻烦",
+      "麻煩",
+      "附近",
+      "周边",
+      "周邊",
+      "周围",
+      "周圍",
+      "我附近",
+      "附近有",
+      "有没有",
+      "有沒有",
+      "有什么",
+      "有什麼",
+      "有啥",
+      "哪里",
+      "哪裡",
+      "哪儿",
+      "哪兒",
+      "推荐",
+      "推薦",
+      "可以",
+      "吗",
+      "嗎",
+      "呢",
+      "么",
+      "麼"
+    ],
+    "category_labels": {
+      "pet_hospital": "宠物医院",
+      "coffee_shop": "咖啡店",
+      "convenience_store": "便利店",
+      "shopping_mall": "商场",
+      "movie_theater": "电影院",
+      "museum": "博物馆",
+      "parking": "停车场",
+      "gas_station": "加油站",
+      "subway_station": "地铁站",
+      "restaurant": "餐厅",
+      "supermarket": "超市",
+      "attraction": "景点",
+      "park": "公园",
+      "bookstore": "书店",
+      "hospital": "医院",
+      "pharmacy": "药店"
+    },
+    "category_queries": {
+      "pet_hospital": "宠物医院",
+      "coffee_shop": "咖啡店",
+      "convenience_store": "便利店",
+      "shopping_mall": "购物中心",
+      "movie_theater": "电影院",
+      "museum": "博物馆",
+      "parking": "停车场",
+      "gas_station": "加油站",
+      "subway_station": "地铁站",
+      "restaurant": "餐厅",
+      "supermarket": "超市",
+      "attraction": "景点",
+      "park": "公园",
+      "bookstore": "书店",
+      "hospital": "医院",
+      "pharmacy": "药店"
+    },
+    "intent_aliases": {
+      "pet_hospital": [
+        "宠物医院",
+        "寵物醫院"
+      ],
+      "coffee_shop": [
+        "咖啡店",
+        "咖啡馆",
+        "咖啡廳",
+        "咖啡"
+      ],
+      "convenience_store": [
+        "便利店"
+      ],
+      "shopping_mall": [
+        "购物中心",
+        "購物中心",
+        "商场",
+        "商場"
+      ],
+      "movie_theater": [
+        "电影院",
+        "電影院",
+        "影院"
+      ],
+      "museum": [
+        "博物馆",
+        "博物館"
+      ],
+      "parking": [
+        "停车场",
+        "停車場"
+      ],
+      "gas_station": [
+        "加油站"
+      ],
+      "subway_station": [
+        "地铁站",
+        "地鐵站"
+      ],
+      "restaurant": [
+        "餐厅",
+        "餐廳",
+        "饭店",
+        "飯店",
+        "吃什么",
+        "吃什麼"
+      ],
+      "supermarket": [
+        "超市"
+      ],
+      "attraction": [
+        "景点",
+        "景點",
+        "景区",
+        "景區"
+      ],
+      "park": [
+        "公园",
+        "公園"
+      ],
+      "bookstore": [
+        "书店",
+        "書店"
+      ],
+      "hospital": [
+        "医院",
+        "醫院"
+      ],
+      "pharmacy": [
+        "药店",
+        "藥店"
+      ]
+    },
     "clarify_category": "你更想找哪类地方？请选择：{choices}。",
     "clarify_location": "{detail}。请补充搜索中心，例如“吉林市附近的公园”，或使用已确认的保存地点。",
     "clarify_both": "还缺少搜索中心和地点类型。可以直接说“吉林市附近的公园”，或选择：{choices}。",

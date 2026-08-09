@@ -17,7 +17,14 @@ _UA = "NEKO-LifeKit-Plugin/0.2"
 
 # ipapi.co 用 ISO 639 简码；Content-Language 头部即可
 LOCALE_TO_GEOIP_LANG: Dict[str, str] = {
-    "zh-CN": "zh", "zh-TW": "zh", "en": "en",
+    "zh-CN": "zh",
+    "zh-TW": "zh",
+    "en": "en",
+    "ja": "ja",
+    "ko": "ko",
+    "ru": "ru",
+    "es": "es",
+    "pt": "pt",
 }
 
 # WMO 降水/降雪代码集
@@ -107,7 +114,17 @@ async def geocode_city(city: str, locale: str = "zh-CN", timeout: float = 5.0) -
     if result.status is LocationStatus.RESOLVED and result.location is not None:
         return result.location.as_legacy_dict()
     if result.status is LocationStatus.PROVIDER_FAILED:
-        raise GeocodeError(f"Geocode '{city}' failed", cause="network")
+        raise GeocodeError(
+            f"Geocode '{city}' failed",
+            cause=result.cause or "network",
+        )
+    if result.status in {
+        LocationStatus.AMBIGUOUS,
+        LocationStatus.NEEDS_CONFIRMATION,
+        LocationStatus.NOT_FOUND,
+        LocationStatus.NO_LOCATION,
+    }:
+        raise GeocodeError(f"Geocode '{city}' unresolved", cause=result.status.value)
     return None
 
 

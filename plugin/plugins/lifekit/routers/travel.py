@@ -12,6 +12,7 @@ from .._chat import push_lifekit_content
 from .._contracts import CityParams, TravelAdviceResult
 from .._i18n import I18n
 from .._location import LocationPurpose
+from .._location_entry import location_failure_result
 
 
 def build_travel_advice(
@@ -99,7 +100,12 @@ class TravelAdviceRouter(PluginRouter):
 
         loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
+            return location_failure_result(
+                loc_err,
+                i18n,
+                field_name="city",
+                requested_location=city or "",
+            )
 
         data, data_err = await plugin._get_weather_data(loc)
         if not data:
@@ -131,6 +137,7 @@ class TravelAdviceRouter(PluginRouter):
         ])
 
         return Ok({
+            "status": "ready",
             "city": loc["city"],
             "summary": summary,
             **advice,

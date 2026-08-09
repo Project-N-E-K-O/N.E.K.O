@@ -32,10 +32,10 @@ from plugin.sdk.plugin import (
     SettingsField,
 )
 
-from ._i18n import I18n, LRUCache
+from ._i18n import I18n, LRUCache, SUPPORTED_LOCALES
 from ._coerce import clamp_int, clean_text, finite_float
 from ._geo import get_system_timezone, detect_vpn_conflict
-from ._api import geoip_locate, fetch_forecast, GeoIPError, ForecastError
+from ._api import geoip_locate, fetch_forecast, ForecastError
 from ._geocoders import nominatim_candidates, open_meteo_candidates
 from .routers import (
     CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
@@ -46,11 +46,14 @@ from .routers import (
 )
 from ._location import (
     LocationCandidate,
+    LocationError,
+    LocationProblem,
     LocationPurpose,
     LocationRequest,
     LocationResolver,
     LocationStatus,
     SavedLocation,
+    location_problem_from_resolution,
 )
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -68,7 +71,12 @@ class LifeKitPlugin(NekoPluginBase):
         timezone: str = SettingsField("Asia/Shanghai", hot=True, description="时区")
         forecast_days: int = SettingsField(3, hot=True, ge=1, le=7, description="预报天数")
         cache_ttl_seconds: int = SettingsField(1800, description="缓存有效期（秒）")
-        locale: str = SettingsField("", hot=True, description="语言（留空自动检测）", json_schema_extra={"hot": True, "enum": ["", "zh-CN", "zh-TW", "en"]})
+        locale: str = SettingsField(
+            "",
+            hot=True,
+            description="语言（留空自动检测）",
+            json_schema_extra={"hot": True, "enum": ["", *SUPPORTED_LOCALES]},
+        )
         force_locale: bool = SettingsField(False, description="强制使用上面的语言设置")
         enable_geoip: bool = SettingsField(
             True,
@@ -188,11 +196,15 @@ class LifeKitPlugin(NekoPluginBase):
         city: Optional[str] = None,
         *,
         purpose: LocationPurpose = LocationPurpose.WEATHER,
-    ) -> tuple[Optional[Dict[str, Any]], str]:
+    ) -> tuple[Optional[Dict[str, Any]], LocationError]:
         """Resolve a location through the shared deterministic resolver."""
+        requested_location = clean_text(city)
+        effective_requested_location = requested_location or clean_text(
+            self._cfg.get("default_city")
+        )
         result = await self._location_resolver.resolve(
             LocationRequest(
-                text=clean_text(city),
+                text=requested_location,
                 purpose=purpose,
                 allow_geoip=bool(self._cfg.get("enable_geoip", True)),
                 locale=self._i18n.locale,
@@ -205,7 +217,12 @@ class LifeKitPlugin(NekoPluginBase):
                     "IP location requires confirmation because timezone differs: ip_tz={}",
                     loc.timezone,
                 )
-                return None, "error.location_confirmation_required"
+                return None, LocationProblem(
+                    error_key="error.location_confirmation_required",
+                    requested_location=effective_requested_location,
+                    purpose=purpose,
+                    candidates=(loc,),
+                )
             return loc.as_legacy_dict(), ""
 
         if result.candidates:
@@ -217,20 +234,14 @@ class LifeKitPlugin(NekoPluginBase):
                     for item in result.candidates[:5]
                 ],
             )
-        error_keys = {
-            LocationStatus.AMBIGUOUS: "error.location_ambiguous",
-            LocationStatus.NEEDS_CONFIRMATION: "error.location_confirmation_required",
-            LocationStatus.NOT_FOUND: "error.city_not_found",
-            LocationStatus.PROVIDER_FAILED: "error.geocode_failed",
-            LocationStatus.NO_LOCATION: "error.no_location",
-        }
-        return None, error_keys.get(result.status, "error.no_location")
+        return None, location_problem_from_resolution(
+            result,
+            requested_location=effective_requested_location,
+            purpose=purpose,
+        )
 
     async def _geoip_location_candidate(self) -> Optional[LocationCandidate]:
-        try:
-            loc = await geoip_locate(locale=self._i18n.locale)
-        except GeoIPError:
-            return None
+        loc = await geoip_locate(locale=self._i18n.locale)
         if not loc:
             return None
         lat = finite_float(loc.get("lat"))
@@ -391,8 +402,9 @@ class LifeKitPlugin(NekoPluginBase):
                 updates["force_locale"] = bool(updates["force_locale"])
             if "locale" in updates:
                 locale = str(updates["locale"])
-                if locale not in {"", "zh-CN", "zh-TW", "en"}:
-                    return Err(SdkError("locale must be one of: zh-CN, zh-TW, en"))
+                if locale not in {"", *SUPPORTED_LOCALES}:
+                    supported = ", ".join(SUPPORTED_LOCALES)
+                    return Err(SdkError(f"locale must be one of: {supported}"))
                 updates["locale"] = locale
             for key in ("default_city", "timezone"):
                 if key in updates:

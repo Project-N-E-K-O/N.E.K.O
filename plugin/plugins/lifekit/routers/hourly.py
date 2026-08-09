@@ -12,6 +12,7 @@ from .._chat import push_lifekit_content
 from .._coerce import clamp_int
 from .._contracts import HourlyForecastParams, HourlyForecastResult
 from .._location import LocationPurpose
+from .._location_entry import location_failure_result
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -47,12 +48,18 @@ class HourlyForecastRouter(PluginRouter):
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
+        hours = clamp_int(hours, 48, 1, 168)
 
         loc, loc_err = await plugin._resolve_location(city, purpose=LocationPurpose.WEATHER)
         if not loc:
-            return Err(SdkError(i18n.t(loc_err or "error.no_location")))
+            return location_failure_result(
+                loc_err,
+                i18n,
+                field_name="city",
+                requested_location=city or "",
+                context={"hours": hours},
+            )
 
-        hours = clamp_int(hours, 48, 1, 168)
         tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
 
         try:
@@ -131,6 +138,7 @@ class HourlyForecastRouter(PluginRouter):
         push_lifekit_content(plugin, blocks)
 
         return Ok({
+            "status": "ready",
             "city": loc["city"],
             "summary": summary,
             "hours": result_hours,

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 
 def _blankable_text(value: Any) -> str:
@@ -15,6 +15,37 @@ def _blankable_text(value: Any) -> str:
 
 class LifeKitModel(BaseModel):
     model_config = {"extra": "ignore"}
+
+
+class ClarificationResult(LifeKitModel):
+    status: Literal["clarify"]
+    summary: str = Field(..., min_length=1)
+    choices: list[str] = Field(default_factory=list)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def clarification_summary_must_not_be_blank(cls, value: Any) -> str:
+        summary = _blankable_text(value)
+        if not summary:
+            raise ValueError("clarification summary must not be blank")
+        return summary
+
+
+class ClarifiableResult(RootModel[Any]):
+    """Validated union of a complete ready result and a clarification result."""
+
+    @property
+    def status(self) -> str:
+        return str(self.root.status)
+
+    @property
+    def summary(self) -> str:
+        return str(getattr(self.root, "summary", ""))
+
+    @property
+    def choices(self) -> list[str]:
+        return list(getattr(self.root, "choices", []))
 
 
 class SavedLocationModel(LifeKitModel):
@@ -49,9 +80,17 @@ class AddLocationParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class AddLocationResult(LifeKitModel):
+class _AddLocationReadyResult(LifeKitModel):
+    status: Literal["ready"]
     message: str
     location: dict[str, Any]
+
+
+class AddLocationResult(ClarifiableResult):
+    root: Annotated[
+        _AddLocationReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
 
 
 class LocationIdParams(LifeKitModel):
@@ -77,11 +116,19 @@ class HourlyForecastParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class HourlyForecastResult(LifeKitModel):
+class _HourlyForecastReadyResult(LifeKitModel):
+    status: Literal["ready"]
     city: str
     summary: str
     hours: list[dict[str, Any]]
     total_hours: int
+
+
+class HourlyForecastResult(ClarifiableResult):
+    root: Annotated[
+        _HourlyForecastReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
 
 
 class NearbyParams(LifeKitModel):
@@ -95,14 +142,20 @@ class NearbyParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class NearbyResult(LifeKitModel):
+class _NearbyReadyResult(LifeKitModel):
+    status: Literal["ready"]
     summary: str
     results: list[dict[str, Any]]
     count: int
-    status: Literal["ready", "clarify"] = "ready"
-    choices: list[str] = Field(default_factory=list)
     provider: str | None = None
     weather_tip: str = ""
+
+
+class NearbyResult(ClarifiableResult):
+    root: Annotated[
+        _NearbyReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
 
 
 class FoodRecommendParams(LifeKitModel):
@@ -117,13 +170,21 @@ class FoodRecommendParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class FoodRecommendResult(LifeKitModel):
+class _FoodRecommendReadyResult(LifeKitModel):
+    status: Literal["ready"]
     summary: str
     recommendations: list[dict[str, Any]]
     query: str
     weather_reason: str = ""
     provider: str | None = None
     next_actions: list[str] = Field(default_factory=list)
+
+
+class FoodRecommendResult(ClarifiableResult):
+    root: Annotated[
+        _FoodRecommendReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
 
 
 class UnitConvertParams(LifeKitModel):
@@ -151,7 +212,8 @@ class CityParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class GetWeatherResult(LifeKitModel):
+class _GetWeatherReadyResult(LifeKitModel):
+    status: Literal["ready"]
     city: str
     summary: str
     current: dict[str, Any]
@@ -160,7 +222,15 @@ class GetWeatherResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class AirQualityResult(LifeKitModel):
+class GetWeatherResult(ClarifiableResult):
+    root: Annotated[
+        _GetWeatherReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
+
+
+class _AirQualityReadyResult(LifeKitModel):
+    status: Literal["ready"]
     city: str
     summary: str
     aqi: dict[str, Any]
@@ -168,7 +238,15 @@ class AirQualityResult(LifeKitModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
-class TravelAdviceResult(LifeKitModel):
+class AirQualityResult(ClarifiableResult):
+    root: Annotated[
+        _AirQualityReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
+
+
+class _TravelAdviceReadyResult(LifeKitModel):
+    status: Literal["ready"]
     city: str
     summary: str
     tips: list[str]
@@ -176,6 +254,13 @@ class TravelAdviceResult(LifeKitModel):
     umbrella: bool = False
     sunscreen: bool = False
     next_actions: list[str] = Field(default_factory=list)
+
+
+class TravelAdviceResult(ClarifiableResult):
+    root: Annotated[
+        _TravelAdviceReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]
 
 
 class CurrencyConvertParams(LifeKitModel):
@@ -255,7 +340,8 @@ class TripAdviceParams(LifeKitModel):
         return _blankable_text(value)
 
 
-class TripAdviceResult(LifeKitModel):
+class _TripAdviceReadyResult(LifeKitModel):
+    status: Literal["ready"]
     origin: str
     destination: str
     distance_km: float
@@ -265,3 +351,10 @@ class TripAdviceResult(LifeKitModel):
     mode_advice: str = ""
     provider: str | None = None
     next_actions: list[str] = Field(default_factory=list)
+
+
+class TripAdviceResult(ClarifiableResult):
+    root: Annotated[
+        _TripAdviceReadyResult | ClarificationResult,
+        Field(discriminator="status"),
+    ]

@@ -150,7 +150,8 @@ async def _get_json(
 
 
 def _language(locale: str) -> str:
-    return "zh" if locale.startswith("zh") else "en"
+    language = "zh" if locale.startswith("zh") else locale.split("-", 1)[0]
+    return language if language in {"zh", "en", "ja", "ko", "ru", "es", "pt"} else "en"
 
 
 def _open_meteo_precision(feature_code: str) -> str:

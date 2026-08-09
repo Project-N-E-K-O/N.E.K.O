@@ -19,6 +19,8 @@ from .._contracts import (
     MessageResult,
     RemoveLocationResult,
 )
+from .._location import is_location_clarification, location_error_key_from_cause
+from .._location_entry import location_failure_result
 
 _STORE_KEY = "saved_locations"
 
@@ -125,13 +127,45 @@ class LocationsRouter(PluginRouter):
         try:
             geo = await geocode_city(resolved_query, locale=locale)
         except GeocodeError as exc:
-            plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
-            return Err(SdkError(f"Unable to locate city: {clean_city} ({exc.cause})"))
+            error_key = location_error_key_from_cause(exc.cause)
+            if not is_location_clarification(error_key):
+                plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
+            return location_failure_result(
+                error_key,
+                plugin._i18n,
+                field_name="city",
+                requested_location=clean_city,
+                context={
+                    "label": clean_label,
+                    "address": clean_address,
+                    "set_default": set_default,
+                },
+            )
         except Exception as exc:
             plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
-            geo = None
+            return location_failure_result(
+                "error.geocode_failed",
+                plugin._i18n,
+                field_name="city",
+                requested_location=clean_city,
+                context={
+                    "label": clean_label,
+                    "address": clean_address,
+                    "set_default": set_default,
+                },
+            )
         if not geo:
-            return Err(SdkError(f"Unable to locate city: {clean_city}"))
+            return location_failure_result(
+                "error.city_not_found",
+                plugin._i18n,
+                field_name="city",
+                requested_location=clean_city,
+                context={
+                    "label": clean_label,
+                    "address": clean_address,
+                    "set_default": set_default,
+                },
+            )
 
         async with plugin._locations_lock:
             locations = await self._load()
@@ -169,7 +203,11 @@ class LocationsRouter(PluginRouter):
             if not await self._save(locations):
                 return Err(SdkError("Save failed. Please check whether plugin storage is enabled."))
 
-        return Ok({"message": f"Added location: {new_loc['label']} ({new_loc['city']})", "location": new_loc})
+        return Ok({
+            "status": "ready",
+            "message": f"Added location: {new_loc['label']} ({new_loc['city']})",
+            "location": new_loc,
+        })
 
     @ui.action(
         label=tr("actions.removeLocation.label", default="Remove location"),

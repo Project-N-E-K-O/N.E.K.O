@@ -75,6 +75,134 @@
   },
   "nearby": {
     "no_query": "請輸入搜尋關鍵詞（如：火鍋、咖啡、超市）",
+    "list_separator": "、",
+    "intent_choice_ids": [
+      "park",
+      "attraction",
+      "restaurant",
+      "shopping_mall"
+    ],
+    "intent_broad_phrases": [
+      "有啥地方可去",
+      "有什麼地方可去",
+      "哪裡可以去",
+      "去哪玩",
+      "好玩的地方",
+      "隨便逛逛"
+    ],
+    "intent_dialogue_markers": [
+      "幫我",
+      "麻煩",
+      "附近",
+      "周邊",
+      "周圍",
+      "我附近",
+      "附近有",
+      "有沒有",
+      "有什麼",
+      "有啥",
+      "哪裡",
+      "哪兒",
+      "推薦",
+      "可以",
+      "嗎",
+      "呢",
+      "麼"
+    ],
+    "category_labels": {
+      "pet_hospital": "寵物醫院",
+      "coffee_shop": "咖啡店",
+      "convenience_store": "便利店",
+      "shopping_mall": "商場",
+      "movie_theater": "電影院",
+      "museum": "博物館",
+      "parking": "停車場",
+      "gas_station": "加油站",
+      "subway_station": "地鐵站",
+      "restaurant": "餐廳",
+      "supermarket": "超市",
+      "attraction": "景點",
+      "park": "公園",
+      "bookstore": "書店",
+      "hospital": "醫院",
+      "pharmacy": "藥店"
+    },
+    "category_queries": {
+      "pet_hospital": "寵物醫院",
+      "coffee_shop": "咖啡店",
+      "convenience_store": "便利店",
+      "shopping_mall": "購物中心",
+      "movie_theater": "電影院",
+      "museum": "博物館",
+      "parking": "停車場",
+      "gas_station": "加油站",
+      "subway_station": "地鐵站",
+      "restaurant": "餐廳",
+      "supermarket": "超市",
+      "attraction": "景點",
+      "park": "公園",
+      "bookstore": "書店",
+      "hospital": "醫院",
+      "pharmacy": "藥店"
+    },
+    "intent_aliases": {
+      "pet_hospital": [
+        "寵物醫院"
+      ],
+      "coffee_shop": [
+        "咖啡店",
+        "咖啡館",
+        "咖啡廳",
+        "咖啡"
+      ],
+      "convenience_store": [
+        "便利店"
+      ],
+      "shopping_mall": [
+        "購物中心",
+        "商場"
+      ],
+      "movie_theater": [
+        "電影院",
+        "影院"
+      ],
+      "museum": [
+        "博物館"
+      ],
+      "parking": [
+        "停車場"
+      ],
+      "gas_station": [
+        "加油站"
+      ],
+      "subway_station": [
+        "地鐵站"
+      ],
+      "restaurant": [
+        "餐廳",
+        "飯店",
+        "吃什麼"
+      ],
+      "supermarket": [
+        "超市"
+      ],
+      "attraction": [
+        "景點",
+        "景區"
+      ],
+      "park": [
+        "公園"
+      ],
+      "bookstore": [
+        "書店"
+      ],
+      "hospital": [
+        "醫院"
+      ],
+      "pharmacy": [
+        "藥店"
+      ]
+    },
     "clarify_category": "你更想找哪類地方？請選擇：{choices}。",
     "clarify_location": "{detail}。請補充搜尋中心，例如「吉林市附近的公園」，或使用已確認的儲存地點。",
     "clarify_both": "還缺少搜尋中心和地點類型。可以直接說「吉林市附近的公園」，或選擇：{choices}。",

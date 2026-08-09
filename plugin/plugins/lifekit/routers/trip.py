@@ -12,6 +12,7 @@ from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
 from .._contracts import TripAdviceParams, TripAdviceResult
 from .._location import LocationPurpose
+from .._location_entry import location_failure_result
 
 
 class TripRouter(PluginRouter):
@@ -59,7 +60,17 @@ class TripRouter(PluginRouter):
             purpose=LocationPurpose.ROUTE_ORIGIN,
         )
         if not origin_loc:
-            return Err(SdkError(i18n.t(origin_err or "error.no_location") + " (origin)"))
+            return location_failure_result(
+                origin_err,
+                i18n,
+                field_name="origin",
+                requested_location=origin or "",
+                context={
+                    "origin": origin or "",
+                    "destination": destination,
+                    "mode": mode,
+                },
+            )
 
         # 解析终点
         dest_loc, dest_err = await plugin._resolve_location(
@@ -67,7 +78,18 @@ class TripRouter(PluginRouter):
             purpose=LocationPurpose.ROUTE_DESTINATION,
         )
         if not dest_loc:
-            return Err(SdkError(i18n.t(dest_err or "error.no_location") + " (destination)"))
+            return location_failure_result(
+                dest_err,
+                i18n,
+                field_name="destination",
+                requested_location=destination,
+                context={
+                    "origin": origin or origin_loc["city"],
+                    "destination": destination,
+                    "mode": mode,
+                    "resolved_origin": origin_loc["city"],
+                },
+            )
 
         # 直线距离
         dist_km = haversine_km(origin_loc["lat"], origin_loc["lon"], dest_loc["lat"], dest_loc["lon"])
@@ -141,6 +163,7 @@ class TripRouter(PluginRouter):
         ])
 
         return Ok({
+            "status": "ready",
             "origin": origin_loc["city"],
             "destination": dest_loc["city"],
             "distance_km": round(dist_km, 1),
