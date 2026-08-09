@@ -7,6 +7,10 @@ Two input shapes are accepted:
 * **legacy** -- a pre-envelope flat `schema: 1` snapshot. The envelope is derived
   locally so nothing downstream needs a second code path.
 
+Wire positions and map bounds arrive in BigWorld units from `8111_for_wows`
+and are converted to metres here (`BW_TO_METERS`). Downstream facts, detectors
+and prompts all speak metres.
+
 Derived values are honest about their limits: a synthesized `battleId` only
 guarantees "it changes between battles", and a synthesized `seq` only guarantees
 "it advances when the content changes". That is exactly what the cursor and the
@@ -45,6 +49,10 @@ from ..domain.snapshot import (
 
 SUPPORTED_API_MAJOR = 1
 
+# 8111_for_wows emits world x/z and map bounds in BigWorld units. The engine
+# constant is 1 BW = 30 metres; every distance downstream is labelled `_m`.
+BW_TO_METERS = 30.0
+
 # Legacy frames are considered stale once the last content change is older than
 # this; it mirrors the service-side rule so both paths age data the same way.
 LEGACY_STALE_SECONDS = 2.0
@@ -66,6 +74,12 @@ def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _bw_to_m(value: Any) -> float | None:
+    """Convert a BigWorld length from the wire into metres, or `None`."""
+    number = _number(value)
+    return None if number is None else number * BW_TO_METERS
 
 
 def _text(value: Any) -> str | None:
@@ -304,7 +318,7 @@ class WowsSchemaAdapter:
     def _read_bounds(raw: Any) -> tuple[float, float, float, float] | None:
         if not isinstance(raw, (list, tuple)) or len(raw) != 4:
             return None
-        values = [_number(item) for item in raw]
+        values = [_bw_to_m(item) for item in raw]
         if any(v is None for v in values):
             return None
         min_x, max_x, min_z, max_z = values  # type: ignore[misc]
@@ -319,7 +333,7 @@ class WowsSchemaAdapter:
         position = raw.get("position")
         x = z = None
         if isinstance(position, (list, tuple)) and len(position) >= 3:
-            x, z = _number(position[0]), _number(position[2])
+            x, z = _bw_to_m(position[0]), _bw_to_m(position[2])
         player_id = raw.get("playerId")
         team_id = raw.get("teamId")
         return SelfShip(
@@ -328,6 +342,7 @@ class WowsSchemaAdapter:
             health=_number(raw.get("health")),
             max_health=_number(raw.get("maxHealth")),
             yaw=_number(raw.get("yaw")),
+            # Speed is already a game-facing knot-scale reading, not BW/s.
             speed=_number(raw.get("speed")),
             x=x,
             z=z,
@@ -369,8 +384,8 @@ class WowsSchemaAdapter:
                 tier=tier if isinstance(tier, int) else None,
                 alive=entry.get("alive") if isinstance(entry.get("alive"), bool) else None,
                 visible=bool(entry.get("visible")),
-                x=_number(entry.get("x")),
-                z=_number(entry.get("z")),
+                x=_bw_to_m(entry.get("x")),
+                z=_bw_to_m(entry.get("z")),
                 yaw=_number(entry.get("yaw")),
                 health=health,
                 max_health=max_health,
@@ -419,6 +434,7 @@ def _sum_table(raw: Any) -> float | None:
 
 
 __all__ = [
+    "BW_TO_METERS",
     "LEGACY_STALE_SECONDS",
     "SUPPORTED_API_MAJOR",
     "UnexpectedServiceIdentity",

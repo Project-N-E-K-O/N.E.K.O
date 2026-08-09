@@ -3,14 +3,20 @@ import {
   Alert,
   Card,
   Columns,
+  Field,
   Inline,
   KeyValue,
+  NumberInput,
+  PasswordInput,
+  SegmentedControl,
   Stack,
   StatCard,
   StatusBadge,
   Switch,
   Text,
   Warning,
+  useEffect,
+  useState,
 } from "@neko/plugin-ui"
 import type { HostedAction } from "@neko/plugin-ui"
 
@@ -38,6 +44,36 @@ export function DiagnosticsSection(props: {
   const paused = Boolean(dispatcher.paused || arbiter.paused)
   const findAction = (id: string) =>
     (props.actions || []).find((action) => action.id === id)
+
+  const [officialEnabled, setOfficialEnabled] = useState(
+    Boolean(officialTool.enabled)
+  )
+  const [officialRegion, setOfficialRegion] = useState(
+    officialTool.region || "asia"
+  )
+  const [applicationIdDraft, setApplicationIdDraft] = useState("")
+  const [shotInterval, setShotInterval] = useState<number | "">(
+    screenshot.min_interval_seconds ?? 15
+  )
+  const [shotRetain, setShotRetain] = useState<number | "">(
+    screenshot.retain_count ?? 20
+  )
+
+  useEffect(() => {
+    setOfficialEnabled(Boolean(officialTool.enabled))
+  }, [officialTool.enabled])
+
+  useEffect(() => {
+    setOfficialRegion(officialTool.region || "asia")
+  }, [officialTool.region])
+
+  useEffect(() => {
+    setShotInterval(screenshot.min_interval_seconds ?? 15)
+  }, [screenshot.min_interval_seconds])
+
+  useEffect(() => {
+    setShotRetain(screenshot.retain_count ?? 20)
+  }, [screenshot.retain_count])
 
   return (
     <Stack gap={12}>
@@ -148,6 +184,78 @@ export function DiagnosticsSection(props: {
               [t("diagnostics.catalog.cacheMisses")]: formatCount(officialTool.cache_misses, t),
             }}
           />
+          <Stack gap={10}>
+            <Text>{t("diagnostics.catalog.officialHelp")}</Text>
+            <Switch
+              checked={officialEnabled}
+              disabled={props.busy}
+              label={t("diagnostics.catalog.officialEnable")}
+              onChange={(checked) => setOfficialEnabled(checked)}
+            />
+            <Field label={t("diagnostics.catalog.region")}>
+              <SegmentedControl
+                value={officialRegion}
+                disabled={props.busy}
+                options={[
+                  { value: "asia", label: t("diagnostics.catalog.region.asia") },
+                  { value: "eu", label: t("diagnostics.catalog.region.eu") },
+                  { value: "na", label: t("diagnostics.catalog.region.na") },
+                ]}
+                onChange={(value) => setOfficialRegion(String(value))}
+              />
+            </Field>
+            <Field
+              label={t("diagnostics.catalog.key")}
+              help={
+                officialTool.key_configured
+                  ? t("diagnostics.catalog.keyHelpConfigured")
+                  : t("diagnostics.catalog.keyHelpEmpty")
+              }
+            >
+              <PasswordInput
+                value={applicationIdDraft}
+                disabled={props.busy}
+                placeholder={
+                  officialTool.key_configured
+                    ? t("diagnostics.catalog.keyPlaceholderConfigured")
+                    : t("diagnostics.catalog.keyPlaceholderEmpty")
+                }
+                onChange={(value) => setApplicationIdDraft(value)}
+              />
+            </Field>
+            <Inline gap={8} wrap>
+              <ActionButton
+                tone="primary"
+                refresh
+                actionId="set_official_api"
+                values={{
+                  enabled: officialEnabled,
+                  region: officialRegion,
+                  ...(applicationIdDraft.trim()
+                    ? { application_id: applicationIdDraft.trim() }
+                    : {}),
+                }}
+                onResult={() => setApplicationIdDraft("")}
+              >
+                {t("diagnostics.catalog.saveOfficial")}
+              </ActionButton>
+              {officialTool.key_configured ? (
+                <ActionButton
+                  tone="danger"
+                  refresh
+                  actionId="set_official_api"
+                  values={{
+                    enabled: officialEnabled,
+                    region: officialRegion,
+                    clear_application_id: true,
+                  }}
+                  onResult={() => setApplicationIdDraft("")}
+                >
+                  {t("diagnostics.catalog.clearKey")}
+                </ActionButton>
+              ) : null}
+            </Inline>
+          </Stack>
         </Stack>
       </Card>
 
@@ -164,16 +272,50 @@ export function DiagnosticsSection(props: {
           ) : (
             <Text>{t("diagnostics.screenshot.disabledHelp")}</Text>
           )}
+          <Inline gap={8} wrap align="end">
+            <Field label={t("diagnostics.screenshot.interval")}>
+              <NumberInput
+                value={shotInterval}
+                min={0}
+                max={600}
+                step={1}
+                disabled={props.busy}
+                onChange={(value) =>
+                  setShotInterval(value === "" ? "" : Number(value))
+                }
+              />
+            </Field>
+            <Field label={t("diagnostics.screenshot.retain")}>
+              <NumberInput
+                value={shotRetain}
+                min={1}
+                max={100}
+                step={1}
+                disabled={props.busy}
+                onChange={(value) =>
+                  setShotRetain(value === "" ? "" : Number(value))
+                }
+              />
+            </Field>
+            <ActionButton
+              tone="primary"
+              refresh
+              actionId="set_screenshot_settings"
+              values={{
+                min_interval_seconds: Number(shotInterval) || 0,
+                retain_count: Number(shotRetain) || 1,
+              }}
+            >
+              {t("diagnostics.screenshot.saveSettings")}
+            </ActionButton>
+          </Inline>
+          <Text>{t("diagnostics.screenshot.settingsHelp")}</Text>
           {screenshot.enabled ? (
             <>
               <KeyValue
                 data={{
-                  [t("diagnostics.screenshot.interval")]:
-                    `${screenshot.min_interval_seconds ?? "—"}s`,
                   [t("diagnostics.screenshot.cooldown")]:
                     `${screenshot.cooldown_remaining_seconds ?? 0}s`,
-                  [t("diagnostics.screenshot.retain")]:
-                    formatCount(screenshot.retain_count, t),
                 }}
               />
               {findAction("capture_screenshot_now") ? (

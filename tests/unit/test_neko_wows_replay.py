@@ -253,7 +253,8 @@ def replay():
 
 @pytest.fixture
 def pipeline():
-    return Pipeline(WowsConfig())
+    # Replay harness stays on dry-run so event-chain tests do not hit the host.
+    return Pipeline(WowsConfig(dry_run=True))
 
 
 def run(pipeline: Pipeline, frames, *, epoch=1):
@@ -483,7 +484,7 @@ def test_rendered_facts_contain_no_unsupported_domain_data(replay, pipeline):
 
 def test_the_legacy_path_produces_the_same_kind_of_chain(replay):
     """A pre-envelope service must reach the same events, cursor aside."""
-    pipeline = Pipeline(WowsConfig())
+    pipeline = Pipeline(WowsConfig(dry_run=True))
     legacy_frames = []
     for frame in replay["frames"]:
         clone = json.loads(json.dumps(frame))

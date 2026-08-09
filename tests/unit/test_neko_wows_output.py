@@ -41,6 +41,10 @@ from plugin.plugins.neko_wows.presentation.instructions import (
     BASE_INSTRUCTIONS,
     NORMAL_OVERLAY,
     URGENT_OVERLAY,
+    VISION_LOOK_BEFORE_SPEAK,
+    WOWS_CONTEXT_INSTRUCTIONS,
+    WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS,
+    context_instructions,
     instructions_for,
 )
 from plugin.plugins.neko_wows.presentation.prompt_router import (
@@ -103,8 +107,8 @@ def request(*, event_id=LOW_HEALTH, expires_at=0.0, text="说点什么"):
 
 def test_dry_run_makes_no_host_calls_at_all():
     plugin = FakePlugin()
-    cfg = WowsConfig()
-    assert cfg.dry_run is True, "dry_run must default to on"
+    cfg = WowsConfig(dry_run=True)
+    assert cfg.dry_run is True
     dispatcher = NekoDispatcher(plugin, cfg, clock=FakeClock())
 
     for _ in range(20):
@@ -121,7 +125,8 @@ def test_dry_run_makes_no_host_calls_at_all():
 def test_dry_run_still_produces_a_complete_request():
     """The point of dry-run is an inspectable request, not a shortcut."""
     plugin = FakePlugin()
-    dispatcher = NekoDispatcher(plugin, WowsConfig(), clock=FakeClock())
+    dispatcher = NekoDispatcher(
+        plugin, WowsConfig(dry_run=True), clock=FakeClock())
     built = request(text="完整提示词")
     dispatcher.deliver(built)
     kwargs = built.push_kwargs()
@@ -175,6 +180,22 @@ def test_context_injection_is_read_only_not_a_turn():
     # Injecting twice would duplicate the scene setup.
     assert injector.push("场景说明", dry_run=False) is False
     assert len(plugin.calls) == 1
+
+
+def test_context_injection_replaces_when_scene_text_changes():
+    """Screenshot toggle mid-battle must refresh the scene block, not keep the old one."""
+    plugin = FakePlugin()
+    injector = ContextInjector(plugin)
+    assert injector.push("看不到屏幕画面", dry_run=False) is True
+
+    assert injector.push("可调用 wows_look_at_battle", dry_run=False) is True
+    assert injector.injected is True
+    assert len(plugin.calls) == 2
+    assert plugin.calls[1]["parts"][0]["text"] == "可调用 wows_look_at_battle"
+
+    # Same replacement text is still a no-op.
+    assert injector.push("可调用 wows_look_at_battle", dry_run=False) is False
+    assert len(plugin.calls) == 2
 
 
 def test_declined_context_submission_stays_retryable():
@@ -640,3 +661,37 @@ def test_urgent_takes_fewer_excerpts_than_normal():
         PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True), excerpts)
     assert urgent.metadata["excerpt_count"] == 1
     assert normal.metadata["excerpt_count"] == 3
+
+
+def test_screenshot_soft_prompt_is_off_by_default():
+    router = WowsPromptRouter(WowsConfig())
+    built = router.build(
+        build_candidate(LOW_HEALTH),
+        PromptProfile(channel_mode=CHANNEL_DUAL, dry_run=True),
+    )
+    assert VISION_LOOK_BEFORE_SPEAK.strip() not in built.text
+    assert built.metadata["screenshot_enabled"] is False
+
+
+def test_screenshot_soft_prompt_is_appended_when_enabled():
+    router = WowsPromptRouter(WowsConfig())
+    for event_id in (LOW_HEALTH, POST_BATTLE_SUMMARY):
+        built = router.build(
+            build_candidate(event_id),
+            PromptProfile(
+                channel_mode=CHANNEL_DUAL,
+                dry_run=True,
+                screenshot_enabled=True,
+            ),
+        )
+        assert "wows_look_at_battle" in built.text, event_id
+        assert VISION_LOOK_BEFORE_SPEAK.strip() in built.text, event_id
+        assert built.metadata["screenshot_enabled"] is True
+
+
+def test_context_instructions_follow_the_screenshot_switch():
+    assert context_instructions(screenshot_enabled=False) == WOWS_CONTEXT_INSTRUCTIONS
+    enabled = context_instructions(screenshot_enabled=True)
+    assert enabled == WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
+    assert "wows_look_at_battle" in enabled
+    assert "看不到屏幕画面" not in enabled

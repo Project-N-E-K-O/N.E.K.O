@@ -180,6 +180,9 @@ class ContextInjector:
         self.logger = logger
         self._lock = threading.RLock()
         self._injected = False
+        # Last accepted scene text. A mid-battle screenshot toggle changes the
+        # block; push must replace rather than leave the stale version active.
+        self._text: str | None = None
         self.host_calls = 0
 
     @property
@@ -189,10 +192,13 @@ class ContextInjector:
 
     def push(self, text: str, *, dry_run: bool) -> bool:
         with self._lock:
-            if dry_run or self._injected:
+            if dry_run:
+                return False
+            if self._injected and self._text == text:
                 return False
             if self._send(text):
                 self._injected = True
+                self._text = text
                 return True
             return False
 
@@ -206,6 +212,7 @@ class ContextInjector:
                 return False
             if self._send(text):
                 self._injected = False
+                self._text = None
                 return True
             return False
 

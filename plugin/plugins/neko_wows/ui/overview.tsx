@@ -1,15 +1,21 @@
 import {
+  ActionButton,
   Alert,
   Card,
   Columns,
   Divider,
+  Field,
   Inline,
+  Input,
   KeyValue,
   StatCard,
   StatusBadge,
   Stack,
   Text,
+  useEffect,
+  useState,
 } from "@neko/plugin-ui"
+import type { HostedAction } from "@neko/plugin-ui"
 
 import {
   availabilityLabel,
@@ -27,6 +33,8 @@ import type { DashboardState, Translate } from "./types"
 
 export function OverviewSection(props: {
   state: DashboardState
+  actions: HostedAction[]
+  busy: boolean
   t: Translate
   locale: string
 }) {
@@ -39,6 +47,24 @@ export function OverviewSection(props: {
   const config = state.config || {}
   const counters = state.counters || {}
   const hasSnapshot = snapshot.seq !== undefined
+  const findAction = (id: string) =>
+    (props.actions || []).find((action) => action.id === id)
+
+  const [serviceUrl, setServiceUrl] = useState(config.service_url || "")
+  const [sourceDir, setSourceDir] = useState(config.service_source_dir || "")
+  const [gameDir, setGameDir] = useState(config.game_dir || "")
+
+  useEffect(() => {
+    setServiceUrl(config.service_url || "")
+  }, [config.service_url])
+
+  useEffect(() => {
+    setSourceDir(config.service_source_dir || "")
+  }, [config.service_source_dir])
+
+  useEffect(() => {
+    setGameDir(config.game_dir || "")
+  }, [config.game_dir])
 
   return (
     <Stack gap={12}>
@@ -106,6 +132,71 @@ export function OverviewSection(props: {
                 || t("common.notConfigured"),
             }}
           />
+          <Divider />
+          <Text>{t("overview.source.editHelp")}</Text>
+          <Field label={t("overview.source.address")}>
+            <Input
+              value={serviceUrl}
+              disabled={props.busy}
+              placeholder="http://127.0.0.1:8111"
+              onChange={setServiceUrl}
+            />
+          </Field>
+          <Field
+            label={t("overview.source.sourceDir")}
+            help={t("overview.source.sourceDirHelp")}
+          >
+            <Input
+              value={sourceDir}
+              disabled={props.busy}
+              placeholder={t("overview.source.sourceDirPlaceholder")}
+              onChange={setSourceDir}
+            />
+          </Field>
+          <Field
+            label={t("overview.source.gameDir")}
+            help={t("overview.source.gameDirHelp")}
+          >
+            <Input
+              value={gameDir}
+              disabled={props.busy}
+              placeholder={t("overview.source.gameDirPlaceholder")}
+              onChange={setGameDir}
+            />
+          </Field>
+          <Inline gap={8} wrap>
+            <ActionButton
+              tone="primary"
+              refresh
+              actionId="set_connection"
+              values={{
+                service_url: serviceUrl,
+                service_source_dir: sourceDir,
+                game_dir: gameDir,
+                reconnect: false,
+              }}
+            >
+              {t("overview.source.save")}
+            </ActionButton>
+            <ActionButton
+              tone="success"
+              refresh
+              actionId="set_connection"
+              values={{
+                service_url: serviceUrl,
+                service_source_dir: sourceDir,
+                game_dir: gameDir,
+                reconnect: true,
+              }}
+            >
+              {t("overview.source.saveAndReconnect")}
+            </ActionButton>
+            {findAction("reconnect") ? (
+              <ActionButton action={findAction("reconnect")} tone="info" refresh>
+                {t("diagnostics.actions.reconnect")}
+              </ActionButton>
+            ) : null}
+          </Inline>
         </Stack>
       </Card>
 

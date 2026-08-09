@@ -41,15 +41,17 @@ auto_start = false
 enabled = true
 
 # ---------------------------------------------------------------------------
-# 运行参数。dry_run 默认开：整条链路照跑到 DeliveryRequest，但 dispatcher 短路，
-# 绝不真投给猫娘。真机校准确认事件链可信后再由面板显式开启。
+# 运行参数。dry_run 默认关：战斗中会真实投递给猫娘，让她主动搭话。
+# 需要只跑链路、不发言时，可在面板临时打开 dry-run（仅本次运行有效）。
 # ---------------------------------------------------------------------------
 [neko_wows]
 enabled = true
-dry_run = true
+dry_run = false
 
 # 数据源。service_url 指向 8111_for_wows；serviceId 校验保证不会误连
 # War Thunder 自带的 8111 遥测（同端口、完全不同的协议）。
+# 面板概览页可改 URL / 源码目录 / 游戏目录，并持久化到 store（覆盖此处默认）；
+# 改动后需重连才生效。
 service_url = "http://127.0.0.1:8111"
 service_auto_start = true
 # 8111_for_wows 仓库根目录；留空则不自动拉起，只连已在跑的服务。
@@ -79,7 +81,8 @@ safety_window_seconds = 60.0
 safety_failure_limit = 5
 observability_max_events = 120
 
-# 检测阈值（世界坐标单位为米）。
+# 检测阈值（米）。8111_for_wows 线上坐标是 BigWorld（×30 → 米），
+# schema_adapter 入站时已换算，这里的阈值按米理解。
 low_health_ratios = [0.35, 0.15]
 rapid_damage_ratio = 0.12
 rapid_damage_window_seconds = 3.0
@@ -100,7 +103,8 @@ ship_catalog_version_policy = "warn"
 ship_catalog_language = "zh-CN"
 ship_catalog_context_batch_chars = 12000
 
-# 官方查询只作为显式 LLM 工具，默认关闭；Application ID 不会写入日志或面板。
+# 官方查询只作为显式 LLM 工具，默认关闭。面板可改开关 / 区服 / Application ID，
+# 并持久化到插件 store（覆盖此处默认）；明文 key 不会回传到面板状态或日志。
 official_api_enabled = false
 official_api_region = "asia"
 official_api_application_id = ""
@@ -109,8 +113,9 @@ official_api_timeout_seconds = 5.0
 official_api_cache_ttl_seconds = 300.0
 
 # 主动截屏。她可以自己决定何时截取战舰世界画面来判断战局。默认关闭：这个功能
-# 会截取屏幕、把 JPEG 写进插件数据目录、并把画面发给模型厂商，必须由用户在面板
-# 上明确打开。命中最短间隔时工具返回 rate_limited，不会硬失败。
+# 会截取屏幕、把 JPEG 写进插件数据目录、并把画面发给模型厂商。面板可改开关 /
+# 最短间隔 / 保留张数，并持久化到 store（覆盖此处默认）。
+# 命中最短间隔时工具返回 rate_limited，不会硬失败。
 screenshot_enabled = false
 screenshot_min_interval_seconds = 15.0
 screenshot_retain_count = 20

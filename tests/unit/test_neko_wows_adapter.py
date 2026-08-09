@@ -5,11 +5,13 @@ from __future__ import annotations
 import pytest
 
 from plugin.plugins.neko_wows.adapters.schema_adapter import (
+    BW_TO_METERS,
     LEGACY_STALE_SECONDS,
     UnexpectedServiceIdentity,
     UnsupportedApiVersion,
     WowsSchemaAdapter,
 )
+from plugin.plugins.neko_wows.domain.facts import FactBuilder
 from plugin.plugins.neko_wows.adapters.transport import (
     DROP_DUPLICATE_SEQ,
     DROP_MALFORMED,
@@ -49,7 +51,8 @@ def flat_body(**overrides):
         "battleType": "RandomBattle",
         "gameMode": "Domination",
         "map": {"name": "New Dawn", "id": "13_OC_new_dawn"},
-        "bounds": [-21000.0, 21000.0, -21000.0, 21000.0],
+        # Wire shape matches 8111_for_wows: BigWorld units (×30 → metres).
+        "bounds": [-700.0, 700.0, -700.0, 700.0],
         "boundsSource": "table",
         "self": {
             "playerId": 2000, "teamId": 0, "health": 40000.0,
@@ -152,6 +155,56 @@ def test_v1_body_is_normalized():
     assert snapshot.damage_inflicted == pytest.approx(15000.0)
     assert len(snapshot.ships) == 2
     assert snapshot.enemies()[0].name == "Shimakaze"
+
+
+def test_adapter_converts_bigworld_wire_coords_to_meters():
+    """8111_for_wows emits BigWorld units (1 BW = 30 m); facts must be metres.
+
+    A raw 192 BW gap used to be labelled ``distance_m: 192`` and spoken as
+    "192 metres". After conversion it is 5.76 km.
+    """
+    own = {
+        "playerId": 2000, "teamId": 0, "health": 40000.0,
+        "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+        "position": [0.0, 0.0, 0.0],
+    }
+    enemy = {
+        "uiId": 2, "playerId": 3000, "teamId": 1, "relation": 2,
+        "type": "Battleship", "name": "Yamato", "playerName": "Foe",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 192.0, "z": 0.0, "yaw": 1.57,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    payload = v1_payload(
+        bounds=[-800.0, 800.0, -800.0, 800.0],
+        self=own,
+        objects=[
+            {
+                "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+                "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+                "tier": 10, "alive": True, "visible": True,
+                "x": 0.0, "z": 0.0, "yaw": 0.0,
+                "health": 40000.0, "maxHealth": 80000.0, "hpRatio": 0.5,
+            },
+            enemy,
+        ],
+    )
+
+    snapshot = WowsSchemaAdapter().parse(payload)
+    assert snapshot.bounds == (
+        -800.0 * BW_TO_METERS,
+        800.0 * BW_TO_METERS,
+        -800.0 * BW_TO_METERS,
+        800.0 * BW_TO_METERS,
+    )
+    assert snapshot.self_ship.x == pytest.approx(0.0)
+    assert snapshot.self_ship.z == pytest.approx(0.0)
+    assert snapshot.enemies()[0].x == pytest.approx(192.0 * BW_TO_METERS)
+
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.nearest_enemy is not None
+    assert facts.nearest_enemy.distance_m == pytest.approx(192.0 * BW_TO_METERS)
+    assert facts.distance_to_boundary_m == pytest.approx(800.0 * BW_TO_METERS)
 
 
 def test_unknown_major_version_is_refused():

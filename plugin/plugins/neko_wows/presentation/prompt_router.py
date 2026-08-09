@@ -15,7 +15,11 @@ from typing import Any, Sequence
 
 from ..domain.contracts import DeliveryRequest, LANE_URGENT, TacticExcerpt
 from ..policy.tactic_policy import AdviceCandidate
-from .instructions import DEFAULT_BUNDLE, PromptBundle
+from .instructions import (
+    DEFAULT_BUNDLE,
+    VISION_LOOK_BEFORE_SPEAK,
+    PromptBundle,
+)
 
 REFERENCE_OPEN = "<<<UNTRUSTED_TACTICAL_REFERENCE>>>"
 REFERENCE_CLOSE = "<<<END_UNTRUSTED_TACTICAL_REFERENCE>>>"
@@ -42,6 +46,9 @@ class PromptProfile:
     dry_run: bool
     target_lanlan: str = ""
     bundle: PromptBundle = DEFAULT_BUNDLE
+    # When true, each call-out nudges the model to look before speaking. Kept
+    # off the editable prompt revision so the privacy switch stays authoritative.
+    screenshot_enabled: bool = False
 
 
 class WowsPromptRouter:
@@ -59,6 +66,8 @@ class WowsPromptRouter:
     ) -> DeliveryRequest:
         bundle = profile.bundle or DEFAULT_BUNDLE
         sections = [bundle.instructions_for(candidate.lane, profile.channel_mode)]
+        if profile.screenshot_enabled:
+            sections.append(VISION_LOOK_BEFORE_SPEAK.strip())
 
         sections.append(
             f"事件：{candidate.summary}（{candidate.event_id}）\n"
@@ -93,6 +102,7 @@ class WowsPromptRouter:
                 "battle_id": candidate.battle_id,
                 "channel_mode": profile.channel_mode,
                 "excerpt_count": excerpts_used,
+                "screenshot_enabled": bool(profile.screenshot_enabled),
                 # Stamped so the timeline can attribute every call-out to the
                 # exact prompt revision that produced it.
                 "prompt_revision": bundle.revision_id,

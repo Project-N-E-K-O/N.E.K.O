@@ -92,7 +92,7 @@ class WowsConfig:
     """Effective `[neko_wows]` settings, clamped so a typo cannot hurt."""
 
     enabled: bool = True
-    dry_run: bool = True
+    dry_run: bool = False
 
     service_url: str = "http://127.0.0.1:8111"
     service_auto_start: bool = True
@@ -175,8 +175,8 @@ class WowsConfig:
         """Build a config from a TOML section, ignoring anything unusable.
 
         A broken value must never take the plugin down, and it must never
-        silently enable real output: `dry_run` only turns off when the config
-        says so explicitly.
+        silently enable real output: missing or corrupt `dry_run` stays on
+        dry-run; live output requires an explicit boolean `false` in config.
         """
         data = dict(raw or {})
         cfg = cls()
@@ -196,6 +196,7 @@ class WowsConfig:
             return value.strip() if isinstance(value, str) else default
 
         cfg.enabled = flag("enabled", cfg.enabled)
+        # Safety fallback stays dry-run-on even though the shipped default is live.
         cfg.dry_run = flag("dry_run", True)
 
         cfg.service_url = text("service_url", cfg.service_url).rstrip("/")

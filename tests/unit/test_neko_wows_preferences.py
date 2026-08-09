@@ -28,8 +28,14 @@ from plugin.plugins.neko_wows.domain.contracts import (
     INTRUSION_NO_INTERRUPT,
     LANE_NORMAL,
     LANE_URGENT,
+    OFFICIAL_API_REGION_EU,
     NullTacticsRepository,
     WowsConfig,
+)
+from plugin.plugins.neko_wows import (
+    STORE_CONNECTION_SETTINGS,
+    STORE_OFFICIAL_API_SETTINGS,
+    STORE_SCREENSHOT_SETTINGS,
 )
 from plugin.plugins.neko_wows.domain.facts import WowsFacts
 from plugin.plugins.neko_wows.policy.arbiter import (
@@ -110,11 +116,11 @@ class _ReloadTarget:
         self.cfg = cfg
 
 
-def test_startup_config_reload_always_forces_dry_run():
-    target = _ReloadTarget(current=False, configured=False)
+def test_startup_config_reload_uses_configured_dry_run():
+    target = _ReloadTarget(current=True, configured=False)
     cfg = asyncio.run(
         NekoWowsPlugin._reload_config(target, force_dry_run=True))
-    assert cfg.dry_run is True
+    assert cfg.dry_run is False
 
 
 def test_hot_reload_preserves_the_explicit_session_dry_run_choice():
@@ -123,16 +129,16 @@ def test_hot_reload_preserves_the_explicit_session_dry_run_choice():
     assert cfg.dry_run is False
 
 
-def test_startup_config_reload_always_disables_screenshots():
+def test_startup_config_reload_uses_configured_screenshot_enabled():
     target = _ReloadTarget(
         current=False,
         configured=False,
-        current_screenshot_enabled=True,
+        current_screenshot_enabled=False,
         configured_screenshot_enabled=True,
     )
     cfg = asyncio.run(
         NekoWowsPlugin._reload_config(target, force_dry_run=True))
-    assert cfg.screenshot_enabled is False
+    assert cfg.screenshot_enabled is True
 
 
 def test_hot_reload_preserves_the_explicit_session_screenshot_choice():
@@ -405,6 +411,14 @@ class _GuardedConfig(WowsConfig):
         "urgent_min_gap_seconds",
         "normal_ttl_seconds",
         "normal_min_gap_seconds",
+        "official_api_enabled",
+        "official_api_region",
+        "official_api_application_id",
+        "service_url",
+        "service_source_dir",
+        "game_dir",
+        "screenshot_min_interval_seconds",
+        "screenshot_retain_count",
     })
 
     def attach_guard(self, lock):
@@ -514,6 +528,12 @@ def _action_target(*, guarded=True, store=None):
     target.arbiter = _GuardedDependency(target._pipeline_lock, enforce=guarded)
     target.dispatcher = _GuardedDependency(target._pipeline_lock, enforce=guarded)
     target.service = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.official_api = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.transport = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.screenshots = _GuardedDependency(target._pipeline_lock, enforce=guarded)
+    target.shots = type("Shots", (), {"clear": lambda _self: 3})()
+    target._reconnect_required = False
+    target._state_lock = threading.RLock()
     target.timeline = _ActionTimeline()
     target.store = store or _ActionStore()
     target.logger = type("Logger", (), {"warning": lambda *_args: None})()
@@ -543,6 +563,31 @@ def _action_target(*, guarded=True, store=None):
         "ttl_seconds": 15.0,
         "min_gap_seconds": 3.0,
     }, {"urgent_ttl_seconds": 15.0, "urgent_min_gap_seconds": 3.0}),
+    ("set_official_api", {
+        "enabled": True,
+        "region": OFFICIAL_API_REGION_EU,
+        "application_id": "demo-app-id",
+    }, {
+        "official_api_enabled": True,
+        "official_api_region": OFFICIAL_API_REGION_EU,
+        "official_api_application_id": "demo-app-id",
+    }),
+    ("set_connection", {
+        "service_url": "http://127.0.0.1:18111",
+        "service_source_dir": "D:/8111_for_wows",
+        "game_dir": "D:/Games/WoWs",
+    }, {
+        "service_url": "http://127.0.0.1:18111",
+        "service_source_dir": "D:/8111_for_wows",
+        "game_dir": "D:/Games/WoWs",
+    }),
+    ("set_screenshot_settings", {
+        "min_interval_seconds": 30.0,
+        "retain_count": 8,
+    }, {
+        "screenshot_min_interval_seconds": 30.0,
+        "screenshot_retain_count": 8,
+    }),
 ])
 def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
     action, kwargs, expected,
@@ -574,6 +619,31 @@ def test_live_preference_actions_change_runtime_only_under_pipeline_lock(
         "lane": LANE_URGENT,
         "enabled": False,
     }, {"disabled_lanes": ()}),
+    ("set_official_api", {
+        "enabled": True,
+        "region": OFFICIAL_API_REGION_EU,
+        "application_id": "demo-app-id",
+    }, {
+        "official_api_enabled": False,
+        "official_api_region": "asia",
+        "official_api_application_id": "",
+    }),
+    ("set_connection", {
+        "service_url": "http://127.0.0.1:18111",
+        "service_source_dir": "D:/8111_for_wows",
+        "game_dir": "D:/Games/WoWs",
+    }, {
+        "service_url": "http://127.0.0.1:8111",
+        "service_source_dir": "",
+        "game_dir": "",
+    }),
+    ("set_screenshot_settings", {
+        "min_interval_seconds": 30.0,
+        "retain_count": 8,
+    }, {
+        "screenshot_min_interval_seconds": 15.0,
+        "screenshot_retain_count": 20,
+    }),
 ])
 @pytest.mark.parametrize("store", [
     _ActionStore(Err(SdkError("disk"))),
@@ -652,3 +722,194 @@ def test_atomic_intrusion_preference_takes_precedence_over_legacy_keys():
 
     assert cfg.dialogue_intrusion_mode == INTRUSION_NO_INTERRUPT
     assert cfg.user_chat_quiet_window_seconds == 25.0
+
+
+def test_official_api_settings_are_persisted_atomically():
+    target = _action_target()
+
+    result = asyncio.run(target.set_official_api(
+        enabled=True,
+        region=OFFICIAL_API_REGION_EU,
+        application_id="  secret-key  ",
+    ))
+
+    assert result.is_ok()
+    assert result.unwrap() == {
+        "enabled": True,
+        "region": OFFICIAL_API_REGION_EU,
+        "key_configured": True,
+        "cleared": False,
+    }
+    assert target.store.calls == [(
+        STORE_OFFICIAL_API_SETTINGS,
+        {
+            "enabled": True,
+            "region": OFFICIAL_API_REGION_EU,
+            "application_id": "secret-key",
+        },
+    )]
+    assert target.official_api.calls == [("apply_config", (target.cfg,))]
+
+
+def test_official_api_save_without_new_key_keeps_existing():
+    target = _action_target(guarded=False)
+    target.cfg.official_api_application_id = "kept-key"
+
+    result = asyncio.run(target.set_official_api(
+        enabled=True, region=OFFICIAL_API_REGION_EU))
+
+    assert result.is_ok()
+    assert target.cfg.official_api_application_id == "kept-key"
+    assert target.store.calls[0][1]["application_id"] == "kept-key"
+
+
+def test_official_api_clear_removes_the_stored_key():
+    target = _action_target(guarded=False)
+    target.cfg.official_api_application_id = "kept-key"
+
+    result = asyncio.run(target.set_official_api(
+        enabled=False,
+        region="asia",
+        clear_application_id=True,
+    ))
+
+    assert result.is_ok()
+    assert result.unwrap()["cleared"] is True
+    assert result.unwrap()["key_configured"] is False
+    assert target.cfg.official_api_application_id == ""
+    assert target.store.calls[0][1]["application_id"] == ""
+
+
+def test_stored_official_api_settings_override_toml_defaults():
+    class Target:
+        async def _stored(self, key):
+            if key == STORE_OFFICIAL_API_SETTINGS:
+                return {
+                    "enabled": True,
+                    "region": OFFICIAL_API_REGION_EU,
+                    "application_id": "from-store",
+                }
+            return None
+
+    cfg = WowsConfig()
+    asyncio.run(NekoWowsPlugin._apply_stored_preferences(Target(), cfg))
+
+    assert cfg.official_api_enabled is True
+    assert cfg.official_api_region == OFFICIAL_API_REGION_EU
+    assert cfg.official_api_application_id == "from-store"
+
+
+def test_connection_settings_are_persisted_and_mark_reconnect():
+    target = _action_target()
+
+    result = asyncio.run(target.set_connection(
+        service_url=" http://127.0.0.1:18111/ ",
+        service_source_dir=" D:/8111_for_wows ",
+        game_dir=" D:/Games/WoWs ",
+    ))
+
+    assert result.is_ok()
+    assert result.unwrap()["changed"] is True
+    assert result.unwrap()["reconnect_required"] is True
+    assert target.cfg.service_url == "http://127.0.0.1:18111"
+    assert target.store.calls == [(
+        STORE_CONNECTION_SETTINGS,
+        {
+            "service_url": "http://127.0.0.1:18111",
+            "service_source_dir": "D:/8111_for_wows",
+            "game_dir": "D:/Games/WoWs",
+        },
+    )]
+    assert ("apply_config", (target.cfg,)) in target.service.calls
+    assert ("apply_config", (target.cfg,)) in target.transport.calls
+
+
+def test_empty_service_url_is_rejected():
+    target = _action_target(guarded=False)
+
+    result = asyncio.run(target.set_connection(service_url="   "))
+
+    assert result.is_err()
+    assert target.store.calls == []
+
+
+def test_screenshot_settings_are_persisted():
+    target = _action_target(guarded=False)
+    target.cfg.screenshot_enabled = True
+
+    result = asyncio.run(target.set_screenshot_settings(
+        min_interval_seconds=45.0, retain_count=12))
+
+    assert result.is_ok()
+    assert target.store.calls == [(
+        STORE_SCREENSHOT_SETTINGS,
+        {
+            "enabled": True,
+            "min_interval_seconds": 45.0,
+            "retain_count": 12,
+        },
+    )]
+    assert target.cfg.screenshot_min_interval_seconds == 45.0
+    assert target.cfg.screenshot_retain_count == 12
+    assert target.screenshots.calls == [("apply_config", (target.cfg,))]
+
+
+def test_screenshot_enabled_is_persisted():
+    target = _action_target(guarded=False)
+
+    result = asyncio.run(target.set_screenshot_enabled(True))
+
+    assert result.is_ok()
+    assert result.unwrap() == {
+        "screenshot_enabled": True,
+        "cleared_shots": 0,
+    }
+    assert target.cfg.screenshot_enabled is True
+    assert target.store.calls == [(
+        STORE_SCREENSHOT_SETTINGS,
+        {
+            "enabled": True,
+            "min_interval_seconds": 15.0,
+            "retain_count": 20,
+        },
+    )]
+
+
+def test_disabling_screenshots_clears_frames_and_persists_off():
+    target = _action_target(guarded=False)
+    target.cfg.screenshot_enabled = True
+
+    result = asyncio.run(target.set_screenshot_enabled(False))
+
+    assert result.is_ok()
+    assert result.unwrap()["cleared_shots"] == 3
+    assert target.cfg.screenshot_enabled is False
+    assert target.store.calls[0][1]["enabled"] is False
+
+
+def test_stored_connection_and_screenshot_settings_override_toml_defaults():
+    class Target:
+        async def _stored(self, key):
+            values = {
+                STORE_CONNECTION_SETTINGS: {
+                    "service_url": "http://127.0.0.1:18111",
+                    "service_source_dir": "D:/8111",
+                    "game_dir": "D:/WoWs",
+                },
+                STORE_SCREENSHOT_SETTINGS: {
+                    "enabled": True,
+                    "min_interval_seconds": 22.0,
+                    "retain_count": 7,
+                },
+            }
+            return values.get(key)
+
+    cfg = WowsConfig()
+    asyncio.run(NekoWowsPlugin._apply_stored_preferences(Target(), cfg))
+
+    assert cfg.service_url == "http://127.0.0.1:18111"
+    assert cfg.service_source_dir == "D:/8111"
+    assert cfg.game_dir == "D:/WoWs"
+    assert cfg.screenshot_enabled is True
+    assert cfg.screenshot_min_interval_seconds == 22.0
+    assert cfg.screenshot_retain_count == 7

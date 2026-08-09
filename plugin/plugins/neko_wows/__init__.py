@@ -13,9 +13,8 @@ Pipeline:
               -> DetectorRegistry -> TacticPolicy -> Arbiter
               -> PromptRouter -> OutputPort
 
-`dry_run` defaults to on: the chain runs end to end and stops at the dispatcher,
-so the panel can be used to verify the event chain before the character ever says
-anything.
+`dry_run` defaults to off so battle call-outs reach the character. Turn it on
+from the panel when you only want to inspect the event chain without speaking.
 """
 
 from __future__ import annotations
@@ -70,8 +69,10 @@ from .domain.contracts import (
     ALL_CHANNEL_MODES,
     ALL_INTRUSION_MODES,
     ALL_LANES,
+    ALL_OFFICIAL_API_REGIONS,
     INTRUSION_CRITICAL_ONLY,
     LANE_URGENT,
+    OFFICIAL_API_REGION_ASIA,
     NullTacticsRepository,
     TacticQuery,
     WowsConfig,
@@ -84,11 +85,11 @@ from .knowledge.store import KnowledgeStore
 from .presentation.instructions import (
     DEFAULT_BUNDLE,
     MAX_SECTION_CHARS,
-    WOWS_CONTEXT_INSTRUCTIONS,
     WOWS_RESTORE_INSTRUCTIONS,
     PromptBundle,
     PromptRejected,
     bundle_from_revision,
+    context_instructions,
     validate_sections,
 )
 from .presentation.prompt_router import PromptProfile, WowsPromptRouter
@@ -115,6 +116,9 @@ STORE_INTRUSION_MODE = "dialogue_intrusion_mode"
 STORE_QUIET_WINDOW = "user_chat_quiet_window_seconds"
 STORE_DISABLED_CATEGORIES = "disabled_categories"
 STORE_DISABLED_LANES = "disabled_lanes"
+STORE_OFFICIAL_API_SETTINGS = "official_api_settings"
+STORE_CONNECTION_SETTINGS = "connection_settings"
+STORE_SCREENSHOT_SETTINGS = "screenshot_settings"
 
 # Config keys that describe *where* the data comes from. Changing any of them
 # needs an explicit reconnect: silently tearing down a live link mid-battle would
@@ -241,18 +245,15 @@ class NekoWowsPlugin(NekoPluginBase):
                 section if isinstance(section, dict) else None)
 
             # Panel-set preferences win over the TOML defaults; `dry_run` is
-            # deliberately not among them, so a stale store cannot enable output.
+            # deliberately not among them (session-only via the panel).
             await self._apply_stored_preferences(cfg)
             with self._pipeline_lock:
-                # Output and screen capture are session choices. Startup always
-                # returns to their safety defaults, while hot reload preserves
-                # the explicit panel choices.
-                cfg.dry_run = True if force_dry_run else bool(self.cfg.dry_run)
-                cfg.screenshot_enabled = (
-                    False
-                    if force_dry_run
-                    else bool(self.cfg.screenshot_enabled)
-                )
+                # Startup takes `dry_run` from TOML and screenshot settings from
+                # TOML+store. Hot reload keeps the panel's session choices for
+                # dry-run and the screenshot switch.
+                if not force_dry_run:
+                    cfg.dry_run = bool(self.cfg.dry_run)
+                    cfg.screenshot_enabled = bool(self.cfg.screenshot_enabled)
                 self._apply_config(cfg)
             return cfg
 
@@ -291,6 +292,35 @@ class NekoWowsPlugin(NekoPluginBase):
         if isinstance(lanes, list):
             cfg.disabled_lanes = tuple(
                 value for value in lanes if value in ALL_LANES)
+        official = await self._stored(STORE_OFFICIAL_API_SETTINGS)
+        if isinstance(official, dict):
+            if isinstance(official.get("enabled"), bool):
+                cfg.official_api_enabled = official["enabled"]
+            region = official.get("region")
+            if isinstance(region, str) and region in ALL_OFFICIAL_API_REGIONS:
+                cfg.official_api_region = region
+            if isinstance(official.get("application_id"), str):
+                cfg.official_api_application_id = official["application_id"].strip()
+        connection = await self._stored(STORE_CONNECTION_SETTINGS)
+        if isinstance(connection, dict):
+            url = connection.get("service_url")
+            if isinstance(url, str) and url.strip():
+                cfg.service_url = url.strip().rstrip("/")
+            if isinstance(connection.get("service_source_dir"), str):
+                cfg.service_source_dir = connection["service_source_dir"].strip()
+            if isinstance(connection.get("game_dir"), str):
+                cfg.game_dir = connection["game_dir"].strip()
+        screenshot = await self._stored(STORE_SCREENSHOT_SETTINGS)
+        if isinstance(screenshot, dict):
+            if isinstance(screenshot.get("enabled"), bool):
+                cfg.screenshot_enabled = screenshot["enabled"]
+            interval = screenshot.get("min_interval_seconds")
+            if isinstance(interval, (int, float)) and not isinstance(interval, bool):
+                cfg.screenshot_min_interval_seconds = max(
+                    0.0, min(600.0, float(interval)))
+            retain = screenshot.get("retain_count")
+            if isinstance(retain, (int, float)) and not isinstance(retain, bool):
+                cfg.screenshot_retain_count = int(max(1, min(100, float(retain))))
 
     async def _stored(self, key: str):
         try:
@@ -563,7 +593,10 @@ class NekoWowsPlugin(NekoPluginBase):
 
         if snapshot.is_live:
             self.context_injector.push(
-                WOWS_CONTEXT_INSTRUCTIONS, dry_run=cfg.dry_run)
+                context_instructions(
+                    screenshot_enabled=bool(cfg.screenshot_enabled)),
+                dry_run=cfg.dry_run,
+            )
             try:
                 catalog_observation = self.ship_context.observe(
                     snapshot, dry_run=cfg.dry_run)
@@ -633,7 +666,11 @@ class NekoWowsPlugin(NekoPluginBase):
         with self._state_lock:
             self._last_candidate = chosen
         profile = PromptProfile(
-            channel_mode=cfg.channel_mode, dry_run=cfg.dry_run, bundle=bundle)
+            channel_mode=cfg.channel_mode,
+            dry_run=cfg.dry_run,
+            bundle=bundle,
+            screenshot_enabled=bool(cfg.screenshot_enabled),
+        )
         excerpts = self._reference_for(chosen, snapshot)
         request = self.router.build(chosen, profile, excerpts)
         outcome = self.dispatcher.deliver(request)
@@ -869,8 +906,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 self.timeline.record(
                     STAGE_DELIVERY, "output_enabled",
                     reason="shadow cooldowns cleared and detectors re-baselined")
-        # Session-only on purpose: enabling real output is an explicit act each
-        # time the plugin starts, so a stale config can never turn it on.
+        # Session-only: panel toggles do not persist; restart reloads TOML.
         return Ok({"dry_run": self.cfg.dry_run, "session_only": True})
 
     @ui.action(id="set_channel_mode", label="设置提示词通道", tone="primary",
@@ -921,6 +957,82 @@ class NekoWowsPlugin(NekoPluginBase):
             self.timeline.record(STAGE_DELIVERY, "resumed", reason="manual")
         return Ok({"paused": False})
 
+    @ui.action(id="set_connection", label="数据源配置", tone="primary",
+               group="diagnostics", order=45, refresh_context=True)
+    @plugin_entry(
+        id="set_connection",
+        name="设置数据源",
+        description=(
+            "持久化 service_url / 服务源码目录 / 游戏目录。"
+            "改动后需重连才生效；reconnect=true 时保存后立即重连。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "service_url": {"type": "string"},
+                "service_source_dir": {"type": "string"},
+                "game_dir": {"type": "string"},
+                "reconnect": {"type": "boolean", "default": False},
+            },
+            "required": ["service_url"],
+        },
+    )
+    async def set_connection(
+        self,
+        service_url: str = "",
+        service_source_dir: str = "",
+        game_dir: str = "",
+        reconnect: bool = False,
+        **_,
+    ):
+        url = str(service_url or "").strip().rstrip("/")
+        if not url:
+            return Err(SdkError("service_url must not be empty"))
+        source_dir = str(service_source_dir or "").strip()
+        game = str(game_dir or "").strip()
+        payload = {
+            "service_url": url,
+            "service_source_dir": source_dir,
+            "game_dir": game,
+        }
+        async with self._preference_lock:
+            before = self._connection_signature()
+            error = await self._persist(STORE_CONNECTION_SETTINGS, payload)
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.service_url = url
+                self.cfg.service_source_dir = source_dir
+                self.cfg.game_dir = game
+                self.service.apply_config(self.cfg)
+                self.transport.apply_config(self.cfg)
+            after = self._connection_signature()
+            changed = before != after
+            if changed:
+                with self._state_lock:
+                    self._reconnect_required = True
+        if reconnect:
+            reconnected = await self.reconnect()
+            if reconnected.is_err():
+                return reconnected
+            return Ok({
+                "service_url": url,
+                "service_source_dir": source_dir,
+                "game_dir": game,
+                "changed": changed,
+                "reconnect_required": bool(self._reconnect_required),
+                "reconnected": True,
+                "transport_started": reconnected.unwrap().get("transport_started"),
+            })
+        return Ok({
+            "service_url": url,
+            "service_source_dir": source_dir,
+            "game_dir": game,
+            "changed": changed,
+            "reconnect_required": bool(self._reconnect_required),
+            "reconnected": False,
+        })
+
     @ui.action(id="reconnect", label="重连数据源", tone="primary",
                group="diagnostics", order=50, refresh_context=True)
     @plugin_entry(
@@ -951,6 +1063,69 @@ class NekoWowsPlugin(NekoPluginBase):
         return Ok({"cleared": True})
 
     # ------------------------------------------------------------------ 截屏
+    @ui.action(id="set_official_api", label="官方查询配置", tone="primary",
+               group="diagnostics", order=65, refresh_context=True)
+    @plugin_entry(
+        id="set_official_api",
+        name="设置官方查询",
+        description=(
+            "开关 Wargaming 官网舰船查询工具，并持久化 Application ID 与区服。"
+            "面板不会回传明文 key；留空保存时保留已有 key，clear_application_id "
+            "为真时清除。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean", "default": False},
+                "region": {
+                    "type": "string",
+                    "enum": list(ALL_OFFICIAL_API_REGIONS),
+                    "default": OFFICIAL_API_REGION_ASIA,
+                },
+                "application_id": {"type": "string"},
+                "clear_application_id": {"type": "boolean", "default": False},
+            },
+        },
+    )
+    async def set_official_api(
+        self,
+        enabled: bool = False,
+        region: str = OFFICIAL_API_REGION_ASIA,
+        application_id: str | None = None,
+        clear_application_id: bool = False,
+        **_,
+    ):
+        if region not in ALL_OFFICIAL_API_REGIONS:
+            return Err(SdkError(f"unknown official API region: {region!r}"))
+        next_enabled = bool(enabled)
+        next_region = region
+        if clear_application_id:
+            next_application_id = ""
+        elif isinstance(application_id, str):
+            next_application_id = application_id.strip()
+        else:
+            next_application_id = self.cfg.official_api_application_id
+        payload = {
+            "enabled": next_enabled,
+            "region": next_region,
+            "application_id": next_application_id,
+        }
+        async with self._preference_lock:
+            error = await self._persist(STORE_OFFICIAL_API_SETTINGS, payload)
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.official_api_enabled = next_enabled
+                self.cfg.official_api_region = next_region
+                self.cfg.official_api_application_id = next_application_id
+                self.official_api.apply_config(self.cfg)
+            return Ok({
+                "enabled": next_enabled,
+                "region": next_region,
+                "key_configured": bool(next_application_id),
+                "cleared": bool(clear_application_id),
+            })
+
     @ui.action(id="set_screenshot_enabled", label="主动截屏", tone="warning",
                group="diagnostics", order=70, refresh_context=True)
     @plugin_entry(
@@ -967,23 +1142,71 @@ class NekoWowsPlugin(NekoPluginBase):
     )
     async def set_screenshot_enabled(self, value: bool = False, **_):
         enabled = bool(value)
-        with self._pipeline_lock:
-            self.cfg.screenshot_enabled = enabled
-            self.screenshots.apply_config(self.cfg)
-            if not enabled:
-                # Turning it off deletes the frames too: leaving screenshots of
-                # the user's desktop on disk after they revoked permission
-                # would be the wrong reading of "off".
-                removed = self.shots.clear()
-            else:
-                removed = 0
-        # Session-only, mirroring set_dry_run: capturing the screen is an
-        # explicit act each time the plugin starts.
-        return Ok({
-            "screenshot_enabled": enabled,
-            "cleared_shots": removed,
-            "session_only": True,
-        })
+        async with self._preference_lock:
+            payload = {
+                "enabled": enabled,
+                "min_interval_seconds": float(
+                    self.cfg.screenshot_min_interval_seconds),
+                "retain_count": int(self.cfg.screenshot_retain_count),
+            }
+            error = await self._persist(STORE_SCREENSHOT_SETTINGS, payload)
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.screenshot_enabled = enabled
+                self.screenshots.apply_config(self.cfg)
+                if not enabled:
+                    # Turning it off deletes the frames too: leaving screenshots
+                    # of the user's desktop on disk after they revoked permission
+                    # would be the wrong reading of "off".
+                    removed = self.shots.clear()
+                else:
+                    removed = 0
+            return Ok({
+                "screenshot_enabled": enabled,
+                "cleared_shots": removed,
+            })
+
+    @ui.action(id="set_screenshot_settings", label="截屏参数", tone="primary",
+               group="diagnostics", order=75, refresh_context=True)
+    @plugin_entry(
+        id="set_screenshot_settings",
+        name="设置截屏参数",
+        description="持久化最短截屏间隔与保留张数（与开关一并写入 store）。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "min_interval_seconds": {
+                    "type": "number", "default": 15.0, "minimum": 0, "maximum": 600,
+                },
+                "retain_count": {
+                    "type": "integer", "default": 20, "minimum": 1, "maximum": 100,
+                },
+            },
+        },
+    )
+    async def set_screenshot_settings(
+        self,
+        min_interval_seconds: float = 15.0,
+        retain_count: int = 20,
+        **_,
+    ):
+        interval = max(0.0, min(600.0, float(min_interval_seconds)))
+        retain = int(max(1, min(100, float(retain_count))))
+        payload = {
+            "enabled": bool(self.cfg.screenshot_enabled),
+            "min_interval_seconds": interval,
+            "retain_count": retain,
+        }
+        async with self._preference_lock:
+            error = await self._persist(STORE_SCREENSHOT_SETTINGS, payload)
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.screenshot_min_interval_seconds = interval
+                self.cfg.screenshot_retain_count = retain
+                self.screenshots.apply_config(self.cfg)
+            return Ok(payload)
 
     @ui.action(id="capture_screenshot_now", label="截一张看看", tone="info",
                group="diagnostics", order=80, refresh_context=True)
@@ -1199,8 +1422,12 @@ class NekoWowsPlugin(NekoPluginBase):
         # cannot become a message no matter what the output settings are.
         request = self.router.build(
             candidate,
-            PromptProfile(channel_mode=self.cfg.channel_mode, dry_run=True,
-                          bundle=bundle),
+            PromptProfile(
+                channel_mode=self.cfg.channel_mode,
+                dry_run=True,
+                bundle=bundle,
+                screenshot_enabled=bool(self.cfg.screenshot_enabled),
+            ),
             (),
         )
         return Ok({

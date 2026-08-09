@@ -25,6 +25,24 @@ WOWS_CONTEXT_INSTRUCTIONS = """\
 作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
 """
 
+# Same scene-setting, used when the user has opted into proactive screenshots.
+WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS = """\
+现在你正在陪主人玩《战舰世界》。你平时靠游戏遥测：自身舰船状态、小地图上的舰船
+位置、伤害统计和当前弹种。主动截屏已开启，需要看画面时可以调用
+wows_look_at_battle。你听不到语音。
+
+接下来你会收到一些结构化的战局事件。它们是插件按确定性规则算出来的事实，你的工
+作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
+"""
+
+# Appended to each call-out only while screenshot_enabled is on. Not part of
+# the editable prompt revision — the switch must be able to take it away.
+VISION_LOOK_BEFORE_SPEAK = """\
+发言前尽量先调用 wows_look_at_battle 看一眼当前画面，再结合上面的事件与事实开口。
+若工具返回冷却中、截图失败或未开启，不要卡住，直接按已有事实说。紧急事件同样
+先尝试看一眼，但冷却或失败时优先把要紧的话说完。
+"""
+
 WOWS_RESTORE_INSTRUCTIONS = """\
 《战舰世界》陪玩已经结束，忘掉上面的战局设定，回到平时的相处方式。
 """
@@ -36,6 +54,7 @@ BASE_INSTRUCTIONS = """\
 要求：
 - 用一到两句口语化的中文说出来，像旁边真的有人在看着屏幕。
 - 只使用给出的事实。没给的数字、战果、击杀、占点一律不要提。
+- 带 `_m` 后缀的距离字段单位是米；口语里可说米或公里，不要把米数当成公里。
 - 不要复述字段名，不要输出 JSON，不要列清单。
 - 不要教学式长篇分析，也不要重复上一次说过的话。
 """
@@ -135,6 +154,13 @@ def instructions_for(lane: str, channel_mode: str) -> str:
     return DEFAULT_BUNDLE.instructions_for(lane, channel_mode)
 
 
+def context_instructions(*, screenshot_enabled: bool) -> str:
+    """Pick the scene-setting block that matches the screenshot switch."""
+    if screenshot_enabled:
+        return WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
+    return WOWS_CONTEXT_INSTRUCTIONS
+
+
 __all__ = [
     "BASE_INSTRUCTIONS",
     "BUILTIN_REVISION_ID",
@@ -143,11 +169,14 @@ __all__ = [
     "NORMAL_OVERLAY",
     "SECTION_NAMES",
     "URGENT_OVERLAY",
+    "VISION_LOOK_BEFORE_SPEAK",
     "WOWS_CONTEXT_INSTRUCTIONS",
+    "WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS",
     "WOWS_RESTORE_INSTRUCTIONS",
     "PromptBundle",
     "PromptRejected",
     "bundle_from_revision",
+    "context_instructions",
     "instructions_for",
     "validate_sections",
 ]

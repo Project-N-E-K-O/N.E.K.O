@@ -76,7 +76,13 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
                 id: "overview",
                 label: props.t("panel.tabs.overview"),
                 content: (
-                  <OverviewSection state={state} t={props.t} locale={props.locale} />
+                  <OverviewSection
+                    state={state}
+                    actions={props.actions || []}
+                    busy={busy}
+                    t={props.t}
+                    locale={props.locale}
+                  />
                 ),
               },
               {

@@ -152,6 +152,8 @@ def test_diagnostics_declares_and_renders_ship_catalog_state():
     assert "key_configured" in diagnostics
     assert "cache_hits" in diagnostics
     assert "cache_misses" in diagnostics
+    assert 'actionId="set_official_api"' in diagnostics
+    assert "PasswordInput" in diagnostics
     assert "official_api_application_id" not in diagnostics
 
 
@@ -166,7 +168,9 @@ def test_the_declared_ui_actions_exist_as_plugin_entries():
                       "save_prompt_revision", "activate_prompt_revision",
                       "reset_prompts", "preview_prompt",
                       "set_intrusion_mode", "set_category_enabled",
-                      "set_lane_enabled", "set_lane_timing"):
+                      "set_lane_enabled", "set_lane_timing",
+                      "set_official_api", "set_connection",
+                      "set_screenshot_settings"):
         handler = getattr(NekoWowsPlugin, action_id, None)
         assert callable(handler), action_id
 
@@ -191,13 +195,13 @@ def test_every_action_the_panel_calls_exists_on_the_plugin():
 
 # --- configuration defaults ---------------------------------------------
 
-def test_the_manifest_ships_with_dry_run_on(manifest):
-    assert manifest["neko_wows"]["dry_run"] is True
+def test_the_manifest_ships_with_dry_run_off(manifest):
+    assert manifest["neko_wows"]["dry_run"] is False
 
 
 def test_the_manifest_section_parses_into_the_config(manifest):
     cfg = WowsConfig.from_mapping(manifest["neko_wows"])
-    assert cfg.dry_run is True
+    assert cfg.dry_run is False
     assert cfg.service_url == "http://127.0.0.1:8111"
     assert cfg.channel_mode in ALL_CHANNEL_MODES
     assert cfg.ttl_for(LANE_URGENT) == 8.0
@@ -247,6 +251,10 @@ def test_ship_catalog_language_accepts_only_supported_values():
         assert WowsConfig.from_mapping({
             "ship_catalog_language": unsupported,
         }).ship_catalog_language == "zh-CN"
+
+
+def test_product_default_enables_live_output():
+    assert WowsConfig().dry_run is False
 
 
 def test_a_corrupt_config_falls_back_to_dry_run():
