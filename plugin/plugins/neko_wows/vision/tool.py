@@ -32,11 +32,13 @@ SOURCE_GAME_WINDOW = "game_window"
 SOURCE_FULLSCREEN = "fullscreen"
 
 WOWS_VISION_PROMPT = (
-    "这是《战舰世界》的战斗画面。请描述遥测数据里读不到的战场态势：\n"
-    "1. 小地图上敌我舰船的分布、推线方向、有没有一侧被打空；\n"
+    "这是《战舰世界》的战斗画面。读图时先看小地图，再看主画面，按下面顺序描述"
+    "遥测读不到的态势：\n"
+    "1. 【必看】小地图：敌我舰船分布、推线/撤退方向、哪一侧空虚或被打穿、"
+    "占点与舰队重心；\n"
     "2. 烟雾、鱼雷航迹、水花与炮口火光这类临时信息；\n"
     "3. 自身状态图标：着火、进水、主炮/舵机损坏、消耗品冷却；\n"
-    "4. 队友的相对位置，自己是不是脱队或被包夹；\n"
+    "4. 主画面里队友的相对位置，自己是不是脱队或被包夹；\n"
     "5. 准星附近有没有可打的目标，弹着散布大概情况。\n"
     "血量、距离、存活数这些数字以随附文本中的遥测为准，不要从画面上估读，"
     "也不要复述它们。只说画面里看得见而数据里没有的东西。"
@@ -191,6 +193,7 @@ def facts_to_telemetry(facts) -> dict[str, Any]:
     put("own_heading_deg", _rounded(facts.own_heading_deg, 1))
     put("alive_allies", facts.alive_allies)
     put("alive_enemies", facts.alive_enemies)
+    # Spotted now — not the same as alive. 0 means nobody lit up, not a wipe.
     put("visible_enemies", facts.visible_enemies)
     put("nearest_ally_distance_m", _rounded(facts.nearest_ally_distance_m, 0))
     put("distance_to_boundary_m", _rounded(facts.distance_to_boundary_m, 0))

@@ -113,6 +113,10 @@ class WowsSchemaAdapter:
         self._legacy_was_active = False
         self._legacy_last_change = 0.0
         self._legacy_battle_seen = False
+        # playerIds seen with alive=False in this battle. Corpses often leave
+        # `objects` while remaining on the roster; stubs must not revive them.
+        self._dead_player_ids: set[int] = set()
+        self._death_battle_key: tuple[str, str | None] | None = None
 
     # ------------------------------------------------------------------
     def parse(self, raw: Mapping[str, Any], *, transport: str = "",
@@ -143,6 +147,9 @@ class WowsSchemaAdapter:
         capabilities = self._read_capabilities(payload.get("capabilities"))
         availability = self._read_availability(payload.get("availability"))
         seq = payload.get("seq")
+        instance_id = str(payload.get("instanceId") or "")
+        battle_id = _text(payload.get("battleId"))
+        self._remember_battle(instance_id, battle_id)
         return WowsSnapshot(
             service_id=str(payload.get("serviceId") or ""),
             api_version=api_version,
@@ -151,9 +158,9 @@ class WowsSchemaAdapter:
                 or _text(payload.get("game_version"))
                 or ""
             ),
-            instance_id=str(payload.get("instanceId") or ""),
+            instance_id=instance_id,
             seq=int(seq) if isinstance(seq, int) and not isinstance(seq, bool) else 0,
-            battle_id=_text(payload.get("battleId")),
+            battle_id=battle_id,
             status=self._read_status(source.get("status"), payload),
             source_kind=str(source.get("kind") or ""),
             source_mode=str(source.get("mode") or ""),
@@ -169,7 +176,6 @@ class WowsSchemaAdapter:
         )
 
     def _parse_legacy(self, payload, transport, epoch, now) -> WowsSnapshot:
-        body = self._body(payload)
         fingerprint = self._fingerprint(payload)
         if fingerprint != self._legacy_fingerprint:
             self._legacy_fingerprint = fingerprint
@@ -184,6 +190,8 @@ class WowsSchemaAdapter:
                     f"{self._legacy_instance_id}-b{self._legacy_battles}")
             self._legacy_battle_seen = True
         self._legacy_was_active = active
+        self._remember_battle(self._legacy_instance_id, self._legacy_battle_id)
+        body = self._body(payload)
 
         if not payload:
             status = STATUS_WAITING
@@ -221,6 +229,13 @@ class WowsSchemaAdapter:
             transport=transport,
             epoch=epoch,
         )
+
+    def _remember_battle(self, instance_id: str, battle_id: str | None) -> None:
+        key = (instance_id, battle_id)
+        if key == self._death_battle_key:
+            return
+        self._death_battle_key = key
+        self._dead_player_ids.clear()
 
     # ------------------------------------------------------------------
     def _body(self, payload) -> dict[str, Any]:
@@ -288,12 +303,22 @@ class WowsSchemaAdapter:
     @staticmethod
     def _derive_availability(body: Mapping[str, Any], status: str) -> dict[str, str]:
         """Infer per-domain availability for a service that does not report it."""
+        ships = body.get("ships") or ()
+        # Roster-only stubs (no uiId/position/alive flag) must not make the
+        # objects domain look populated when the wire `objects` list was empty.
+        object_ships = any(
+            ship.ui_id is not None
+            or ship.has_position
+            or ship.visible
+            or ship.alive is not None
+            for ship in ships
+        )
         present = {
             DOMAIN_SELF: body.get("self_ship") is not None,
-            DOMAIN_OBJECTS: bool(body.get("ships")),
+            DOMAIN_OBJECTS: object_ships,
             DOMAIN_ROSTER: any(
                 ship.player_name or ship.tier is not None
-                for ship in body.get("ships") or ()
+                for ship in ships
             ),
             DOMAIN_DAMAGE: any(
                 body.get(key) for key in
@@ -349,8 +374,7 @@ class WowsSchemaAdapter:
             is_observer=bool(raw.get("isObserver")),
         )
 
-    @staticmethod
-    def _read_ships(raw_objects: Any, raw_roster: Any) -> tuple[Ship, ...]:
+    def _read_ships(self, raw_objects: Any, raw_roster: Any) -> tuple[Ship, ...]:
         roster: dict[int, Mapping[str, Any]] = {}
         if isinstance(raw_roster, (list, tuple)):
             for entry in raw_roster:
@@ -358,39 +382,78 @@ class WowsSchemaAdapter:
                     roster[entry["playerId"]] = entry
 
         ships: list[Ship] = []
-        if not isinstance(raw_objects, (list, tuple)):
-            return ()
-        for entry in raw_objects:
-            if not isinstance(entry, Mapping):
+        seen_player_ids: set[int] = set()
+        if isinstance(raw_objects, (list, tuple)):
+            for entry in raw_objects:
+                if not isinstance(entry, Mapping):
+                    continue
+                player_id = entry.get("playerId")
+                meta = roster.get(player_id) if isinstance(player_id, int) else None
+                meta = meta if isinstance(meta, Mapping) else {}
+                health = _number(entry.get("health"))
+                max_health = _number(entry.get("maxHealth"))
+                hp_ratio = _number(entry.get("hpRatio"))
+                if hp_ratio is None and health is not None and max_health:
+                    hp_ratio = max(0.0, min(1.0, health / max_health))
+                relation = entry.get("relation")
+                tier = (
+                    entry.get("tier") if entry.get("tier") is not None
+                    else meta.get("shipTier")
+                )
+                alive = (
+                    entry.get("alive") if isinstance(entry.get("alive"), bool)
+                    else None
+                )
+                if isinstance(player_id, int):
+                    seen_player_ids.add(player_id)
+                    if alive is False:
+                        self._dead_player_ids.add(player_id)
+                    elif alive is True:
+                        self._dead_player_ids.discard(player_id)
+                ships.append(Ship(
+                    ui_id=entry.get("uiId") if isinstance(entry.get("uiId"), int) else None,
+                    player_id=player_id if isinstance(player_id, int) else None,
+                    team_id=(
+                        entry.get("teamId") if isinstance(entry.get("teamId"), int)
+                        else None
+                    ),
+                    relation=relation if isinstance(relation, int) else None,
+                    ship_type=_text(entry.get("type")) or _text(meta.get("shipType")),
+                    name=_text(entry.get("name")) or _text(meta.get("shipName")),
+                    player_name=(
+                        _text(entry.get("playerName")) or _text(meta.get("name"))
+                    ),
+                    tier=tier if isinstance(tier, int) else None,
+                    alive=alive,
+                    visible=bool(entry.get("visible")),
+                    x=_bw_to_m(entry.get("x")),
+                    z=_bw_to_m(entry.get("z")),
+                    yaw=_number(entry.get("yaw")),
+                    health=health,
+                    max_health=max_health,
+                    hp_ratio=hp_ratio,
+                    stale_seconds=_number(entry.get("staleSeconds")),
+                ))
+
+        # Roster lists the full match even before anyone is spotted. Emit
+        # position-less stubs so alive counts are not stuck at zero at the
+        # opening, while objects remain authoritative for death/visibility.
+        for player_id, meta in roster.items():
+            if player_id in seen_player_ids or player_id in self._dead_player_ids:
                 continue
-            player_id = entry.get("playerId")
-            meta = roster.get(player_id) if isinstance(player_id, int) else None
-            meta = meta if isinstance(meta, Mapping) else {}
-            health = _number(entry.get("health"))
-            max_health = _number(entry.get("maxHealth"))
-            hp_ratio = _number(entry.get("hpRatio"))
-            if hp_ratio is None and health is not None and max_health:
-                hp_ratio = max(0.0, min(1.0, health / max_health))
-            relation = entry.get("relation")
-            tier = entry.get("tier") if entry.get("tier") is not None else meta.get("shipTier")
+            relation = meta.get("relation")
+            team_id = meta.get("teamId")
+            tier = meta.get("shipTier")
             ships.append(Ship(
-                ui_id=entry.get("uiId") if isinstance(entry.get("uiId"), int) else None,
-                player_id=player_id if isinstance(player_id, int) else None,
-                team_id=entry.get("teamId") if isinstance(entry.get("teamId"), int) else None,
+                player_id=player_id,
+                team_id=team_id if isinstance(team_id, int) else None,
                 relation=relation if isinstance(relation, int) else None,
-                ship_type=_text(entry.get("type")) or _text(meta.get("shipType")),
-                name=_text(entry.get("name")) or _text(meta.get("shipName")),
-                player_name=_text(entry.get("playerName")) or _text(meta.get("name")),
+                ship_type=_text(meta.get("shipType")),
+                name=_text(meta.get("shipName")),
+                player_name=_text(meta.get("name")),
                 tier=tier if isinstance(tier, int) else None,
-                alive=entry.get("alive") if isinstance(entry.get("alive"), bool) else None,
-                visible=bool(entry.get("visible")),
-                x=_bw_to_m(entry.get("x")),
-                z=_bw_to_m(entry.get("z")),
-                yaw=_number(entry.get("yaw")),
-                health=health,
-                max_health=max_health,
-                hp_ratio=hp_ratio,
-                stale_seconds=_number(entry.get("staleSeconds")),
+                alive=None,
+                visible=False,
             ))
         return tuple(ships)
 

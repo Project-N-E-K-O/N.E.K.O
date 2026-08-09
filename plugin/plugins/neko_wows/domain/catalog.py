@@ -136,8 +136,8 @@ _SPECS: tuple[EventSpec, ...] = (
         summary="人数劣势",
         cooldown_seconds=45.0,
         coalesce_key="wows_situation",
-        required=(DOMAIN_OBJECTS,),
-        optional=(DOMAIN_ROSTER,),
+        required=(),
+        optional=(DOMAIN_OBJECTS, DOMAIN_ROSTER),
     ),
     EventSpec(
         event_id=LOCALLY_ISOLATED,

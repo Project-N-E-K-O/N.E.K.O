@@ -135,8 +135,10 @@ class RapidDamageDetector(Detector):
 class OutnumberedDetector(Detector):
     name = "outnumbered"
     events = (OUTNUMBERED,)
-    required = (DOMAIN_OBJECTS,)
-    optional = (DOMAIN_ROSTER,)
+    # Alive counts are valid from objects and/or roster; either is enough.
+    required = ()
+    required_any = (DOMAIN_OBJECTS, DOMAIN_ROSTER)
+    optional = (DOMAIN_OBJECTS, DOMAIN_ROSTER)
 
     def reset(self) -> None:
         self._announced_gap = 0

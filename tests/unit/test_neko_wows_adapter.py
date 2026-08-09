@@ -207,6 +207,230 @@ def test_adapter_converts_bigworld_wire_coords_to_meters():
     assert facts.distance_to_boundary_m == pytest.approx(800.0 * BW_TO_METERS)
 
 
+def test_alive_enemies_keep_last_known_ships_after_they_go_dark():
+    """灭点后仍在 objects 里、visible=false 的敌舰不能从存活数里消失。"""
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 40000.0, "maxHealth": 80000.0, "hpRatio": 0.5,
+    }
+    spotted = {
+        "uiId": 2, "playerId": 3001, "teamId": 1, "relation": 2,
+        "type": "Destroyer", "name": "Shimakaze", "playerName": "FoeA",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 100.0, "z": 0.0, "yaw": 1.57,
+        "health": 10000.0, "maxHealth": 20000.0, "hpRatio": 0.5,
+    }
+    dark = {
+        "uiId": 3, "playerId": 3002, "teamId": 1, "relation": 2,
+        "type": "Cruiser", "name": "Zao", "playerName": "FoeB",
+        "tier": 10, "alive": True, "visible": False,
+        "x": 200.0, "z": 50.0, "yaw": 0.0, "staleSeconds": 12.0,
+        "health": 30000.0, "maxHealth": 40000.0, "hpRatio": 0.75,
+    }
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        self={
+            "playerId": 2000, "teamId": 0, "health": 40000.0,
+            "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+        objects=[own, spotted, dark],
+    ))
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.alive_enemies == 2
+    assert facts.visible_enemies == 1
+
+
+def test_threat_geometry_uses_visible_enemies_not_dark_last_known():
+    """存活计数可含灭点船，但威胁方位只能看当前点亮的。"""
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 40000.0, "maxHealth": 80000.0, "hpRatio": 0.5,
+    }
+    # Lit but farther.
+    spotted = {
+        "uiId": 2, "playerId": 3001, "teamId": 1, "relation": 2,
+        "type": "Destroyer", "name": "Shimakaze", "playerName": "FoeA",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 200.0, "z": 0.0, "yaw": 1.57,
+        "health": 10000.0, "maxHealth": 20000.0, "hpRatio": 0.5,
+    }
+    # Dark last-known, much closer — must not become nearest_enemy.
+    dark = {
+        "uiId": 3, "playerId": 3002, "teamId": 1, "relation": 2,
+        "type": "Cruiser", "name": "Zao", "playerName": "FoeB",
+        "tier": 10, "alive": True, "visible": False,
+        "x": 20.0, "z": 0.0, "yaw": 0.0, "staleSeconds": 12.0,
+        "health": 30000.0, "maxHealth": 40000.0, "hpRatio": 0.75,
+    }
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        self={
+            "playerId": 2000, "teamId": 0, "health": 40000.0,
+            "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+        objects=[own, spotted, dark],
+    ))
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.alive_enemies == 2
+    assert facts.visible_enemies == 1
+    assert facts.nearest_enemy is not None
+    assert facts.nearest_enemy.ship.player_id == 3001
+    assert len(facts.threats_in_scan_range) == 1
+
+
+def test_roster_stub_does_not_resurrect_ship_after_corpse_leaves_objects():
+    """尸体从 objects 消失后，roster 存根不能把敌舰算回存活。"""
+    adapter = WowsSchemaAdapter()
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    dead = {
+        "uiId": 2, "playerId": 3001, "teamId": 1, "relation": 2,
+        "type": "Destroyer", "name": "Shimakaze", "playerName": "FoeA",
+        "tier": 10, "alive": False, "visible": False,
+        "x": 100.0, "z": 0.0, "yaw": 1.57,
+        "health": 0.0, "maxHealth": 20000.0, "hpRatio": 0.0,
+    }
+    roster = [
+        {"playerId": 2000, "teamId": 0, "relation": 0, "name": "Master",
+         "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+        {"playerId": 3001, "teamId": 1, "relation": 2, "name": "FoeA",
+         "shipName": "Shimakaze", "shipType": "Destroyer", "shipTier": 10},
+        {"playerId": 3002, "teamId": 1, "relation": 2, "name": "FoeB",
+         "shipName": "Zao", "shipType": "Cruiser", "shipTier": 10},
+    ]
+    self_body = {
+        "playerId": 2000, "teamId": 0, "health": 80000.0,
+        "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+        "position": [0.0, 0.0, 0.0],
+    }
+    seen_dead = adapter.parse(v1_payload(
+        self=self_body, objects=[own, dead], roster=roster))
+    assert FactBuilder(WowsConfig()).build(seen_dead).alive_enemies == 1
+
+    corpse_gone = adapter.parse(v1_payload(
+        seq=2, self=self_body, objects=[own], roster=roster))
+    facts = FactBuilder(WowsConfig()).build(corpse_gone)
+    assert facts.alive_enemies == 1
+    assert {s.player_id for s in corpse_gone.enemies(visible_only=False)} == {3002}
+
+
+def test_roster_only_enemies_count_as_alive_before_anyone_is_spotted():
+    """开局对面还没人亮过时，roster 里的敌舰仍应计入存活，而不是 0。"""
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        self={
+            "playerId": 2000, "teamId": 0, "health": 80000.0,
+            "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+        objects=[own],
+        roster=[
+            {"playerId": 2000, "teamId": 0, "relation": 0, "name": "Master",
+             "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+            {"playerId": 3001, "teamId": 1, "relation": 2, "name": "FoeA",
+             "shipName": "Shimakaze", "shipType": "Destroyer", "shipTier": 10},
+            {"playerId": 3002, "teamId": 1, "relation": 2, "name": "FoeB",
+             "shipName": "Zao", "shipType": "Cruiser", "shipTier": 10},
+        ],
+    ))
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.alive_enemies == 2
+    assert facts.visible_enemies == 0
+
+
+def test_dead_object_enemy_is_not_revived_by_roster_entry():
+    """objects 里已标记死亡的敌舰，即使还在 roster，也不能算存活。"""
+    own = {
+        "uiId": 1, "playerId": 2000, "teamId": 0, "relation": 0,
+        "type": "Battleship", "name": "OwnShip", "playerName": "Master",
+        "tier": 10, "alive": True, "visible": True,
+        "x": 0.0, "z": 0.0, "yaw": 0.0,
+        "health": 80000.0, "maxHealth": 80000.0, "hpRatio": 1.0,
+    }
+    dead = {
+        "uiId": 2, "playerId": 3001, "teamId": 1, "relation": 2,
+        "type": "Destroyer", "name": "Shimakaze", "playerName": "FoeA",
+        "tier": 10, "alive": False, "visible": False,
+        "x": 100.0, "z": 0.0, "yaw": 1.57,
+        "health": 0.0, "maxHealth": 20000.0, "hpRatio": 0.0,
+    }
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        self={
+            "playerId": 2000, "teamId": 0, "health": 80000.0,
+            "maxHealth": 80000.0, "yaw": 0.0, "speed": 25.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+        objects=[own, dead],
+        roster=[
+            {"playerId": 2000, "teamId": 0, "relation": 0, "name": "Master",
+             "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+            {"playerId": 3001, "teamId": 1, "relation": 2, "name": "FoeA",
+             "shipName": "Shimakaze", "shipType": "Destroyer", "shipTier": 10},
+        ],
+    ))
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert facts.alive_enemies == 0
+    assert facts.visible_enemies == 0
+
+
+def test_roster_counts_survive_when_objects_domain_is_stale():
+    """Live meta keeps roster available after objects go stale; counts must remain."""
+    roster = [
+        {"playerId": 2000, "teamId": 1, "relation": 1, "name": "Master",
+         "shipName": "OwnShip", "shipType": "Battleship", "shipTier": 10},
+        {"playerId": 2101, "teamId": 1, "relation": 1, "name": "AllyA",
+         "shipName": "AllyCA", "shipType": "Cruiser", "shipTier": 10},
+        {"playerId": 3001, "teamId": 0, "relation": 2, "name": "FoeA",
+         "shipName": "Shimakaze", "shipType": "Destroyer", "shipTier": 10},
+        {"playerId": 3002, "teamId": 0, "relation": 2, "name": "FoeB",
+         "shipName": "Zao", "shipType": "Cruiser", "shipTier": 10},
+    ]
+    snapshot = WowsSchemaAdapter().parse(v1_payload(
+        self={
+            "playerId": 2000, "teamId": 1, "health": 0.0,
+            "maxHealth": 80000.0, "yaw": 0.0, "speed": 0.0,
+            "position": [0.0, 0.0, 0.0],
+        },
+        objects=[],
+        roster=roster,
+        availability={
+            "self": AVAIL_STALE,
+            "objects": AVAIL_STALE,
+            "roster": AVAIL_AVAILABLE,
+            "damage": AVAIL_STALE,
+            "ballistics": AVAIL_STALE,
+            "mapBounds": AVAIL_AVAILABLE,
+            "kills": AVAIL_UNSUPPORTED,
+            "capturePoints": AVAIL_UNSUPPORTED,
+            "torpedoes": AVAIL_UNSUPPORTED,
+            "consumables": AVAIL_UNSUPPORTED,
+        },
+    ))
+    facts = FactBuilder(WowsConfig()).build(snapshot)
+    assert snapshot.is_available(DOMAIN_OBJECTS) is False
+    assert snapshot.is_available(DOMAIN_ROSTER) is True
+    assert facts.alive_allies == 2
+    assert facts.alive_enemies == 2
+    assert facts.visible_enemies is None
+
+
 def test_unknown_major_version_is_refused():
     adapter = WowsSchemaAdapter()
     with pytest.raises(UnsupportedApiVersion):

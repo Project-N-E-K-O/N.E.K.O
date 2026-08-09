@@ -695,3 +695,9 @@ def test_context_instructions_follow_the_screenshot_switch():
     assert enabled == WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
     assert "wows_look_at_battle" in enabled
     assert "看不到屏幕画面" not in enabled
+
+
+def test_base_instructions_distinguish_visible_from_alive_counts():
+    assert "visible_enemies" in BASE_INSTRUCTIONS
+    assert "失去视野" in BASE_INSTRUCTIONS
+    assert "团灭" in BASE_INSTRUCTIONS

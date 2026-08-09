@@ -28,8 +28,8 @@ WOWS_CONTEXT_INSTRUCTIONS = """\
 # Same scene-setting, used when the user has opted into proactive screenshots.
 WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS = """\
 现在你正在陪主人玩《战舰世界》。你平时靠游戏遥测：自身舰船状态、小地图上的舰船
-位置、伤害统计和当前弹种。主动截屏已开启，需要看画面时可以调用
-wows_look_at_battle。你听不到语音。
+位置、伤害统计和当前弹种。主动截屏已开启：每次开口前都要先调用
+wows_look_at_battle 看一眼画面，再说话。你听不到语音。
 
 接下来你会收到一些结构化的战局事件。它们是插件按确定性规则算出来的事实，你的工
 作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
@@ -38,9 +38,9 @@ wows_look_at_battle。你听不到语音。
 # Appended to each call-out only while screenshot_enabled is on. Not part of
 # the editable prompt revision — the switch must be able to take it away.
 VISION_LOOK_BEFORE_SPEAK = """\
-发言前尽量先调用 wows_look_at_battle 看一眼当前画面，再结合上面的事件与事实开口。
-若工具返回冷却中、截图失败或未开启，不要卡住，直接按已有事实说。紧急事件同样
-先尝试看一眼，但冷却或失败时优先把要紧的话说完。
+每次发言前必须先调用 wows_look_at_battle 看一眼当前画面，再结合上面的事件、事实
+与画面开口。若工具返回冷却中、截图失败或未开启，不要卡住，直接按已有事实说。
+紧急事件同样必须先尝试看一眼，但冷却或失败时优先把要紧的话说完。
 """
 
 WOWS_RESTORE_INSTRUCTIONS = """\
@@ -55,6 +55,9 @@ BASE_INSTRUCTIONS = """\
 - 用一到两句口语化的中文说出来，像旁边真的有人在看着屏幕。
 - 只使用给出的事实。没给的数字、战果、击杀、占点一律不要提。
 - 带 `_m` 后缀的距离字段单位是米；口语里可说米或公里，不要把米数当成公里。
+- enemies_alive / allies_alive 是遥测已知仍存活的数量（含灭点后的上次位置/花名册）；
+  visible_enemies 才是当前点亮数。visible_enemies 为 0 只表示还没人进视野或都灭点了，
+  不能说对面没人或被团灭；没有死亡事实时，敌舰从点亮变为未点亮只能说失去视野，不能说死了。
 - 不要复述字段名，不要输出 JSON，不要列清单。
 - 不要教学式长篇分析，也不要重复上一次说过的话。
 """

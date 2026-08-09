@@ -22,6 +22,7 @@ from plugin.plugins.neko_wows.domain.catalog import (
     LOW_HEALTH,
     LOW_HP_TARGET,
     MULTI_DIRECTION_THREAT,
+    OUTNUMBERED,
     OWN_BROADSIDE_EXPOSED,
     OWN_SHIP_SUNK,
     POST_BATTLE_SUMMARY,
@@ -35,6 +36,8 @@ from plugin.plugins.neko_wows.domain.snapshot import (
     AVAIL_UNKNOWN,
     AVAIL_UNSUPPORTED,
     CORE_DOMAINS,
+    DOMAIN_OBJECTS,
+    DOMAIN_ROSTER,
     FUTURE_DOMAINS,
     STATUS_ENDED,
     STATUS_LIVE,
@@ -558,6 +561,41 @@ def test_outnumbered_uses_visible_alive_counts():
         frame(seq=2, at=101.0, ships=ships),
     ])
     assert "outnumbered" in fired(results)
+
+
+def test_outnumbered_fires_from_roster_when_objects_stale():
+    """Roster-backed alive counts must still drive outnumbered mid-battle."""
+    registry = DetectorRegistry(build_survival_detectors(CFG))
+    ships = (
+        Ship(
+            player_id=2000, team_id=0, relation=0, name="OwnShip",
+            alive=None, visible=False,
+        ),
+        Ship(
+            player_id=3001, team_id=1, relation=2, name="E1",
+            alive=None, visible=False,
+        ),
+        Ship(
+            player_id=3002, team_id=1, relation=2, name="E2",
+            alive=None, visible=False,
+        ),
+        Ship(
+            player_id=3003, team_id=1, relation=2, name="E3",
+            alive=None, visible=False,
+        ),
+    )
+    avail = availability(**{
+        DOMAIN_OBJECTS: AVAIL_STALE,
+        DOMAIN_ROSTER: AVAIL_AVAILABLE,
+    })
+    results = feed(registry, [
+        frame(seq=1, at=100.0, ships=ships, avail=avail),
+        frame(seq=2, at=101.0, ships=ships, avail=avail),
+    ])
+    assert OUTNUMBERED in fired(results)
+    assert not any(
+        block.detector == "outnumbered" for result in results for block in result.blocked
+    )
 
 
 def test_isolation_needs_a_known_ally_position():

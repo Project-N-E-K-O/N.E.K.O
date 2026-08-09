@@ -129,13 +129,20 @@ class FactBuilder:
             sourced.append(DOMAIN_SELF)
 
         objects_ok = snapshot.is_available(DOMAIN_OBJECTS)
+        roster_ok = snapshot.is_available(DOMAIN_ROSTER)
         if objects_ok:
             sourced.append(DOMAIN_OBJECTS)
-        if snapshot.is_available(DOMAIN_ROSTER):
+        if roster_ok:
             sourced.append(DOMAIN_ROSTER)
 
-        enemies = snapshot.enemies() if objects_ok else ()
-        allies = snapshot.allies() if objects_ok else ()
+        # Alive counts come from objects (incl. last-known) and/or the full
+        # match roster in meta. Threat geometry stays visible-only: a dark
+        # last-known x/z must not become nearest_enemy or a closing edge.
+        count_ok = objects_ok or roster_ok
+        known_enemies = snapshot.enemies(visible_only=False) if count_ok else ()
+        own_side = snapshot.own_side(visible_only=False) if count_ok else ()
+        visible_enemies = snapshot.enemies(visible_only=True) if objects_ok else ()
+        visible_allies = snapshot.allies(visible_only=True) if objects_ok else ()
 
         own_heading = _yaw_to_deg(own.yaw) if own is not None else None
 
@@ -143,9 +150,9 @@ class FactBuilder:
         nearest_enemy: ThreatBearing | None = None
         nearest_ally_distance: float | None = None
         if own is not None and own.has_position and objects_ok:
-            threats = self._threats(own, enemies)
+            threats = self._threats(own, visible_enemies)
             nearest_enemy = threats[0] if threats else None
-            nearest_ally_distance = self._nearest_ally_distance(own, allies)
+            nearest_ally_distance = self._nearest_ally_distance(own, visible_allies)
 
         bearings = tuple(t.bearing_deg for t in threats)
         spread = _bearing_spread(bearings) if len(bearings) >= 2 else None
@@ -184,9 +191,9 @@ class FactBuilder:
             own_alive=(own.health is not None and own.health > 0) if own is not None else None,
             own_speed=own.speed if own is not None else None,
             own_heading_deg=own_heading,
-            alive_allies=len(allies) if objects_ok else None,
-            alive_enemies=len(enemies) if objects_ok else None,
-            visible_enemies=sum(1 for e in enemies if e.visible) if objects_ok else None,
+            alive_allies=len(own_side) if count_ok else None,
+            alive_enemies=len(known_enemies) if count_ok else None,
+            visible_enemies=len(visible_enemies) if objects_ok else None,
             nearest_enemy=nearest_enemy,
             nearest_ally_distance_m=nearest_ally_distance,
             threats_in_scan_range=threats,

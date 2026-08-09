@@ -79,6 +79,10 @@ class Detector:
     name: str = "detector"
     events: tuple[str, ...] = ()
     required: tuple[str, ...] = ()
+    # When non-empty, at least one of these domains must be available (in
+    # addition to every entry in `required`). Used for counts that can come
+    # from either live objects or the match roster.
+    required_any: tuple[str, ...] = ()
     optional: tuple[str, ...] = ()
     # False for detectors driven by the source status rather than live ship data,
     # so they still run on the final inactive frame.
@@ -180,7 +184,7 @@ class DetectorRegistry:
         blocked: list[BlockedDetector] = []
         recovered_any = False
         for detector in self.detectors:
-            missing = snapshot.missing_domains(detector.required)
+            missing = _missing_domains(detector, snapshot)
             if missing:
                 if detector.name not in self._blocked_detectors:
                     detector.reset()
@@ -211,6 +215,14 @@ class DetectorRegistry:
             baseline_only=not comparable or recovered_any,
             identity_reset=identity_reset,
         )
+
+
+def _missing_domains(detector: Detector, snapshot: WowsSnapshot) -> tuple[str, ...]:
+    missing = list(snapshot.missing_domains(detector.required))
+    required_any = getattr(detector, "required_any", ()) or ()
+    if required_any and not any(snapshot.is_available(domain) for domain in required_any):
+        missing.extend(required_any)
+    return tuple(missing)
 
 
 __all__ = [

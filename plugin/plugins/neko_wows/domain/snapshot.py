@@ -228,3 +228,16 @@ class WowsSnapshot:
             s for s in self.ships
             if s.is_ally and s.alive is not False and (s.visible or not visible_only)
         )
+
+    def own_side(self, *, visible_only: bool = True) -> tuple[Ship, ...]:
+        """Own team including self.
+
+        Wire roster marks the player as ``relation=1`` (ally), while live
+        objects often use ``relation=0`` (self). Team-size counts need both.
+        """
+        return tuple(
+            s for s in self.ships
+            if (s.is_ally or s.relation == RELATION_SELF)
+            and s.alive is not False
+            and (s.visible or not visible_only)
+        )
