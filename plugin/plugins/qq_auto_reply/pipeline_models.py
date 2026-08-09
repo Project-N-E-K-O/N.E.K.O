@@ -196,10 +196,6 @@ class QQReplyContext:
     # core memory 段是否含 participant 域：member 授权在生成前被撤销时
     # 该段（及混合域召回）要一并撤除。
     used_member_subject: bool = False
-    # 本轮召回通道：True=挂 recall_memory 工具、模型自主决定何时查（此时
-    # 构建期不做同步召回，recalled_memory_text 恒空）；False=线路不支持
-    # tool call（免费代理会静默丢 tools），回落到宿主生成前同步召回。
-    recall_via_tool: bool = False
     # 本轮上下文的唯一标识：投递钩子的幂等键。绝不能用 id(context)——
     # CPython 会把刚释放的同尺寸对象原样发回，下一轮的 context 常常拿到
     # 同一地址，幂等扫描会把新一轮的行误判成"已经补过了"。

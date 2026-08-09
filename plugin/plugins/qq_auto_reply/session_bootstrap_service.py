@@ -234,7 +234,7 @@ class QQSessionBootstrapService:
                 model=model,
                 on_text_delta=on_text_delta,
                 on_response_discarded=on_response_discarded,
-                # 一轮只允许一次召回：与旧的每轮同步召回同预算，也压住
+                # 一轮只允许一次召回：给这轮的检索定死一次的预算，也压住
                 # 工具轮的最坏超时（每多一次迭代就多一整段 LLM 流，而这里
                 # 超时的代价是丢弃整个共享群会话）。封顶后 forced-finalize
                 # 会摘掉 tools 逼出最终文本，召回结果不会白拿。

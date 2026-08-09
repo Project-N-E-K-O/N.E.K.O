@@ -86,7 +86,6 @@ from ._genai_support import (  # noqa: F401 - preserve the legacy module namespa
     _genai_parts_from_content,
     _genai_types,
     _should_use_genai_sdk,
-    route_supports_tool_calls,
 )
 from ._lifecycle import (  # noqa: F401 - preserve the legacy module namespace
     _slop_reduced_for_genai,

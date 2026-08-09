@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from plugin.plugins.qq_auto_reply import reply_generation_service as reply_module
 from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
 from plugin.plugins.qq_auto_reply.pipeline_models import QQModelResult
 from plugin.plugins.qq_auto_reply.reply_buffer_service import (
@@ -20,7 +19,7 @@ from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
 from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
 
 
-def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook(monkeypatch):
+def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook():
     """QQ must not receive ownership of the model's outbound text buffer."""
 
     class _ToolService:
@@ -45,7 +44,6 @@ def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook(monkeypatch):
         def set_tool_round_start_callback(self, callback):
             self.round_start_callbacks.append(callback)
 
-    monkeypatch.setattr(reply_module, "route_supports_tool_calls", lambda *_: True)
     service = QQReplyGenerationService.__new__(QQReplyGenerationService)
     service.plugin = SimpleNamespace(
         memory_tool_service=_ToolService(),
@@ -54,7 +52,7 @@ def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook(monkeypatch):
     client = _Client()
 
     armed = service._arm_recall_tool(
-        context=SimpleNamespace(recall_via_tool=True, use_memory_context=True),
+        context=SimpleNamespace(use_memory_context=True),
         user_session=client,
         consent_before={},
     )

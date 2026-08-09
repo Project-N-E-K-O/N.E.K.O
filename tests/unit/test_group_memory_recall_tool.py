@@ -90,7 +90,6 @@ def _group_context(sender_id="2046", **overrides):
         cross_session_section="",
         used_member_subject=False,
         use_memory_context=True,
-        recall_via_tool=True,
         member_memory_enabled=True,
         source_kind="",
         permission_level="user",
@@ -475,7 +474,6 @@ async def test_private_participant_turn_refreshes_empty_memory_prompt():
         core_memory_text="",
         cross_session_section="",
         cross_group_section="",
-        recall_via_tool=False,
         participant_memory_enabled=True,
         private_memory_mode="participant",
         used_member_subject=False,
@@ -571,10 +569,13 @@ async def test_final_disarm_clears_handler_when_tool_cleanup_fails():
 
 
 @pytest.mark.asyncio
-async def test_arm_respects_the_session_clients_frozen_route():
-    """Arming binds to the CLIENT's route, not the current config: a
-    cached session can outlive a provider switch, and a route that
-    silently drops ``tools`` must not count as armed."""
+async def test_arm_installs_the_tool_whatever_the_route():
+    """Arming does not inspect the client's route at all.
+
+    The free proxy used to be classified as tool-less, which pushed those
+    turns onto a build-time recall. That fallback is gone — every turn's
+    only recall channel is this tool — so a route-shaped check returning
+    False here would leave the turn with no memory whatsoever."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
@@ -586,13 +587,13 @@ async def test_arm_respects_the_session_clients_frozen_route():
         context=_group_context(),
         user_session=free_client,
         consent_before={},
-    ) is False
-    assert free_client.armed_tool_names == []
+    ) is True
+    assert free_client.armed_tool_names[-1] == ["recall_memory"]
 
-    # recall_via_tool=False（构建期决定走回落）：连 set_tools 都不碰。
+    # 记忆政策关着：本轮压根不该读记忆，是唯一还会拦住挂载的业务条件。
     capable_client = _RecallToolClient(AsyncMock())
     assert service._arm_recall_tool(
-        context=_group_context(recall_via_tool=False),
+        context=_group_context(use_memory_context=False),
         user_session=capable_client,
         consent_before={},
     ) is False
@@ -1498,7 +1499,7 @@ async def test_tool_turn_timeout_covers_the_whole_tool_loop(monkeypatch):
 
     captured.clear()
     await service._run_session_generation(
-        context=_group_context(recall_via_tool=False),
+        context=_group_context(use_memory_context=False),
         session_key="group:7788",
         user_data={"lock": asyncio.Lock()},
         user_session=_RecallToolClient(_quiet),
@@ -1508,10 +1509,9 @@ async def test_tool_turn_timeout_covers_the_whole_tool_loop(monkeypatch):
 
 
 def test_plugin_session_clients_cap_tool_iterations_to_one():
-    """One recall per turn: same budget as the old per-turn synchronous
-    recall, and it bounds the armed-turn worst case the timeout above is
-    sized for. The forced-finalize after the cap still feeds the recall
-    result back, so the read is never wasted.
+    """One recall per turn: that cap bounds the armed-turn worst case the
+    timeout above is sized for. The forced-finalize after the cap still
+    feeds the recall result back, so the read is never wasted.
 
     AST 而非源码字面量计数：旧写法比较两个字符串的出现次数，任何后续
     PR 在注释/docstring 里写下 "OmniOfflineClient(" 或
@@ -1548,33 +1548,25 @@ def test_plugin_session_clients_cap_tool_iterations_to_one():
 
 
 # ---------------------------------------------------------------------------
-# Route capability fallback (连带 #8)
+# Retired: the route capability gate (free proxy forwards tools now)
 # ---------------------------------------------------------------------------
 
 
-def test_route_capability_predicate_knows_the_free_proxy():
-    from main_logic.omni_offline_client import route_supports_tool_calls
+def test_offline_client_grows_no_route_capability_gate():
+    """No "does this route support tools" predicate may come back.
 
-    assert route_supports_tool_calls(
-        "free-model", "https://www.lanlan.app/text/v1",
-    ) is False
-    assert route_supports_tool_calls(
-        "free-model", "https://www.lanlan.tech/text/v1",
-    ) is False
-    # 区域改写只动 URL：模型名单独命中也算免费路由。
-    assert route_supports_tool_calls("free-model", "https://example.com/v1") is False
-    assert route_supports_tool_calls(
-        TOOL_CAPABLE_MODEL, TOOL_CAPABLE_BASE_URL,
-    ) is True
-    assert route_supports_tool_calls("", "") is True
-    # 免费域按 host 判，不是子串：路径/查询串里提到 lanlan.* 的自配端点
-    # 不是免费代理（与 voice registry 的免费路由判法同口径）。
-    assert route_supports_tool_calls(
-        TOOL_CAPABLE_MODEL, "https://custom.example/v1/lanlan.tech",
-    ) is True
-    assert route_supports_tool_calls(
-        TOOL_CAPABLE_MODEL, "https://api.lanlan.app/v1",
-    ) is False
+    One existed while lanlan's free proxy silently dropped ``tools``: QQ
+    consulted it and pushed those turns onto a build-time recall. The
+    proxy forwards tools now and that fallback is deleted, so a predicate
+    answering False would no longer mean "use the other channel" — it
+    would mean the turn gets no memory at all, silently.
+    """
+    import main_logic.omni_offline_client as ooc
+
+    assert [
+        name for name in dir(ooc)
+        if "supports_tool" in name or "free_route" in name
+    ] == []
 
 
 @pytest.mark.asyncio
@@ -1665,97 +1657,54 @@ def _build_config_manager(model, base_url):
     )
 
 
-@pytest.mark.asyncio
-async def test_free_route_falls_back_to_synchronous_recall(monkeypatch):
-    """Providers that silently drop ``tools`` (the free proxy) must keep
-    the pre-generation synchronous recall — flipping them to tool-call
-    mode would zero group memory for those users with no error anywhere."""
-    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
-
-    bridge = _mock_bridge()
-    plugin = _build_stub_plugin(bridge)
-    monkeypatch.setattr(
-        rcn, "get_config_manager",
-        lambda: _build_config_manager(
-            "free-model", "https://www.lanlan.app/text/v1",
-        ),
-    )
-    node = rcn.QQReplyContextNode.__new__(rcn.QQReplyContextNode)
-    node.plugin = plugin
-
-    context = await node.build(
-        message="群规是什么？",
-        permission_level="user",
-        sender_id="2046",
-        is_group=True,
-        group_id="7788",
-        use_memory_context=True,
-    )
-    assert context.recall_via_tool is False
-    bridge.query_relevant_memory.assert_awaited_once()
-    assert "群规是不剧透" in context.recalled_memory_text
-
-    # 回落路径的 consent 复检依旧生效：构建期间已 opt-out 的群不发起召回。
-    bridge.query_relevant_memory.reset_mock()
-    plugin._qq_settings["group_memory_enabled"] = False
-    context = await node.build(
-        message="群规是什么？",
-        permission_level="user",
-        sender_id="2046",
-        is_group=True,
-        group_id="7788",
-        use_memory_context=True,
-    )
-    bridge.query_relevant_memory.assert_not_awaited()
-    assert context.recalled_memory_text == ""
-
-
-@pytest.mark.asyncio
-async def test_tool_capable_route_defers_recall_to_the_model(monkeypatch):
-    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
-
-    bridge = _mock_bridge()
-    plugin = _build_stub_plugin(bridge)
-    monkeypatch.setattr(
-        rcn, "get_config_manager",
-        lambda: _build_config_manager(TOOL_CAPABLE_MODEL, TOOL_CAPABLE_BASE_URL),
-    )
-    node = rcn.QQReplyContextNode.__new__(rcn.QQReplyContextNode)
-    node.plugin = plugin
-
-    context = await node.build(
-        message="群规是什么？",
-        permission_level="user",
-        sender_id="2046",
-        is_group=True,
-        group_id="7788",
-        use_memory_context=True,
-    )
-    assert context.recall_via_tool is True
-    bridge.query_relevant_memory.assert_not_awaited()
-    assert context.recalled_memory_text == ""
-    assert context.recalled_memory_used is False
-
-
-@pytest.mark.asyncio
-async def test_capability_probe_failure_degrades_to_fallback(monkeypatch):
-    """When the route cannot be determined, choose the channel that is
-    KNOWN to work — the synchronous recall."""
-    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
-
-    bridge = _mock_bridge()
-    plugin = _build_stub_plugin(bridge)
-
+def _unreadable_config_manager():
     def _boom(kind):
         raise RuntimeError("config store busy")
 
-    config_manager = SimpleNamespace(
+    return SimpleNamespace(
         get_character_data=lambda: (
             "Master", "Neko", None, {}, None, {}, None, None, None,
         ),
         get_model_api_config=_boom,
     )
-    monkeypatch.setattr(rcn, "get_config_manager", lambda: config_manager)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_config_manager",
+    [
+        pytest.param(
+            lambda: _build_config_manager(
+                "free-model", "https://www.lanlan.app/text/v1",
+            ),
+            id="free-proxy",
+        ),
+        pytest.param(
+            lambda: _build_config_manager(
+                TOOL_CAPABLE_MODEL, TOOL_CAPABLE_BASE_URL,
+            ),
+            id="tool-capable",
+        ),
+        pytest.param(_unreadable_config_manager, id="config-unreadable"),
+    ],
+)
+async def test_context_build_never_spends_a_retrieval(
+    monkeypatch, make_config_manager,
+):
+    """Building a turn's context must never cost a recall round-trip.
+
+    Recall belongs to the model, mid-generation, through the tool. Doing
+    it here would spend a retrieval (HTTP + prompt tokens) on EVERY turn
+    — the build cannot know whether this reply needs memory at all. The
+    route the turn happens to run on is not a reason to reintroduce one,
+    and neither is a config store that refuses to answer: the answer to
+    "I can't tell what the route is" is still to leave it to the tool.
+    """
+    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
+
+    bridge = _mock_bridge()
+    plugin = _build_stub_plugin(bridge)
+    monkeypatch.setattr(rcn, "get_config_manager", make_config_manager)
     node = rcn.QQReplyContextNode.__new__(rcn.QQReplyContextNode)
     node.plugin = plugin
 
@@ -1767,8 +1716,10 @@ async def test_capability_probe_failure_degrades_to_fallback(monkeypatch):
         group_id="7788",
         use_memory_context=True,
     )
-    assert context.recall_via_tool is False
-    bridge.query_relevant_memory.assert_awaited_once()
+
+    bridge.query_relevant_memory.assert_not_awaited()
+    assert context.recalled_memory_text == ""
+    assert context.recalled_memory_used is False
 
 
 # ---------------------------------------------------------------------------
@@ -2035,11 +1986,11 @@ async def test_bridge_forwards_time_spec_and_allows_time_only():
 
 
 @pytest.mark.asyncio
-async def test_fallback_recall_shares_the_subject_resolver():
-    """The fallback recall, the tool handler AND the scoped bootstrap
-    context must authorize identical scopes — enforced by all three
-    calling resolve_group_recall_subjects. A re-inlined copy in any path
-    is where the scopes would drift (the bootstrap path WAS such a copy
+async def test_group_read_paths_share_the_subject_resolver():
+    """The tool handler AND the scoped bootstrap context must authorize
+    identical scopes — enforced by both calling
+    resolve_group_recall_subjects. A re-inlined copy in either path is
+    where the scopes would drift (the bootstrap path WAS such a copy
     until the recent-speaker expansion collapsed it).
 
     AST 而非源码字符串：函数体内的 import 语句 / 注释同样含这个名字，
@@ -2050,7 +2001,6 @@ async def test_fallback_recall_shares_the_subject_resolver():
     import textwrap
 
     from plugin.plugins.qq_auto_reply import memory_tool_service as mts
-    from plugin.plugins.qq_auto_reply import reply_context_node as rcn
     from plugin.plugins.qq_auto_reply import session_instruction_service as sis
 
     def _calls_resolver(func) -> bool:
@@ -2066,9 +2016,6 @@ async def test_fallback_recall_shares_the_subject_resolver():
             for node in ast.walk(tree)
         )
 
-    assert _calls_resolver(
-        rcn.QQReplyContextNode._build_recalled_memory_text
-    ), "回落召回路径没有真正调用共享 resolver"
     assert _calls_resolver(
         mts.QQMemoryToolService.execute_recall
     ), "tool handler 路径没有真正调用共享 resolver"

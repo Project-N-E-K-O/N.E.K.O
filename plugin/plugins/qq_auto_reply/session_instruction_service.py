@@ -774,8 +774,8 @@ class QQSessionInstructionService:
                 "group_memory_enabled", False,
             )
         ):
-            # 读点前复检实时策略（对偶 _build_recalled_memory_text）：构建
-            # 期间 opt-out 的群，不得再拉 scoped bootstrap 上下文。
+            # 读点前复检实时策略（对偶 execute_recall 的 handler 入口闸）：
+            # 构建期间 opt-out 的群，不得再拉 scoped bootstrap 上下文。
             return ""
         group_id = str(group_id or "").strip()
         if is_group and not group_id:
@@ -783,9 +783,9 @@ class QQSessionInstructionService:
         try:
             if is_group:
                 # subject 组装收口进 resolve_group_recall_subjects：本段此前
-                # 是一份内联副本（群 + 当前发言人），三条读路径（tool
-                # handler / 回落召回 / 本段 bootstrap）必须授权完全一致的
-                # 域，扩容（+最近发言人）也只在一处生效。
+                # 是一份内联副本（群 + 当前发言人），两条读路径（tool
+                # handler / 本段 bootstrap）必须授权完全一致的域，扩容
+                # （+最近发言人）也只在一处生效。
                 from .memory_tool_service import resolve_group_recall_subjects
 
                 subjects, used_member = await resolve_group_recall_subjects(
@@ -813,13 +813,13 @@ class QQSessionInstructionService:
                         "group_memory_enabled", False,
                     )
                 ):
-                    # 读后复检（对偶 _build_recalled_memory_text）：opt-out
+                    # 读后复检（对偶 execute_recall 的读后闸）：opt-out
                     # 落在 fetch 飞行期间时丢弃已读回的数据。
                     return ""
             elif participant_memory:
-                # 私聊 participant 轮：subject 组装与 tool handler / 回落
-                # 召回共用 resolver（开关实时复检 + sender 规范化收口在它
-                # 那一处）。resolver fail-closed 返回 []，bridge 对空列表
+                # 私聊 participant 轮：subject 组装与 tool handler 共用
+                # resolver（开关实时复检 + sender 规范化收口在它那一处）。
+                # resolver fail-closed 返回 []，bridge 对空列表
                 # 直接返回空串——**绝不**落到下面的 legacy 分支：那是
                 # 主人的私聊 persona，交给非 admin 好友就是隐私泄漏。
                 from .memory_tool_service import (

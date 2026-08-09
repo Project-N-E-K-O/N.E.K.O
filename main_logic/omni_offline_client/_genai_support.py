@@ -325,8 +325,7 @@ def _genai_parts_from_content(content: Any) -> list:
 
 def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     """Decide whether to route this Gemini-flavoured offline call through
-    the native google-genai SDK (which supports tool calling) instead of
-    the OpenAI-compat endpoint (which silently drops ``tools``).
+    the native google-genai SDK instead of the OpenAI-compat endpoint.
 
     Returns True only when:
       1. ``google-genai`` is importable in the running env, AND
@@ -334,10 +333,11 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
          the model name contains "gemini" AND base_url is empty/None
          (i.e. caller wants direct genai with no proxy).
 
-    Explicitly excluded: lanlan.app's international free proxy uses
-    Gemini under the hood but exposes only the OpenAI-compat surface, so
-    its base_url ('lanlan.app') stays on the OpenAI path. Tools won't
-    work there until the proxy is upgraded — see TODO in core.py.
+    This is a transport choice, not a capability one: both paths carry
+    ``tools`` to the model, so callers never have to ask which one they
+    landed on before handing over a tool definition. lanlan's free proxy
+    exposes only the OpenAI-compat surface and therefore stays on the
+    OpenAI path — it forwards tools like any other compat endpoint.
     """
     # 先做便宜的字符串判断：只有路由确实指向 native Gemini 时才去 import SDK。
     # 这样常规 OpenAI-compat 端点（含 greeting）构造 client 时不会触发 genai
@@ -355,59 +355,6 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     if _GENAI_AVAILABLE is None:
         return _ensure_genai()
     return bool(_GENAI_AVAILABLE)
-
-
-# 免费路由的两个特征：base_url 落在 lanlan 免费域（lanlan.tech 国内 /
-# lanlan.app 海外，含 www. 等子域），或模型名是免费路由固定的 free-model。
-# 两个信号各自独立成立（区域改写只动 URL，模型名由配置层固定），任一命中
-# 即视为免费路由。
-_FREE_ROUTE_BASE_URL_HINTS = ("lanlan.app", "lanlan.tech")
-_FREE_ROUTE_MODEL_NAME = "free-model"
-
-
-def _is_free_route_host(base_url: str | None) -> bool:
-    """Whether ``base_url``'s HOST is a lanlan free-proxy domain.
-
-    Host-parsed on purpose (same discipline as the voice registry's
-    free-route check): a custom endpoint whose path or query merely
-    mentions ``lanlan.app`` must not be misread as the free proxy."""
-    from urllib.parse import urlparse
-
-    bl = (base_url or "").strip()
-    if not bl:
-        return False
-    parsed = urlparse(bl if "//" in bl else "//" + bl)
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return False
-    return any(
-        host == hint or host.endswith("." + hint)
-        for hint in _FREE_ROUTE_BASE_URL_HINTS
-    )
-
-
-def route_supports_tool_calls(model: str, base_url: str | None) -> bool:
-    """Whether tool definitions handed to ``OmniOfflineClient`` on this
-    route actually reach the model.
-
-    The native google-genai path supports tools. Standard OpenAI-compat
-    endpoints honour the ``tools`` param. The known exception is the free
-    proxy (lanlan.app international / lanlan.tech domestic, fixed model
-    name ``free-model``): it exposes only the OpenAI-compat surface and
-    silently DROPS ``tools`` (see ``_should_use_genai_sdk``'s exclusion
-    note). Callers that depend on a tool being callable (e.g. the QQ
-    plugin's ``recall_memory``) must check this and fall back to a
-    host-driven path, otherwise those users lose the feature silently.
-    The domestic free proxy's tool support is undocumented, so it is
-    treated as unsupported too — the fallback keeps working either way.
-    """
-    if _should_use_genai_sdk(model, base_url):
-        return True
-    if _is_free_route_host(base_url):
-        return False
-    if (model or "").strip().lower() == _FREE_ROUTE_MODEL_NAME:
-        return False
-    return True
 
 
 class _GenaiMixin:

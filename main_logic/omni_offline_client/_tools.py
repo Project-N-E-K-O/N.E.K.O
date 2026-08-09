@@ -271,8 +271,7 @@ class _ToolingMixin:
         - Native Gemini (``_use_genai_sdk``): dispatches to
           ``_astream_genai_with_tools`` and on tools-related failures sets
           ``_genai_tools_unsupported`` so subsequent calls degrade to the
-          OpenAI-compat path (where tools won't work — that's the
-          documented lanlan.app/free trade-off).
+          OpenAI-compat path, which carries ``tools`` too.
         - Otherwise: ``_astream_openai_with_tools``.
         """
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
