@@ -644,5 +644,7 @@
   "ui.attention.reply_penalty": "응답 소모 비율",
   "ui.attention.msg_recovery": "메시지당 보너스",
   "ui.attention.focus_rise": "허니문 (초)",
-  "ui.attention.focus_cooldown": "최소 하강 시간 (초)"
+  "ui.attention.focus_cooldown": "최소 하강 시간 (초)",
+  "ui.attention.rise_rate": "기본 상승 속도",
+  "ui.attention.rise_rate.hint": "상승 단계에서 초당 자연 주의력 증가 (0.02 = 100초당 +2점)."
 }

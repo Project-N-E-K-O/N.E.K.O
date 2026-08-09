@@ -673,5 +673,7 @@
   "ui.attention.min_threshold.hint": "Below this score a group is out of focus competition.",
   "ui.attention.focus_rise.hint": "Honeymoon window: time a crowned group keeps rising before falling.",
   "ui.attention.focus_cooldown.hint": "Minimum duration of the fall phase before it can rise again.",
-  "ui.attention.icebreaker.hint": "Focus lands on the same silent group this many times before an icebreaker."
+  "ui.attention.icebreaker.hint": "Focus lands on the same silent group this many times before an icebreaker.",
+  "ui.attention.rise_rate": "Base Rise Rate",
+  "ui.attention.rise_rate.hint": "Per-second natural attention growth in the rise phase (0.02 = +2 points per 100s)."
 }

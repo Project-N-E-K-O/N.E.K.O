@@ -22,14 +22,9 @@ import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import httpx
-import websockets
-
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
 from plugin.sdk.plugin import NekoPluginBase, lifecycle, neko_plugin, plugin_entry, Ok, Err, SdkError, tr, ui
-from .qq_client import QQClient
-from .qq_open_plat import QQOpenPlatformConnection
 
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
@@ -205,9 +200,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             retention_limit=int((settings or {}).get("backlog_retention_limit", 200) or 200),
         )
 
-    def _make_qq_connection(self) -> QQClient | QQOpenPlatformConnection:
+    def _make_qq_connection(self):
+        # 延迟导入：qq_client/qq_open_plat 是重模块（顶层 import 会拖慢插件进程
+        # 启动握手），而连接对象只在真正启动自动回复时才需要。
         mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
         if mode == "open_platform":
+            from .qq_open_plat import QQOpenPlatformConnection
             return QQOpenPlatformConnection(
                 app_id=str((self._qq_settings or {}).get("qq_open_app_id") or "").strip(),
                 client_secret=str((self._qq_settings or {}).get("qq_open_client_secret") or "").strip(),
@@ -219,6 +217,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 # 取证行要同时进 UI 的「运行日志」页，不能只落文件。
                 emit_log=self._emit_log,
             )
+        from .qq_client import QQClient
         return QQClient(
             onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://0.0.0.0:6199"),
             token=str((self._qq_settings or {}).get("token") or ""),
@@ -912,17 +911,25 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
     )
     async def pick_directory(self, **_):
-        """打开系统原生目录选择器"""
-        import tkinter.filedialog as fd
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        path = fd.askdirectory(title="选择 NapCat 安装目录")
-        root.destroy()
-        if path:
-            return Ok({"path": str(path)})
-        return Ok({"path": "", "cancelled": True})
+        """打开系统原生目录选择器（后端路径——前端 NapCat 目录用 <input webkitdirectory> 原生选择，不走这里）。
+
+        注意：tkinter 在插件子进程里可能无桌面会话/初始化失败，直接 Tk() 会导致
+        进程崩溃（宿主收到 error=None）。因此这里捕获异常返回明确错误，绝不崩溃进程。
+        """
+        try:
+            import tkinter.filedialog as fd
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            path = fd.askdirectory(title="选择 NapCat 安装目录")
+            root.destroy()
+            if path:
+                return Ok({"path": str(path)})
+            return Ok({"path": "", "cancelled": True})
+        except Exception as e:
+            self._emit_log("ERROR", f"pick_directory 打开目录选择失败: {type(e).__name__}: {e}")
+            return Err(SdkError(f"PICK_DIRECTORY_FAILED: tkinter 目录选择在插件进程不可用: {type(e).__name__}"))
 
     @plugin_entry(
         id="get_napcat_webui",
@@ -1100,6 +1107,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         group_attention_message_gain: Optional[float] = None,
         attention_base_rise_rate: Optional[float] = None,
         attention_message_boost: Optional[float] = None,
+        attention_keyword_boost_ratio: Optional[float] = None,
         attention_honeymoon_seconds: Optional[int] = None,
         attention_fall_seconds: Optional[int] = None,
         attention_fall_rate: Optional[float] = None,
@@ -1138,6 +1146,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             group_attention_message_gain=group_attention_message_gain,
             attention_base_rise_rate=attention_base_rise_rate,
             attention_message_boost=attention_message_boost,
+            attention_keyword_boost_ratio=attention_keyword_boost_ratio,
             attention_honeymoon_seconds=attention_honeymoon_seconds,
             attention_fall_seconds=attention_fall_seconds,
             attention_fall_rate=attention_fall_rate,

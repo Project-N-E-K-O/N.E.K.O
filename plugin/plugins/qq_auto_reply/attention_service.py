@@ -217,46 +217,57 @@ class QQAttentionService:
 
     # ── 周期模型参数（可配）──
 
+    def _setting(self, key: str, default: Any) -> Any:
+        """读配置，尊重 0 值：缺失（未设置/None）才回退 default。
+
+        旧写法 ``get(key, default) or default`` 会把保存的 0 当成 falsy 回退
+        默认——例如 attention_consume_ratio=0（禁用回复消耗）被读回 0.10，
+        attention_fall_rate=0 被读回 0.015，dashboard 报保存成功但运行时
+        行为不变。
+        """
+        value = (self.plugin._qq_settings or {}).get(key)
+        return default if value is None else value
+
     def _rise_rate(self) -> float:
         """rise 相位基础增速（/秒）。"""
-        return max(0.0, float((self.plugin._qq_settings or {}).get("attention_base_rise_rate", 0.02) or 0.02))
+        return max(0.0, float(self._setting("attention_base_rise_rate", 0.02)))
 
     def _message_boost(self) -> float:
         """单条消息对注意力的加成。"""
-        return max(0.0, float((self.plugin._qq_settings or {}).get("attention_message_boost", 0.15) or 0.15))
+        return max(0.0, float(self._setting("attention_message_boost", 0.15)))
 
     def _keyword_boost_ratio(self) -> float:
         """分类命中（mention/关键词）时的额外加成倍率。"""
-        return max(0.0, float((self.plugin._qq_settings or {}).get("attention_keyword_boost_ratio", 1.8) or 1.8))
+        return max(0.0, float(self._setting("attention_keyword_boost_ratio", 1.8)))
 
     def _message_gain(self) -> float:
         """批量消息计数时每条消息的注意力增益。"""
-        return max(0.0, float((self.plugin._qq_settings or {}).get("group_attention_message_gain", 0.25) or 0.25))
+        return max(0.0, float(self._setting("group_attention_message_gain", 0.25)))
 
     def _honeymoon_seconds(self) -> int:
         """夺冠后继续上升的蜜月窗口（秒）。"""
-        return max(0, int((self.plugin._qq_settings or {}).get("attention_honeymoon_seconds", 60) or 60))
+        return max(0, int(self._setting("attention_honeymoon_seconds", 60)))
 
     def _fall_seconds(self) -> int:
         """进入 fall 相位至少持续多久才允许回升（秒）。"""
-        return max(0, int((self.plugin._qq_settings or {}).get("attention_fall_seconds", 30) or 30))
+        return max(0, int(self._setting("attention_fall_seconds", 30)))
 
     def _fall_rate(self) -> float:
         """fall 相位回落速率（/秒）。"""
-        return max(0.0, float((self.plugin._qq_settings or {}).get("attention_fall_rate", 0.015) or 0.015))
+        return max(0.0, float(self._setting("attention_fall_rate", 0.015)))
 
     def _consume_ratio(self) -> float:
         """猫娘每次发言消耗注意力的比例（0~1）。"""
-        return min(1.0, max(0.0, float((self.plugin._qq_settings or {}).get("attention_consume_ratio", 0.10) or 0.10)))
+        return min(1.0, max(0.0, float(self._setting("attention_consume_ratio", 0.10))))
 
     def _max_attention(self) -> float:
-        return float((self.plugin._qq_settings or {}).get("group_attention_max_score", 10.0) or 10.0)
+        return float(self._setting("group_attention_max_score", 10.0))
 
     def _focus_threshold(self) -> float:
-        return float((self.plugin._qq_settings or {}).get("group_attention_focus_threshold", 4.0) or 4.0)
+        return float(self._setting("group_attention_focus_threshold", 4.0))
 
     def _minimum_threshold(self) -> float:
-        return float((self.plugin._qq_settings or {}).get("group_attention_min_threshold", 1.0) or 1.0)
+        return float(self._setting("group_attention_min_threshold", 1.0))
 
     # ── 相位推进 ──
 
@@ -287,15 +298,18 @@ class QQAttentionService:
                 state.phase_started_at = now
         else:
             # 上升：正向情绪涨得快，疲劳涨得慢。
-            # 自然上升在焦点线封顶：闲置群随时间涨到焦点线就停，不会一路打满
-            # 到 max_attention。超过焦点线的部分只能靠消息/@/关键词 boost
-            # （update_on_message）或情绪抢焦点（set_emotion）推动——否则所有
-            # 群都闲置饱和到 10.0，焦点竞争退化为「最近发言的群」。
+            # 自然上升只作用于低于焦点线的群：未到线的群随时间涨到焦点线就停，
+            # 不会一路打满到 max_attention。高于焦点线的分数来自消息/@/关键词
+            # boost（update_on_message）或情绪抢焦点（set_emotion），rise 相位
+            # 不叠加时间增长、也绝不砍掉——min(焦点线, 高分) 会把 8.0 直接砍回
+            # 4.0，让 @bot 抢来的高注意力在 decay_all（每 5s）里瞬间蒸发。
             rate = self._rise_rate() * (1.0 + emo) * rise_scale
-            before = state.attention_score
-            state.attention_score = min(self._focus_threshold(), state.attention_score + rate * dt)
-            # 刚跨过焦点线 → 重置夺冠计时（蜜月窗口从此刻起算）
-            if before < self._focus_threshold() <= state.attention_score:
+            if state.attention_score < self._focus_threshold():
+                state.attention_score = min(self._focus_threshold(), state.attention_score + rate * dt)
+            # 分数不低于焦点线且夺冠计时未记录 → 记录夺冠时刻（蜜月窗口从此刻起算）。
+            # 覆盖「从低涨到线」和「本来就高于线」两种情况——旧条件 before < th
+            # 在分数本来就高于 th 时永远不成立，导致 focus_acquired_at 记不上。
+            if state.attention_score >= self._focus_threshold() and int(state.focus_acquired_at or 0) <= 0:
                 state.focus_acquired_at = now
             # 到线夺冠后蜜月结束 → 回落；未到线的群继续上升不回落
             if (

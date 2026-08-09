@@ -1,11 +1,11 @@
-"""主消息图片的 VLM 描述必须注入 content，供回溯补回等消费。
+"""VLM descriptions for message images must be injected into content for retroactive review.
 
-修复背景：纯图片消息的 raw_message 为空串，图片在 message 数组里；旧逻辑靠替换
-文本中的 [CQ:image] 注入描述，对纯图片永远注入不进去，导致回溯补回摘要里图片
-内容为空。本测试钉死 `_inject_image_descriptions` 的行为：
-- 纯图片消息 → content 直接填充 "[Image 描述]"
-- 文本 + 图片 → 描述追加到文本后
-- 图片描述失败 → content 保持原样
+Background: a pure-image message has an empty raw_message (images live in the message array),
+so the old logic that replaced [CQ:image] in the text never injected a description, leaving the
+retroactive-review summary empty of image content. Pins `_inject_image_descriptions`:
+- pure-image message -> content filled with "[Image description]"
+- text + image -> description appended after the text
+- image description failure -> content unchanged
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ async def _run(message, *, describer=None):
 
 
 def test_pure_image_message_gets_description():
-    """纯图片消息：content 直接填充图片描述（修复前为空）。"""
+    """A pure-image message fills content with image descriptions (was empty before the fix)."""
     async def describer(url): return f"一张{url.split('/')[-1].split('.')[0]}的图"
     msg = asyncio.run(_run(_img_message(), describer=describer))
     assert "Image" in msg["content"]
@@ -51,7 +51,7 @@ def test_pure_image_message_gets_description():
 
 
 def test_text_plus_image_appends_description():
-    """文本 + 图片：描述追加到文本后，不丢原文本。"""
+    """Text plus images appends descriptions after the text without dropping it."""
     async def describer(url): return "猫的照片"
     msg = asyncio.run(_run(_img_message(has_text=True), describer=describer))
     assert "看看这张图" in msg["content"]
@@ -59,7 +59,7 @@ def test_text_plus_image_appends_description():
 
 
 def test_image_description_failure_keeps_content():
-    """图片描述失败（返回空/抛错）：content 保持原样，不崩溃。"""
+    """When image description fails (empty/throws), content stays unchanged without crashing."""
 
     async def describer(url):
         return ""

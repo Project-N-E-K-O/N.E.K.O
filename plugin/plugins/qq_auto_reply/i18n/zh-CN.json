@@ -673,5 +673,7 @@
   "ui.attention.min_threshold.hint": "低于此分数的群不参与焦点竞争。",
   "ui.attention.focus_rise.hint": "夺冠后继续上升的蜜月窗口（秒），蜜月结束进入回落。",
   "ui.attention.focus_cooldown.hint": "fall 相位最短持续多久才允许回升（秒）。",
-  "ui.attention.icebreaker.hint": "焦点连续落同一群但无人发言，达此次数触发破冰主动发言（0=禁用）。"
+  "ui.attention.icebreaker.hint": "焦点连续落同一群但无人发言，达此次数触发破冰主动发言（0=禁用）。",
+  "ui.attention.rise_rate": "基础上升速率",
+  "ui.attention.rise_rate.hint": "rise 相位每秒的自然注意力增长（0.02 = 每100秒+2分）。"
 }

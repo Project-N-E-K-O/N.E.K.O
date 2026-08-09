@@ -644,5 +644,7 @@
   "ui.attention.reply_penalty": "Proporção de consumo ao responder",
   "ui.attention.msg_recovery": "Bônus por mensagem",
   "ui.attention.focus_rise": "Lua de mel (seg)",
-  "ui.attention.focus_cooldown": "Duração mínima de queda (seg)"
+  "ui.attention.focus_cooldown": "Duração mínima de queda (seg)",
+  "ui.attention.rise_rate": "Taxa de subida base",
+  "ui.attention.rise_rate.hint": "Crescimento natural de atenção por segundo na fase rise (0.02 = +2 pontos por 100 s)."
 }

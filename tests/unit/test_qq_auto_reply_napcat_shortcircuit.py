@@ -1,8 +1,9 @@
-"""NapCat 启动失败时 wait_for_onebot_ready 必须短路，不空等 20 秒。
+"""wait_for_onebot_ready must short-circuit when NapCat startup fails, not idle-wait 20s.
 
-背景：napcat_directory 未配置或不存在时，ensure_napcat_started 会设置
-_startup_error；但 wait_for_onebot_ready 旧实现不检查该错误，仍空轮询满
-timeout（20s），前端 call() 轮询上限也是 20s → 启动按钮误报 timeout。
+Background: when napcat_directory is unset or missing, ensure_napcat_started sets
+_startup_error; but the old wait_for_onebot_ready ignored it and polled for the full
+timeout (20s), and the frontend call() also polls with a 20s cap, so the start button
+reported a spurious timeout.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ def _plugin(*, qq_settings=None, startup_error=None, qq_client=None):
 
 
 def test_wait_shortcircuits_when_startup_error_already_set():
-    """已有 startup_error → 立即返回 False，不进入轮询循环。"""
+    """With startup_error already set, returns False immediately without polling."""
     plugin = _plugin(startup_error="启动器不存在: xxx")
     service = QQNapcatService(plugin)
 
@@ -40,7 +41,7 @@ def test_wait_shortcircuits_when_startup_error_already_set():
 
 
 def test_wait_polls_when_no_error_but_no_client():
-    """无 startup_error、客户端未连 → 走正常轮询，超时后返回 False。"""
+    """Without startup_error and no client connected, polls normally and returns False on timeout."""
     plugin = _plugin(startup_error=None, qq_client=SimpleNamespace(is_connected=lambda: False))
     service = QQNapcatService(plugin)
 
@@ -52,7 +53,7 @@ def test_wait_polls_when_no_error_but_no_client():
 
 
 def test_wait_returns_true_when_connected():
-    """客户端已连 → 立即返回 True 并清除 startup_error。"""
+    """With a client connected, returns True immediately and clears startup_error."""
     plugin = _plugin(
         startup_error="旧错误",
         qq_client=SimpleNamespace(is_connected=lambda: True),
@@ -66,7 +67,7 @@ def test_wait_returns_true_when_connected():
 
 
 def test_ensure_started_sets_error_when_no_dir():
-    """napcat_directory 未配置 → ensure_napcat_started 设置明确错误（不静默）。"""
+    """When napcat_directory is unset, ensure_napcat_started sets an explicit error (not silent)."""
     plugin = _plugin(qq_settings={})
     service = QQNapcatService(plugin)
 

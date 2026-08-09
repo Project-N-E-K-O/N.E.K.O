@@ -644,5 +644,7 @@
   "ui.attention.reply_penalty": "Доля расхода при ответе",
   "ui.attention.msg_recovery": "Бонус за сообщение",
   "ui.attention.focus_rise": "Медовый месяц (сек)",
-  "ui.attention.focus_cooldown": "Мин. длительность спада (сек)"
+  "ui.attention.focus_cooldown": "Мин. длительность спада (сек)",
+  "ui.attention.rise_rate": "Базовая скорость роста",
+  "ui.attention.rise_rate.hint": "Естественный рост внимания в секунду в фазе rise (0.02 = +2 очка за 100 с)."
 }

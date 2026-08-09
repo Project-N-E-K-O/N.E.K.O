@@ -1,4 +1,4 @@
-"""`adjust_group_attention` entry：正 delta → boost，负 delta → consume，零 → noop。"""
+"""`adjust_group_attention` entry: positive delta boosts, negative consumes, zero no-ops."""
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +71,7 @@ def test_missing_service_returns_error():
 
 
 class _KwPlugin:
-    """最小桩：让 update_on_message 走分类命中分支。"""
+    """Minimal stub that drives update_on_message through the keyword-match branch."""
     def __init__(self, keyword_ratio):
         self._qq_settings = {
             "enable_group_attention": True,
@@ -109,7 +109,7 @@ async def _classify_message_boost(keyword_ratio, category="issue"):
 
 
 def test_keyword_boost_ratio_is_consumed():
-    """update_on_message 使用 attention_keyword_boost_ratio 而非硬编码 1.8。"""
+    """update_on_message uses attention_keyword_boost_ratio instead of hardcoded 1.8."""
     import asyncio
     low = asyncio.run(_classify_message_boost(1.0))     # 1.0 * 1.0 = 1.0
     high = asyncio.run(_classify_message_boost(5.0))    # 1.0 * 5.0 = 5.0

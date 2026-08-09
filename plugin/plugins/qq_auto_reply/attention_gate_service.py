@@ -213,6 +213,12 @@ class QQAttentionGateService:
         # 0. 记录消息时间（用于主动发言检测）
         self._touch_group(normalized_group_id)
 
+        # 0.5 焦点门控前置：先捕获「接收时焦点」再更新注意力。
+        #    若在 update_on_message() 之后再取焦点，当前群刚被 boost 过，
+        #    一个接收前非焦点的群可能因此在步骤 1 变成焦点，同一条非 @ 消息
+        #    会被放行进 LLM 而非返回 non_focus——破坏焦点优先规则。
+        focus_group = attention.get_focus_group()
+
         # 1. 消息更新注意力（非焦点群也要累计，等待成为焦点）
         await attention.update_on_message({
             "group_id": normalized_group_id,
@@ -243,7 +249,6 @@ class QQAttentionGateService:
 
         # 4. 焦点门控前置：非焦点群 → block（注意力已在步骤 1 累计），
         #    输出跳过原因。关键词/回复猫娘的消息同样在此被拦下。
-        focus_group = attention.get_focus_group()
         current_score = float(attention.get_state(normalized_group_id).attention_score)
         if focus_group != normalized_group_id:
             self.plugin._emit_log(

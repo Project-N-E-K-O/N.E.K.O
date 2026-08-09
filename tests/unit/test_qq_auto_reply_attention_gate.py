@@ -1,9 +1,10 @@
-"""焦点门控前置：非焦点群一律 block（含回复猫娘的消息），@bot 保留强制回复。
+"""Focus-first gating: non-focus groups are blocked (including reply-to-bot), @bot keeps force reply.
 
-钉死 `attention_gate_service.evaluate()` 的门控顺序：
-1. @bot 直接点名 → 唯一旁路，任何群都强制回复
-2. 其余消息（普通 / 关键词 / 回复猫娘）→ 非焦点群 block，注意力照常累计，输出跳过原因
-3. 焦点群内 → 关键词 / 回复 bot 强制回复；普通消息交 LLM 自行判断
+Pins the gating order of `attention_gate_service.evaluate()`:
+1. @bot direct mention -> only bypass, force-replies in any group
+2. Other messages (plain / keyword / reply-to-bot) -> non-focus groups are blocked,
+   attention still accumulates, skip reason is logged
+3. Inside the focus group -> keyword / reply-to-bot force reply; plain messages go to the LLM
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from plugin.plugins.qq_auto_reply.attention_gate_service import QQAttentionGateS
 
 
 class _FakeAttention:
-    """记录调用、返回固定焦点群与分数的最小注意力桩。"""
+    """Minimal attention stub recording calls and returning a fixed focus group and score."""
 
     def __init__(self, *, focus_group: str, enabled: bool = True, score: float = 5.0):
         self._focus = focus_group
@@ -87,7 +88,7 @@ async def _evaluate(plugin, **kwargs) -> tuple:
 
 
 def test_non_focus_plain_message_blocked_and_attention_accumulated():
-    """非焦点群的普通消息：block，但 update_on_message 照常执行（注意力累计）。"""
+    """A plain message in a non-focus group is blocked, but attention still accumulates."""
     attention = _FakeAttention(focus_group="g2")  # 焦点是 g2，本消息来自 g1
     plugin = _plugin(attention)
 
@@ -102,7 +103,7 @@ def test_non_focus_plain_message_blocked_and_attention_accumulated():
 
 
 def test_non_focus_reply_to_bot_blocked():
-    """非焦点群的「回复猫娘的消息」同样 block —— 这是用户点名要求的门控。"""
+    """A reply-to-bot message in a non-focus group is also blocked (user-requested gating)."""
     attention = _FakeAttention(focus_group="g2")
     plugin = _plugin(attention)
 
@@ -119,7 +120,7 @@ def test_non_focus_reply_to_bot_blocked():
 
 
 def test_at_bot_bypasses_focus_gate():
-    """纯 @bot（未回复）直接点名 → 非焦点群也强制回复（唯一旁路）。"""
+    """A pure @bot (no reply) force-replies even in a non-focus group (only bypass)."""
     attention = _FakeAttention(focus_group="g2")
     plugin = _plugin(attention)
 
@@ -132,7 +133,7 @@ def test_at_bot_bypasses_focus_gate():
 
 
 def test_at_and_reply_combined_non_focus_blocked():
-    """消息同时带 @ 和 回复猫娘 → 按回复处理，非焦点群 block（回复优先于 @）。"""
+    """A message with both @ and reply-to-bot is treated as a reply and blocked in non-focus groups."""
     attention = _FakeAttention(focus_group="g2")
     plugin = _plugin(attention)
 
@@ -150,7 +151,7 @@ def test_at_and_reply_combined_non_focus_blocked():
 
 
 def test_at_and_reply_combined_focus_replies():
-    """消息同时带 @ 和 回复猫娘 → 焦点群内强制回复（reason=reply_to_bot）。"""
+    """A message with both @ and reply-to-bot force-replies inside the focus group."""
     attention = _FakeAttention(focus_group="g1")
     plugin = _plugin(attention)
 
@@ -167,7 +168,7 @@ def test_at_and_reply_combined_focus_replies():
 
 
 def test_focus_group_plain_message_passes_to_llm():
-    """焦点群的普通消息：不强制回复，交给 LLM 自行判断（reason=focus_group）。"""
+    """A plain message in the focus group is not force-replied; the LLM decides (reason=focus_group)."""
     attention = _FakeAttention(focus_group="g1")
     plugin = _plugin(attention)
 
@@ -179,7 +180,7 @@ def test_focus_group_plain_message_passes_to_llm():
 
 
 def test_focus_group_reply_to_bot_force_replies():
-    """焦点群内回复猫娘的消息：强制回复。"""
+    """A reply-to-bot message inside the focus group force-replies."""
     attention = _FakeAttention(focus_group="g1")
     plugin = _plugin(attention)
 
@@ -196,7 +197,7 @@ def test_focus_group_reply_to_bot_force_replies():
 
 
 def test_focus_group_keyword_force_replies():
-    """焦点群内命中关键词：强制回复。"""
+    """A keyword hit inside the focus group force-replies."""
     attention = _FakeAttention(focus_group="g1")
     plugin = _plugin(attention)
     plugin._qq_settings = {
@@ -214,7 +215,7 @@ def test_focus_group_keyword_force_replies():
 
 
 def test_non_focus_low_attention_still_blocked():
-    """非焦点群即使注意力低于阈值也 block，reason 仍是非焦点（不泄露焦点原因）。"""
+    """A non-focus group is blocked even below the threshold; reason stays non_focus."""
     attention = _FakeAttention(focus_group="g2", score=0.5)
     plugin = _plugin(attention)
 
@@ -225,7 +226,7 @@ def test_non_focus_low_attention_still_blocked():
 
 
 def test_focus_group_low_attention_blocked():
-    """焦点群注意力低于最小阈值：block 并输出原因。"""
+    """A focus group below the minimum threshold is blocked with the reason logged."""
     attention = _FakeAttention(focus_group="g1", score=0.5)
     plugin = _plugin(attention)
 
@@ -233,3 +234,58 @@ def test_focus_group_low_attention_blocked():
 
     assert decision.action == "ignore"
     assert decision.reason.startswith("focus_low_attention")
+
+
+class _OrderSensitiveAttention:
+    """验证 get_focus_group 在 update_on_message 之前捕获接收时焦点。
+
+    修复前：update_on_message 先 boost 当前群 → get_focus_group 后取时当前群
+    已变焦点 → 非 @ 消息被放行。修复后：get_focus_group 先取（接收时焦点），
+    update_on_message 后若当前群变焦点也不放行（因为判断用的是接收时焦点）。
+    """
+
+    def __init__(self):
+        self.calls: list[str] = []
+        self._now = 1000
+
+    def _enabled(self) -> bool:
+        return True
+
+    def _current_time(self) -> int:
+        return self._now
+
+    def _minimum_threshold(self) -> float:
+        return 1.0
+
+    def get_focus_group(self) -> str | None:
+        self.calls.append("get_focus_group")
+        # 接收时焦点是 g2（非 g1）；g1 只有 boost 后才会成为焦点
+        return "g2"
+
+    def get_state(self, group_id: str):
+        self.calls.append("get_state")
+        return SimpleNamespace(attention_score=6.0)  # 分数足以成焦点
+
+    async def update_on_message(self, message: dict) -> None:
+        self.calls.append(f"update_on_message:{message.get('group_id')}")
+
+    def mark_focus(self, group_id: str) -> None:
+        self.calls.append(f"mark_focus:{group_id}")
+
+    def wake_boost(self, group_id: str) -> None:
+        self.calls.append(f"wake_boost:{group_id}")
+
+
+def test_focus_captured_before_attention_update():
+    """get_focus_group 必须在 update_on_message 之前调用（接收时焦点），
+    否则 boost 后非焦点群会假装成焦点被放行。"""
+    attention = _OrderSensitiveAttention()
+    plugin = _plugin(attention)
+
+    decision, _ = asyncio.run(_evaluate(plugin, group_id="g1"))
+
+    # 接收时 g1 非焦点（get_focus_group 返回 g2）→ 即使分数 6.0 也应 block
+    assert decision.action == "ignore"
+    assert decision.reason.startswith("non_focus")
+    # get_focus_group 必须先于 update_on_message
+    assert attention.calls.index("get_focus_group") < attention.calls.index("update_on_message:g1")
