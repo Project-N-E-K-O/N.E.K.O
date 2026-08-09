@@ -3625,7 +3625,8 @@
             "prev": "Previous",
             "done": "Done",
             "close": "Close",
-            "skip": "Skip"
+            "skip": "Skip",
+            "skipWithEsc": "Skip (ESC)"
         },
         "fullscreenPrompt": {
             "title": "🎓 Start Tutorial",

@@ -3852,7 +3852,7 @@ class UniversalTutorialManager {
             return;
         }
 
-        const label = this.t('tutorial.buttons.skip', '跳过');
+        const label = this.t('tutorial.buttons.skipWithEsc', '跳过(ESC)');
         controller.show({
             label: label,
             onSkip: () => this.handleTutorialSkipRequest()
