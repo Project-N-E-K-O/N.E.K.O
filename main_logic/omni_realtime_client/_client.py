@@ -117,6 +117,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
         noise_reduction_enabled: bool = True,
+        silence_timeout_seconds: Optional[float] = None,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -249,16 +250,19 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
 
         # Silence detection for auto-closing inactive sessions
-        # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
+        # 只在 GLM 和 free API 时启用；秒数来自 config.VOICE_SILENCE_TIMEOUT_SECONDS
+        # （0/负值关闭）。Qwen / Step 放行；livestream 整路跳过。
         self._last_speech_time = None
         self._api_type = api_type or ""
         self._livestream_mode = bool(livestream_mode)
-        # 只在 GLM 和 free 时启用静默超时；livestream 模式（主播长会话）整路跳过
+        self._silence_timeout_seconds = self._resolve_silence_timeout_seconds(
+            silence_timeout_seconds
+        )
         self._enable_silence_timeout = (
             self._api_type.lower() in ['glm', 'free']
             and not self._livestream_mode
+            and self._silence_timeout_seconds > 0
         )
-        self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
         self._silence_check_task = None
         self._silence_timeout_triggered = False
 
@@ -464,6 +468,21 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._proactive_inject_awaiting_outcome = False
         self._proactive_inject_outcome_token: Optional[str] = None
         self._gemini_proactive_outcome: Optional[tuple] = None
+
+    @staticmethod
+    def _resolve_silence_timeout_seconds(value: Optional[float]) -> float:
+        """Normalize configured silence timeout; ``<= 0`` disables the check."""
+        if value is None:
+            from config import VOICE_SILENCE_TIMEOUT_SECONDS
+
+            value = VOICE_SILENCE_TIMEOUT_SECONDS
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            seconds = 90.0
+        if seconds != seconds or seconds == float("inf") or seconds == float("-inf"):
+            seconds = 90.0
+        return max(0.0, seconds)
 
     def _create_audio_processor(self) -> AudioProcessor:
         """Create session-owned audio state, including native RNNoise state."""

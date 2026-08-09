@@ -547,7 +547,7 @@ def get_livestream_config() -> Dict[str, Any]:
     Livestream mode is a sub-mode layered on top of core_api_type='free'. When enabled:
     - on the free path, all lanlan.tech URLs are rewritten to server_prefix-derived addresses (/core /text/v1 /tts)
     - on the free path, voice is forced to voice_id (bypassing the free_voices preset gate)
-    - OmniRealtimeClient skips the 90-second silence mic-off check
+    - OmniRealtimeClient skips the configured voice silence mic-off check
 
     Priority:
     1. ``config/livestream_config.json`` (untracked, single-file patch for streamer distribution)

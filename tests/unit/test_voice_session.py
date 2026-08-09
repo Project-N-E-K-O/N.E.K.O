@@ -951,6 +951,55 @@ async def test_connect_qwen_server_vad_preserves_payload():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Voice silence timeout comes from config.VOICE_SILENCE_TIMEOUT_SECONDS
+# (0/negative disables). Still gated to glm/free and skipped in livestream.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "api_type,livestream,seconds,expect_enabled,expect_seconds",
+    [
+        ("glm", False, 90, True, 90.0),
+        ("free", False, 120, True, 120.0),
+        ("glm", False, 0, False, 0.0),
+        ("glm", False, -5, False, 0.0),
+        ("qwen", False, 90, False, 90.0),
+        ("glm", True, 90, False, 90.0),
+    ],
+)
+def test_silence_timeout_reads_configured_seconds(
+    api_type, livestream, seconds, expect_enabled, expect_seconds,
+):
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model="test-model",
+        api_type=api_type,
+        livestream_mode=livestream,
+        silence_timeout_seconds=seconds,
+    )
+    assert client._silence_timeout_seconds == expect_seconds
+    assert client._enable_silence_timeout is expect_enabled
+
+
+@pytest.mark.unit
+def test_silence_timeout_defaults_to_session_settings_constant():
+    from config import VOICE_SILENCE_TIMEOUT_SECONDS
+
+    client = OmniRealtimeClient(
+        base_url="wss://example.test/realtime",
+        api_key="sk-test",
+        model="glm-realtime",
+        api_type="glm",
+    )
+    assert client._silence_timeout_seconds == float(
+        max(0.0, VOICE_SILENCE_TIMEOUT_SECONDS)
+    )
+    assert client._enable_silence_timeout is (VOICE_SILENCE_TIMEOUT_SECONDS > 0)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Regression: connect() must reset _has_server_vad to False in MANUAL
 # mode for every provider that defaults to server-VAD. Otherwise
 # stream_audio() and _check_silence_timeout() take the wrong branch
