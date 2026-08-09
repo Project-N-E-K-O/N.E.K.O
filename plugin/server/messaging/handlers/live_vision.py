@@ -19,7 +19,7 @@ async def handle_live_vision_get(request: dict[str, object], send_response: Send
     try:
         payload = await live_vision_query_service.get_live_vision(
             role=request.get("role"),
-            include_frame=coerce_bool(request.get("include_frame")),
+            include_frame=coerce_bool(request.get("include_frame"), default=False),
             timeout=timeout,
         )
         send_response(from_plugin, request_id, payload, None, timeout=timeout)

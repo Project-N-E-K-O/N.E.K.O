@@ -7,6 +7,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers import events as events_module
 from plugin.server.messaging.handlers import export as export_module
 from plugin.server.messaging.handlers import lifecycle as lifecycle_module
+from plugin.server.messaging.handlers import live_vision as live_vision_module
 from plugin.server.messaging.handlers import memory as memory_module
 from plugin.server.messaging.handlers import plugin_query as plugin_query_module
 from plugin.server.messaging.handlers import plugin_to_plugin as p2p_module
@@ -166,6 +167,70 @@ async def test_plugin_to_plugin_and_bus_get_handlers(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_live_vision_handler_answers_the_request_a_plugin_actually_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Driven with the literal payload ``ctx.get_live_vision`` puts on the wire.
+
+    A probe polls this every couple of seconds, so anything the handler gets
+    wrong turns into a log flood rather than a single visible failure -- worth
+    exercising the real argument handling instead of stubbing past it.
+    """
+    send = _Recorder()
+    seen: list[dict[str, object]] = []
+
+    async def _get_live_vision(**kwargs) -> dict[str, object]:
+        seen.append(kwargs)
+        return {"active": True, "source": "screen", "native_vision": True}
+
+    monkeypatch.setattr(
+        live_vision_module.live_vision_query_service,
+        "get_live_vision",
+        _get_live_vision,
+    )
+    await live_vision_module.handle_live_vision_get(
+        {
+            "type": "LIVE_VISION_GET",
+            "from_plugin": "neko_wows",
+            "request_id": "1",
+            "timeout": 3.0,
+            "role": "",
+            "include_frame": False,
+        },
+        send,
+    )
+
+    assert send.calls[-1][3] is None
+    assert send.calls[-1][2]["active"] is True
+    assert seen[-1]["include_frame"] is False
+
+    await live_vision_module.handle_live_vision_get(
+        {"from_plugin": "p", "request_id": "2", "include_frame": True}, send)
+    assert seen[-1]["include_frame"] is True
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_live_vision_handler_answers_not_sharing_instead_of_erroring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller polls on a timer; "no" is a safe answer, an error is not."""
+    send = _Recorder()
+
+    async def _boom(**kwargs) -> dict[str, object]:
+        raise RuntimeError("main server went away")
+
+    monkeypatch.setattr(
+        live_vision_module.live_vision_query_service, "get_live_vision", _boom)
+    await live_vision_module.handle_live_vision_get(
+        {"from_plugin": "p", "request_id": "3"}, send)
+
+    assert send.calls[-1][3] is None
+    assert send.calls[-1][2]["active"] is False
+
+
+@pytest.mark.plugin_unit
 def test_registry_build_request_handlers_and_messages_module() -> None:
     handlers = registry_module.build_request_handlers()
     required = {
@@ -175,6 +240,7 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
         "PLUGIN_SYSTEM_CONFIG_GET",
         "MEMORY_QUERY",
         "USER_CONTEXT_GET",
+        "LIVE_VISION_GET",
         "EXPORT_PUSH",
         "RUN_UPDATE",
         "EVENT_GET",
