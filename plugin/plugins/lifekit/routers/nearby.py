@@ -17,6 +17,11 @@ from .._nearby_discovery import (
     SearchCenter,
     normalize_search_terms,
 )
+from .._nearby_intent import (
+    normalize_place_intent,
+    normalize_preference_hints,
+    search_terms_for_hints,
+)
 from .._routing import format_distance
 from .._location import (
     LocationCandidate,
@@ -37,8 +42,10 @@ class NearbyRouter(PluginRouter):
         id="search_nearby",
         name="附近搜索",
         description=(
-            "根据用户完整的自然语言需求搜索附近地点。调用时保留原始需求，并生成 1 到 4 个"
-            "从具体到宽泛、可跨类别的简短地图召回词；不要要求用户先选择地点类别。"
+            "搜索某条路、地标、当前位置或城市附近的餐厅、咖啡、商店、景点和生活服务。"
+            "request 保留用户原话；能确定时填写 location_hint，并选择最接近的 place_intent，"
+            "preference_hints 只填写用户明确说出的简短偏好。不确定时使用 explore；"
+            "不要生成地图召回词，也不要要求用户先选择地点类别。"
         ),
         params=NearbyParams,
         llm_result_model=NearbyResult,
@@ -50,14 +57,18 @@ class NearbyRouter(PluginRouter):
         request: str = "",
         search_terms: list[str] | None = None,
         location: str = "",
+        location_hint: str = "",
+        place_intent: str = "",
+        preference_hints: list[str] | None = None,
         radius: int = 3000,
         _ctx: dict[str, Any] | None = None,
         **_,
     ):
         if params is not None:
             request = params.request
-            search_terms = params.search_terms
-            location = params.location
+            location_hint = params.location_hint
+            place_intent = params.place_intent
+            preference_hints = params.preference_hints
             radius = params.radius
 
         plugin = self.main_plugin
@@ -66,10 +77,15 @@ class NearbyRouter(PluginRouter):
 
         raw_request = clean_text((_ctx or {}).get("latest_user_request"))
         request_text = raw_request or clean_text(request)
-        terms = _clean_search_terms(search_terms)
+        intent = normalize_place_intent(place_intent)
+        preferences = normalize_preference_hints(preference_hints)
+        terms = _clean_search_terms(search_terms) or search_terms_for_hints(
+            intent,
+            preferences,
+        )
         if not request_text or not terms:
             return Err(SdkError(i18n.t("nearby.no_query")))
-        clean_location = clean_text(location)
+        clean_location = clean_text(location_hint) or clean_text(location)
         radius = clamp_int(radius, 3000, 500, 50000)
 
         # 解析搜索中心
@@ -92,13 +108,14 @@ class NearbyRouter(PluginRouter):
             payload = location_clarification_payload(
                 clarification,
                 error=loc_err,
-                field_name="location",
+                field_name="location_hint",
                 requested_location=clean_location,
                 context={
                     "kind": "nearby",
                     "request": request_text,
-                    "search_terms": list(terms),
-                    "location": clean_location,
+                    "location_hint": clean_location,
+                    "place_intent": intent,
+                    "preference_hints": list(preferences),
                     "radius": radius,
                 },
             )

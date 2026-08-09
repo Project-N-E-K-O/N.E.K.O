@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -34,6 +35,47 @@ async def test_generic_shop_discovery_uses_osm_tag_existence_filter() -> None:
     assert '%5B%22shop%22%5D' in captured_queries[0]
     assert '%5B%22name%22~%22' not in captured_queries[0]
     assert '%5B%22shop%22%3D%22yes%22%5D' not in captured_queries[0]
+
+
+@pytest.mark.parametrize(
+    ("search_term", "expected_filter"),
+    [
+        ("茶馆", '["amenity"="cafe"]'),
+        ("博物馆", '["tourism"="museum"]'),
+        ("美术馆", '["tourism"="gallery"]'),
+        ("书店", '["shop"="books"]'),
+        ("室内游乐场", '["leisure"="indoor_play"]'),
+        ("酒吧", '["amenity"="bar"]'),
+        ("夜店", '["amenity"="nightclub"]'),
+        ("火锅", '["cuisine"~"^(hot_pot|hotpot)$"]'),
+        ("烧烤", '["cuisine"~"^(barbecue|grill)$"]'),
+        ("川菜", '["cuisine"="chinese"]'),
+        ("日料", '["cuisine"~"^(japanese|sushi)$"]'),
+        ("素食餐厅", '["diet:vegetarian"~"^(yes|only)$"]'),
+        ("甜品店", '["shop"~"^(confectionery|pastry)$"]'),
+    ],
+)
+@pytest.mark.asyncio
+async def test_typed_intent_terms_use_osm_category_filters(
+    search_term: str,
+    expected_filter: str,
+) -> None:
+    captured_query = ""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_query
+        captured_query = parse_qs(request.content.decode())["data"][0]
+        return httpx.Response(200, json={"elements": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = OverpassPOI(
+            endpoints=("https://available.example/api/interpreter",),
+            http_client=client,
+        )
+        await provider.search(search_term, 31.235, 121.475)
+
+    assert expected_filter in captured_query
+    assert '["name"~' not in captured_query
 
 
 @pytest.mark.asyncio

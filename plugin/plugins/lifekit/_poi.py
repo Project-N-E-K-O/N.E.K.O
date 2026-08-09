@@ -173,15 +173,37 @@ class OverpassPOI:
         "商店": '["shop"]', "店铺": '["shop"]', "shop": '["shop"]',
         "shops": '["shop"]', "store": '["shop"]', "stores": '["shop"]',
         "餐厅": '["amenity"="restaurant"]', "餐饮": '["amenity"="restaurant"]',
-        "火锅": '["amenity"="restaurant"]', "烧烤": '["amenity"="restaurant"]',
+        "火锅": (
+            '["amenity"~"^(restaurant|fast_food)$"]'
+            '["cuisine"~"^(hot_pot|hotpot)$"]'
+        ),
+        "烧烤": (
+            '["amenity"~"^(restaurant|fast_food)$"]'
+            '["cuisine"~"^(barbecue|grill)$"]'
+        ),
+        "川菜": '["amenity"="restaurant"]["cuisine"="chinese"]',
+        "日料": (
+            '["amenity"="restaurant"]'
+            '["cuisine"~"^(japanese|sushi)$"]'
+        ),
+        "素食餐厅": (
+            '["amenity"~"^(restaurant|cafe|fast_food)$"]'
+            '["diet:vegetarian"~"^(yes|only)$"]'
+        ),
         "咖啡": '["amenity"="cafe"]', "咖啡厅": '["amenity"="cafe"]',
         "咖啡馆": '["amenity"="cafe"]', "cafe": '["amenity"="cafe"]',
+        "茶馆": '["amenity"="cafe"]',
+        "甜品店": '["shop"~"^(confectionery|pastry)$"]',
         "超市": '["shop"="supermarket"]', "便利店": '["shop"="convenience"]',
         "购物中心": '["shop"="mall"]', "商场": '["shop"="mall"]',
+        "书店": '["shop"="books"]',
         "药店": '["amenity"="pharmacy"]', "医院": '["amenity"="hospital"]',
         "银行": '["amenity"="bank"]', "ATM": '["amenity"="atm"]',
         "酒店": '["tourism"="hotel"]', "宾馆": '["tourism"="hotel"]',
         "景点": '["tourism"="attraction"]', "公园": '["leisure"="park"]',
+        "博物馆": '["tourism"="museum"]', "美术馆": '["tourism"="gallery"]',
+        "室内游乐场": '["leisure"="indoor_play"]',
+        "酒吧": '["amenity"="bar"]', "夜店": '["amenity"="nightclub"]',
         "学校": '["amenity"="school"]', "大学": '["amenity"="university"]',
         "加油站": '["amenity"="fuel"]', "停车场": '["amenity"="parking"]',
         "地铁站": '["station"="subway"]', "公交站": '["highway"="bus_stop"]',

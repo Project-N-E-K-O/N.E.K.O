@@ -77,17 +77,30 @@ class _NoopLogger:
         pass
 
 
-def test_nearby_entry_exposes_only_the_discovery_plan_interface() -> None:
+def test_nearby_entry_exposes_typed_hints_instead_of_provider_search_terms() -> None:
     entry = NearbyRouter().collect_entries()["search_nearby"]
     schema = entry.meta.input_schema or {}
     properties = schema.get("properties", {})
 
+    assert "不要生成地图召回词" in entry.meta.description
     assert "request" in properties
-    assert "search_terms" in properties
-    assert properties["search_terms"]["maxItems"] == 4
-    assert "不要要求用户先明确地点类别" in properties["search_terms"]["description"]
+    assert properties["place_intent"]["enum"] == [
+        "food",
+        "coffee",
+        "shopping",
+        "outdoors",
+        "culture",
+        "family",
+        "nightlife",
+        "service",
+        "explore",
+    ]
+    assert properties["preference_hints"]["maxItems"] == 4
+    assert "search_terms" not in properties
+    assert "location_hint" in properties
+    assert "location" not in properties
     assert "query" not in properties
-    assert set(schema.get("required", [])) == {"request", "search_terms"}
+    assert set(schema.get("required", [])) == {"request"}
 
 
 @pytest.mark.asyncio

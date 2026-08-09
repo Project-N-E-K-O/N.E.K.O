@@ -6,7 +6,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, RootModel, field_validator
 
-from ._nearby_discovery import MAX_SEARCH_TERMS, normalize_search_terms
+from ._nearby_intent import (
+    MAX_PREFERENCE_HINTS,
+    PlaceIntent,
+    normalize_preference_hints,
+)
 
 
 def _blankable_text(value: Any) -> str:
@@ -151,29 +155,35 @@ class HourlyForecastResult(ClarifiableResult):
 
 class NearbyParams(LifeKitModel):
     request: str = Field(..., min_length=1, description="用户的原始附近搜索需求，保留完整语义")
-    search_terms: list[str] = Field(
-        ...,
-        min_length=1,
-        max_length=MAX_SEARCH_TERMS,
+    location_hint: str = Field(
+        "",
+        description="从用户原话中识别出的搜索中心；不确定时留空",
+    )
+    place_intent: PlaceIntent = Field(
+        "explore",
+        description="最接近用户需求的地点意图；不确定时使用 explore",
+    )
+    preference_hints: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_PREFERENCE_HINTS,
         description=(
-            "根据用户需求生成 1 到 4 个简短的地图召回词，按具体到宽泛排序，"
-            "可以跨类别且不要写完整句子；不要要求用户先明确地点类别"
+            "用户明确表达的最多 4 个简短偏好，例如川菜、安静、适合儿童；"
+            "不要生成地图服务的召回词"
         ),
     )
-    location: str = Field("", description="搜索中心（地点标签或城市名，留空用默认位置）")
     radius: int = Field(3000, ge=500, le=50000, description="搜索半径（米，默认 3000）")
 
-    @field_validator("request", "location", mode="before")
+    @field_validator("request", "location_hint", mode="before")
     @classmethod
     def _clean_text(cls, value: Any) -> str:
         return _blankable_text(value)
 
-    @field_validator("search_terms", mode="before")
+    @field_validator("preference_hints", mode="before")
     @classmethod
-    def _clean_search_terms(cls, value: Any) -> list[str]:
+    def _clean_preference_hints(cls, value: Any) -> list[str]:
         if not isinstance(value, (list, tuple)):
-            raise ValueError("search_terms must be a list")
-        return list(normalize_search_terms(value))
+            raise ValueError("preference_hints must be a list")
+        return list(normalize_preference_hints(value))
 
 
 class _NearbyReadyResult(LifeKitModel):
