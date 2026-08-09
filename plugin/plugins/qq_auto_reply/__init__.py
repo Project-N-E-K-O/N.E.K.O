@@ -1008,6 +1008,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def ensure_napcat(self, **_):
         """仅启动 NapCat 进程，不连接"""
         await self._ensure_napcat_started()
+        # 硬失败（目录缺失/启动器缺失/进程拉起失败）→ 明确报错，不返回
+        # 「已启动」假象，也不让前端反复重试（ensure_napcat_started 已短路）。
+        if self.napcat_service.has_hard_startup_error():
+            return Err(SdkError(f"NAPCAT_START_FAILED: {self.napcat_service.get_startup_error()}"))
         ready = await self.napcat_service.wait_for_onebot_ready()
         if ready:
             await self._sync_napcat_qrcode_into_static()

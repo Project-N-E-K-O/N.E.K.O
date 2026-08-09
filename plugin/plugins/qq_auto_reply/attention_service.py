@@ -323,9 +323,11 @@ class QQAttentionService:
     # ── 焦点选择 ──
 
     def _current_focus_group_id(self, states: list[QQGroupAttentionState]) -> str:
+        # 焦点候选资格用焦点线 _focus_threshold()（默认 4.0）而非最低线 1.0：
+        # 低于焦点线的群不参与焦点竞争，避免 1.1 分的群被当成焦点绕过门控。
         focused = [
             state for state in states
-            if int(state.focus_acquired_at or 0) > 0 and float(state.attention_score) >= self._minimum_threshold()
+            if int(state.focus_acquired_at or 0) > 0 and float(state.attention_score) >= self._focus_threshold()
         ]
         if not focused:
             return ""
@@ -343,7 +345,9 @@ class QQAttentionService:
         return candidate.group_id if candidate else ""
 
     def _top_candidate_state(self, states: list[QQGroupAttentionState], now: int) -> QQGroupAttentionState | None:
-        eligible = [state for state in states if float(state.attention_score) >= self._minimum_threshold()]
+        # 焦点候选资格用焦点线 _focus_threshold()（默认 4.0）而非最低线 1.0，
+        # 与「焦点 = 所有 attention ≥ 焦点线的群中最高者」的语义一致。
+        eligible = [state for state in states if float(state.attention_score) >= self._focus_threshold()]
         if not eligible:
             return None
         return max(

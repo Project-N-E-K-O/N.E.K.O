@@ -257,8 +257,8 @@ class QQAttentionGateService:
             )
             return GateDecision("ignore", reason=f"non_focus(focus={focus_group or '无'},score={current_score:.1f})")
 
-        # 5. 焦点群：检查注意力是否足够
-        min_threshold = attention._minimum_threshold()
+        # 5. 焦点群：检查注意力是否足够（焦点线而非最低线）
+        min_threshold = attention._focus_threshold()
         if current_score < min_threshold:
             self.plugin._emit_log("INFO", f"[Gate] 焦点群{normalized_group_id} 注意力过低({current_score:.1f}<{min_threshold}), 忽略")
             return GateDecision("ignore", reason=f"focus_low_attention({current_score:.1f})")
