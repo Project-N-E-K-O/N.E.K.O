@@ -646,5 +646,6 @@
   "ui.attention.focus_rise": "Luna de miel (seg)",
   "ui.attention.focus_cooldown": "Duración mínima de caída (seg)",
   "ui.attention.rise_rate": "Tasa de aumento base",
-  "ui.attention.rise_rate.hint": "Crecimiento natural de atención por segundo en la fase rise (0.02 = +2 puntos por 100 s)."
+  "ui.attention.rise_rate.hint": "Crecimiento natural de atención por segundo en la fase rise (0.02 = +2 puntos por 100 s).",
+  "ui.napcat.config.path_manual": "El navegador no puede obtener la ruta absoluta; introdúcela manualmente."
 }

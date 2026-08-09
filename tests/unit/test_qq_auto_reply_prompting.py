@@ -224,10 +224,10 @@ def test_rise_phase_does_not_clamp_above_focus_line():
 
 
 def test_zero_attention_settings_are_honored():
-    """保存的 0 值必须被尊重，不能因 or-default 回退到默认。
+    """Saved 0 values must be honored, not fall back to defaults via or-default.
 
-    旧写法 ``get(key, d) or d`` 把 0 当 falsy：attention_consume_ratio=0
-    （禁用回复消耗）被读回 0.10，attention_fall_rate=0 被读回 0.015。
+    Old ``get(key, d) or d`` treated 0 as falsy: attention_consume_ratio=0
+    (disable reply consumption) read back 0.10, attention_fall_rate=0 read back 0.015.
     """
     from types import SimpleNamespace
 

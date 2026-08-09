@@ -985,7 +985,8 @@ class QQSettingsService:
             self.plugin._qq_settings["group_attention_message_gain"] = self._clamp_attention_float(group_attention_message_gain, "group_attention_message_gain", floor=0.0)
         attention_base_rise_rate = kwargs.get("attention_base_rise_rate")
         if attention_base_rise_rate is not None:
-            self.plugin._qq_settings["attention_base_rise_rate"] = self._clamp_attention_float(attention_base_rise_rate, "attention_base_rise_rate", floor=0.0001)
+            # floor=0：0 表示禁用自然上升（rise 相位不随时间增长）
+            self.plugin._qq_settings["attention_base_rise_rate"] = self._clamp_attention_float(attention_base_rise_rate, "attention_base_rise_rate", floor=0.0)
         attention_message_boost = kwargs.get("attention_message_boost")
         if attention_message_boost is not None:
             self.plugin._qq_settings["attention_message_boost"] = self._clamp_attention_float(attention_message_boost, "attention_message_boost", floor=0.0)

@@ -646,5 +646,6 @@
   "ui.attention.focus_rise": "ハネムーン (秒)",
   "ui.attention.focus_cooldown": "最小フォール時間 (秒)",
   "ui.attention.rise_rate": "基本上昇レート",
-  "ui.attention.rise_rate.hint": "rise フェーズの毎秒の自然な注意成長（0.02 = 100秒あたり+2ポイント）。"
+  "ui.attention.rise_rate.hint": "rise フェーズの毎秒の自然な注意成長（0.02 = 100秒あたり+2ポイント）。",
+  "ui.napcat.config.path_manual": "ブラウザで絶対パスを取得できません。手動で入力してください"
 }

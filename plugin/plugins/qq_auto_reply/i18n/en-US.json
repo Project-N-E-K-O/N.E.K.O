@@ -675,5 +675,6 @@
   "ui.attention.focus_cooldown.hint": "Minimum duration of the fall phase before it can rise again.",
   "ui.attention.icebreaker.hint": "Focus lands on the same silent group this many times before an icebreaker.",
   "ui.attention.rise_rate": "Base Rise Rate",
-  "ui.attention.rise_rate.hint": "Per-second natural attention growth in the rise phase (0.02 = +2 points per 100s)."
+  "ui.attention.rise_rate.hint": "Per-second natural attention growth in the rise phase (0.02 = +2 points per 100s).",
+  "ui.napcat.config.path_manual": "Browser cannot get the absolute path; please enter it manually."
 }

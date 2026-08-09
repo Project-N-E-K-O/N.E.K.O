@@ -646,5 +646,6 @@
   "ui.attention.focus_rise": "Медовый месяц (сек)",
   "ui.attention.focus_cooldown": "Мин. длительность спада (сек)",
   "ui.attention.rise_rate": "Базовая скорость роста",
-  "ui.attention.rise_rate.hint": "Естественный рост внимания в секунду в фазе rise (0.02 = +2 очка за 100 с)."
+  "ui.attention.rise_rate.hint": "Естественный рост внимания в секунду в фазе rise (0.02 = +2 очка за 100 с).",
+  "ui.napcat.config.path_manual": "Браузер не может получить абсолютный путь; введите его вручную."
 }

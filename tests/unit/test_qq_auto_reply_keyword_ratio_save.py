@@ -1,7 +1,8 @@
-"""`attention_keyword_boost_ratio` 必须在 save_settings 全链路声明/透传/保存。
+"""`attention_keyword_boost_ratio` must be declared/forwarded/saved across save_settings.
 
-之前 __init__.py 的 save_settings 签名和 dashboard_service 都缺这个参数，
-前端发的值被 **_ 吞掉，运行时仍用默认 1.8，dashboard 也回显 1.8。
+Previously the save_settings signature in __init__.py and dashboard_service both
+lacked this parameter, so the value sent by the frontend was swallowed by **_,
+the runtime kept the default 1.8, and the dashboard echoed 1.8.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ class _DashboardStub:
 
 
 def test_keyword_boost_ratio_forwarded_to_dashboard():
-    """save_settings entry 必须把 attention_keyword_boost_ratio 透传给 dashboard_service。"""
+    """The save_settings entry must forward attention_keyword_boost_ratio to dashboard_service."""
     dash = _DashboardStub()
     inst = QQAutoReplyPlugin.__new__(QQAutoReplyPlugin)
     inst.dashboard_service = dash
@@ -34,7 +35,7 @@ def test_keyword_boost_ratio_forwarded_to_dashboard():
 
 
 def test_keyword_boost_ratio_passed_with_other_params():
-    """与其它注意力参数同传时也透传（不是被 **_ 吞掉）。"""
+    """It is forwarded alongside other attention params (not swallowed by **_)."""
     dash = _DashboardStub()
     inst = QQAutoReplyPlugin.__new__(QQAutoReplyPlugin)
     inst.dashboard_service = dash

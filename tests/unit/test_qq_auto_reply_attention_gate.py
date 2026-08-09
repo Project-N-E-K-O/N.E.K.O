@@ -237,11 +237,11 @@ def test_focus_group_low_attention_blocked():
 
 
 class _OrderSensitiveAttention:
-    """验证 get_focus_group 在 update_on_message 之前捕获接收时焦点。
+    """Verifies get_focus_group captures the receipt-time focus before update_on_message.
 
-    修复前：update_on_message 先 boost 当前群 → get_focus_group 后取时当前群
-    已变焦点 → 非 @ 消息被放行。修复后：get_focus_group 先取（接收时焦点），
-    update_on_message 后若当前群变焦点也不放行（因为判断用的是接收时焦点）。
+    Before the fix: update_on_message boosted the current group first, so a later
+    get_focus_group could see it as focus and admit a non-@ message. After: the focus
+    is captured first (receipt-time), so a boost-induced focus does not admit it.
     """
 
     def __init__(self):
@@ -277,8 +277,8 @@ class _OrderSensitiveAttention:
 
 
 def test_focus_captured_before_attention_update():
-    """get_focus_group 必须在 update_on_message 之前调用（接收时焦点），
-    否则 boost 后非焦点群会假装成焦点被放行。"""
+    """get_focus_group must run before update_on_message (receipt-time focus),
+    or a boosted non-focus group could fake being the focus and be admitted."""
     attention = _OrderSensitiveAttention()
     plugin = _plugin(attention)
 
