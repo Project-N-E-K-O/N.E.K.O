@@ -1,8 +1,9 @@
-"""`_run_focus_shift_check` 在 ignore 分支也要推进焦点切换。
+"""`_run_focus_shift_check` advances the focus shift even on the ignore branch.
 
-一条被 gate ignore 的非焦点消息 boost 后可能让该群变成焦点；若不在这里
-check_focus_shift，_last_focus_group 不更新、回溯补回不触发、切换点消息
-留在 backlog。本测试验证该方法在有切换时触发回溯、无切换时静默。
+A non-focus message boosted by the gate may make its group the focus; without
+check_focus_shift here, _last_focus_group stays stale, retroactive review does
+not run, and the switch-point message stays in the backlog. Verifies the method
+triggers review on a shift and stays silent without one.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ def _plugin(gate):
 
 
 def test_focus_shift_triggers_retroactive_review():
-    """有焦点切换时创建回溯补回任务。"""
+    """A focus shift creates a retroactive-review task."""
     gate = _Gate(shift=SimpleNamespace(new_focus_group="g2"))
     dispatcher = QQMessageDispatcher(_plugin(gate))
 
@@ -51,7 +52,7 @@ def test_focus_shift_triggers_retroactive_review():
 
 
 def test_no_focus_shift_is_noop():
-    """无焦点切换时静默返回，不创建任务。"""
+    """Without a focus shift, it returns silently without creating a task."""
     gate = _Gate(shift=None)
     dispatcher = QQMessageDispatcher(_plugin(gate))
 
@@ -64,7 +65,7 @@ def test_no_focus_shift_is_noop():
 
 
 def test_missing_gate_is_noop():
-    """插件无 attention_gate_service 时安全返回。"""
+    """Returns safely when the plugin has no attention_gate_service."""
     dispatcher = QQMessageDispatcher(_plugin(gate=None))
     # 不应抛异常
     asyncio.run(dispatcher._run_focus_shift_check())
