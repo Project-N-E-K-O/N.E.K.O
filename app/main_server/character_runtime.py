@@ -735,6 +735,14 @@ async def _handle_agent_event(event: dict):
                     # Images to stream at manager-release time (respond only;
                     # empty for read, which already streamed above).
                     "media_images": deferred_proactive_images,
+                    # Opt-in request for the host's own live screen-share frame,
+                    # resolved at the delivery point (see _stream_cb_live_frame)
+                    # rather than here: the pacing manager may hold this cue for
+                    # seconds, and a plugin that wants to see the screen wants
+                    # to see it as she speaks, not as the cue was queued.
+                    "attach_live_frame": bool(
+                        event_metadata.get("attach_live_frame")
+                    ),
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",

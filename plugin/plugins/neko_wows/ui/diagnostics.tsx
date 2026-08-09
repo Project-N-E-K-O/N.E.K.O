@@ -28,6 +28,7 @@ export function DiagnosticsSection(props: {
   actions: HostedAction[]
   onSetDryRun: (value: boolean) => void
   onSetScreenshotEnabled: (value: boolean) => void
+  onSetLiveVisionEnabled: (value: boolean) => void
   busy: boolean
   t: Translate
   locale?: string
@@ -41,6 +42,7 @@ export function DiagnosticsSection(props: {
   const officialTool = catalog.official_tool || {}
   const screenshot = state.screenshot || {}
   const recentShots = screenshot.recent || []
+  const liveVision = state.live_vision || {}
   const paused = Boolean(dispatcher.paused || arbiter.paused)
   const findAction = (id: string) =>
     (props.actions || []).find((action) => action.id === id)
@@ -256,6 +258,37 @@ export function DiagnosticsSection(props: {
               ) : null}
             </Inline>
           </Stack>
+        </Stack>
+      </Card>
+
+      <Card title={t("diagnostics.liveVision.title")}>
+        <Stack gap={10}>
+          <Switch
+            checked={liveVision.enabled !== false}
+            disabled={props.busy}
+            label={t("diagnostics.liveVision.enable")}
+            onChange={(checked) => props.onSetLiveVisionEnabled(checked)}
+          />
+          {liveVision.enabled === false ? (
+            <Text>{t("diagnostics.liveVision.disabledHelp")}</Text>
+          ) : liveVision.in_use ? (
+            <Alert tone="success">{t("diagnostics.liveVision.inUse")}</Alert>
+          ) : liveVision.active && liveVision.source === "camera" ? (
+            <Text>{t("diagnostics.liveVision.cameraOnly")}</Text>
+          ) : liveVision.active && !liveVision.native_vision ? (
+            <Alert tone="warning">{t("diagnostics.liveVision.noNativeVision")}</Alert>
+          ) : (
+            <Text>{t("diagnostics.liveVision.notSharing")}</Text>
+          )}
+          {liveVision.active ? (
+            <KeyValue
+              data={{
+                [t("diagnostics.liveVision.source")]: liveVision.source || "—",
+                [t("diagnostics.liveVision.age")]:
+                  `${Math.round((liveVision.age_seconds ?? 0) * 10) / 10}s`,
+              }}
+            />
+          ) : null}
         </Stack>
       </Card>
 

@@ -17,6 +17,7 @@ from ..domain.contracts import DeliveryRequest, LANE_URGENT, TacticExcerpt
 from ..policy.tactic_policy import AdviceCandidate
 from .instructions import (
     DEFAULT_BUNDLE,
+    LIVE_VISION_SPEAK_HINT,
     VISION_LOOK_BEFORE_SPEAK,
     PromptBundle,
 )
@@ -49,6 +50,14 @@ class PromptProfile:
     # When true, each call-out nudges the model to look before speaking. Kept
     # off the editable prompt revision so the privacy switch stays authoritative.
     screenshot_enabled: bool = False
+    # Ask the host to attach the shared screen to this turn. Follows the panel
+    # switch alone, deliberately: whether a frame actually exists is a fact the
+    # host establishes when it delivers, and asking is free when it does not.
+    live_vision_enabled: bool = False
+    # What the probe believed when the call-out was built, which is the best we
+    # can do for the *wording* -- the text has to be written before delivery.
+    # It only picks a sentence; it never decides whether a frame is attached.
+    live_vision_active: bool = False
 
 
 class WowsPromptRouter:
@@ -66,7 +75,12 @@ class WowsPromptRouter:
     ) -> DeliveryRequest:
         bundle = profile.bundle or DEFAULT_BUNDLE
         sections = [bundle.instructions_for(candidate.lane, profile.channel_mode)]
-        if profile.screenshot_enabled:
+        # Only ever one of the two. Telling her to call the screenshot tool on a
+        # turn that already carries the shared frame would buy the same picture
+        # twice, once at the price this whole path exists to avoid.
+        if profile.live_vision_active:
+            sections.append(LIVE_VISION_SPEAK_HINT.strip())
+        elif profile.screenshot_enabled:
             sections.append(VISION_LOOK_BEFORE_SPEAK.strip())
 
         sections.append(
@@ -103,6 +117,13 @@ class WowsPromptRouter:
                 "channel_mode": profile.channel_mode,
                 "excerpt_count": excerpts_used,
                 "screenshot_enabled": bool(profile.screenshot_enabled),
+                # A request, not a prediction. The host re-checks liveness at
+                # the delivery point and attaches only if a frame is really
+                # there, so gating this on the plugin's cached view would just
+                # discard cues the host could have served -- every call-out in
+                # the seconds after sharing starts, and the first one after a
+                # cold start, when that cache is still empty.
+                "attach_live_frame": bool(profile.live_vision_enabled),
                 # Stamped so the timeline can attribute every call-out to the
                 # exact prompt revision that produced it.
                 "prompt_revision": bundle.revision_id,

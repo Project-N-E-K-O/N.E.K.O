@@ -109,6 +109,15 @@ class LLMSessionManager(
         self._bg_tasks: set = set()  # 防止 fire-and-forget 任务被 GC 回收
         self._screenshot_future: asyncio.Future | None = None
         self._avatar_position: dict | None = None  # 前端传来的 Avatar 归一化坐标 {centerX, centerY, width, height}
+        # The screen/camera share, kept here rather than read back off the
+        # session client. The client's ``_latest_image_b64`` is an ambient
+        # slot that a dropped avatar image, a pasted user image, or a plugin's
+        # own picture all overwrite, so a consumer asking for "the shared
+        # screen" could be handed any of those. This slot has exactly one
+        # writer: an accepted screen/camera frame. See ``live_vision_snapshot``.
+        self._live_vision_source: str = ""
+        self._live_vision_last_frame_at: float = 0.0
+        self._live_vision_frame_b64: str = ""
         self.current_speech_id = None
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0

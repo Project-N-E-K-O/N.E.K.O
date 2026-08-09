@@ -134,6 +134,25 @@ export type ScreenshotState = {
   recent?: ShotSummary[]
 }
 
+export type LiveVisionState = {
+  /** Panel switch. */
+  enabled?: boolean
+  /** Frames are arriving from the main conversation right now. */
+  active?: boolean
+  /** "screen" or "camera"; only a screen share is useful here. */
+  source?: string
+  age_seconds?: number | null
+  /** The conversation model reads pixels without a vision-model detour. */
+  native_vision?: boolean
+  role?: string
+  /** The host has been asked at least once. */
+  polled?: boolean
+  /** All host-side conditions met, switch aside. */
+  usable?: boolean
+  /** usable AND switched on: what the pipeline will actually do. */
+  in_use?: boolean
+}
+
 export type WowsConfigView = {
   dry_run?: boolean
   channel_mode?: string
@@ -237,6 +256,7 @@ export type DashboardState = {
   dispatcher?: DispatcherState
   context_injected?: boolean
   screenshot?: ScreenshotState
+  live_vision?: LiveVisionState
   ship_catalog?: ShipCatalogState
   documents?: DocumentsState
   prompts?: PromptsState

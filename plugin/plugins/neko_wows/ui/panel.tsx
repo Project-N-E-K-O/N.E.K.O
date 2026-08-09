@@ -172,6 +172,8 @@ export default function NekoWowsPanel(props: PluginSurfaceProps<DashboardState>)
                     onSetDryRun={(value) => call("set_dry_run", { value })}
                     onSetScreenshotEnabled={(value) =>
                       call("set_screenshot_enabled", { value })}
+                    onSetLiveVisionEnabled={(value) =>
+                      call("set_live_vision_enabled", { value })}
                   />
                 ),
               },

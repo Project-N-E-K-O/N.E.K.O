@@ -120,6 +120,12 @@ screenshot_enabled = false
 screenshot_min_interval_seconds = 15.0
 screenshot_retain_count = 20
 
+# 复用主对话的屏幕共享画面。默认开启，且与上面的截屏开关无关：它自己不截屏、
+# 不落盘，只是把你已经在共享给猫娘的那一帧接到战报这一轮上，省掉一次工具往返
+# 和一次视觉模型调用。共享没开、画面过期、共享的是摄像头、或者对话模型不支持
+# 原生看图时，自动退回上面的截屏工具。
+live_vision_enabled = true
+
 # 战术文档库。存储配额可以放很大，但排序索引单独设上限：超出后文档仍然可以
 # 按 front matter 标签检索，只是不再参与 BM25 排序，面板会显示索引覆盖率。
 tactics_max_file_bytes = 8388608

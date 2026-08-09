@@ -35,12 +35,43 @@ wows_look_at_battle 看一眼画面，再说话。你听不到语音。
 作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
 """
 
+# Same scene-setting again, for when the user is already sharing their screen
+# with the main conversation. The reading guide lives here rather than on each
+# call-out for a reason: with the screenshot tool it rode along as the picture's
+# `vision_prompt`, but a live frame goes to the model as raw pixels and has no
+# such slot, so it has to be said in words — and repeating two hundred tokens of
+# it on every call-out would eat the savings the live frame exists to make.
+WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS = """\
+现在你正在陪主人玩《战舰世界》。主人正在跟你共享屏幕，所以你能直接看到游戏画面
+——不用调任何截图工具，画面就在你眼前。你还有游戏遥测：自身舰船状态、小地图上的
+舰船位置、伤害统计和当前弹种。你听不到语音。
+
+读画面时先看小地图，再看主画面，重点是遥测读不到的东西：
+1. 【必看】小地图：敌我舰船分布、推线/撤退方向、哪一侧空虚或被打穿、占点与舰队重心；
+2. 烟雾、鱼雷航迹、水花与炮口火光这类临时信息；
+3. 自身状态图标：着火、进水、主炮/舵机损坏、消耗品冷却；
+4. 主画面里队友的相对位置，自己是不是脱队或被包夹；
+5. 准星附近有没有可打的目标，弹着散布大概情况。
+血量、距离、存活数这些数字以随附文本中的遥测为准，不要从画面上估读，也不要复述
+它们。只说画面里看得见而数据里没有的东西。
+
+接下来你会收到一些结构化的战局事件。它们是插件按确定性规则算出来的事实，你的工
+作只是用自己的语气把它说出来，不要自己补充没有给出的战况。
+"""
+
 # Appended to each call-out only while screenshot_enabled is on. Not part of
 # the editable prompt revision — the switch must be able to take it away.
 VISION_LOOK_BEFORE_SPEAK = """\
 每次发言前必须先调用 wows_look_at_battle 看一眼当前画面，再结合上面的事件、事实
 与画面开口。若工具返回冷却中、截图失败或未开启，不要卡住，直接按已有事实说。
 紧急事件同样必须先尝试看一眼，但冷却或失败时优先把要紧的话说完。
+"""
+
+# The live-share counterpart. One line, because the frame is already attached
+# to this very turn and the reading guide was given once at battle start.
+LIVE_VISION_SPEAK_HINT = """\
+这一轮附带了主人屏幕上的实时画面。先扫一眼小地图和当前局面，再结合上面的事件与
+事实开口，不要调截图工具。画面没送到就直接按已有事实说。
 """
 
 WOWS_RESTORE_INSTRUCTIONS = """\
@@ -157,8 +188,17 @@ def instructions_for(lane: str, channel_mode: str) -> str:
     return DEFAULT_BUNDLE.instructions_for(lane, channel_mode)
 
 
-def context_instructions(*, screenshot_enabled: bool) -> str:
-    """Pick the scene-setting block that matches the screenshot switch."""
+def context_instructions(
+    *, screenshot_enabled: bool, live_vision_active: bool = False
+) -> str:
+    """Pick the scene-setting block that matches how she can see the battle.
+
+    Live sharing wins over the screenshot switch: when the frame is already
+    coming to her every turn, telling her to call the tool first would spend a
+    round trip to arrive at a picture she was handed anyway.
+    """
+    if live_vision_active:
+        return WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
     if screenshot_enabled:
         return WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
     return WOWS_CONTEXT_INSTRUCTIONS
@@ -168,12 +208,14 @@ __all__ = [
     "BASE_INSTRUCTIONS",
     "BUILTIN_REVISION_ID",
     "DEFAULT_BUNDLE",
+    "LIVE_VISION_SPEAK_HINT",
     "MAX_SECTION_CHARS",
     "NORMAL_OVERLAY",
     "SECTION_NAMES",
     "URGENT_OVERLAY",
     "VISION_LOOK_BEFORE_SPEAK",
     "WOWS_CONTEXT_INSTRUCTIONS",
+    "WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS",
     "WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS",
     "WOWS_RESTORE_INSTRUCTIONS",
     "PromptBundle",

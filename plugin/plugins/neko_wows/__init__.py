@@ -103,6 +103,7 @@ from .ship_data.official_api import (
 )
 from .ship_data.resolver import ShipResolver
 from .ship_data.store import ShipCatalogStore
+from .vision.live import LiveVisionProbe
 from .vision.store import ShotStore
 from .vision.tool import ScreenshotService, facts_to_telemetry
 
@@ -119,6 +120,7 @@ STORE_DISABLED_LANES = "disabled_lanes"
 STORE_OFFICIAL_API_SETTINGS = "official_api_settings"
 STORE_CONNECTION_SETTINGS = "connection_settings"
 STORE_SCREENSHOT_SETTINGS = "screenshot_settings"
+STORE_LIVE_VISION_ENABLED = "live_vision_enabled"
 
 # Config keys that describe *where* the data comes from. Changing any of them
 # needs an explicit reconnect: silently tearing down a live link mid-battle would
@@ -198,8 +200,18 @@ class NekoWowsPlugin(NekoPluginBase):
             self.cfg.screenshot_retain_count,
             logger=self.logger,
         )
+        # Sync IPC on purpose: the probe refreshes on its own worker thread and
+        # the screenshot tool already runs under asyncio.to_thread, so neither
+        # caller has a running loop to block.
+        self.live_vision = LiveVisionProbe(
+            self._host_ctx.get_live_vision_sync, logger=self.logger)
         self.screenshots = ScreenshotService(
-            self.cfg, self.shots, self._telemetry_snapshot, logger=self.logger)
+            self.cfg,
+            self.shots,
+            self._telemetry_snapshot,
+            logger=self.logger,
+            live_frame_provider=self._live_frame,
+        )
 
         # A plain sqlite3 store rather than the SDK's async `self.db`: retrieval
         # happens inside `_evaluate` on the transport thread, which cannot await.
@@ -254,6 +266,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 if not force_dry_run:
                     cfg.dry_run = bool(self.cfg.dry_run)
                     cfg.screenshot_enabled = bool(self.cfg.screenshot_enabled)
+                    cfg.live_vision_enabled = bool(self.cfg.live_vision_enabled)
                 self._apply_config(cfg)
             return cfg
 
@@ -321,6 +334,9 @@ class NekoWowsPlugin(NekoPluginBase):
             retain = screenshot.get("retain_count")
             if isinstance(retain, (int, float)) and not isinstance(retain, bool):
                 cfg.screenshot_retain_count = int(max(1, min(100, float(retain))))
+        live_vision = await self._stored(STORE_LIVE_VISION_ENABLED)
+        if isinstance(live_vision, bool):
+            cfg.live_vision_enabled = live_vision
 
     async def _stored(self, key: str):
         try:
@@ -369,6 +385,31 @@ class NekoWowsPlugin(NekoPluginBase):
             return {"in_battle": False}
         _snapshot, facts = latest
         return facts_to_telemetry(facts)
+
+    def _live_vision_active(self) -> bool:
+        """Whether this call-out can count on the host attaching the screen.
+
+        The panel switch is checked first so that turning it off costs nothing:
+        no probe, no refresh thread, and the pipeline behaves exactly as it did
+        before this feature existed.
+        """
+        if not self.cfg.live_vision_enabled:
+            return False
+        return self.live_vision.is_active()
+
+    def _live_frame(self) -> bytes | None:
+        """The shared frame for the screenshot tool, when one is available.
+
+        Accepts a share the model cannot read natively, unlike
+        ``_live_vision_active``: this frame goes back through the tool's own
+        image channel, which the host transcribes for such models anyway, so
+        the only thing gained or lost here is who grabbed the pixels.
+        """
+        if not self.cfg.live_vision_enabled:
+            return None
+        if not self.live_vision.is_sharing_screen():
+            return None
+        return self.live_vision.fetch_frame()
 
     @staticmethod
     def _detection_signature(cfg: WowsConfig) -> tuple:
@@ -594,7 +635,8 @@ class NekoWowsPlugin(NekoPluginBase):
         if snapshot.is_live:
             self.context_injector.push(
                 context_instructions(
-                    screenshot_enabled=bool(cfg.screenshot_enabled)),
+                    screenshot_enabled=bool(cfg.screenshot_enabled),
+                    live_vision_active=self._live_vision_active()),
                 dry_run=cfg.dry_run,
             )
             try:
@@ -670,6 +712,8 @@ class NekoWowsPlugin(NekoPluginBase):
             dry_run=cfg.dry_run,
             bundle=bundle,
             screenshot_enabled=bool(cfg.screenshot_enabled),
+            live_vision_enabled=bool(cfg.live_vision_enabled),
+            live_vision_active=self._live_vision_active(),
         )
         excerpts = self._reference_for(chosen, snapshot)
         request = self.router.build(chosen, profile, excerpts)
@@ -803,6 +847,7 @@ class NekoWowsPlugin(NekoPluginBase):
             "dispatcher": self.dispatcher.stats(),
             "context_injected": self.context_injector.injected,
             "screenshot": self.screenshots.status(),
+            "live_vision": self._live_vision_payload(cfg),
             "ship_catalog": self._ship_catalog_payload(),
             "documents": self._documents_payload(),
             "prompts": self._prompts_payload(bundle),
@@ -811,6 +856,25 @@ class NekoWowsPlugin(NekoPluginBase):
             "timeline": self.timeline.recent(60),
             "mod_hint": _mod_hint(service, snapshot_view),
         }
+
+    def _live_vision_payload(self, cfg: WowsConfig) -> dict[str, Any]:
+        """Panel view of the live share.
+
+        Switched off means genuinely no work, here as everywhere else: the
+        panel shows "off" and says nothing about sharing, so probing the host
+        every poll would buy an answer nobody displays.
+        """
+        if not cfg.live_vision_enabled:
+            return {"enabled": False, "active": False, "usable": False,
+                    "in_use": False, "polled": False, "source": "",
+                    "age_seconds": None, "native_vision": False, "role": ""}
+        payload = dict(self.live_vision.status())
+        payload["enabled"] = True
+        # What the pipeline would actually do right now, so the panel can say
+        # "sharing, but she still needs the screenshot tool" rather than making
+        # the user infer it from three separate flags.
+        payload["in_use"] = bool(payload.get("usable"))
+        return payload
 
     def _ship_catalog_payload(self) -> dict[str, Any]:
         payload = dict(self.ship_context.stats())
@@ -1167,6 +1231,30 @@ class NekoWowsPlugin(NekoPluginBase):
                 "cleared_shots": removed,
             })
 
+    @ui.action(id="set_live_vision_enabled", label="共享时自动看画面", tone="primary",
+               group="diagnostics", order=72, refresh_context=True)
+    @plugin_entry(
+        id="set_live_vision_enabled",
+        name="开关共享画面复用",
+        description=(
+            "主对话开着屏幕共享时，把那一帧直接接到战报上，省掉一次截图工具"
+            "往返。它自己不截屏也不落盘，默认开启；关掉就只走上面的主动截屏。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"value": {"type": "boolean", "default": True}},
+        },
+    )
+    async def set_live_vision_enabled(self, value: bool = True, **_):
+        enabled = bool(value)
+        async with self._preference_lock:
+            error = await self._persist(STORE_LIVE_VISION_ENABLED, enabled)
+            if error is not None:
+                return Err(error)
+            with self._pipeline_lock:
+                self.cfg.live_vision_enabled = enabled
+            return Ok({"live_vision_enabled": enabled})
+
     @ui.action(id="set_screenshot_settings", label="截屏参数", tone="primary",
                group="diagnostics", order=75, refresh_context=True)
     @plugin_entry(
@@ -1427,6 +1515,8 @@ class NekoWowsPlugin(NekoPluginBase):
                 dry_run=True,
                 bundle=bundle,
                 screenshot_enabled=bool(self.cfg.screenshot_enabled),
+                live_vision_enabled=bool(self.cfg.live_vision_enabled),
+                live_vision_active=self._live_vision_active(),
             ),
             (),
         )

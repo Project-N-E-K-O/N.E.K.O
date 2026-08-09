@@ -1787,9 +1787,15 @@ class ProactiveMixin:
             return True
         all_ok = True
         registered_description_event_ids: list[str] = []
+        # One shared frame per batch: every cue released together lands in the
+        # same turn, so a second copy of the same screenshot buys nothing and
+        # costs another image's worth of context.
+        live_frame_sent = False
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
+            if not live_frame_sent:
+                live_frame_sent = await self._stream_cb_live_frame(cb, session, si)
             images = cb.get("media_images")
             if not images:
                 continue
@@ -1888,6 +1894,56 @@ class ProactiveMixin:
             for event_id in registered_description_event_ids:
                 session._inject_rejection_handlers.pop(event_id, None)
         return all_ok
+
+    async def _stream_cb_live_frame(self, cb: dict, session, si) -> bool:
+        """Give one callback's turn the live screen-share frame it asked for.
+
+        Opportunistic, and that is the whole difference from ``media_images``.
+        A callback's own pictures are part of what it wants to say, so losing
+        one defers the entire delivery; the live frame is merely context the
+        host happens to be holding. When it is missing or the send fails the
+        call-out still goes out, because a silent character is worse than a
+        blind one. Failures therefore never touch ``all_ok``, and
+        ``on_rejected`` is deliberately not passed: a rejected frame must not
+        drag the callback into the retry machinery.
+
+        Skipped without native vision. There the frame would detour through
+        the vision model, which is exactly the round trip a caller opts into
+        this path to avoid — and the plugin still has its own screenshot tool
+        for that case.
+        """
+        if not cb.get("attach_live_frame"):
+            return False
+        # Read native support off the session actually being streamed to, not
+        # off ``self.session``: the caller may be delivering into a session it
+        # captured earlier in the release path.
+        if not getattr(session, "_supports_native_image", False):
+            return False
+        state = self.live_vision_snapshot()
+        # A camera share is somebody's room, not their screen; a plugin asking
+        # to see what the user sees has no use for it.
+        if not state["active"] or state["source"] != "screen":
+            return False
+        # The manager's own slot, not the session's ambient ``_latest_image_b64``:
+        # that one is also written by avatar drops, pasted images and other
+        # plugins' pictures, any of which would otherwise be delivered here as
+        # though it were the user's screen.
+        frame = self.live_vision_frame_b64()
+        if not frame:
+            return False
+        try:
+            await si(frame, bypass_rate_limit=True, cache_latest=False)
+        except Exception as e:
+            logger.warning(
+                "[%s] live-frame attach failed; delivering call-out without it: %s",
+                self.lanlan_name, e,
+            )
+            return False
+        logger.debug(
+            "[%s] attached live share frame to proactive cue (age=%.1fs)",
+            self.lanlan_name, state["age_seconds"] or 0.0,
+        )
+        return True
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
         """Handle a FRONTEND-reported audio playback boundary.

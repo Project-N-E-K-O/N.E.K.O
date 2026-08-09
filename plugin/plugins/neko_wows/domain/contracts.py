@@ -151,6 +151,14 @@ class WowsConfig:
     screenshot_min_interval_seconds: float = 15.0
     screenshot_retain_count: int = 20
 
+    # --- live screen share ---
+    # On by default, unlike the switch above, and deliberately independent of
+    # it: this one captures nothing and writes nothing. It only reuses frames
+    # the user is already streaming to the character, so turning screen sharing
+    # on IS the consent. The switch exists for someone who wants the catgirl
+    # kept out of the shared screen anyway.
+    live_vision_enabled: bool = True
+
     # --- tactical documents ---
     tactics_max_file_bytes: int = 8 * 1024 * 1024
     tactics_max_documents: int = 500
@@ -289,6 +297,8 @@ class WowsConfig:
             "screenshot_min_interval_seconds", 15.0, 0.0, 600.0)
         cfg.screenshot_retain_count = int(number(
             "screenshot_retain_count", 20, 1, 100))
+
+        cfg.live_vision_enabled = flag("live_vision_enabled", True)
 
         cfg.tactics_max_file_bytes = int(number(
             "tactics_max_file_bytes", 8 * 1024 * 1024, 4096, 64 * 1024 * 1024))

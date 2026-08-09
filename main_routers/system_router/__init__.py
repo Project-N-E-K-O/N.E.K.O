@@ -166,6 +166,12 @@ from .screenshot import (  # noqa: F401
     backend_screenshot,
     backend_interactive_screenshot,
 )
+from .live_vision import (  # noqa: F401
+    _INACTIVE,
+    _candidate_managers,
+    _pick_sharing_manager,
+    get_live_vision_state,
+)
 from .activity_signal import (  # noqa: F401
     _ACTIVITY_SIGNAL_THROTTLE,
     _ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES,

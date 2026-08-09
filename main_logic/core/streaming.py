@@ -33,6 +33,7 @@ from ._shared import (
     _TEXT_SESSION_INPUT_TYPES,
     _IMAGE_INPUT_TYPES,
     _LIVE_VISION_STREAM_INPUT_TYPES,
+    _LIVE_VISION_STALE_SECONDS,
     logger,
 )
 
@@ -147,6 +148,66 @@ class StreamingMixin:
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""
         return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
+
+    def _note_live_vision_frame(self, input_type: str, image_b64: str) -> None:
+        """Record one accepted screen/camera frame and when it arrived.
+
+        The frame is kept alongside the timestamp so the two can never
+        disagree. Reading the picture back off the session client instead
+        would mean reading a slot that avatar drops, pasted images and plugin
+        pictures also write, and answering "here is the shared screen" with
+        whichever of those landed last.
+        """
+        self._live_vision_source = str(input_type or "")
+        self._live_vision_last_frame_at = time.monotonic()
+        self._live_vision_frame_b64 = image_b64 if isinstance(image_b64, str) else ""
+
+    def live_vision_snapshot(self) -> dict:
+        """Report whether a screen/camera share is currently feeding this session.
+
+        Two facts, because consumers need both. Frames arriving says the user
+        is sharing; native vision says the model can take those pixels as they
+        are. Without native vision every image detours through the vision
+        model, which is the round trip the live-frame path exists to avoid, so
+        callers skip the path entirely rather than pay for it twice.
+
+        Also where an expired frame is released. This is the one method every
+        consumer calls -- delivery, the HTTP probe, the panel -- so it is the
+        only place guaranteed to run again after sharing stops, and a picture
+        of somebody's desktop should not sit in memory once it has aged out
+        of being answerable.
+        """
+        session = self.session
+        native_vision = bool(getattr(session, "_supports_native_image", False))
+        last_at = float(getattr(self, "_live_vision_last_frame_at", 0.0) or 0.0)
+        if not last_at:
+            return {
+                "active": False,
+                "source": "",
+                "age_seconds": None,
+                "native_vision": native_vision,
+            }
+        age = max(0.0, time.monotonic() - last_at)
+        active = age <= _LIVE_VISION_STALE_SECONDS
+        if not active:
+            self._live_vision_frame_b64 = ""
+        return {
+            "active": active,
+            "source": str(getattr(self, "_live_vision_source", "") or "") if active else "",
+            "age_seconds": round(age, 3),
+            "native_vision": native_vision,
+        }
+
+    def live_vision_frame_b64(self) -> str:
+        """The current shared frame, or an empty string when there isn't one.
+
+        Gated on the same liveness the snapshot reports, so a frame left over
+        from a share that has since stopped is never handed out.
+        """
+        if not self.live_vision_snapshot()["active"]:
+            return ""
+        frame = getattr(self, "_live_vision_frame_b64", "")
+        return frame if isinstance(frame, str) else ""
 
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
         input_type = message.get("input_type")
@@ -616,6 +677,11 @@ class StreamingMixin:
                             # 语音模式直接发送图片
                             await self.session.stream_image(image_b64)
                             image_accepted = True
+                        if (
+                            image_accepted
+                            and input_type in _LIVE_VISION_STREAM_INPUT_TYPES
+                        ):
+                            self._note_live_vision_frame(input_type, image_b64)
                         if (
                             image_accepted
                             and image_arrival_time is not None

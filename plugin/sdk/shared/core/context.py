@@ -35,6 +35,7 @@ _SDK_CONTEXT_METHOD_NAMES = (
     "trigger_plugin_event",
     "get_system_config",
     "query_memory",
+    "get_live_vision",
     "run_update",
     "export_push",
     "finish",
@@ -83,6 +84,14 @@ class _HostContextProtocol(Protocol):
     async def get_system_config(self, timeout: float = 5.0) -> object: ...
 
     async def query_memory(self, bucket_id: str, query: str, timeout: float = 5.0) -> object: ...
+
+    async def get_live_vision_async(
+        self,
+        *,
+        role: str = "",
+        include_frame: bool = False,
+        timeout: float = 3.0,
+    ) -> object: ...
 
     async def run_update_async(self, **kwargs: object) -> object: ...
 
@@ -264,6 +273,25 @@ class SdkContext:
 
     async def query_memory(self, bucket_id: str, query: str, timeout: float = 5.0) -> object:
         return await self._host_ctx.query_memory(bucket_id, query, timeout=timeout)
+
+    async def get_live_vision(
+        self,
+        *,
+        role: str = "",
+        include_frame: bool = False,
+        timeout: float = 3.0,
+    ) -> object:
+        """Whether the user is sharing a screen or camera with the character.
+
+        Returns ``active``, ``source`` (``"screen"`` / ``"camera"``),
+        ``age_seconds`` since the last frame, ``native_vision`` (whether the
+        conversation model takes pixels directly), and ``role``. Pass
+        ``include_frame`` to also get ``frame_b64`` — a picture of the user's
+        desktop, so ask for it only when you will actually look at it.
+        """
+        return await self._host_ctx.get_live_vision_async(
+            role=role, include_frame=include_frame, timeout=timeout
+        )
 
     async def run_update(
         self,

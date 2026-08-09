@@ -30,6 +30,7 @@ REASON_SHOT_EXPIRED = "shot_expired"
 
 SOURCE_GAME_WINDOW = "game_window"
 SOURCE_FULLSCREEN = "fullscreen"
+SOURCE_LIVE_SHARE = "live_share"
 
 WOWS_VISION_PROMPT = (
     "这是《战舰世界》的战斗画面。读图时先看小地图，再看主画面，按下面顺序描述"
@@ -56,12 +57,14 @@ class ScreenshotService:
         *,
         logger=None,
         clock: Callable[[], float] = time.monotonic,
+        live_frame_provider: Callable[[], bytes | None] | None = None,
     ) -> None:
         self.cfg = cfg
         self._store = store
         self._telemetry = telemetry_provider
         self._logger = logger
         self._clock = clock
+        self._live_frame = live_frame_provider
         self._last_capture_at: float | None = None
 
     def apply_config(self, cfg) -> None:
@@ -84,8 +87,7 @@ class ScreenshotService:
                 telemetry=self._safe_telemetry(),
             )
 
-        window = find_game_window(self.cfg.game_dir)
-        jpeg = capture_jpeg(window)
+        jpeg, source, window = self._acquire()
         if jpeg is None:
             return _failure(REASON_CAPTURE_FAILED, telemetry=self._safe_telemetry())
 
@@ -99,7 +101,7 @@ class ScreenshotService:
                 "ok": True,
                 "shot_id": record.shot_id,
                 "captured_at": record.captured_at,
-                "source": SOURCE_GAME_WINDOW if window else SOURCE_FULLSCREEN,
+                "source": source,
                 "window_title": window.title if window else "",
                 "telemetry": self._safe_telemetry(),
                 "recall_hint": (
@@ -142,6 +144,35 @@ class ScreenshotService:
         }
 
     # ------------------------------------------------------------------
+    def _acquire(self) -> tuple[bytes | None, str, Any]:
+        """Get a frame, preferring one the host already has.
+
+        When the user is sharing their screen the host is capturing at 1Hz
+        anyway, so grabbing the window ourselves would be a second capture of
+        the same moment — and one that fails more often, since PrintWindow on a
+        fullscreen DirectX client is unreliable in a way the share is not.
+
+        Falling back is unconditional. A share that stopped between the check
+        and the fetch, a frame that failed to decode, a host that went away:
+        all of them just mean we take the screenshot ourselves, the way we did
+        before the share existed.
+        """
+        if self._live_frame is not None:
+            try:
+                frame = self._live_frame()
+            except Exception as exc:
+                self._log("warning", f"live frame unavailable, capturing: {exc}")
+                frame = None
+            if frame:
+                return frame, SOURCE_LIVE_SHARE, None
+
+        window = find_game_window(self.cfg.game_dir)
+        return (
+            capture_jpeg(window),
+            SOURCE_GAME_WINDOW if window else SOURCE_FULLSCREEN,
+            window,
+        )
+
     def _cooldown_remaining(self) -> float:
         interval = float(self.cfg.screenshot_min_interval_seconds or 0.0)
         if interval <= 0 or self._last_capture_at is None:
@@ -253,6 +284,7 @@ __all__ = [
     "REASON_STORE_FAILED",
     "SOURCE_FULLSCREEN",
     "SOURCE_GAME_WINDOW",
+    "SOURCE_LIVE_SHARE",
     "WOWS_VISION_PROMPT",
     "ScreenshotService",
     "facts_to_telemetry",

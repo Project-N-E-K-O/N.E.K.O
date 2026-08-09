@@ -290,6 +290,7 @@ def _catalog_order_target(*, catalog_error: Exception | None = None):
     ))
     plugin.context_injector = SimpleNamespace(
         push=lambda *_args, **_kwargs: calls.append("scene") or True)
+    plugin.live_vision = SimpleNamespace(is_active=lambda: False)
 
     def observe(*_args, **_kwargs):
         calls.append("ship")

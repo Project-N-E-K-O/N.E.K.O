@@ -17,6 +17,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
     from plugin.server.messaging.handlers.system_config import handle_plugin_system_config_get
     from plugin.server.messaging.handlers.memory import handle_memory_query
     from plugin.server.messaging.handlers.user_context import handle_user_context_get
+    from plugin.server.messaging.handlers.live_vision import handle_live_vision_get
     from plugin.server.messaging.handlers.export import handle_export_push
     from plugin.server.messaging.handlers.run_update import handle_run_update
     from plugin.server.messaging.handlers.events import handle_event_get
@@ -43,6 +44,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "PLUGIN_SYSTEM_CONFIG_GET": handle_plugin_system_config_get,
         "MEMORY_QUERY": handle_memory_query,
         "USER_CONTEXT_GET": handle_user_context_get,
+        "LIVE_VISION_GET": handle_live_vision_get,
         "EXPORT_PUSH": handle_export_push,
         "RUN_UPDATE": handle_run_update,
         "EVENT_GET": handle_event_get,

@@ -1899,6 +1899,66 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"System config get timed out after {timeout}s") from e
 
+    def get_live_vision_sync(
+        self,
+        *,
+        role: str = "",
+        include_frame: bool = False,
+        timeout: float = 3.0,
+    ) -> Dict[str, Any]:
+        """同步版本:查询主对话是否正在共享屏幕"""
+        return self._send_request_and_wait(
+            method_name="get_live_vision",
+            request_type="LIVE_VISION_GET",
+            request_data={
+                "role": role,
+                "include_frame": bool(include_frame),
+            },
+            timeout=timeout,
+            wrap_result=True,
+            error_log_template=None,
+        )
+
+    async def get_live_vision_async(
+        self,
+        *,
+        role: str = "",
+        include_frame: bool = False,
+        timeout: float = 3.0,
+    ) -> Dict[str, Any]:
+        """异步版本:查询主对话是否正在共享屏幕"""
+        return await self._send_request_and_wait_async(
+            method_name="get_live_vision",
+            request_type="LIVE_VISION_GET",
+            request_data={
+                "role": role,
+                "include_frame": bool(include_frame),
+            },
+            timeout=timeout,
+            wrap_result=True,
+            error_log_template=None,
+        )
+
+    def get_live_vision(
+        self,
+        *,
+        role: str = "",
+        include_frame: bool = False,
+        timeout: float = 3.0,
+    ):
+        """智能版本:自动检测执行环境,选择同步或异步执行方式
+
+        Returns:
+            在事件循环中返回协程,否则返回结果字典
+        """
+        if self._is_in_event_loop():
+            return self.get_live_vision_async(
+                role=role, include_frame=include_frame, timeout=timeout
+            )
+        return self.get_live_vision_sync(
+            role=role, include_frame=include_frame, timeout=timeout
+        )
+
     def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
         """同步版本:查询内存数据"""
         try:
